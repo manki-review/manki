@@ -19,6 +19,7 @@
     "@actions/core": "^1.11.1",
     "@actions/github": "^6.0.0",
     "@anthropic-ai/sdk": "^0.39.0",
+    "@octokit/auth-app": "^8.2.0",
     "@octokit/rest": "^21.1.1",
     "minimatch": "^10.2.4",
     "parse-diff": "^0.11.1",

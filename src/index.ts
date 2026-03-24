@@ -1,6 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
+import { createAuthenticatedOctokit } from './auth';
 import { ClaudeClient } from './claude';
 import { loadConfig } from './config';
 import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
@@ -19,6 +20,17 @@ import {
   createNitIssue,
 } from './github';
 import { checkAndAutoApprove } from './state';
+
+type Octokit = ReturnType<typeof github.getOctokit>;
+
+let cachedOctokit: Octokit | null = null;
+
+async function getOctokit(): Promise<Octokit> {
+  if (!cachedOctokit) {
+    cachedOctokit = await createAuthenticatedOctokit();
+  }
+  return cachedOctokit;
+}
 
 async function run(): Promise<void> {
   try {
@@ -99,8 +111,7 @@ async function handleCommentTrigger(): Promise<void> {
   const repo = github.context.repo.repo;
   const prNumber = payload.issue.number;
 
-  const githubToken = core.getInput('github_token', { required: true });
-  const octokit = github.getOctokit(githubToken);
+  const octokit = await getOctokit();
 
   const { data: pr } = await octokit.rest.pulls.get({
     owner,
@@ -120,13 +131,12 @@ async function runFullReview(
 ): Promise<void> {
   core.info(`Starting review for ${owner}/${repo}#${prNumber}`);
 
-  const githubToken = core.getInput('github_token', { required: true });
   const oauthToken = core.getInput('claude_code_oauth_token');
   const apiKey = core.getInput('anthropic_api_key');
   const configPath = core.getInput('config_path') || '.claude-review.yml';
   const modelOverride = core.getInput('model');
 
-  const octokit = github.getOctokit(githubToken);
+  const octokit = await getOctokit();
 
   const progressCommentId = await postProgressComment(octokit, owner, repo, prNumber);
 
@@ -196,7 +206,7 @@ async function runFullReview(
     let memory: RepoMemory | null = null;
     let memoryContext = '';
     if (config.memory.enabled) {
-      const memoryToken = core.getInput('memory_repo_token') || githubToken;
+      const memoryToken = core.getInput('memory_repo_token') || core.getInput('github_token', { required: true });
       const memoryOctokit = github.getOctokit(memoryToken);
       const memoryRepo = config.memory.repo || `${owner}/review-memory`;
 
@@ -285,8 +295,7 @@ async function runFullReview(
 }
 
 async function handleReviewStateCheck(): Promise<void> {
-  const token = core.getInput('github_token', { required: true });
-  const octokit = github.getOctokit(token);
+  const octokit = await getOctokit();
 
   const pr = github.context.payload.pull_request;
   if (!pr) {
@@ -329,12 +338,11 @@ function hasClaudeMention(): boolean {
 }
 
 async function handleInteraction(): Promise<void> {
-  const githubToken = core.getInput('github_token', { required: true });
   const oauthToken = core.getInput('claude_code_oauth_token');
   const apiKey = core.getInput('anthropic_api_key');
   const modelOverride = core.getInput('model');
 
-  const octokit = github.getOctokit(githubToken);
+  const octokit = await getOctokit();
   const claude = new ClaudeClient({
     oauthToken: oauthToken || undefined,
     apiKey: apiKey || undefined,
@@ -365,12 +373,11 @@ async function handleReviewCommentInteraction(): Promise<void> {
     return;
   }
 
-  const githubToken = core.getInput('github_token', { required: true });
   const oauthToken = core.getInput('claude_code_oauth_token');
   const apiKey = core.getInput('anthropic_api_key');
   const configPath = core.getInput('config_path') || '.claude-review.yml';
 
-  const octokit = github.getOctokit(githubToken);
+  const octokit = await getOctokit();
   const { owner, repo } = github.context.repo;
 
   const baseRef = payload.pull_request?.base?.ref ?? 'main';
