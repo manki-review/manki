@@ -291,8 +291,14 @@ function formatFindingComment(finding: Finding): string {
   let comment = `${severityEmoji} **${severityLabel}**: ${finding.title}\n\n${finding.description}`;
 
   if (finding.suggestedFix) {
-    comment += `\n\n**Suggested fix:**\n\`\`\`suggestion\n${finding.suggestedFix}\n\`\`\``;
+    comment += `\n\n<details>\n<summary>Suggested fix</summary>\n\n\`\`\`suggestion\n${finding.suggestedFix}\n\`\`\`\n</details>`;
   }
+
+  comment += `\n\n<details>\n<summary>🤖 Prompt for AI Agents</summary>\n\n\`\`\`\nIn \`${finding.file}\` around line ${finding.line}: ${finding.description}\n`;
+  if (finding.suggestedFix) {
+    comment += `\nSuggested change:\n${finding.suggestedFix}\n`;
+  }
+  comment += `\`\`\`\n</details>`;
 
   if (finding.reviewers.length > 0) {
     comment += `\n\n<sub>Flagged by: ${finding.reviewers.join(', ')}</sub>`;
