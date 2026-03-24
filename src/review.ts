@@ -10,7 +10,8 @@ export async function runReview(
   rawDiff: string,
   repoContext: string,
 ): Promise<ReviewResult> {
-  core.info(`Running ${config.reviewers.length} reviewer agents in parallel...`);
+  const reviewerNames = config.reviewers.map(r => r.name).join(', ');
+  core.info(`Running ${config.reviewers.length} reviewer agents in parallel: ${reviewerNames}`);
 
   const agentResults = await Promise.allSettled(
     config.reviewers.map(reviewer =>
@@ -24,7 +25,12 @@ export async function runReview(
     const reviewer = config.reviewers[i];
     if (result.status === 'fulfilled') {
       allFindings.push({ reviewer: reviewer.name, findings: result.value });
-      core.info(`${reviewer.name}: ${result.value.length} findings`);
+      core.startGroup(`Reviewer: ${reviewer.name}`);
+      core.info(`Findings: ${result.value.length}`);
+      for (const f of result.value) {
+        core.info(`  [${f.severity}] ${f.title} — ${f.file}:${f.line}`);
+      }
+      core.endGroup();
     } else {
       core.warning(`${reviewer.name} agent failed: ${result.reason}`);
     }
@@ -40,8 +46,19 @@ export async function runReview(
     };
   }
 
-  core.info('Running consolidation agent...');
-  return runConsolidationAgent(client, config, allFindings, rawDiff);
+  const totalFindings = allFindings.reduce((sum, af) => sum + af.findings.length, 0);
+  core.info(`Running consolidation agent with ${totalFindings} total findings...`);
+  const result = await runConsolidationAgent(client, config, allFindings, rawDiff);
+
+  core.startGroup('Consolidated Review');
+  core.info(`Verdict: ${result.verdict}`);
+  core.info(`Findings: ${result.findings.length}`);
+  for (const f of result.findings) {
+    core.info(`  [${f.severity}] ${f.title} — ${f.file}:${f.line}`);
+  }
+  core.endGroup();
+
+  return result;
 }
 
 async function runReviewerAgent(
