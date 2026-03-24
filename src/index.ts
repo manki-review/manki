@@ -329,7 +329,8 @@ async function handleReviewCommentInteraction(): Promise<void> {
   const octokit = github.getOctokit(githubToken);
   const { owner, repo } = github.context.repo;
 
-  const configContent = await fetchConfigFile(octokit, owner, repo, 'main', configPath);
+  const baseRef = payload.pull_request?.base?.ref ?? 'main';
+  const configContent = await fetchConfigFile(octokit, owner, repo, baseRef, configPath);
   const config = loadConfig(configContent ?? undefined);
 
   const claude = new ClaudeClient({
