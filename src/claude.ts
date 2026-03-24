@@ -83,7 +83,7 @@ export class ClaudeClient {
       ], {
         env: {
           ...process.env,
-          CLAUDE_CODE_OAUTH_TOKEN: this.oauthToken,
+          ...(this.oauthToken ? { CLAUDE_CODE_OAUTH_TOKEN: this.oauthToken } : {}),
         },
         stdio: ['pipe', 'pipe', 'pipe'],
       });

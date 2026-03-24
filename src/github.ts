@@ -349,7 +349,9 @@ function formatFindingComment(finding: Finding): string {
   comment += `**Description:**\n${safeDescription}\n`;
 
   if (finding.suggestedFix) {
-    comment += `\n**Suggested fix:**\n\`\`\`\n${finding.suggestedFix}\n\`\`\`\n`;
+    const maxBt = (finding.suggestedFix.match(/`+/g) || []).reduce((max, s) => Math.max(max, s.length), 0);
+    const fence = '`'.repeat(Math.max(3, maxBt + 1));
+    comment += `\n**Suggested fix:**\n${fence}\n${finding.suggestedFix}\n${fence}\n`;
   }
 
   comment += '\n> **Important:** Before applying this fix, validate the finding in the broader context of the file and surrounding code. The review agent may have missed context that makes this a false positive.\n';
