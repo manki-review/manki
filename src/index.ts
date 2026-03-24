@@ -18,6 +18,7 @@ import {
   dismissPreviousReviews,
   postReview,
   createNitIssue,
+  reactToIssueComment,
 } from './github';
 import { checkAndAutoApprove } from './state';
 
@@ -112,6 +113,11 @@ async function handleCommentTrigger(): Promise<void> {
   const prNumber = payload.issue.number;
 
   const octokit = await getOctokit();
+
+  // Acknowledge the review request
+  if (payload.comment?.id) {
+    await reactToIssueComment(octokit, owner, repo, payload.comment.id, 'eyes');
+  }
 
   const { data: pr } = await octokit.rest.pulls.get({
     owner,

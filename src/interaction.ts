@@ -3,6 +3,7 @@ import * as github from '@actions/github';
 
 import { ClaudeClient } from './claude';
 import { writeSuppression, writeLearning, sanitizeMemoryField } from './memory';
+import { reactToIssueComment, reactToReviewComment } from './github';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -57,6 +58,9 @@ export async function handleReviewCommentReply(
       core.info('Parent comment is not from claude-review');
       return;
     }
+
+    // Acknowledge the reply
+    await reactToReviewComment(octokit, owner, repo, comment.id, 'eyes');
 
     const context = buildReplyContext(
       parentComment.body,
@@ -144,18 +148,23 @@ export async function handlePRComment(
   if (!prNumber) return;
 
   const command = parseCommand(body);
+  const commentId = comment.id as number;
 
   switch (command.type) {
     case 'explain':
+      await reactToIssueComment(octokit, owner, repo, commentId, 'eyes');
       await handleExplain(octokit, client, owner, repo, prNumber, command.args);
       break;
     case 'dismiss':
       await handleDismiss(octokit, owner, repo, prNumber, command.args, memoryConfig, memoryToken);
+      await reactToIssueComment(octokit, owner, repo, commentId, '+1');
       break;
     case 'help':
+      await reactToIssueComment(octokit, owner, repo, commentId, '+1');
       await handleHelp(octokit, owner, repo, prNumber);
       break;
     default:
+      await reactToIssueComment(octokit, owner, repo, commentId, 'eyes');
       await handleGenericQuestion(octokit, client, owner, repo, prNumber, body);
   }
 }

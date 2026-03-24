@@ -377,4 +377,50 @@ export async function createNitIssue(
   return issue.number;
 }
 
+/**
+ * React to an issue comment with an emoji. Failures are silently ignored
+ * since reactions are non-critical UX signals.
+ */
+export async function reactToIssueComment(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  commentId: number,
+  content: '+1' | '-1' | 'laugh' | 'confused' | 'heart' | 'hooray' | 'rocket' | 'eyes',
+): Promise<void> {
+  try {
+    await octokit.rest.reactions.createForIssueComment({
+      owner,
+      repo,
+      comment_id: commentId,
+      content,
+    });
+  } catch {
+    // Non-critical — don't fail the workflow over a reaction
+  }
+}
+
+/**
+ * React to a pull request review comment with an emoji. Failures are silently
+ * ignored since reactions are non-critical UX signals.
+ */
+export async function reactToReviewComment(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  commentId: number,
+  content: '+1' | '-1' | 'laugh' | 'confused' | 'heart' | 'hooray' | 'rocket' | 'eyes',
+): Promise<void> {
+  try {
+    await octokit.rest.reactions.createForPullRequestReviewComment({
+      owner,
+      repo,
+      comment_id: commentId,
+      content,
+    });
+  } catch {
+    // Non-critical — don't fail the workflow over a reaction
+  }
+}
+
 export { formatFindingComment, mapVerdictToEvent, BOT_MARKER };
