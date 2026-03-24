@@ -180,7 +180,7 @@ function deduplicateFindings(
 
   for (const finding of newFindings) {
     const isDuplicate = previousFindings.some(prev =>
-      matchesPrevious(finding, prev)
+      prev.status === 'open' && matchesPrevious(finding, prev)
     );
 
     if (isDuplicate) {
@@ -194,6 +194,9 @@ function deduplicateFindings(
 }
 
 function matchesPrevious(finding: Finding, previous: PreviousFinding): boolean {
+  if (!previous.title || previous.title.length < 3) return false;
+  if (!finding.title || finding.title.length < 3) return false;
+
   const titleMatch = finding.title.toLowerCase().includes(previous.title.toLowerCase()) ||
     previous.title.toLowerCase().includes(finding.title.toLowerCase());
 
