@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+      - run: npm run build
+
+      # Commit dist/ to a release branch and update the major version tag
+      - name: Update release branch
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          MAJOR=$(echo "$TAG" | grep -oE '^v[0-9]+')
+
+          # Configure git
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Add dist/ (it's in .gitignore so we need --force)
+          git add -f dist/
+
+          # Commit if there are changes
+          git diff --staged --quiet || git commit -m "build: compile dist/ for ${TAG}"
+
+          # Force-update the major version tag (e.g., v1)
+          git tag -fa "$MAJOR" -m "Update $MAJOR tag to $TAG"
+          git push origin "$MAJOR" --force
+
+      - name: Create GitHub Release
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release create "$TAG" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

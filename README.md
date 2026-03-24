@@ -60,13 +60,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: xdustinface/claude-review@main
+      - uses: xdustinface/claude-review@v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           # Use ONE of the following:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
+
+> **Note:** `@v1` points to the latest release with pre-built `dist/`. If you use `@main`, you must build from source by adding `setup-node`, `npm ci`, and `npm run build` steps before the action.
 
 ### 3. (Optional) Customize
 
