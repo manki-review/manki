@@ -5,6 +5,7 @@ import { ClaudeClient } from './claude';
 import { writeSuppression, writeLearning, sanitizeMemoryField } from './memory';
 import { reactToIssueComment, reactToReviewComment } from './github';
 import { checkAndAutoApprove, fetchBotReviewThreads } from './state';
+import { ReviewConfig } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -127,6 +128,7 @@ export async function handlePRComment(
   client: ClaudeClient,
   memoryConfig?: MemoryConfig,
   memoryToken?: string,
+  config?: ReviewConfig,
 ): Promise<void> {
   const payload = github.context.payload;
   const comment = payload.comment;
@@ -173,7 +175,7 @@ export async function handlePRComment(
       break;
     case 'check':
       await reactToIssueComment(octokit, owner, repo, commentId, 'eyes');
-      await handleCheck(octokit, owner, repo, prNumber);
+      await handleCheck(octokit, owner, repo, prNumber, config);
       break;
     case 'help':
       await reactToIssueComment(octokit, owner, repo, commentId, '+1');
@@ -382,7 +384,29 @@ async function handleCheck(
   owner: string,
   repo: string,
   prNumber: number,
+  config?: ReviewConfig,
 ): Promise<void> {
+  const authorAssociation = github.context.payload.comment?.author_association;
+  const isTrusted = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(authorAssociation ?? '');
+
+  if (!isTrusted) {
+    await octokit.rest.issues.createComment({
+      owner, repo,
+      issue_number: prNumber,
+      body: `${BOT_MARKER}\nOnly collaborators can trigger auto-approve checks.`,
+    });
+    return;
+  }
+
+  if (!config?.auto_approve) {
+    await octokit.rest.issues.createComment({
+      owner, repo,
+      issue_number: prNumber,
+      body: `${BOT_MARKER}\nAuto-approve is disabled. Set \`auto_approve: true\` in \`.manki.yml\` to enable.`,
+    });
+    return;
+  }
+
   const approved = await checkAndAutoApprove(octokit, owner, repo, prNumber);
 
   if (!approved) {
