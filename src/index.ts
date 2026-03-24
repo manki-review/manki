@@ -14,6 +14,7 @@ import {
   dismissPreviousReviews,
   postReview,
 } from './github';
+import { checkAndAutoApprove } from './state';
 
 async function run(): Promise<void> {
   try {
@@ -39,6 +40,13 @@ async function run(): Promise<void> {
         if (action === 'created') {
           core.info('Review comment interaction — not yet implemented');
           // TODO: implement in #8 (comment interaction)
+        }
+        break;
+
+      case 'pull_request_review':
+        if (action === 'submitted' || action === 'dismissed') {
+          core.info('Review submitted/dismissed — checking if auto-approve is warranted');
+          await handleReviewStateCheck();
         }
         break;
 
@@ -188,6 +196,25 @@ async function runFullReview(
       findings: [],
       highlights: [],
     });
+  }
+}
+
+async function handleReviewStateCheck(): Promise<void> {
+  const token = core.getInput('github_token', { required: true });
+  const octokit = github.getOctokit(token);
+
+  const pr = github.context.payload.pull_request;
+  if (!pr) {
+    core.info('No pull request in payload — skipping auto-approve check');
+    return;
+  }
+
+  const { owner, repo } = github.context.repo;
+  const prNumber = pr.number;
+
+  const approved = await checkAndAutoApprove(octokit, owner, repo, prNumber);
+  if (approved) {
+    core.info(`PR #${prNumber} auto-approved after all blocking issues resolved`);
   }
 }
 
