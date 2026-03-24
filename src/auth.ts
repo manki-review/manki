@@ -17,7 +17,7 @@ export async function createAuthenticatedOctokit(): Promise<Octokit> {
 
   if (appId && privateKey) {
     core.info('Using GitHub App authentication for custom bot identity');
-    const token = await getInstallationToken(appId, privateKey, githubToken);
+    const token = await getInstallationToken(appId, privateKey);
     return github.getOctokit(token);
   }
 
@@ -28,10 +28,14 @@ export async function createAuthenticatedOctokit(): Promise<Octokit> {
 async function getInstallationToken(
   appId: string,
   privateKey: string,
-  fallbackToken: string,
 ): Promise<string> {
+  const appIdNum = parseInt(appId, 10);
+  if (isNaN(appIdNum)) {
+    throw new Error(`Invalid github_app_id: "${appId}" is not a number`);
+  }
+
   const auth = createAppAuth({
-    appId: parseInt(appId, 10),
+    appId: appIdNum,
     privateKey,
   });
 
@@ -55,7 +59,6 @@ async function getInstallationToken(
     core.info(`Authenticated as GitHub App (installation ${installation.id})`);
     return installationAuth.token;
   } catch (error) {
-    core.warning(`Failed to get app installation token: ${error}. Falling back to GITHUB_TOKEN.`);
-    return fallbackToken;
+    throw new Error(`GitHub App authentication failed: ${error}. Check that the app is installed on this repo and credentials are correct.`);
   }
 }
