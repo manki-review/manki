@@ -205,10 +205,10 @@ async function runFullReview(
 
     let memory: RepoMemory | null = null;
     let memoryContext = '';
-    if (config.memory.enabled) {
+    if (config.memory?.enabled) {
       const memoryToken = core.getInput('memory_repo_token') || core.getInput('github_token', { required: true });
       const memoryOctokit = github.getOctokit(memoryToken);
-      const memoryRepo = config.memory.repo || `${owner}/review-memory`;
+      const memoryRepo = config.memory?.repo || `${owner}/review-memory`;
 
       try {
         memory = await loadMemory(memoryOctokit, memoryRepo, repo);
@@ -272,10 +272,10 @@ async function runFullReview(
       }
     }
 
-    if (memory && config.memory.enabled) {
+    if (memory && config.memory?.enabled) {
       const memoryToken = core.getInput('memory_repo_token') || githubToken;
       const memoryOctokit = github.getOctokit(memoryToken);
-      const memoryRepo = config.memory.repo || `${owner}/review-memory`;
+      const memoryRepo = config.memory?.repo || `${owner}/review-memory`;
 
       for (const finding of result.findings) {
         try {
@@ -377,8 +377,8 @@ async function handleInteraction(): Promise<void> {
   const configContent = await fetchConfigFile(octokit, owner, repo, baseRef, configPath);
   const config = loadConfig(configContent ?? undefined);
 
-  const memoryConfig = config.memory.enabled ? config.memory : undefined;
-  const memoryToken = config.memory.enabled ? (core.getInput('memory_repo_token') || githubToken) : undefined;
+  const memoryConfig = config.memory?.enabled ? config.memory : undefined;
+  const memoryToken = config.memory?.enabled ? (core.getInput('memory_repo_token') || githubToken) : undefined;
 
   await handlePRComment(octokit, claude, memoryConfig, memoryToken);
 }
@@ -421,8 +421,8 @@ async function handleReviewCommentInteraction(): Promise<void> {
     model: config.model,
   });
 
-  const memoryConfig = config.memory.enabled ? config.memory : undefined;
-  const memoryToken = config.memory.enabled ? (core.getInput('memory_repo_token') || githubToken) : undefined;
+  const memoryConfig = config.memory?.enabled ? config.memory : undefined;
+  const memoryToken = config.memory?.enabled ? (core.getInput('memory_repo_token') || githubToken) : undefined;
 
   await handleReviewCommentReply(octokit, claude, memoryConfig, memoryToken);
 }
