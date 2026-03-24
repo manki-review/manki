@@ -1,5 +1,5 @@
-name: 'Claude Review'
-description: 'Multi-agent Claude Code PR review — automated code review with specialist agents'
+name: 'Manki'
+description: 'Multi-agent AI code review — automated reviews with specialist agents'
 author: 'xdustinface'
 
 inputs:
@@ -13,9 +13,9 @@ inputs:
     description: 'GitHub token for posting reviews and comments'
     required: true
   config_path:
-    description: 'Path to .claude-review.yml config file'
+    description: 'Path to .manki.yml config file'
     required: false
-    default: '.claude-review.yml'
+    default: '.manki.yml'
   memory_repo_token:
     description: 'GitHub token with access to the review memory repository'
     required: false

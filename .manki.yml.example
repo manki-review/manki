@@ -1,5 +1,5 @@
-# Claude Review configuration
-# Place this file as .claude-review.yml in your repository root
+# Manki configuration
+# Place this file as .manki.yml in your repository root
 
 # Claude model for reviews (default: claude-opus-4-6)
 # model: claude-opus-4-6

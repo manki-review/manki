@@ -63,13 +63,13 @@ describe('formatFindingComment', () => {
 
   it('includes metadata marker with severity and sanitized title', () => {
     const comment = formatFindingComment(baseFinding);
-    expect(comment).toContain('<!-- claude-review:blocking:Null-pointer-dereference -->');
+    expect(comment).toContain('<!-- manki:blocking:Null-pointer-dereference -->');
   });
 
   it('sanitizes special characters in metadata marker title', () => {
     const finding: Finding = { ...baseFinding, title: 'Bug: foo() returns "bar"!' };
     const comment = formatFindingComment(finding);
-    expect(comment).toContain('<!-- claude-review:blocking:Bug--foo---returns--bar-- -->');
+    expect(comment).toContain('<!-- manki:blocking:Bug--foo---returns--bar-- -->');
   });
 });
 
