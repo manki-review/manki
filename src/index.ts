@@ -1,6 +1,20 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
+import { ClaudeClient } from './claude';
+import { loadConfig } from './config';
+import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
+import { runReview } from './review';
+import {
+  fetchPRDiff,
+  fetchConfigFile,
+  fetchRepoContext,
+  postProgressComment,
+  updateProgressComment,
+  dismissPreviousReviews,
+  postReview,
+} from './github';
+
 async function run(): Promise<void> {
   try {
     const eventName = github.context.eventName;
@@ -11,22 +25,20 @@ async function run(): Promise<void> {
     switch (eventName) {
       case 'pull_request':
         if (action === 'opened' || action === 'synchronize') {
-          core.info('PR opened or updated — running review');
-          // TODO: implement in #5/#6
+          await handlePullRequest();
         }
         break;
 
       case 'issue_comment':
         if (action === 'created' && isClaudeReviewRequest()) {
-          core.info('@claude review requested — running review');
-          // TODO: implement in #6
+          await handleCommentTrigger();
         }
         break;
 
       case 'pull_request_review_comment':
         if (action === 'created') {
-          core.info('Review comment created — checking for interaction');
-          // TODO: implement in #8
+          core.info('Review comment interaction — not yet implemented');
+          // TODO: implement in #8 (comment interaction)
         }
         break;
 
@@ -37,6 +49,145 @@ async function run(): Promise<void> {
     if (error instanceof Error) {
       core.setFailed(error.message);
     }
+  }
+}
+
+async function handlePullRequest(): Promise<void> {
+  const pr = github.context.payload.pull_request;
+  if (!pr) {
+    core.setFailed('No pull request found in event payload');
+    return;
+  }
+
+  const prNumber = pr.number;
+  const commitSha = pr.head.sha;
+  const owner = github.context.repo.owner;
+  const repo = github.context.repo.repo;
+
+  if (pr.draft) {
+    core.info('Skipping draft PR');
+    return;
+  }
+
+  await runFullReview(owner, repo, prNumber, commitSha, pr.base.ref);
+}
+
+async function handleCommentTrigger(): Promise<void> {
+  const payload = github.context.payload;
+
+  if (!payload.issue?.pull_request) {
+    core.info('Comment is on an issue, not a PR — skipping');
+    return;
+  }
+
+  const owner = github.context.repo.owner;
+  const repo = github.context.repo.repo;
+  const prNumber = payload.issue.number;
+
+  const githubToken = core.getInput('github_token', { required: true });
+  const octokit = github.getOctokit(githubToken);
+
+  const { data: pr } = await octokit.rest.pulls.get({
+    owner,
+    repo,
+    pull_number: prNumber,
+  });
+
+  await runFullReview(owner, repo, prNumber, pr.head.sha, pr.base.ref);
+}
+
+async function runFullReview(
+  owner: string,
+  repo: string,
+  prNumber: number,
+  commitSha: string,
+  baseRef: string,
+): Promise<void> {
+  core.info(`Starting review for ${owner}/${repo}#${prNumber}`);
+
+  const githubToken = core.getInput('github_token', { required: true });
+  const oauthToken = core.getInput('claude_code_oauth_token');
+  const apiKey = core.getInput('anthropic_api_key');
+  const configPath = core.getInput('config_path') || '.claude-review.yml';
+  const modelOverride = core.getInput('model');
+
+  const octokit = github.getOctokit(githubToken);
+
+  const progressCommentId = await postProgressComment(octokit, owner, repo, prNumber);
+
+  try {
+    const configContent = await fetchConfigFile(octokit, owner, repo, baseRef, configPath);
+    const config = loadConfig(configContent ?? undefined);
+
+    if (modelOverride) {
+      config.model = modelOverride;
+    }
+
+    if (github.context.eventName === 'pull_request' && !config.auto_review) {
+      core.info('auto_review is disabled — skipping');
+      await octokit.rest.issues.deleteComment({ owner, repo, comment_id: progressCommentId });
+      return;
+    }
+
+    const claude = new ClaudeClient({
+      oauthToken: oauthToken || undefined,
+      apiKey: apiKey || undefined,
+      model: config.model,
+    });
+
+    const rawDiff = await fetchPRDiff(octokit, owner, repo, prNumber);
+    const diff = parsePRDiff(rawDiff);
+
+    if (isDiffTooLarge(diff, config.max_diff_lines)) {
+      core.warning(`Diff too large (${diff.totalAdditions + diff.totalDeletions} lines > ${config.max_diff_lines} max)`);
+      await updateProgressComment(octokit, owner, repo, progressCommentId, {
+        verdict: 'COMMENT',
+        summary: `Diff too large for automated review (${diff.totalAdditions + diff.totalDeletions} lines). Please request a manual review.`,
+        findings: [],
+        highlights: [],
+      });
+      return;
+    }
+
+    const filteredFiles = filterFiles(diff.files, config.include_paths, config.exclude_paths);
+    core.info(`Reviewing ${filteredFiles.length} files (${diff.files.length} total, ${diff.files.length - filteredFiles.length} filtered out)`);
+
+    if (filteredFiles.length === 0) {
+      core.info('No reviewable files in diff');
+      await updateProgressComment(octokit, owner, repo, progressCommentId, {
+        verdict: 'APPROVE',
+        summary: 'No reviewable files in this PR (all filtered out by config).',
+        findings: [],
+        highlights: [],
+      });
+      return;
+    }
+
+    const repoContext = await fetchRepoContext(octokit, owner, repo, baseRef);
+
+    await dismissPreviousReviews(octokit, owner, repo, prNumber);
+
+    const result = await runReview(claude, config, diff, rawDiff, repoContext);
+
+    const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, result);
+
+    await updateProgressComment(octokit, owner, repo, progressCommentId, result);
+
+    core.setOutput('review_id', reviewId.toString());
+    core.setOutput('verdict', result.verdict);
+    core.setOutput('findings_count', result.findings.length.toString());
+
+    core.info(`Review complete: ${result.verdict} with ${result.findings.length} findings`);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    core.setFailed(`Review failed: ${msg}`);
+
+    await updateProgressComment(octokit, owner, repo, progressCommentId, {
+      verdict: 'COMMENT',
+      summary: `Review failed: ${msg}`,
+      findings: [],
+      highlights: [],
+    });
   }
 }
 
