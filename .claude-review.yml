@@ -9,3 +9,7 @@ instructions: |
   This is a TypeScript GitHub Action project.
   Focus on: correct GitHub API usage, proper error handling, TypeScript type safety.
   The action processes untrusted PR content — flag any potential prompt injection vectors.
+
+memory:
+  enabled: true
+  repo: "xdustinface/review-memory"
