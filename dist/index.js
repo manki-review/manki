@@ -35700,6 +35700,7 @@ class ClaudeClient {
     apiKey;
     anthropic;
     model;
+    cachedCLIPath;
     constructor(options) {
         this.oauthToken = options.oauthToken;
         this.apiKey = options.apiKey;
@@ -35717,10 +35718,35 @@ class ClaudeClient {
         }
         return this.sendViaAPI(systemPrompt, userMessage);
     }
+    async ensureCLI() {
+        if (this.cachedCLIPath) {
+            return this.cachedCLIPath;
+        }
+        try {
+            const { stdout } = await execFileAsync('which', ['claude']);
+            this.cachedCLIPath = stdout.trim();
+            return this.cachedCLIPath;
+        }
+        catch {
+            core.info('Claude CLI not found, installing via npm...');
+            await execFileAsync('npm', ['install', '-g', '@anthropic-ai/claude-code'], {
+                timeout: 120000,
+            });
+            try {
+                const { stdout } = await execFileAsync('which', ['claude']);
+                this.cachedCLIPath = stdout.trim();
+                return this.cachedCLIPath;
+            }
+            catch {
+                throw new Error('Failed to install Claude CLI');
+            }
+        }
+    }
     async sendViaOAuth(systemPrompt, userMessage) {
         const fullPrompt = `${systemPrompt}\n\n---\n\n${userMessage}`;
+        const cliPath = await this.ensureCLI();
         try {
-            const { stdout } = await execFileAsync('claude', [
+            const { stdout } = await execFileAsync(cliPath, [
                 '-p', fullPrompt,
                 '--output-format', 'text',
                 '--model', this.model,
