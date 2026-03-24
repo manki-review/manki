@@ -237,6 +237,22 @@ You can also trigger a review manually by commenting `@claude review` on any PR.
 | Review doesn't trigger on `@claude review` | The workflow file must exist on the default branch (main) |
 | "Diff too large" | Increase `max_diff_lines` in config or split the PR |
 
+## Known Limitations
+
+### `@claude review` runs action code from main branch
+
+GitHub Actions runs `issue_comment` triggered workflows from the **default branch** (main), not the PR branch. This means:
+
+- `@claude review` always uses the action code from main — not from the PR branch
+- If you're developing the action itself and want to test changes, use a direct push to trigger the `pull_request` event instead
+- **The review content is still correct** — the PR diff is fetched via API regardless of which branch the workflow runs on
+
+This is a GitHub platform limitation that affects all Actions-based bots. Tools like CodeRabbit avoid this by using a webhook server instead of GitHub Actions.
+
+### Reviews may post duplicate comments across runs
+
+Each review run posts fresh inline comments. The recap phase deduplicates against previous findings, but if the consolidation agent fails or produces different titles, duplicates can occur. This is tracked in issue backlog.
+
 ## Quick Reference: All Secrets
 
 | Secret | Required | Purpose |

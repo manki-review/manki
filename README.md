@@ -221,6 +221,8 @@ review-memory/
 5. **Post review**: Findings posted as inline comments with appropriate severity
 6. **Auto-approve**: When all blocking issues are resolved, the PR is approved
 
+> **Note**: `@claude review` comments always run the action from the `main` branch (GitHub Actions limitation). The PR diff is still correctly reviewed — only the action code version is fixed to main.
+
 ## License
 
 MIT
