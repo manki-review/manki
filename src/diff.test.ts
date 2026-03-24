@@ -260,14 +260,14 @@ describe('filterFiles', () => {
 
   it('includes dotfiles with default include pattern', () => {
     const dotfiles: DiffFile[] = [
-      { path: '.claude-review.yml', changeType: 'modified', hunks: [] },
+      { path: '.manki.yml', changeType: 'modified', hunks: [] },
       { path: '.github/workflows/ci.yml', changeType: 'modified', hunks: [] },
       { path: '.gitignore', changeType: 'modified', hunks: [] },
       { path: 'src/main.ts', changeType: 'modified', hunks: [] },
     ];
     const result = filterFiles(dotfiles, ['**/*'], []);
     expect(result).toHaveLength(4);
-    expect(result.map((f) => f.path)).toContain('.claude-review.yml');
+    expect(result.map((f) => f.path)).toContain('.manki.yml');
     expect(result.map((f) => f.path)).toContain('.github/workflows/ci.yml');
     expect(result.map((f) => f.path)).toContain('.gitignore');
   });

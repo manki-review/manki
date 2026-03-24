@@ -5,7 +5,8 @@ import { Finding, ParsedDiff } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
-const BOT_MARKER = '<!-- claude-review';
+const BOT_MARKER = '<!-- manki';
+const LEGACY_BOT_MARKER = '<!-- claude-review';
 
 interface PreviousFinding {
   title: string;
@@ -139,13 +140,13 @@ async function fetchReviewThreads(
 
     return result.repository.pullRequest.reviewThreads.nodes.map(thread => {
       const firstComment = thread.comments.nodes[0];
-      const isBotThread = firstComment?.body?.includes(BOT_MARKER) ?? false;
+      const isBotThread = (firstComment?.body?.includes(BOT_MARKER) || firstComment?.body?.includes(LEGACY_BOT_MARKER)) ?? false;
 
       const hasHumanReply = thread.comments.nodes.some((c, i) =>
         i > 0 && c.author?.login !== 'github-actions[bot]'
       );
 
-      const severityMatch = firstComment?.body?.match(/claude-review:(blocking|suggestion|question):/);
+      const severityMatch = firstComment?.body?.match(/(?:manki|claude-review):(blocking|suggestion|question):/);
       const severity = severityMatch?.[1] ?? 'unknown';
 
       const titleMatch = firstComment?.body?.match(/\*\*(?:Blocking|Suggestion|Question)\*\*:\s*(.+?)(?:\n|$)/);

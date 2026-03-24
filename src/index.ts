@@ -49,9 +49,9 @@ async function run(): Promise<void> {
 
       case 'issue_comment':
         if (action === 'created') {
-          if (isClaudeReviewRequest()) {
+          if (isReviewRequest()) {
             await handleCommentTrigger();
-          } else if (hasClaudeMention()) {
+          } else if (hasBotMention()) {
             await handleInteraction();
           }
         }
@@ -139,7 +139,7 @@ async function runFullReview(
 
   const oauthToken = core.getInput('claude_code_oauth_token');
   const apiKey = core.getInput('anthropic_api_key');
-  const configPath = core.getInput('config_path') || '.claude-review.yml';
+  const configPathInput = core.getInput('config_path');
   const modelOverride = core.getInput('model');
 
   const octokit = await getOctokit();
@@ -147,7 +147,15 @@ async function runFullReview(
   const progressCommentId = await postProgressComment(octokit, owner, repo, prNumber);
 
   try {
-    const configContent = await fetchConfigFile(octokit, owner, repo, baseRef, configPath);
+    let configContent: string | null = null;
+    if (configPathInput) {
+      configContent = await fetchConfigFile(octokit, owner, repo, baseRef, configPathInput);
+    } else {
+      configContent = await fetchConfigFile(octokit, owner, repo, baseRef, '.manki.yml');
+      if (!configContent) {
+        configContent = await fetchConfigFile(octokit, owner, repo, baseRef, '.claude-review.yml');
+      }
+    }
     const config = loadConfig(configContent ?? undefined);
 
     if (modelOverride) {
@@ -326,9 +334,17 @@ async function handleReviewStateCheck(): Promise<void> {
 
   const { owner, repo } = github.context.repo;
   const prNumber = pr.number;
-  const configPath = core.getInput('config_path') || '.claude-review.yml';
+  const configPathInput = core.getInput('config_path');
 
-  const configContent = await fetchConfigFile(octokit, owner, repo, pr.base.ref, configPath);
+  let configContent: string | null = null;
+  if (configPathInput) {
+    configContent = await fetchConfigFile(octokit, owner, repo, pr.base.ref, configPathInput);
+  } else {
+    configContent = await fetchConfigFile(octokit, owner, repo, pr.base.ref, '.manki.yml');
+    if (!configContent) {
+      configContent = await fetchConfigFile(octokit, owner, repo, pr.base.ref, '.claude-review.yml');
+    }
+  }
   const config = loadConfig(configContent ?? undefined);
 
   if (!config.auto_approve) {
@@ -342,27 +358,27 @@ async function handleReviewStateCheck(): Promise<void> {
   }
 }
 
-function isClaudeReviewRequest(): boolean {
+function isReviewRequest(): boolean {
   const comment = github.context.payload.comment;
   if (!comment) return false;
 
   const body = comment.body?.toLowerCase() ?? '';
-  return body.includes('@claude') && body.includes('review');
+  return (body.includes('@manki') || body.includes('@claude')) && body.includes('review');
 }
 
-function hasClaudeMention(): boolean {
+function hasBotMention(): boolean {
   const comment = github.context.payload.comment;
   if (!comment) return false;
 
   const body = comment.body?.toLowerCase() ?? '';
-  return body.includes('@claude') && !body.includes('review');
+  return (body.includes('@manki') || body.includes('@claude')) && !body.includes('review');
 }
 
 async function handleInteraction(): Promise<void> {
   const oauthToken = core.getInput('claude_code_oauth_token');
   const apiKey = core.getInput('anthropic_api_key');
   const modelOverride = core.getInput('model');
-  const configPath = core.getInput('config_path') || '.claude-review.yml';
+  const configPathInput = core.getInput('config_path');
 
   const octokit = await getOctokit();
   const claude = new ClaudeClient({
@@ -380,7 +396,15 @@ async function handleInteraction(): Promise<void> {
     baseRef = pr.base.ref;
   }
 
-  const configContent = await fetchConfigFile(octokit, owner, repo, baseRef, configPath);
+  let configContent: string | null = null;
+  if (configPathInput) {
+    configContent = await fetchConfigFile(octokit, owner, repo, baseRef, configPathInput);
+  } else {
+    configContent = await fetchConfigFile(octokit, owner, repo, baseRef, '.manki.yml');
+    if (!configContent) {
+      configContent = await fetchConfigFile(octokit, owner, repo, baseRef, '.claude-review.yml');
+    }
+  }
   const config = loadConfig(configContent ?? undefined);
 
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;
@@ -396,29 +420,37 @@ async function handleReviewCommentInteraction(): Promise<void> {
   if (!comment) return;
 
   // Don't respond to our own comments
-  if (comment.user?.type === 'Bot' || comment.body?.includes('<!-- claude-review')) {
+  if (comment.user?.type === 'Bot' || comment.body?.includes('<!-- manki') || comment.body?.includes('<!-- claude-review')) {
     return;
   }
 
-  // Only respond if this is a reply to a bot comment or mentions @claude
+  // Only respond if this is a reply to a bot comment or mentions @manki/@claude
   const body = comment.body?.toLowerCase() ?? '';
   const isReplyToBot = !!comment.in_reply_to_id; // handleReviewCommentReply will verify it's actually our comment
-  const mentionsClaude = body.includes('@claude');
+  const mentionsBot = body.includes('@manki') || body.includes('@claude');
 
-  if (!isReplyToBot && !mentionsClaude) {
-    core.info('Review comment is not a reply to bot or @claude mention — skipping');
+  if (!isReplyToBot && !mentionsBot) {
+    core.info('Review comment is not a reply to bot or @manki mention — skipping');
     return;
   }
 
   const oauthToken = core.getInput('claude_code_oauth_token');
   const apiKey = core.getInput('anthropic_api_key');
-  const configPath = core.getInput('config_path') || '.claude-review.yml';
+  const configPathInput = core.getInput('config_path');
 
   const octokit = await getOctokit();
   const { owner, repo } = github.context.repo;
 
   const baseRef = payload.pull_request?.base?.ref ?? 'main';
-  const configContent = await fetchConfigFile(octokit, owner, repo, baseRef, configPath);
+  let configContent: string | null = null;
+  if (configPathInput) {
+    configContent = await fetchConfigFile(octokit, owner, repo, baseRef, configPathInput);
+  } else {
+    configContent = await fetchConfigFile(octokit, owner, repo, baseRef, '.manki.yml');
+    if (!configContent) {
+      configContent = await fetchConfigFile(octokit, owner, repo, baseRef, '.claude-review.yml');
+    }
+  }
   const config = loadConfig(configContent ?? undefined);
 
   const claude = new ClaudeClient({

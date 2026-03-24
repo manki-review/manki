@@ -1,7 +1,7 @@
 {
-  "name": "claude-review",
+  "name": "manki",
   "version": "0.1.0",
-  "description": "Multi-agent Claude Code PR review GitHub Action",
+  "description": "Multi-agent AI code review GitHub Action",
   "main": "dist/index.js",
   "scripts": {
     "build": "ncc build src/index.ts --source-map --license licenses.txt",
@@ -12,7 +12,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/xdustinface/claude-review"
+    "url": "https://github.com/xdustinface/manki"
   },
   "license": "MIT",
   "dependencies": {

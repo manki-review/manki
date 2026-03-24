@@ -1,6 +1,6 @@
 # Setup Guide
 
-Complete step-by-step guide to install Claude Review on a GitHub repository.
+Complete step-by-step guide to install Manki on a GitHub repository.
 
 ## Prerequisites
 
@@ -21,13 +21,13 @@ Complete step-by-step guide to install Claude Review on a GitHub repository.
 
 ### Branch Protection (Optional)
 
-If you use branch protection rules and want claude-review to be a required check:
+If you use branch protection rules and want Manki to be a required check:
 
 1. Go to **Settings → Branches → Branch protection rules**
 2. Edit the rule for `main` (or your default branch)
 3. Under "Require status checks to pass":
    - Add `build` (CI check)
-   - Add `review` (Claude Review check)
+   - Add `review` (Manki check)
 4. Under "Require pull request reviews before merging":
    - Set to 1 required review
    - The action's APPROVE counts as a review
@@ -66,7 +66,7 @@ Required only if you enable the review memory system. This is a fine-grained PAT
 
 1. Go to [github.com/settings/personal-access-tokens/new](https://github.com/settings/personal-access-tokens/new)
 2. Configure:
-   - **Token name**: `claude-review-memory`
+   - **Token name**: `manki-memory`
    - **Expiration**: 1 year (or your preference)
    - **Repository access**: "Only select repositories" → select your memory repo (e.g., `<owner>/review-memory`)
    - **Permissions**: Repository permissions → **Contents** → Read and write
@@ -84,8 +84,8 @@ By default, reviews appear as "github-actions[bot]". To give the review bot its 
 
 1. Go to **Settings > Developer settings > GitHub Apps > New GitHub App**
 2. Configure:
-   - **App name**: `Claude Review` (or your preferred name)
-   - **Homepage URL**: `https://github.com/xdustinface/claude-review`
+   - **App name**: `Manki` (or your preferred name)
+   - **Homepage URL**: `https://github.com/xdustinface/manki`
    - **Webhook**: Uncheck "Active" (not needed)
    - **Permissions**:
      - Repository: **Contents** > Read
@@ -106,31 +106,31 @@ By default, reviews appear as "github-actions[bot]". To give the review bot its 
 ### Add Secrets
 
 ```bash
-gh secret set CLAUDE_REVIEW_APP_ID --repo <owner>/<repo>
+gh secret set MANKI_APP_ID --repo <owner>/<repo>
 # Paste the App ID number
 
-gh secret set CLAUDE_REVIEW_PRIVATE_KEY --repo <owner>/<repo>
+gh secret set MANKI_PRIVATE_KEY --repo <owner>/<repo>
 # Paste the contents of the .pem file
 ```
 
 ### Update Workflow
 
 ```yaml
-      - name: Claude Review
-        uses: xdustinface/claude-review@v1
+      - name: Manki Review
+        uses: xdustinface/manki@v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          github_app_id: ${{ secrets.CLAUDE_REVIEW_APP_ID }}
-          github_app_private_key: ${{ secrets.CLAUDE_REVIEW_PRIVATE_KEY }}
+          github_app_id: ${{ secrets.MANKI_APP_ID }}
+          github_app_private_key: ${{ secrets.MANKI_PRIVATE_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 ```
 
 ## Step 3: Add the Workflow
 
-Create `.github/workflows/claude-review.yml`:
+Create `.github/workflows/manki.yml`:
 
 ```yaml
-name: Claude Review
+name: Manki
 
 on:
   pull_request:
@@ -150,7 +150,7 @@ jobs:
     if: |
       github.event_name == 'pull_request' ||
       (github.event_name == 'issue_comment' &&
-       contains(github.event.comment.body, '@claude') &&
+       (contains(github.event.comment.body, '@manki') || contains(github.event.comment.body, '@claude')) &&
        contains(github.event.comment.body, 'review') &&
        github.event.issue.pull_request)
     runs-on: ubuntu-latest
@@ -164,8 +164,8 @@ jobs:
         run: npm install -g @anthropic-ai/claude-code
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      - name: Claude Review
-        uses: xdustinface/claude-review@v1
+      - name: Manki Review
+        uses: xdustinface/manki@v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -175,7 +175,7 @@ jobs:
 
 ## Step 4: Configure Reviews (Optional)
 
-Create `.claude-review.yml` in your repository root:
+Create `.manki.yml` in your repository root:
 
 ```yaml
 # Claude model (default: claude-opus-4-6)
@@ -220,7 +220,7 @@ The memory system makes reviews smarter over time by tracking learnings, suppres
 ### Create the Memory Repository
 
 ```bash
-gh repo create <owner>/review-memory --public --description "Review memory for claude-review"
+gh repo create <owner>/review-memory --public --description "Review memory for Manki"
 ```
 
 ### Seed Initial Structure
@@ -253,7 +253,7 @@ git push
 
 ### Enable in Config
 
-Add to your `.claude-review.yml`:
+Add to your `.manki.yml`:
 
 ```yaml
 memory:
@@ -269,11 +269,11 @@ After setup, create a test PR to verify everything works:
 
 1. Create a branch with a small change
 2. Open a PR
-3. The Claude Review workflow should trigger automatically
+3. The Manki workflow should trigger automatically
 4. Check the Actions tab for the review run
 5. The PR should receive inline review comments and an APPROVE/REQUEST_CHANGES review
 
-You can also trigger a review manually by commenting `@claude review` on any PR.
+You can also trigger a review manually by commenting `@manki review` on any PR.
 
 ## Troubleshooting
 
@@ -283,16 +283,16 @@ You can also trigger a review manually by commenting `@claude review` on any PR.
 | "Failed to post APPROVE review" | Enable "Allow GitHub Actions to create and approve pull requests" in repo settings |
 | Review says "No reviewable files" | Check `include_paths`/`exclude_paths` in config — dotfiles are included by default |
 | Memory not loading | Verify `REVIEW_MEMORY_TOKEN` secret is set and the PAT has Contents read/write on the memory repo |
-| Review doesn't trigger on `@claude review` | The workflow file must exist on the default branch (main) |
+| Review doesn't trigger on `@manki review` | The workflow file must exist on the default branch (main) |
 | "Diff too large" | Increase `max_diff_lines` in config or split the PR |
 
 ## Known Limitations
 
-### `@claude review` runs action code from main branch
+### `@manki review` runs action code from main branch
 
 GitHub Actions runs `issue_comment` triggered workflows from the **default branch** (main), not the PR branch. This means:
 
-- `@claude review` always uses the action code from main — not from the PR branch
+- `@manki review` always uses the action code from main — not from the PR branch
 - If you're developing the action itself and want to test changes, use a direct push to trigger the `pull_request` event instead
 - **The review content is still correct** — the PR diff is fetched via API regardless of which branch the workflow runs on
 
@@ -309,7 +309,7 @@ Each review run posts fresh inline comments. The recap phase deduplicates agains
 | `CLAUDE_CODE_OAUTH_TOKEN` | Yes* | Claude Max subscription auth |
 | `ANTHROPIC_API_KEY` | Yes* | Anthropic API auth (alternative) |
 | `REVIEW_MEMORY_TOKEN` | No | Fine-grained PAT for memory repo writes |
-| `CLAUDE_REVIEW_APP_ID` | No | GitHub App ID for custom bot identity |
-| `CLAUDE_REVIEW_PRIVATE_KEY` | No | GitHub App private key (PEM format) |
+| `MANKI_APP_ID` | No | GitHub App ID for custom bot identity |
+| `MANKI_PRIVATE_KEY` | No | GitHub App private key (PEM format) |
 
 \* One of `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` is required.

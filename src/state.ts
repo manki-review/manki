@@ -5,7 +5,8 @@ import { dismissPreviousReviews } from './github';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
-const BOT_MARKER = '<!-- claude-review -->';
+const BOT_MARKER = '<!-- manki -->';
+const LEGACY_BOT_MARKER = '<!-- claude-review -->';
 
 interface ReviewThread {
   id: string;
@@ -71,13 +72,14 @@ async function fetchBotReviewThreads(
   return threads
     .filter(thread => {
       const firstComment = thread.comments.nodes[0];
-      return firstComment?.body?.includes('claude-review:') || firstComment?.body?.includes(BOT_MARKER);
+      return firstComment?.body?.includes('manki:') || firstComment?.body?.includes('claude-review:') ||
+        firstComment?.body?.includes(BOT_MARKER) || firstComment?.body?.includes(LEGACY_BOT_MARKER);
     })
     .map(thread => {
       const body = thread.comments.nodes[0]?.body ?? '';
-      const blockingMatch = body.match(/<!-- claude-review:(blocking|suggestion|question):/);
+      const blockingMatch = body.match(/<!-- (?:manki|claude-review):(blocking|suggestion|question):/);
       const isBlocking = blockingMatch?.[1] === 'blocking';
-      const titleMatch = body.match(/<!-- claude-review:\w+:(.+?) -->/);
+      const titleMatch = body.match(/<!-- (?:manki|claude-review):\w+:(.+?) -->/);
       const findingTitle = titleMatch?.[1]?.replace(/-/g, ' ') ?? 'Unknown';
 
       return {
@@ -161,4 +163,4 @@ async function checkAndAutoApprove(
   return true;
 }
 
-export { ReviewThread, areAllBlockingResolved, checkAndAutoApprove, fetchBotReviewThreads, BOT_MARKER };
+export { ReviewThread, areAllBlockingResolved, checkAndAutoApprove, fetchBotReviewThreads, BOT_MARKER, LEGACY_BOT_MARKER };

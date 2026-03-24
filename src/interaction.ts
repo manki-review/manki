@@ -12,7 +12,8 @@ interface MemoryConfig {
   repo: string;
 }
 
-const BOT_MARKER = '<!-- claude-review -->';
+const BOT_MARKER = '<!-- manki -->';
+const LEGACY_BOT_MARKER = '<!-- claude-review -->';
 
 /**
  * Handle a reply to one of our review comments.
@@ -29,7 +30,7 @@ export async function handleReviewCommentReply(
   if (!comment) return;
 
   // Don't reply to ourselves
-  if (comment.user?.type === 'Bot' || comment.body?.includes(BOT_MARKER)) {
+  if (comment.user?.type === 'Bot' || isBotComment(comment.body ?? '')) {
     core.info('Skipping bot comment');
     return;
   }
@@ -54,8 +55,8 @@ export async function handleReviewCommentReply(
       comment_id: inReplyTo,
     });
 
-    if (!parentComment.body?.includes(BOT_MARKER) && !parentComment.body?.includes('claude-review:')) {
-      core.info('Parent comment is not from claude-review');
+    if (!isBotComment(parentComment.body ?? '')) {
+      core.info('Parent comment is not from Manki');
       return;
     }
 
@@ -119,7 +120,7 @@ export async function handleReviewCommentReply(
 }
 
 /**
- * Handle @claude commands in PR comments.
+ * Handle @manki commands in PR comments.
  */
 export async function handlePRComment(
   octokit: Octokit,
@@ -133,13 +134,13 @@ export async function handlePRComment(
   if (!comment) return;
 
   // Don't reply to ourselves
-  if (comment.user?.type === 'Bot' || comment.body?.includes(BOT_MARKER)) {
+  if (comment.user?.type === 'Bot' || isBotComment(comment.body ?? '')) {
     return;
   }
 
   const body = comment.body ?? '';
 
-  if (!body.toLowerCase().includes('@claude')) return;
+  if (!hasBotMention(body)) return;
 
   const owner = github.context.repo.owner;
   const repo = github.context.repo.repo;
@@ -194,7 +195,7 @@ interface ParsedCommand {
 
 function parseCommand(body: string): ParsedCommand {
   const lower = body.toLowerCase();
-  const match = lower.match(/@claude\s+(explain|dismiss|help|remember|forget|check)(?:\s+(.*))?/);
+  const match = lower.match(/@(?:manki|claude)\s+(explain|dismiss|help|remember|forget|check)(?:\s+(.*))?/);
 
   if (match) {
     return {
@@ -297,7 +298,7 @@ async function handleHelp(
     owner,
     repo,
     issue_number: prNumber,
-    body: `${BOT_MARKER}\n**Claude Review Commands:**\n\n| Command | Description |\n|---------|-------------|\n| \`@claude review\` | Run a full multi-agent review |\n| \`@claude explain [topic]\` | Explain something about this PR |\n| \`@claude dismiss [finding]\` | Dismiss a review finding |\n| \`@claude remember <instruction>\` | Teach the reviewer something for future reviews |\n| \`@claude remember global: <instruction>\` | Teach globally (all repos) |\n| \`@claude help\` | Show this help message |\n\nYou can also reply to any review comment to start a conversation.`,
+    body: `${BOT_MARKER}\n**Manki Commands:**\n\n| Command | Description |\n|---------|-------------|\n| \`@manki review\` | Run a full multi-agent review |\n| \`@manki explain [topic]\` | Explain something about this PR |\n| \`@manki dismiss [finding]\` | Dismiss a review finding |\n| \`@manki remember <instruction>\` | Teach the reviewer something for future reviews |\n| \`@manki remember global: <instruction>\` | Teach globally (all repos) |\n| \`@manki help\` | Show this help message |\n\nYou can also reply to any review comment to start a conversation.`,
   });
 }
 
@@ -326,7 +327,7 @@ async function handleRemember(
     await octokit.rest.issues.createComment({
       owner, repo,
       issue_number: prNumber,
-      body: `${BOT_MARKER}\nPlease provide a more detailed instruction (at least 10 characters).\n\nExample: \`@claude remember always check for SQL injection in query builders\``,
+      body: `${BOT_MARKER}\nPlease provide a more detailed instruction (at least 10 characters).\n\nExample: \`@manki remember always check for SQL injection in query builders\``,
     });
     return;
   }
@@ -407,7 +408,7 @@ function buildReplyContext(
   line?: number | null,
 ): string {
   let context = '## Original Review Comment\n\n';
-  context += originalComment.replace(BOT_MARKER, '').trim();
+  context += originalComment.replace(BOT_MARKER, '').replace(LEGACY_BOT_MARKER, '').trim();
 
   if (filePath) {
     context += `\n\nFile: \`${filePath}\``;
@@ -419,4 +420,14 @@ function buildReplyContext(
   return context;
 }
 
-export { parseCommand, buildReplyContext, ParsedCommand, BOT_MARKER };
+function isBotComment(body: string): boolean {
+  return body.includes(BOT_MARKER) || body.includes(LEGACY_BOT_MARKER) ||
+    body.includes('manki:') || body.includes('claude-review:');
+}
+
+function hasBotMention(body: string): boolean {
+  const lower = body.toLowerCase();
+  return lower.includes('@manki') || lower.includes('@claude');
+}
+
+export { parseCommand, buildReplyContext, ParsedCommand, BOT_MARKER, LEGACY_BOT_MARKER, isBotComment, hasBotMention };

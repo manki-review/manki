@@ -1,18 +1,18 @@
-# Claude Review
+# Manki
 
 Multi-agent AI code review for GitHub pull requests, powered by Claude.
 
-Claude Review runs three specialized reviewer agents in parallel — **Security & Correctness**, **Architecture & Quality**, and **Testing & Edge Cases** — then consolidates their findings into a single, actionable review.
+Manki runs three specialized reviewer agents in parallel — **Security & Correctness**, **Architecture & Quality**, and **Testing & Edge Cases** — then consolidates their findings into a single, actionable review.
 
 ## Features
 
 - **Multi-agent review**: 3 specialist agents provide diverse perspectives, then a consolidation agent de-duplicates and validates findings
 - **Smart severity**: Blocking issues trigger `REQUEST_CHANGES`, suggestions are posted as `COMMENT`, clean PRs get `APPROVE`
 - **Auto-approve**: When all blocking issues are resolved, the PR is automatically approved
-- **Customizable**: Configure reviewer agents, file filters, and custom instructions via `.claude-review.yml`
+- **Customizable**: Configure reviewer agents, file filters, and custom instructions via `.manki.yml`
 - **Custom bot identity**: GitHub App support lets reviews appear under your own app name and avatar
 - **Dual auth**: Works with Claude Max subscription (OAuth) or Anthropic API key
-- **Mention trigger**: Comment `@claude review` on any PR to trigger a review on demand
+- **Mention trigger**: Comment `@manki review` on any PR to trigger a review on demand
 - **Concurrent-safe**: New pushes to a PR automatically cancel any in-progress review for that PR
 
 ## Quick Start
@@ -36,10 +36,10 @@ Add your API key as a repository secret named `ANTHROPIC_API_KEY`.
 
 ### 2. Add the workflow
 
-Create `.github/workflows/claude-review.yml` in your repository:
+Create `.github/workflows/manki.yml` in your repository:
 
 ```yaml
-name: Claude Review
+name: Manki
 
 on:
   pull_request:
@@ -56,15 +56,15 @@ permissions:
 
 jobs:
   review:
-    # Skip if not a PR event or not a @claude review request
+    # Skip if not a PR event or not a @manki review request
     if: |
       github.event_name == 'pull_request' ||
       (github.event_name == 'issue_comment' &&
-       contains(github.event.comment.body, '@claude') &&
+       (contains(github.event.comment.body, '@manki') || contains(github.event.comment.body, '@claude')) &&
        contains(github.event.comment.body, 'review') &&
        github.event.issue.pull_request)
     concurrency:
-      group: claude-review-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
+      group: manki-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
       cancel-in-progress: true
     runs-on: ubuntu-latest
     steps:
@@ -74,8 +74,8 @@ jobs:
         run: npm install -g @anthropic-ai/claude-code
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      - name: Claude Review
-        uses: xdustinface/claude-review@v1
+      - name: Manki Review
+        uses: xdustinface/manki@v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           # Use ONE of the following:
@@ -88,7 +88,7 @@ jobs:
 
 ### 3. (Optional) Customize
 
-Create `.claude-review.yml` in your repository root:
+Create `.manki.yml` in your repository root:
 
 ```yaml
 # Claude model (default: claude-opus-4-6)
@@ -126,7 +126,7 @@ max_diff_lines: 10000
 
 ## Review Memory
 
-Claude Review can learn from past reviews and carry that knowledge forward. When memory is enabled, the action stores learnings, suppressions, and pattern data in a dedicated GitHub repository, so reviewers improve over time and avoid repeating resolved feedback.
+Manki can learn from past reviews and carry that knowledge forward. When memory is enabled, the action stores learnings, suppressions, and pattern data in a dedicated GitHub repository, so reviewers improve over time and avoid repeating resolved feedback.
 
 ### What memory tracks
 
@@ -136,7 +136,7 @@ Claude Review can learn from past reviews and carry that knowledge forward. When
 
 ### Enabling memory
 
-Add the following to your `.claude-review.yml`:
+Add the following to your `.manki.yml`:
 
 ```yaml
 memory:
@@ -153,13 +153,13 @@ The memory repo token gives the action read/write access to the memory repositor
 3. **Repository access**: Select **Only select repositories** and choose your memory repo (e.g., `your-org/review-memory`)
 4. **Permissions**: Under **Repository permissions**, set **Contents** to **Read and write**
 5. Click **Generate token** and copy the value
-6. In each repo that uses Claude Review, go to **Settings > Secrets and variables > Actions** and add a secret named `REVIEW_MEMORY_TOKEN` with the token value
+6. In each repo that uses Manki, go to **Settings > Secrets and variables > Actions** and add a secret named `REVIEW_MEMORY_TOKEN` with the token value
 
 Then pass it in your workflow:
 
 ```yaml
-- name: Claude Review
-  uses: xdustinface/claude-review@v1
+- name: Manki Review
+  uses: xdustinface/manki@v1
   with:
     github_token: ${{ secrets.GITHUB_TOKEN }}
     claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -203,7 +203,7 @@ review-memory/
 | `github_token` | Yes | GitHub token for posting reviews |
 | `claude_code_oauth_token` | No* | OAuth token for Max subscription |
 | `anthropic_api_key` | No* | Anthropic API key |
-| `config_path` | No | Path to config file (default: `.claude-review.yml`) |
+| `config_path` | No | Path to config file (default: `.manki.yml`) |
 | `model` | No | Override model from config |
 | `memory_repo_token` | No | Token for memory repo access |
 | `github_app_id` | No | GitHub App ID for custom bot identity |
@@ -221,14 +221,14 @@ review-memory/
 
 ## How It Works
 
-1. **Trigger**: PR opened/updated, or `@claude review` comment
+1. **Trigger**: PR opened/updated, or `@manki review` comment
 2. **Gather context**: Fetches diff, config, and repo context (CLAUDE.md)
 3. **Parallel review**: 3 specialist agents analyze the diff independently
 4. **Consolidation**: A consolidation agent merges, de-duplicates, and validates findings
 5. **Post review**: Findings posted as inline comments with appropriate severity
 6. **Auto-approve**: When all blocking issues are resolved, the PR is approved
 
-> **Note**: `@claude review` comments always run the action from the `main` branch (GitHub Actions limitation). The PR diff is still correctly reviewed — only the action code version is fixed to main.
+> **Note**: `@manki review` comments always run the action from the `main` branch (GitHub Actions limitation). The PR diff is still correctly reviewed — only the action code version is fixed to main.
 
 ## License
 

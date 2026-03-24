@@ -1,4 +1,4 @@
-name: Claude Review
+name: Manki
 
 on:
   pull_request:
@@ -21,11 +21,11 @@ jobs:
       github.event_name == 'pull_request' ||
       github.event_name == 'pull_request_review' ||
       (github.event_name == 'issue_comment' &&
-       contains(github.event.comment.body, '@claude') &&
+       (contains(github.event.comment.body, '@manki') || contains(github.event.comment.body, '@claude')) &&
        github.event.issue.pull_request) ||
       github.event_name == 'pull_request_review_comment'
     concurrency:
-      group: claude-review-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
+      group: manki-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
       cancel-in-progress: true
     runs-on: ubuntu-latest
     steps:
@@ -41,7 +41,7 @@ jobs:
         run: npm install -g @anthropic-ai/claude-code
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      - name: Claude Review
+      - name: Manki Review
         uses: ./  # Use local action for self-testing
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
