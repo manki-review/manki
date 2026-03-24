@@ -38,11 +38,9 @@ jobs:
           # Commit if there are changes
           git diff --staged --quiet || git commit -m "build: compile dist/ for ${TAG}"
 
-          # Force-update major version tags
-          for VTAG in v1 v2; do
-            git tag -fa "$VTAG" -m "Update $VTAG tag to $TAG"
-            git push origin "$VTAG" --force
-          done
+          # Force-update major version tag
+          git tag -fa "v2" -m "Update v2 tag to $TAG"
+          git push origin "v2" --force
 
       - name: Create GitHub Release
         run: |
