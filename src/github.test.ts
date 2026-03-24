@@ -45,23 +45,27 @@ describe('formatFindingComment', () => {
     expect(comment).not.toContain('```suggestion');
   });
 
-  it('includes AI agent prompt in a collapsible details section', () => {
+  it('includes AI agent prompt in a collapsible details section with labeled fields', () => {
     const comment = formatFindingComment(baseFinding);
     expect(comment).toContain('<details>\n<summary>🤖 Prompt for AI Agents</summary>');
-    expect(comment).toContain(`In \`${baseFinding.file}\` around line ${baseFinding.line}`);
-    expect(comment).toContain(baseFinding.description);
+    expect(comment).toContain(`**File:** \`${baseFinding.file}\``);
+    expect(comment).toContain(`**Line:** ${baseFinding.line}`);
+    expect(comment).toContain(`**Finding:** ${baseFinding.title}`);
+    expect(comment).toContain(`**Severity:** ${baseFinding.severity}`);
+    expect(comment).toContain(`**Description:**\n${baseFinding.description}`);
+    expect(comment).toContain('> **Important:** Before applying this fix, validate the finding');
     expect(comment).not.toContain('<details open');
   });
 
-  it('includes suggested change in AI agent prompt when suggestedFix is present', () => {
+  it('includes suggested fix in AI agent prompt when suggestedFix is present', () => {
     const finding: Finding = { ...baseFinding, suggestedFix: 'if (value != null) { use(value); }' };
     const comment = formatFindingComment(finding);
-    expect(comment).toContain('Suggested change:\nif (value != null) { use(value); }');
+    expect(comment).toContain('**Suggested fix:**\n```\nif (value != null) { use(value); }\n```');
   });
 
-  it('omits suggested change from AI agent prompt when no suggestedFix', () => {
+  it('omits suggested fix from AI agent prompt when no suggestedFix', () => {
     const comment = formatFindingComment(baseFinding);
-    expect(comment).not.toContain('Suggested change:');
+    expect(comment).not.toContain('**Suggested fix:**\n```');
   });
 
   it('includes reviewer attribution', () => {

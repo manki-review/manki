@@ -294,11 +294,19 @@ function formatFindingComment(finding: Finding): string {
     comment += `\n\n<details>\n<summary>Suggested fix</summary>\n\n\`\`\`suggestion\n${finding.suggestedFix}\n\`\`\`\n</details>`;
   }
 
-  comment += `\n\n<details>\n<summary>🤖 Prompt for AI Agents</summary>\n\n\`\`\`\nIn \`${finding.file}\` around line ${finding.line}: ${finding.description}\n`;
+  comment += '\n\n<details>\n<summary>🤖 Prompt for AI Agents</summary>\n\n';
+  comment += `**File:** \`${finding.file}\`\n`;
+  comment += `**Line:** ${finding.line}\n`;
+  comment += `**Finding:** ${finding.title}\n`;
+  comment += `**Severity:** ${finding.severity}\n\n`;
+  comment += `**Description:**\n${finding.description}\n`;
+
   if (finding.suggestedFix) {
-    comment += `\nSuggested change:\n${finding.suggestedFix}\n`;
+    comment += `\n**Suggested fix:**\n\`\`\`\n${finding.suggestedFix}\n\`\`\`\n`;
   }
-  comment += `\`\`\`\n</details>`;
+
+  comment += '\n> **Important:** Before applying this fix, validate the finding in the broader context of the file and surrounding code. The review agent may have missed context that makes this a false positive.\n';
+  comment += '\n</details>';
 
   if (finding.reviewers.length > 0) {
     comment += `\n\n<sub>Flagged by: ${finding.reviewers.join(', ')}</sub>`;
@@ -330,7 +338,7 @@ export function buildNitIssueBody(
 
 The following non-blocking findings were identified during automated review. Please triage:
 - **Close this issue** if the findings aren't worth addressing
-- **Remove the \`need-human\` label** to signal the coordinator to implement fixes
+- **Remove the \`needs-human\` label** to signal the coordinator to implement fixes
 
 ${checklist}
 
@@ -352,7 +360,7 @@ export async function createNitIssue(
   const nits = findings.filter(f => f.severity === 'suggestion' || f.severity === 'question');
   if (nits.length === 0) return null;
 
-  const searchQuery = `repo:${owner}/${repo} is:issue "Review nits from PR #${prNumber}" label:need-human`;
+  const searchQuery = `repo:${owner}/${repo} is:issue "Review nits from PR #${prNumber}" label:needs-human`;
   const { data: existing } = await octokit.rest.search.issuesAndPullRequests({ q: searchQuery });
   if (existing.total_count > 0) {
     core.info(`Nit issue already exists for PR #${prNumber}: #${existing.items[0].number}`);
@@ -360,11 +368,11 @@ export async function createNitIssue(
   }
 
   try {
-    await octokit.rest.issues.getLabel({ owner, repo, name: 'need-human' });
+    await octokit.rest.issues.getLabel({ owner, repo, name: 'needs-human' });
   } catch {
     await octokit.rest.issues.createLabel({
       owner, repo,
-      name: 'need-human',
+      name: 'needs-human',
       description: 'Needs human triage before AI picks it up',
       color: 'FBCA04',
     });
@@ -376,7 +384,7 @@ export async function createNitIssue(
     owner, repo,
     title: `Review nits from PR #${prNumber}`,
     body,
-    labels: ['need-human'],
+    labels: ['needs-human'],
   });
 
   core.info(`Created nit issue #${issue.number} for PR #${prNumber} with ${nits.length} findings`);
