@@ -220,6 +220,24 @@ memory:
       expect(core.warning).toHaveBeenCalledWith('Config YAML root must be an object. Using defaults.');
     });
 
+    it('throws when review_thresholds.small >= review_thresholds.medium', () => {
+      const yaml = `
+review_thresholds:
+  small: 500
+  medium: 100
+`;
+      expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
+    });
+
+    it('throws when review_thresholds.small equals review_thresholds.medium', () => {
+      const yaml = `
+review_thresholds:
+  small: 200
+  medium: 200
+`;
+      expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
+    });
+
     it('ignores unknown keys during merge', () => {
       const yaml = `
 model: claude-sonnet-4-20250514

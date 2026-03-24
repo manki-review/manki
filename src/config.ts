@@ -126,6 +126,12 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
       if ('medium' in thresholds && (typeof thresholds.medium !== 'number' || thresholds.medium <= 0)) {
         errors.push('`review_thresholds.medium` must be a positive number');
       }
+      if (
+        typeof thresholds.small === 'number' && typeof thresholds.medium === 'number' &&
+        thresholds.small >= thresholds.medium
+      ) {
+        errors.push('`review_thresholds.small` must be less than `review_thresholds.medium`');
+      }
     }
   }
 

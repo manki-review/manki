@@ -543,6 +543,30 @@ describe('tallyVotes', () => {
     expect(results[0].reviewers).toEqual(['Alpha', 'Beta']);
   });
 
+  it('does not escalate question findings to blocking on unanimous agree', () => {
+    const questionFinding = { ...makeFinding({ title: 'Unclear code', severity: 'question' as const }), index: 0 };
+    const votes: AgentVote[] = [
+      { agentName: 'A', findingIndex: 0, vote: 'agree', reason: 'valid' },
+      { agentName: 'B', findingIndex: 0, vote: 'agree', reason: 'valid' },
+      { agentName: 'C', findingIndex: 0, vote: 'agree', reason: 'valid' },
+    ];
+    const results = tallyVotes([questionFinding], votes, 3);
+    expect(results).toHaveLength(1);
+    expect(results[0].severity).toBe('question');
+  });
+
+  it('does not escalate blocking findings further on unanimous agree', () => {
+    const blockingFinding = { ...makeFinding({ title: 'Real bug', severity: 'blocking' as const }), index: 0 };
+    const votes: AgentVote[] = [
+      { agentName: 'A', findingIndex: 0, vote: 'agree', reason: 'valid' },
+      { agentName: 'B', findingIndex: 0, vote: 'agree', reason: 'valid' },
+      { agentName: 'C', findingIndex: 0, vote: 'agree', reason: 'valid' },
+    ];
+    const results = tallyVotes([blockingFinding], votes, 3);
+    expect(results).toHaveLength(1);
+    expect(results[0].severity).toBe('blocking');
+  });
+
   it('handles multiple findings independently', () => {
     const votes: AgentVote[] = [
       { agentName: 'A', findingIndex: 0, vote: 'agree', reason: 'valid' },

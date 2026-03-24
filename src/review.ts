@@ -187,7 +187,7 @@ async function runDeliberation(
   ).join('\n\n');
 
   const voteResults = await Promise.allSettled(
-    team.agents.map(agent => runAgentVote(client, config, agent, findingsSummary, rawDiff))
+    team.agents.map(agent => runAgentVote(client, config, agent, findingsSummary, rawDiff, flatFindings.length))
   );
 
   const allVotes: AgentVote[] = [];
@@ -209,6 +209,7 @@ async function runAgentVote(
   agent: ReviewerAgent,
   findingsSummary: string,
   rawDiff: string,
+  totalFindings: number,
 ): Promise<AgentVote[]> {
   let systemPrompt = `You are ${agent.name}, a code review specialist focusing on: ${agent.focus}
 
@@ -232,19 +233,28 @@ Be concise. One sentence per reason. Vote on EVERY finding.`;
     systemPrompt += `\n\n## Additional Instructions\n\n${config.instructions}`;
   }
 
-  const userMessage = `## Findings to vote on\n\n${findingsSummary}\n\n## PR Diff (for context)\n\n\`\`\`diff\n${rawDiff.slice(0, 50000)}\n\`\`\``;
+  const maxLen = 50000;
+  let truncatedDiff = rawDiff;
+  if (rawDiff.length > maxLen) {
+    const cutoff = rawDiff.lastIndexOf('\n', maxLen);
+    truncatedDiff = rawDiff.slice(0, cutoff > 0 ? cutoff : maxLen) + '\n... (truncated)';
+  }
+
+  const userMessage = `## Findings to vote on\n\n${findingsSummary}\n\n## PR Diff (for context)\n\n\`\`\`diff\n${truncatedDiff}\n\`\`\``;
 
   const response = await client.sendMessage(systemPrompt, userMessage);
   const jsonText = extractJSON(response.content);
 
   try {
     const votes = JSON.parse(jsonText) as Array<{ index: number; vote: string; reason: string }>;
-    return votes.map(v => ({
-      agentName: agent.name,
-      findingIndex: v.index,
-      vote: (['agree', 'disagree', 'escalate'].includes(v.vote) ? v.vote : 'agree') as AgentVote['vote'],
-      reason: v.reason || '',
-    }));
+    return votes
+      .filter(v => v.index >= 0 && v.index < totalFindings)
+      .map(v => ({
+        agentName: agent.name,
+        findingIndex: v.index,
+        vote: (['agree', 'disagree', 'escalate'].includes(v.vote) ? v.vote : 'agree') as AgentVote['vote'],
+        reason: v.reason || '',
+      }));
   } catch {
     core.warning(`Failed to parse votes from ${agent.name}`);
     return [];
@@ -279,7 +289,7 @@ export function tallyVotes(
     if (agreeCount >= majority) {
       let severity = finding.severity;
 
-      if (agreeCount === findingVotes.length) {
+      if (agreeCount === findingVotes.length && finding.severity === 'suggestion') {
         severity = 'blocking';
       } else if (escalateCount > 0 && agreeCount >= majority) {
         severity = 'blocking';
