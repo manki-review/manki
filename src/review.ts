@@ -21,20 +21,28 @@ export async function runReview(
 
   const allFindings: { reviewer: string; findings: Finding[] }[] = [];
   for (let i = 0; i < agentResults.length; i++) {
-    const result = agentResults[i];
+    const agentResult = agentResults[i];
     const reviewer = config.reviewers[i];
-    if (result.status === 'fulfilled') {
-      allFindings.push({ reviewer: reviewer.name, findings: result.value });
-      core.startGroup(`Reviewer: ${reviewer.name}`);
-      core.info(`Findings: ${result.value.length}`);
-      for (const f of result.value) {
-        core.info(`  [${f.severity}] ${f.title} — ${f.file}:${f.line}`);
+    if (agentResult.status === 'fulfilled') {
+      const findings = agentResult.value;
+      allFindings.push({ reviewer: reviewer.name, findings });
+
+      core.startGroup(`${reviewer.name} (${findings.length} findings)`);
+      for (const f of findings) {
+        core.info(`[${f.severity ?? '?'}] ${f.title ?? 'untitled'} — ${f.file ?? '?'}:${f.line ?? '?'}`);
       }
       core.endGroup();
     } else {
-      core.warning(`${reviewer.name} agent failed: ${result.reason}`);
+      core.warning(`${reviewer.name} agent failed: ${agentResult.reason}`);
     }
   }
+
+  core.info('');
+  core.info('\u2501\u2501\u2501 Review Agent Results \u2501\u2501\u2501');
+  for (const af of allFindings) {
+    core.info(`  ${af.reviewer}: ${af.findings.length} findings`);
+  }
+  core.info('');
 
   if (allFindings.length === 0) {
     core.warning('All reviewer agents failed');
@@ -50,11 +58,23 @@ export async function runReview(
   core.info(`Running consolidation agent with ${totalFindings} total findings...`);
   const result = await runConsolidationAgent(client, config, allFindings, rawDiff);
 
-  core.startGroup('Consolidated Review');
+  core.startGroup('Review Summary');
   core.info(`Verdict: ${result.verdict}`);
   core.info(`Findings: ${result.findings.length}`);
-  for (const f of result.findings) {
-    core.info(`  [${f.severity}] ${f.title} — ${f.file}:${f.line}`);
+  if (result.findings.length > 0) {
+    core.info('');
+    for (const f of result.findings) {
+      const icon = f.severity === 'blocking' ? '\u2717' : f.severity === 'suggestion' ? '\u25CB' : '?';
+      core.info(`  ${icon} [${f.severity}] ${f.title}`);
+      core.info(`    ${f.file}:${f.line}`);
+    }
+  }
+  if (result.highlights.length > 0) {
+    core.info('');
+    core.info('Highlights:');
+    for (const h of result.highlights) {
+      core.info(`  + ${h}`);
+    }
   }
   core.endGroup();
 

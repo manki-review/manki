@@ -30,7 +30,13 @@ jobs:
           cache: 'npm'
       - run: npm ci
       - run: npm run build
-      - uses: ./  # Use local action for self-testing
+      - name: Install Claude Code CLI
+        if: env.CLAUDE_CODE_OAUTH_TOKEN != ''
+        run: npm install -g @anthropic-ai/claude-code
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      - name: Claude Review
+        uses: ./  # Use local action for self-testing
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

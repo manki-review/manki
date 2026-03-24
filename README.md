@@ -60,7 +60,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: xdustinface/claude-review@v1
+      - name: Install Claude Code CLI
+        if: env.CLAUDE_CODE_OAUTH_TOKEN != ''
+        run: npm install -g @anthropic-ai/claude-code
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      - name: Claude Review
+        uses: xdustinface/claude-review@v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           # Use ONE of the following:
