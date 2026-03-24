@@ -183,8 +183,16 @@ export async function postReview(
 
   for (const f of result.findings) {
     if (!f.file || f.line <= 0) {
-      const fix = f.suggestedFix ? `\n  Fix: \`${f.suggestedFix.slice(0, 100)}\`` : '';
-      generalFindings.push(`**[${getSeverityLabel(f.severity)}] ${f.title}**${fix}`);
+      let entry = `**[${getSeverityLabel(f.severity)}] ${f.title}**\n  ${f.description}`;
+      if (f.suggestedFix) {
+        const fix = f.suggestedFix.slice(0, 200);
+        if (fix.includes('`') || fix.includes('\n')) {
+          entry += `\n  \`\`\`\n  ${fix}\n  \`\`\``;
+        } else {
+          entry += `\n  Fix: \`${fix}\``;
+        }
+      }
+      generalFindings.push(entry);
       continue;
     }
 

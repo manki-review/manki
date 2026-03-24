@@ -308,8 +308,8 @@ describe('postReview generalFindings', () => {
     expect(body).not.toContain('Fix:');
   });
 
-  it('truncates long suggestedFix to 100 chars in general findings', async () => {
-    const longFix = 'x'.repeat(150);
+  it('truncates long suggestedFix to 200 chars in general findings', async () => {
+    const longFix = 'x'.repeat(250);
     const result: ReviewResult = {
       verdict: 'APPROVE',
       summary: 'Summary',
@@ -330,8 +330,58 @@ describe('postReview generalFindings', () => {
 
     await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
     const body = mockCreateReview.mock.calls[0][0].body as string;
-    expect(body).toContain('Fix: `' + 'x'.repeat(100) + '`');
-    expect(body).not.toContain('x'.repeat(150));
+    expect(body).toContain('Fix: `' + 'x'.repeat(200) + '`');
+    expect(body).not.toContain('x'.repeat(250));
+  });
+
+  it('uses code block for suggestedFix containing backticks', async () => {
+    const fixWithBackticks = 'use `foo` instead of `bar`';
+    const result: ReviewResult = {
+      verdict: 'APPROVE',
+      summary: 'Summary',
+      findings: [
+        {
+          severity: 'suggestion',
+          title: 'Backtick fix',
+          file: '',
+          line: 0,
+          description: 'Desc.',
+          suggestedFix: fixWithBackticks,
+          reviewers: [],
+        },
+      ],
+      highlights: [],
+      reviewComplete: true,
+    };
+
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
+    const body = mockCreateReview.mock.calls[0][0].body as string;
+    expect(body).toContain('```');
+    expect(body).toContain(fixWithBackticks);
+    expect(body).not.toContain('Fix: `');
+  });
+
+  it('includes description in general findings', async () => {
+    const result: ReviewResult = {
+      verdict: 'APPROVE',
+      summary: 'Summary',
+      findings: [
+        {
+          severity: 'suggestion',
+          title: 'Some title',
+          file: '',
+          line: 0,
+          description: 'Important description here.',
+          reviewers: [],
+        },
+      ],
+      highlights: [],
+      reviewComplete: true,
+    };
+
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
+    const body = mockCreateReview.mock.calls[0][0].body as string;
+    expect(body).toContain('Important description here.');
   });
 });
 
