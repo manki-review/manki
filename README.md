@@ -28,6 +28,8 @@ Copy the token and add it as a repository secret named `CLAUDE_CODE_OAUTH_TOKEN`
 **Option B: Anthropic API key**
 Add your API key as a repository secret named `ANTHROPIC_API_KEY`.
 
+> **Memory repo token (optional):** If you plan to use review memory, you'll also need a `REVIEW_MEMORY_TOKEN` secret. See [Review Memory](#review-memory) below.
+
 ### 2. Add the workflow
 
 Create `.github/workflows/claude-review.yml` in your repository:
@@ -72,6 +74,7 @@ jobs:
           # Use ONE of the following:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # memory_repo_token: ${{ secrets.REVIEW_MEMORY_TOKEN }}  # Optional: enable review memory
 ```
 
 > **Note:** `@v1` points to the latest release with pre-built `dist/`. If you use `@main`, you must build from source by adding `setup-node`, `npm ci`, and `npm run build` steps before the action.
@@ -113,6 +116,62 @@ max_diff_lines: 10000
 #   This is a Rust project. Focus on ownership and error handling.
 #   The FFI layer uses raw pointers intentionally.
 ```
+
+## Review Memory
+
+Claude Review can learn from past reviews and carry that knowledge forward. When memory is enabled, the action stores learnings, suppressions, and pattern data in a dedicated GitHub repository, so reviewers improve over time and avoid repeating resolved feedback.
+
+### What memory tracks
+
+- **Learnings** — recurring patterns, codebase conventions, and reviewer corrections
+- **Suppressions** — findings the team has explicitly dismissed or marked as acceptable
+- **Pattern tracking** — how often specific issue types appear and get resolved
+
+### Enabling memory
+
+Add the following to your `.claude-review.yml`:
+
+```yaml
+memory:
+  enabled: true
+  repo: "your-org/review-memory"   # owner/repo format
+```
+
+### Setting up the memory repo token
+
+The memory repo token gives the action read/write access to the memory repository. Use a fine-grained personal access token (PAT) scoped as narrowly as possible:
+
+1. Go to **Settings > Developer settings > Personal access tokens > Fine-grained tokens**
+2. Click **Generate new token**
+3. **Repository access**: Select **Only select repositories** and choose your memory repo (e.g., `your-org/review-memory`)
+4. **Permissions**: Under **Repository permissions**, set **Contents** to **Read and write**
+5. Click **Generate token** and copy the value
+6. In each repo that uses Claude Review, go to **Settings > Secrets and variables > Actions** and add a secret named `REVIEW_MEMORY_TOKEN` with the token value
+
+Then pass it in your workflow:
+
+```yaml
+- name: Claude Review
+  uses: xdustinface/claude-review@v1
+  with:
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+    memory_repo_token: ${{ secrets.REVIEW_MEMORY_TOKEN }}
+```
+
+### Memory repo structure
+
+The memory repository is organized as follows:
+
+```
+review-memory/
+  _global/            # Cross-repo learnings and patterns
+  your-repo-name/     # Per-repo learnings and suppressions
+  another-repo/
+```
+
+- `_global/` contains learnings that apply across all repositories
+- `{repo-name}/` directories contain repository-specific data
 
 ## Configuration Reference
 
