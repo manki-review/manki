@@ -203,7 +203,7 @@ async function runFullReview(
       if (suppressed.length > 0) {
         core.info(`Suppressed ${suppressed.length} findings based on memory`);
         result.findings = kept;
-        result.verdict = determineVerdict(null, result.findings);
+        result.verdict = determineVerdict(undefined, result.findings);
       }
     }
 

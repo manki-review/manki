@@ -166,16 +166,17 @@ export function matchesSuppression(finding: Finding, suppression: Suppression): 
 }
 
 const MAX_MEMORY_FIELD_LENGTH = 500;
-const PROMPT_INJECTION_PATTERNS = /^---+$|^(system|user|assistant)\s*:/gmi;
 
 /**
- * Sanitize a memory field: truncate to a reasonable length and strip
- * potential prompt injection markers.
+ * Sanitize a memory field by truncating to a reasonable length.
+ * Prompt injection is mitigated by wrapping output in data boundaries
+ * rather than trying to filter patterns (which is easily bypassed).
  */
 export function sanitizeMemoryField(value: string): string {
-  let sanitized = value.slice(0, MAX_MEMORY_FIELD_LENGTH);
-  sanitized = sanitized.replace(PROMPT_INJECTION_PATTERNS, '');
-  return sanitized.trim();
+  const truncated = value.length > MAX_MEMORY_FIELD_LENGTH
+    ? value.slice(0, MAX_MEMORY_FIELD_LENGTH) + '...'
+    : value;
+  return truncated;
 }
 
 /**
@@ -205,7 +206,7 @@ export function buildMemoryContext(memory: RepoMemory): string {
     }
   }
 
-  return parts.join('\n');
+  return `<review-memory>\n${parts.join('\n')}\n</review-memory>`;
 }
 
 /**
