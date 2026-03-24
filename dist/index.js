@@ -36412,6 +36412,7 @@ const github = __importStar(__nccwpck_require__(6834));
 const claude_1 = __nccwpck_require__(793);
 const config_1 = __nccwpck_require__(4613);
 const diff_1 = __nccwpck_require__(6024);
+const interaction_1 = __nccwpck_require__(5763);
 const review_1 = __nccwpck_require__(3563);
 const github_1 = __nccwpck_require__(4248);
 const state_1 = __nccwpck_require__(5430);
@@ -36427,14 +36428,18 @@ async function run() {
                 }
                 break;
             case 'issue_comment':
-                if (action === 'created' && isClaudeReviewRequest()) {
-                    await handleCommentTrigger();
+                if (action === 'created') {
+                    if (isClaudeReviewRequest()) {
+                        await handleCommentTrigger();
+                    }
+                    else if (hasClaudeMention()) {
+                        await handleInteraction();
+                    }
                 }
                 break;
             case 'pull_request_review_comment':
                 if (action === 'created') {
-                    core.info('Review comment interaction — not yet implemented');
-                    // TODO: implement in #8 (comment interaction)
+                    await handleReviewCommentInteraction();
                 }
                 break;
             case 'pull_request_review':
@@ -36579,7 +36584,240 @@ function isClaudeReviewRequest() {
     const body = comment.body?.toLowerCase() ?? '';
     return body.includes('@claude') && body.includes('review');
 }
+function hasClaudeMention() {
+    const comment = github.context.payload.comment;
+    if (!comment)
+        return false;
+    const body = comment.body?.toLowerCase() ?? '';
+    return body.includes('@claude') && !body.includes('review');
+}
+async function handleInteraction() {
+    const githubToken = core.getInput('github_token', { required: true });
+    const oauthToken = core.getInput('claude_code_oauth_token');
+    const apiKey = core.getInput('anthropic_api_key');
+    const modelOverride = core.getInput('model');
+    const octokit = github.getOctokit(githubToken);
+    const claude = new claude_1.ClaudeClient({
+        oauthToken: oauthToken || undefined,
+        apiKey: apiKey || undefined,
+        model: modelOverride || 'claude-opus-4-6',
+    });
+    await (0, interaction_1.handlePRComment)(octokit, claude);
+}
+async function handleReviewCommentInteraction() {
+    const githubToken = core.getInput('github_token', { required: true });
+    const oauthToken = core.getInput('claude_code_oauth_token');
+    const apiKey = core.getInput('anthropic_api_key');
+    const modelOverride = core.getInput('model');
+    const octokit = github.getOctokit(githubToken);
+    const claude = new claude_1.ClaudeClient({
+        oauthToken: oauthToken || undefined,
+        apiKey: apiKey || undefined,
+        model: modelOverride || 'claude-opus-4-6',
+    });
+    await (0, interaction_1.handleReviewCommentReply)(octokit, claude);
+}
 run();
+
+
+/***/ }),
+
+/***/ 5763:
+/***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.BOT_MARKER = void 0;
+exports.handleReviewCommentReply = handleReviewCommentReply;
+exports.handlePRComment = handlePRComment;
+exports.parseCommand = parseCommand;
+exports.buildReplyContext = buildReplyContext;
+const core = __importStar(__nccwpck_require__(7930));
+const github = __importStar(__nccwpck_require__(6834));
+const BOT_MARKER = '<!-- claude-review -->';
+exports.BOT_MARKER = BOT_MARKER;
+/**
+ * Handle a reply to one of our review comments.
+ */
+async function handleReviewCommentReply(octokit, client) {
+    const payload = github.context.payload;
+    const comment = payload.comment;
+    if (!comment)
+        return;
+    // Don't reply to ourselves
+    if (comment.user?.type === 'Bot' || comment.body?.includes(BOT_MARKER)) {
+        core.info('Skipping bot comment');
+        return;
+    }
+    // Check if this is a reply to one of our comments
+    const inReplyTo = comment.in_reply_to_id;
+    if (!inReplyTo) {
+        core.info('Not a reply to an existing comment');
+        return;
+    }
+    const owner = github.context.repo.owner;
+    const repo = github.context.repo.repo;
+    const prNumber = payload.pull_request?.number;
+    if (!prNumber)
+        return;
+    try {
+        const { data: parentComment } = await octokit.rest.pulls.getReviewComment({
+            owner,
+            repo,
+            comment_id: inReplyTo,
+        });
+        if (!parentComment.body?.includes(BOT_MARKER) && !parentComment.body?.includes('claude-review:')) {
+            core.info('Parent comment is not from claude-review');
+            return;
+        }
+        const context = buildReplyContext(parentComment.body, comment.body, parentComment.path, parentComment.line);
+        const response = await client.sendMessage('You are a helpful code review assistant. A developer is replying to one of your review comments. ' +
+            'Provide a concise, helpful response. If they are asking for clarification, explain clearly. ' +
+            'If they are disagreeing, acknowledge their point and either update your recommendation or explain why the original concern still stands.', context);
+        await octokit.rest.pulls.createReplyForReviewComment({
+            owner,
+            repo,
+            pull_number: prNumber,
+            comment_id: comment.id,
+            body: `${BOT_MARKER}\n${response.content}`,
+        });
+        core.info('Posted reply to review comment');
+    }
+    catch (error) {
+        core.warning(`Failed to handle review comment reply: ${error}`);
+    }
+}
+/**
+ * Handle @claude commands in PR comments.
+ */
+async function handlePRComment(octokit, client) {
+    const payload = github.context.payload;
+    const comment = payload.comment;
+    if (!comment)
+        return;
+    // Don't reply to ourselves
+    if (comment.user?.type === 'Bot' || comment.body?.includes(BOT_MARKER)) {
+        return;
+    }
+    const body = comment.body ?? '';
+    if (!body.toLowerCase().includes('@claude'))
+        return;
+    const owner = github.context.repo.owner;
+    const repo = github.context.repo.repo;
+    const prNumber = payload.issue?.number;
+    if (!prNumber)
+        return;
+    const command = parseCommand(body);
+    switch (command.type) {
+        case 'explain':
+            await handleExplain(octokit, client, owner, repo, prNumber, command.args);
+            break;
+        case 'dismiss':
+            await handleDismiss(octokit, owner, repo, prNumber, command.args);
+            break;
+        case 'help':
+            await handleHelp(octokit, owner, repo, prNumber);
+            break;
+        default:
+            await handleGenericQuestion(octokit, client, owner, repo, prNumber, body);
+    }
+}
+function parseCommand(body) {
+    const lower = body.toLowerCase();
+    const match = lower.match(/@claude\s+(explain|dismiss|help)(?:\s+(.*))?/);
+    if (match) {
+        return {
+            type: match[1],
+            args: match[2]?.trim() ?? '',
+        };
+    }
+    return { type: 'generic', args: body };
+}
+async function handleExplain(octokit, client, owner, repo, prNumber, topic) {
+    const { data: diff } = await octokit.rest.pulls.get({
+        owner,
+        repo,
+        pull_number: prNumber,
+        mediaType: { format: 'diff' },
+    });
+    const response = await client.sendMessage('You are a code review assistant. A developer is asking you to explain something about a pull request. Be concise and helpful.', `## PR Diff\n\n\`\`\`diff\n${diff}\n\`\`\`\n\n## Question\n\n${topic || 'Please explain the changes in this PR.'}`);
+    await octokit.rest.issues.createComment({
+        owner,
+        repo,
+        issue_number: prNumber,
+        body: `${BOT_MARKER}\n${response.content}`,
+    });
+}
+async function handleDismiss(octokit, owner, repo, prNumber, findingRef) {
+    await octokit.rest.issues.createComment({
+        owner,
+        repo,
+        issue_number: prNumber,
+        body: `${BOT_MARKER}\nDismissed${findingRef ? `: ${findingRef}` : ''}. This will be remembered for future reviews once the memory system is enabled.`,
+    });
+}
+async function handleHelp(octokit, owner, repo, prNumber) {
+    await octokit.rest.issues.createComment({
+        owner,
+        repo,
+        issue_number: prNumber,
+        body: `${BOT_MARKER}\n**Claude Review Commands:**\n\n| Command | Description |\n|---------|-------------|\n| \`@claude review\` | Run a full multi-agent review |\n| \`@claude explain [topic]\` | Explain something about this PR |\n| \`@claude dismiss [finding]\` | Dismiss a review finding |\n| \`@claude help\` | Show this help message |\n\nYou can also reply to any review comment to start a conversation.`,
+    });
+}
+async function handleGenericQuestion(octokit, client, owner, repo, prNumber, question) {
+    const response = await client.sendMessage('You are a helpful code review assistant. A developer is asking you a question about a pull request. Be concise and helpful.', question);
+    await octokit.rest.issues.createComment({
+        owner,
+        repo,
+        issue_number: prNumber,
+        body: `${BOT_MARKER}\n${response.content}`,
+    });
+}
+function buildReplyContext(originalComment, replyBody, filePath, line) {
+    let context = '## Original Review Comment\n\n';
+    context += originalComment.replace(BOT_MARKER, '').trim();
+    if (filePath) {
+        context += `\n\nFile: \`${filePath}\``;
+        if (line)
+            context += ` (line ${line})`;
+    }
+    context += `\n\n## Developer Reply\n\n${replyBody}`;
+    return context;
+}
 
 
 /***/ }),

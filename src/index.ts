@@ -4,6 +4,7 @@ import * as github from '@actions/github';
 import { ClaudeClient } from './claude';
 import { loadConfig } from './config';
 import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
+import { handleReviewCommentReply, handlePRComment } from './interaction';
 import { runReview } from './review';
 import {
   fetchPRDiff,
@@ -31,15 +32,18 @@ async function run(): Promise<void> {
         break;
 
       case 'issue_comment':
-        if (action === 'created' && isClaudeReviewRequest()) {
-          await handleCommentTrigger();
+        if (action === 'created') {
+          if (isClaudeReviewRequest()) {
+            await handleCommentTrigger();
+          } else if (hasClaudeMention()) {
+            await handleInteraction();
+          }
         }
         break;
 
       case 'pull_request_review_comment':
         if (action === 'created') {
-          core.info('Review comment interaction — not yet implemented');
-          // TODO: implement in #8 (comment interaction)
+          await handleReviewCommentInteraction();
         }
         break;
 
@@ -224,6 +228,46 @@ function isClaudeReviewRequest(): boolean {
 
   const body = comment.body?.toLowerCase() ?? '';
   return body.includes('@claude') && body.includes('review');
+}
+
+function hasClaudeMention(): boolean {
+  const comment = github.context.payload.comment;
+  if (!comment) return false;
+
+  const body = comment.body?.toLowerCase() ?? '';
+  return body.includes('@claude') && !body.includes('review');
+}
+
+async function handleInteraction(): Promise<void> {
+  const githubToken = core.getInput('github_token', { required: true });
+  const oauthToken = core.getInput('claude_code_oauth_token');
+  const apiKey = core.getInput('anthropic_api_key');
+  const modelOverride = core.getInput('model');
+
+  const octokit = github.getOctokit(githubToken);
+  const claude = new ClaudeClient({
+    oauthToken: oauthToken || undefined,
+    apiKey: apiKey || undefined,
+    model: modelOverride || 'claude-opus-4-6',
+  });
+
+  await handlePRComment(octokit, claude);
+}
+
+async function handleReviewCommentInteraction(): Promise<void> {
+  const githubToken = core.getInput('github_token', { required: true });
+  const oauthToken = core.getInput('claude_code_oauth_token');
+  const apiKey = core.getInput('anthropic_api_key');
+  const modelOverride = core.getInput('model');
+
+  const octokit = github.getOctokit(githubToken);
+  const claude = new ClaudeClient({
+    oauthToken: oauthToken || undefined,
+    apiKey: apiKey || undefined,
+    model: modelOverride || 'claude-opus-4-6',
+  });
+
+  await handleReviewCommentReply(octokit, claude);
 }
 
 run();
