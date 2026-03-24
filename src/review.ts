@@ -53,6 +53,7 @@ export async function runReview(
       summary: 'Review could not be completed — all reviewer agents failed.',
       findings: [],
       highlights: [],
+      reviewComplete: false,
     };
   }
 
@@ -279,14 +280,16 @@ export function parseConsolidatedReview(responseText: string): ReviewResult {
       summary: String(parsed.summary || ''),
       findings,
       highlights: Array.isArray(parsed.highlights) ? parsed.highlights.map(String) : [],
+      reviewComplete: true,
     };
   } catch (e) {
     core.warning(`Failed to parse consolidated review: ${e}`);
     return {
-      verdict: determineVerdict(undefined, []),
+      verdict: 'COMMENT',
       summary: 'Review consolidation failed — raw findings from individual reviewers may be incomplete.',
       findings: [],
       highlights: [],
+      reviewComplete: false,
     };
   }
 }

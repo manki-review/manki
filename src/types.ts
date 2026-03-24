@@ -17,6 +17,7 @@ export interface ReviewResult {
   summary: string;
   findings: Finding[];
   highlights: string[];
+  reviewComplete: boolean;
 }
 
 export interface ReviewerAgent {

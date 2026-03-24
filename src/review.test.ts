@@ -166,12 +166,25 @@ describe('parseConsolidatedReview', () => {
     expect(result.findings).toEqual([]);
   });
 
-  it('returns fallback with APPROVE verdict for invalid JSON', () => {
+  it('returns fallback with COMMENT verdict and reviewComplete false for invalid JSON', () => {
     const result = parseConsolidatedReview('not json at all');
-    expect(result.verdict).toBe('APPROVE');
+    expect(result.verdict).toBe('COMMENT');
     expect(result.summary).toContain('consolidation failed');
     expect(result.findings).toEqual([]);
     expect(result.highlights).toEqual([]);
+    expect(result.reviewComplete).toBe(false);
+  });
+
+  it('sets reviewComplete true on successful parse', () => {
+    const json = JSON.stringify({
+      verdict: 'APPROVE',
+      summary: 'Looks good.',
+      findings: [],
+      highlights: [],
+    });
+    const result = parseConsolidatedReview(json);
+    expect(result.verdict).toBe('APPROVE');
+    expect(result.reviewComplete).toBe(true);
   });
 
   it('overrides claimed verdict based on actual findings', () => {

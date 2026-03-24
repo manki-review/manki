@@ -160,6 +160,7 @@ async function runFullReview(
         summary: `Diff too large for automated review (${diff.totalAdditions + diff.totalDeletions} lines). Please request a manual review.`,
         findings: [],
         highlights: [],
+        reviewComplete: true,
       };
       // Dismiss stale CHANGES_REQUESTED reviews before posting the skip comment
       try {
@@ -182,6 +183,7 @@ async function runFullReview(
         summary: 'No reviewable files in this PR (all filtered out by config).',
         findings: [],
         highlights: [],
+        reviewComplete: true,
       };
       await dismissPreviousReviews(octokit, owner, repo, prNumber);
       await postReview(octokit, owner, repo, prNumber, commitSha, result);
@@ -224,6 +226,10 @@ async function runFullReview(
     await dismissPreviousReviews(octokit, owner, repo, prNumber);
 
     const result = await runReview(claude, config, diff, rawDiff, fullContext);
+
+    if (!result.reviewComplete && result.verdict === 'APPROVE') {
+      result.verdict = 'COMMENT';
+    }
 
     if (memory && memory.suppressions.length > 0) {
       const { kept, suppressed } = applySuppressions(result.findings, memory.suppressions);
@@ -273,6 +279,7 @@ async function runFullReview(
       summary: `Review failed: ${msg}`,
       findings: [],
       highlights: [],
+      reviewComplete: false,
     });
   }
 }
