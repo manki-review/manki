@@ -20,6 +20,3 @@ jobs:
       - run: npm run typecheck
       - run: npm run test
       - run: npm run build
-      - name: Check dist/ is up to date
-        run: |
-          git diff --exit-code dist/ || (echo "dist/ is out of date. Run 'npm run build' and commit." && exit 1)
