@@ -24,7 +24,6 @@ export interface ReviewResult {
 export interface ReviewerAgent {
   name: string;
   focus: string;
-  systemPrompt?: string;
 }
 
 export type ReviewLevel = 'auto' | 'small' | 'medium' | 'large';

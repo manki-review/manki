@@ -54,7 +54,12 @@ export function selectTeam(
 
   const teamSize = level === 'small' ? 3 : level === 'medium' ? 5 : 7;
 
-  const pool = [...AGENT_POOL, ...(customReviewers || [])];
+  const pool = [...AGENT_POOL];
+  for (const custom of (customReviewers || [])) {
+    if (!pool.some(p => p.name === custom.name)) {
+      pool.push(custom);
+    }
+  }
   const selected: ReviewerAgent[] = CORE_AGENTS.map(i => pool[i]);
 
   if (teamSize > 3) {
@@ -172,15 +177,29 @@ async function runDeliberation(
   allFindings: { reviewer: string; findings: Finding[] }[],
   rawDiff: string,
 ): Promise<Finding[]> {
-  const flatFindings: Array<Finding & { originalReviewer: string; index: number }> = [];
-  let idx = 0;
+  const rawFindings: Array<Finding & { originalReviewer: string }> = [];
   for (const af of allFindings) {
     for (const f of af.findings) {
-      flatFindings.push({ ...f, originalReviewer: af.reviewer, index: idx++ });
+      rawFindings.push({ ...f, originalReviewer: af.reviewer });
     }
   }
 
-  if (flatFindings.length === 0) return [];
+  if (rawFindings.length === 0) return [];
+
+  // Deduplicate findings before deliberation
+  const deduped: Array<Finding & { originalReviewer: string }> = [];
+  for (const f of rawFindings) {
+    const isDupe = deduped.some(d =>
+      d.file === f.file &&
+      Math.abs(d.line - f.line) <= 3 &&
+      titlesMatch(d.title, f.title)
+    );
+    if (!isDupe) {
+      deduped.push(f);
+    }
+  }
+
+  const flatFindings = deduped.map((f, i) => ({ ...f, index: i }));
 
   const findingsSummary = flatFindings.map((f, i) =>
     `[${i}] [${f.severity}] "${f.title}" at ${f.file}:${f.line} (by ${f.originalReviewer})\n    ${f.description}`
@@ -262,7 +281,7 @@ Be concise. One sentence per reason. Vote on EVERY finding.`;
 }
 
 export function tallyVotes(
-  findings: Array<Finding & { index: number }>,
+  findings: Array<Finding & { index: number; originalReviewer: string }>,
   votes: AgentVote[],
   teamSize: number,
 ): Finding[] {
@@ -271,13 +290,15 @@ export function tallyVotes(
 
   for (const finding of findings) {
     const findingVotes = votes.filter(v => v.findingIndex === finding.index);
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { index, originalReviewer, ...cleanFinding } = finding;
 
     const agreeCount = findingVotes.filter(v => v.vote === 'agree' || v.vote === 'escalate').length;
     const disagreeCount = findingVotes.filter(v => v.vote === 'disagree').length;
     const escalateCount = findingVotes.filter(v => v.vote === 'escalate').length;
 
     if (findingVotes.length === 0) {
-      results.push(finding);
+      results.push(cleanFinding);
       continue;
     }
 
@@ -300,7 +321,7 @@ export function tallyVotes(
         .map(v => v.agentName);
 
       results.push({
-        ...finding,
+        ...cleanFinding,
         severity,
         reviewers: agreeVoters,
       });
@@ -308,7 +329,7 @@ export function tallyVotes(
     }
 
     results.push({
-      ...finding,
+      ...cleanFinding,
       severity: 'suggestion',
       reviewers: findingVotes.filter(v => v.vote !== 'disagree').map(v => v.agentName),
     });

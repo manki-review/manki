@@ -466,8 +466,8 @@ describe('selectTeam', () => {
 });
 
 describe('tallyVotes', () => {
-  const findingA = { ...makeFinding({ title: 'Bug A', severity: 'suggestion' }), index: 0 };
-  const findingB = { ...makeFinding({ title: 'Bug B', severity: 'suggestion' }), index: 1 };
+  const findingA = { ...makeFinding({ title: 'Bug A', severity: 'suggestion' }), index: 0, originalReviewer: 'Reviewer1' };
+  const findingB = { ...makeFinding({ title: 'Bug B', severity: 'suggestion' }), index: 1, originalReviewer: 'Reviewer2' };
 
   it('keeps finding when majority agrees', () => {
     const votes: AgentVote[] = [
@@ -502,7 +502,7 @@ describe('tallyVotes', () => {
   });
 
   it('downgrades to suggestion on split vote', () => {
-    const finding = { ...makeFinding({ title: 'Mixed', severity: 'blocking' }), index: 0 };
+    const finding = { ...makeFinding({ title: 'Mixed', severity: 'blocking' }), index: 0, originalReviewer: 'Reviewer1' };
     const votes: AgentVote[] = [
       { agentName: 'A', findingIndex: 0, vote: 'agree', reason: 'valid' },
       { agentName: 'B', findingIndex: 0, vote: 'disagree', reason: 'nah' },
@@ -520,6 +520,13 @@ describe('tallyVotes', () => {
     expect(results).toHaveLength(1);
     expect(results[0].title).toBe('Bug A');
     expect(results[0].severity).toBe('suggestion');
+  });
+
+  it('strips internal properties from output findings', () => {
+    const results = tallyVotes([findingA], [], 3);
+    const result = results[0] as unknown as Record<string, unknown>;
+    expect(result).not.toHaveProperty('index');
+    expect(result).not.toHaveProperty('originalReviewer');
   });
 
   it('escalates to blocking when escalate vote present with majority agree', () => {
@@ -544,7 +551,7 @@ describe('tallyVotes', () => {
   });
 
   it('does not escalate question findings to blocking on unanimous agree', () => {
-    const questionFinding = { ...makeFinding({ title: 'Unclear code', severity: 'question' as const }), index: 0 };
+    const questionFinding = { ...makeFinding({ title: 'Unclear code', severity: 'question' as const }), index: 0, originalReviewer: 'Reviewer1' };
     const votes: AgentVote[] = [
       { agentName: 'A', findingIndex: 0, vote: 'agree', reason: 'valid' },
       { agentName: 'B', findingIndex: 0, vote: 'agree', reason: 'valid' },
@@ -556,7 +563,7 @@ describe('tallyVotes', () => {
   });
 
   it('does not escalate blocking findings further on unanimous agree', () => {
-    const blockingFinding = { ...makeFinding({ title: 'Real bug', severity: 'blocking' as const }), index: 0 };
+    const blockingFinding = { ...makeFinding({ title: 'Real bug', severity: 'blocking' as const }), index: 0, originalReviewer: 'Reviewer1' };
     const votes: AgentVote[] = [
       { agentName: 'A', findingIndex: 0, vote: 'agree', reason: 'valid' },
       { agentName: 'B', findingIndex: 0, vote: 'agree', reason: 'valid' },

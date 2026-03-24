@@ -84,16 +84,21 @@ export class ClaudeClient {
           CLAUDE_CODE_OAUTH_TOKEN: this.oauthToken,
         },
         stdio: ['pipe', 'pipe', 'pipe'],
-        timeout: 300000,
       });
 
       let stdout = '';
       let stderr = '';
 
+      const timer = setTimeout(() => {
+        child.kill('SIGTERM');
+        reject(new Error('Claude CLI timed out after 300s'));
+      }, 300000);
+
       child.stdout.on('data', (data: Buffer) => { stdout += data.toString(); });
       child.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
 
       child.on('close', (code) => {
+        clearTimeout(timer);
         if (code !== 0) {
           const msg = `exit ${code}: ${stderr.slice(0, 500)}`;
           core.warning(`Claude CLI failed (${msg})`);
@@ -108,7 +113,12 @@ export class ClaudeClient {
       });
 
       child.on('error', (error) => {
+        clearTimeout(timer);
         reject(new Error(`Claude CLI spawn failed: ${error.message}`));
+      });
+
+      child.stdin.on('error', (err) => {
+        core.debug(`stdin write error: ${err.message}`);
       });
 
       child.stdin.write(fullPrompt);
