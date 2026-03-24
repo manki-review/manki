@@ -531,4 +531,17 @@ describe('sanitizeMarkdown', () => {
     const result = sanitizeMarkdown(input);
     expect(result).not.toContain('``');
   });
+
+  it('strips attribute-less HTML tags like <details> and <div>', () => {
+    expect(sanitizeMarkdown('<details>content</details>')).toBe('content');
+    expect(sanitizeMarkdown('<div>inner</div>')).toBe('inner');
+    expect(sanitizeMarkdown('before <b>bold</b> after')).toBe('before bold after');
+    expect(sanitizeMarkdown('<summary>title</summary>')).toBe('title');
+  });
+
+  it('preserves TypeScript generics that are not HTML tag names', () => {
+    expect(sanitizeMarkdown('Array<T>')).toBe('Array<T>');
+    expect(sanitizeMarkdown('Map<MyType, string>')).toBe('Map<MyType, string>');
+    expect(sanitizeMarkdown('Promise<Result>')).toBe('Promise<Result>');
+  });
 });

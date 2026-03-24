@@ -340,19 +340,20 @@ function getSeverityLabel(severity: FindingSeverity): string {
 }
 
 function sanitizeMarkdown(text: string): string {
+  const htmlTags = 'a|abbr|address|article|aside|audio|b|bdi|bdo|blockquote|body|br|button|canvas|caption|cite|code|col|colgroup|data|datalist|dd|del|details|dfn|dialog|div|dl|dt|em|embed|fieldset|figcaption|figure|footer|form|h[1-6]|head|header|hgroup|hr|html|i|iframe|img|input|ins|kbd|label|legend|li|link|main|map|mark|meta|meter|nav|noscript|object|ol|optgroup|option|output|p|param|picture|pre|progress|q|rp|rt|ruby|s|samp|script|section|select|slot|small|source|span|strong|style|sub|summary|sup|table|tbody|td|template|textarea|tfoot|th|thead|time|title|tr|track|u|ul|var|video|wbr';
+
   return text
-    .replace(/<!--[\s\S]*?(?:-->|$)/g, '')          // HTML comments (including unclosed)
-    .replace(/<[a-z][a-z0-9]*\s[^>]*(?:>|$)/gi, '') // Tags with attributes (dangerous)
-    .replace(/<\/?(script|iframe|style|object|embed|form|input|button|select|textarea|meta|link|base)[^>]*>/gi, '') // Known dangerous tags
+    .replace(/<!--[\s\S]*?(?:-->|$)/g, '')                          // HTML comments (including unclosed)
+    .replace(new RegExp(`<\\/?(${htmlTags})(?:\\s[^>]*)?(?:>|$)`, 'gi'), '') // Known HTML tags (with or without attributes)
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')                       // Images: keep alt text only
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')                        // Links: keep text only
+    .replace(/!\[([^\]]*)\]\[[^\]]*\]/g, '$1')                       // Reference images
+    .replace(/\[([^\]]*)\]\[[^\]]*\]/g, '$1')                        // Reference links
+    .replace(/^\[[^\]]*\]:\s+.*$/gm, '')                             // Link/image definitions
     // Insert zero-width space after @ to prevent GitHub from resolving mentions.
     // Lookbehind avoids matching email addresses (which have chars before @).
     // Also handles @org/team patterns.
-    .replace(/(?<![a-zA-Z0-9.])@([a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)?)/g, '@\u200B$1')
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1') // Images: keep alt text only
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1') // Links: keep text only
-    .replace(/!\[([^\]]*)\]\[[^\]]*\]/g, '$1') // Reference images
-    .replace(/\[([^\]]*)\]\[[^\]]*\]/g, '$1')  // Reference links
-    .replace(/^\[[^\]]*\]:\s+.*$/gm, '');       // Link/image definitions
+    .replace(/(?<![a-zA-Z0-9.])@([a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)?)/g, '@\u200B$1');
 }
 
 function formatFindingComment(finding: Finding): string {
