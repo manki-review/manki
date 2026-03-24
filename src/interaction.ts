@@ -150,6 +150,16 @@ export async function handlePRComment(
   const command = parseCommand(body);
   const commentId = comment.id as number;
 
+  const prOnlyCommands = new Set(['check', 'explain', 'review']);
+  if (prOnlyCommands.has(command.type) && !github.context.payload.issue?.pull_request) {
+    await octokit.rest.issues.createComment({
+      owner, repo,
+      issue_number: issueNumber,
+      body: `${BOT_MARKER}\nThe \`${command.type}\` command only works on pull requests.`,
+    });
+    return;
+  }
+
   switch (command.type) {
     case 'explain':
       if (!client) { core.warning('Claude client required for explain command'); return; }
