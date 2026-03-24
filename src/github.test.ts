@@ -30,18 +30,38 @@ describe('formatFindingComment', () => {
     expect(comment).toContain('❓ **Question**');
   });
 
-  it('includes suggested fix in a suggestion code block when present', () => {
+  it('wraps suggested fix in a collapsible details section', () => {
     const finding: Finding = { ...baseFinding, suggestedFix: 'if (value != null) { use(value); }' };
     const comment = formatFindingComment(finding);
-    expect(comment).toContain('**Suggested fix:**');
+    expect(comment).toContain('<details>\n<summary>Suggested fix</summary>');
     expect(comment).toContain('```suggestion');
     expect(comment).toContain('if (value != null) { use(value); }');
+    expect(comment).not.toContain('<details open');
   });
 
   it('omits suggested fix section when not present', () => {
     const comment = formatFindingComment(baseFinding);
-    expect(comment).not.toContain('**Suggested fix:**');
+    expect(comment).not.toContain('<summary>Suggested fix</summary>');
     expect(comment).not.toContain('```suggestion');
+  });
+
+  it('includes AI agent prompt in a collapsible details section', () => {
+    const comment = formatFindingComment(baseFinding);
+    expect(comment).toContain('<details>\n<summary>🤖 Prompt for AI Agents</summary>');
+    expect(comment).toContain(`In \`${baseFinding.file}\` around line ${baseFinding.line}`);
+    expect(comment).toContain(baseFinding.description);
+    expect(comment).not.toContain('<details open');
+  });
+
+  it('includes suggested change in AI agent prompt when suggestedFix is present', () => {
+    const finding: Finding = { ...baseFinding, suggestedFix: 'if (value != null) { use(value); }' };
+    const comment = formatFindingComment(finding);
+    expect(comment).toContain('Suggested change:\nif (value != null) { use(value); }');
+  });
+
+  it('omits suggested change from AI agent prompt when no suggestedFix', () => {
+    const comment = formatFindingComment(baseFinding);
+    expect(comment).not.toContain('Suggested change:');
   });
 
   it('includes reviewer attribution', () => {
