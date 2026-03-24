@@ -87,7 +87,12 @@ export class ClaudeClient {
         timeout: 300000,
       });
 
-      return { content: stdout.trim() };
+      const content = stdout.trim();
+      core.startGroup('Claude CLI response');
+      core.info(content);
+      core.endGroup();
+
+      return { content };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       core.warning(`Claude CLI failed: ${msg}`);
@@ -106,6 +111,11 @@ export class ClaudeClient {
     });
 
     const textBlocks = response.content.filter(b => b.type === 'text');
-    return { content: textBlocks.map(b => b.text).join('\n') };
+    const content = textBlocks.map(b => b.text).join('\n');
+    core.startGroup('Claude API response');
+    core.info(content);
+    core.endGroup();
+
+    return { content };
   }
 }
