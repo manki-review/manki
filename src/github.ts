@@ -179,8 +179,15 @@ export async function postReview(
   // Validate and filter inline comments against the diff
   const validComments: Array<{path: string; line: number; side: 'RIGHT'; body: string}> = [];
   const invalidComments: string[] = [];
+  const generalFindings: string[] = [];
 
-  for (const f of result.findings.filter(f => f.file && f.line > 0)) {
+  for (const f of result.findings) {
+    if (!f.file || f.line <= 0) {
+      const severityLabel = f.severity === 'blocking' ? 'Blocking' : f.severity === 'suggestion' ? 'Suggestion' : 'Question';
+      generalFindings.push(`**[${severityLabel}] ${f.title}**: ${f.description}`);
+      continue;
+    }
+
     const commentBody = formatFindingComment(f);
 
     if (diff) {
@@ -193,11 +200,13 @@ export async function postReview(
           if (closest) {
             validComments.push({ path: f.file, line: closest, side: 'RIGHT', body: commentBody });
           } else {
-            invalidComments.push(`**${f.title}** (${f.file}:${f.line}): ${f.description}`);
+            const severityLabel = f.severity === 'blocking' ? 'Blocking' : f.severity === 'suggestion' ? 'Suggestion' : 'Question';
+            invalidComments.push(`**[${severityLabel}] ${f.title}** (\`${f.file}:${f.line}\`): ${f.description}`);
           }
         }
       } else {
-        invalidComments.push(`**${f.title}** (${f.file}:${f.line}): ${f.description}`);
+        const severityLabel = f.severity === 'blocking' ? 'Blocking' : f.severity === 'suggestion' ? 'Suggestion' : 'Question';
+        invalidComments.push(`**[${severityLabel}] ${f.title}** (\`${f.file}:${f.line}\`): ${f.description}`);
       }
     } else {
       validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: commentBody });
@@ -205,8 +214,11 @@ export async function postReview(
   }
 
   let body = `${BOT_MARKER}\n${result.summary}`;
+  if (generalFindings.length > 0) {
+    body += `\n\n**General findings:**\n${generalFindings.map(c => `- ${c}`).join('\n')}`;
+  }
   if (invalidComments.length > 0) {
-    body += `\n\n**Additional findings (not on changed lines):**\n${invalidComments.map(c => `- ${c}`).join('\n')}`;
+    body += `\n\n**Findings (not on changed lines):**\n${invalidComments.map(c => `- ${c}`).join('\n')}`;
   }
 
   if (invalidComments.length > 0) {
