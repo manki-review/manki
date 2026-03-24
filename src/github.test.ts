@@ -164,30 +164,85 @@ describe('buildNitIssueBody', () => {
     expect(body).toContain('PR #99');
   });
 
-  it('includes suggested fix when present', () => {
+  it('includes suggested fix in folded fix prompt when present', () => {
     const withFix: Finding = { ...suggestion, suggestedFix: 'const x = 1;' };
     const body = buildNitIssueBody(42, [withFix], 'myorg');
     expect(body).toContain('**Suggested fix:**');
-    expect(body).toContain('`const x = 1;`');
+    expect(body).toContain('const x = 1;');
   });
 
-  it('omits suggested fix when not present', () => {
+  it('omits suggested fix from fix prompt when not present', () => {
     const body = buildNitIssueBody(42, [suggestion], 'myorg');
-    expect(body).not.toContain('Suggested fix');
-  });
-
-  it('truncates long suggested fixes to 100 chars', () => {
-    const longFix = 'a'.repeat(200);
-    const withFix: Finding = { ...suggestion, suggestedFix: longFix };
-    const body = buildNitIssueBody(42, [withFix], 'myorg');
-    expect(body).toContain('`' + 'a'.repeat(100) + '`');
-    expect(body).not.toContain('a'.repeat(101));
+    expect(body).not.toContain('**Suggested fix:**');
   });
 
   it('uses correct emoji for suggestion vs question', () => {
     const body = buildNitIssueBody(42, [suggestion, question], 'myorg');
-    // suggestion gets lightbulb, question gets question mark
     expect(body).toContain('\u{1F4A1} **Use const instead of let**');
     expect(body).toContain('\u{2753} **Is this timeout intentional?**');
+  });
+
+  it('includes code context when present', () => {
+    const withContext: Finding = {
+      ...suggestion,
+      file: 'src/utils.ts',
+      codeContext: '+let x = 1;\n+let y = 2;',
+    };
+    const body = buildNitIssueBody(42, [withContext], 'myorg');
+    expect(body).toContain('```typescript');
+    expect(body).toContain('+let x = 1;\n+let y = 2;');
+    expect(body).toContain('```');
+  });
+
+  it('omits code context when not present', () => {
+    const body = buildNitIssueBody(42, [suggestion], 'myorg');
+    expect(body).not.toContain('```typescript');
+  });
+
+  it('detects language from file extension', () => {
+    const extensions: Array<[string, string]> = [
+      ['src/app.ts', 'typescript'],
+      ['src/app.tsx', 'typescript'],
+      ['src/app.js', 'javascript'],
+      ['src/app.jsx', 'javascript'],
+      ['src/lib.rs', 'rust'],
+      ['src/main.py', 'python'],
+      ['src/main.go', 'go'],
+      ['styles.css', 'css'],
+      ['config.yml', 'yaml'],
+    ];
+
+    for (const [file, lang] of extensions) {
+      const finding: Finding = {
+        ...suggestion,
+        file,
+        codeContext: '+some code',
+      };
+      const body = buildNitIssueBody(42, [finding], 'myorg');
+      expect(body).toContain(`\`\`\`${lang}`);
+    }
+  });
+
+  it('wraps fix prompt in a folded details section', () => {
+    const body = buildNitIssueBody(42, [suggestion], 'myorg');
+    expect(body).toContain('<details>');
+    expect(body).toContain('<summary>\u{1F916} Fix prompt</summary>');
+    expect(body).toContain('</details>');
+    expect(body).toContain('**File:** `src/utils.ts`');
+    expect(body).toContain('**Line:** 10');
+    expect(body).toContain('**Finding:** Use const instead of let');
+    expect(body).toContain('**Severity:** suggestion');
+  });
+
+  it('includes triage instructions with @manki triage', () => {
+    const body = buildNitIssueBody(42, [suggestion], 'myorg');
+    expect(body).toContain('`@manki triage`');
+    expect(body).toContain('**Check the box** for findings worth fixing');
+    expect(body).toContain('**Leave unchecked** for findings to dismiss');
+  });
+
+  it('includes validation reminder in fix prompt', () => {
+    const body = buildNitIssueBody(42, [suggestion], 'myorg');
+    expect(body).toContain('Before applying this fix, validate the finding');
   });
 });

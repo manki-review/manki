@@ -273,6 +273,25 @@ async function runFullReview(
     const recapSummary = buildRecapSummary(result.findings.length, duplicates.length, resolved, open);
     result.summary = `${result.summary}\n\n${recapSummary}`;
 
+    // Enrich findings with code context from the diff for nit issues
+    for (const finding of result.findings) {
+      if (finding.file && finding.line) {
+        const diffFile = diff.files.find(f => f.path === finding.file);
+        if (diffFile) {
+          const hunk = diffFile.hunks.find(h =>
+            finding.line >= h.newStart && finding.line <= h.newStart + h.newLines - 1,
+          );
+          if (hunk) {
+            const lines = hunk.content.split('\n');
+            const findingOffset = finding.line - hunk.newStart;
+            const start = Math.max(0, findingOffset - 5);
+            const end = Math.min(lines.length, findingOffset + 10);
+            finding.codeContext = lines.slice(start, end).join('\n');
+          }
+        }
+      }
+    }
+
     const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
 
     if (result.verdict === 'APPROVE' && result.findings.length > 0) {

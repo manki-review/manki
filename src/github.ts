@@ -330,15 +330,44 @@ export function buildNitIssueBody(
 
   const checklist = nits.map(f => {
     const icon = f.severity === 'suggestion' ? '\u{1F4A1}' : '\u{2753}';
-    const fix = f.suggestedFix ? `\n  **Suggested fix:** \`${f.suggestedFix.slice(0, 100)}\`` : '';
-    return `- [ ] ${icon} **${f.title}** \u2014 \`${f.file}:${f.line}\`\n  ${f.description}${fix}`;
+    const safeTitle = f.title.replace(/`/g, "'");
+    const safeDescription = f.description.replace(/<!--/g, '').replace(/-->/g, '');
+
+    let item = `- [ ] ${icon} **${safeTitle}** \u2014 \`${f.file}:${f.line}\`\n`;
+    item += `  \n  ${safeDescription}\n`;
+
+    if (f.codeContext) {
+      const ext = f.file.split('.').pop() || '';
+      const langMap: Record<string, string> = {
+        'ts': 'typescript', 'tsx': 'typescript', 'js': 'javascript', 'jsx': 'javascript',
+        'rs': 'rust', 'py': 'python', 'go': 'go', 'java': 'java',
+        'css': 'css', 'html': 'html', 'yml': 'yaml', 'yaml': 'yaml',
+      };
+      const lang = langMap[ext] || ext;
+      item += `  \n  \`\`\`${lang}\n${f.codeContext}\n  \`\`\`\n`;
+    }
+
+    item += `  \n  <details>\n  <summary>\u{1F916} Fix prompt</summary>\n\n`;
+    item += `  **File:** \`${f.file}\`\n`;
+    item += `  **Line:** ${f.line}\n`;
+    item += `  **Finding:** ${safeTitle}\n`;
+    item += `  **Severity:** ${f.severity}\n\n`;
+    item += `  **Description:**\n  ${safeDescription}\n`;
+    if (f.suggestedFix) {
+      item += `  \n  **Suggested fix:**\n  \`\`\`\n  ${f.suggestedFix}\n  \`\`\`\n`;
+    }
+    item += `  \n  > **Important:** Before applying this fix, validate the finding in the broader context of the file and surrounding code.\n`;
+    item += `  \n  </details>`;
+
+    return item;
   }).join('\n\n');
 
   return `## Review Nits from PR #${prNumber}
 
 The following non-blocking findings were identified during automated review. Please triage:
-- **Close this issue** if the findings aren't worth addressing
-- **Remove the \`needs-human\` label** to signal the coordinator to implement fixes
+- **Check the box** for findings worth fixing
+- **Leave unchecked** for findings to dismiss
+- Comment \`@manki triage\` when done
 
 ${checklist}
 

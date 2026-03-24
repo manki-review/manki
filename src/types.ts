@@ -8,6 +8,7 @@ export interface Finding {
   description: string;
   suggestedFix?: string;
   reviewers: string[];
+  codeContext?: string;
 }
 
 export type ReviewVerdict = 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES';
