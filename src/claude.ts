@@ -21,6 +21,7 @@ export class ClaudeClient {
   private apiKey?: string;
   private anthropic?: Anthropic;
   private model: string;
+  private cachedCLIPath?: string;
 
   constructor(options: ClaudeClientOptions) {
     this.oauthToken = options.oauthToken;
@@ -43,11 +44,37 @@ export class ClaudeClient {
     return this.sendViaAPI(systemPrompt, userMessage);
   }
 
-  private async sendViaOAuth(systemPrompt: string, userMessage: string): Promise<ClaudeResponse> {
-    const fullPrompt = `${systemPrompt}\n\n---\n\n${userMessage}`;
+  private async ensureCLI(): Promise<string> {
+    if (this.cachedCLIPath) {
+      return this.cachedCLIPath;
+    }
 
     try {
-      const { stdout } = await execFileAsync('claude', [
+      const { stdout } = await execFileAsync('which', ['claude']);
+      this.cachedCLIPath = stdout.trim();
+      return this.cachedCLIPath;
+    } catch {
+      core.info('Claude CLI not found, installing via npm...');
+      await execFileAsync('npm', ['install', '-g', '@anthropic-ai/claude-code'], {
+        timeout: 120000,
+      });
+
+      try {
+        const { stdout } = await execFileAsync('which', ['claude']);
+        this.cachedCLIPath = stdout.trim();
+        return this.cachedCLIPath;
+      } catch {
+        throw new Error('Failed to install Claude CLI');
+      }
+    }
+  }
+
+  private async sendViaOAuth(systemPrompt: string, userMessage: string): Promise<ClaudeResponse> {
+    const fullPrompt = `${systemPrompt}\n\n---\n\n${userMessage}`;
+    const cliPath = await this.ensureCLI();
+
+    try {
+      const { stdout } = await execFileAsync(cliPath, [
         '-p', fullPrompt,
         '--output-format', 'text',
         '--model', this.model,

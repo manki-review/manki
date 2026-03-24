@@ -11,8 +11,10 @@ export declare class ClaudeClient {
     private apiKey?;
     private anthropic?;
     private model;
+    private cachedCLIPath?;
     constructor(options: ClaudeClientOptions);
     sendMessage(systemPrompt: string, userMessage: string): Promise<ClaudeResponse>;
+    private ensureCLI;
     private sendViaOAuth;
     private sendViaAPI;
 }
