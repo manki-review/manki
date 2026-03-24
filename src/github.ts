@@ -218,11 +218,15 @@ export async function postReview(
           if (closest) {
             validComments.push({ path: f.file, line: closest, side: 'RIGHT', body: commentBody });
           } else {
-            invalidComments.push(`**[${getSeverityLabel(f.severity)}] ${sanitizeMarkdown(f.title)}** (\`${f.file.replace(/`/g, "'")}:${f.line}\`): ${sanitizeMarkdown(f.description).slice(0, 200)}`);
+            const desc = sanitizeMarkdown(f.description);
+            const truncDesc = desc.length > 200 ? desc.slice(0, 200) + '...' : desc;
+            invalidComments.push(`**[${getSeverityLabel(f.severity)}] ${sanitizeMarkdown(f.title)}** (\`${f.file.replace(/`/g, "'")}:${f.line}\`): ${truncDesc}`);
           }
         }
       } else {
-        invalidComments.push(`**[${getSeverityLabel(f.severity)}] ${sanitizeMarkdown(f.title)}** (\`${f.file.replace(/`/g, "'")}:${f.line}\`): ${sanitizeMarkdown(f.description).slice(0, 200)}`);
+        const desc = sanitizeMarkdown(f.description);
+        const truncDesc = desc.length > 200 ? desc.slice(0, 200) + '...' : desc;
+        invalidComments.push(`**[${getSeverityLabel(f.severity)}] ${sanitizeMarkdown(f.title)}** (\`${f.file.replace(/`/g, "'")}:${f.line}\`): ${truncDesc}`);
       }
     } else {
       validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: commentBody });
@@ -326,8 +330,9 @@ function getSeverityLabel(severity: FindingSeverity): string {
 
 function sanitizeMarkdown(text: string): string {
   return text
-    .replace(/<!--[\s\S]*?-->/g, '')        // HTML comments
-    .replace(/<\/?[a-z][^>]*>/gi, '')        // HTML tags
+    .replace(/<!--[\s\S]*?(?:-->|$)/g, '')   // HTML comments (including unclosed)
+    .replace(/<\/?[a-z][^>]*(?:>|$)/gi, '')  // HTML tags (including unclosed)
+    .replace(/@([a-zA-Z0-9_-]+)/g, '`@$1`') // Neutralize @mentions
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1') // Images: keep alt text only
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1') // Links: keep text only
     .replace(/!\[([^\]]*)\]\[[^\]]*\]/g, '$1') // Reference images

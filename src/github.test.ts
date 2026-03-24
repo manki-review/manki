@@ -486,4 +486,16 @@ describe('sanitizeMarkdown', () => {
     const plain = 'Just a regular string with `code` and *emphasis*.';
     expect(sanitizeMarkdown(plain)).toBe(plain);
   });
+
+  it('strips unclosed HTML comments', () => {
+    expect(sanitizeMarkdown('before <!-- unclosed comment')).toBe('before ');
+  });
+
+  it('strips unclosed HTML tags', () => {
+    expect(sanitizeMarkdown('before <div class="x"')).toBe('before ');
+  });
+
+  it('wraps @mentions in backticks', () => {
+    expect(sanitizeMarkdown('cc @octocat for review')).toBe('cc `@octocat` for review');
+  });
 });
