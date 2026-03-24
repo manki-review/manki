@@ -222,7 +222,7 @@ export async function postReview(
           }
         }
       } else {
-        invalidComments.push(`**[${getSeverityLabel(f.severity)}] ${sanitizeMarkdown(f.title)}** (\`${f.file}:${f.line}\`): ${sanitizeMarkdown(f.description).slice(0, 200)}`);
+        invalidComments.push(`**[${getSeverityLabel(f.severity)}] ${sanitizeMarkdown(f.title)}** (\`${f.file.replace(/`/g, "'")}:${f.line}\`): ${sanitizeMarkdown(f.description).slice(0, 200)}`);
       }
     } else {
       validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: commentBody });
@@ -329,7 +329,10 @@ function sanitizeMarkdown(text: string): string {
     .replace(/<!--[\s\S]*?-->/g, '')        // HTML comments
     .replace(/<\/?[a-z][^>]*>/gi, '')        // HTML tags
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1') // Images: keep alt text only
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1'); // Links: keep text only
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1') // Links: keep text only
+    .replace(/!\[([^\]]*)\]\[[^\]]*\]/g, '$1') // Reference images
+    .replace(/\[([^\]]*)\]\[[^\]]*\]/g, '$1')  // Reference links
+    .replace(/^\[[^\]]*\]:\s+.*$/gm, '');       // Link/image definitions
 }
 
 function formatFindingComment(finding: Finding): string {
@@ -348,8 +351,9 @@ function formatFindingComment(finding: Finding): string {
     comment += `\n\n<details>\n<summary>Suggested fix</summary>\n\n${fence}suggestion\n${finding.suggestedFix}\n${fence}\n</details>`;
   }
 
+  const safeFile = finding.file.replace(/`/g, "'");
   comment += '\n\n<details>\n<summary>🤖 Prompt for AI Agents</summary>\n\n';
-  comment += `**File:** \`${finding.file}\`\n`;
+  comment += `**File:** \`${safeFile}\`\n`;
   comment += `**Line:** ${finding.line}\n`;
   comment += `**Finding:** ${safeTitle}\n`;
   comment += `**Severity:** ${finding.severity}\n\n`;
