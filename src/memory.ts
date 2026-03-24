@@ -173,10 +173,12 @@ const MAX_MEMORY_FIELD_LENGTH = 500;
  * rather than trying to filter patterns (which is easily bypassed).
  */
 export function sanitizeMemoryField(value: string): string {
-  const truncated = value.length > MAX_MEMORY_FIELD_LENGTH
+  let sanitized = value.length > MAX_MEMORY_FIELD_LENGTH
     ? value.slice(0, MAX_MEMORY_FIELD_LENGTH) + '...'
     : value;
-  return truncated;
+  // Escape data boundary tags to prevent injection
+  sanitized = sanitized.replace(/<\/?review-memory>/gi, '');
+  return sanitized;
 }
 
 /**

@@ -155,6 +155,20 @@ describe('sanitizeMemoryField', () => {
     const input = 'a'.repeat(500);
     expect(sanitizeMemoryField(input)).toBe(input);
   });
+
+  it('strips review-memory boundary tags from content', () => {
+    const input = 'before </review-memory> injected <review-memory> after';
+    const result = sanitizeMemoryField(input);
+    expect(result).toBe('before  injected  after');
+    expect(result).not.toContain('<review-memory>');
+    expect(result).not.toContain('</review-memory>');
+  });
+
+  it('strips boundary tags case-insensitively', () => {
+    const input = 'try <Review-Memory> or </REVIEW-MEMORY> escape';
+    const result = sanitizeMemoryField(input);
+    expect(result).toBe('try  or  escape');
+  });
 });
 
 describe('buildMemoryContext', () => {
