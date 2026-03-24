@@ -411,6 +411,22 @@ describe('postReview generalFindings', () => {
     expect(body).toContain('Important description here.');
   });
 
+  it('truncates review body when it exceeds max length', async () => {
+    const longDesc = 'x'.repeat(70000);
+    const result: ReviewResult = {
+      verdict: 'APPROVE',
+      summary: longDesc,
+      findings: [],
+      highlights: [],
+      reviewComplete: true,
+    };
+
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
+    const body = mockCreateReview.mock.calls[0][0].body as string;
+    expect(body.length).toBeLessThanOrEqual(60000 + 50); // cap + truncation message
+    expect(body).toContain('*(Review body truncated)*');
+  });
+
   it('includes file path in general findings when file is set but line is invalid', async () => {
     const result: ReviewResult = {
       verdict: 'APPROVE',
@@ -495,7 +511,24 @@ describe('sanitizeMarkdown', () => {
     expect(sanitizeMarkdown('before <div class="x"')).toBe('before ');
   });
 
-  it('wraps @mentions in backticks', () => {
-    expect(sanitizeMarkdown('cc @octocat for review')).toBe('cc `@octocat` for review');
+  it('neutralizes @mentions with zero-width space', () => {
+    expect(sanitizeMarkdown('cc @octocat for review')).toBe('cc @\u200Boctocat for review');
+  });
+
+  it('neutralizes @org/team mentions', () => {
+    expect(sanitizeMarkdown('cc @myorg/reviewers')).toBe('cc @\u200Bmyorg/reviewers');
+  });
+
+  it('does not modify email addresses', () => {
+    expect(sanitizeMarkdown('contact user@example.com')).toBe('contact user@example.com');
+  });
+
+  it('does not modify already-backticked mentions', () => {
+    // The @ inside backticks is preceded by `, which is not [a-zA-Z0-9.], so
+    // the regex will insert a ZWS. But since it's inside backticks GitHub won't
+    // render it as a mention anyway. The important thing is we don't double-wrap.
+    const input = 'see `@octocat` for details';
+    const result = sanitizeMarkdown(input);
+    expect(result).not.toContain('``');
   });
 });

@@ -194,7 +194,7 @@ export async function postReview(
           ? f.suggestedFix.slice(0, 200) + '...'
           : f.suggestedFix;
         if (fix.includes('`') || fix.includes('\n')) {
-          // Dynamic fence: use more backticks than the longest run in the fix content
+          // Dynamic fence: content inside code fences is literal, so no sanitization needed.
           const maxBackticks = (fix.match(/`+/g) || []).reduce((max, s) => Math.max(max, s.length), 0);
           const fence = '`'.repeat(Math.max(3, maxBackticks + 1));
           entry += `\n  ${fence}\n  ${fix}\n  ${fence}`;
@@ -239,6 +239,11 @@ export async function postReview(
   }
   if (invalidComments.length > 0) {
     body += `\n\n**Findings (not on changed lines):**\n${invalidComments.map(c => `- ${c}`).join('\n')}`;
+  }
+
+  const MAX_BODY_LENGTH = 60000; // GitHub limit is 65536
+  if (body.length > MAX_BODY_LENGTH) {
+    body = body.slice(0, MAX_BODY_LENGTH) + '\n\n*(Review body truncated)*';
   }
 
   if (invalidComments.length > 0) {
@@ -332,7 +337,10 @@ function sanitizeMarkdown(text: string): string {
   return text
     .replace(/<!--[\s\S]*?(?:-->|$)/g, '')   // HTML comments (including unclosed)
     .replace(/<\/?[a-z][^>]*(?:>|$)/gi, '')  // HTML tags (including unclosed)
-    .replace(/@([a-zA-Z0-9_-]+)/g, '`@$1`') // Neutralize @mentions
+    // Insert zero-width space after @ to prevent GitHub from resolving mentions.
+    // Lookbehind avoids matching email addresses (which have chars before @).
+    // Also handles @org/team patterns.
+    .replace(/(?<![a-zA-Z0-9.])@([a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)?)/g, '@\u200B$1')
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1') // Images: keep alt text only
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1') // Links: keep text only
     .replace(/!\[([^\]]*)\]\[[^\]]*\]/g, '$1') // Reference images
