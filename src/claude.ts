@@ -89,31 +89,43 @@ export class ClaudeClient {
       let stdout = '';
       let stderr = '';
       let timedOut = false;
+      let outputExceeded = false;
+      let settled = false;
+      let killTimer: NodeJS.Timeout | undefined;
 
       const timer = setTimeout(() => {
         timedOut = true;
         child.kill('SIGTERM');
-        setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, 5000);
+        killTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, 5000);
       }, 300000);
 
       const MAX_OUTPUT = 50 * 1024 * 1024; // 50 MB
       child.stdout.on('data', (data: Buffer) => {
         stdout += data.toString();
-        if (stdout.length > MAX_OUTPUT) {
+        if (stdout.length > MAX_OUTPUT && !outputExceeded) {
+          outputExceeded = true;
           child.kill('SIGTERM');
         }
       });
       child.stderr.on('data', (data: Buffer) => {
         stderr += data.toString();
-        if (stderr.length > MAX_OUTPUT) {
+        if (stderr.length > MAX_OUTPUT && !outputExceeded) {
+          outputExceeded = true;
           child.kill('SIGTERM');
         }
       });
 
       child.on('close', (code) => {
         clearTimeout(timer);
+        if (killTimer) clearTimeout(killTimer);
+        if (settled) return;
+        settled = true;
         if (timedOut) {
           reject(new Error('Claude CLI timed out after 300s'));
+          return;
+        }
+        if (outputExceeded) {
+          reject(new Error('Claude CLI output exceeded 50MB limit'));
           return;
         }
         if (code !== 0) {
@@ -131,6 +143,9 @@ export class ClaudeClient {
 
       child.on('error', (error) => {
         clearTimeout(timer);
+        if (killTimer) clearTimeout(killTimer);
+        if (settled) return;
+        settled = true;
         reject(new Error(`Claude CLI spawn failed: ${error.message}`));
       });
 

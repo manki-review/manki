@@ -60,12 +60,23 @@ export function selectTeam(
       pool.push(custom);
     }
   }
+
+  // Core agents always included
   const selected: ReviewerAgent[] = CORE_AGENTS.map(i => pool[i]);
 
-  if (teamSize > 3) {
-    const paths = diff.files.map(f => f.path.toLowerCase());
+  // Custom reviewers always included (they were explicitly configured)
+  for (const custom of (customReviewers || [])) {
+    if (!selected.some(s => s.name === custom.name)) {
+      selected.push(custom);
+    }
+  }
 
-    const candidates = pool.slice(3).map(agent => {
+  // If we still need more agents to reach teamSize, score and pick from remaining pool
+  if (selected.length < teamSize) {
+    const paths = diff.files.map(f => f.path.toLowerCase());
+    const selectedNames = new Set(selected.map(s => s.name));
+
+    const candidates = pool.filter(a => !selectedNames.has(a.name)).map(agent => {
       let score = 0;
       const focus = agent.focus.toLowerCase();
 
@@ -88,7 +99,7 @@ export function selectTeam(
     });
 
     candidates.sort((a, b) => b.score - a.score);
-    const additional = candidates.slice(0, teamSize - 3).map(c => c.agent);
+    const additional = candidates.slice(0, teamSize - selected.length).map(c => c.agent);
     selected.push(...additional);
   }
 

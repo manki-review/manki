@@ -466,6 +466,16 @@ describe('selectTeam', () => {
     expect(securityCount).toBe(1);
   });
 
+  it('includes custom reviewers even for small teams', () => {
+    const custom: ReviewerAgent = { name: 'Protocol Expert', focus: 'protocol compliance' };
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const config = makeConfig({ review_level: 'small' });
+    const roster = selectTeam(diff, config, [custom]);
+    expect(roster.agents.map(a => a.name)).toContain('Protocol Expert');
+    // 3 core + 1 custom
+    expect(roster.agents.length).toBeGreaterThanOrEqual(4);
+  });
+
   it('respects fixed review_level override', () => {
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
     const config = makeConfig({ review_level: 'large' });

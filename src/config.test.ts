@@ -238,6 +238,15 @@ review_thresholds:
       expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
     });
 
+    it('throws when partial threshold override causes small >= medium after merge', () => {
+      const yaml = `
+review_thresholds:
+  small: 1500
+`;
+      // After merge: small=1500, medium=1000 (default) => small >= medium
+      expect(() => loadConfigFromContent(yaml)).toThrow('review_thresholds.small');
+    });
+
     it('ignores unknown keys during merge', () => {
       const yaml = `
 model: claude-sonnet-4-20250514
