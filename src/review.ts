@@ -331,10 +331,10 @@ export function mergeIndividualFindings(
 
       if (existing) {
         if (!existing.reviewers.includes(af.reviewer)) {
-          existing.reviewers.push(af.reviewer);
+          existing.reviewers = [...existing.reviewers, af.reviewer];
         }
       } else {
-        allFindings.push({ ...f });
+        allFindings.push({ ...f, reviewers: [af.reviewer] });
       }
     }
   }
