@@ -10,6 +10,7 @@ Claude Review runs three specialized reviewer agents in parallel — **Security 
 - **Smart severity**: Blocking issues trigger `REQUEST_CHANGES`, suggestions are posted as `COMMENT`, clean PRs get `APPROVE`
 - **Auto-approve**: When all blocking issues are resolved, the PR is automatically approved
 - **Customizable**: Configure reviewer agents, file filters, and custom instructions via `.claude-review.yml`
+- **Custom bot identity**: GitHub App support lets reviews appear under your own app name and avatar
 - **Dual auth**: Works with Claude Max subscription (OAuth) or Anthropic API key
 - **Mention trigger**: Comment `@claude review` on any PR to trigger a review on demand
 
@@ -201,6 +202,8 @@ review-memory/
 | `config_path` | No | Path to config file (default: `.claude-review.yml`) |
 | `model` | No | Override model from config |
 | `memory_repo_token` | No | Token for memory repo access |
+| `github_app_id` | No | GitHub App ID for custom bot identity |
+| `github_app_private_key` | No | GitHub App private key (PEM format) |
 
 \* One of `claude_code_oauth_token` or `anthropic_api_key` is required.
 

@@ -23,6 +23,12 @@ inputs:
     description: 'Claude model to use for reviews'
     required: false
     default: 'claude-opus-4-6'
+  github_app_id:
+    description: 'GitHub App ID for custom bot identity (reviews show as the app name)'
+    required: false
+  github_app_private_key:
+    description: 'GitHub App private key (PEM format) for generating installation tokens'
+    required: false
 
 outputs:
   review_id:

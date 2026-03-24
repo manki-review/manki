@@ -76,6 +76,55 @@ Required only if you enable the review memory system. This is a fine-grained PAT
    gh secret set REVIEW_MEMORY_TOKEN --repo <owner>/<repo>
    ```
 
+## Custom Bot Identity (Optional)
+
+By default, reviews appear as "github-actions[bot]". To give the review bot its own name and avatar, create a GitHub App.
+
+### Create the GitHub App
+
+1. Go to **Settings > Developer settings > GitHub Apps > New GitHub App**
+2. Configure:
+   - **App name**: `Claude Review` (or your preferred name)
+   - **Homepage URL**: `https://github.com/xdustinface/claude-review`
+   - **Webhook**: Uncheck "Active" (not needed)
+   - **Permissions**:
+     - Repository: **Contents** > Read
+     - Repository: **Pull requests** > Read and write
+     - Repository: **Issues** > Read and write
+   - **Where can this GitHub App be installed?**: "Only on this account"
+3. Click "Create GitHub App"
+4. Note the **App ID** displayed on the app page
+5. Generate a **private key** (scroll down > "Generate a private key")
+6. Download the `.pem` file
+
+### Install the App
+
+1. Go to the app's settings page
+2. Click "Install App" in the sidebar
+3. Select your account and choose which repos to install on
+
+### Add Secrets
+
+```bash
+gh secret set CLAUDE_REVIEW_APP_ID --repo <owner>/<repo>
+# Paste the App ID number
+
+gh secret set CLAUDE_REVIEW_PRIVATE_KEY --repo <owner>/<repo>
+# Paste the contents of the .pem file
+```
+
+### Update Workflow
+
+```yaml
+      - name: Claude Review
+        uses: xdustinface/claude-review@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_app_id: ${{ secrets.CLAUDE_REVIEW_APP_ID }}
+          github_app_private_key: ${{ secrets.CLAUDE_REVIEW_PRIVATE_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+```
+
 ## Step 3: Add the Workflow
 
 Create `.github/workflows/claude-review.yml`:
@@ -244,5 +293,7 @@ You can also trigger a review manually by commenting `@claude review` on any PR.
 | `CLAUDE_CODE_OAUTH_TOKEN` | Yes* | Claude Max subscription auth |
 | `ANTHROPIC_API_KEY` | Yes* | Anthropic API auth (alternative) |
 | `REVIEW_MEMORY_TOKEN` | No | Fine-grained PAT for memory repo writes |
+| `CLAUDE_REVIEW_APP_ID` | No | GitHub App ID for custom bot identity |
+| `CLAUDE_REVIEW_PRIVATE_KEY` | No | GitHub App private key (PEM format) |
 
 \* One of `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` is required.
