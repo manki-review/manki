@@ -183,7 +183,8 @@ export async function postReview(
 
   for (const f of result.findings) {
     if (!f.file || f.line <= 0) {
-      const location = f.file ? ` — \`${f.file}\`` : '';
+      const safeFile = f.file?.replace(/`/g, "'") ?? '';
+      const location = f.file ? ` — \`${safeFile}\`` : '';
       const safeTitle = sanitizeMarkdown(f.title);
       const fullDesc = sanitizeMarkdown(f.description);
       const safeDesc = fullDesc.length > 300 ? fullDesc.slice(0, 300) + '...' : fullDesc;
@@ -217,7 +218,7 @@ export async function postReview(
           if (closest) {
             validComments.push({ path: f.file, line: closest, side: 'RIGHT', body: commentBody });
           } else {
-            invalidComments.push(`**[${getSeverityLabel(f.severity)}] ${sanitizeMarkdown(f.title)}** (\`${f.file}:${f.line}\`): ${sanitizeMarkdown(f.description).slice(0, 200)}`);
+            invalidComments.push(`**[${getSeverityLabel(f.severity)}] ${sanitizeMarkdown(f.title)}** (\`${f.file.replace(/`/g, "'")}:${f.line}\`): ${sanitizeMarkdown(f.description).slice(0, 200)}`);
           }
         }
       } else {
@@ -324,7 +325,11 @@ function getSeverityLabel(severity: FindingSeverity): string {
 }
 
 function sanitizeMarkdown(text: string): string {
-  return text.replace(/<!--[\s\S]*?-->/g, '').replace(/<\/?[a-z][^>]*>/gi, '');
+  return text
+    .replace(/<!--[\s\S]*?-->/g, '')        // HTML comments
+    .replace(/<\/?[a-z][^>]*>/gi, '')        // HTML tags
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1') // Images: keep alt text only
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1'); // Links: keep text only
 }
 
 function formatFindingComment(finding: Finding): string {
@@ -336,6 +341,8 @@ function formatFindingComment(finding: Finding): string {
   let comment = `${severityEmoji} **${severityLabel}**: ${safeTitle}\n\n${safeDescription}`;
 
   if (finding.suggestedFix) {
+    // Content inside dynamically-fenced code blocks is rendered literally by GitHub,
+    // so HTML/markdown injection is not possible here — no sanitization needed.
     const maxBt = (finding.suggestedFix.match(/`+/g) || []).reduce((max, s) => Math.max(max, s.length), 0);
     const fence = '`'.repeat(Math.max(3, maxBt + 1));
     comment += `\n\n<details>\n<summary>Suggested fix</summary>\n\n${fence}suggestion\n${finding.suggestedFix}\n${fence}\n</details>`;
@@ -349,6 +356,7 @@ function formatFindingComment(finding: Finding): string {
   comment += `**Description:**\n${safeDescription}\n`;
 
   if (finding.suggestedFix) {
+    // Inside a dynamically-fenced code block — GitHub renders literally, safe from injection.
     const maxBt = (finding.suggestedFix.match(/`+/g) || []).reduce((max, s) => Math.max(max, s.length), 0);
     const fence = '`'.repeat(Math.max(3, maxBt + 1));
     comment += `\n**Suggested fix:**\n${fence}\n${finding.suggestedFix}\n${fence}\n`;

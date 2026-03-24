@@ -462,9 +462,20 @@ describe('sanitizeMarkdown', () => {
     expect(sanitizeMarkdown('a <!-- multi\nline\ncomment --> b')).toBe('a  b');
   });
 
-  it('preserves regular markdown (bold, links)', () => {
-    const md = '**bold** and [link](https://example.com)';
-    expect(sanitizeMarkdown(md)).toBe(md);
+  it('preserves bold and emphasis', () => {
+    expect(sanitizeMarkdown('**bold** and *emphasis*')).toBe('**bold** and *emphasis*');
+  });
+
+  it('strips markdown images, keeping alt text', () => {
+    expect(sanitizeMarkdown('see ![logo](https://evil.com/track.png) here')).toBe('see logo here');
+  });
+
+  it('strips markdown links, keeping text', () => {
+    expect(sanitizeMarkdown('click [here](https://evil.com) now')).toBe('click here now');
+  });
+
+  it('strips images inside links', () => {
+    expect(sanitizeMarkdown('[![badge](https://img.url)](https://link.url)')).toBe('badge');
   });
 
   it('handles empty string', () => {
