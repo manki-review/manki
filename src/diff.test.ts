@@ -248,6 +248,16 @@ describe('filterFiles', () => {
     expect(result).toHaveLength(0);
   });
 
+  it('excludes dotfiles when pattern targets them', () => {
+    const dotfiles: DiffFile[] = [
+      { path: '.env', changeType: 'modified', hunks: [] },
+      { path: '.gitignore', changeType: 'modified', hunks: [] },
+      { path: 'src/main.ts', changeType: 'modified', hunks: [] },
+    ];
+    const result = filterFiles(dotfiles, ['**/*'], ['.*']);
+    expect(result.map((f) => f.path)).toEqual(['src/main.ts']);
+  });
+
   it('includes dotfiles with default include pattern', () => {
     const dotfiles: DiffFile[] = [
       { path: '.claude-review.yml', changeType: 'modified', hunks: [] },
