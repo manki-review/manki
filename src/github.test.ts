@@ -1,4 +1,4 @@
-import { formatFindingComment, mapVerdictToEvent, BOT_MARKER, buildNitIssueBody, getSeverityLabel, postReview, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence } from './github';
+import { formatFindingComment, mapVerdictToEvent, BOT_MARKER, buildNitIssueBody, getSeverityLabel, postReview, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, safeTruncate } from './github';
 import { Finding, ReviewResult } from './types';
 
 describe('formatFindingComment', () => {
@@ -638,5 +638,37 @@ describe('dynamicFence', () => {
 
   it('handles content with long backtick runs', () => {
     expect(dynamicFence('`````')).toBe('``````');
+  });
+});
+
+describe('safeTruncate', () => {
+  it('returns text unchanged when shorter than max', () => {
+    expect(safeTruncate('hello', 10)).toBe('hello');
+  });
+
+  it('truncates normal text at boundary', () => {
+    expect(safeTruncate('hello world', 5)).toBe('hello...');
+  });
+
+  it('avoids splitting a surrogate pair at the boundary', () => {
+    // U+1F600 (grinning face) is a surrogate pair: \uD83D\uDE00
+    const text = 'ab\u{1F600}cd';
+    // maxLen=3 would land between the high and low surrogate; safeTruncate backs up
+    const result = safeTruncate(text, 3);
+    expect(result).toBe('ab...');
+  });
+});
+
+describe('sanitizeMarkdown numeric entities', () => {
+  it('decodes decimal numeric HTML entities', () => {
+    expect(sanitizeMarkdown('&#60;b&#62;bold&#60;/b&#62;')).toBe('bold');
+  });
+
+  it('decodes hex numeric HTML entities', () => {
+    expect(sanitizeMarkdown('&#x3C;b&#x3E;bold&#x3C;/b&#x3E;')).toBe('bold');
+  });
+
+  it('decodes mixed named and numeric entities', () => {
+    expect(sanitizeMarkdown('&lt;div&#62;text&#x3C;/div&gt;')).toBe('text');
   });
 });

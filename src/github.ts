@@ -200,9 +200,7 @@ export async function postReview(
       const safeDesc = safeTruncate(fullDesc, 300);
       let entry = `**[${getSeverityLabel(f.severity)}] ${safeTitle}**${location}\n  ${safeDesc}`;
       if (f.suggestedFix) {
-        const fix = f.suggestedFix.length > 200
-          ? f.suggestedFix.slice(0, 200) + '...'
-          : f.suggestedFix;
+        const fix = safeTruncate(f.suggestedFix, 200);
         if (fix.includes('`') || fix.includes('\n')) {
           // Dynamic fence: content inside code fences is literal, so no sanitization needed.
           const fence = dynamicFence(fix);
@@ -373,7 +371,9 @@ function sanitizeMarkdown(text: string): string {
     .replace(/&gt;/g, '>')
     .replace(/&amp;/g, '&')
     .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
+    .replace(/&#39;/g, "'")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code, 10)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCharCode(parseInt(code, 16)));
   // Run comment stripping twice to handle nested comments like <!-- <!-- --> -->,
   // then clean up any dangling close markers left behind.
   result = result.replace(/<!--[\s\S]*?(?:-->|$)/g, '');
