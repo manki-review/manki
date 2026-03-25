@@ -592,7 +592,7 @@ export async function createNitIssue(
   const nits = findings.filter(f => f.severity === 'nit');
   if (nits.length === 0) return null;
 
-  const searchQuery = `repo:${owner}/${repo} is:issue "Review nits from PR #${prNumber}" label:needs-human`;
+  const searchQuery = `repo:${owner}/${repo} is:issue "triage: findings from PR #${prNumber}" label:needs-human`;
   const { data: existing } = await octokit.rest.search.issuesAndPullRequests({ q: searchQuery });
   if (existing.total_count > 0) {
     core.info(`Nit issue already exists for PR #${prNumber}: #${existing.items[0].number}`);
@@ -614,7 +614,7 @@ export async function createNitIssue(
 
   const { data: issue } = await octokit.rest.issues.create({
     owner, repo,
-    title: `Review nits from PR #${prNumber}`,
+    title: `triage: findings from PR #${prNumber}`,
     body,
     labels: ['needs-human'],
   });
