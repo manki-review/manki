@@ -208,6 +208,12 @@ describe('buildReviewerSystemPrompt', () => {
     const prompt = buildReviewerSystemPrompt(reviewer, makeConfig());
     expect(prompt).not.toContain('Additional Instructions');
   });
+
+  it('mentions review memory in the rules', () => {
+    const prompt = buildReviewerSystemPrompt(reviewer, makeConfig());
+    expect(prompt).toContain('review memory');
+    expect(prompt).toContain('suppressed');
+  });
 });
 
 describe('buildReviewerUserMessage', () => {
@@ -265,6 +271,75 @@ describe('buildReviewerUserMessage', () => {
     const message = buildReviewerUserMessage('diff', '', fileContents);
     const filesIdx = message.indexOf('## Changed Files');
     const diffIdx = message.indexOf('## Pull Request Diff');
+    expect(filesIdx).toBeLessThan(diffIdx);
+  });
+
+  it('includes PR context when provided', () => {
+    const prContext = { title: 'Add login flow', body: 'Implements OAuth2 login.', baseBranch: 'main' };
+    const message = buildReviewerUserMessage('diff', '', undefined, prContext);
+    expect(message).toContain('## Pull Request');
+    expect(message).toContain('**Title**: Add login flow');
+    expect(message).toContain('**Base branch**: main');
+    expect(message).toContain('Implements OAuth2 login.');
+  });
+
+  it('omits PR context when undefined', () => {
+    const message = buildReviewerUserMessage('diff', '');
+    expect(message).not.toContain('## Pull Request\n');
+  });
+
+  it('omits PR body when empty', () => {
+    const prContext = { title: 'Fix bug', body: '', baseBranch: 'develop' };
+    const message = buildReviewerUserMessage('diff', '', undefined, prContext);
+    expect(message).toContain('**Title**: Fix bug');
+    expect(message).not.toContain('Implements');
+  });
+
+  it('truncates long PR body at 2000 chars', () => {
+    const longBody = 'x'.repeat(3000);
+    const prContext = { title: 'Big PR', body: longBody, baseBranch: 'main' };
+    const message = buildReviewerUserMessage('diff', '', undefined, prContext);
+    expect(message).toContain('... (truncated)');
+    expect(message).not.toContain('x'.repeat(3000));
+  });
+
+  it('places PR context before repo context and diff', () => {
+    const prContext = { title: 'Feature', body: 'Description', baseBranch: 'main' };
+    const message = buildReviewerUserMessage('diff', 'repo info', undefined, prContext);
+    const prIdx = message.indexOf('## Pull Request');
+    const repoIdx = message.indexOf('## Repository Context');
+    const diffIdx = message.indexOf('## Pull Request Diff');
+    expect(prIdx).toBeLessThan(repoIdx);
+    expect(repoIdx).toBeLessThan(diffIdx);
+  });
+
+  it('includes memory context when provided', () => {
+    const memoryCtx = '<review-memory>\n## Review Memory — Learnings\nSome learning\n</review-memory>';
+    const message = buildReviewerUserMessage('diff', '', undefined, undefined, memoryCtx);
+    expect(message).toContain('## Review Memory');
+    expect(message).toContain(memoryCtx);
+  });
+
+  it('omits memory context when empty', () => {
+    const message = buildReviewerUserMessage('diff', '', undefined, undefined, '');
+    expect(message).not.toContain('## Review Memory');
+  });
+
+  it('omits memory context when undefined', () => {
+    const message = buildReviewerUserMessage('diff', '');
+    expect(message).not.toContain('## Review Memory');
+  });
+
+  it('places memory context after repo context and before file contents', () => {
+    const fileContents = new Map([['a.ts', 'content']]);
+    const memoryCtx = '<review-memory>learnings</review-memory>';
+    const message = buildReviewerUserMessage('diff', 'repo info', fileContents, undefined, memoryCtx);
+    const repoIdx = message.indexOf('## Repository Context');
+    const memIdx = message.indexOf('## Review Memory');
+    const filesIdx = message.indexOf('## Changed Files');
+    const diffIdx = message.indexOf('## Pull Request Diff');
+    expect(repoIdx).toBeLessThan(memIdx);
+    expect(memIdx).toBeLessThan(filesIdx);
     expect(filesIdx).toBeLessThan(diffIdx);
   });
 });

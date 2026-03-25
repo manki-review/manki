@@ -6,9 +6,10 @@ import { ClaudeClient } from './claude';
 import { loadConfig, resolveModel } from './config';
 import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
 import { handleReviewCommentReply, handlePRComment } from './interaction';
-import { loadMemory, buildMemoryContext, applySuppressions, applyEscalations, updatePattern, RepoMemory } from './memory';
+import { loadMemory, applySuppressions, applyEscalations, updatePattern, RepoMemory } from './memory';
 import { fetchRecapState, deduplicateFindings, buildRecapSummary, resolveAddressedThreads } from './recap';
 import { runReview, determineVerdict } from './review';
+import { PrContext } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -100,7 +101,13 @@ async function handlePullRequest(): Promise<void> {
     return;
   }
 
-  await runFullReview(owner, repo, prNumber, commitSha, pr.base.ref);
+  const prContext: PrContext = {
+    title: pr.title,
+    body: pr.body || '',
+    baseBranch: pr.base.ref,
+  };
+
+  await runFullReview(owner, repo, prNumber, commitSha, pr.base.ref, prContext);
 }
 
 async function handleCommentTrigger(): Promise<void> {
@@ -128,7 +135,13 @@ async function handleCommentTrigger(): Promise<void> {
     pull_number: prNumber,
   });
 
-  await runFullReview(owner, repo, prNumber, pr.head.sha, pr.base.ref);
+  const prContext: PrContext = {
+    title: pr.title,
+    body: pr.body || '',
+    baseBranch: pr.base.ref,
+  };
+
+  await runFullReview(owner, repo, prNumber, pr.head.sha, pr.base.ref, prContext);
 }
 
 async function runFullReview(
@@ -137,6 +150,7 @@ async function runFullReview(
   prNumber: number,
   commitSha: string,
   baseRef: string,
+  prContext?: PrContext,
 ): Promise<void> {
   core.info(`Starting review for ${owner}/${repo}#${prNumber}`);
 
@@ -224,7 +238,6 @@ async function runFullReview(
     const repoContext = await fetchRepoContext(octokit, owner, repo, baseRef);
 
     let memory: RepoMemory | null = null;
-    let memoryContext = '';
     if (config.memory?.enabled) {
       const memoryToken = getMemoryToken();
       if (!memoryToken) {
@@ -235,7 +248,6 @@ async function runFullReview(
 
         try {
           memory = await loadMemory(memoryOctokit, memoryRepo, repo);
-          memoryContext = buildMemoryContext(memory);
           core.info(`Loaded memory: ${memory.learnings.length} learnings, ${memory.suppressions.length} suppressions`);
         } catch (error) {
           core.warning(`Failed to load review memory: ${error}`);
@@ -255,7 +267,7 @@ async function runFullReview(
       }
     }
 
-    const fullContext = [repoContext, memoryContext, recap.recapContext].filter(Boolean).join('\n\n');
+    const fullContext = [repoContext, recap.recapContext].filter(Boolean).join('\n\n');
 
     // Fetch full file contents for changed files so reviewers have surrounding context
     const filePaths = filteredFiles
@@ -270,7 +282,7 @@ async function runFullReview(
 
     await dismissPreviousReviews(octokit, owner, repo, prNumber);
 
-    const result = await runReview({ reviewer: reviewerClient, judge: judgeClient }, config, diff, rawDiff, fullContext, memory, fileContents);
+    const result = await runReview({ reviewer: reviewerClient, judge: judgeClient }, config, diff, rawDiff, fullContext, memory, fileContents, prContext);
 
     if (!result.reviewComplete && result.verdict === 'APPROVE') {
       result.verdict = 'COMMENT';

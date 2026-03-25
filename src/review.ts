@@ -2,8 +2,8 @@ import * as core from '@actions/core';
 
 import { ClaudeClient } from './claude';
 import { runJudgeAgent, JudgeInput } from './judge';
-import { RepoMemory } from './memory';
-import { ReviewConfig, ReviewerAgent, Finding, ReviewResult, ReviewVerdict, ParsedDiff, TeamRoster } from './types';
+import { RepoMemory, buildMemoryContext } from './memory';
+import { ReviewConfig, ReviewerAgent, Finding, ReviewResult, ReviewVerdict, ParsedDiff, TeamRoster, PrContext } from './types';
 import { extractJSON } from './json';
 
 export const AGENT_POOL: readonly ReviewerAgent[] = Object.freeze([
@@ -132,14 +132,17 @@ export async function runReview(
   repoContext: string,
   memory?: RepoMemory | null,
   fileContents?: Map<string, string>,
+  prContext?: PrContext,
 ): Promise<ReviewResult> {
   const team = selectTeam(diff, config, config.reviewers);
   core.info(`Review team (${team.level}): ${team.agents.map(a => a.name).join(', ')}`);
 
+  const memoryContext = memory ? buildMemoryContext(memory) : '';
+
   core.info(`Running ${team.agents.length} reviewer agents in parallel...`);
   const agentResults = await Promise.allSettled(
     team.agents.map(agent =>
-      runReviewerAgent(clients.reviewer, config, agent, rawDiff, repoContext, fileContents)
+      runReviewerAgent(clients.reviewer, config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext)
     )
   );
 
@@ -176,6 +179,7 @@ export async function runReview(
         rawDiff,
         memory: memory ?? undefined,
         repoContext,
+        prContext,
       };
       const judged = await runJudgeAgent(clients.judge, config, judgeInput);
       finalFindings = judged.filter(f => f.severity !== 'ignore');
@@ -219,9 +223,11 @@ async function runReviewerAgent(
   rawDiff: string,
   repoContext: string,
   fileContents?: Map<string, string>,
+  prContext?: PrContext,
+  memoryContext?: string,
 ): Promise<Finding[]> {
   const systemPrompt = buildReviewerSystemPrompt(reviewer, config);
-  const userMessage = buildReviewerUserMessage(rawDiff, repoContext, fileContents);
+  const userMessage = buildReviewerUserMessage(rawDiff, repoContext, fileContents, prContext, memoryContext);
 
   const response = await client.sendMessage(systemPrompt, userMessage);
   return parseFindings(response.content, reviewer.name);
@@ -266,7 +272,8 @@ Respond with ONLY a JSON array (no markdown fences, no explanation). Each findin
 - Keep descriptions concrete and actionable.
 - If you find NO issues, respond with an empty array: []
 - Be thorough but not pedantic. Quality over quantity.
-- When full file contents are provided, use them to understand context (variable definitions, imports, surrounding logic) but only flag issues in the changed code.`;
+- When full file contents are provided, use them to understand context (variable definitions, imports, surrounding logic) but only flag issues in the changed code.
+- When review memory is provided, respect its learnings and suppressions. Do not flag patterns that are listed as intentionally suppressed.`;
 
   if (config.instructions) {
     prompt += `\n\n## Additional Instructions\n\n${config.instructions}`;
@@ -279,11 +286,30 @@ export function buildReviewerUserMessage(
   rawDiff: string,
   repoContext: string,
   fileContents?: Map<string, string>,
+  prContext?: PrContext,
+  memoryContext?: string,
 ): string {
   let message = '';
 
+  if (prContext) {
+    message += `## Pull Request\n\n`;
+    message += `**Title**: ${prContext.title}\n`;
+    message += `**Base branch**: ${prContext.baseBranch}\n`;
+    if (prContext.body) {
+      const body = prContext.body.length > 2000
+        ? prContext.body.slice(0, 2000) + '\n... (truncated)'
+        : prContext.body;
+      message += `\n${body}\n`;
+    }
+    message += '\n';
+  }
+
   if (repoContext) {
     message += `## Repository Context\n\n${repoContext}\n\n`;
+  }
+
+  if (memoryContext) {
+    message += `## Review Memory\n\n${memoryContext}\n\n`;
   }
 
   if (fileContents && fileContents.size > 0) {

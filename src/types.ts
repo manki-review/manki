@@ -84,3 +84,9 @@ export interface ParsedDiff {
   totalAdditions: number;
   totalDeletions: number;
 }
+
+export interface PrContext {
+  title: string;
+  body: string;
+  baseBranch: string;
+}

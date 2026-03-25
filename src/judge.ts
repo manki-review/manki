@@ -11,7 +11,7 @@ import {
   RepoMemory,
 } from './memory';
 import { validateSeverity } from './review';
-import { DiffFile, Finding, FindingSeverity, ReviewConfig, ParsedDiff } from './types';
+import { DiffFile, Finding, FindingSeverity, ReviewConfig, ParsedDiff, PrContext } from './types';
 
 export interface JudgeInput {
   findings: Finding[];
@@ -19,6 +19,7 @@ export interface JudgeInput {
   rawDiff: string;
   memory?: RepoMemory;
   repoContext: string;
+  prContext?: PrContext;
 }
 
 export interface JudgedFinding {
@@ -83,8 +84,15 @@ export function buildJudgeUserMessage(
   findings: Finding[],
   codeContextMap: Map<string, string>,
   memoryContext: string,
+  prContext?: PrContext,
 ): string {
   const parts: string[] = [];
+
+  if (prContext) {
+    parts.push(`## Pull Request\n`);
+    parts.push(`**Title**: ${prContext.title}`);
+    parts.push(`**Base branch**: ${prContext.baseBranch}\n`);
+  }
 
   parts.push(`## Findings to Evaluate (${findings.length} total)\n`);
 
@@ -240,7 +248,7 @@ export async function runJudgeAgent(
   config: ReviewConfig,
   input: JudgeInput,
 ): Promise<Finding[]> {
-  const { findings, diff, memory } = input;
+  const { findings, diff, memory, prContext } = input;
 
   if (findings.length === 0) return [];
 
@@ -257,7 +265,7 @@ export async function runJudgeAgent(
     : '';
 
   const systemPrompt = buildJudgeSystemPrompt(config);
-  const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext);
+  const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext);
 
   const response = await client.sendMessage(systemPrompt, userMessage, { effort: 'high' });
   const judged = parseJudgeResponse(response.content);
