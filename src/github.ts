@@ -788,4 +788,70 @@ export async function fetchLinkedIssues(
   return results;
 }
 
+/**
+ * Discover and fetch CLAUDE.md files in subdirectories relevant to changed file paths.
+ * Walks up the directory tree from each changed file to find the nearest CLAUDE.md,
+ * excluding root-level files already fetched by `fetchRepoContext`.
+ */
+export async function fetchSubdirClaudeMd(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  ref: string,
+  changedPaths: string[],
+): Promise<string> {
+  if (changedPaths.length === 0) return '';
+
+  let treeEntries: Array<{ path?: string; type?: string }>;
+  try {
+    const { data } = await octokit.rest.git.getTree({ owner, repo, tree_sha: ref, recursive: 'true' });
+    treeEntries = data.tree;
+  } catch {
+    core.debug('Could not fetch repo tree for subdirectory CLAUDE.md discovery');
+    return '';
+  }
+
+  const claudeMdPaths = new Set(
+    treeEntries
+      .filter(e => e.type === 'blob' && e.path?.endsWith('/CLAUDE.md'))
+      .map(e => e.path!)
+      .filter(p => p !== 'CLAUDE.md' && p !== '.claude/CLAUDE.md'),
+  );
+
+  if (claudeMdPaths.size === 0) return '';
+
+  // For each changed file, walk up the directory tree and find the nearest CLAUDE.md
+  const toFetch = new Set<string>();
+  for (const changedPath of changedPaths) {
+    let dir = changedPath.includes('/') ? changedPath.substring(0, changedPath.lastIndexOf('/')) : '';
+    while (dir) {
+      const candidate = `${dir}/CLAUDE.md`;
+      if (claudeMdPaths.has(candidate)) {
+        toFetch.add(candidate);
+        break;
+      }
+      dir = dir.includes('/') ? dir.substring(0, dir.lastIndexOf('/')) : '';
+    }
+  }
+
+  if (toFetch.size === 0) return '';
+
+  const parts: string[] = [];
+  for (const path of toFetch) {
+    try {
+      const { data } = await octokit.rest.repos.getContent({ owner, repo, path, ref });
+      if ('content' in data && data.encoding === 'base64') {
+        let content = Buffer.from(data.content, 'base64').toString('utf-8');
+        const dir = path.substring(0, path.lastIndexOf('/'));
+        content = await resolveReferences(octokit, owner, repo, ref, content, dir);
+        parts.push(`## ${path}\n\n${content}`);
+      }
+    } catch {
+      core.debug(`Could not fetch subdirectory CLAUDE.md: ${path}`);
+    }
+  }
+
+  return parts.join('\n\n---\n\n');
+}
+
 export { dynamicFence, formatFindingComment, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, safeTruncate, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_MARKER };
