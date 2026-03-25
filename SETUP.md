@@ -117,7 +117,7 @@ gh secret set MANKI_PRIVATE_KEY --repo <owner>/<repo>
 
 ```yaml
       - name: Manki Review
-        uses: xdustinface/manki@v2
+        uses: xdustinface/manki@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           github_app_id: ${{ secrets.MANKI_APP_ID }}
@@ -172,7 +172,7 @@ jobs:
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       - name: Manki Review
-        uses: xdustinface/manki@v2
+        uses: xdustinface/manki@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -227,6 +227,14 @@ review_thresholds:
   small: 200   # diffs under this many lines get a small team
   medium: 1000  # diffs under this many lines get a medium team
 
+# Per-stage model selection (optional — falls back to `model` if not set)
+models:
+  reviewer: claude-sonnet-4-6    # fast, parallel reviewers
+  judge: claude-opus-4-6         # precise, single judge
+
+# Where to post nit findings: 'issues' (separate GitHub issue) or 'comments' (inline PR comments)
+nit_handling: issues
+
 # Additional context for reviewers
 instructions: |
   This is a Rust project. Focus on ownership and error handling.
@@ -243,6 +251,27 @@ memory:
 ```
 
 See [`.manki.yml.example`](.manki.yml.example) for the full reference with defaults.
+
+### Review pipeline
+
+Manki reviews run in three stages:
+
+1. **Reviewer agents** -- A team of specialist agents (security, architecture, correctness, etc.) review the diff in parallel. Each produces raw findings.
+2. **Judge agent** -- A single agent evaluates all reviewer findings for accuracy, actionability, and severity. It filters out noise, merges duplicates, and assigns a 4-tier severity to each surviving finding.
+3. **Recap** -- Deduplicated findings are posted as inline PR comments and a summary review.
+
+### Severity tiers
+
+The judge assigns one of four severity levels to each finding:
+
+| Severity | Meaning | Effect |
+|----------|---------|--------|
+| `required` | Must fix before merge | Blocks approval (REQUEST_CHANGES) |
+| `suggestion` | Should fix, but not blocking | Posted as inline comment, PR can still be approved |
+| `nit` | Minor style or preference issue | Collected into a nit issue (or inline comments, depending on `nit_handling`) |
+| `ignore` | False positive or irrelevant | Dropped silently |
+
+Use the `models` config section to choose different Claude models for the reviewer and judge stages (e.g., a faster model for reviewers and a more precise model for the judge).
 
 ## Step 5: Set Up Review Memory (Optional)
 
@@ -344,7 +373,7 @@ You can also trigger a review manually by commenting `@manki review` on any PR.
 | "Diff too large" | Increase `max_diff_lines` in config or split the PR |
 | `@manki triage` does nothing | Make sure the `if` condition allows plain `issue_comment` events (not just PR comments) |
 | Auto-approve not working | Check that `auto_approve: true` is set in `.manki.yml` and the `pull_request_review` event trigger is in the workflow |
-| Inline comments land on wrong lines | The consolidation agent validated line numbers but the diff may have shifted. Findings that can't be placed inline are moved to the review body |
+| Inline comments land on wrong lines | The judge agent validated line numbers but the diff may have shifted. Findings that can't be placed inline are moved to the review body |
 
 ## Known Limitations
 
@@ -360,7 +389,7 @@ This is a GitHub platform limitation that affects all Actions-based bots. Tools 
 
 ### Reviews may post duplicate comments across runs
 
-Each review run posts fresh inline comments. The recap phase deduplicates against previous findings, but if the consolidation agent fails or produces different titles, duplicates can occur. This is tracked in issue backlog.
+Each review run posts fresh inline comments. The recap phase deduplicates against previous findings, but if the judge agent fails or produces different titles, duplicates can occur. This is tracked in issue backlog.
 
 ## Quick Reference: All Secrets
 
