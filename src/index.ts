@@ -337,7 +337,17 @@ async function runFullReview(
     core.setOutput('findings_count', result.findings.length.toString());
     core.setOutput('findings_json', JSON.stringify(result.findings));
 
+    const severityCounts = { required: 0, suggestion: 0, nit: 0, ignore: 0 };
+    for (const f of result.findings) {
+      severityCounts[f.severity]++;
+    }
+    core.setOutput('severity_counts', JSON.stringify(severityCounts));
+
+    const judgeModel = config.models?.judge || config.model;
+    core.setOutput('judge_model', judgeModel);
+
     core.info(`Review complete: ${result.verdict} with ${result.findings.length} findings`);
+    core.info(`Severity breakdown: ${severityCounts.required} required, ${severityCounts.suggestion} suggestion, ${severityCounts.nit} nit, ${severityCounts.ignore} ignore`);
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     core.setFailed(`Review failed: ${msg}`);

@@ -2,12 +2,12 @@
 
 **Your tokens, your rules.** Self-hosted AI code review that runs on your own GitHub runners and learns from your team.
 
-Manki assembles a dynamic review team from a pool of seven specialist agents, sized to your diff, then runs a deliberation round where every agent votes on every finding. She's curious, thorough, and remembers what you teach her.
+Manki assembles a dynamic review team from a pool of seven specialist agents, sized to your diff, then passes all findings through a judge agent that deduplicates, re-severities, and tallies the final verdict. She's curious, thorough, and remembers what you teach her.
 
 ## What Manki does
 
 - **Dynamic review teams** -- A pool of seven specialist agents (Security, Architecture, Correctness, Testing, Performance, Maintainability, Dependencies) with automatic team sizing: 3 agents for small diffs, 5 for medium, 7 for large. Core agents (Security, Architecture, Correctness) always participate; additional agents are selected by content relevance
-- **Deliberation voting** -- After the review round, every team member votes on every finding (agree/disagree/escalate). Majority-disagree drops false positives, unanimous-agree escalates to blocking, split votes become suggestions
+- **Judge agent** -- After the review round, a judge agent deduplicates overlapping findings, assigns a final 4-tier severity (required/suggestion/nit/ignore), and tallies the verdict
 - **Smart verdicts** -- Blocking issues get `REQUEST_CHANGES`. Nits get `APPROVE` with suggestions. Failures fall back to `COMMENT`. She won't hold up your PRs over style nitpicks
 - **Review recap** -- On subsequent pushes, Manki deduplicates against previous findings and tracks which ones were resolved
 - **Auto-resolve with validation** -- When a new push touches code near an open finding, Claude validates whether the fix actually addresses it and auto-resolves the thread
@@ -107,6 +107,14 @@ review_thresholds:
 instructions: |
   This is a Rust project. Focus on ownership and error handling.
 
+# Per-role model overrides
+models:
+  reviewer: claude-opus-4-6
+  judge: claude-opus-4-6
+
+# What to do with non-blocking findings: "issues" (default) or "comments"
+nit_handling: issues
+
 # Enable memory for self-learning
 memory:
   enabled: true
@@ -119,13 +127,13 @@ See [`.manki.yml.example`](.manki.yml.example) for all options.
 
 1. PR opened -- Manki wakes up
 2. A dynamic team is assembled from the agent pool (3/5/7 agents depending on diff size)
-3. All team members review the diff in parallel
-4. A deliberation round runs -- every agent votes on every finding, majority rules
+3. All reviewers analyze the diff in parallel
+4. A judge agent deduplicates findings, assigns final severities, and tallies the verdict
 5. Clean review posted -- blocking issues get `REQUEST_CHANGES`, nits get `APPROVE`
-5. Non-blocking findings become a GitHub issue with checkboxes and a `needs-human` label
-6. On new pushes, Manki checks which findings were addressed, auto-resolves validated threads, and deduplicates before reviewing again
-7. When all blocking threads are resolved, she approves
-8. Comment `@manki triage` on a nit issue to convert checked items into work issues and dismiss the rest as suppressions
+6. Non-blocking findings become a GitHub issue with checkboxes and a `needs-human` label
+7. On new pushes, Manki checks which findings were addressed, auto-resolves validated threads, and deduplicates before reviewing again
+8. When all blocking threads are resolved, she approves
+9. Comment `@manki triage` on a nit issue to convert checked items into work issues and dismiss the rest as suppressions
 
 > Manki has a healthy appetite for tokens and a nose for bugs. She doesn't chase rate limits -- she chases rabbits.
 

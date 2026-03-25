@@ -39,6 +39,10 @@ outputs:
     description: 'Total number of findings'
   findings_json:
     description: 'JSON array of all findings (for downstream processing)'
+  severity_counts:
+    description: 'JSON object with severity counts: {required, suggestion, nit, ignore}'
+  judge_model:
+    description: 'Model used for the judge agent'
 
 runs:
   using: 'node20'
