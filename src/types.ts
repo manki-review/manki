@@ -35,13 +35,6 @@ export interface ReviewThresholds {
   medium: number;
 }
 
-export interface AgentVote {
-  agentName: string;
-  findingIndex: number;
-  vote: 'agree' | 'disagree' | 'escalate';
-  reason: string;
-}
-
 export interface TeamRoster {
   level: 'small' | 'medium' | 'large';  // resolved, never 'auto'
   agents: ReviewerAgent[];
