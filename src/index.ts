@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 
 import { createAuthenticatedOctokit } from './auth';
 import { ClaudeClient } from './claude';
-import { loadConfig } from './config';
+import { loadConfig, resolveModel } from './config';
 import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
 import { handleReviewCommentReply, handlePRComment } from './interaction';
 import { loadMemory, buildMemoryContext, applySuppressions, applyEscalations, updatePattern, RepoMemory } from './memory';
@@ -159,6 +159,7 @@ async function runFullReview(
 
     if (modelOverride) {
       config.model = modelOverride;
+      config.models = undefined;
     }
 
     if (github.context.eventName === 'pull_request' && !config.auto_review) {
@@ -167,11 +168,16 @@ async function runFullReview(
       return;
     }
 
-    const claude = new ClaudeClient({
+    const authOptions = {
       oauthToken: oauthToken || undefined,
       apiKey: apiKey || undefined,
-      model: config.model,
-    });
+    };
+    const reviewerModel = resolveModel(config, 'reviewer');
+    const judgeModel = resolveModel(config, 'judge');
+    core.info(`Models — reviewer: ${reviewerModel}, judge: ${judgeModel}`);
+
+    const reviewerClient = new ClaudeClient({ ...authOptions, model: reviewerModel });
+    const judgeClient = new ClaudeClient({ ...authOptions, model: judgeModel });
 
     const rawDiff = await fetchPRDiff(octokit, owner, repo, prNumber);
     const diff = parsePRDiff(rawDiff);
@@ -236,7 +242,7 @@ async function runFullReview(
 
     if (recap.previousFindings.length > 0) {
       const autoResolved = await resolveAddressedThreads(
-        octokit, claude, owner, repo, prNumber,
+        octokit, judgeClient, owner, repo, prNumber,
         recap.previousFindings, diff,
       );
       if (autoResolved > 0) {
@@ -248,7 +254,7 @@ async function runFullReview(
 
     await dismissPreviousReviews(octokit, owner, repo, prNumber);
 
-    const result = await runReview(claude, config, diff, rawDiff, fullContext, memory);
+    const result = await runReview({ reviewer: reviewerClient, judge: judgeClient }, config, diff, rawDiff, fullContext, memory);
 
     if (!result.reviewComplete && result.verdict === 'APPROVE') {
       result.verdict = 'COMMENT';
@@ -401,11 +407,6 @@ async function handleInteraction(): Promise<void> {
   const configPathInput = core.getInput('config_path');
 
   const octokit = await getOctokit();
-  const claude = new ClaudeClient({
-    oauthToken: oauthToken || undefined,
-    apiKey: apiKey || undefined,
-    model: modelOverride || 'claude-opus-4-6',
-  });
 
   const { owner, repo } = github.context.repo;
   const prNumber = github.context.payload.issue?.number;
@@ -422,6 +423,13 @@ async function handleInteraction(): Promise<void> {
     configContent = await fetchConfigFile(octokit, owner, repo, baseRef, '.manki.yml');
   }
   const config = loadConfig(configContent ?? undefined);
+
+  const interactionModel = modelOverride || resolveModel(config, 'judge');
+  const claude = new ClaudeClient({
+    oauthToken: oauthToken || undefined,
+    apiKey: apiKey || undefined,
+    model: interactionModel,
+  });
 
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;
   const memoryToken = config.memory?.enabled ? (core.getInput('memory_repo_token') || core.getInput('github_token', { required: true })) : undefined;
@@ -497,7 +505,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
   const claude = new ClaudeClient({
     oauthToken: oauthToken || undefined,
     apiKey: apiKey || undefined,
-    model: config.model,
+    model: resolveModel(config, 'judge'),
   });
 
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;

@@ -271,6 +271,10 @@ export function loadConfigFromFile(filePath: string): ReviewConfig {
   return loadConfigFromContent(content);
 }
 
+export function resolveModel(config: ReviewConfig, stage: 'reviewer' | 'judge'): string {
+  return config.models?.[stage] || config.model;
+}
+
 export function loadConfig(yamlContent: string | undefined): ReviewConfig {
   if (!yamlContent) {
     core.info('No config content provided, using defaults');

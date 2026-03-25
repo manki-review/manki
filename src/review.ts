@@ -119,8 +119,13 @@ export function selectTeam(
   return { level, agents: selected, lineCount };
 }
 
+export interface ReviewClients {
+  reviewer: ClaudeClient;
+  judge: ClaudeClient;
+}
+
 export async function runReview(
-  client: ClaudeClient,
+  clients: ReviewClients,
   config: ReviewConfig,
   diff: ParsedDiff,
   rawDiff: string,
@@ -133,7 +138,7 @@ export async function runReview(
   core.info(`Running ${team.agents.length} reviewer agents in parallel...`);
   const agentResults = await Promise.allSettled(
     team.agents.map(agent =>
-      runReviewerAgent(client, config, agent, rawDiff, repoContext)
+      runReviewerAgent(clients.reviewer, config, agent, rawDiff, repoContext)
     )
   );
 
@@ -171,7 +176,7 @@ export async function runReview(
         memory: memory ?? undefined,
         repoContext,
       };
-      const judged = await runJudgeAgent(client, config, judgeInput);
+      const judged = await runJudgeAgent(clients.judge, config, judgeInput);
       finalFindings = judged.filter(f => f.severity !== 'ignore');
       core.info(`Judge complete: ${finalFindings.length} findings survived (${judged.length - finalFindings.length} ignored)`);
     } catch (error) {
