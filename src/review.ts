@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 
 import { ClaudeClient } from './claude';
-import { ReviewConfig, ReviewerAgent, Finding, ReviewResult, ReviewVerdict, ParsedDiff, AgentVote, TeamRoster } from './types';
+import { ReviewConfig, ReviewerAgent, Finding, FindingSeverity, ReviewResult, ReviewVerdict, ParsedDiff, AgentVote, TeamRoster } from './types';
 import { extractJSON } from './json';
 
 export const AGENT_POOL: readonly ReviewerAgent[] = Object.freeze([
@@ -217,7 +217,7 @@ async function runDeliberation(
       titlesMatch(d.title, f.title)
     );
     if (existing) {
-      const severityOrder: Record<string, number> = { required: 3, suggestion: 2, nit: 1, ignore: 0 };
+      const severityOrder: Record<FindingSeverity, number> = { required: 3, suggestion: 2, nit: 1, ignore: 0 };
       if ((severityOrder[f.severity] || 0) > (severityOrder[existing.severity] || 0)) {
         existing.severity = f.severity;
       }

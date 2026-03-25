@@ -30,6 +30,13 @@ describe('formatFindingComment', () => {
     expect(comment).toContain('📝 **Nit**');
   });
 
+  it('formats an ignore finding with correct emoji and label', () => {
+    const finding: Finding = { ...baseFinding, severity: 'ignore' };
+    const comment = formatFindingComment(finding);
+    expect(comment).toContain('⚪ **Ignore**');
+    expect(comment).toContain('<!-- manki:ignore:');
+  });
+
   it('wraps suggested fix in a collapsible details section', () => {
     const finding: Finding = { ...baseFinding, suggestedFix: 'if (value != null) { use(value); }' };
     const comment = formatFindingComment(finding);

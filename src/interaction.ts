@@ -310,7 +310,7 @@ async function handleHelp(
     owner,
     repo,
     issue_number: prNumber,
-    body: `${BOT_MARKER}\n**Manki Commands:**\n\n| Command | Description |\n|---------|-------------|\n| \`@manki review\` | Run a full multi-agent review |\n| \`@manki explain [topic]\` | Explain something about this PR |\n| \`@manki dismiss [finding]\` | Dismiss a review finding |\n| \`@manki remember <instruction>\` | Teach the reviewer something for future reviews |\n| \`@manki remember global: <instruction>\` | Teach globally (all repos) |\n| \`@manki check\` | Check if all blocking issues are resolved and auto-approve |\n| \`@manki triage\` | Process nit issue checkboxes — create issues for ticked items, suppress unticked |\n| \`@manki help\` | Show this help message |\n\nYou can also reply to any review comment to start a conversation.`,
+    body: `${BOT_MARKER}\n**Manki Commands:**\n\n| Command | Description |\n|---------|-------------|\n| \`@manki review\` | Run a full multi-agent review |\n| \`@manki explain [topic]\` | Explain something about this PR |\n| \`@manki dismiss [finding]\` | Dismiss a review finding |\n| \`@manki remember <instruction>\` | Teach the reviewer something for future reviews |\n| \`@manki remember global: <instruction>\` | Teach globally (all repos) |\n| \`@manki check\` | Check if all required issues are resolved and auto-approve |\n| \`@manki triage\` | Process nit issue checkboxes — create issues for ticked items, suppress unticked |\n| \`@manki help\` | Show this help message |\n\nYou can also reply to any review comment to start a conversation.`,
   });
 }
 
@@ -424,20 +424,20 @@ async function handleCheck(
 
   if (!approved) {
     const threads = await fetchBotReviewThreads(octokit, owner, repo, prNumber);
-    const blocking = threads.filter(t => t.isRequired && !t.isResolved);
+    const required = threads.filter(t => t.isRequired && !t.isResolved);
 
-    if (blocking.length > 0) {
-      const list = blocking.map(t => `- "${t.findingTitle}"`).join('\n');
+    if (required.length > 0) {
+      const list = required.map(t => `- "${t.findingTitle}"`).join('\n');
       await octokit.rest.issues.createComment({
         owner, repo,
         issue_number: prNumber,
-        body: `${BOT_MARKER}\n**${blocking.length} blocking issue(s) still open:**\n\n${list}\n\nResolve all blocking threads to trigger auto-approval.`,
+        body: `${BOT_MARKER}\n**${required.length} required issue(s) still open:**\n\n${list}\n\nResolve all required threads to trigger auto-approval.`,
       });
     } else {
       await octokit.rest.issues.createComment({
         owner, repo,
         issue_number: prNumber,
-        body: `${BOT_MARKER}\nNo blocking issues found. Checking approval status...`,
+        body: `${BOT_MARKER}\nNo required issues found. Checking approval status...`,
       });
     }
   }

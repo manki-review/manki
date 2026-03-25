@@ -91,16 +91,16 @@ async function fetchBotReviewThreads(
 }
 
 /**
- * Check if all blocking threads are resolved.
+ * Check if all required threads are resolved.
  */
-function areAllBlockingResolved(threads: ReviewThread[]): boolean {
-  const blockingThreads = threads.filter(t => t.isRequired);
-  if (blockingThreads.length === 0) return true;
-  return blockingThreads.every(t => t.isResolved);
+function areAllRequiredResolved(threads: ReviewThread[]): boolean {
+  const requiredThreads = threads.filter(t => t.isRequired);
+  if (requiredThreads.length === 0) return true;
+  return requiredThreads.every(t => t.isResolved);
 }
 
 /**
- * Post an approval review if all blocking issues are resolved.
+ * Post an approval review if all required issues are resolved.
  */
 async function checkAndAutoApprove(
   octokit: Octokit,
@@ -110,13 +110,13 @@ async function checkAndAutoApprove(
 ): Promise<boolean> {
   const threads = await fetchBotReviewThreads(octokit, owner, repo, prNumber);
 
-  const blockingCount = threads.filter(t => t.isRequired).length;
-  const resolvedBlockingCount = threads.filter(t => t.isRequired && t.isResolved).length;
+  const requiredCount = threads.filter(t => t.isRequired).length;
+  const resolvedRequiredCount = threads.filter(t => t.isRequired && t.isResolved).length;
 
-  core.info(`Blocking threads: ${resolvedBlockingCount}/${blockingCount} resolved`);
+  core.info(`Required threads: ${resolvedRequiredCount}/${requiredCount} resolved`);
 
-  if (!areAllBlockingResolved(threads)) {
-    core.info('Not all blocking issues resolved — skipping auto-approve');
+  if (!areAllRequiredResolved(threads)) {
+    core.info('Not all required issues resolved — skipping auto-approve');
     return false;
   }
 
@@ -132,8 +132,8 @@ async function checkAndAutoApprove(
     core.warning(`Failed to dismiss previous reviews during auto-approve: ${error}`);
   }
 
-  core.info('All blocking issues resolved — auto-approving');
-  const body = `${BOT_MARKER}\nAll blocking issues resolved. Approved.`;
+  core.info('All required issues resolved — auto-approving');
+  const body = `${BOT_MARKER}\nAll required issues resolved. Approved.`;
 
   try {
     await octokit.rest.pulls.createReview({
@@ -163,4 +163,4 @@ async function checkAndAutoApprove(
   return true;
 }
 
-export { ReviewThread, areAllBlockingResolved, checkAndAutoApprove, fetchBotReviewThreads, BOT_MARKER };
+export { ReviewThread, areAllRequiredResolved, checkAndAutoApprove, fetchBotReviewThreads, BOT_MARKER };
