@@ -14,6 +14,7 @@ import {
   fetchPRDiff,
   fetchConfigFile,
   fetchRepoContext,
+  fetchSubdirClaudeMd,
   fetchFileContents,
   postProgressComment,
   updateProgressComment,
@@ -241,7 +242,17 @@ async function runFullReview(
       return;
     }
 
-    const repoContext = await fetchRepoContext(octokit, owner, repo, baseRef);
+    let repoContext = await fetchRepoContext(octokit, owner, repo, baseRef);
+
+    const changedPaths = filteredFiles.map(f => f.path);
+    try {
+      const subdirContext = await fetchSubdirClaudeMd(octokit, owner, repo, baseRef, changedPaths);
+      if (subdirContext) {
+        repoContext = repoContext ? `${repoContext}\n\n---\n\n${subdirContext}` : subdirContext;
+      }
+    } catch (error) {
+      core.warning(`Failed to fetch subdirectory CLAUDE.md files: ${error}`);
+    }
 
     let memory: RepoMemory | null = null;
     if (config.memory?.enabled) {

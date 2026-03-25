@@ -1,4 +1,4 @@
-import { formatFindingComment, mapVerdictToEvent, BOT_MARKER, buildNitIssueBody, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, safeTruncate, fetchFileContents, fetchLinkedIssues } from './github';
+import { formatFindingComment, mapVerdictToEvent, BOT_MARKER, buildNitIssueBody, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, safeTruncate, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd } from './github';
 import { Finding, ReviewResult } from './types';
 
 describe('formatFindingComment', () => {
@@ -998,5 +998,149 @@ describe('fetchLinkedIssues', () => {
     const result = await fetchLinkedIssues(octokit, 'owner', 'repo', 'Closes #1');
     expect(result[0].title).not.toContain('<!--');
     expect(result[0].body).not.toContain('<script>');
+  });
+});
+
+describe('fetchSubdirClaudeMd', () => {
+  function mockOctokit(
+    treeEntries: Array<{ path: string; type: string }>,
+    fileContents: Record<string, string>,
+  ) {
+    return {
+      rest: {
+        git: {
+          getTree: jest.fn(async () => ({
+            data: { tree: treeEntries },
+          })),
+        },
+        repos: {
+          getContent: jest.fn(async ({ path }: { path: string }) => {
+            const content = fileContents[path];
+            if (content === undefined) throw new Error(`Not found: ${path}`);
+            return {
+              data: {
+                content: Buffer.from(content).toString('base64'),
+                encoding: 'base64',
+              },
+            };
+          }),
+        },
+      },
+    } as unknown as Parameters<typeof fetchSubdirClaudeMd>[0];
+  }
+
+  const baseTree = [
+    { path: 'CLAUDE.md', type: 'blob' },
+    { path: '.claude/CLAUDE.md', type: 'blob' },
+    { path: 'src/CLAUDE.md', type: 'blob' },
+    { path: 'src/auth/CLAUDE.md', type: 'blob' },
+    { path: 'lib/CLAUDE.md', type: 'blob' },
+  ];
+
+  it('finds CLAUDE.md in subdirectories for changed files', async () => {
+    const octokit = mockOctokit(baseTree, {
+      'src/CLAUDE.md': 'Source rules',
+    });
+
+    const result = await fetchSubdirClaudeMd(octokit, 'owner', 'repo', 'abc123', ['src/index.ts']);
+    expect(result).toContain('## src/CLAUDE.md');
+    expect(result).toContain('Source rules');
+  });
+
+  it('walks up directory tree to find nearest CLAUDE.md', async () => {
+    const octokit = mockOctokit(baseTree, {
+      'src/auth/CLAUDE.md': 'Auth rules',
+    });
+
+    const result = await fetchSubdirClaudeMd(octokit, 'owner', 'repo', 'abc123', ['src/auth/handlers.ts']);
+    expect(result).toContain('## src/auth/CLAUDE.md');
+    expect(result).toContain('Auth rules');
+  });
+
+  it('deduplicates when two changed files share the same nearest CLAUDE.md', async () => {
+    const octokit = mockOctokit(baseTree, {
+      'src/CLAUDE.md': 'Source rules',
+    });
+
+    const result = await fetchSubdirClaudeMd(octokit, 'owner', 'repo', 'abc123', [
+      'src/foo.ts',
+      'src/bar.ts',
+    ]);
+    const matches = result.match(/## src\/CLAUDE\.md/g);
+    expect(matches).toHaveLength(1);
+  });
+
+  it('excludes root CLAUDE.md and .claude/CLAUDE.md', async () => {
+    const octokit = mockOctokit(
+      [{ path: 'CLAUDE.md', type: 'blob' }, { path: '.claude/CLAUDE.md', type: 'blob' }],
+      {},
+    );
+
+    const result = await fetchSubdirClaudeMd(octokit, 'owner', 'repo', 'abc123', ['README.md']);
+    expect(result).toBe('');
+  });
+
+  it('returns empty string when no subdirectory CLAUDE.md files exist', async () => {
+    const octokit = mockOctokit(
+      [{ path: 'CLAUDE.md', type: 'blob' }],
+      {},
+    );
+
+    const result = await fetchSubdirClaudeMd(octokit, 'owner', 'repo', 'abc123', ['src/index.ts']);
+    expect(result).toBe('');
+  });
+
+  it('returns empty string for empty changedPaths', async () => {
+    const octokit = mockOctokit(baseTree, {});
+
+    const result = await fetchSubdirClaudeMd(octokit, 'owner', 'repo', 'abc123', []);
+    expect(result).toBe('');
+  });
+
+  it('fetches multiple CLAUDE.md files for changes in different directories', async () => {
+    const octokit = mockOctokit(baseTree, {
+      'src/CLAUDE.md': 'Source rules',
+      'lib/CLAUDE.md': 'Lib rules',
+    });
+
+    const result = await fetchSubdirClaudeMd(octokit, 'owner', 'repo', 'abc123', [
+      'src/index.ts',
+      'lib/utils.ts',
+    ]);
+    expect(result).toContain('## src/CLAUDE.md');
+    expect(result).toContain('Source rules');
+    expect(result).toContain('## lib/CLAUDE.md');
+    expect(result).toContain('Lib rules');
+  });
+
+  it('resolves @references in subdirectory CLAUDE.md files', async () => {
+    const octokit = mockOctokit(baseTree, {
+      'src/CLAUDE.md': '@rules/style.md',
+      'src/rules/style.md': 'Style guidelines',
+    });
+
+    const result = await fetchSubdirClaudeMd(octokit, 'owner', 'repo', 'abc123', ['src/index.ts']);
+    expect(result).toContain('Style guidelines');
+  });
+
+  it('skips CLAUDE.md files that fail to fetch', async () => {
+    const octokit = mockOctokit(baseTree, {
+      'src/CLAUDE.md': 'Source rules',
+      // lib/CLAUDE.md is missing — will throw
+    });
+
+    const result = await fetchSubdirClaudeMd(octokit, 'owner', 'repo', 'abc123', [
+      'src/index.ts',
+      'lib/utils.ts',
+    ]);
+    expect(result).toContain('## src/CLAUDE.md');
+    expect(result).not.toContain('lib/CLAUDE.md');
+  });
+
+  it('ignores root-level changed files with no subdirectory CLAUDE.md', async () => {
+    const octokit = mockOctokit(baseTree, {});
+
+    const result = await fetchSubdirClaudeMd(octokit, 'owner', 'repo', 'abc123', ['package.json']);
+    expect(result).toBe('');
   });
 });
