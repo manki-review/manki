@@ -165,7 +165,7 @@ async function checkAndAutoApprove(
 
 /**
  * Resolve stale bot review threads left over from previous commits (e.g. after force-push).
- * A thread is stale when its originalCommit differs from the current head SHA.
+ * A thread is stale when the first comment's commit differs from the current head SHA.
  */
 async function resolveStaleThreads(
   octokit: Octokit,
@@ -182,12 +182,12 @@ async function resolveStaleThreads(
             nodes {
               id
               isResolved
-              originalCommit {
-                oid
-              }
               comments(first: 1) {
                 nodes {
                   body
+                  commit {
+                    oid
+                  }
                 }
               }
             }
@@ -204,9 +204,8 @@ async function resolveStaleThreads(
           nodes: Array<{
             id: string;
             isResolved: boolean;
-            originalCommit: { oid: string } | null;
             comments: {
-              nodes: Array<{ body: string }>;
+              nodes: Array<{ body: string; commit: { oid: string } | null }>;
             };
           }>;
         };
@@ -223,7 +222,7 @@ async function resolveStaleThreads(
     const body = thread.comments.nodes[0]?.body ?? '';
     if (!body.includes('manki:') && !body.includes(BOT_MARKER)) continue;
 
-    const commitOid = thread.originalCommit?.oid;
+    const commitOid = thread.comments.nodes[0]?.commit?.oid;
     if (!commitOid || commitOid === currentHeadSha) continue;
 
     try {

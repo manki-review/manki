@@ -58,11 +58,13 @@ function makeGraphqlThreadNode(overrides: {
   return {
     id: overrides.id ?? 'thread-1',
     isResolved: overrides.isResolved ?? false,
-    originalCommit: overrides.commitOid !== undefined
-      ? (overrides.commitOid === null ? null : { oid: overrides.commitOid })
-      : { oid: 'old-sha-111' },
     comments: {
-      nodes: [{ body: overrides.body ?? '<!-- manki:required:test --> **Required**: test' }],
+      nodes: [{
+        body: overrides.body ?? '<!-- manki:required:test --> **Required**: test',
+        commit: overrides.commitOid !== undefined
+          ? (overrides.commitOid === null ? null : { oid: overrides.commitOid })
+          : { oid: 'old-sha-111' },
+      }],
     },
   };
 }
@@ -153,7 +155,7 @@ describe('resolveStaleThreads', () => {
     expect(graphqlMock).toHaveBeenCalledTimes(1);
   });
 
-  it('skips threads with null originalCommit', async () => {
+  it('skips threads with null commit on first comment', async () => {
     const graphqlMock = jest.fn().mockResolvedValueOnce({
       repository: {
         pullRequest: {
