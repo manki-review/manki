@@ -83,7 +83,7 @@ export async function handleReviewCommentReply(
       repo,
       pull_number: prNumber,
       comment_id: comment.id,
-      body: `${BOT_MARKER}\n${response.content}`,
+      body: `${BOT_MARKER}\n**Manki** — ${response.content}`,
     });
 
     core.info('Posted reply to review comment');
@@ -155,7 +155,7 @@ export async function handlePRComment(
     await octokit.rest.issues.createComment({
       owner, repo,
       issue_number: issueNumber,
-      body: `${BOT_MARKER}\nThe \`${command.type}\` command only works on pull requests.`,
+      body: `${BOT_MARKER}\n**Manki** — The \`${command.type}\` command only works on pull requests.`,
     });
     return;
   }
@@ -240,7 +240,7 @@ async function handleExplain(
     owner,
     repo,
     issue_number: prNumber,
-    body: `${BOT_MARKER}\n${response.content}`,
+    body: `${BOT_MARKER}\n**Manki** — ${response.content}`,
   });
 }
 
@@ -307,9 +307,7 @@ async function handleHelp(
     owner,
     repo,
     issue_number: prNumber,
-    body: `${BOT_MARKER}\n**Manki Commands:**\n\n| Command | Description |\n|---------|-------------|\n| \`@manki review\` | Run a full multi-agent review |\n| \`@manki explain [topic]\` | Explain something about this PR |\n| \`@manki dismiss [finding]\` | Dismiss a review finding |\n| \`@manki remember <instruction>\` | Teach the reviewer something for future reviews |\n| \`@manki remember global: <instruction>\` | Teach globally (all repos) |\n| \`@manki forget <text>\` | Remove a learning matching the text |
-| \`@manki forget suppression <pattern>\` | Remove a suppression matching the pattern |
-| \`@manki check\` | Check if all required issues are resolved and auto-approve |\n| \`@manki triage\` | Process nit issue checkboxes — create issues for ticked items, suppress unticked |\n| \`@manki help\` | Show this help message |\n\nYou can also reply to any review comment to start a conversation.`,
+    body: `${BOT_MARKER}\n**Manki** — Here's what I can do:\n\n| Command | |\n|---|---|\n| \`@manki review\` | Run a full review |\n| \`@manki explain [topic]\` | Explain something about this PR |\n| \`@manki check\` | Check required issues & auto-approve |\n| \`@manki dismiss [finding]\` | Dismiss a finding |\n| \`@manki triage\` | Process nit issue checkboxes |\n| \`@manki remember <instruction>\` | Teach me something for future reviews |\n| \`@manki forget <text>\` | Remove a learning or suppression |\n| \`@manki help\` | Show this message |\n\nYou can also reply to any of my review comments.`,
   });
 }
 
@@ -329,7 +327,7 @@ async function handleRemember(
     await octokit.rest.issues.createComment({
       owner, repo,
       issue_number: prNumber,
-      body: `${BOT_MARKER}\nOnly collaborators can teach the reviewer.`,
+      body: `${BOT_MARKER}\n**Manki** — Only repo collaborators can teach me.`,
     });
     return;
   }
@@ -338,7 +336,7 @@ async function handleRemember(
     await octokit.rest.issues.createComment({
       owner, repo,
       issue_number: prNumber,
-      body: `${BOT_MARKER}\nPlease provide a more detailed instruction (at least 10 characters).\n\nExample: \`@manki remember always check for SQL injection in query builders\``,
+      body: `${BOT_MARKER}\n**Manki** — That's too short — give me a bit more detail.\nExample: \`@manki remember always check for SQL injection in query builders\``,
     });
     return;
   }
@@ -347,7 +345,7 @@ async function handleRemember(
     await octokit.rest.issues.createComment({
       owner, repo,
       issue_number: prNumber,
-      body: `${BOT_MARKER}\nMemory is not enabled for this repo. Add \`memory.enabled: true\` to \`.manki.yml\` to use this feature.`,
+      body: `${BOT_MARKER}\n**Manki** — Memory isn't enabled for this repo. Add \`memory.enabled: true\` to \`.manki.yml\` to turn it on.`,
     });
     return;
   }
@@ -377,7 +375,7 @@ async function handleRemember(
     await octokit.rest.issues.createComment({
       owner, repo,
       issue_number: prNumber,
-      body: `${BOT_MARKER}\nRemembered (scope: ${scope}): "${sanitized}"`,
+      body: `${BOT_MARKER}\n**Manki** — Got it, I'll remember that for future reviews.\n\`${sanitized}\` (scope: ${scope})`,
     });
 
     core.info(`Stored learning: "${sanitized}" (scope: ${scope})`);
@@ -386,7 +384,7 @@ async function handleRemember(
     await octokit.rest.issues.createComment({
       owner, repo,
       issue_number: prNumber,
-      body: `${BOT_MARKER}\nFailed to store learning. Check that the memory repo token has write access.`,
+      body: `${BOT_MARKER}\n**Manki** — Couldn't save that — check that the memory repo token has write access.`,
     });
   }
 }
@@ -407,7 +405,7 @@ async function handleForget(
     await octokit.rest.issues.createComment({
       owner, repo,
       issue_number: issueNumber,
-      body: `${BOT_MARKER}\nOnly collaborators can remove memories.`,
+      body: `${BOT_MARKER}\n**Manki** — Only repo collaborators can manage memories.`,
     });
     return;
   }
@@ -416,7 +414,7 @@ async function handleForget(
     await octokit.rest.issues.createComment({
       owner, repo,
       issue_number: issueNumber,
-      body: `${BOT_MARKER}\nPlease provide a search term (at least 3 characters).\n\nUsage:\n- \`@manki forget <text>\` — remove a learning matching the text\n- \`@manki forget suppression <pattern>\` — remove a suppression matching the pattern`,
+      body: `${BOT_MARKER}\n**Manki** — Search term too short — need at least 3 characters.\n\nUsage:\n- \`@manki forget <text>\` — remove a learning\n- \`@manki forget suppression <pattern>\` — remove a suppression`,
     });
     return;
   }
@@ -425,7 +423,7 @@ async function handleForget(
     await octokit.rest.issues.createComment({
       owner, repo,
       issue_number: issueNumber,
-      body: `${BOT_MARKER}\nMemory is not enabled for this repo. Add \`memory.enabled: true\` to \`.manki.yml\` to use this feature.`,
+      body: `${BOT_MARKER}\n**Manki** — Memory isn't enabled for this repo. Add \`memory.enabled: true\` to \`.manki.yml\` to turn it on.`,
     });
     return;
   }
@@ -441,7 +439,7 @@ async function handleForget(
         await octokit.rest.issues.createComment({
           owner, repo,
           issue_number: issueNumber,
-          body: `${BOT_MARKER}\nPlease provide a search pattern (at least 3 characters) after \`suppression\`.`,
+          body: `${BOT_MARKER}\n**Manki** — Search term too short — need at least 3 characters.\n\nUsage:\n- \`@manki forget <text>\` — remove a learning\n- \`@manki forget suppression <pattern>\` — remove a suppression`,
         });
         return;
       }
@@ -452,14 +450,14 @@ async function handleForget(
         await octokit.rest.issues.createComment({
           owner, repo,
           issue_number: issueNumber,
-          body: `${BOT_MARKER}\nRemoved suppression: "${removed.pattern}" (${remaining} remaining)`,
+          body: `${BOT_MARKER}\n**Manki** — Removed suppression: \`${removed.pattern}\` (${remaining} remaining)`,
         });
         core.info(`Removed suppression: "${removed.pattern}"`);
       } else {
         await octokit.rest.issues.createComment({
           owner, repo,
           issue_number: issueNumber,
-          body: `${BOT_MARKER}\nNo matching suppression found for: "${searchPattern}"`,
+          body: `${BOT_MARKER}\n**Manki** — No matching suppression found for \`${searchPattern}\`.`,
         });
       }
     } else {
@@ -469,14 +467,14 @@ async function handleForget(
         await octokit.rest.issues.createComment({
           owner, repo,
           issue_number: issueNumber,
-          body: `${BOT_MARKER}\nRemoved learning: "${removed.content}" (${remaining} remaining)`,
+          body: `${BOT_MARKER}\n**Manki** — Removed: \`${removed.content}\` (${remaining} learnings remaining)`,
         });
         core.info(`Removed learning: "${removed.content}"`);
       } else {
         await octokit.rest.issues.createComment({
           owner, repo,
           issue_number: issueNumber,
-          body: `${BOT_MARKER}\nNo matching learning found for: "${trimmed}"`,
+          body: `${BOT_MARKER}\n**Manki** — No matching learning found for \`${trimmed}\`.`,
         });
       }
     }
@@ -485,7 +483,7 @@ async function handleForget(
     await octokit.rest.issues.createComment({
       owner, repo,
       issue_number: issueNumber,
-      body: `${BOT_MARKER}\nFailed to remove memory. Check that the memory repo token has write access.`,
+      body: `${BOT_MARKER}\n**Manki** — Couldn't remove that — check that the memory repo token has write access.`,
     });
   }
 }
@@ -504,7 +502,7 @@ async function handleCheck(
     await octokit.rest.issues.createComment({
       owner, repo,
       issue_number: prNumber,
-      body: `${BOT_MARKER}\nOnly collaborators can trigger auto-approve checks.`,
+      body: `${BOT_MARKER}\n**Manki** — Only repo collaborators can trigger auto-approve.`,
     });
     return;
   }
@@ -513,7 +511,7 @@ async function handleCheck(
     await octokit.rest.issues.createComment({
       owner, repo,
       issue_number: prNumber,
-      body: `${BOT_MARKER}\nAuto-approve is disabled. Set \`auto_approve: true\` in \`.manki.yml\` to enable.`,
+      body: `${BOT_MARKER}\n**Manki** — Auto-approve is disabled. Set \`auto_approve: true\` in \`.manki.yml\` to enable.`,
     });
     return;
   }
@@ -525,17 +523,17 @@ async function handleCheck(
     const required = threads.filter(t => t.isRequired && !t.isResolved);
 
     if (required.length > 0) {
-      const list = required.map(t => `- "${t.findingTitle}"`).join('\n');
+      const list = required.map(t => `- \`${t.findingTitle}\``).join('\n');
       await octokit.rest.issues.createComment({
         owner, repo,
         issue_number: prNumber,
-        body: `${BOT_MARKER}\n**${required.length} required issue(s) still open:**\n\n${list}\n\nResolve all required threads to trigger auto-approval.`,
+        body: `${BOT_MARKER}\n**Manki** — ${required.length} required issue(s) still open:\n${list}\n\nResolve these to trigger auto-approval.`,
       });
     } else {
       await octokit.rest.issues.createComment({
         owner, repo,
         issue_number: prNumber,
-        body: `${BOT_MARKER}\nNo required issues found. Checking approval status...`,
+        body: `${BOT_MARKER}\n**Manki** — No required issues found, checking approval status...`,
       });
     }
   }
@@ -555,7 +553,7 @@ async function handleTriage(
     await octokit.rest.issues.createComment({
       owner, repo,
       issue_number: issueNumber,
-      body: `${BOT_MARKER}\nOnly collaborators can triage findings.`,
+      body: `${BOT_MARKER}\n**Manki** — Only repo collaborators can triage findings.`,
     });
     return;
   }
@@ -581,7 +579,7 @@ async function handleTriage(
     await octokit.rest.issues.createComment({
       owner, repo,
       issue_number: issueNumber,
-      body: `${BOT_MARKER}\nCouldn't parse any findings from the issue body. Make sure the checkboxes follow the expected format.`,
+      body: `${BOT_MARKER}\n**Manki** — Couldn't parse any findings from the issue body. Make sure the checkboxes follow the expected format.`,
     });
     return;
   }
@@ -668,7 +666,7 @@ async function handleTriage(
   await octokit.rest.issues.createComment({
     owner, repo,
     issue_number: issueNumber,
-    body: `${BOT_MARKER}\n**Triage complete:**\n- ${accepted.length} finding(s) accepted → issues created: ${issueLinks || 'none'}\n- ${rejected.length} finding(s) dismissed → stored as suppressions\n\nClosing this issue.`,
+    body: `${BOT_MARKER}\n**Manki** — Triage complete!\n- ✅ ${accepted.length} finding(s) accepted → created ${issueLinks || 'none'}\n- ⛔ ${rejected.length} finding(s) dismissed → stored as suppressions\n\nClosing this issue.`,
   });
 
   await octokit.rest.issues.update({
@@ -701,7 +699,7 @@ async function handleGenericQuestion(
     owner,
     repo,
     issue_number: prNumber,
-    body: `${BOT_MARKER}\n${response.content}`,
+    body: `${BOT_MARKER}\n**Manki** — ${response.content}`,
   });
 }
 

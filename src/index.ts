@@ -212,7 +212,7 @@ async function runFullReview(
       core.warning(`Diff too large (${diff.totalAdditions + diff.totalDeletions} lines > ${config.max_diff_lines} max)`);
       const result = {
         verdict: 'COMMENT' as const,
-        summary: `Diff too large for automated review (${diff.totalAdditions + diff.totalDeletions} lines). Please request a manual review.`,
+        summary: `**Manki** — This PR is too large for automated review (${diff.totalAdditions + diff.totalDeletions} lines). Consider splitting it up or request a manual review.`,
         findings: [],
         highlights: [],
         reviewComplete: true,
@@ -417,7 +417,7 @@ async function runFullReview(
 
     await updateProgressComment(octokit, owner, repo, progressCommentId, {
       verdict: 'COMMENT',
-      summary: `Review failed: ${msg}`,
+      summary: `**Manki** — Review failed: \`${msg}\`. Please retry or check the logs.`,
       findings: [],
       highlights: [],
       reviewComplete: false,
