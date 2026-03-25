@@ -31,6 +31,10 @@ export const DEFAULT_CONFIG: ReviewConfig = {
   instructions: '',
   review_level: 'auto',
   review_thresholds: { small: 200, medium: 1000 },
+  models: {
+    reviewer: 'claude-sonnet-4-6',
+    judge: 'claude-opus-4-6',
+  },
   memory: {
     enabled: false,
     repo: '',
