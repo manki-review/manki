@@ -63,7 +63,7 @@ jobs:
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       - name: Manki
-        uses: xdustinface/manki@v2
+        uses: xdustinface/manki@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -92,7 +92,6 @@ You can also reply to any of her review comments to start a conversation.
 Create `.manki.yml` in your repo root:
 
 ```yaml
-model: claude-opus-4-6
 auto_review: true
 auto_approve: true
 exclude_paths: ["*.lock"]
@@ -107,10 +106,13 @@ review_thresholds:
 instructions: |
   This is a Rust project. Focus on ownership and error handling.
 
-# Per-role model overrides
+# Default model (used as fallback when per-stage model is not set)
+model: claude-opus-4-6
+
+# Per-stage model selection (falls back to `model` if not set)
 models:
-  reviewer: claude-opus-4-6
-  judge: claude-opus-4-6
+  reviewer: claude-sonnet-4-6   # fast, parallel reviewers
+  judge: claude-opus-4-6        # precise, single judge
 
 # What to do with non-blocking findings: "issues" (default) or "comments"
 nit_handling: issues
@@ -123,12 +125,19 @@ memory:
 
 See [`.manki.yml.example`](.manki.yml.example) for all options.
 
+## Security
+
+- **Prompt injection** -- PR diffs are untrusted content passed to LLM prompts. All findings are sanitized before posting to GitHub (HTML stripping, `@mention` escaping via `sanitizeMarkdown`)
+- **Token handling** -- All secrets are masked via `core.setSecret()`. The memory repo uses a separate `memory_repo_token`
+- **Memory access control** -- Only repo owners, members, and collaborators can use `@manki remember`. Commands from outside collaborators are ignored
+- **Judge trust model** -- The judge has final say on severity and can downgrade `required` to `ignore`. This is by design to reduce false positives from individual reviewers
+
 ## How it works
 
 1. PR opened -- Manki wakes up
 2. A dynamic team is assembled from the agent pool (3/5/7 agents depending on diff size)
 3. All reviewers analyze the diff in parallel
-4. A judge agent deduplicates findings, assigns final severities, and tallies the verdict
+4. A judge agent evaluates each finding for accuracy, actionability, and severity using per-finding curated code context and memory
 5. Clean review posted -- blocking issues get `REQUEST_CHANGES`, nits get `APPROVE`
 6. Non-blocking findings become a GitHub issue with checkboxes and a `needs-human` label
 7. On new pushes, Manki checks which findings were addressed, auto-resolves validated threads, and deduplicates before reviewing again
@@ -139,4 +148,4 @@ See [`.manki.yml.example`](.manki.yml.example) for all options.
 
 ## License
 
-MIT
+AGPL-3.0
