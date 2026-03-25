@@ -6,7 +6,7 @@ import { ClaudeClient } from './claude';
 import { loadConfig, resolveModel } from './config';
 import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
 import { handleReviewCommentReply, handlePRComment } from './interaction';
-import { loadMemory, applySuppressions, applyEscalations, updatePattern, RepoMemory } from './memory';
+import { loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
 import { fetchRecapState, deduplicateFindings, buildRecapSummary, resolveAddressedThreads } from './recap';
 import { runReview, determineVerdict } from './review';
 import { PrContext } from './types';
@@ -286,15 +286,6 @@ async function runFullReview(
 
     if (!result.reviewComplete && result.verdict === 'APPROVE') {
       result.verdict = 'COMMENT';
-    }
-
-    if (memory && memory.suppressions.length > 0) {
-      const { kept, suppressed } = applySuppressions(result.findings, memory.suppressions);
-      if (suppressed.length > 0) {
-        core.info(`Suppressed ${suppressed.length} findings based on memory`);
-        result.findings = kept;
-        result.verdict = determineVerdict(result.findings);
-      }
     }
 
     const { unique, duplicates } = deduplicateFindings(result.findings, recap.previousFindings);

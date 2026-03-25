@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 
 import { ClaudeClient } from './claude';
 import { runJudgeAgent, JudgeInput } from './judge';
-import { RepoMemory, buildMemoryContext } from './memory';
+import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { ReviewConfig, ReviewerAgent, Finding, ReviewResult, ReviewVerdict, ParsedDiff, TeamRoster, PrContext } from './types';
 import { extractJSON } from './json';
 
@@ -146,7 +146,7 @@ export async function runReview(
     )
   );
 
-  const allFindings: Finding[] = [];
+  let allFindings: Finding[] = [];
   for (let i = 0; i < agentResults.length; i++) {
     const result = agentResults[i];
     if (result.status === 'fulfilled') {
@@ -165,6 +165,14 @@ export async function runReview(
       highlights: [],
       reviewComplete: false,
     };
+  }
+
+  if (memory?.suppressions && memory.suppressions.length > 0) {
+    const { kept, suppressed } = applySuppressions(allFindings, memory.suppressions);
+    if (suppressed.length > 0) {
+      core.info(`Suppressed ${suppressed.length} findings before judge evaluation`);
+    }
+    allFindings = kept;
   }
 
   let finalFindings: Finding[];
