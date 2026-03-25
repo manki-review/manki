@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { createAuthenticatedOctokit } from './auth';
+import { createAuthenticatedOctokit, getMemoryToken } from './auth';
 import { ClaudeClient } from './claude';
 import { loadConfig, resolveModel } from './config';
 import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
@@ -225,16 +225,20 @@ async function runFullReview(
     let memory: RepoMemory | null = null;
     let memoryContext = '';
     if (config.memory?.enabled) {
-      const memoryToken = core.getInput('memory_repo_token') || core.getInput('github_token', { required: true });
-      const memoryOctokit = github.getOctokit(memoryToken);
-      const memoryRepo = config.memory?.repo || `${owner}/review-memory`;
+      const memoryToken = getMemoryToken();
+      if (!memoryToken) {
+        core.warning('No memory token available — skipping memory load. Set memory_repo_token or github_token.');
+      } else {
+        const memoryOctokit = github.getOctokit(memoryToken);
+        const memoryRepo = config.memory?.repo || `${owner}/review-memory`;
 
-      try {
-        memory = await loadMemory(memoryOctokit, memoryRepo, repo);
-        memoryContext = buildMemoryContext(memory);
-        core.info(`Loaded memory: ${memory.learnings.length} learnings, ${memory.suppressions.length} suppressions`);
-      } catch (error) {
-        core.warning(`Failed to load review memory: ${error}`);
+        try {
+          memory = await loadMemory(memoryOctokit, memoryRepo, repo);
+          memoryContext = buildMemoryContext(memory);
+          core.info(`Loaded memory: ${memory.learnings.length} learnings, ${memory.suppressions.length} suppressions`);
+        } catch (error) {
+          core.warning(`Failed to load review memory: ${error}`);
+        }
       }
     }
 
@@ -326,18 +330,22 @@ async function runFullReview(
     }
 
     if (memory && config.memory?.enabled) {
-      const memoryToken = core.getInput('memory_repo_token') || core.getInput('github_token', { required: true });
-      const memoryOctokit = github.getOctokit(memoryToken);
-      const memoryRepo = config.memory?.repo || `${owner}/review-memory`;
+      const memoryToken = getMemoryToken();
+      if (!memoryToken) {
+        core.warning('No memory token available — skipping memory update. Set memory_repo_token or github_token.');
+      } else {
+        const memoryOctokit = github.getOctokit(memoryToken);
+        const memoryRepo = config.memory?.repo || `${owner}/review-memory`;
 
-      for (const finding of result.findings) {
-        try {
-          await updatePattern(memoryOctokit, memoryRepo, repo, finding.title, repo);
-        } catch (error) {
-          core.debug(`Failed to update pattern for "${finding.title}": ${error}`);
+        for (const finding of result.findings) {
+          try {
+            await updatePattern(memoryOctokit, memoryRepo, repo, finding.title, repo);
+          } catch (error) {
+            core.debug(`Failed to update pattern for "${finding.title}": ${error}`);
+          }
         }
+        core.info(`Updated ${result.findings.length} patterns in memory repo`);
       }
-      core.info(`Updated ${result.findings.length} patterns in memory repo`);
     }
 
     await updateProgressComment(octokit, owner, repo, progressCommentId, result);
@@ -451,7 +459,7 @@ async function handleInteraction(): Promise<void> {
   });
 
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;
-  const memoryToken = config.memory?.enabled ? (core.getInput('memory_repo_token') || core.getInput('github_token', { required: true })) : undefined;
+  const memoryToken = config.memory?.enabled ? getMemoryToken() ?? undefined : undefined;
 
   await handlePRComment(octokit, claude, owner, repo, prNumber, memoryConfig, memoryToken, config);
 }
@@ -479,7 +487,7 @@ async function handleIssueInteraction(): Promise<void> {
   const config = loadConfig(configContent ?? undefined);
 
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;
-  const memoryToken = config.memory?.enabled ? (core.getInput('memory_repo_token') || core.getInput('github_token', { required: true })) : undefined;
+  const memoryToken = config.memory?.enabled ? getMemoryToken() ?? undefined : undefined;
 
   await handlePRComment(octokit, null, owner, repo, issueNumber, memoryConfig, memoryToken, config);
 }
@@ -528,7 +536,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
   });
 
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;
-  const memoryToken = config.memory?.enabled ? (core.getInput('memory_repo_token') || core.getInput('github_token', { required: true })) : undefined;
+  const memoryToken = config.memory?.enabled ? getMemoryToken() ?? undefined : undefined;
 
   await handleReviewCommentReply(octokit, claude, memoryConfig, memoryToken);
 

@@ -13,7 +13,7 @@ type Octokit = ReturnType<typeof github.getOctokit>;
 export async function createAuthenticatedOctokit(): Promise<Octokit> {
   const appId = core.getInput('github_app_id');
   const privateKey = core.getInput('github_app_private_key');
-  const githubToken = core.getInput('github_token', { required: true });
+  const githubToken = core.getInput('github_token');
 
   if (appId && privateKey) {
     core.info('Using GitHub App authentication for custom bot identity');
@@ -21,8 +21,26 @@ export async function createAuthenticatedOctokit(): Promise<Octokit> {
     return github.getOctokit(token);
   }
 
+  if (!githubToken) {
+    throw new Error('No authentication configured. Provide either github_token or both github_app_id and github_app_private_key.');
+  }
+
   core.info('Using GITHUB_TOKEN (reviews will appear as github-actions[bot])');
   return github.getOctokit(githubToken);
+}
+
+/**
+ * Returns a token suitable for memory repo operations.
+ * Prefers memory_repo_token, falls back to github_token, returns null if neither is set.
+ */
+export function getMemoryToken(): string | null {
+  const memoryToken = core.getInput('memory_repo_token');
+  if (memoryToken) return memoryToken;
+
+  const githubToken = core.getInput('github_token');
+  if (githubToken) return githubToken;
+
+  return null;
 }
 
 async function getInstallationToken(
