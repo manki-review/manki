@@ -79,6 +79,14 @@ describe('formatFindingComment', () => {
     expect(comment).toContain('<sub>Flagged by: Security, Testing</sub>');
   });
 
+  it('sanitizes reviewer names containing markdown or HTML', () => {
+    const finding: Finding = { ...baseFinding, reviewers: ['<script>alert(1)</script>', '@evil/team'] };
+    const comment = formatFindingComment(finding);
+    expect(comment).not.toContain('<script>');
+    expect(comment).not.toContain('</script>');
+    expect(comment).toContain('@\u200Bevil/team');
+  });
+
   it('omits reviewer attribution when reviewers is empty', () => {
     const finding: Finding = { ...baseFinding, reviewers: [] };
     const comment = formatFindingComment(finding);
@@ -554,6 +562,17 @@ describe('sanitizeMarkdown', () => {
     expect(sanitizeMarkdown('see [click][1]\n[1]: https://evil.com')).toBe('see click\n');
     expect(sanitizeMarkdown('[logo]: https://evil.com/img.png "alt"')).toBe('');
     expect(sanitizeMarkdown('text\n[ref]: http://example.com\nmore')).toBe('text\n\nmore');
+  });
+
+  it('strips self-closing HTML tags like <br/> and <hr />', () => {
+    expect(sanitizeMarkdown('line1<br/>line2')).toBe('line1line2');
+    expect(sanitizeMarkdown('line1<br />line2')).toBe('line1line2');
+    expect(sanitizeMarkdown('above<hr/>below')).toBe('abovebelow');
+    expect(sanitizeMarkdown('text<img src="x"/>more')).toBe('textmore');
+  });
+
+  it('handles nested bracket edge case in links via second pass', () => {
+    expect(sanitizeMarkdown('[![inner](http://img)](http://link)')).toBe('inner');
   });
 
   it('strips nested HTML comments', () => {

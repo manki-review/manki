@@ -360,9 +360,12 @@ function sanitizeMarkdown(text: string): string {
   result = result.replace(/-->/g, '');
 
   return result
-    .replace(new RegExp(`<\\/?(${htmlTags})(?:\\s[^>]*)?(?:>|$)`, 'gi'), '') // Known HTML tags (with or without attributes)
+    .replace(new RegExp(`<\\/?(${htmlTags})(?:\\s[^>]*)?\\s*\\/?>`, 'gi'), '') // Known HTML tags (opening, closing, self-closing)
+    .replace(new RegExp(`<\\/?(${htmlTags})(?:\\s[^>]*)?$`, 'gi'), '')      // Unclosed tags at end of string
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')                       // Images: keep alt text only
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')                        // Links: keep text only
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')                       // Second pass for nested brackets
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')                        // Second pass for nested brackets
     .replace(/!\[([^\]]*)\]\[[^\]]*\]/g, '$1')                       // Reference images
     .replace(/\[([^\]]*)\]\[[^\]]*\]/g, '$1')                        // Reference links
     .replace(/^\[[^\]]*\]:\s+.*$/gm, '')                             // Link/image definitions
@@ -407,7 +410,8 @@ function formatFindingComment(finding: Finding): string {
   comment += '\n</details>';
 
   if (finding.reviewers.length > 0) {
-    comment += `\n\n<sub>Flagged by: ${finding.reviewers.join(', ')}</sub>`;
+    const safeReviewers = finding.reviewers.map(r => sanitizeMarkdown(r)).join(', ');
+    comment += `\n\n<sub>Flagged by: ${safeReviewers}</sub>`;
   }
 
   comment += `\n\n<!-- manki:${finding.severity}:${finding.title.replace(/[^a-zA-Z0-9]/g, '-')} -->`;
