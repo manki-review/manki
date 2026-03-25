@@ -146,7 +146,7 @@ export async function runReview(
     )
   );
 
-  let allFindings: Finding[] = [];
+  const allFindings: Finding[] = [];
   for (let i = 0; i < agentResults.length; i++) {
     const result = agentResults[i];
     if (result.status === 'fulfilled') {
