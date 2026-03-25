@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 
 import { ClaudeClient } from './claude';
-import { ReviewConfig, ReviewerAgent, Finding, ReviewResult, ReviewVerdict, ParsedDiff, AgentVote, TeamRoster } from './types';
+import { ReviewConfig, ReviewerAgent, Finding, FindingSeverity, ReviewResult, ReviewVerdict, ParsedDiff, AgentVote, TeamRoster } from './types';
 import { extractJSON } from './json';
 
 export const AGENT_POOL: readonly ReviewerAgent[] = Object.freeze([
@@ -165,8 +165,8 @@ export async function runReview(
     finalFindings = mergeIndividualFindings(allFindings).findings;
   }
 
-  const hasBlocking = finalFindings.some(f => f.severity === 'blocking');
-  const verdict = hasBlocking ? 'REQUEST_CHANGES' : 'APPROVE';
+  const hasRequired = finalFindings.some(f => f.severity === 'required');
+  const verdict = hasRequired ? 'REQUEST_CHANGES' : 'APPROVE';
 
   const teamNames = team.agents.map(a => a.name).join(', ');
   const summary = `Reviewed by ${team.agents.length} agents (${team.level}): ${teamNames}. ${finalFindings.length} findings after deliberation.`;
@@ -177,7 +177,7 @@ export async function runReview(
   core.info(`Verdict: ${verdict}`);
   core.info(`Findings: ${finalFindings.length}`);
   for (const f of finalFindings) {
-    const icon = f.severity === 'blocking' ? '\u2717' : f.severity === 'suggestion' ? '\u25CB' : '?';
+    const icon = f.severity === 'required' ? '\u2717' : f.severity === 'suggestion' ? '\u25CB' : f.severity === 'nit' ? '\u00B7' : '\u2205';
     core.info(`  ${icon} [${f.severity}] ${f.title}`);
     core.info(`    ${f.file}:${f.line}`);
   }
@@ -217,7 +217,7 @@ async function runDeliberation(
       titlesMatch(d.title, f.title)
     );
     if (existing) {
-      const severityOrder: Record<string, number> = { blocking: 3, suggestion: 2, question: 1 };
+      const severityOrder: Record<FindingSeverity, number> = { required: 3, suggestion: 2, nit: 1, ignore: 0 };
       if ((severityOrder[f.severity] || 0) > (severityOrder[existing.severity] || 0)) {
         existing.severity = f.severity;
       }
@@ -355,9 +355,9 @@ export function tallyVotes(
       // If some agents failed to vote, we don't escalate — partial consensus
       // shouldn't be treated as full agreement.
       if (agreeCount === teamSize && finding.severity === 'suggestion') {
-        severity = 'blocking';
+        severity = 'required';
       } else if (escalateCount >= 2 && agreeCount >= majority && finding.severity === 'suggestion') {
-        severity = 'blocking';
+        severity = 'required';
       }
 
       const agreeVoters = findingVotes
@@ -410,7 +410,7 @@ Respond with ONLY a JSON array (no markdown fences, no explanation). Each findin
 \`\`\`
 [
   {
-    "severity": "blocking" | "suggestion" | "question",
+    "severity": "required" | "suggestion" | "nit" | "ignore",
     "title": "Short descriptive title",
     "file": "path/to/file.ext",
     "line": <line number in the NEW file>,
@@ -422,9 +422,10 @@ Respond with ONLY a JSON array (no markdown fences, no explanation). Each findin
 
 ## Severity Guidelines
 
-- **blocking**: Bugs, security vulnerabilities, data corruption risks, crashes, incorrect behavior. These MUST be fixed before merge.
-- **suggestion**: Style improvements, minor optimizations, readability enhancements, naming nitpicks. Nice to have but not required.
-- **question**: Code that needs clarification. You're not sure if it's wrong, but it looks suspicious or unclear.
+- **required**: Bugs, security vulnerabilities, data corruption risks, crashes, incorrect behavior. These MUST be fixed before merge.
+- **suggestion**: Style improvements, minor optimizations, readability enhancements. Nice to have but not required.
+- **nit**: Trivial nitpicks — naming, formatting, minor style preferences. Collected separately for triage.
+- **ignore**: Not a real issue — false positive or intentional pattern. Use this to explicitly dismiss a potential finding.
 
 ## Rules
 
@@ -480,7 +481,7 @@ export function parseFindings(responseText: string, reviewerName: string): Findi
 }
 
 export function validateSeverity(severity: unknown): Finding['severity'] {
-  if (severity === 'blocking' || severity === 'suggestion' || severity === 'question') {
+  if (severity === 'required' || severity === 'suggestion' || severity === 'nit' || severity === 'ignore') {
     return severity;
   }
   return 'suggestion';
@@ -517,8 +518,8 @@ export function parseConsolidatedReview(responseText: string): ReviewResult {
 }
 
 export function determineVerdict(claimed: unknown, findings: Finding[]): ReviewVerdict {
-  const hasBlocking = findings.some(f => f.severity === 'blocking');
-  if (hasBlocking) return 'REQUEST_CHANGES';
+  const hasRequired = findings.some(f => f.severity === 'required');
+  if (hasRequired) return 'REQUEST_CHANGES';
   return 'APPROVE';
 }
 
@@ -573,10 +574,10 @@ export function mergeIndividualFindings(
     }
   }
 
-  const hasBlocking = allFindings.some(f => f.severity === 'blocking');
+  const hasRequired = allFindings.some(f => f.severity === 'required');
 
   return {
-    verdict: hasBlocking ? 'REQUEST_CHANGES' : 'APPROVE',
+    verdict: hasRequired ? 'REQUEST_CHANGES' : 'APPROVE',
     summary: `Review completed (consolidation skipped). ${allFindings.length} findings from ${agentFindings.length} reviewers.`,
     findings: allFindings,
     highlights: [],

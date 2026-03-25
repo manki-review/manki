@@ -75,29 +75,41 @@ describe('applySuppressions', () => {
     expect(suppressed).toHaveLength(0);
   });
 
-  it('never suppresses blocking-severity findings', () => {
+  it('never suppresses required-severity findings', () => {
     const findings = [
-      makeFinding({ severity: 'blocking', title: 'Unused variable in auth' }),
+      makeFinding({ severity: 'required', title: 'Unused variable in auth' }),
     ];
     const suppressions = [makeSuppression({ pattern: 'unused variable' })];
 
     const { kept, suppressed } = applySuppressions(findings, suppressions);
     expect(kept).toHaveLength(1);
     expect(suppressed).toHaveLength(0);
-    expect(kept[0].severity).toBe('blocking');
+    expect(kept[0].severity).toBe('required');
   });
 
-  it('suppresses suggestion but keeps blocking with same pattern', () => {
+  it('never suppresses ignore-severity findings', () => {
     const findings = [
-      makeFinding({ severity: 'blocking', title: 'Unused variable causes crash' }),
-      makeFinding({ severity: 'suggestion', title: 'Unused variable cleanup' }),
-      makeFinding({ severity: 'question', title: 'Unused variable — intentional?' }),
+      makeFinding({ severity: 'ignore', title: 'Unused variable false positive' }),
     ];
     const suppressions = [makeSuppression({ pattern: 'unused variable' })];
 
     const { kept, suppressed } = applySuppressions(findings, suppressions);
     expect(kept).toHaveLength(1);
-    expect(kept[0].severity).toBe('blocking');
+    expect(suppressed).toHaveLength(0);
+    expect(kept[0].severity).toBe('ignore');
+  });
+
+  it('suppresses suggestion and nit but keeps required with same pattern', () => {
+    const findings = [
+      makeFinding({ severity: 'required', title: 'Unused variable causes crash' }),
+      makeFinding({ severity: 'suggestion', title: 'Unused variable cleanup' }),
+      makeFinding({ severity: 'nit', title: 'Unused variable — rename?' }),
+    ];
+    const suppressions = [makeSuppression({ pattern: 'unused variable' })];
+
+    const { kept, suppressed } = applySuppressions(findings, suppressions);
+    expect(kept).toHaveLength(1);
+    expect(kept[0].severity).toBe('required');
     expect(suppressed).toHaveLength(2);
   });
 });
@@ -285,16 +297,16 @@ describe('applyEscalations', () => {
 
     const result = applyEscalations(findings, patterns);
     expect(result).toHaveLength(1);
-    expect(result[0].severity).toBe('blocking');
+    expect(result[0].severity).toBe('required');
   });
 
-  it('does not escalate blocking findings', () => {
-    const findings = [makeFinding({ severity: 'blocking', title: 'Unused variable' })];
+  it('does not escalate required findings', () => {
+    const findings = [makeFinding({ severity: 'required', title: 'Unused variable' })];
     const patterns = [makePattern({ finding_title: 'unused variable', escalated: true })];
 
     const result = applyEscalations(findings, patterns);
     expect(result).toHaveLength(1);
-    expect(result[0].severity).toBe('blocking');
+    expect(result[0].severity).toBe('required');
   });
 
   it('does not escalate non-matching patterns', () => {
@@ -316,16 +328,16 @@ describe('applyEscalations', () => {
 
     const result = applyEscalations(findings, patterns);
     expect(result).toHaveLength(1);
-    expect(result[0].severity).toBe('blocking');
+    expect(result[0].severity).toBe('required');
   });
 
-  it('escalates question severity findings', () => {
-    const findings = [makeFinding({ severity: 'question', title: 'Unused variable' })];
+  it('escalates nit severity findings', () => {
+    const findings = [makeFinding({ severity: 'nit', title: 'Unused variable' })];
     const patterns = [makePattern({ finding_title: 'unused variable', escalated: true })];
 
     const result = applyEscalations(findings, patterns);
     expect(result).toHaveLength(1);
-    expect(result[0].severity).toBe('blocking');
+    expect(result[0].severity).toBe('required');
   });
 
   it('does not escalate when pattern is not escalated', () => {

@@ -118,7 +118,7 @@ async function fetchTextFile(
 }
 
 /** Severities that are allowed to be suppressed by stored suppressions. */
-const SUPPRESSIBLE_SEVERITIES: ReadonlySet<FindingSeverity> = new Set<FindingSeverity>(['suggestion', 'question']);
+const SUPPRESSIBLE_SEVERITIES: ReadonlySet<FindingSeverity> = new Set<FindingSeverity>(['suggestion', 'nit']);
 
 /**
  * Filter findings against stored suppressions.
@@ -365,7 +365,7 @@ export function applyEscalations(
   patterns: Pattern[],
 ): Finding[] {
   return findings.map(f => {
-    if (f.severity !== 'suggestion' && f.severity !== 'question') return f;
+    if (f.severity !== 'suggestion' && f.severity !== 'nit') return f;
 
     const normalized = f.title.toLowerCase().trim();
     const pattern = patterns.find(p =>
@@ -373,8 +373,8 @@ export function applyEscalations(
     );
 
     if (pattern) {
-      core.info(`Escalating "${f.title}" from ${f.severity} to blocking (pattern accepted ${pattern.accepted_count || 0} times)`);
-      return { ...f, severity: 'blocking' as const };
+      core.info(`Escalating "${f.title}" from ${f.severity} to required (pattern accepted ${pattern.accepted_count || 0} times)`);
+      return { ...f, severity: 'required' as const };
     }
 
     return f;

@@ -123,7 +123,7 @@ export async function updateProgressComment(
   const emoji = result.verdict === 'APPROVE' ? '✅' : result.verdict === 'REQUEST_CHANGES' ? '❌' : '💬';
   const safeSummary = sanitizeMarkdown(result.summary);
   const findingsSummary = result.findings.length > 0
-    ? `\n\n| Severity | Count |\n|---|---|\n| Blocking | ${result.findings.filter(f => f.severity === 'blocking').length} |\n| Suggestions | ${result.findings.filter(f => f.severity === 'suggestion').length} |\n| Questions | ${result.findings.filter(f => f.severity === 'question').length} |`
+    ? `\n\n| Severity | Count |\n|---|---|\n| Required | ${result.findings.filter(f => f.severity === 'required').length} |\n| Suggestions | ${result.findings.filter(f => f.severity === 'suggestion').length} |\n| Nits | ${result.findings.filter(f => f.severity === 'nit').length} |\n| Ignored | ${result.findings.filter(f => f.severity === 'ignore').length} |`
     : '';
 
   const safeHighlights = result.highlights.map(h => sanitizeMarkdown(h));
@@ -355,10 +355,26 @@ function mapVerdictToEvent(verdict: ReviewVerdict): 'APPROVE' | 'COMMENT' | 'REQ
   }
 }
 
+const severityLabels: Record<FindingSeverity, string> = {
+  required: 'Required',
+  suggestion: 'Suggestion',
+  nit: 'Nit',
+  ignore: 'Ignore',
+};
+
+const severityEmojis: Record<FindingSeverity, string> = {
+  required: '🚫',
+  suggestion: '💡',
+  nit: '📝',
+  ignore: '⚪',
+};
+
 function getSeverityLabel(severity: FindingSeverity): string {
-  if (severity === 'blocking') return 'Blocking';
-  if (severity === 'suggestion') return 'Suggestion';
-  return 'Question';
+  return severityLabels[severity];
+}
+
+function getSeverityEmoji(severity: FindingSeverity): string {
+  return severityEmojis[severity];
 }
 
 // Sanitizes LLM-generated text (titles, descriptions, summaries) before embedding
@@ -400,7 +416,7 @@ function sanitizeMarkdown(text: string): string {
 }
 
 function formatFindingComment(finding: Finding): string {
-  const severityEmoji = finding.severity === 'blocking' ? '🚫' : finding.severity === 'suggestion' ? '💡' : '❓';
+  const severityEmoji = getSeverityEmoji(finding.severity);
   const severityLabel = getSeverityLabel(finding.severity);
   const safeTitle = sanitizeMarkdown(finding.title);
   const safeDescription = sanitizeMarkdown(finding.description);
@@ -443,7 +459,7 @@ function formatFindingComment(finding: Finding): string {
 }
 
 /**
- * Build the markdown body for a nit issue from non-blocking findings.
+ * Build the markdown body for a nit issue from non-required findings.
  * Pure function — no API calls — for testability.
  */
 export function buildNitIssueBody(
@@ -451,10 +467,10 @@ export function buildNitIssueBody(
   findings: Finding[],
   owner: string,
 ): string {
-  const nits = findings.filter(f => f.severity === 'suggestion' || f.severity === 'question');
+  const nits = findings.filter(f => f.severity === 'nit');
 
   const checklist = nits.map(f => {
-    const icon = f.severity === 'suggestion' ? '\u{1F4A1}' : '\u{2753}';
+    const icon = '\u{1F4DD}';
     const safeTitle = sanitizeMarkdown(f.title);
     const safeDescription = sanitizeMarkdown(f.description);
     const safeFile = sanitizeFilePath(f.file);
@@ -504,7 +520,7 @@ ${checklist}
 }
 
 /**
- * Create a GitHub issue from non-blocking review findings.
+ * Create a GitHub issue from non-required review findings.
  * Returns the issue number, or null if no nits or issue already exists.
  */
 export async function createNitIssue(
@@ -514,7 +530,7 @@ export async function createNitIssue(
   prNumber: number,
   findings: Finding[],
 ): Promise<number | null> {
-  const nits = findings.filter(f => f.severity === 'suggestion' || f.severity === 'question');
+  const nits = findings.filter(f => f.severity === 'nit');
   if (nits.length === 0) return null;
 
   const searchQuery = `repo:${owner}/${repo} is:issue "Review nits from PR #${prNumber}" label:needs-human`;
@@ -594,4 +610,4 @@ export async function reactToReviewComment(
   }
 }
 
-export { dynamicFence, formatFindingComment, getSeverityLabel, mapVerdictToEvent, safeTruncate, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_MARKER };
+export { dynamicFence, formatFindingComment, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, safeTruncate, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_MARKER };

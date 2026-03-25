@@ -44,6 +44,14 @@
 # instructions: |
 #   This is a Rust project. Focus on ownership and error handling.
 
+# Per-stage model selection (optional — falls back to `model` if not set)
+# models:
+#   reviewer: claude-sonnet-4-6    # fast, parallel reviewers
+#   judge: claude-opus-4-6         # precise, single judge
+
+# Where to post nit findings: 'issues' (separate GitHub issue) or 'comments' (inline PR comments)
+# nit_handling: issues
+
 # Review memory (requires memory_repo_token)
 # Stores learnings, suppressions, and patterns to improve reviews over time
 # memory:

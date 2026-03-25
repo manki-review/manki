@@ -3,7 +3,7 @@ import { Finding, ReviewResult } from './types';
 
 describe('formatFindingComment', () => {
   const baseFinding: Finding = {
-    severity: 'blocking',
+    severity: 'required',
     title: 'Null pointer dereference',
     file: 'src/main.ts',
     line: 42,
@@ -11,9 +11,9 @@ describe('formatFindingComment', () => {
     reviewers: ['Security & Correctness'],
   };
 
-  it('formats a blocking finding with correct emoji and label', () => {
+  it('formats a required finding with correct emoji and label', () => {
     const comment = formatFindingComment(baseFinding);
-    expect(comment).toContain('🚫 **Blocking**');
+    expect(comment).toContain('🚫 **Required**');
     expect(comment).toContain(baseFinding.title);
     expect(comment).toContain(baseFinding.description);
   });
@@ -24,10 +24,17 @@ describe('formatFindingComment', () => {
     expect(comment).toContain('💡 **Suggestion**');
   });
 
-  it('formats a question finding with correct emoji and label', () => {
-    const finding: Finding = { ...baseFinding, severity: 'question' };
+  it('formats a nit finding with correct emoji and label', () => {
+    const finding: Finding = { ...baseFinding, severity: 'nit' };
     const comment = formatFindingComment(finding);
-    expect(comment).toContain('❓ **Question**');
+    expect(comment).toContain('📝 **Nit**');
+  });
+
+  it('formats an ignore finding with correct emoji and label', () => {
+    const finding: Finding = { ...baseFinding, severity: 'ignore' };
+    const comment = formatFindingComment(finding);
+    expect(comment).toContain('⚪ **Ignore**');
+    expect(comment).toContain('<!-- manki:ignore:');
   });
 
   it('wraps suggested fix in a collapsible details section', () => {
@@ -95,13 +102,13 @@ describe('formatFindingComment', () => {
 
   it('includes metadata marker with severity and sanitized title', () => {
     const comment = formatFindingComment(baseFinding);
-    expect(comment).toContain('<!-- manki:blocking:Null-pointer-dereference -->');
+    expect(comment).toContain('<!-- manki:required:Null-pointer-dereference -->');
   });
 
   it('sanitizes special characters in metadata marker title', () => {
     const finding: Finding = { ...baseFinding, title: 'Bug: foo() returns "bar"!' };
     const comment = formatFindingComment(finding);
-    expect(comment).toContain('<!-- manki:blocking:Bug--foo---returns--bar-- -->');
+    expect(comment).toContain('<!-- manki:required:Bug--foo---returns--bar-- -->');
   });
 });
 
@@ -126,8 +133,8 @@ describe('BOT_MARKER', () => {
 });
 
 describe('buildNitIssueBody', () => {
-  const suggestion: Finding = {
-    severity: 'suggestion',
+  const nit: Finding = {
+    severity: 'nit',
     title: 'Use const instead of let',
     file: 'src/utils.ts',
     line: 10,
@@ -135,8 +142,8 @@ describe('buildNitIssueBody', () => {
     reviewers: ['Style'],
   };
 
-  const question: Finding = {
-    severity: 'question',
+  const suggestion: Finding = {
+    severity: 'suggestion',
     title: 'Is this timeout intentional?',
     file: 'src/client.ts',
     line: 55,
@@ -144,8 +151,8 @@ describe('buildNitIssueBody', () => {
     reviewers: ['Performance'],
   };
 
-  const blocking: Finding = {
-    severity: 'blocking',
+  const required: Finding = {
+    severity: 'required',
     title: 'Null dereference',
     file: 'src/main.ts',
     line: 1,
@@ -153,46 +160,45 @@ describe('buildNitIssueBody', () => {
     reviewers: ['Security'],
   };
 
-  it('filters to only suggestion and question findings', () => {
-    const body = buildNitIssueBody(42, [blocking, suggestion, question], 'myorg');
+  it('filters to only nit findings', () => {
+    const body = buildNitIssueBody(42, [required, nit, suggestion], 'myorg');
     expect(body).toContain('Use const instead of let');
-    expect(body).toContain('Is this timeout intentional?');
     expect(body).not.toContain('Null dereference');
+    expect(body).not.toContain('Is this timeout intentional?');
   });
 
   it('formats checklist items with file and line', () => {
-    const body = buildNitIssueBody(42, [suggestion], 'myorg');
+    const body = buildNitIssueBody(42, [nit], 'myorg');
     expect(body).toContain('- [ ]');
     expect(body).toContain('`src/utils.ts:10`');
     expect(body).toContain('Variable is never reassigned.');
   });
 
   it('includes PR reference in header', () => {
-    const body = buildNitIssueBody(99, [suggestion], 'myorg');
+    const body = buildNitIssueBody(99, [nit], 'myorg');
     expect(body).toContain('PR #99');
   });
 
   it('includes suggested fix in folded fix prompt when present', () => {
-    const withFix: Finding = { ...suggestion, suggestedFix: 'const x = 1;' };
+    const withFix: Finding = { ...nit, suggestedFix: 'const x = 1;' };
     const body = buildNitIssueBody(42, [withFix], 'myorg');
     expect(body).toContain('**Suggested fix:**');
     expect(body).toContain('const x = 1;');
   });
 
   it('omits suggested fix from fix prompt when not present', () => {
-    const body = buildNitIssueBody(42, [suggestion], 'myorg');
+    const body = buildNitIssueBody(42, [nit], 'myorg');
     expect(body).not.toContain('**Suggested fix:**');
   });
 
-  it('uses correct emoji for suggestion vs question', () => {
-    const body = buildNitIssueBody(42, [suggestion, question], 'myorg');
-    expect(body).toContain('\u{1F4A1} **Use const instead of let**');
-    expect(body).toContain('\u{2753} **Is this timeout intentional?**');
+  it('uses nit emoji for nit findings', () => {
+    const body = buildNitIssueBody(42, [nit], 'myorg');
+    expect(body).toContain('\u{1F4DD} **Use const instead of let**');
   });
 
   it('includes code context when present', () => {
     const withContext: Finding = {
-      ...suggestion,
+      ...nit,
       file: 'src/utils.ts',
       codeContext: '+let x = 1;\n+let y = 2;',
     };
@@ -203,7 +209,7 @@ describe('buildNitIssueBody', () => {
   });
 
   it('omits code context when not present', () => {
-    const body = buildNitIssueBody(42, [suggestion], 'myorg');
+    const body = buildNitIssueBody(42, [nit], 'myorg');
     expect(body).not.toContain('```typescript');
   });
 
@@ -222,7 +228,7 @@ describe('buildNitIssueBody', () => {
 
     for (const [file, lang] of extensions) {
       const finding: Finding = {
-        ...suggestion,
+        ...nit,
         file,
         codeContext: '+some code',
       };
@@ -232,25 +238,25 @@ describe('buildNitIssueBody', () => {
   });
 
   it('wraps fix prompt in a folded details section', () => {
-    const body = buildNitIssueBody(42, [suggestion], 'myorg');
+    const body = buildNitIssueBody(42, [nit], 'myorg');
     expect(body).toContain('<details>');
     expect(body).toContain('<summary>\u{1F916} Fix prompt</summary>');
     expect(body).toContain('</details>');
     expect(body).toContain('**File:** `src/utils.ts`');
     expect(body).toContain('**Line:** 10');
     expect(body).toContain('**Finding:** Use const instead of let');
-    expect(body).toContain('**Severity:** suggestion');
+    expect(body).toContain('**Severity:** nit');
   });
 
   it('includes triage instructions with @manki triage', () => {
-    const body = buildNitIssueBody(42, [suggestion], 'myorg');
+    const body = buildNitIssueBody(42, [nit], 'myorg');
     expect(body).toContain('`@manki triage`');
     expect(body).toContain('**Check the box** for findings worth fixing');
     expect(body).toContain('**Leave unchecked** for findings to dismiss');
   });
 
   it('includes validation reminder in fix prompt', () => {
-    const body = buildNitIssueBody(42, [suggestion], 'myorg');
+    const body = buildNitIssueBody(42, [nit], 'myorg');
     expect(body).toContain('Before applying this fix, validate the finding');
   });
 });
@@ -460,16 +466,20 @@ describe('postReview generalFindings', () => {
 });
 
 describe('getSeverityLabel', () => {
-  it('returns Blocking for blocking severity', () => {
-    expect(getSeverityLabel('blocking')).toBe('Blocking');
+  it('returns Required for required severity', () => {
+    expect(getSeverityLabel('required')).toBe('Required');
   });
 
   it('returns Suggestion for suggestion severity', () => {
     expect(getSeverityLabel('suggestion')).toBe('Suggestion');
   });
 
-  it('returns Question for question severity', () => {
-    expect(getSeverityLabel('question')).toBe('Question');
+  it('returns Nit for nit severity', () => {
+    expect(getSeverityLabel('nit')).toBe('Nit');
+  });
+
+  it('returns Ignore for ignore severity', () => {
+    expect(getSeverityLabel('ignore')).toBe('Ignore');
   });
 });
 

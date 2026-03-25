@@ -374,7 +374,7 @@ async function handleReviewStateCheck(): Promise<void> {
 
   const approved = await checkAndAutoApprove(octokit, owner, repo, prNumber);
   if (approved) {
-    core.info(`PR #${prNumber} auto-approved after all blocking issues resolved`);
+    core.info(`PR #${prNumber} auto-approved after all required issues resolved`);
   }
 }
 

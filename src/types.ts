@@ -1,4 +1,4 @@
-export type FindingSeverity = 'blocking' | 'suggestion' | 'question';
+export type FindingSeverity = 'required' | 'suggestion' | 'nit' | 'ignore';
 
 export interface Finding {
   severity: FindingSeverity;
@@ -9,6 +9,8 @@ export interface Finding {
   suggestedFix?: string;
   reviewers: string[];
   codeContext?: string;
+  judgeNotes?: string;
+  judgeConfidence?: 'high' | 'medium' | 'low';
 }
 
 export type ReviewVerdict = 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES';
@@ -62,6 +64,11 @@ export interface ReviewConfig {
     enabled: boolean;
     repo: string;
   };
+  models?: {
+    reviewer?: string;
+    judge?: string;
+  };
+  nit_handling?: 'issues' | 'comments';
 }
 
 export interface DiffFile {

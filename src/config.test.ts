@@ -30,6 +30,7 @@ describe('config', () => {
       expect(typeof DEFAULT_CONFIG.memory).toBe('object');
       expect(typeof DEFAULT_CONFIG.memory.enabled).toBe('boolean');
       expect(typeof DEFAULT_CONFIG.memory.repo).toBe('string');
+      expect(DEFAULT_CONFIG.nit_handling).toBe('issues');
       expect(DEFAULT_CONFIG.review_level).toBe('auto');
       expect(DEFAULT_CONFIG.review_thresholds).toEqual({ small: 200, medium: 1000 });
     });
@@ -255,6 +256,73 @@ unknown_thing: true
       const config = loadConfigFromContent(yaml);
       expect(config.model).toBe('claude-sonnet-4-20250514');
       expect((config as unknown as Record<string, unknown>)['unknown_thing']).toBeUndefined();
+    });
+
+    it('accepts valid models object', () => {
+      const yaml = `
+models:
+  reviewer: claude-sonnet-4-6
+  judge: claude-opus-4-6
+`;
+      const config = loadConfigFromContent(yaml);
+      expect(config.models?.reviewer).toBe('claude-sonnet-4-6');
+      expect(config.models?.judge).toBe('claude-opus-4-6');
+    });
+
+    it('accepts partial models object', () => {
+      const yaml = `
+models:
+  reviewer: claude-sonnet-4-6
+`;
+      const config = loadConfigFromContent(yaml);
+      expect(config.models?.reviewer).toBe('claude-sonnet-4-6');
+      expect(config.models?.judge).toBeUndefined();
+    });
+
+    it('throws on invalid models type', () => {
+      const yaml = 'models: "not an object"';
+      expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
+    });
+
+    it('throws on invalid models.reviewer type', () => {
+      const yaml = `
+models:
+  reviewer: 123
+`;
+      expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
+      expect(core.error).toHaveBeenCalledWith('`models.reviewer` must be a string');
+    });
+
+    it('throws on invalid models.judge type', () => {
+      const yaml = `
+models:
+  judge: true
+`;
+      expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
+      expect(core.error).toHaveBeenCalledWith('`models.judge` must be a string');
+    });
+
+    it('accepts valid nit_handling values', () => {
+      const yamlIssues = 'nit_handling: issues';
+      expect(loadConfigFromContent(yamlIssues).nit_handling).toBe('issues');
+
+      const yamlComments = 'nit_handling: comments';
+      expect(loadConfigFromContent(yamlComments).nit_handling).toBe('comments');
+    });
+
+    it('throws on invalid nit_handling value', () => {
+      const yaml = 'nit_handling: email';
+      expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
+      expect(core.error).toHaveBeenCalledWith('`nit_handling` must be "issues" or "comments"');
+    });
+
+    it('deep-merges models object', () => {
+      const yaml = `
+models:
+  reviewer: claude-sonnet-4-6
+`;
+      const config = loadConfigFromContent(yaml);
+      expect(config.models?.reviewer).toBe('claude-sonnet-4-6');
     });
   });
 });

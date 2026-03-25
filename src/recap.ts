@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { ClaudeClient } from './claude';
-import { Finding, ParsedDiff } from './types';
+import { Finding, FindingSeverity, ParsedDiff } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -11,7 +11,7 @@ interface PreviousFinding {
   title: string;
   file: string;
   line: number;
-  severity: string;
+  severity: FindingSeverity | 'unknown';
   status: 'open' | 'resolved' | 'replied';
   threadId?: string;
 }
@@ -81,7 +81,7 @@ interface ReviewThread {
   findingTitle: string;
   file: string;
   line: number;
-  severity: string;
+  severity: FindingSeverity | 'unknown';
 }
 
 async function fetchReviewThreads(
@@ -145,10 +145,10 @@ async function fetchReviewThreads(
         i > 0 && c.author?.login !== 'github-actions[bot]'
       );
 
-      const severityMatch = firstComment?.body?.match(/manki:(blocking|suggestion|question):/);
-      const severity = severityMatch?.[1] ?? 'unknown';
+      const severityMatch = firstComment?.body?.match(/manki:(required|suggestion|nit|ignore):/);
+      const severity = (severityMatch?.[1] ?? 'unknown') as FindingSeverity | 'unknown';
 
-      const titleMatch = firstComment?.body?.match(/\*\*(?:Blocking|Suggestion|Question)\*\*:\s*(.+?)(?:\n|$)/);
+      const titleMatch = firstComment?.body?.match(/\*\*(?:Required|Suggestion|Nit|Ignore)\*\*:\s*(.+?)(?:\n|$)/);
       const findingTitle = titleMatch?.[1]?.trim() ?? '';
 
       return {

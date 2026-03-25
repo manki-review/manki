@@ -51,7 +51,7 @@ describe('parseFindings', () => {
   it('parses valid JSON array', () => {
     const json = JSON.stringify([
       {
-        severity: 'blocking',
+        severity: 'required',
         title: 'Bug found',
         file: 'src/index.ts',
         line: 10,
@@ -62,7 +62,7 @@ describe('parseFindings', () => {
 
     const findings = parseFindings(json, 'TestReviewer');
     expect(findings).toHaveLength(1);
-    expect(findings[0].severity).toBe('blocking');
+    expect(findings[0].severity).toBe('required');
     expect(findings[0].title).toBe('Bug found');
     expect(findings[0].file).toBe('src/index.ts');
     expect(findings[0].line).toBe(10);
@@ -80,11 +80,11 @@ describe('parseFindings', () => {
   });
 
   it('parses markdown-wrapped JSON without language tag', () => {
-    const json = '```\n[{"severity":"question","title":"Why?","file":"b.ts","line":5,"description":"Unclear code."}]\n```';
+    const json = '```\n[{"severity":"nit","title":"Why?","file":"b.ts","line":5,"description":"Unclear code."}]\n```';
 
     const findings = parseFindings(json, 'Reviewer');
     expect(findings).toHaveLength(1);
-    expect(findings[0].severity).toBe('question');
+    expect(findings[0].severity).toBe('nit');
   });
 
   it('returns empty array for invalid JSON', () => {
@@ -103,7 +103,7 @@ describe('parseFindings', () => {
   });
 
   it('handles missing fields gracefully', () => {
-    const json = JSON.stringify([{ severity: 'blocking' }]);
+    const json = JSON.stringify([{ severity: 'required' }]);
 
     const findings = parseFindings(json, 'Reviewer');
     expect(findings).toHaveLength(1);
@@ -129,20 +129,26 @@ describe('parseFindings', () => {
 });
 
 describe('validateSeverity', () => {
-  it('accepts blocking', () => {
-    expect(validateSeverity('blocking')).toBe('blocking');
+  it('accepts required', () => {
+    expect(validateSeverity('required')).toBe('required');
   });
 
   it('accepts suggestion', () => {
     expect(validateSeverity('suggestion')).toBe('suggestion');
   });
 
-  it('accepts question', () => {
-    expect(validateSeverity('question')).toBe('question');
+  it('accepts nit', () => {
+    expect(validateSeverity('nit')).toBe('nit');
+  });
+
+  it('accepts ignore', () => {
+    expect(validateSeverity('ignore')).toBe('ignore');
   });
 
   it('defaults to suggestion for unknown values', () => {
     expect(validateSeverity('critical')).toBe('suggestion');
+    expect(validateSeverity('blocking')).toBe('suggestion');
+    expect(validateSeverity('question')).toBe('suggestion');
     expect(validateSeverity(undefined)).toBe('suggestion');
     expect(validateSeverity(null)).toBe('suggestion');
     expect(validateSeverity(42)).toBe('suggestion');
@@ -156,7 +162,7 @@ describe('parseConsolidatedReview', () => {
       summary: 'Found some issues.',
       findings: [
         {
-          severity: 'blocking',
+          severity: 'required',
           title: 'Bug',
           file: 'src/a.ts',
           line: 5,
@@ -215,7 +221,7 @@ describe('parseConsolidatedReview', () => {
       summary: 'Looks good.',
       findings: [
         {
-          severity: 'blocking',
+          severity: 'required',
           title: 'Bug',
           file: 'a.ts',
           line: 1,
@@ -232,10 +238,10 @@ describe('parseConsolidatedReview', () => {
 });
 
 describe('determineVerdict', () => {
-  it('returns REQUEST_CHANGES when any finding is blocking', () => {
+  it('returns REQUEST_CHANGES when any finding is required', () => {
     const findings: Finding[] = [
       { severity: 'suggestion', title: 'A', file: '', line: 0, description: '', reviewers: [] },
-      { severity: 'blocking', title: 'B', file: '', line: 0, description: '', reviewers: [] },
+      { severity: 'required', title: 'B', file: '', line: 0, description: '', reviewers: [] },
     ];
     expect(determineVerdict('APPROVE', findings)).toBe('REQUEST_CHANGES');
   });
@@ -247,9 +253,16 @@ describe('determineVerdict', () => {
     expect(determineVerdict('APPROVE', findings)).toBe('APPROVE');
   });
 
-  it('returns APPROVE when there are only questions', () => {
+  it('returns APPROVE when there are only nits', () => {
     const findings: Finding[] = [
-      { severity: 'question', title: 'A', file: '', line: 0, description: '', reviewers: [] },
+      { severity: 'nit', title: 'A', file: '', line: 0, description: '', reviewers: [] },
+    ];
+    expect(determineVerdict('APPROVE', findings)).toBe('APPROVE');
+  });
+
+  it('returns APPROVE when there are only ignores', () => {
+    const findings: Finding[] = [
+      { severity: 'ignore', title: 'A', file: '', line: 0, description: '', reviewers: [] },
     ];
     expect(determineVerdict('APPROVE', findings)).toBe('APPROVE');
   });
@@ -343,14 +356,14 @@ describe('mergeIndividualFindings', () => {
     expect(result.findings).toHaveLength(2);
   });
 
-  it('returns REQUEST_CHANGES when any finding is blocking', () => {
+  it('returns REQUEST_CHANGES when any finding is required', () => {
     const result = mergeIndividualFindings([
-      { reviewer: 'A', findings: [makeFinding({ severity: 'blocking' })] },
+      { reviewer: 'A', findings: [makeFinding({ severity: 'required' })] },
     ]);
     expect(result.verdict).toBe('REQUEST_CHANGES');
   });
 
-  it('returns APPROVE when no blocking findings', () => {
+  it('returns APPROVE when no required findings', () => {
     const result = mergeIndividualFindings([
       { reviewer: 'A', findings: [makeFinding({ severity: 'suggestion' })] },
     ]);
@@ -561,11 +574,11 @@ describe('tallyVotes', () => {
     ];
     const results = tallyVotes([findingA], votes, 3);
     expect(results).toHaveLength(1);
-    expect(results[0].severity).toBe('blocking');
+    expect(results[0].severity).toBe('required');
   });
 
   it('downgrades to suggestion on split vote', () => {
-    const finding = { ...makeFinding({ title: 'Mixed', severity: 'blocking' }), index: 0, originalReviewer: 'Reviewer1' };
+    const finding = { ...makeFinding({ title: 'Mixed', severity: 'required' }), index: 0, originalReviewer: 'Reviewer1' };
     const votes: AgentVote[] = [
       { agentName: 'A', findingIndex: 0, vote: 'agree', reason: 'valid' },
       { agentName: 'B', findingIndex: 0, vote: 'disagree', reason: 'nah' },
@@ -592,7 +605,7 @@ describe('tallyVotes', () => {
     expect(result).not.toHaveProperty('originalReviewer');
   });
 
-  it('escalates suggestion to blocking when 2+ escalate votes with majority agree', () => {
+  it('escalates suggestion to required when 2+ escalate votes with majority agree', () => {
     const votes: AgentVote[] = [
       { agentName: 'A', findingIndex: 0, vote: 'escalate', reason: 'worse than reported' },
       { agentName: 'B', findingIndex: 0, vote: 'escalate', reason: 'much worse' },
@@ -600,7 +613,7 @@ describe('tallyVotes', () => {
     ];
     const results = tallyVotes([findingA], votes, 3);
     expect(results).toHaveLength(1);
-    expect(results[0].severity).toBe('blocking');
+    expect(results[0].severity).toBe('required');
   });
 
   it('does not escalate with only 1 escalate vote', () => {
@@ -614,28 +627,28 @@ describe('tallyVotes', () => {
     expect(results[0].severity).toBe('suggestion');
   });
 
-  it('does not escalate question findings via escalate votes', () => {
-    const questionFinding = { ...makeFinding({ title: 'Unclear', severity: 'question' as const }), index: 0, originalReviewer: 'R1' };
+  it('does not escalate nit findings via escalate votes', () => {
+    const nitFinding = { ...makeFinding({ title: 'Unclear', severity: 'nit' as const }), index: 0, originalReviewer: 'R1' };
     const votes: AgentVote[] = [
       { agentName: 'A', findingIndex: 0, vote: 'escalate', reason: 'serious' },
       { agentName: 'B', findingIndex: 0, vote: 'escalate', reason: 'serious' },
       { agentName: 'C', findingIndex: 0, vote: 'agree', reason: 'valid' },
     ];
-    const results = tallyVotes([questionFinding], votes, 3);
+    const results = tallyVotes([nitFinding], votes, 3);
     expect(results).toHaveLength(1);
-    expect(results[0].severity).toBe('question');
+    expect(results[0].severity).toBe('nit');
   });
 
-  it('does not escalate already-blocking findings via escalate votes', () => {
-    const blockingFinding = { ...makeFinding({ title: 'Bug', severity: 'blocking' as const }), index: 0, originalReviewer: 'R1' };
+  it('does not escalate already-required findings via escalate votes', () => {
+    const requiredFinding = { ...makeFinding({ title: 'Bug', severity: 'required' as const }), index: 0, originalReviewer: 'R1' };
     const votes: AgentVote[] = [
       { agentName: 'A', findingIndex: 0, vote: 'escalate', reason: 'serious' },
       { agentName: 'B', findingIndex: 0, vote: 'escalate', reason: 'serious' },
       { agentName: 'C', findingIndex: 0, vote: 'agree', reason: 'valid' },
     ];
-    const results = tallyVotes([blockingFinding], votes, 3);
+    const results = tallyVotes([requiredFinding], votes, 3);
     expect(results).toHaveLength(1);
-    expect(results[0].severity).toBe('blocking');
+    expect(results[0].severity).toBe('required');
   });
 
   it('collects agreeing voter names in reviewers array', () => {
@@ -648,28 +661,28 @@ describe('tallyVotes', () => {
     expect(results[0].reviewers).toEqual(['Alpha', 'Beta']);
   });
 
-  it('does not escalate question findings to blocking on unanimous agree', () => {
-    const questionFinding = { ...makeFinding({ title: 'Unclear code', severity: 'question' as const }), index: 0, originalReviewer: 'Reviewer1' };
+  it('does not escalate nit findings to required on unanimous agree', () => {
+    const nitFinding = { ...makeFinding({ title: 'Unclear code', severity: 'nit' as const }), index: 0, originalReviewer: 'Reviewer1' };
     const votes: AgentVote[] = [
       { agentName: 'A', findingIndex: 0, vote: 'agree', reason: 'valid' },
       { agentName: 'B', findingIndex: 0, vote: 'agree', reason: 'valid' },
       { agentName: 'C', findingIndex: 0, vote: 'agree', reason: 'valid' },
     ];
-    const results = tallyVotes([questionFinding], votes, 3);
+    const results = tallyVotes([nitFinding], votes, 3);
     expect(results).toHaveLength(1);
-    expect(results[0].severity).toBe('question');
+    expect(results[0].severity).toBe('nit');
   });
 
-  it('does not escalate blocking findings further on unanimous agree', () => {
-    const blockingFinding = { ...makeFinding({ title: 'Real bug', severity: 'blocking' as const }), index: 0, originalReviewer: 'Reviewer1' };
+  it('does not escalate required findings further on unanimous agree', () => {
+    const requiredFinding = { ...makeFinding({ title: 'Real bug', severity: 'required' as const }), index: 0, originalReviewer: 'Reviewer1' };
     const votes: AgentVote[] = [
       { agentName: 'A', findingIndex: 0, vote: 'agree', reason: 'valid' },
       { agentName: 'B', findingIndex: 0, vote: 'agree', reason: 'valid' },
       { agentName: 'C', findingIndex: 0, vote: 'agree', reason: 'valid' },
     ];
-    const results = tallyVotes([blockingFinding], votes, 3);
+    const results = tallyVotes([requiredFinding], votes, 3);
     expect(results).toHaveLength(1);
-    expect(results[0].severity).toBe('blocking');
+    expect(results[0].severity).toBe('required');
   });
 
   it('handles multiple findings independently', () => {
