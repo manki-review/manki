@@ -227,6 +227,46 @@ describe('buildReviewerUserMessage', () => {
     const message = buildReviewerUserMessage('diff content', '');
     expect(message).not.toContain('Repository Context');
   });
+
+  it('includes file contents when provided', () => {
+    const fileContents = new Map([
+      ['src/foo.ts', 'const x = 1;\nexport default x;'],
+      ['src/bar.ts', 'export function bar() { return 42; }'],
+    ]);
+    const message = buildReviewerUserMessage('diff content', '', fileContents);
+    expect(message).toContain('## Changed Files');
+    expect(message).toContain('### File: src/foo.ts');
+    expect(message).toContain('const x = 1;');
+    expect(message).toContain('### File: src/bar.ts');
+    expect(message).toContain('export function bar()');
+    expect(message).toContain('## Pull Request Diff');
+  });
+
+  it('uses file extension as language hint in code fences', () => {
+    const fileContents = new Map([
+      ['src/main.rs', 'fn main() {}'],
+    ]);
+    const message = buildReviewerUserMessage('diff', '', fileContents);
+    expect(message).toContain('```rs\nfn main() {}');
+  });
+
+  it('omits file contents section when map is empty', () => {
+    const message = buildReviewerUserMessage('diff', '', new Map());
+    expect(message).not.toContain('Changed Files');
+  });
+
+  it('omits file contents section when undefined', () => {
+    const message = buildReviewerUserMessage('diff', '', undefined);
+    expect(message).not.toContain('Changed Files');
+  });
+
+  it('places file contents before the diff', () => {
+    const fileContents = new Map([['a.ts', 'content']]);
+    const message = buildReviewerUserMessage('diff', '', fileContents);
+    const filesIdx = message.indexOf('## Changed Files');
+    const diffIdx = message.indexOf('## Pull Request Diff');
+    expect(filesIdx).toBeLessThan(diffIdx);
+  });
 });
 
 describe('parseFindings with extractJSON', () => {

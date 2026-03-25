@@ -17,6 +17,10 @@ export interface ClaudeResponse {
   content: string;
 }
 
+export interface SendMessageOptions {
+  effort?: 'low' | 'medium' | 'high' | 'max';
+}
+
 export class ClaudeClient {
   private oauthToken?: string;
   private apiKey?: string;
@@ -38,11 +42,11 @@ export class ClaudeClient {
     }
   }
 
-  async sendMessage(systemPrompt: string, userMessage: string): Promise<ClaudeResponse> {
+  async sendMessage(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<ClaudeResponse> {
     if (this.oauthToken) {
-      return this.sendViaOAuth(systemPrompt, userMessage);
+      return this.sendViaOAuth(systemPrompt, userMessage, options);
     }
-    return this.sendViaAPI(systemPrompt, userMessage);
+    return this.sendViaAPI(systemPrompt, userMessage, options);
   }
 
   private async ensureCLI(): Promise<string> {
@@ -70,17 +74,23 @@ export class ClaudeClient {
     }
   }
 
-  private async sendViaOAuth(systemPrompt: string, userMessage: string): Promise<ClaudeResponse> {
+  private async sendViaOAuth(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<ClaudeResponse> {
     const fullPrompt = `${systemPrompt}\n\n---\n\n${userMessage}`;
     const cliPath = await this.ensureCLI();
 
     return new Promise((resolve, reject) => {
       // -p enables pipe mode — reads prompt from stdin when no argument follows
-      const child = spawn(cliPath, [
+      const args = [
         '-p',
         '--output-format', 'text',
         '--model', this.model,
-      ], {
+      ];
+
+      if (options?.effort) {
+        args.push('--effort', options.effort);
+      }
+
+      const child = spawn(cliPath, args, {
         env: {
           // process.env is spread intentionally — Claude CLI requires PATH, HOME, and other system vars.
           // CLAUDE_CODE_OAUTH_TOKEN is added conditionally. Secrets should be managed via GitHub Actions secret masking.
@@ -207,18 +217,28 @@ export class ClaudeClient {
     });
   }
 
-  private async sendViaAPI(systemPrompt: string, userMessage: string): Promise<ClaudeResponse> {
+  private async sendViaAPI(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<ClaudeResponse> {
     if (!this.anthropic) throw new Error('Anthropic client not initialized');
 
-    const response = await this.anthropic.messages.create({
+    const useThinking = options?.effort && options.effort !== 'low';
+    const budgetMap: Record<string, number> = { medium: 5000, high: 10000, max: 16000 };
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const params: any = {
       model: this.model,
-      max_tokens: 16384,
+      max_tokens: useThinking ? 32768 : 16384,
       system: systemPrompt,
       messages: [{ role: 'user', content: userMessage }],
-    });
+    };
 
-    const textBlocks = response.content.filter(b => b.type === 'text');
-    const content = textBlocks.map(b => b.text).join('\n');
+    if (useThinking) {
+      params.thinking = { type: 'enabled', budget_tokens: budgetMap[options!.effort!] };
+    }
+
+    const response = await this.anthropic.messages.create(params);
+
+    const textBlocks = response.content.filter((b) => b.type === 'text');
+    const content = textBlocks.map((b) => 'text' in b ? b.text : '').join('\n');
     core.startGroup('Claude API response');
     core.info(content);
     core.endGroup();

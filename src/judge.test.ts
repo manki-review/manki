@@ -386,6 +386,28 @@ describe('runJudgeAgent', () => {
     expect(mockSendMessage).toHaveBeenCalledTimes(1);
   });
 
+  it('passes effort option to sendMessage', async () => {
+    const judgedResponse = JSON.stringify([
+      { title: 'Unused variable', severity: 'suggestion', reasoning: 'Real issue.', confidence: 'high' },
+    ]);
+    mockSendMessage.mockResolvedValue({ content: judgedResponse });
+
+    const input: JudgeInput = {
+      findings: [makeFinding()],
+      diff: makeDiff(),
+      rawDiff: '',
+      repoContext: '',
+    };
+
+    await runJudgeAgent(mockClient, makeConfig(), input);
+
+    expect(mockSendMessage).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      { effort: 'high' },
+    );
+  });
+
   it('returns originals when judge response is empty', async () => {
     mockSendMessage.mockResolvedValue({ content: '' });
 

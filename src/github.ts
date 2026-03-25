@@ -611,4 +611,77 @@ export async function reactToReviewComment(
   }
 }
 
+const DEFAULT_MAX_FILE_SIZE = 50 * 1024; // 50KB per file
+const DEFAULT_MAX_TOTAL_SIZE = 100 * 1024; // 100KB total
+
+/**
+ * Fetch file contents for changed files via the GitHub API.
+ * Skips binary files and files exceeding the size limit.
+ * If total content exceeds the budget, includes only the largest files that fit.
+ */
+export async function fetchFileContents(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  ref: string,
+  files: string[],
+  maxFileSize: number = DEFAULT_MAX_FILE_SIZE,
+  maxTotalSize: number = DEFAULT_MAX_TOTAL_SIZE,
+): Promise<Map<string, string>> {
+  const results: Array<{ path: string; content: string }> = [];
+
+  const fetches = files.map(async (path) => {
+    try {
+      const { data } = await octokit.rest.repos.getContent({ owner, repo, path, ref });
+
+      if (Array.isArray(data) || !('content' in data) || data.encoding !== 'base64') {
+        return null;
+      }
+
+      if (data.size > maxFileSize) {
+        core.debug(`Skipping ${path}: ${data.size} bytes exceeds ${maxFileSize} limit`);
+        return null;
+      }
+
+      const content = Buffer.from(data.content, 'base64').toString('utf-8');
+
+      // Skip binary files (content with null bytes)
+      if (content.includes('\0')) {
+        core.debug(`Skipping ${path}: binary file`);
+        return null;
+      }
+
+      return { path, content };
+    } catch {
+      core.debug(`Could not fetch ${path}`);
+      return null;
+    }
+  });
+
+  const settled = await Promise.all(fetches);
+  for (const result of settled) {
+    if (result) {
+      results.push(result);
+    }
+  }
+
+  // Sort by content size descending so we include the largest files first
+  results.sort((a, b) => b.content.length - a.content.length);
+
+  const fileContents = new Map<string, string>();
+  let totalSize = 0;
+
+  for (const { path, content } of results) {
+    if (totalSize + content.length > maxTotalSize) {
+      core.debug(`Skipping ${path}: would exceed total size budget (${totalSize}/${maxTotalSize})`);
+      continue;
+    }
+    fileContents.set(path, content);
+    totalSize += content.length;
+  }
+
+  core.info(`Fetched ${fileContents.size}/${files.length} file contents (${totalSize} bytes)`);
+  return fileContents;
+}
+
 export { dynamicFence, formatFindingComment, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, safeTruncate, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_MARKER };

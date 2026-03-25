@@ -259,7 +259,7 @@ export async function runJudgeAgent(
   const systemPrompt = buildJudgeSystemPrompt(config);
   const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext);
 
-  const response = await client.sendMessage(systemPrompt, userMessage);
+  const response = await client.sendMessage(systemPrompt, userMessage, { effort: 'high' });
   const judged = parseJudgeResponse(response.content);
 
   if (judged.length === 0) {

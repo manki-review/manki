@@ -13,6 +13,7 @@ import {
   fetchPRDiff,
   fetchConfigFile,
   fetchRepoContext,
+  fetchFileContents,
   postProgressComment,
   updateProgressComment,
   dismissPreviousReviews,
@@ -256,9 +257,20 @@ async function runFullReview(
 
     const fullContext = [repoContext, memoryContext, recap.recapContext].filter(Boolean).join('\n\n');
 
+    // Fetch full file contents for changed files so reviewers have surrounding context
+    const filePaths = filteredFiles
+      .filter(f => f.changeType !== 'deleted')
+      .map(f => f.path);
+    let fileContents: Map<string, string> | undefined;
+    try {
+      fileContents = await fetchFileContents(octokit, owner, repo, commitSha, filePaths);
+    } catch (error) {
+      core.warning(`Failed to fetch file contents: ${error}`);
+    }
+
     await dismissPreviousReviews(octokit, owner, repo, prNumber);
 
-    const result = await runReview({ reviewer: reviewerClient, judge: judgeClient }, config, diff, rawDiff, fullContext, memory);
+    const result = await runReview({ reviewer: reviewerClient, judge: judgeClient }, config, diff, rawDiff, fullContext, memory, fileContents);
 
     if (!result.reviewComplete && result.verdict === 'APPROVE') {
       result.verdict = 'COMMENT';

@@ -1,4 +1,4 @@
-import { formatFindingComment, mapVerdictToEvent, BOT_MARKER, buildNitIssueBody, getSeverityLabel, postReview, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, safeTruncate } from './github';
+import { formatFindingComment, mapVerdictToEvent, BOT_MARKER, buildNitIssueBody, getSeverityLabel, postReview, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, safeTruncate, fetchFileContents } from './github';
 import { Finding, ReviewResult } from './types';
 
 describe('formatFindingComment', () => {
@@ -697,5 +697,88 @@ describe('sanitizeMarkdown numeric entities', () => {
 
   it('decodes mixed named and numeric entities', () => {
     expect(sanitizeMarkdown('&lt;div&#62;text&#x3C;/div&gt;')).toBe('text');
+  });
+});
+
+describe('fetchFileContents', () => {
+  function mockOctokit(files: Record<string, { content: string; size: number } | 'error'>) {
+    return {
+      rest: {
+        repos: {
+          getContent: jest.fn(async ({ path }: { path: string }) => {
+            const entry = files[path];
+            if (!entry || entry === 'error') {
+              throw new Error(`Not found: ${path}`);
+            }
+            return {
+              data: {
+                content: Buffer.from(entry.content).toString('base64'),
+                encoding: 'base64',
+                size: entry.size,
+              },
+            };
+          }),
+        },
+      },
+    } as unknown as Parameters<typeof fetchFileContents>[0];
+  }
+
+  it('fetches file contents and returns a map', async () => {
+    const octokit = mockOctokit({
+      'src/a.ts': { content: 'const a = 1;', size: 12 },
+      'src/b.ts': { content: 'const b = 2;', size: 12 },
+    });
+
+    const result = await fetchFileContents(octokit, 'owner', 'repo', 'abc123', ['src/a.ts', 'src/b.ts']);
+    expect(result.size).toBe(2);
+    expect(result.get('src/a.ts')).toBe('const a = 1;');
+    expect(result.get('src/b.ts')).toBe('const b = 2;');
+  });
+
+  it('skips files exceeding maxFileSize', async () => {
+    const octokit = mockOctokit({
+      'big.ts': { content: 'x'.repeat(100), size: 60000 },
+    });
+
+    const result = await fetchFileContents(octokit, 'owner', 'repo', 'abc123', ['big.ts'], 50000);
+    expect(result.size).toBe(0);
+  });
+
+  it('skips files that fail to fetch', async () => {
+    const octokit = mockOctokit({
+      'good.ts': { content: 'ok', size: 2 },
+      'missing.ts': 'error',
+    });
+
+    const result = await fetchFileContents(octokit, 'owner', 'repo', 'abc123', ['good.ts', 'missing.ts']);
+    expect(result.size).toBe(1);
+    expect(result.get('good.ts')).toBe('ok');
+  });
+
+  it('respects maxTotalSize budget', async () => {
+    const octokit = mockOctokit({
+      'large.ts': { content: 'a'.repeat(80), size: 80 },
+      'small.ts': { content: 'b'.repeat(30), size: 30 },
+    });
+
+    // Budget of 100 bytes: the large file (80) fits, small file (30) would exceed 110 > 100
+    const result = await fetchFileContents(octokit, 'owner', 'repo', 'abc123', ['large.ts', 'small.ts'], 50000, 100);
+    expect(result.size).toBe(1);
+    expect(result.has('large.ts')).toBe(true);
+  });
+
+  it('skips binary files containing null bytes', async () => {
+    const octokit = mockOctokit({
+      'image.png': { content: 'header\0binary', size: 13 },
+    });
+
+    const result = await fetchFileContents(octokit, 'owner', 'repo', 'abc123', ['image.png']);
+    expect(result.size).toBe(0);
+  });
+
+  it('returns empty map for empty file list', async () => {
+    const octokit = mockOctokit({});
+    const result = await fetchFileContents(octokit, 'owner', 'repo', 'abc123', []);
+    expect(result.size).toBe(0);
   });
 });

@@ -131,6 +131,7 @@ export async function runReview(
   rawDiff: string,
   repoContext: string,
   memory?: RepoMemory | null,
+  fileContents?: Map<string, string>,
 ): Promise<ReviewResult> {
   const team = selectTeam(diff, config, config.reviewers);
   core.info(`Review team (${team.level}): ${team.agents.map(a => a.name).join(', ')}`);
@@ -138,7 +139,7 @@ export async function runReview(
   core.info(`Running ${team.agents.length} reviewer agents in parallel...`);
   const agentResults = await Promise.allSettled(
     team.agents.map(agent =>
-      runReviewerAgent(clients.reviewer, config, agent, rawDiff, repoContext)
+      runReviewerAgent(clients.reviewer, config, agent, rawDiff, repoContext, fileContents)
     )
   );
 
@@ -217,9 +218,10 @@ async function runReviewerAgent(
   reviewer: ReviewerAgent,
   rawDiff: string,
   repoContext: string,
+  fileContents?: Map<string, string>,
 ): Promise<Finding[]> {
   const systemPrompt = buildReviewerSystemPrompt(reviewer, config);
-  const userMessage = buildReviewerUserMessage(rawDiff, repoContext);
+  const userMessage = buildReviewerUserMessage(rawDiff, repoContext, fileContents);
 
   const response = await client.sendMessage(systemPrompt, userMessage);
   return parseFindings(response.content, reviewer.name);
@@ -263,7 +265,8 @@ Respond with ONLY a JSON array (no markdown fences, no explanation). Each findin
 - Don't flag intentional patterns (e.g., TODO comments, known workarounds mentioned in context).
 - Keep descriptions concrete and actionable.
 - If you find NO issues, respond with an empty array: []
-- Be thorough but not pedantic. Quality over quantity.`;
+- Be thorough but not pedantic. Quality over quantity.
+- When full file contents are provided, use them to understand context (variable definitions, imports, surrounding logic) but only flag issues in the changed code.`;
 
   if (config.instructions) {
     prompt += `\n\n## Additional Instructions\n\n${config.instructions}`;
@@ -272,11 +275,24 @@ Respond with ONLY a JSON array (no markdown fences, no explanation). Each findin
   return prompt;
 }
 
-export function buildReviewerUserMessage(rawDiff: string, repoContext: string): string {
+export function buildReviewerUserMessage(
+  rawDiff: string,
+  repoContext: string,
+  fileContents?: Map<string, string>,
+): string {
   let message = '';
 
   if (repoContext) {
     message += `## Repository Context\n\n${repoContext}\n\n`;
+  }
+
+  if (fileContents && fileContents.size > 0) {
+    message += `## Changed Files\n\n`;
+    message += `The full content of changed files is provided below for context. Focus your review on the diff, but use these files to understand the surrounding code.\n\n`;
+    for (const [path, content] of fileContents) {
+      const ext = path.split('.').pop() || '';
+      message += `### File: ${path}\n\n\`\`\`${ext}\n${content}\n\`\`\`\n\n`;
+    }
   }
 
   message += `## Pull Request Diff\n\n\`\`\`diff\n${truncateDiff(rawDiff)}\n\`\`\``;
