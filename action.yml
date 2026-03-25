@@ -10,8 +10,8 @@ inputs:
     description: 'Anthropic API key (alternative to OAuth token)'
     required: false
   github_token:
-    description: 'GitHub token for posting reviews and comments'
-    required: true
+    description: 'GitHub token for posting reviews and comments (not required when using GitHub App auth)'
+    required: false
   config_path:
     description: 'Path to .manki.yml config file'
     required: false
