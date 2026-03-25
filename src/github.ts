@@ -55,6 +55,62 @@ export async function fetchConfigFile(
   }
 }
 
+const MAX_RESOLVE_DEPTH = 3;
+
+/**
+ * Resolve `@path/to/file.md` references in CLAUDE.md content by fetching
+ * the referenced files from the repo and inlining their content.
+ */
+async function resolveReferences(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  ref: string,
+  content: string,
+  basePath: string,
+  depth: number = 0,
+): Promise<string> {
+  if (depth >= MAX_RESOLVE_DEPTH) {
+    return content;
+  }
+
+  const lines = content.split('\n');
+  const resolvedLines: string[] = [];
+
+  for (const line of lines) {
+    const match = line.match(/^@(\S+\.md)\s*$/);
+    if (!match) {
+      resolvedLines.push(line);
+      continue;
+    }
+
+    const filePath = match[1];
+    if (filePath.includes('..')) {
+      resolvedLines.push(line);
+      continue;
+    }
+
+    const resolvedPath = basePath ? `${basePath}/${filePath}` : filePath;
+    try {
+      const { data } = await octokit.rest.repos.getContent({ owner, repo, path: resolvedPath, ref });
+      if ('content' in data && data.encoding === 'base64') {
+        let fileContent = Buffer.from(data.content, 'base64').toString('utf-8');
+        const fileDir = resolvedPath.includes('/') ? resolvedPath.substring(0, resolvedPath.lastIndexOf('/')) : '';
+        fileContent = await resolveReferences(octokit, owner, repo, ref, fileContent, fileDir, depth + 1);
+        resolvedLines.push(fileContent.trimEnd());
+      } else {
+        // Not a file (e.g., directory listing) — keep original reference
+        resolvedLines.push(line);
+      }
+    } catch {
+      resolvedLines.push(line);
+      resolvedLines.push(`<!-- Could not resolve reference: ${filePath} -->`);
+    }
+  }
+
+  return resolvedLines.join('\n');
+}
+
 /**
  * Fetch repo context (CLAUDE.md, README, etc.) for richer reviews.
  */
@@ -71,7 +127,9 @@ export async function fetchRepoContext(
     try {
       const { data } = await octokit.rest.repos.getContent({ owner, repo, path, ref });
       if ('content' in data && data.encoding === 'base64') {
-        const content = Buffer.from(data.content, 'base64').toString('utf-8');
+        let content = Buffer.from(data.content, 'base64').toString('utf-8');
+        const dir = path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
+        content = await resolveReferences(octokit, owner, repo, ref, content, dir);
         parts.push(`## ${path}\n\n${content}`);
       }
     } catch {
@@ -684,4 +742,4 @@ export async function fetchFileContents(
   return fileContents;
 }
 
-export { dynamicFence, formatFindingComment, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, safeTruncate, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_MARKER };
+export { dynamicFence, formatFindingComment, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, safeTruncate, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_MARKER };
