@@ -31,6 +31,8 @@ export interface Pattern {
   id: string;
   finding_title: string;
   occurrences: number;
+  accepted_count: number;
+  rejected_count: number;
   repos: string[];
   first_seen: string;
   last_seen: string;
@@ -287,6 +289,8 @@ export async function updatePattern(
       id: `pat-${Date.now()}`,
       finding_title: normalized,
       occurrences: 1,
+      accepted_count: 0,
+      rejected_count: 0,
       repos: [repoName],
       first_seen: new Date().toISOString().split('T')[0],
       last_seen: new Date().toISOString().split('T')[0],
@@ -299,6 +303,133 @@ export async function updatePattern(
   await writeFile(octokit, owner, repo, path, content, `Update pattern: ${findingTitle.slice(0, 50)}`);
 
   return pattern;
+}
+
+/**
+ * Update a pattern's acceptance/rejection count based on triage decision.
+ */
+export async function updatePatternDecision(
+  octokit: Octokit,
+  memoryRepo: string,
+  targetRepo: string,
+  findingTitle: string,
+  accepted: boolean,
+): Promise<void> {
+  const [owner, repo] = memoryRepo.split('/');
+  const path = `${targetRepo}/patterns.yml`;
+
+  const existing = await fetchYamlFile<Pattern[]>(octokit, owner, repo, path) || [];
+
+  const normalized = findingTitle.toLowerCase().trim();
+  let pattern = existing.find(p => p.finding_title === normalized);
+
+  if (pattern) {
+    if (accepted) {
+      pattern.accepted_count = (pattern.accepted_count || 0) + 1;
+    } else {
+      pattern.rejected_count = (pattern.rejected_count || 0) + 1;
+    }
+    pattern.last_seen = new Date().toISOString().split('T')[0];
+
+    // Auto-escalate: accepted 3+ times and accepted > 2x rejected
+    if (!pattern.escalated &&
+        (pattern.accepted_count || 0) >= 3 &&
+        (pattern.accepted_count || 0) > (pattern.rejected_count || 0) * 2) {
+      pattern.escalated = true;
+      core.info(`Pattern "${findingTitle}" escalated — consistently accepted by team`);
+    }
+  } else {
+    pattern = {
+      id: `pat-${Date.now()}`,
+      finding_title: normalized,
+      occurrences: 0,
+      accepted_count: accepted ? 1 : 0,
+      rejected_count: accepted ? 0 : 1,
+      repos: [targetRepo],
+      first_seen: new Date().toISOString().split('T')[0],
+      last_seen: new Date().toISOString().split('T')[0],
+      escalated: false,
+    };
+    existing.push(pattern);
+  }
+
+  const content = stringifyYaml(existing);
+  await writeFile(octokit, owner, repo, path, content, `Update pattern decision: ${findingTitle.slice(0, 50)}`);
+}
+
+/**
+ * Escalate findings whose patterns have been consistently accepted by the team.
+ */
+export function applyEscalations(
+  findings: Finding[],
+  patterns: Pattern[],
+): Finding[] {
+  return findings.map(f => {
+    if (f.severity !== 'suggestion' && f.severity !== 'question') return f;
+
+    const normalized = f.title.toLowerCase().trim();
+    const pattern = patterns.find(p =>
+      p.escalated && p.finding_title === normalized,
+    );
+
+    if (pattern) {
+      core.info(`Escalating "${f.title}" from ${f.severity} to blocking (pattern accepted ${pattern.accepted_count || 0} times)`);
+      return { ...f, severity: 'blocking' as const };
+    }
+
+    return f;
+  });
+}
+
+/**
+ * Batch-update pattern acceptance/rejection counts in a single read-write cycle.
+ */
+export async function batchUpdatePatternDecisions(
+  octokit: Octokit,
+  memoryRepo: string,
+  targetRepo: string,
+  decisions: Array<{ title: string; accepted: boolean }>,
+): Promise<void> {
+  const [owner, repo] = memoryRepo.split('/');
+  const path = `${targetRepo}/patterns.yml`;
+
+  const existing = await fetchYamlFile<Pattern[]>(octokit, owner, repo, path) || [];
+
+  for (const decision of decisions) {
+    const normalized = decision.title.toLowerCase().trim();
+    const pattern = existing.find(p => p.finding_title === normalized);
+
+    if (pattern) {
+      if (decision.accepted) {
+        pattern.accepted_count = (pattern.accepted_count || 0) + 1;
+      } else {
+        pattern.rejected_count = (pattern.rejected_count || 0) + 1;
+      }
+      pattern.last_seen = new Date().toISOString().split('T')[0];
+
+      if (!pattern.escalated &&
+          (pattern.accepted_count || 0) >= 3 &&
+          (pattern.accepted_count || 0) > (pattern.rejected_count || 0) * 2) {
+        pattern.escalated = true;
+        core.info(`Pattern "${decision.title}" escalated`);
+      }
+    } else {
+      existing.push({
+        id: `pat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        finding_title: normalized,
+        occurrences: 0,
+        accepted_count: decision.accepted ? 1 : 0,
+        rejected_count: decision.accepted ? 0 : 1,
+        repos: [targetRepo],
+        first_seen: new Date().toISOString().split('T')[0],
+        last_seen: new Date().toISOString().split('T')[0],
+        escalated: false,
+      });
+    }
+  }
+
+  const content = stringifyYaml(existing);
+  await writeFile(octokit, owner, repo, path, content, `Update ${decisions.length} pattern decisions`);
 }
 
 async function getFileSha(

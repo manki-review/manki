@@ -1,4 +1,4 @@
-import { applySuppressions, matchesSuppression, buildMemoryContext, sanitizeMemoryField, Suppression, RepoMemory } from './memory';
+import { applySuppressions, applyEscalations, matchesSuppression, buildMemoryContext, sanitizeMemoryField, Suppression, Pattern, RepoMemory } from './memory';
 import { Finding } from './types';
 
 const makeFinding = (overrides: Partial<Finding> = {}): Finding => ({
@@ -274,5 +274,78 @@ describe('buildMemoryContext', () => {
     expect(context).toContain('Review Memory — Learnings');
     expect(context).toContain('Prefer const over let');
     expect(context).not.toContain('Review Memory — Suppressions');
+  });
+});
+
+const makePattern = (overrides: Partial<Pattern> = {}): Pattern => ({
+  id: 'pat-1',
+  finding_title: 'unused variable',
+  occurrences: 5,
+  accepted_count: 4,
+  rejected_count: 1,
+  repos: ['test-repo'],
+  first_seen: '2025-01-01',
+  last_seen: '2025-06-01',
+  escalated: true,
+  ...overrides,
+});
+
+describe('applyEscalations', () => {
+  it('escalates suggestion when pattern is escalated', () => {
+    const findings = [makeFinding({ severity: 'suggestion', title: 'Unused variable' })];
+    const patterns = [makePattern({ finding_title: 'unused variable', escalated: true })];
+
+    const result = applyEscalations(findings, patterns);
+    expect(result).toHaveLength(1);
+    expect(result[0].severity).toBe('blocking');
+  });
+
+  it('does not escalate blocking findings', () => {
+    const findings = [makeFinding({ severity: 'blocking', title: 'Unused variable' })];
+    const patterns = [makePattern({ finding_title: 'unused variable', escalated: true })];
+
+    const result = applyEscalations(findings, patterns);
+    expect(result).toHaveLength(1);
+    expect(result[0].severity).toBe('blocking');
+  });
+
+  it('does not escalate non-matching patterns', () => {
+    const findings = [makeFinding({ severity: 'suggestion', title: 'Missing error handling' })];
+    const patterns = [makePattern({ finding_title: 'unused variable', escalated: true })];
+
+    const result = applyEscalations(findings, patterns);
+    expect(result).toHaveLength(1);
+    expect(result[0].severity).toBe('suggestion');
+  });
+
+  it('handles missing accepted_count gracefully', () => {
+    const findings = [makeFinding({ severity: 'suggestion', title: 'Unused variable' })];
+    const patterns = [makePattern({
+      finding_title: 'unused variable',
+      escalated: true,
+      accepted_count: undefined as unknown as number,
+    })];
+
+    const result = applyEscalations(findings, patterns);
+    expect(result).toHaveLength(1);
+    expect(result[0].severity).toBe('blocking');
+  });
+
+  it('escalates question severity findings', () => {
+    const findings = [makeFinding({ severity: 'question', title: 'Unused variable' })];
+    const patterns = [makePattern({ finding_title: 'unused variable', escalated: true })];
+
+    const result = applyEscalations(findings, patterns);
+    expect(result).toHaveLength(1);
+    expect(result[0].severity).toBe('blocking');
+  });
+
+  it('does not escalate when pattern is not escalated', () => {
+    const findings = [makeFinding({ severity: 'suggestion', title: 'Unused variable' })];
+    const patterns = [makePattern({ finding_title: 'unused variable', escalated: false })];
+
+    const result = applyEscalations(findings, patterns);
+    expect(result).toHaveLength(1);
+    expect(result[0].severity).toBe('suggestion');
   });
 });

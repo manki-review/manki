@@ -12,7 +12,7 @@ Manki runs three specialist reviewers in parallel, then consolidates their findi
 - **Auto-resolve with validation** -- When a new push touches code near an open finding, Claude validates whether the fix actually addresses it and auto-resolves the thread
 - **Auto-approve** -- When all blocking threads are resolved, Manki approves the PR. Trigger manually with `@manki check`
 - **Nit issues for triage** -- Non-blocking findings become a GitHub issue with checkboxes, a `needs-human` label, code snippets, and AI agent fix prompts. Triage with `@manki triage`
-- **Self-learning memory** -- Teach her with `@manki remember`. She stores learnings, tracks patterns, applies suppressions, and gets smarter over time
+- **Self-learning memory** -- Teach her with `@manki remember`. She stores learnings, tracks patterns, applies suppressions, and auto-escalates findings that are consistently accepted during triage
 - **Conversational** -- Reply to any review comment to start a discussion. She reacts with emoji to acknowledge commands
 - **No external dependencies** -- Runs on GitHub Actions with your Claude Max subscription. No third-party services, no external rate limits, no waiting in queue
 

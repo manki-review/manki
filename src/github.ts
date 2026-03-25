@@ -261,14 +261,20 @@ export async function postReview(
       : 'The token may lack permission to request changes.';
     core.warning(`Failed to post ${event} review. ${hint} Falling back to COMMENT.`);
 
+    const findingSummary = validComments.map(c => {
+      const firstLine = c.body.split('\n')[0];
+      return `- ${firstLine} (\`${c.path}:${c.line}\`)`;
+    }).join('\n');
+    const fallbackBody = `${body}\n\n**Findings (could not post inline):**\n${findingSummary}`;
+
     const { data: review } = await octokit.rest.pulls.createReview({
       owner,
       repo,
       pull_number: prNumber,
       commit_id: commitSha,
       event: 'COMMENT',
-      body,
-      comments: validComments,
+      body: fallbackBody,
+      comments: [],
     });
 
     core.info(`Posted fallback COMMENT review #${review.id} (original verdict: ${result.verdict})`);
