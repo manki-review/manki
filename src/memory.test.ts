@@ -1,4 +1,16 @@
-import { applySuppressions, applyEscalations, matchesSuppression, buildMemoryContext, sanitizeMemoryField, Suppression, Pattern, RepoMemory } from './memory';
+import {
+  applySuppressions,
+  applyEscalations,
+  matchesSuppression,
+  buildMemoryContext,
+  sanitizeMemoryField,
+  filterLearningsForFinding,
+  filterSuppressionsForFinding,
+  Suppression,
+  Pattern,
+  Learning,
+  RepoMemory,
+} from './memory';
 import { Finding } from './types';
 
 const makeFinding = (overrides: Partial<Finding> = {}): Finding => ({
@@ -277,6 +289,7 @@ describe('buildMemoryContext', () => {
   });
 });
 
+
 const makePattern = (overrides: Partial<Pattern> = {}): Pattern => ({
   id: 'pat-1',
   finding_title: 'unused variable',
@@ -347,5 +360,74 @@ describe('applyEscalations', () => {
     const result = applyEscalations(findings, patterns);
     expect(result).toHaveLength(1);
     expect(result[0].severity).toBe('suggestion');
+  });
+});
+
+const makeLearning = (overrides: Partial<Learning> = {}): Learning => ({
+  id: 'l1',
+  content: 'Always check for null before accessing properties',
+  scope: 'repo',
+  source: 'repo#1',
+  created_at: '2025-01-01',
+  ...overrides,
+});
+
+describe('filterLearningsForFinding', () => {
+  it('returns learnings with keyword overlap', () => {
+    const finding = makeFinding({ title: 'Missing null check', description: 'No null guard on property access.' });
+    const learnings = [makeLearning({ content: 'Always check for null before accessing properties' })];
+
+    const result = filterLearningsForFinding(learnings, finding);
+    expect(result).toHaveLength(1);
+  });
+
+  it('returns empty when no keywords match', () => {
+    const finding = makeFinding({ title: 'SQL injection', description: 'User input not sanitized.' });
+    const learnings = [makeLearning({ content: 'Use consistent naming conventions' })];
+
+    const result = filterLearningsForFinding(learnings, finding);
+    expect(result).toHaveLength(0);
+  });
+
+  it('ignores short words (fewer than 4 characters)', () => {
+    const finding = makeFinding({ title: 'A bad bug', description: 'It is bad.' });
+    const learnings = [makeLearning({ content: 'bad code is bad' })];
+
+    const result = filterLearningsForFinding(learnings, finding);
+    expect(result).toHaveLength(0);
+  });
+
+  it('matches case-insensitively', () => {
+    const finding = makeFinding({ title: 'VARIABLE unused', description: 'Remove unused variable.' });
+    const learnings = [makeLearning({ content: 'Unused variables should be cleaned up' })];
+
+    const result = filterLearningsForFinding(learnings, finding);
+    expect(result).toHaveLength(1);
+  });
+});
+
+describe('filterSuppressionsForFinding', () => {
+  it('returns suppressions that match the finding', () => {
+    const finding = makeFinding({ title: 'Unused variable detected' });
+    const suppressions = [makeSuppression({ pattern: 'unused variable' })];
+
+    const result = filterSuppressionsForFinding(suppressions, finding);
+    expect(result).toHaveLength(1);
+  });
+
+  it('returns empty when no suppressions match', () => {
+    const finding = makeFinding({ title: 'Security vulnerability' });
+    const suppressions = [makeSuppression({ pattern: 'unused variable' })];
+
+    const result = filterSuppressionsForFinding(suppressions, finding);
+    expect(result).toHaveLength(0);
+  });
+
+  it('respects file glob', () => {
+    const finding = makeFinding({ title: 'Unused variable', file: 'lib/other.ts' });
+    const suppressions = [makeSuppression({ pattern: 'unused variable', file_glob: 'src/**' })];
+
+    const result = filterSuppressionsForFinding(suppressions, finding);
+    expect(result).toHaveLength(0);
   });
 });
