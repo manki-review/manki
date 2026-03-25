@@ -98,6 +98,9 @@ async function resolveReferences(
         const fileDir = resolvedPath.includes('/') ? resolvedPath.substring(0, resolvedPath.lastIndexOf('/')) : '';
         fileContent = await resolveReferences(octokit, owner, repo, ref, fileContent, fileDir, depth + 1);
         resolvedLines.push(fileContent.trimEnd());
+      } else {
+        // Not a file (e.g., directory listing) — keep original reference
+        resolvedLines.push(line);
       }
     } catch {
       resolvedLines.push(line);
