@@ -197,7 +197,7 @@ export async function postReview(
       const location = f.file ? ` — \`${safeFile}\`` : '';
       const safeTitle = sanitizeMarkdown(f.title);
       const fullDesc = sanitizeMarkdown(f.description);
-      const safeDesc = fullDesc.length > 300 ? fullDesc.slice(0, 300) + '...' : fullDesc;
+      const safeDesc = safeTruncate(fullDesc, 300);
       let entry = `**[${getSeverityLabel(f.severity)}] ${safeTitle}**${location}\n  ${safeDesc}`;
       if (f.suggestedFix) {
         const fix = f.suggestedFix.length > 200
@@ -228,13 +228,13 @@ export async function postReview(
             validComments.push({ path: f.file, line: closest, side: 'RIGHT', body: commentBody });
           } else {
             const desc = sanitizeMarkdown(f.description);
-            const truncDesc = desc.length > 200 ? desc.slice(0, 200) + '...' : desc;
+            const truncDesc = safeTruncate(desc, 200);
             invalidComments.push(`**[${getSeverityLabel(f.severity)}] ${sanitizeMarkdown(f.title)}** (\`${sanitizeFilePath(f.file)}:${f.line}\`): ${truncDesc}`);
           }
         }
       } else {
         const desc = sanitizeMarkdown(f.description);
-        const truncDesc = desc.length > 200 ? desc.slice(0, 200) + '...' : desc;
+        const truncDesc = safeTruncate(desc, 200);
         invalidComments.push(`**[${getSeverityLabel(f.severity)}] ${sanitizeMarkdown(f.title)}** (\`${sanitizeFilePath(f.file)}:${f.line}\`): ${truncDesc}`);
       }
     } else {
@@ -331,9 +331,18 @@ function dynamicFence(content: string): string {
 function truncateBody(text: string, maxLength: number = 60000): string {
   if (text.length <= maxLength) return text;
   const notice = '\n\n*(Review body truncated)*';
-  const effectiveMax = maxLength - notice.length;
-  const cutoff = text.lastIndexOf(' ', effectiveMax);
-  return text.slice(0, cutoff > effectiveMax - 100 ? cutoff : effectiveMax) + notice;
+  const safeMax = Math.max(0, maxLength - notice.length);
+  const cutoff = text.lastIndexOf(' ', safeMax);
+  return text.slice(0, cutoff > safeMax - 100 ? cutoff : safeMax) + notice;
+}
+
+function safeTruncate(text: string, maxLen: number): string {
+  if (text.length <= maxLen) return text;
+  let end = maxLen;
+  if (end > 0 && text.charCodeAt(end - 1) >= 0xD800 && text.charCodeAt(end - 1) <= 0xDBFF) {
+    end--;
+  }
+  return text.slice(0, end) + '...';
 }
 
 function sanitizeFilePath(file: string): string {
@@ -358,15 +367,24 @@ function getSeverityLabel(severity: FindingSeverity): string {
 // it into the GitHub comment body. Our own structural markup (<details>, <summary>,
 // collapsible sections, etc.) is added AFTER sanitization and is never passed through here.
 function sanitizeMarkdown(text: string): string {
-  let result = text;
+  // Decode common HTML entities so encoded tags like &lt;script&gt; are caught by tag stripping
+  let result = text
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
   // Run comment stripping twice to handle nested comments like <!-- <!-- --> -->,
   // then clean up any dangling close markers left behind.
   result = result.replace(/<!--[\s\S]*?(?:-->|$)/g, '');
   result = result.replace(/<!--[\s\S]*?(?:-->|$)/g, '');
   result = result.replace(/-->/g, '');
 
+  // Run tag stripping twice to handle nesting like <div<div>>
+  result = result.replace(HTML_TAG_REGEX, '');
+  result = result.replace(HTML_TAG_REGEX, '');
+
   return result
-    .replace(HTML_TAG_REGEX, '')           // Known HTML tags (opening, closing, self-closing)
     .replace(HTML_UNCLOSED_TAG_REGEX, '')  // Unclosed tags at end of string
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')                       // Images: keep alt text only
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')                        // Links: keep text only
@@ -576,4 +594,4 @@ export async function reactToReviewComment(
   }
 }
 
-export { dynamicFence, formatFindingComment, getSeverityLabel, mapVerdictToEvent, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_MARKER };
+export { dynamicFence, formatFindingComment, getSeverityLabel, mapVerdictToEvent, safeTruncate, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_MARKER };
