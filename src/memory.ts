@@ -218,6 +218,31 @@ export function buildMemoryContext(memory: RepoMemory): string {
 }
 
 /**
+ * Filter learnings to those relevant to a specific finding,
+ * matching by keyword overlap between the finding and learning content.
+ */
+export function filterLearningsForFinding(learnings: Learning[], finding: Finding): Learning[] {
+  const text = `${finding.title} ${finding.description}`.toLowerCase();
+  const keywords = text.split(/\s+/)
+    .map(w => w.replace(/[^a-z0-9]/g, ''))
+    .filter(w => w.length >= 4);
+
+  if (keywords.length === 0) return [];
+
+  return learnings.filter(l => {
+    const contentLower = l.content.toLowerCase();
+    return keywords.some(kw => contentLower.includes(kw));
+  });
+}
+
+/**
+ * Filter suppressions to those that match a specific finding.
+ */
+export function filterSuppressionsForFinding(suppressions: Suppression[], finding: Finding): Suppression[] {
+  return suppressions.filter(s => matchesSuppression(finding, s));
+}
+
+/**
  * Write a suppression to the memory repo.
  */
 export async function writeSuppression(
