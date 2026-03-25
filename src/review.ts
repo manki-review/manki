@@ -175,6 +175,11 @@ export interface ReviewClients {
   judge: ClaudeClient;
 }
 
+export interface ReviewProgress {
+  phase: 'reviewed';
+  rawFindingCount: number;
+}
+
 export async function runReview(
   clients: ReviewClients,
   config: ReviewConfig,
@@ -185,6 +190,7 @@ export async function runReview(
   fileContents?: Map<string, string>,
   prContext?: PrContext,
   linkedIssues?: LinkedIssue[],
+  onProgress?: (progress: ReviewProgress) => void,
 ): Promise<ReviewResult> {
   const team = selectTeam(diff, config, config.reviewers);
   core.info(`Review team (${team.level}): ${team.agents.map(a => a.name).join(', ')}`);
@@ -256,6 +262,10 @@ export async function runReview(
       highlights: [],
       reviewComplete: false,
     };
+  }
+
+  if (onProgress) {
+    onProgress({ phase: 'reviewed', rawFindingCount: allFindings.length });
   }
 
   let findingsForJudge = allFindings;

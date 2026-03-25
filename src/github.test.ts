@@ -1,5 +1,5 @@
-import { formatFindingComment, formatStatsJson, formatStatsOneLiner, mapVerdictToEvent, BOT_MARKER, buildNitIssueBody, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, safeTruncate, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd } from './github';
-import { Finding, ReviewResult, ReviewStats } from './types';
+import { buildDashboard, formatFindingComment, formatStatsJson, formatStatsOneLiner, mapVerdictToEvent, BOT_MARKER, buildNitIssueBody, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, safeTruncate, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd } from './github';
+import { DashboardData, Finding, ReviewResult, ReviewStats } from './types';
 
 describe('formatFindingComment', () => {
   const baseFinding: Finding = {
@@ -1276,5 +1276,53 @@ describe('fetchSubdirClaudeMd', () => {
 
     const result = await fetchSubdirClaudeMd(octokit, 'owner', 'repo', 'abc123', ['package.json']);
     expect(result).toBe('');
+  });
+});
+
+describe('buildDashboard', () => {
+  it('renders the started phase with running review and pending judge', () => {
+    const data: DashboardData = { phase: 'started', lineCount: 150, agentCount: 5 };
+    const md = buildDashboard(data);
+    expect(md).toContain('**Manki** — Review started');
+    expect(md).toContain('Done (150 lines)');
+    expect(md).toContain('Review (5 agents) | Running...');
+    expect(md).toContain('Judge | Pending');
+  });
+
+  it('renders the reviewed phase with finding count and running judge', () => {
+    const data: DashboardData = { phase: 'reviewed', lineCount: 300, agentCount: 3, rawFindingCount: 12 };
+    const md = buildDashboard(data);
+    expect(md).toContain('**Manki** — Review started');
+    expect(md).toContain('Done (300 lines)');
+    expect(md).toContain('Review (3 agents) | Done — 12 findings');
+    expect(md).toContain('Judge | Running...');
+  });
+
+  it('renders the complete phase with kept/dropped counts', () => {
+    const data: DashboardData = {
+      phase: 'complete', lineCount: 500, agentCount: 7,
+      rawFindingCount: 20, keptCount: 8, droppedCount: 12,
+    };
+    const md = buildDashboard(data);
+    expect(md).toContain('**Manki** — Review complete');
+    expect(md).toContain('Done (500 lines)');
+    expect(md).toContain('Review (7 agents) | Done — 20 findings');
+    expect(md).toContain('Judge | Done — 8 kept, 12 dropped');
+  });
+
+  it('defaults rawFindingCount to 0 when not provided in reviewed phase', () => {
+    const data: DashboardData = { phase: 'reviewed', lineCount: 100, agentCount: 3 };
+    const md = buildDashboard(data);
+    expect(md).toContain('Done — 0 findings');
+  });
+
+  it('contains a proper markdown table structure', () => {
+    const data: DashboardData = { phase: 'started', lineCount: 50, agentCount: 2 };
+    const md = buildDashboard(data);
+    expect(md).toContain('| | Step | Status |');
+    expect(md).toContain('|---|------|--------|');
+    expect(md).toContain('| 1 |');
+    expect(md).toContain('| 2 |');
+    expect(md).toContain('| 3 |');
   });
 });

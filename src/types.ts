@@ -94,6 +94,7 @@ export interface PrContext {
   baseBranch: string;
 }
 
+
 export interface ReviewStats {
   model: string;
   reviewTimeMs: number;
@@ -109,4 +110,13 @@ export interface ReviewStats {
   verdict: string;
   prNumber: number;
   commitSha: string;
+}
+
+export interface DashboardData {
+  phase: 'started' | 'reviewed' | 'complete';
+  lineCount: number;
+  agentCount: number;
+  rawFindingCount?: number;
+  keptCount?: number;
+  droppedCount?: number;
 }

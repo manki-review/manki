@@ -8,8 +8,8 @@ import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
 import { handleReviewCommentReply, handlePRComment } from './interaction';
 import { loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
 import { fetchRecapState, deduplicateFindings, buildRecapSummary, resolveAddressedThreads } from './recap';
-import { runReview, determineVerdict } from './review';
-import { PrContext, ReviewStats } from './types';
+import { runReview, determineVerdict, selectTeam } from './review';
+import { DashboardData, PrContext, ReviewStats } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -18,6 +18,7 @@ import {
   fetchFileContents,
   postProgressComment,
   updateProgressComment,
+  updateProgressDashboard,
   dismissPreviousReviews,
   postReview,
   createNitIssue,
@@ -208,6 +209,15 @@ async function runFullReview(
 
     const rawDiff = await fetchPRDiff(octokit, owner, repo, prNumber);
     const diff = parsePRDiff(rawDiff);
+    const team = selectTeam(diff, config, config.reviewers);
+    const lineCount = diff.totalAdditions + diff.totalDeletions;
+
+    const dashboard: DashboardData = {
+      phase: 'started',
+      lineCount,
+      agentCount: team.agents.length,
+    };
+    await updateProgressDashboard(octokit, owner, repo, progressCommentId, dashboard);
 
     if (isDiffTooLarge(diff, config.max_diff_lines)) {
       core.warning(`Diff too large (${diff.totalAdditions + diff.totalDeletions} lines > ${config.max_diff_lines} max)`);
@@ -314,7 +324,18 @@ async function runFullReview(
 
     await dismissPreviousReviews(octokit, owner, repo, prNumber);
 
-    const result = await runReview({ reviewer: reviewerClient, judge: judgeClient }, config, diff, rawDiff, fullContext, memory, fileContents, prContext, linkedIssues);
+    let rawFindingCount = 0;
+    const result = await runReview(
+      { reviewer: reviewerClient, judge: judgeClient }, config, diff, rawDiff, fullContext,
+      memory, fileContents, prContext, linkedIssues,
+      (progress) => {
+        rawFindingCount = progress.rawFindingCount;
+        dashboard.phase = 'reviewed';
+        dashboard.rawFindingCount = progress.rawFindingCount;
+        updateProgressDashboard(octokit, owner, repo, progressCommentId, dashboard)
+          .catch(err => core.warning(`Failed to update dashboard: ${err}`));
+      },
+    );
 
     if (!result.reviewComplete && result.verdict === 'APPROVE') {
       result.verdict = 'COMMENT';
@@ -418,7 +439,16 @@ async function runFullReview(
       }
     }
 
-    await updateProgressComment(octokit, owner, repo, progressCommentId, result);
+    const droppedCount = rawFindingCount - result.findings.length;
+    const completeDashboard: DashboardData = {
+      phase: 'complete',
+      lineCount,
+      agentCount: team.agents.length,
+      rawFindingCount,
+      keptCount: result.findings.length,
+      droppedCount: droppedCount >= 0 ? droppedCount : 0,
+    };
+    await updateProgressComment(octokit, owner, repo, progressCommentId, result, completeDashboard);
 
     core.setOutput('review_id', reviewId.toString());
     core.setOutput('verdict', result.verdict);

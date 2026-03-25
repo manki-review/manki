@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { Finding, FindingSeverity, ParsedDiff, ReviewResult, ReviewStats, ReviewVerdict } from './types';
+import { DashboardData, Finding, FindingSeverity, ParsedDiff, ReviewResult, ReviewStats, ReviewVerdict } from './types';
 import { isLineInDiff, findClosestDiffLine } from './diff';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -150,6 +150,43 @@ export async function fetchRepoContext(
 }
 
 /**
+ * Build a markdown dashboard table showing review progress across phases.
+ */
+export function buildDashboard(data: DashboardData): string {
+  const parseStatus = `Done (${data.lineCount} lines)`;
+
+  let reviewStatus: string;
+  if (data.phase === 'started') {
+    reviewStatus = 'Running...';
+  } else {
+    reviewStatus = `Done — ${data.rawFindingCount ?? 0} findings`;
+  }
+
+  let judgeStatus: string;
+  if (data.phase === 'started') {
+    judgeStatus = 'Pending';
+  } else if (data.phase === 'reviewed') {
+    judgeStatus = 'Running...';
+  } else {
+    judgeStatus = `Done — ${data.keptCount ?? 0} kept, ${data.droppedCount ?? 0} dropped`;
+  }
+
+  const header = data.phase === 'complete'
+    ? '**Manki** — Review complete'
+    : '**Manki** — Review started';
+
+  return [
+    header,
+    '',
+    '| | Step | Status |',
+    '|---|------|--------|',
+    `| 1 | Parse diff | ${parseStatus} |`,
+    `| 2 | Review (${data.agentCount} agents) | ${reviewStatus} |`,
+    `| 3 | Judge | ${judgeStatus} |`,
+  ].join('\n');
+}
+
+/**
  * Post a "review in progress" comment on the PR.
  * Returns the comment ID so we can update/delete it later.
  */
@@ -158,18 +195,23 @@ export async function postProgressComment(
   owner: string,
   repo: string,
   prNumber: number,
+  dashboard?: DashboardData,
 ): Promise<number> {
+  const body = dashboard
+    ? `${BOT_MARKER}\n${buildDashboard(dashboard)}`
+    : `${BOT_MARKER}\n**Manki** — Review started`;
+
   const { data } = await octokit.rest.issues.createComment({
     owner,
     repo,
     issue_number: prNumber,
-    body: `${BOT_MARKER}\n🔍 **Manki** review in progress...\n\nRunning specialist reviewer agents. This typically takes 1-3 minutes.`,
+    body,
   });
   return data.id;
 }
 
 /**
- * Update the progress comment with the final summary.
+ * Update the progress comment with dashboard state or the final summary.
  */
 export async function updateProgressComment(
   octokit: Octokit,
@@ -177,6 +219,7 @@ export async function updateProgressComment(
   repo: string,
   commentId: number,
   result: ReviewResult,
+  dashboard?: DashboardData,
 ): Promise<void> {
   const emoji = result.verdict === 'APPROVE' ? '✅' : result.verdict === 'REQUEST_CHANGES' ? '❌' : '💬';
   const safeSummary = sanitizeMarkdown(result.summary);
@@ -189,11 +232,31 @@ export async function updateProgressComment(
     ? `\n\n**Highlights:**\n${safeHighlights.map(h => `- ${h}`).join('\n')}`
     : '';
 
+  const dashboardBlock = dashboard ? `${buildDashboard(dashboard)}\n\n---\n\n` : '';
+
   await octokit.rest.issues.updateComment({
     owner,
     repo,
     comment_id: commentId,
-    body: truncateBody(`${BOT_MARKER}\n${emoji} **Manki** — ${result.verdict.replace('_', ' ')}\n\n${safeSummary}${findingsSummary}${highlights}`),
+    body: truncateBody(`${BOT_MARKER}\n${dashboardBlock}${emoji} **Manki** — ${result.verdict.replace('_', ' ')}\n\n${safeSummary}${findingsSummary}${highlights}`),
+  });
+}
+
+/**
+ * Update the progress comment with just a dashboard (no final result yet).
+ */
+export async function updateProgressDashboard(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  commentId: number,
+  dashboard: DashboardData,
+): Promise<void> {
+  await octokit.rest.issues.updateComment({
+    owner,
+    repo,
+    comment_id: commentId,
+    body: `${BOT_MARKER}\n${buildDashboard(dashboard)}`,
   });
 }
 
