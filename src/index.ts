@@ -319,7 +319,7 @@ async function runFullReview(
 
     if (nitHandling === 'issues' && nitFindings.length > 0) {
       try {
-        await createNitIssue(octokit, owner, repo, prNumber, result.findings);
+        await createNitIssue(octokit, owner, repo, prNumber, nitFindings);
       } catch (error) {
         core.warning(`Failed to create nit issue: ${error}`);
       }
