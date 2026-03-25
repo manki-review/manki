@@ -425,6 +425,12 @@ describe('runJudgeAgent', () => {
 
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
     expect(result).toHaveLength(2);
+    // "Unused variable" should fuzzy-match "Unused variable cleanup" => severity 'ignore'
+    expect(result[0].severity).toBe('ignore');
+    expect(result[0].judgeNotes).toBe('Not real.');
+    // "Something completely different" matches "Different title" by position => severity 'nit'
+    expect(result[1].severity).toBe('nit');
+    expect(result[1].judgeNotes).toBe('Minor.');
   });
 
   it('includes memory context when memory is provided', async () => {

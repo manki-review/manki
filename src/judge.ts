@@ -21,10 +21,6 @@ export interface JudgeInput {
   repoContext: string;
 }
 
-export interface JudgeOutput {
-  findings: JudgedFinding[];
-}
-
 export interface JudgedFinding {
   title: string;
   severity: FindingSeverity;
@@ -137,6 +133,7 @@ function extractHunkContext(diffFile: DiffFile, line: number): string {
 
   const lines = hunk.content.split('\n');
   const offset = line - hunk.newStart;
+  if (offset < 0 || offset >= lines.length) return '';
   const start = Math.max(0, offset - CONTEXT_LINES);
   const end = Math.min(lines.length, offset + CONTEXT_LINES + 1);
 
