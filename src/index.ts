@@ -186,7 +186,7 @@ async function runFullReview(
 
     if (modelOverride) {
       config.model = modelOverride;
-      config.models = undefined;
+      config.models = { reviewer: modelOverride, judge: modelOverride };
     }
 
     if (github.context.eventName === 'pull_request' && !config.auto_review) {

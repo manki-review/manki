@@ -37,6 +37,11 @@ describe('config', () => {
       expect(DEFAULT_CONFIG.review_passes).toBe(1);
     });
 
+    it('defaults models.reviewer to Sonnet and models.judge to Opus', () => {
+      expect(DEFAULT_CONFIG.models?.reviewer).toBe('claude-sonnet-4-6');
+      expect(DEFAULT_CONFIG.models?.judge).toBe('claude-opus-4-6');
+    });
+
     it('has three default reviewers with name and focus', () => {
       for (const reviewer of DEFAULT_CONFIG.reviewers) {
         expect(typeof reviewer.name).toBe('string');
@@ -127,12 +132,12 @@ memory:
 
     it('warns on unknown keys but does not fail', () => {
       const yaml = `
-model: claude-opus-4-6
+model: claude-sonnet-4-6
 unknown_key: some_value
 another_unknown: 123
 `;
       const config = loadConfigFromContent(yaml);
-      expect(config.model).toBe('claude-opus-4-6');
+      expect(config.model).toBe('claude-sonnet-4-6');
       expect(core.warning).toHaveBeenCalledWith('Unknown config key: "unknown_key"');
       expect(core.warning).toHaveBeenCalledWith('Unknown config key: "another_unknown"');
     });
@@ -335,7 +340,7 @@ models:
     });
 
     it('defaults review_passes to 1', () => {
-      const config = loadConfigFromContent('model: claude-opus-4-6');
+      const config = loadConfigFromContent('model: claude-sonnet-4-6');
       expect(config.review_passes).toBe(1);
     });
 
@@ -360,10 +365,9 @@ models:
   describe('resolveModel', () => {
     const baseConfig: ReviewConfig = {
       ...DEFAULT_CONFIG,
-      model: 'claude-opus-4-6',
     };
 
-    it('returns default stage-specific models', () => {
+    it('returns default stage-specific models from defaults', () => {
       expect(resolveModel(baseConfig, 'reviewer')).toBe('claude-sonnet-4-6');
       expect(resolveModel(baseConfig, 'judge')).toBe('claude-opus-4-6');
     });
@@ -378,24 +382,35 @@ models:
     });
 
     it('falls back to config.model when models is undefined', () => {
-      const config: ReviewConfig = { ...baseConfig, models: undefined };
-      expect(resolveModel(config, 'reviewer')).toBe('claude-opus-4-6');
+      const config: ReviewConfig = { ...baseConfig, model: 'custom-model', models: undefined };
+      expect(resolveModel(config, 'reviewer')).toBe('custom-model');
+      expect(resolveModel(config, 'judge')).toBe('custom-model');
+    });
+
+    it('models.stage takes precedence over top-level model', () => {
+      const config: ReviewConfig = {
+        ...baseConfig,
+        model: 'custom-model',
+        models: { reviewer: 'claude-sonnet-4-6', judge: 'claude-opus-4-6' },
+      };
+      expect(resolveModel(config, 'reviewer')).toBe('claude-sonnet-4-6');
       expect(resolveModel(config, 'judge')).toBe('claude-opus-4-6');
     });
 
     it('falls back to config.model when stage key is missing', () => {
       const config: ReviewConfig = {
         ...baseConfig,
+        model: 'custom-model',
         models: { reviewer: 'claude-sonnet-4-6' },
       };
       expect(resolveModel(config, 'reviewer')).toBe('claude-sonnet-4-6');
-      expect(resolveModel(config, 'judge')).toBe('claude-opus-4-6');
+      expect(resolveModel(config, 'judge')).toBe('custom-model');
     });
 
     it('falls back to config.model when models is empty object', () => {
-      const config: ReviewConfig = { ...baseConfig, models: {} };
-      expect(resolveModel(config, 'reviewer')).toBe('claude-opus-4-6');
-      expect(resolveModel(config, 'judge')).toBe('claude-opus-4-6');
+      const config: ReviewConfig = { ...baseConfig, model: 'custom-model', models: {} };
+      expect(resolveModel(config, 'reviewer')).toBe('custom-model');
+      expect(resolveModel(config, 'judge')).toBe('custom-model');
     });
   });
 });

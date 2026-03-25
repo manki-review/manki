@@ -20,7 +20,7 @@ const DEFAULT_REVIEWERS: ReviewerAgent[] = [
 ];
 
 export const DEFAULT_CONFIG: ReviewConfig = {
-  model: 'claude-opus-4-6',
+  model: 'claude-sonnet-4-6',
   auto_review: true,
   auto_approve: true,
   review_language: 'en',
