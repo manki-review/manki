@@ -219,7 +219,7 @@ export async function runReview(
 
       if (passFindings.length > 0) {
         allAgentsFailed = false;
-        const threshold = Math.ceil(passes / 2);
+        const threshold = Math.ceil(passFindings.length / 2);
         const consistent = intersectFindings(passFindings, threshold);
         const totalRaw = passFindings.reduce((sum, p) => sum + p.length, 0);
         core.info(`Multi-pass: ${agent.name} — ${passFindings.length} passes, ${consistent.length} consistent findings (from ${totalRaw} raw)`);
