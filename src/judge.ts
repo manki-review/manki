@@ -94,7 +94,17 @@ Respond with ONLY a JSON array (no markdown fences, no explanation). Each elemen
 ]
 \`\`\`
 
-The output array may be shorter than the input when duplicates are merged. Preserve the order of first appearance.`;
+The output array may be shorter than the input when duplicates are merged. Preserve the order of first appearance.
+
+## Scope Validation
+
+After evaluating individual findings, check if all changed files relate to the PR's stated purpose (title and description). If any files appear unrelated to the PR scope:
+
+- Create a finding with severity "suggestion" titled "Unrelated change: [filename]"
+- Explain why the file seems out of scope
+- Recommend splitting into a separate PR
+
+Only flag files that are clearly unrelated — don't flag shared config files or test files that naturally accompany the changed code.`;
 
   if (config.instructions) {
     prompt += `\n\n## Project Instructions\n\n${config.instructions}`;
@@ -109,6 +119,7 @@ export function buildJudgeUserMessage(
   memoryContext: string,
   prContext?: PrContext,
   linkedIssues?: LinkedIssue[],
+  changedFiles?: string[],
 ): string {
   const parts: string[] = [];
 
@@ -116,6 +127,14 @@ export function buildJudgeUserMessage(
     parts.push(`## Pull Request\n`);
     parts.push(`**Title**: ${prContext.title}`);
     parts.push(`**Base branch**: ${prContext.baseBranch}\n`);
+  }
+
+  if (changedFiles && changedFiles.length > 0) {
+    parts.push(`## Changed Files in This PR\n`);
+    for (const file of changedFiles) {
+      parts.push(`- ${file}`);
+    }
+    parts.push('');
   }
 
   if (linkedIssues && linkedIssues.length > 0) {
@@ -299,8 +318,10 @@ export async function runJudgeAgent(
     ? filterMemoryForFindings(findings, memory)
     : '';
 
+  const changedFiles = diff.files.map(f => f.path);
+
   const systemPrompt = buildJudgeSystemPrompt(config);
-  const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues);
+  const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles);
 
   const response = await client.sendMessage(systemPrompt, userMessage, { effort: 'high' });
   const judged = parseJudgeResponse(response.content);

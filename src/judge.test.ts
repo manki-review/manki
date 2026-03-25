@@ -126,6 +126,13 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('ONE entry for the merged finding');
   });
 
+  it('includes scope validation instructions', () => {
+    const prompt = buildJudgeSystemPrompt(makeConfig());
+    expect(prompt).toContain('Scope Validation');
+    expect(prompt).toContain('Unrelated change');
+    expect(prompt).toContain('splitting into a separate PR');
+  });
+
   it('includes severity examples for each level', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig());
     // required examples
@@ -216,6 +223,31 @@ describe('buildJudgeUserMessage', () => {
     const msg = buildJudgeUserMessage(findings, new Map(), '');
 
     expect(msg).not.toContain('## Pull Request\n');
+  });
+
+  it('includes changed files list when provided', () => {
+    const findings = [makeFinding()];
+    const changedFiles = ['src/foo.ts', 'src/bar.ts', '.manki.yml'];
+    const msg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, changedFiles);
+
+    expect(msg).toContain('## Changed Files in This PR');
+    expect(msg).toContain('- src/foo.ts');
+    expect(msg).toContain('- src/bar.ts');
+    expect(msg).toContain('- .manki.yml');
+  });
+
+  it('omits changed files section when empty', () => {
+    const findings = [makeFinding()];
+    const msg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, []);
+
+    expect(msg).not.toContain('## Changed Files in This PR');
+  });
+
+  it('omits changed files section when undefined', () => {
+    const findings = [makeFinding()];
+    const msg = buildJudgeUserMessage(findings, new Map(), '');
+
+    expect(msg).not.toContain('## Changed Files in This PR');
   });
 });
 
