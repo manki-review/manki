@@ -133,7 +133,7 @@ async function checkAndAutoApprove(
   }
 
   core.info('All required issues resolved — auto-approving');
-  const body = `${BOT_MARKER}\nAll required issues resolved. Approved.`;
+  const body = BOT_MARKER;
 
   try {
     await octokit.rest.pulls.createReview({
