@@ -1,6 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { ClaudeClient } from './claude';
+import { matchesSuppression, Suppression } from './memory';
 import { Finding, FindingSeverity, ParsedDiff } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -169,13 +170,22 @@ async function fetchReviewThreads(
 }
 
 /**
- * Filter out findings that duplicate previous ones.
+ * Filter out findings that duplicate previous ones or match stored suppressions.
  * Returns only genuinely new findings.
  */
 function deduplicateFindings(
   newFindings: Finding[],
   previousFindings: PreviousFinding[],
+  suppressions?: Suppression[],
 ): { unique: Finding[]; duplicates: Finding[] } {
+  if (suppressions && suppressions.length > 0) {
+    newFindings = newFindings.filter(f => {
+      const match = suppressions.some(s => matchesSuppression(f, s));
+      if (match) core.info(`Suppressed by memory: "${f.title}"`);
+      return !match;
+    });
+  }
+
   const unique: Finding[] = [];
   const duplicates: Finding[] = [];
 

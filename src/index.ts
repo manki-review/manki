@@ -288,7 +288,7 @@ async function runFullReview(
       result.verdict = 'COMMENT';
     }
 
-    const { unique, duplicates } = deduplicateFindings(result.findings, recap.previousFindings);
+    const { unique, duplicates } = deduplicateFindings(result.findings, recap.previousFindings, memory?.suppressions);
     if (duplicates.length > 0) {
       core.info(`Deduplicated ${duplicates.length} findings (already flagged in previous reviews)`);
       result.findings = unique;

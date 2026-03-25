@@ -1,4 +1,5 @@
 import { Finding } from './types';
+import { Suppression } from './memory';
 import { deduplicateFindings, buildRecapSummary, PreviousFinding, resolveAddressedThreads } from './recap';
 
 const makeFinding = (overrides: Partial<Finding> = {}): Finding => ({
@@ -17,6 +18,16 @@ const makePrevious = (overrides: Partial<PreviousFinding> = {}): PreviousFinding
   line: 10,
   severity: 'suggestion',
   status: 'open',
+  ...overrides,
+});
+
+const makeSuppression = (overrides: Partial<Suppression> = {}): Suppression => ({
+  id: 'sup-1',
+  pattern: 'test finding',
+  reason: 'intentional',
+  created_by: 'user',
+  created_at: '2025-01-01',
+  pr_ref: 'owner/repo#1',
   ...overrides,
 });
 
@@ -119,6 +130,74 @@ describe('deduplicateFindings', () => {
     const result = deduplicateFindings(findings, previous);
     expect(result.unique).toHaveLength(0);
     expect(result.duplicates).toHaveLength(1);
+  });
+});
+
+describe('deduplicateFindings with suppressions', () => {
+  it('filters findings matching a suppression', () => {
+    const findings = [makeFinding({ title: 'Test finding in module', file: 'src/foo.ts', line: 10 })];
+    const suppressions = [makeSuppression({ pattern: 'test finding' })];
+
+    const result = deduplicateFindings(findings, [], suppressions);
+    expect(result.unique).toHaveLength(0);
+  });
+
+  it('keeps findings that do not match any suppression', () => {
+    const findings = [makeFinding({ title: 'Unused variable', file: 'src/foo.ts', line: 10 })];
+    const suppressions = [makeSuppression({ pattern: 'test finding' })];
+
+    const result = deduplicateFindings(findings, [], suppressions);
+    expect(result.unique).toHaveLength(1);
+    expect(result.unique[0].title).toBe('Unused variable');
+  });
+
+  it('works with no suppressions (backward compat)', () => {
+    const findings = [makeFinding({ title: 'Missing null check', file: 'src/foo.ts', line: 42 })];
+
+    const result = deduplicateFindings(findings, []);
+    expect(result.unique).toHaveLength(1);
+  });
+
+  it('works with undefined suppressions (backward compat)', () => {
+    const findings = [makeFinding({ title: 'Missing null check', file: 'src/foo.ts', line: 42 })];
+
+    const result = deduplicateFindings(findings, [], undefined);
+    expect(result.unique).toHaveLength(1);
+  });
+
+  it('works with empty suppressions array', () => {
+    const findings = [makeFinding({ title: 'Missing null check', file: 'src/foo.ts', line: 42 })];
+
+    const result = deduplicateFindings(findings, [], []);
+    expect(result.unique).toHaveLength(1);
+  });
+
+  it('respects file_glob in suppressions', () => {
+    const findings = [
+      makeFinding({ title: 'Test finding A', file: 'src/foo.ts', line: 10 }),
+      makeFinding({ title: 'Test finding B', file: 'test/bar.ts', line: 20 }),
+    ];
+    const suppressions = [makeSuppression({ pattern: 'test finding', file_glob: 'src/**' })];
+
+    const result = deduplicateFindings(findings, [], suppressions);
+    expect(result.unique).toHaveLength(1);
+    expect(result.unique[0].title).toBe('Test finding B');
+  });
+
+  it('applies both suppressions and dedup together', () => {
+    const findings = [
+      makeFinding({ title: 'Test finding', file: 'src/foo.ts', line: 10 }),
+      makeFinding({ title: 'Missing null check', file: 'src/bar.ts', line: 42 }),
+      makeFinding({ title: 'Unused import', file: 'src/baz.ts', line: 5 }),
+    ];
+    const previous = [makePrevious({ title: 'Missing null check', file: 'src/bar.ts', line: 42 })];
+    const suppressions = [makeSuppression({ pattern: 'test finding' })];
+
+    const result = deduplicateFindings(findings, previous, suppressions);
+    expect(result.unique).toHaveLength(1);
+    expect(result.unique[0].title).toBe('Unused import');
+    expect(result.duplicates).toHaveLength(1);
+    expect(result.duplicates[0].title).toBe('Missing null check');
   });
 });
 
