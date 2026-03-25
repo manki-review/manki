@@ -171,6 +171,23 @@ describe('buildJudgeUserMessage', () => {
     expect(msg).toContain('Finding 2: Finding B');
     expect(msg).toContain('2 total');
   });
+
+  it('includes PR context when provided', () => {
+    const findings = [makeFinding()];
+    const prContext = { title: 'Add auth middleware', body: '', baseBranch: 'main' };
+    const msg = buildJudgeUserMessage(findings, new Map(), '', prContext);
+
+    expect(msg).toContain('## Pull Request');
+    expect(msg).toContain('**Title**: Add auth middleware');
+    expect(msg).toContain('**Base branch**: main');
+  });
+
+  it('omits PR context when undefined', () => {
+    const findings = [makeFinding()];
+    const msg = buildJudgeUserMessage(findings, new Map(), '');
+
+    expect(msg).not.toContain('## Pull Request\n');
+  });
 });
 
 describe('extractCodeContext', () => {
