@@ -1,4 +1,5 @@
-import { DEFAULT_CONFIG, loadConfig, loadConfigFromContent } from './config';
+import { DEFAULT_CONFIG, loadConfig, loadConfigFromContent, resolveModel } from './config';
+import { ReviewConfig } from './types';
 
 // Suppress @actions/core output during tests
 jest.mock('@actions/core', () => ({
@@ -323,6 +324,43 @@ models:
 `;
       const config = loadConfigFromContent(yaml);
       expect(config.models?.reviewer).toBe('claude-sonnet-4-6');
+    });
+  });
+
+  describe('resolveModel', () => {
+    const baseConfig: ReviewConfig = {
+      ...DEFAULT_CONFIG,
+      model: 'claude-opus-4-6',
+    };
+
+    it('returns stage-specific model when configured', () => {
+      const config: ReviewConfig = {
+        ...baseConfig,
+        models: { reviewer: 'claude-sonnet-4-6', judge: 'claude-opus-4-6' },
+      };
+      expect(resolveModel(config, 'reviewer')).toBe('claude-sonnet-4-6');
+      expect(resolveModel(config, 'judge')).toBe('claude-opus-4-6');
+    });
+
+    it('falls back to config.model when models is undefined', () => {
+      const config: ReviewConfig = { ...baseConfig, models: undefined };
+      expect(resolveModel(config, 'reviewer')).toBe('claude-opus-4-6');
+      expect(resolveModel(config, 'judge')).toBe('claude-opus-4-6');
+    });
+
+    it('falls back to config.model when stage key is missing', () => {
+      const config: ReviewConfig = {
+        ...baseConfig,
+        models: { reviewer: 'claude-sonnet-4-6' },
+      };
+      expect(resolveModel(config, 'reviewer')).toBe('claude-sonnet-4-6');
+      expect(resolveModel(config, 'judge')).toBe('claude-opus-4-6');
+    });
+
+    it('falls back to config.model when models is empty object', () => {
+      const config: ReviewConfig = { ...baseConfig, models: {} };
+      expect(resolveModel(config, 'reviewer')).toBe('claude-opus-4-6');
+      expect(resolveModel(config, 'judge')).toBe('claude-opus-4-6');
     });
   });
 });
