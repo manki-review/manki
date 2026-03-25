@@ -9,6 +9,7 @@ import {
   truncateDiff,
   AGENT_POOL,
 } from './review';
+import { LinkedIssue } from './github';
 import { Finding, ReviewerAgent, ReviewConfig, ParsedDiff } from './types';
 
 const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
@@ -611,5 +612,42 @@ describe('selectTeam dependency file scoring', () => {
     const config = makeConfig({ review_level: 'medium' });
     const roster = selectTeam(diff, config);
     expect(roster.agents.map(a => a.name)).toContain('Dependencies & Integration');
+  });
+});
+
+describe('buildReviewerUserMessage with linked issues', () => {
+  const issues: LinkedIssue[] = [
+    { number: 152, title: 'Pre-filter suppressed findings before judge evaluation', body: 'The judge should not see suppressed findings.' },
+    { number: 99, title: 'Add caching layer', body: 'We need a caching layer for API calls.' },
+  ];
+
+  it('includes linked issues section when provided', () => {
+    const message = buildReviewerUserMessage('diff', '', undefined, undefined, undefined, issues);
+    expect(message).toContain('## Linked Issues');
+    expect(message).toContain('### Issue #152: Pre-filter suppressed findings before judge evaluation');
+    expect(message).toContain('The judge should not see suppressed findings.');
+    expect(message).toContain('### Issue #99: Add caching layer');
+  });
+
+  it('omits linked issues section when empty array', () => {
+    const message = buildReviewerUserMessage('diff', '', undefined, undefined, undefined, []);
+    expect(message).not.toContain('## Linked Issues');
+  });
+
+  it('omits linked issues section when undefined', () => {
+    const message = buildReviewerUserMessage('diff', '');
+    expect(message).not.toContain('## Linked Issues');
+  });
+
+  it('places linked issues after PR context and before repo context', () => {
+    const prContext = { title: 'Feature', body: 'Description', baseBranch: 'main' };
+    const message = buildReviewerUserMessage('diff', 'repo info', undefined, prContext, undefined, issues);
+    const prIdx = message.indexOf('## Pull Request');
+    const issuesIdx = message.indexOf('## Linked Issues');
+    const repoIdx = message.indexOf('## Repository Context');
+    const diffIdx = message.indexOf('## Pull Request Diff');
+    expect(prIdx).toBeLessThan(issuesIdx);
+    expect(issuesIdx).toBeLessThan(repoIdx);
+    expect(repoIdx).toBeLessThan(diffIdx);
   });
 });

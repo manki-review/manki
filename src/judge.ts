@@ -10,6 +10,7 @@ import {
   Suppression,
   RepoMemory,
 } from './memory';
+import { LinkedIssue } from './github';
 import { validateSeverity } from './review';
 import { DiffFile, Finding, FindingSeverity, ReviewConfig, ParsedDiff, PrContext } from './types';
 
@@ -20,6 +21,7 @@ export interface JudgeInput {
   memory?: RepoMemory;
   repoContext: string;
   prContext?: PrContext;
+  linkedIssues?: LinkedIssue[];
 }
 
 export interface JudgedFinding {
@@ -97,6 +99,7 @@ export function buildJudgeUserMessage(
   codeContextMap: Map<string, string>,
   memoryContext: string,
   prContext?: PrContext,
+  linkedIssues?: LinkedIssue[],
 ): string {
   const parts: string[] = [];
 
@@ -104,6 +107,17 @@ export function buildJudgeUserMessage(
     parts.push(`## Pull Request\n`);
     parts.push(`**Title**: ${prContext.title}`);
     parts.push(`**Base branch**: ${prContext.baseBranch}\n`);
+  }
+
+  if (linkedIssues && linkedIssues.length > 0) {
+    parts.push(`## Linked Issues\n`);
+    for (const issue of linkedIssues) {
+      parts.push(`### Issue #${issue.number}: ${issue.title}\n`);
+      if (issue.body) {
+        parts.push(issue.body);
+      }
+      parts.push('');
+    }
   }
 
   parts.push(`## Findings to Evaluate (${findings.length} total)\n`);
@@ -260,7 +274,7 @@ export async function runJudgeAgent(
   config: ReviewConfig,
   input: JudgeInput,
 ): Promise<Finding[]> {
-  const { findings, diff, memory, prContext } = input;
+  const { findings, diff, memory, prContext, linkedIssues } = input;
 
   if (findings.length === 0) return [];
 
@@ -277,7 +291,7 @@ export async function runJudgeAgent(
     : '';
 
   const systemPrompt = buildJudgeSystemPrompt(config);
-  const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext);
+  const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues);
 
   const response = await client.sendMessage(systemPrompt, userMessage, { effort: 'high' });
   const judged = parseJudgeResponse(response.content);

@@ -3,6 +3,7 @@ import * as core from '@actions/core';
 import { ClaudeClient } from './claude';
 import { runJudgeAgent, JudgeInput } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
+import { LinkedIssue } from './github';
 import { ReviewConfig, ReviewerAgent, Finding, ReviewResult, ReviewVerdict, ParsedDiff, TeamRoster, PrContext } from './types';
 import { extractJSON } from './json';
 
@@ -133,6 +134,7 @@ export async function runReview(
   memory?: RepoMemory | null,
   fileContents?: Map<string, string>,
   prContext?: PrContext,
+  linkedIssues?: LinkedIssue[],
 ): Promise<ReviewResult> {
   const team = selectTeam(diff, config, config.reviewers);
   core.info(`Review team (${team.level}): ${team.agents.map(a => a.name).join(', ')}`);
@@ -142,7 +144,7 @@ export async function runReview(
   core.info(`Running ${team.agents.length} reviewer agents in parallel...`);
   const agentResults = await Promise.allSettled(
     team.agents.map(agent =>
-      runReviewerAgent(clients.reviewer, config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext)
+      runReviewerAgent(clients.reviewer, config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues)
     )
   );
 
@@ -189,6 +191,7 @@ export async function runReview(
         memory: memory ?? undefined,
         repoContext,
         prContext,
+        linkedIssues,
       };
       const judged = await runJudgeAgent(clients.judge, config, judgeInput);
       finalFindings = judged.filter(f => f.severity !== 'ignore');
@@ -234,9 +237,10 @@ async function runReviewerAgent(
   fileContents?: Map<string, string>,
   prContext?: PrContext,
   memoryContext?: string,
+  linkedIssues?: LinkedIssue[],
 ): Promise<Finding[]> {
   const systemPrompt = buildReviewerSystemPrompt(reviewer, config);
-  const userMessage = buildReviewerUserMessage(rawDiff, repoContext, fileContents, prContext, memoryContext);
+  const userMessage = buildReviewerUserMessage(rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues);
 
   const response = await client.sendMessage(systemPrompt, userMessage);
   return parseFindings(response.content, reviewer.name);
@@ -306,6 +310,7 @@ export function buildReviewerUserMessage(
   fileContents?: Map<string, string>,
   prContext?: PrContext,
   memoryContext?: string,
+  linkedIssues?: LinkedIssue[],
 ): string {
   let message = '';
 
@@ -320,6 +325,16 @@ export function buildReviewerUserMessage(
       message += `\n${body}\n`;
     }
     message += '\n';
+  }
+
+  if (linkedIssues && linkedIssues.length > 0) {
+    message += `## Linked Issues\n\n`;
+    for (const issue of linkedIssues) {
+      message += `### Issue #${issue.number}: ${issue.title}\n\n`;
+      if (issue.body) {
+        message += `${issue.body}\n\n`;
+      }
+    }
   }
 
   if (repoContext) {

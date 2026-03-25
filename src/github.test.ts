@@ -1,4 +1,4 @@
-import { formatFindingComment, mapVerdictToEvent, BOT_MARKER, buildNitIssueBody, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, safeTruncate, fetchFileContents } from './github';
+import { formatFindingComment, mapVerdictToEvent, BOT_MARKER, buildNitIssueBody, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, safeTruncate, fetchFileContents, fetchLinkedIssues } from './github';
 import { Finding, ReviewResult } from './types';
 
 describe('formatFindingComment', () => {
@@ -873,5 +873,100 @@ describe('resolveReferences', () => {
     const result = await resolveReferences(octokit, 'owner', 'repo', 'main', content, '.claude');
 
     expect(result).toBe(content);
+  });
+});
+
+describe('fetchLinkedIssues', () => {
+  const mockGet = jest.fn();
+  const octokit = {
+    rest: {
+      issues: { get: mockGet },
+    },
+  } as unknown as Parameters<typeof fetchLinkedIssues>[0];
+
+  beforeEach(() => {
+    mockGet.mockReset();
+  });
+
+  it('parses "Closes #42" from PR body', async () => {
+    mockGet.mockResolvedValue({ data: { number: 42, title: 'Fix bug', body: 'Some description' } });
+
+    const result = await fetchLinkedIssues(octokit, 'owner', 'repo', 'Closes #42');
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual({ number: 42, title: 'Fix bug', body: 'Some description' });
+    expect(mockGet).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', issue_number: 42 });
+  });
+
+  it('parses "fixes #10" case-insensitively', async () => {
+    mockGet.mockResolvedValue({ data: { number: 10, title: 'Issue 10', body: 'Body' } });
+
+    const result = await fetchLinkedIssues(octokit, 'owner', 'repo', 'fixes #10');
+    expect(result).toHaveLength(1);
+    expect(result[0].number).toBe(10);
+  });
+
+  it('parses "Part of #5"', async () => {
+    mockGet.mockResolvedValue({ data: { number: 5, title: 'Epic', body: 'Epic body' } });
+
+    const result = await fetchLinkedIssues(octokit, 'owner', 'repo', 'Part of #5');
+    expect(result).toHaveLength(1);
+    expect(result[0].number).toBe(5);
+  });
+
+  it('parses "Resolves #7"', async () => {
+    mockGet.mockResolvedValue({ data: { number: 7, title: 'Issue 7', body: 'Body' } });
+
+    const result = await fetchLinkedIssues(octokit, 'owner', 'repo', 'Resolves #7');
+    expect(result).toHaveLength(1);
+    expect(result[0].number).toBe(7);
+  });
+
+  it('handles multiple references', async () => {
+    mockGet.mockImplementation(({ issue_number }: { issue_number: number }) =>
+      Promise.resolve({ data: { number: issue_number, title: `Issue ${issue_number}`, body: `Body ${issue_number}` } }),
+    );
+
+    const result = await fetchLinkedIssues(octokit, 'owner', 'repo', 'Closes #1, fixes #2, resolves #3');
+    expect(result).toHaveLength(3);
+    expect(result.map(r => r.number)).toEqual([1, 2, 3]);
+  });
+
+  it('deduplicates same issue referenced twice', async () => {
+    mockGet.mockResolvedValue({ data: { number: 42, title: 'Bug', body: 'Body' } });
+
+    const result = await fetchLinkedIssues(octokit, 'owner', 'repo', 'Closes #42 and also fixes #42');
+    expect(result).toHaveLength(1);
+    expect(mockGet).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns empty array when no references found', async () => {
+    const result = await fetchLinkedIssues(octokit, 'owner', 'repo', 'Just a regular PR body');
+    expect(result).toEqual([]);
+    expect(mockGet).not.toHaveBeenCalled();
+  });
+
+  it('returns empty array for empty body', async () => {
+    const result = await fetchLinkedIssues(octokit, 'owner', 'repo', '');
+    expect(result).toEqual([]);
+  });
+
+  it('truncates long issue bodies to 2000 chars', async () => {
+    const longBody = 'x'.repeat(3000);
+    mockGet.mockResolvedValue({ data: { number: 1, title: 'Issue', body: longBody } });
+
+    const result = await fetchLinkedIssues(octokit, 'owner', 'repo', 'Closes #1');
+    expect(result[0].body.length).toBeLessThan(longBody.length);
+    expect(result[0].body).toContain('... (truncated)');
+  });
+
+  it('skips issues that fail to fetch', async () => {
+    mockGet.mockImplementation(({ issue_number }: { issue_number: number }) => {
+      if (issue_number === 1) return Promise.resolve({ data: { number: 1, title: 'Good', body: 'Body' } });
+      return Promise.reject(new Error('Not found'));
+    });
+
+    const result = await fetchLinkedIssues(octokit, 'owner', 'repo', 'Closes #1, closes #999');
+    expect(result).toHaveLength(1);
+    expect(result[0].number).toBe(1);
   });
 });

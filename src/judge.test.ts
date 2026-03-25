@@ -9,6 +9,7 @@ import {
 } from './judge';
 import { ClaudeClient } from './claude';
 import { RepoMemory, Learning, Suppression } from './memory';
+import { LinkedIssue } from './github';
 import { Finding, ReviewConfig, ParsedDiff, DiffFile, DiffHunk } from './types';
 
 const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
@@ -510,5 +511,33 @@ describe('runJudgeAgent', () => {
 
     const [, userMessage] = mockSendMessage.mock.calls[0];
     expect(userMessage).toContain('Relevant Suppressions');
+  });
+});
+
+describe('buildJudgeUserMessage with linked issues', () => {
+  it('includes linked issues section when provided', () => {
+    const findings = [makeFinding()];
+    const issues: LinkedIssue[] = [
+      { number: 42, title: 'Implement caching', body: 'Add Redis caching for API responses.' },
+    ];
+    const msg = buildJudgeUserMessage(findings, new Map(), '', undefined, issues);
+
+    expect(msg).toContain('## Linked Issues');
+    expect(msg).toContain('### Issue #42: Implement caching');
+    expect(msg).toContain('Add Redis caching for API responses.');
+  });
+
+  it('omits linked issues section when empty', () => {
+    const findings = [makeFinding()];
+    const msg = buildJudgeUserMessage(findings, new Map(), '', undefined, []);
+
+    expect(msg).not.toContain('## Linked Issues');
+  });
+
+  it('omits linked issues section when undefined', () => {
+    const findings = [makeFinding()];
+    const msg = buildJudgeUserMessage(findings, new Map(), '');
+
+    expect(msg).not.toContain('## Linked Issues');
   });
 });

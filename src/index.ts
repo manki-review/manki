@@ -21,6 +21,7 @@ import {
   postReview,
   createNitIssue,
   reactToIssueComment,
+  fetchLinkedIssues,
 } from './github';
 import { checkAndAutoApprove } from './state';
 
@@ -280,9 +281,21 @@ async function runFullReview(
       core.warning(`Failed to fetch file contents: ${error}`);
     }
 
+    let linkedIssues;
+    if (prContext?.body) {
+      try {
+        linkedIssues = await fetchLinkedIssues(octokit, owner, repo, prContext.body);
+        if (linkedIssues.length > 0) {
+          core.info(`Fetched ${linkedIssues.length} linked issue(s) from PR body`);
+        }
+      } catch (error) {
+        core.warning(`Failed to fetch linked issues: ${error}`);
+      }
+    }
+
     await dismissPreviousReviews(octokit, owner, repo, prNumber);
 
-    const result = await runReview({ reviewer: reviewerClient, judge: judgeClient }, config, diff, rawDiff, fullContext, memory, fileContents, prContext);
+    const result = await runReview({ reviewer: reviewerClient, judge: judgeClient }, config, diff, rawDiff, fullContext, memory, fileContents, prContext, linkedIssues);
 
     if (!result.reviewComplete && result.verdict === 'APPROVE') {
       result.verdict = 'COMMENT';

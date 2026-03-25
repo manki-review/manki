@@ -742,4 +742,48 @@ export async function fetchFileContents(
   return fileContents;
 }
 
+export interface LinkedIssue {
+  number: number;
+  title: string;
+  body: string;
+}
+
+const LINKED_ISSUE_REGEX = /(?:closes?|fixes?|resolves?|part\s+of)\s+#(\d+)/gi;
+const MAX_ISSUE_BODY_LENGTH = 2000;
+
+/**
+ * Parse PR body for issue references and fetch their details.
+ */
+export async function fetchLinkedIssues(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  prBody: string,
+): Promise<LinkedIssue[]> {
+  if (!prBody) return [];
+
+  const issueNumbers = new Set<number>();
+  let match: RegExpExecArray | null;
+  while ((match = LINKED_ISSUE_REGEX.exec(prBody)) !== null) {
+    issueNumbers.add(parseInt(match[1], 10));
+  }
+
+  if (issueNumbers.size === 0) return [];
+
+  const results: LinkedIssue[] = [];
+  for (const issueNumber of issueNumbers) {
+    try {
+      const { data } = await octokit.rest.issues.get({ owner, repo, issue_number: issueNumber });
+      const body = (data.body || '').length > MAX_ISSUE_BODY_LENGTH
+        ? (data.body || '').slice(0, MAX_ISSUE_BODY_LENGTH) + '\n... (truncated)'
+        : (data.body || '');
+      results.push({ number: data.number, title: data.title, body });
+    } catch {
+      core.debug(`Could not fetch linked issue #${issueNumber}`);
+    }
+  }
+
+  return results;
+}
+
 export { dynamicFence, formatFindingComment, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, safeTruncate, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_MARKER };
