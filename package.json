@@ -14,7 +14,7 @@
     "type": "git",
     "url": "https://github.com/xdustinface/manki"
   },
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
   "dependencies": {
     "@actions/core": "^1.11.1",
     "@actions/github": "^6.0.0",
