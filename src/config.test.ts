@@ -270,14 +270,14 @@ models:
       expect(config.models?.judge).toBe('claude-opus-4-6');
     });
 
-    it('accepts partial models object', () => {
+    it('accepts partial models object and merges with defaults', () => {
       const yaml = `
 models:
   reviewer: claude-sonnet-4-6
 `;
       const config = loadConfigFromContent(yaml);
       expect(config.models?.reviewer).toBe('claude-sonnet-4-6');
-      expect(config.models?.judge).toBeUndefined();
+      expect(config.models?.judge).toBe('claude-opus-4-6');
     });
 
     it('throws on invalid models type', () => {
@@ -317,13 +317,14 @@ models:
       expect(core.error).toHaveBeenCalledWith('`nit_handling` must be "issues" or "comments"');
     });
 
-    it('deep-merges models object', () => {
+    it('deep-merges models object with defaults', () => {
       const yaml = `
 models:
-  reviewer: claude-sonnet-4-6
+  reviewer: claude-haiku-4-5
 `;
       const config = loadConfigFromContent(yaml);
-      expect(config.models?.reviewer).toBe('claude-sonnet-4-6');
+      expect(config.models?.reviewer).toBe('claude-haiku-4-5');
+      expect(config.models?.judge).toBe('claude-opus-4-6');
     });
   });
 
@@ -333,13 +334,18 @@ models:
       model: 'claude-opus-4-6',
     };
 
-    it('returns stage-specific model when configured', () => {
+    it('returns default stage-specific models', () => {
+      expect(resolveModel(baseConfig, 'reviewer')).toBe('claude-sonnet-4-6');
+      expect(resolveModel(baseConfig, 'judge')).toBe('claude-opus-4-6');
+    });
+
+    it('returns overridden stage-specific model', () => {
       const config: ReviewConfig = {
         ...baseConfig,
-        models: { reviewer: 'claude-sonnet-4-6', judge: 'claude-opus-4-6' },
+        models: { reviewer: 'claude-haiku-4-5', judge: 'claude-sonnet-4-6' },
       };
-      expect(resolveModel(config, 'reviewer')).toBe('claude-sonnet-4-6');
-      expect(resolveModel(config, 'judge')).toBe('claude-opus-4-6');
+      expect(resolveModel(config, 'reviewer')).toBe('claude-haiku-4-5');
+      expect(resolveModel(config, 'judge')).toBe('claude-sonnet-4-6');
     });
 
     it('falls back to config.model when models is undefined', () => {
