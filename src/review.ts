@@ -1,7 +1,9 @@
 import * as core from '@actions/core';
 
 import { ClaudeClient } from './claude';
-import { ReviewConfig, ReviewerAgent, Finding, FindingSeverity, ReviewResult, ReviewVerdict, ParsedDiff, AgentVote, TeamRoster } from './types';
+import { runJudgeAgent, JudgeInput } from './judge';
+import { RepoMemory } from './memory';
+import { ReviewConfig, ReviewerAgent, Finding, ReviewResult, ReviewVerdict, ParsedDiff, TeamRoster } from './types';
 import { extractJSON } from './json';
 
 export const AGENT_POOL: readonly ReviewerAgent[] = Object.freeze([
@@ -123,6 +125,7 @@ export async function runReview(
   diff: ParsedDiff,
   rawDiff: string,
   repoContext: string,
+  memory?: RepoMemory | null,
 ): Promise<ReviewResult> {
   const team = selectTeam(diff, config, config.reviewers);
   core.info(`Review team (${team.level}): ${team.agents.map(a => a.name).join(', ')}`);
@@ -134,18 +137,18 @@ export async function runReview(
     )
   );
 
-  const allFindings: { reviewer: string; findings: Finding[] }[] = [];
+  const allFindings: Finding[] = [];
   for (let i = 0; i < agentResults.length; i++) {
     const result = agentResults[i];
     if (result.status === 'fulfilled') {
-      allFindings.push({ reviewer: team.agents[i].name, findings: result.value });
+      allFindings.push(...result.value);
       core.info(`${team.agents[i].name}: ${result.value.length} findings`);
     } else {
       core.warning(`${team.agents[i].name} failed: ${result.reason}`);
     }
   }
 
-  if (allFindings.length === 0) {
+  if (allFindings.length === 0 && agentResults.every(r => r.status === 'rejected')) {
     return {
       verdict: 'COMMENT',
       summary: 'Review could not be completed — all reviewer agents failed.',
@@ -156,20 +159,31 @@ export async function runReview(
   }
 
   let finalFindings: Finding[];
-  try {
-    core.info('Running deliberation round...');
-    finalFindings = await runDeliberation(client, config, team, allFindings, rawDiff);
-    core.info(`Deliberation complete: ${finalFindings.length} findings survived`);
-  } catch (error) {
-    core.warning(`Deliberation failed: ${error}. Falling back to merged findings.`);
-    finalFindings = mergeIndividualFindings(allFindings).findings;
+  if (allFindings.length === 0) {
+    finalFindings = [];
+  } else {
+    try {
+      core.info(`Running judge on ${allFindings.length} findings...`);
+      const judgeInput: JudgeInput = {
+        findings: allFindings,
+        diff,
+        rawDiff,
+        memory: memory ?? undefined,
+        repoContext,
+      };
+      const judged = await runJudgeAgent(client, config, judgeInput);
+      finalFindings = judged.filter(f => f.severity !== 'ignore');
+      core.info(`Judge complete: ${finalFindings.length} findings survived (${judged.length - finalFindings.length} ignored)`);
+    } catch (error) {
+      core.warning(`Judge failed: ${error}. Returning reviewer findings without judge evaluation.`);
+      finalFindings = allFindings;
+    }
   }
 
-  const hasRequired = finalFindings.some(f => f.severity === 'required');
-  const verdict = hasRequired ? 'REQUEST_CHANGES' : 'APPROVE';
+  const verdict = determineVerdict(finalFindings);
 
   const teamNames = team.agents.map(a => a.name).join(', ');
-  const summary = `Reviewed by ${team.agents.length} agents (${team.level}): ${teamNames}. ${finalFindings.length} findings after deliberation.`;
+  const summary = `Reviewed by ${team.agents.length} agents (${team.level}): ${teamNames}. ${finalFindings.length} findings after judge evaluation.`;
 
   core.startGroup('Review Summary');
   core.info(`Team: ${teamNames}`);
@@ -190,196 +204,6 @@ export async function runReview(
     highlights: [],
     reviewComplete: true,
   };
-}
-
-async function runDeliberation(
-  client: ClaudeClient,
-  config: ReviewConfig,
-  team: TeamRoster,
-  allFindings: { reviewer: string; findings: Finding[] }[],
-  rawDiff: string,
-): Promise<Finding[]> {
-  const rawFindings: Array<Finding & { originalReviewer: string }> = [];
-  for (const af of allFindings) {
-    for (const f of af.findings) {
-      rawFindings.push({ ...f, originalReviewer: af.reviewer });
-    }
-  }
-
-  if (rawFindings.length === 0) return [];
-
-  // Deduplicate findings before deliberation
-  const deduped: Array<Finding & { originalReviewer: string }> = [];
-  for (const f of rawFindings) {
-    const existing = deduped.find(d =>
-      d.file === f.file &&
-      Math.abs(d.line - f.line) <= 3 &&
-      titlesMatch(d.title, f.title)
-    );
-    if (existing) {
-      const severityOrder: Record<FindingSeverity, number> = { required: 3, suggestion: 2, nit: 1, ignore: 0 };
-      if ((severityOrder[f.severity] || 0) > (severityOrder[existing.severity] || 0)) {
-        existing.severity = f.severity;
-      }
-      if (!existing.reviewers.includes(f.originalReviewer)) {
-        existing.reviewers = [...existing.reviewers, f.originalReviewer];
-      }
-    } else {
-      deduped.push(f);
-    }
-  }
-
-  const flatFindings = deduped.map((f, i) => ({ ...f, index: i }));
-
-  const findingsSummary = flatFindings.map((f, i) =>
-    `[${i}] [${f.severity}] "${f.title}" at ${f.file}:${f.line} (by ${f.originalReviewer})\n    ${f.description}`
-  ).join('\n\n');
-
-  const voteResults = await Promise.allSettled(
-    team.agents.map(agent => runAgentVote(client, config, agent, findingsSummary, rawDiff, flatFindings.length))
-  );
-
-  const allVotes: AgentVote[] = [];
-  for (let i = 0; i < voteResults.length; i++) {
-    const result = voteResults[i];
-    if (result.status === 'fulfilled') {
-      // Deduplicate: only keep the first vote from each agent per finding
-      const seen = new Set<number>();
-      for (const vote of result.value) {
-        if (!seen.has(vote.findingIndex)) {
-          seen.add(vote.findingIndex);
-          allVotes.push(vote);
-        }
-      }
-    } else {
-      core.warning(`${team.agents[i].name} deliberation failed: ${result.reason}`);
-    }
-  }
-
-  return tallyVotes(flatFindings, allVotes, team.agents.length);
-}
-
-async function runAgentVote(
-  client: ClaudeClient,
-  config: ReviewConfig,
-  agent: ReviewerAgent,
-  findingsSummary: string,
-  rawDiff: string,
-  totalFindings: number,
-): Promise<AgentVote[]> {
-  let systemPrompt = `You are ${agent.name}, a code review specialist focusing on: ${agent.focus}
-
-Other reviewers have found issues in a pull request. You must vote on each finding.
-
-For each finding, respond with a JSON array:
-[
-  { "index": 0, "vote": "agree", "reason": "This is a real issue because..." },
-  { "index": 1, "vote": "disagree", "reason": "This is not an issue because..." },
-  ...
-]
-
-Vote options:
-- "agree" — the finding is valid and should be reported
-- "disagree" — the finding is a false positive or not worth flagging
-- "escalate" — the finding is more serious than the original severity suggests
-
-Be concise. One sentence per reason. Vote on EVERY finding.`;
-
-  if (config.instructions) {
-    systemPrompt += `\n\n## Additional Instructions\n\n${config.instructions}`;
-  }
-
-  const userMessage = `## Findings to vote on\n\n${findingsSummary}\n\n## PR Diff (for context)\n\n\`\`\`diff\n${truncateDiff(rawDiff)}\n\`\`\``;
-
-  const response = await client.sendMessage(systemPrompt, userMessage);
-  const jsonText = extractJSON(response.content);
-
-  try {
-    const validVotes = ['agree', 'disagree', 'escalate'];
-    const votes = JSON.parse(jsonText) as Array<{ index: number; vote: string; reason: string }>;
-    return votes
-      .filter(v => v.index >= 0 && v.index < totalFindings && validVotes.includes(v.vote))
-      .map(v => ({
-        agentName: agent.name,
-        findingIndex: v.index,
-        vote: v.vote as AgentVote['vote'],
-        reason: v.reason || '',
-      }));
-  } catch {
-    core.warning(`Failed to parse votes from ${agent.name}`);
-    return [];
-  }
-}
-
-export function tallyVotes(
-  findings: Array<Finding & { index: number; originalReviewer: string }>,
-  votes: AgentVote[],
-  teamSize: number,
-): Finding[] {
-  if (teamSize <= 0) return findings.map(f => ({ ...f }));
-
-  const results: Finding[] = [];
-  const majority = Math.ceil(teamSize / 2);
-
-  for (const finding of findings) {
-    // Deduplicate: only count the first vote from each agent per finding
-    const seenAgents = new Set<string>();
-    const findingVotes = votes.filter(v => {
-      if (v.findingIndex !== finding.index) return false;
-      const key = v.agentName;
-      if (seenAgents.has(key)) return false;
-      seenAgents.add(key);
-      return true;
-    });
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const { index, originalReviewer, ...cleanFinding } = finding;
-
-    const agreeCount = findingVotes.filter(v => v.vote === 'agree' || v.vote === 'escalate').length;
-    const disagreeCount = findingVotes.filter(v => v.vote === 'disagree').length;
-    const escalateCount = findingVotes.filter(v => v.vote === 'escalate').length;
-
-    if (findingVotes.length === 0) {
-      results.push(cleanFinding);
-      continue;
-    }
-
-    if (disagreeCount >= majority) {
-      core.info(`Dropped: "${finding.title}" (${disagreeCount}/${findingVotes.length} disagree)`);
-      continue;
-    }
-
-    if (agreeCount >= majority) {
-      let severity = finding.severity;
-
-      // Uses teamSize (not voter count) so that true unanimity is required.
-      // If some agents failed to vote, we don't escalate — partial consensus
-      // shouldn't be treated as full agreement.
-      if (agreeCount === teamSize && finding.severity === 'suggestion') {
-        severity = 'required';
-      } else if (escalateCount >= 2 && agreeCount >= majority && finding.severity === 'suggestion') {
-        severity = 'required';
-      }
-
-      const agreeVoters = findingVotes
-        .filter(v => v.vote === 'agree' || v.vote === 'escalate')
-        .map(v => v.agentName);
-
-      results.push({
-        ...cleanFinding,
-        severity,
-        reviewers: agreeVoters,
-      });
-      continue;
-    }
-
-    results.push({
-      ...cleanFinding,
-      severity: 'suggestion',
-      reviewers: findingVotes.filter(v => v.vote !== 'disagree').map(v => v.agentName),
-    });
-  }
-
-  return results;
 }
 
 async function runReviewerAgent(
@@ -487,40 +311,9 @@ export function validateSeverity(severity: unknown): Finding['severity'] {
   return 'suggestion';
 }
 
-export function parseConsolidatedReview(responseText: string): ReviewResult {
-  const jsonText = extractJSON(responseText);
-
-  try {
-    const parsed = JSON.parse(jsonText);
-
-    const findings: Finding[] = (parsed.findings || []).map((f: Record<string, unknown>) => ({
-      severity: validateSeverity(f.severity),
-      title: String(f.title || 'Untitled'),
-      file: String(f.file || ''),
-      line: Number(f.line) || 0,
-      description: String(f.description || ''),
-      suggestedFix: f.suggestedFix ? String(f.suggestedFix) : undefined,
-      reviewers: Array.isArray(f.reviewers) ? f.reviewers.map(String) : [],
-    }));
-
-    const verdict = determineVerdict(parsed.verdict, findings);
-
-    return {
-      verdict,
-      summary: String(parsed.summary || ''),
-      findings,
-      highlights: Array.isArray(parsed.highlights) ? parsed.highlights.map(String) : [],
-      reviewComplete: true,
-    };
-  } catch (e) {
-    throw new Error(`Failed to parse consolidated review: ${e}`);
-  }
-}
-
-export function determineVerdict(claimed: unknown, findings: Finding[]): ReviewVerdict {
+export function determineVerdict(findings: Finding[]): ReviewVerdict {
   const hasRequired = findings.some(f => f.severity === 'required');
-  if (hasRequired) return 'REQUEST_CHANGES';
-  return 'APPROVE';
+  return hasRequired ? 'REQUEST_CHANGES' : 'APPROVE';
 }
 
 export function truncateDiff(rawDiff: string, maxLength: number = 50000): string {
@@ -545,42 +338,4 @@ export function titlesMatch(a: string, b: string): boolean {
   const longer = aLower.length > bLower.length ? aLower : bLower;
 
   return longer.includes(shorter);
-}
-
-/**
- * Merge individual reviewer findings when deliberation fails.
- * De-duplicates by title similarity + file + line proximity.
- */
-export function mergeIndividualFindings(
-  agentFindings: { reviewer: string; findings: Finding[] }[],
-): ReviewResult {
-  const allFindings: Finding[] = [];
-
-  for (const af of agentFindings) {
-    for (const f of af.findings) {
-      const existing = allFindings.find(e =>
-        e.file === f.file &&
-        Math.abs(e.line - f.line) <= 3 &&
-        titlesMatch(e.title, f.title)
-      );
-
-      if (existing) {
-        if (!existing.reviewers.includes(af.reviewer)) {
-          existing.reviewers = [...existing.reviewers, af.reviewer];
-        }
-      } else {
-        allFindings.push({ ...f, reviewers: [af.reviewer] });
-      }
-    }
-  }
-
-  const hasRequired = allFindings.some(f => f.severity === 'required');
-
-  return {
-    verdict: hasRequired ? 'REQUEST_CHANGES' : 'APPROVE',
-    summary: `Review completed (consolidation skipped). ${allFindings.length} findings from ${agentFindings.length} reviewers.`,
-    findings: allFindings,
-    highlights: [],
-    reviewComplete: true,
-  };
 }

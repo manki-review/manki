@@ -248,7 +248,7 @@ async function runFullReview(
 
     await dismissPreviousReviews(octokit, owner, repo, prNumber);
 
-    const result = await runReview(claude, config, diff, rawDiff, fullContext);
+    const result = await runReview(claude, config, diff, rawDiff, fullContext, memory);
 
     if (!result.reviewComplete && result.verdict === 'APPROVE') {
       result.verdict = 'COMMENT';
@@ -259,7 +259,7 @@ async function runFullReview(
       if (suppressed.length > 0) {
         core.info(`Suppressed ${suppressed.length} findings based on memory`);
         result.findings = kept;
-        result.verdict = determineVerdict(undefined, result.findings);
+        result.verdict = determineVerdict(result.findings);
       }
     }
 
@@ -267,12 +267,12 @@ async function runFullReview(
     if (duplicates.length > 0) {
       core.info(`Deduplicated ${duplicates.length} findings (already flagged in previous reviews)`);
       result.findings = unique;
-      result.verdict = determineVerdict(undefined, result.findings);
+      result.verdict = determineVerdict(result.findings);
     }
 
     if (memory && memory.patterns.length > 0) {
       result.findings = applyEscalations(result.findings, memory.patterns);
-      result.verdict = determineVerdict(undefined, result.findings);
+      result.verdict = determineVerdict(result.findings);
     }
 
     const resolved = recap.previousFindings.filter(f => f.status === 'resolved').length;
