@@ -21,7 +21,7 @@ const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
   review_language: 'en',
   include_paths: ['**/*'],
   exclude_paths: [],
-  max_diff_lines: 10000,
+  max_diff_lines: 50000,
   reviewers: [],
   review_level: 'auto',
   review_thresholds: { small: 200, medium: 1000 },

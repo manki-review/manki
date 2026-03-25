@@ -26,7 +26,7 @@ export const DEFAULT_CONFIG: ReviewConfig = {
   review_language: 'en',
   include_paths: ['**/*'],
   exclude_paths: ['*.lock', 'dist/**', '*.generated.*'],
-  max_diff_lines: 10000,
+  max_diff_lines: 50000,
   reviewers: DEFAULT_REVIEWERS,
   instructions: '',
   review_level: 'auto',
