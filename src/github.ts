@@ -625,7 +625,7 @@ export function buildNitIssueBody(
 
     if (f.suggestedFix) {
       const fence = dynamicFence(f.suggestedFix);
-      item += `\n  **Suggested fix:**\n  ${fence}\n  ${f.suggestedFix}\n  ${fence}\n`;
+      item += `\n  **Suggested fix:**\n${fence}\n${f.suggestedFix}\n${fence}\n`;
     }
 
     item += `\n  </details>`;
