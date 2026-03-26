@@ -304,7 +304,7 @@ export async function runReview(
   const verdict = determineVerdict(finalFindings);
 
   const teamNames = team.agents.map(a => a.name).join(', ');
-  const summary = `Reviewed by ${team.agents.length} agents (${team.level}): ${teamNames}. ${finalFindings.length} findings after judge evaluation.`;
+  const summary = `Reviewed by ${team.agents.length} agents: ${teamNames}. ${finalFindings.length} findings after judge evaluation.`;
 
   core.startGroup('Review Summary');
   core.info(`Team: ${teamNames}`);
