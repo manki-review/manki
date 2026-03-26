@@ -448,7 +448,7 @@ async function runFullReview(
       keptCount: result.findings.length,
       droppedCount: droppedCount >= 0 ? droppedCount : 0,
     };
-    await updateProgressComment(octokit, owner, repo, progressCommentId, result, completeDashboard);
+    await updateProgressComment(octokit, owner, repo, progressCommentId, result, completeDashboard, stats);
 
     core.setOutput('review_id', reviewId.toString());
     core.setOutput('verdict', result.verdict);

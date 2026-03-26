@@ -31,6 +31,11 @@ export interface JudgedFinding {
   confidence: 'high' | 'medium' | 'low';
 }
 
+export interface JudgeResult {
+  summary: string;
+  findings: JudgedFinding[];
+}
+
 const CONTEXT_LINES = 10;
 
 export function buildJudgeSystemPrompt(config: ReviewConfig): string {
@@ -81,20 +86,23 @@ Multiple specialist reviewers may flag the same issue independently. When you se
 
 ## Output Format
 
-Respond with ONLY a JSON array (no markdown fences, no explanation). Each element:
+Respond with ONLY a JSON object (no markdown fences, no explanation):
 
 \`\`\`
-[
-  {
-    "title": "Short title matching or close to the original finding title",
-    "severity": "required" | "suggestion" | "nit" | "ignore",
-    "reasoning": "1-2 sentences explaining your judgment",
-    "confidence": "high" | "medium" | "low"
-  }
-]
+{
+  "summary": "1-2 sentence review summary. Be conversational but professional. Focus on what matters: what was found, what's good, what needs attention. Never list agent names. Never mention agent count or review level. Never say 'after judge evaluation'. For clean PRs: acknowledge briefly. For PRs with findings: highlight the most important finding(s).",
+  "findings": [
+    {
+      "title": "Short title matching or close to the original finding title",
+      "severity": "required" | "suggestion" | "nit" | "ignore",
+      "reasoning": "1-2 sentences explaining your judgment",
+      "confidence": "high" | "medium" | "low"
+    }
+  ]
+}
 \`\`\`
 
-The output array may be shorter than the input when duplicates are merged. Preserve the order of first appearance.`;
+The findings array may be shorter than the input when duplicates are merged. Preserve the order of first appearance.`;
 
   if (config.instructions) {
     prompt += `\n\n## Project Instructions\n\n${config.instructions}`;
@@ -264,25 +272,39 @@ function filterSuppressionsForFindings(suppressions: Suppression[], findings: Fi
   return result;
 }
 
-export function parseJudgeResponse(responseText: string): JudgedFinding[] {
+export function parseJudgeResponse(responseText: string): JudgeResult {
   const jsonText = extractJSON(responseText);
 
   try {
     const parsed = JSON.parse(jsonText);
-    if (!Array.isArray(parsed)) {
-      core.warning(`Judge did not return an array, got: ${typeof parsed}`);
-      return [];
+
+    const parseFindings = (arr: unknown[]): JudgedFinding[] =>
+      arr.map((item: unknown) => item as Record<string, unknown>).map((f) => ({
+        title: String(f.title || 'Untitled'),
+        severity: validateSeverity(f.severity),
+        reasoning: String(f.reasoning || ''),
+        confidence: validateConfidence(f.confidence),
+      }));
+
+    // New object format with summary + findings
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const findings = Array.isArray(parsed.findings) ? parseFindings(parsed.findings) : [];
+      const summary = typeof parsed.summary === 'string' && parsed.summary
+        ? parsed.summary
+        : 'Review complete.';
+      return { summary, findings };
     }
 
-    return parsed.map((f: Record<string, unknown>) => ({
-      title: String(f.title || 'Untitled'),
-      severity: validateSeverity(f.severity),
-      reasoning: String(f.reasoning || ''),
-      confidence: validateConfidence(f.confidence),
-    }));
+    // Backward compat: plain JSON array
+    if (Array.isArray(parsed)) {
+      return { summary: 'Review complete.', findings: parseFindings(parsed) };
+    }
+
+    core.warning(`Judge returned unexpected format: ${typeof parsed}`);
+    return { summary: 'Review complete.', findings: [] };
   } catch (e) {
     core.warning(`Failed to parse judge response: ${e}`);
-    return [];
+    return { summary: 'Review complete.', findings: [] };
   }
 }
 
@@ -297,10 +319,10 @@ export async function runJudgeAgent(
   client: ClaudeClient,
   config: ReviewConfig,
   input: JudgeInput,
-): Promise<Finding[]> {
+): Promise<{ findings: Finding[]; summary: string }> {
   const { findings, diff, memory, prContext, linkedIssues } = input;
 
-  if (findings.length === 0) return [];
+  if (findings.length === 0) return { findings, summary: 'Review complete.' };
 
   const codeContextMap = new Map<string, string>();
   for (const f of findings) {
@@ -320,15 +342,17 @@ export async function runJudgeAgent(
   const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles);
 
   const response = await client.sendMessage(systemPrompt, userMessage, { effort: 'high' });
-  const judged = parseJudgeResponse(response.content);
+  const judgeResult = parseJudgeResponse(response.content);
 
-  if (judged.length === 0) {
+  if (judgeResult.findings.length === 0) {
     core.warning('Judge returned no findings — returning originals unchanged');
-    return findings;
+    return { findings, summary: judgeResult.summary };
   }
 
-  const mapped = mapJudgedToFindings(findings, judged);
-  return deduplicateFindings(mapped);
+  return {
+    findings: deduplicateFindings(mapJudgedToFindings(findings, judgeResult.findings)),
+    summary: judgeResult.summary,
+  };
 }
 
 export function mapJudgedToFindings(original: Finding[], judged: JudgedFinding[]): Finding[] {

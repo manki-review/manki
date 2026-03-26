@@ -150,39 +150,34 @@ export async function fetchRepoContext(
 }
 
 /**
- * Build a markdown dashboard table showing review progress across phases.
+ * Build text status lines showing review progress across phases.
  */
 export function buildDashboard(data: DashboardData): string {
-  const parseStatus = `Done (${data.lineCount} lines)`;
-
-  let reviewStatus: string;
   if (data.phase === 'started') {
-    reviewStatus = 'Running...';
-  } else {
-    reviewStatus = `Done — ${data.rawFindingCount ?? 0} findings`;
+    return [
+      '**Manki** — Review in progress',
+      '',
+      `\u2713 Parsed diff — ${data.lineCount} lines`,
+      `\u23F3 Reviewing with ${data.agentCount} agents...`,
+      `\u25CB Judge — pending`,
+    ].join('\n');
   }
 
-  let judgeStatus: string;
-  if (data.phase === 'started') {
-    judgeStatus = 'Pending';
-  } else if (data.phase === 'reviewed') {
-    judgeStatus = 'Running...';
-  } else {
-    judgeStatus = `Done — ${data.keptCount ?? 0} kept, ${data.droppedCount ?? 0} dropped`;
+  if (data.phase === 'reviewed') {
+    return [
+      '**Manki** — Review in progress',
+      '',
+      `\u2713 Parsed diff — ${data.lineCount} lines`,
+      `\u2713 Review — ${data.agentCount} agents \u00B7 ${data.rawFindingCount ?? 0} findings`,
+      `\u23F3 Running judge...`,
+    ].join('\n');
   }
 
-  const header = data.phase === 'complete'
-    ? '**Manki** — Review complete'
-    : '**Manki** — Review started';
-
+  // phase === 'complete'
   return [
-    header,
-    '',
-    '| | Step | Status |',
-    '|---|------|--------|',
-    `| 1 | Parse diff | ${parseStatus} |`,
-    `| 2 | Review (${data.agentCount} agents) | ${reviewStatus} |`,
-    `| 3 | Judge | ${judgeStatus} |`,
+    `\u2713 Parsed diff — ${data.lineCount} lines`,
+    `\u2713 Review — ${data.agentCount} agents \u00B7 ${data.rawFindingCount ?? 0} findings`,
+    `\u2713 Judge — ${data.keptCount ?? 0} kept \u00B7 ${data.droppedCount ?? 0} dropped`,
   ].join('\n');
 }
 
@@ -220,25 +215,40 @@ export async function updateProgressComment(
   commentId: number,
   result: ReviewResult,
   dashboard?: DashboardData,
+  stats?: ReviewStats,
 ): Promise<void> {
-  const emoji = result.verdict === 'APPROVE' ? '✅' : result.verdict === 'REQUEST_CHANGES' ? '❌' : '💬';
+  const emoji = result.verdict === 'APPROVE' ? '\u2705' : result.verdict === 'REQUEST_CHANGES' ? '\u274C' : '\u{1F4AC}';
+  const verdictLabel = result.verdict.replace('_', ' ');
   const safeSummary = sanitizeMarkdown(result.summary);
-  const findingsSummary = result.findings.length > 0
-    ? `\n\n| Severity | Count |\n|---|---|\n| Required | ${result.findings.filter(f => f.severity === 'required').length} |\n| Suggestions | ${result.findings.filter(f => f.severity === 'suggestion').length} |\n| Nits | ${result.findings.filter(f => f.severity === 'nit').length} |\n| Ignored | ${result.findings.filter(f => f.severity === 'ignore').length} |`
-    : '';
 
-  const safeHighlights = result.highlights.map(h => sanitizeMarkdown(h));
-  const highlights = safeHighlights.length > 0
-    ? `\n\n**Highlights:**\n${safeHighlights.map(h => `- ${h}`).join('\n')}`
-    : '';
+  const statsLine = stats ? formatStatsOneLiner(stats) : '';
+  const dashboardBlock = dashboard ? buildDashboard(dashboard) : '';
 
-  const dashboardBlock = dashboard ? `${buildDashboard(dashboard)}\n\n---\n\n` : '';
+  const parts: string[] = [
+    BOT_MARKER,
+    `**Manki** — ${emoji} ${verdictLabel}`,
+    '',
+    `> ${safeSummary}`,
+  ];
+
+  if (statsLine || dashboardBlock) {
+    const detailsSummary = statsLine || 'Review details';
+    parts.push('');
+    parts.push(`<details>`);
+    parts.push(`<summary>${detailsSummary}</summary>`);
+    parts.push('');
+    if (dashboardBlock) {
+      parts.push(dashboardBlock);
+    }
+    parts.push('');
+    parts.push(`</details>`);
+  }
 
   await octokit.rest.issues.updateComment({
     owner,
     repo,
     comment_id: commentId,
-    body: truncateBody(`${BOT_MARKER}\n${dashboardBlock}${emoji} **Manki** — ${result.verdict.replace('_', ' ')}\n\n${safeSummary}${findingsSummary}${highlights}`),
+    body: truncateBody(parts.join('\n')),
   });
 }
 
@@ -378,7 +388,7 @@ export async function postReview(
     }
   }
 
-  let body = `${BOT_MARKER}\n${sanitizeMarkdown(result.summary)}`;
+  let body = `${BOT_MARKER}\n> ${sanitizeMarkdown(result.summary)}`;
   if (stats) {
     body += `\n\n${formatStatsOneLiner(stats)}`;
     body += `\n\n${formatStatsJson(stats)}`;

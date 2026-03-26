@@ -1283,19 +1283,19 @@ describe('buildDashboard', () => {
   it('renders the started phase with running review and pending judge', () => {
     const data: DashboardData = { phase: 'started', lineCount: 150, agentCount: 5 };
     const md = buildDashboard(data);
-    expect(md).toContain('**Manki** — Review started');
-    expect(md).toContain('Done (150 lines)');
-    expect(md).toContain('Review (5 agents) | Running...');
-    expect(md).toContain('Judge | Pending');
+    expect(md).toContain('**Manki** — Review in progress');
+    expect(md).toContain('\u2713 Parsed diff — 150 lines');
+    expect(md).toContain('\u23F3 Reviewing with 5 agents...');
+    expect(md).toContain('\u25CB Judge — pending');
   });
 
   it('renders the reviewed phase with finding count and running judge', () => {
     const data: DashboardData = { phase: 'reviewed', lineCount: 300, agentCount: 3, rawFindingCount: 12 };
     const md = buildDashboard(data);
-    expect(md).toContain('**Manki** — Review started');
-    expect(md).toContain('Done (300 lines)');
-    expect(md).toContain('Review (3 agents) | Done — 12 findings');
-    expect(md).toContain('Judge | Running...');
+    expect(md).toContain('**Manki** — Review in progress');
+    expect(md).toContain('\u2713 Parsed diff — 300 lines');
+    expect(md).toContain('\u2713 Review — 3 agents \u00B7 12 findings');
+    expect(md).toContain('\u23F3 Running judge...');
   });
 
   it('renders the complete phase with kept/dropped counts', () => {
@@ -1304,25 +1304,22 @@ describe('buildDashboard', () => {
       rawFindingCount: 20, keptCount: 8, droppedCount: 12,
     };
     const md = buildDashboard(data);
-    expect(md).toContain('**Manki** — Review complete');
-    expect(md).toContain('Done (500 lines)');
-    expect(md).toContain('Review (7 agents) | Done — 20 findings');
-    expect(md).toContain('Judge | Done — 8 kept, 12 dropped');
+    expect(md).toContain('\u2713 Parsed diff — 500 lines');
+    expect(md).toContain('\u2713 Review — 7 agents \u00B7 20 findings');
+    expect(md).toContain('\u2713 Judge — 8 kept \u00B7 12 dropped');
   });
 
   it('defaults rawFindingCount to 0 when not provided in reviewed phase', () => {
     const data: DashboardData = { phase: 'reviewed', lineCount: 100, agentCount: 3 };
     const md = buildDashboard(data);
-    expect(md).toContain('Done — 0 findings');
+    expect(md).toContain('0 findings');
   });
 
-  it('contains a proper markdown table structure', () => {
+  it('uses text status lines instead of a table', () => {
     const data: DashboardData = { phase: 'started', lineCount: 50, agentCount: 2 };
     const md = buildDashboard(data);
-    expect(md).toContain('| | Step | Status |');
-    expect(md).toContain('|---|------|--------|');
-    expect(md).toContain('| 1 |');
-    expect(md).toContain('| 2 |');
-    expect(md).toContain('| 3 |');
+    expect(md).not.toContain('| |');
+    expect(md).not.toContain('|---|');
+    expect(md).toContain('\u2713 Parsed diff');
   });
 });

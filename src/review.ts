@@ -278,6 +278,7 @@ export async function runReview(
   }
 
   let finalFindings: Finding[];
+  let judgeSummary = 'Review complete.';
   if (findingsForJudge.length === 0) {
     finalFindings = [];
   } else {
@@ -292,9 +293,10 @@ export async function runReview(
         prContext,
         linkedIssues,
       };
-      const judged = await runJudgeAgent(clients.judge, config, judgeInput);
-      finalFindings = judged.filter(f => f.severity !== 'ignore');
-      core.info(`Judge complete: ${finalFindings.length} findings survived (${judged.length - finalFindings.length} ignored)`);
+      const judgeResult = await runJudgeAgent(clients.judge, config, judgeInput);
+      judgeSummary = judgeResult.summary;
+      finalFindings = judgeResult.findings.filter(f => f.severity !== 'ignore');
+      core.info(`Judge complete: ${finalFindings.length} findings survived (${judgeResult.findings.length - finalFindings.length} ignored)`);
     } catch (error) {
       core.warning(`Judge failed: ${error}. Returning reviewer findings without judge evaluation.`);
       finalFindings = allFindings;
@@ -303,11 +305,10 @@ export async function runReview(
 
   const verdict = determineVerdict(finalFindings);
 
-  const teamNames = team.agents.map(a => a.name).join(', ');
-  const summary = `Reviewed by ${team.agents.length} agents: ${teamNames}. ${finalFindings.length} findings after judge evaluation.`;
+  const summary = judgeSummary;
 
   core.startGroup('Review Summary');
-  core.info(`Team: ${teamNames}`);
+  core.info(`Team: ${team.agents.map(a => a.name).join(', ')}`);
   core.info(`Level: ${team.level} (${team.lineCount} lines changed)`);
   core.info(`Verdict: ${verdict}`);
   core.info(`Findings: ${finalFindings.length}`);

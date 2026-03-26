@@ -304,25 +304,52 @@ describe('extractCodeContext', () => {
 });
 
 describe('parseJudgeResponse', () => {
-  it('parses valid JSON array with all fields', () => {
+  it('parses object format with summary and findings', () => {
+    const json = JSON.stringify({
+      summary: 'Clean PR with one minor issue.',
+      findings: [
+        { title: 'Bug found', severity: 'required', reasoning: 'This is a real bug.', confidence: 'high' },
+      ],
+    });
+
+    const result = parseJudgeResponse(json);
+    expect(result.summary).toBe('Clean PR with one minor issue.');
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].title).toBe('Bug found');
+    expect(result.findings[0].severity).toBe('required');
+    expect(result.findings[0].reasoning).toBe('This is a real bug.');
+    expect(result.findings[0].confidence).toBe('high');
+  });
+
+  it('falls back to default summary when plain array is returned', () => {
     const json = JSON.stringify([
       { title: 'Bug found', severity: 'required', reasoning: 'This is a real bug.', confidence: 'high' },
     ]);
 
     const result = parseJudgeResponse(json);
-    expect(result).toHaveLength(1);
-    expect(result[0].title).toBe('Bug found');
-    expect(result[0].severity).toBe('required');
-    expect(result[0].reasoning).toBe('This is a real bug.');
-    expect(result[0].confidence).toBe('high');
+    expect(result.summary).toBe('Review complete.');
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].title).toBe('Bug found');
+  });
+
+  it('falls back to default summary when summary is missing from object', () => {
+    const json = JSON.stringify({
+      findings: [
+        { title: 'Test', severity: 'suggestion', reasoning: 'Okay.', confidence: 'medium' },
+      ],
+    });
+
+    const result = parseJudgeResponse(json);
+    expect(result.summary).toBe('Review complete.');
+    expect(result.findings).toHaveLength(1);
   });
 
   it('parses JSON wrapped in markdown code fences', () => {
     const json = '```json\n[{"title":"Bug","severity":"required","reasoning":"Real bug.","confidence":"high"}]\n```';
 
     const result = parseJudgeResponse(json);
-    expect(result).toHaveLength(1);
-    expect(result[0].title).toBe('Bug');
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].title).toBe('Bug');
   });
 
   it('defaults missing confidence to medium', () => {
@@ -331,7 +358,7 @@ describe('parseJudgeResponse', () => {
     ]);
 
     const result = parseJudgeResponse(json);
-    expect(result[0].confidence).toBe('medium');
+    expect(result.findings[0].confidence).toBe('medium');
   });
 
   it('defaults invalid severity to suggestion', () => {
@@ -340,31 +367,33 @@ describe('parseJudgeResponse', () => {
     ]);
 
     const result = parseJudgeResponse(json);
-    expect(result[0].severity).toBe('suggestion');
+    expect(result.findings[0].severity).toBe('suggestion');
   });
 
-  it('returns empty array for empty response', () => {
+  it('returns empty findings for empty response', () => {
     const result = parseJudgeResponse('');
-    expect(result).toEqual([]);
+    expect(result.findings).toEqual([]);
+    expect(result.summary).toBe('Review complete.');
   });
 
-  it('returns empty array for malformed JSON', () => {
+  it('returns empty findings for malformed JSON', () => {
     const result = parseJudgeResponse('not json {broken');
-    expect(result).toEqual([]);
+    expect(result.findings).toEqual([]);
   });
 
-  it('returns empty array for non-array JSON', () => {
+  it('returns empty findings for unrecognized object', () => {
     const result = parseJudgeResponse('{"not": "an array"}');
-    expect(result).toEqual([]);
+    expect(result.findings).toEqual([]);
+    expect(result.summary).toBe('Review complete.');
   });
 
   it('handles missing title and reasoning gracefully', () => {
     const json = JSON.stringify([{ severity: 'nit' }]);
 
     const result = parseJudgeResponse(json);
-    expect(result).toHaveLength(1);
-    expect(result[0].title).toBe('Untitled');
-    expect(result[0].reasoning).toBe('');
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].title).toBe('Untitled');
+    expect(result.findings[0].reasoning).toBe('');
   });
 
   it('parses multiple findings', () => {
@@ -374,9 +403,9 @@ describe('parseJudgeResponse', () => {
     ]);
 
     const result = parseJudgeResponse(json);
-    expect(result).toHaveLength(2);
-    expect(result[0].severity).toBe('required');
-    expect(result[1].severity).toBe('ignore');
+    expect(result.findings).toHaveLength(2);
+    expect(result.findings[0].severity).toBe('required');
+    expect(result.findings[1].severity).toBe('ignore');
   });
 });
 
@@ -434,7 +463,7 @@ describe('runJudgeAgent', () => {
     mockSendMessage.mockReset();
   });
 
-  it('returns empty array for empty findings', async () => {
+  it('returns empty findings with default summary for empty findings', async () => {
     const input: JudgeInput = {
       findings: [],
       diff: makeDiff(),
@@ -443,14 +472,18 @@ describe('runJudgeAgent', () => {
     };
 
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
-    expect(result).toEqual([]);
+    expect(result.findings).toEqual([]);
+    expect(result.summary).toBe('Review complete.');
     expect(mockSendMessage).not.toHaveBeenCalled();
   });
 
-  it('calls client and returns updated findings', async () => {
-    const judgedResponse = JSON.stringify([
-      { title: 'Unused variable', severity: 'ignore', reasoning: 'False positive.', confidence: 'high' },
-    ]);
+  it('calls client and returns updated findings with summary', async () => {
+    const judgedResponse = JSON.stringify({
+      summary: 'One false positive found.',
+      findings: [
+        { title: 'Unused variable', severity: 'ignore', reasoning: 'False positive.', confidence: 'high' },
+      ],
+    });
     mockSendMessage.mockResolvedValue({ content: judgedResponse });
 
     const input: JudgeInput = {
@@ -461,17 +494,21 @@ describe('runJudgeAgent', () => {
     };
 
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
-    expect(result).toHaveLength(1);
-    expect(result[0].severity).toBe('ignore');
-    expect(result[0].judgeNotes).toBe('False positive.');
-    expect(result[0].judgeConfidence).toBe('high');
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].severity).toBe('ignore');
+    expect(result.findings[0].judgeNotes).toBe('False positive.');
+    expect(result.findings[0].judgeConfidence).toBe('high');
+    expect(result.summary).toBe('One false positive found.');
     expect(mockSendMessage).toHaveBeenCalledTimes(1);
   });
 
   it('passes effort option to sendMessage', async () => {
-    const judgedResponse = JSON.stringify([
-      { title: 'Unused variable', severity: 'suggestion', reasoning: 'Real issue.', confidence: 'high' },
-    ]);
+    const judgedResponse = JSON.stringify({
+      summary: 'Real issue found.',
+      findings: [
+        { title: 'Unused variable', severity: 'suggestion', reasoning: 'Real issue.', confidence: 'high' },
+      ],
+    });
     mockSendMessage.mockResolvedValue({ content: judgedResponse });
 
     const input: JudgeInput = {
@@ -502,16 +539,19 @@ describe('runJudgeAgent', () => {
     };
 
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
-    expect(result).toHaveLength(1);
-    expect(result[0].severity).toBe('required');
-    expect(result[0].judgeNotes).toBeUndefined();
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].severity).toBe('required');
+    expect(result.findings[0].judgeNotes).toBeUndefined();
   });
 
   it('matches judge findings by fuzzy title when order differs', async () => {
-    const judgedResponse = JSON.stringify([
-      { title: 'Different title', severity: 'nit', reasoning: 'Minor.', confidence: 'low' },
-      { title: 'Unused variable cleanup', severity: 'ignore', reasoning: 'Not real.', confidence: 'high' },
-    ]);
+    const judgedResponse = JSON.stringify({
+      summary: 'Mixed findings.',
+      findings: [
+        { title: 'Different title', severity: 'nit', reasoning: 'Minor.', confidence: 'low' },
+        { title: 'Unused variable cleanup', severity: 'ignore', reasoning: 'Not real.', confidence: 'high' },
+      ],
+    });
     mockSendMessage.mockResolvedValue({ content: judgedResponse });
 
     const input: JudgeInput = {
@@ -528,19 +568,22 @@ describe('runJudgeAgent', () => {
     };
 
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
-    expect(result).toHaveLength(2);
+    expect(result.findings).toHaveLength(2);
     // "Unused variable" should fuzzy-match "Unused variable cleanup" => severity 'ignore'
-    expect(result[0].severity).toBe('ignore');
-    expect(result[0].judgeNotes).toBe('Not real.');
+    expect(result.findings[0].severity).toBe('ignore');
+    expect(result.findings[0].judgeNotes).toBe('Not real.');
     // "Something completely different" matches "Different title" by position => severity 'nit'
-    expect(result[1].severity).toBe('nit');
-    expect(result[1].judgeNotes).toBe('Minor.');
+    expect(result.findings[1].severity).toBe('nit');
+    expect(result.findings[1].judgeNotes).toBe('Minor.');
   });
 
   it('includes memory context when memory is provided', async () => {
-    const judgedResponse = JSON.stringify([
-      { title: 'Unused variable', severity: 'ignore', reasoning: 'Suppressed.', confidence: 'high' },
-    ]);
+    const judgedResponse = JSON.stringify({
+      summary: 'Suppressed finding.',
+      findings: [
+        { title: 'Unused variable', severity: 'ignore', reasoning: 'Suppressed.', confidence: 'high' },
+      ],
+    });
     mockSendMessage.mockResolvedValue({ content: judgedResponse });
 
     const input: JudgeInput = {
