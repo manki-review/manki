@@ -228,7 +228,7 @@ export async function updateProgressComment(
     BOT_MARKER,
     `**Manki** — ${emoji} ${verdictLabel}`,
     '',
-    `> ${safeSummary}`,
+    safeSummary,
   ];
 
   if (statsLine || dashboardBlock) {
@@ -331,6 +331,7 @@ export async function postReview(
   result: ReviewResult,
   diff?: ParsedDiff,
   stats?: ReviewStats,
+  recapSummary?: string,
 ): Promise<number> {
   const event = mapVerdictToEvent(result.verdict);
 
@@ -388,7 +389,10 @@ export async function postReview(
     }
   }
 
-  let body = `${BOT_MARKER}\n> ${sanitizeMarkdown(result.summary)}`;
+  let body = `${BOT_MARKER}\n${sanitizeMarkdown(result.summary)}`;
+  if (recapSummary) {
+    body += `\n\n${recapSummary}`;
+  }
   if (stats) {
     body += `\n\n${formatStatsOneLiner(stats)}`;
     body += `\n\n${formatStatsJson(stats)}`;

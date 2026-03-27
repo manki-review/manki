@@ -356,7 +356,6 @@ async function runFullReview(
     const resolved = recap.previousFindings.filter(f => f.status === 'resolved').length;
     const open = recap.previousFindings.filter(f => f.status === 'open').length;
     const recapSummary = buildRecapSummary(result.findings.length, duplicates.length, resolved, open);
-    result.summary = `${result.summary}\n\n${recapSummary}`;
 
     // Enrich findings with code context from the diff for nit issues
     for (const finding of result.findings) {
@@ -410,7 +409,7 @@ async function runFullReview(
     };
 
     const reviewResult = { ...result, findings: inlineFindings };
-    const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, reviewResult, diff, stats);
+    const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, reviewResult, diff, stats, recapSummary);
 
     if (nitHandling === 'issues' && nitFindings.length > 0) {
       try {
