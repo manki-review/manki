@@ -2,7 +2,7 @@
   <img src="assets/manki.png" alt="Manki" width="200" />
 </p>
 
-<h1 align="center">Manki</h1>
+<h1 align="center">Manki — curious, thorough, and always learning</h1>
 
 <p align="center">
   <a href="https://github.com/xdustinface/manki/actions/workflows/ci.yml"><img src="https://github.com/xdustinface/manki/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
