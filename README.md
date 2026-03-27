@@ -1,9 +1,15 @@
-# Manki
+<p align="center">
+  <img src="assets/manki.png" alt="Manki" width="200" />
+</p>
 
-[![CI](https://github.com/xdustinface/manki/actions/workflows/ci.yml/badge.svg)](https://github.com/xdustinface/manki/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/xdustinface/manki/graph/badge.svg)](https://codecov.io/gh/xdustinface/manki)
+<h1 align="center">Manki</h1>
 
-**Your tokens, your rules.** Self-hosted AI code review that runs on your own GitHub runners and learns from your team.
+<p align="center">
+  <a href="https://github.com/xdustinface/manki/actions/workflows/ci.yml"><img src="https://github.com/xdustinface/manki/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://codecov.io/gh/xdustinface/manki"><img src="https://codecov.io/gh/xdustinface/manki/graph/badge.svg" alt="codecov" /></a>
+</p>
+
+<p align="center"><strong>Your tokens, your rules.</strong> Self-hosted AI code review that runs on your own GitHub runners and learns from your team.</p>
 
 Manki assembles a dynamic review team from a pool of seven specialist agents, sized to your diff, then passes all findings through a judge agent that deduplicates, re-severities, and tallies the final verdict. She's curious, thorough, and remembers what you teach her.
 
@@ -15,7 +21,10 @@ Manki assembles a dynamic review team from a pool of seven specialist agents, si
 - **Review recap** -- On subsequent pushes, Manki deduplicates against previous findings and tracks which ones were resolved
 - **Auto-resolve with validation** -- When a new push touches code near an open finding, Claude validates whether the fix actually addresses it and auto-resolves the thread
 - **Auto-approve** -- When all blocking threads are resolved, Manki approves the PR. Trigger manually with `@manki check`
-- **Nit issues for triage** -- Non-blocking findings become a GitHub issue with checkboxes, a `needs-human` label, code snippets, and AI agent fix prompts. Triage with `@manki triage`
+- **Nit issues for triage** -- Non-blocking findings become a GitHub issue with checkboxes, a `needs-human` label, and collapsible details with GitHub permalink embeds. Triage with `@manki triage`
+- **Live dashboard** -- Progress comment updates in real-time showing each review phase (parse, review, judge) with status
+- **AI-generated summaries** -- The judge writes a concise review summary instead of a hardcoded template. Collapsed review stats (JSON) are included for future performance analysis
+- **Structured AI context** -- Inline comments include a collapsed JSON block with machine-readable metadata for AI agents to consume
 - **Self-learning memory** -- Teach her with `@manki remember`. She stores learnings, tracks patterns, applies suppressions, and auto-escalates findings that are consistently accepted during triage
 - **Conversational** -- Reply to any review comment to start a discussion. She reacts with emoji to acknowledge commands
 - **No external dependencies** -- Runs on GitHub Actions with your Claude Max subscription. No third-party services, no external rate limits, no waiting in queue
@@ -85,7 +94,8 @@ For the full setup guide (permissions, memory system, GitHub App identity, troub
 | `@manki remember global: <instruction>` | Teach globally (applies to all repos) |
 | `@manki check` | Check thread resolution and auto-approve if clear |
 | `@manki triage` | Process nit issue checkboxes into work issues + suppressions |
-| `@manki forget` | Not yet implemented -- remove learnings manually for now |
+| `@manki forget <text>` | Remove a learning matching the text |
+| `@manki forget suppression <pattern>` | Remove a suppression matching the pattern |
 | `@manki help` | Show all commands |
 
 You can also reply to any of her review comments to start a conversation.
@@ -109,13 +119,16 @@ review_thresholds:
 instructions: |
   This is a Rust project. Focus on ownership and error handling.
 
-# Default model (used as fallback when per-stage model is not set)
-model: claude-opus-4-6
-
-# Per-stage model selection (falls back to `model` if not set)
+# Per-stage model selection
 models:
   reviewer: claude-sonnet-4-6   # fast, parallel reviewers
   judge: claude-opus-4-6        # precise, single judge
+
+# Deprecated: top-level model (fallback when models.stage is not set)
+# model: claude-sonnet-4-6
+
+# Max diff size for automated review (default: 50000)
+# max_diff_lines: 50000
 
 # What to do with non-blocking findings: "issues" (default) or "comments"
 nit_handling: issues
