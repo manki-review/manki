@@ -2,22 +2,7 @@ import * as core from '@actions/core';
 import * as fs from 'fs';
 import { parse as parseYaml } from 'yaml';
 
-import { ReviewConfig, ReviewerAgent } from './types';
-
-const DEFAULT_REVIEWERS: ReviewerAgent[] = [
-  {
-    name: 'Security & Correctness',
-    focus: 'bugs, vulnerabilities, memory safety, data integrity, input validation, crypto correctness, no key exposure, integer overflow, no panics in library code',
-  },
-  {
-    name: 'Architecture & Quality',
-    focus: 'design patterns, simplicity, maintainability, code reuse, naming conventions, idiomatic usage, dead code, over-engineering, appropriate visibility modifiers',
-  },
-  {
-    name: 'Testing & Edge Cases',
-    focus: 'test coverage, error paths, boundary conditions, race conditions, missing assertions, test quality, edge cases in error handling',
-  },
-];
+import { ReviewConfig } from './types';
 
 export const DEFAULT_CONFIG: ReviewConfig = {
   model: 'claude-sonnet-4-6',
@@ -27,7 +12,7 @@ export const DEFAULT_CONFIG: ReviewConfig = {
   include_paths: ['**/*'],
   exclude_paths: ['*.lock', 'dist/**', '*.generated.*'],
   max_diff_lines: 50000,
-  reviewers: DEFAULT_REVIEWERS,
+  reviewers: [],
   instructions: '',
   review_level: 'auto',
   review_thresholds: { small: 200, medium: 1000 },

@@ -26,7 +26,7 @@ describe('config', () => {
       expect(typeof DEFAULT_CONFIG.max_diff_lines).toBe('number');
       expect(DEFAULT_CONFIG.max_diff_lines).toBeGreaterThan(0);
       expect(Array.isArray(DEFAULT_CONFIG.reviewers)).toBe(true);
-      expect(DEFAULT_CONFIG.reviewers.length).toBe(3);
+      expect(DEFAULT_CONFIG.reviewers.length).toBe(0);
       expect(typeof DEFAULT_CONFIG.instructions).toBe('string');
       expect(typeof DEFAULT_CONFIG.memory).toBe('object');
       expect(typeof DEFAULT_CONFIG.memory.enabled).toBe('boolean');
