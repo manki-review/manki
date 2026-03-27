@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { DashboardData, Finding, FindingSeverity, ParsedDiff, ReviewResult, ReviewStats, ReviewVerdict } from './types';
+import { DashboardData, Finding, FindingSeverity, ParsedDiff, ReviewMetadata, ReviewResult, ReviewStats, ReviewVerdict } from './types';
 import { isLineInDiff, findClosestDiffLine } from './diff';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -206,42 +206,61 @@ export async function postProgressComment(
 }
 
 /**
- * Update the progress comment with dashboard state or the final summary.
+ * Freeze the progress comment as an audit log with the final dashboard
+ * and optional review metadata (config, judge decisions, recap, timing).
  */
 export async function updateProgressComment(
   octokit: Octokit,
   owner: string,
   repo: string,
   commentId: number,
-  result: ReviewResult,
-  dashboard?: DashboardData,
-  stats?: ReviewStats,
+  dashboard: DashboardData,
+  metadata?: ReviewMetadata,
 ): Promise<void> {
-  const emoji = result.verdict === 'APPROVE' ? '\u2705' : result.verdict === 'REQUEST_CHANGES' ? '\u274C' : '\u{1F4AC}';
-  const verdictLabel = result.verdict.replace('_', ' ');
-  const safeSummary = sanitizeMarkdown(result.summary);
-
-  const statsLine = stats ? formatStatsOneLiner(stats) : '';
-  const dashboardBlock = dashboard ? buildDashboard(dashboard) : '';
-
   const parts: string[] = [
     BOT_MARKER,
-    `**Manki** — ${emoji} ${verdictLabel}`,
+    '**Manki** — Review complete',
     '',
-    safeSummary,
+    buildDashboard({ ...dashboard, phase: 'complete' }),
   ];
 
-  if (statsLine || dashboardBlock) {
-    const detailsSummary = statsLine || 'Review details';
+  if (metadata) {
     parts.push('');
-    parts.push(`<details>`);
-    parts.push(`<summary>${detailsSummary}</summary>`);
+    parts.push('<details>');
+    parts.push('<summary>Review metadata</summary>');
     parts.push('');
-    if (dashboardBlock) {
-      parts.push(dashboardBlock);
+
+    parts.push('**Config:**');
+    parts.push(`- Models: reviewer=${metadata.config.reviewerModel}, judge=${metadata.config.judgeModel}`);
+    parts.push(`- Review level: ${metadata.config.reviewLevel} (${metadata.config.reviewLevelReason})`);
+    parts.push(`- Team: ${metadata.config.teamAgents.join(', ')}`);
+    parts.push(`- Memory: ${metadata.config.memoryEnabled ? `enabled (${metadata.config.memoryRepo})` : 'disabled'}`);
+    parts.push(`- Nit handling: ${metadata.config.nitHandling}`);
+    parts.push('');
+
+    if (metadata.judgeDecisions.length > 0) {
+      parts.push('**Judge decisions:**');
+      for (const d of metadata.judgeDecisions) {
+        const icon = d.kept ? '\u2713 Kept' : '\u2717 Dropped';
+        parts.push(`- ${icon}: "${d.title}" (${d.severity}, ${d.confidence} confidence) — "${d.reasoning}"`);
+      }
+      parts.push('');
     }
+
+    parts.push('**Recap:**');
+    parts.push(`- ${metadata.recap.newFindings} new findings`);
+    if (metadata.recap.previouslyFlagged > 0) parts.push(`- ${metadata.recap.previouslyFlagged} previously flagged`);
+    if (metadata.recap.resolved > 0) parts.push(`- ${metadata.recap.resolved} resolved`);
+    if (metadata.recap.suppressionsApplied > 0) parts.push(`- ${metadata.recap.suppressionsApplied} suppressions applied`);
     parts.push('');
-    parts.push(`</details>`);
+
+    parts.push('**Timing:**');
+    parts.push(`- Parse: ${(metadata.timing.parseMs / 1000).toFixed(1)}s`);
+    parts.push(`- Review agents: ${(metadata.timing.reviewMs / 1000).toFixed(1)}s`);
+    parts.push(`- Judge: ${(metadata.timing.judgeMs / 1000).toFixed(1)}s`);
+    parts.push(`- Total: ${(metadata.timing.totalMs / 1000).toFixed(1)}s`);
+    parts.push('');
+    parts.push('</details>');
   }
 
   await octokit.rest.issues.updateComment({

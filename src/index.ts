@@ -9,7 +9,7 @@ import { handleReviewCommentReply, handlePRComment } from './interaction';
 import { loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
 import { fetchRecapState, deduplicateFindings, buildRecapSummary, resolveAddressedThreads } from './recap';
 import { runReview, determineVerdict, selectTeam } from './review';
-import { DashboardData, PrContext, ReviewStats } from './types';
+import { DashboardData, PrContext, ReviewMetadata, ReviewStats } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -209,6 +209,7 @@ async function runFullReview(
 
     const rawDiff = await fetchPRDiff(octokit, owner, repo, prNumber);
     const diff = parsePRDiff(rawDiff);
+    const parseEndTime = Date.now();
     const team = selectTeam(diff, config, config.reviewers);
     const lineCount = diff.totalAdditions + diff.totalDeletions;
 
@@ -235,7 +236,7 @@ async function runFullReview(
         core.warning(`Failed to dismiss previous reviews: ${error}`);
       }
       await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
-      await updateProgressComment(octokit, owner, repo, progressCommentId, result);
+      await updateProgressComment(octokit, owner, repo, progressCommentId, dashboard);
       return;
     }
 
@@ -253,7 +254,7 @@ async function runFullReview(
       };
       await dismissPreviousReviews(octokit, owner, repo, prNumber);
       await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
-      await updateProgressComment(octokit, owner, repo, progressCommentId, result);
+      await updateProgressComment(octokit, owner, repo, progressCommentId, dashboard);
       return;
     }
 
@@ -325,17 +326,20 @@ async function runFullReview(
     await dismissPreviousReviews(octokit, owner, repo, prNumber);
 
     let rawFindingCount = 0;
+    let reviewEndTime = parseEndTime;
     const result = await runReview(
       { reviewer: reviewerClient, judge: judgeClient }, config, diff, rawDiff, fullContext,
       memory, fileContents, prContext, linkedIssues,
       (progress) => {
         rawFindingCount = progress.rawFindingCount;
+        reviewEndTime = Date.now();
         dashboard.phase = 'reviewed';
         dashboard.rawFindingCount = progress.rawFindingCount;
         updateProgressDashboard(octokit, owner, repo, progressCommentId, dashboard)
           .catch(err => core.warning(`Failed to update dashboard: ${err}`));
       },
     );
+    const judgeEndTime = Date.now();
 
     if (!result.reviewComplete && result.verdict === 'APPROVE') {
       result.verdict = 'COMMENT';
@@ -447,7 +451,42 @@ async function runFullReview(
       keptCount: result.findings.length,
       droppedCount: droppedCount >= 0 ? droppedCount : 0,
     };
-    await updateProgressComment(octokit, owner, repo, progressCommentId, result, completeDashboard, stats);
+
+    const timing = {
+      parseMs: parseEndTime - startTime,
+      reviewMs: reviewEndTime - parseEndTime,
+      judgeMs: judgeEndTime - reviewEndTime,
+      totalMs: judgeEndTime - startTime,
+    };
+
+    const metadata: ReviewMetadata = {
+      config: {
+        reviewerModel,
+        judgeModel,
+        reviewLevel: team.level,
+        reviewLevelReason: `auto, ${diff.totalAdditions + diff.totalDeletions} lines`,
+        teamAgents: team.agents.map(a => a.name),
+        memoryEnabled: config.memory?.enabled ?? false,
+        memoryRepo: config.memory?.repo ?? '',
+        nitHandling,
+      },
+      judgeDecisions: (result.allJudgedFindings || result.findings).map(f => ({
+        title: f.title,
+        severity: f.severity,
+        reasoning: f.judgeNotes || '',
+        confidence: f.judgeConfidence || 'medium',
+        kept: f.severity !== 'ignore',
+      })),
+      recap: {
+        newFindings: result.findings.length,
+        previouslyFlagged: recap.previousFindings.filter(f => f.status === 'open').length,
+        resolved: recap.previousFindings.filter(f => f.status === 'resolved').length,
+        suppressionsApplied: duplicates.length,
+      },
+      timing,
+    };
+
+    await updateProgressComment(octokit, owner, repo, progressCommentId, completeDashboard, metadata);
 
     core.setOutput('review_id', reviewId.toString());
     core.setOutput('verdict', result.verdict);
@@ -469,11 +508,9 @@ async function runFullReview(
     core.setFailed(`Review failed: ${msg}`);
 
     await updateProgressComment(octokit, owner, repo, progressCommentId, {
-      verdict: 'COMMENT',
-      summary: `**Manki** — Review failed: \`${msg}\`. Please retry or check the logs.`,
-      findings: [],
-      highlights: [],
-      reviewComplete: false,
+      phase: 'complete',
+      lineCount: 0,
+      agentCount: 0,
     });
   }
 }

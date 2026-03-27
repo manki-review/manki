@@ -278,6 +278,7 @@ export async function runReview(
   }
 
   let finalFindings: Finding[];
+  let allJudgedFindings: Finding[] | undefined;
   let judgeSummary = 'Review complete.';
   if (findingsForJudge.length === 0) {
     finalFindings = [];
@@ -295,6 +296,7 @@ export async function runReview(
       };
       const judgeResult = await runJudgeAgent(clients.judge, config, judgeInput);
       judgeSummary = judgeResult.summary;
+      allJudgedFindings = judgeResult.findings;
       finalFindings = judgeResult.findings.filter(f => f.severity !== 'ignore');
       core.info(`Judge complete: ${finalFindings.length} findings survived (${judgeResult.findings.length - finalFindings.length} ignored)`);
     } catch (error) {
@@ -327,6 +329,7 @@ export async function runReview(
     reviewComplete: true,
     rawFindingCount: allFindings.length,
     agentNames: team.agents.map(a => a.name),
+    allJudgedFindings,
   };
 }
 

@@ -23,6 +23,7 @@ export interface ReviewResult {
   reviewComplete: boolean;
   rawFindingCount?: number;
   agentNames?: string[];
+  allJudgedFindings?: Finding[];
 }
 
 export interface ReviewerAgent {
@@ -119,4 +120,38 @@ export interface DashboardData {
   rawFindingCount?: number;
   keptCount?: number;
   droppedCount?: number;
+}
+
+export interface JudgeDecision {
+  title: string;
+  severity: FindingSeverity;
+  reasoning: string;
+  confidence: 'high' | 'medium' | 'low';
+  kept: boolean;
+}
+
+export interface ReviewMetadata {
+  config: {
+    reviewerModel: string;
+    judgeModel: string;
+    reviewLevel: string;
+    reviewLevelReason: string;
+    teamAgents: string[];
+    memoryEnabled: boolean;
+    memoryRepo: string;
+    nitHandling: string;
+  };
+  judgeDecisions: JudgeDecision[];
+  recap: {
+    newFindings: number;
+    previouslyFlagged: number;
+    resolved: number;
+    suppressionsApplied: number;
+  };
+  timing: {
+    parseMs: number;
+    reviewMs: number;
+    judgeMs: number;
+    totalMs: number;
+  };
 }

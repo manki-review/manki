@@ -1,5 +1,5 @@
-import { buildDashboard, formatFindingComment, formatStatsJson, formatStatsOneLiner, mapVerdictToEvent, BOT_MARKER, buildNitIssueBody, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, safeTruncate, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd } from './github';
-import { DashboardData, Finding, ReviewResult, ReviewStats } from './types';
+import { buildDashboard, formatFindingComment, formatStatsJson, formatStatsOneLiner, mapVerdictToEvent, BOT_MARKER, buildNitIssueBody, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, safeTruncate, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment } from './github';
+import { DashboardData, Finding, ReviewMetadata, ReviewResult, ReviewStats } from './types';
 
 describe('formatFindingComment', () => {
   const baseFinding: Finding = {
@@ -1321,5 +1321,148 @@ describe('buildDashboard', () => {
     expect(md).not.toContain('| |');
     expect(md).not.toContain('|---|');
     expect(md).toContain('\u2713 Parsed diff');
+  });
+});
+
+describe('updateProgressComment', () => {
+  const mockUpdateComment = jest.fn().mockResolvedValue({});
+  const mockOctokit = {
+    rest: {
+      issues: {
+        updateComment: mockUpdateComment,
+      },
+    },
+  } as unknown as Parameters<typeof updateProgressComment>[0];
+
+  const baseDashboard: DashboardData = {
+    phase: 'complete',
+    lineCount: 200,
+    agentCount: 5,
+    rawFindingCount: 10,
+    keptCount: 3,
+    droppedCount: 7,
+  };
+
+  const baseMetadata: ReviewMetadata = {
+    config: {
+      reviewerModel: 'claude-sonnet-4-20250514',
+      judgeModel: 'claude-sonnet-4-20250514',
+      reviewLevel: 'medium',
+      reviewLevelReason: 'auto, 200 lines',
+      teamAgents: ['Security & Safety', 'Correctness & Logic', 'Architecture & Design'],
+      memoryEnabled: true,
+      memoryRepo: 'owner/review-memory',
+      nitHandling: 'issues',
+    },
+    judgeDecisions: [
+      { title: 'Null dereference', severity: 'required', reasoning: 'Valid bug', confidence: 'high', kept: true },
+      { title: 'Style nitpick', severity: 'ignore', reasoning: 'Intentional pattern', confidence: 'medium', kept: false },
+    ],
+    recap: {
+      newFindings: 3,
+      previouslyFlagged: 1,
+      resolved: 2,
+      suppressionsApplied: 1,
+    },
+    timing: {
+      parseMs: 500,
+      reviewMs: 12000,
+      judgeMs: 5000,
+      totalMs: 17500,
+    },
+  };
+
+  beforeEach(() => {
+    mockUpdateComment.mockClear();
+  });
+
+  it('renders dashboard without metadata when metadata is not provided', async () => {
+    await updateProgressComment(mockOctokit, 'owner', 'repo', 123, baseDashboard);
+    const body = mockUpdateComment.mock.calls[0][0].body as string;
+    expect(body).toContain('**Manki** — Review complete');
+    expect(body).toContain('\u2713 Parsed diff');
+    expect(body).toContain('\u2713 Judge');
+    expect(body).not.toContain('Review metadata');
+  });
+
+  it('renders config section in metadata', async () => {
+    await updateProgressComment(mockOctokit, 'owner', 'repo', 123, baseDashboard, baseMetadata);
+    const body = mockUpdateComment.mock.calls[0][0].body as string;
+    expect(body).toContain('<summary>Review metadata</summary>');
+    expect(body).toContain('**Config:**');
+    expect(body).toContain('reviewer=claude-sonnet-4-20250514');
+    expect(body).toContain('judge=claude-sonnet-4-20250514');
+    expect(body).toContain('Review level: medium (auto, 200 lines)');
+    expect(body).toContain('Security & Safety, Correctness & Logic, Architecture & Design');
+    expect(body).toContain('enabled (owner/review-memory)');
+    expect(body).toContain('Nit handling: issues');
+  });
+
+  it('renders judge decisions with kept/dropped icons', async () => {
+    await updateProgressComment(mockOctokit, 'owner', 'repo', 123, baseDashboard, baseMetadata);
+    const body = mockUpdateComment.mock.calls[0][0].body as string;
+    expect(body).toContain('**Judge decisions:**');
+    expect(body).toContain('\u2713 Kept: "Null dereference"');
+    expect(body).toContain('(required, high confidence)');
+    expect(body).toContain('\u2717 Dropped: "Style nitpick"');
+    expect(body).toContain('(ignore, medium confidence)');
+  });
+
+  it('renders recap section', async () => {
+    await updateProgressComment(mockOctokit, 'owner', 'repo', 123, baseDashboard, baseMetadata);
+    const body = mockUpdateComment.mock.calls[0][0].body as string;
+    expect(body).toContain('**Recap:**');
+    expect(body).toContain('3 new findings');
+    expect(body).toContain('1 previously flagged');
+    expect(body).toContain('2 resolved');
+    expect(body).toContain('1 suppressions applied');
+  });
+
+  it('omits zero recap counters', async () => {
+    const metadata: ReviewMetadata = {
+      ...baseMetadata,
+      recap: { newFindings: 5, previouslyFlagged: 0, resolved: 0, suppressionsApplied: 0 },
+    };
+    await updateProgressComment(mockOctokit, 'owner', 'repo', 123, baseDashboard, metadata);
+    const body = mockUpdateComment.mock.calls[0][0].body as string;
+    expect(body).toContain('5 new findings');
+    expect(body).not.toContain('previously flagged');
+    expect(body).not.toContain('resolved');
+    expect(body).not.toContain('suppressions applied');
+  });
+
+  it('renders timing section', async () => {
+    await updateProgressComment(mockOctokit, 'owner', 'repo', 123, baseDashboard, baseMetadata);
+    const body = mockUpdateComment.mock.calls[0][0].body as string;
+    expect(body).toContain('**Timing:**');
+    expect(body).toContain('Parse: 0.5s');
+    expect(body).toContain('Review agents: 12.0s');
+    expect(body).toContain('Judge: 5.0s');
+    expect(body).toContain('Total: 17.5s');
+  });
+
+  it('omits judge decisions section when empty', async () => {
+    const metadata: ReviewMetadata = { ...baseMetadata, judgeDecisions: [] };
+    await updateProgressComment(mockOctokit, 'owner', 'repo', 123, baseDashboard, metadata);
+    const body = mockUpdateComment.mock.calls[0][0].body as string;
+    expect(body).not.toContain('**Judge decisions:**');
+  });
+
+  it('shows memory disabled when not enabled', async () => {
+    const metadata: ReviewMetadata = {
+      ...baseMetadata,
+      config: { ...baseMetadata.config, memoryEnabled: false, memoryRepo: '' },
+    };
+    await updateProgressComment(mockOctokit, 'owner', 'repo', 123, baseDashboard, metadata);
+    const body = mockUpdateComment.mock.calls[0][0].body as string;
+    expect(body).toContain('Memory: disabled');
+  });
+
+  it('forces dashboard phase to complete', async () => {
+    const dashboard: DashboardData = { ...baseDashboard, phase: 'reviewed' };
+    await updateProgressComment(mockOctokit, 'owner', 'repo', 123, dashboard, baseMetadata);
+    const body = mockUpdateComment.mock.calls[0][0].body as string;
+    expect(body).toContain('\u2713 Judge');
+    expect(body).not.toContain('\u23F3 Running judge');
   });
 });
