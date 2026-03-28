@@ -132,6 +132,46 @@ describe('resolveGitHubToken', () => {
     expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Token service error (500)'));
   });
 
+  it('falls back when token service returns invalid response (empty token)', async () => {
+    mockFetch(async (url: string) => {
+      if (url.includes('/installation')) {
+        return new Response(
+          JSON.stringify({ id: INSTALLATION_ID, app_slug: 'manki-labs' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response(
+        JSON.stringify({ token: '', expires_at: '2026-03-28T12:00:00Z' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+
+    const result = await resolveGitHubToken(GITHUB_TOKEN, TOKEN_URL, OWNER, REPO);
+
+    expect(result).toEqual<TokenResult>({ token: GITHUB_TOKEN, identity: 'actions' });
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('invalid response'));
+  });
+
+  it('falls back when token service returns invalid response (missing token)', async () => {
+    mockFetch(async (url: string) => {
+      if (url.includes('/installation')) {
+        return new Response(
+          JSON.stringify({ id: INSTALLATION_ID, app_slug: 'manki-labs' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      return new Response(
+        JSON.stringify({ expires_at: '2026-03-28T12:00:00Z' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+
+    const result = await resolveGitHubToken(GITHUB_TOKEN, TOKEN_URL, OWNER, REPO);
+
+    expect(result).toEqual<TokenResult>({ token: GITHUB_TOKEN, identity: 'actions' });
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('invalid response'));
+  });
+
   it('falls back on network error', async () => {
     mockFetch(async () => {
       throw new Error('Network failure');

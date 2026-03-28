@@ -20,17 +20,25 @@ export async function resolveGitHubToken(
   repo: string,
 ): Promise<TokenResult> {
   try {
-    const response = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/installation`,
-      {
-        headers: {
-          Authorization: `token ${githubToken}`,
-          Accept: 'application/vnd.github+json',
-          'User-Agent': 'manki',
-          'X-GitHub-Api-Version': '2022-11-28',
+    const ghController = new AbortController();
+    const ghTimeout = setTimeout(() => ghController.abort(), 10000);
+    let response: Response;
+    try {
+      response = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/installation`,
+        {
+          headers: {
+            Authorization: `token ${githubToken}`,
+            Accept: 'application/vnd.github+json',
+            'User-Agent': 'manki',
+            'X-GitHub-Api-Version': '2022-11-28',
+          },
+          signal: ghController.signal,
         },
-      },
-    );
+      );
+    } finally {
+      clearTimeout(ghTimeout);
+    }
 
     if (!response.ok) {
       core.info('Manki app not installed — using github-actions[bot] identity');
@@ -46,11 +54,22 @@ export async function resolveGitHubToken(
 
     core.info(`Found manki-labs installation: ${installation.id}`);
 
-    const tokenResponse = await fetch(tokenUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ installation_id: installation.id }),
-    });
+    // The token service has no authentication. This is a known limitation —
+    // installation IDs are public and the generated tokens are short-lived with
+    // limited permissions, but a shared-secret auth header would add defense in depth.
+    const tokenController = new AbortController();
+    const tokenTimeout = setTimeout(() => tokenController.abort(), 10000);
+    let tokenResponse: Response;
+    try {
+      tokenResponse = await fetch(tokenUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ installation_id: installation.id }),
+        signal: tokenController.signal,
+      });
+    } finally {
+      clearTimeout(tokenTimeout);
+    }
 
     if (!tokenResponse.ok) {
       core.warning(`Token service error (${tokenResponse.status}) — falling back to github-actions[bot]`);
@@ -58,6 +77,12 @@ export async function resolveGitHubToken(
     }
 
     const tokenData = await tokenResponse.json() as { token: string; expires_at: string };
+
+    if (!tokenData.token || typeof tokenData.token !== 'string') {
+      core.warning('Token service returned invalid response — falling back to github-actions[bot]');
+      return { token: githubToken, identity: 'actions' };
+    }
+
     core.info(`Using manki-labs[bot] identity (token expires ${tokenData.expires_at})`);
     core.setSecret(tokenData.token);
     return { token: tokenData.token, identity: 'app' };
