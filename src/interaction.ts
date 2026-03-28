@@ -202,9 +202,11 @@ interface ParsedCommand {
   args: string;
 }
 
+const BOT_PREFIX_PATTERN = /(?:@manki-labs|@manki|\/manki)\s+(explain|dismiss|help|remember|forget|check|triage)(?:\s+(.*))?/;
+
 function parseCommand(body: string): ParsedCommand {
   const lower = body.toLowerCase();
-  const match = lower.match(/@manki\s+(explain|dismiss|help|remember|forget|check|triage)(?:\s+(.*))?/);
+  const match = lower.match(BOT_PREFIX_PATTERN);
 
   if (match) {
     return {
@@ -307,7 +309,7 @@ async function handleHelp(
     owner,
     repo,
     issue_number: prNumber,
-    body: `${BOT_MARKER}\n**Manki** — Here's what I can do:\n\n| Command | |\n|---|---|\n| \`@manki review\` | Run a full review |\n| \`@manki explain [topic]\` | Explain something about this PR |\n| \`@manki check\` | Check required issues & auto-approve |\n| \`@manki dismiss [finding]\` | Dismiss a finding |\n| \`@manki triage\` | Process nit issue checkboxes |\n| \`@manki remember <instruction>\` | Teach me something for future reviews |\n| \`@manki forget <text>\` | Remove a learning or suppression |\n| \`@manki help\` | Show this message |\n\nYou can also reply to any of my review comments.`,
+    body: `${BOT_MARKER}\n**Manki** — Here's what I can do:\n\n| Command | |\n|---|---|\n| \`/manki review\` | Run a full review |\n| \`/manki explain [topic]\` | Explain something about this PR |\n| \`/manki check\` | Check required issues & auto-approve |\n| \`/manki dismiss [finding]\` | Dismiss a finding |\n| \`/manki triage\` | Process nit issue checkboxes |\n| \`/manki remember <instruction>\` | Teach me something for future reviews |\n| \`/manki forget <text>\` | Remove a learning or suppression |\n| \`/manki help\` | Show this message |\n\nYou can also use \`@manki\` or \`@manki-labs\` as the command prefix, or reply to any of my review comments.`,
   });
 }
 
@@ -336,7 +338,7 @@ async function handleRemember(
     await octokit.rest.issues.createComment({
       owner, repo,
       issue_number: prNumber,
-      body: `${BOT_MARKER}\n**Manki** — That's too short — give me a bit more detail.\nExample: \`@manki remember always check for SQL injection in query builders\``,
+      body: `${BOT_MARKER}\n**Manki** — That's too short — give me a bit more detail.\nExample: \`/manki remember always check for SQL injection in query builders\``,
     });
     return;
   }
@@ -414,7 +416,7 @@ async function handleForget(
     await octokit.rest.issues.createComment({
       owner, repo,
       issue_number: issueNumber,
-      body: `${BOT_MARKER}\n**Manki** — Search term too short — need at least 3 characters.\n\nUsage:\n- \`@manki forget <text>\` — remove a learning\n- \`@manki forget suppression <pattern>\` — remove a suppression`,
+      body: `${BOT_MARKER}\n**Manki** — Search term too short — need at least 3 characters.\n\nUsage:\n- \`/manki forget <text>\` — remove a learning\n- \`/manki forget suppression <pattern>\` — remove a suppression`,
     });
     return;
   }
@@ -439,7 +441,7 @@ async function handleForget(
         await octokit.rest.issues.createComment({
           owner, repo,
           issue_number: issueNumber,
-          body: `${BOT_MARKER}\n**Manki** — Search term too short — need at least 3 characters.\n\nUsage:\n- \`@manki forget <text>\` — remove a learning\n- \`@manki forget suppression <pattern>\` — remove a suppression`,
+          body: `${BOT_MARKER}\n**Manki** — Search term too short — need at least 3 characters.\n\nUsage:\n- \`/manki forget <text>\` — remove a learning\n- \`/manki forget suppression <pattern>\` — remove a suppression`,
         });
         return;
       }
@@ -728,7 +730,7 @@ function isBotComment(body: string): boolean {
 
 function hasBotMention(body: string): boolean {
   const lower = body.toLowerCase();
-  return lower.includes('@manki');
+  return lower.includes('@manki') || lower.includes('/manki');
 }
 
 export { parseCommand, buildReplyContext, ParsedCommand, BOT_MARKER, isBotComment, hasBotMention };

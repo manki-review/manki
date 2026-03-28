@@ -48,6 +48,46 @@ describe('parseCommand', () => {
     expect(result).toEqual<ParsedCommand>({ type: 'explain', args: 'this function please' });
   });
 
+  it('parses /manki prefix', () => {
+    const result = parseCommand('/manki explain the error handling');
+    expect(result).toEqual<ParsedCommand>({ type: 'explain', args: 'the error handling' });
+  });
+
+  it('parses /manki dismiss', () => {
+    const result = parseCommand('/manki dismiss null-check-warning');
+    expect(result).toEqual<ParsedCommand>({ type: 'dismiss', args: 'null-check-warning' });
+  });
+
+  it('parses /manki help', () => {
+    const result = parseCommand('/manki help');
+    expect(result).toEqual<ParsedCommand>({ type: 'help', args: '' });
+  });
+
+  it('parses @manki-labs prefix', () => {
+    const result = parseCommand('@manki-labs explain the error handling');
+    expect(result).toEqual<ParsedCommand>({ type: 'explain', args: 'the error handling' });
+  });
+
+  it('parses @manki-labs dismiss', () => {
+    const result = parseCommand('@manki-labs dismiss null-check-warning');
+    expect(result).toEqual<ParsedCommand>({ type: 'dismiss', args: 'null-check-warning' });
+  });
+
+  it('parses @manki-labs help', () => {
+    const result = parseCommand('@manki-labs help');
+    expect(result).toEqual<ParsedCommand>({ type: 'help', args: '' });
+  });
+
+  it('is case-insensitive for /manki prefix', () => {
+    const result = parseCommand('/Manki EXPLAIN the changes');
+    expect(result).toEqual<ParsedCommand>({ type: 'explain', args: 'the changes' });
+  });
+
+  it('is case-insensitive for @manki-labs prefix', () => {
+    const result = parseCommand('@Manki-Labs EXPLAIN the changes');
+    expect(result).toEqual<ParsedCommand>({ type: 'explain', args: 'the changes' });
+  });
+
   it('parses @manki remember with instruction', () => {
     const result = parseCommand('@manki remember always check for SQL injection in query builders');
     expect(result).toEqual<ParsedCommand>({ type: 'remember', args: 'always check for sql injection in query builders' });
@@ -175,11 +215,27 @@ describe('hasBotMention', () => {
     expect(hasBotMention('@manki explain this')).toBe(true);
   });
 
+  it('detects /manki mention', () => {
+    expect(hasBotMention('/manki explain this')).toBe(true);
+  });
+
+  it('detects @manki-labs mention', () => {
+    expect(hasBotMention('@manki-labs explain this')).toBe(true);
+  });
+
   it('returns false for unrelated text', () => {
     expect(hasBotMention('just a comment')).toBe(false);
   });
 
-  it('is case-insensitive', () => {
+  it('is case-insensitive for @manki', () => {
     expect(hasBotMention('@MANKI help')).toBe(true);
+  });
+
+  it('is case-insensitive for /manki', () => {
+    expect(hasBotMention('/MANKI help')).toBe(true);
+  });
+
+  it('is case-insensitive for @manki-labs', () => {
+    expect(hasBotMention('@MANKI-LABS help')).toBe(true);
   });
 });

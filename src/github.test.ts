@@ -248,7 +248,7 @@ describe('buildNitIssueBody', () => {
 
   it('includes triage instructions mentioning learning preferences', () => {
     const body = buildNitIssueBody(42, [nit], 'testowner', 'testrepo', 'abc123');
-    expect(body).toContain('`@manki triage`');
+    expect(body).toContain('`/manki triage`');
     expect(body).toContain('**Check the box** for findings worth fixing');
     expect(body).toContain('**Leave unchecked** for findings to dismiss');
     expect(body).toContain('learn your preferences');

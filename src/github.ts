@@ -650,7 +650,7 @@ export function buildNitIssueBody(
   return `The following non-blocking findings were identified during automated review. Triaging these helps Manki learn your preferences.
 - **Check the box** for findings worth fixing
 - **Leave unchecked** for findings to dismiss
-- Comment \`@manki triage\` when done
+- Comment \`/manki triage\` when done
 
 ${checklist}
 
