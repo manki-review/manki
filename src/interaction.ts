@@ -564,19 +564,7 @@ async function handleTriage(
   const { data: issue } = await octokit.rest.issues.get({ owner, repo, issue_number: issueNumber });
   const body = issue.body ?? '';
 
-  const checkedRegex = /^- \[x\] [💡❓] \*\*(.+?)\*\* — `(.+?)`/gmiu;
-  const uncheckedRegex = /^- \[ \] [💡❓] \*\*(.+?)\*\* — `(.+?)`/gmu;
-
-  const accepted: Array<{ title: string; ref: string }> = [];
-  const rejected: Array<{ title: string; ref: string }> = [];
-
-  let match;
-  while ((match = checkedRegex.exec(body)) !== null) {
-    accepted.push({ title: match[1], ref: match[2] });
-  }
-  while ((match = uncheckedRegex.exec(body)) !== null) {
-    rejected.push({ title: match[1], ref: match[2] });
-  }
+  const { accepted, rejected } = parseTriageBody(body);
 
   if (accepted.length === 0 && rejected.length === 0) {
     await octokit.rest.issues.createComment({
@@ -590,7 +578,7 @@ async function handleTriage(
   const createdIssues: number[] = [];
   for (const item of accepted) {
     const sectionRegex = new RegExp(
-      `- \\[x\\] [💡❓] \\*\\*${escapeRegex(item.title)}\\*\\*[\\s\\S]*?(?=\\n- \\[|\\n---|$)`,
+      `- \\[x\\] (?:<details><summary>)?[📝💡❓🚫] \\*\\*${escapeRegex(item.title)}\\*\\*[\\s\\S]*?(?=\\n- \\[|\\n---|$)`,
       'iu',
     );
     const sectionMatch = body.match(sectionRegex);
@@ -733,4 +721,32 @@ function hasBotMention(body: string): boolean {
   return BOT_MENTION_PATTERN.test(body.toLowerCase());
 }
 
-export { parseCommand, buildReplyContext, ParsedCommand, BOT_MARKER, isBotComment, hasBotMention };
+interface TriageFinding {
+  title: string;
+  ref: string;
+}
+
+interface TriageResult {
+  accepted: TriageFinding[];
+  rejected: TriageFinding[];
+}
+
+function parseTriageBody(body: string): TriageResult {
+  const checkedRegex = /^- \[x\] (?:<details><summary>)?[📝💡❓🚫] \*\*(.+?)\*\* — (?:`|<code>)(.+?)(?:`|<\/code>)/gmiu;
+  const uncheckedRegex = /^- \[ \] (?:<details><summary>)?[📝💡❓🚫] \*\*(.+?)\*\* — (?:`|<code>)(.+?)(?:`|<\/code>)/gmu;
+
+  const accepted: TriageFinding[] = [];
+  const rejected: TriageFinding[] = [];
+
+  let match;
+  while ((match = checkedRegex.exec(body)) !== null) {
+    accepted.push({ title: match[1], ref: match[2] });
+  }
+  while ((match = uncheckedRegex.exec(body)) !== null) {
+    rejected.push({ title: match[1], ref: match[2] });
+  }
+
+  return { accepted, rejected };
+}
+
+export { parseCommand, buildReplyContext, parseTriageBody, ParsedCommand, TriageFinding, TriageResult, BOT_MARKER, isBotComment, hasBotMention };

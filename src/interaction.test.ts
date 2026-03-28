@@ -1,4 +1,4 @@
-import { parseCommand, buildReplyContext, ParsedCommand, isBotComment, hasBotMention } from './interaction';
+import { parseCommand, buildReplyContext, parseTriageBody, ParsedCommand, isBotComment, hasBotMention } from './interaction';
 
 describe('parseCommand', () => {
   it('parses @manki explain with args', () => {
@@ -128,6 +128,64 @@ describe('parseCommand', () => {
     expect(result).toEqual<ParsedCommand>({ type: 'triage', args: '' });
   });
 
+});
+
+describe('parseTriageBody', () => {
+  it('parses old backtick format with suggestion and question emojis', () => {
+    const body = [
+      '- [x] 💡 **Null check missing** — `src/index.ts:42`',
+      '- [ ] ❓ **Unused import** — `src/utils.ts:10`',
+    ].join('\n');
+    const result = parseTriageBody(body);
+    expect(result.accepted).toEqual([{ title: 'Null check missing', ref: 'src/index.ts:42' }]);
+    expect(result.rejected).toEqual([{ title: 'Unused import', ref: 'src/utils.ts:10' }]);
+  });
+
+  it('parses new details/summary format with code tags', () => {
+    const body = [
+      '- [x] <details><summary>📝 **Style nit** — <code>src/app.ts:7</code></summary>',
+      '',
+      'Consider using const instead of let.',
+      '</details>',
+      '- [ ] <details><summary>📝 **Rename variable** — <code>src/app.ts:15</code></summary>',
+      '',
+      'Use a more descriptive name.',
+      '</details>',
+    ].join('\n');
+    const result = parseTriageBody(body);
+    expect(result.accepted).toEqual([{ title: 'Style nit', ref: 'src/app.ts:7' }]);
+    expect(result.rejected).toEqual([{ title: 'Rename variable', ref: 'src/app.ts:15' }]);
+  });
+
+  it('parses blocker emoji in new format', () => {
+    const body = '- [x] <details><summary>🚫 **Security flaw** — <code>src/auth.ts:99</code></summary>\n</details>';
+    const result = parseTriageBody(body);
+    expect(result.accepted).toEqual([{ title: 'Security flaw', ref: 'src/auth.ts:99' }]);
+  });
+
+  it('handles mix of old and new formats', () => {
+    const body = [
+      '- [x] 💡 **Old finding** — `src/old.ts:1`',
+      '- [x] <details><summary>📝 **New finding** — <code>src/new.ts:2</code></summary>',
+      '</details>',
+      '- [ ] ❓ **Old rejected** — `src/old.ts:5`',
+      '- [ ] <details><summary>🚫 **New rejected** — <code>src/new.ts:8</code></summary>',
+      '</details>',
+    ].join('\n');
+    const result = parseTriageBody(body);
+    expect(result.accepted).toHaveLength(2);
+    expect(result.rejected).toHaveLength(2);
+    expect(result.accepted[0].title).toBe('Old finding');
+    expect(result.accepted[1].title).toBe('New finding');
+    expect(result.rejected[0].title).toBe('Old rejected');
+    expect(result.rejected[1].title).toBe('New rejected');
+  });
+
+  it('returns empty arrays when no findings match', () => {
+    const result = parseTriageBody('No findings here.');
+    expect(result.accepted).toEqual([]);
+    expect(result.rejected).toEqual([]);
+  });
 });
 
 describe('buildReplyContext', () => {
