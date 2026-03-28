@@ -5,7 +5,7 @@ import { createAuthenticatedOctokit, getMemoryToken } from './auth';
 import { ClaudeClient } from './claude';
 import { loadConfig, resolveModel } from './config';
 import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
-import { handleReviewCommentReply, handlePRComment, BOT_MENTION_PATTERN } from './interaction';
+import { handleReviewCommentReply, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention } from './interaction';
 import { loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
 import { fetchRecapState, deduplicateFindings, buildRecapSummary, resolveAddressedThreads } from './recap';
 import { runReview, determineVerdict, selectTeam } from './review';
@@ -54,11 +54,12 @@ async function run(): Promise<void> {
 
       case 'issue_comment':
         if (action === 'created') {
-          if (isReviewRequest() && github.context.payload.issue?.pull_request) {
+          const commentBody = github.context.payload.comment?.body ?? '';
+          if (isReviewRequest(commentBody) && github.context.payload.issue?.pull_request) {
             await handleCommentTrigger();
-          } else if (hasBotMention() && github.context.payload.issue?.pull_request) {
+          } else if (isBotMentionNonReview(commentBody) && github.context.payload.issue?.pull_request) {
             await handleInteraction();
-          } else if (hasBotMention() && !github.context.payload.issue?.pull_request) {
+          } else if (isBotMentionNonReview(commentBody) && !github.context.payload.issue?.pull_request) {
             await handleIssueInteraction();
           }
         }
@@ -547,21 +548,6 @@ async function handleReviewStateCheck(): Promise<void> {
   }
 }
 
-function isReviewRequest(): boolean {
-  const comment = github.context.payload.comment;
-  if (!comment) return false;
-
-  const body = comment.body?.toLowerCase() ?? '';
-  return BOT_MENTION_PATTERN.test(body) && body.includes('review');
-}
-
-function hasBotMention(): boolean {
-  const comment = github.context.payload.comment;
-  if (!comment) return false;
-
-  const body = comment.body?.toLowerCase() ?? '';
-  return BOT_MENTION_PATTERN.test(body) && !body.includes('review');
-}
 
 async function handleInteraction(): Promise<void> {
   const oauthToken = core.getInput('claude_code_oauth_token');
@@ -640,9 +626,9 @@ async function handleReviewCommentInteraction(): Promise<void> {
   }
 
   // Only respond if this is a reply to a bot comment or mentions @manki
-  const body = comment.body?.toLowerCase() ?? '';
+  const body = comment.body ?? '';
   const isReplyToBot = !!comment.in_reply_to_id; // handleReviewCommentReply will verify it's actually our comment
-  const mentionsBot = body.includes('@manki');
+  const mentionsBot = hasBotMention(body);
 
   if (!isReplyToBot && !mentionsBot) {
     core.info('Review comment is not a reply to bot or @manki mention — skipping');

@@ -1,4 +1,4 @@
-import { parseCommand, buildReplyContext, parseTriageBody, ParsedCommand, isBotComment, hasBotMention } from './interaction';
+import { parseCommand, buildReplyContext, parseTriageBody, ParsedCommand, isBotComment, hasBotMention, isReviewRequest, isBotMentionNonReview } from './interaction';
 
 describe('parseCommand', () => {
   it('parses @manki explain with args', () => {
@@ -295,5 +295,56 @@ describe('hasBotMention', () => {
 
   it('is case-insensitive for @manki-labs', () => {
     expect(hasBotMention('@MANKI-LABS help')).toBe(true);
+  });
+});
+
+describe('isReviewRequest', () => {
+  it('detects @manki review', () => {
+    expect(isReviewRequest('@manki review')).toBe(true);
+  });
+
+  it('detects /manki review', () => {
+    expect(isReviewRequest('/manki review')).toBe(true);
+  });
+
+  it('detects @manki-labs review', () => {
+    expect(isReviewRequest('@manki-labs review')).toBe(true);
+  });
+
+  it('is case-insensitive', () => {
+    expect(isReviewRequest('@Manki Review')).toBe(true);
+  });
+
+  it('returns false for non-review commands', () => {
+    expect(isReviewRequest('@manki explain')).toBe(false);
+    expect(isReviewRequest('/manki help')).toBe(false);
+  });
+
+  it('returns false for text without bot mention', () => {
+    expect(isReviewRequest('please review this')).toBe(false);
+  });
+});
+
+describe('isBotMentionNonReview', () => {
+  it('detects @manki explain', () => {
+    expect(isBotMentionNonReview('@manki explain')).toBe(true);
+  });
+
+  it('detects /manki help', () => {
+    expect(isBotMentionNonReview('/manki help')).toBe(true);
+  });
+
+  it('detects @manki-labs dismiss', () => {
+    expect(isBotMentionNonReview('@manki-labs dismiss')).toBe(true);
+  });
+
+  it('returns false for review commands', () => {
+    expect(isBotMentionNonReview('@manki review')).toBe(false);
+    expect(isBotMentionNonReview('/manki review')).toBe(false);
+    expect(isBotMentionNonReview('@manki-labs review')).toBe(false);
+  });
+
+  it('returns false for text without bot mention', () => {
+    expect(isBotMentionNonReview('just a comment')).toBe(false);
   });
 });

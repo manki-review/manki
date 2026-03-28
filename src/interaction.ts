@@ -749,4 +749,12 @@ function parseTriageBody(body: string): TriageResult {
   return { accepted, rejected };
 }
 
-export { parseCommand, buildReplyContext, parseTriageBody, ParsedCommand, TriageFinding, TriageResult, BOT_MARKER, BOT_MENTION_PATTERN, isBotComment, hasBotMention };
+function isReviewRequest(body: string): boolean {
+  return BOT_MENTION_PATTERN.test(body.toLowerCase()) && /\breview\b/i.test(body);
+}
+
+function isBotMentionNonReview(body: string): boolean {
+  return BOT_MENTION_PATTERN.test(body.toLowerCase()) && !/\breview\b/i.test(body);
+}
+
+export { parseCommand, buildReplyContext, parseTriageBody, ParsedCommand, TriageFinding, TriageResult, BOT_MARKER, BOT_MENTION_PATTERN, isBotComment, hasBotMention, isReviewRequest, isBotMentionNonReview };
