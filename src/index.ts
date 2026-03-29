@@ -720,4 +720,13 @@ async function main(): Promise<void> {
   process.exit(0);
 }
 
-main();
+// Only auto-run when executed directly (not imported for testing)
+if (process.env.NODE_ENV !== 'test') {
+  main();
+}
+
+function _resetOctokitCache(): void {
+  cachedOctokit = null;
+}
+
+export { run, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, runFullReview, main, _resetOctokitCache };
