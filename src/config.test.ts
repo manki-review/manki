@@ -17,11 +17,8 @@ describe('config', () => {
 
   describe('DEFAULT_CONFIG', () => {
     it('has all required fields with valid types', () => {
-      expect(typeof DEFAULT_CONFIG.model).toBe('string');
       expect(typeof DEFAULT_CONFIG.auto_review).toBe('boolean');
       expect(typeof DEFAULT_CONFIG.auto_approve).toBe('boolean');
-      expect(typeof DEFAULT_CONFIG.review_language).toBe('string');
-      expect(Array.isArray(DEFAULT_CONFIG.include_paths)).toBe(true);
       expect(Array.isArray(DEFAULT_CONFIG.exclude_paths)).toBe(true);
       expect(typeof DEFAULT_CONFIG.max_diff_lines).toBe('number');
       expect(DEFAULT_CONFIG.max_diff_lines).toBeGreaterThan(0);
@@ -72,11 +69,9 @@ describe('config', () => {
 
     it('merges partial config over defaults', () => {
       const yaml = `
-model: claude-sonnet-4-20250514
 max_diff_lines: 5000
 `;
       const config = loadConfigFromContent(yaml);
-      expect(config.model).toBe('claude-sonnet-4-20250514');
       expect(config.max_diff_lines).toBe(5000);
       // Other fields remain default
       expect(config.auto_review).toBe(DEFAULT_CONFIG.auto_review);
@@ -94,16 +89,6 @@ reviewers:
       expect(config.reviewers).toHaveLength(1);
       expect(config.reviewers[0].name).toBe('Custom Reviewer');
       expect(config.reviewers[0].focus).toBe('custom focus area');
-    });
-
-    it('replaces include_paths array entirely', () => {
-      const yaml = `
-include_paths:
-  - "src/**"
-  - "lib/**"
-`;
-      const config = loadConfigFromContent(yaml);
-      expect(config.include_paths).toEqual(['src/**', 'lib/**']);
     });
 
     it('replaces exclude_paths array entirely', () => {
@@ -127,20 +112,14 @@ memory:
 
     it('warns on unknown keys but does not fail', () => {
       const yaml = `
-model: claude-sonnet-4-6
+auto_review: true
 unknown_key: some_value
 another_unknown: 123
 `;
       const config = loadConfigFromContent(yaml);
-      expect(config.model).toBe('claude-sonnet-4-6');
+      expect(config.auto_review).toBe(true);
       expect(core.warning).toHaveBeenCalledWith('Unknown config key: "unknown_key"');
       expect(core.warning).toHaveBeenCalledWith('Unknown config key: "another_unknown"');
-    });
-
-    it('throws on invalid model type', () => {
-      const yaml = 'model: 123';
-      expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
-      expect(core.error).toHaveBeenCalledWith('`model` must be a string');
     });
 
     it('throws on invalid max_diff_lines', () => {
@@ -252,11 +231,11 @@ review_thresholds:
 
     it('ignores unknown keys during merge', () => {
       const yaml = `
-model: claude-sonnet-4-20250514
+auto_review: false
 unknown_thing: true
 `;
       const config = loadConfigFromContent(yaml);
-      expect(config.model).toBe('claude-sonnet-4-20250514');
+      expect(config.auto_review).toBe(false);
       expect((config as unknown as Record<string, unknown>)['unknown_thing']).toBeUndefined();
     });
 
@@ -335,7 +314,7 @@ models:
     });
 
     it('defaults review_passes to 1', () => {
-      const config = loadConfigFromContent('model: claude-sonnet-4-6');
+      const config = loadConfigFromContent('auto_review: true');
       expect(config.review_passes).toBe(1);
     });
 
@@ -376,36 +355,25 @@ models:
       expect(resolveModel(config, 'judge')).toBe('claude-sonnet-4-6');
     });
 
-    it('falls back to config.model when models is undefined', () => {
-      const config: ReviewConfig = { ...baseConfig, model: 'custom-model', models: undefined };
-      expect(resolveModel(config, 'reviewer')).toBe('custom-model');
-      expect(resolveModel(config, 'judge')).toBe('custom-model');
+    it('falls back to default models when models is undefined', () => {
+      const config: ReviewConfig = { ...baseConfig, models: undefined };
+      expect(resolveModel(config, 'reviewer')).toBe('claude-sonnet-4-6');
+      expect(resolveModel(config, 'judge')).toBe('claude-opus-4-6');
     });
 
-    it('models.stage takes precedence over top-level model', () => {
+    it('falls back to default model when stage key is missing', () => {
       const config: ReviewConfig = {
         ...baseConfig,
-        model: 'custom-model',
-        models: { reviewer: 'claude-sonnet-4-6', judge: 'claude-opus-4-6' },
+        models: { reviewer: 'claude-sonnet-4-6' },
       };
       expect(resolveModel(config, 'reviewer')).toBe('claude-sonnet-4-6');
       expect(resolveModel(config, 'judge')).toBe('claude-opus-4-6');
     });
 
-    it('falls back to config.model when stage key is missing', () => {
-      const config: ReviewConfig = {
-        ...baseConfig,
-        model: 'custom-model',
-        models: { reviewer: 'claude-sonnet-4-6' },
-      };
+    it('falls back to default models when models is empty object', () => {
+      const config: ReviewConfig = { ...baseConfig, models: {} };
       expect(resolveModel(config, 'reviewer')).toBe('claude-sonnet-4-6');
-      expect(resolveModel(config, 'judge')).toBe('custom-model');
-    });
-
-    it('falls back to config.model when models is empty object', () => {
-      const config: ReviewConfig = { ...baseConfig, model: 'custom-model', models: {} };
-      expect(resolveModel(config, 'reviewer')).toBe('custom-model');
-      expect(resolveModel(config, 'judge')).toBe('custom-model');
+      expect(resolveModel(config, 'judge')).toBe('claude-opus-4-6');
     });
   });
 });

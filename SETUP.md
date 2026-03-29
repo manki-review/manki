@@ -209,12 +209,7 @@ auto_review: true
 # Auto-approve when all blocking issues are resolved (default: true)
 auto_approve: true
 
-# Review language (default: en)
-review_language: en
-
 # File filtering
-include_paths:
-  - "**/*"
 exclude_paths:
   - "*.lock"
 
@@ -367,7 +362,7 @@ You can also trigger a review manually by commenting `@manki review` on any PR.
 |---------|----------|
 | "spawn claude ENOENT" | Add the "Install Claude Code CLI" step before the action |
 | "Failed to post APPROVE review" | Enable "Allow GitHub Actions to create and approve pull requests" in repo settings |
-| Review says "No reviewable files" | Check `include_paths`/`exclude_paths` in config -- dotfiles are included by default |
+| Review says "No reviewable files" | Check `exclude_paths` in config -- dotfiles are included by default |
 | Memory not loading | Verify `REVIEW_MEMORY_TOKEN` secret is set and the PAT has Contents read/write on the memory repo |
 | Review doesn't trigger on `@manki review` | The workflow file must exist on the default branch (main) |
 | "Diff too large" | Increase `max_diff_lines` in config or split the PR |

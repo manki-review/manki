@@ -1,9 +1,6 @@
 # Manki configuration
 # Place this file as .manki.yml in your repository root
 
-# Claude model for reviews (default: claude-opus-4-6)
-# model: claude-opus-4-6
-
 # Automatically review PRs on open/update (default: true)
 # When false, reviews only run via @manki review
 # auto_review: true
@@ -12,12 +9,7 @@
 # Triggers on thread resolution and via @manki check
 # auto_approve: true
 
-# Review language (default: en)
-# review_language: en
-
 # File filtering
-# include_paths:
-#   - "**/*"
 # exclude_paths:
 #   - "*.lock"
 #   - "dist/**"
@@ -44,7 +36,7 @@
 # instructions: |
 #   This is a Rust project. Focus on ownership and error handling.
 
-# Per-stage model selection (optional — falls back to `model` if not set)
+# Per-stage model selection
 # models:
 #   reviewer: claude-sonnet-4-6    # fast, parallel reviewers
 #   judge: claude-opus-4-6         # precise, single judge

@@ -21,11 +21,8 @@ import { runJudgeAgent } from './judge';
 import { applySuppressions } from './memory';
 
 const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
-  model: 'claude-opus-4-6',
   auto_review: true,
   auto_approve: true,
-  review_language: 'en',
-  include_paths: ['**/*'],
   exclude_paths: [],
   max_diff_lines: 50000,
   reviewers: [],

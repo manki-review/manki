@@ -45,11 +45,8 @@ export interface TeamRoster {
 }
 
 export interface ReviewConfig {
-  model: string;
   auto_review: boolean;
   auto_approve: boolean;
-  review_language: string;
-  include_paths: string[];
   exclude_paths: string[];
   max_diff_lines: number;
   reviewers: ReviewerAgent[];

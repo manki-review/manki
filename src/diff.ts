@@ -49,23 +49,15 @@ export function parsePRDiff(rawDiff: string): ParsedDiff {
 }
 
 /**
- * Filter diff files based on include/exclude glob patterns.
- * A file is included if it matches ANY include pattern (or include is empty)
- * AND doesn't match ANY exclude pattern.
+ * Filter diff files based on exclude glob patterns.
+ * A file is included unless it matches ANY exclude pattern.
  */
 export function filterFiles(
   files: DiffFile[],
-  includePaths: string[],
   excludePaths: string[],
 ): DiffFile[] {
   return files.filter((file) => {
     const matchOpts = { matchBase: true, dot: true };
-
-    const included =
-      includePaths.length === 0 ||
-      includePaths.some((pattern) => minimatch(file.path, pattern, matchOpts));
-
-    if (!included) return false;
 
     const excluded = excludePaths.some((pattern) =>
       minimatch(file.path, pattern, matchOpts),
