@@ -1,5 +1,5 @@
-import { buildDashboard, formatFindingComment, formatStatsJson, formatStatsOneLiner, mapVerdictToEvent, BOT_MARKER, buildNitIssueBody, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, safeTruncate, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment } from './github';
-import { DashboardData, Finding, ReviewMetadata, ReviewResult, ReviewStats } from './types';
+import { buildDashboard, formatFindingComment, formatStatsJson, formatStatsOneLiner, mapVerdictToEvent, BOT_MARKER, buildNitIssueBody, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, safeTruncate, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, createNitIssue, fetchPRDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji } from './github';
+import { DashboardData, Finding, ParsedDiff, ReviewMetadata, ReviewResult, ReviewStats } from './types';
 
 describe('formatFindingComment', () => {
   const baseFinding: Finding = {
@@ -1465,5 +1465,575 @@ describe('updateProgressComment', () => {
     const body = mockUpdateComment.mock.calls[0][0].body as string;
     expect(body).toContain('\u2713 Judge');
     expect(body).not.toContain('\u23F3 Running judge');
+  });
+});
+
+describe('fetchPRDiff', () => {
+  it('fetches the raw diff string', async () => {
+    const mockOctokit = {
+      rest: {
+        pulls: {
+          get: jest.fn().mockResolvedValue({ data: 'diff --git a/file.ts b/file.ts' }),
+        },
+      },
+    } as unknown as Parameters<typeof fetchPRDiff>[0];
+
+    const result = await fetchPRDiff(mockOctokit, 'owner', 'repo', 1);
+    expect(result).toBe('diff --git a/file.ts b/file.ts');
+    expect(mockOctokit.rest.pulls.get).toHaveBeenCalledWith({
+      owner: 'owner',
+      repo: 'repo',
+      pull_number: 1,
+      mediaType: { format: 'diff' },
+    });
+  });
+});
+
+describe('fetchConfigFile', () => {
+  it('returns decoded file content', async () => {
+    const content = 'auto_review: true';
+    const mockOctokit = {
+      rest: {
+        repos: {
+          getContent: jest.fn().mockResolvedValue({
+            data: {
+              content: Buffer.from(content).toString('base64'),
+              encoding: 'base64',
+            },
+          }),
+        },
+      },
+    } as unknown as Parameters<typeof fetchConfigFile>[0];
+
+    const result = await fetchConfigFile(mockOctokit, 'owner', 'repo', 'main', '.manki.yml');
+    expect(result).toBe(content);
+  });
+
+  it('returns null when file is not found', async () => {
+    const mockOctokit = {
+      rest: {
+        repos: {
+          getContent: jest.fn().mockRejectedValue(new Error('Not found')),
+        },
+      },
+    } as unknown as Parameters<typeof fetchConfigFile>[0];
+
+    const result = await fetchConfigFile(mockOctokit, 'owner', 'repo', 'main', '.manki.yml');
+    expect(result).toBeNull();
+  });
+
+  it('returns null when data has no content field', async () => {
+    const mockOctokit = {
+      rest: {
+        repos: {
+          getContent: jest.fn().mockResolvedValue({
+            data: { type: 'dir', entries: [] },
+          }),
+        },
+      },
+    } as unknown as Parameters<typeof fetchConfigFile>[0];
+
+    const result = await fetchConfigFile(mockOctokit, 'owner', 'repo', 'main', '.manki.yml');
+    expect(result).toBeNull();
+  });
+});
+
+describe('fetchRepoContext', () => {
+  it('fetches CLAUDE.md files and repo description', async () => {
+    const mockOctokit = {
+      rest: {
+        repos: {
+          getContent: jest.fn().mockImplementation(({ path }: { path: string }) => {
+            if (path === 'CLAUDE.md') {
+              return Promise.resolve({
+                data: {
+                  content: Buffer.from('Root instructions').toString('base64'),
+                  encoding: 'base64',
+                },
+              });
+            }
+            throw new Error('Not found');
+          }),
+          get: jest.fn().mockResolvedValue({
+            data: { full_name: 'owner/repo', description: 'A test repo' },
+          }),
+        },
+      },
+    } as unknown as Parameters<typeof fetchRepoContext>[0];
+
+    const result = await fetchRepoContext(mockOctokit, 'owner', 'repo', 'main');
+    expect(result).toContain('Repository: owner/repo');
+    expect(result).toContain('A test repo');
+    expect(result).toContain('Root instructions');
+  });
+
+  it('returns empty string when no context files exist', async () => {
+    const mockOctokit = {
+      rest: {
+        repos: {
+          getContent: jest.fn().mockRejectedValue(new Error('Not found')),
+          get: jest.fn().mockRejectedValue(new Error('Not found')),
+        },
+      },
+    } as unknown as Parameters<typeof fetchRepoContext>[0];
+
+    const result = await fetchRepoContext(mockOctokit, 'owner', 'repo', 'main');
+    expect(result).toBe('');
+  });
+});
+
+describe('postProgressComment', () => {
+  it('posts a progress comment and returns comment ID', async () => {
+    const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 42 } });
+    const mockOctokit = {
+      rest: {
+        issues: {
+          createComment: createCommentMock,
+        },
+      },
+    } as unknown as Parameters<typeof postProgressComment>[0];
+
+    const id = await postProgressComment(mockOctokit, 'owner', 'repo', 1);
+    expect(id).toBe(42);
+    const body = createCommentMock.mock.calls[0][0].body as string;
+    expect(body).toContain(BOT_MARKER);
+    expect(body).toContain('Review started');
+  });
+
+  it('uses dashboard data when provided', async () => {
+    const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 43 } });
+    const mockOctokit = {
+      rest: {
+        issues: {
+          createComment: createCommentMock,
+        },
+      },
+    } as unknown as Parameters<typeof postProgressComment>[0];
+
+    const dashboard: DashboardData = { phase: 'started', lineCount: 100, agentCount: 3 };
+    const id = await postProgressComment(mockOctokit, 'owner', 'repo', 1, dashboard);
+    expect(id).toBe(43);
+    const body = createCommentMock.mock.calls[0][0].body as string;
+    expect(body).toContain('100 lines');
+    expect(body).toContain('3 agents');
+  });
+});
+
+describe('updateProgressDashboard', () => {
+  it('updates comment with dashboard content', async () => {
+    const updateCommentMock = jest.fn().mockResolvedValue({});
+    const mockOctokit = {
+      rest: {
+        issues: {
+          updateComment: updateCommentMock,
+        },
+      },
+    } as unknown as Parameters<typeof updateProgressDashboard>[0];
+
+    const dashboard: DashboardData = { phase: 'reviewed', lineCount: 200, agentCount: 5, rawFindingCount: 8 };
+    await updateProgressDashboard(mockOctokit, 'owner', 'repo', 123, dashboard);
+    const body = updateCommentMock.mock.calls[0][0].body as string;
+    expect(body).toContain(BOT_MARKER);
+    expect(body).toContain('8 findings');
+  });
+});
+
+describe('dismissPreviousReviews', () => {
+  it('dismisses reviews with bot marker and CHANGES_REQUESTED state', async () => {
+    const dismissMock = jest.fn().mockResolvedValue({});
+    const mockOctokit = {
+      rest: {
+        pulls: {
+          listReviews: jest.fn().mockResolvedValue({
+            data: [
+              { id: 1, body: `${BOT_MARKER}\nSome review`, state: 'CHANGES_REQUESTED' },
+              { id: 2, body: 'Human review', state: 'CHANGES_REQUESTED' },
+              { id: 3, body: `${BOT_MARKER}\nApproved`, state: 'APPROVED' },
+            ],
+          }),
+          dismissReview: dismissMock,
+        },
+      },
+    } as unknown as Parameters<typeof dismissPreviousReviews>[0];
+
+    await dismissPreviousReviews(mockOctokit, 'owner', 'repo', 1);
+    expect(dismissMock).toHaveBeenCalledTimes(1);
+    expect(dismissMock).toHaveBeenCalledWith(expect.objectContaining({ review_id: 1 }));
+  });
+
+  it('handles dismiss failure gracefully', async () => {
+    const mockOctokit = {
+      rest: {
+        pulls: {
+          listReviews: jest.fn().mockResolvedValue({
+            data: [{ id: 1, body: `${BOT_MARKER}\nReview`, state: 'CHANGES_REQUESTED' }],
+          }),
+          dismissReview: jest.fn().mockRejectedValue(new Error('Forbidden')),
+        },
+      },
+    } as unknown as Parameters<typeof dismissPreviousReviews>[0];
+
+    // Should not throw
+    await dismissPreviousReviews(mockOctokit, 'owner', 'repo', 1);
+  });
+});
+
+describe('reactToIssueComment', () => {
+  it('creates a reaction on an issue comment', async () => {
+    const createMock = jest.fn().mockResolvedValue({});
+    const mockOctokit = {
+      rest: {
+        reactions: {
+          createForIssueComment: createMock,
+        },
+      },
+    } as unknown as Parameters<typeof reactToIssueComment>[0];
+
+    await reactToIssueComment(mockOctokit, 'owner', 'repo', 123, 'rocket');
+    expect(createMock).toHaveBeenCalledWith({
+      owner: 'owner',
+      repo: 'repo',
+      comment_id: 123,
+      content: 'rocket',
+    });
+  });
+
+  it('silently ignores reaction failures', async () => {
+    const mockOctokit = {
+      rest: {
+        reactions: {
+          createForIssueComment: jest.fn().mockRejectedValue(new Error('Forbidden')),
+        },
+      },
+    } as unknown as Parameters<typeof reactToIssueComment>[0];
+
+    await reactToIssueComment(mockOctokit, 'owner', 'repo', 123, '+1');
+  });
+});
+
+describe('reactToReviewComment', () => {
+  it('creates a reaction on a review comment', async () => {
+    const createMock = jest.fn().mockResolvedValue({});
+    const mockOctokit = {
+      rest: {
+        reactions: {
+          createForPullRequestReviewComment: createMock,
+        },
+      },
+    } as unknown as Parameters<typeof reactToReviewComment>[0];
+
+    await reactToReviewComment(mockOctokit, 'owner', 'repo', 456, 'heart');
+    expect(createMock).toHaveBeenCalledWith({
+      owner: 'owner',
+      repo: 'repo',
+      comment_id: 456,
+      content: 'heart',
+    });
+  });
+
+  it('silently ignores reaction failures', async () => {
+    const mockOctokit = {
+      rest: {
+        reactions: {
+          createForPullRequestReviewComment: jest.fn().mockRejectedValue(new Error('Forbidden')),
+        },
+      },
+    } as unknown as Parameters<typeof reactToReviewComment>[0];
+
+    await reactToReviewComment(mockOctokit, 'owner', 'repo', 456, 'eyes');
+  });
+});
+
+describe('createNitIssue', () => {
+  it('returns null when no nit findings exist', async () => {
+    const mockOctokit = {} as unknown as Parameters<typeof createNitIssue>[0];
+    const findings: Finding[] = [
+      { severity: 'required', title: 'Bug', file: 'a.ts', line: 1, description: 'Desc', reviewers: [] },
+    ];
+
+    const result = await createNitIssue(mockOctokit, 'owner', 'repo', 1, findings, 'sha');
+    expect(result).toBeNull();
+  });
+
+  it('returns existing issue number if nit issue already exists', async () => {
+    const mockOctokit = {
+      rest: {
+        search: {
+          issuesAndPullRequests: jest.fn().mockResolvedValue({
+            data: { total_count: 1, items: [{ number: 99 }] },
+          }),
+        },
+      },
+    } as unknown as Parameters<typeof createNitIssue>[0];
+
+    const findings: Finding[] = [
+      { severity: 'nit', title: 'Style', file: 'a.ts', line: 1, description: 'Desc', reviewers: [] },
+    ];
+
+    const result = await createNitIssue(mockOctokit, 'owner', 'repo', 1, findings, 'sha');
+    expect(result).toBe(99);
+  });
+
+  it('creates a new nit issue with label', async () => {
+    const createIssueMock = jest.fn().mockResolvedValue({ data: { number: 200 } });
+    const mockOctokit = {
+      rest: {
+        search: {
+          issuesAndPullRequests: jest.fn().mockResolvedValue({ data: { total_count: 0, items: [] } }),
+        },
+        issues: {
+          getLabel: jest.fn().mockResolvedValue({}),
+          create: createIssueMock,
+        },
+      },
+    } as unknown as Parameters<typeof createNitIssue>[0];
+
+    const findings: Finding[] = [
+      { severity: 'nit', title: 'Style issue', file: 'a.ts', line: 5, description: 'Minor style.', reviewers: [] },
+    ];
+
+    const result = await createNitIssue(mockOctokit, 'owner', 'repo', 42, findings, 'abc123');
+    expect(result).toBe(200);
+    expect(createIssueMock).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'triage: findings from PR #42',
+      labels: ['needs-human'],
+    }));
+  });
+
+  it('creates the needs-human label if it does not exist', async () => {
+    const createLabelMock = jest.fn().mockResolvedValue({});
+    const mockOctokit = {
+      rest: {
+        search: {
+          issuesAndPullRequests: jest.fn().mockResolvedValue({ data: { total_count: 0, items: [] } }),
+        },
+        issues: {
+          getLabel: jest.fn().mockRejectedValue(new Error('Not found')),
+          createLabel: createLabelMock,
+          create: jest.fn().mockResolvedValue({ data: { number: 201 } }),
+        },
+      },
+    } as unknown as Parameters<typeof createNitIssue>[0];
+
+    const findings: Finding[] = [
+      { severity: 'nit', title: 'Nit', file: 'a.ts', line: 1, description: 'Desc', reviewers: [] },
+    ];
+
+    await createNitIssue(mockOctokit, 'owner', 'repo', 1, findings, 'sha');
+    expect(createLabelMock).toHaveBeenCalledWith(expect.objectContaining({ name: 'needs-human' }));
+  });
+});
+
+describe('postReview fallback paths', () => {
+  it('retries without inline comments when line validation error occurs', async () => {
+    const createReviewMock = jest.fn()
+      .mockRejectedValueOnce(new Error('pull_request_review_thread.line must be part of the diff'))
+      .mockResolvedValueOnce({ data: { id: 2 } });
+
+    const mockOctokit = {
+      rest: { pulls: { createReview: createReviewMock } },
+    } as unknown as Parameters<typeof postReview>[0];
+
+    const result: ReviewResult = {
+      verdict: 'APPROVE',
+      summary: 'Summary',
+      findings: [{
+        severity: 'suggestion',
+        title: 'Some issue',
+        file: 'src/a.ts',
+        line: 10,
+        description: 'Desc.',
+        reviewers: ['Test'],
+      }],
+      highlights: [],
+      reviewComplete: true,
+    };
+
+    const reviewId = await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
+    expect(reviewId).toBe(2);
+    expect(createReviewMock).toHaveBeenCalledTimes(2);
+    // Second call should have empty comments
+    expect(createReviewMock.mock.calls[1][0].comments).toEqual([]);
+  });
+
+  it('falls back to COMMENT when APPROVE fails due to permission', async () => {
+    const createReviewMock = jest.fn()
+      .mockRejectedValueOnce(new Error('Resource not accessible by integration'))
+      .mockResolvedValueOnce({ data: { id: 3 } });
+
+    const mockOctokit = {
+      rest: { pulls: { createReview: createReviewMock } },
+    } as unknown as Parameters<typeof postReview>[0];
+
+    const result: ReviewResult = {
+      verdict: 'APPROVE',
+      summary: 'All good.',
+      findings: [{
+        severity: 'suggestion',
+        title: 'Minor thing',
+        file: 'src/a.ts',
+        line: 10,
+        description: 'Desc.',
+        reviewers: [],
+      }],
+      highlights: [],
+      reviewComplete: true,
+    };
+
+    const reviewId = await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
+    expect(reviewId).toBe(3);
+    expect(createReviewMock.mock.calls[1][0].event).toBe('COMMENT');
+  });
+
+  it('falls back to COMMENT when REQUEST_CHANGES fails', async () => {
+    const createReviewMock = jest.fn()
+      .mockRejectedValueOnce(new Error('Permission denied'))
+      .mockResolvedValueOnce({ data: { id: 4 } });
+
+    const mockOctokit = {
+      rest: { pulls: { createReview: createReviewMock } },
+    } as unknown as Parameters<typeof postReview>[0];
+
+    const result: ReviewResult = {
+      verdict: 'REQUEST_CHANGES',
+      summary: 'Issues found.',
+      findings: [{
+        severity: 'required',
+        title: 'Critical bug here',
+        file: 'src/a.ts',
+        line: 10,
+        description: 'Desc.',
+        reviewers: [],
+      }],
+      highlights: [],
+      reviewComplete: true,
+    };
+
+    const reviewId = await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
+    expect(reviewId).toBe(4);
+    expect(createReviewMock.mock.calls[1][0].event).toBe('COMMENT');
+  });
+
+  it('throws when COMMENT event fails (no further fallback)', async () => {
+    const createReviewMock = jest.fn().mockRejectedValue(new Error('API error'));
+    const mockOctokit = {
+      rest: { pulls: { createReview: createReviewMock } },
+    } as unknown as Parameters<typeof postReview>[0];
+
+    const result: ReviewResult = {
+      verdict: 'COMMENT',
+      summary: 'Comment.',
+      findings: [{
+        severity: 'suggestion',
+        title: 'Some issue',
+        file: 'src/a.ts',
+        line: 10,
+        description: 'Desc.',
+        reviewers: [],
+      }],
+      highlights: [],
+      reviewComplete: true,
+    };
+
+    await expect(postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result)).rejects.toThrow('API error');
+  });
+
+  it('moves findings to body when diff file is not found', async () => {
+    const createReviewMock = jest.fn().mockResolvedValue({ data: { id: 5 } });
+    const mockOctokit = {
+      rest: { pulls: { createReview: createReviewMock } },
+    } as unknown as Parameters<typeof postReview>[0];
+
+    const diff: ParsedDiff = {
+      files: [{ path: 'src/other.ts', changeType: 'modified', hunks: [] }],
+      totalAdditions: 5,
+      totalDeletions: 0,
+    };
+
+    const result: ReviewResult = {
+      verdict: 'APPROVE',
+      summary: 'Summary',
+      findings: [{
+        severity: 'suggestion',
+        title: 'Issue in missing file',
+        file: 'src/missing.ts',
+        line: 10,
+        description: 'Desc.',
+        reviewers: [],
+      }],
+      highlights: [],
+      reviewComplete: true,
+    };
+
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result, diff);
+    const body = createReviewMock.mock.calls[0][0].body as string;
+    expect(body).toContain('Findings (not on changed lines)');
+    expect(body).toContain('Issue in missing file');
+    expect(createReviewMock.mock.calls[0][0].comments).toEqual([]);
+  });
+
+  it('includes recap summary in review body when provided', async () => {
+    const createReviewMock = jest.fn().mockResolvedValue({ data: { id: 6 } });
+    const mockOctokit = {
+      rest: { pulls: { createReview: createReviewMock } },
+    } as unknown as Parameters<typeof postReview>[0];
+
+    const result: ReviewResult = {
+      verdict: 'APPROVE',
+      summary: 'All good.',
+      findings: [],
+      highlights: [],
+      reviewComplete: true,
+    };
+
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result, undefined, undefined, 'Findings: 2 new, 1 resolved');
+    const body = createReviewMock.mock.calls[0][0].body as string;
+    expect(body).toContain('Findings: 2 new, 1 resolved');
+  });
+
+  it('moves finding to body when file has empty hunks and line cannot be resolved', async () => {
+    const createReviewMock = jest.fn().mockResolvedValue({ data: { id: 7 } });
+    const mockOctokit = {
+      rest: { pulls: { createReview: createReviewMock } },
+    } as unknown as Parameters<typeof postReview>[0];
+
+    const diff: ParsedDiff = {
+      files: [{
+        path: 'src/a.ts',
+        changeType: 'modified',
+        hunks: [],
+      }],
+      totalAdditions: 1,
+      totalDeletions: 0,
+    };
+
+    const result: ReviewResult = {
+      verdict: 'APPROVE',
+      summary: 'Summary',
+      findings: [{
+        severity: 'suggestion',
+        title: 'Issue in empty hunk file',
+        file: 'src/a.ts',
+        line: 10,
+        description: 'Desc.',
+        reviewers: [],
+      }],
+      highlights: [],
+      reviewComplete: true,
+    };
+
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result, diff);
+    const body = createReviewMock.mock.calls[0][0].body as string;
+    expect(body).toContain('Findings (not on changed lines)');
+    expect(body).toContain('Issue in empty hunk file');
+  });
+});
+
+describe('getSeverityEmoji', () => {
+  it('returns correct emoji for each severity', () => {
+    expect(getSeverityEmoji('required')).toBe('\u{1F6AB}');
+    expect(getSeverityEmoji('suggestion')).toBe('\u{1F4A1}');
+    expect(getSeverityEmoji('nit')).toBe('\u{1F4DD}');
+    expect(getSeverityEmoji('ignore')).toBe('\u26AA');
   });
 });
