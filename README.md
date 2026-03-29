@@ -27,14 +27,13 @@ Manki assembles a dynamic review team from a pool of seven specialist agents, si
 - **Structured AI context** -- Inline comments include a collapsed JSON block with machine-readable metadata for AI agents to consume
 - **Self-learning memory** -- Teach her with `/manki remember`. She stores learnings, tracks patterns, applies suppressions, and auto-escalates findings that are consistently accepted during triage
 - **Conversational** -- Reply to any review comment to start a discussion. She reacts with emoji to acknowledge commands
-- **No external dependencies** -- Runs on GitHub Actions with your Claude Max subscription. No third-party services, no external rate limits, no waiting in queue
+- **Self-hosted** -- Runs on GitHub Actions with your own Claude credentials. Optional GitHub App identity via OIDC token service; falls back gracefully to github-actions[bot] if unavailable
 
 ## Quick start
 
 ```yaml
 # .github/workflows/manki.yml
 name: Manki
-
 on:
   pull_request:
     types: [opened, synchronize]
@@ -49,27 +48,19 @@ permissions:
   contents: read
   pull-requests: write
   issues: write
+  id-token: write
+
+concurrency:
+  group: manki-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   review:
     runs-on: ubuntu-latest
-    concurrency:
-      group: manki-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
-      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: xdustinface/manki@v4
         with:
-          node-version: '20'
-          cache: 'npm'
-      - name: Install Claude Code CLI
-        run: npm install -g @anthropic-ai/claude-code
-        env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      - name: Manki
-        uses: xdustinface/manki@v3
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 ```
 
@@ -90,7 +81,7 @@ For the full setup guide (permissions, memory system, GitHub App identity, troub
 | `/manki forget suppression <pattern>` | Remove a suppression matching the pattern |
 | `/manki help` | Show all commands |
 
-You can also use `@manki` or `@manki-labs` as the command prefix, or reply to any of her review comments to start a conversation.
+You can also use `@manki` or `@manki-labs` as the command prefix, or reply to any of her review comments to start a conversation. Tip: You can edit a comment to add `/manki` if you forgot to include it.
 
 ## Configure
 
@@ -116,8 +107,8 @@ models:
   reviewer: claude-sonnet-4-6   # fast, parallel reviewers
   judge: claude-opus-4-6        # precise, single judge
 
-# Deprecated: top-level model (fallback when models.stage is not set)
-# model: claude-sonnet-4-6
+# Multi-pass verification (default: 1, increase for higher confidence)
+# review_passes: 2
 
 # Max diff size for automated review (default: 50000)
 # max_diff_lines: 50000
@@ -139,6 +130,7 @@ See [`.manki.yml.example`](.manki.yml.example) for all options.
 - **Token handling** -- All secrets are masked via `core.setSecret()`. The memory repo uses a separate `memory_repo_token`
 - **Memory access control** -- Only repo owners, members, and collaborators can use `/manki remember`. Commands from outside collaborators are ignored
 - **Judge trust model** -- The judge has final say on severity and can downgrade `required` to `ignore`. This is by design to reduce false positives from individual reviewers
+- **OIDC authentication** -- Token service requests are authenticated via GitHub Actions OIDC tokens, cryptographically proving the request comes from a legitimate workflow. No shared secrets needed
 
 ## How it works
 
