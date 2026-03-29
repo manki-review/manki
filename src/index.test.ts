@@ -27,10 +27,13 @@ const mockPullsGet = jest.fn().mockResolvedValue({
   },
 });
 
+const mockListReactionsForIssueComment = jest.fn().mockResolvedValue({ data: [] });
+
 const mockOctokitInstance = {
   rest: {
     pulls: { get: mockPullsGet },
     issues: { deleteComment: jest.fn().mockResolvedValue(undefined) },
+    reactions: { listForIssueComment: mockListReactionsForIssueComment },
   },
 };
 
@@ -264,7 +267,7 @@ describe('run', () => {
   });
 
   describe('issue_comment event filtering', () => {
-    it('skips issue_comment events with non-created action', async () => {
+    it('skips issue_comment events with unsupported action', async () => {
       setContext({
         eventName: 'issue_comment',
         payload: { action: 'deleted', sender: { login: 'user' } },
@@ -336,6 +339,54 @@ describe('run', () => {
       await run();
 
       expect(jest.mocked(interaction.handlePRComment)).toHaveBeenCalled();
+    });
+
+    it('skips edited comments that already have eyes reaction from bot', async () => {
+      jest.mocked(interaction.hasBotMention).mockReturnValue(true);
+      jest.mocked(interaction.isReviewRequest).mockReturnValue(true);
+      mockListReactionsForIssueComment.mockResolvedValueOnce({
+        data: [{ content: 'eyes', user: { login: 'manki-labs[bot]' } }],
+      });
+
+      setContext({
+        eventName: 'issue_comment',
+        payload: {
+          action: 'edited',
+          sender: { login: 'user' },
+          comment: { body: '@manki review', id: 99 },
+          issue: { number: 5, pull_request: { url: 'https://...' } },
+        },
+      });
+
+      await run();
+
+      expect(jest.mocked(core.info)).toHaveBeenCalledWith(
+        'Edited comment already processed (has eyes reaction) — skipping',
+      );
+      expect(jest.mocked(ghUtils.reactToIssueComment)).not.toHaveBeenCalled();
+    });
+
+    it('processes edited comments that have no eyes reaction from bot', async () => {
+      jest.mocked(interaction.hasBotMention).mockReturnValue(true);
+      jest.mocked(interaction.isReviewRequest).mockReturnValue(true);
+      mockListReactionsForIssueComment.mockResolvedValueOnce({
+        data: [{ content: 'heart', user: { login: 'some-user' } }],
+      });
+
+      setContext({
+        eventName: 'issue_comment',
+        payload: {
+          action: 'edited',
+          sender: { login: 'user' },
+          comment: { body: '@manki review', id: 99 },
+          issue: { number: 5, pull_request: { url: 'https://...' } },
+        },
+      });
+
+      await run();
+
+      // Should proceed to handle the comment (reactToIssueComment is called in handleCommentTrigger)
+      expect(jest.mocked(ghUtils.reactToIssueComment)).toHaveBeenCalled();
     });
 
     it('routes bot mention on issue (not PR) to handleIssueInteraction', async () => {

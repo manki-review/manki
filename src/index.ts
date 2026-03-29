@@ -61,7 +61,7 @@ async function run(): Promise<void> {
       return;
     }
   } else if (eventName === 'issue_comment') {
-    if (action !== 'created') {
+    if (action !== 'created' && action !== 'edited') {
       core.info(`Ignoring issue_comment action: ${action}`);
       return;
     }
@@ -69,6 +69,29 @@ async function run(): Promise<void> {
     if (!hasBotMention(body) && !isReviewRequest(body)) {
       core.info('Comment does not mention Manki — ignoring');
       return;
+    }
+    // For edited comments, check if we already processed this comment (has eyes reaction)
+    if (action === 'edited') {
+      const commentId = github.context.payload.comment?.id;
+      if (commentId) {
+        try {
+          const octokit = await getOctokit();
+          const { owner, repo } = github.context.repo;
+          const { data: reactions } = await octokit.rest.reactions.listForIssueComment({
+            owner, repo, comment_id: commentId,
+          });
+          const alreadyProcessed = reactions.some(r =>
+            r.content === 'eyes' &&
+            (r.user?.login === 'manki-labs[bot]' || r.user?.login === 'github-actions[bot]')
+          );
+          if (alreadyProcessed) {
+            core.info('Edited comment already processed (has eyes reaction) — skipping');
+            return;
+          }
+        } catch {
+          // If we can't check reactions, proceed anyway
+        }
+      }
     }
   } else if (eventName === 'pull_request_review_comment') {
     if (action !== 'created') {
