@@ -611,7 +611,9 @@ describe('main', () => {
 
     await main();
 
-    // The error should be caught by runFullReview's try/catch, then main completes
+    expect(jest.mocked(core.warning)).toHaveBeenCalledWith(
+      'Manki encountered an error: Error: Something broke',
+    );
     exitSpy.mockRestore();
   });
 
