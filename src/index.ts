@@ -24,7 +24,6 @@ import {
   createNitIssue,
   reactToIssueComment,
   fetchLinkedIssues,
-  BOT_MARKER,
 } from './github';
 import { checkAndAutoApprove, resolveStaleThreads } from './state';
 
@@ -119,41 +118,6 @@ async function run(): Promise<void> {
   }
 }
 
-/**
- * Check if another workflow run is already reviewing this PR by querying
- * the GitHub Actions workflow runs API for in-progress runs.
- */
-async function isReviewInProgress(
-  octokit: Octokit,
-  owner: string,
-  repo: string,
-  prNumber: number,
-): Promise<boolean> {
-  const currentRunId = Number(process.env.GITHUB_RUN_ID || '0');
-  const currentWorkflow = process.env.GITHUB_WORKFLOW || '';
-
-  try {
-    const { data: runs } = await octokit.rest.actions.listWorkflowRunsForRepo({
-      owner,
-      repo,
-      status: 'in_progress',
-      per_page: 10,
-    });
-
-    // Check if there's another in-progress run from the same workflow for the same PR
-    const otherRun = runs.workflow_runs.find(r =>
-      r.id !== currentRunId &&
-      r.name === currentWorkflow &&
-      r.pull_requests?.some(pr => pr.number === prNumber),
-    );
-
-    return !!otherRun;
-  } catch {
-    // If we can't check, don't block
-    return false;
-  }
-}
-
 async function handlePullRequest(): Promise<void> {
   const pr = github.context.payload.pull_request;
   if (!pr) {
@@ -168,12 +132,6 @@ async function handlePullRequest(): Promise<void> {
 
   if (pr.draft) {
     core.info('Skipping draft PR');
-    return;
-  }
-
-  const octokit = await getOctokit();
-  if (await isReviewInProgress(octokit, owner, repo, prNumber)) {
-    core.info('Review already in progress — skipping duplicate');
     return;
   }
 
@@ -203,17 +161,6 @@ async function handleCommentTrigger(): Promise<void> {
   // Acknowledge the review request
   if (payload.comment?.id) {
     await reactToIssueComment(octokit, owner, repo, payload.comment.id, 'eyes');
-  }
-
-  if (await isReviewInProgress(octokit, owner, repo, prNumber)) {
-    await octokit.rest.issues.createComment({
-      owner,
-      repo,
-      issue_number: prNumber,
-      body: `${BOT_MARKER}\n**Manki** — A review is already in progress for this commit. Please wait for it to complete.`,
-    });
-    core.info('Review already in progress — skipping duplicate');
-    return;
   }
 
   const { data: pr } = await octokit.rest.pulls.get({
