@@ -93,7 +93,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Rebranded from claude-review to Manki
-- `@claude remember` command to teach the reviewer
+- `@manki remember` command to teach the reviewer
 
 ## [1.2.0] - 2026-03-24
 
