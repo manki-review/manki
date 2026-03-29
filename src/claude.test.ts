@@ -286,9 +286,9 @@ describe('sendViaOAuth — error paths', () => {
     expect(spawnOpts.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('my-oauth-token');
   });
 
-  it('omits CLAUDE_CODE_OAUTH_TOKEN env var when oauthToken is falsy', async () => {
+  it('sets CLAUDE_CODE_OAUTH_TOKEN env var when oauthToken is provided', async () => {
     setupSpawnMock({ stdout: 'ok' });
-    // Both tokens provided, but oauthToken is empty string (falsy) — goes to API path
+    // Both tokens provided — oauthToken takes precedence
     const client = new ClaudeClient({ oauthToken: 'tok', apiKey: 'sk-key', model: 'claude-opus-4-6' });
 
     await client.sendMessage('sys', 'user');
