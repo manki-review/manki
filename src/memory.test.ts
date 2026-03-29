@@ -6,8 +6,14 @@ import {
   sanitizeMemoryField,
   filterLearningsForFinding,
   filterSuppressionsForFinding,
+  loadMemory,
   removeLearning,
   removeSuppression,
+  writeSuppression,
+  writeLearning,
+  updatePattern,
+  updatePatternDecision,
+  batchUpdatePatternDecisions,
   Suppression,
   Pattern,
   Learning,
@@ -540,5 +546,280 @@ describe('removeSuppression', () => {
 
     expect(removed).toBeNull();
     expect(remaining).toBe(0);
+  });
+});
+
+describe('loadMemory', () => {
+  it('loads repo-specific and global learnings', async () => {
+    const repoLearnings: Learning[] = [
+      makeLearning({ id: 'l1', content: 'repo learning', scope: 'repo' }),
+    ];
+    const globalLearnings: Learning[] = [
+      makeLearning({ id: 'l2', content: 'global learning', scope: 'global' }),
+    ];
+    const suppressions: Suppression[] = [
+      makeSuppression({ id: 's1', pattern: 'unused var' }),
+    ];
+    const patterns: Pattern[] = [
+      makePattern({ id: 'p1', finding_title: 'test pattern' }),
+    ];
+
+    const octokit = mockMemoryOctokit({
+      'test-repo/learnings.yml': repoLearnings,
+      'test-repo/suppressions.yml': suppressions,
+      'test-repo/patterns.yml': patterns,
+      '_global/learnings.yml': globalLearnings,
+    });
+
+    // Patch for fetchTextFile — conventions.md is fetched as raw text, not YAML
+    const origGetContent = octokit.rest.repos.getContent as unknown as jest.Mock;
+    const originalImpl = origGetContent.getMockImplementation()!;
+    origGetContent.mockImplementation(async (args: { path: string }) => {
+      if (args.path === '_global/conventions.md') {
+        return {
+          data: {
+            content: Buffer.from('Use consistent naming').toString('base64'),
+            encoding: 'base64',
+            sha: 'abc',
+          },
+        };
+      }
+      return originalImpl(args);
+    });
+
+    const memory = await loadMemory(octokit, 'owner/memory', 'test-repo');
+
+    // 2 file learnings + 1 conventions entry
+    expect(memory.learnings).toHaveLength(3);
+    expect(memory.learnings[0].content).toBe('repo learning');
+    expect(memory.learnings[1].content).toBe('global learning');
+    expect(memory.learnings[2].id).toBe('global-conventions');
+    expect(memory.learnings[2].content).toBe('Use consistent naming');
+    expect(memory.suppressions).toHaveLength(1);
+    expect(memory.patterns).toHaveLength(1);
+  });
+
+  it('returns empty arrays when no files exist', async () => {
+    const octokit = mockMemoryOctokit({});
+
+    const memory = await loadMemory(octokit, 'owner/memory', 'test-repo');
+
+    expect(memory.learnings).toHaveLength(0);
+    expect(memory.suppressions).toHaveLength(0);
+    expect(memory.patterns).toHaveLength(0);
+  });
+});
+
+describe('writeSuppression', () => {
+  it('appends suppression to existing file', async () => {
+    const existing: Suppression[] = [
+      makeSuppression({ id: 'sup-1', pattern: 'existing' }),
+    ];
+    const octokit = mockMemoryOctokit({ 'test-repo/suppressions.yml': existing });
+
+    await writeSuppression(octokit, 'owner/memory', 'test-repo', makeSuppression({ id: 'sup-2', pattern: 'new pattern' }));
+
+    const createCall = (octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls[0][0];
+    expect(createCall.path).toBe('test-repo/suppressions.yml');
+  });
+
+  it('creates file when none exists', async () => {
+    const octokit = mockMemoryOctokit({});
+
+    await writeSuppression(octokit, 'owner/memory', 'test-repo', makeSuppression({ id: 'sup-1', pattern: 'brand new' }));
+
+    expect(octokit.rest.repos.createOrUpdateFileContents).toHaveBeenCalled();
+  });
+});
+
+describe('writeLearning', () => {
+  it('appends repo-scoped learning', async () => {
+    const existing: Learning[] = [
+      makeLearning({ id: 'l1', content: 'existing learning' }),
+    ];
+    const octokit = mockMemoryOctokit({ 'test-repo/learnings.yml': existing });
+
+    await writeLearning(octokit, 'owner/memory', 'test-repo', makeLearning({ id: 'l2', content: 'new learning', scope: 'repo' }));
+
+    const createCall = (octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls[0][0];
+    expect(createCall.path).toBe('test-repo/learnings.yml');
+  });
+
+  it('writes global-scoped learning to _global path', async () => {
+    const octokit = mockMemoryOctokit({});
+
+    await writeLearning(octokit, 'owner/memory', 'test-repo', makeLearning({ id: 'l1', content: 'global tip', scope: 'global' }));
+
+    const createCall = (octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls[0][0];
+    expect(createCall.path).toBe('_global/learnings.yml');
+  });
+});
+
+describe('updatePattern', () => {
+  it('creates new pattern when none exists', async () => {
+    const octokit = mockMemoryOctokit({ 'test-repo/patterns.yml': [] });
+
+    const pattern = await updatePattern(octokit, 'owner/memory', 'test-repo', 'Missing null check', 'test-repo');
+
+    expect(pattern).not.toBeNull();
+    expect(pattern!.finding_title).toBe('missing null check');
+    expect(pattern!.occurrences).toBe(1);
+    expect(pattern!.escalated).toBe(false);
+  });
+
+  it('increments existing pattern occurrences', async () => {
+    const existing: Pattern[] = [
+      makePattern({ finding_title: 'missing null check', occurrences: 3, escalated: false }),
+    ];
+    const octokit = mockMemoryOctokit({ 'test-repo/patterns.yml': existing });
+
+    const pattern = await updatePattern(octokit, 'owner/memory', 'test-repo', 'Missing null check', 'test-repo');
+
+    expect(pattern!.occurrences).toBe(4);
+  });
+
+  it('escalates pattern at 5 occurrences', async () => {
+    const existing: Pattern[] = [
+      makePattern({ finding_title: 'missing null check', occurrences: 4, escalated: false }),
+    ];
+    const octokit = mockMemoryOctokit({ 'test-repo/patterns.yml': existing });
+
+    const pattern = await updatePattern(octokit, 'owner/memory', 'test-repo', 'Missing null check', 'test-repo');
+
+    expect(pattern!.occurrences).toBe(5);
+    expect(pattern!.escalated).toBe(true);
+  });
+
+  it('adds repo to repos list if not present', async () => {
+    const existing: Pattern[] = [
+      makePattern({ finding_title: 'missing null check', repos: ['other-repo'], occurrences: 1, escalated: false }),
+    ];
+    const octokit = mockMemoryOctokit({ 'test-repo/patterns.yml': existing });
+
+    const pattern = await updatePattern(octokit, 'owner/memory', 'test-repo', 'Missing null check', 'test-repo');
+
+    expect(pattern!.repos).toContain('test-repo');
+    expect(pattern!.repos).toContain('other-repo');
+  });
+});
+
+describe('updatePatternDecision', () => {
+  it('increments accepted_count for accepted decision', async () => {
+    const existing: Pattern[] = [
+      makePattern({ finding_title: 'unused import', accepted_count: 2, rejected_count: 0, escalated: false }),
+    ];
+    const octokit = mockMemoryOctokit({ 'test-repo/patterns.yml': existing });
+
+    await updatePatternDecision(octokit, 'owner/memory', 'test-repo', 'Unused import', true);
+
+    const createCall = (octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls[0][0];
+    const { parse } = await import('yaml');
+    const data = parse(Buffer.from(createCall.content, 'base64').toString('utf-8')) as Pattern[];
+    expect(data[0].accepted_count).toBe(3);
+  });
+
+  it('increments rejected_count for rejected decision', async () => {
+    const existing: Pattern[] = [
+      makePattern({ finding_title: 'unused import', accepted_count: 1, rejected_count: 1, escalated: false }),
+    ];
+    const octokit = mockMemoryOctokit({ 'test-repo/patterns.yml': existing });
+
+    await updatePatternDecision(octokit, 'owner/memory', 'test-repo', 'Unused import', false);
+
+    const createCall = (octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls[0][0];
+    const { parse } = await import('yaml');
+    const data = parse(Buffer.from(createCall.content, 'base64').toString('utf-8')) as Pattern[];
+    expect(data[0].rejected_count).toBe(2);
+  });
+
+  it('creates new pattern when none matches', async () => {
+    const octokit = mockMemoryOctokit({ 'test-repo/patterns.yml': [] });
+
+    await updatePatternDecision(octokit, 'owner/memory', 'test-repo', 'New finding', true);
+
+    const createCall = (octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls[0][0];
+    const { parse } = await import('yaml');
+    const data = parse(Buffer.from(createCall.content, 'base64').toString('utf-8')) as Pattern[];
+    expect(data).toHaveLength(1);
+    expect(data[0].finding_title).toBe('new finding');
+    expect(data[0].accepted_count).toBe(1);
+  });
+
+  it('auto-escalates when accepted 3+ times and accepted > 2x rejected', async () => {
+    const existing: Pattern[] = [
+      makePattern({ finding_title: 'unused import', accepted_count: 2, rejected_count: 0, escalated: false }),
+    ];
+    const octokit = mockMemoryOctokit({ 'test-repo/patterns.yml': existing });
+
+    await updatePatternDecision(octokit, 'owner/memory', 'test-repo', 'Unused import', true);
+
+    const createCall = (octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls[0][0];
+    const { parse } = await import('yaml');
+    const data = parse(Buffer.from(createCall.content, 'base64').toString('utf-8')) as Pattern[];
+    expect(data[0].escalated).toBe(true);
+  });
+});
+
+describe('batchUpdatePatternDecisions', () => {
+  it('updates multiple patterns in a single write', async () => {
+    const existing: Pattern[] = [
+      makePattern({ finding_title: 'unused import', accepted_count: 0, rejected_count: 0, escalated: false }),
+      makePattern({ id: 'pat-2', finding_title: 'missing error handling', accepted_count: 0, rejected_count: 0, escalated: false }),
+    ];
+    const octokit = mockMemoryOctokit({ 'test-repo/patterns.yml': existing });
+
+    await batchUpdatePatternDecisions(octokit, 'owner/memory', 'test-repo', [
+      { title: 'Unused import', accepted: true },
+      { title: 'Missing error handling', accepted: false },
+    ]);
+
+    const createCall = (octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls[0][0];
+    const { parse } = await import('yaml');
+    const data = parse(Buffer.from(createCall.content, 'base64').toString('utf-8')) as Pattern[];
+    const importPattern = data.find(p => p.finding_title === 'unused import')!;
+    const errorPattern = data.find(p => p.finding_title === 'missing error handling')!;
+    expect(importPattern.accepted_count).toBe(1);
+    expect(errorPattern.rejected_count).toBe(1);
+  });
+
+  it('creates new patterns for unrecognized titles', async () => {
+    const octokit = mockMemoryOctokit({ 'test-repo/patterns.yml': [] });
+
+    await batchUpdatePatternDecisions(octokit, 'owner/memory', 'test-repo', [
+      { title: 'Brand new finding', accepted: true },
+    ]);
+
+    const createCall = (octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls[0][0];
+    const { parse } = await import('yaml');
+    const data = parse(Buffer.from(createCall.content, 'base64').toString('utf-8')) as Pattern[];
+    expect(data).toHaveLength(1);
+    expect(data[0].finding_title).toBe('brand new finding');
+    expect(data[0].accepted_count).toBe(1);
+  });
+});
+
+describe('buildMemoryContext — suppressions only', () => {
+  it('includes only suppressions when no learnings exist', () => {
+    const memory: RepoMemory = {
+      learnings: [],
+      suppressions: [makeSuppression({ pattern: 'todo comment', reason: 'tracked in issues' })],
+      patterns: [],
+    };
+
+    const context = buildMemoryContext(memory);
+    expect(context).not.toContain('Review Memory — Learnings');
+    expect(context).toContain('Review Memory — Suppressions');
+    expect(context).toContain('"todo comment"');
+  });
+
+  it('includes file_glob scope in suppression output', () => {
+    const memory: RepoMemory = {
+      learnings: [],
+      suppressions: [makeSuppression({ pattern: 'todo', file_glob: 'src/**', reason: 'only in src' })],
+      patterns: [],
+    };
+
+    const context = buildMemoryContext(memory);
+    expect(context).toContain('files matching src/**');
   });
 });

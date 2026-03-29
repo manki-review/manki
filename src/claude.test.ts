@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
 import Anthropic from '@anthropic-ai/sdk';
 
-import { ClaudeClient } from './claude';
+import { ClaudeClient, resetCLIInstallPromise } from './claude';
 
 jest.mock('child_process', () => ({
   execFile: jest.fn(),
@@ -10,10 +10,18 @@ jest.mock('child_process', () => ({
 
 jest.mock('@anthropic-ai/sdk');
 
+// Container for the execFileAsync mock — must be a plain object so the
+// hoisted jest.mock factory can capture a reference to it before const
+// declarations are initialized.
+const _execMock = { fn: null as jest.Mock | null };
 jest.mock('util', () => ({
   ...jest.requireActual('util'),
-  promisify: () => jest.fn().mockResolvedValue({ stdout: '/usr/bin/claude' }),
+  promisify: () => (...args: unknown[]) => _execMock.fn!(...args),
 }));
+
+// Now assign the actual mock function (runs after hoisting)
+const mockExecFileAsync = jest.fn().mockResolvedValue({ stdout: '/usr/bin/claude' });
+_execMock.fn = mockExecFileAsync;
 
 const mockSpawn = spawn as jest.MockedFunction<typeof spawn>;
 
@@ -171,5 +179,285 @@ describe('sendMessage effort option (API path)', () => {
     const params = mockCreate.mock.calls[0][0];
     expect(params.thinking).toBeUndefined();
     expect(params.max_tokens).toBe(16384);
+  });
+
+  it('concatenates multiple text blocks', async () => {
+    mockCreate.mockResolvedValue({
+      content: [
+        { type: 'thinking', thinking: 'hmm' },
+        { type: 'text', text: 'first' },
+        { type: 'text', text: 'second' },
+      ],
+    });
+
+    const client = new ClaudeClient({ apiKey: 'sk-key', model: 'claude-opus-4-6' });
+    const result = await client.sendMessage('system', 'user');
+
+    expect(result.content).toBe('first\nsecond');
+  });
+
+  it('throws when Anthropic client is not initialized', async () => {
+    // Create with oauthToken only — no Anthropic client
+    const client = new ClaudeClient({ oauthToken: 'token', model: 'claude-opus-4-6' });
+
+    // Access private sendViaAPI directly via prototype
+    const sendViaAPI = (ClaudeClient.prototype as unknown as Record<string, unknown>)['sendViaAPI'] as (
+      systemPrompt: string,
+      userMessage: string,
+    ) => Promise<unknown>;
+
+    await expect(sendViaAPI.call(client, 'sys', 'user')).rejects.toThrow('Anthropic client not initialized');
+  });
+});
+
+describe('sendViaOAuth — error paths', () => {
+  beforeEach(() => {
+    mockSpawn.mockReset();
+    resetCLIInstallPromise();
+  });
+
+  function setupSpawnMock(opts: {
+    exitCode?: number | null;
+    signal?: string | null;
+    stdout?: string;
+    stderr?: string;
+    error?: Error;
+    closeDelay?: number;
+  }): void {
+    const proc = {
+      stdin: { write: jest.fn().mockReturnValue(true), end: jest.fn(), on: jest.fn() },
+      stdout: { on: jest.fn() },
+      stderr: { on: jest.fn() },
+      on: jest.fn(),
+      kill: jest.fn(),
+    };
+
+    proc.stdout.on.mockImplementation((event: string, cb: (data: Buffer) => void) => {
+      if (event === 'data' && opts.stdout) {
+        setTimeout(() => cb(Buffer.from(opts.stdout!)), 0);
+      }
+    });
+    proc.stderr.on.mockImplementation((event: string, cb: (data: Buffer) => void) => {
+      if (event === 'data' && opts.stderr) {
+        setTimeout(() => cb(Buffer.from(opts.stderr!)), 0);
+      }
+    });
+    proc.on.mockImplementation((event: string, cb: (...args: unknown[]) => void) => {
+      if (event === 'close' && !opts.error) {
+        setTimeout(() => cb(opts.exitCode ?? 0, opts.signal ?? null), opts.closeDelay ?? 5);
+      }
+      if (event === 'error' && opts.error) {
+        setTimeout(() => cb(opts.error), 0);
+      }
+    });
+
+    mockSpawn.mockReturnValue(proc as unknown as ReturnType<typeof spawn>);
+  }
+
+  it('rejects on non-zero exit code', async () => {
+    setupSpawnMock({ exitCode: 1, stderr: 'something went wrong' });
+    const client = new ClaudeClient({ oauthToken: 'token', model: 'claude-opus-4-6' });
+
+    await expect(client.sendMessage('sys', 'user')).rejects.toThrow('Claude CLI invocation failed');
+  });
+
+  it('rejects on spawn error', async () => {
+    setupSpawnMock({ error: new Error('ENOENT') });
+    const client = new ClaudeClient({ oauthToken: 'token', model: 'claude-opus-4-6' });
+
+    await expect(client.sendMessage('sys', 'user')).rejects.toThrow('Claude CLI spawn failed: ENOENT');
+  });
+
+  it('returns trimmed content on success', async () => {
+    setupSpawnMock({ stdout: '  hello world  \n' });
+    const client = new ClaudeClient({ oauthToken: 'token', model: 'claude-opus-4-6' });
+
+    const result = await client.sendMessage('sys', 'user');
+    expect(result.content).toBe('hello world');
+  });
+
+  it('sets CLAUDE_CODE_OAUTH_TOKEN in spawn env', async () => {
+    setupSpawnMock({ stdout: 'ok' });
+    const client = new ClaudeClient({ oauthToken: 'my-oauth-token', model: 'claude-opus-4-6' });
+
+    await client.sendMessage('sys', 'user');
+
+    const spawnOpts = mockSpawn.mock.calls[0][2] as { env: Record<string, string> };
+    expect(spawnOpts.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('my-oauth-token');
+  });
+
+  it('sets CLAUDE_CODE_OAUTH_TOKEN env var when oauthToken is provided', async () => {
+    setupSpawnMock({ stdout: 'ok' });
+    // Both tokens provided — oauthToken takes precedence
+    const client = new ClaudeClient({ oauthToken: 'tok', apiKey: 'sk-key', model: 'claude-opus-4-6' });
+
+    await client.sendMessage('sys', 'user');
+
+    const spawnOpts = mockSpawn.mock.calls[0][2] as { env: Record<string, string> };
+    expect(spawnOpts.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('tok');
+  });
+
+  it('includes exit signal in error message when present', async () => {
+    setupSpawnMock({ exitCode: 1, signal: 'SIGTERM', stderr: 'killed' });
+    const client = new ClaudeClient({ oauthToken: 'token', model: 'claude-opus-4-6' });
+
+    await expect(client.sendMessage('sys', 'user')).rejects.toThrow('signal SIGTERM');
+  });
+
+  it('handles stdin.write returning false (drain path)', async () => {
+    const proc = {
+      stdin: {
+        write: jest.fn().mockReturnValue(false),
+        end: jest.fn(),
+        on: jest.fn(),
+        once: jest.fn(),
+      },
+      stdout: { on: jest.fn() },
+      stderr: { on: jest.fn() },
+      on: jest.fn(),
+      kill: jest.fn(),
+    };
+
+    proc.stdout.on.mockImplementation((event: string, cb: (data: Buffer) => void) => {
+      if (event === 'data') {
+        setTimeout(() => cb(Buffer.from('drain response')), 0);
+      }
+    });
+    proc.stderr.on.mockImplementation(() => {});
+
+    // Simulate drain event firing, then close
+    proc.stdin.once.mockImplementation((event: string, cb: () => void) => {
+      if (event === 'drain') {
+        setTimeout(() => cb(), 1);
+      }
+    });
+    proc.on.mockImplementation((event: string, cb: (code: number | null, signal: string | null) => void) => {
+      if (event === 'close') {
+        setTimeout(() => cb(0, null), 10);
+      }
+    });
+
+    mockSpawn.mockReturnValue(proc as unknown as ReturnType<typeof spawn>);
+    const client = new ClaudeClient({ oauthToken: 'token', model: 'claude-opus-4-6' });
+
+    const result = await client.sendMessage('sys', 'user');
+    expect(result.content).toBe('drain response');
+    expect(proc.stdin.once).toHaveBeenCalledWith('drain', expect.any(Function));
+  });
+
+  it('handles stdin.write throwing an error', async () => {
+    const proc = {
+      stdin: {
+        write: jest.fn().mockImplementation(() => { throw new Error('write EPIPE'); }),
+        end: jest.fn(),
+        on: jest.fn(),
+        once: jest.fn(),
+      },
+      stdout: { on: jest.fn() },
+      stderr: { on: jest.fn() },
+      on: jest.fn(),
+      kill: jest.fn(),
+    };
+
+    proc.stdout.on.mockImplementation(() => {});
+    proc.stderr.on.mockImplementation(() => {});
+    proc.on.mockImplementation(() => {});
+
+    mockSpawn.mockReturnValue(proc as unknown as ReturnType<typeof spawn>);
+    const client = new ClaudeClient({ oauthToken: 'token', model: 'claude-opus-4-6' });
+
+    await expect(client.sendMessage('sys', 'user')).rejects.toThrow('stdin write failed: write EPIPE');
+  });
+});
+
+describe('ensureCLI — install path', () => {
+  beforeEach(() => {
+    mockSpawn.mockReset();
+    mockExecFileAsync.mockReset();
+    resetCLIInstallPromise();
+  });
+
+  function setupSpawnForSuccess(stdout: string): void {
+    const proc = {
+      stdin: { write: jest.fn().mockReturnValue(true), end: jest.fn(), on: jest.fn() },
+      stdout: { on: jest.fn() },
+      stderr: { on: jest.fn() },
+      on: jest.fn(),
+      kill: jest.fn(),
+    };
+
+    proc.stdout.on.mockImplementation((event: string, cb: (data: Buffer) => void) => {
+      if (event === 'data') {
+        setTimeout(() => cb(Buffer.from(stdout)), 0);
+      }
+    });
+    proc.stderr.on.mockImplementation(() => {});
+    proc.on.mockImplementation((event: string, cb: (code: number | null, signal: string | null) => void) => {
+      if (event === 'close') {
+        setTimeout(() => cb(0, null), 5);
+      }
+    });
+
+    mockSpawn.mockReturnValue(proc as unknown as ReturnType<typeof spawn>);
+  }
+
+  it('installs CLI when which fails, then succeeds', async () => {
+    // First call: which claude fails; second call: npm install succeeds; third call: which claude succeeds
+    mockExecFileAsync
+      .mockRejectedValueOnce(new Error('not found'))
+      .mockResolvedValueOnce({ stdout: '' }) // npm install
+      .mockResolvedValueOnce({ stdout: '/usr/local/bin/claude\n' }); // which after install
+
+    setupSpawnForSuccess('installed ok');
+    const client = new ClaudeClient({ oauthToken: 'token', model: 'claude-opus-4-6' });
+
+    const result = await client.sendMessage('sys', 'user');
+    expect(result.content).toBe('installed ok');
+  });
+
+  it('throws when CLI install fails (which still fails after install)', async () => {
+    mockExecFileAsync
+      .mockRejectedValueOnce(new Error('not found'))
+      .mockResolvedValueOnce({ stdout: '' }) // npm install
+      .mockRejectedValueOnce(new Error('still not found')); // which after install
+
+    setupSpawnForSuccess('should not reach');
+    const client = new ClaudeClient({ oauthToken: 'token', model: 'claude-opus-4-6' });
+
+    await expect(client.sendMessage('sys', 'user')).rejects.toThrow('Failed to install Claude CLI');
+  });
+
+  it('reuses cached CLI path on second call', async () => {
+    mockExecFileAsync.mockResolvedValue({ stdout: '/usr/bin/claude\n' });
+    setupSpawnForSuccess('response');
+    const client = new ClaudeClient({ oauthToken: 'token', model: 'claude-opus-4-6' });
+
+    await client.sendMessage('sys', 'first');
+    await client.sendMessage('sys', 'second');
+
+    // execFileAsync (which) should only be called once, then cached
+    expect(mockExecFileAsync).toHaveBeenCalledTimes(1);
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+  });
+
+  it('clears install promise on install failure so retry is possible', async () => {
+    // First attempt: which fails, npm install fails
+    mockExecFileAsync
+      .mockRejectedValueOnce(new Error('not found'))
+      .mockResolvedValueOnce({ stdout: '' }) // npm install
+      .mockRejectedValueOnce(new Error('still not found')); // which after install
+
+    setupSpawnForSuccess('should not reach');
+    const client = new ClaudeClient({ oauthToken: 'token', model: 'claude-opus-4-6' });
+
+    await expect(client.sendMessage('sys', 'first')).rejects.toThrow('Failed to install Claude CLI');
+
+    // Second attempt: which succeeds (cliInstallPromise was cleared)
+    mockExecFileAsync.mockResolvedValue({ stdout: '/usr/local/bin/claude\n' });
+
+    // Need a fresh client since cachedCLIPath is instance-level
+    const client2 = new ClaudeClient({ oauthToken: 'token', model: 'claude-opus-4-6' });
+    const result = await client2.sendMessage('sys', 'retry');
+    expect(result.content).toBe('should not reach');
   });
 });
