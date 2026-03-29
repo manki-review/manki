@@ -129,6 +129,7 @@ async function isReviewInProgress(
   prNumber: number,
 ): Promise<boolean> {
   const currentRunId = Number(process.env.GITHUB_RUN_ID || '0');
+  const currentWorkflow = process.env.GITHUB_WORKFLOW || '';
 
   try {
     const { data: runs } = await octokit.rest.actions.listWorkflowRunsForRepo({
@@ -139,9 +140,10 @@ async function isReviewInProgress(
       per_page: 10,
     });
 
-    // Check if there's another in-progress run for the same PR (different from us)
+    // Check if there's another in-progress run from the same workflow for the same PR
     const otherRun = runs.workflow_runs.find(r =>
       r.id !== currentRunId &&
+      r.name === currentWorkflow &&
       r.pull_requests?.some(pr => pr.number === prNumber),
     );
 
