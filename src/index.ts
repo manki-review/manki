@@ -44,6 +44,13 @@ async function run(): Promise<void> {
 
   core.info(`Event: ${eventName}, Action: ${action}`);
 
+  // Prevent self-triggering — skip events caused by our own bot
+  const actor = github.context.payload.sender?.login ?? '';
+  if (actor === 'manki-labs[bot]' || actor === 'github-actions[bot]') {
+    core.info(`Ignoring event from bot: ${actor}`);
+    return;
+  }
+
   // Event filtering — exit immediately for irrelevant events
   if (eventName === 'pull_request') {
     if (action !== 'opened' && action !== 'synchronize') {
@@ -63,6 +70,12 @@ async function run(): Promise<void> {
   } else if (eventName === 'pull_request_review_comment') {
     if (action !== 'created') {
       core.info(`Ignoring pull_request_review_comment action: ${action}`);
+      return;
+    }
+    // Skip our own review comments
+    const commentBody = github.context.payload.comment?.body ?? '';
+    if (commentBody.includes('<!-- manki')) {
+      core.info('Ignoring our own review comment');
       return;
     }
   } else if (eventName === 'pull_request_review') {
