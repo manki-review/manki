@@ -563,6 +563,7 @@ async function handleTriage(
 
   const { data: issue } = await octokit.rest.issues.get({ owner, repo, issue_number: issueNumber });
   const body = issue.body ?? '';
+  const issueTitle = issue.title ?? '';
 
   const { accepted, rejected } = parseTriageBody(body);
 
@@ -575,20 +576,42 @@ async function handleTriage(
     return;
   }
 
+  const prNumber = extractPrNumber(issueTitle);
+
   const createdIssues: number[] = [];
   for (const item of accepted) {
-    const sectionRegex = new RegExp(
-      `- \\[x\\] (?:<details><summary>)?[📝💡❓🚫] \\*\\*${escapeRegex(item.title)}\\*\\*[\\s\\S]*?(?=\\n- \\[|\\n---|$)`,
-      'iu',
-    );
-    const sectionMatch = body.match(sectionRegex);
-    const context = sectionMatch ? sectionMatch[0] : item.title;
+    const cleanTitle = `${triageTitlePrefix(item.title)}: ${item.title}`;
+    const { description, permalink, suggestedFix } = extractFindingContent(item.section);
+
+    const bodyParts: string[] = [
+      `## Context`,
+      ``,
+      `From review triage (#${issueNumber}${prNumber ? `, PR #${prNumber}` : ''}).`,
+      ``,
+      `## Description`,
+      ``,
+      description || item.title,
+      ``,
+      `## File`,
+      ``,
+      `\`${item.ref}\``,
+    ];
+
+    if (permalink) {
+      bodyParts.push('', permalink);
+    }
+
+    if (suggestedFix) {
+      bodyParts.push('', '## Suggested Fix', '', '```', suggestedFix, '```');
+    }
+
+    const issueBody = bodyParts.join('\n');
 
     try {
       const { data: newIssue } = await octokit.rest.issues.create({
         owner, repo,
-        title: item.title,
-        body: `**From review triage** — Source: #${issueNumber}\n\n${context}`,
+        title: cleanTitle,
+        body: issueBody,
       });
       createdIssues.push(newIssue.number);
       core.info(`Created issue #${newIssue.number} for "${item.title}"`);
@@ -669,10 +692,6 @@ async function handleTriage(
   core.info(`Triage complete: ${accepted.length} accepted, ${rejected.length} rejected`);
 }
 
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 async function handleGenericQuestion(
   octokit: Octokit,
   client: ClaudeClient,
@@ -724,6 +743,7 @@ function hasBotMention(body: string): boolean {
 interface TriageFinding {
   title: string;
   ref: string;
+  section: string;
 }
 
 interface TriageResult {
@@ -731,22 +751,90 @@ interface TriageResult {
   rejected: TriageFinding[];
 }
 
+interface FindingContent {
+  description: string;
+  permalink: string | null;
+  suggestedFix: string | null;
+}
+
 function parseTriageBody(body: string): TriageResult {
-  const checkedRegex = /^- \[x\] (?:<details><summary>)?[📝💡❓🚫] \*\*(.+?)\*\* — (?:`|<code>)(.+?)(?:`|<\/code>)/gmiu;
-  const uncheckedRegex = /^- \[ \] (?:<details><summary>)?[📝💡❓🚫] \*\*(.+?)\*\* — (?:`|<code>)(.+?)(?:`|<\/code>)/gmu;
+  const headerRegex = /^- \[([ x])\] (?:<details><summary>)?[📝💡❓🚫] \*\*(.+?)\*\* — (?:`|<code>)(.+?)(?:`|<\/code>)/gmiu;
 
   const accepted: TriageFinding[] = [];
   const rejected: TriageFinding[] = [];
 
+  // Collect all match positions first
+  const matches: { checked: boolean; title: string; ref: string; start: number }[] = [];
   let match;
-  while ((match = checkedRegex.exec(body)) !== null) {
-    accepted.push({ title: match[1], ref: match[2] });
+  while ((match = headerRegex.exec(body)) !== null) {
+    matches.push({
+      checked: match[1] === 'x',
+      title: match[2],
+      ref: match[3],
+      start: match.index,
+    });
   }
-  while ((match = uncheckedRegex.exec(body)) !== null) {
-    rejected.push({ title: match[1], ref: match[2] });
+
+  // Extract full sections using positions of subsequent findings
+  for (let i = 0; i < matches.length; i++) {
+    const end = i + 1 < matches.length ? matches[i + 1].start : body.length;
+    const section = body.slice(matches[i].start, end).trim();
+    const finding: TriageFinding = {
+      title: matches[i].title,
+      ref: matches[i].ref,
+      section,
+    };
+    if (matches[i].checked) {
+      accepted.push(finding);
+    } else {
+      rejected.push(finding);
+    }
   }
 
   return { accepted, rejected };
+}
+
+function extractFindingContent(section: string): FindingContent {
+  // Strip HTML tags (details/summary/code)
+  const stripped = section
+    .replace(/<\/?details>/g, '')
+    .replace(/<\/?summary>/g, '')
+    .replace(/<\/?code>/g, '`');
+
+  // Extract permalink (GitHub URL)
+  const permalinkMatch = stripped.match(/(https:\/\/github\.com\/[^\s)]+)/);
+  const permalink = permalinkMatch ? permalinkMatch[1] : null;
+
+  // Extract suggested fix (content after "**Suggested fix:**")
+  const suggestedFixMatch = stripped.match(/\*\*Suggested fix:\*\*\s*\n```[\s\S]*?\n([\s\S]*?)\n```/);
+  const suggestedFix = suggestedFixMatch ? suggestedFixMatch[1].trim() : null;
+
+  // Extract description: content between the header line and the permalink or suggested fix
+  const lines = stripped.split('\n');
+  // Skip the first line (checkbox + title line)
+  const descriptionLines: string[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    if (line.startsWith('https://github.com/')) break;
+    if (line.startsWith('**Suggested fix:**')) break;
+    if (line === '```') break;
+    descriptionLines.push(line);
+  }
+  const description = descriptionLines.join('\n').trim();
+
+  return { description, permalink, suggestedFix };
+}
+
+function triageTitlePrefix(title: string): string {
+  const lower = title.toLowerCase();
+  if (lower.startsWith('missing test') || lower.includes('no test')) return 'test';
+  return 'fix';
+}
+
+function extractPrNumber(issueTitle: string): number | null {
+  const match = issueTitle.match(/findings from PR #(\d+)/);
+  return match ? parseInt(match[1], 10) : null;
 }
 
 function isReviewRequest(body: string): boolean {
@@ -757,4 +845,4 @@ function isBotMentionNonReview(body: string): boolean {
   return BOT_MENTION_PATTERN.test(body.toLowerCase()) && !/\breview\b/i.test(body);
 }
 
-export { parseCommand, buildReplyContext, parseTriageBody, ParsedCommand, TriageFinding, TriageResult, BOT_MARKER, BOT_MENTION_PATTERN, isBotComment, hasBotMention, isReviewRequest, isBotMentionNonReview };
+export { parseCommand, buildReplyContext, parseTriageBody, extractFindingContent, triageTitlePrefix, extractPrNumber, ParsedCommand, TriageFinding, TriageResult, FindingContent, BOT_MARKER, BOT_MENTION_PATTERN, isBotComment, hasBotMention, isReviewRequest, isBotMentionNonReview };

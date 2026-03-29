@@ -1,4 +1,4 @@
-import { parseCommand, buildReplyContext, parseTriageBody, ParsedCommand, isBotComment, hasBotMention, isReviewRequest, isBotMentionNonReview, handlePRComment, handleReviewCommentReply } from './interaction';
+import { parseCommand, buildReplyContext, parseTriageBody, extractFindingContent, triageTitlePrefix, extractPrNumber, ParsedCommand, isBotComment, hasBotMention, isReviewRequest, isBotMentionNonReview, handlePRComment, handleReviewCommentReply } from './interaction';
 import { ReviewConfig } from './types';
 import * as github from '@actions/github';
 import * as core from '@actions/core';
@@ -179,8 +179,13 @@ describe('parseTriageBody', () => {
       '- [ ] ❓ **Unused import** — `src/utils.ts:10`',
     ].join('\n');
     const result = parseTriageBody(body);
-    expect(result.accepted).toEqual([{ title: 'Null check missing', ref: 'src/index.ts:42' }]);
-    expect(result.rejected).toEqual([{ title: 'Unused import', ref: 'src/utils.ts:10' }]);
+    expect(result.accepted).toHaveLength(1);
+    expect(result.accepted[0].title).toBe('Null check missing');
+    expect(result.accepted[0].ref).toBe('src/index.ts:42');
+    expect(result.accepted[0].section).toContain('Null check missing');
+    expect(result.rejected).toHaveLength(1);
+    expect(result.rejected[0].title).toBe('Unused import');
+    expect(result.rejected[0].ref).toBe('src/utils.ts:10');
   });
 
   it('parses new details/summary format with code tags', () => {
@@ -195,14 +200,21 @@ describe('parseTriageBody', () => {
       '</details>',
     ].join('\n');
     const result = parseTriageBody(body);
-    expect(result.accepted).toEqual([{ title: 'Style nit', ref: 'src/app.ts:7' }]);
-    expect(result.rejected).toEqual([{ title: 'Rename variable', ref: 'src/app.ts:15' }]);
+    expect(result.accepted).toHaveLength(1);
+    expect(result.accepted[0].title).toBe('Style nit');
+    expect(result.accepted[0].ref).toBe('src/app.ts:7');
+    expect(result.accepted[0].section).toContain('Consider using const');
+    expect(result.rejected).toHaveLength(1);
+    expect(result.rejected[0].title).toBe('Rename variable');
+    expect(result.rejected[0].ref).toBe('src/app.ts:15');
   });
 
   it('parses blocker emoji in new format', () => {
     const body = '- [x] <details><summary>🚫 **Security flaw** — <code>src/auth.ts:99</code></summary>\n</details>';
     const result = parseTriageBody(body);
-    expect(result.accepted).toEqual([{ title: 'Security flaw', ref: 'src/auth.ts:99' }]);
+    expect(result.accepted).toHaveLength(1);
+    expect(result.accepted[0].title).toBe('Security flaw');
+    expect(result.accepted[0].ref).toBe('src/auth.ts:99');
   });
 
   it('handles mix of old and new formats', () => {
@@ -227,6 +239,83 @@ describe('parseTriageBody', () => {
     const result = parseTriageBody('No findings here.');
     expect(result.accepted).toEqual([]);
     expect(result.rejected).toEqual([]);
+  });
+});
+
+describe('extractFindingContent', () => {
+  it('extracts description from a details/summary section', () => {
+    const section = [
+      '- [x] <details><summary>📝 **Style nit** — <code>src/app.ts:7</code></summary>',
+      '',
+      'Consider using const instead of let.',
+      '</details>',
+    ].join('\n');
+    const result = extractFindingContent(section);
+    expect(result.description).toBe('Consider using const instead of let.');
+    expect(result.permalink).toBeNull();
+    expect(result.suggestedFix).toBeNull();
+  });
+
+  it('extracts permalink from section', () => {
+    const section = [
+      '- [x] <details><summary>📝 **Bug** — <code>src/a.ts:1</code></summary>',
+      '',
+      'Description here.',
+      'https://github.com/owner/repo/blob/abc123/src/a.ts#L1',
+      '</details>',
+    ].join('\n');
+    const result = extractFindingContent(section);
+    expect(result.description).toBe('Description here.');
+    expect(result.permalink).toBe('https://github.com/owner/repo/blob/abc123/src/a.ts#L1');
+  });
+
+  it('extracts suggested fix from section', () => {
+    const section = [
+      '- [x] <details><summary>📝 **Fix me** — <code>src/b.ts:5</code></summary>',
+      '',
+      'This needs fixing.',
+      '**Suggested fix:**',
+      '```',
+      'const x = 1;',
+      '```',
+      '</details>',
+    ].join('\n');
+    const result = extractFindingContent(section);
+    expect(result.description).toBe('This needs fixing.');
+    expect(result.suggestedFix).toBe('const x = 1;');
+  });
+
+  it('returns empty description for minimal sections', () => {
+    const section = '- [x] 💡 **Simple** — `src/a.ts:1`';
+    const result = extractFindingContent(section);
+    expect(result.description).toBe('');
+    expect(result.permalink).toBeNull();
+    expect(result.suggestedFix).toBeNull();
+  });
+});
+
+describe('triageTitlePrefix', () => {
+  it('returns test for missing test titles', () => {
+    expect(triageTitlePrefix('Missing test for edge case')).toBe('test');
+  });
+
+  it('returns test for no test titles', () => {
+    expect(triageTitlePrefix('No test coverage for parser')).toBe('test');
+  });
+
+  it('returns fix for other titles', () => {
+    expect(triageTitlePrefix('Null check missing')).toBe('fix');
+    expect(triageTitlePrefix('Unused import')).toBe('fix');
+  });
+});
+
+describe('extractPrNumber', () => {
+  it('extracts PR number from triage issue title', () => {
+    expect(extractPrNumber('triage: findings from PR #42')).toBe(42);
+  });
+
+  it('returns null for non-matching titles', () => {
+    expect(extractPrNumber('some other issue')).toBeNull();
   });
 });
 
@@ -964,6 +1053,7 @@ describe('handleTriage (via handlePRComment)', () => {
     const octokit = createMockOctokit();
     octokit.rest.issues.get.mockResolvedValue({
       data: {
+        title: 'triage: findings from PR #10',
         body: '- [x] 💡 **Fix null check** — `src/a.ts:1`\n- [ ] 📝 **Rename var** — `src/b.ts:2`',
       },
     });
@@ -971,7 +1061,27 @@ describe('handleTriage (via handlePRComment)', () => {
     await handlePRComment(octokit, null, 'test-owner', 'test-repo', 5);
 
     expect(octokit.rest.issues.create).toHaveBeenCalledWith(
-      expect.objectContaining({ title: 'Fix null check' }),
+      expect.objectContaining({
+        title: 'fix: Fix null check',
+        body: expect.stringContaining('## Context'),
+      }),
+    );
+    // Body should reference triage issue and PR
+    expect(octokit.rest.issues.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining('PR #10'),
+      }),
+    );
+    // Body should have structured sections
+    expect(octokit.rest.issues.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining('## File'),
+      }),
+    );
+    expect(octokit.rest.issues.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining('`src/a.ts:1`'),
+      }),
     );
     expect(octokit.rest.issues.update).toHaveBeenCalledWith(
       expect.objectContaining({ state: 'closed', issue_number: 5 }),
