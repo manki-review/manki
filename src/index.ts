@@ -24,6 +24,7 @@ import {
   createNitIssue,
   reactToIssueComment,
   fetchLinkedIssues,
+  BOT_MARKER,
 } from './github';
 import { checkAndAutoApprove, resolveStaleThreads } from './state';
 
@@ -117,6 +118,27 @@ async function run(): Promise<void> {
   }
 }
 
+/**
+ * Check if a Manki review is already in progress for this PR by looking
+ * for a progress comment that hasn't been finalized yet.
+ */
+async function isReviewInProgress(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  prNumber: number,
+): Promise<boolean> {
+  const { data: comments } = await octokit.rest.issues.listComments({
+    owner,
+    repo,
+    issue_number: prNumber,
+  });
+  return comments.some(c =>
+    c.body?.includes(BOT_MARKER) &&
+    c.body?.includes('Review in progress'),
+  );
+}
+
 async function handlePullRequest(): Promise<void> {
   const pr = github.context.payload.pull_request;
   if (!pr) {
@@ -131,6 +153,12 @@ async function handlePullRequest(): Promise<void> {
 
   if (pr.draft) {
     core.info('Skipping draft PR');
+    return;
+  }
+
+  const octokit = await getOctokit();
+  if (await isReviewInProgress(octokit, owner, repo, prNumber)) {
+    core.info('Review already in progress — skipping duplicate');
     return;
   }
 
@@ -160,6 +188,17 @@ async function handleCommentTrigger(): Promise<void> {
   // Acknowledge the review request
   if (payload.comment?.id) {
     await reactToIssueComment(octokit, owner, repo, payload.comment.id, 'eyes');
+  }
+
+  if (await isReviewInProgress(octokit, owner, repo, prNumber)) {
+    await octokit.rest.issues.createComment({
+      owner,
+      repo,
+      issue_number: prNumber,
+      body: `${BOT_MARKER}\n**Manki** — A review is already in progress for this commit. Please wait for it to complete.`,
+    });
+    core.info('Review already in progress — skipping duplicate');
+    return;
   }
 
   const { data: pr } = await octokit.rest.pulls.get({
