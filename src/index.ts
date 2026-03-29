@@ -44,10 +44,14 @@ async function run(): Promise<void> {
 
   core.info(`Event: ${eventName}, Action: ${action}`);
 
-  // Prevent self-triggering — skip events caused by our own bot
+  // Prevent self-triggering — skip events caused by our own bot.
+  // For pull_request_review events, the sender may be the PR author while
+  // the actual review author lives in payload.review.user.login.
   const actor = github.context.payload.sender?.login ?? '';
-  if (actor === 'manki-labs[bot]' || actor === 'github-actions[bot]') {
-    core.info(`Ignoring event from bot: ${actor}`);
+  const reviewAuthor = github.context.payload.review?.user?.login ?? '';
+  if (actor === 'manki-labs[bot]' || actor === 'github-actions[bot]' ||
+      reviewAuthor === 'manki-labs[bot]' || reviewAuthor === 'github-actions[bot]') {
+    core.info(`Ignoring event from bot: ${actor || reviewAuthor}`);
     return;
   }
 
@@ -59,7 +63,7 @@ async function run(): Promise<void> {
       return;
     }
   } else if (eventName === 'issue_comment') {
-    if (action !== 'created') {
+    if (action !== 'created' && action !== 'edited') {
       core.info(`Ignoring issue_comment action: ${action}`);
       return;
     }
@@ -569,6 +573,13 @@ async function handleReviewStateCheck(): Promise<void> {
 
   if (!config.auto_approve) {
     core.info('auto_approve is disabled — skipping state check');
+    return;
+  }
+
+  // Skip auto-approve if the review targets a stale commit (a new push happened since)
+  const reviewCommitSha = github.context.payload.review?.commit_id;
+  if (reviewCommitSha && reviewCommitSha !== pr.head.sha) {
+    core.info(`Review targets stale commit ${reviewCommitSha}, HEAD is ${pr.head.sha} — skipping auto-approve`);
     return;
   }
 

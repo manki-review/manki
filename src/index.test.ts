@@ -168,6 +168,23 @@ describe('run', () => {
         'Ignoring event from bot: github-actions[bot]',
       );
     });
+
+    it('ignores pull_request_review events where the review author is the bot', async () => {
+      setContext({
+        eventName: 'pull_request_review',
+        payload: {
+          action: 'submitted',
+          sender: { login: 'some-user' },
+          review: { user: { login: 'manki-labs[bot]' } },
+        },
+      });
+
+      await run();
+
+      expect(jest.mocked(core.info)).toHaveBeenCalledWith(
+        'Ignoring event from bot: some-user',
+      );
+    });
   });
 
   describe('pull_request event filtering', () => {
@@ -230,7 +247,7 @@ describe('run', () => {
   });
 
   describe('issue_comment event filtering', () => {
-    it('skips issue_comment events with non-created action', async () => {
+    it('skips issue_comment events with unsupported action', async () => {
       setContext({
         eventName: 'issue_comment',
         payload: { action: 'deleted', sender: { login: 'user' } },
@@ -1296,6 +1313,32 @@ describe('handleReviewStateCheck', () => {
     expect(jest.mocked(core.info)).toHaveBeenCalledWith(
       'PR #5 auto-approved after all required issues resolved',
     );
+  });
+
+  it('skips auto-approve when review targets a stale commit', async () => {
+    setContext({
+      eventName: 'pull_request_review',
+      payload: {
+        action: 'submitted',
+        pull_request: { number: 5, head: { sha: 'new-sha' }, base: { ref: 'main' } },
+        review: { commit_id: 'old-sha' },
+      },
+    });
+    jest.mocked(configModule.loadConfig).mockReturnValue({
+      auto_review: true, auto_approve: true, max_diff_lines: 5000,
+      include_paths: [], exclude_paths: [], nit_handling: 'issues',
+      reviewers: [], model: 'claude-sonnet-4-20250514', review_language: 'en',
+      instructions: '', review_level: 'auto',
+      review_thresholds: { small: 200, medium: 800 },
+      memory: { enabled: false, repo: '' },
+    });
+
+    await handleReviewStateCheck();
+
+    expect(jest.mocked(core.info)).toHaveBeenCalledWith(
+      'Review targets stale commit old-sha, HEAD is new-sha — skipping auto-approve',
+    );
+    expect(jest.mocked(stateModule.checkAndAutoApprove)).not.toHaveBeenCalled();
   });
 });
 

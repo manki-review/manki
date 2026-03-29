@@ -39,7 +39,7 @@ on:
   pull_request:
     types: [opened, synchronize]
   issue_comment:
-    types: [created]
+    types: [created, edited]
   pull_request_review_comment:
     types: [created]
   pull_request_review:
