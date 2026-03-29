@@ -146,38 +146,25 @@ describe('run', () => {
   });
 
   describe('bot self-triggering prevention', () => {
-    it('ignores events from manki-labs[bot]', async () => {
+    it('ignores events from any bot sender', async () => {
       setContext({
         eventName: 'pull_request',
-        payload: { action: 'opened', sender: { login: 'manki-labs[bot]' } },
+        payload: { action: 'opened', sender: { login: 'dependabot[bot]', type: 'Bot' } },
       });
 
       await run();
 
       expect(jest.mocked(core.info)).toHaveBeenCalledWith(
-        'Ignoring event from bot: manki-labs[bot]',
+        'Ignoring event from bot: dependabot[bot]',
       );
     });
 
-    it('ignores events from github-actions[bot]', async () => {
-      setContext({
-        eventName: 'pull_request',
-        payload: { action: 'opened', sender: { login: 'github-actions[bot]' } },
-      });
-
-      await run();
-
-      expect(jest.mocked(core.info)).toHaveBeenCalledWith(
-        'Ignoring event from bot: github-actions[bot]',
-      );
-    });
-
-    it('ignores pull_request_review events where review author is manki-labs[bot]', async () => {
+    it('ignores pull_request_review events where review author is a bot', async () => {
       setContext({
         eventName: 'pull_request_review',
         payload: {
           action: 'submitted',
-          review: { user: { login: 'manki-labs[bot]' } },
+          review: { user: { login: 'manki-labs[bot]', type: 'Bot' } },
           pull_request: { number: 1, base: { ref: 'main' } },
         },
       });
@@ -189,20 +176,20 @@ describe('run', () => {
       );
     });
 
-    it('ignores pull_request_review events where review author is github-actions[bot]', async () => {
+    it('does not ignore events from human users', async () => {
       setContext({
-        eventName: 'pull_request_review',
+        eventName: 'pull_request',
         payload: {
-          action: 'submitted',
-          review: { user: { login: 'github-actions[bot]' } },
-          pull_request: { number: 1, base: { ref: 'main' } },
+          action: 'opened',
+          sender: { login: 'some-user', type: 'User' },
+          pull_request: { number: 1, head: { sha: 'abc' }, base: { ref: 'main' }, title: 'Test', body: '', draft: false },
         },
       });
 
       await run();
 
-      expect(jest.mocked(core.info)).toHaveBeenCalledWith(
-        'Ignoring event from bot: github-actions[bot]',
+      expect(jest.mocked(core.info)).not.toHaveBeenCalledWith(
+        expect.stringContaining('Ignoring event from bot'),
       );
     });
   });

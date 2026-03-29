@@ -44,12 +44,12 @@ async function run(): Promise<void> {
 
   core.info(`Event: ${eventName}, Action: ${action}`);
 
-  // Prevent self-triggering — skip events caused by our own bot
-  const actor = github.context.payload.sender?.login ?? '';
-  const reviewAuthor = github.context.payload.review?.user?.login ?? '';
-  if (actor === 'manki-labs[bot]' || actor === 'github-actions[bot]' ||
-      reviewAuthor === 'manki-labs[bot]' || reviewAuthor === 'github-actions[bot]') {
-    core.info(`Ignoring event from bot: ${actor || reviewAuthor}`);
+  // Prevent self-triggering — skip events caused by any bot
+  const senderType = github.context.payload.sender?.type ?? '';
+  const reviewAuthorType = github.context.payload.review?.user?.type ?? '';
+  if (senderType === 'Bot' || reviewAuthorType === 'Bot') {
+    const actor = github.context.payload.sender?.login ?? github.context.payload.review?.user?.login ?? 'unknown bot';
+    core.info(`Ignoring event from bot: ${actor}`);
     return;
   }
 
