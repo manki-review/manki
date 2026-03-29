@@ -168,6 +168,40 @@ describe('run', () => {
         'Ignoring event from bot: github-actions[bot]',
       );
     });
+
+    it('ignores pull_request_review events where review author is manki-labs[bot]', async () => {
+      setContext({
+        eventName: 'pull_request_review',
+        payload: {
+          action: 'submitted',
+          review: { user: { login: 'manki-labs[bot]' } },
+          pull_request: { number: 1, base: { ref: 'main' } },
+        },
+      });
+
+      await run();
+
+      expect(jest.mocked(core.info)).toHaveBeenCalledWith(
+        'Ignoring event from bot: manki-labs[bot]',
+      );
+    });
+
+    it('ignores pull_request_review events where review author is github-actions[bot]', async () => {
+      setContext({
+        eventName: 'pull_request_review',
+        payload: {
+          action: 'submitted',
+          review: { user: { login: 'github-actions[bot]' } },
+          pull_request: { number: 1, base: { ref: 'main' } },
+        },
+      });
+
+      await run();
+
+      expect(jest.mocked(core.info)).toHaveBeenCalledWith(
+        'Ignoring event from bot: github-actions[bot]',
+      );
+    });
   });
 
   describe('pull_request event filtering', () => {
@@ -581,6 +615,28 @@ describe('handleReviewStateCheck', () => {
     expect(jest.mocked(core.info)).toHaveBeenCalledWith(
       'No pull request in payload — skipping auto-approve check',
     );
+  });
+
+  it('skips auto-approve when review is for a stale commit', async () => {
+    setContext({
+      eventName: 'pull_request_review',
+      payload: {
+        action: 'submitted',
+        review: { commit_id: 'old-sha-111' },
+        pull_request: {
+          number: 1,
+          head: { sha: 'new-sha-222' },
+          base: { ref: 'main' },
+        },
+      },
+    });
+
+    await handleReviewStateCheck();
+
+    expect(jest.mocked(core.info)).toHaveBeenCalledWith(
+      'Review is for stale commit old-sha-111, HEAD is new-sha-222 — skipping auto-approve',
+    );
+    expect(jest.mocked(stateModule.checkAndAutoApprove)).not.toHaveBeenCalled();
   });
 });
 

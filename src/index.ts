@@ -46,8 +46,10 @@ async function run(): Promise<void> {
 
   // Prevent self-triggering — skip events caused by our own bot
   const actor = github.context.payload.sender?.login ?? '';
-  if (actor === 'manki-labs[bot]' || actor === 'github-actions[bot]') {
-    core.info(`Ignoring event from bot: ${actor}`);
+  const reviewAuthor = github.context.payload.review?.user?.login ?? '';
+  if (actor === 'manki-labs[bot]' || actor === 'github-actions[bot]' ||
+      reviewAuthor === 'manki-labs[bot]' || reviewAuthor === 'github-actions[bot]') {
+    core.info(`Ignoring event from bot: ${actor || reviewAuthor}`);
     return;
   }
 
@@ -552,6 +554,13 @@ async function handleReviewStateCheck(): Promise<void> {
   const pr = github.context.payload.pull_request;
   if (!pr) {
     core.info('No pull request in payload — skipping auto-approve check');
+    return;
+  }
+
+  const reviewSha = github.context.payload.review?.commit_id;
+  const headSha = github.context.payload.pull_request?.head?.sha;
+  if (reviewSha && headSha && reviewSha !== headSha) {
+    core.info(`Review is for stale commit ${reviewSha}, HEAD is ${headSha} — skipping auto-approve`);
     return;
   }
 
