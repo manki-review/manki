@@ -22,6 +22,7 @@ export interface JudgeInput {
   repoContext: string;
   prContext?: PrContext;
   linkedIssues?: LinkedIssue[];
+  agentCount: number;
 }
 
 export interface JudgedFinding {
@@ -38,7 +39,8 @@ export interface JudgeResult {
 
 const CONTEXT_LINES = 10;
 
-export function buildJudgeSystemPrompt(config: ReviewConfig): string {
+export function buildJudgeSystemPrompt(config: ReviewConfig, agentCount: number): string {
+  const majorityThreshold = Math.ceil(agentCount / 2);
   let prompt = `You are a code review judge. You evaluate findings from multiple specialist reviewers for accuracy, actionability, and severity.
 
 ## Severity Assessment
@@ -106,10 +108,10 @@ For each finding, evaluate:
 
 ## Reviewer Consensus
 
-When evaluating severity, consider how many reviewers independently flagged each finding (visible in the reviewers list):
-- **3+ reviewers flagged it** — strong signal. Default to keeping the reviewer's severity. Only downgrade if you're certain it's a false positive.
-- **2 reviewers flagged it** — moderate signal. Trust the severity unless you have specific evidence to downgrade.
-- **1 reviewer flagged it** — use your independent judgment. May downgrade or ignore if not convincing.
+This review used ${agentCount} specialist agents. When evaluating severity, consider the proportion of reviewers who independently flagged each finding:
+- **Majority or more flagged it** (${majorityThreshold}+ of ${agentCount}) — strong signal. Default to keeping the reviewer's severity. Only downgrade if you're certain it's a false positive.
+- **More than one flagged it** (2+ of ${agentCount}) — moderate signal. Trust the severity unless you have specific evidence to downgrade.
+- **Only one flagged it** (1 of ${agentCount}) — use your independent judgment. May downgrade or ignore if not convincing.
 
 Multiple independent reviewers reaching the same conclusion is strong evidence that the finding is real. Downgrading a consensus finding requires explicit justification in your reasoning.
 
@@ -366,7 +368,7 @@ export async function runJudgeAgent(
   config: ReviewConfig,
   input: JudgeInput,
 ): Promise<{ findings: Finding[]; summary: string }> {
-  const { findings, diff, memory, prContext, linkedIssues } = input;
+  const { findings, diff, memory, prContext, linkedIssues, agentCount } = input;
 
   if (findings.length === 0) return { findings, summary: 'Review complete.' };
 
@@ -384,7 +386,7 @@ export async function runJudgeAgent(
 
   const changedFiles = diff.files;
 
-  const systemPrompt = buildJudgeSystemPrompt(config);
+  const systemPrompt = buildJudgeSystemPrompt(config, agentCount);
   const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles);
 
   const response = await client.sendMessage(systemPrompt, userMessage, { effort: 'high' });

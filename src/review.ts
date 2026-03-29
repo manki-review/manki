@@ -293,6 +293,7 @@ export async function runReview(
         repoContext,
         prContext,
         linkedIssues,
+        agentCount: team.agents.length,
       };
       const judgeResult = await runJudgeAgent(clients.judge, config, judgeInput);
       judgeSummary = judgeResult.summary;

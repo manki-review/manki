@@ -91,7 +91,7 @@ const makeMemory = (overrides: Partial<RepoMemory> = {}): RepoMemory => ({
 
 describe('buildJudgeSystemPrompt', () => {
   it('contains severity definitions', () => {
-    const prompt = buildJudgeSystemPrompt(makeConfig());
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     expect(prompt).toContain('required');
     expect(prompt).toContain('suggestion');
     expect(prompt).toContain('nit');
@@ -99,41 +99,41 @@ describe('buildJudgeSystemPrompt', () => {
   });
 
   it('contains evaluation criteria', () => {
-    const prompt = buildJudgeSystemPrompt(makeConfig());
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     expect(prompt).toContain('Accuracy');
     expect(prompt).toContain('Actionability');
     expect(prompt).toContain('Severity');
   });
 
   it('includes project instructions when present', () => {
-    const prompt = buildJudgeSystemPrompt(makeConfig({ instructions: 'Use strict TypeScript.' }));
+    const prompt = buildJudgeSystemPrompt(makeConfig({ instructions: 'Use strict TypeScript.' }), 5);
     expect(prompt).toContain('Use strict TypeScript.');
     expect(prompt).toContain('Project Instructions');
   });
 
   it('omits project instructions section when empty', () => {
-    const prompt = buildJudgeSystemPrompt(makeConfig({ instructions: '' }));
+    const prompt = buildJudgeSystemPrompt(makeConfig({ instructions: '' }), 5);
     expect(prompt).not.toContain('Project Instructions');
   });
 
   it('defines the judge role', () => {
-    const prompt = buildJudgeSystemPrompt(makeConfig());
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     expect(prompt).toContain('code review judge');
   });
 
   it('includes duplicate detection instructions', () => {
-    const prompt = buildJudgeSystemPrompt(makeConfig());
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     expect(prompt).toContain('Duplicate Detection');
     expect(prompt).toContain('ONE entry for the merged finding');
   });
 
   it('does not include scope validation (handled by reviewers)', () => {
-    const prompt = buildJudgeSystemPrompt(makeConfig());
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     expect(prompt).not.toContain('Scope Validation');
   });
 
   it('includes severity examples for each level', () => {
-    const prompt = buildJudgeSystemPrompt(makeConfig());
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     // required examples
     expect(prompt).toContain('SQL injection');
     expect(prompt).toContain('Null/undefined dereference');
@@ -152,23 +152,34 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('Style preference that does not affect correctness');
   });
 
-  it('contains Reviewer Consensus section', () => {
-    const prompt = buildJudgeSystemPrompt(makeConfig());
+  it('contains Reviewer Consensus section with dynamic thresholds', () => {
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     expect(prompt).toContain('## Reviewer Consensus');
-    expect(prompt).toContain('3+ reviewers flagged it');
-    expect(prompt).toContain('2 reviewers flagged it');
-    expect(prompt).toContain('1 reviewer flagged it');
+    expect(prompt).toContain('This review used 5 specialist agents');
+    expect(prompt).toContain('3+ of 5');
+    expect(prompt).toContain('2+ of 5');
+    expect(prompt).toContain('1 of 5');
+  });
+
+  it('adapts majority threshold to team size', () => {
+    const prompt3 = buildJudgeSystemPrompt(makeConfig(), 3);
+    expect(prompt3).toContain('2+ of 3');
+    expect(prompt3).toContain('This review used 3 specialist agents');
+
+    const prompt7 = buildJudgeSystemPrompt(makeConfig(), 7);
+    expect(prompt7).toContain('4+ of 7');
+    expect(prompt7).toContain('This review used 7 specialist agents');
   });
 
   it('contains Acceptance Criteria section', () => {
-    const prompt = buildJudgeSystemPrompt(makeConfig());
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     expect(prompt).toContain('## Acceptance Criteria');
     expect(prompt).toContain('unmet acceptance criterion');
     expect(prompt).toContain('partially met criterion');
   });
 
   it('contains Impact and Likelihood severity framework', () => {
-    const prompt = buildJudgeSystemPrompt(makeConfig());
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     expect(prompt).toContain('## Severity Assessment');
     expect(prompt).toContain('**Impact**');
     expect(prompt).toContain('**Likelihood**');
@@ -493,6 +504,7 @@ describe('runJudgeAgent', () => {
       diff: makeDiff(),
       rawDiff: '',
       repoContext: '',
+      agentCount: 5,
     };
 
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
@@ -515,6 +527,7 @@ describe('runJudgeAgent', () => {
       diff: makeDiff(),
       rawDiff: '',
       repoContext: '',
+      agentCount: 5,
     };
 
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
@@ -540,6 +553,7 @@ describe('runJudgeAgent', () => {
       diff: makeDiff(),
       rawDiff: '',
       repoContext: '',
+      agentCount: 5,
     };
 
     await runJudgeAgent(mockClient, makeConfig(), input);
@@ -560,6 +574,7 @@ describe('runJudgeAgent', () => {
       diff: makeDiff(),
       rawDiff: '',
       repoContext: '',
+      agentCount: 5,
     };
 
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
@@ -589,6 +604,7 @@ describe('runJudgeAgent', () => {
       ]),
       rawDiff: '',
       repoContext: '',
+      agentCount: 5,
     };
 
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
@@ -616,6 +632,7 @@ describe('runJudgeAgent', () => {
       rawDiff: '',
       memory: makeMemory(),
       repoContext: '',
+      agentCount: 5,
     };
 
     await runJudgeAgent(mockClient, makeConfig(), input);
