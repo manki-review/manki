@@ -191,6 +191,23 @@ describe('run', () => {
         expect.stringContaining('Ignoring event from bot'),
       );
     });
+
+    it('does not ignore events from human users even without explicit type', async () => {
+      setContext({
+        eventName: 'pull_request',
+        payload: {
+          action: 'opened',
+          sender: { login: 'some-user' },
+          pull_request: { number: 1, head: { sha: 'abc' }, base: { ref: 'main' }, title: 'Test', body: '', draft: false },
+        },
+      });
+
+      await run();
+
+      expect(jest.mocked(core.info)).not.toHaveBeenCalledWith(
+        expect.stringContaining('Ignoring event from bot'),
+      );
+    });
   });
 
   describe('pull_request event filtering', () => {
