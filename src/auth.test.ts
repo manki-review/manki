@@ -116,6 +116,7 @@ describe('resolveGitHubToken', () => {
     const call = (global.fetch as jest.Mock).mock.calls[0];
     expect(call[0]).toBe(TOKEN_URL);
     expect(call[1].headers['Authorization']).toBe('Bearer fake-oidc-token');
+    expect(call[1].method).toBe('POST');
     expect(JSON.parse(call[1].body)).toEqual({ owner: OWNER, repo: REPO });
   });
 
