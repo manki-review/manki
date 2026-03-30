@@ -108,6 +108,30 @@ export interface ReviewStats {
   verdict: string;
   prNumber: number;
   commitSha: string;
+
+  // Per-agent metrics
+  agentMetrics?: Array<{
+    name: string;
+    findingsRaw: number;
+    findingsKept: number;
+  }>;
+
+  // Judge calibration
+  judgeMetrics?: {
+    confidenceDistribution: { high: number; medium: number; low: number };
+    severityChanges: number;
+    mergedDuplicates: number;
+  };
+
+  // File analysis
+  fileMetrics?: {
+    fileTypes: Record<string, number>;
+    findingsPerFile: Record<string, number>;
+  };
+
+  // Split model into reviewer/judge
+  reviewerModel?: string;
+  judgeModel?: string;
 }
 
 export interface DashboardData {

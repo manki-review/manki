@@ -455,6 +455,41 @@ async function runFullReview(
       if (f.severity in severityMap) severityMap[f.severity]++;
     }
 
+    // Per-agent metrics: count raw and kept findings per agent
+    const agentNames = result.agentNames ?? [];
+    const allJudged = result.allJudgedFindings ?? [];
+    const agentMetrics = agentNames.length > 0
+      ? agentNames.map(name => ({
+        name,
+        findingsRaw: allJudged.filter(f => f.reviewers.includes(name)).length,
+        findingsKept: result.findings.filter(f => f.reviewers.includes(name)).length,
+      }))
+      : undefined;
+
+    // Judge calibration metrics
+    const confidenceDistribution = { high: 0, medium: 0, low: 0 };
+    for (const f of allJudged) {
+      if (f.judgeConfidence) confidenceDistribution[f.judgeConfidence]++;
+    }
+    const severityChanges = allJudged.filter(f => f.judgeNotes).length;
+    const mergedDuplicates = (result.rawFindingCount ?? 0) - allJudged.length;
+    const judgeMetrics = allJudged.length > 0
+      ? { confidenceDistribution, severityChanges, mergedDuplicates }
+      : undefined;
+
+    // File analysis metrics
+    const fileTypes: Record<string, number> = {};
+    for (const file of filteredFiles) {
+      const dotIdx = file.path.lastIndexOf('.');
+      const ext = dotIdx !== -1 ? file.path.slice(dotIdx) : '(none)';
+      fileTypes[ext] = (fileTypes[ext] ?? 0) + 1;
+    }
+    const findingsPerFile: Record<string, number> = {};
+    for (const f of result.findings) {
+      if (f.file) findingsPerFile[f.file] = (findingsPerFile[f.file] ?? 0) + 1;
+    }
+    const fileMetrics = { fileTypes, findingsPerFile };
+
     const stats: ReviewStats = {
       model: reviewerModel,
       reviewTimeMs,
@@ -470,6 +505,11 @@ async function runFullReview(
       verdict: result.verdict,
       prNumber,
       commitSha,
+      agentMetrics,
+      judgeMetrics,
+      fileMetrics,
+      reviewerModel,
+      judgeModel,
     };
 
     const reviewResult = { ...result, findings: inlineFindings };
