@@ -150,7 +150,7 @@ export async function handlePRComment(
   const command = parseCommand(body);
   const commentId = comment.id as number;
 
-  const prOnlyCommands = new Set(['check', 'explain', 'review']);
+  const prOnlyCommands = new Set(['check', 'explain']);
   if (prOnlyCommands.has(command.type) && !github.context.payload.issue?.pull_request) {
     await octokit.rest.issues.createComment({
       owner, repo,
@@ -843,6 +843,55 @@ function isReviewRequest(body: string): boolean {
 
 function isBotMentionNonReview(body: string): boolean {
   return BOT_MENTION_PATTERN.test(body.toLowerCase()) && !/\breview\b/i.test(body);
+}
+
+/**
+ * Handle a bot command posted as a reply to an inline review comment.
+ * Routes to the same handlers as handlePRComment but uses review-comment
+ * reactions and skips commands that only make sense at PR level.
+ */
+export async function handleReviewCommentCommand(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  commentId: number,
+  command: ParsedCommand,
+  memoryConfig?: MemoryConfig,
+  memoryToken?: string,
+): Promise<void> {
+  const prOnlyCommands = new Set(['check', 'explain']);
+  if (prOnlyCommands.has(command.type)) {
+    await octokit.rest.issues.createComment({
+      owner, repo,
+      issue_number: prNumber,
+      body: `${BOT_MARKER}\n**Manki** — The \`${command.type}\` command only works as a PR-level comment.`,
+    });
+    return;
+  }
+
+  switch (command.type) {
+    case 'dismiss':
+      await handleDismiss(octokit, owner, repo, prNumber, command.args, memoryConfig, memoryToken);
+      await reactToReviewComment(octokit, owner, repo, commentId, '+1');
+      break;
+    case 'remember':
+      await reactToReviewComment(octokit, owner, repo, commentId, 'eyes');
+      await handleRemember(octokit, owner, repo, prNumber, command.args, memoryConfig, memoryToken);
+      break;
+    case 'forget':
+      await reactToReviewComment(octokit, owner, repo, commentId, 'eyes');
+      await handleForget(octokit, owner, repo, prNumber, command.args, memoryConfig, memoryToken);
+      break;
+    case 'triage':
+      await reactToReviewComment(octokit, owner, repo, commentId, 'eyes');
+      await handleTriage(octokit, owner, repo, prNumber, memoryConfig, memoryToken);
+      break;
+    case 'help':
+      await reactToReviewComment(octokit, owner, repo, commentId, '+1');
+      await handleHelp(octokit, owner, repo, prNumber);
+      break;
+  }
 }
 
 export { parseCommand, buildReplyContext, parseTriageBody, extractFindingContent, triageTitlePrefix, extractPrNumber, ParsedCommand, TriageFinding, TriageResult, FindingContent, BOT_MARKER, BOT_MENTION_PATTERN, isBotComment, hasBotMention, isReviewRequest, isBotMentionNonReview };

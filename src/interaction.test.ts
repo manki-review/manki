@@ -1,4 +1,4 @@
-import { parseCommand, buildReplyContext, parseTriageBody, extractFindingContent, triageTitlePrefix, extractPrNumber, ParsedCommand, isBotComment, hasBotMention, isReviewRequest, isBotMentionNonReview, handlePRComment, handleReviewCommentReply } from './interaction';
+import { parseCommand, buildReplyContext, parseTriageBody, extractFindingContent, triageTitlePrefix, extractPrNumber, ParsedCommand, isBotComment, hasBotMention, isReviewRequest, isBotMentionNonReview, handlePRComment, handleReviewCommentReply, handleReviewCommentCommand } from './interaction';
 import { ReviewConfig } from './types';
 import * as github from '@actions/github';
 import * as core from '@actions/core';
@@ -1140,5 +1140,77 @@ describe('handlePRComment error propagation', () => {
     const client = createMockClient();
     client.sendMessage = jest.fn().mockRejectedValue(new Error('API failure'));
     await expect(handlePRComment(octokit, client, 'test-owner', 'test-repo', 1)).rejects.toThrow('API failure');
+  });
+});
+
+describe('handleReviewCommentCommand', () => {
+  it('routes dismiss command and reacts with +1', async () => {
+    setContext({ comment: { id: 55, body: '/manki dismiss null-check', user: { type: 'User' }, author_association: 'COLLABORATOR' } });
+    const octokit = createMockOctokit();
+    const command = parseCommand('/manki dismiss null-check');
+    await handleReviewCommentCommand(octokit, 'test-owner', 'test-repo', 1, 55, command);
+    expect(ghUtils.reactToReviewComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 55, '+1');
+    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.stringContaining('Dismissed') }),
+    );
+  });
+
+  it('routes remember command and reacts with eyes', async () => {
+    setContext({ comment: { id: 56, body: '@manki remember always validate input before processing data in handlers', user: { type: 'User' }, author_association: 'OWNER' } });
+    const octokit = createMockOctokit();
+    const command = parseCommand('@manki remember always validate input before processing data in handlers');
+    const memoryConfig = { enabled: true, repo: 'test-owner/memory' };
+    await handleReviewCommentCommand(octokit, 'test-owner', 'test-repo', 1, 56, command, memoryConfig, 'mem-token');
+    expect(ghUtils.reactToReviewComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 56, 'eyes');
+    expect(memory.writeLearning).toHaveBeenCalled();
+  });
+
+  it('routes forget command and reacts with eyes', async () => {
+    setContext({ comment: { id: 57, body: '/manki forget null-check', user: { type: 'User' }, author_association: 'COLLABORATOR' } });
+    const octokit = createMockOctokit();
+    const command = parseCommand('/manki forget null-check');
+    const memoryConfig = { enabled: true, repo: 'test-owner/memory' };
+    await handleReviewCommentCommand(octokit, 'test-owner', 'test-repo', 1, 57, command, memoryConfig, 'mem-token');
+    expect(ghUtils.reactToReviewComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 57, 'eyes');
+  });
+
+  it('routes help command and reacts with +1', async () => {
+    setContext({ comment: { id: 58, body: '/manki help', user: { type: 'User' }, author_association: 'COLLABORATOR' } });
+    const octokit = createMockOctokit();
+    const command = parseCommand('/manki help');
+    await handleReviewCommentCommand(octokit, 'test-owner', 'test-repo', 1, 58, command);
+    expect(ghUtils.reactToReviewComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 58, '+1');
+    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.stringContaining("Here's what I can do") }),
+    );
+  });
+
+  it('rejects PR-only commands with a message', async () => {
+    setContext({ comment: { id: 59, body: '/manki explain something', user: { type: 'User' }, author_association: 'COLLABORATOR' } });
+    const octokit = createMockOctokit();
+    const command = parseCommand('/manki explain something');
+    await handleReviewCommentCommand(octokit, 'test-owner', 'test-repo', 1, 59, command);
+    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.stringContaining('only works as a PR-level comment') }),
+    );
+    expect(ghUtils.reactToReviewComment).not.toHaveBeenCalled();
+  });
+
+  it('rejects check command with PR-only message', async () => {
+    setContext({ comment: { id: 60, body: '/manki check', user: { type: 'User' }, author_association: 'COLLABORATOR' } });
+    const octokit = createMockOctokit();
+    const command = parseCommand('/manki check');
+    await handleReviewCommentCommand(octokit, 'test-owner', 'test-repo', 1, 60, command);
+    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.stringContaining('only works as a PR-level comment') }),
+    );
+  });
+
+  it('does not use reactToIssueComment', async () => {
+    setContext({ comment: { id: 61, body: '/manki dismiss test', user: { type: 'User' }, author_association: 'COLLABORATOR' } });
+    const octokit = createMockOctokit();
+    const command = parseCommand('/manki dismiss test');
+    await handleReviewCommentCommand(octokit, 'test-owner', 'test-repo', 1, 61, command);
+    expect(ghUtils.reactToIssueComment).not.toHaveBeenCalled();
   });
 });

@@ -65,10 +65,12 @@ jest.mock('./diff', () => ({
 
 jest.mock('./interaction', () => ({
   handleReviewCommentReply: jest.fn().mockResolvedValue(undefined),
+  handleReviewCommentCommand: jest.fn().mockResolvedValue(undefined),
   handlePRComment: jest.fn().mockResolvedValue(undefined),
   isReviewRequest: jest.fn().mockReturnValue(false),
   isBotMentionNonReview: jest.fn().mockReturnValue(false),
   hasBotMention: jest.fn().mockReturnValue(false),
+  parseCommand: jest.fn().mockReturnValue({ type: 'generic', args: '' }),
 }));
 
 jest.mock('./memory', () => ({
@@ -448,8 +450,9 @@ describe('run', () => {
       );
     });
 
-    it('routes valid review comments to handler', async () => {
-      jest.mocked(interaction.hasBotMention).mockReturnValue(true);
+    it('routes generic review comments to handleReviewCommentReply', async () => {
+      jest.mocked(interaction.hasBotMention).mockReturnValueOnce(true);
+      jest.mocked(interaction.parseCommand).mockReturnValueOnce({ type: 'generic', args: '' });
 
       setContext({
         eventName: 'pull_request_review_comment',
@@ -457,17 +460,43 @@ describe('run', () => {
           action: 'created',
           sender: { login: 'user' },
           comment: {
-            body: '@manki explain this',
+            body: '@manki what do you think?',
             in_reply_to_id: 123,
             user: { type: 'User' },
           },
-          pull_request: { base: { ref: 'main' } },
+          pull_request: { number: 1, base: { ref: 'main' } },
         },
       });
 
       await run();
 
       expect(jest.mocked(interaction.handleReviewCommentReply)).toHaveBeenCalled();
+      expect(jest.mocked(interaction.handleReviewCommentCommand)).not.toHaveBeenCalled();
+    });
+
+    it('routes command review comments to handleReviewCommentCommand', async () => {
+      jest.mocked(interaction.hasBotMention).mockReturnValueOnce(true);
+      jest.mocked(interaction.parseCommand).mockReturnValueOnce({ type: 'dismiss', args: 'null-check' });
+
+      setContext({
+        eventName: 'pull_request_review_comment',
+        payload: {
+          action: 'created',
+          sender: { login: 'user' },
+          comment: {
+            id: 55,
+            body: '/manki dismiss null-check',
+            in_reply_to_id: 123,
+            user: { type: 'User' },
+          },
+          pull_request: { number: 1, base: { ref: 'main' } },
+        },
+      });
+
+      await run();
+
+      expect(jest.mocked(interaction.handleReviewCommentCommand)).toHaveBeenCalled();
+      expect(jest.mocked(interaction.handleReviewCommentReply)).not.toHaveBeenCalled();
     });
   });
 

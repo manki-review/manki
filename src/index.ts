@@ -5,7 +5,7 @@ import { createAuthenticatedOctokit, getMemoryToken } from './auth';
 import { ClaudeClient } from './claude';
 import { loadConfig, resolveModel } from './config';
 import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
-import { handleReviewCommentReply, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention } from './interaction';
+import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand } from './interaction';
 import { loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
 import { fetchRecapState, deduplicateFindings, buildRecapSummary, resolveAddressedThreads } from './recap';
 import { runReview, determineVerdict, selectTeam } from './review';
@@ -726,7 +726,17 @@ async function handleReviewCommentInteraction(): Promise<void> {
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;
   const memoryToken = config.memory?.enabled ? getMemoryToken(cachedResolvedToken) ?? undefined : undefined;
 
-  await handleReviewCommentReply(octokit, claude, memoryConfig, memoryToken);
+  const command = parseCommand(body);
+  if (command.type !== 'generic') {
+    const prNumber = payload.pull_request?.number;
+    if (prNumber) {
+      await handleReviewCommentCommand(octokit, owner, repo, prNumber, comment.id, command, memoryConfig, memoryToken);
+    } else {
+      core.warning('Cannot handle command — pull request number not available');
+    }
+  } else {
+    await handleReviewCommentReply(octokit, claude, memoryConfig, memoryToken);
+  }
 
   if (config.auto_approve) {
     const prNumber = payload.pull_request?.number;
