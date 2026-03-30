@@ -150,7 +150,7 @@ export async function handlePRComment(
   const command = parseCommand(body);
   const commentId = comment.id as number;
 
-  const prOnlyCommands = new Set(['check', 'explain', 'review']);
+  const prOnlyCommands = new Set(['check', 'explain']);
   if (prOnlyCommands.has(command.type) && !github.context.payload.issue?.pull_request) {
     await octokit.rest.issues.createComment({
       owner, repo,
@@ -860,7 +860,7 @@ export async function handleReviewCommentCommand(
   memoryConfig?: MemoryConfig,
   memoryToken?: string,
 ): Promise<void> {
-  const prOnlyCommands = new Set(['check', 'explain', 'review']);
+  const prOnlyCommands = new Set(['check', 'explain']);
   if (prOnlyCommands.has(command.type)) {
     await octokit.rest.issues.createComment({
       owner, repo,

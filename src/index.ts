@@ -731,6 +731,8 @@ async function handleReviewCommentInteraction(): Promise<void> {
     const prNumber = payload.pull_request?.number;
     if (prNumber) {
       await handleReviewCommentCommand(octokit, owner, repo, prNumber, comment.id, command, memoryConfig, memoryToken);
+    } else {
+      core.warning('Cannot handle command — pull request number not available');
     }
   } else {
     await handleReviewCommentReply(octokit, claude, memoryConfig, memoryToken);
