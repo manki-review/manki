@@ -19,7 +19,7 @@ permissions:
 jobs:
   review:
     concurrency:
-      group: manki-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
+      group: manki-${{ github.event_name }}-${{ github.event.comment.id || github.event.pull_request.number || github.event.issue.number || github.run_id }}
       cancel-in-progress: true
     runs-on: ubuntu-latest
     steps:
