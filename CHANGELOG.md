@@ -5,6 +5,54 @@ All notable changes to Manki will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.0] - 2026-03-29
+
+### Added
+
+- Live-updating dashboard progress comment with text status lines
+- AI-generated review summaries from judge agent
+- Review event body with collapsed stats JSON for future analysis
+- Progress comment as frozen audit log with review metadata (config, judge decisions, timing)
+- Auto-detect GitHub App installation and use app token (`manki-labs[bot]` identity)
+- `/manki` and `@manki-labs` command prefixes alongside `@manki`
+- Token service authentication with GitHub Actions OIDC (no secrets needed)
+- Judge validates PR scope — flags unrelated file changes
+- Judge consensus weighting — multi-reviewer findings get more weight
+- Judge acceptance criteria enforcement — unmet criteria flagged as required
+- Judge impact x likelihood severity matrix (inspired by SonarQube)
+- Dynamic consensus thresholds relative to team size
+- Support for edited comments (`/manki` added via edit)
+- Triage-created issues with proper prefixes and structured format
+- Post-judge dedup pass for duplicate findings
+- Logo added to repo and README
+
+### Changed
+
+- Action always exits 0 — event filtering moved inside, SIGTERM handled gracefully
+- Concurrency group includes event name to prevent cross-event cancellation
+- Nit issues redesigned with collapsible `<details>` and GitHub permalink embeds
+- Inline comments use structured AI context JSON instead of duplicated "Fix prompt"
+- All command responses restyled with `**Manki** —` branding
+- Silent auto-approve (no visible message body)
+- Default `models.reviewer` to Sonnet, `models.judge` to Opus
+- `max_diff_lines` bumped from 10k to 50k
+- Universal bot filter using `sender.type === 'Bot'`
+- Removed `DEFAULT_REVIEWERS` — `AGENT_POOL` is single source of truth
+- Team size label shows actual agent count
+- README overhauled with logo, updated features, simplified config
+
+### Fixed
+
+- Code fences in nit issues render at column 0 for GitHub compat
+- Triage parser matches new `<details>` nit issue format
+- Serialize concurrent `ensureCLI` calls with shared install promise
+- Remove blockquote from review summary, separate recap text
+- `isReviewRequest` and `hasBotMention` support all command prefixes
+- Bot self-triggering prevention for `pull_request_review` events
+- Stale commit SHA guard for auto-approve
+- Judge `required` severity bar loosened and calibrated with project memory
+- Codecov checks made informational, then enforced at 95%
+
 ## [3.1.0] - 2026-03-25
 
 ### Added
@@ -130,6 +178,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic review posting with inline comments
 - Configuration via `.manki.yml`
 
+[4.0.0]: https://github.com/xdustinface/manki/compare/v3.1.0...v4.0.0
 [3.1.0]: https://github.com/xdustinface/manki/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/xdustinface/manki/compare/v2.4.0...v3.0.0
 [2.4.0]: https://github.com/xdustinface/manki/compare/v2.3.0...v2.4.0
