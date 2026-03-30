@@ -5,7 +5,7 @@ All notable changes to Manki will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [4.0.0] - 2026-03-29
+## [4.0.0] - 2026-03-30
 
 ### Added
 
@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `resolvedToken` made explicit — `createAuthenticatedOctokit` returns token alongside Octokit, `getMemoryToken` is now a pure function
 - Action always exits 0 — event filtering moved inside, SIGTERM handled gracefully
 - Concurrency group includes event name to prevent cross-event cancellation
 - Nit issues redesigned with collapsible `<details>` and GitHub permalink embeds
@@ -52,6 +53,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stale commit SHA guard for auto-approve
 - Judge `required` severity bar loosened and calibrated with project memory
 - Codecov checks made informational, then enforced at 95%
+- Bot skip log message now shows review author login when `reviewAuthorType` triggers the skip
+
+### Tests
+
+- Test coverage for missing `sender.type` field on webhook payloads
+- Test coverage for POST method assertion on OIDC token exchange
 
 ## [3.1.0] - 2026-03-25
 
