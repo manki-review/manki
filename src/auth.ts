@@ -4,6 +4,12 @@ import { createAppAuth } from '@octokit/auth-app';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
+let resolvedToken: string | null = null;
+
+export function setResolvedToken(token: string): void {
+  resolvedToken = token;
+}
+
 export interface TokenResult {
   token: string;
   identity: 'app' | 'actions';
@@ -76,6 +82,7 @@ export async function createAuthenticatedOctokit(): Promise<Octokit> {
   if (appId && privateKey) {
     core.info('Using GitHub App authentication for custom bot identity');
     const token = await getInstallationToken(appId, privateKey);
+    setResolvedToken(token);
     return github.getOctokit(token);
   }
 
@@ -86,6 +93,7 @@ export async function createAuthenticatedOctokit(): Promise<Octokit> {
   const tokenUrl = core.getInput('manki_token_url') || 'https://manki.dustinface.me/token';
   const { owner, repo: repoName } = github.context.repo;
   const { token } = await resolveGitHubToken(githubToken, tokenUrl, owner, repoName);
+  setResolvedToken(token);
 
   return github.getOctokit(token);
 }
@@ -95,9 +103,14 @@ export async function createAuthenticatedOctokit(): Promise<Octokit> {
  * Prefers memory_repo_token, falls back to github_token, returns null if neither is set.
  */
 export function getMemoryToken(): string | null {
+  // Explicit memory_repo_token takes priority
   const memoryToken = core.getInput('memory_repo_token');
   if (memoryToken) return memoryToken;
 
+  // Use the resolved app token (cross-repo access if app is installed on memory repo)
+  if (resolvedToken) return resolvedToken;
+
+  // Fall back to raw github_token
   const githubToken = core.getInput('github_token');
   if (githubToken) return githubToken;
 
