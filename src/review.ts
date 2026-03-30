@@ -7,6 +7,8 @@ import { LinkedIssue } from './github';
 import { ReviewConfig, ReviewerAgent, Finding, ReviewResult, ReviewVerdict, ParsedDiff, DiffFile, TeamRoster, PrContext } from './types';
 import { extractJSON } from './json';
 
+export const HIGH_CONF_SUGGESTION_THRESHOLD = 3;
+
 export const AGENT_POOL: readonly ReviewerAgent[] = Object.freeze([
   {
     name: 'Security & Safety',
@@ -382,7 +384,7 @@ Respond with ONLY a JSON array (no markdown fences, no explanation). Each findin
   - SQL injection via unsanitized user input in a database query
   - Null/undefined dereference in an error handling path that will crash at runtime
   - Off-by-one in array bounds causing data corruption or out-of-bounds access
-- **suggestion**: Style improvements, minor optimizations, readability enhancements. Nice to have but not required.
+- **suggestion**: Meaningful improvements — missing error context, suboptimal patterns, incomplete handling. Worth addressing for code quality.
   - Error message lacks context (e.g., logging "failed" without the error reason)
   - Variable could be \`const\` instead of \`let\` since it is never reassigned
   - Function could be simplified by extracting a reusable helper
@@ -500,7 +502,14 @@ export function validateSeverity(severity: unknown): Finding['severity'] {
 
 export function determineVerdict(findings: Finding[]): ReviewVerdict {
   const hasRequired = findings.some(f => f.severity === 'required');
-  return hasRequired ? 'REQUEST_CHANGES' : 'APPROVE';
+  if (hasRequired) return 'REQUEST_CHANGES';
+
+  const highConfSuggestions = findings.filter(
+    f => f.severity === 'suggestion' && f.judgeConfidence === 'high',
+  );
+  if (highConfSuggestions.length >= HIGH_CONF_SUGGESTION_THRESHOLD) return 'REQUEST_CHANGES';
+
+  return 'APPROVE';
 }
 
 export function truncateDiff(rawDiff: string, maxLength: number = 50000): string {

@@ -137,8 +137,8 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('Missing error handling');
     // suggestion examples
     expect(prompt).toContain('Error message lacks context');
-    expect(prompt).toContain('const');
-    expect(prompt).toContain('extracting a helper');
+    expect(prompt).toContain('improve testability');
+    expect(prompt).toContain('Missing timeout on HTTP request');
     // nit examples
     expect(prompt).toContain('Variable name could be more descriptive');
     expect(prompt).toContain('import ordering');

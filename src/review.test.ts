@@ -185,6 +185,33 @@ describe('determineVerdict', () => {
   it('returns APPROVE when there are no findings', () => {
     expect(determineVerdict([])).toBe('APPROVE');
   });
+
+  it('should REQUEST_CHANGES when 3+ high-confidence suggestions exist', () => {
+    const findings: Finding[] = [
+      { severity: 'suggestion', title: 'a', file: 'f', line: 1, description: '', reviewers: ['r'], judgeConfidence: 'high' },
+      { severity: 'suggestion', title: 'b', file: 'f', line: 2, description: '', reviewers: ['r'], judgeConfidence: 'high' },
+      { severity: 'suggestion', title: 'c', file: 'f', line: 3, description: '', reviewers: ['r'], judgeConfidence: 'high' },
+    ];
+    expect(determineVerdict(findings)).toBe('REQUEST_CHANGES');
+  });
+
+  it('should APPROVE when fewer than 3 high-confidence suggestions exist', () => {
+    const findings: Finding[] = [
+      { severity: 'suggestion', title: 'a', file: 'f', line: 1, description: '', reviewers: ['r'], judgeConfidence: 'high' },
+      { severity: 'suggestion', title: 'b', file: 'f', line: 2, description: '', reviewers: ['r'], judgeConfidence: 'high' },
+    ];
+    expect(determineVerdict(findings)).toBe('APPROVE');
+  });
+
+  it('should APPROVE when suggestions are not high-confidence', () => {
+    const findings: Finding[] = [
+      { severity: 'suggestion', title: 'a', file: 'f', line: 1, description: '', reviewers: ['r'], judgeConfidence: 'medium' },
+      { severity: 'suggestion', title: 'b', file: 'f', line: 2, description: '', reviewers: ['r'], judgeConfidence: 'low' },
+      { severity: 'suggestion', title: 'c', file: 'f', line: 3, description: '', reviewers: ['r'], judgeConfidence: 'medium' },
+      { severity: 'suggestion', title: 'd', file: 'f', line: 4, description: '', reviewers: ['r'] },
+    ];
+    expect(determineVerdict(findings)).toBe('APPROVE');
+  });
 });
 
 describe('buildReviewerSystemPrompt', () => {

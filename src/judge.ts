@@ -61,9 +61,14 @@ Evaluate each finding on two dimensions:
 
 **Severity mapping:**
 - **required**: Critical/High impact + Certain/Probable likelihood, OR any Critical impact, OR patterns flagged as important in project memory
-- **suggestion**: High impact + Possible likelihood, Medium impact + Certain/Probable likelihood, or any finding worth addressing but not blocking
+- **suggestion**: High impact + Possible likelihood, OR Medium impact + Certain/Probable likelihood
 - **nit**: Low impact regardless of likelihood, or Medium impact + Unlikely likelihood
 - **ignore**: False positives, intentional patterns, style preferences, reviewer misunderstandings
+
+**Calibration note**: LLMs tend toward leniency when judging code review findings. Counteract this bias:
+- When a finding is borderline between two severities, choose the higher one
+- A finding that "could cause problems" under realistic conditions is \`required\`, not \`suggestion\`
+- Only downgrade a finding if you can articulate a specific reason the issue won't manifest
 
 Include your impact and likelihood assessment in the reasoning field (e.g., "Impact: High (silent data loss), Likelihood: Probable (happens on every error path) → required").
 
@@ -73,11 +78,15 @@ Examples of **required** (high impact, certain/probable):
   - Missing error handling that silently swallows failures
   - Logic error that produces incorrect results under common conditions
   - Breaking API change without migration path
+  - Unchecked return value where the error is silently discarded
+  - Resource leak (file handle, connection, listener) not cleaned up on error path
+  - Race condition in concurrent code (shared mutable state without synchronization)
+  - Missing input validation at a trust boundary (API endpoint, user input, external data)
 
-Examples of **suggestion** (medium impact or lower likelihood):
-  - Error message lacks context (impact: medium, likelihood: certain)
-  - Variable could be \`const\` instead of \`let\` (impact: low, likelihood: certain → actually a nit)
-  - Function could be simplified by extracting a helper (impact: medium, likelihood: N/A)
+Examples of **suggestion** (medium impact, or high impact with lower likelihood):
+  - Error message lacks context that would help debugging (impact: medium, likelihood: certain)
+  - Function could be split to improve testability (impact: medium, likelihood: N/A)
+  - Missing timeout on HTTP request that could hang indefinitely (impact: high, likelihood: possible)
 
 Examples of **nit**:
   - Variable name could be more descriptive
@@ -100,9 +109,9 @@ For each finding, evaluate:
 ## Guidelines
 
 - Respect the project's review memory when calibrating severity. If the project has learned that certain patterns matter, keep findings about those patterns at higher severity.
-- Trust reviewer severity unless you have clear evidence it's overstated. The reviewers see the full code context.
+- Trust reviewer severity unless you have clear evidence it's overstated or understated. The reviewers see the full code context, but may understate severity due to framing bias.
 - When multiple reviewers agree, give their consensus significant weight.
-- Be liberal with \`ignore\` — actively filter noise and false positives.
+- Use \`ignore\` for genuine false positives and intentional patterns only — not as a way to reduce finding count.
 - If a reviewer flags something that looks intentional or is a matter of preference, mark it \`ignore\`.
 - When downgrading a finding that multiple reviewers flagged, explicitly explain why in your reasoning.
 
