@@ -978,6 +978,71 @@ describe('runFullReview orchestration', () => {
     expect(jest.mocked(core.setOutput)).toHaveBeenCalledWith('findings_count', '1');
   });
 
+  it('populates enriched stats fields (agentMetrics, judgeMetrics, fileMetrics, model split)', async () => {
+    const testFiles = [
+      { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] },
+      { path: 'src/utils.js', changeType: 'added' as const, hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 3, content: 'new' }] },
+    ];
+    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+      files: testFiles, totalAdditions: 20, totalDeletions: 5,
+    });
+    jest.mocked(diffModule.filterFiles).mockReturnValue(testFiles);
+
+    const findings = [
+      { severity: 'required' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const, judgeNotes: 'confirmed' },
+      { severity: 'suggestion' as const, title: 'Style', file: 'src/app.ts', line: 8, description: 'desc', reviewers: ['general'], judgeConfidence: 'medium' as const },
+      { severity: 'nit' as const, title: 'Nit', file: 'src/utils.js', line: 1, description: 'desc', reviewers: ['general', 'security'], judgeConfidence: 'low' as const },
+    ];
+    const allJudged = [
+      ...findings,
+      { severity: 'ignore' as const, title: 'Dropped', file: 'src/app.ts', line: 2, description: 'dropped', reviewers: ['security'], judgeConfidence: 'high' as const, judgeNotes: 'not relevant' },
+    ];
+
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'REQUEST_CHANGES', summary: 'Issues found',
+      findings,
+      highlights: [],
+      reviewComplete: true,
+      rawFindingCount: 6,
+      agentNames: ['security', 'general'],
+      allJudgedFindings: allJudged,
+    });
+    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue('REQUEST_CHANGES');
+
+    await callRunFullReview();
+
+    const statsArg = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+    expect(statsArg).toBeDefined();
+
+    // agentMetrics: third finding has both reviewers, so security gets 3 raw / 2 kept
+    expect(statsArg!.agentMetrics).toEqual([
+      { name: 'security', findingsRaw: 3, findingsKept: 2 },
+      { name: 'general', findingsRaw: 2, findingsKept: 2 },
+    ]);
+
+    // judgeMetrics
+    expect(statsArg!.judgeMetrics).toEqual({
+      confidenceDistribution: { high: 2, medium: 1, low: 1 },
+      severityChanges: 2,
+      mergedDuplicates: 2,
+    });
+
+    // fileMetrics
+    expect(statsArg!.fileMetrics).toEqual({
+      fileTypes: { '.ts': 1, '.js': 1 },
+      findingsPerFile: { 'src/app.ts': 2, 'src/utils.js': 1 },
+    });
+
+    // Model split
+    expect(statsArg!.reviewerModel).toBeDefined();
+    expect(statsArg!.judgeModel).toBeDefined();
+
+    // Backwards compatibility: model field still present
+    expect(statsArg!.model).toBeDefined();
+  });
+
   it('creates nit issues when nit_handling is "issues"', async () => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
