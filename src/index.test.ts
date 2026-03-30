@@ -38,7 +38,7 @@ const mockOctokitInstance = {
 };
 
 jest.mock('./auth', () => ({
-  createAuthenticatedOctokit: jest.fn().mockResolvedValue(mockOctokitInstance),
+  createAuthenticatedOctokit: jest.fn().mockResolvedValue({ octokit: mockOctokitInstance, resolvedToken: 'mock-resolved-token' }),
   getMemoryToken: jest.fn().mockReturnValue(null),
 }));
 
