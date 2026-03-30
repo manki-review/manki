@@ -30,10 +30,13 @@ import { checkAndAutoApprove, resolveStaleThreads } from './state';
 type Octokit = ReturnType<typeof github.getOctokit>;
 
 let cachedOctokit: Octokit | null = null;
+let cachedResolvedToken: string | null = null;
 
 async function getOctokit(): Promise<Octokit> {
   if (!cachedOctokit) {
-    cachedOctokit = await createAuthenticatedOctokit();
+    const { octokit, resolvedToken } = await createAuthenticatedOctokit();
+    cachedOctokit = octokit;
+    cachedResolvedToken = resolvedToken;
   }
   return cachedOctokit;
 }
@@ -329,7 +332,7 @@ async function runFullReview(
 
     let memory: RepoMemory | null = null;
     if (config.memory?.enabled) {
-      const memoryToken = getMemoryToken();
+      const memoryToken = getMemoryToken(cachedResolvedToken);
       if (!memoryToken) {
         core.warning('No memory token available — skipping memory load. Set memory_repo_token or github_token.');
       } else {
@@ -481,7 +484,7 @@ async function runFullReview(
     }
 
     if (memory && config.memory?.enabled) {
-      const memoryToken = getMemoryToken();
+      const memoryToken = getMemoryToken(cachedResolvedToken);
       if (!memoryToken) {
         core.warning('No memory token available — skipping memory update. Set memory_repo_token or github_token.');
       } else {
@@ -644,7 +647,7 @@ async function handleInteraction(): Promise<void> {
   });
 
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;
-  const memoryToken = config.memory?.enabled ? getMemoryToken() ?? undefined : undefined;
+  const memoryToken = config.memory?.enabled ? getMemoryToken(cachedResolvedToken) ?? undefined : undefined;
 
   await handlePRComment(octokit, claude, owner, repo, prNumber, memoryConfig, memoryToken, config);
 }
@@ -672,7 +675,7 @@ async function handleIssueInteraction(): Promise<void> {
   const config = loadConfig(configContent ?? undefined);
 
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;
-  const memoryToken = config.memory?.enabled ? getMemoryToken() ?? undefined : undefined;
+  const memoryToken = config.memory?.enabled ? getMemoryToken(cachedResolvedToken) ?? undefined : undefined;
 
   await handlePRComment(octokit, null, owner, repo, issueNumber, memoryConfig, memoryToken, config);
 }
@@ -721,7 +724,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
   });
 
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;
-  const memoryToken = config.memory?.enabled ? getMemoryToken() ?? undefined : undefined;
+  const memoryToken = config.memory?.enabled ? getMemoryToken(cachedResolvedToken) ?? undefined : undefined;
 
   await handleReviewCommentReply(octokit, claude, memoryConfig, memoryToken);
 
@@ -760,6 +763,7 @@ if (process.env.NODE_ENV !== 'test') {
 
 function _resetOctokitCache(): void {
   cachedOctokit = null;
+  cachedResolvedToken = null;
 }
 
 export { run, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, runFullReview, main, _resetOctokitCache };

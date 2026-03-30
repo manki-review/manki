@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { createAppAuth } from '@octokit/auth-app';
 
-import { createAuthenticatedOctokit, getMemoryToken, resolveGitHubToken, setResolvedToken, TokenResult } from './auth';
+import { createAuthenticatedOctokit, getMemoryToken, resolveGitHubToken, TokenResult } from './auth';
 
 jest.mock('@actions/core');
 jest.mock('@actions/github');
@@ -12,8 +12,6 @@ const mockGetInput = core.getInput as jest.MockedFunction<typeof core.getInput>;
 describe('getMemoryToken', () => {
   beforeEach(() => {
     mockGetInput.mockReset();
-    // Reset the resolved token between tests
-    setResolvedToken('');
   });
 
   it('returns memory_repo_token when set', () => {
@@ -23,7 +21,7 @@ describe('getMemoryToken', () => {
       return '';
     });
 
-    expect(getMemoryToken()).toBe('memory-token-123');
+    expect(getMemoryToken(null)).toBe('memory-token-123');
   });
 
   it('falls back to github_token when memory_repo_token is empty', () => {
@@ -33,13 +31,13 @@ describe('getMemoryToken', () => {
       return '';
     });
 
-    expect(getMemoryToken()).toBe('github-token-456');
+    expect(getMemoryToken(null)).toBe('github-token-456');
   });
 
   it('returns null when both tokens are empty', () => {
     mockGetInput.mockImplementation(() => '');
 
-    expect(getMemoryToken()).toBeNull();
+    expect(getMemoryToken(null)).toBeNull();
   });
 
   it('prefers memory_repo_token over github_token', () => {
@@ -49,7 +47,7 @@ describe('getMemoryToken', () => {
       return '';
     });
 
-    expect(getMemoryToken()).toBe('memory-token');
+    expect(getMemoryToken(null)).toBe('memory-token');
   });
 
   it('prefers resolved app token over raw github_token', () => {
@@ -58,8 +56,7 @@ describe('getMemoryToken', () => {
       return '';
     });
 
-    setResolvedToken('app-token-resolved');
-    expect(getMemoryToken()).toBe('app-token-resolved');
+    expect(getMemoryToken('app-token-resolved')).toBe('app-token-resolved');
   });
 
   it('prefers memory_repo_token over resolved app token', () => {
@@ -69,8 +66,7 @@ describe('getMemoryToken', () => {
       return '';
     });
 
-    setResolvedToken('app-token-resolved');
-    expect(getMemoryToken()).toBe('explicit-memory-token');
+    expect(getMemoryToken('app-token-resolved')).toBe('explicit-memory-token');
   });
 
   it('falls back to github_token when resolved token is not set', () => {
@@ -79,7 +75,7 @@ describe('getMemoryToken', () => {
       return '';
     });
 
-    expect(getMemoryToken()).toBe('github-token');
+    expect(getMemoryToken(null)).toBe('github-token');
   });
 });
 
@@ -219,7 +215,6 @@ describe('createAuthenticatedOctokit', () => {
     mockGetInput.mockReset();
     mockGetOctokit.mockReset();
     mockCreateAppAuth.mockReset();
-    setResolvedToken('');
     jest.restoreAllMocks();
 
     // Default context.repo
@@ -260,7 +255,8 @@ describe('createAuthenticatedOctokit', () => {
     expect(mockAuth).toHaveBeenCalledWith({ type: 'installation', installationId: 999 });
     expect(core.setSecret).toHaveBeenCalledWith('app-jwt-token');
     expect(core.setSecret).toHaveBeenCalledWith('installation-token-abc');
-    expect(result).toBeDefined();
+    expect(result.octokit).toBeDefined();
+    expect(result.resolvedToken).toBe('installation-token-abc');
   });
 
   it('throws when github_app_id is not a number', async () => {
@@ -295,14 +291,12 @@ describe('createAuthenticatedOctokit', () => {
 
     const result = await createAuthenticatedOctokit();
 
-    expect(result).toBeDefined();
+    expect(result.octokit).toBeDefined();
+    expect(result.resolvedToken).toBe('ghp_fallback');
     expect(mockGetOctokit).toHaveBeenCalledWith('ghp_fallback');
-
-    // Resolved token is cached for getMemoryToken
-    expect(getMemoryToken()).toBe('ghp_fallback');
   });
 
-  it('caches app token for getMemoryToken after resolution', async () => {
+  it('returns resolved app token for use with getMemoryToken', async () => {
     mockGetInput.mockImplementation((name: string) => {
       if (name === 'github_app_id') return '';
       if (name === 'github_app_private_key') return '';
@@ -318,9 +312,10 @@ describe('createAuthenticatedOctokit', () => {
     ));
     mockGetOctokit.mockReturnValue({} as ReturnType<typeof github.getOctokit>);
 
-    await createAuthenticatedOctokit();
+    const result = await createAuthenticatedOctokit();
 
-    expect(getMemoryToken()).toBe('resolved-app-token');
+    expect(result.resolvedToken).toBe('resolved-app-token');
+    expect(getMemoryToken(result.resolvedToken)).toBe('resolved-app-token');
   });
 
   it('uses custom manki_token_url when provided', async () => {

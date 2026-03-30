@@ -4,10 +4,9 @@ import { createAppAuth } from '@octokit/auth-app';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
-let resolvedToken: string | null = null;
-
-export function setResolvedToken(token: string): void {
-  resolvedToken = token;
+export interface AuthResult {
+  octokit: Octokit;
+  resolvedToken: string;
 }
 
 export interface TokenResult {
@@ -74,7 +73,7 @@ export async function resolveGitHubToken(
  * Create an authenticated Octokit client.
  * Priority: explicit App credentials > auto-detect manki-labs app > github_token.
  */
-export async function createAuthenticatedOctokit(): Promise<Octokit> {
+export async function createAuthenticatedOctokit(): Promise<AuthResult> {
   const appId = core.getInput('github_app_id');
   const privateKey = core.getInput('github_app_private_key');
   const githubToken = core.getInput('github_token');
@@ -82,8 +81,7 @@ export async function createAuthenticatedOctokit(): Promise<Octokit> {
   if (appId && privateKey) {
     core.info('Using GitHub App authentication for custom bot identity');
     const token = await getInstallationToken(appId, privateKey);
-    setResolvedToken(token);
-    return github.getOctokit(token);
+    return { octokit: github.getOctokit(token), resolvedToken: token };
   }
 
   if (!githubToken) {
@@ -93,16 +91,15 @@ export async function createAuthenticatedOctokit(): Promise<Octokit> {
   const tokenUrl = core.getInput('manki_token_url') || 'https://manki.dustinface.me/token';
   const { owner, repo: repoName } = github.context.repo;
   const { token } = await resolveGitHubToken(githubToken, tokenUrl, owner, repoName);
-  setResolvedToken(token);
 
-  return github.getOctokit(token);
+  return { octokit: github.getOctokit(token), resolvedToken: token };
 }
 
 /**
  * Returns a token suitable for memory repo operations.
  * Prefers memory_repo_token, falls back to github_token, returns null if neither is set.
  */
-export function getMemoryToken(): string | null {
+export function getMemoryToken(resolvedToken: string | null): string | null {
   // Explicit memory_repo_token takes priority
   const memoryToken = core.getInput('memory_repo_token');
   if (memoryToken) return memoryToken;
