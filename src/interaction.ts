@@ -70,7 +70,8 @@ export async function handleReviewCommentReply(
       const scopedDiff = filePath ? scopeDiffToFile(fullDiff, filePath) : fullDiff;
       const truncated = truncateDiff(scopedDiff, 15000);
       if (truncated.trim()) {
-        diffContext = `\n\n## PR Changes Context\n\nThe following diff shows the changes in this PR relevant to the file being discussed:\n\n\`\`\`diff\n${truncated}\n\`\`\``;
+        const sanitizedDiff = truncated.replace(/```/g, '` ` `');
+        diffContext = `\n\n## PR Changes Context\n\nThe following diff shows the changes in this PR relevant to the file being discussed:\n\n\`\`\`diff\n${sanitizedDiff}\n\`\`\``;
       }
     } catch (error) {
       core.debug(`Failed to fetch PR diff for reply context: ${error}`);
@@ -751,14 +752,14 @@ function scopeDiffToFile(fullDiff: string, filePath: string): string {
 
   for (const line of lines) {
     if (line.startsWith('diff --git')) {
-      inTargetFile = line.includes(`a/${filePath}`) || line.includes(`b/${filePath}`);
+      inTargetFile = line.includes(` a/${filePath} `) || line.endsWith(` b/${filePath}`);
     }
     if (inTargetFile) {
       result.push(line);
     }
   }
 
-  return result.length > 0 ? result.join('\n') : fullDiff;
+  return result.length > 0 ? result.join('\n') : '';
 }
 
 function isBotComment(body: string): boolean {
