@@ -50,7 +50,6 @@ jest.mock('./config', () => ({
   loadConfig: jest.fn().mockReturnValue({
     auto_review: true,
     max_diff_lines: 5000,
-    include_paths: [],
     exclude_paths: [],
     nit_handling: 'issues',
     reviewers: [],
@@ -744,8 +743,8 @@ describe('runFullReview orchestration', () => {
     // Reset to default config for each test
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
-      include_paths: [], exclude_paths: [], nit_handling: 'issues',
-      reviewers: [], model: 'claude-sonnet-4-20250514', review_language: 'en',
+      exclude_paths: [], nit_handling: 'issues',
+      reviewers: [],
       instructions: '', review_level: 'auto',
       review_thresholds: { small: 200, medium: 800 },
       memory: { enabled: false, repo: '' },
@@ -875,12 +874,9 @@ describe('runFullReview orchestration', () => {
       auto_review: false,
       auto_approve: false,
       max_diff_lines: 5000,
-      include_paths: [],
       exclude_paths: [],
       nit_handling: 'issues',
       reviewers: [],
-      model: 'claude-sonnet-4-20250514',
-      review_language: 'en',
       instructions: '',
       review_level: 'auto',
       review_thresholds: { small: 200, medium: 800 },
@@ -947,8 +943,8 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
-      include_paths: [], exclude_paths: [], nit_handling: 'issues',
-      reviewers: [], model: 'claude-sonnet-4-20250514', review_language: 'en',
+      exclude_paths: [], nit_handling: 'issues',
+      reviewers: [],
       instructions: '', review_level: 'auto',
       review_thresholds: { small: 200, medium: 800 },
       memory: { enabled: false, repo: '' },
@@ -987,8 +983,8 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
-      include_paths: [], exclude_paths: [], nit_handling: 'comments',
-      reviewers: [], model: 'claude-sonnet-4-20250514', review_language: 'en',
+      exclude_paths: [], nit_handling: 'comments',
+      reviewers: [],
       instructions: '', review_level: 'auto',
       review_thresholds: { small: 200, medium: 800 },
       memory: { enabled: false, repo: '' },
@@ -1107,8 +1103,8 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
-      include_paths: [], exclude_paths: [], nit_handling: 'issues',
-      reviewers: [], model: 'claude-sonnet-4-20250514', review_language: 'en',
+      exclude_paths: [], nit_handling: 'issues',
+      reviewers: [],
       instructions: '', review_level: 'auto',
       review_thresholds: { small: 200, medium: 800 },
       memory: { enabled: true, repo: 'owner/memory' },
@@ -1197,8 +1193,8 @@ describe('handleInteraction', () => {
     _resetOctokitCache();
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
-      include_paths: [], exclude_paths: [], nit_handling: 'issues',
-      reviewers: [], model: 'claude-sonnet-4-20250514', review_language: 'en',
+      exclude_paths: [], nit_handling: 'issues',
+      reviewers: [],
       instructions: '', review_level: 'auto',
       review_thresholds: { small: 200, medium: 800 },
       memory: { enabled: false, repo: '' },
@@ -1249,8 +1245,8 @@ describe('handleIssueInteraction', () => {
     _resetOctokitCache();
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
-      include_paths: [], exclude_paths: [], nit_handling: 'issues',
-      reviewers: [], model: 'claude-sonnet-4-20250514', review_language: 'en',
+      exclude_paths: [], nit_handling: 'issues',
+      reviewers: [],
       instructions: '', review_level: 'auto',
       review_thresholds: { small: 200, medium: 800 },
       memory: { enabled: false, repo: '' },
@@ -1349,8 +1345,8 @@ describe('handleReviewStateCheck', () => {
     });
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
-      include_paths: [], exclude_paths: [], nit_handling: 'issues',
-      reviewers: [], model: 'claude-sonnet-4-20250514', review_language: 'en',
+      exclude_paths: [], nit_handling: 'issues',
+      reviewers: [],
       instructions: '', review_level: 'auto',
       review_thresholds: { small: 200, medium: 800 },
       memory: { enabled: false, repo: '' },
@@ -1374,8 +1370,8 @@ describe('handleReviewStateCheck', () => {
     });
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: true, max_diff_lines: 5000,
-      include_paths: [], exclude_paths: [], nit_handling: 'issues',
-      reviewers: [], model: 'claude-sonnet-4-20250514', review_language: 'en',
+      exclude_paths: [], nit_handling: 'issues',
+      reviewers: [],
       instructions: '', review_level: 'auto',
       review_thresholds: { small: 200, medium: 800 },
       memory: { enabled: false, repo: '' },
@@ -1403,8 +1399,8 @@ describe('handleReviewCommentInteraction auto-approve', () => {
     jest.mocked(interaction.hasBotMention).mockReturnValue(true);
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: true, max_diff_lines: 5000,
-      include_paths: [], exclude_paths: [], nit_handling: 'issues',
-      reviewers: [], model: 'claude-sonnet-4-20250514', review_language: 'en',
+      exclude_paths: [], nit_handling: 'issues',
+      reviewers: [],
       instructions: '', review_level: 'auto',
       review_thresholds: { small: 200, medium: 800 },
       memory: { enabled: false, repo: '' },

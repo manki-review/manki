@@ -5,11 +5,8 @@ import { parse as parseYaml } from 'yaml';
 import { ReviewConfig } from './types';
 
 export const DEFAULT_CONFIG: ReviewConfig = {
-  model: 'claude-sonnet-4-6',
   auto_review: true,
   auto_approve: true,
-  review_language: 'en',
-  include_paths: ['**/*'],
   exclude_paths: ['*.lock', 'dist/**', '*.generated.*'],
   max_diff_lines: 50000,
   reviewers: [],
@@ -29,11 +26,8 @@ export const DEFAULT_CONFIG: ReviewConfig = {
 };
 
 const KNOWN_KEYS = new Set([
-  'model',
   'auto_review',
   'auto_approve',
-  'review_language',
-  'include_paths',
   'exclude_paths',
   'max_diff_lines',
   'reviewers',
@@ -64,10 +58,6 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
     }
   }
 
-  if ('model' in config && typeof config.model !== 'string') {
-    errors.push('`model` must be a string');
-  }
-
   if ('max_diff_lines' in config) {
     if (typeof config.max_diff_lines !== 'number' || config.max_diff_lines <= 0) {
       errors.push('`max_diff_lines` must be a positive number');
@@ -82,18 +72,8 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
     errors.push('`auto_approve` must be a boolean');
   }
 
-  if ('review_language' in config && typeof config.review_language !== 'string') {
-    errors.push('`review_language` must be a string');
-  }
-
   if ('instructions' in config && typeof config.instructions !== 'string') {
     errors.push('`instructions` must be a string');
-  }
-
-  if ('include_paths' in config) {
-    if (!Array.isArray(config.include_paths)) {
-      errors.push('`include_paths` must be an array of strings');
-    }
   }
 
   if ('exclude_paths' in config) {
@@ -272,7 +252,7 @@ export function loadConfigFromFile(filePath: string): ReviewConfig {
 }
 
 export function resolveModel(config: ReviewConfig, stage: 'reviewer' | 'judge'): string {
-  return config.models?.[stage] || config.model;
+  return config.models?.[stage] || DEFAULT_CONFIG.models![stage]!;
 }
 
 export function loadConfig(yamlContent: string | undefined): ReviewConfig {

@@ -210,42 +210,28 @@ describe('filterFiles', () => {
     { path: 'dist/index.js', changeType: 'modified', hunks: [] },
   ];
 
-  it('returns all files when no patterns specified', () => {
-    const result = filterFiles(files, [], []);
+  it('returns all files when no exclude patterns specified', () => {
+    const result = filterFiles(files, []);
     expect(result).toHaveLength(6);
   });
 
-  it('filters by include patterns', () => {
-    const result = filterFiles(files, ['src/**/*.ts'], []);
-    expect(result).toHaveLength(2);
-    expect(result.map((f) => f.path)).toEqual(['src/main.ts', 'src/utils.ts']);
-  });
-
   it('filters by exclude patterns', () => {
-    const result = filterFiles(files, [], ['dist/**']);
+    const result = filterFiles(files, ['dist/**']);
     expect(result).toHaveLength(5);
     expect(result.map((f) => f.path)).not.toContain('dist/index.js');
   });
 
-  it('applies both include and exclude patterns', () => {
-    const result = filterFiles(files, ['**/*.ts'], ['tests/**']);
-    expect(result).toHaveLength(2);
-    expect(result.map((f) => f.path)).toEqual(['src/main.ts', 'src/utils.ts']);
+  it('applies multiple exclude patterns', () => {
+    const result = filterFiles(files, ['tests/**', 'dist/**']);
+    expect(result).toHaveLength(4);
+    expect(result.map((f) => f.path)).not.toContain('tests/main.test.ts');
+    expect(result.map((f) => f.path)).not.toContain('dist/index.js');
   });
 
   it('supports matchBase for patterns without slashes', () => {
-    const result = filterFiles(files, ['*.ts'], []);
-    expect(result).toHaveLength(3);
-  });
-
-  it('handles multiple include patterns with OR semantics', () => {
-    const result = filterFiles(files, ['*.ts', '*.md'], []);
-    expect(result).toHaveLength(4);
-  });
-
-  it('returns empty array when nothing matches include', () => {
-    const result = filterFiles(files, ['*.py'], []);
-    expect(result).toHaveLength(0);
+    const result = filterFiles(files, ['*.json']);
+    expect(result).toHaveLength(5);
+    expect(result.map((f) => f.path)).not.toContain('package.json');
   });
 
   it('excludes dotfiles when pattern targets them', () => {
@@ -254,18 +240,18 @@ describe('filterFiles', () => {
       { path: '.gitignore', changeType: 'modified', hunks: [] },
       { path: 'src/main.ts', changeType: 'modified', hunks: [] },
     ];
-    const result = filterFiles(dotfiles, ['**/*'], ['.*']);
+    const result = filterFiles(dotfiles, ['.*']);
     expect(result.map((f) => f.path)).toEqual(['src/main.ts']);
   });
 
-  it('includes dotfiles with default include pattern', () => {
+  it('includes dotfiles when no exclude pattern targets them', () => {
     const dotfiles: DiffFile[] = [
       { path: '.manki.yml', changeType: 'modified', hunks: [] },
       { path: '.github/workflows/ci.yml', changeType: 'modified', hunks: [] },
       { path: '.gitignore', changeType: 'modified', hunks: [] },
       { path: 'src/main.ts', changeType: 'modified', hunks: [] },
     ];
-    const result = filterFiles(dotfiles, ['**/*'], []);
+    const result = filterFiles(dotfiles, []);
     expect(result).toHaveLength(4);
     expect(result.map((f) => f.path)).toContain('.manki.yml');
     expect(result.map((f) => f.path)).toContain('.github/workflows/ci.yml');

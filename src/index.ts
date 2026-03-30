@@ -242,7 +242,6 @@ async function runFullReview(
     const config = loadConfig(configContent ?? undefined);
 
     if (modelOverride) {
-      config.model = modelOverride;
       config.models = { reviewer: modelOverride, judge: modelOverride };
     }
 
@@ -296,7 +295,7 @@ async function runFullReview(
       return;
     }
 
-    const filteredFiles = filterFiles(diff.files, config.include_paths, config.exclude_paths);
+    const filteredFiles = filterFiles(diff.files, config.exclude_paths);
     core.info(`Reviewing ${filteredFiles.length} files (${diff.files.length} total, ${diff.files.length - filteredFiles.length} filtered out)`);
 
     if (filteredFiles.length === 0) {
