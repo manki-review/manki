@@ -11,7 +11,7 @@ import {
   RepoMemory,
 } from './memory';
 import { LinkedIssue } from './github';
-import { sanitize, sanitizeForPrompt, titlesOverlap } from './recap';
+import { sanitizeForPrompt, titlesOverlap } from './recap';
 import { validateSeverity } from './review';
 import { DiffFile, Finding, FindingSeverity, ReviewConfig, ParsedDiff, PrContext } from './types';
 
