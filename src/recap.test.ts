@@ -945,4 +945,23 @@ describe('llmDeduplicateFindings', () => {
     expect(result.duplicates).toHaveLength(1);
     expect(result.duplicates[0].title).toBe('Missing null check');
   });
+
+  it('keeps finding in unique when matchedDismissed index is out of bounds', async () => {
+    const findings = [
+      makeFinding({ title: 'Null check missing', file: 'src/foo.ts', line: 10 }),
+    ];
+    const previous = [
+      makePrevious({ title: 'Old issue A', file: 'src/a.ts', line: 1, status: 'resolved' }),
+      makePrevious({ title: 'Old issue B', file: 'src/b.ts', line: 2, status: 'resolved' }),
+    ];
+    const mockClient = {
+      sendMessage: jest.fn().mockResolvedValue({
+        content: '[{ "index": 1, "matchedDismissed": 99 }]',
+      }),
+    } as unknown as import('./claude').ClaudeClient;
+
+    const result = await llmDeduplicateFindings(findings, previous, mockClient);
+    expect(result.unique).toHaveLength(1);
+    expect(result.duplicates).toHaveLength(0);
+  });
 });
