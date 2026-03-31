@@ -5,6 +5,26 @@ All notable changes to Manki will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.1.0] - 2026-03-31
+
+### Added
+
+- Per-agent, judge, and file metrics in `ReviewStats` JSON (`agentMetrics`, `judgeMetrics`, `fileMetrics`, split `reviewerModel`/`judgeModel`) (#348)
+- PR diff context included in conversational replies to review comments (#346)
+- Confidence-weighted verdict threshold and anti-leniency calibration in judge prompt (#343)
+
+### Fixed
+
+- Remove top-level `model` action input that silently overrode `.manki.yml` config (#354)
+- Lower `HIGH_CONF_SUGGESTION_THRESHOLD` to 1 — single high-confidence suggestion triggers REQUEST_CHANGES (#351)
+- Use `comment.id` in concurrency group to prevent review comment cancellation (#345)
+- Skip duplicate approval in `checkAndAutoApprove` (#340)
+- Route `/manki` commands from review comment replies (#337)
+
+### Docs
+
+- Update SETUP.md action references from v3 to v4 (#336)
+
 ## [4.0.0] - 2026-03-30
 
 ### Added
@@ -185,6 +205,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic review posting with inline comments
 - Configuration via `.manki.yml`
 
+[4.1.0]: https://github.com/xdustinface/manki/compare/v4.0.0...v4.1.0
 [4.0.0]: https://github.com/xdustinface/manki/compare/v3.1.0...v4.0.0
 [3.1.0]: https://github.com/xdustinface/manki/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/xdustinface/manki/compare/v2.4.0...v3.0.0
