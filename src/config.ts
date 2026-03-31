@@ -16,6 +16,7 @@ export const DEFAULT_CONFIG: ReviewConfig = {
   models: {
     reviewer: 'claude-sonnet-4-6',
     judge: 'claude-opus-4-6',
+    dedup: 'claude-haiku-4-5',
   },
   memory: {
     enabled: false,
@@ -140,6 +141,9 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
       if ('judge' in models && typeof models.judge !== 'string') {
         errors.push('`models.judge` must be a string');
       }
+      if ('dedup' in models && typeof models.dedup !== 'string') {
+        errors.push('`models.dedup` must be a string');
+      }
     }
   }
 
@@ -251,7 +255,7 @@ export function loadConfigFromFile(filePath: string): ReviewConfig {
   return loadConfigFromContent(content);
 }
 
-export function resolveModel(config: ReviewConfig, stage: 'reviewer' | 'judge'): string {
+export function resolveModel(config: ReviewConfig, stage: 'reviewer' | 'judge' | 'dedup'): string {
   return config.models?.[stage] || DEFAULT_CONFIG.models![stage]!;
 }
 

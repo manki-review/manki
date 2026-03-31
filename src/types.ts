@@ -60,6 +60,7 @@ export interface ReviewConfig {
   models?: {
     reviewer?: string;
     judge?: string;
+    dedup?: string;
   };
   nit_handling?: 'issues' | 'comments';
   review_passes?: number;

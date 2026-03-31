@@ -260,7 +260,8 @@ async function runFullReview(
     };
     const reviewerModel = resolveModel(config, 'reviewer');
     const judgeModel = resolveModel(config, 'judge');
-    core.info(`Models — reviewer: ${reviewerModel}, judge: ${judgeModel}`);
+    const dedupModel = resolveModel(config, 'dedup');
+    core.info(`Models — reviewer: ${reviewerModel}, judge: ${judgeModel}, dedup: ${dedupModel}`);
 
     const reviewerClient = new ClaudeClient({ ...authOptions, model: reviewerModel });
     const judgeClient = new ClaudeClient({ ...authOptions, model: judgeModel });
@@ -451,7 +452,7 @@ async function runFullReview(
 
     // LLM-based dedup for findings that passed static matching
     if (result.findings.length > 0 && recap.previousFindings.length > 0) {
-      const dedupClient = new ClaudeClient({ ...authOptions, model: 'claude-haiku-4-5' });
+      const dedupClient = new ClaudeClient({ ...authOptions, model: dedupModel });
       const llmResult = await llmDeduplicateFindings(result.findings, recap.previousFindings, dedupClient);
       if (llmResult.duplicates.length > 0) {
         result.findings = llmResult.unique;
