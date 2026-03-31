@@ -1193,7 +1193,7 @@ describe('runFullReview orchestration', () => {
     });
     // Simulate dedup removing finding1 (it was already flagged)
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({
-      unique: [finding2], duplicates: [finding1],
+      unique: [finding2], duplicates: [{ finding: finding1, matchedTitle: 'Previous finding' }],
     });
     jest.mocked(reviewModule.determineVerdict).mockReturnValue('COMMENT');
 
@@ -1527,7 +1527,7 @@ describe('runFullReview orchestration', () => {
     );
     // Simulate suppressions removing finding2 during dedup
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({
-      unique: [finding1], duplicates: [finding2],
+      unique: [finding1], duplicates: [{ finding: finding2, matchedTitle: 'Previous nit' }],
     });
     jest.mocked(reviewModule.determineVerdict).mockReturnValue('COMMENT');
 

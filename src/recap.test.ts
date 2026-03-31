@@ -1,6 +1,6 @@
 import { Finding } from './types';
 import { Suppression } from './memory';
-import { deduplicateFindings, buildRecapSummary, PreviousFinding, resolveAddressedThreads, fetchRecapState, titlesOverlap, llmDeduplicateFindings } from './recap';
+import { deduplicateFindings, buildRecapSummary, PreviousFinding, resolveAddressedThreads, fetchRecapState, titlesOverlap, llmDeduplicateFindings, DuplicateMatch } from './recap';
 
 const makeFinding = (overrides: Partial<Finding> = {}): Finding => ({
   severity: 'suggestion',
@@ -223,6 +223,34 @@ describe('deduplicateFindings', () => {
     expect(result.unique).toHaveLength(1);
     expect(result.duplicates).toHaveLength(0);
   });
+
+  it('returns matchedTitle with each static duplicate', () => {
+    const findings = [
+      makeFinding({ title: 'Missing null check', file: 'src/foo.ts', line: 42 }),
+      makeFinding({ title: 'Unused import in bar', file: 'src/bar.ts', line: 10 }),
+    ];
+    const previous = [
+      makePrevious({ title: 'Missing null check', file: 'src/foo.ts', line: 42 }),
+      makePrevious({ title: 'Unused import in bar', file: 'src/bar.ts', line: 10 }),
+    ];
+
+    const result = deduplicateFindings(findings, previous);
+    expect(result.duplicates).toHaveLength(2);
+    expect(result.duplicates[0].finding.title).toBe('Missing null check');
+    expect(result.duplicates[0].matchedTitle).toBe('Missing null check');
+    expect(result.duplicates[1].finding.title).toBe('Unused import in bar');
+    expect(result.duplicates[1].matchedTitle).toBe('Unused import in bar');
+  });
+
+  it('returns matched previous title when titles differ via substring', () => {
+    const findings = [makeFinding({ title: 'Missing null check in processBlock', file: 'src/foo.ts', line: 42 })];
+    const previous = [makePrevious({ title: 'Missing null check', file: 'src/foo.ts', line: 42 })];
+
+    const result = deduplicateFindings(findings, previous);
+    expect(result.duplicates).toHaveLength(1);
+    expect(result.duplicates[0].finding.title).toBe('Missing null check in processBlock');
+    expect(result.duplicates[0].matchedTitle).toBe('Missing null check');
+  });
 });
 
 describe('titlesOverlap', () => {
@@ -340,7 +368,8 @@ describe('deduplicateFindings with suppressions', () => {
     expect(result.unique).toHaveLength(1);
     expect(result.unique[0].title).toBe('Unused import');
     expect(result.duplicates).toHaveLength(1);
-    expect(result.duplicates[0].title).toBe('Missing null check');
+    expect(result.duplicates[0].finding.title).toBe('Missing null check');
+    expect(result.duplicates[0].matchedTitle).toBe('Missing null check');
   });
 });
 
@@ -879,7 +908,8 @@ describe('llmDeduplicateFindings', () => {
     expect(result.unique).toHaveLength(1);
     expect(result.unique[0].title).toBe('Unused import');
     expect(result.duplicates).toHaveLength(1);
-    expect(result.duplicates[0].title).toBe('Missing null check');
+    expect(result.duplicates[0].finding.title).toBe('Missing null check');
+    expect(result.duplicates[0].matchedTitle).toBe('Null safety issue');
   });
 
   it('handles LLM returning no matches', async () => {
@@ -943,7 +973,8 @@ describe('llmDeduplicateFindings', () => {
     expect(result.unique).toHaveLength(1);
     expect(result.unique[0].title).toBe('Unused import');
     expect(result.duplicates).toHaveLength(1);
-    expect(result.duplicates[0].title).toBe('Missing null check');
+    expect(result.duplicates[0].finding.title).toBe('Missing null check');
+    expect(result.duplicates[0].matchedTitle).toBe('Null safety issue');
   });
 
   it('keeps finding in unique when matchedDismissed index is out of bounds', async () => {

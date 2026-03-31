@@ -173,11 +173,16 @@ async function fetchReviewThreads(
  * Filter out findings that duplicate previous ones or match stored suppressions.
  * Returns only genuinely new findings.
  */
+interface DuplicateMatch {
+  finding: Finding;
+  matchedTitle: string;
+}
+
 function deduplicateFindings(
   newFindings: Finding[],
   previousFindings: PreviousFinding[],
   suppressions?: Suppression[],
-): { unique: Finding[]; duplicates: Finding[] } {
+): { unique: Finding[]; duplicates: DuplicateMatch[] } {
   if (suppressions && suppressions.length > 0) {
     newFindings = newFindings.filter(f => {
       const match = suppressions.some(s => matchesSuppression(f, s));
@@ -187,15 +192,15 @@ function deduplicateFindings(
   }
 
   const unique: Finding[] = [];
-  const duplicates: Finding[] = [];
+  const duplicates: DuplicateMatch[] = [];
 
   for (const finding of newFindings) {
-    const isDuplicate = previousFindings.some(prev =>
+    const matched = previousFindings.find(prev =>
       matchesPrevious(finding, prev)
     );
 
-    if (isDuplicate) {
-      duplicates.push(finding);
+    if (matched) {
+      duplicates.push({ finding, matchedTitle: matched.title });
     } else {
       unique.push(finding);
     }
@@ -357,7 +362,7 @@ async function llmDeduplicateFindings(
   findings: Finding[],
   previousFindings: PreviousFinding[],
   client: ClaudeClient,
-): Promise<{ unique: Finding[]; duplicates: Finding[] }> {
+): Promise<{ unique: Finding[]; duplicates: DuplicateMatch[] }> {
   const dismissed = previousFindings.filter(f => f.status === 'resolved');
   if (findings.length === 0 || dismissed.length === 0) {
     return { unique: findings, duplicates: [] };
@@ -394,14 +399,14 @@ async function llmDeduplicateFindings(
     );
 
     const unique: Finding[] = [];
-    const duplicates: Finding[] = [];
+    const duplicates: DuplicateMatch[] = [];
     for (let i = 0; i < findings.length; i++) {
       if (matchedIndices.has(i)) {
         const match = matches.find(m => m.index - 1 === i);
         const dismissedIdx = match ? match.matchedDismissed - 1 : -1;
         const dismissedTitle = dismissedIdx >= 0 && dismissedIdx < dismissed.length ? dismissed[dismissedIdx].title : 'unknown';
         core.info(`LLM dedup: "${findings[i].title}" matches dismissed "${dismissedTitle}"`);
-        duplicates.push(findings[i]);
+        duplicates.push({ finding: findings[i], matchedTitle: dismissedTitle });
       } else {
         unique.push(findings[i]);
       }
@@ -418,4 +423,4 @@ async function llmDeduplicateFindings(
   }
 }
 
-export { PreviousFinding, RecapState, fetchRecapState, deduplicateFindings, buildRecapSummary, resolveAddressedThreads, titlesOverlap, llmDeduplicateFindings };
+export { DuplicateMatch, PreviousFinding, RecapState, fetchRecapState, deduplicateFindings, buildRecapSummary, resolveAddressedThreads, titlesOverlap, llmDeduplicateFindings };

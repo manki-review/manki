@@ -7,7 +7,7 @@ import { loadConfig, resolveModel } from './config';
 import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand } from './interaction';
 import { loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
-import { fetchRecapState, deduplicateFindings, buildRecapSummary, resolveAddressedThreads, llmDeduplicateFindings } from './recap';
+import { fetchRecapState, deduplicateFindings, buildRecapSummary, resolveAddressedThreads, llmDeduplicateFindings, DuplicateMatch } from './recap';
 import { runReview, determineVerdict, selectTeam } from './review';
 import { DashboardData, PrContext, ReviewMetadata, ReviewStats } from './types';
 import {
@@ -442,10 +442,11 @@ async function runFullReview(
       result.verdict = 'COMMENT';
     }
 
-    const { unique, duplicates } = deduplicateFindings(result.findings, recap.previousFindings, memory?.suppressions);
-    let totalDuplicates = duplicates.length;
-    if (duplicates.length > 0 || unique.length !== result.findings.length) {
-      core.info(`Deduplicated ${duplicates.length} findings, ${result.findings.length - unique.length} total removed`);
+    const { unique, duplicates: staticDuplicates } = deduplicateFindings(result.findings, recap.previousFindings, memory?.suppressions);
+    let totalDuplicates = staticDuplicates.length;
+    const allDuplicateMatches: DuplicateMatch[] = [...staticDuplicates];
+    if (staticDuplicates.length > 0 || unique.length !== result.findings.length) {
+      core.info(`Deduplicated ${staticDuplicates.length} findings, ${result.findings.length - unique.length} total removed`);
       result.findings = unique;
       result.verdict = determineVerdict(result.findings);
     }
@@ -457,6 +458,7 @@ async function runFullReview(
       if (llmResult.duplicates.length > 0) {
         result.findings = llmResult.unique;
         totalDuplicates += llmResult.duplicates.length;
+        allDuplicateMatches.push(...llmResult.duplicates);
         result.verdict = determineVerdict(result.findings);
       }
     }
@@ -560,7 +562,16 @@ async function runFullReview(
 
     const resolved = recap.previousFindings.filter(f => f.status === 'resolved').length;
     const open = recap.previousFindings.filter(f => f.status === 'open').length;
-    const recapSummary = buildRecapSummary(result.findings.length, totalDuplicates, resolved, open);
+
+    let dedupDetails = '';
+    if (allDuplicateMatches.length > 0) {
+      const lines = allDuplicateMatches.map(d =>
+        `- "${d.finding.title}" → matches "${d.matchedTitle}"`
+      );
+      dedupDetails = `\n\n<details><summary>🔁 ${allDuplicateMatches.length} finding${allDuplicateMatches.length === 1 ? '' : 's'} skipped (previously dismissed)</summary>\n\n${lines.join('\n')}\n\n</details>`;
+    }
+
+    const recapSummary = buildRecapSummary(result.findings.length, totalDuplicates, resolved, open) + dedupDetails;
 
     const reviewResult = { ...result, findings: inlineFindings };
     const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, reviewResult, diff, stats, recapSummary);
