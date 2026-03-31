@@ -204,18 +204,47 @@ function deduplicateFindings(
   return { unique, duplicates };
 }
 
+function titlesOverlap(a: string, b: string): boolean {
+  const aLower = a.toLowerCase();
+  const bLower = b.toLowerCase();
+
+  if (aLower === bLower) return true;
+
+  // Substring match (keep for exact matches)
+  const shorter = aLower.length <= bLower.length ? aLower : bLower;
+  const longer = aLower.length > bLower.length ? aLower : bLower;
+  if (shorter.length >= 5 && longer.includes(shorter)) return true;
+
+  // Word overlap — 50% of words in the shorter title must appear in the longer
+  return wordOverlapRatio(a, b) >= 0.5;
+}
+
+function wordOverlapRatio(a: string, b: string): number {
+  const aWords = new Set(a.toLowerCase().split(/\s+/).map(w => w.replace(/^[^a-z0-9]+|[^a-z0-9]+$/gi, '')).filter(w => w.length >= 3));
+  const bWords = new Set(b.toLowerCase().split(/\s+/).map(w => w.replace(/^[^a-z0-9]+|[^a-z0-9]+$/gi, '')).filter(w => w.length >= 3));
+  if (aWords.size === 0 || bWords.size === 0) return 0;
+
+  let overlap = 0;
+  for (const w of aWords) {
+    if (bWords.has(w)) overlap++;
+  }
+
+  return overlap / Math.min(aWords.size, bWords.size);
+}
+
 function matchesPrevious(finding: Finding, previous: PreviousFinding): boolean {
   if (!previous.title || previous.title.length < 3) return false;
   if (!finding.title || finding.title.length < 3) return false;
 
-  const titleMatch = finding.title.toLowerCase().includes(previous.title.toLowerCase()) ||
-    previous.title.toLowerCase().includes(finding.title.toLowerCase());
+  const titleMatch = titlesOverlap(finding.title, previous.title);
 
   if (!titleMatch) return false;
 
   if (finding.file !== previous.file) return false;
 
-  if (Math.abs(finding.line - previous.line) > 5) return false;
+  // Relax line proximity when word overlap is strong (>= 70%)
+  const maxLineDelta = wordOverlapRatio(finding.title, previous.title) >= 0.7 ? 20 : 5;
+  if (Math.abs(finding.line - previous.line) > maxLineDelta) return false;
 
   return true;
 }
@@ -324,4 +353,4 @@ async function resolveAddressedThreads(
   return resolvedCount;
 }
 
-export { PreviousFinding, RecapState, fetchRecapState, deduplicateFindings, buildRecapSummary, resolveAddressedThreads };
+export { PreviousFinding, RecapState, fetchRecapState, deduplicateFindings, buildRecapSummary, resolveAddressedThreads, titlesOverlap };
