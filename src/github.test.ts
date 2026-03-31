@@ -1350,6 +1350,54 @@ describe('buildDashboard', () => {
     expect(md).toContain('\u2713 Judge — 8 kept \u00B7 12 dropped');
   });
 
+  it('renders per-agent detail in the complete phase when agentProgress is provided', () => {
+    const data: DashboardData = {
+      phase: 'complete', lineCount: 500, agentCount: 5,
+      rawFindingCount: 17, keptCount: 14, droppedCount: 3,
+      agentProgress: [
+        { name: 'Security & Safety', status: 'done', findingCount: 2, durationMs: 4000 },
+        { name: 'Architecture & Design', status: 'done', findingCount: 3, durationMs: 3000 },
+        { name: 'Correctness & Logic', status: 'done', findingCount: 5, durationMs: 6000 },
+        { name: 'Testing & Coverage', status: 'done', findingCount: 4, durationMs: 5000 },
+        { name: 'Performance & Efficiency', status: 'done', findingCount: 3, durationMs: 4000 },
+      ],
+    };
+    const md = buildDashboard(data);
+    expect(md).toContain('\u2713 Review — 5 agents \u00B7 17 findings');
+    expect(md).toContain('\u2705 Security & Safety — 2 findings (4s)');
+    expect(md).toContain('\u2705 Architecture & Design — 3 findings (3s)');
+    expect(md).toContain('\u2705 Correctness & Logic — 5 findings (6s)');
+    expect(md).toContain('\u2705 Testing & Coverage — 4 findings (5s)');
+    expect(md).toContain('\u2705 Performance & Efficiency — 3 findings (4s)');
+    expect(md).toContain('\u2713 Judge — 14 kept \u00B7 3 dropped');
+  });
+
+  it('renders failed agent in the complete phase', () => {
+    const data: DashboardData = {
+      phase: 'complete', lineCount: 200, agentCount: 2,
+      rawFindingCount: 3, keptCount: 2, droppedCount: 1,
+      agentProgress: [
+        { name: 'Security & Safety', status: 'done', findingCount: 3, durationMs: 2000 },
+        { name: 'Architecture & Design', status: 'failed', durationMs: 500 },
+      ],
+    };
+    const md = buildDashboard(data);
+    expect(md).toContain('\u2705 Security & Safety — 3 findings (2s)');
+    expect(md).toContain('\u274C Architecture & Design — failed (500ms)');
+    expect(md).toContain('\u2713 Judge — 2 kept \u00B7 1 dropped');
+  });
+
+  it('formats sub-second durations in milliseconds', () => {
+    const data: DashboardData = {
+      phase: 'started', lineCount: 100, agentCount: 1,
+      agentProgress: [
+        { name: 'Security & Safety', status: 'done', findingCount: 1, durationMs: 750 },
+      ],
+    };
+    const md = buildDashboard(data);
+    expect(md).toContain('750ms');
+  });
+
   it('defaults rawFindingCount to 0 when not provided in reviewed phase', () => {
     const data: DashboardData = { phase: 'reviewed', lineCount: 100, agentCount: 3 };
     const md = buildDashboard(data);

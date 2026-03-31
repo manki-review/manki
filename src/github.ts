@@ -206,11 +206,15 @@ export function buildDashboard(data: DashboardData): string {
   }
 
   // phase === 'complete'
-  return [
+  const completeLines = [
     `\u2713 Parsed diff — ${data.lineCount} lines`,
     `\u2713 Review — ${data.agentCount} agents \u00B7 ${data.rawFindingCount ?? 0} findings`,
-    `\u2713 Judge — ${data.keptCount ?? 0} kept \u00B7 ${data.droppedCount ?? 0} dropped`,
-  ].join('\n');
+  ];
+  if (hasAgentProgress) {
+    completeLines.push(renderAgentLines(agents));
+  }
+  completeLines.push(`\u2713 Judge — ${data.keptCount ?? 0} kept \u00B7 ${data.droppedCount ?? 0} dropped`);
+  return completeLines.join('\n');
 }
 
 /**
