@@ -29,10 +29,12 @@ const mockPullsGet = jest.fn().mockResolvedValue({
 
 const mockListReactionsForIssueComment = jest.fn().mockResolvedValue({ data: [] });
 
+const mockListComments = jest.fn().mockResolvedValue({ data: [] });
+
 const mockOctokitInstance = {
   rest: {
     pulls: { get: mockPullsGet },
-    issues: { deleteComment: jest.fn().mockResolvedValue(undefined) },
+    issues: { deleteComment: jest.fn().mockResolvedValue(undefined), listComments: mockListComments },
     reactions: { listForIssueComment: mockListReactionsForIssueComment },
   },
 };
@@ -112,6 +114,7 @@ jest.mock('./github', () => ({
   createNitIssue: jest.fn().mockResolvedValue(undefined),
   reactToIssueComment: jest.fn().mockResolvedValue(undefined),
   fetchLinkedIssues: jest.fn().mockResolvedValue([]),
+  BOT_MARKER: '<!-- manki-bot -->',
 }));
 
 jest.mock('./state', () => ({
@@ -119,7 +122,7 @@ jest.mock('./state', () => ({
   resolveStaleThreads: jest.fn().mockResolvedValue(0),
 }));
 
-import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, main, _resetOctokitCache } from './index';
+import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, main, _resetOctokitCache, isReviewInProgress } from './index';
 import * as interaction from './interaction';
 import * as ghUtils from './github';
 import * as diffModule from './diff';
@@ -592,6 +595,36 @@ describe('handlePullRequest', () => {
     expect(jest.mocked(core.info)).toHaveBeenCalledWith('Skipping draft PR');
     expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
   });
+
+  it('skips when review is already in progress', async () => {
+    const recentDate = new Date(Date.now() - 2 * 60000).toISOString();
+    mockListComments.mockResolvedValueOnce({
+      data: [
+        { body: '<!-- manki-bot -->\n**Manki** — Review in progress', updated_at: recentDate, user: { login: 'manki-labs[bot]', type: 'Bot' } },
+      ],
+    });
+
+    setContext({
+      eventName: 'pull_request',
+      payload: {
+        action: 'opened',
+        sender: { login: 'user' },
+        pull_request: {
+          number: 1,
+          head: { sha: 'abc' },
+          base: { ref: 'main' },
+          title: 'Test PR',
+          body: '',
+          draft: false,
+        },
+      },
+    });
+
+    await handlePullRequest();
+
+    expect(jest.mocked(core.info)).toHaveBeenCalledWith(expect.stringContaining('review already in progress'));
+    expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
+  });
 });
 
 describe('handleCommentTrigger', () => {
@@ -615,6 +648,31 @@ describe('handleCommentTrigger', () => {
     expect(jest.mocked(core.info)).toHaveBeenCalledWith(
       'Comment is on an issue, not a PR — skipping',
     );
+  });
+
+  it('reacts with eyes and skips when review is already in progress', async () => {
+    const recentDate = new Date(Date.now() - 2 * 60000).toISOString();
+    mockListComments.mockResolvedValueOnce({
+      data: [
+        { body: '<!-- manki-bot -->\n**Manki** — Review in progress', updated_at: recentDate, user: { login: 'manki-labs[bot]', type: 'Bot' } },
+      ],
+    });
+
+    setContext({
+      eventName: 'issue_comment',
+      payload: {
+        action: 'created',
+        issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } },
+        comment: { id: 42, body: '@manki review' },
+      },
+    });
+
+    await handleCommentTrigger();
+
+    expect(jest.mocked(ghUtils.reactToIssueComment)).toHaveBeenCalledWith(
+      expect.anything(), 'test-owner', 'test-repo', 42, 'eyes',
+    );
+    expect(jest.mocked(core.info)).toHaveBeenCalledWith('Review already in progress — skipping');
   });
 });
 
@@ -1786,5 +1844,72 @@ describe('handleReviewCommentInteraction auto-approve', () => {
     expect(jest.mocked(stateModule.checkAndAutoApprove)).toHaveBeenCalledWith(
       expect.anything(), 'test-owner', 'test-repo', 8,
     );
+  });
+});
+
+describe('isReviewInProgress', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    _resetOctokitCache();
+  });
+
+  it('returns true when a recent progress comment exists', async () => {
+    const recentDate = new Date(Date.now() - 2 * 60000).toISOString();
+    mockListComments.mockResolvedValueOnce({
+      data: [
+        { body: '<!-- manki-bot -->\n**Manki** — Review in progress\n\nSome details', updated_at: recentDate, user: { login: 'manki-labs[bot]', type: 'Bot' } },
+      ],
+    });
+
+    const result = await isReviewInProgress(mockOctokitInstance as never, 'owner', 'repo', 1);
+
+    expect(result).toBe(true);
+    expect(jest.mocked(core.info)).toHaveBeenCalledWith(expect.stringContaining('review already in progress'));
+  });
+
+  it('returns false when the progress comment is stale (>10 min)', async () => {
+    const staleDate = new Date(Date.now() - 15 * 60000).toISOString();
+    mockListComments.mockResolvedValueOnce({
+      data: [
+        { body: '<!-- manki-bot -->\n**Manki** — Review in progress', updated_at: staleDate, user: { login: 'manki-labs[bot]', type: 'Bot' } },
+      ],
+    });
+
+    const result = await isReviewInProgress(mockOctokitInstance as never, 'owner', 'repo', 1);
+
+    expect(result).toBe(false);
+  });
+
+  it('returns false when no progress comment exists', async () => {
+    mockListComments.mockResolvedValueOnce({
+      data: [
+        { body: 'Some random comment', updated_at: new Date().toISOString(), user: { login: 'someuser', type: 'User' } },
+      ],
+    });
+
+    const result = await isReviewInProgress(mockOctokitInstance as never, 'owner', 'repo', 1);
+
+    expect(result).toBe(false);
+  });
+
+  it('ignores progress-like comments from non-bot users', async () => {
+    const recentDate = new Date(Date.now() - 2 * 60000).toISOString();
+    mockListComments.mockResolvedValueOnce({
+      data: [
+        { body: '<!-- manki-bot -->\n**Manki** — Review in progress', updated_at: recentDate, user: { login: 'malicious-user', type: 'User' } },
+      ],
+    });
+
+    const result = await isReviewInProgress(mockOctokitInstance as never, 'owner', 'repo', 1);
+
+    expect(result).toBe(false);
+  });
+
+  it('returns false when the API call fails', async () => {
+    mockListComments.mockRejectedValueOnce(new Error('API error'));
+
+    const result = await isReviewInProgress(mockOctokitInstance as never, 'owner', 'repo', 1);
+
+    expect(result).toBe(false);
   });
 });
