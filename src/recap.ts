@@ -59,13 +59,13 @@ async function fetchRecapState(
     }
 
     if (open.length > 0) {
-      parts.push(`\n### Still Open (${open.length} findings -- already flagged, do NOT duplicate):`);
+      parts.push(`\n### Still Open (${open.length} findings -- context only, may re-flag if still present):`);
       for (const f of open) {
         parts.push(`- [${f.severity}] "${f.title}" at ${f.file}:${f.line}`);
       }
     }
 
-    parts.push('\nFocus ONLY on genuinely new issues in the code changes. Do not re-flag anything listed above.');
+    parts.push('\nFocus on genuinely new issues in the code changes. Do not re-flag resolved findings.');
     recapContext = parts.join('\n');
   }
 
@@ -193,9 +193,10 @@ function deduplicateFindings(
 
   const unique: Finding[] = [];
   const duplicates: DuplicateMatch[] = [];
+  const engaged = previousFindings.filter(f => f.status === 'resolved');
 
   for (const finding of newFindings) {
-    const matched = previousFindings.find(prev =>
+    const matched = engaged.find(prev =>
       matchesPrevious(finding, prev)
     );
 

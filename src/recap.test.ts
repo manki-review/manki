@@ -34,7 +34,7 @@ const makeSuppression = (overrides: Partial<Suppression> = {}): Suppression => (
 describe('deduplicateFindings', () => {
   it('detects exact match by title, file, and line', () => {
     const findings = [makeFinding({ title: 'Missing null check', file: 'src/foo.ts', line: 42 })];
-    const previous = [makePrevious({ title: 'Missing null check', file: 'src/foo.ts', line: 42 })];
+    const previous = [makePrevious({ title: 'Missing null check', file: 'src/foo.ts', line: 42, status: 'resolved' })];
 
     const result = deduplicateFindings(findings, previous);
     expect(result.unique).toHaveLength(0);
@@ -43,7 +43,7 @@ describe('deduplicateFindings', () => {
 
   it('detects fuzzy line match within +/-5 lines', () => {
     const findings = [makeFinding({ title: 'Missing null check', file: 'src/foo.ts', line: 45 })];
-    const previous = [makePrevious({ title: 'Missing null check', file: 'src/foo.ts', line: 42 })];
+    const previous = [makePrevious({ title: 'Missing null check', file: 'src/foo.ts', line: 42, status: 'resolved' })];
 
     const result = deduplicateFindings(findings, previous);
     expect(result.unique).toHaveLength(0);
@@ -52,7 +52,7 @@ describe('deduplicateFindings', () => {
 
   it('does not match different file with same title', () => {
     const findings = [makeFinding({ title: 'Missing null check', file: 'src/bar.ts', line: 42 })];
-    const previous = [makePrevious({ title: 'Missing null check', file: 'src/foo.ts', line: 42 })];
+    const previous = [makePrevious({ title: 'Missing null check', file: 'src/foo.ts', line: 42, status: 'resolved' })];
 
     const result = deduplicateFindings(findings, previous);
     expect(result.unique).toHaveLength(1);
@@ -61,7 +61,7 @@ describe('deduplicateFindings', () => {
 
   it('does not match different title with same file and line', () => {
     const findings = [makeFinding({ title: 'Unused variable', file: 'src/foo.ts', line: 42 })];
-    const previous = [makePrevious({ title: 'Missing null check', file: 'src/foo.ts', line: 42 })];
+    const previous = [makePrevious({ title: 'Missing null check', file: 'src/foo.ts', line: 42, status: 'resolved' })];
 
     const result = deduplicateFindings(findings, previous);
     expect(result.unique).toHaveLength(1);
@@ -81,7 +81,7 @@ describe('deduplicateFindings', () => {
 
   it('does not match when previous title is empty', () => {
     const findings = [makeFinding({ title: 'Missing null check', file: 'src/foo.ts', line: 42 })];
-    const previous = [makePrevious({ title: '', file: 'src/foo.ts', line: 42 })];
+    const previous = [makePrevious({ title: '', file: 'src/foo.ts', line: 42, status: 'resolved' })];
 
     const result = deduplicateFindings(findings, previous);
     expect(result.unique).toHaveLength(1);
@@ -90,7 +90,7 @@ describe('deduplicateFindings', () => {
 
   it('does not match when finding title is shorter than 3 characters', () => {
     const findings = [makeFinding({ title: 'AB', file: 'src/foo.ts', line: 42 })];
-    const previous = [makePrevious({ title: 'AB', file: 'src/foo.ts', line: 42 })];
+    const previous = [makePrevious({ title: 'AB', file: 'src/foo.ts', line: 42, status: 'resolved' })];
 
     const result = deduplicateFindings(findings, previous);
     expect(result.unique).toHaveLength(1);
@@ -106,7 +106,7 @@ describe('deduplicateFindings', () => {
     expect(result.duplicates).toHaveLength(1);
   });
 
-  it('deduplicates against both open and resolved previous findings', () => {
+  it('only deduplicates against resolved, not open previous findings', () => {
     const findings = [
       makeFinding({ title: 'Missing null check', file: 'src/foo.ts', line: 42 }),
       makeFinding({ title: 'Unused import', file: 'src/bar.ts', line: 10 }),
@@ -117,13 +117,15 @@ describe('deduplicateFindings', () => {
     ];
 
     const result = deduplicateFindings(findings, previous);
-    expect(result.unique).toHaveLength(0);
-    expect(result.duplicates).toHaveLength(2);
+    expect(result.unique).toHaveLength(1);
+    expect(result.unique[0].title).toBe('Missing null check');
+    expect(result.duplicates).toHaveLength(1);
+    expect(result.duplicates[0].finding.title).toBe('Unused import');
   });
 
   it('matches by title substring', () => {
     const findings = [makeFinding({ title: 'Missing null check in processBlock', file: 'src/foo.ts', line: 42 })];
-    const previous = [makePrevious({ title: 'Missing null check', file: 'src/foo.ts', line: 42 })];
+    const previous = [makePrevious({ title: 'Missing null check', file: 'src/foo.ts', line: 42, status: 'resolved' })];
 
     const result = deduplicateFindings(findings, previous);
     expect(result.unique).toHaveLength(0);
@@ -140,6 +142,7 @@ describe('deduplicateFindings', () => {
       title: 'FFI removes is_ours without adding replacement',
       file: 'src/ffi.rs',
       line: 50,
+      status: 'resolved',
     })];
 
     const result = deduplicateFindings(findings, previous);
@@ -149,7 +152,7 @@ describe('deduplicateFindings', () => {
 
   it('does not match completely different titles', () => {
     const findings = [makeFinding({ title: 'Memory leak in connection pool', file: 'src/pool.ts', line: 10 })];
-    const previous = [makePrevious({ title: 'Missing error handling in parser', file: 'src/pool.ts', line: 10 })];
+    const previous = [makePrevious({ title: 'Missing error handling in parser', file: 'src/pool.ts', line: 10, status: 'resolved' })];
 
     const result = deduplicateFindings(findings, previous);
     expect(result.unique).toHaveLength(1);
@@ -166,6 +169,7 @@ describe('deduplicateFindings', () => {
       title: 'Unsafe type cast without guard',
       file: 'src/util.ts',
       line: 30,
+      status: 'resolved',
     })];
 
     const result = deduplicateFindings(findings, previous);
@@ -183,6 +187,7 @@ describe('deduplicateFindings', () => {
       title: 'Missing null check before dereference',
       file: 'src/foo.ts',
       line: 45,
+      status: 'resolved',
     })];
 
     const result = deduplicateFindings(findings, previous);
@@ -200,6 +205,7 @@ describe('deduplicateFindings', () => {
       title: 'Missing null check before dereference',
       file: 'src/foo.ts',
       line: 45,
+      status: 'resolved',
     })];
 
     const result = deduplicateFindings(findings, previous);
@@ -217,6 +223,7 @@ describe('deduplicateFindings', () => {
       title: 'Missing null check before dereference',
       file: 'src/foo.ts',
       line: 10,
+      status: 'resolved',
     })];
 
     const result = deduplicateFindings(findings, previous);
@@ -230,8 +237,8 @@ describe('deduplicateFindings', () => {
       makeFinding({ title: 'Unused import in bar', file: 'src/bar.ts', line: 10 }),
     ];
     const previous = [
-      makePrevious({ title: 'Missing null check', file: 'src/foo.ts', line: 42 }),
-      makePrevious({ title: 'Unused import in bar', file: 'src/bar.ts', line: 10 }),
+      makePrevious({ title: 'Missing null check', file: 'src/foo.ts', line: 42, status: 'resolved' }),
+      makePrevious({ title: 'Unused import in bar', file: 'src/bar.ts', line: 10, status: 'resolved' }),
     ];
 
     const result = deduplicateFindings(findings, previous);
@@ -244,12 +251,30 @@ describe('deduplicateFindings', () => {
 
   it('returns matched previous title when titles differ via substring', () => {
     const findings = [makeFinding({ title: 'Missing null check in processBlock', file: 'src/foo.ts', line: 42 })];
-    const previous = [makePrevious({ title: 'Missing null check', file: 'src/foo.ts', line: 42 })];
+    const previous = [makePrevious({ title: 'Missing null check', file: 'src/foo.ts', line: 42, status: 'resolved' })];
 
     const result = deduplicateFindings(findings, previous);
     expect(result.duplicates).toHaveLength(1);
     expect(result.duplicates[0].finding.title).toBe('Missing null check in processBlock');
     expect(result.duplicates[0].matchedTitle).toBe('Missing null check');
+  });
+
+  it('does not suppress findings matching open previous findings', () => {
+    const findings = [makeFinding({ title: 'Missing null check', file: 'src/foo.ts', line: 42 })];
+    const previous = [makePrevious({ title: 'Missing null check', file: 'src/foo.ts', line: 42, status: 'open' })];
+
+    const result = deduplicateFindings(findings, previous);
+    expect(result.unique).toHaveLength(1);
+    expect(result.duplicates).toHaveLength(0);
+  });
+
+  it('does not suppress findings matching replied previous findings', () => {
+    const findings = [makeFinding({ title: 'Missing null check', file: 'src/foo.ts', line: 42 })];
+    const previous = [makePrevious({ title: 'Missing null check', file: 'src/foo.ts', line: 42, status: 'replied' })];
+
+    const result = deduplicateFindings(findings, previous);
+    expect(result.unique).toHaveLength(1);
+    expect(result.duplicates).toHaveLength(0);
   });
 });
 
@@ -361,7 +386,7 @@ describe('deduplicateFindings with suppressions', () => {
       makeFinding({ title: 'Missing null check', file: 'src/bar.ts', line: 42 }),
       makeFinding({ title: 'Unused import', file: 'src/baz.ts', line: 5 }),
     ];
-    const previous = [makePrevious({ title: 'Missing null check', file: 'src/bar.ts', line: 42 })];
+    const previous = [makePrevious({ title: 'Missing null check', file: 'src/bar.ts', line: 42, status: 'resolved' })];
     const suppressions = [makeSuppression({ pattern: 'test finding' })];
 
     const result = deduplicateFindings(findings, previous, suppressions);
