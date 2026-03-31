@@ -24,6 +24,7 @@ import {
   createNitIssue,
   reactToIssueComment,
   fetchLinkedIssues,
+  BOT_MARKER as PROGRESS_MARKER,
 } from './github';
 import { checkAndAutoApprove, resolveStaleThreads } from './state';
 
@@ -150,6 +151,28 @@ async function run(): Promise<void> {
   }
 }
 
+async function isReviewInProgress(octokit: Octokit, owner: string, repo: string, prNumber: number): Promise<boolean> {
+  try {
+    const { data: comments } = await octokit.rest.issues.listComments({
+      owner, repo, issue_number: prNumber, per_page: 5, direction: 'desc',
+    });
+    const progressComment = comments.find(c =>
+      c.body?.includes(PROGRESS_MARKER) && c.body?.includes('Review in progress')
+    );
+    if (!progressComment) return false;
+
+    const updatedAt = new Date(progressComment.updated_at).getTime();
+    const ageMinutes = (Date.now() - updatedAt) / 60000;
+    if (ageMinutes < 10) {
+      core.info(`Skipping — review already in progress (progress comment updated ${ageMinutes.toFixed(1)}m ago)`);
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 async function handlePullRequest(): Promise<void> {
   const pr = github.context.payload.pull_request;
   if (!pr) {
@@ -164,6 +187,11 @@ async function handlePullRequest(): Promise<void> {
 
   if (pr.draft) {
     core.info('Skipping draft PR');
+    return;
+  }
+
+  const octokit = await getOctokit();
+  if (await isReviewInProgress(octokit, owner, repo, prNumber)) {
     return;
   }
 
@@ -189,6 +217,10 @@ async function handleCommentTrigger(): Promise<void> {
   const prNumber = payload.issue.number;
 
   const octokit = await getOctokit();
+
+  if (await isReviewInProgress(octokit, owner, repo, prNumber)) {
+    return;
+  }
 
   // Acknowledge the review request
   if (payload.comment?.id) {
@@ -872,4 +904,4 @@ function _resetOctokitCache(): void {
   octokitCache.resolvedToken = null;
 }
 
-export { run, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, runFullReview, main, _resetOctokitCache };
+export { run, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, runFullReview, main, _resetOctokitCache, isReviewInProgress };
