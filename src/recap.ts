@@ -255,7 +255,7 @@ function matchesPrevious(finding: Finding, previous: PreviousFinding): boolean {
 }
 
 function sanitizeHtml(s: string): string {
-  return s.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 /**
@@ -283,7 +283,7 @@ function buildRecapSummary(
     `- "${sanitizeHtml(d.finding.title)}" → matches "${sanitizeHtml(d.matchedTitle)}"`
   );
   const count = duplicateMatches.length;
-  return summary + `\n\n<details><summary>🔁 ${count} finding${count === 1 ? '' : 's'} skipped (previously dismissed)</summary>\n\n${lines.join('\n')}\n\n</details>`;
+  return summary + `\n\n<details><summary>🔁 ${count} finding${count === 1 ? '' : 's'} skipped (previously flagged)</summary>\n\n${lines.join('\n')}\n\n</details>`;
 }
 
 /**

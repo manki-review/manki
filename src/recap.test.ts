@@ -510,7 +510,7 @@ describe('buildRecapSummary', () => {
     const summary = buildRecapSummary(1, 1, 0, 0, matches);
     expect(summary).toContain('Findings: 1 new, 1 skipped (already flagged)');
     expect(summary).toContain('<details>');
-    expect(summary).toContain('1 finding skipped (previously dismissed)');
+    expect(summary).toContain('1 finding skipped (previously flagged)');
     expect(summary).toContain('"Unused import"');
   });
 
@@ -523,6 +523,16 @@ describe('buildRecapSummary', () => {
     expect(summary).toContain('&lt;script&gt;');
     expect(summary).toContain('&quot;xss&quot;');
     expect(summary).toContain('legit &quot;title&quot;');
+  });
+
+  it('escapes ampersands in finding titles to prevent HTML entity injection', () => {
+    const matches = [
+      { finding: makeFinding({ title: 'a &lt;b&gt; issue' }), matchedTitle: 'foo & bar' },
+    ];
+    const summary = buildRecapSummary(0, 1, 0, 0, matches);
+    expect(summary).toContain('&amp;lt;b&amp;gt;');
+    expect(summary).toContain('foo &amp; bar');
+    expect(summary).not.toContain('foo & bar');
   });
 });
 
