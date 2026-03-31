@@ -11,7 +11,7 @@ import {
   RepoMemory,
 } from './memory';
 import { LinkedIssue } from './github';
-import { sanitize, titlesOverlap } from './recap';
+import { sanitize, sanitizeForPrompt, titlesOverlap } from './recap';
 import { validateSeverity } from './review';
 import { DiffFile, Finding, FindingSeverity, ReviewConfig, ParsedDiff, PrContext } from './types';
 
@@ -212,7 +212,7 @@ export function buildJudgeUserMessage(
     parts.push(`- **Resolved**: ${recapStats.resolved} finding${recapStats.resolved !== 1 ? 's' : ''}`);
     if (recapStats.resolvedTitles.length > 0) {
       for (const title of recapStats.resolvedTitles) {
-        const safeTitle = sanitize(title).replace(/\\"/g, '"');
+        const safeTitle = sanitizeForPrompt(title);
         parts.push(`  - ${safeTitle}`);
       }
     }

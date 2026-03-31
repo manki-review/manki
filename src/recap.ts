@@ -13,6 +13,11 @@ export function sanitize(s: string): string {
   return s.replace(/[\r\n]/g, ' ').replace(/`{3,}/g, '').replace(/"/g, '\\"');
 }
 
+/** Strip newlines and triple-backtick sequences from untrusted text for prompt interpolation (no quote escaping). */
+export function sanitizeForPrompt(s: string): string {
+  return s.replace(/[\r\n]/g, ' ').replace(/`{3,}/g, '');
+}
+
 interface PreviousFinding {
   title: string;
   file: string;
