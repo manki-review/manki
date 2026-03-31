@@ -222,8 +222,6 @@ async function runFullReview(
   const oauthToken = core.getInput('claude_code_oauth_token');
   const apiKey = core.getInput('anthropic_api_key');
   const configPathInput = core.getInput('config_path');
-  const modelOverride = core.getInput('model');
-
   const octokit = await getOctokit();
 
   const progressCommentId = await postProgressComment(octokit, owner, repo, prNumber);
@@ -245,10 +243,6 @@ async function runFullReview(
       configContent = await fetchConfigFile(octokit, owner, repo, baseRef, '.manki.yml');
     }
     const config = loadConfig(configContent ?? undefined);
-
-    if (modelOverride) {
-      config.models = { reviewer: modelOverride, judge: modelOverride };
-    }
 
     if (github.context.eventName === 'pull_request' && !config.auto_review) {
       core.info('auto_review is disabled — skipping');
@@ -658,7 +652,6 @@ async function handleReviewStateCheck(): Promise<void> {
 async function handleInteraction(): Promise<void> {
   const oauthToken = core.getInput('claude_code_oauth_token');
   const apiKey = core.getInput('anthropic_api_key');
-  const modelOverride = core.getInput('model');
   const configPathInput = core.getInput('config_path');
 
   const octokit = await getOctokit();
@@ -679,7 +672,7 @@ async function handleInteraction(): Promise<void> {
   }
   const config = loadConfig(configContent ?? undefined);
 
-  const interactionModel = modelOverride || resolveModel(config, 'judge');
+  const interactionModel = resolveModel(config, 'judge');
   const claude = new ClaudeClient({
     oauthToken: oauthToken || undefined,
     apiKey: apiKey || undefined,
