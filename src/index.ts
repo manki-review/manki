@@ -226,6 +226,8 @@ async function runFullReview(
 
   const progressCommentId = await postProgressComment(octokit, owner, repo, prNumber);
 
+  let dashboardFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
   try {
     // Capture recap state before resolving stale threads so dedup sees
     // the original open/resolved status of each previous finding.
@@ -383,7 +385,6 @@ async function runFullReview(
     let rawFindingCount = 0;
     let reviewEndTime = parseEndTime;
 
-    let dashboardFlushTimer: ReturnType<typeof setTimeout> | null = null;
     function scheduleDashboardFlush(): void {
       if (dashboardFlushTimer) clearTimeout(dashboardFlushTimer);
       dashboardFlushTimer = setTimeout(() => {
@@ -639,6 +640,10 @@ async function runFullReview(
     core.info(`Review complete: ${result.verdict} with ${result.findings.length} findings`);
     core.info(`Severity breakdown: ${severityCounts.required} required, ${severityCounts.suggestion} suggestion, ${severityCounts.nit} nit, ${severityCounts.ignore} ignore`);
   } catch (error) {
+    if (dashboardFlushTimer) {
+      clearTimeout(dashboardFlushTimer);
+      dashboardFlushTimer = null;
+    }
     const msg = error instanceof Error ? error.message : String(error);
     core.warning(`Review failed: ${msg}`);
 

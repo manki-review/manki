@@ -1341,6 +1341,14 @@ describe('runFullReview orchestration', () => {
     const dashboardCalls = jest.mocked(ghUtils.updateProgressDashboard).mock.calls;
     // At least the initial dashboard + the agent-complete flush
     expect(dashboardCalls.length).toBeGreaterThanOrEqual(2);
+
+    // Verify dashboard content reflects agent-complete status
+    const agentFlushDashboard = dashboardCalls[1][4];
+    expect(agentFlushDashboard.agentProgress).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'general', status: 'done', findingCount: 2 }),
+      ]),
+    );
   });
 
   it('updates dashboard on agent-complete with failure status', async () => {
@@ -1383,6 +1391,14 @@ describe('runFullReview orchestration', () => {
 
     const dashboardCalls = jest.mocked(ghUtils.updateProgressDashboard).mock.calls;
     expect(dashboardCalls.length).toBeGreaterThanOrEqual(2);
+
+    // Verify dashboard content reflects agent failure status
+    const agentFlushDashboard = dashboardCalls[1][4];
+    expect(agentFlushDashboard.agentProgress).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'general', status: 'failed', findingCount: 0 }),
+      ]),
+    );
   });
 
   it('flushes dashboard immediately on judging progress', async () => {
@@ -1458,6 +1474,77 @@ describe('runFullReview orchestration', () => {
     expect(lastDashboard.phase).toBe('reviewed');
     expect(lastDashboard.rawFindingCount).toBe(4);
     expect(lastDashboard.agentProgress).toBeUndefined();
+  });
+
+  it('reflects suppression-reduced judgeInputCount in dashboard', async () => {
+    const testFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+    };
+    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+      files: [testFile], totalAdditions: 10, totalDeletions: 5,
+    });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+
+    jest.mocked(configModule.loadConfig).mockReturnValue({
+      auto_review: true, auto_approve: false, max_diff_lines: 5000,
+      exclude_paths: [], nit_handling: 'issues',
+      reviewers: [],
+      instructions: '', review_level: 'auto',
+      review_thresholds: { small: 200, medium: 800 },
+      memory: { enabled: true, repo: 'owner/memory' },
+    });
+    jest.mocked(authModule.getMemoryToken).mockReturnValue('token123');
+
+    const memory = {
+      learnings: [],
+      suppressions: [{
+        id: 's1', pattern: 'Noise', reason: 'false positive',
+        created_by: 'tester', created_at: '2024-01-01', pr_ref: 'test-owner/test-repo#1',
+      }],
+      patterns: [],
+    };
+    jest.mocked(memoryModule.loadMemory).mockResolvedValue(memory);
+
+    const finding1 = { severity: 'suggestion' as const, title: 'Real issue', file: 'src/app.ts', line: 3, description: 'desc', reviewers: ['general'] };
+    const finding2 = { severity: 'nit' as const, title: 'Noise', file: 'src/app.ts', line: 7, description: 'desc', reviewers: ['general'] };
+
+    jest.mocked(reviewModule.runReview).mockImplementation(
+      async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
+        if (onProgress) {
+          onProgress({
+            phase: 'judging',
+            rawFindingCount: 6,
+            judgeInputCount: 4,
+          });
+        }
+        return {
+          verdict: 'COMMENT', summary: 'Issues found',
+          findings: [finding1, finding2], highlights: [], reviewComplete: true,
+        };
+      },
+    );
+    // Simulate suppressions removing finding2 during dedup
+    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({
+      unique: [finding1], duplicates: [finding2],
+    });
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue('COMMENT');
+
+    await callRunFullReview();
+
+    const dashboardCalls = jest.mocked(ghUtils.updateProgressDashboard).mock.calls;
+    // The judging flush should include judgeInputCount < rawFindingCount
+    const judgingDashboard = dashboardCalls.find(c => c[4].judgeInputCount !== undefined)?.[4];
+    expect(judgingDashboard).toBeDefined();
+    expect(judgingDashboard!.rawFindingCount).toBe(6);
+    expect(judgingDashboard!.judgeInputCount).toBe(4);
+    expect(judgingDashboard!.judgeInputCount).toBeLessThan(judgingDashboard!.rawFindingCount!);
+
+    // Verify suppressions were passed to deduplicateFindings
+    expect(jest.mocked(recapModule.deduplicateFindings)).toHaveBeenCalledWith(
+      expect.any(Array), expect.any(Array), memory.suppressions,
+    );
   });
 });
 
