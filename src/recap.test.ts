@@ -1,6 +1,6 @@
 import { Finding } from './types';
 import { Suppression } from './memory';
-import { deduplicateFindings, buildRecapSummary, PreviousFinding, resolveAddressedThreads, fetchRecapState } from './recap';
+import { deduplicateFindings, buildRecapSummary, PreviousFinding, resolveAddressedThreads, fetchRecapState, titlesOverlap } from './recap';
 
 const makeFinding = (overrides: Partial<Finding> = {}): Finding => ({
   severity: 'suggestion',
@@ -128,6 +128,127 @@ describe('deduplicateFindings', () => {
     const result = deduplicateFindings(findings, previous);
     expect(result.unique).toHaveLength(0);
     expect(result.duplicates).toHaveLength(1);
+  });
+
+  it('matches rephrased title with word overlap', () => {
+    const findings = [makeFinding({
+      title: 'FFI API regression: is_ours removed with no replacement',
+      file: 'src/ffi.rs',
+      line: 50,
+    })];
+    const previous = [makePrevious({
+      title: 'FFI removes is_ours without adding replacement',
+      file: 'src/ffi.rs',
+      line: 50,
+    })];
+
+    const result = deduplicateFindings(findings, previous);
+    expect(result.unique).toHaveLength(0);
+    expect(result.duplicates).toHaveLength(1);
+  });
+
+  it('does not match completely different titles', () => {
+    const findings = [makeFinding({ title: 'Memory leak in connection pool', file: 'src/pool.ts', line: 10 })];
+    const previous = [makePrevious({ title: 'Missing error handling in parser', file: 'src/pool.ts', line: 10 })];
+
+    const result = deduplicateFindings(findings, previous);
+    expect(result.unique).toHaveLength(1);
+    expect(result.duplicates).toHaveLength(0);
+  });
+
+  it('matches same file + nearby line + word overlap as duplicate', () => {
+    const findings = [makeFinding({
+      title: 'Unsafe cast should use type guard',
+      file: 'src/util.ts',
+      line: 33,
+    })];
+    const previous = [makePrevious({
+      title: 'Unsafe type cast without guard',
+      file: 'src/util.ts',
+      line: 30,
+    })];
+
+    const result = deduplicateFindings(findings, previous);
+    expect(result.unique).toHaveLength(0);
+    expect(result.duplicates).toHaveLength(1);
+  });
+
+  it('matches same file + far line when word overlap is high', () => {
+    const findings = [makeFinding({
+      title: 'Missing null check before dereference',
+      file: 'src/foo.ts',
+      line: 60,
+    })];
+    const previous = [makePrevious({
+      title: 'Missing null check before dereference',
+      file: 'src/foo.ts',
+      line: 45,
+    })];
+
+    const result = deduplicateFindings(findings, previous);
+    expect(result.unique).toHaveLength(0);
+    expect(result.duplicates).toHaveLength(1);
+  });
+
+  it('does not match different file even with matching title', () => {
+    const findings = [makeFinding({
+      title: 'Missing null check before dereference',
+      file: 'src/bar.ts',
+      line: 10,
+    })];
+    const previous = [makePrevious({
+      title: 'Missing null check before dereference',
+      file: 'src/foo.ts',
+      line: 10,
+    })];
+
+    const result = deduplicateFindings(findings, previous);
+    expect(result.unique).toHaveLength(1);
+    expect(result.duplicates).toHaveLength(0);
+  });
+});
+
+describe('titlesOverlap', () => {
+  it('matches identical titles', () => {
+    expect(titlesOverlap('Missing null check', 'Missing null check')).toBe(true);
+  });
+
+  it('matches case-insensitive', () => {
+    expect(titlesOverlap('Missing Null Check', 'missing null check')).toBe(true);
+  });
+
+  it('matches substring when shorter is >= 5 chars', () => {
+    expect(titlesOverlap('Missing null check in processBlock', 'Missing null check')).toBe(true);
+  });
+
+  it('matches short title when word overlap is sufficient', () => {
+    expect(titlesOverlap('Bug', 'Bug in parser')).toBe(true);
+  });
+
+  it('does not match short unrelated titles', () => {
+    expect(titlesOverlap('Bug', 'Type error')).toBe(false);
+  });
+
+  it('matches by word overlap at 50% threshold', () => {
+    expect(titlesOverlap(
+      'FFI removes is_ours without adding replacement',
+      'FFI API regression: is_ours removed with no replacement',
+    )).toBe(true);
+  });
+
+  it('does not match completely unrelated titles', () => {
+    expect(titlesOverlap(
+      'Memory leak in connection pool',
+      'Missing error handling in parser',
+    )).toBe(false);
+  });
+
+  it('matches identical strings even when all words are short', () => {
+    expect(titlesOverlap('a b c', 'a b c')).toBe(true);
+  });
+
+  it('returns false when all words are too short and strings differ', () => {
+    expect(titlesOverlap('a b c', 'x y z')).toBe(false);
   });
 });
 
