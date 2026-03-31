@@ -126,8 +126,8 @@ async function checkAndAutoApprove(
     pull_number: prNumber,
   });
   const botReviews = reviews.filter(
-    (r: { body?: string | null; state?: string }) =>
-      r.body?.includes('<!-- manki') && r.state !== 'DISMISSED',
+    (r: { body?: string | null; state?: string; user?: { login?: string; type?: string } | null }) =>
+      r.body?.includes('<!-- manki') && r.user?.login?.includes('[bot]') && r.state !== 'DISMISSED',
   );
   const latestBotReview = botReviews[botReviews.length - 1];
   if (latestBotReview?.state === 'APPROVED') {

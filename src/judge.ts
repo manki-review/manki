@@ -40,7 +40,7 @@ export interface JudgeResult {
 const CONTEXT_LINES = 10;
 
 export function buildJudgeSystemPrompt(config: ReviewConfig, agentCount: number): string {
-  const majorityThreshold = Math.ceil(agentCount / 2);
+  const majorityThreshold = Math.max(1, Math.ceil(agentCount / 2));
   let prompt = `You are a code review judge. You evaluate findings from multiple specialist reviewers for accuracy, actionability, and severity.
 
 ## Severity Assessment
