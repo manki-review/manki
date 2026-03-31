@@ -220,6 +220,10 @@ async function handleCommentTrigger(): Promise<void> {
   const octokit = await getOctokit();
 
   if (await isReviewInProgress(octokit, owner, repo, prNumber)) {
+    if (payload.comment?.id) {
+      await reactToIssueComment(octokit, owner, repo, payload.comment.id, 'eyes');
+    }
+    core.info('Review already in progress — skipping');
     return;
   }
 
