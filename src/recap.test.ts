@@ -914,6 +914,17 @@ describe('llmDeduplicateFindings', () => {
     expect(result.duplicates).toHaveLength(0);
   });
 
+  it('does not treat replied findings as dismissed', async () => {
+    const findings = [makeFinding({ title: 'Missing null check', file: 'src/foo.ts', line: 10 })];
+    const previous = [makePrevious({ title: 'Missing null check', status: 'replied' })];
+    const mockClient = { sendMessage: jest.fn() } as unknown as import('./claude').ClaudeClient;
+
+    const result = await llmDeduplicateFindings(findings, previous, mockClient);
+    expect(result.unique).toHaveLength(1);
+    expect(result.duplicates).toHaveLength(0);
+    expect(mockClient.sendMessage).not.toHaveBeenCalled();
+  });
+
   it('handles LLM response with code fences', async () => {
     const findings = [
       makeFinding({ title: 'Missing null check', file: 'src/foo.ts', line: 10 }),
