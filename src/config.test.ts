@@ -283,6 +283,15 @@ models:
       expect(core.error).toHaveBeenCalledWith('`models.judge` must be a string');
     });
 
+    it('throws on invalid models.dedup type', () => {
+      const yaml = `
+models:
+  dedup: 42
+`;
+      expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
+      expect(core.error).toHaveBeenCalledWith('`models.dedup` must be a string');
+    });
+
     it('accepts valid nit_handling values', () => {
       const yamlIssues = 'nit_handling: issues';
       expect(loadConfigFromContent(yamlIssues).nit_handling).toBe('issues');
@@ -344,21 +353,24 @@ models:
     it('returns default stage-specific models from defaults', () => {
       expect(resolveModel(baseConfig, 'reviewer')).toBe('claude-sonnet-4-6');
       expect(resolveModel(baseConfig, 'judge')).toBe('claude-opus-4-6');
+      expect(resolveModel(baseConfig, 'dedup')).toBe('claude-haiku-4-5');
     });
 
     it('returns overridden stage-specific model', () => {
       const config: ReviewConfig = {
         ...baseConfig,
-        models: { reviewer: 'claude-haiku-4-5', judge: 'claude-sonnet-4-6' },
+        models: { reviewer: 'claude-haiku-4-5', judge: 'claude-sonnet-4-6', dedup: 'claude-sonnet-4-6' },
       };
       expect(resolveModel(config, 'reviewer')).toBe('claude-haiku-4-5');
       expect(resolveModel(config, 'judge')).toBe('claude-sonnet-4-6');
+      expect(resolveModel(config, 'dedup')).toBe('claude-sonnet-4-6');
     });
 
     it('falls back to default models when models is undefined', () => {
       const config: ReviewConfig = { ...baseConfig, models: undefined };
       expect(resolveModel(config, 'reviewer')).toBe('claude-sonnet-4-6');
       expect(resolveModel(config, 'judge')).toBe('claude-opus-4-6');
+      expect(resolveModel(config, 'dedup')).toBe('claude-haiku-4-5');
     });
 
     it('falls back to default model when stage key is missing', () => {
@@ -374,6 +386,7 @@ models:
       const config: ReviewConfig = { ...baseConfig, models: {} };
       expect(resolveModel(config, 'reviewer')).toBe('claude-sonnet-4-6');
       expect(resolveModel(config, 'judge')).toBe('claude-opus-4-6');
+      expect(resolveModel(config, 'dedup')).toBe('claude-haiku-4-5');
     });
   });
 });
