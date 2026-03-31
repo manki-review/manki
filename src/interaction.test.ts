@@ -1,4 +1,4 @@
-import { parseCommand, buildReplyContext, parseTriageBody, extractFindingContent, triageTitlePrefix, extractPrNumber, ParsedCommand, isBotComment, hasBotMention, isReviewRequest, isBotMentionNonReview, handlePRComment, handleReviewCommentReply, handleReviewCommentCommand } from './interaction';
+import { parseCommand, buildReplyContext, parseTriageBody, extractFindingContent, triageTitlePrefix, extractPrNumber, ParsedCommand, isBotComment, hasBotMention, isReviewRequest, isBotMentionNonReview, handlePRComment, handleReviewCommentReply, handleReviewCommentCommand, scopeDiffToFile } from './interaction';
 import { ReviewConfig } from './types';
 import * as github from '@actions/github';
 import * as core from '@actions/core';
@@ -1224,5 +1224,53 @@ describe('handleReviewCommentCommand', () => {
     const command = parseCommand('/manki dismiss test');
     await handleReviewCommentCommand(octokit, 'test-owner', 'test-repo', 1, 61, command);
     expect(ghUtils.reactToIssueComment).not.toHaveBeenCalled();
+  });
+});
+
+describe('scopeDiffToFile', () => {
+  const multiFileDiff = [
+    'diff --git a/src/handler.ts b/src/handler.ts',
+    'index abc..def 100644',
+    '--- a/src/handler.ts',
+    '+++ b/src/handler.ts',
+    '@@ -1,3 +1,4 @@',
+    ' import { foo } from "bar";',
+    '+import { baz } from "qux";',
+    ' const x = 1;',
+    'diff --git a/src/handler.test.ts b/src/handler.test.ts',
+    'index 111..222 100644',
+    '--- a/src/handler.test.ts',
+    '+++ b/src/handler.test.ts',
+    '@@ -10,3 +10,4 @@',
+    ' test("works", () => {',
+    '+  expect(true).toBe(true);',
+    ' });',
+    'diff --git a/src/utils.ts b/src/utils.ts',
+    'index ghi..jkl 100644',
+    '--- a/src/utils.ts',
+    '+++ b/src/utils.ts',
+    '@@ -5,3 +5,4 @@',
+    ' export function helper() {',
+    '+  return 42;',
+    ' }',
+  ].join('\n');
+
+  it('extracts a single file diff from a multi-file diff', () => {
+    const result = scopeDiffToFile(multiFileDiff, 'src/utils.ts');
+    expect(result).toContain('diff --git a/src/utils.ts b/src/utils.ts');
+    expect(result).toContain('return 42;');
+    expect(result).not.toContain('src/handler.ts');
+  });
+
+  it('returns empty string when file is not in the diff', () => {
+    const result = scopeDiffToFile(multiFileDiff, 'src/missing.ts');
+    expect(result).toBe('');
+  });
+
+  it('does not match substring filenames', () => {
+    const result = scopeDiffToFile(multiFileDiff, 'src/handler.ts');
+    expect(result).toContain('diff --git a/src/handler.ts b/src/handler.ts');
+    expect(result).not.toContain('src/handler.test.ts');
+    expect(result).not.toContain('src/utils.ts');
   });
 });

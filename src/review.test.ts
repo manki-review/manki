@@ -188,7 +188,7 @@ describe('determineVerdict', () => {
 
   it('should REQUEST_CHANGES when 1+ high-confidence suggestions exist', () => {
     const findings: Finding[] = [
-      { severity: 'suggestion', title: 'a', file: 'f', line: 1, description: '', reviewers: ['r'], judgeConfidence: 'high' },
+      { severity: 'suggestion', title: 'Missing null check', file: 'src/handler.ts', line: 1, description: 'The return value should be checked for null', reviewers: ['reviewer-1'], judgeConfidence: 'high' },
     ];
     expect(determineVerdict(findings)).toBe('REQUEST_CHANGES');
   });
@@ -200,10 +200,10 @@ describe('determineVerdict', () => {
 
   it('should APPROVE when suggestions are not high-confidence', () => {
     const findings: Finding[] = [
-      { severity: 'suggestion', title: 'a', file: 'f', line: 1, description: '', reviewers: ['r'], judgeConfidence: 'medium' },
-      { severity: 'suggestion', title: 'b', file: 'f', line: 2, description: '', reviewers: ['r'], judgeConfidence: 'low' },
-      { severity: 'suggestion', title: 'c', file: 'f', line: 3, description: '', reviewers: ['r'], judgeConfidence: 'medium' },
-      { severity: 'suggestion', title: 'd', file: 'f', line: 4, description: '', reviewers: ['r'] },
+      { severity: 'suggestion', title: 'Missing null check', file: 'src/handler.ts', line: 1, description: 'The return value should be checked for null', reviewers: ['reviewer-1'], judgeConfidence: 'medium' },
+      { severity: 'suggestion', title: 'Unused import detected', file: 'src/handler.ts', line: 2, description: 'This import is not referenced anywhere', reviewers: ['reviewer-1'], judgeConfidence: 'low' },
+      { severity: 'suggestion', title: 'Consider using const', file: 'src/utils.ts', line: 3, description: 'Variable is never reassigned', reviewers: ['reviewer-1'], judgeConfidence: 'medium' },
+      { severity: 'suggestion', title: 'Potential memory leak', file: 'src/utils.ts', line: 4, description: 'Event listener is never removed', reviewers: ['reviewer-1'] },
     ];
     expect(determineVerdict(findings)).toBe('APPROVE');
   });

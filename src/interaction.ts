@@ -746,7 +746,7 @@ function buildReplyContext(
   return context;
 }
 
-function scopeDiffToFile(fullDiff: string, filePath: string): string {
+export function scopeDiffToFile(fullDiff: string, filePath: string): string {
   const lines = fullDiff.split('\n');
   const result: string[] = [];
   let inTargetFile = false;
