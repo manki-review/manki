@@ -1437,7 +1437,7 @@ describe('runFullReview orchestration', () => {
     const lastDashboard = dashboardCalls[dashboardCalls.length - 1][4];
     expect(lastDashboard.phase).toBe('reviewed');
     expect(lastDashboard.judgeInputCount).toBe(3);
-    expect(lastDashboard.agentProgress).toBeUndefined();
+    expect(lastDashboard.agentProgress).toBeDefined();
   });
 
   it('flushes dashboard immediately on reviewed progress', async () => {
@@ -1473,7 +1473,7 @@ describe('runFullReview orchestration', () => {
     const lastDashboard = dashboardCalls[dashboardCalls.length - 1][4];
     expect(lastDashboard.phase).toBe('reviewed');
     expect(lastDashboard.rawFindingCount).toBe(4);
-    expect(lastDashboard.agentProgress).toBeUndefined();
+    expect(lastDashboard.agentProgress).toBeDefined();
   });
 
   it('reflects suppression-reduced judgeInputCount in dashboard', async () => {

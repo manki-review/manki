@@ -418,7 +418,6 @@ async function runFullReview(
           reviewEndTime = Date.now();
           dashboard.phase = 'reviewed';
           dashboard.rawFindingCount = progress.rawFindingCount;
-          dashboard.agentProgress = undefined;
           updateProgressDashboard(octokit, owner, repo, progressCommentId, dashboard)
             .catch(err => core.warning(`Failed to update dashboard: ${err}`));
         } else if (progress.phase === 'judging') {
@@ -429,7 +428,6 @@ async function runFullReview(
           dashboard.phase = 'reviewed';
           dashboard.rawFindingCount = progress.rawFindingCount;
           dashboard.judgeInputCount = progress.judgeInputCount;
-          dashboard.agentProgress = undefined;
           updateProgressDashboard(octokit, owner, repo, progressCommentId, dashboard)
             .catch(err => core.warning(`Failed to update dashboard: ${err}`));
         }
