@@ -19,10 +19,6 @@ inputs:
   memory_repo_token:
     description: 'GitHub token with access to the review memory repository'
     required: false
-  model:
-    description: 'Claude model to use for reviews'
-    required: false
-    default: 'claude-opus-4-6'
   github_app_id:
     description: 'GitHub App ID for custom bot identity (reviews show as the app name)'
     required: false
