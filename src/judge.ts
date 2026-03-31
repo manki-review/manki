@@ -53,7 +53,7 @@ export function buildJudgeSystemPrompt(config: ReviewConfig, agentCount: number,
   const majorityThreshold = Math.max(1, Math.ceil(agentCount / 2));
 
   const summaryInstruction = isFollowUp
-    ? 'Start with a brief \'Since last review\' recap mentioning how many findings were resolved and key resolutions. Then focus the summary on what is new or changed in this review cycle. Do not re-introduce the overall PR opinion from scratch. Keep the tone conversational and professional.'
+    ? 'Use this exact markdown structure:\n\n**Since last review** — [X findings resolved (list key ones briefly), Y with author reply, Z still open]\n\n**This cycle** — [1-2 sentences about new findings, leading with the most impactful one. Be conversational and professional. Do not re-introduce the overall PR opinion.]'
     : '1-2 sentence review summary. Be conversational but professional. Focus on what matters: what was found, what\'s good, what needs attention. Never list agent names. Never mention agent count or review level. Never say \'after judge evaluation\'. For clean PRs: acknowledge briefly. For PRs with findings: highlight the most important finding(s).';
   let prompt = `You are a code review judge. You evaluate findings from multiple specialist reviewers for accuracy, actionability, and severity.
 
