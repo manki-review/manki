@@ -149,7 +149,7 @@ async function fetchReviewThreads(
       const severityMatch = firstComment?.body?.match(/manki:(required|suggestion|nit|ignore):/);
       const severity = (severityMatch?.[1] ?? 'unknown') as FindingSeverity | 'unknown';
 
-      const titleMatch = firstComment?.body?.match(/\*\*(?:Required|Suggestion|Nit|Ignore)\*\*:\s*(.+?)(?:\n|$)/);
+      const titleMatch = firstComment?.body?.match(/\*\*(?:Required|Suggestion|Nit|Ignore)\*\*(?:\s*<sub>\[[^\]]*\]<\/sub>)?\s*:\s*(.+?)(?:\n|$)/);
       const findingTitle = titleMatch?.[1]?.trim() ?? '';
 
       return {
@@ -279,9 +279,14 @@ function buildRecapSummary(
 
   if (!duplicateMatches || duplicateMatches.length === 0) return summary;
 
-  const lines = duplicateMatches.map(d =>
-    `- "${sanitizeHtml(d.finding.title)}" → matches "${sanitizeHtml(d.matchedTitle)}"`
-  );
+  const lines = duplicateMatches.map(d => {
+    const title = sanitizeHtml(d.finding.title);
+    const file = sanitizeHtml(d.finding.file);
+    const line = d.finding.line;
+    const severity = sanitizeHtml(d.finding.severity);
+    const matched = sanitizeHtml(d.matchedTitle);
+    return `<details>\n<summary>"${title}" (${file}:${line}, ${severity})</summary>\n\nMatches previously flagged: "${matched}"\n</details>`;
+  });
   const count = duplicateMatches.length;
   return summary + `\n\n<details><summary>🔁 ${count} finding${count === 1 ? '' : 's'} skipped (previously flagged)</summary>\n\n${lines.join('\n')}\n\n</details>`;
 }

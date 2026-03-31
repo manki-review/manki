@@ -503,15 +503,15 @@ describe('buildRecapSummary', () => {
     expect(summary).toBe('No findings');
   });
 
-  it('appends collapsed dedup details when duplicateMatches provided', () => {
+  it('appends collapsed dedup details with per-finding collapsible sections', () => {
     const matches = [
-      { finding: makeFinding({ title: 'Unused import' }), matchedTitle: 'Remove unused import' },
+      { finding: makeFinding({ title: 'Unused import', file: 'src/index.ts', line: 10, severity: 'suggestion' }), matchedTitle: 'Remove unused import' },
     ];
     const summary = buildRecapSummary(1, 1, 0, 0, matches);
     expect(summary).toContain('Findings: 1 new, 1 skipped (already flagged)');
-    expect(summary).toContain('<details>');
     expect(summary).toContain('1 finding skipped (previously flagged)');
-    expect(summary).toContain('"Unused import"');
+    expect(summary).toContain('<summary>"Unused import" (src/index.ts:10, suggestion)</summary>');
+    expect(summary).toContain('Matches previously flagged: "Remove unused import"');
   });
 
   it('sanitizes HTML in finding titles within dedup details', () => {
@@ -679,6 +679,37 @@ describe('fetchRecapState', () => {
 
     const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
     expect(state.previousFindings[0].severity).toBe('unknown');
+  });
+
+  it('extracts title when confidence sub tag is present', async () => {
+    const octokit = mockOctokit([
+      makeThread({
+        id: 't1',
+        isResolved: false,
+        comments: {
+          nodes: [{
+            body: '<!-- manki:required:Prompt-injection --> 🚫 **Required** <sub>[high confidence]</sub>: Prompt injection via unsanitized file paths\n\nDescription.',
+            author: { login: 'github-actions[bot]' },
+          }],
+        },
+      }),
+      makeThread({
+        id: 't2',
+        isResolved: false,
+        path: 'src/bar.ts',
+        line: 20,
+        comments: {
+          nodes: [{
+            body: '<!-- manki:suggestion:LLM-dedup --> 💡 **Suggestion** <sub>[medium confidence]</sub>: LLM dedup only compares against resolved findings\n\nDetails.',
+            author: { login: 'github-actions[bot]' },
+          }],
+        },
+      }),
+    ]);
+
+    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    expect(state.previousFindings[0].title).toBe('Prompt injection via unsanitized file paths');
+    expect(state.previousFindings[1].title).toBe('LLM dedup only compares against resolved findings');
   });
 
   it('handles null line in thread', async () => {
