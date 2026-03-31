@@ -363,12 +363,14 @@ async function llmDeduplicateFindings(
     return { unique: findings, duplicates: [] };
   }
 
+  const sanitize = (s: string) => s.replace(/[\r\n]/g, ' ');
+
   const dismissedList = dismissed.map((f, i) =>
-    `${i + 1}. "${f.title}" (${f.file}:${f.line})`
+    `${i + 1}. "${sanitize(f.title)}" (${sanitize(f.file)}:${f.line})`
   ).join('\n');
 
   const newList = findings.map((f, i) =>
-    `${i + 1}. "${f.title}" (${f.file}:${f.line})`
+    `${i + 1}. "${sanitize(f.title)}" (${sanitize(f.file)}:${f.line})`
   ).join('\n');
 
   try {
@@ -384,7 +386,12 @@ async function llmDeduplicateFindings(
     }
 
     const matches = JSON.parse(jsonText) as Array<{ index: number; matchedDismissed: number }>;
-    const matchedIndices = new Set(matches.map(m => m.index - 1).filter(i => i >= 0 && i < findings.length));
+    const matchedIndices = new Set(
+      matches
+        .filter(m => m.index - 1 >= 0 && m.index - 1 < findings.length
+                  && m.matchedDismissed - 1 >= 0 && m.matchedDismissed - 1 < dismissed.length)
+        .map(m => m.index - 1),
+    );
 
     const unique: Finding[] = [];
     const duplicates: Finding[] = [];
