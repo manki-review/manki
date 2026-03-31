@@ -173,11 +173,16 @@ async function fetchReviewThreads(
  * Filter out findings that duplicate previous ones or match stored suppressions.
  * Returns only genuinely new findings.
  */
+interface DuplicateMatch {
+  finding: Finding;
+  matchedTitle: string;
+}
+
 function deduplicateFindings(
   newFindings: Finding[],
   previousFindings: PreviousFinding[],
   suppressions?: Suppression[],
-): { unique: Finding[]; duplicates: Finding[] } {
+): { unique: Finding[]; duplicates: DuplicateMatch[] } {
   if (suppressions && suppressions.length > 0) {
     newFindings = newFindings.filter(f => {
       const match = suppressions.some(s => matchesSuppression(f, s));
@@ -187,15 +192,15 @@ function deduplicateFindings(
   }
 
   const unique: Finding[] = [];
-  const duplicates: Finding[] = [];
+  const duplicates: DuplicateMatch[] = [];
 
   for (const finding of newFindings) {
-    const isDuplicate = previousFindings.some(prev =>
+    const matched = previousFindings.find(prev =>
       matchesPrevious(finding, prev)
     );
 
-    if (isDuplicate) {
-      duplicates.push(finding);
+    if (matched) {
+      duplicates.push({ finding, matchedTitle: matched.title });
     } else {
       unique.push(finding);
     }
@@ -249,6 +254,10 @@ function matchesPrevious(finding: Finding, previous: PreviousFinding): boolean {
   return true;
 }
 
+function sanitizeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 /**
  * Build a review summary that includes deduplication stats.
  */
@@ -257,6 +266,7 @@ function buildRecapSummary(
   duplicateCount: number,
   resolvedCount: number,
   openCount: number,
+  duplicateMatches?: DuplicateMatch[],
 ): string {
   const parts: string[] = [];
 
@@ -265,7 +275,15 @@ function buildRecapSummary(
   if (resolvedCount > 0) parts.push(`${resolvedCount} resolved`);
   if (duplicateCount > 0) parts.push(`${duplicateCount} skipped (already flagged)`);
 
-  return parts.length > 0 ? `Findings: ${parts.join(', ')}` : 'No findings';
+  const summary = parts.length > 0 ? `Findings: ${parts.join(', ')}` : 'No findings';
+
+  if (!duplicateMatches || duplicateMatches.length === 0) return summary;
+
+  const lines = duplicateMatches.map(d =>
+    `- "${sanitizeHtml(d.finding.title)}" → matches "${sanitizeHtml(d.matchedTitle)}"`
+  );
+  const count = duplicateMatches.length;
+  return summary + `\n\n<details><summary>🔁 ${count} finding${count === 1 ? '' : 's'} skipped (previously flagged)</summary>\n\n${lines.join('\n')}\n\n</details>`;
 }
 
 /**
@@ -357,7 +375,7 @@ async function llmDeduplicateFindings(
   findings: Finding[],
   previousFindings: PreviousFinding[],
   client: ClaudeClient,
-): Promise<{ unique: Finding[]; duplicates: Finding[] }> {
+): Promise<{ unique: Finding[]; duplicates: DuplicateMatch[] }> {
   const dismissed = previousFindings.filter(f => f.status === 'resolved');
   if (findings.length === 0 || dismissed.length === 0) {
     return { unique: findings, duplicates: [] };
@@ -394,14 +412,14 @@ async function llmDeduplicateFindings(
     );
 
     const unique: Finding[] = [];
-    const duplicates: Finding[] = [];
+    const duplicates: DuplicateMatch[] = [];
     for (let i = 0; i < findings.length; i++) {
       if (matchedIndices.has(i)) {
         const match = matches.find(m => m.index - 1 === i);
         const dismissedIdx = match ? match.matchedDismissed - 1 : -1;
         const dismissedTitle = dismissedIdx >= 0 && dismissedIdx < dismissed.length ? dismissed[dismissedIdx].title : 'unknown';
         core.info(`LLM dedup: "${findings[i].title}" matches dismissed "${dismissedTitle}"`);
-        duplicates.push(findings[i]);
+        duplicates.push({ finding: findings[i], matchedTitle: dismissedTitle });
       } else {
         unique.push(findings[i]);
       }
@@ -418,4 +436,4 @@ async function llmDeduplicateFindings(
   }
 }
 
-export { PreviousFinding, RecapState, fetchRecapState, deduplicateFindings, buildRecapSummary, resolveAddressedThreads, titlesOverlap, llmDeduplicateFindings };
+export { DuplicateMatch, PreviousFinding, RecapState, fetchRecapState, deduplicateFindings, buildRecapSummary, resolveAddressedThreads, titlesOverlap, llmDeduplicateFindings };

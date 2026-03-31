@@ -223,6 +223,34 @@ describe('deduplicateFindings', () => {
     expect(result.unique).toHaveLength(1);
     expect(result.duplicates).toHaveLength(0);
   });
+
+  it('returns matchedTitle with each static duplicate', () => {
+    const findings = [
+      makeFinding({ title: 'Missing null check', file: 'src/foo.ts', line: 42 }),
+      makeFinding({ title: 'Unused import in bar', file: 'src/bar.ts', line: 10 }),
+    ];
+    const previous = [
+      makePrevious({ title: 'Missing null check', file: 'src/foo.ts', line: 42 }),
+      makePrevious({ title: 'Unused import in bar', file: 'src/bar.ts', line: 10 }),
+    ];
+
+    const result = deduplicateFindings(findings, previous);
+    expect(result.duplicates).toHaveLength(2);
+    expect(result.duplicates[0].finding.title).toBe('Missing null check');
+    expect(result.duplicates[0].matchedTitle).toBe('Missing null check');
+    expect(result.duplicates[1].finding.title).toBe('Unused import in bar');
+    expect(result.duplicates[1].matchedTitle).toBe('Unused import in bar');
+  });
+
+  it('returns matched previous title when titles differ via substring', () => {
+    const findings = [makeFinding({ title: 'Missing null check in processBlock', file: 'src/foo.ts', line: 42 })];
+    const previous = [makePrevious({ title: 'Missing null check', file: 'src/foo.ts', line: 42 })];
+
+    const result = deduplicateFindings(findings, previous);
+    expect(result.duplicates).toHaveLength(1);
+    expect(result.duplicates[0].finding.title).toBe('Missing null check in processBlock');
+    expect(result.duplicates[0].matchedTitle).toBe('Missing null check');
+  });
 });
 
 describe('titlesOverlap', () => {
@@ -340,7 +368,8 @@ describe('deduplicateFindings with suppressions', () => {
     expect(result.unique).toHaveLength(1);
     expect(result.unique[0].title).toBe('Unused import');
     expect(result.duplicates).toHaveLength(1);
-    expect(result.duplicates[0].title).toBe('Missing null check');
+    expect(result.duplicates[0].finding.title).toBe('Missing null check');
+    expect(result.duplicates[0].matchedTitle).toBe('Missing null check');
   });
 });
 
@@ -472,6 +501,38 @@ describe('buildRecapSummary', () => {
   it('returns "No findings" when all counts are zero', () => {
     const summary = buildRecapSummary(0, 0, 0, 0);
     expect(summary).toBe('No findings');
+  });
+
+  it('appends collapsed dedup details when duplicateMatches provided', () => {
+    const matches = [
+      { finding: makeFinding({ title: 'Unused import' }), matchedTitle: 'Remove unused import' },
+    ];
+    const summary = buildRecapSummary(1, 1, 0, 0, matches);
+    expect(summary).toContain('Findings: 1 new, 1 skipped (already flagged)');
+    expect(summary).toContain('<details>');
+    expect(summary).toContain('1 finding skipped (previously flagged)');
+    expect(summary).toContain('"Unused import"');
+  });
+
+  it('sanitizes HTML in finding titles within dedup details', () => {
+    const matches = [
+      { finding: makeFinding({ title: '<script>alert("xss")</script>' }), matchedTitle: 'legit "title"' },
+    ];
+    const summary = buildRecapSummary(0, 1, 0, 0, matches);
+    expect(summary).not.toContain('<script>');
+    expect(summary).toContain('&lt;script&gt;');
+    expect(summary).toContain('&quot;xss&quot;');
+    expect(summary).toContain('legit &quot;title&quot;');
+  });
+
+  it('escapes ampersands in finding titles to prevent HTML entity injection', () => {
+    const matches = [
+      { finding: makeFinding({ title: 'a &lt;b&gt; issue' }), matchedTitle: 'foo & bar' },
+    ];
+    const summary = buildRecapSummary(0, 1, 0, 0, matches);
+    expect(summary).toContain('&amp;lt;b&amp;gt;');
+    expect(summary).toContain('foo &amp; bar');
+    expect(summary).not.toContain('foo & bar');
   });
 });
 
@@ -879,7 +940,8 @@ describe('llmDeduplicateFindings', () => {
     expect(result.unique).toHaveLength(1);
     expect(result.unique[0].title).toBe('Unused import');
     expect(result.duplicates).toHaveLength(1);
-    expect(result.duplicates[0].title).toBe('Missing null check');
+    expect(result.duplicates[0].finding.title).toBe('Missing null check');
+    expect(result.duplicates[0].matchedTitle).toBe('Null safety issue');
   });
 
   it('handles LLM returning no matches', async () => {
@@ -943,7 +1005,8 @@ describe('llmDeduplicateFindings', () => {
     expect(result.unique).toHaveLength(1);
     expect(result.unique[0].title).toBe('Unused import');
     expect(result.duplicates).toHaveLength(1);
-    expect(result.duplicates[0].title).toBe('Missing null check');
+    expect(result.duplicates[0].finding.title).toBe('Missing null check');
+    expect(result.duplicates[0].matchedTitle).toBe('Null safety issue');
   });
 
   it('keeps finding in unique when matchedDismissed index is out of bounds', async () => {
