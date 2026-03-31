@@ -632,7 +632,7 @@ async function runFullReview(
         newFindings: result.findings.length,
         previouslyFlagged: recap.previousFindings.filter(f => f.status === 'open').length,
         resolved: recap.previousFindings.filter(f => f.status === 'resolved').length,
-        suppressionsApplied: duplicates.length,
+        suppressionsApplied: totalDuplicates,
       },
       timing,
     };

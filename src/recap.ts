@@ -363,7 +363,7 @@ async function llmDeduplicateFindings(
     return { unique: findings, duplicates: [] };
   }
 
-  const sanitize = (s: string) => s.replace(/[\r\n]/g, ' ');
+  const sanitize = (s: string) => s.replace(/[\r\n]/g, ' ').replace(/"/g, '\\"');
 
   const dismissedList = dismissed.map((f, i) =>
     `${i + 1}. "${sanitize(f.title)}" (${sanitize(f.file)}:${f.line})`
