@@ -9,6 +9,7 @@ import {
   runJudgeAgent,
   JudgeInput,
   JudgedFinding,
+  RecapStats,
 } from './judge';
 import { ClaudeClient } from './claude';
 import { RepoMemory, Learning, Suppression } from './memory';
@@ -183,6 +184,18 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('**Severity mapping:**');
     expect(prompt).toContain('Critical/High impact + Certain/Probable likelihood');
   });
+
+  it('uses follow-up summary instruction when isFollowUp is true', () => {
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, true);
+    expect(prompt).toContain('Since last review');
+    expect(prompt).not.toContain('1-2 sentence review summary');
+  });
+
+  it('uses standard summary instruction when isFollowUp is false', () => {
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, false);
+    expect(prompt).toContain('1-2 sentence review summary');
+    expect(prompt).not.toContain('Since last review');
+  });
 });
 
 describe('buildJudgeUserMessage', () => {
@@ -284,6 +297,31 @@ describe('buildJudgeUserMessage', () => {
     const msg = buildJudgeUserMessage(findings, new Map(), '');
 
     expect(msg).not.toContain('## Changed Files in This PR');
+  });
+
+  it('includes recap section with counts and resolved titles when recapStats provided', () => {
+    const findings = [makeFinding()];
+    const recapStats: RecapStats = {
+      resolved: 2,
+      open: 1,
+      replied: 3,
+      resolvedTitles: ['Null check missing', 'Unused import'],
+    };
+    const msg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, recapStats);
+
+    expect(msg).toContain('## Previous Review Recap');
+    expect(msg).toContain('**Resolved**: 2 findings');
+    expect(msg).toContain('- Null check missing');
+    expect(msg).toContain('- Unused import');
+    expect(msg).toContain('**Still open**: 1 finding');
+    expect(msg).toContain('**Author replied**: 3 findings');
+  });
+
+  it('omits recap section when recapStats is undefined', () => {
+    const findings = [makeFinding()];
+    const msg = buildJudgeUserMessage(findings, new Map(), '');
+
+    expect(msg).not.toContain('## Previous Review Recap');
   });
 });
 
@@ -502,6 +540,7 @@ describe('runJudgeAgent', () => {
       rawDiff: '',
       repoContext: '',
       agentCount: 5,
+      isFollowUp: false,
     };
 
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
@@ -525,6 +564,7 @@ describe('runJudgeAgent', () => {
       rawDiff: '',
       repoContext: '',
       agentCount: 5,
+      isFollowUp: false,
     };
 
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
@@ -551,6 +591,7 @@ describe('runJudgeAgent', () => {
       rawDiff: '',
       repoContext: '',
       agentCount: 5,
+      isFollowUp: false,
     };
 
     await runJudgeAgent(mockClient, makeConfig(), input);
@@ -572,6 +613,7 @@ describe('runJudgeAgent', () => {
       rawDiff: '',
       repoContext: '',
       agentCount: 5,
+      isFollowUp: false,
     };
 
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
@@ -602,6 +644,7 @@ describe('runJudgeAgent', () => {
       rawDiff: '',
       repoContext: '',
       agentCount: 5,
+      isFollowUp: false,
     };
 
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
@@ -630,6 +673,7 @@ describe('runJudgeAgent', () => {
       memory: makeMemory(),
       repoContext: '',
       agentCount: 5,
+      isFollowUp: false,
     };
 
     await runJudgeAgent(mockClient, makeConfig(), input);

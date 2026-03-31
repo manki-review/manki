@@ -15,6 +15,13 @@ import { titlesOverlap } from './recap';
 import { validateSeverity } from './review';
 import { DiffFile, Finding, FindingSeverity, ReviewConfig, ParsedDiff, PrContext } from './types';
 
+export interface RecapStats {
+  resolved: number;
+  open: number;
+  replied: number;
+  resolvedTitles: string[];
+}
+
 export interface JudgeInput {
   findings: Finding[];
   diff: ParsedDiff;
@@ -24,6 +31,8 @@ export interface JudgeInput {
   prContext?: PrContext;
   linkedIssues?: LinkedIssue[];
   agentCount: number;
+  recapStats?: RecapStats;
+  isFollowUp: boolean;
 }
 
 export interface JudgedFinding {
@@ -40,8 +49,12 @@ export interface JudgeResult {
 
 const CONTEXT_LINES = 10;
 
-export function buildJudgeSystemPrompt(config: ReviewConfig, agentCount: number): string {
+export function buildJudgeSystemPrompt(config: ReviewConfig, agentCount: number, isFollowUp: boolean = false): string {
   const majorityThreshold = Math.max(1, Math.ceil(agentCount / 2));
+
+  const summaryInstruction = isFollowUp
+    ? 'Start with a brief "Since last review" recap mentioning how many findings were resolved and key resolutions. Then focus the summary on what is new or changed in this review cycle. Do not re-introduce the overall PR opinion from scratch. Keep the tone conversational and professional.'
+    : '1-2 sentence review summary. Be conversational but professional. Focus on what matters: what was found, what\'s good, what needs attention. Never list agent names. Never mention agent count or review level. Never say \'after judge evaluation\'. For clean PRs: acknowledge briefly. For PRs with findings: highlight the most important finding(s).';
   let prompt = `You are a code review judge. You evaluate findings from multiple specialist reviewers for accuracy, actionability, and severity.
 
 ## Severity Assessment
@@ -148,7 +161,7 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
 
 \`\`\`
 {
-  "summary": "1-2 sentence review summary. Be conversational but professional. Focus on what matters: what was found, what's good, what needs attention. Never list agent names. Never mention agent count or review level. Never say 'after judge evaluation'. For clean PRs: acknowledge briefly. For PRs with findings: highlight the most important finding(s).",
+  "summary": "${summaryInstruction}",
   "findings": [
     {
       "title": "Short title matching or close to the original finding title",
@@ -176,6 +189,7 @@ export function buildJudgeUserMessage(
   prContext?: PrContext,
   linkedIssues?: LinkedIssue[],
   changedFiles?: DiffFile[],
+  recapStats?: RecapStats,
 ): string {
   const parts: string[] = [];
 
@@ -183,6 +197,19 @@ export function buildJudgeUserMessage(
     parts.push(`## Pull Request\n`);
     parts.push(`**Title**: ${prContext.title}`);
     parts.push(`**Base branch**: ${prContext.baseBranch}\n`);
+  }
+
+  if (recapStats) {
+    parts.push(`## Previous Review Recap\n`);
+    parts.push(`- **Resolved**: ${recapStats.resolved} finding${recapStats.resolved !== 1 ? 's' : ''}`);
+    if (recapStats.resolvedTitles.length > 0) {
+      for (const title of recapStats.resolvedTitles) {
+        parts.push(`  - ${title}`);
+      }
+    }
+    parts.push(`- **Still open**: ${recapStats.open} finding${recapStats.open !== 1 ? 's' : ''}`);
+    parts.push(`- **Author replied**: ${recapStats.replied} finding${recapStats.replied !== 1 ? 's' : ''}`);
+    parts.push('');
   }
 
   if (changedFiles && changedFiles.length > 0) {
@@ -378,7 +405,7 @@ export async function runJudgeAgent(
   config: ReviewConfig,
   input: JudgeInput,
 ): Promise<{ findings: Finding[]; summary: string }> {
-  const { findings, diff, memory, prContext, linkedIssues, agentCount } = input;
+  const { findings, diff, memory, prContext, linkedIssues, agentCount, recapStats, isFollowUp } = input;
 
   if (findings.length === 0) return { findings, summary: 'Review complete.' };
 
@@ -396,8 +423,8 @@ export async function runJudgeAgent(
 
   const changedFiles = diff.files;
 
-  const systemPrompt = buildJudgeSystemPrompt(config, agentCount);
-  const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles);
+  const systemPrompt = buildJudgeSystemPrompt(config, agentCount, isFollowUp);
+  const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, recapStats);
 
   const response = await client.sendMessage(systemPrompt, userMessage, { effort: 'high' });
   const judgeResult = parseJudgeResponse(response.content);

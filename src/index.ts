@@ -8,6 +8,7 @@ import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand } from './interaction';
 import { loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
 import { fetchRecapState, deduplicateFindings, buildRecapSummary, resolveAddressedThreads, llmDeduplicateFindings, DuplicateMatch } from './recap';
+import { RecapStats } from './judge';
 import { runReview, determineVerdict, selectTeam } from './review';
 import { DashboardData, PrContext, ReviewMetadata, ReviewStats } from './types';
 import {
@@ -397,6 +398,20 @@ async function runFullReview(
 
     const fullContext = [repoContext, recap.recapContext].filter(Boolean).join('\n\n');
 
+    const isFollowUp = recap.previousFindings.length > 0;
+    let recapStats: RecapStats | undefined;
+    if (isFollowUp) {
+      const resolved = recap.previousFindings.filter(f => f.status === 'resolved');
+      const open = recap.previousFindings.filter(f => f.status === 'open');
+      const replied = recap.previousFindings.filter(f => f.status === 'replied');
+      recapStats = {
+        resolved: resolved.length,
+        open: open.length,
+        replied: replied.length,
+        resolvedTitles: resolved.map(f => f.title).filter(t => t.length > 0),
+      };
+    }
+
     // Fetch full file contents for changed files so reviewers have surrounding context
     const filePaths = filteredFiles
       .filter(f => f.changeType !== 'deleted')
@@ -472,6 +487,8 @@ async function runFullReview(
             .catch(err => core.warning(`Failed to update dashboard: ${err}`));
         }
       },
+      recapStats,
+      isFollowUp,
     );
     const judgeEndTime = Date.now();
 
