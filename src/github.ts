@@ -196,13 +196,17 @@ export function buildDashboard(data: DashboardData): string {
   }
 
   if (data.phase === 'reviewed') {
-    return [
+    const reviewedLines = [
       '**Manki** — Review in progress',
       '',
       `\u2713 Parsed diff — ${data.lineCount} lines`,
       `\u2713 Review — ${data.agentCount} agents \u00B7 ${data.rawFindingCount ?? 0} findings`,
-      `\u23F3 Judge — evaluating ${data.judgeInputCount ?? data.rawFindingCount ?? 0} findings...`,
-    ].join('\n');
+    ];
+    if (hasAgentProgress) {
+      reviewedLines.push(renderAgentLines(agents));
+    }
+    reviewedLines.push(`\u23F3 Judge — evaluating ${data.judgeInputCount ?? data.rawFindingCount ?? 0} findings...`);
+    return reviewedLines.join('\n');
   }
 
   // phase === 'complete'

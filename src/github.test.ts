@@ -1339,6 +1339,24 @@ describe('buildDashboard', () => {
     expect(md).toContain('Judge — evaluating 10 findings...');
   });
 
+  it('renders per-agent detail in the reviewed phase when agentProgress is provided', () => {
+    const data: DashboardData = {
+      phase: 'reviewed', lineCount: 300, agentCount: 3, rawFindingCount: 7,
+      agentProgress: [
+        { name: 'Security & Safety', status: 'done', findingCount: 3, durationMs: 4000 },
+        { name: 'Correctness & Logic', status: 'done', findingCount: 4, durationMs: 2500 },
+        { name: 'Architecture & Design', status: 'done', findingCount: 0, durationMs: 3100 },
+      ],
+    };
+    const md = buildDashboard(data);
+    expect(md).toContain('**Manki** — Review in progress');
+    expect(md).toContain('\u2713 Review — 3 agents \u00B7 7 findings');
+    expect(md).toContain('\u2705 Security & Safety — 3 findings (4s)');
+    expect(md).toContain('\u2705 Correctness & Logic — 4 findings (3s)');
+    expect(md).toContain('\u2705 Architecture & Design — 0 findings (3s)');
+    expect(md).toContain('Judge — evaluating 7 findings...');
+  });
+
   it('renders the complete phase with kept/dropped counts', () => {
     const data: DashboardData = {
       phase: 'complete', lineCount: 500, agentCount: 7,
