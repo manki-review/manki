@@ -581,13 +581,10 @@ async function runFullReview(
 
     const droppedCount = rawFindingCount - result.findings.length;
     const completeDashboard: DashboardData = {
+      ...dashboard,
       phase: 'complete',
-      lineCount,
-      agentCount: team.agents.length,
-      rawFindingCount,
       keptCount: result.findings.length,
       droppedCount: droppedCount >= 0 ? droppedCount : 0,
-      agentProgress: dashboard.agentProgress,
     };
 
     const timing = {

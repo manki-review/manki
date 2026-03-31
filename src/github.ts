@@ -171,54 +171,38 @@ function formatDuration(ms: number): string {
 export function buildDashboard(data: DashboardData): string {
   const agents = data.agentProgress;
   const hasAgentProgress = agents && agents.length > 0;
+  const lines: string[] = [];
+
+  if (data.phase !== 'complete') {
+    lines.push('**Manki** — Review in progress', '');
+  }
+
+  lines.push(`\u2713 Parsed diff — ${data.lineCount} lines`);
 
   if (data.phase === 'started') {
     if (hasAgentProgress) {
       const done = agents.filter(a => a.status === 'done' || a.status === 'failed').length;
-      const lines = [
-        '**Manki** — Review in progress',
-        '',
-        `\u2713 Parsed diff — ${data.lineCount} lines`,
-        `\uD83D\uDD0D Review — ${done}/${agents.length} agents complete`,
-        renderAgentLines(agents),
-        `\u25CB Judge`,
-      ];
-      return lines.join('\n');
+      lines.push(`\uD83D\uDD0D Review — ${done}/${agents.length} agents complete`);
+      lines.push(renderAgentLines(agents));
+    } else {
+      lines.push(`\u23F3 Reviewing with ${data.agentCount} agents...`);
     }
-
-    return [
-      '**Manki** — Review in progress',
-      '',
-      `\u2713 Parsed diff — ${data.lineCount} lines`,
-      `\u23F3 Reviewing with ${data.agentCount} agents...`,
-      `\u25CB Judge — pending`,
-    ].join('\n');
-  }
-
-  if (data.phase === 'reviewed') {
-    const reviewedLines = [
-      '**Manki** — Review in progress',
-      '',
-      `\u2713 Parsed diff — ${data.lineCount} lines`,
-      `\u2713 Review — ${data.agentCount} agents \u00B7 ${data.rawFindingCount ?? 0} findings`,
-    ];
+  } else {
+    lines.push(`\u2713 Review — ${data.agentCount} agents \u00B7 ${data.rawFindingCount ?? 0} findings`);
     if (hasAgentProgress) {
-      reviewedLines.push(renderAgentLines(agents));
+      lines.push(renderAgentLines(agents));
     }
-    reviewedLines.push(`\u23F3 Judge — evaluating ${data.judgeInputCount ?? data.rawFindingCount ?? 0} findings...`);
-    return reviewedLines.join('\n');
   }
 
-  // phase === 'complete'
-  const completeLines = [
-    `\u2713 Parsed diff — ${data.lineCount} lines`,
-    `\u2713 Review — ${data.agentCount} agents \u00B7 ${data.rawFindingCount ?? 0} findings`,
-  ];
-  if (hasAgentProgress) {
-    completeLines.push(renderAgentLines(agents));
+  if (data.phase === 'started') {
+    lines.push(hasAgentProgress ? `\u25CB Judge` : `\u25CB Judge — pending`);
+  } else if (data.phase === 'reviewed') {
+    lines.push(`\u23F3 Judge — evaluating ${data.judgeInputCount ?? data.rawFindingCount ?? 0} findings...`);
+  } else {
+    lines.push(`\u2713 Judge — ${data.keptCount ?? 0} kept \u00B7 ${data.droppedCount ?? 0} dropped`);
   }
-  completeLines.push(`\u2713 Judge — ${data.keptCount ?? 0} kept \u00B7 ${data.droppedCount ?? 0} dropped`);
-  return completeLines.join('\n');
+
+  return lines.join('\n');
 }
 
 /**
