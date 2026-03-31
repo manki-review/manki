@@ -190,6 +190,23 @@ describe('deduplicateFindings', () => {
     expect(result.duplicates).toHaveLength(1);
   });
 
+  it('does not match when line delta exceeds relaxed threshold', () => {
+    const findings = [makeFinding({
+      title: 'Missing null check before dereference',
+      file: 'src/foo.ts',
+      line: 70,
+    })];
+    const previous = [makePrevious({
+      title: 'Missing null check before dereference',
+      file: 'src/foo.ts',
+      line: 45,
+    })];
+
+    const result = deduplicateFindings(findings, previous);
+    expect(result.unique).toHaveLength(1);
+    expect(result.duplicates).toHaveLength(0);
+  });
+
   it('does not match different file even with matching title', () => {
     const findings = [makeFinding({
       title: 'Missing null check before dereference',
@@ -249,6 +266,13 @@ describe('titlesOverlap', () => {
 
   it('returns false when all words are too short and strings differ', () => {
     expect(titlesOverlap('a b c', 'x y z')).toBe(false);
+  });
+
+  it('matches titles with punctuation-laden words', () => {
+    expect(titlesOverlap(
+      'regression: `is_ours` removed, error handling missing',
+      'regression is_ours removed error handling missing',
+    )).toBe(true);
   });
 });
 

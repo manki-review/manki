@@ -220,8 +220,8 @@ function titlesOverlap(a: string, b: string): boolean {
 }
 
 function wordOverlapRatio(a: string, b: string): number {
-  const aWords = new Set(a.toLowerCase().split(/\s+/).filter(w => w.length >= 3));
-  const bWords = new Set(b.toLowerCase().split(/\s+/).filter(w => w.length >= 3));
+  const aWords = new Set(a.toLowerCase().split(/\s+/).map(w => w.replace(/^[^a-z0-9]+|[^a-z0-9]+$/gi, '')).filter(w => w.length >= 3));
+  const bWords = new Set(b.toLowerCase().split(/\s+/).map(w => w.replace(/^[^a-z0-9]+|[^a-z0-9]+$/gi, '')).filter(w => w.length >= 3));
   if (aWords.size === 0 || bWords.size === 0) return 0;
 
   let overlap = 0;
