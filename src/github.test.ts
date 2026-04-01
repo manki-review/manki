@@ -1579,6 +1579,19 @@ describe('updateProgressComment', () => {
     const body = mockUpdateComment.mock.calls[0][0].body as string;
     expect(body).toContain(REVIEW_COMPLETE_MARKER);
   });
+
+  it('appends recapStatsTag to the comment body when provided', async () => {
+    const tag = '<!-- manki-recap:{"resolved":5,"open":2,"replied":1} -->';
+    await updateProgressComment(mockOctokit, 'owner', 'repo', 123, baseDashboard, baseMetadata, tag);
+    const body = mockUpdateComment.mock.calls[0][0].body as string;
+    expect(body).toContain(tag);
+  });
+
+  it('omits recapStatsTag when not provided', async () => {
+    await updateProgressComment(mockOctokit, 'owner', 'repo', 123, baseDashboard, baseMetadata);
+    const body = mockUpdateComment.mock.calls[0][0].body as string;
+    expect(body).not.toContain('<!-- manki-recap:');
+  });
 });
 
 describe('fetchPRDiff', () => {

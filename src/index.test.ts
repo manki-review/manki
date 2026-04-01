@@ -1305,6 +1305,88 @@ describe('runFullReview orchestration', () => {
     expect(jest.mocked(reviewModule.determineVerdict)).toHaveBeenCalledWith([finding2]);
   });
 
+  it('computes delta recap stats and passes cumulative tag to progress comment', async () => {
+    const testFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+    };
+    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+      files: [testFile], totalAdditions: 10, totalDeletions: 5,
+    });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+
+    // Set up previous findings with mixed statuses
+    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
+      previousFindings: [
+        { title: 'Old bug', file: 'src/app.ts', line: 1, severity: 'required', status: 'resolved' },
+        { title: 'Open issue', file: 'src/app.ts', line: 2, severity: 'suggestion', status: 'open' },
+        { title: 'Replied finding', file: 'src/app.ts', line: 3, severity: 'nit', status: 'replied' },
+      ],
+      recapContext: 'some context',
+    });
+
+    // Previous recap had 0 resolved, 0 open, 0 replied — so deltas should equal totals
+    jest.mocked(recapModule.fetchPreviousRecapStats).mockResolvedValue({
+      resolved: 0, open: 0, replied: 0,
+    });
+
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'APPROVE', summary: 'Looks good',
+      findings: [], highlights: [], reviewComplete: true,
+    });
+    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [], duplicates: [] });
+
+    await callRunFullReview();
+
+    // formatRecapStatsTag should have been called with cumulative counts
+    expect(jest.mocked(recapModule.formatRecapStatsTag)).toHaveBeenCalledWith({
+      resolved: 1, open: 1, replied: 1,
+    });
+
+    // updateProgressComment should receive the tag as the last argument
+    expect(jest.mocked(ghUtils.updateProgressComment)).toHaveBeenCalledWith(
+      expect.anything(), 'test-owner', 'test-repo', 1,
+      expect.anything(), expect.anything(),
+      '<!-- manki-recap:{"resolved":0,"open":0,"replied":0} -->',
+    );
+  });
+
+  it('skips recap stats tag when there are no previous findings', async () => {
+    const testFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+    };
+    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+      files: [testFile], totalAdditions: 10, totalDeletions: 5,
+    });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+
+    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
+      previousFindings: [],
+      recapContext: '',
+    });
+
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'APPROVE', summary: 'Looks good',
+      findings: [], highlights: [], reviewComplete: true,
+    });
+    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [], duplicates: [] });
+
+    await callRunFullReview();
+
+    // formatRecapStatsTag should NOT have been called
+    expect(jest.mocked(recapModule.formatRecapStatsTag)).not.toHaveBeenCalled();
+
+    // updateProgressComment should be called with undefined tag
+    expect(jest.mocked(ghUtils.updateProgressComment)).toHaveBeenCalledWith(
+      expect.anything(), 'test-owner', 'test-repo', 1,
+      expect.anything(), expect.anything(),
+      undefined,
+    );
+  });
+
   it('applies memory escalations when patterns exist', async () => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
