@@ -81,7 +81,7 @@ For the full setup guide (permissions, memory system, GitHub App identity, troub
 | `/manki forget suppression <pattern>` | Remove a suppression matching the pattern |
 | `/manki help` | Show all commands |
 
-You can also use `@manki` or `@manki-labs` as the command prefix, or reply to any of her review comments to start a conversation. Tip: You can edit a comment to add `/manki` if you forgot to include it.
+You can also use `@manki` as the command prefix, or reply to any of her review comments to start a conversation. Tip: You can edit a comment to add `/manki` if you forgot to include it.
 
 ## Configure
 
@@ -120,7 +120,7 @@ nit_handling: issues
 memory:
   enabled: true
   repo: "your-org/review-memory"
-# memory_repo_token is optional if the manki-labs GitHub App
+# memory_repo_token is optional if the manki-review GitHub App
 # is installed on your memory repo. Otherwise, add it as a
 # workflow secret: memory_repo_token: ${{ secrets.REVIEW_MEMORY_TOKEN }}
 ```

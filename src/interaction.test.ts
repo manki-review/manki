@@ -125,21 +125,6 @@ describe('parseCommand', () => {
     expect(result).toEqual<ParsedCommand>({ type: 'help', args: '' });
   });
 
-  it('parses @manki-labs prefix (backwards compat)', () => {
-    const result = parseCommand('@manki-labs explain the error handling');
-    expect(result).toEqual<ParsedCommand>({ type: 'explain', args: 'the error handling' });
-  });
-
-  it('parses @manki-labs dismiss (backwards compat)', () => {
-    const result = parseCommand('@manki-labs dismiss null-check-warning');
-    expect(result).toEqual<ParsedCommand>({ type: 'dismiss', args: 'null-check-warning' });
-  });
-
-  it('parses @manki-labs help (backwards compat)', () => {
-    const result = parseCommand('@manki-labs help');
-    expect(result).toEqual<ParsedCommand>({ type: 'help', args: '' });
-  });
-
   it('is case-insensitive for /manki prefix', () => {
     const result = parseCommand('/Manki EXPLAIN the changes');
     expect(result).toEqual<ParsedCommand>({ type: 'explain', args: 'the changes' });

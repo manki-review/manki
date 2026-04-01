@@ -215,8 +215,8 @@ interface ParsedCommand {
   args: string;
 }
 
-const BOT_MENTION_PATTERN = /(?:@manki-review|@manki-labs|@manki|\/manki)\b/;
-const BOT_PREFIX_PATTERN = /(?:@manki-review|@manki-labs|@manki|\/manki)\s+(explain|dismiss|help|remember|forget|check|triage)(?:\s+(.*))?/;
+const BOT_MENTION_PATTERN = /(?:@manki-review|@manki|\/manki)\b/;
+const BOT_PREFIX_PATTERN = /(?:@manki-review|@manki|\/manki)\s+(explain|dismiss|help|remember|forget|check|triage)(?:\s+(.*))?/;
 
 function parseCommand(body: string): ParsedCommand {
   const lower = body.toLowerCase();
