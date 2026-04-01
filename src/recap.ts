@@ -4,6 +4,7 @@ import { ClaudeClient } from './claude';
 import { matchesSuppression, Suppression } from './memory';
 import { getSeverityEmoji } from './github';
 import { Finding, FindingSeverity, ParsedDiff } from './types';
+import { BOT_MARKER as PROGRESS_MARKER } from './github';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -109,7 +110,7 @@ async function fetchPreviousRecapStats(
 
     for (const comment of comments) {
       if (comment.user?.type !== 'Bot') continue;
-      if (!comment.body?.includes('<!-- manki-bot -->')) continue;
+      if (!comment.body?.includes(PROGRESS_MARKER)) continue;
 
       const match = comment.body.match(RECAP_STATS_RE);
       if (match) {

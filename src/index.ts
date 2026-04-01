@@ -413,8 +413,9 @@ async function runFullReview(
       }
     }
 
+    let autoResolved = 0;
     if (recap.previousFindings.length > 0) {
-      const autoResolved = await resolveAddressedThreads(
+      autoResolved = await resolveAddressedThreads(
         octokit, judgeClient, owner, repo, prNumber,
         recap.previousFindings, diff,
       );
@@ -438,7 +439,7 @@ async function runFullReview(
       const deltaReplied = Math.max(0, totalReplied.length - (previousRecap?.replied ?? 0));
 
       const resolvedTitles = deltaResolved > 0
-        ? totalResolved.slice(-deltaResolved).map(f => f.title).filter(t => t.length > 0)
+        ? totalResolved.map(f => f.title).filter(t => t.length > 0)
         : [];
 
       recapStats = {
@@ -729,8 +730,8 @@ async function runFullReview(
 
     const cumulativeTag = recap.previousFindings.length > 0
       ? formatRecapStatsTag({
-        resolved: recap.previousFindings.filter(f => f.status === 'resolved').length,
-        open: recap.previousFindings.filter(f => f.status === 'open').length,
+        resolved: recap.previousFindings.filter(f => f.status === 'resolved').length + autoResolved,
+        open: recap.previousFindings.filter(f => f.status === 'open').length - autoResolved,
         replied: recap.previousFindings.filter(f => f.status === 'replied').length,
       })
       : undefined;
