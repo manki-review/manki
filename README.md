@@ -31,40 +31,11 @@ Manki assembles a dynamic review team from a pool of seven specialist agents, si
 
 ## Quick start
 
-```yaml
-# .github/workflows/manki.yml
-name: Manki
-on:
-  pull_request:
-    types: [opened, synchronize]
-  issue_comment:
-    types: [created, edited]
-  pull_request_review_comment:
-    types: [created]
-  pull_request_review:
-    types: [submitted, dismissed]
+1. **Install the app** -- [github.com/apps/manki-review](https://github.com/apps/manki-review)
+2. **Add a Claude secret** -- `gh secret set CLAUDE_CODE_OAUTH_TOKEN`
+3. **Add the workflow** -- copy the YAML from the [Setup Guide](SETUP.md#step-3-add-the-workflow)
 
-permissions:
-  contents: read
-  pull-requests: write
-  issues: write
-  id-token: write
-
-concurrency:
-  group: manki-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
-  cancel-in-progress: true
-
-jobs:
-  review:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: xdustinface/manki@v4
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-```
-
-For the full setup guide (permissions, memory system, GitHub App identity, troubleshooting), see **[SETUP.md](SETUP.md)**.
+Full setup guide with memory, triage, and troubleshooting: **[SETUP.md](SETUP.md)**
 
 ## Talk to Manki
 
