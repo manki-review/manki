@@ -2,6 +2,7 @@ import { areAllRequiredResolved, resolveStaleThreads, fetchBotReviewThreads, che
 
 jest.mock('./github', () => ({
   dismissPreviousReviews: jest.fn().mockResolvedValue(undefined),
+  isReviewInProgress: jest.fn().mockResolvedValue(false),
 }));
 
 const makeThread = (overrides: Partial<ReviewThread> = {}): ReviewThread => ({
@@ -310,10 +311,22 @@ describe('fetchBotReviewThreads', () => {
 });
 
 describe('checkAndAutoApprove', () => {
-  const { dismissPreviousReviews } = jest.requireMock('./github') as { dismissPreviousReviews: jest.Mock };
+  const { dismissPreviousReviews, isReviewInProgress: mockIsReviewInProgress } = jest.requireMock('./github') as {
+    dismissPreviousReviews: jest.Mock;
+    isReviewInProgress: jest.Mock;
+  };
 
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  it('skips when review is in progress', async () => {
+    mockIsReviewInProgress.mockResolvedValueOnce(5);
+    const octokit = {} as unknown as Octokit;
+
+    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+
+    expect(result).toBe(false);
   });
 
   function makeMockOctokit(overrides: {

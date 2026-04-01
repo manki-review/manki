@@ -1,4 +1,4 @@
-import { buildDashboard, formatFindingComment, formatStatsJson, formatStatsOneLiner, mapVerdictToEvent, BOT_MARKER, buildNitIssueBody, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, safeTruncate, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, createNitIssue, fetchPRDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji } from './github';
+import { buildDashboard, formatFindingComment, formatStatsJson, formatStatsOneLiner, mapVerdictToEvent, BOT_MARKER, REVIEW_COMPLETE_MARKER, buildNitIssueBody, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, safeTruncate, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, createNitIssue, fetchPRDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress } from './github';
 import { DashboardData, Finding, ParsedDiff, ReviewMetadata, ReviewResult, ReviewStats } from './types';
 
 describe('formatFindingComment', () => {
@@ -2142,5 +2142,76 @@ describe('getSeverityEmoji', () => {
     expect(getSeverityEmoji('suggestion')).toBe('\u{1F4A1}');
     expect(getSeverityEmoji('nit')).toBe('\u{1F4DD}');
     expect(getSeverityEmoji('ignore')).toBe('\u26AA');
+  });
+});
+
+describe('isReviewInProgress', () => {
+  type Octokit = ReturnType<typeof import('@actions/github').getOctokit>;
+
+  function makeMockOctokit(comments: Array<{ body: string; updated_at: string; user: { type: string } }>) {
+    return {
+      rest: {
+        issues: {
+          listComments: jest.fn().mockResolvedValue({ data: comments }),
+        },
+      },
+    } as unknown as Octokit;
+  }
+
+  it('returns remaining minutes when progress comment exists without complete marker', async () => {
+    const recentDate = new Date(Date.now() - 2 * 60000).toISOString();
+    const octokit = makeMockOctokit([
+      { body: `${BOT_MARKER}\n**Manki** — Review in progress`, updated_at: recentDate, user: { type: 'Bot' } },
+    ]);
+
+    const result = await isReviewInProgress(octokit, 'owner', 'repo', 1);
+
+    expect(result).toBe(8);
+  });
+
+  it('returns false when progress comment contains complete marker', async () => {
+    const recentDate = new Date(Date.now() - 2 * 60000).toISOString();
+    const octokit = makeMockOctokit([
+      { body: `${BOT_MARKER}\n**Manki** — Review in progress\n${REVIEW_COMPLETE_MARKER}`, updated_at: recentDate, user: { type: 'Bot' } },
+    ]);
+
+    const result = await isReviewInProgress(octokit, 'owner', 'repo', 1);
+
+    expect(result).toBe(false);
+  });
+
+  it('returns false when progress comment is stale (>10 min)', async () => {
+    const staleDate = new Date(Date.now() - 15 * 60000).toISOString();
+    const octokit = makeMockOctokit([
+      { body: `${BOT_MARKER}\n**Manki** — Review in progress`, updated_at: staleDate, user: { type: 'Bot' } },
+    ]);
+
+    const result = await isReviewInProgress(octokit, 'owner', 'repo', 1);
+
+    expect(result).toBe(false);
+  });
+
+  it('returns false when no progress comment exists', async () => {
+    const octokit = makeMockOctokit([
+      { body: 'Some random comment', updated_at: new Date().toISOString(), user: { type: 'User' } },
+    ]);
+
+    const result = await isReviewInProgress(octokit, 'owner', 'repo', 1);
+
+    expect(result).toBe(false);
+  });
+
+  it('returns false when the API call fails', async () => {
+    const octokit = {
+      rest: {
+        issues: {
+          listComments: jest.fn().mockRejectedValue(new Error('API error')),
+        },
+      },
+    } as unknown as Octokit;
+
+    const result = await isReviewInProgress(octokit, 'owner', 'repo', 1);
+
+    expect(result).toBe(false);
   });
 });

@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { dismissPreviousReviews } from './github';
+import { dismissPreviousReviews, isReviewInProgress } from './github';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -108,6 +108,12 @@ async function checkAndAutoApprove(
   repo: string,
   prNumber: number,
 ): Promise<boolean> {
+  const remaining = await isReviewInProgress(octokit, owner, repo, prNumber);
+  if (remaining !== false) {
+    core.info(`Skipping auto-approve — review in progress (${remaining}m remaining)`);
+    return false;
+  }
+
   const threads = await fetchBotReviewThreads(octokit, owner, repo, prNumber);
 
   const requiredCount = threads.filter(t => t.isRequired).length;

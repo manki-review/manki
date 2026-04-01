@@ -7,6 +7,8 @@ import { isLineInDiff, findClosestDiffLine } from './diff';
 type Octokit = ReturnType<typeof github.getOctokit>;
 
 const BOT_MARKER = '<!-- manki-bot -->';
+const REVIEW_COMPLETE_MARKER = '<!-- manki-review-complete -->';
+const FORCE_REVIEW_MARKER = '<!-- manki-force-review -->';
 
 // Covers all standard HTML elements including `base` (can inject a base URL that hijacks relative links)
 const HTML_TAGS = 'a|abbr|address|article|aside|audio|b|base|bdi|bdo|blockquote|body|br|button|canvas|caption|cite|code|col|colgroup|data|datalist|dd|del|details|dfn|dialog|div|dl|dt|em|embed|fieldset|figcaption|figure|footer|form|h[1-6]|head|header|hgroup|hr|html|i|iframe|img|input|ins|kbd|label|legend|li|link|main|map|mark|math|meta|meter|nav|noscript|object|ol|optgroup|option|output|p|param|picture|pre|progress|q|rp|rt|ruby|s|samp|script|section|select|slot|small|source|span|strong|style|sub|summary|sup|svg|table|tbody|td|template|textarea|tfoot|th|thead|time|title|tr|track|u|ul|var|video|wbr';
@@ -286,6 +288,8 @@ export async function updateProgressComment(
     parts.push('');
     parts.push('</details>');
   }
+
+  parts.push(REVIEW_COMPLETE_MARKER);
 
   await octokit.rest.issues.updateComment({
     owner,
@@ -978,4 +982,34 @@ export async function fetchSubdirClaudeMd(
   return parts.join('\n\n---\n\n');
 }
 
-export { dynamicFence, formatFindingComment, formatStatsJson, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, safeTruncate, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_MARKER };
+/**
+ * Check whether a review is currently in progress for a PR.
+ * Returns the number of minutes remaining until timeout, or `false` if no review is active.
+ */
+async function isReviewInProgress(octokit: Octokit, owner: string, repo: string, prNumber: number): Promise<false | number> {
+  try {
+    const { data: comments } = await octokit.rest.issues.listComments({
+      owner, repo, issue_number: prNumber, per_page: 100, direction: 'desc',
+    });
+    const progressComment = comments.find(c =>
+      c.user?.type === 'Bot' &&
+      c.body?.includes(BOT_MARKER) && c.body?.includes('Review in progress')
+    );
+    if (!progressComment) return false;
+
+    if (progressComment.body?.includes(REVIEW_COMPLETE_MARKER)) return false;
+
+    const updatedAt = new Date(progressComment.updated_at).getTime();
+    const ageMinutes = (Date.now() - updatedAt) / 60000;
+    if (ageMinutes < 10) {
+      const remaining = Math.ceil(10 - ageMinutes);
+      core.info(`Skipping — review already in progress (progress comment updated ${ageMinutes.toFixed(1)}m ago)`);
+      return remaining;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+export { dynamicFence, formatFindingComment, formatStatsJson, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, safeTruncate, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, isReviewInProgress };

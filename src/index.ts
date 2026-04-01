@@ -26,6 +26,8 @@ import {
   reactToIssueComment,
   fetchLinkedIssues,
   BOT_MARKER as PROGRESS_MARKER,
+  FORCE_REVIEW_MARKER,
+  isReviewInProgress,
 } from './github';
 import { checkAndAutoApprove, resolveStaleThreads } from './state';
 
@@ -75,12 +77,14 @@ async function run(): Promise<void> {
       return;
     }
     const body = github.context.payload.comment?.body ?? '';
-    if (!hasBotMention(body) && !isReviewRequest(body)) {
+    const isForceReview = action === 'edited' &&
+      body.includes(FORCE_REVIEW_MARKER) && body.includes('- [x] Force review');
+    if (!isForceReview && !hasBotMention(body) && !isReviewRequest(body)) {
       core.info('Comment does not mention Manki — ignoring');
       return;
     }
     // For edited comments, check if we already processed this comment (has eyes reaction)
-    if (action === 'edited') {
+    if (action === 'edited' && !isForceReview) {
       const commentId = github.context.payload.comment?.id;
       if (commentId) {
         try {
@@ -131,7 +135,16 @@ async function run(): Promise<void> {
 
     case 'issue_comment': {
       const commentBody = github.context.payload.comment?.body ?? '';
-      if (isReviewRequest(commentBody) && github.context.payload.issue?.pull_request) {
+      const forceReviewChecked = commentBody.includes(FORCE_REVIEW_MARKER) && commentBody.includes('- [x] Force review');
+      if (forceReviewChecked && github.context.payload.issue?.pull_request) {
+        const commentId = github.context.payload.comment?.id;
+        if (commentId) {
+          const octokit = await getOctokit();
+          const { owner, repo } = github.context.repo;
+          await reactToIssueComment(octokit, owner, repo, commentId, 'eyes');
+        }
+        await handleCommentTrigger(true);
+      } else if (isReviewRequest(commentBody) && github.context.payload.issue?.pull_request) {
         await handleCommentTrigger();
       } else if (isBotMentionNonReview(commentBody) && github.context.payload.issue?.pull_request) {
         await handleInteraction();
@@ -152,27 +165,18 @@ async function run(): Promise<void> {
   }
 }
 
-async function isReviewInProgress(octokit: Octokit, owner: string, repo: string, prNumber: number): Promise<boolean> {
-  try {
-    const { data: comments } = await octokit.rest.issues.listComments({
-      owner, repo, issue_number: prNumber, per_page: 100, direction: 'desc',
-    });
-    const progressComment = comments.find(c =>
-      c.user?.type === 'Bot' &&
-      c.body?.includes(PROGRESS_MARKER) && c.body?.includes('Review in progress')
-    );
-    if (!progressComment) return false;
-
-    const updatedAt = new Date(progressComment.updated_at).getTime();
-    const ageMinutes = (Date.now() - updatedAt) / 60000;
-    if (ageMinutes < 10) {
-      core.info(`Skipping — review already in progress (progress comment updated ${ageMinutes.toFixed(1)}m ago)`);
-      return true;
-    }
-    return false;
-  } catch {
-    return false;
-  }
+async function postReviewSkippedComment(
+  octokit: Octokit, owner: string, repo: string, prNumber: number, remaining: number,
+): Promise<void> {
+  const body = [
+    PROGRESS_MARKER,
+    `**Review skipped** — a review is currently in progress. Retry in ~${remaining} minutes, or force now:`,
+    '',
+    '- [ ] Force review',
+    '',
+    FORCE_REVIEW_MARKER,
+  ].join('\n');
+  await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
 }
 
 async function handlePullRequest(): Promise<void> {
@@ -193,7 +197,9 @@ async function handlePullRequest(): Promise<void> {
   }
 
   const octokit = await getOctokit();
-  if (await isReviewInProgress(octokit, owner, repo, prNumber)) {
+  const remaining = await isReviewInProgress(octokit, owner, repo, prNumber);
+  if (remaining !== false) {
+    await postReviewSkippedComment(octokit, owner, repo, prNumber, remaining);
     return;
   }
 
@@ -206,7 +212,7 @@ async function handlePullRequest(): Promise<void> {
   await runFullReview(owner, repo, prNumber, commitSha, pr.base.ref, prContext);
 }
 
-async function handleCommentTrigger(): Promise<void> {
+async function handleCommentTrigger(forceReview?: boolean): Promise<void> {
   const payload = github.context.payload;
 
   if (!payload.issue?.pull_request) {
@@ -220,12 +226,16 @@ async function handleCommentTrigger(): Promise<void> {
 
   const octokit = await getOctokit();
 
-  if (await isReviewInProgress(octokit, owner, repo, prNumber)) {
-    if (payload.comment?.id) {
-      await reactToIssueComment(octokit, owner, repo, payload.comment.id, 'eyes');
+  if (!forceReview) {
+    const remaining = await isReviewInProgress(octokit, owner, repo, prNumber);
+    if (remaining !== false) {
+      if (payload.comment?.id) {
+        await reactToIssueComment(octokit, owner, repo, payload.comment.id, 'eyes');
+      }
+      await postReviewSkippedComment(octokit, owner, repo, prNumber, remaining);
+      core.info('Review already in progress — skipping');
+      return;
     }
-    core.info('Review already in progress — skipping');
-    return;
   }
 
   // Acknowledge the review request
@@ -927,4 +937,4 @@ function _resetOctokitCache(): void {
   octokitCache.resolvedToken = null;
 }
 
-export { run, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, runFullReview, main, _resetOctokitCache, isReviewInProgress };
+export { run, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, runFullReview, main, _resetOctokitCache };
