@@ -34,7 +34,7 @@ const mockListComments = jest.fn().mockResolvedValue({ data: [] });
 const mockOctokitInstance = {
   rest: {
     pulls: { get: mockPullsGet },
-    issues: { deleteComment: jest.fn().mockResolvedValue(undefined), listComments: mockListComments, createComment: jest.fn().mockResolvedValue({ data: { id: 999 } }) },
+    issues: { deleteComment: jest.fn().mockResolvedValue(undefined), listComments: mockListComments, createComment: jest.fn().mockResolvedValue({ data: { id: 999 } }), updateComment: jest.fn().mockResolvedValue({}) },
     reactions: { listForIssueComment: mockListReactionsForIssueComment },
   },
 };
@@ -625,6 +625,42 @@ describe('handlePullRequest', () => {
       expect.objectContaining({ body: expect.stringContaining('Review skipped') }),
     );
     expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
+  });
+
+  it('updates existing skip comment instead of creating a duplicate', async () => {
+    jest.mocked(ghUtils.isReviewInProgress).mockResolvedValueOnce(5);
+    mockListComments.mockResolvedValueOnce({
+      data: [
+        {
+          id: 77,
+          body: '<!-- manki-bot -->\n**Review skipped** — a review is currently in progress.',
+          user: { type: 'Bot' },
+        },
+      ],
+    });
+
+    setContext({
+      eventName: 'pull_request',
+      payload: {
+        action: 'opened',
+        sender: { login: 'user' },
+        pull_request: {
+          number: 1,
+          head: { sha: 'abc' },
+          base: { ref: 'main' },
+          title: 'Test PR',
+          body: '',
+          draft: false,
+        },
+      },
+    });
+
+    await handlePullRequest();
+
+    expect(mockOctokitInstance.rest.issues.updateComment).toHaveBeenCalledWith(
+      expect.objectContaining({ comment_id: 77, body: expect.stringContaining('Review skipped') }),
+    );
+    expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalled();
   });
 });
 
@@ -1873,7 +1909,8 @@ describe('force review checkbox', () => {
     expect(jest.mocked(ghUtils.reactToIssueComment)).toHaveBeenCalledWith(
       expect.anything(), 'test-owner', 'test-repo', 42, 'eyes',
     );
-    // force review skips the isReviewInProgress check, so it should proceed to fetch PR
+    // force review bypasses the isReviewInProgress check entirely
+    expect(jest.mocked(ghUtils.isReviewInProgress)).not.toHaveBeenCalled();
     expect(mockPullsGet).toHaveBeenCalled();
   });
 
