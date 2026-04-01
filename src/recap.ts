@@ -2,6 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { ClaudeClient } from './claude';
 import { matchesSuppression, Suppression } from './memory';
+import { getSeverityEmoji } from './github';
 import { Finding, FindingSeverity, ParsedDiff } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -294,9 +295,11 @@ function buildRecapSummary(
     const title = sanitizeHtml(d.finding.title);
     const file = sanitizeHtml(d.finding.file);
     const line = d.finding.line;
-    const severity = sanitizeHtml(d.finding.severity);
+    const severity = d.finding.severity as FindingSeverity;
+    const emoji = getSeverityEmoji(severity);
+    const description = sanitizeHtml(d.finding.description);
     const matched = sanitizeHtml(d.matchedTitle);
-    return `<details>\n<summary>"${title}" (${file}:${line}, ${severity})</summary>\n\nMatches previously flagged: "${matched}"\n</details>`;
+    return `<details>\n<summary>${emoji} "${title}" (${file}:${line}, ${sanitizeHtml(severity)})</summary>\n\n**Description:** ${description}\n\n*Matches previously flagged: "${matched}"*\n</details>`;
   });
   const count = duplicateMatches.length;
   return summary + `\n\n<details><summary>🔁 ${count} finding${count === 1 ? '' : 's'} skipped (previously flagged)</summary>\n\n${lines.join('\n\n')}\n\n</details>`;

@@ -530,13 +530,14 @@ describe('buildRecapSummary', () => {
 
   it('appends collapsed dedup details with per-finding collapsible sections', () => {
     const matches = [
-      { finding: makeFinding({ title: 'Unused import', file: 'src/index.ts', line: 10, severity: 'suggestion' }), matchedTitle: 'Remove unused import' },
+      { finding: makeFinding({ title: 'Unused import', file: 'src/index.ts', line: 10, severity: 'suggestion', description: 'The import is not used anywhere' }), matchedTitle: 'Remove unused import' },
     ];
     const summary = buildRecapSummary(1, 1, 0, 0, matches);
     expect(summary).toContain('Findings: 1 new, 1 skipped (already flagged)');
     expect(summary).toContain('1 finding skipped (previously flagged)');
-    expect(summary).toContain('<summary>"Unused import" (src/index.ts:10, suggestion)</summary>');
-    expect(summary).toContain('Matches previously flagged: "Remove unused import"');
+    expect(summary).toContain('💡 "Unused import" (src/index.ts:10, suggestion)</summary>');
+    expect(summary).toContain('**Description:** The import is not used anywhere');
+    expect(summary).toContain('*Matches previously flagged: "Remove unused import"*');
   });
 
   it('sanitizes HTML in finding titles within dedup details', () => {
