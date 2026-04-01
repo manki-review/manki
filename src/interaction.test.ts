@@ -471,6 +471,10 @@ describe('isReviewRequest', () => {
     expect(isReviewRequest('/manki help')).toBe(false);
   });
 
+  it('returns false for @manki-review with non-review action', () => {
+    expect(isReviewRequest('@manki-review dismiss')).toBe(false);
+  });
+
   it('returns false for text without bot mention', () => {
     expect(isReviewRequest('please review this')).toBe(false);
   });
