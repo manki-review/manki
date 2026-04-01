@@ -2,13 +2,36 @@
 
 Complete step-by-step guide to install Manki on a GitHub repository.
 
+## Quick Start
+
+### 1. Install the GitHub App
+
+Install [Manki](https://github.com/apps/manki-review) on the repositories you want reviewed.
+
+### 2. Add Secrets
+
+Add your Claude authentication to the repository:
+
+```bash
+# Option A: Claude Max subscription (no extra API costs)
+claude setup-token
+gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo <owner>/<repo>
+
+# Option B: Anthropic API key (pay-per-use)
+gh secret set ANTHROPIC_API_KEY --repo <owner>/<repo>
+```
+
+### 3. Add the Workflow
+
+Create `.github/workflows/manki.yml` -- see [full workflow below](#step-3-add-the-workflow).
+
+---
+
 ## Prerequisites
 
 - A GitHub repository
 - A Claude Max subscription (or Anthropic API key)
 - Repository admin access (for settings changes)
-
-## Step 1: Repository Settings
 
 ### Enable GitHub Actions PR Approval
 
@@ -33,6 +56,22 @@ If you use branch protection rules and want Manki to be a required check:
    - The action's APPROVE counts as a review
 
 > **Note**: If the action finds blocking issues, it posts REQUEST_CHANGES which blocks the merge. Non-blocking suggestions still result in APPROVE.
+
+## Step 1: Install the GitHub App
+
+Install the [Manki GitHub App](https://github.com/apps/manki-review) on the repositories you want reviewed. This gives Manki its own identity -- reviews appear as `manki-review[bot]` with a distinct avatar instead of the generic `github-actions[bot]`.
+
+1. Go to [github.com/apps/manki-review](https://github.com/apps/manki-review)
+2. Click **Install**
+3. Select your account and choose which repositories to install on
+
+The app requires these permissions:
+
+| Permission | Access | Purpose |
+|------------|--------|---------|
+| Contents | Read | Read repository files and diffs |
+| Pull requests | Read and write | Post review comments and approvals |
+| Issues | Read and write | Create nit issues and triage |
 
 ## Step 2: Authentication Secrets
 
@@ -76,55 +115,6 @@ Required only if you enable the review memory system. This is a fine-grained PAT
    gh secret set REVIEW_MEMORY_TOKEN --repo <owner>/<repo>
    ```
 
-## Custom Bot Identity (Optional)
-
-By default, reviews appear as "github-actions[bot]". To give the review bot its own name and avatar, create a GitHub App.
-
-### Create the GitHub App
-
-1. Go to **Settings > Developer settings > GitHub Apps > New GitHub App**
-2. Configure:
-   - **App name**: `Manki` (or your preferred name)
-   - **Homepage URL**: `https://github.com/xdustinface/manki`
-   - **Webhook**: Uncheck "Active" (not needed)
-   - **Permissions**:
-     - Repository: **Contents** > Read
-     - Repository: **Pull requests** > Read and write
-     - Repository: **Issues** > Read and write
-   - **Where can this GitHub App be installed?**: "Only on this account"
-3. Click "Create GitHub App"
-4. Note the **App ID** displayed on the app page
-5. Generate a **private key** (scroll down > "Generate a private key")
-6. Download the `.pem` file
-
-### Install the App
-
-1. Go to the app's settings page
-2. Click "Install App" in the sidebar
-3. Select your account and choose which repos to install on
-
-### Add Secrets
-
-```bash
-gh secret set MANKI_APP_ID --repo <owner>/<repo>
-# Paste the App ID number
-
-gh secret set MANKI_PRIVATE_KEY --repo <owner>/<repo>
-# Paste the contents of the .pem file
-```
-
-### Update Workflow
-
-```yaml
-      - name: Manki Review
-        uses: xdustinface/manki@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          github_app_id: ${{ secrets.MANKI_APP_ID }}
-          github_app_private_key: ${{ secrets.MANKI_PRIVATE_KEY }}
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-```
-
 ## Step 3: Add the Workflow
 
 Create `.github/workflows/manki.yml`:
@@ -135,32 +125,26 @@ name: Manki
 on:
   pull_request:
     types: [opened, synchronize]
-  issue_comment:
-    types: [created]
-  pull_request_review_comment:
-    types: [created]
   pull_request_review:
     types: [submitted, dismissed]
+  issue_comment:
+    types: [created, edited]
+  pull_request_review_comment:
+    types: [created]
 
 permissions:
   contents: read
   pull-requests: write
   issues: write
+  id-token: write
 
 jobs:
   review:
-    if: |
-      github.event_name == 'pull_request' ||
-      (github.event_name == 'issue_comment' &&
-       contains(github.event.comment.body, '@manki')) ||
-      (github.event_name == 'pull_request_review_comment' &&
-       github.event.action == 'created') ||
-      (github.event_name == 'pull_request_review' &&
-       (github.event.action == 'submitted' || github.event.action == 'dismissed'))
-    runs-on: ubuntu-latest
+    if: github.actor != 'manki-review[bot]'
     concurrency:
-      group: manki-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
+      group: manki-${{ github.event_name }}-${{ github.event.comment.id || github.event.pull_request.number || github.event.issue.number || github.run_id }}
       cancel-in-progress: true
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -185,15 +169,15 @@ jobs:
 | Event | Purpose |
 |-------|---------|
 | `pull_request: [opened, synchronize]` | Auto-review on PR open and new pushes |
-| `issue_comment: [created]` | `@manki` commands on PRs and issues (review, explain, triage, etc.) |
+| `issue_comment: [created, edited]` | `/manki` commands on PRs and issues (review, explain, triage, etc.) |
 | `pull_request_review_comment: [created]` | Replies to review comment threads |
 | `pull_request_review: [submitted, dismissed]` | Auto-approve check when reviews change state |
 
-The `if` condition allows `issue_comment` events without the `pull_request` filter so that `@manki triage` works on nit issues (which are regular issues, not PRs).
+The `if` condition allows `issue_comment` events without the `pull_request` filter so that `/manki triage` works on nit issues (which are regular issues, not PRs). The self-trigger guard (`github.actor != 'manki-review[bot]'`) prevents the bot from reviewing its own comments.
 
 ### Concurrency
 
-The `concurrency` block ensures only one Manki run is active per PR at a time. If a new push arrives while a review is running, the in-progress run is cancelled.
+The `concurrency` block ensures only one Manki run is active per PR at a time. If a new push arrives while a review is running, the in-progress run is cancelled. The `comment.id` in the concurrency group allows parallel runs for different comment-triggered commands on the same PR.
 
 ## Step 4: Configure Reviews (Optional)
 
@@ -222,7 +206,7 @@ review_thresholds:
   small: 200   # diffs under this many lines get a small team
   medium: 1000  # diffs under this many lines get a medium team
 
-# Per-stage model selection (optional — falls back to `model` if not set)
+# Per-stage model selection (optional -- falls back to `model` if not set)
 models:
   reviewer: claude-sonnet-4-6    # fast, parallel reviewers
   judge: claude-opus-4-6         # precise, single judge
@@ -320,8 +304,8 @@ Make sure the `REVIEW_MEMORY_TOKEN` secret is set (see Step 2).
 
 ### How memory works
 
-- **Learnings** -- Stored when you use `@manki remember` or when substantive review comment discussions are detected. Injected as context into future reviewer prompts.
-- **Suppressions** -- Created by `@manki dismiss` or by leaving nit issue checkboxes unchecked during triage. Non-blocking findings matching a suppression pattern are filtered out (blocking findings are never suppressed).
+- **Learnings** -- Stored when you use `/manki remember` or when substantive review comment discussions are detected. Injected as context into future reviewer prompts.
+- **Suppressions** -- Created by `/manki dismiss` or by leaving nit issue checkboxes unchecked during triage. Non-blocking findings matching a suppression pattern are filtered out (blocking findings are never suppressed).
 - **Patterns** -- Automatically tracked from recurring findings. After 5 occurrences a pattern is escalated for visibility.
 - **Global conventions** -- A `_global/conventions.md` file applied to all repos using the memory system.
 
@@ -336,7 +320,7 @@ To triage:
 
 1. Open the nit issue
 2. Check the boxes for findings worth fixing, leave the rest unchecked
-3. Comment `@manki triage`
+3. Comment `/manki triage`
 
 Manki will:
 
@@ -354,7 +338,7 @@ After setup, create a test PR to verify everything works:
 4. Check the Actions tab for the review run
 5. The PR should receive inline review comments and an APPROVE/REQUEST_CHANGES review
 
-You can also trigger a review manually by commenting `@manki review` on any PR.
+You can also trigger a review manually by commenting `/manki review` on any PR.
 
 ## Troubleshooting
 
@@ -364,19 +348,19 @@ You can also trigger a review manually by commenting `@manki review` on any PR.
 | "Failed to post APPROVE review" | Enable "Allow GitHub Actions to create and approve pull requests" in repo settings |
 | Review says "No reviewable files" | Check `exclude_paths` in config -- dotfiles are included by default |
 | Memory not loading | Verify `REVIEW_MEMORY_TOKEN` secret is set and the PAT has Contents read/write on the memory repo |
-| Review doesn't trigger on `@manki review` | The workflow file must exist on the default branch (main) |
+| Review doesn't trigger on `/manki review` | The workflow file must exist on the default branch (main) |
 | "Diff too large" | Increase `max_diff_lines` in config or split the PR |
-| `@manki triage` does nothing | Make sure the `if` condition allows plain `issue_comment` events (not just PR comments) |
+| `/manki triage` does nothing | Make sure the `if` condition allows plain `issue_comment` events (not just PR comments) |
 | Auto-approve not working | Check that `auto_approve: true` is set in `.manki.yml` and the `pull_request_review` event trigger is in the workflow |
 | Inline comments land on wrong lines | The judge agent validated line numbers but the diff may have shifted. Findings that can't be placed inline are moved to the review body |
 
 ## Known Limitations
 
-### `@manki review` runs action code from main branch
+### `/manki review` runs action code from main branch
 
 GitHub Actions runs `issue_comment` triggered workflows from the **default branch** (main), not the PR branch. This means:
 
-- `@manki review` always uses the action code from main -- not from the PR branch
+- `/manki review` always uses the action code from main -- not from the PR branch
 - If you're developing the action itself and want to test changes, use a direct push to trigger the `pull_request` event instead
 - **The review content is still correct** -- the PR diff is fetched via API regardless of which branch the workflow runs on
 
@@ -393,7 +377,5 @@ Each review run posts fresh inline comments. The recap phase deduplicates agains
 | `CLAUDE_CODE_OAUTH_TOKEN` | Yes* | Claude Max subscription auth |
 | `ANTHROPIC_API_KEY` | Yes* | Anthropic API auth (alternative) |
 | `REVIEW_MEMORY_TOKEN` | No | Fine-grained PAT for memory repo writes |
-| `MANKI_APP_ID` | No | GitHub App ID for custom bot identity |
-| `MANKI_PRIVATE_KEY` | No | GitHub App private key (PEM format) |
 
 \* One of `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` is required.
