@@ -84,7 +84,7 @@ async function run(): Promise<void> {
       return;
     }
     // For edited comments, check if we already processed this comment (has eyes reaction)
-    if (action === 'edited' && !isForceReview) {
+    if (action === 'edited') {
       const commentId = github.context.payload.comment?.id;
       if (commentId) {
         try {
@@ -135,7 +135,7 @@ async function run(): Promise<void> {
 
     case 'issue_comment': {
       const commentBody = github.context.payload.comment?.body ?? '';
-      const forceReviewChecked = commentBody.includes(FORCE_REVIEW_MARKER) && commentBody.includes('- [x] Force review');
+      const forceReviewChecked = action === 'edited' && commentBody.includes(FORCE_REVIEW_MARKER) && commentBody.includes('- [x] Force review');
       if (forceReviewChecked && github.context.payload.issue?.pull_request) {
         const commentId = github.context.payload.comment?.id;
         if (commentId) {
@@ -176,7 +176,19 @@ async function postReviewSkippedComment(
     '',
     FORCE_REVIEW_MARKER,
   ].join('\n');
-  await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+  // Update an existing skip comment instead of creating a duplicate
+  const { data: comments } = await octokit.rest.issues.listComments({
+    owner, repo, issue_number: prNumber, per_page: 100, direction: 'desc',
+  });
+  const existing = comments.find(c =>
+    c.user?.type === 'Bot' &&
+    c.body?.includes(PROGRESS_MARKER) && c.body?.includes('Review skipped'),
+  );
+  if (existing) {
+    await octokit.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+  } else {
+    await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+  }
 }
 
 async function handlePullRequest(): Promise<void> {

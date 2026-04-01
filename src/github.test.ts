@@ -2201,6 +2201,17 @@ describe('isReviewInProgress', () => {
     expect(result).toBe(false);
   });
 
+  it('returns false when progress comment is from a non-bot user', async () => {
+    const recentDate = new Date(Date.now() - 2 * 60000).toISOString();
+    const octokit = makeMockOctokit([
+      { body: `${BOT_MARKER}\n**Manki** — Review in progress`, updated_at: recentDate, user: { type: 'User' } },
+    ]);
+
+    const result = await isReviewInProgress(octokit, 'owner', 'repo', 1);
+
+    expect(result).toBe(false);
+  });
+
   it('returns false when the API call fails', async () => {
     const octokit = {
       rest: {

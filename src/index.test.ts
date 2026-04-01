@@ -1855,6 +1855,8 @@ describe('force review checkbox', () => {
   });
 
   it('routes force review checkbox edit to handleCommentTrigger with forceReview', async () => {
+    // Simulate an active review so the test proves force review bypasses the gate
+    jest.mocked(ghUtils.isReviewInProgress).mockResolvedValueOnce(5);
     const forceBody = `<!-- manki-bot -->\n**Review skipped** — a review is currently in progress. Retry in ~5 minutes, or force now:\n\n- [x] Force review\n\n${FORCE_REVIEW_MARKER}`;
     setContext({
       eventName: 'issue_comment',
