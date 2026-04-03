@@ -735,8 +735,8 @@ async function runFullReview(
       })),
       recap: {
         newFindings: result.findings.length,
-        previouslyFlagged: currentOpen,
-        resolved: currentResolved,
+        previouslyFlagged: recapDelta?.stillOpen.length ?? currentOpen,
+        resolved: recapDelta?.resolvedSinceLastReview.length ?? currentResolved,
         suppressionsApplied: totalDuplicates,
       },
       timing,
