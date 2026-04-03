@@ -10,6 +10,7 @@ import {
   JudgeInput,
   JudgedFinding,
   RecapStats,
+  RecapDelta,
 } from './judge';
 import { ClaudeClient } from './claude';
 import { RepoMemory, Learning, Suppression } from './memory';
@@ -196,6 +197,43 @@ describe('buildJudgeSystemPrompt', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     expect(prompt).toContain('1-2 sentence review summary');
     expect(prompt).not.toContain('Since last review');
+  });
+
+  it('includes recap delta context when both recapStats and recapDelta are provided', () => {
+    const recapStats: RecapStats = { resolved: 2, open: 1, replied: 0, resolvedTitles: ['Fix A', 'Fix B'] };
+    const recapDelta: RecapDelta = {
+      resolvedSinceLastReview: ['Fix A', 'Fix B'],
+      stillOpen: ['Bug C'],
+      newThisCycle: 0,
+    };
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, recapStats, recapDelta);
+    expect(prompt).toContain('Follow-Up Review Context');
+    expect(prompt).toContain('Findings resolved since last review');
+    expect(prompt).toContain('"Fix A"');
+    expect(prompt).toContain('"Fix B"');
+    expect(prompt).toContain('Findings still open');
+    expect(prompt).toContain('"Bug C"');
+    expect(prompt).toContain('Write your summary as a progress update');
+  });
+
+  it('shows no resolved message when delta has no resolved findings', () => {
+    const recapStats: RecapStats = { resolved: 0, open: 2, replied: 0, resolvedTitles: [] };
+    const recapDelta: RecapDelta = {
+      resolvedSinceLastReview: [],
+      stillOpen: ['Bug A', 'Bug B'],
+      newThisCycle: 0,
+    };
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, recapStats, recapDelta);
+    expect(prompt).toContain('No findings were resolved since the last review.');
+    expect(prompt).toContain('"Bug A"');
+    expect(prompt).toContain('"Bug B"');
+  });
+
+  it('omits recap delta section when recapDelta is not provided', () => {
+    const recapStats: RecapStats = { resolved: 1, open: 0, replied: 0, resolvedTitles: ['Fix A'] };
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, recapStats);
+    expect(prompt).not.toContain('Follow-Up Review Context');
+    expect(prompt).toContain('Since last review');
   });
 });
 
