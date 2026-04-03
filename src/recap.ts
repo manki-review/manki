@@ -1,6 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { ClaudeClient } from './claude';
+import { BOT_MARKER as PROGRESS_BOT_MARKER } from './github';
 import { matchesSuppression, Suppression } from './memory';
 import { getSeverityEmoji } from './github';
 import { Finding, FindingSeverity, ParsedDiff } from './types';
@@ -8,6 +9,7 @@ import { Finding, FindingSeverity, ParsedDiff } from './types';
 type Octokit = ReturnType<typeof github.getOctokit>;
 
 const BOT_MARKER = '<!-- manki';
+const RECAP_STATS_REGEX = /<!-- manki-recap:(\{[^}]+\}) -->/;
 
 /** Escape double quotes and strip triple-backtick sequences from untrusted text before LLM interpolation. */
 export function sanitize(s: string): string {
@@ -31,6 +33,46 @@ interface PreviousFinding {
 interface RecapState {
   previousFindings: PreviousFinding[];
   recapContext: string;
+}
+
+interface CumulativeRecapStats {
+  resolved: number;
+  open: number;
+  replied: number;
+}
+
+async function fetchPreviousRecapStats(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  prNumber: number,
+): Promise<CumulativeRecapStats | null> {
+  try {
+    const { data: comments } = await octokit.rest.issues.listComments({
+      owner,
+      repo,
+      issue_number: prNumber,
+      per_page: 100,
+      direction: 'desc',
+    });
+
+    for (const comment of comments) {
+      if (!comment.body?.includes(PROGRESS_BOT_MARKER)) continue;
+
+      const match = comment.body.match(RECAP_STATS_REGEX);
+      if (match) {
+        return JSON.parse(match[1]) as CumulativeRecapStats;
+      }
+    }
+  } catch (error) {
+    core.warning(`Failed to fetch previous recap stats: ${error}`);
+  }
+
+  return null;
+}
+
+function formatRecapStatsTag(stats: CumulativeRecapStats): string {
+  return `<!-- manki-recap:${JSON.stringify(stats)} -->`;
 }
 
 /**
@@ -272,19 +314,16 @@ function sanitizeHtml(s: string): string {
 
 /**
  * Build a review summary that includes deduplication stats.
+ * Progression (resolved/open) is handled by the judge summary.
  */
 function buildRecapSummary(
   newCount: number,
   duplicateCount: number,
-  resolvedCount: number,
-  openCount: number,
   duplicateMatches?: DuplicateMatch[],
 ): string {
   const parts: string[] = [];
 
   if (newCount > 0) parts.push(`${newCount} new`);
-  if (openCount > 0) parts.push(`${openCount} previously flagged`);
-  if (resolvedCount > 0) parts.push(`${resolvedCount} resolved`);
   if (duplicateCount > 0) parts.push(`${duplicateCount} skipped (already flagged)`);
 
   const summary = parts.length > 0 ? `Findings: ${parts.join(', ')}` : 'No findings';
@@ -455,4 +494,4 @@ async function llmDeduplicateFindings(
   }
 }
 
-export { DuplicateMatch, PreviousFinding, RecapState, fetchRecapState, deduplicateFindings, buildRecapSummary, resolveAddressedThreads, titlesOverlap, llmDeduplicateFindings };
+export { CumulativeRecapStats, DuplicateMatch, PreviousFinding, RecapState, fetchRecapState, fetchPreviousRecapStats, formatRecapStatsTag, deduplicateFindings, buildRecapSummary, resolveAddressedThreads, titlesOverlap, llmDeduplicateFindings };

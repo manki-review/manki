@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 
 import { ClaudeClient } from './claude';
-import { runJudgeAgent, JudgeInput, RecapStats } from './judge';
+import { runJudgeAgent, JudgeInput, RecapStats, RecapDelta } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { LinkedIssue } from './github';
 import { ReviewConfig, ReviewerAgent, Finding, ReviewResult, ReviewVerdict, ParsedDiff, DiffFile, TeamRoster, PrContext } from './types';
@@ -201,6 +201,7 @@ export async function runReview(
   linkedIssues?: LinkedIssue[],
   onProgress?: (progress: ReviewProgress) => void,
   recapStats?: RecapStats,
+  recapDelta?: RecapDelta,
 ): Promise<ReviewResult> {
   const team = selectTeam(diff, config, config.reviewers);
   core.info(`Review team (${team.level}): ${team.agents.map(a => a.name).join(', ')}`);
@@ -381,6 +382,7 @@ export async function runReview(
         linkedIssues,
         agentCount: team.agents.length,
         recapStats,
+        recapDelta,
       };
       const judgeResult = await runJudgeAgent(clients.judge, config, judgeInput);
       judgeSummary = judgeResult.summary;

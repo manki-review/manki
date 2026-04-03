@@ -22,6 +22,12 @@ export interface RecapStats {
   resolvedTitles: string[];
 }
 
+export interface RecapDelta {
+  resolvedSinceLastReview: string[];
+  stillOpen: string[];
+  newThisCycle: number;
+}
+
 export interface JudgeInput {
   findings: Finding[];
   diff: ParsedDiff;
@@ -32,6 +38,7 @@ export interface JudgeInput {
   linkedIssues?: LinkedIssue[];
   agentCount: number;
   recapStats?: RecapStats;
+  recapDelta?: RecapDelta;
 }
 
 export interface JudgedFinding {
@@ -48,7 +55,34 @@ export interface JudgeResult {
 
 const CONTEXT_LINES = 10;
 
-export function buildJudgeSystemPrompt(config: ReviewConfig, agentCount: number, recapStats?: RecapStats): string {
+function buildRecapDeltaSection(delta: RecapDelta): string {
+  const parts: string[] = ['## Follow-Up Review Context\n'];
+
+  if (delta.resolvedSinceLastReview.length > 0) {
+    parts.push('Findings resolved since last review:');
+    for (const t of delta.resolvedSinceLastReview) {
+      parts.push(`- "${t}"`);
+    }
+  } else {
+    parts.push('No findings were resolved since the last review.');
+  }
+
+  if (delta.stillOpen.length > 0) {
+    parts.push('');
+    parts.push('Findings still open:');
+    for (const t of delta.stillOpen) {
+      parts.push(`- "${t}"`);
+    }
+  }
+
+  parts.push('');
+  parts.push('Write your summary as a progress update: what the author fixed, what remains open, and your assessment of the new changes. Do NOT re-summarize the entire PR purpose.');
+  parts.push('');
+
+  return parts.join('\n');
+}
+
+export function buildJudgeSystemPrompt(config: ReviewConfig, agentCount: number, recapStats?: RecapStats, recapDelta?: RecapDelta): string {
   const isFollowUp = recapStats !== undefined;
   const majorityThreshold = Math.max(1, Math.ceil(agentCount / 2));
 
@@ -163,7 +197,7 @@ This is a follow-up review (not the first review of this PR). Structure your sum
 
 **This cycle** — [1-2 sentences about new findings, leading with the most impactful one. Be conversational and professional. Do not re-introduce the overall PR opinion.]
 
-` : ''}## Output Format
+${recapDelta ? buildRecapDeltaSection(recapDelta) : ''}` : ''}## Output Format
 
 Respond with ONLY a JSON object (no markdown fences, no explanation):
 
@@ -414,7 +448,7 @@ export async function runJudgeAgent(
   config: ReviewConfig,
   input: JudgeInput,
 ): Promise<{ findings: Finding[]; summary: string }> {
-  const { findings, diff, memory, prContext, linkedIssues, agentCount, recapStats } = input;
+  const { findings, diff, memory, prContext, linkedIssues, agentCount, recapStats, recapDelta } = input;
 
   if (findings.length === 0) return { findings, summary: 'Review complete.' };
 
@@ -432,7 +466,7 @@ export async function runJudgeAgent(
 
   const changedFiles = diff.files;
 
-  const systemPrompt = buildJudgeSystemPrompt(config, agentCount, recapStats);
+  const systemPrompt = buildJudgeSystemPrompt(config, agentCount, recapStats, recapDelta);
   const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, recapStats);
 
   const response = await client.sendMessage(systemPrompt, userMessage, { effort: 'high' });

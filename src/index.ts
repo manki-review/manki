@@ -7,8 +7,8 @@ import { loadConfig, resolveModel } from './config';
 import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand } from './interaction';
 import { loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
-import { fetchRecapState, deduplicateFindings, buildRecapSummary, resolveAddressedThreads, llmDeduplicateFindings, DuplicateMatch } from './recap';
-import { RecapStats } from './judge';
+import { fetchRecapState, fetchPreviousRecapStats, formatRecapStatsTag, deduplicateFindings, buildRecapSummary, resolveAddressedThreads, llmDeduplicateFindings, DuplicateMatch } from './recap';
+import { RecapStats, RecapDelta } from './judge';
 import { runReview, determineVerdict, selectTeam } from './review';
 import { DashboardData, PrContext, ReviewMetadata, ReviewStats } from './types';
 import {
@@ -413,8 +413,9 @@ async function runFullReview(
       }
     }
 
+    let autoResolved = 0;
     if (recap.previousFindings.length > 0) {
-      const autoResolved = await resolveAddressedThreads(
+      autoResolved = await resolveAddressedThreads(
         octokit, judgeClient, owner, repo, prNumber,
         recap.previousFindings, diff,
       );
@@ -425,16 +426,43 @@ async function runFullReview(
 
     const fullContext = [repoContext, recap.recapContext].filter(Boolean).join('\n\n');
 
+    const previousRecap = recap.previousFindings.length > 0
+      ? await fetchPreviousRecapStats(octokit, owner, repo, prNumber)
+      : null;
+
+    const currentResolved = recap.previousFindings.filter(f => f.status === 'resolved').length + autoResolved;
+    const currentOpen = recap.previousFindings.filter(f => f.status === 'open').length - autoResolved;
+    const currentReplied = recap.previousFindings.filter(f => f.status === 'replied').length;
+
     let recapStats: RecapStats | undefined;
+    let recapDelta: RecapDelta | undefined;
     if (recap.previousFindings.length > 0) {
-      const resolved = recap.previousFindings.filter(f => f.status === 'resolved');
-      const open = recap.previousFindings.filter(f => f.status === 'open');
-      const replied = recap.previousFindings.filter(f => f.status === 'replied');
       recapStats = {
-        resolved: resolved.length,
-        open: open.length,
-        replied: replied.length,
-        resolvedTitles: resolved.map(f => f.title).filter(t => t.length > 0),
+        resolved: currentResolved,
+        open: currentOpen,
+        replied: currentReplied,
+        resolvedTitles: recap.previousFindings
+          .filter(f => f.status === 'resolved')
+          .map(f => f.title)
+          .filter(t => t.length > 0),
+      };
+
+      const deltaResolved = currentResolved - (previousRecap?.resolved ?? 0);
+
+      const resolvedTitles = recap.previousFindings
+        .filter(f => f.status === 'resolved')
+        .map(f => f.title)
+        .filter(t => t.length > 0);
+
+      const openTitles = recap.previousFindings
+        .filter(f => f.status === 'open')
+        .map(f => f.title)
+        .filter(t => t.length > 0);
+
+      recapDelta = {
+        resolvedSinceLastReview: deltaResolved > 0 ? resolvedTitles.slice(0, deltaResolved) : [],
+        stillOpen: openTitles,
+        newThisCycle: 0,
       };
     }
 
@@ -514,6 +542,7 @@ async function runFullReview(
         }
       },
       recapStats,
+      recapDelta,
     );
     const judgeEndTime = Date.now();
 
@@ -639,10 +668,7 @@ async function runFullReview(
       judgeModel,
     };
 
-    const resolvedCount = recapStats?.resolved ?? recap.previousFindings.filter(f => f.status === 'resolved').length;
-    const openCount = recapStats?.open ?? recap.previousFindings.filter(f => f.status === 'open').length;
-
-    const recapSummary = buildRecapSummary(result.findings.length, totalDuplicates, resolvedCount, openCount, allDuplicateMatches);
+    const recapSummary = buildRecapSummary(result.findings.length, totalDuplicates, allDuplicateMatches);
 
     const reviewResult = { ...result, findings: inlineFindings };
     const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, reviewResult, diff, stats, recapSummary);
@@ -709,14 +735,22 @@ async function runFullReview(
       })),
       recap: {
         newFindings: result.findings.length,
-        previouslyFlagged: openCount,
-        resolved: resolvedCount,
+        previouslyFlagged: currentOpen,
+        resolved: currentResolved,
         suppressionsApplied: totalDuplicates,
       },
       timing,
     };
 
-    await updateProgressComment(octokit, owner, repo, progressCommentId, completeDashboard, metadata);
+    const cumulativeTag = recap.previousFindings.length > 0
+      ? formatRecapStatsTag({
+        resolved: currentResolved,
+        open: currentOpen,
+        replied: currentReplied,
+      })
+      : undefined;
+
+    await updateProgressComment(octokit, owner, repo, progressCommentId, completeDashboard, metadata, cumulativeTag);
 
     core.setOutput('review_id', reviewId.toString());
     core.setOutput('verdict', result.verdict);
