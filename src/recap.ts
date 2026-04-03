@@ -368,8 +368,9 @@ async function resolveAddressedThreads(
   prNumber: number,
   previousFindings: PreviousFinding[],
   diff: ParsedDiff,
-): Promise<number> {
+): Promise<{ count: number; titles: string[] }> {
   let resolvedCount = 0;
+  const resolvedTitles: string[] = [];
 
   const openFindings = previousFindings.filter(f => f.status === 'open' && f.threadId);
 
@@ -388,11 +389,11 @@ async function resolveAddressedThreads(
     }
   }
 
-  if (candidates.length === 0) return 0;
+  if (candidates.length === 0) return { count: 0, titles: [] };
 
   if (!client) {
     core.info(`${candidates.length} findings may have been addressed but cannot validate without Claude client`);
-    return 0;
+    return { count: 0, titles: [] };
   }
 
   const prompt = candidates.map((c, i) =>
@@ -426,6 +427,7 @@ async function resolveAddressedThreads(
             `, { threadId: candidate.finding.threadId });
 
             resolvedCount++;
+            if (candidate.finding.title) resolvedTitles.push(candidate.finding.title);
             core.info(`Auto-resolved: "${candidate.finding.title}" — ${result.reason}`);
           } catch (error) {
             core.debug(`Failed to resolve thread: ${error}`);
@@ -437,7 +439,7 @@ async function resolveAddressedThreads(
     core.warning(`Failed to validate addressed findings: ${error}`);
   }
 
-  return resolvedCount;
+  return { count: resolvedCount, titles: resolvedTitles };
 }
 
 async function llmDeduplicateFindings(

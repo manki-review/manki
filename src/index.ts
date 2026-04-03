@@ -414,11 +414,14 @@ async function runFullReview(
     }
 
     let autoResolved = 0;
+    let autoResolvedTitles: string[] = [];
     if (recap.previousFindings.length > 0) {
-      autoResolved = await resolveAddressedThreads(
+      const resolved = await resolveAddressedThreads(
         octokit, judgeClient, owner, repo, prNumber,
         recap.previousFindings, diff,
       );
+      autoResolved = resolved.count;
+      autoResolvedTitles = resolved.titles;
       if (autoResolved > 0) {
         core.info(`Auto-resolved ${autoResolved} findings addressed in latest push`);
       }
@@ -428,20 +431,23 @@ async function runFullReview(
 
     const previousRecap = await fetchPreviousRecapStats(octokit, owner, repo, prNumber);
 
+    // Adjust for auto-resolved threads: in-memory status is stale (still 'open')
+    // because resolveAddressedThreads already resolved them on GitHub
+    const totalResolved = recap.previousFindings.filter(f => f.status === 'resolved').length + autoResolved;
+    const totalOpen = recap.previousFindings.filter(f => f.status === 'open').length - autoResolved;
+    const totalReplied = recap.previousFindings.filter(f => f.status === 'replied').length;
+
     let recapStats: RecapStats | undefined;
     if (recap.previousFindings.length > 0) {
-      // Adjust for auto-resolved threads: in-memory status is stale (still 'open')
-      // because resolveAddressedThreads already resolved them on GitHub
-      const totalResolved = recap.previousFindings.filter(f => f.status === 'resolved').length + autoResolved;
-      const totalOpen = recap.previousFindings.filter(f => f.status === 'open').length - autoResolved;
-      const totalReplied = recap.previousFindings.filter(f => f.status === 'replied').length;
-
       const deltaResolved = Math.max(0, totalResolved - (previousRecap?.resolved ?? 0));
       const deltaOpen = Math.max(0, totalOpen - (previousRecap?.open ?? 0));
       const deltaReplied = Math.max(0, totalReplied - (previousRecap?.replied ?? 0));
 
       const resolvedTitles = deltaResolved > 0
-        ? recap.previousFindings.filter(f => f.status === 'resolved').map(f => f.title).filter(t => t.length > 0)
+        ? [
+          ...recap.previousFindings.filter(f => f.status === 'resolved').map(f => f.title),
+          ...autoResolvedTitles,
+        ].filter(t => t.length > 0)
         : [];
 
       recapStats = {
@@ -653,8 +659,8 @@ async function runFullReview(
       judgeModel,
     };
 
-    const resolvedCount = recapStats?.resolved ?? recap.previousFindings.filter(f => f.status === 'resolved').length;
-    const openCount = recapStats?.open ?? recap.previousFindings.filter(f => f.status === 'open').length;
+    const resolvedCount = recapStats?.resolved ?? totalResolved;
+    const openCount = recapStats?.open ?? totalOpen;
 
     const recapSummary = buildRecapSummary(result.findings.length, totalDuplicates, resolvedCount, openCount, allDuplicateMatches);
 
@@ -732,9 +738,9 @@ async function runFullReview(
 
     const cumulativeTag = recap.previousFindings.length > 0
       ? formatRecapStatsTag({
-        resolved: recap.previousFindings.filter(f => f.status === 'resolved').length + autoResolved,
-        open: recap.previousFindings.filter(f => f.status === 'open').length - autoResolved,
-        replied: recap.previousFindings.filter(f => f.status === 'replied').length,
+        resolved: totalResolved,
+        open: totalOpen,
+        replied: totalReplied,
       })
       : undefined;
 

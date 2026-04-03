@@ -423,7 +423,7 @@ describe('resolveAddressedThreads', () => {
     };
 
     const result = await resolveAddressedThreads(mockOctokit, null, 'owner', 'repo', 1, findings, diff);
-    expect(result).toBe(0);
+    expect(result).toEqual({ count: 0, titles: [] });
   });
 
   it('returns 0 when no open findings match any hunks', async () => {
@@ -446,7 +446,7 @@ describe('resolveAddressedThreads', () => {
     };
 
     const result = await resolveAddressedThreads(mockOctokit, null, 'owner', 'repo', 1, findings, diff);
-    expect(result).toBe(0);
+    expect(result).toEqual({ count: 0, titles: [] });
   });
 
   it('resolves threads when Claude confirms findings are addressed', async () => {
@@ -476,7 +476,7 @@ describe('resolveAddressedThreads', () => {
     };
 
     const result = await resolveAddressedThreads(mockOctokit, mockClient, 'owner', 'repo', 1, findings, diff);
-    expect(result).toBe(1);
+    expect(result).toEqual({ count: 1, titles: ['Missing null check'] });
     expect(graphqlMock).toHaveBeenCalledTimes(1);
   });
 
@@ -507,7 +507,7 @@ describe('resolveAddressedThreads', () => {
     };
 
     const result = await resolveAddressedThreads(mockOctokit, mockClient, 'owner', 'repo', 1, findings, diff);
-    expect(result).toBe(0);
+    expect(result).toEqual({ count: 0, titles: [] });
     expect(graphqlMock).not.toHaveBeenCalled();
   });
 });
@@ -789,7 +789,7 @@ describe('resolveAddressedThreads edge cases', () => {
     };
 
     const result = await resolveAddressedThreads(mockOctokit, null, 'owner', 'repo', 1, findings, diff);
-    expect(result).toBe(0);
+    expect(result).toEqual({ count: 0, titles: [] });
   });
 
   it('returns 0 when no findings match diff files', async () => {
@@ -812,7 +812,7 @@ describe('resolveAddressedThreads edge cases', () => {
     };
 
     const result = await resolveAddressedThreads(mockOctokit, null, 'owner', 'repo', 1, findings, diff);
-    expect(result).toBe(0);
+    expect(result).toEqual({ count: 0, titles: [] });
   });
 
   it('handles Claude response with code fence wrapping', async () => {
@@ -842,7 +842,7 @@ describe('resolveAddressedThreads edge cases', () => {
     };
 
     const result = await resolveAddressedThreads(mockOctokit, mockClient, 'owner', 'repo', 1, findings, diff);
-    expect(result).toBe(1);
+    expect(result).toEqual({ count: 1, titles: ['Missing null check'] });
   });
 
   it('handles Claude validation error gracefully', async () => {
@@ -869,7 +869,7 @@ describe('resolveAddressedThreads edge cases', () => {
     };
 
     const result = await resolveAddressedThreads(mockOctokit, mockClient, 'owner', 'repo', 1, findings, diff);
-    expect(result).toBe(0);
+    expect(result).toEqual({ count: 0, titles: [] });
   });
 
   it('handles graphql resolve mutation failure gracefully', async () => {
@@ -899,7 +899,7 @@ describe('resolveAddressedThreads edge cases', () => {
     };
 
     const result = await resolveAddressedThreads(mockOctokit, mockClient, 'owner', 'repo', 1, findings, diff);
-    expect(result).toBe(0);
+    expect(result).toEqual({ count: 0, titles: [] });
   });
 
   it('skips resolved findings', async () => {
@@ -922,7 +922,7 @@ describe('resolveAddressedThreads edge cases', () => {
     };
 
     const result = await resolveAddressedThreads(mockOctokit, null, 'owner', 'repo', 1, findings, diff);
-    expect(result).toBe(0);
+    expect(result).toEqual({ count: 0, titles: [] });
   });
 
   it('handles out-of-range index in Claude response', async () => {
@@ -952,7 +952,7 @@ describe('resolveAddressedThreads edge cases', () => {
     };
 
     const result = await resolveAddressedThreads(mockOctokit, mockClient, 'owner', 'repo', 1, findings, diff);
-    expect(result).toBe(0);
+    expect(result).toEqual({ count: 0, titles: [] });
     expect(graphqlMock).not.toHaveBeenCalled();
   });
 });

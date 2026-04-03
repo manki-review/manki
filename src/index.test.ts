@@ -87,7 +87,7 @@ jest.mock('./recap', () => ({
   formatRecapStatsTag: jest.fn().mockReturnValue('<!-- manki-recap:{"resolved":0,"open":0,"replied":0} -->'),
   deduplicateFindings: jest.fn().mockReturnValue({ unique: [], duplicates: [] }),
   buildRecapSummary: jest.fn().mockReturnValue(''),
-  resolveAddressedThreads: jest.fn().mockResolvedValue(0),
+  resolveAddressedThreads: jest.fn().mockResolvedValue({ count: 0, titles: [] }),
 }));
 
 jest.mock('./review', () => ({
@@ -1459,7 +1459,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(recapModule.fetchPreviousRecapStats).mockResolvedValue(null);
 
     // resolveAddressedThreads auto-resolves 1 thread
-    jest.mocked(recapModule.resolveAddressedThreads).mockResolvedValue(1);
+    jest.mocked(recapModule.resolveAddressedThreads).mockResolvedValue({ count: 1, titles: ['Will be auto-resolved'] });
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'APPROVE', summary: 'Looks good',
@@ -1480,7 +1480,7 @@ describe('runFullReview orchestration', () => {
     // previousRecap is null, so delta = adjusted total: resolved=2, open=1
     const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0];
     const recapStatsArg = runReviewCall[runReviewCall.length - 1];
-    expect(recapStatsArg).toEqual({ resolved: 2, open: 1, replied: 0, resolvedTitles: ['Already resolved'] });
+    expect(recapStatsArg).toEqual({ resolved: 2, open: 1, replied: 0, resolvedTitles: ['Already resolved', 'Will be auto-resolved'] });
   });
 
   it('buildRecapSummary receives delta counts, not cumulative', async () => {
