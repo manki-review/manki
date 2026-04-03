@@ -19,7 +19,6 @@ export interface RecapStats {
   resolved: number;
   open: number;
   replied: number;
-  resolvedTitles: string[];
 }
 
 export interface RecapDelta {
@@ -231,6 +230,7 @@ export function buildJudgeUserMessage(
   linkedIssues?: LinkedIssue[],
   changedFiles?: DiffFile[],
   recapStats?: RecapStats,
+  recapDelta?: RecapDelta,
 ): string {
   const parts: string[] = [];
 
@@ -243,8 +243,9 @@ export function buildJudgeUserMessage(
   if (recapStats) {
     parts.push(`## Changes Since Last Review\n`);
     parts.push(`- **Resolved**: ${recapStats.resolved} finding${recapStats.resolved !== 1 ? 's' : ''} since last review`);
-    if (recapStats.resolvedTitles.length > 0) {
-      for (const title of recapStats.resolvedTitles) {
+    const resolvedTitles = recapDelta?.resolvedSinceLastReview ?? [];
+    if (resolvedTitles.length > 0) {
+      for (const title of resolvedTitles) {
         const safeTitle = sanitizeForPrompt(title);
         parts.push(`  - ${safeTitle}`);
       }
@@ -466,7 +467,7 @@ export async function runJudgeAgent(
   const changedFiles = diff.files;
 
   const systemPrompt = buildJudgeSystemPrompt(config, agentCount, recapStats, recapDelta);
-  const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, recapStats);
+  const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, recapStats, recapDelta);
 
   const response = await client.sendMessage(systemPrompt, userMessage, { effort: 'high' });
   const judgeResult = parseJudgeResponse(response.content);

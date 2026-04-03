@@ -455,9 +455,8 @@ async function runFullReview(
 
       recapStats = {
         resolved: deltaResolved,
-        open: currentOpen,
+        open: currentOpen + currentReplied,
         replied: deltaReplied,
-        resolvedTitles: deltaResolvedTitles,
       };
 
       const openTitles = recap.previousFindings

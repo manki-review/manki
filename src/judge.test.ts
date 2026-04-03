@@ -187,7 +187,7 @@ describe('buildJudgeSystemPrompt', () => {
   });
 
   it('uses follow-up summary instruction when recapStats is provided', () => {
-    const recapStats: RecapStats = { resolved: 1, open: 0, replied: 0, resolvedTitles: [] };
+    const recapStats: RecapStats = { resolved: 1, open: 0, replied: 0 };
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5, recapStats);
     expect(prompt).toContain('Since last review');
     expect(prompt).not.toContain('1-2 sentence review summary');
@@ -200,7 +200,7 @@ describe('buildJudgeSystemPrompt', () => {
   });
 
   it('includes recap delta context when both recapStats and recapDelta are provided', () => {
-    const recapStats: RecapStats = { resolved: 2, open: 1, replied: 0, resolvedTitles: ['Fix A', 'Fix B'] };
+    const recapStats: RecapStats = { resolved: 2, open: 1, replied: 0 };
     const recapDelta: RecapDelta = {
       resolvedSinceLastReview: ['Fix A', 'Fix B'],
       stillOpen: ['Bug C'],
@@ -217,7 +217,7 @@ describe('buildJudgeSystemPrompt', () => {
   });
 
   it('uses singular form and omits open count when no findings are still open', () => {
-    const recapStats: RecapStats = { resolved: 1, open: 0, replied: 0, resolvedTitles: ['Fix A'] };
+    const recapStats: RecapStats = { resolved: 1, open: 0, replied: 0 };
     const recapDelta: RecapDelta = {
       resolvedSinceLastReview: ['Fix A'],
       stillOpen: [],
@@ -228,7 +228,7 @@ describe('buildJudgeSystemPrompt', () => {
   });
 
   it('shows no resolved message when delta has no resolved findings', () => {
-    const recapStats: RecapStats = { resolved: 0, open: 2, replied: 0, resolvedTitles: [] };
+    const recapStats: RecapStats = { resolved: 0, open: 2, replied: 0 };
     const recapDelta: RecapDelta = {
       resolvedSinceLastReview: [],
       stillOpen: ['Bug A', 'Bug B'],
@@ -241,7 +241,7 @@ describe('buildJudgeSystemPrompt', () => {
   });
 
   it('omits recap delta section when recapDelta is not provided', () => {
-    const recapStats: RecapStats = { resolved: 1, open: 0, replied: 0, resolvedTitles: ['Fix A'] };
+    const recapStats: RecapStats = { resolved: 1, open: 0, replied: 0 };
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5, recapStats);
     expect(prompt).not.toContain('Follow-Up Review Context');
     expect(prompt).toContain('Since last review');
@@ -249,7 +249,7 @@ describe('buildJudgeSystemPrompt', () => {
   });
 
   it('sanitizes recap delta titles containing newlines and backticks', () => {
-    const recapStats: RecapStats = { resolved: 1, open: 1, replied: 0, resolvedTitles: ['Fix A'] };
+    const recapStats: RecapStats = { resolved: 1, open: 1, replied: 0 };
     const recapDelta: RecapDelta = {
       resolvedSinceLastReview: ['Fix with\nnewline'],
       stillOpen: ['Bug with ```backticks```'],
@@ -369,9 +369,12 @@ describe('buildJudgeUserMessage', () => {
       resolved: 2,
       open: 1,
       replied: 3,
-      resolvedTitles: ['Null check missing', 'Unused import'],
     };
-    const msg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, recapStats);
+    const recapDelta: RecapDelta = {
+      resolvedSinceLastReview: ['Null check missing', 'Unused import'],
+      stillOpen: ['Bug A'],
+    };
+    const msg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, recapStats, recapDelta);
 
     expect(msg).toContain('## Changes Since Last Review');
     expect(msg).toContain('**Resolved**: 2 findings since last review');
