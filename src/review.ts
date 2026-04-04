@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 
 import { ClaudeClient } from './claude';
-import { runJudgeAgent, JudgeInput, RecapStats, RecapDelta } from './judge';
+import { runJudgeAgent, JudgeInput, ResolveThread } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { LinkedIssue } from './github';
 import { ReviewConfig, ReviewerAgent, Finding, ReviewResult, ReviewVerdict, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult } from './types';
@@ -348,8 +348,8 @@ export async function runReview(
   prContext?: PrContext,
   linkedIssues?: LinkedIssue[],
   onProgress?: (progress: ReviewProgress) => void,
-  recapStats?: RecapStats,
-  recapDelta?: RecapDelta,
+  isFollowUp?: boolean,
+  openThreads?: Array<{ threadId: string; title: string; file: string; line: number; severity: string }>,
 ): Promise<ReviewResult> {
   let team: TeamRoster;
 
@@ -553,6 +553,7 @@ export async function runReview(
   let finalFindings: Finding[];
   let allJudgedFindings: Finding[] | undefined;
   let judgeSummary = 'Review complete.';
+  let judgeResolveThreads: ResolveThread[] | undefined;
   if (findingsForJudge.length === 0) {
     finalFindings = [];
   } else {
@@ -567,12 +568,13 @@ export async function runReview(
         prContext,
         linkedIssues,
         agentCount: team.agents.length,
-        recapStats,
-        recapDelta,
+        isFollowUp,
+        openThreads,
       };
       const judgeResult = await runJudgeAgent(clients.judge, config, judgeInput);
       judgeSummary = judgeResult.summary;
       allJudgedFindings = judgeResult.findings;
+      judgeResolveThreads = judgeResult.resolveThreads;
       finalFindings = judgeResult.findings.filter(f => f.severity !== 'ignore');
       core.info(`Judge complete: ${finalFindings.length} findings survived (${judgeResult.findings.length - finalFindings.length} ignored)`);
     } catch (error) {
@@ -606,6 +608,7 @@ export async function runReview(
     rawFindingCount: allFindings.length,
     agentNames: team.agents.map(a => a.name),
     allJudgedFindings,
+    resolveThreads: judgeResolveThreads,
   };
 }
 

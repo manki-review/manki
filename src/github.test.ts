@@ -1557,21 +1557,6 @@ describe('updateProgressComment', () => {
     expect(body).toContain(REVIEW_COMPLETE_MARKER);
   });
 
-  it('includes recapStatsTag before REVIEW_COMPLETE_MARKER when provided', async () => {
-    const tag = '<!-- manki-recap:{"resolved":3,"open":1,"replied":0} -->';
-    await updateProgressComment(mockOctokit, 'owner', 'repo', 123, baseDashboard, baseMetadata, tag);
-    const body = mockUpdateComment.mock.calls[0][0].body as string;
-    expect(body).toContain(tag);
-    const tagIdx = body.indexOf(tag);
-    const markerIdx = body.indexOf(REVIEW_COMPLETE_MARKER);
-    expect(tagIdx).toBeLessThan(markerIdx);
-  });
-
-  it('omits recapStatsTag when not provided', async () => {
-    await updateProgressComment(mockOctokit, 'owner', 'repo', 123, baseDashboard, baseMetadata);
-    const body = mockUpdateComment.mock.calls[0][0].body as string;
-    expect(body).not.toContain('manki-recap');
-  });
 });
 
 describe('fetchPRDiff', () => {
@@ -2076,25 +2061,6 @@ describe('postReview fallback paths', () => {
     expect(body).toContain('Findings (not on changed lines)');
     expect(body).toContain('Issue in missing file');
     expect(createReviewMock.mock.calls[0][0].comments).toEqual([]);
-  });
-
-  it('includes recap summary in review body when provided', async () => {
-    const createReviewMock = jest.fn().mockResolvedValue({ data: { id: 6 } });
-    const mockOctokit = {
-      rest: { pulls: { createReview: createReviewMock } },
-    } as unknown as Parameters<typeof postReview>[0];
-
-    const result: ReviewResult = {
-      verdict: 'APPROVE',
-      summary: 'All good.',
-      findings: [],
-      highlights: [],
-      reviewComplete: true,
-    };
-
-    await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result, undefined, undefined, 'Findings: 2 new, 1 resolved');
-    const body = createReviewMock.mock.calls[0][0].body as string;
-    expect(body).toContain('Findings: 2 new, 1 resolved');
   });
 
   it('moves finding to body when file has empty hunks and line cannot be resolved', async () => {

@@ -24,6 +24,7 @@ export interface ReviewResult {
   rawFindingCount?: number;
   agentNames?: string[];
   allJudgedFindings?: Finding[];
+  resolveThreads?: Array<{ threadId: string; reason: string }>;
 }
 
 export interface ReviewerAgent {

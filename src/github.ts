@@ -243,7 +243,6 @@ export async function updateProgressComment(
   commentId: number,
   dashboard: DashboardData,
   metadata?: ReviewMetadata,
-  recapStatsTag?: string,
 ): Promise<void> {
   const parts: string[] = [
     BOT_MARKER,
@@ -283,10 +282,6 @@ export async function updateProgressComment(
     parts.push(`- Total: ${(metadata.timing.totalMs / 1000).toFixed(1)}s`);
     parts.push('');
     parts.push('</details>');
-  }
-
-  if (recapStatsTag) {
-    parts.push(recapStatsTag);
   }
 
   parts.push(REVIEW_COMPLETE_MARKER);
@@ -378,7 +373,6 @@ export async function postReview(
   result: ReviewResult,
   diff?: ParsedDiff,
   stats?: ReviewStats,
-  recapSummary?: string,
 ): Promise<number> {
   const event = mapVerdictToEvent(result.verdict);
 
@@ -437,9 +431,6 @@ export async function postReview(
   }
 
   let body = `${BOT_MARKER}\n${sanitizeMarkdown(result.summary)}`;
-  if (recapSummary) {
-    body += `\n\n${recapSummary}`;
-  }
   if (stats) {
     body += `\n\n${formatStatsOneLiner(stats)}`;
     body += `\n\n${formatStatsJson(stats)}`;

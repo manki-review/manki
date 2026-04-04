@@ -9,8 +9,6 @@ import {
   runJudgeAgent,
   JudgeInput,
   JudgedFinding,
-  RecapStats,
-  RecapDelta,
 } from './judge';
 import { ClaudeClient } from './claude';
 import { RepoMemory, Learning, Suppression } from './memory';
@@ -186,80 +184,30 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('Critical/High impact + Certain/Probable likelihood');
   });
 
-  it('uses follow-up summary instruction when recapStats is provided', () => {
-    const recapStats: RecapStats = { resolved: 1, open: 0, replied: 0 };
-    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, recapStats);
-    expect(prompt).toContain('Since last review');
+  it('uses follow-up summary instruction when isFollowUp is true', () => {
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, true);
+    expect(prompt).toContain('Follow-Up Review');
+    expect(prompt).toContain('brief progress update');
     expect(prompt).not.toContain('1-2 sentence review summary');
   });
 
-  it('uses standard summary instruction when recapStats is undefined', () => {
-    const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
+  it('uses standard summary instruction when isFollowUp is false', () => {
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, false);
     expect(prompt).toContain('1-2 sentence review summary');
-    expect(prompt).not.toContain('Since last review');
+    expect(prompt).not.toContain('Follow-Up Review');
   });
 
-  it('includes recap delta context when both recapStats and recapDelta are provided', () => {
-    const recapStats: RecapStats = { resolved: 2, open: 1, replied: 0 };
-    const recapDelta: RecapDelta = {
-      resolvedSinceLastReview: ['Fix A', 'Fix B'],
-      stillOpen: ['Bug C'],
-    };
-    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, recapStats, recapDelta);
-    expect(prompt).toContain('2 findings resolved, 1 still open');
-    expect(prompt).toContain('Follow-Up Review Context');
-    expect(prompt).toContain('Findings resolved since last review');
-    expect(prompt).toContain('"Fix A"');
-    expect(prompt).toContain('"Fix B"');
-    expect(prompt).toContain('Findings still open');
-    expect(prompt).toContain('"Bug C"');
-    expect(prompt).toContain('Write your summary as a progress update');
+  it('includes resolveThreads in output format when hasOpenThreads is true', () => {
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, true, true);
+    expect(prompt).toContain('resolveThreads');
+    expect(prompt).toContain('threadId');
   });
 
-  it('uses singular form and omits open count when no findings are still open', () => {
-    const recapStats: RecapStats = { resolved: 1, open: 0, replied: 0 };
-    const recapDelta: RecapDelta = {
-      resolvedSinceLastReview: ['Fix A'],
-      stillOpen: [],
-    };
-    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, recapStats, recapDelta);
-    expect(prompt).toContain('1 finding resolved');
-    expect(prompt).not.toContain('still open');
+  it('omits resolveThreads from output format when hasOpenThreads is false', () => {
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, false, false);
+    expect(prompt).not.toContain('resolveThreads');
   });
 
-  it('shows no resolved message when delta has no resolved findings', () => {
-    const recapStats: RecapStats = { resolved: 0, open: 2, replied: 0 };
-    const recapDelta: RecapDelta = {
-      resolvedSinceLastReview: [],
-      stillOpen: ['Bug A', 'Bug B'],
-    };
-    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, recapStats, recapDelta);
-    expect(prompt).toContain('0 findings resolved, 2 still open');
-    expect(prompt).toContain('No findings were resolved since the last review.');
-    expect(prompt).toContain('"Bug A"');
-    expect(prompt).toContain('"Bug B"');
-  });
-
-  it('omits recap delta section when recapDelta is not provided', () => {
-    const recapStats: RecapStats = { resolved: 1, open: 0, replied: 0 };
-    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, recapStats);
-    expect(prompt).not.toContain('Follow-Up Review Context');
-    expect(prompt).toContain('Since last review');
-    expect(prompt).toContain('[summarize what changed]');
-  });
-
-  it('sanitizes recap delta titles containing newlines and backticks', () => {
-    const recapStats: RecapStats = { resolved: 1, open: 1, replied: 0 };
-    const recapDelta: RecapDelta = {
-      resolvedSinceLastReview: ['Fix with\nnewline'],
-      stillOpen: ['Bug with ```backticks```'],
-    };
-    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, recapStats, recapDelta);
-    expect(prompt).not.toContain('\n"Fix with\nnewline"');
-    expect(prompt).toContain('Fix with newline');
-    expect(prompt).not.toContain('```backticks```');
-    expect(prompt).toContain('Bug with backticks');
-  });
 });
 
 describe('buildJudgeUserMessage', () => {
@@ -363,32 +311,33 @@ describe('buildJudgeUserMessage', () => {
     expect(msg).not.toContain('## Changed Files in This PR');
   });
 
-  it('includes recap section with counts and resolved titles when recapStats provided', () => {
+  it('includes open threads section when openThreads provided', () => {
     const findings = [makeFinding()];
-    const recapStats: RecapStats = {
-      resolved: 2,
-      open: 1,
-      replied: 3,
-    };
-    const recapDelta: RecapDelta = {
-      resolvedSinceLastReview: ['Null check missing', 'Unused import'],
-      stillOpen: ['Bug A'],
-    };
-    const msg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, recapStats, recapDelta);
+    const openThreads = [
+      { threadId: 'PRRT_abc', title: 'Null check missing', file: 'src/foo.ts', line: 10, severity: 'required' },
+      { threadId: 'PRRT_def', title: 'Unused import', file: 'src/bar.ts', line: 20, severity: 'suggestion' },
+    ];
+    const msg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, openThreads);
 
-    expect(msg).toContain('## Changes Since Last Review');
-    expect(msg).toContain('**Resolved**: 2 findings since last review');
-    expect(msg).toContain('- Null check missing');
-    expect(msg).toContain('- Unused import');
-    expect(msg).toContain('**Still open**: 1 finding');
-    expect(msg).toContain('**Author replied**: 3 findings since last review');
+    expect(msg).toContain('## Open Review Threads');
+    expect(msg).toContain('PRRT_abc');
+    expect(msg).toContain('Null check missing');
+    expect(msg).toContain('PRRT_def');
+    expect(msg).toContain('Unused import');
   });
 
-  it('omits recap section when recapStats is undefined', () => {
+  it('omits open threads section when openThreads is undefined', () => {
     const findings = [makeFinding()];
     const msg = buildJudgeUserMessage(findings, new Map(), '');
 
-    expect(msg).not.toContain('## Changes Since Last Review');
+    expect(msg).not.toContain('## Open Review Threads');
+  });
+
+  it('omits open threads section when openThreads is empty', () => {
+    const findings = [makeFinding()];
+    const msg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, []);
+
+    expect(msg).not.toContain('## Open Review Threads');
   });
 });
 
@@ -522,6 +471,48 @@ describe('parseJudgeResponse', () => {
     const result = parseJudgeResponse('{"not": "an array"}');
     expect(result.findings).toEqual([]);
     expect(result.summary).toBe('Review complete.');
+  });
+
+  it('parses resolveThreads from judge response', () => {
+    const json = JSON.stringify({
+      summary: 'Follow-up review.',
+      findings: [],
+      resolveThreads: [
+        { threadId: 'PRRT_abc', reason: 'Fixed in new diff' },
+        { threadId: 'PRRT_def', reason: 'Addressed by refactoring' },
+      ],
+    });
+
+    const result = parseJudgeResponse(json);
+    expect(result.resolveThreads).toHaveLength(2);
+    expect(result.resolveThreads![0]).toEqual({ threadId: 'PRRT_abc', reason: 'Fixed in new diff' });
+    expect(result.resolveThreads![1]).toEqual({ threadId: 'PRRT_def', reason: 'Addressed by refactoring' });
+  });
+
+  it('returns undefined resolveThreads when not present in response', () => {
+    const json = JSON.stringify({
+      summary: 'Clean PR.',
+      findings: [],
+    });
+
+    const result = parseJudgeResponse(json);
+    expect(result.resolveThreads).toBeUndefined();
+  });
+
+  it('filters invalid resolveThreads entries', () => {
+    const json = JSON.stringify({
+      summary: 'Review.',
+      findings: [],
+      resolveThreads: [
+        { threadId: 'PRRT_abc', reason: 'Valid' },
+        { threadId: 123, reason: 'Invalid threadId type' },
+        { threadId: 'PRRT_def' },
+      ],
+    });
+
+    const result = parseJudgeResponse(json);
+    expect(result.resolveThreads).toHaveLength(1);
+    expect(result.resolveThreads![0].threadId).toBe('PRRT_abc');
   });
 
   it('handles missing title and reasoning gracefully', () => {

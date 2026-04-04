@@ -1,25 +1,18 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { ClaudeClient } from './claude';
-import { BOT_MARKER as PROGRESS_BOT_MARKER } from './github';
 import { matchesSuppression, Suppression } from './memory';
-import { getSeverityEmoji } from './github';
-import { Finding, FindingSeverity, ParsedDiff } from './types';
+import { Finding, FindingSeverity } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
 const BOT_MARKER = '<!-- manki';
-const RECAP_STATS_REGEX = /<!-- manki-recap:(\{[^}]+\}) -->/;
 
 /** Escape double quotes and strip triple-backtick sequences from untrusted text before LLM interpolation. */
 export function sanitize(s: string): string {
   return s.replace(/[\r\n]/g, ' ').replace(/`{3,}/g, '').replace(/"/g, '\\"');
 }
 
-/** Strip newlines and triple-backtick sequences from untrusted text for prompt interpolation (no quote escaping). */
-export function sanitizeForPrompt(s: string): string {
-  return s.replace(/[\r\n]/g, ' ').replace(/`{3,}/g, '');
-}
 
 interface PreviousFinding {
   title: string;
@@ -33,52 +26,6 @@ interface PreviousFinding {
 interface RecapState {
   previousFindings: PreviousFinding[];
   recapContext: string;
-}
-
-interface CumulativeRecapStats {
-  resolved: number;
-  open: number;
-  replied: number;
-}
-
-async function fetchPreviousRecapStats(
-  octokit: Octokit,
-  owner: string,
-  repo: string,
-  prNumber: number,
-): Promise<CumulativeRecapStats | null> {
-  try {
-    const { data: comments } = await octokit.rest.issues.listComments({
-      owner,
-      repo,
-      issue_number: prNumber,
-      per_page: 100,
-      direction: 'desc',
-    });
-
-    for (const comment of comments) {
-      if (comment.user?.type !== 'Bot') continue;
-      if (!comment.body?.includes(PROGRESS_BOT_MARKER)) continue;
-
-      const match = comment.body.match(RECAP_STATS_REGEX);
-      if (match) {
-        try {
-          return JSON.parse(match[1]) as CumulativeRecapStats;
-        } catch {
-          core.debug(`Malformed recap stats JSON in comment, skipping: ${match[1]}`);
-          continue;
-        }
-      }
-    }
-  } catch (error) {
-    core.warning(`Failed to fetch previous recap stats: ${error}`);
-  }
-
-  return null;
-}
-
-function formatRecapStatsTag(stats: CumulativeRecapStats): string {
-  return `<!-- manki-recap:${JSON.stringify(stats)} -->`;
 }
 
 /**
@@ -314,119 +261,6 @@ function matchesPrevious(finding: Finding, previous: PreviousFinding): boolean {
   return true;
 }
 
-function sanitizeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-/**
- * Build a review summary that includes deduplication stats.
- * Progression (resolved/open) is handled by the judge summary.
- */
-function buildRecapSummary(
-  duplicateCount: number,
-  duplicateMatches?: DuplicateMatch[],
-): string {
-  if (duplicateCount === 0 || !duplicateMatches || duplicateMatches.length === 0) return '';
-
-  const lines = duplicateMatches.map(d => {
-    const title = sanitizeHtml(d.finding.title);
-    const file = sanitizeHtml(d.finding.file);
-    const line = d.finding.line;
-    const severity = d.finding.severity as FindingSeverity;
-    const emoji = getSeverityEmoji(severity);
-    const description = sanitizeHtml(d.finding.description);
-    const matched = sanitizeHtml(d.matchedTitle);
-    return `<details>\n<summary>${emoji} "${title}" (${file}:${line}, ${sanitizeHtml(severity)})</summary>\n\n**Description:** ${description}\n\n*Matches previously flagged: "${matched}"*\n</details>`;
-  });
-  const count = duplicateMatches.length;
-  return `<details><summary>🔁 ${count} finding${count === 1 ? '' : 's'} skipped (previously flagged)</summary>\n\n${lines.join('\n\n')}\n\n</details>`;
-}
-
-/**
- * Auto-resolve review threads whose findings were addressed in the new diff.
- * Candidates are identified by hunk overlap, then validated by Claude to
- * confirm the code change actually addresses the finding.
- */
-async function resolveAddressedThreads(
-  octokit: Octokit,
-  client: ClaudeClient | null,
-  owner: string,
-  repo: string,
-  prNumber: number,
-  previousFindings: PreviousFinding[],
-  diff: ParsedDiff,
-): Promise<string[]> {
-  const resolvedTitles: string[] = [];
-
-  const openFindings = previousFindings.filter(f => f.status === 'open' && f.threadId);
-
-  const candidates: Array<{ finding: PreviousFinding; hunkContent: string }> = [];
-
-  for (const finding of openFindings) {
-    const diffFile = diff.files.find(f => f.path === finding.file);
-    if (!diffFile) continue;
-
-    for (const hunk of diffFile.hunks) {
-      const hunkEnd = hunk.newStart + hunk.newLines - 1;
-      if (finding.line >= hunk.newStart - 3 && finding.line <= hunkEnd + 3) {
-        candidates.push({ finding, hunkContent: hunk.content });
-        break;
-      }
-    }
-  }
-
-  if (candidates.length === 0) return [];
-
-  if (!client) {
-    core.info(`${candidates.length} findings may have been addressed but cannot validate without Claude client`);
-    return [];
-  }
-
-  const prompt = candidates.map((c, i) =>
-    `### Finding ${i + 1}: "${c.finding.title}" at ${c.finding.file}:${c.finding.line} [${c.finding.severity}]\n\nNew code at that location:\n\`\`\`\n${c.hunkContent}\n\`\`\``
-  ).join('\n\n');
-
-  try {
-    const response = await client.sendMessage(
-      'You are checking if code review findings were addressed by new code changes. For each finding, respond with a JSON array where each element is: { "index": <number>, "addressed": true/false, "reason": "<brief reason>" }. Only mark as addressed if the code change ACTUALLY fixes the issue — not just cosmetic changes near the same lines. Respond with ONLY the JSON array.',
-      prompt,
-    );
-
-    let jsonText = response.content.trim();
-    if (jsonText.startsWith('```')) {
-      jsonText = jsonText.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
-    }
-
-    const results = JSON.parse(jsonText) as Array<{ index: number; addressed: boolean; reason: string }>;
-
-    for (const result of results) {
-      if (result.addressed && result.index >= 0 && result.index < candidates.length) {
-        const candidate = candidates[result.index];
-        if (candidate.finding.threadId) {
-          try {
-            await octokit.graphql(`
-              mutation($threadId: ID!) {
-                resolveReviewThread(input: { threadId: $threadId }) {
-                  thread { isResolved }
-                }
-              }
-            `, { threadId: candidate.finding.threadId });
-
-            resolvedTitles.push(candidate.finding.title);
-            core.info(`Auto-resolved: "${candidate.finding.title}" — ${result.reason}`);
-          } catch (error) {
-            core.debug(`Failed to resolve thread: ${error}`);
-          }
-        }
-      }
-    }
-  } catch (error) {
-    core.warning(`Failed to validate addressed findings: ${error}`);
-  }
-
-  return resolvedTitles;
-}
-
 async function llmDeduplicateFindings(
   findings: Finding[],
   previousFindings: PreviousFinding[],
@@ -492,4 +326,4 @@ async function llmDeduplicateFindings(
   }
 }
 
-export { CumulativeRecapStats, DuplicateMatch, PreviousFinding, RecapState, fetchRecapState, fetchPreviousRecapStats, formatRecapStatsTag, deduplicateFindings, buildRecapSummary, resolveAddressedThreads, titlesOverlap, llmDeduplicateFindings };
+export { DuplicateMatch, PreviousFinding, RecapState, fetchRecapState, deduplicateFindings, titlesOverlap, llmDeduplicateFindings };
