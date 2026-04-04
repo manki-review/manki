@@ -28,7 +28,7 @@ import {
   BOT_MARKER as PROGRESS_MARKER,
   FORCE_REVIEW_MARKER,
   isReviewInProgress,
-  isRecentlyApproved,
+  isApprovedOnCommit,
 } from './github';
 import { checkAndAutoApprove, resolveStaleThreads } from './state';
 
@@ -220,8 +220,8 @@ async function handlePullRequest(): Promise<void> {
     return;
   }
 
-  if (await isRecentlyApproved(octokit, owner, repo, prNumber, commitSha)) {
-    core.info('Recently approved — skipping redundant review');
+  if (await isApprovedOnCommit(octokit, owner, repo, prNumber, commitSha)) {
+    core.info('Already approved on this commit — skipping review');
     return;
   }
 
@@ -265,11 +265,11 @@ async function handleCommentTrigger(forceReview?: boolean): Promise<void> {
       return;
     }
 
-    if (await isRecentlyApproved(octokit, owner, repo, prNumber, pr.head.sha)) {
+    if (await isApprovedOnCommit(octokit, owner, repo, prNumber, pr.head.sha)) {
       if (payload.comment?.id) {
         await reactToIssueComment(octokit, owner, repo, payload.comment.id, 'eyes');
       }
-      core.info('Recently approved — skipping redundant review');
+      core.info('Already approved on this commit — skipping review');
       return;
     }
   }

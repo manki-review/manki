@@ -119,7 +119,7 @@ jest.mock('./github', () => ({
   reactToIssueComment: jest.fn().mockResolvedValue(undefined),
   fetchLinkedIssues: jest.fn().mockResolvedValue([]),
   isReviewInProgress: jest.fn().mockResolvedValue(false),
-  isRecentlyApproved: jest.fn().mockResolvedValue(false),
+  isApprovedOnCommit: jest.fn().mockResolvedValue(false),
   BOT_LOGIN: 'manki-review[bot]',
   BOT_MARKER: '<!-- manki-bot -->',
   REVIEW_COMPLETE_MARKER: '<!-- manki-review-complete -->',
@@ -671,6 +671,31 @@ describe('handlePullRequest', () => {
     );
     expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalled();
   });
+
+  it('skips review when already approved on this commit', async () => {
+    jest.mocked(ghUtils.isApprovedOnCommit).mockResolvedValueOnce(true);
+
+    setContext({
+      eventName: 'pull_request',
+      payload: {
+        action: 'opened',
+        sender: { login: 'user' },
+        pull_request: {
+          number: 1,
+          head: { sha: 'abc' },
+          base: { ref: 'main' },
+          title: 'Test PR',
+          body: '',
+          draft: false,
+        },
+      },
+    });
+
+    await handlePullRequest();
+
+    expect(jest.mocked(core.info)).toHaveBeenCalledWith('Already approved on this commit — skipping review');
+    expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
+  });
 });
 
 describe('handleCommentTrigger', () => {
@@ -721,9 +746,27 @@ describe('handleCommentTrigger', () => {
     expect(skipBody).toContain('- [ ] Force review');
     expect(jest.mocked(core.info)).toHaveBeenCalledWith('Review already in progress — skipping');
   });
+
+  it('skips review when already approved on this commit', async () => {
+    jest.mocked(ghUtils.isApprovedOnCommit).mockResolvedValueOnce(true);
+
+    setContext({
+      eventName: 'issue_comment',
+      payload: {
+        action: 'created',
+        issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } },
+        comment: { id: 42, body: '@manki-review review' },
+      },
+    });
+
+    await handleCommentTrigger();
+
+    expect(jest.mocked(core.info)).toHaveBeenCalledWith('Already approved on this commit — skipping review');
+    expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
+  });
 });
 
-describe('isRecentlyApproved guard', () => {
+describe('isApprovedOnCommit guard', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     _resetOctokitCache();
@@ -748,45 +791,45 @@ describe('isRecentlyApproved guard', () => {
     comment: { id: 42, body: '@manki review' },
   };
 
-  it('skips review when recently approved', async () => {
-    jest.mocked(ghUtils.isRecentlyApproved).mockResolvedValueOnce(true);
+  it('skips review when already approved on commit', async () => {
+    jest.mocked(ghUtils.isApprovedOnCommit).mockResolvedValueOnce(true);
 
     setContext({ eventName: 'pull_request', payload: prPayload });
     await handlePullRequest();
 
-    expect(jest.mocked(core.info)).toHaveBeenCalledWith('Recently approved — skipping redundant review');
+    expect(jest.mocked(core.info)).toHaveBeenCalledWith('Already approved on this commit — skipping review');
     expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
   });
 
-  it('proceeds when not recently approved', async () => {
-    jest.mocked(ghUtils.isRecentlyApproved).mockResolvedValueOnce(false);
+  it('proceeds when not approved on commit', async () => {
+    jest.mocked(ghUtils.isApprovedOnCommit).mockResolvedValueOnce(false);
 
     setContext({ eventName: 'pull_request', payload: prPayload });
     await handlePullRequest();
 
-    expect(jest.mocked(core.info)).not.toHaveBeenCalledWith('Recently approved — skipping redundant review');
+    expect(jest.mocked(core.info)).not.toHaveBeenCalledWith('Already approved on this commit — skipping review');
     expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
   });
 
-  it('skips review via handleCommentTrigger when recently approved', async () => {
-    jest.mocked(ghUtils.isRecentlyApproved).mockResolvedValueOnce(true);
+  it('skips review via handleCommentTrigger when already approved on commit', async () => {
+    jest.mocked(ghUtils.isApprovedOnCommit).mockResolvedValueOnce(true);
 
     setContext({ eventName: 'issue_comment', payload: commentPayload });
     await handleCommentTrigger();
 
-    expect(jest.mocked(core.info)).toHaveBeenCalledWith('Recently approved — skipping redundant review');
+    expect(jest.mocked(core.info)).toHaveBeenCalledWith('Already approved on this commit — skipping review');
     expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
     expect(jest.mocked(ghUtils.reactToIssueComment)).toHaveBeenCalledWith(
       expect.anything(), 'test-owner', 'test-repo', 42, 'eyes',
     );
   });
 
-  it('force review bypasses the recently approved check', async () => {
+  it('force review bypasses the approved-on-commit check', async () => {
     setContext({ eventName: 'issue_comment', payload: commentPayload });
     await handleCommentTrigger(true);
 
-    expect(jest.mocked(core.info)).not.toHaveBeenCalledWith('Recently approved — skipping redundant review');
-    expect(jest.mocked(ghUtils.isRecentlyApproved)).not.toHaveBeenCalled();
+    expect(jest.mocked(core.info)).not.toHaveBeenCalledWith('Already approved on this commit — skipping review');
+    expect(jest.mocked(ghUtils.isApprovedOnCommit)).not.toHaveBeenCalled();
   });
 });
 
