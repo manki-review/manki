@@ -283,6 +283,15 @@ models:
       expect(core.error).toHaveBeenCalledWith('`models.judge` must be a string');
     });
 
+    it('throws on invalid models.planner type', () => {
+      const yaml = `
+models:
+  planner: 99
+`;
+      expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
+      expect(core.error).toHaveBeenCalledWith('`models.planner` must be a string');
+    });
+
     it('throws on invalid models.dedup type', () => {
       const yaml = `
 models:

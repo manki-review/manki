@@ -1372,15 +1372,12 @@ describe('runReview', () => {
     expect(securityCall![0]).toContain('Check auth token handling in src/auth.ts');
   });
 
-  it('falls back to selectTeam when planner is disabled', async () => {
+  it('falls back to selectTeam when planner client is not provided', async () => {
     const clients: ReviewClients = {
       reviewer: {
         sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
       } as unknown as import('./claude').ClaudeClient,
       judge: {
-        sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
-      planner: {
         sendMessage: jest.fn(),
       } as unknown as import('./claude').ClaudeClient,
     };
@@ -1390,8 +1387,6 @@ describe('runReview', () => {
 
     const result = await runReview(clients, config, diff, 'raw diff', 'repo context');
     expect(result.reviewComplete).toBe(true);
-    // Planner should not have been called
-    expect((clients.planner!.sendMessage as jest.Mock)).not.toHaveBeenCalled();
     // Should fall back to heuristic (small team = 3 agents)
     expect(result.agentNames).toHaveLength(3);
   });
@@ -1835,17 +1830,20 @@ describe('runPlanner', () => {
 
   it('returns null on timeout', async () => {
     jest.useFakeTimers();
-    const client = {
-      sendMessage: jest.fn().mockImplementation(() => new Promise(() => {})),
-    } as unknown as import('./claude').ClaudeClient;
+    try {
+      const client = {
+        sendMessage: jest.fn().mockImplementation(() => new Promise(() => {})),
+      } as unknown as import('./claude').ClaudeClient;
 
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
-    const resultPromise = runPlanner(client, diff);
+      const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+      const resultPromise = runPlanner(client, diff);
 
-    jest.advanceTimersByTime(PLANNER_TIMEOUT_MS);
-    const result = await resultPromise;
-    expect(result).toBeNull();
-    jest.useRealTimers();
+      jest.advanceTimersByTime(PLANNER_TIMEOUT_MS);
+      const result = await resultPromise;
+      expect(result).toBeNull();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 

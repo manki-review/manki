@@ -339,6 +339,7 @@ async function runFullReview(
     const diff = parsePRDiff(rawDiff);
     const parseEndTime = Date.now();
     const team = selectTeam(diff, config, config.reviewers);
+    let actualTeamAgents: string[] = team.agents.map(a => a.name);
     const lineCount = diff.totalAdditions + diff.totalDeletions;
 
     const dashboard: DashboardData = {
@@ -486,6 +487,7 @@ async function runFullReview(
         if (progress.phase === 'planning') {
           core.info('Planner analyzing PR content...');
         } else if (progress.phase === 'team-selected' && progress.agentNames) {
+          actualTeamAgents = progress.agentNames;
           dashboard.agentCount = progress.agentNames.length;
           dashboard.agentProgress = progress.agentNames.map(name => ({ name, status: 'reviewing' as const }));
           scheduleDashboardFlush();
@@ -705,7 +707,7 @@ async function runFullReview(
         judgeModel,
         reviewLevel: team.level,
         reviewLevelReason: `auto, ${diff.totalAdditions + diff.totalDeletions} lines`,
-        teamAgents: team.agents.map(a => a.name),
+        teamAgents: actualTeamAgents,
         memoryEnabled: config.memory?.enabled ?? false,
         memoryRepo: config.memory?.repo ?? '',
         nitHandling,

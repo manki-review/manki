@@ -352,7 +352,7 @@ export async function runReview(
 ): Promise<ReviewResult> {
   let team: TeamRoster;
 
-  if (clients.planner && config.planner?.enabled !== false && config.review_level === 'auto') {
+  if (clients.planner && config.review_level === 'auto') {
     if (onProgress) {
       onProgress({ phase: 'planning', rawFindingCount: 0 });
     }
