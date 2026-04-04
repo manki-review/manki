@@ -1339,11 +1339,13 @@ describe('runReview', () => {
     // Planner client should have been called
     expect((clients.planner!.sendMessage as jest.Mock)).toHaveBeenCalledTimes(1);
 
-    // Planning phase should have been emitted
+    // Planning phase should have been emitted: once before and once after planner completes
     const planningCalls = onProgress.mock.calls.filter(
       (call: [import('./review').ReviewProgress]) => call[0].phase === 'planning',
     );
-    expect(planningCalls).toHaveLength(1);
+    expect(planningCalls).toHaveLength(2);
+    expect(planningCalls[0][0].plannerResult).toBeUndefined();
+    expect(planningCalls[1][0].plannerResult).toBeDefined();
 
     // Planner result should be in the review result
     expect(result.plannerResult).toBeDefined();
@@ -1357,6 +1359,43 @@ describe('runReview', () => {
     for (const call of reviewerCalls) {
       expect(call[2]).toEqual({ effort: 'medium' });
     }
+  });
+
+  it('passes planner judgeEffort to the judge agent', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 3,
+      reviewerEffort: 'low',
+      judgeEffort: 'high',
+      prType: 'bugfix',
+    });
+
+    const findingJson = JSON.stringify([{
+      severity: 'required', title: 'Bug', file: 'a.ts', line: 1,
+      description: 'desc', suggestedFix: '', reviewers: [],
+    }]);
+
+    const clients: ReviewClients = {
+      reviewer: {
+        sendMessage: jest.fn().mockResolvedValue({ content: findingJson }),
+      } as unknown as import('./claude').ClaudeClient,
+      judge: {
+        sendMessage: jest.fn(),
+      } as unknown as import('./claude').ClaudeClient,
+      planner: {
+        sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
+      } as unknown as import('./claude').ClaudeClient,
+    };
+
+    const config = makeConfig({ review_level: 'auto' });
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
+
+    await runReview(clients, config, diff, 'raw diff', 'repo context');
+
+    expect(mockedRunJudgeAgent).toHaveBeenCalledTimes(1);
+    const judgeInput = mockedRunJudgeAgent.mock.calls[0][2];
+    expect(judgeInput.effort).toBe('high');
   });
 
   it('falls back to selectTeam when planner client is not provided', async () => {

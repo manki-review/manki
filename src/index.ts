@@ -472,6 +472,16 @@ async function runFullReview(
       (progress) => {
         if (progress.phase === 'planning') {
           core.info('Planner analyzing PR content...');
+          if (progress.plannerResult) {
+            dashboard.plannerInfo = {
+              teamSize: progress.plannerResult.teamSize,
+              reviewerEffort: progress.plannerResult.reviewerEffort,
+              judgeEffort: progress.plannerResult.judgeEffort,
+              prType: progress.plannerResult.prType,
+            };
+            dashboard.agentCount = progress.plannerResult.teamSize;
+            scheduleDashboardFlush();
+          }
         } else if (progress.phase === 'agent-complete') {
           rawFindingCount = progress.rawFindingCount;
           if (dashboard.agentProgress && progress.agentName) {

@@ -334,6 +334,9 @@ export async function runReview(
     if (plannerResult) {
       team = selectTeam(diff, config, config.reviewers, plannerResult.teamSize);
       core.info(`Planner: ${plannerResult.teamSize} agents, reviewer: ${plannerResult.reviewerEffort}, judge: ${plannerResult.judgeEffort} (${plannerResult.prType})`);
+      if (onProgress) {
+        onProgress({ phase: 'planning', rawFindingCount: 0, plannerResult });
+      }
     } else {
       team = heuristicFallback(diff, config);
     }

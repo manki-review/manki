@@ -1695,6 +1695,7 @@ describe('runFullReview orchestration', () => {
       async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
         if (onProgress) {
           onProgress({ phase: 'planning', rawFindingCount: 0 });
+          onProgress({ phase: 'planning', rawFindingCount: 0, plannerResult: { teamSize: 3 as const, reviewerEffort: 'low' as const, judgeEffort: 'low' as const, prType: 'chore' } });
         }
         jest.advanceTimersByTime(600);
         await Promise.resolve();
@@ -1711,6 +1712,13 @@ describe('runFullReview orchestration', () => {
     jest.useRealTimers();
 
     expect(jest.mocked(core.info)).toHaveBeenCalledWith('Planner analyzing PR content...');
+
+    const dashboardCalls = jest.mocked(ghUtils.updateProgressDashboard).mock.calls;
+    const dashboardWithPlanner = dashboardCalls.find(call => call[4]?.plannerInfo !== undefined);
+    expect(dashboardWithPlanner).toBeDefined();
+    expect(dashboardWithPlanner![4].plannerInfo).toEqual({
+      teamSize: 3, reviewerEffort: 'low', judgeEffort: 'low', prType: 'chore',
+    });
   });
 
   it('resolves threads the judge identified as addressed', async () => {

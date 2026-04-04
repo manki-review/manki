@@ -171,6 +171,12 @@ function formatDuration(ms: number): string {
   return ms < 1000 ? `${ms}ms` : `${Math.round(ms / 1000)}s`;
 }
 
+const VALID_PR_TYPES = new Set(['feature', 'bugfix', 'refactor', 'docs', 'test', 'chore', 'rename']);
+
+function sanitizePrType(prType: string): string {
+  return VALID_PR_TYPES.has(prType) ? prType : 'unknown';
+}
+
 export function buildDashboard(data: DashboardData): string {
   const agents = data.agentProgress;
   const hasAgentProgress = agents && agents.length > 0;
@@ -183,7 +189,8 @@ export function buildDashboard(data: DashboardData): string {
   lines.push(`\u2713 Parsed diff — ${data.lineCount} lines`);
 
   if (data.plannerInfo) {
-    lines.push(`\u2713 Planner — ${data.plannerInfo.teamSize} agents, reviewer: ${data.plannerInfo.reviewerEffort}, judge: ${data.plannerInfo.judgeEffort} (${data.plannerInfo.prType})`);
+    const prType = sanitizePrType(data.plannerInfo.prType);
+    lines.push(`\u2713 Planner — ${data.plannerInfo.teamSize} agents, reviewer: ${data.plannerInfo.reviewerEffort}, judge: ${data.plannerInfo.judgeEffort} (${prType})`);
   }
 
   if (data.phase === 'started') {

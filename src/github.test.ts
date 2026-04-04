@@ -1429,6 +1429,25 @@ describe('buildDashboard', () => {
     expect(md).not.toContain('|---|');
     expect(md).toContain('\u2713 Parsed diff');
   });
+
+  it('renders plannerInfo when present', () => {
+    const data: DashboardData = {
+      phase: 'started', lineCount: 200, agentCount: 5,
+      plannerInfo: { teamSize: 5, reviewerEffort: 'medium', judgeEffort: 'high', prType: 'feature' },
+    };
+    const md = buildDashboard(data);
+    expect(md).toContain('\u2713 Planner — 5 agents, reviewer: medium, judge: high (feature)');
+  });
+
+  it('sanitizes unknown prType values in plannerInfo', () => {
+    const data: DashboardData = {
+      phase: 'started', lineCount: 100, agentCount: 3,
+      plannerInfo: { teamSize: 3, reviewerEffort: 'low', judgeEffort: 'low', prType: '<script>alert(1)</script>' },
+    };
+    const md = buildDashboard(data);
+    expect(md).toContain('(unknown)');
+    expect(md).not.toContain('<script>');
+  });
 });
 
 describe('updateProgressComment', () => {
