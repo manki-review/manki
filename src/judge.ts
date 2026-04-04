@@ -52,8 +52,22 @@ export function buildJudgeSystemPrompt(config: ReviewConfig, agentCount: number,
   const majorityThreshold = Math.max(1, Math.ceil(agentCount / 2));
 
   const summaryInstruction = isFollowUp
-    ? 'Brief progress update: what the author changed since the last review and your assessment of the new changes. Do not re-summarize the entire PR purpose.'
-    : '1-2 sentence review summary. Be conversational but professional. Focus on what matters: what was found, what\'s good, what needs attention. Never list agent names. Never mention agent count or review level. Never say \'after judge evaluation\'. For clean PRs: acknowledge briefly. For PRs with findings: highlight the most important finding(s).';
+    ? `Write a brief, opinionated progress update in 1-2 sentences. Focus on whether previous concerns were addressed and what's new. Be direct — don't re-describe the PR. Never start with "The author" or "Since last review —". Good examples:
+- "All previous findings addressed cleanly. Two new nits on test coverage but nothing blocking."
+- "The timeout leak is fixed but introduced a new issue: clearTimeout never fires on success."
+- "Previous concerns resolved. Nothing new — this is ready."
+Bad examples (do NOT write like this):
+- "The author addressed the positional slice ordering issue..."
+- "Since last review — All 11 previously open findings resolved."`
+    : `Write a concise, opinionated review summary in 1-2 sentences. Lead with what matters most — the biggest risk, the smartest decision, or the thing that needs attention. Be direct and conversational, not formal. Never start with "The author" or "This PR" or "The refactor". Vary your opening. Never list agent names. Never mention agent count or review level. Never say "after judge evaluation". Good examples:
+- "Clean refactor — the new planner is half the code with better results."
+- "One real issue buried in an otherwise solid change: the timeout handler leaks."
+- "Mostly mechanical, but the auth token validation path needs a closer look."
+- "Nothing to flag — straightforward config cleanup."
+Bad examples (do NOT write like this):
+- "The author addressed all issues from the prior cycle..."
+- "The refactor looks solid overall. The main actionable issue is..."
+- "This PR modifies the review pipeline to..."`;
   let prompt = `You are a code review judge. You evaluate findings from multiple specialist reviewers for accuracy, actionability, and severity.
 
 ## Severity Assessment
@@ -157,7 +171,6 @@ Multiple specialist reviewers may flag the same issue independently. When you se
 ${isFollowUp ? `## Follow-Up Review
 
 This is a follow-up review. The previous review state is included in the repository context.
-Write your summary as a brief progress update: what the author changed since the last review and your assessment of the new changes. Do not re-summarize the entire PR purpose.
 ` : ''}## Output Format
 
 Respond with ONLY a JSON object (no markdown fences, no explanation):
