@@ -415,6 +415,7 @@ export async function runReview(
             totalAgents: team.agents.length,
           });
         }
+        break;
       }
     }
   } else {

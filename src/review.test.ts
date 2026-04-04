@@ -1140,11 +1140,10 @@ describe('runReview', () => {
     const agentCalls = onProgress.mock.calls.filter(
       (call: [import('./review').ReviewProgress]) => call[0].phase === 'agent-complete',
     );
-    expect(agentCalls.length).toBe(3);
-    for (const [progress] of agentCalls) {
-      expect(progress.agentStatus).toBe('failure');
-      expect(progress.agentFindingCount).toBe(0);
-    }
+    // Loop breaks after first agent failure
+    expect(agentCalls.length).toBe(1);
+    expect(agentCalls[0][0].agentStatus).toBe('failure');
+    expect(agentCalls[0][0].agentFindingCount).toBe(0);
   });
 
   it('returns reviewComplete false with failedAgents when one agent fails in multi-pass mode', async () => {
@@ -1182,17 +1181,11 @@ describe('runReview', () => {
     const agentCalls = onProgress.mock.calls.filter(
       (call: [import('./review').ReviewProgress]) => call[0].phase === 'agent-complete',
     );
-    expect(agentCalls.length).toBe(3);
+    // Loop breaks after first agent failure, so only one agent-complete event fires
+    expect(agentCalls.length).toBe(1);
 
-    // First agent should have failed (all passes rejected)
     expect(agentCalls[0][0].agentStatus).toBe('failure');
     expect(agentCalls[0][0].agentFindingCount).toBe(0);
-
-    // Remaining agents should have succeeded
-    for (const [progress] of agentCalls.slice(1)) {
-      expect(progress.agentStatus).toBe('success');
-      expect(progress.agentFindingCount).toBeGreaterThanOrEqual(0);
-    }
 
     // Judge should not run when agents fail
     expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
@@ -1314,6 +1307,7 @@ describe('runReview', () => {
     expect(result.failedAgents!.length).toBe(1);
     expect(result.summary).toContain('failed');
     expect(result.summary).toContain('Retry with @manki review');
+    expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
   });
 
   it('uses planner result to set team size and effort when planner client is provided', async () => {
