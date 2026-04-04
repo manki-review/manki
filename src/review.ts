@@ -44,6 +44,11 @@ export const AGENT_POOL: readonly ReviewerAgent[] = Object.freeze([
 
 const CORE_AGENTS: readonly number[] = Object.freeze([0, 1, 2]);
 
+export const TRIVIAL_VERIFIER_AGENT: ReviewerAgent = Object.freeze({
+  name: 'Trivial Change Verifier',
+  focus: 'Review this trivial change on two fronts: (1) check the actual content for issues appropriate to the change type — typos, stale references, broken markdown/links, incomplete renames; (2) verify the change is actually trivial as classified and flag any hidden behavior change, security implication, broken invariant, or missing test that would contradict that assessment.',
+});
+
 export function selectTeam(
   diff: ParsedDiff,
   config: ReviewConfig,
@@ -54,6 +59,10 @@ export function selectTeam(
 
   let teamSize: number;
   let level: 'small' | 'medium' | 'large';
+
+  if (teamSizeOverride === 1) {
+    return { level: 'small', agents: [TRIVIAL_VERIFIER_AGENT], lineCount };
+  }
 
   if (teamSizeOverride) {
     teamSize = teamSizeOverride;
@@ -234,8 +243,9 @@ function buildPlannerSummary(diff: ParsedDiff, prContext?: PrContext): string {
 const PLANNER_SYSTEM_PROMPT = `You are a code review planning assistant. Analyze this PR and decide how to review it.
 
 Decide:
-1. teamSize: 3, 5, or 7 reviewer agents (odd numbers for majority voting).
-   - 3: simple changes — docs, renames, config tweaks, small bug fixes
+1. teamSize: 1, 3, 5, or 7 reviewer agents (odd numbers for majority voting).
+   - 1: unambiguously trivial changes only, where a single sanity-check reviewer is sufficient. Use sparingly. Qualifies when the change cannot affect runtime behavior in any non-obvious way: README/docs edits, comment-only changes, .gitignore/CHANGELOG additions, pure identifier renames with no behavior change. Does NOT qualify if there is any logic change (even a few lines), any auth/crypto/security-adjacent edit, or anything where "subtle bug" is a realistic failure mode. When in doubt, pick 3.
+   - 3: simple changes — small bug fixes, config tweaks, straightforward refactors
    - 5: typical features, moderate refactors, multi-file changes
    - 7: security-sensitive, complex architectural changes, crypto, auth
 2. reviewerEffort: "low", "medium", or "high" — how much effort each reviewer agent should spend.
@@ -256,7 +266,7 @@ Respond with ONLY a JSON object (no markdown fences):
   "prType": "feature"
 }`;
 
-const VALID_TEAM_SIZES = new Set([3, 5, 7]);
+const VALID_TEAM_SIZES = new Set([1, 3, 5, 7]);
 const VALID_EFFORTS = new Set(['low', 'medium', 'high']);
 
 export async function runPlanner(
@@ -334,6 +344,10 @@ export async function runReview(
     if (plannerResult) {
       team = selectTeam(diff, config, config.reviewers, plannerResult.teamSize);
       core.info(`Planner: ${plannerResult.teamSize} agents, reviewer: ${plannerResult.reviewerEffort}, judge: ${plannerResult.judgeEffort} (${plannerResult.prType})`);
+      if (plannerResult.teamSize === 1) {
+        const totalLines = diff.totalAdditions + diff.totalDeletions;
+        core.info(`teamSize=1 decision: prType=${plannerResult.prType}, lines=${totalLines}, files=${diff.files.length}`);
+      }
       if (onProgress) {
         onProgress({ phase: 'planning', rawFindingCount: 0, plannerResult });
       }

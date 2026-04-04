@@ -35,7 +35,7 @@ export interface ReviewerAgent {
 }
 
 export interface PlannerResult {
-  teamSize: 3 | 5 | 7;
+  teamSize: 1 | 3 | 5 | 7;
   reviewerEffort: 'low' | 'medium' | 'high';
   judgeEffort: 'low' | 'medium' | 'high';
   prType: string;

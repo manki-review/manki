@@ -15,6 +15,7 @@ import {
   runPlanner,
   ReviewClients,
   AGENT_POOL,
+  TRIVIAL_VERIFIER_AGENT,
   PLANNER_TIMEOUT_MS,
 } from './review';
 import { LinkedIssue } from './github';
@@ -1363,6 +1364,40 @@ describe('runReview', () => {
     }
   });
 
+  it('runs a single trivial verifier agent and still invokes the judge when planner picks teamSize=1', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 1,
+      reviewerEffort: 'low',
+      judgeEffort: 'low',
+      prType: 'docs',
+    });
+
+    const clients: ReviewClients = {
+      reviewer: {
+        sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
+      } as unknown as import('./claude').ClaudeClient,
+      judge: {
+        sendMessage: jest.fn(),
+      } as unknown as import('./claude').ClaudeClient,
+      planner: {
+        sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
+      } as unknown as import('./claude').ClaudeClient,
+    };
+
+    const config = makeConfig({ review_level: 'auto' });
+    const diff = makeDiff({ totalAdditions: 2, totalDeletions: 0 });
+
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
+
+    const result = await runReview(clients, config, diff, 'raw diff', 'repo context');
+    expect(result.reviewComplete).toBe(true);
+    expect(result.agentNames).toEqual(['Trivial Change Verifier']);
+    expect(result.plannerResult!.teamSize).toBe(1);
+    expect((clients.reviewer.sendMessage as jest.Mock)).toHaveBeenCalledTimes(1);
+    expect(mockedRunJudgeAgent).toHaveBeenCalledTimes(1);
+    expect(mockedRunJudgeAgent.mock.calls[0][2].effort).toBe('low');
+  });
+
   it('passes planner judgeEffort to the judge agent', async () => {
     const plannerResponse = JSON.stringify({
       teamSize: 3,
@@ -1606,7 +1641,7 @@ describe('runPlanner', () => {
   });
 
   it('accepts all valid team sizes', async () => {
-    for (const size of [3, 5, 7]) {
+    for (const size of [1, 3, 5, 7]) {
       const client = makeClient(JSON.stringify({
         teamSize: size,
         reviewerEffort: 'low',
@@ -1783,6 +1818,30 @@ describe('selectTeam with teamSizeOverride', () => {
     const roster = selectTeam(diff, config, undefined, 5);
     expect(roster.agents).toHaveLength(5);
     expect(roster.level).toBe('medium');
+  });
+
+  it('returns single trivial verifier agent when override is 1', () => {
+    const diff = makeDiff({ totalAdditions: 2, totalDeletions: 0 });
+    const config = makeConfig();
+    const roster = selectTeam(diff, config, undefined, 1);
+    expect(roster.agents).toHaveLength(1);
+    expect(roster.agents[0]).toBe(TRIVIAL_VERIFIER_AGENT);
+    expect(roster.level).toBe('small');
+  });
+
+  it('skips core agents and scoring when override is 1', () => {
+    const diff = makeDiff({
+      totalAdditions: 2,
+      totalDeletions: 0,
+      files: [{ path: 'src/review.test.ts', changeType: 'modified', hunks: [] }],
+    });
+    const config = makeConfig();
+    const customReviewers: ReviewerAgent[] = [{ name: 'Custom', focus: 'custom' }];
+    const roster = selectTeam(diff, config, customReviewers, 1);
+    expect(roster.agents).toHaveLength(1);
+    expect(roster.agents[0]).toBe(TRIVIAL_VERIFIER_AGENT);
+    expect(roster.agents.map(a => a.name)).not.toContain('Custom');
+    expect(roster.agents.map(a => a.name)).not.toContain('Testing & Coverage');
   });
 
   it('keeps heuristic agent scoring with override', () => {
