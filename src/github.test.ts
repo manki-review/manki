@@ -1,4 +1,4 @@
-import { buildDashboard, formatFindingComment, formatStatsJson, formatStatsOneLiner, mapVerdictToEvent, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, buildNitIssueBody, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, safeTruncate, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, createNitIssue, fetchPRDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit } from './github';
+import { buildDashboard, formatFindingComment, formatStatsJson, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, buildNitIssueBody, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, safeTruncate, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, createNitIssue, fetchPRDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit } from './github';
 import { DashboardData, Finding, ParsedDiff, ReviewMetadata, ReviewResult, ReviewStats } from './types';
 
 describe('formatFindingComment', () => {
@@ -2225,7 +2225,7 @@ describe('isReviewInProgress', () => {
 describe('isApprovedOnCommit', () => {
   type Octokit = ReturnType<typeof import('@actions/github').getOctokit>;
 
-  function makeMockOctokit(reviews: Array<{ body?: string | null; state: string; commit_id?: string; user?: { type: string } }>) {
+  function makeMockOctokit(reviews: Array<{ body?: string | null; state: string; commit_id?: string; user?: { login?: string; type: string } }>) {
     return {
       rest: {
         pulls: {
@@ -2237,7 +2237,7 @@ describe('isApprovedOnCommit', () => {
 
   it('returns true when the latest bot review is APPROVED on the given commit', async () => {
     const octokit = makeMockOctokit([
-      { body: `${BOT_MARKER}\nReview`, state: 'APPROVED', commit_id: 'sha-123', user: { type: 'Bot' } },
+      { body: `${BOT_MARKER}\nReview`, state: 'APPROVED', commit_id: 'sha-123', user: { login: BOT_LOGIN, type: 'Bot' } },
     ]);
 
     expect(await isApprovedOnCommit(octokit, 'owner', 'repo', 1, 'sha-123')).toBe(true);
@@ -2245,7 +2245,7 @@ describe('isApprovedOnCommit', () => {
 
   it('returns false when the approval is on a different commit', async () => {
     const octokit = makeMockOctokit([
-      { body: `${BOT_MARKER}\nReview`, state: 'APPROVED', commit_id: 'sha-old', user: { type: 'Bot' } },
+      { body: `${BOT_MARKER}\nReview`, state: 'APPROVED', commit_id: 'sha-old', user: { login: BOT_LOGIN, type: 'Bot' } },
     ]);
 
     expect(await isApprovedOnCommit(octokit, 'owner', 'repo', 1, 'sha-new')).toBe(false);
@@ -2253,7 +2253,7 @@ describe('isApprovedOnCommit', () => {
 
   it('returns false when the latest bot review is DISMISSED', async () => {
     const octokit = makeMockOctokit([
-      { body: `${BOT_MARKER}\nReview`, state: 'DISMISSED', commit_id: 'sha-123', user: { type: 'Bot' } },
+      { body: `${BOT_MARKER}\nReview`, state: 'DISMISSED', commit_id: 'sha-123', user: { login: BOT_LOGIN, type: 'Bot' } },
     ]);
 
     expect(await isApprovedOnCommit(octokit, 'owner', 'repo', 1, 'sha-123')).toBe(false);
@@ -2279,8 +2279,8 @@ describe('isApprovedOnCommit', () => {
 
   it('picks the latest non-dismissed review when multiple exist', async () => {
     const octokit = makeMockOctokit([
-      { body: `${BOT_MARKER}\nOld`, state: 'CHANGES_REQUESTED', commit_id: 'sha-old', user: { type: 'Bot' } },
-      { body: `${BOT_MARKER}\nNew`, state: 'APPROVED', commit_id: 'sha-123', user: { type: 'Bot' } },
+      { body: `${BOT_MARKER}\nOld`, state: 'CHANGES_REQUESTED', commit_id: 'sha-old', user: { login: BOT_LOGIN, type: 'Bot' } },
+      { body: `${BOT_MARKER}\nNew`, state: 'APPROVED', commit_id: 'sha-123', user: { login: BOT_LOGIN, type: 'Bot' } },
     ]);
 
     expect(await isApprovedOnCommit(octokit, 'owner', 'repo', 1, 'sha-123')).toBe(true);

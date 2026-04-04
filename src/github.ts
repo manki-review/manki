@@ -1024,10 +1024,11 @@ async function isApprovedOnCommit(octokit: Octokit, owner: string, repo: string,
       owner,
       repo,
       pull_number: prNumber,
+      per_page: 100,
     });
     const botReviews = reviews.filter(
       (r: { body?: string | null; state?: string; user?: { login?: string; type?: string } | null }) =>
-        r.body?.includes(BOT_MARKER) && r.user?.type === 'Bot' && r.state !== 'DISMISSED',
+        r.user?.login === BOT_LOGIN && r.user?.type === 'Bot' && r.state !== 'DISMISSED',
     );
     const latest = botReviews[botReviews.length - 1];
     if (!latest || latest.state !== 'APPROVED') return false;
