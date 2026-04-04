@@ -27,6 +27,8 @@ const mockPullsGet = jest.fn().mockResolvedValue({
   },
 });
 
+const mockListReviews = jest.fn().mockResolvedValue({ data: [] });
+
 const mockListReactionsForIssueComment = jest.fn().mockResolvedValue({ data: [] });
 
 const mockListComments = jest.fn().mockResolvedValue({ data: [] });
@@ -35,7 +37,7 @@ const mockGraphql = jest.fn().mockResolvedValue({ resolveReviewThread: { thread:
 
 const mockOctokitInstance = {
   rest: {
-    pulls: { get: mockPullsGet },
+    pulls: { get: mockPullsGet, listReviews: mockListReviews },
     issues: { deleteComment: jest.fn().mockResolvedValue(undefined), listComments: mockListComments, createComment: jest.fn().mockResolvedValue({ data: { id: 999 } }), updateComment: jest.fn().mockResolvedValue({}) },
     reactions: { listForIssueComment: mockListReactionsForIssueComment },
   },
@@ -717,6 +719,108 @@ describe('handleCommentTrigger', () => {
     expect(skipBody).toContain(FORCE_REVIEW_MARKER);
     expect(skipBody).toContain('- [ ] Force review');
     expect(jest.mocked(core.info)).toHaveBeenCalledWith('Review already in progress — skipping');
+  });
+});
+
+describe('isRecentlyApproved guard', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    _resetOctokitCache();
+  });
+
+  const prPayload = {
+    action: 'opened',
+    sender: { login: 'user' },
+    pull_request: {
+      number: 1,
+      head: { sha: 'abc' },
+      base: { ref: 'main' },
+      title: 'Test PR',
+      body: '',
+      draft: false,
+    },
+  };
+
+  const commentPayload = {
+    action: 'created',
+    issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } },
+    comment: { id: 42, body: '@manki review' },
+  };
+
+  it('skips review when latest bot review is APPROVED and recent', async () => {
+    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+    mockListReviews.mockResolvedValueOnce({
+      data: [{
+        user: { login: 'manki-review[bot]', type: 'Bot' },
+        state: 'APPROVED',
+        submitted_at: twoMinutesAgo,
+      }],
+    });
+
+    setContext({ eventName: 'pull_request', payload: prPayload });
+    await handlePullRequest();
+
+    expect(jest.mocked(core.info)).toHaveBeenCalledWith('Recently approved — skipping redundant review');
+    expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
+  });
+
+  it('proceeds when latest bot review is APPROVED but older than 5 minutes', async () => {
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    mockListReviews.mockResolvedValueOnce({
+      data: [{
+        user: { login: 'manki-review[bot]', type: 'Bot' },
+        state: 'APPROVED',
+        submitted_at: tenMinutesAgo,
+      }],
+    });
+
+    setContext({ eventName: 'pull_request', payload: prPayload });
+    await handlePullRequest();
+
+    expect(jest.mocked(core.info)).not.toHaveBeenCalledWith('Recently approved — skipping redundant review');
+    expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
+  });
+
+  it('proceeds when latest bot review is CHANGES_REQUESTED', async () => {
+    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+    mockListReviews.mockResolvedValueOnce({
+      data: [{
+        user: { login: 'manki-review[bot]', type: 'Bot' },
+        state: 'CHANGES_REQUESTED',
+        submitted_at: twoMinutesAgo,
+      }],
+    });
+
+    setContext({ eventName: 'pull_request', payload: prPayload });
+    await handlePullRequest();
+
+    expect(jest.mocked(core.info)).not.toHaveBeenCalledWith('Recently approved — skipping redundant review');
+    expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
+  });
+
+  it('skips review via handleCommentTrigger when recently approved', async () => {
+    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+    mockListReviews.mockResolvedValueOnce({
+      data: [{
+        user: { login: 'manki-review[bot]', type: 'Bot' },
+        state: 'APPROVED',
+        submitted_at: twoMinutesAgo,
+      }],
+    });
+
+    setContext({ eventName: 'issue_comment', payload: commentPayload });
+    await handleCommentTrigger();
+
+    expect(jest.mocked(core.info)).toHaveBeenCalledWith('Recently approved — skipping redundant review');
+    expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
+  });
+
+  it('force review bypasses the recently approved check', async () => {
+    setContext({ eventName: 'issue_comment', payload: commentPayload });
+    await handleCommentTrigger(true);
+
+    expect(jest.mocked(core.info)).not.toHaveBeenCalledWith('Recently approved — skipping redundant review');
+    expect(mockListReviews).not.toHaveBeenCalled();
   });
 });
 
