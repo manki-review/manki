@@ -240,7 +240,11 @@ Available reviewer agents:
 ${agentList}
 
 Decide:
-1. agents (3-7): which agents to include (by exact name). Always include "Security & Safety" and "Correctness & Logic". Pick based on complexity, not line count.
+1. agents: select exactly 3, 5, or 7 agents by exact name (odd numbers for majority voting).
+   - 3: simple changes — docs, renames, config tweaks, small bug fixes
+   - 5: typical features, moderate refactors, multi-file changes
+   - 7: security-sensitive, complex architectural changes, crypto, auth
+   Always include "Security & Safety" and "Correctness & Logic". Pick based on complexity, not line count.
 2. focusAreas: for each selected agent, a 1-2 sentence directive on what to focus on in THIS specific PR. Be specific — reference actual files, patterns, or concerns visible in the diff.
 3. prType: one of "feature", "bugfix", "refactor", "docs", "test", "chore"
 
@@ -270,11 +274,16 @@ export async function runPlanner(
     }
 
     const validAgentNames = new Set(AGENT_POOL.map(a => a.name));
-    const agents = parsed.agents.filter((name: string) => validAgentNames.has(name));
+    let agents: string[] = parsed.agents.filter((name: string) => validAgentNames.has(name));
 
     if (agents.length < 3) {
       core.warning('Planner selected fewer than 3 valid agents — falling back to heuristic team selection');
       return null;
+    }
+
+    // Enforce odd team size for majority voting — trim last agent if even
+    if (agents.length % 2 === 0) {
+      agents = agents.slice(0, agents.length - 1);
     }
 
     const focusAreas: Record<string, string> = {};

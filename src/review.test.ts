@@ -1309,12 +1309,13 @@ describe('runReview', () => {
 
   it('uses planner result to shape team when planner client is provided', async () => {
     const plannerResponse = JSON.stringify({
-      agents: ['Security & Safety', 'Correctness & Logic', 'Testing & Coverage', 'Performance & Efficiency'],
+      agents: ['Security & Safety', 'Correctness & Logic', 'Testing & Coverage', 'Performance & Efficiency', 'Architecture & Design'],
       focusAreas: {
         'Security & Safety': 'Check auth token handling in src/auth.ts',
         'Correctness & Logic': 'Verify error propagation in handlers',
         'Testing & Coverage': 'Ensure new auth flow has tests',
         'Performance & Efficiency': 'Check for unnecessary allocations in hot path',
+        'Architecture & Design': 'Review module boundaries',
       },
       prType: 'feature',
     });
@@ -1340,7 +1341,8 @@ describe('runReview', () => {
     expect(result.agentNames).toContain('Security & Safety');
     expect(result.agentNames).toContain('Testing & Coverage');
     expect(result.agentNames).toContain('Performance & Efficiency');
-    expect(result.agentNames).toHaveLength(4);
+    expect(result.agentNames).toContain('Architecture & Design');
+    expect(result.agentNames).toHaveLength(5);
 
     // Planner client should have been called
     expect((clients.planner!.sendMessage as jest.Mock)).toHaveBeenCalledTimes(1);
@@ -1356,9 +1358,9 @@ describe('runReview', () => {
     );
     expect(teamSelectedCalls).toHaveLength(1);
     expect(teamSelectedCalls[0][0].agentNames).toEqual(
-      expect.arrayContaining(['Security & Safety', 'Correctness & Logic', 'Testing & Coverage', 'Performance & Efficiency']),
+      expect.arrayContaining(['Security & Safety', 'Correctness & Logic', 'Testing & Coverage', 'Performance & Efficiency', 'Architecture & Design']),
     );
-    expect(teamSelectedCalls[0][0].agentNames).toHaveLength(4);
+    expect(teamSelectedCalls[0][0].agentNames).toHaveLength(5);
   });
 
   it('falls back to selectTeam when planner is disabled', async () => {
@@ -1584,6 +1586,65 @@ describe('runPlanner', () => {
     expect(result).not.toBeNull();
     expect(result!.agents).toHaveLength(3);
     expect(result!.agents).not.toContain('Nonexistent Agent');
+  });
+
+  it('trims even agent count to odd for majority voting', async () => {
+    const response = JSON.stringify({
+      agents: ['Security & Safety', 'Correctness & Logic', 'Architecture & Design', 'Testing & Coverage'],
+      focusAreas: {
+        'Security & Safety': 'Focus',
+        'Correctness & Logic': 'Focus',
+        'Architecture & Design': 'Focus',
+        'Testing & Coverage': 'Focus',
+      },
+      prType: 'feature',
+    });
+
+    const client = makeClient(response);
+    const diff = makeDiff({ totalAdditions: 50, totalDeletions: 10 });
+    const result = await runPlanner(client, diff);
+    expect(result).not.toBeNull();
+    expect(result!.agents).toHaveLength(3);
+    expect(result!.agents).not.toContain('Testing & Coverage');
+  });
+
+  it('trims 6 agents to 5 for majority voting', async () => {
+    const response = JSON.stringify({
+      agents: [
+        'Security & Safety', 'Correctness & Logic', 'Architecture & Design',
+        'Testing & Coverage', 'Performance & Efficiency', 'Maintainability & Readability',
+      ],
+      focusAreas: {
+        'Security & Safety': 'Focus',
+        'Correctness & Logic': 'Focus',
+        'Architecture & Design': 'Focus',
+        'Testing & Coverage': 'Focus',
+        'Performance & Efficiency': 'Focus',
+        'Maintainability & Readability': 'Focus',
+      },
+      prType: 'feature',
+    });
+
+    const client = makeClient(response);
+    const diff = makeDiff({ totalAdditions: 200, totalDeletions: 50 });
+    const result = await runPlanner(client, diff);
+    expect(result).not.toBeNull();
+    expect(result!.agents).toHaveLength(5);
+    expect(result!.agents).not.toContain('Maintainability & Readability');
+  });
+
+  it('returns null when even trim would drop below 3 agents', async () => {
+    const response = JSON.stringify({
+      agents: ['Security & Safety', 'Fake Agent 1', 'Correctness & Logic', 'Fake Agent 2'],
+      focusAreas: { 'Security & Safety': 'Focus', 'Correctness & Logic': 'Focus' },
+      prType: 'chore',
+    });
+
+    const client = makeClient(response);
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const result = await runPlanner(client, diff);
+    // 4 agents, 2 invalid → 2 valid → < 3 → null
+    expect(result).toBeNull();
   });
 
   it('returns null when fewer than 3 valid agents after filtering', async () => {
