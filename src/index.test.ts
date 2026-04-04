@@ -119,6 +119,7 @@ jest.mock('./github', () => ({
   reactToIssueComment: jest.fn().mockResolvedValue(undefined),
   fetchLinkedIssues: jest.fn().mockResolvedValue([]),
   isReviewInProgress: jest.fn().mockResolvedValue(false),
+  isRecentlyApproved: jest.fn().mockResolvedValue(false),
   BOT_LOGIN: 'manki-review[bot]',
   BOT_MARKER: '<!-- manki-bot -->',
   REVIEW_COMPLETE_MARKER: '<!-- manki-review-complete -->',
@@ -747,15 +748,8 @@ describe('isRecentlyApproved guard', () => {
     comment: { id: 42, body: '@manki review' },
   };
 
-  it('skips review when latest bot review is APPROVED and recent', async () => {
-    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
-    mockListReviews.mockResolvedValueOnce({
-      data: [{
-        user: { login: 'manki-review[bot]', type: 'Bot' },
-        state: 'APPROVED',
-        submitted_at: twoMinutesAgo,
-      }],
-    });
+  it('skips review when recently approved', async () => {
+    jest.mocked(ghUtils.isRecentlyApproved).mockResolvedValueOnce(true);
 
     setContext({ eventName: 'pull_request', payload: prPayload });
     await handlePullRequest();
@@ -764,32 +758,8 @@ describe('isRecentlyApproved guard', () => {
     expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
   });
 
-  it('proceeds when latest bot review is APPROVED but older than 5 minutes', async () => {
-    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
-    mockListReviews.mockResolvedValueOnce({
-      data: [{
-        user: { login: 'manki-review[bot]', type: 'Bot' },
-        state: 'APPROVED',
-        submitted_at: tenMinutesAgo,
-      }],
-    });
-
-    setContext({ eventName: 'pull_request', payload: prPayload });
-    await handlePullRequest();
-
-    expect(jest.mocked(core.info)).not.toHaveBeenCalledWith('Recently approved — skipping redundant review');
-    expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
-  });
-
-  it('proceeds when latest bot review is CHANGES_REQUESTED', async () => {
-    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
-    mockListReviews.mockResolvedValueOnce({
-      data: [{
-        user: { login: 'manki-review[bot]', type: 'Bot' },
-        state: 'CHANGES_REQUESTED',
-        submitted_at: twoMinutesAgo,
-      }],
-    });
+  it('proceeds when not recently approved', async () => {
+    jest.mocked(ghUtils.isRecentlyApproved).mockResolvedValueOnce(false);
 
     setContext({ eventName: 'pull_request', payload: prPayload });
     await handlePullRequest();
@@ -799,14 +769,7 @@ describe('isRecentlyApproved guard', () => {
   });
 
   it('skips review via handleCommentTrigger when recently approved', async () => {
-    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
-    mockListReviews.mockResolvedValueOnce({
-      data: [{
-        user: { login: 'manki-review[bot]', type: 'Bot' },
-        state: 'APPROVED',
-        submitted_at: twoMinutesAgo,
-      }],
-    });
+    jest.mocked(ghUtils.isRecentlyApproved).mockResolvedValueOnce(true);
 
     setContext({ eventName: 'issue_comment', payload: commentPayload });
     await handleCommentTrigger();
@@ -820,7 +783,7 @@ describe('isRecentlyApproved guard', () => {
     await handleCommentTrigger(true);
 
     expect(jest.mocked(core.info)).not.toHaveBeenCalledWith('Recently approved — skipping redundant review');
-    expect(mockListReviews).not.toHaveBeenCalled();
+    expect(jest.mocked(ghUtils.isRecentlyApproved)).not.toHaveBeenCalled();
   });
 });
 

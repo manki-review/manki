@@ -28,38 +28,11 @@ import {
   BOT_MARKER as PROGRESS_MARKER,
   FORCE_REVIEW_MARKER,
   isReviewInProgress,
+  isRecentlyApproved,
 } from './github';
 import { checkAndAutoApprove, resolveStaleThreads } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
-
-async function isRecentlyApproved(
-  octokit: Octokit,
-  owner: string,
-  repo: string,
-  prNumber: number,
-): Promise<boolean> {
-  try {
-    const { data: reviews } = await octokit.rest.pulls.listReviews({
-      owner, repo, pull_number: prNumber,
-    });
-
-    const botReviews = reviews
-      .filter(r => r.user?.login === BOT_LOGIN || r.user?.type === 'Bot')
-      .filter(r => r.state !== 'DISMISSED');
-
-    if (botReviews.length === 0) return false;
-
-    const latest = botReviews[botReviews.length - 1];
-    if (latest.state !== 'APPROVED') return false;
-
-    const submittedAt = new Date(latest.submitted_at || 0);
-    const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
-    return submittedAt.getTime() > fiveMinutesAgo;
-  } catch {
-    return false;
-  }
-}
 
 const octokitCache = {
   instance: null as Octokit | null,
