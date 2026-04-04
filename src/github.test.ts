@@ -1,4 +1,4 @@
-import { buildDashboard, formatFindingComment, formatStatsJson, formatStatsOneLiner, mapVerdictToEvent, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, buildNitIssueBody, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, safeTruncate, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, createNitIssue, fetchPRDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress } from './github';
+import { buildDashboard, formatFindingComment, formatStatsJson, formatStatsOneLiner, mapVerdictToEvent, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, buildNitIssueBody, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, safeTruncate, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, createNitIssue, fetchPRDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isRecentlyApproved } from './github';
 import { DashboardData, Finding, ParsedDiff, ReviewMetadata, ReviewResult, ReviewStats } from './types';
 
 describe('formatFindingComment', () => {
@@ -2219,5 +2219,132 @@ describe('isReviewInProgress', () => {
     const result = await isReviewInProgress(octokit, 'owner', 'repo', 1);
 
     expect(result).toBe(false);
+  });
+});
+
+describe('isRecentlyApproved', () => {
+  type Octokit = ReturnType<typeof import('@actions/github').getOctokit>;
+
+  function makeMockOctokit(reviews: Array<{ user: { login: string; type?: string }; state: string; submitted_at: string; commit_id?: string }>) {
+    return {
+      rest: {
+        pulls: {
+          listReviews: jest.fn().mockResolvedValue({ data: reviews }),
+        },
+      },
+    } as unknown as Octokit;
+  }
+
+  it('returns true when latest bot approval is within 5 minutes', async () => {
+    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+    const octokit = makeMockOctokit([
+      { user: { login: 'manki-review[bot]', type: 'Bot' }, state: 'APPROVED', submitted_at: twoMinutesAgo },
+    ]);
+
+    expect(await isRecentlyApproved(octokit, 'owner', 'repo', 1)).toBe(true);
+  });
+
+  it('returns false when latest bot approval is older than 5 minutes', async () => {
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const octokit = makeMockOctokit([
+      { user: { login: 'manki-review[bot]', type: 'Bot' }, state: 'APPROVED', submitted_at: tenMinutesAgo },
+    ]);
+
+    expect(await isRecentlyApproved(octokit, 'owner', 'repo', 1)).toBe(false);
+  });
+
+  it('returns false when latest bot review is CHANGES_REQUESTED', async () => {
+    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+    const octokit = makeMockOctokit([
+      { user: { login: 'manki-review[bot]', type: 'Bot' }, state: 'CHANGES_REQUESTED', submitted_at: twoMinutesAgo },
+    ]);
+
+    expect(await isRecentlyApproved(octokit, 'owner', 'repo', 1)).toBe(false);
+  });
+
+  it('returns false when bot approval was DISMISSED', async () => {
+    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+    const octokit = makeMockOctokit([
+      { user: { login: 'manki-review[bot]', type: 'Bot' }, state: 'DISMISSED', submitted_at: twoMinutesAgo },
+    ]);
+
+    expect(await isRecentlyApproved(octokit, 'owner', 'repo', 1)).toBe(false);
+  });
+
+  it('returns false when listReviews throws (fail-open)', async () => {
+    const octokit = {
+      rest: {
+        pulls: {
+          listReviews: jest.fn().mockRejectedValue(new Error('API error')),
+        },
+      },
+    } as unknown as Octokit;
+
+    expect(await isRecentlyApproved(octokit, 'owner', 'repo', 1)).toBe(false);
+  });
+
+  it('ignores approvals from other bots', async () => {
+    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+    const octokit = makeMockOctokit([
+      { user: { login: 'dependabot[bot]', type: 'Bot' }, state: 'APPROVED', submitted_at: twoMinutesAgo },
+    ]);
+
+    expect(await isRecentlyApproved(octokit, 'owner', 'repo', 1)).toBe(false);
+  });
+
+  it('passes per_page: 100 to listReviews', async () => {
+    const octokit = makeMockOctokit([]);
+    await isRecentlyApproved(octokit, 'owner', 'repo', 1);
+
+    expect(octokit.rest.pulls.listReviews).toHaveBeenCalledWith({
+      owner: 'owner', repo: 'repo', pull_number: 1, per_page: 100,
+    });
+  });
+
+  it('returns false when commitSha does not match approval commit_id', async () => {
+    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+    const octokit = makeMockOctokit([
+      { user: { login: 'manki-review[bot]', type: 'Bot' }, state: 'APPROVED', submitted_at: twoMinutesAgo, commit_id: 'old-sha' },
+    ]);
+
+    expect(await isRecentlyApproved(octokit, 'owner', 'repo', 1, 'new-sha')).toBe(false);
+  });
+
+  it('returns true when commitSha matches approval commit_id', async () => {
+    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+    const octokit = makeMockOctokit([
+      { user: { login: 'manki-review[bot]', type: 'Bot' }, state: 'APPROVED', submitted_at: twoMinutesAgo, commit_id: 'same-sha' },
+    ]);
+
+    expect(await isRecentlyApproved(octokit, 'owner', 'repo', 1, 'same-sha')).toBe(true);
+  });
+
+  it('skips commitSha check when not provided', async () => {
+    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+    const octokit = makeMockOctokit([
+      { user: { login: 'manki-review[bot]', type: 'Bot' }, state: 'APPROVED', submitted_at: twoMinutesAgo, commit_id: 'any-sha' },
+    ]);
+
+    expect(await isRecentlyApproved(octokit, 'owner', 'repo', 1)).toBe(true);
+  });
+
+  it('returns true when multiple non-dismissed reviews end with APPROVED', async () => {
+    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+    const octokit = makeMockOctokit([
+      { user: { login: 'manki-review[bot]', type: 'Bot' }, state: 'CHANGES_REQUESTED', submitted_at: twoMinutesAgo },
+      { user: { login: 'manki-review[bot]', type: 'Bot' }, state: 'APPROVED', submitted_at: twoMinutesAgo },
+    ]);
+
+    expect(await isRecentlyApproved(octokit, 'owner', 'repo', 1)).toBe(true);
+  });
+
+  it('returns false when multiple non-dismissed reviews end with CHANGES_REQUESTED', async () => {
+    const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+    const octokit = makeMockOctokit([
+      { user: { login: 'manki-review[bot]', type: 'Bot' }, state: 'APPROVED', submitted_at: twoMinutesAgo },
+      { user: { login: 'manki-review[bot]', type: 'Bot' }, state: 'CHANGES_REQUESTED', submitted_at: twoMinutesAgo },
+    ]);
+
+    expect(await isRecentlyApproved(octokit, 'owner', 'repo', 1)).toBe(false);
   });
 });

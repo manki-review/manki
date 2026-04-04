@@ -28,6 +28,7 @@ import {
   BOT_MARKER as PROGRESS_MARKER,
   FORCE_REVIEW_MARKER,
   isReviewInProgress,
+  isRecentlyApproved,
 } from './github';
 import { checkAndAutoApprove, resolveStaleThreads } from './state';
 
@@ -219,6 +220,11 @@ async function handlePullRequest(): Promise<void> {
     return;
   }
 
+  if (await isRecentlyApproved(octokit, owner, repo, prNumber, commitSha)) {
+    core.info('Recently approved — skipping redundant review');
+    return;
+  }
+
   const prContext: PrContext = {
     title: pr.title,
     body: pr.body || '',
@@ -242,6 +248,12 @@ async function handleCommentTrigger(forceReview?: boolean): Promise<void> {
 
   const octokit = await getOctokit();
 
+  const { data: pr } = await octokit.rest.pulls.get({
+    owner,
+    repo,
+    pull_number: prNumber,
+  });
+
   if (!forceReview) {
     const remaining = await isReviewInProgress(octokit, owner, repo, prNumber);
     if (remaining !== false) {
@@ -252,18 +264,20 @@ async function handleCommentTrigger(forceReview?: boolean): Promise<void> {
       core.info('Review already in progress — skipping');
       return;
     }
+
+    if (await isRecentlyApproved(octokit, owner, repo, prNumber, pr.head.sha)) {
+      if (payload.comment?.id) {
+        await reactToIssueComment(octokit, owner, repo, payload.comment.id, 'eyes');
+      }
+      core.info('Recently approved — skipping redundant review');
+      return;
+    }
   }
 
   // Acknowledge the review request (skip when forceReview — already reacted in run())
   if (!forceReview && payload.comment?.id) {
     await reactToIssueComment(octokit, owner, repo, payload.comment.id, 'eyes');
   }
-
-  const { data: pr } = await octokit.rest.pulls.get({
-    owner,
-    repo,
-    pull_number: prNumber,
-  });
 
   const prContext: PrContext = {
     title: pr.title,

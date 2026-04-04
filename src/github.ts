@@ -1014,4 +1014,40 @@ async function isReviewInProgress(octokit: Octokit, owner: string, repo: string,
   }
 }
 
-export { dynamicFence, formatFindingComment, formatStatsJson, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, safeTruncate, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, isReviewInProgress };
+/**
+ * Check whether the bot recently approved a PR (within 5 minutes).
+ * Returns `true` if the latest non-dismissed bot approval is recent, meaning a
+ * new review would be redundant.  Fails open (returns `false`) on API errors.
+ */
+async function isRecentlyApproved(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  commitSha?: string,
+): Promise<boolean> {
+  try {
+    const { data: reviews } = await octokit.rest.pulls.listReviews({
+      owner, repo, pull_number: prNumber, per_page: 100,
+    });
+
+    const botReviews = reviews
+      .filter(r => r.user?.login === BOT_LOGIN)
+      .filter(r => r.state !== 'DISMISSED');
+
+    if (botReviews.length === 0) return false;
+
+    const latest = botReviews[botReviews.length - 1];
+    if (latest.state !== 'APPROVED') return false;
+
+    if (commitSha && latest.commit_id !== commitSha) return false;
+
+    const submittedAt = new Date(latest.submitted_at || 0);
+    const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
+    return submittedAt.getTime() > fiveMinutesAgo;
+  } catch {
+    return false;
+  }
+}
+
+export { dynamicFence, formatFindingComment, formatStatsJson, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, safeTruncate, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, isReviewInProgress, isRecentlyApproved };
