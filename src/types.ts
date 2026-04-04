@@ -29,6 +29,13 @@ export interface ReviewResult {
 export interface ReviewerAgent {
   name: string;
   focus: string;
+  focusArea?: string;
+}
+
+export interface PlannerResult {
+  agents: string[];
+  focusAreas: Record<string, string>;
+  prType?: string;
 }
 
 export type ReviewLevel = 'auto' | 'small' | 'medium' | 'large';
@@ -61,6 +68,10 @@ export interface ReviewConfig {
     reviewer?: string;
     judge?: string;
     dedup?: string;
+    planner?: string;
+  };
+  planner?: {
+    enabled?: boolean;
   };
   nit_handling?: 'issues' | 'comments';
   review_passes?: number;

@@ -4,10 +4,14 @@ import { ClaudeClient } from './claude';
 import { runJudgeAgent, JudgeInput, RecapStats, RecapDelta } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { LinkedIssue } from './github';
-import { ReviewConfig, ReviewerAgent, Finding, ReviewResult, ReviewVerdict, ParsedDiff, DiffFile, TeamRoster, PrContext } from './types';
+import { ReviewConfig, ReviewerAgent, Finding, ReviewResult, ReviewVerdict, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult } from './types';
 import { extractJSON } from './json';
 
 export const HIGH_CONF_SUGGESTION_THRESHOLD = 1;
+
+export const REQUIRED_AGENTS = ['Security & Safety', 'Correctness & Logic'] as const;
+
+export const PLANNER_TIMEOUT_MS = 30_000;
 
 export const AGENT_POOL: readonly ReviewerAgent[] = Object.freeze([
   {
@@ -175,10 +179,11 @@ export function intersectFindings(passes: Finding[][], threshold: number): Findi
 export interface ReviewClients {
   reviewer: ClaudeClient;
   judge: ClaudeClient;
+  planner?: ClaudeClient;
 }
 
 export interface ReviewProgress {
-  phase: 'agent-complete' | 'reviewed' | 'judging';
+  phase: 'planning' | 'team-selected' | 'agent-complete' | 'reviewed' | 'judging';
   agentName?: string;
   agentFindingCount?: number;
   agentDurationMs?: number;
@@ -187,6 +192,149 @@ export interface ReviewProgress {
   judgeInputCount?: number;
   completedAgents?: number;
   totalAgents?: number;
+  agentNames?: string[];
+}
+
+function buildPlannerSummary(diff: ParsedDiff, prContext?: PrContext): string {
+  let summary = '';
+
+  if (prContext) {
+    summary += `PR: ${prContext.title}`;
+    if (prContext.baseBranch) summary += ` (${prContext.baseBranch})`;
+    summary += '\n';
+    if (prContext.body) {
+      summary += prContext.body.slice(0, 500) + '\n';
+    }
+  }
+
+  summary += `\nFiles changed (${diff.totalAdditions}+ ${diff.totalDeletions}-):\n`;
+
+  for (let i = 0; i < diff.files.length; i++) {
+    const file = diff.files[i];
+    const additions = file.hunks.reduce((sum, h) => sum + h.content.split('\n').filter(l => l.startsWith('+')).length, 0);
+    const deletions = file.hunks.reduce((sum, h) => sum + h.content.split('\n').filter(l => l.startsWith('-')).length, 0);
+    let line = `- ${file.path} (${file.changeType}, +${additions} -${deletions})`;
+
+    if (i < 5 && file.hunks.length > 0) {
+      const hunkDescs = file.hunks.slice(0, 3).map(h => {
+        const firstLine = h.content.split('\n').find(l => l.trim().length > 0) || '';
+        return firstLine.slice(0, 60).trim();
+      }).filter(Boolean);
+      if (hunkDescs.length > 0) {
+        line += ` [hunks: ${hunkDescs.join(', ')}]`;
+      }
+    }
+
+    summary += line + '\n';
+
+    if (summary.length > 1800) {
+      summary += `... and ${diff.files.length - i - 1} more files\n`;
+      break;
+    }
+  }
+
+  return summary.slice(0, 2000);
+}
+
+function buildPlannerSystemPrompt(): string {
+  const agentList = AGENT_POOL.map(a => `- ${a.name}: ${a.focus}`).join('\n');
+  return `You are a code review planning assistant. Analyze this PR and decide how to review it.
+
+Available reviewer agents:
+${agentList}
+
+Decide:
+1. agents: select exactly 3, 5, or 7 agents by exact name (odd numbers for majority voting).
+   - 3: simple changes — docs, renames, config tweaks, small bug fixes
+   - 5: typical features, moderate refactors, multi-file changes
+   - 7: security-sensitive, complex architectural changes, crypto, auth
+   Always include "Security & Safety" and "Correctness & Logic". Pick based on complexity, not line count.
+2. focusAreas: for each selected agent, a 1-2 sentence directive on what to focus on in THIS specific PR. Be specific — reference actual files, patterns, or concerns visible in the diff.
+3. prType: one of "feature", "bugfix", "refactor", "docs", "test", "chore"
+
+Respond with ONLY a JSON object (no markdown fences):
+{
+  "agents": ["agent name", ...],
+  "focusAreas": { "agent name": "focus directive", ... },
+  "prType": "feature"
+}`;
+}
+
+export async function runPlanner(
+  client: ClaudeClient,
+  diff: ParsedDiff,
+  prContext?: PrContext,
+): Promise<PlannerResult | null> {
+  let timeoutId: ReturnType<typeof setTimeout>;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error('Planner timed out')), PLANNER_TIMEOUT_MS);
+  });
+
+  try {
+    const userMessage = buildPlannerSummary(diff, prContext);
+    const response = await Promise.race([
+      client.sendMessage(buildPlannerSystemPrompt(), userMessage, { effort: 'low' }),
+      timeoutPromise,
+    ]);
+    clearTimeout(timeoutId!);
+
+    const jsonText = extractJSON(response.content);
+    const parsed = JSON.parse(jsonText);
+
+    if (!Array.isArray(parsed.agents) || typeof parsed.focusAreas !== 'object' || parsed.focusAreas === null) {
+      core.warning('Planner returned malformed result — falling back to heuristic team selection');
+      return null;
+    }
+
+    const validAgentNames = new Set(AGENT_POOL.map(a => a.name));
+    let agents: string[] = parsed.agents.filter((name: string) => validAgentNames.has(name));
+
+    // Enforce required agents — prepend any that the LLM omitted (reverse to preserve order)
+    for (let i = REQUIRED_AGENTS.length - 1; i >= 0; i--) {
+      if (!agents.includes(REQUIRED_AGENTS[i])) {
+        agents.unshift(REQUIRED_AGENTS[i]);
+      }
+    }
+
+    if (agents.length < 3) {
+      core.warning('Planner selected fewer than 3 valid agents — falling back to heuristic team selection');
+      return null;
+    }
+
+    // Enforce odd team size for majority voting — trim last agent if even
+    if (agents.length % 2 === 0) {
+      agents = agents.slice(0, agents.length - 1);
+    }
+
+    const focusAreas: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed.focusAreas)) {
+      if (typeof value === 'string' && validAgentNames.has(key)) {
+        focusAreas[key] = value.slice(0, 500);
+      }
+    }
+
+    return {
+      agents,
+      focusAreas,
+      prType: parsed.prType,
+    };
+  } catch (error) {
+    clearTimeout(timeoutId!);
+    core.warning(`Planner failed: ${error} — falling back to heuristic team selection`);
+    return null;
+  }
+}
+
+function determineLevelFromSize(size: number): 'small' | 'medium' | 'large' {
+  if (size <= 3) return 'small';
+  if (size <= 5) return 'medium';
+  return 'large';
+}
+
+function heuristicFallback(diff: ParsedDiff, config: ReviewConfig): TeamRoster {
+  const team = selectTeam(diff, config, config.reviewers);
+  core.info(`Review team (${team.level}): ${team.agents.map(a => a.name).join(', ')}`);
+  return team;
 }
 
 export async function runReview(
@@ -203,8 +351,46 @@ export async function runReview(
   recapStats?: RecapStats,
   recapDelta?: RecapDelta,
 ): Promise<ReviewResult> {
-  const team = selectTeam(diff, config, config.reviewers);
-  core.info(`Review team (${team.level}): ${team.agents.map(a => a.name).join(', ')}`);
+  let team: TeamRoster;
+
+  if (clients.planner && config.review_level === 'auto') {
+    if (onProgress) {
+      onProgress({ phase: 'planning', rawFindingCount: 0 });
+    }
+    const plannerResult = await runPlanner(clients.planner, diff, prContext);
+    if (plannerResult) {
+      const selectedAgents: ReviewerAgent[] = plannerResult.agents
+        .map(name => AGENT_POOL.find(a => a.name === name))
+        .filter((a): a is ReviewerAgent => a !== undefined)
+        .map(agent => ({
+          ...agent,
+          focusArea: plannerResult.focusAreas[agent.name],
+        }));
+
+      if (config.reviewers) {
+        for (const custom of config.reviewers) {
+          if (!selectedAgents.some(s => s.name === custom.name)) {
+            selectedAgents.push(custom);
+          }
+        }
+      }
+
+      team = {
+        level: determineLevelFromSize(selectedAgents.length),
+        agents: selectedAgents,
+        lineCount: diff.totalAdditions + diff.totalDeletions,
+      };
+      core.info(`Planner selected team (${plannerResult.prType || 'unknown'}): ${team.agents.map(a => a.name).join(', ')}`);
+    } else {
+      team = heuristicFallback(diff, config);
+    }
+  } else {
+    team = heuristicFallback(diff, config);
+  }
+
+  if (onProgress) {
+    onProgress({ phase: 'team-selected', rawFindingCount: 0, agentNames: team.agents.map(a => a.name) });
+  }
 
   const memoryContext = memory ? buildMemoryContext(memory) : '';
 
@@ -444,7 +630,19 @@ async function runReviewerAgent(
 export function buildReviewerSystemPrompt(reviewer: ReviewerAgent, config: ReviewConfig): string {
   let prompt = `You are a code reviewer specializing in: ${reviewer.focus}
 
-Your role: ${reviewer.name}
+Your role: ${reviewer.name}`;
+
+  if (reviewer.focusArea) {
+    prompt += `
+
+## Focus Area (from pre-review analysis)
+
+${reviewer.focusArea}
+
+Note: this is guidance, not a restriction. Flag any other issues you find.`;
+  }
+
+  prompt += `
 
 Review the provided pull request diff carefully from your specialist perspective. Return your findings as a JSON array.
 

@@ -283,6 +283,15 @@ models:
       expect(core.error).toHaveBeenCalledWith('`models.judge` must be a string');
     });
 
+    it('throws on invalid models.planner type', () => {
+      const yaml = `
+models:
+  planner: 99
+`;
+      expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
+      expect(core.error).toHaveBeenCalledWith('`models.planner` must be a string');
+    });
+
     it('throws on invalid models.dedup type', () => {
       const yaml = `
 models:
@@ -354,6 +363,7 @@ models:
       expect(resolveModel(baseConfig, 'reviewer')).toBe('claude-sonnet-4-6');
       expect(resolveModel(baseConfig, 'judge')).toBe('claude-opus-4-6');
       expect(resolveModel(baseConfig, 'dedup')).toBe('claude-haiku-4-5');
+      expect(resolveModel(baseConfig, 'planner')).toBe('claude-haiku-4-5');
     });
 
     it('returns overridden stage-specific model', () => {
@@ -387,6 +397,31 @@ models:
       expect(resolveModel(config, 'reviewer')).toBe('claude-sonnet-4-6');
       expect(resolveModel(config, 'judge')).toBe('claude-opus-4-6');
       expect(resolveModel(config, 'dedup')).toBe('claude-haiku-4-5');
+      expect(resolveModel(config, 'planner')).toBe('claude-haiku-4-5');
+    });
+
+    it('returns overridden planner model', () => {
+      const config: ReviewConfig = {
+        ...baseConfig,
+        models: { planner: 'claude-sonnet-4-6' },
+      };
+      expect(resolveModel(config, 'planner')).toBe('claude-sonnet-4-6');
+    });
+  });
+
+  describe('planner config', () => {
+    it('accepts planner key in config validation', () => {
+      const config = loadConfig('planner:\n  enabled: false\n');
+      expect(config.planner?.enabled).toBe(false);
+    });
+
+    it('defaults planner to enabled', () => {
+      const config = loadConfig(undefined);
+      expect(config.planner?.enabled).toBe(true);
+    });
+
+    it('rejects invalid planner.enabled type', () => {
+      expect(() => loadConfig('planner:\n  enabled: "yes"\n')).toThrow();
     });
   });
 });

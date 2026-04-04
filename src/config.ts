@@ -17,6 +17,10 @@ export const DEFAULT_CONFIG: ReviewConfig = {
     reviewer: 'claude-sonnet-4-6',
     judge: 'claude-opus-4-6',
     dedup: 'claude-haiku-4-5',
+    planner: 'claude-haiku-4-5',
+  },
+  planner: {
+    enabled: true,
   },
   memory: {
     enabled: false,
@@ -37,6 +41,7 @@ const KNOWN_KEYS = new Set([
   'review_thresholds',
   'memory',
   'models',
+  'planner',
   'nit_handling',
   'review_passes',
 ]);
@@ -144,6 +149,20 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
       if ('dedup' in models && typeof models.dedup !== 'string') {
         errors.push('`models.dedup` must be a string');
       }
+      if ('planner' in models && typeof models.planner !== 'string') {
+        errors.push('`models.planner` must be a string');
+      }
+    }
+  }
+
+  if ('planner' in config) {
+    const planner = config.planner as Record<string, unknown>;
+    if (!planner || typeof planner !== 'object' || Array.isArray(planner)) {
+      errors.push('`planner` must be an object');
+    } else {
+      if ('enabled' in planner && typeof planner.enabled !== 'boolean') {
+        errors.push('`planner.enabled` must be a boolean');
+      }
     }
   }
 
@@ -193,6 +212,8 @@ function deepMerge(defaults: ReviewConfig, overrides: Record<string, unknown>): 
       result.memory = { ...defaults.memory, ...(value as Record<string, unknown>) } as ReviewConfig['memory'];
     } else if (key === 'models' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
       result.models = { ...defaults.models, ...(value as Record<string, unknown>) } as ReviewConfig['models'];
+    } else if (key === 'planner' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      result.planner = { ...defaults.planner, ...(value as Record<string, unknown>) } as ReviewConfig['planner'];
     } else if (key === 'review_thresholds' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
       result.review_thresholds = { ...defaults.review_thresholds, ...(value as Record<string, unknown>) } as ReviewConfig['review_thresholds'];
     } else {
@@ -255,7 +276,7 @@ export function loadConfigFromFile(filePath: string): ReviewConfig {
   return loadConfigFromContent(content);
 }
 
-export function resolveModel(config: ReviewConfig, stage: 'reviewer' | 'judge' | 'dedup'): string {
+export function resolveModel(config: ReviewConfig, stage: 'reviewer' | 'judge' | 'dedup' | 'planner'): string {
   return config.models?.[stage] || DEFAULT_CONFIG.models![stage]!;
 }
 
