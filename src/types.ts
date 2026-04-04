@@ -33,7 +33,6 @@ export interface ReviewerAgent {
 }
 
 export interface PlannerResult {
-  teamSize: number;
   agents: string[];
   focusAreas: Record<string, string>;
   prType?: string;

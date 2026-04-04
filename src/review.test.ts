@@ -1309,7 +1309,6 @@ describe('runReview', () => {
 
   it('uses planner result to shape team when planner client is provided', async () => {
     const plannerResponse = JSON.stringify({
-      teamSize: 4,
       agents: ['Security & Safety', 'Correctness & Logic', 'Testing & Coverage', 'Performance & Efficiency'],
       focusAreas: {
         'Security & Safety': 'Check auth token handling in src/auth.ts',
@@ -1335,7 +1334,8 @@ describe('runReview', () => {
     const config = makeConfig({ review_level: 'auto' });
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
 
-    const result = await runReview(clients, config, diff, 'raw diff', 'repo context');
+    const onProgress = jest.fn();
+    const result = await runReview(clients, config, diff, 'raw diff', 'repo context', null, undefined, undefined, undefined, onProgress);
     expect(result.reviewComplete).toBe(true);
     expect(result.agentNames).toContain('Security & Safety');
     expect(result.agentNames).toContain('Testing & Coverage');
@@ -1344,6 +1344,21 @@ describe('runReview', () => {
 
     // Planner client should have been called
     expect((clients.planner!.sendMessage as jest.Mock)).toHaveBeenCalledTimes(1);
+
+    // Planning and team-selected phases should have been emitted
+    const planningCalls = onProgress.mock.calls.filter(
+      (call: [import('./review').ReviewProgress]) => call[0].phase === 'planning',
+    );
+    expect(planningCalls).toHaveLength(1);
+
+    const teamSelectedCalls = onProgress.mock.calls.filter(
+      (call: [import('./review').ReviewProgress]) => call[0].phase === 'team-selected',
+    );
+    expect(teamSelectedCalls).toHaveLength(1);
+    expect(teamSelectedCalls[0][0].agentNames).toEqual(
+      expect.arrayContaining(['Security & Safety', 'Correctness & Logic', 'Testing & Coverage', 'Performance & Efficiency']),
+    );
+    expect(teamSelectedCalls[0][0].agentNames).toHaveLength(4);
   });
 
   it('falls back to selectTeam when planner is disabled', async () => {
@@ -1444,7 +1459,6 @@ describe('runPlanner', () => {
 
     const result = await runPlanner(client, diff);
     expect(result).not.toBeNull();
-    expect(result!.teamSize).toBe(5);
     expect(result!.agents).toHaveLength(5);
     expect(result!.agents).toContain('Security & Safety');
     expect(result!.focusAreas['Security & Safety']).toBe('Check for injection in query params');
@@ -1509,14 +1523,27 @@ describe('runPlanner', () => {
     expect(result).toBeNull();
   });
 
-  it('clamps teamSize to valid range', async () => {
+  it('returns null when focusAreas is null', async () => {
     const response = JSON.stringify({
-      teamSize: 10,
+      agents: ['Security & Safety', 'Correctness & Logic', 'Architecture & Design'],
+      focusAreas: null,
+      prType: 'feature',
+    });
+
+    const client = makeClient(response);
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const result = await runPlanner(client, diff);
+    expect(result).toBeNull();
+  });
+
+  it('filters non-string focusArea values and truncates long ones', async () => {
+    const longFocus = 'x'.repeat(600);
+    const response = JSON.stringify({
       agents: ['Security & Safety', 'Correctness & Logic', 'Architecture & Design'],
       focusAreas: {
-        'Security & Safety': 'Focus',
-        'Correctness & Logic': 'Focus',
-        'Architecture & Design': 'Focus',
+        'Security & Safety': longFocus,
+        'Correctness & Logic': 123,
+        'Architecture & Design': 'Valid focus',
       },
       prType: 'feature',
     });
@@ -1525,7 +1552,9 @@ describe('runPlanner', () => {
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
     const result = await runPlanner(client, diff);
     expect(result).not.toBeNull();
-    expect(result!.teamSize).toBe(7);
+    expect(result!.focusAreas['Security & Safety']).toHaveLength(500);
+    expect(result!.focusAreas['Correctness & Logic']).toBeUndefined();
+    expect(result!.focusAreas['Architecture & Design']).toBe('Valid focus');
   });
 
   it('includes PR context in planner message', async () => {

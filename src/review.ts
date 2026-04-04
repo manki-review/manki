@@ -179,7 +179,7 @@ export interface ReviewClients {
 }
 
 export interface ReviewProgress {
-  phase: 'planning' | 'agent-complete' | 'reviewed' | 'judging';
+  phase: 'planning' | 'team-selected' | 'agent-complete' | 'reviewed' | 'judging';
   agentName?: string;
   agentFindingCount?: number;
   agentDurationMs?: number;
@@ -188,6 +188,7 @@ export interface ReviewProgress {
   judgeInputCount?: number;
   completedAgents?: number;
   totalAgents?: number;
+  agentNames?: string[];
 }
 
 function buildPlannerSummary(diff: ParsedDiff, prContext?: PrContext): string {
@@ -231,30 +232,25 @@ function buildPlannerSummary(diff: ParsedDiff, prContext?: PrContext): string {
   return summary.slice(0, 2000);
 }
 
-const PLANNER_SYSTEM_PROMPT = `You are a code review planning assistant. Analyze this PR and decide how to review it.
+function buildPlannerSystemPrompt(): string {
+  const agentList = AGENT_POOL.map(a => `- ${a.name}: ${a.focus}`).join('\n');
+  return `You are a code review planning assistant. Analyze this PR and decide how to review it.
 
 Available reviewer agents:
-- Security & Safety: authentication, authorization, input validation, secrets, injection
-- Architecture & Design: patterns, coupling, API design, abstractions, modularity
-- Correctness & Logic: bugs, edge cases, error handling, race conditions, off-by-one
-- Testing & Coverage: test quality, missing tests, mock abuse, assertions
-- Performance & Efficiency: complexity, memory, caching, unnecessary work
-- Maintainability & Readability: naming, complexity, dead code, documentation
-- Dependencies & Integration: dependency changes, version compatibility, API contracts
+${agentList}
 
 Decide:
-1. teamSize (3-7): based on complexity, not line count. A 50-line crypto change needs more agents than a 500-line rename.
-2. agents: which agents to include (by exact name). Always include "Security & Safety" and "Correctness & Logic".
-3. focusAreas: for each selected agent, a 1-2 sentence directive on what to focus on in THIS specific PR. Be specific — reference actual files, patterns, or concerns visible in the diff.
-4. prType: one of "feature", "bugfix", "refactor", "docs", "test", "chore"
+1. agents (3-7): which agents to include (by exact name). Always include "Security & Safety" and "Correctness & Logic". Pick based on complexity, not line count.
+2. focusAreas: for each selected agent, a 1-2 sentence directive on what to focus on in THIS specific PR. Be specific — reference actual files, patterns, or concerns visible in the diff.
+3. prType: one of "feature", "bugfix", "refactor", "docs", "test", "chore"
 
 Respond with ONLY a JSON object (no markdown fences):
 {
-  "teamSize": <number>,
   "agents": ["agent name", ...],
   "focusAreas": { "agent name": "focus directive", ... },
   "prType": "feature"
 }`;
+}
 
 export async function runPlanner(
   client: ClaudeClient,
@@ -263,17 +259,16 @@ export async function runPlanner(
 ): Promise<PlannerResult | null> {
   try {
     const userMessage = buildPlannerSummary(diff, prContext);
-    const response = await client.sendMessage(PLANNER_SYSTEM_PROMPT, userMessage, { effort: 'low' });
+    const response = await client.sendMessage(buildPlannerSystemPrompt(), userMessage, { effort: 'low' });
 
     const jsonText = extractJSON(response.content);
     const parsed = JSON.parse(jsonText);
 
-    if (typeof parsed.teamSize !== 'number' || !Array.isArray(parsed.agents) || typeof parsed.focusAreas !== 'object') {
+    if (!Array.isArray(parsed.agents) || typeof parsed.focusAreas !== 'object' || parsed.focusAreas === null) {
       core.warning('Planner returned malformed result — falling back to heuristic team selection');
       return null;
     }
 
-    const teamSize = Math.max(3, Math.min(7, parsed.teamSize));
     const validAgentNames = new Set(AGENT_POOL.map(a => a.name));
     const agents = parsed.agents.filter((name: string) => validAgentNames.has(name));
 
@@ -282,10 +277,16 @@ export async function runPlanner(
       return null;
     }
 
+    const focusAreas: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed.focusAreas)) {
+      if (typeof value === 'string' && validAgentNames.has(key)) {
+        focusAreas[key] = value.slice(0, 500);
+      }
+    }
+
     return {
-      teamSize,
       agents,
-      focusAreas: parsed.focusAreas,
+      focusAreas,
       prType: parsed.prType,
     };
   } catch (error) {
@@ -350,6 +351,10 @@ export async function runReview(
   } else {
     team = selectTeam(diff, config, config.reviewers);
     core.info(`Review team (${team.level}): ${team.agents.map(a => a.name).join(', ')}`);
+  }
+
+  if (onProgress) {
+    onProgress({ phase: 'team-selected', rawFindingCount: 0, agentNames: team.agents.map(a => a.name) });
   }
 
   const memoryContext = memory ? buildMemoryContext(memory) : '';
