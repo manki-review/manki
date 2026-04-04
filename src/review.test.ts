@@ -15,6 +15,8 @@ import {
   runPlanner,
   ReviewClients,
   AGENT_POOL,
+  REQUIRED_AGENTS,
+  PLANNER_TIMEOUT_MS,
 } from './review';
 import { LinkedIssue } from './github';
 import { Finding, ReviewerAgent, ReviewConfig, ParsedDiff, DiffFile } from './types';
@@ -1485,6 +1487,9 @@ describe('runReview', () => {
     expect(result.reviewComplete).toBe(true);
     expect(result.agentNames).toContain('Custom Reviewer');
     expect(result.agentNames).toHaveLength(4);
+    // Custom reviewer is appended after planner-selected agents
+    expect(result.agentNames!.indexOf('Custom Reviewer')).toBe(3);
+    expect(result.agentNames!.slice(0, 3)).toEqual(['Security & Safety', 'Correctness & Logic', 'Architecture & Design']);
   });
 
   it('falls back to selectTeam when planner returns error', async () => {
@@ -1769,6 +1774,64 @@ describe('runPlanner', () => {
     expect(sentMessage.length).toBeLessThanOrEqual(2000);
     expect(sentMessage).toContain('... and');
     expect(sentMessage).toContain('more files');
+  });
+
+  it('prepends required agents when LLM omits them', async () => {
+    const response = JSON.stringify({
+      agents: ['Architecture & Design', 'Testing & Coverage', 'Performance & Efficiency'],
+      focusAreas: {
+        'Architecture & Design': 'Focus',
+        'Testing & Coverage': 'Focus',
+        'Performance & Efficiency': 'Focus',
+      },
+      prType: 'feature',
+    });
+
+    const client = makeClient(response);
+    const diff = makeDiff({ totalAdditions: 50, totalDeletions: 10 });
+    const result = await runPlanner(client, diff);
+    expect(result).not.toBeNull();
+    expect(result!.agents).toContain('Security & Safety');
+    expect(result!.agents).toContain('Correctness & Logic');
+    expect(result!.agents.indexOf('Security & Safety')).toBe(0);
+    expect(result!.agents.indexOf('Correctness & Logic')).toBe(1);
+    // 3 original + 2 prepended = 5 (odd, no trim needed)
+    expect(result!.agents).toHaveLength(5);
+  });
+
+  it('does not duplicate required agents already present', async () => {
+    const response = JSON.stringify({
+      agents: ['Security & Safety', 'Correctness & Logic', 'Architecture & Design'],
+      focusAreas: {
+        'Security & Safety': 'Focus',
+        'Correctness & Logic': 'Focus',
+        'Architecture & Design': 'Focus',
+      },
+      prType: 'feature',
+    });
+
+    const client = makeClient(response);
+    const diff = makeDiff({ totalAdditions: 50, totalDeletions: 10 });
+    const result = await runPlanner(client, diff);
+    expect(result).not.toBeNull();
+    expect(result!.agents).toHaveLength(3);
+    expect(result!.agents.filter(a => a === 'Security & Safety')).toHaveLength(1);
+    expect(result!.agents.filter(a => a === 'Correctness & Logic')).toHaveLength(1);
+  });
+
+  it('returns null on timeout', async () => {
+    jest.useFakeTimers();
+    const client = {
+      sendMessage: jest.fn().mockImplementation(() => new Promise(() => {})),
+    } as unknown as import('./claude').ClaudeClient;
+
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const resultPromise = runPlanner(client, diff);
+
+    jest.advanceTimersByTime(PLANNER_TIMEOUT_MS);
+    const result = await resultPromise;
+    expect(result).toBeNull();
+    jest.useRealTimers();
   });
 });
 

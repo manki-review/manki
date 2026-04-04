@@ -9,6 +9,10 @@ import { extractJSON } from './json';
 
 export const HIGH_CONF_SUGGESTION_THRESHOLD = 1;
 
+export const REQUIRED_AGENTS = ['Security & Safety', 'Correctness & Logic'] as const;
+
+export const PLANNER_TIMEOUT_MS = 30_000;
+
 export const AGENT_POOL: readonly ReviewerAgent[] = Object.freeze([
   {
     name: 'Security & Safety',
@@ -263,7 +267,10 @@ export async function runPlanner(
 ): Promise<PlannerResult | null> {
   try {
     const userMessage = buildPlannerSummary(diff, prContext);
-    const response = await client.sendMessage(buildPlannerSystemPrompt(), userMessage, { effort: 'low' });
+    const response = await Promise.race([
+      client.sendMessage(buildPlannerSystemPrompt(), userMessage, { effort: 'low' }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Planner timed out')), PLANNER_TIMEOUT_MS)),
+    ]);
 
     const jsonText = extractJSON(response.content);
     const parsed = JSON.parse(jsonText);
@@ -275,6 +282,13 @@ export async function runPlanner(
 
     const validAgentNames = new Set(AGENT_POOL.map(a => a.name));
     let agents: string[] = parsed.agents.filter((name: string) => validAgentNames.has(name));
+
+    // Enforce required agents — prepend any that the LLM omitted (reverse to preserve order)
+    for (let i = REQUIRED_AGENTS.length - 1; i >= 0; i--) {
+      if (!agents.includes(REQUIRED_AGENTS[i])) {
+        agents.unshift(REQUIRED_AGENTS[i]);
+      }
+    }
 
     if (agents.length < 3) {
       core.warning('Planner selected fewer than 3 valid agents — falling back to heuristic team selection');
