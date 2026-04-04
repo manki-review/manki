@@ -1353,7 +1353,7 @@ describe('runFullReview orchestration', () => {
     );
   });
 
-  it('downgrades incomplete review from APPROVE to COMMENT', async () => {
+  it('posts COMMENT and skips post-review processing for incomplete review', async () => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
@@ -1365,20 +1365,23 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'APPROVE', summary: 'Looks good',
+      verdict: 'APPROVE', summary: 'Review incomplete',
       findings: [], highlights: [], reviewComplete: false,
     });
-    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [], duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue('APPROVE');
 
     await callRunFullReview();
 
-    // Incomplete review should not APPROVE
+    // Incomplete review should post COMMENT and skip dedup/nit/memory processing
     expect(jest.mocked(ghUtils.postReview)).toHaveBeenCalledWith(
       expect.anything(), 'test-owner', 'test-repo', 42, 'abc123',
       expect.objectContaining({ verdict: 'COMMENT' }),
-      expect.anything(), expect.anything(),
+      expect.anything(),
     );
+    expect(jest.mocked(core.warning)).toHaveBeenCalledWith(
+      expect.stringContaining('Review incomplete'),
+    );
+    // Should not call dedup since we return early
+    expect(jest.mocked(recapModule.deduplicateFindings)).not.toHaveBeenCalled();
   });
 
   it('catches review failure and updates progress comment with error state', async () => {

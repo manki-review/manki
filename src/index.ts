@@ -543,8 +543,17 @@ async function runFullReview(
     );
     const judgeEndTime = Date.now();
 
-    if (!result.reviewComplete && result.verdict === 'APPROVE') {
+    if (!result.reviewComplete) {
+      if (dashboardFlushTimer) {
+        clearTimeout(dashboardFlushTimer);
+        dashboardFlushTimer = null;
+      }
+      core.warning(`Review incomplete: ${result.summary}`);
       result.verdict = 'COMMENT';
+      await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
+      dashboard.phase = 'complete';
+      await updateProgressComment(octokit, owner, repo, progressCommentId, dashboard);
+      return;
     }
 
     const { unique, duplicates: staticDuplicates } = deduplicateFindings(result.findings, recap.previousFindings, memory?.suppressions);

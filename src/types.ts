@@ -26,6 +26,7 @@ export interface ReviewResult {
   allJudgedFindings?: Finding[];
   resolveThreads?: Array<{ threadId: string; reason: string }>;
   plannerResult?: PlannerResult;
+  failedAgents?: string[];
 }
 
 export interface ReviewerAgent {

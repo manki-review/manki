@@ -595,7 +595,13 @@ describe('runJudgeAgent', () => {
     mockSendMessage.mockReset();
   });
 
-  it('returns empty findings with default summary for empty findings', async () => {
+  it('runs judge and produces summary when findings are empty and no open threads', async () => {
+    const judgedResponse = JSON.stringify({
+      summary: 'Clean change — no issues found.',
+      findings: [],
+    });
+    mockSendMessage.mockResolvedValue({ content: judgedResponse });
+
     const input: JudgeInput = {
       findings: [],
       diff: makeDiff(),
@@ -606,8 +612,8 @@ describe('runJudgeAgent', () => {
 
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
     expect(result.findings).toEqual([]);
-    expect(result.summary).toBe('Review complete.');
-    expect(mockSendMessage).not.toHaveBeenCalled();
+    expect(result.summary).toBe('Clean change — no issues found.');
+    expect(mockSendMessage).toHaveBeenCalledTimes(1);
   });
 
   it('calls client and returns updated findings with summary', async () => {

@@ -439,8 +439,6 @@ export async function runJudgeAgent(
 
   const hasOpenThreads = (openThreads?.length ?? 0) > 0;
 
-  if (findings.length === 0 && !hasOpenThreads) return { findings, summary: 'Review complete.' };
-
   const codeContextMap = new Map<string, string>();
   for (const f of findings) {
     const ctx = extractCodeContext(f, diff);

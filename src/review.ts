@@ -352,7 +352,7 @@ export async function runReview(
   const multiPass = passes > 1;
 
   const allFindings: Finding[] = [];
-  let allAgentsFailed = true;
+  const failedAgents: string[] = [];
 
   let completedCount = 0;
   let progressFindingCount = 0;
@@ -381,7 +381,6 @@ export async function runReview(
       completedCount++;
 
       if (passFindings.length > 0) {
-        allAgentsFailed = false;
         const threshold = Math.ceil(passFindings.length / 2);
         const consistent = intersectFindings(passFindings, threshold);
         const totalRaw = passFindings.reduce((sum, p) => sum + p.length, 0);
@@ -401,6 +400,7 @@ export async function runReview(
           });
         }
       } else {
+        failedAgents.push(agent.name);
         core.warning(`${agent.name}: all passes failed`);
 
         if (onProgress) {
@@ -415,6 +415,7 @@ export async function runReview(
             totalAgents: team.agents.length,
           });
         }
+        break;
       }
     }
   } else {
@@ -462,22 +463,26 @@ export async function runReview(
     for (let i = 0; i < agentResults.length; i++) {
       const result = agentResults[i];
       if (result.status === 'fulfilled') {
-        allAgentsFailed = false;
         allFindings.push(...result.value);
         core.info(`${team.agents[i].name}: ${result.value.length} findings`);
       } else {
+        failedAgents.push(team.agents[i].name);
         core.warning(`${team.agents[i].name} failed: ${result.reason}`);
       }
     }
   }
 
-  if (allFindings.length === 0 && allAgentsFailed) {
+  if (failedAgents.length > 0) {
+    const summary = failedAgents.length === team.agents.length
+      ? 'Review could not be completed — all reviewer agents failed.'
+      : `Review incomplete — ${failedAgents.join(', ')} failed. Retry with @manki review.`;
     return {
       verdict: 'COMMENT',
-      summary: 'Review could not be completed — all reviewer agents failed.',
+      summary,
       findings: [],
       highlights: [],
       reviewComplete: false,
+      failedAgents,
     };
   }
 
@@ -508,34 +513,36 @@ export async function runReview(
   let allJudgedFindings: Finding[] | undefined;
   let judgeSummary = 'Review complete.';
   let judgeResolveThreads: ResolveThread[] | undefined;
-  if (findingsForJudge.length === 0) {
-    finalFindings = [];
-  } else {
-    try {
-      core.info(`Running judge on ${findingsForJudge.length} findings...`);
-      const judgeInput: JudgeInput = {
-        findings: findingsForJudge,
-        diff,
-        rawDiff,
-        memory: memory ?? undefined,
-        repoContext,
-        prContext,
-        linkedIssues,
-        agentCount: team.agents.length,
-        isFollowUp,
-        openThreads,
-        effort: judgeEffort as 'low' | 'medium' | 'high',
-      };
-      const judgeResult = await runJudgeAgent(clients.judge, config, judgeInput);
-      judgeSummary = judgeResult.summary;
-      allJudgedFindings = judgeResult.findings;
-      judgeResolveThreads = judgeResult.resolveThreads;
-      finalFindings = judgeResult.findings.filter(f => f.severity !== 'ignore');
-      core.info(`Judge complete: ${finalFindings.length} findings survived (${judgeResult.findings.length - finalFindings.length} ignored)`);
-    } catch (error) {
-      core.warning(`Judge failed: ${error}. Returning reviewer findings without judge evaluation.`);
-      finalFindings = allFindings;
-    }
+  try {
+    core.info(`Running judge on ${findingsForJudge.length} findings...`);
+    const judgeInput: JudgeInput = {
+      findings: findingsForJudge,
+      diff,
+      rawDiff,
+      memory: memory ?? undefined,
+      repoContext,
+      prContext,
+      linkedIssues,
+      agentCount: team.agents.length,
+      isFollowUp,
+      openThreads,
+      effort: judgeEffort as 'low' | 'medium' | 'high',
+    };
+    const judgeResult = await runJudgeAgent(clients.judge, config, judgeInput);
+    judgeSummary = judgeResult.summary;
+    allJudgedFindings = judgeResult.findings;
+    judgeResolveThreads = judgeResult.resolveThreads;
+    finalFindings = judgeResult.findings.filter(f => f.severity !== 'ignore');
+    core.info(`Judge complete: ${finalFindings.length} findings survived (${judgeResult.findings.length - finalFindings.length} ignored)`);
+  } catch (error) {
+    core.warning(`Judge failed: ${error}`);
+    return {
+      verdict: 'COMMENT' as ReviewVerdict,
+      summary: 'Review incomplete — judge failed. Retry with @manki review.',
+      findings: [],
+      highlights: [],
+      reviewComplete: false,
+    };
   }
 
   const verdict = determineVerdict(finalFindings);

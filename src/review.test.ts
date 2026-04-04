@@ -972,6 +972,8 @@ describe('runReview', () => {
     expect(result.verdict).toBe('COMMENT');
     expect(result.reviewComplete).toBe(false);
     expect(result.summary).toContain('all reviewer agents failed');
+    expect(result.failedAgents).toBeDefined();
+    expect(result.failedAgents!.length).toBe(3);
   });
 
   it('fires onProgress callback per agent and for judging phase', async () => {
@@ -1138,14 +1140,13 @@ describe('runReview', () => {
     const agentCalls = onProgress.mock.calls.filter(
       (call: [import('./review').ReviewProgress]) => call[0].phase === 'agent-complete',
     );
-    expect(agentCalls.length).toBe(3);
-    for (const [progress] of agentCalls) {
-      expect(progress.agentStatus).toBe('failure');
-      expect(progress.agentFindingCount).toBe(0);
-    }
+    // Loop breaks after first agent failure
+    expect(agentCalls.length).toBe(1);
+    expect(agentCalls[0][0].agentStatus).toBe('failure');
+    expect(agentCalls[0][0].agentFindingCount).toBe(0);
   });
 
-  it('marks agent as failed when all passes fail but other agents succeed in multi-pass mode', async () => {
+  it('returns reviewComplete false with failedAgents when one agent fails in multi-pass mode', async () => {
     let callCount = 0;
     const findingJson = JSON.stringify([
       { severity: 'required', title: 'Found a bug', file: 'src/a.ts', line: 10, description: 'Bug.' },
@@ -1168,31 +1169,26 @@ describe('runReview', () => {
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
     const onProgress = jest.fn();
 
-    mockedRunJudgeAgent.mockResolvedValue({
-      findings: [
-        { severity: 'required', title: 'Found a bug', file: 'src/a.ts', line: 10, description: 'Bug.', reviewers: ['Code Quality'] },
-      ],
-      summary: 'One finding.',
-    });
-
     const result = await runReview(clients, config, diff, 'raw diff', 'repo context', undefined, undefined, undefined, undefined, onProgress);
 
-    expect(result.reviewComplete).toBe(true);
+    expect(result.reviewComplete).toBe(false);
+    expect(result.failedAgents).toBeDefined();
+    expect(result.failedAgents!.length).toBe(1);
+    expect(result.failedAgents).toContain('Security & Safety');
+    expect(result.summary).toContain('Security & Safety');
+    expect(result.summary).toContain('Retry with @manki review');
 
     const agentCalls = onProgress.mock.calls.filter(
       (call: [import('./review').ReviewProgress]) => call[0].phase === 'agent-complete',
     );
-    expect(agentCalls.length).toBe(3);
+    // Loop breaks after first agent failure, so only one agent-complete event fires
+    expect(agentCalls.length).toBe(1);
 
-    // First agent should have failed (all passes rejected)
     expect(agentCalls[0][0].agentStatus).toBe('failure');
     expect(agentCalls[0][0].agentFindingCount).toBe(0);
 
-    // Remaining agents should have succeeded
-    for (const [progress] of agentCalls.slice(1)) {
-      expect(progress.agentStatus).toBe('success');
-      expect(progress.agentFindingCount).toBeGreaterThanOrEqual(0);
-    }
+    // Judge should not run when agents fail
+    expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
   });
 
   it('applies suppressions from memory before judge', async () => {
@@ -1218,7 +1214,7 @@ describe('runReview', () => {
     expect(result.findings).toEqual([]);
   });
 
-  it('falls back to reviewer findings when judge fails', async () => {
+  it('returns reviewComplete false when judge fails', async () => {
     const findingJson = JSON.stringify([
       { severity: 'suggestion', title: 'Some code improvement', file: 'src/a.ts', line: 10, description: 'Improve this.' },
     ]);
@@ -1229,8 +1225,9 @@ describe('runReview', () => {
     mockedRunJudgeAgent.mockRejectedValue(new Error('Judge API failed'));
 
     const result = await runReview(clients, config, diff, 'raw diff', 'repo context');
-    expect(result.findings.length).toBeGreaterThanOrEqual(1);
-    expect(result.verdict).toBe('APPROVE');
+    expect(result.reviewComplete).toBe(false);
+    expect(result.verdict).toBe('COMMENT');
+    expect(result.summary).toContain('judge failed');
   });
 
   it('runs multi-pass review with review_passes > 1', async () => {
@@ -1286,7 +1283,7 @@ describe('runReview', () => {
     expect(result.agentNames).toContain('Security & Safety');
   });
 
-  it('handles partial agent failures in single-pass mode', async () => {
+  it('returns reviewComplete false with failedAgents when an agent fails in single-pass mode', async () => {
     let callCount = 0;
     const clients: ReviewClients = {
       reviewer: {
@@ -1304,8 +1301,13 @@ describe('runReview', () => {
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
 
     const result = await runReview(clients, config, diff, 'raw diff', 'repo context');
-    expect(result.reviewComplete).toBe(true);
-    expect(result.verdict).toBe('APPROVE');
+    expect(result.reviewComplete).toBe(false);
+    expect(result.verdict).toBe('COMMENT');
+    expect(result.failedAgents).toBeDefined();
+    expect(result.failedAgents!.length).toBe(1);
+    expect(result.summary).toContain('failed');
+    expect(result.summary).toContain('Retry with @manki review');
+    expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
   });
 
   it('uses planner result to set team size and effort when planner client is provided', async () => {
