@@ -11,6 +11,9 @@ export const HIGH_CONF_SUGGESTION_THRESHOLD = 1;
 
 export const PLANNER_TIMEOUT_MS = 30_000;
 
+// Standard reviewer pool used for teamSize >= 3. TRIVIAL_VERIFIER_AGENT is
+// intentionally excluded — it is only active for the teamSize=1 path and does
+// not participate in scoring, focusAreas validation, or planner prompts.
 export const AGENT_POOL: readonly ReviewerAgent[] = Object.freeze([
   {
     name: 'Security & Safety',
@@ -61,6 +64,9 @@ export function selectTeam(
   let level: 'small' | 'medium' | 'large';
 
   if (teamSizeOverride === 1) {
+    if (customReviewers && customReviewers.length > 0) {
+      core.info(`teamSize=1: skipping custom reviewers [${customReviewers.map(r => r.name).join(', ')}]`);
+    }
     return { level: 'small', agents: [TRIVIAL_VERIFIER_AGENT], lineCount };
   }
 
@@ -218,9 +224,6 @@ function buildPlannerSummary(diff: ParsedDiff, prContext?: PrContext): string {
     summary += `PR: ${prContext.title}`;
     if (prContext.baseBranch) summary += ` (${prContext.baseBranch})`;
     summary += '\n';
-    if (prContext.body) {
-      summary += prContext.body.slice(0, 200) + '\n';
-    }
   }
 
   summary += `\nFiles changed (${diff.totalAdditions}+ ${diff.totalDeletions}-):\n`;
