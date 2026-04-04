@@ -171,13 +171,17 @@ Multiple specialist reviewers may flag the same issue independently. When you se
 ${isFollowUp ? `## Follow-Up Review
 
 This is a follow-up review. The previous review state is included in the repository context.
-` : ''}## Output Format
+` : ''}## Summary Instructions
+
+${summaryInstruction}
+
+## Output Format
 
 Respond with ONLY a JSON object (no markdown fences, no explanation):
 
 \`\`\`
 {
-  "summary": "${summaryInstruction}",
+  "summary": "Your review summary (see Summary Instructions above)",
   "findings": [
     {
       "title": "Short title matching or close to the original finding title",
