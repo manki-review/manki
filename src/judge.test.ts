@@ -187,13 +187,17 @@ describe('buildJudgeSystemPrompt', () => {
   it('uses follow-up summary instruction when isFollowUp is true', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5, true);
     expect(prompt).toContain('Follow-Up Review');
-    expect(prompt).toContain('brief progress update');
-    expect(prompt).not.toContain('1-2 sentence review summary');
+    expect(prompt).toContain('opinionated progress update');
+    expect(prompt).toContain('Never start with "The author"');
+    expect(prompt).not.toContain('opinionated review summary');
   });
 
   it('uses standard summary instruction when isFollowUp is false', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5, false);
-    expect(prompt).toContain('1-2 sentence review summary');
+    expect(prompt).toContain('opinionated review summary');
+    expect(prompt).toContain('Never start with "The author"');
+    expect(prompt).toContain('Good examples:');
+    expect(prompt).toContain('Bad examples (do NOT write like this)');
     expect(prompt).not.toContain('Follow-Up Review');
   });
 
