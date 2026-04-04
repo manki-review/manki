@@ -283,10 +283,16 @@ async function runFullReview(
   prContext?: PrContext,
 ): Promise<void> {
   core.info(`Starting review for ${owner}/${repo}#${prNumber}`);
-  const startTime = Date.now();
 
   const oauthToken = core.getInput('claude_code_oauth_token');
   const apiKey = core.getInput('anthropic_api_key');
+
+  if (!oauthToken && !apiKey) {
+    core.setFailed('No API key configured — set claude_code_oauth_token or anthropic_api_key');
+    return;
+  }
+
+  const startTime = Date.now();
   const configPathInput = core.getInput('config_path');
   const octokit = await getOctokit();
 

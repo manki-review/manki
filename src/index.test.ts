@@ -7,6 +7,7 @@ jest.mock('@actions/core', () => ({
   debug: jest.fn(),
   getInput: jest.fn().mockReturnValue(''),
   setOutput: jest.fn(),
+  setFailed: jest.fn(),
 }));
 
 jest.mock('@actions/github', () => ({
@@ -154,6 +155,10 @@ describe('run', () => {
     jest.clearAllMocks();
     _resetOctokitCache();
     setContext({ eventName: '', payload: {} });
+    // Provide a valid API key so runFullReview passes early validation
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'anthropic_api_key' ? 'test-api-key' : '',
+    );
   });
 
   describe('bot self-triggering prevention', () => {
@@ -830,6 +835,9 @@ describe('main', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     _resetOctokitCache();
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'anthropic_api_key' ? 'test-api-key' : '',
+    );
   });
 
   it('catches errors and reports via core.warning', async () => {
@@ -889,6 +897,10 @@ describe('runFullReview orchestration', () => {
     jest.clearAllMocks();
     _resetOctokitCache();
     setContext({ eventName: 'pull_request', payload: { action: 'opened' } });
+    // Provide a valid API key so the early validation passes
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'anthropic_api_key' ? 'test-api-key' : '',
+    );
     // Reset to default config for each test
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
@@ -1873,6 +1885,40 @@ describe('runFullReview orchestration', () => {
     expect(jest.mocked(core.debug)).toHaveBeenCalledWith(
       expect.stringContaining('Failed to resolve thread PRRT_fail'),
     );
+  });
+
+  it('fails fast with setFailed when no API key is configured', async () => {
+    jest.mocked(core.getInput).mockReturnValue('');
+
+    await callRunFullReview();
+
+    expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(
+      'No API key configured — set claude_code_oauth_token or anthropic_api_key',
+    );
+    expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
+    expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+  });
+
+  it('proceeds when claude_code_oauth_token is set', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'claude_code_oauth_token' ? 'oauth-token' : '',
+    );
+
+    await callRunFullReview();
+
+    expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
+    expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
+  });
+
+  it('proceeds when anthropic_api_key is set', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'anthropic_api_key' ? 'api-key' : '',
+    );
+
+    await callRunFullReview();
+
+    expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
+    expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
   });
 });
 
