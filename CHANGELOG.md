@@ -5,6 +5,49 @@ All notable changes to Manki will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.3.0] - 2026-04-05
+
+> **Rename note**: references to `@manki-labs` and `manki-labs[bot]` in the 4.0.0–4.2.0 entries below refer to the old command prefix and bot login, which were removed/renamed in 4.3.0. The current prefix is `@manki` and the bot login is `manki-review[bot]`.
+
+### Added
+
+- Pre-review planner stage with content-aware team and effort selection (#412)
+- `teamSize=1` with `Trivial Change Verifier` agent for trivial PRs (#438)
+- New config keys `planner.enabled` (default `true`) and `models.planner` (default `claude-haiku-4-5`) (#412)
+
+### Changed
+
+- **Breaking (soft)**: `@manki-labs` command prefix removed — use `@manki` (#403)
+- **Breaking (soft)**: bot login renamed `manki-labs[bot]` → `manki-review[bot]` and centralized as `BOT_LOGIN` (#394)
+- Planner output simplified to team-size + effort-level only (#418)
+- Auto-approve now requires all findings resolved before approving (#406)
+- Judge always runs; review fails on agent or judge errors (#430)
+- Judge summaries more opinionated with examples and anti-patterns (#428)
+- Skip redundant review after recent approval (#421, #425)
+- Follow-up review recap uses delta since last review (#410, #382)
+- Static dedup only matches resolved findings, not open or replied (#379)
+- Recap simplified to judge-only natural summary, finding-counting machinery removed (#415)
+- Reorder `models` config keys by pipeline order — planner, reviewer, judge, dedup (#450)
+
+### Fixed
+
+- Prevent premature auto-approve and stale progress comment blocking (#390)
+- Fail fast when no API key is configured (#429)
+- Show full description in collapsed duplicate findings (#397)
+- Handle confidence tag in finding title regex and improve dedup details (#376)
+
+### Docs
+
+- Overhaul SETUP.md with quick start and GitHub App installation (#400)
+- Replace README quick start with link to SETUP.md (#404)
+- Align README, SETUP, and example config with v4.3.0 state (#446)
+- Introduce `AGENTS.md` with repo conventions (#452)
+
+### Chores
+
+- Raise patch coverage target from 80% to 90% (#387)
+- Ignore `.claude/` and `coverage/` directories (#435)
+
 ## [4.2.0] - 2026-03-31
 
 ### Added
@@ -230,6 +273,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic review posting with inline comments
 - Configuration via `.manki.yml`
 
+[4.3.0]: https://github.com/xdustinface/manki/compare/v4.2.0...v4.3.0
+[4.2.0]: https://github.com/xdustinface/manki/compare/v4.1.0...v4.2.0
 [4.1.0]: https://github.com/xdustinface/manki/compare/v4.0.0...v4.1.0
 [4.0.0]: https://github.com/xdustinface/manki/compare/v3.1.0...v4.0.0
 [3.1.0]: https://github.com/xdustinface/manki/compare/v3.0.0...v3.1.0
