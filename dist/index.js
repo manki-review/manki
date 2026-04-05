@@ -38199,6 +38199,7 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
             }
             const severityChanges = allJudged.filter(f => f.judgeNotes).length;
             const mergedDuplicates = (result.rawFindingCount ?? 0)
+                - (result.suppressionCount ?? 0)
                 - (result.staticDedupCount ?? 0)
                 - (result.llmDedupCount ?? 0)
                 - allJudged.length;
@@ -41133,12 +41134,14 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
         onProgress({ phase: 'reviewed', rawFindingCount: allFindings.length });
     }
     let findingsForJudge = allFindings;
+    let suppressionCount = 0;
     if (memory?.suppressions && memory.suppressions.length > 0) {
         const { kept, suppressed } = (0, memory_1.applySuppressions)(allFindings, memory.suppressions);
         if (suppressed.length > 0) {
             core.info(`Suppressed ${suppressed.length} findings before judge evaluation`);
         }
         findingsForJudge = kept;
+        suppressionCount = suppressed.length;
     }
     let staticDedupCount = 0;
     let llmDedupCount = 0;
@@ -41230,6 +41233,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
         plannerResult: plannerResult ?? undefined,
         staticDedupCount,
         llmDedupCount,
+        suppressionCount,
     };
 }
 async function runReviewerAgent(client, config, reviewer, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, effort) {

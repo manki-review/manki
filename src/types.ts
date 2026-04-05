@@ -30,6 +30,7 @@ export interface ReviewResult {
   failedAgents?: string[];
   staticDedupCount?: number;
   llmDedupCount?: number;
+  suppressionCount?: number;
 }
 
 export interface ReviewerAgent {

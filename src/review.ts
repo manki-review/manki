@@ -513,12 +513,14 @@ export async function runReview(
   }
 
   let findingsForJudge = allFindings;
+  let suppressionCount = 0;
   if (memory?.suppressions && memory.suppressions.length > 0) {
     const { kept, suppressed } = applySuppressions(allFindings, memory.suppressions);
     if (suppressed.length > 0) {
       core.info(`Suppressed ${suppressed.length} findings before judge evaluation`);
     }
     findingsForJudge = kept;
+    suppressionCount = suppressed.length;
   }
 
   let staticDedupCount = 0;
@@ -617,6 +619,7 @@ export async function runReview(
     plannerResult: plannerResult ?? undefined,
     staticDedupCount,
     llmDedupCount,
+    suppressionCount,
   };
 }
 

@@ -626,6 +626,7 @@ async function runFullReview(
       }
       const severityChanges = allJudged.filter(f => f.judgeNotes).length;
       const mergedDuplicates = (result.rawFindingCount ?? 0)
+        - (result.suppressionCount ?? 0)
         - (result.staticDedupCount ?? 0)
         - (result.llmDedupCount ?? 0)
         - allJudged.length;

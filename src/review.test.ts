@@ -1214,6 +1214,7 @@ describe('runReview', () => {
     const result = await runReview(clients, config, diff, 'raw diff', 'repo context', memory);
     expect(mockedApplySuppressions).toHaveBeenCalled();
     expect(result.findings).toEqual([]);
+    expect(result.suppressionCount).toBe(1);
   });
 
   it('drops findings matching dismissed previous ones before judge sees them', async () => {
