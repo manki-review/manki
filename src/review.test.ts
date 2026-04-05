@@ -1243,6 +1243,50 @@ describe('runReview', () => {
     expect(result.findings).toEqual([]);
   });
 
+  it('emits judgeInputCount in judging progress event reflecting post-suppression post-dedup count', async () => {
+    const findingJson = JSON.stringify([
+      { severity: 'required', title: 'Null dereference bug', file: 'src/a.ts', line: 10, description: 'Bug found.' },
+    ]);
+    const clients = makeClients(findingJson);
+    const config = makeConfig();
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const memory = {
+      suppressions: [{ id: '1', pattern: 'xyz-nomatch', reason: 'noisy', created_by: 'user', created_at: '2025-01-01', pr_ref: '#1' }],
+      learnings: [],
+      patterns: [],
+    };
+    // Suppress 1 of the 3 identical raw findings, keep 2 for dedup to handle.
+    mockedApplySuppressions.mockReturnValue({
+      kept: [
+        { severity: 'required', title: 'Null dereference bug', file: 'src/a.ts', line: 10, description: 'Bug found.', reviewers: ['Security & Safety'] },
+        { severity: 'required', title: 'Null dereference bug', file: 'src/a.ts', line: 10, description: 'Bug found.', reviewers: ['Security & Safety'] },
+      ],
+      suppressed: [
+        { severity: 'required', title: 'Null dereference bug', file: 'src/a.ts', line: 10, description: 'Bug found.', reviewers: ['Security & Safety'] },
+      ],
+    });
+    const previousFindings = [
+      { title: 'Null dereference bug', file: 'src/a.ts', line: 10, severity: 'required' as const, status: 'resolved' as const },
+    ];
+
+    const onProgress = jest.fn();
+    const result = await runReview(
+      clients, config, diff, 'raw diff', 'repo context',
+      memory, undefined, undefined, undefined, onProgress, undefined, undefined,
+      previousFindings,
+    );
+
+    // raw = 3, suppression drops 1, static dedup drops remaining 2, judgeInput = 0
+    expect(result.suppressionCount).toBe(1);
+    expect(result.staticDedupCount).toBe(2);
+    const judgingCalls = onProgress.mock.calls.filter(
+      (call: [import('./review').ReviewProgress]) => call[0].phase === 'judging',
+    );
+    expect(judgingCalls).toHaveLength(1);
+    expect(judgingCalls[0][0].rawFindingCount).toBe(3);
+    expect(judgingCalls[0][0].judgeInputCount).toBe(0);
+  });
+
   it('runs LLM dedup after static dedup when a dedup client is provided', async () => {
     const findingJson = JSON.stringify([
       { severity: 'required', title: 'Totally different wording of same bug', file: 'src/a.ts', line: 10, description: 'Bug.' },
