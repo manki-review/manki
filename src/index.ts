@@ -184,6 +184,7 @@ async function postReviewSkippedComment(
       owner, repo, issue_number: prNumber, per_page: 100, direction: 'desc',
     });
     const existing = comments.find(c =>
+      c.user?.login === BOT_LOGIN &&
       c.user?.type === 'Bot' &&
       c.body?.includes(PROGRESS_MARKER) && c.body?.includes('Review skipped'),
     );

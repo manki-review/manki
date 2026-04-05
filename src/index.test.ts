@@ -651,7 +651,7 @@ describe('handlePullRequest', () => {
         {
           id: 77,
           body: '<!-- manki-bot -->\n**Review skipped** — a review is currently in progress.',
-          user: { type: 'Bot' },
+          user: { login: 'manki-review[bot]', type: 'Bot' },
         },
       ],
     });

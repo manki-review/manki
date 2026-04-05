@@ -2360,6 +2360,18 @@ describe('extractRunIdFromBody', () => {
     expect(extractRunIdFromBody(undefined)).toBeNull();
     expect(extractRunIdFromBody('')).toBeNull();
   });
+
+  it('returns null when run id is non-numeric', () => {
+    expect(extractRunIdFromBody(`${BOT_MARKER}\n<!-- manki-run-id:abc -->`)).toBeNull();
+  });
+
+  it('returns null when run id digits are missing', () => {
+    expect(extractRunIdFromBody(`${BOT_MARKER}\n<!-- manki-run-id: -->`)).toBeNull();
+  });
+
+  it('extracts the first run id when multiple markers are present', () => {
+    expect(extractRunIdFromBody(`${BOT_MARKER}\n<!-- manki-run-id:111 -->\n<!-- manki-run-id:222 -->`)).toBe(111);
+  });
 });
 
 describe('markOwnProgressCommentCancelled', () => {
