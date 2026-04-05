@@ -45,10 +45,11 @@ flowchart LR
     C --> D[Judge]
     D --> E[Review Posted]
 
-    A -.-> A1[team size<br/>& effort]
-    B -.-> B1[findings<br/>in parallel]
-    C -.-> C1[vs prior<br/>findings]
-    D -.-> D1[filter &<br/>classify]
+    A -.-> A1[reads diff, picks team<br/>size + effort level]
+    B -.-> B1[specialists review<br/>in parallel]
+    C -.-> C1[drops repeats from<br/>prior reviews]
+    D -.-> D1[filters noise,<br/>assigns severity]
+    E -.-> E1[inline comments +<br/>summary + verdict]
 
     style A fill:#29362B,stroke:#3a4d3d,color:#fff
     style B fill:#29362B,stroke:#3a4d3d,color:#fff
