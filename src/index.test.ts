@@ -1387,6 +1387,59 @@ describe('runFullReview orchestration', () => {
     expect(statsArg!.model).toBeDefined();
   });
 
+  it('adjusts mergedDuplicates and findingsRaw for pre-judge dedup counts', async () => {
+    const testFiles = [
+      { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] },
+    ];
+    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+      files: testFiles, totalAdditions: 20, totalDeletions: 5,
+    });
+    jest.mocked(diffModule.filterFiles).mockReturnValue(testFiles);
+
+    const findings = [
+      { severity: 'required' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const },
+    ];
+    const allJudged = [...findings];
+    // rawFindings: 5 findings from agents (pre-suppression, pre-dedup)
+    const rawFindings = [
+      { severity: 'required' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'] },
+      { severity: 'required' as const, title: 'Dup1', file: 'src/app.ts', line: 6, description: 'desc', reviewers: ['security'] },
+      { severity: 'required' as const, title: 'Dup2', file: 'src/app.ts', line: 7, description: 'desc', reviewers: ['general'] },
+      { severity: 'suggestion' as const, title: 'Judge-merged', file: 'src/app.ts', line: 8, description: 'desc', reviewers: ['general'] },
+      { severity: 'suggestion' as const, title: 'Judge-merged-2', file: 'src/app.ts', line: 9, description: 'desc', reviewers: ['general'] },
+    ];
+
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'REQUEST_CHANGES', summary: 'Issues found',
+      findings,
+      highlights: [],
+      reviewComplete: true,
+      rawFindingCount: 5,
+      agentNames: ['security', 'general'],
+      allJudgedFindings: allJudged,
+      rawFindings,
+      staticDedupCount: 1,
+      llmDedupCount: 1,
+    });
+    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue('REQUEST_CHANGES');
+
+    await callRunFullReview();
+
+    const statsArg = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+    expect(statsArg).toBeDefined();
+
+    // mergedDuplicates excludes pre-judge dedup: 5 - 1 (static) - 1 (llm) - 1 (judged) = 2
+    expect(statsArg!.judgeMetrics?.mergedDuplicates).toBe(2);
+
+    // findingsRaw comes from rawFindings (pre-dedup per-agent counts)
+    expect(statsArg!.agentMetrics).toEqual([
+      { name: 'security', findingsRaw: 2, findingsKept: 1 },
+      { name: 'general', findingsRaw: 3, findingsKept: 0 },
+    ]);
+  });
+
   it('creates nit issues when nit_handling is "issues"', async () => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,

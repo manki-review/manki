@@ -38181,10 +38181,11 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
         // Per-agent metrics: count raw and kept findings per agent
         const agentNames = result.agentNames ?? [];
         const allJudged = result.allJudgedFindings ?? [];
+        const rawFindings = result.rawFindings ?? allJudged;
         const agentMetrics = agentNames.length > 0
             ? agentNames.map(name => ({
                 name,
-                findingsRaw: allJudged.filter(f => f.reviewers.includes(name)).length,
+                findingsRaw: rawFindings.filter(f => f.reviewers.includes(name)).length,
                 findingsKept: result.findings.filter(f => f.reviewers.includes(name)).length,
             }))
             : undefined;
@@ -38197,7 +38198,10 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
                     confidenceDistribution[f.judgeConfidence]++;
             }
             const severityChanges = allJudged.filter(f => f.judgeNotes).length;
-            const mergedDuplicates = (result.rawFindingCount ?? 0) - allJudged.length;
+            const mergedDuplicates = (result.rawFindingCount ?? 0)
+                - (result.staticDedupCount ?? 0)
+                - (result.llmDedupCount ?? 0)
+                - allJudged.length;
             judgeMetrics = { confidenceDistribution, severityChanges, mergedDuplicates };
         }
         // File analysis metrics
@@ -41221,6 +41225,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
         rawFindingCount: allFindings.length,
         agentNames: team.agents.map(a => a.name),
         allJudgedFindings,
+        rawFindings: allFindings,
         resolveThreads: judgeResolveThreads,
         plannerResult: plannerResult ?? undefined,
         staticDedupCount,

@@ -24,6 +24,7 @@ export interface ReviewResult {
   rawFindingCount?: number;
   agentNames?: string[];
   allJudgedFindings?: Finding[];
+  rawFindings?: Finding[];
   resolveThreads?: Array<{ threadId: string; reason: string }>;
   plannerResult?: PlannerResult;
   failedAgents?: string[];

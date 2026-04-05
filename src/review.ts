@@ -612,6 +612,7 @@ export async function runReview(
     rawFindingCount: allFindings.length,
     agentNames: team.agents.map(a => a.name),
     allJudgedFindings,
+    rawFindings: allFindings,
     resolveThreads: judgeResolveThreads,
     plannerResult: plannerResult ?? undefined,
     staticDedupCount,
