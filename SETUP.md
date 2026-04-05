@@ -168,21 +168,13 @@ jobs:
 
 ### Action inputs
 
-The workflow above uses the only inputs most setups need: `claude_code_oauth_token` (or `anthropic_api_key`), `github_token`, and optionally `memory_repo_token`. To point at a config file outside the repo root, set `config_path` (default: `.manki.yml`). See [`action.yml`](action.yml) for the full input reference including GitHub App identity fields.
+The workflow above uses the only inputs most setups need: `claude_code_oauth_token` (or `anthropic_api_key`), `github_token`, and optionally `memory_repo_token`. To point at a config file outside the repo root, set `config_path` (default: `.manki.yml`). For GitHub App identity, set `github_app_id`, `github_app_private_key`, and `manki_token_url`. See [`action.yml`](action.yml) for the full input reference.
 
 ### Action outputs
 
-The action exposes outputs you can chain into later workflow steps (e.g., fail a job on `REQUEST_CHANGES`, or post `severity_counts` to Slack):
+The action exposes outputs you can chain into later workflow steps: `review_id`, `verdict`, `findings_count`, `findings_json`, `severity_counts`, and `judge_model`. See [`action.yml`](action.yml) for the source of truth on each output's shape and semantics.
 
-| Output | Description |
-|--------|-------------|
-| `verdict` | Review verdict: `APPROVE`, `COMMENT`, or `REQUEST_CHANGES` |
-| `findings_count` | Total number of findings |
-| `severity_counts` | JSON object with severity counts: `{required, suggestion, nit, ignore}` |
-
-See [`action.yml`](action.yml) for the complete list (including `review_id`, `findings_json`, `judge_model`).
-
-Two common downstream uses:
+### Using outputs in downstream workflow steps
 
 ```yaml
 # Fail CI when the judge requests changes
