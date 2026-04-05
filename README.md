@@ -40,10 +40,10 @@ Manki wakes up when a PR is opened. A fast planner (Haiku) picks the team size a
 
 ```mermaid
 flowchart LR
-    A["fa:fa-clipboard-list Planner"] --> B["fa:fa-users Reviewers"]
-    B --> C["fa:fa-filter Dedup"]
-    C --> D["fa:fa-scale-balanced Judge"]
-    D --> E["fa:fa-circle-check Review Posted"]
+    A[Planner] --> B[Reviewers]
+    B --> C[Dedup]
+    C --> D[Judge]
+    D --> E[Review Posted]
 
     A -.-> A1[team size<br/>& effort]
     B -.-> B1[findings<br/>in parallel]
