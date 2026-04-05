@@ -1,8 +1,10 @@
 import * as github from '@actions/github';
 import { ClaudeClient } from './claude';
 import { Suppression } from './memory';
-import { Finding, FindingSeverity, ParsedDiff } from './types';
+import { Finding, FindingSeverity } from './types';
 type Octokit = ReturnType<typeof github.getOctokit>;
+/** Escape double quotes and strip triple-backtick sequences from untrusted text before LLM interpolation. */
+export declare function sanitize(s: string, maxLength?: number): string;
 interface PreviousFinding {
     title: string;
     file: string;
@@ -32,18 +34,8 @@ declare function deduplicateFindings(newFindings: Finding[], previousFindings: P
     duplicates: DuplicateMatch[];
 };
 declare function titlesOverlap(a: string, b: string): boolean;
-/**
- * Build a review summary that includes deduplication stats.
- */
-declare function buildRecapSummary(newCount: number, duplicateCount: number, resolvedCount: number, openCount: number, duplicateMatches?: DuplicateMatch[]): string;
-/**
- * Auto-resolve review threads whose findings were addressed in the new diff.
- * Candidates are identified by hunk overlap, then validated by Claude to
- * confirm the code change actually addresses the finding.
- */
-declare function resolveAddressedThreads(octokit: Octokit, client: ClaudeClient | null, owner: string, repo: string, prNumber: number, previousFindings: PreviousFinding[], diff: ParsedDiff): Promise<number>;
 declare function llmDeduplicateFindings(findings: Finding[], previousFindings: PreviousFinding[], client: ClaudeClient): Promise<{
     unique: Finding[];
     duplicates: DuplicateMatch[];
 }>;
-export { DuplicateMatch, PreviousFinding, RecapState, fetchRecapState, deduplicateFindings, buildRecapSummary, resolveAddressedThreads, titlesOverlap, llmDeduplicateFindings };
+export { DuplicateMatch, PreviousFinding, RecapState, fetchRecapState, deduplicateFindings, titlesOverlap, llmDeduplicateFindings };

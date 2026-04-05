@@ -1,7 +1,13 @@
 import * as github from '@actions/github';
 import { DashboardData, Finding, FindingSeverity, ParsedDiff, ReviewMetadata, ReviewResult, ReviewStats, ReviewVerdict } from './types';
 type Octokit = ReturnType<typeof github.getOctokit>;
+declare const BOT_LOGIN = "manki-review[bot]";
 declare const BOT_MARKER = "<!-- manki-bot -->";
+declare const REVIEW_COMPLETE_MARKER = "<!-- manki-review-complete -->";
+declare const FORCE_REVIEW_MARKER = "<!-- manki-force-review -->";
+declare const RUN_ID_MARKER_PREFIX = "<!-- manki-run-id:";
+declare const CANCELLED_MARKER = "<!-- manki-review-cancelled -->";
+declare function extractRunIdFromBody(body: string | null | undefined): number | null;
 /**
  * Fetch the raw diff for a PR.
  */
@@ -43,7 +49,7 @@ declare function formatStatsJson(stats: ReviewStats): string;
 /**
  * Post the review with inline comments.
  */
-export declare function postReview(octokit: Octokit, owner: string, repo: string, prNumber: number, commitSha: string, result: ReviewResult, diff?: ParsedDiff, stats?: ReviewStats, recapSummary?: string): Promise<number>;
+export declare function postReview(octokit: Octokit, owner: string, repo: string, prNumber: number, commitSha: string, result: ReviewResult, diff?: ParsedDiff, stats?: ReviewStats): Promise<number>;
 declare function dynamicFence(content: string): string;
 declare function truncateBody(text: string, maxLength?: number): string;
 declare function safeTruncate(text: string, maxLen: number): string;
@@ -94,4 +100,21 @@ export declare function fetchLinkedIssues(octokit: Octokit, owner: string, repo:
  * excluding root-level files already fetched by `fetchRepoContext`.
  */
 export declare function fetchSubdirClaudeMd(octokit: Octokit, owner: string, repo: string, ref: string, changedPaths: string[]): Promise<string>;
-export { dynamicFence, formatFindingComment, formatStatsJson, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, safeTruncate, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_MARKER };
+/**
+ * Check whether a review is currently in progress for a PR by verifying the
+ * embedded Actions run_id via the GitHub Actions API. Zombie comments from
+ * cancelled/failed runs are marked as cancelled in-place (not deleted) so the
+ * audit trail is preserved.
+ */
+declare function isReviewInProgress(octokit: Octokit, owner: string, repo: string, prNumber: number): Promise<boolean>;
+/**
+ * Post-step cleanup: find our run's progress comment and mark it as cancelled.
+ * Invoked when GitHub Actions cancels the main step.
+ */
+declare function markOwnProgressCommentCancelled(octokit: Octokit, owner: string, repo: string, prNumber: number, runId: number): Promise<boolean>;
+/**
+ * Check whether the bot already has an active (non-dismissed) APPROVED review
+ * on the given commit SHA.
+ */
+declare function isApprovedOnCommit(octokit: Octokit, owner: string, repo: string, prNumber: number, commitSha: string): Promise<boolean>;
+export { dynamicFence, formatFindingComment, formatStatsJson, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, safeTruncate, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody };

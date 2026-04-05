@@ -9,13 +9,13 @@ export interface TokenResult {
     identity: 'app' | 'actions';
 }
 /**
- * Auto-detect manki-labs GitHub App installation and fetch an app token
+ * Auto-detect manki-review GitHub App installation and fetch an app token
  * from the token service. Falls back to the provided github_token on any failure.
  */
 export declare function resolveGitHubToken(githubToken: string, tokenUrl: string, owner: string, repo: string): Promise<TokenResult>;
 /**
  * Create an authenticated Octokit client.
- * Priority: explicit App credentials > auto-detect manki-labs app > github_token.
+ * Priority: explicit App credentials > auto-detect manki-review app > github_token.
  */
 export declare function createAuthenticatedOctokit(): Promise<AuthResult>;
 /**

@@ -1,10 +1,7 @@
-import * as github from '@actions/github';
 import { PrContext } from './types';
-type Octokit = ReturnType<typeof github.getOctokit>;
 declare function run(): Promise<void>;
-declare function isReviewInProgress(octokit: Octokit, owner: string, repo: string, prNumber: number): Promise<boolean>;
 declare function handlePullRequest(): Promise<void>;
-declare function handleCommentTrigger(): Promise<void>;
+declare function handleCommentTrigger(forceReview?: boolean): Promise<void>;
 declare function runFullReview(owner: string, repo: string, prNumber: number, commitSha: string, baseRef: string, prContext?: PrContext): Promise<void>;
 declare function handleReviewStateCheck(): Promise<void>;
 declare function handleInteraction(): Promise<void>;
@@ -12,4 +9,4 @@ declare function handleIssueInteraction(): Promise<void>;
 declare function handleReviewCommentInteraction(): Promise<void>;
 declare function main(): Promise<void>;
 declare function _resetOctokitCache(): void;
-export { run, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, runFullReview, main, _resetOctokitCache, isReviewInProgress };
+export { run, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, runFullReview, main, _resetOctokitCache };

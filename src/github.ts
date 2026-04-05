@@ -174,12 +174,15 @@ export async function fetchRepoContext(
 function renderAgentLines(agents: AgentProgressEntry[]): string {
   return agents.map(a => {
     if (a.status === 'done') {
-      return `  \u2705 ${a.name} — ${a.findingCount ?? 0} findings (${formatDuration(a.durationMs ?? 0)})`;
+      return `  \u2713 ${a.name} — ${a.findingCount ?? 0} findings (${formatDuration(a.durationMs ?? 0)})`;
     }
     if (a.status === 'failed') {
-      return `  \u274C ${a.name} — failed (${formatDuration(a.durationMs ?? 0)})`;
+      return `  \u2717 ${a.name} — failed (${formatDuration(a.durationMs ?? 0)})`;
     }
-    return `  \u23F3 ${a.name}`;
+    if (a.status === 'reviewing') {
+      return `  \u23F3 ${a.name}`;
+    }
+    return `  \u25CB ${a.name}`;
   }).join('\n');
 }
 
@@ -195,44 +198,51 @@ function sanitizePrType(prType: string): string {
 
 export function buildDashboard(data: DashboardData): string {
   const agents = data.agentProgress;
-  const hasAgentProgress = agents && agents.length > 0;
-  const lines: string[] = [];
+  const hasAgentProgress = !!(agents && agents.length > 0);
+  const sections: string[] = [];
 
+  const header: string[] = [];
   if (data.phase !== 'complete') {
-    lines.push('**Manki** — Review in progress', '');
+    header.push('**Manki** — Review in progress', '');
   }
+  header.push(`\u2713 Parsed diff — ${data.lineCount} lines`);
+  sections.push(header.join('\n'));
 
-  lines.push(`\u2713 Parsed diff — ${data.lineCount} lines`);
-
-  if (data.plannerInfo) {
+  if (data.phase === 'planning') {
+    sections.push(`\u23F3 Planner — analyzing...`);
+  } else if (data.plannerInfo) {
     const prType = sanitizePrType(data.plannerInfo.prType);
-    lines.push(`\u2713 Planner — ${data.plannerInfo.teamSize} agents, reviewer: ${data.plannerInfo.reviewerEffort}, judge: ${data.plannerInfo.judgeEffort} (${prType})`);
+    sections.push(`\u2713 Planner — ${data.plannerInfo.teamSize} agents, reviewer: ${data.plannerInfo.reviewerEffort}, judge: ${data.plannerInfo.judgeEffort} (${prType})`);
   }
 
-  if (data.phase === 'started') {
+  const reviewLines: string[] = [];
+  if (data.phase === 'planning') {
+    reviewLines.push(`\u25CB Review`);
+  } else if (data.phase === 'started') {
     if (hasAgentProgress) {
       const done = agents.filter(a => a.status === 'done' || a.status === 'failed').length;
-      lines.push(`\uD83D\uDD0D Review — ${done}/${agents.length} agents complete`);
-      lines.push(renderAgentLines(agents));
+      reviewLines.push(`\u23F3 Review — ${done}/${agents.length} agents complete`);
+      reviewLines.push(renderAgentLines(agents));
     } else {
-      lines.push(`\u23F3 Reviewing with ${data.agentCount} agents...`);
+      reviewLines.push(`\u23F3 Review — reviewing with ${data.agentCount} agents...`);
     }
   } else {
-    lines.push(`\u2713 Review — ${data.agentCount} agents \u00B7 ${data.rawFindingCount ?? 0} findings`);
+    reviewLines.push(`\u2713 Review — ${data.agentCount} agents \u00B7 ${data.rawFindingCount ?? 0} findings`);
     if (hasAgentProgress) {
-      lines.push(renderAgentLines(agents));
+      reviewLines.push(renderAgentLines(agents));
     }
   }
+  sections.push(reviewLines.join('\n'));
 
-  if (data.phase === 'started') {
-    lines.push(hasAgentProgress ? `\u25CB Judge` : `\u25CB Judge — pending`);
+  if (data.phase === 'planning' || data.phase === 'started') {
+    sections.push(`\u25CB Judge`);
   } else if (data.phase === 'reviewed') {
-    lines.push(`\u23F3 Judge — evaluating ${data.judgeInputCount ?? data.rawFindingCount ?? 0} findings...`);
+    sections.push(`\u23F3 Judge — evaluating ${data.judgeInputCount ?? data.rawFindingCount ?? 0} findings...`);
   } else {
-    lines.push(`\u2713 Judge — ${data.keptCount ?? 0} kept \u00B7 ${data.droppedCount ?? 0} dropped`);
+    sections.push(`\u2713 Judge — ${data.keptCount ?? 0} kept \u00B7 ${data.droppedCount ?? 0} dropped`);
   }
 
-  return lines.join('\n');
+  return sections.join('\n\n');
 }
 
 /**

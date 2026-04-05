@@ -36764,12 +36764,15 @@ async function fetchRepoContext(octokit, owner, repo, ref) {
 function renderAgentLines(agents) {
     return agents.map(a => {
         if (a.status === 'done') {
-            return `  \u2705 ${a.name} — ${a.findingCount ?? 0} findings (${formatDuration(a.durationMs ?? 0)})`;
+            return `  \u2713 ${a.name} — ${a.findingCount ?? 0} findings (${formatDuration(a.durationMs ?? 0)})`;
         }
         if (a.status === 'failed') {
-            return `  \u274C ${a.name} — failed (${formatDuration(a.durationMs ?? 0)})`;
+            return `  \u2717 ${a.name} — failed (${formatDuration(a.durationMs ?? 0)})`;
         }
-        return `  \u23F3 ${a.name}`;
+        if (a.status === 'reviewing') {
+            return `  \u23F3 ${a.name}`;
+        }
+        return `  \u25CB ${a.name}`;
     }).join('\n');
 }
 function formatDuration(ms) {
@@ -36781,42 +36784,52 @@ function sanitizePrType(prType) {
 }
 function buildDashboard(data) {
     const agents = data.agentProgress;
-    const hasAgentProgress = agents && agents.length > 0;
-    const lines = [];
+    const hasAgentProgress = !!(agents && agents.length > 0);
+    const sections = [];
+    const header = [];
     if (data.phase !== 'complete') {
-        lines.push('**Manki** — Review in progress', '');
+        header.push('**Manki** — Review in progress', '');
     }
-    lines.push(`\u2713 Parsed diff — ${data.lineCount} lines`);
-    if (data.plannerInfo) {
+    header.push(`\u2713 Parsed diff — ${data.lineCount} lines`);
+    sections.push(header.join('\n'));
+    if (data.phase === 'planning') {
+        sections.push(`\u23F3 Planner — analyzing...`);
+    }
+    else if (data.plannerInfo) {
         const prType = sanitizePrType(data.plannerInfo.prType);
-        lines.push(`\u2713 Planner — ${data.plannerInfo.teamSize} agents, reviewer: ${data.plannerInfo.reviewerEffort}, judge: ${data.plannerInfo.judgeEffort} (${prType})`);
+        sections.push(`\u2713 Planner — ${data.plannerInfo.teamSize} agents, reviewer: ${data.plannerInfo.reviewerEffort}, judge: ${data.plannerInfo.judgeEffort} (${prType})`);
     }
-    if (data.phase === 'started') {
+    const reviewLines = [];
+    if (data.phase === 'planning') {
+        reviewLines.push(`\u25CB Review`);
+    }
+    else if (data.phase === 'started') {
         if (hasAgentProgress) {
             const done = agents.filter(a => a.status === 'done' || a.status === 'failed').length;
-            lines.push(`\uD83D\uDD0D Review — ${done}/${agents.length} agents complete`);
-            lines.push(renderAgentLines(agents));
+            reviewLines.push(`\u23F3 Review — ${done}/${agents.length} agents complete`);
+            reviewLines.push(renderAgentLines(agents));
         }
         else {
-            lines.push(`\u23F3 Reviewing with ${data.agentCount} agents...`);
+            reviewLines.push(`\u23F3 Review — reviewing with ${data.agentCount} agents...`);
         }
     }
     else {
-        lines.push(`\u2713 Review — ${data.agentCount} agents \u00B7 ${data.rawFindingCount ?? 0} findings`);
+        reviewLines.push(`\u2713 Review — ${data.agentCount} agents \u00B7 ${data.rawFindingCount ?? 0} findings`);
         if (hasAgentProgress) {
-            lines.push(renderAgentLines(agents));
+            reviewLines.push(renderAgentLines(agents));
         }
     }
-    if (data.phase === 'started') {
-        lines.push(hasAgentProgress ? `\u25CB Judge` : `\u25CB Judge — pending`);
+    sections.push(reviewLines.join('\n'));
+    if (data.phase === 'planning' || data.phase === 'started') {
+        sections.push(`\u25CB Judge`);
     }
     else if (data.phase === 'reviewed') {
-        lines.push(`\u23F3 Judge — evaluating ${data.judgeInputCount ?? data.rawFindingCount ?? 0} findings...`);
+        sections.push(`\u23F3 Judge — evaluating ${data.judgeInputCount ?? data.rawFindingCount ?? 0} findings...`);
     }
     else {
-        lines.push(`\u2713 Judge — ${data.keptCount ?? 0} kept \u00B7 ${data.droppedCount ?? 0} dropped`);
+        sections.push(`\u2713 Judge — ${data.keptCount ?? 0} kept \u00B7 ${data.droppedCount ?? 0} dropped`);
     }
-    return lines.join('\n');
+    return sections.join('\n\n');
 }
 /**
  * Post a "review in progress" comment on the PR.
@@ -37914,14 +37927,21 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
         const rawDiff = await (0, github_1.fetchPRDiff)(octokit, owner, repo, prNumber);
         const diff = (0, diff_1.parsePRDiff)(rawDiff);
         const parseEndTime = Date.now();
+        const plannerEnabled = !!plannerClient && config.review_level === 'auto';
         const team = (0, review_1.selectTeam)(diff, config, config.reviewers);
         const lineCount = diff.totalAdditions + diff.totalDeletions;
-        const dashboard = {
-            phase: 'started',
-            lineCount,
-            agentCount: team.agents.length,
-            agentProgress: team.agents.map(a => ({ name: a.name, status: 'reviewing' })),
-        };
+        const dashboard = plannerEnabled
+            ? {
+                phase: 'planning',
+                lineCount,
+                agentCount: 0,
+            }
+            : {
+                phase: 'started',
+                lineCount,
+                agentCount: team.agents.length,
+                agentProgress: team.agents.map(a => ({ name: a.name, status: 'reviewing' })),
+            };
         await (0, github_1.updateProgressDashboard)(octokit, owner, repo, progressCommentId, dashboard);
         if ((0, diff_1.isDiffTooLarge)(diff, config.max_diff_lines)) {
             core.warning(`Diff too large (${diff.totalAdditions + diff.totalDeletions} lines > ${config.max_diff_lines} max)`);
@@ -38047,6 +38067,7 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
                     dashboard.agentCount = progress.plannerResult.teamSize;
                     const plannerTeam = (0, review_1.selectTeam)(diff, config, config.reviewers, progress.plannerResult.teamSize);
                     dashboard.agentProgress = plannerTeam.agents.map(a => ({ name: a.name, status: 'reviewing' }));
+                    dashboard.phase = 'started';
                     scheduleDashboardFlush();
                 }
             }
@@ -40727,7 +40748,7 @@ function selectTeam(diff, config, customReviewers, teamSizeOverride) {
         if (customReviewers && customReviewers.length > 0) {
             core.info(`teamSize=1: skipping custom reviewers [${customReviewers.map(r => r.name).join(', ')}]`);
         }
-        return { level: 'small', agents: [exports.TRIVIAL_VERIFIER_AGENT], lineCount };
+        return { level: 'trivial', agents: [exports.TRIVIAL_VERIFIER_AGENT], lineCount };
     }
     if (teamSizeOverride) {
         teamSize = teamSizeOverride;

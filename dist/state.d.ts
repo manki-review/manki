@@ -13,11 +13,13 @@ interface ReviewThread {
  */
 declare function fetchBotReviewThreads(octokit: Octokit, owner: string, repo: string, prNumber: number): Promise<ReviewThread[]>;
 /**
- * Check if all required threads are resolved.
+ * Check if all bot review threads (required, suggestion, nit) are resolved.
+ * Auto-approve should only fire when every finding is resolved, because
+ * CHANGES_REQUESTED can be caused by high-confidence suggestions too.
  */
-declare function areAllRequiredResolved(threads: ReviewThread[]): boolean;
+declare function areAllFindingsResolved(threads: ReviewThread[]): boolean;
 /**
- * Post an approval review if all required issues are resolved.
+ * Post an approval review if all findings are resolved.
  */
 declare function checkAndAutoApprove(octokit: Octokit, owner: string, repo: string, prNumber: number): Promise<boolean>;
 /**
@@ -25,4 +27,4 @@ declare function checkAndAutoApprove(octokit: Octokit, owner: string, repo: stri
  * A thread is stale when the first comment's commit differs from the current head SHA.
  */
 declare function resolveStaleThreads(octokit: Octokit, owner: string, repo: string, prNumber: number, currentHeadSha: string): Promise<number>;
-export { ReviewThread, areAllRequiredResolved, checkAndAutoApprove, fetchBotReviewThreads, resolveStaleThreads, BOT_MARKER };
+export { ReviewThread, areAllFindingsResolved, checkAndAutoApprove, fetchBotReviewThreads, resolveStaleThreads, BOT_MARKER };

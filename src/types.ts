@@ -157,7 +157,7 @@ export interface AgentProgressEntry {
 }
 
 export interface DashboardData {
-  phase: 'started' | 'reviewed' | 'complete';
+  phase: 'planning' | 'started' | 'reviewed' | 'complete';
   lineCount: number;
   agentCount: number;
   rawFindingCount?: number;

@@ -357,15 +357,22 @@ async function runFullReview(
     const rawDiff = await fetchPRDiff(octokit, owner, repo, prNumber);
     const diff = parsePRDiff(rawDiff);
     const parseEndTime = Date.now();
+    const plannerEnabled = !!plannerClient && config.review_level === 'auto';
     const team = selectTeam(diff, config, config.reviewers);
     const lineCount = diff.totalAdditions + diff.totalDeletions;
 
-    const dashboard: DashboardData = {
-      phase: 'started',
-      lineCount,
-      agentCount: team.agents.length,
-      agentProgress: team.agents.map(a => ({ name: a.name, status: 'reviewing' as const })),
-    };
+    const dashboard: DashboardData = plannerEnabled
+      ? {
+          phase: 'planning',
+          lineCount,
+          agentCount: 0,
+        }
+      : {
+          phase: 'started',
+          lineCount,
+          agentCount: team.agents.length,
+          agentProgress: team.agents.map(a => ({ name: a.name, status: 'reviewing' as const })),
+        };
     await updateProgressDashboard(octokit, owner, repo, progressCommentId, dashboard);
 
     if (isDiffTooLarge(diff, config.max_diff_lines)) {
@@ -502,6 +509,7 @@ async function runFullReview(
             dashboard.agentCount = progress.plannerResult.teamSize;
             const plannerTeam = selectTeam(diff, config, config.reviewers, progress.plannerResult.teamSize);
             dashboard.agentProgress = plannerTeam.agents.map(a => ({ name: a.name, status: 'reviewing' as const }));
+            dashboard.phase = 'started';
             scheduleDashboardFlush();
           }
         } else if (progress.phase === 'agent-complete') {

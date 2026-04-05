@@ -1661,6 +1661,10 @@ describe('runFullReview orchestration', () => {
       async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
         if (onProgress) {
           onProgress({
+            phase: 'planning', rawFindingCount: 0,
+            plannerResult: { teamSize: 1, reviewerEffort: 'low', judgeEffort: 'low', prType: 'chore' },
+          });
+          onProgress({
             phase: 'agent-complete',
             agentName: 'general',
             agentFindingCount: 2,
@@ -1714,6 +1718,10 @@ describe('runFullReview orchestration', () => {
       async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
         if (onProgress) {
           onProgress({
+            phase: 'planning', rawFindingCount: 0,
+            plannerResult: { teamSize: 1, reviewerEffort: 'low', judgeEffort: 'low', prType: 'chore' },
+          });
+          onProgress({
             phase: 'agent-complete',
             agentName: 'general',
             agentFindingCount: 0,
@@ -1763,6 +1771,10 @@ describe('runFullReview orchestration', () => {
       async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
         if (onProgress) {
           onProgress({
+            phase: 'planning', rawFindingCount: 0,
+            plannerResult: { teamSize: 1, reviewerEffort: 'low', judgeEffort: 'low', prType: 'chore' },
+          });
+          onProgress({
             phase: 'judging',
             rawFindingCount: 5,
             judgeInputCount: 3,
@@ -1801,6 +1813,10 @@ describe('runFullReview orchestration', () => {
     jest.mocked(reviewModule.runReview).mockImplementation(
       async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
         if (onProgress) {
+          onProgress({
+            phase: 'planning', rawFindingCount: 0,
+            plannerResult: { teamSize: 1, reviewerEffort: 'low', judgeEffort: 'low', prType: 'chore' },
+          });
           onProgress({
             phase: 'reviewed',
             rawFindingCount: 4,

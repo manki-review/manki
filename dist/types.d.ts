@@ -21,10 +21,22 @@ export interface ReviewResult {
     rawFindingCount?: number;
     agentNames?: string[];
     allJudgedFindings?: Finding[];
+    resolveThreads?: Array<{
+        threadId: string;
+        reason: string;
+    }>;
+    plannerResult?: PlannerResult;
+    failedAgents?: string[];
 }
 export interface ReviewerAgent {
     name: string;
     focus: string;
+}
+export interface PlannerResult {
+    teamSize: 1 | 3 | 5 | 7;
+    reviewerEffort: 'low' | 'medium' | 'high';
+    judgeEffort: 'low' | 'medium' | 'high';
+    prType: string;
 }
 export type ReviewLevel = 'auto' | 'small' | 'medium' | 'large';
 export interface ReviewThresholds {
@@ -32,7 +44,7 @@ export interface ReviewThresholds {
     medium: number;
 }
 export interface TeamRoster {
-    level: 'small' | 'medium' | 'large';
+    level: 'trivial' | 'small' | 'medium' | 'large';
     agents: ReviewerAgent[];
     lineCount: number;
 }
@@ -50,9 +62,13 @@ export interface ReviewConfig {
         repo: string;
     };
     models?: {
+        planner?: string;
         reviewer?: string;
         judge?: string;
         dedup?: string;
+    };
+    planner?: {
+        enabled?: boolean;
     };
     nit_handling?: 'issues' | 'comments';
     review_passes?: number;
@@ -123,7 +139,7 @@ export interface AgentProgressEntry {
     durationMs?: number;
 }
 export interface DashboardData {
-    phase: 'started' | 'reviewed' | 'complete';
+    phase: 'planning' | 'started' | 'reviewed' | 'complete';
     lineCount: number;
     agentCount: number;
     rawFindingCount?: number;
@@ -131,6 +147,7 @@ export interface DashboardData {
     keptCount?: number;
     droppedCount?: number;
     agentProgress?: AgentProgressEntry[];
+    plannerInfo?: Pick<PlannerResult, 'teamSize' | 'reviewerEffort' | 'judgeEffort' | 'prType'>;
 }
 export interface JudgeDecision {
     title: string;
@@ -151,12 +168,6 @@ export interface ReviewMetadata {
         nitHandling: string;
     };
     judgeDecisions: JudgeDecision[];
-    recap: {
-        newFindings: number;
-        previouslyFlagged: number;
-        resolved: number;
-        suppressionsApplied: number;
-    };
     timing: {
         parseMs: number;
         reviewMs: number;

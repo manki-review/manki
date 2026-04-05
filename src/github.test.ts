@@ -1285,8 +1285,31 @@ describe('buildDashboard', () => {
     const md = buildDashboard(data);
     expect(md).toContain('**Manki** — Review in progress');
     expect(md).toContain('\u2713 Parsed diff — 150 lines');
-    expect(md).toContain('\u23F3 Reviewing with 5 agents...');
-    expect(md).toContain('\u25CB Judge — pending');
+    expect(md).toContain('\u23F3 Review — reviewing with 5 agents...');
+    expect(md).toContain('\u25CB Judge');
+    expect(md).not.toContain('\u25CB Judge — pending');
+  });
+
+  it('renders the planning phase with analyzing planner and pending review/judge', () => {
+    const data: DashboardData = { phase: 'planning', lineCount: 83, agentCount: 0 };
+    const md = buildDashboard(data);
+    expect(md).toContain('**Manki** — Review in progress');
+    expect(md).toContain('\u2713 Parsed diff — 83 lines');
+    expect(md).toContain('\u23F3 Planner — analyzing...');
+    expect(md).toContain('\u25CB Review');
+    expect(md).toContain('\u25CB Judge');
+    expect(md).not.toContain('\uD83D\uDD0D');
+  });
+
+  it('separates stages with blank lines', () => {
+    const data: DashboardData = { phase: 'planning', lineCount: 83, agentCount: 0 };
+    const md = buildDashboard(data);
+    const parts = md.split('\n\n');
+    expect(parts.length).toBeGreaterThanOrEqual(4);
+    expect(parts.some(p => p.includes('Parsed diff'))).toBe(true);
+    expect(parts.some(p => p.trim().startsWith('\u23F3 Planner'))).toBe(true);
+    expect(parts.some(p => p.trim() === '\u25CB Review')).toBe(true);
+    expect(parts.some(p => p.trim() === '\u25CB Judge')).toBe(true);
   });
 
   it('renders per-agent progress when agentProgress is provided', () => {
@@ -1296,17 +1319,20 @@ describe('buildDashboard', () => {
         { name: 'Security & Safety', status: 'done', findingCount: 2, durationMs: 4000 },
         { name: 'Architecture & Design', status: 'done', findingCount: 0, durationMs: 3200 },
         { name: 'Correctness & Logic', status: 'reviewing' },
-        { name: 'Testing & Coverage', status: 'reviewing' },
-        { name: 'Performance & Efficiency', status: 'reviewing' },
+        { name: 'Testing & Coverage', status: 'pending' },
+        { name: 'Performance & Efficiency', status: 'pending' },
       ],
     };
     const md = buildDashboard(data);
     expect(md).toContain('**Manki** — Review in progress');
-    expect(md).toContain('2/5 agents complete');
-    expect(md).toContain('\u2705 Security & Safety — 2 findings (4s)');
-    expect(md).toContain('\u2705 Architecture & Design — 0 findings (3s)');
-    expect(md).toContain('\u23F3 Correctness & Logic');
+    expect(md).toContain('\u23F3 Review — 2/5 agents complete');
+    expect(md).toContain('  \u2713 Security & Safety — 2 findings (4s)');
+    expect(md).toContain('  \u2713 Architecture & Design — 0 findings (3s)');
+    expect(md).toContain('  \u23F3 Correctness & Logic');
+    expect(md).toContain('  \u25CB Testing & Coverage');
+    expect(md).toContain('  \u25CB Performance & Efficiency');
     expect(md).toContain('\u25CB Judge');
+    expect(md).not.toContain('\uD83D\uDD0D');
   });
 
   it('renders failed agent status in agent progress', () => {
@@ -1319,8 +1345,8 @@ describe('buildDashboard', () => {
       ],
     };
     const md = buildDashboard(data);
-    expect(md).toContain('\u274C Security & Safety — failed (2s)');
-    expect(md).toContain('\u2705 Correctness & Logic — 1 findings (2s)');
+    expect(md).toContain('  \u2717 Security & Safety — failed (2s)');
+    expect(md).toContain('  \u2713 Correctness & Logic — 1 findings (2s)');
   });
 
   it('renders the reviewed phase with finding count and running judge', () => {
@@ -1351,9 +1377,9 @@ describe('buildDashboard', () => {
     const md = buildDashboard(data);
     expect(md).toContain('**Manki** — Review in progress');
     expect(md).toContain('\u2713 Review — 3 agents \u00B7 7 findings');
-    expect(md).toContain('\u2705 Security & Safety — 3 findings (4s)');
-    expect(md).toContain('\u2705 Correctness & Logic — 4 findings (3s)');
-    expect(md).toContain('\u2705 Architecture & Design — 0 findings (3s)');
+    expect(md).toContain('  \u2713 Security & Safety — 3 findings (4s)');
+    expect(md).toContain('  \u2713 Correctness & Logic — 4 findings (3s)');
+    expect(md).toContain('  \u2713 Architecture & Design — 0 findings (3s)');
     expect(md).toContain('Judge — evaluating 7 findings...');
   });
 
@@ -1382,11 +1408,11 @@ describe('buildDashboard', () => {
     };
     const md = buildDashboard(data);
     expect(md).toContain('\u2713 Review — 5 agents \u00B7 17 findings');
-    expect(md).toContain('\u2705 Security & Safety — 2 findings (4s)');
-    expect(md).toContain('\u2705 Architecture & Design — 3 findings (3s)');
-    expect(md).toContain('\u2705 Correctness & Logic — 5 findings (6s)');
-    expect(md).toContain('\u2705 Testing & Coverage — 4 findings (5s)');
-    expect(md).toContain('\u2705 Performance & Efficiency — 3 findings (4s)');
+    expect(md).toContain('  \u2713 Security & Safety — 2 findings (4s)');
+    expect(md).toContain('  \u2713 Architecture & Design — 3 findings (3s)');
+    expect(md).toContain('  \u2713 Correctness & Logic — 5 findings (6s)');
+    expect(md).toContain('  \u2713 Testing & Coverage — 4 findings (5s)');
+    expect(md).toContain('  \u2713 Performance & Efficiency — 3 findings (4s)');
     expect(md).toContain('\u2713 Judge — 14 kept \u00B7 3 dropped');
   });
 
@@ -1400,8 +1426,8 @@ describe('buildDashboard', () => {
       ],
     };
     const md = buildDashboard(data);
-    expect(md).toContain('\u2705 Security & Safety — 3 findings (2s)');
-    expect(md).toContain('\u274C Architecture & Design — failed (500ms)');
+    expect(md).toContain('  \u2713 Security & Safety — 3 findings (2s)');
+    expect(md).toContain('  \u2717 Architecture & Design — failed (500ms)');
     expect(md).toContain('\u2713 Judge — 2 kept \u00B7 1 dropped');
   });
 
