@@ -67,7 +67,7 @@ export function selectTeam(
     if (customReviewers && customReviewers.length > 0) {
       core.info(`teamSize=1: skipping custom reviewers [${customReviewers.map(r => r.name).join(', ')}]`);
     }
-    return { level: 'small', agents: [TRIVIAL_VERIFIER_AGENT], lineCount };
+    return { level: 'trivial', agents: [TRIVIAL_VERIFIER_AGENT], lineCount };
   }
 
   if (teamSizeOverride) {

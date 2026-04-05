@@ -1860,7 +1860,7 @@ describe('selectTeam with teamSizeOverride', () => {
     const roster = selectTeam(diff, config, undefined, 1);
     expect(roster.agents).toHaveLength(1);
     expect(roster.agents[0]).toBe(TRIVIAL_VERIFIER_AGENT);
-    expect(roster.level).toBe('small');
+    expect(roster.level).toBe('trivial');
     expect(roster.lineCount).toBe(2);
   });
 

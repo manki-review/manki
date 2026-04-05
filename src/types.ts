@@ -49,7 +49,7 @@ export interface ReviewThresholds {
 }
 
 export interface TeamRoster {
-  level: 'small' | 'medium' | 'large';  // resolved, never 'auto'
+  level: 'trivial' | 'small' | 'medium' | 'large';  // resolved, never 'auto'
   agents: ReviewerAgent[];
   lineCount: number;
 }
