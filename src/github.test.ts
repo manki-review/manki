@@ -1745,6 +1745,7 @@ describe('updateProgressDashboard', () => {
     const body = updateCommentMock.mock.calls[0][0].body as string;
     expect(body).toContain(BOT_MARKER);
     expect(body).toContain('8 findings');
+    expect(body).toMatch(/<!-- manki-run-id:[^ ]+ -->/);
   });
 });
 
@@ -2137,7 +2138,7 @@ describe('isReviewInProgress', () => {
   }
 
   interface MockOpts {
-    comments: Array<{ id?: number; body: string; user: { type: string } }>;
+    comments: Array<{ id?: number; body: string; user: { login?: string; type: string } }>;
     workflowRun?: { status: string | null; conclusion: string | null };
     workflowRunError?: Error;
   }
@@ -2151,7 +2152,11 @@ describe('isReviewInProgress', () => {
       rest: {
         issues: {
           listComments: jest.fn().mockResolvedValue({
-            data: opts.comments.map((c, i) => ({ id: c.id ?? i + 1, body: c.body, user: c.user })),
+            data: opts.comments.map((c, i) => ({
+              id: c.id ?? i + 1,
+              body: c.body,
+              user: { login: c.user.login ?? (c.user.type === 'Bot' ? BOT_LOGIN : 'someone'), type: c.user.type },
+            })),
           }),
           updateComment,
         },
@@ -2319,7 +2324,7 @@ describe('isReviewInProgress', () => {
   });
 
   it('returns true for each active workflow status', async () => {
-    for (const status of ['queued', 'waiting', 'pending', 'requested'] as const) {
+    for (const status of ['queued', 'waiting', 'pending', 'requested', 'action_required'] as const) {
       const { octokit } = makeMockOctokit({
         comments: [{ body: makeRunIdBody(600), user: { type: 'Bot' } }],
         workflowRun: { status, conclusion: null },
@@ -2327,6 +2332,17 @@ describe('isReviewInProgress', () => {
       const result = await isReviewInProgress(octokit, 'owner', 'repo', 1);
       expect(result).toBe(true);
     }
+  });
+
+  it('ignores progress comments posted by other bots (login mismatch)', async () => {
+    const { octokit, getWorkflowRun } = makeMockOctokit({
+      comments: [{ body: makeRunIdBody(700), user: { login: 'dependabot[bot]', type: 'Bot' } }],
+    });
+
+    const result = await isReviewInProgress(octokit, 'owner', 'repo', 1);
+
+    expect(result).toBe(false);
+    expect(getWorkflowRun).not.toHaveBeenCalled();
   });
 });
 
@@ -2353,12 +2369,16 @@ describe('markOwnProgressCommentCancelled', () => {
     return `${BOT_MARKER}\n<!-- manki-run-id:${runId} -->\n**Manki** — Review in progress`;
   }
 
-  function makeOctokit(comments: Array<{ id?: number; body: string; user: { type: string } }>, updateError?: Error) {
+  function makeOctokit(comments: Array<{ id?: number; body: string; user: { login?: string; type: string } }>, updateError?: Error) {
     const updateComment = updateError
       ? jest.fn().mockRejectedValue(updateError)
       : jest.fn().mockResolvedValue({});
     const listComments = jest.fn().mockResolvedValue({
-      data: comments.map((c, i) => ({ id: c.id ?? i + 1, body: c.body, user: c.user })),
+      data: comments.map((c, i) => ({
+        id: c.id ?? i + 1,
+        body: c.body,
+        user: { login: c.user.login ?? (c.user.type === 'Bot' ? BOT_LOGIN : 'someone'), type: c.user.type },
+      })),
     });
     const octokit = {
       rest: { issues: { listComments, updateComment } },
@@ -2411,6 +2431,17 @@ describe('markOwnProgressCommentCancelled', () => {
     const result = await markOwnProgressCommentCancelled(octokit, 'owner', 'repo', 1, 77);
 
     expect(result).toBe(false);
+  });
+
+  it('ignores comments posted by other bots (login mismatch)', async () => {
+    const { octokit, updateComment } = makeOctokit([
+      { id: 10, body: makeBody(77), user: { login: 'dependabot[bot]', type: 'Bot' } },
+    ]);
+
+    const result = await markOwnProgressCommentCancelled(octokit, 'owner', 'repo', 1, 77);
+
+    expect(result).toBe(false);
+    expect(updateComment).not.toHaveBeenCalled();
   });
 
   it('returns false and warns when listComments API fails', async () => {

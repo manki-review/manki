@@ -332,11 +332,12 @@ export async function updateProgressDashboard(
   commentId: number,
   dashboard: DashboardData,
 ): Promise<void> {
+  const runIdMarker = buildRunIdMarker(github.context.runId);
   await octokit.rest.issues.updateComment({
     owner,
     repo,
     comment_id: commentId,
-    body: `${BOT_MARKER}\n${buildDashboard(dashboard)}`,
+    body: `${BOT_MARKER}\n${runIdMarker}\n${buildDashboard(dashboard)}`,
   });
 }
 
@@ -1042,6 +1043,7 @@ async function findProgressComment(
     owner, repo, issue_number: prNumber, per_page: 100, direction: 'desc',
   });
   const match = comments.find(c =>
+    c.user?.login === BOT_LOGIN &&
     c.user?.type === 'Bot' &&
     c.body?.includes(BOT_MARKER) &&
     !c.body?.includes(REVIEW_COMPLETE_MARKER) &&
@@ -1092,7 +1094,7 @@ async function isReviewInProgress(octokit: Octokit, owner: string, repo: string,
     return false;
   }
 
-  if (status === 'in_progress' || status === 'queued' || status === 'waiting' || status === 'pending' || status === 'requested') {
+  if (status === 'in_progress' || status === 'queued' || status === 'waiting' || status === 'pending' || status === 'requested' || status === 'action_required') {
     core.info(`Skipping — review already in progress (run ${progress.runId}, status=${status})`);
     return true;
   }
@@ -1114,6 +1116,7 @@ async function markOwnProgressCommentCancelled(
       owner, repo, issue_number: prNumber, per_page: 100, direction: 'desc',
     });
     const target = comments.find(c =>
+      c.user?.login === BOT_LOGIN &&
       c.user?.type === 'Bot' &&
       c.body?.includes(BOT_MARKER) &&
       !c.body?.includes(REVIEW_COMPLETE_MARKER) &&
