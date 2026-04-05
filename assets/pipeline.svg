@@ -48,9 +48,8 @@
   <!-- Bottom row: descriptions -->
   <!-- Planner desc -->
   <rect x="10" y="112" width="160" height="80" rx="6" fill="#1a1d23" stroke="#3a4d3d" stroke-width="1" stroke-dasharray="4 3"/>
-  <text x="90" y="142" text-anchor="middle" fill="#9ba3b0" font-size="13">reads diff,</text>
-  <text x="90" y="160" text-anchor="middle" fill="#9ba3b0" font-size="13">picks team size</text>
-  <text x="90" y="178" text-anchor="middle" fill="#9ba3b0" font-size="13">+ effort level</text>
+  <text x="90" y="142" text-anchor="middle" fill="#9ba3b0" font-size="13">reads diff, picks</text>
+  <text x="90" y="160" text-anchor="middle" fill="#9ba3b0" font-size="13">team + effort</text>
 
   <!-- Reviewers desc -->
   <rect x="200" y="112" width="160" height="80" rx="6" fill="#1a1d23" stroke="#3a4d3d" stroke-width="1" stroke-dasharray="4 3"/>
@@ -69,7 +68,6 @@
 
   <!-- Posted desc -->
   <rect x="770" y="112" width="200" height="80" rx="6" fill="#1a1d23" stroke="#3a4d3d" stroke-width="1" stroke-dasharray="4 3"/>
-  <text x="870" y="142" text-anchor="middle" fill="#9ba3b0" font-size="13">inline comments</text>
-  <text x="870" y="160" text-anchor="middle" fill="#9ba3b0" font-size="13">+ summary</text>
-  <text x="870" y="178" text-anchor="middle" fill="#9ba3b0" font-size="13">+ verdict</text>
+  <text x="870" y="142" text-anchor="middle" fill="#9ba3b0" font-size="13">inline comments +</text>
+  <text x="870" y="160" text-anchor="middle" fill="#9ba3b0" font-size="13">summary + verdict</text>
 </svg>
