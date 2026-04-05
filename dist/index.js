@@ -36584,7 +36584,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.RUN_ID_MARKER_PREFIX = exports.CANCELLED_MARKER = exports.FORCE_REVIEW_MARKER = exports.REVIEW_COMPLETE_MARKER = exports.BOT_MARKER = exports.BOT_LOGIN = void 0;
+exports.MANKI_VERSION = exports.VERSION_MARKER_PREFIX = exports.RUN_ID_MARKER_PREFIX = exports.CANCELLED_MARKER = exports.FORCE_REVIEW_MARKER = exports.REVIEW_COMPLETE_MARKER = exports.BOT_MARKER = exports.BOT_LOGIN = void 0;
 exports.fetchPRDiff = fetchPRDiff;
 exports.fetchConfigFile = fetchConfigFile;
 exports.fetchRepoContext = fetchRepoContext;
@@ -36617,6 +36617,8 @@ exports.isReviewInProgress = isReviewInProgress;
 exports.isApprovedOnCommit = isApprovedOnCommit;
 exports.markOwnProgressCommentCancelled = markOwnProgressCommentCancelled;
 exports.extractRunIdFromBody = extractRunIdFromBody;
+exports.extractVersionFromBody = extractVersionFromBody;
+const module_1 = __nccwpck_require__(3339);
 const core = __importStar(__nccwpck_require__(7930));
 const github = __importStar(__nccwpck_require__(6834));
 const diff_1 = __nccwpck_require__(6024);
@@ -36632,7 +36634,20 @@ const RUN_ID_MARKER_PREFIX = '<!-- manki-run-id:';
 exports.RUN_ID_MARKER_PREFIX = RUN_ID_MARKER_PREFIX;
 const CANCELLED_MARKER = '<!-- manki-review-cancelled -->';
 exports.CANCELLED_MARKER = CANCELLED_MARKER;
+const VERSION_MARKER_PREFIX = '<!-- manki-version:';
+exports.VERSION_MARKER_PREFIX = VERSION_MARKER_PREFIX;
+const MANKI_VERSION = (0, module_1.createRequire)(__filename)('../package.json').version;
+exports.MANKI_VERSION = MANKI_VERSION;
+const VERSION_MARKER = `${VERSION_MARKER_PREFIX} ${MANKI_VERSION} -->`;
+const BOT_MARKERS = `${BOT_MARKER}\n${VERSION_MARKER}`;
 const RUN_ID_MARKER_REGEX = /<!-- manki-run-id:(\d+) -->/;
+const VERSION_MARKER_REGEX = /<!-- manki-version:\s*([^\s]+)\s*-->/;
+function extractVersionFromBody(body) {
+    if (!body)
+        return null;
+    const match = body.match(VERSION_MARKER_REGEX);
+    return match ? match[1] : null;
+}
 function buildRunIdMarker(runId) {
     return `${RUN_ID_MARKER_PREFIX}${runId} -->`;
 }
@@ -36838,8 +36853,8 @@ function buildDashboard(data) {
 async function postProgressComment(octokit, owner, repo, prNumber, dashboard) {
     const runIdMarker = buildRunIdMarker(github.context.runId);
     const body = dashboard
-        ? `${BOT_MARKER}\n${runIdMarker}\n${buildDashboard(dashboard)}`
-        : `${BOT_MARKER}\n${runIdMarker}\n**Manki** — Review started`;
+        ? `${BOT_MARKERS}\n${runIdMarker}\n${buildDashboard(dashboard)}`
+        : `${BOT_MARKERS}\n${runIdMarker}\n**Manki** — Review started`;
     const { data } = await octokit.rest.issues.createComment({
         owner,
         repo,
@@ -36855,6 +36870,7 @@ async function postProgressComment(octokit, owner, repo, prNumber, dashboard) {
 async function updateProgressComment(octokit, owner, repo, commentId, dashboard, metadata) {
     const parts = [
         BOT_MARKER,
+        VERSION_MARKER,
         `**Manki** — ${metadata ? 'Review complete' : 'Review failed'}`,
         '',
         buildDashboard({ ...dashboard, phase: 'complete' }),
@@ -36904,7 +36920,7 @@ async function updateProgressDashboard(octokit, owner, repo, commentId, dashboar
         owner,
         repo,
         comment_id: commentId,
-        body: `${BOT_MARKER}\n${runIdMarker}\n${buildDashboard(dashboard)}`,
+        body: `${BOT_MARKERS}\n${runIdMarker}\n${buildDashboard(dashboard)}`,
     });
 }
 /**
@@ -37011,7 +37027,7 @@ async function postReview(octokit, owner, repo, prNumber, commitSha, result, dif
             validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: commentBody });
         }
     }
-    let body = `${BOT_MARKER}\n${sanitizeMarkdown(result.summary)}`;
+    let body = `${BOT_MARKERS}\n${sanitizeMarkdown(result.summary)}`;
     if (stats) {
         body += `\n\n${formatStatsOneLiner(stats)}`;
         body += `\n\n${formatStatsJson(stats)}`;
@@ -41694,6 +41710,14 @@ module.exports = require("http2");
 
 "use strict";
 module.exports = require("https");
+
+/***/ }),
+
+/***/ 3339:
+/***/ ((module) => {
+
+"use strict";
+module.exports = require("module");
 
 /***/ }),
 

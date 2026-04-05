@@ -1,4 +1,4 @@
-import { buildDashboard, formatFindingComment, formatStatsJson, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, CANCELLED_MARKER, buildNitIssueBody, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, safeTruncate, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, createNitIssue, fetchPRDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody } from './github';
+import { buildDashboard, formatFindingComment, formatStatsJson, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, buildNitIssueBody, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, safeTruncate, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, createNitIssue, fetchPRDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody } from './github';
 import { DashboardData, Finding, ParsedDiff, ReviewMetadata, ReviewResult, ReviewStats } from './types';
 
 describe('formatFindingComment', () => {
@@ -166,6 +166,25 @@ describe('mapVerdictToEvent', () => {
 describe('BOT_MARKER', () => {
   it('is an HTML comment', () => {
     expect(BOT_MARKER).toMatch(/^<!--.*-->$/);
+  });
+
+  it('matches legacy unversioned comments (backwards compat)', () => {
+    const legacyBody = `${BOT_MARKER}\n**Manki** — Review started`;
+    expect(legacyBody.includes(BOT_MARKER)).toBe(true);
+    expect(extractVersionFromBody(legacyBody)).toBeNull();
+  });
+
+  it('matches new comments with both markers', () => {
+    const newBody = `${BOT_MARKER}\n${VERSION_MARKER_PREFIX} ${MANKI_VERSION} -->\n**Manki** — Review started`;
+    expect(newBody.includes(BOT_MARKER)).toBe(true);
+    expect(extractVersionFromBody(newBody)).toBe(MANKI_VERSION);
+  });
+
+  it('parses version from a comment containing the version marker', () => {
+    expect(extractVersionFromBody('<!-- manki-bot -->\n<!-- manki-version: 4.2.0 -->\nfoo')).toBe('4.2.0');
+    expect(extractVersionFromBody('<!-- manki-version:9.9.9 -->')).toBe('9.9.9');
+    expect(extractVersionFromBody('no marker here')).toBeNull();
+    expect(extractVersionFromBody(null)).toBeNull();
   });
 });
 

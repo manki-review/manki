@@ -7,6 +7,9 @@ declare const REVIEW_COMPLETE_MARKER = "<!-- manki-review-complete -->";
 declare const FORCE_REVIEW_MARKER = "<!-- manki-force-review -->";
 declare const RUN_ID_MARKER_PREFIX = "<!-- manki-run-id:";
 declare const CANCELLED_MARKER = "<!-- manki-review-cancelled -->";
+declare const VERSION_MARKER_PREFIX = "<!-- manki-version:";
+declare const MANKI_VERSION: string;
+declare function extractVersionFromBody(body: string | null | undefined): string | null;
 declare function extractRunIdFromBody(body: string | null | undefined): number | null;
 /**
  * Fetch the raw diff for a PR.
@@ -117,4 +120,4 @@ declare function markOwnProgressCommentCancelled(octokit: Octokit, owner: string
  * on the given commit SHA.
  */
 declare function isApprovedOnCommit(octokit: Octokit, owner: string, repo: string, prNumber: number, commitSha: string): Promise<boolean>;
-export { dynamicFence, formatFindingComment, formatStatsJson, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, safeTruncate, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody };
+export { dynamicFence, formatFindingComment, formatStatsJson, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, safeTruncate, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody };

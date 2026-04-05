@@ -1,3 +1,5 @@
+import { createRequire } from 'module';
+
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
@@ -12,8 +14,20 @@ const REVIEW_COMPLETE_MARKER = '<!-- manki-review-complete -->';
 const FORCE_REVIEW_MARKER = '<!-- manki-force-review -->';
 const RUN_ID_MARKER_PREFIX = '<!-- manki-run-id:';
 const CANCELLED_MARKER = '<!-- manki-review-cancelled -->';
+const VERSION_MARKER_PREFIX = '<!-- manki-version:';
+
+const MANKI_VERSION: string = (createRequire(__filename)('../package.json') as { version: string }).version;
+const VERSION_MARKER = `${VERSION_MARKER_PREFIX} ${MANKI_VERSION} -->`;
+const BOT_MARKERS = `${BOT_MARKER}\n${VERSION_MARKER}`;
 
 const RUN_ID_MARKER_REGEX = /<!-- manki-run-id:(\d+) -->/;
+const VERSION_MARKER_REGEX = /<!-- manki-version:\s*([^\s]+)\s*-->/;
+
+function extractVersionFromBody(body: string | null | undefined): string | null {
+  if (!body) return null;
+  const match = body.match(VERSION_MARKER_REGEX);
+  return match ? match[1] : null;
+}
 
 function buildRunIdMarker(runId: number | string): string {
   return `${RUN_ID_MARKER_PREFIX}${runId} -->`;
@@ -258,8 +272,8 @@ export async function postProgressComment(
 ): Promise<number> {
   const runIdMarker = buildRunIdMarker(github.context.runId);
   const body = dashboard
-    ? `${BOT_MARKER}\n${runIdMarker}\n${buildDashboard(dashboard)}`
-    : `${BOT_MARKER}\n${runIdMarker}\n**Manki** — Review started`;
+    ? `${BOT_MARKERS}\n${runIdMarker}\n${buildDashboard(dashboard)}`
+    : `${BOT_MARKERS}\n${runIdMarker}\n**Manki** — Review started`;
 
   const { data } = await octokit.rest.issues.createComment({
     owner,
@@ -284,6 +298,7 @@ export async function updateProgressComment(
 ): Promise<void> {
   const parts: string[] = [
     BOT_MARKER,
+    VERSION_MARKER,
     `**Manki** — ${metadata ? 'Review complete' : 'Review failed'}`,
     '',
     buildDashboard({ ...dashboard, phase: 'complete' }),
@@ -347,7 +362,7 @@ export async function updateProgressDashboard(
     owner,
     repo,
     comment_id: commentId,
-    body: `${BOT_MARKER}\n${runIdMarker}\n${buildDashboard(dashboard)}`,
+    body: `${BOT_MARKERS}\n${runIdMarker}\n${buildDashboard(dashboard)}`,
   });
 }
 
@@ -469,7 +484,7 @@ export async function postReview(
     }
   }
 
-  let body = `${BOT_MARKER}\n${sanitizeMarkdown(result.summary)}`;
+  let body = `${BOT_MARKERS}\n${sanitizeMarkdown(result.summary)}`;
   if (stats) {
     body += `\n\n${formatStatsOneLiner(stats)}`;
     body += `\n\n${formatStatsJson(stats)}`;
@@ -1166,4 +1181,4 @@ async function isApprovedOnCommit(octokit: Octokit, owner: string, repo: string,
   }
 }
 
-export { dynamicFence, formatFindingComment, formatStatsJson, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, safeTruncate, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody };
+export { dynamicFence, formatFindingComment, formatStatsJson, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, safeTruncate, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody };
