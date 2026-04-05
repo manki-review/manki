@@ -75,10 +75,10 @@ instructions: |
 
 # Per-stage model selection
 models:
+  planner: claude-haiku-4-5     # fast pre-review planning pass
   reviewer: claude-sonnet-4-6   # fast, parallel reviewers
   judge: claude-opus-4-6        # precise, single judge
   dedup: claude-haiku-4-5       # fast LLM dedup against prior findings
-  planner: claude-haiku-4-5     # fast pre-review planning pass
 
 # Multi-pass verification (default: 1, increase for higher confidence)
 # review_passes: 2

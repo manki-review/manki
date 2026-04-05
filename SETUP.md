@@ -166,29 +166,19 @@ jobs:
 
 ### Action inputs
 
-| Input | Required | Default | Purpose |
-|-------|----------|---------|---------|
-| `claude_code_oauth_token` | One of | -- | Claude Max OAuth token |
-| `anthropic_api_key` | One of | -- | Anthropic API key (alternative to OAuth) |
-| `github_token` | No* | -- | GitHub token for posting reviews (not required when using GitHub App auth) |
-| `config_path` | No | `.manki.yml` | Path to the Manki config file |
-| `memory_repo_token` | No | -- | PAT with access to the review memory repository |
-| `github_app_id` | No | -- | GitHub App ID for custom bot identity |
-| `github_app_private_key` | No | -- | GitHub App private key (PEM) for generating installation tokens |
-| `manki_token_url` | No | `https://manki.dustinface.me/token` | Token service URL for GitHub App identity |
-
-\* Required unless GitHub App auth is configured.
+The workflow above uses the only inputs most setups need: `claude_code_oauth_token` (or `anthropic_api_key`), `github_token`, and optionally `memory_repo_token`. To point at a config file outside the repo root, set `config_path` (default: `.manki.yml`). See [`action.yml`](action.yml) for the full input reference including GitHub App identity fields.
 
 ### Action outputs
 
+The action exposes outputs you can chain into later workflow steps (e.g., fail a job on `REQUEST_CHANGES`, or post `severity_counts` to Slack):
+
 | Output | Description |
 |--------|-------------|
-| `review_id` | The GitHub review ID that was posted |
 | `verdict` | Review verdict: `APPROVE`, `COMMENT`, or `REQUEST_CHANGES` |
 | `findings_count` | Total number of findings |
-| `findings_json` | JSON array of all findings (for downstream processing) |
 | `severity_counts` | JSON object with severity counts: `{required, suggestion, nit, ignore}` |
-| `judge_model` | Model used for the judge agent |
+
+See [`action.yml`](action.yml) for the complete list (including `review_id`, `findings_json`, `judge_model`).
 
 ### Event triggers explained
 
@@ -233,10 +223,10 @@ review_thresholds:
 
 # Per-stage model selection
 models:
+  planner: claude-haiku-4-5      # fast pre-review planning pass
   reviewer: claude-sonnet-4-6    # fast, parallel reviewers
   judge: claude-opus-4-6         # precise, single judge
   dedup: claude-haiku-4-5        # fast LLM dedup against prior findings
-  planner: claude-haiku-4-5      # fast pre-review planning pass
 
 # Planner stage (default: enabled). When review_level is "auto", a fast
 # pre-review pass chooses team size (1/3/5/7), reviewer/judge effort, and
