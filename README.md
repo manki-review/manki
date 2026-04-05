@@ -11,7 +11,7 @@
 
 <p align="center"><strong>Your tokens, your rules.</strong> Self-hosted AI code review that runs on your own GitHub runners and learns from your team.</p>
 
-Manki assembles a dynamic review team sized to your PR's content and complexity. A judge filters noise, dedups against prior reviews, and manki learns your team's conventions over time.
+Manki assembles a dynamic review team sized to your PR's content and complexity. Dedup drops repeats from prior reviews, a judge filters noise and classifies what remains, and manki learns your team's conventions over time.
 
 <p align="center">
   <img src="assets/review-example.png" alt="Example manki review comment" width="800" />
@@ -19,7 +19,7 @@ Manki assembles a dynamic review team sized to your PR's content and complexity.
 
 ## Why Manki
 
-- **Multi-stage pipeline** — a planner picks the team, agents review in parallel, a judge filters noise, dedup catches repeats from prior reviews
+- **Multi-stage pipeline** — a planner picks the team, agents review in parallel, dedup catches repeats from prior reviews, a judge filters noise and classifies findings
 - **Adaptive team sizing** — 1, 3, 5, or 7 reviewers chosen per PR based on content and complexity
 - **Self-learning memory** — teach manki via `/manki remember`; it remembers dismissed findings and your team's conventions across PRs
 - **Self-hosted GitHub Action** — your API key, your compute, no SaaS intermediary
@@ -34,19 +34,19 @@ Full setup guide with memory, triage, and troubleshooting: **[SETUP.md](SETUP.md
 
 ## How it works
 
-Manki wakes up when a PR is opened. A fast planner (Haiku) picks the team size and effort, reviewers work in parallel, the judge evaluates each finding, and dedup filters repeats from prior reviews. Results land as inline comments plus a summary and verdict. When all blocking threads resolve, manki approves.
+Manki wakes up when a PR is opened. A fast planner (Haiku) picks the team size and effort, reviewers work in parallel, dedup drops findings that match repeats from prior reviews, and the judge evaluates and classifies what remains. Results land as inline comments plus a summary and verdict. When all blocking threads resolve, manki approves.
 
 ```mermaid
 flowchart LR
     A[📋 Planner] --> B[👥 Reviewers]
-    B --> C[⚖️ Judge]
-    C --> D[🔍 Dedup]
+    B --> C[🔍 Dedup]
+    C --> D[⚖️ Judge]
     D --> E[✅ Review Posted]
 
     A -.-> A1[team size<br/>& effort]
     B -.-> B1[findings<br/>in parallel]
-    C -.-> C1[filter &<br/>classify]
-    D -.-> D1[vs prior<br/>findings]
+    C -.-> C1[vs prior<br/>findings]
+    D -.-> D1[filter &<br/>classify]
 
     style A fill:#29362B,stroke:#3a4d3d,color:#fff
     style B fill:#29362B,stroke:#3a4d3d,color:#fff
