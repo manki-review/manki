@@ -271,6 +271,7 @@ Respond with ONLY a JSON object (no markdown fences):
 
 const VALID_TEAM_SIZES = new Set([1, 3, 5, 7]);
 const VALID_EFFORTS = new Set(['low', 'medium', 'high']);
+const VALID_PR_TYPES = new Set(['feature', 'bugfix', 'refactor', 'docs', 'test', 'chore', 'rename']);
 
 export async function runPlanner(
   client: ClaudeClient,
@@ -306,7 +307,8 @@ export async function runPlanner(
       return null;
     }
 
-    const prType = typeof parsed.prType === 'string' ? parsed.prType : 'unknown';
+    const prTypeRaw = typeof parsed.prType === 'string' ? parsed.prType : 'unknown';
+    const prType = VALID_PR_TYPES.has(prTypeRaw) ? prTypeRaw : 'unknown';
 
     return { teamSize, reviewerEffort, judgeEffort, prType };
   } catch (error) {

@@ -1391,29 +1391,31 @@ describe('runReview', () => {
     mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
 
     const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
-
-    const progress: import('./review').ReviewProgress[] = [];
-    const result = await runReview(
-      clients, config, diff, 'raw diff', 'repo context',
-      undefined, undefined, undefined, undefined,
-      p => progress.push(p),
-    );
-    expect(result.reviewComplete).toBe(true);
-    expect(result.agentNames).toEqual(['Trivial Change Verifier']);
-    expect(result.plannerResult!.teamSize).toBe(1);
-    expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining('teamSize=1 decision'));
-    infoSpy.mockRestore();
-    expect((clients.reviewer.sendMessage as jest.Mock)).toHaveBeenCalledTimes(1);
-    expect(clients.reviewer.sendMessage as jest.Mock).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.any(String),
-      { effort: 'low' },
-    );
-    expect(mockedRunJudgeAgent).toHaveBeenCalledTimes(1);
-    expect(mockedRunJudgeAgent.mock.calls[0][2].effort).toBe('low');
-    const planningWithResult = progress.filter(p => p.phase === 'planning' && p.plannerResult);
-    expect(planningWithResult).toHaveLength(1);
-    expect(planningWithResult[0].plannerResult!.teamSize).toBe(1);
+    try {
+      const progress: import('./review').ReviewProgress[] = [];
+      const result = await runReview(
+        clients, config, diff, 'raw diff', 'repo context',
+        undefined, undefined, undefined, undefined,
+        p => progress.push(p),
+      );
+      expect(result.reviewComplete).toBe(true);
+      expect(result.agentNames).toEqual(['Trivial Change Verifier']);
+      expect(result.plannerResult!.teamSize).toBe(1);
+      expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining('teamSize=1 decision'));
+      expect((clients.reviewer.sendMessage as jest.Mock)).toHaveBeenCalledTimes(1);
+      expect(clients.reviewer.sendMessage as jest.Mock).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(String),
+        { effort: 'low' },
+      );
+      expect(mockedRunJudgeAgent).toHaveBeenCalledTimes(1);
+      expect(mockedRunJudgeAgent.mock.calls[0][2].effort).toBe('low');
+      const planningWithResult = progress.filter(p => p.phase === 'planning' && p.plannerResult);
+      expect(planningWithResult).toHaveLength(1);
+      expect(planningWithResult[0].plannerResult!.teamSize).toBe(1);
+    } finally {
+      infoSpy.mockRestore();
+    }
   });
 
   it('passes planner judgeEffort to the judge agent', async () => {
@@ -1694,6 +1696,19 @@ describe('runPlanner', () => {
       teamSize: 3,
       reviewerEffort: 'low',
       judgeEffort: 'low',
+    }));
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const result = await runPlanner(client, diff);
+    expect(result).not.toBeNull();
+    expect(result!.prType).toBe('unknown');
+  });
+
+  it('coerces out-of-allowlist prType to unknown', async () => {
+    const client = makeClient(JSON.stringify({
+      teamSize: 3,
+      reviewerEffort: 'low',
+      judgeEffort: 'low',
+      prType: 'malicious\nevil',
     }));
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
     const result = await runPlanner(client, diff);
