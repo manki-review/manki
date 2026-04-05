@@ -15,10 +15,10 @@ Manki assembles a dynamic review team from a pool of seven specialist agents, si
 
 ## What Manki does
 
-- **Dynamic review teams** -- A pool of seven specialist agents (Security, Architecture, Correctness, Testing, Performance, Maintainability, Dependencies) with automatic team sizing: 3 agents for small diffs, 5 for medium, 7 for large. Core agents (Security, Architecture, Correctness) always participate; additional agents are selected by content relevance
+- **Dynamic review teams** -- A pool of seven specialist agents (Security, Architecture, Correctness, Testing, Performance, Maintainability, Dependencies) with automatic team sizing: 3 agents for small diffs, 5 for medium, 7 for large. Core agents (Security, Architecture, Correctness) always participate; additional agents are selected by content relevance. Trivial PRs (docs, renames, comment-only edits) are routed to a single Trivial Change Verifier (`teamSize=1`)
 - **Judge agent** -- After the review round, a judge agent deduplicates overlapping findings, assigns a final 4-tier severity (required/suggestion/nit/ignore), and tallies the verdict
 - **Smart verdicts** -- Blocking issues get `REQUEST_CHANGES`. Nits get `APPROVE` with suggestions. Failures fall back to `COMMENT`. She won't hold up your PRs over style nitpicks
-- **Review recap** -- On subsequent pushes, Manki deduplicates against previous findings and tracks which ones were resolved
+- **Two-tier dedup** -- On subsequent pushes, Manki runs static matching plus an LLM dedup pass (Haiku) against previously posted findings, and tracks which ones were resolved
 - **Auto-resolve with validation** -- When a new push touches code near an open finding, Claude validates whether the fix actually addresses it and auto-resolves the thread
 - **Auto-approve** -- When all blocking threads are resolved, Manki approves the PR. Trigger manually with `/manki check`
 - **Nit issues for triage** -- Non-blocking findings become a GitHub issue with checkboxes, a `needs-human` label, and collapsible details with GitHub permalink embeds. Triage with `/manki triage`
@@ -75,8 +75,10 @@ instructions: |
 
 # Per-stage model selection
 models:
+  planner: claude-haiku-4-5     # fast pre-review planning pass
   reviewer: claude-sonnet-4-6   # fast, parallel reviewers
   judge: claude-opus-4-6        # precise, single judge
+  dedup: claude-haiku-4-5       # fast LLM dedup against prior findings
 
 # Multi-pass verification (default: 1, increase for higher confidence)
 # review_passes: 2
@@ -109,12 +111,12 @@ See [`.manki.yml.example`](.manki.yml.example) for all options.
 ## How it works
 
 1. PR opened -- Manki wakes up
-2. A dynamic team is assembled from the agent pool (3/5/7 agents depending on diff size)
-3. All reviewers analyze the diff in parallel
+2. A fast planner pass (Haiku) sizes the team adaptively for `review_level: auto` (1/3/5/7 agents) and picks reviewer/judge effort. Trivial PRs go to a single Trivial Change Verifier
+3. The chosen team of reviewers analyzes the diff in parallel
 4. A judge agent evaluates each finding for accuracy, actionability, and severity using per-finding curated code context and memory
 5. Clean review posted -- blocking issues get `REQUEST_CHANGES`, nits get `APPROVE`
 6. Non-blocking findings become a GitHub issue with checkboxes and a `needs-human` label
-7. On new pushes, Manki checks which findings were addressed, auto-resolves validated threads, and deduplicates before reviewing again
+7. On new pushes, Manki checks which findings were addressed, auto-resolves validated threads, and runs two-tier dedup (static + LLM) against prior findings before reviewing again
 8. When all blocking threads are resolved, she approves
 9. Comment `/manki triage` on a nit issue to convert checked items into work issues and dismiss the rest as suppressions
 

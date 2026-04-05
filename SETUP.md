@@ -75,6 +75,8 @@ The app requires these permissions:
 
 ## Step 2: Authentication Secrets
 
+> **When do you need a GitHub token?** If you installed the GitHub App (Step 1), you do **not** need to pass `github_token` -- the App handles PR access. The `memory_repo_token` input is only required when your memory repo is a **separate** repository (the App can't reach it). Users who skip the GitHub App can fall back to `github_token: ${{ secrets.GITHUB_TOKEN }}`.
+
 ### Claude Code OAuth Token (Max Subscription)
 
 This allows the action to use your Claude Max subscription -- no extra API costs.
@@ -158,11 +160,43 @@ jobs:
       - name: Manki Review
         uses: xdustinface/manki@v4
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}  # Alternative to OAuth
-          # memory_repo_token: ${{ secrets.REVIEW_MEMORY_TOKEN }}  # Optional: for review memory
+          # github_token: ${{ secrets.GITHUB_TOKEN }}  # Only if not using the GitHub App
+          # memory_repo_token: ${{ secrets.REVIEW_MEMORY_TOKEN }}  # Only if memory repo is separate
 ```
+
+### Action inputs
+
+The workflow above uses the only inputs most setups need: `claude_code_oauth_token` (or `anthropic_api_key`), `github_token`, and optionally `memory_repo_token`. To point at a config file outside the repo root, set `config_path` (default: `.manki.yml`). For GitHub App identity, set `github_app_id`, `github_app_private_key`, and `manki_token_url`. See [`action.yml`](action.yml) for the full input reference.
+
+### Action outputs
+
+The action exposes outputs you can chain into later workflow steps: `review_id`, `verdict`, `findings_count`, `findings_json`, `severity_counts`, and `judge_model`. See [`action.yml`](action.yml) for the source of truth on each output's shape and semantics.
+
+### Using outputs in downstream workflow steps
+
+```yaml
+# Fail CI when the judge requests changes
+- uses: xdustinface/manki@v4
+  id: manki
+  with:
+    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+- name: Fail on blocking findings
+  if: steps.manki.outputs.verdict == 'REQUEST_CHANGES'
+  run: exit 1
+```
+
+```yaml
+# Label PRs that have any required-severity findings
+- name: Label blocking PRs
+  if: fromJSON(steps.manki.outputs.severity_counts).required > 0
+  run: gh pr edit ${{ github.event.number }} --add-label blocking-findings
+  env:
+    GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
+
+You can also forward `severity_counts` or `findings_json` to a metrics sink (Slack, Datadog, a dashboard) in a follow-up step.
 
 ### Event triggers explained
 
@@ -184,21 +218,20 @@ The `concurrency` block ensures only one Manki run is active per PR at a time. I
 Create `.manki.yml` in your repository root:
 
 ```yaml
-# Claude model (default: claude-opus-4-6)
-model: claude-opus-4-6
-
 # Auto-review on PR open/update (default: true)
 auto_review: true
 
 # Auto-approve when all blocking issues are resolved (default: true)
 auto_approve: true
 
-# File filtering
+# File filtering (defaults: ["*.lock", "dist/**", "*.generated.*"])
 exclude_paths:
   - "*.lock"
+  - "dist/**"
+  - "*.generated.*"
 
-# Maximum diff size before skipping (default: 10000 lines)
-max_diff_lines: 10000
+# Maximum diff size before skipping (default: 50000 lines)
+max_diff_lines: 50000
 
 # Team sizing: auto (default), small (3 agents), medium (5), large (7)
 review_level: auto
@@ -206,13 +239,25 @@ review_thresholds:
   small: 200   # diffs under this many lines get a small team
   medium: 1000  # diffs under this many lines get a medium team
 
-# Per-stage model selection (optional -- falls back to `model` if not set)
+# Per-stage model selection
 models:
+  planner: claude-haiku-4-5      # fast pre-review planning pass
   reviewer: claude-sonnet-4-6    # fast, parallel reviewers
   judge: claude-opus-4-6         # precise, single judge
+  dedup: claude-haiku-4-5        # fast LLM dedup against prior findings
+
+# Planner stage (default: enabled). When review_level is "auto", a fast
+# pre-review pass chooses team size (1/3/5/7), reviewer/judge effort, and
+# PR type. teamSize=1 routes trivial changes to a Trivial Change Verifier.
+planner:
+  enabled: true
 
 # Where to post nit findings: 'issues' (separate GitHub issue) or 'comments' (inline PR comments)
 nit_handling: issues
+
+# Multi-pass verification (integer 1-5, default: 1). Runs each reviewer N
+# times with shuffled file ordering; only consistent findings are kept.
+# review_passes: 1
 
 # Additional context for reviewers
 instructions: |
@@ -233,11 +278,13 @@ See [`.manki.yml.example`](.manki.yml.example) for the full reference with defau
 
 ### Review pipeline
 
-Manki reviews run in three stages:
+Manki reviews run in these stages:
 
-1. **Reviewer agents** -- A team of specialist agents (security, architecture, correctness, etc.) review the diff in parallel. Each produces raw findings.
-2. **Judge agent** -- A single agent evaluates all reviewer findings for accuracy, actionability, and severity. It filters out noise, merges duplicates, and assigns a 4-tier severity to each surviving finding.
-3. **Recap** -- Deduplicated findings are posted as inline PR comments and a summary review.
+1. **Planner** (pre-review, `review_level: auto` only) -- A fast Haiku pass analyzes the diff and picks team size (1/3/5/7), reviewer/judge effort, and PR type. teamSize=1 routes trivial changes (docs, renames, comment-only edits) to a single **Trivial Change Verifier** agent. Falls back to the heuristic team selector if the planner fails or is disabled.
+2. **Reviewer agents** -- The chosen team of specialist agents (security, architecture, correctness, etc.) review the diff in parallel. Each produces raw findings.
+3. **Judge agent** -- A single agent evaluates all reviewer findings for accuracy, actionability, and severity. It filters out noise, merges duplicates, and assigns a 4-tier severity to each surviving finding.
+4. **Dedup** (post-judge, follow-up runs) -- A two-tier dedup pass filters findings already posted on the PR. A static matcher handles exact/near-exact matches, then an LLM dedup pass (Haiku) catches semantic duplicates.
+5. **Recap** -- Surviving findings are posted as inline PR comments with a summary review.
 
 ### Severity tiers
 
