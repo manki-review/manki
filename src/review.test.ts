@@ -1857,11 +1857,17 @@ describe('selectTeam with teamSizeOverride', () => {
     });
     const config = makeConfig();
     const customReviewers: ReviewerAgent[] = [{ name: 'Custom', focus: 'custom' }];
-    const roster = selectTeam(diff, config, customReviewers, 1);
-    expect(roster.agents).toHaveLength(1);
-    expect(roster.agents[0]).toBe(TRIVIAL_VERIFIER_AGENT);
-    expect(roster.agents.map(a => a.name)).not.toContain('Custom');
-    expect(roster.agents.map(a => a.name)).not.toContain('Testing & Coverage');
+    const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
+    try {
+      const roster = selectTeam(diff, config, customReviewers, 1);
+      expect(roster.agents).toHaveLength(1);
+      expect(roster.agents[0]).toBe(TRIVIAL_VERIFIER_AGENT);
+      expect(roster.agents.map(a => a.name)).not.toContain('Custom');
+      expect(roster.agents.map(a => a.name)).not.toContain('Testing & Coverage');
+      expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining('skipping custom reviewers'));
+    } finally {
+      infoSpy.mockRestore();
+    }
   });
 
   it('keeps heuristic agent scoring with override', () => {
