@@ -342,11 +342,11 @@ async function runFullReview(
       oauthToken: oauthToken || undefined,
       apiKey: apiKey || undefined,
     };
+    const plannerModel = resolveModel(config, 'planner');
     const reviewerModel = resolveModel(config, 'reviewer');
     const judgeModel = resolveModel(config, 'judge');
     const dedupModel = resolveModel(config, 'dedup');
-    const plannerModel = resolveModel(config, 'planner');
-    core.info(`Models — reviewer: ${reviewerModel}, judge: ${judgeModel}, dedup: ${dedupModel}, planner: ${plannerModel}`);
+    core.info(`Models — planner: ${plannerModel}, reviewer: ${reviewerModel}, judge: ${judgeModel}, dedup: ${dedupModel}`);
 
     const reviewerClient = new ClaudeClient({ ...authOptions, model: reviewerModel });
     const judgeClient = new ClaudeClient({ ...authOptions, model: judgeModel });

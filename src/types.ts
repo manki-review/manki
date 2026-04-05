@@ -68,10 +68,10 @@ export interface ReviewConfig {
     repo: string;
   };
   models?: {
+    planner?: string;
     reviewer?: string;
     judge?: string;
     dedup?: string;
-    planner?: string;
   };
   planner?: {
     enabled?: boolean;

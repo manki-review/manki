@@ -14,10 +14,10 @@ export const DEFAULT_CONFIG: ReviewConfig = {
   review_level: 'auto',
   review_thresholds: { small: 200, medium: 1000 },
   models: {
+    planner: 'claude-haiku-4-5',
     reviewer: 'claude-sonnet-4-6',
     judge: 'claude-opus-4-6',
     dedup: 'claude-haiku-4-5',
-    planner: 'claude-haiku-4-5',
   },
   planner: {
     enabled: true,
@@ -140,6 +140,9 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
     if (!models || typeof models !== 'object' || Array.isArray(models)) {
       errors.push('`models` must be an object');
     } else {
+      if ('planner' in models && typeof models.planner !== 'string') {
+        errors.push('`models.planner` must be a string');
+      }
       if ('reviewer' in models && typeof models.reviewer !== 'string') {
         errors.push('`models.reviewer` must be a string');
       }
@@ -148,9 +151,6 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
       }
       if ('dedup' in models && typeof models.dedup !== 'string') {
         errors.push('`models.dedup` must be a string');
-      }
-      if ('planner' in models && typeof models.planner !== 'string') {
-        errors.push('`models.planner` must be a string');
       }
     }
   }
@@ -276,7 +276,7 @@ export function loadConfigFromFile(filePath: string): ReviewConfig {
   return loadConfigFromContent(content);
 }
 
-export function resolveModel(config: ReviewConfig, stage: 'reviewer' | 'judge' | 'dedup' | 'planner'): string {
+export function resolveModel(config: ReviewConfig, stage: 'planner' | 'reviewer' | 'judge' | 'dedup'): string {
   return config.models?.[stage] || DEFAULT_CONFIG.models![stage]!;
 }
 
