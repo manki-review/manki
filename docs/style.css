@@ -50,8 +50,8 @@ section {
 .hero-logo {
   display: block;
   margin: 0 auto 24px;
-  width: 120px;
-  height: 120px;
+  width: 140px;
+  height: auto;
 }
 
 .hero h1 {
