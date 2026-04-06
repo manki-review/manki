@@ -68,7 +68,7 @@ section + section {
 }
 
 .hero h1 {
-  font-size: 2.4rem;
+  font-size: 1.9rem;
   font-weight: 700;
   line-height: 1.25;
   max-width: 780px;
@@ -451,7 +451,7 @@ footer {
 /* === Responsive === */
 @media (max-width: 768px) {
   .hero h1 {
-    font-size: 1.7rem;
+    font-size: 1.5rem;
   }
 
   .hero .subhead {
@@ -501,7 +501,7 @@ footer {
   }
 
   .hero h1 {
-    font-size: 1.45rem;
+    font-size: 1.3rem;
   }
 
   .cta-group {
