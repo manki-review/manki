@@ -593,15 +593,15 @@ describe('sendViaOAuth — stale process detection', () => {
       // Flush microtasks so ensureCLI resolves and spawn is called
       await jest.advanceTimersByTimeAsync(0);
 
-      // Advance past the stale timeout — the 10s interval checker fires at 100s (>90s idle)
-      await jest.advanceTimersByTimeAsync(STALE_TIMEOUT_MS + 10_000);
+      // Advance past the stale timeout — self-resetting setTimeout fires exactly at 90s
+      await jest.advanceTimersByTimeAsync(STALE_TIMEOUT_MS);
 
       expect(proc.kill).toHaveBeenCalledWith('SIGTERM');
 
       // Simulate process exit after SIGTERM
       closeCb!(null, 'SIGTERM');
 
-      await expect(promise).rejects.toThrow('Claude CLI stale — no output for 90s');
+      await expect(promise).rejects.toThrow(`Claude CLI stale — no output for ${STALE_TIMEOUT_MS / 1000}s`);
     } finally {
       jest.useRealTimers();
     }
@@ -688,7 +688,7 @@ describe('sendViaOAuth — stale process detection', () => {
       // Emit one stdout chunk then go silent
       stdoutCb!(Buffer.from('partial output here'));
 
-      await jest.advanceTimersByTimeAsync(STALE_TIMEOUT_MS + 10_000);
+      await jest.advanceTimersByTimeAsync(STALE_TIMEOUT_MS);
 
       closeCb!(null, 'SIGTERM');
 

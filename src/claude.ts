@@ -124,38 +124,38 @@ export class ClaudeClient {
       let outputExceeded = false;
       let settled = false;
       let killTimer: NodeJS.Timeout | undefined;
+      let staleKillTimer: NodeJS.Timeout | undefined;
       let outputKillTimer: NodeJS.Timeout | undefined;
       // Only set in the catch block below; clearTimeout(undefined) is a no-op on the normal path
       let stdinKillTimer: NodeJS.Timeout | undefined;
-      let lastStdoutAt = Date.now();
       let lastStdoutChunk = '';
 
       const clearAllTimers = (): void => {
         clearTimeout(timer);
-        clearInterval(staleChecker);
+        clearTimeout(staleTimer);
         if (killTimer) clearTimeout(killTimer);
+        if (staleKillTimer) clearTimeout(staleKillTimer);
         if (outputKillTimer) clearTimeout(outputKillTimer);
         if (stdinKillTimer) clearTimeout(stdinKillTimer);
       };
 
       const timer = setTimeout(() => {
         timedOut = true;
-        clearInterval(staleChecker);
+        clearTimeout(staleTimer);
         child.kill('SIGTERM');
         killTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, 5000);
         killTimer.unref();
       }, 600000);
       timer.unref();
 
-      const staleChecker = setInterval(() => {
-        if (Date.now() - lastStdoutAt > STALE_TIMEOUT_MS) {
-          clearInterval(staleChecker);
-          stale = true;
-          child.kill('SIGTERM');
-          killTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, 5000);
-          killTimer.unref();
-        }
-      }, 10_000);
+      const handleStale = (): void => {
+        stale = true;
+        child.kill('SIGTERM');
+        staleKillTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, 5000);
+        staleKillTimer.unref();
+      };
+      let staleTimer = setTimeout(handleStale, STALE_TIMEOUT_MS);
+      staleTimer.unref();
 
       const MAX_OUTPUT = 50 * 1024 * 1024; // 50 MB
       const killOnOutputExceeded = (): void => {
@@ -170,7 +170,9 @@ export class ClaudeClient {
       const stderrDecoder = new StringDecoder('utf8');
       child.stdout.on('data', (data: Buffer) => {
         if (outputExceeded || settled) return;
-        lastStdoutAt = Date.now();
+        clearTimeout(staleTimer);
+        staleTimer = setTimeout(handleStale, STALE_TIMEOUT_MS);
+        staleTimer.unref();
         lastStdoutChunk = data.toString().slice(-500);
         stdout += stdoutDecoder.write(data);
         if (stdout.length + stderr.length > MAX_OUTPUT) killOnOutputExceeded();
@@ -194,7 +196,7 @@ export class ClaudeClient {
             stdoutSnippet ? `Last stdout: ${stdoutSnippet}` : '',
             stderrSnippet ? `stderr: ${stderrSnippet}` : '',
           ].filter(Boolean).join('. ');
-          const msg = `Claude CLI stale — no output for 90s${details ? `. ${details}` : ''}`;
+          const msg = `Claude CLI stale — no output for ${STALE_TIMEOUT_MS / 1000}s${details ? `. ${details}` : ''}`;
           core.warning(msg);
           reject(new Error(msg));
           return;
