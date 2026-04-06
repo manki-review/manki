@@ -99,6 +99,7 @@ describe('parseFindings', () => {
     try {
       const findings = parseFindings('this is not json', 'Reviewer');
       expect(findings).toEqual([]);
+      expect(warnSpy).toHaveBeenCalled();
     } finally {
       warnSpy.mockRestore();
     }
@@ -109,6 +110,7 @@ describe('parseFindings', () => {
     try {
       const findings = parseFindings('{"not": "an array"}', 'Reviewer');
       expect(findings).toEqual([]);
+      expect(warnSpy).toHaveBeenCalled();
     } finally {
       warnSpy.mockRestore();
     }
@@ -159,7 +161,19 @@ describe('parseFindings', () => {
       const findings = parseFindings('{"key": "value"}', 'ArchAgent');
       expect(findings).toEqual([]);
       expect(warnSpy).toHaveBeenCalledTimes(1);
-      expect(warnSpy.mock.calls[0][0]).toMatch(/ArchAgent.*expected array.*object/);
+      expect(warnSpy.mock.calls[0][0]).toMatch(/ArchAgent.*did not return an array.*object/);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('warns when parsed result is null', () => {
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    try {
+      const findings = parseFindings('null', 'NullAgent');
+      expect(findings).toEqual([]);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0][0]).toMatch(/NullAgent.*null/);
     } finally {
       warnSpy.mockRestore();
     }
@@ -1787,6 +1801,8 @@ describe('runReview', () => {
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
 
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'All clear.' });
+
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
     try {
@@ -1819,6 +1835,8 @@ describe('runReview', () => {
     };
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'All clear.' });
 
     jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick', 'queueMicrotask'] });
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
