@@ -149,11 +149,11 @@ on:
     types: [created]
 
 permissions:
-  contents: read
-  pull-requests: write
-  issues: write
-  id-token: write
-  actions: read
+  contents: read          # read repo files and diffs
+  pull-requests: write    # post review comments and approvals
+  issues: write           # create nit issues when configured
+  id-token: write         # OIDC token for GitHub App identity
+  actions: read           # verify workflow run is legitimate
 
 jobs:
   review:
