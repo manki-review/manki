@@ -1,4 +1,4 @@
-import { buildDashboard, formatFindingComment, formatStatsJson, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, buildNitIssueBody, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, safeTruncate, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, createNitIssue, fetchPRDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody } from './github';
+import { buildDashboard, formatFindingComment, formatStatsJson, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, buildNitIssueBody, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, safeTruncate, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, createNitIssue, fetchPRDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody, INDENT } from './github';
 import { DashboardData, Finding, ParsedDiff, ReviewMetadata, ReviewResult, ReviewStats } from './types';
 
 describe('formatFindingComment', () => {
@@ -1305,24 +1305,28 @@ describe('fetchSubdirClaudeMd', () => {
 });
 
 describe('buildDashboard', () => {
+
   it('renders the started phase with running review and pending judge', () => {
     const data: DashboardData = { phase: 'started', lineCount: 150, agentCount: 5 };
     const md = buildDashboard(data);
     expect(md).toContain('**Manki** — Review in progress');
-    expect(md).toContain('\u2713 Parsed diff — 150 lines');
-    expect(md).toContain('\u23F3 Review — reviewing with 5 agents...');
-    expect(md).toContain('\u25CB Judge');
-    expect(md).not.toContain('\u25CB Judge — pending');
+    expect(md).toContain('**Planner**');
+    expect(md).toContain(`${INDENT}150 lines · 5 agents`);
+    expect(md).toContain('**Review**');
+    expect(md).toContain(`${INDENT}reviewing with 5 agents...`);
+    expect(md).toContain('**Judge**');
+    expect(md).toContain(`${INDENT}pending`);
   });
 
   it('renders the planning phase with analyzing planner and pending review/judge', () => {
     const data: DashboardData = { phase: 'planning', lineCount: 83, agentCount: 0 };
     const md = buildDashboard(data);
     expect(md).toContain('**Manki** — Review in progress');
-    expect(md).toContain('\u2713 Parsed diff — 83 lines');
-    expect(md).toContain('\u23F3 Planner — analyzing...');
-    expect(md).toContain('\u25CB Review');
-    expect(md).toContain('\u25CB Judge');
+    expect(md).toContain('**Planner**');
+    expect(md).toContain(`${INDENT}analyzing...`);
+    expect(md).toContain('**Review**');
+    expect(md).toContain('**Judge**');
+    expect(md).toContain(`${INDENT}pending`);
     expect(md).not.toContain('\uD83D\uDD0D');
   });
 
@@ -1331,10 +1335,9 @@ describe('buildDashboard', () => {
     const md = buildDashboard(data);
     const parts = md.split('\n\n');
     expect(parts.length).toBeGreaterThanOrEqual(4);
-    expect(parts.some(p => p.includes('Parsed diff'))).toBe(true);
-    expect(parts.some(p => p.trim().startsWith('\u23F3 Planner'))).toBe(true);
-    expect(parts.some(p => p.trim() === '\u25CB Review')).toBe(true);
-    expect(parts.some(p => p.trim() === '\u25CB Judge')).toBe(true);
+    expect(parts.some(p => p.includes('**Planner**'))).toBe(true);
+    expect(parts.some(p => p.includes('**Review**'))).toBe(true);
+    expect(parts.some(p => p.includes('**Judge**'))).toBe(true);
   });
 
   it('renders per-agent progress when agentProgress is provided', () => {
@@ -1350,13 +1353,13 @@ describe('buildDashboard', () => {
     };
     const md = buildDashboard(data);
     expect(md).toContain('**Manki** — Review in progress');
-    expect(md).toContain('\u23F3 Review — 2/5 agents complete');
-    expect(md).toContain('  \u2713 Security & Safety — 2 findings (4s)');
-    expect(md).toContain('  \u2713 Architecture & Design — 0 findings (3s)');
-    expect(md).toContain('  \u23F3 Correctness & Logic');
-    expect(md).toContain('  \u25CB Testing & Coverage');
-    expect(md).toContain('  \u25CB Performance & Efficiency');
-    expect(md).toContain('\u25CB Judge');
+    expect(md).toContain('**Review** — 2/5 agents complete');
+    expect(md).toContain(`${INDENT}✓ Security & Safety — 2 (4s)`);
+    expect(md).toContain(`${INDENT}✓ Architecture & Design — 0 (3s)`);
+    expect(md).toContain(`${INDENT}⏳ Correctness & Logic`);
+    expect(md).toContain(`${INDENT}○ Testing & Coverage`);
+    expect(md).toContain(`${INDENT}○ Performance & Efficiency`);
+    expect(md).toContain('**Judge**');
     expect(md).not.toContain('\uD83D\uDD0D');
   });
 
@@ -1370,24 +1373,24 @@ describe('buildDashboard', () => {
       ],
     };
     const md = buildDashboard(data);
-    expect(md).toContain('  \u2717 Security & Safety — failed (2s)');
-    expect(md).toContain('  \u2713 Correctness & Logic — 1 findings (2s)');
+    expect(md).toContain(`${INDENT}✗ Security & Safety — failed (2s)`);
+    expect(md).toContain(`${INDENT}✓ Correctness & Logic — 1 (2s)`);
   });
 
   it('renders the reviewed phase with finding count and running judge', () => {
     const data: DashboardData = { phase: 'reviewed', lineCount: 300, agentCount: 3, rawFindingCount: 12 };
     const md = buildDashboard(data);
     expect(md).toContain('**Manki** — Review in progress');
-    expect(md).toContain('\u2713 Parsed diff — 300 lines');
-    expect(md).toContain('\u2713 Review — 3 agents \u00B7 12 findings');
-    expect(md).toContain('Judge — evaluating 12 findings...');
+    expect(md).toContain('**Review** — 12 findings');
+    expect(md).toContain('**Judge**');
+    expect(md).toContain(`${INDENT}evaluating 12 findings...`);
   });
 
   it('renders judgeInputCount separately from rawFindingCount in reviewed phase', () => {
     const data: DashboardData = { phase: 'reviewed', lineCount: 300, agentCount: 3, rawFindingCount: 12, judgeInputCount: 10 };
     const md = buildDashboard(data);
-    expect(md).toContain('\u2713 Review — 3 agents \u00B7 12 findings');
-    expect(md).toContain('Judge — evaluating 10 findings...');
+    expect(md).toContain('**Review** — 12 findings');
+    expect(md).toContain(`${INDENT}evaluating 10 findings...`);
   });
 
   it('renders per-agent detail in the reviewed phase when agentProgress is provided', () => {
@@ -1401,11 +1404,11 @@ describe('buildDashboard', () => {
     };
     const md = buildDashboard(data);
     expect(md).toContain('**Manki** — Review in progress');
-    expect(md).toContain('\u2713 Review — 3 agents \u00B7 7 findings');
-    expect(md).toContain('  \u2713 Security & Safety — 3 findings (4s)');
-    expect(md).toContain('  \u2713 Correctness & Logic — 4 findings (3s)');
-    expect(md).toContain('  \u2713 Architecture & Design — 0 findings (3s)');
-    expect(md).toContain('Judge — evaluating 7 findings...');
+    expect(md).toContain('**Review** — 7 findings');
+    expect(md).toContain(`${INDENT}✓ Security & Safety — 3 (4s)`);
+    expect(md).toContain(`${INDENT}✓ Correctness & Logic — 4 (3s)`);
+    expect(md).toContain(`${INDENT}✓ Architecture & Design — 0 (3s)`);
+    expect(md).toContain(`${INDENT}evaluating 7 findings...`);
   });
 
   it('renders the complete phase with kept/dropped counts', () => {
@@ -1414,9 +1417,9 @@ describe('buildDashboard', () => {
       rawFindingCount: 20, keptCount: 8, droppedCount: 12,
     };
     const md = buildDashboard(data);
-    expect(md).toContain('\u2713 Parsed diff — 500 lines');
-    expect(md).toContain('\u2713 Review — 7 agents \u00B7 20 findings');
-    expect(md).toContain('\u2713 Judge — 8 kept \u00B7 12 dropped');
+    expect(md).not.toContain('**Manki** — Review in progress');
+    expect(md).toContain('**Review** — 20 findings');
+    expect(md).toContain('**Judge** — 8 kept · 12 dropped');
   });
 
   it('renders per-agent detail in the complete phase when agentProgress is provided', () => {
@@ -1432,13 +1435,13 @@ describe('buildDashboard', () => {
       ],
     };
     const md = buildDashboard(data);
-    expect(md).toContain('\u2713 Review — 5 agents \u00B7 17 findings');
-    expect(md).toContain('  \u2713 Security & Safety — 2 findings (4s)');
-    expect(md).toContain('  \u2713 Architecture & Design — 3 findings (3s)');
-    expect(md).toContain('  \u2713 Correctness & Logic — 5 findings (6s)');
-    expect(md).toContain('  \u2713 Testing & Coverage — 4 findings (5s)');
-    expect(md).toContain('  \u2713 Performance & Efficiency — 3 findings (4s)');
-    expect(md).toContain('\u2713 Judge — 14 kept \u00B7 3 dropped');
+    expect(md).toContain('**Review** — 17 findings');
+    expect(md).toContain(`${INDENT}✓ Security & Safety — 2 (4s)`);
+    expect(md).toContain(`${INDENT}✓ Architecture & Design — 3 (3s)`);
+    expect(md).toContain(`${INDENT}✓ Correctness & Logic — 5 (6s)`);
+    expect(md).toContain(`${INDENT}✓ Testing & Coverage — 4 (5s)`);
+    expect(md).toContain(`${INDENT}✓ Performance & Efficiency — 3 (4s)`);
+    expect(md).toContain('**Judge** — 14 kept · 3 dropped');
   });
 
   it('renders failed agent in the complete phase', () => {
@@ -1451,9 +1454,9 @@ describe('buildDashboard', () => {
       ],
     };
     const md = buildDashboard(data);
-    expect(md).toContain('  \u2713 Security & Safety — 3 findings (2s)');
-    expect(md).toContain('  \u2717 Architecture & Design — failed (500ms)');
-    expect(md).toContain('\u2713 Judge — 2 kept \u00B7 1 dropped');
+    expect(md).toContain(`${INDENT}✓ Security & Safety — 3 (2s)`);
+    expect(md).toContain(`${INDENT}✗ Architecture & Design — failed (500ms)`);
+    expect(md).toContain('**Judge** — 2 kept · 1 dropped');
   });
 
   it('formats sub-second durations in milliseconds', () => {
@@ -1473,21 +1476,25 @@ describe('buildDashboard', () => {
     expect(md).toContain('0 findings');
   });
 
-  it('uses text status lines instead of a table', () => {
+  it('uses bold stage headers instead of status icons', () => {
     const data: DashboardData = { phase: 'started', lineCount: 50, agentCount: 2 };
     const md = buildDashboard(data);
     expect(md).not.toContain('| |');
     expect(md).not.toContain('|---|');
-    expect(md).toContain('\u2713 Parsed diff');
+    expect(md).toContain('**Planner**');
+    expect(md).toContain('**Review**');
+    expect(md).toContain('**Judge**');
   });
 
-  it('renders plannerInfo when present', () => {
+  it('renders plannerInfo with structured details', () => {
     const data: DashboardData = {
       phase: 'started', lineCount: 200, agentCount: 5,
       plannerInfo: { teamSize: 5, reviewerEffort: 'medium', judgeEffort: 'high', prType: 'feature' },
     };
     const md = buildDashboard(data);
-    expect(md).toContain('\u2713 Planner — 5 agents, reviewer: medium, judge: high (feature)');
+    expect(md).toContain('**Planner**');
+    expect(md).toContain(`${INDENT}feature · 200 lines · 5 agents`);
+    expect(md).toContain(`${INDENT}review effort: medium · judge effort: high`);
   });
 
   it('sanitizes unknown prType values in plannerInfo', () => {
@@ -1496,8 +1503,55 @@ describe('buildDashboard', () => {
       plannerInfo: { teamSize: 3, reviewerEffort: 'low', judgeEffort: 'low', prType: '<script>alert(1)</script>' },
     };
     const md = buildDashboard(data);
-    expect(md).toContain('(unknown)');
+    expect(md).toContain('unknown');
     expect(md).not.toContain('<script>');
+  });
+
+  it('renders severity breakdown in judge section when provided', () => {
+    const data: DashboardData = {
+      phase: 'complete', lineCount: 400, agentCount: 5,
+      rawFindingCount: 8, keptCount: 2, droppedCount: 6,
+      keptSeverities: { required: 1, suggestion: 1 },
+      droppedSeverities: { nit: 3, suggestion: 2, ignore: 1 },
+    };
+    const md = buildDashboard(data);
+    expect(md).toContain('**Judge** — 2 kept · 6 dropped');
+    expect(md).toContain(`${INDENT}kept: 1 required · 1 suggestion`);
+    expect(md).toContain(`${INDENT}dropped: 2 suggestion · 3 nit · 1 ignore`);
+  });
+
+  it('renders plannerInfo in complete phase', () => {
+    const data: DashboardData = {
+      phase: 'complete', lineCount: 400, agentCount: 5,
+      keptCount: 3, droppedCount: 5, rawFindingCount: 8,
+      plannerInfo: { teamSize: 5, reviewerEffort: 'medium', judgeEffort: 'high', prType: 'bugfix' },
+    };
+    const md = buildDashboard(data);
+    expect(md).toContain('**Planner**');
+    expect(md).toContain(`${INDENT}bugfix · 400 lines · 5 agents`);
+    expect(md).toContain(`${INDENT}review effort: medium · judge effort: high`);
+  });
+
+  it('sanitizes unknown effort values in plannerInfo', () => {
+    const data: DashboardData = {
+      phase: 'started', lineCount: 100, agentCount: 3,
+      plannerInfo: { teamSize: 3, reviewerEffort: 'injected' as unknown as 'low', judgeEffort: 'high', prType: 'feature' },
+    };
+    const md = buildDashboard(data);
+    expect(md).toContain('review effort: unknown');
+    expect(md).toContain('judge effort: high');
+    expect(md).not.toContain('injected');
+  });
+
+  it('omits severity breakdown lines when severities are not provided', () => {
+    const data: DashboardData = {
+      phase: 'complete', lineCount: 400, agentCount: 5,
+      rawFindingCount: 8, keptCount: 2, droppedCount: 6,
+    };
+    const md = buildDashboard(data);
+    expect(md).toContain('**Judge** — 2 kept · 6 dropped');
+    expect(md).not.toContain(`${INDENT}kept:`);
+    expect(md).not.toContain(`${INDENT}dropped:`);
   });
 });
 
@@ -1551,8 +1605,8 @@ describe('updateProgressComment', () => {
     await updateProgressComment(mockOctokit, 'owner', 'repo', 123, baseDashboard);
     const body = mockUpdateComment.mock.calls[0][0].body as string;
     expect(body).toContain('**Manki** — Review failed');
-    expect(body).toContain('\u2713 Parsed diff');
-    expect(body).toContain('\u2713 Judge');
+    expect(body).toContain('**Planner**');
+    expect(body).toContain('**Judge**');
     expect(body).not.toContain('Review metadata');
   });
 
@@ -1617,8 +1671,8 @@ describe('updateProgressComment', () => {
     const dashboard: DashboardData = { ...baseDashboard, phase: 'reviewed' };
     await updateProgressComment(mockOctokit, 'owner', 'repo', 123, dashboard, baseMetadata);
     const body = mockUpdateComment.mock.calls[0][0].body as string;
-    expect(body).toContain('\u2713 Judge');
-    expect(body).not.toContain('\u23F3 Running judge');
+    expect(body).toContain('**Judge** — 3 kept · 7 dropped');
+    expect(body).not.toContain('evaluating');
   });
 
   it('includes REVIEW_COMPLETE_MARKER in the updated comment body', async () => {

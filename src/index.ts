@@ -482,7 +482,6 @@ async function runFullReview(
 
     await dismissPreviousReviews(octokit, owner, repo, prNumber);
 
-    let rawFindingCount = 0;
     let reviewEndTime = parseEndTime;
 
     function scheduleDashboardFlush(): void {
@@ -514,7 +513,6 @@ async function runFullReview(
             scheduleDashboardFlush();
           }
         } else if (progress.phase === 'agent-complete') {
-          rawFindingCount = progress.rawFindingCount;
           if (dashboard.agentProgress && progress.agentName) {
             const entry = dashboard.agentProgress.find(a => a.name === progress.agentName);
             if (entry) {
@@ -529,7 +527,6 @@ async function runFullReview(
             clearTimeout(dashboardFlushTimer);
             dashboardFlushTimer = null;
           }
-          rawFindingCount = progress.rawFindingCount;
           reviewEndTime = Date.now();
           dashboard.phase = 'reviewed';
           dashboard.rawFindingCount = progress.rawFindingCount;
@@ -729,12 +726,41 @@ async function runFullReview(
       });
     }
 
-    const droppedCount = rawFindingCount - result.findings.length;
+    const allJudgedForDashboard = result.allJudgedFindings || result.findings;
+    const rawForLookup = result.rawFindings ?? allJudgedForDashboard;
+    const judgeDecisions = allJudgedForDashboard.map(f => {
+      const kept = f.severity !== 'ignore';
+      const originalSeverity = kept
+        ? f.severity
+        : rawForLookup.find(r => r.title === f.title && r.file === f.file && r.line === f.line)?.severity ?? f.severity;
+      return {
+        title: f.title,
+        severity: f.severity,
+        reasoning: f.judgeNotes || '',
+        confidence: f.judgeConfidence || 'medium',
+        kept,
+        originalSeverity,
+      };
+    });
+
+    const keptSeverities: Record<string, number> = {};
+    const droppedSeverities: Record<string, number> = {};
+    for (const d of judgeDecisions) {
+      if (d.kept) {
+        keptSeverities[d.severity] = (keptSeverities[d.severity] ?? 0) + 1;
+      } else {
+        droppedSeverities[d.originalSeverity] = (droppedSeverities[d.originalSeverity] ?? 0) + 1;
+      }
+    }
+
+    const judgeDroppedCount = judgeDecisions.filter(d => !d.kept).length;
     const completeDashboard: DashboardData = {
       ...dashboard,
       phase: 'complete',
       keptCount: result.findings.length,
-      droppedCount: droppedCount >= 0 ? droppedCount : 0,
+      droppedCount: judgeDroppedCount,
+      keptSeverities,
+      droppedSeverities,
     };
 
     const timing = {
@@ -755,13 +781,7 @@ async function runFullReview(
         memoryRepo: config.memory?.repo ?? '',
         nitHandling,
       },
-      judgeDecisions: (result.allJudgedFindings || result.findings).map(f => ({
-        title: f.title,
-        severity: f.severity,
-        reasoning: f.judgeNotes || '',
-        confidence: f.judgeConfidence || 'medium',
-        kept: f.severity !== 'ignore',
-      })),
+      judgeDecisions,
       timing,
     };
 

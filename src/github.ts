@@ -191,18 +191,20 @@ export async function fetchRepoContext(
 /**
  * Build text status lines showing review progress across phases.
  */
+export const INDENT = '&nbsp;&nbsp;&nbsp;&nbsp;';
+
 function renderAgentLines(agents: AgentProgressEntry[]): string {
   return agents.map(a => {
     if (a.status === 'done') {
-      return `  \u2713 ${a.name} — ${a.findingCount ?? 0} findings (${formatDuration(a.durationMs ?? 0)})`;
+      return `${INDENT}✓ ${a.name} — ${a.findingCount ?? 0} (${formatDuration(a.durationMs ?? 0)})`;
     }
     if (a.status === 'failed') {
-      return `  \u2717 ${a.name} — failed (${formatDuration(a.durationMs ?? 0)})`;
+      return `${INDENT}✗ ${a.name} — failed (${formatDuration(a.durationMs ?? 0)})`;
     }
     if (a.status === 'reviewing') {
-      return `  \u23F3 ${a.name}`;
+      return `${INDENT}⏳ ${a.name}`;
     }
-    return `  \u25CB ${a.name}`;
+    return `${INDENT}○ ${a.name}`;
   }).join('\n');
 }
 
@@ -216,51 +218,85 @@ function sanitizePrType(prType: string): string {
   return VALID_PR_TYPES.has(prType) ? prType : 'unknown';
 }
 
+const VALID_EFFORTS = new Set(['low', 'medium', 'high']);
+
+function sanitizeEffort(v: string): string {
+  return VALID_EFFORTS.has(v) ? v : 'unknown';
+}
+
+const SEVERITY_ORDER = ['required', 'suggestion', 'nit', 'ignore'];
+
+function renderSeverityBreakdown(severities: Record<string, number>): string {
+  return SEVERITY_ORDER
+    .filter(s => (severities[s] ?? 0) > 0)
+    .map(s => `${severities[s]} ${s}`)
+    .join(' · ');
+}
+
 export function buildDashboard(data: DashboardData): string {
   const agents = data.agentProgress;
   const hasAgentProgress = !!(agents && agents.length > 0);
   const sections: string[] = [];
 
-  const header: string[] = [];
   if (data.phase !== 'complete') {
-    header.push('**Manki** — Review in progress', '');
+    sections.push('**Manki** — Review in progress');
   }
-  header.push(`\u2713 Parsed diff — ${data.lineCount} lines`);
-  sections.push(header.join('\n'));
 
+  const plannerLines: string[] = [];
   if (data.phase === 'planning') {
-    sections.push(`\u23F3 Planner — analyzing...`);
+    plannerLines.push(`**Planner**`);
+    plannerLines.push(`${INDENT}analyzing...`);
   } else if (data.plannerInfo) {
     const prType = sanitizePrType(data.plannerInfo.prType);
-    sections.push(`\u2713 Planner — ${data.plannerInfo.teamSize} agents, reviewer: ${data.plannerInfo.reviewerEffort}, judge: ${data.plannerInfo.judgeEffort} (${prType})`);
+    plannerLines.push(`**Planner**`);
+    plannerLines.push(`${INDENT}${prType} · ${data.lineCount} lines · ${data.plannerInfo.teamSize} agents`);
+    plannerLines.push(`${INDENT}review effort: ${sanitizeEffort(data.plannerInfo.reviewerEffort)} · judge effort: ${sanitizeEffort(data.plannerInfo.judgeEffort)}`);
+  } else {
+    plannerLines.push(`**Planner**`);
+    plannerLines.push(`${INDENT}${data.lineCount} lines · ${data.agentCount} agents`);
   }
+  sections.push(plannerLines.join('\n'));
 
   const reviewLines: string[] = [];
   if (data.phase === 'planning') {
-    reviewLines.push(`\u25CB Review`);
+    reviewLines.push(`**Review**`);
+    reviewLines.push(`${INDENT}pending`);
   } else if (data.phase === 'started') {
     if (hasAgentProgress) {
       const done = agents.filter(a => a.status === 'done' || a.status === 'failed').length;
-      reviewLines.push(`\u23F3 Review — ${done}/${agents.length} agents complete`);
+      reviewLines.push(`**Review** — ${done}/${agents.length} agents complete`);
       reviewLines.push(renderAgentLines(agents));
     } else {
-      reviewLines.push(`\u23F3 Review — reviewing with ${data.agentCount} agents...`);
+      reviewLines.push(`**Review**`);
+      reviewLines.push(`${INDENT}reviewing with ${data.agentCount} agents...`);
     }
   } else {
-    reviewLines.push(`\u2713 Review — ${data.agentCount} agents \u00B7 ${data.rawFindingCount ?? 0} findings`);
+    reviewLines.push(`**Review** — ${data.rawFindingCount ?? 0} findings`);
     if (hasAgentProgress) {
       reviewLines.push(renderAgentLines(agents));
     }
   }
   sections.push(reviewLines.join('\n'));
 
+  const judgeLines: string[] = [];
   if (data.phase === 'planning' || data.phase === 'started') {
-    sections.push(`\u25CB Judge`);
+    judgeLines.push(`**Judge**`);
+    judgeLines.push(`${INDENT}pending`);
   } else if (data.phase === 'reviewed') {
-    sections.push(`\u23F3 Judge — evaluating ${data.judgeInputCount ?? data.rawFindingCount ?? 0} findings...`);
+    judgeLines.push(`**Judge**`);
+    judgeLines.push(`${INDENT}evaluating ${data.judgeInputCount ?? data.rawFindingCount ?? 0} findings...`);
   } else {
-    sections.push(`\u2713 Judge — ${data.keptCount ?? 0} kept \u00B7 ${data.droppedCount ?? 0} dropped`);
+    judgeLines.push(`**Judge** — ${data.keptCount ?? 0} kept · ${data.droppedCount ?? 0} dropped`);
+    if (data.keptSeverities) {
+      const breakdown = renderSeverityBreakdown(data.keptSeverities);
+      if (breakdown) judgeLines.push(`${INDENT}kept: ${breakdown}`);
+    }
+    if (data.droppedSeverities) {
+      const breakdown = renderSeverityBreakdown(data.droppedSeverities);
+      if (breakdown) judgeLines.push(`${INDENT}dropped: ${breakdown}`);
+    }
   }
+  sections.push(judgeLines.join('\n'));
 
   return sections.join('\n\n');
 }
