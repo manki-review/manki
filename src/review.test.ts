@@ -2176,9 +2176,8 @@ describe('runReview', () => {
 
   it('retries failed agents in multi-pass mode and recovers on subsequent pass', async () => {
     const callsByAgent: Record<string, number> = {};
-    const findingJson = JSON.stringify([
-      { severity: 'suggestion', title: 'Bug', file: 'src/a.ts', line: 1, description: 'Desc.' },
-    ]);
+    const securityFinding = { severity: 'required' as const, title: 'SQL injection', file: 'src/db.ts', line: 42, description: 'Unsanitized input.' };
+    const emptyFindings = JSON.stringify([]);
     const clients: ReviewClients = {
       reviewer: {
         sendMessage: jest.fn().mockImplementation((_sys: string) => {
@@ -2188,7 +2187,11 @@ describe('runReview', () => {
           if (agentName === 'Security' && callsByAgent[agentName] <= 2) {
             return Promise.reject(new Error('Timeout'));
           }
-          return Promise.resolve({ content: findingJson });
+          // Security returns a finding on retry; other agents return nothing
+          if (agentName === 'Security') {
+            return Promise.resolve({ content: JSON.stringify([securityFinding]) });
+          }
+          return Promise.resolve({ content: emptyFindings });
         }),
       } as unknown as import('./claude').ClaudeClient,
       judge: {
@@ -2198,12 +2201,18 @@ describe('runReview', () => {
     const config = makeConfig({ review_passes: 2 });
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
 
-    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
+    mockedRunJudgeAgent.mockResolvedValue({
+      findings: [{ ...securityFinding, reviewers: ['Security & Safety'] }],
+      summary: 'One required finding from retry.',
+    });
 
     const result = await runReview(clients, config, diff, 'raw diff', 'repo context');
     expect(result.reviewComplete).toBe(true);
     // Security failed initial passes (2 calls) but succeeded on retry
     expect(callsByAgent['Security']).toBeGreaterThanOrEqual(3);
+    // Other agents produced no findings — only the retry contributed
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].title).toBe('SQL injection');
   });
 });
 
