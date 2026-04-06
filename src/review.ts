@@ -284,16 +284,17 @@ export function buildPlannerSystemPrompt(agentNames: string[]): string {
 
 Decide:
 1. teamSize: 1, 3, 5, or 7 reviewer agents (odd numbers for majority voting).
-   - 1: unambiguously trivial changes only, where a single sanity-check reviewer is sufficient. Use sparingly. Qualifies when the change cannot affect runtime behavior in any non-obvious way: README/docs edits, comment-only changes, .gitignore/CHANGELOG additions, pure identifier renames with no behavior change. Does NOT qualify if there is any logic change (even a few lines), any auth/crypto/security-adjacent edit, or anything where "subtle bug" is a realistic failure mode. When in doubt, pick 3.
-   - 3: simple changes — small bug fixes, config tweaks, straightforward refactors
-   - 5: typical features, moderate refactors, multi-file changes
-   - 7: security-sensitive, complex architectural changes, crypto, auth
+   Default to 3. Only go to 5 when the PR genuinely needs more specialist perspectives than 3 agents can cover. 7 is rare — reserve it for changes where missing a specialist would be dangerous.
+   - 1: changes where a bug is unrealistic (docs, comments, renames)
+   - 3: most PRs — bug fixes, features, refactors
+   - 5: PRs that span multiple concerns or subsystems
+   - 7: security/crypto-critical, architectural overhauls
 2. agents: pick exactly teamSize agents from the pool below, each with an effort level ("low", "medium", or "high"):
 ${agentList}
-   Effort guidelines per agent:
+   Effort controls thinking depth and cost. low = fast pass, no extended reasoning. medium = moderate reasoning (~5K thinking tokens). high = deep analysis (~10K thinking tokens). Higher effort catches subtle bugs but costs more. Match effort to the risk level of each agent's assignment — security on auth code needs high, maintainability on a rename needs low.
    - low: the agent's specialty is not very relevant to this PR
    - medium: standard relevance
-   - high: the agent's specialty is critical for this PR (e.g., Security for auth changes)
+   - high: the agent's specialty is critical for this PR
 3. judgeEffort: "low", "medium", or "high" — how much effort the judge should spend evaluating findings.
    - low: few expected findings, straightforward changes
    - medium: moderate findings expected
@@ -304,17 +305,15 @@ ${agentList}
 
 Respond with ONLY a JSON object (no markdown fences):
 {
-  "teamSize": 5,
+  "teamSize": 3,
   "judgeEffort": "medium",
   "prType": "feature",
   "language": "typescript",
   "context": "GitHub Actions bot",
   "agents": [
-    { "name": "Security & Safety", "effort": "high" },
+    { "name": "Security & Safety", "effort": "medium" },
     { "name": "Correctness & Logic", "effort": "high" },
-    { "name": "Architecture & Design", "effort": "medium" },
-    { "name": "Testing & Coverage", "effort": "medium" },
-    { "name": "Dependencies & Integration", "effort": "low" }
+    { "name": "Architecture & Design", "effort": "medium" }
   ]
 }`;
 }
