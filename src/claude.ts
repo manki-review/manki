@@ -183,12 +183,14 @@ export class ClaudeClient {
         clearTimeout(staleTimer);
         staleTimer = setTimeout(handleStale, STALE_TIMEOUT_MS);
         staleTimer.unref();
-        lastStdoutChunk = (lastStdoutChunk + data.toString()).slice(-500);
 
         rawBytes += data.length;
         if (rawBytes + stderr.length > MAX_OUTPUT) { killOnOutputExceeded(); return; }
 
-        jsonBuffer += stdoutDecoder.write(data);
+        // Decode once — avoids double decoding and multi-byte corruption at chunk boundaries
+        const chunk = stdoutDecoder.write(data);
+        lastStdoutChunk = (lastStdoutChunk + chunk).slice(-500);
+        jsonBuffer += chunk;
         const lines = jsonBuffer.split('\n');
         jsonBuffer = lines.pop() ?? '';
 

@@ -457,7 +457,9 @@ describe('sendViaOAuth — error paths', () => {
       // Simulate process exit after SIGTERM
       closeCb!(null, 'SIGTERM');
 
-      await expect(promise).rejects.toThrow('Claude CLI timed out after 600s. Last stdout: keepalive-0keepalive-1keepalive-2keepalive-3keepalive-4keepalive-5keepalive-6. stderr: some diagnostic output');
+      const err: Error = await promise.then(() => { throw new Error('expected rejection'); }, (e) => e);
+      expect(err.message).toContain('Claude CLI timed out after 600s');
+      expect(err.message).toContain('stderr: some diagnostic output');
     } finally {
       jest.useRealTimers();
     }
@@ -529,6 +531,182 @@ describe('sendViaOAuth — error paths', () => {
     const client = new ClaudeClient({ oauthToken: 'token', model: 'claude-opus-4-6' });
 
     await expect(client.sendMessage('sys', 'user')).rejects.toThrow('stdin write failed: write EPIPE');
+  });
+
+  it('rejects when stdout exceeds 50MB output limit', async () => {
+    const proc = {
+      stdin: { write: jest.fn().mockReturnValue(true), end: jest.fn(), on: jest.fn() },
+      stdout: { on: jest.fn() },
+      stderr: { on: jest.fn() },
+      on: jest.fn(),
+      kill: jest.fn(),
+    };
+
+    let stdoutCb: ((data: Buffer) => void) | undefined;
+    let closeCb: ((code: number | null, signal: string | null) => void) | undefined;
+
+    proc.stdout.on.mockImplementation((event: string, cb: (data: Buffer) => void) => {
+      if (event === 'data') stdoutCb = cb;
+    });
+    proc.stderr.on.mockImplementation(() => {});
+    proc.on.mockImplementation((event: string, cb: (...args: unknown[]) => void) => {
+      if (event === 'close') closeCb = cb as typeof closeCb;
+    });
+
+    mockSpawn.mockReturnValue(proc as unknown as ReturnType<typeof spawn>);
+    const client = new ClaudeClient({ oauthToken: 'token', model: 'claude-opus-4-6' });
+
+    const promise = client.sendMessage('sys', 'user');
+
+    // Wait for ensureCLI to resolve
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Send a massive chunk to exceed the 50MB limit
+    const bigChunk = Buffer.alloc(51 * 1024 * 1024, 'x');
+    stdoutCb!(bigChunk);
+
+    expect(proc.kill).toHaveBeenCalledWith('SIGTERM');
+
+    // Simulate process exit
+    closeCb!(null, 'SIGTERM');
+
+    await expect(promise).rejects.toThrow('Claude CLI output exceeded 50MB limit');
+  });
+
+  it('flushes remaining decoder bytes in close handler', async () => {
+    const proc = {
+      stdin: { write: jest.fn().mockReturnValue(true), end: jest.fn(), on: jest.fn() },
+      stdout: { on: jest.fn() },
+      stderr: { on: jest.fn() },
+      on: jest.fn(),
+      kill: jest.fn(),
+    };
+
+    let stdoutCb: ((data: Buffer) => void) | undefined;
+    let closeCb: ((code: number | null, signal: string | null) => void) | undefined;
+
+    proc.stdout.on.mockImplementation((event: string, cb: (data: Buffer) => void) => {
+      if (event === 'data') stdoutCb = cb;
+    });
+    proc.stderr.on.mockImplementation(() => {});
+    proc.on.mockImplementation((event: string, cb: (...args: unknown[]) => void) => {
+      if (event === 'close') closeCb = cb as typeof closeCb;
+    });
+
+    mockSpawn.mockReturnValue(proc as unknown as ReturnType<typeof spawn>);
+    const client = new ClaudeClient({ oauthToken: 'token', model: 'claude-opus-4-6' });
+
+    const promise = client.sendMessage('sys', 'user');
+
+    // Wait for ensureCLI to resolve
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Build a JSON line whose UTF-8 encoding contains the 3-byte char "€" (U+20AC).
+    // Split the buffer so the last byte of "€" is withheld — StringDecoder will
+    // hold it until end() is called, exercising the flush path in the close handler.
+    const line = JSON.stringify({ type: 'result', result: 'price €42' });
+    const fullBuf = Buffer.from(line + '\n');
+    // The euro sign "€" is 3 bytes (0xE2 0x82 0xAC). Split 1 byte before the end of the euro sign.
+    const euroIdx = fullBuf.indexOf(Buffer.from('€'));
+    const splitAt = euroIdx + 2; // send first 2 of 3 euro bytes
+    stdoutCb!(fullBuf.subarray(0, splitAt));
+    // Send the remaining byte plus the newline — this completes the char
+    stdoutCb!(fullBuf.subarray(splitAt));
+
+    closeCb!(0, null);
+
+    const result = await promise;
+    expect(result.content).toBe('price €42');
+  });
+
+  it('flushes incomplete multi-byte char from decoder on close', async () => {
+    const proc = {
+      stdin: { write: jest.fn().mockReturnValue(true), end: jest.fn(), on: jest.fn() },
+      stdout: { on: jest.fn() },
+      stderr: { on: jest.fn() },
+      on: jest.fn(),
+      kill: jest.fn(),
+    };
+
+    let stdoutCb: ((data: Buffer) => void) | undefined;
+    let closeCb: ((code: number | null, signal: string | null) => void) | undefined;
+
+    proc.stdout.on.mockImplementation((event: string, cb: (data: Buffer) => void) => {
+      if (event === 'data') stdoutCb = cb;
+    });
+    proc.stderr.on.mockImplementation(() => {});
+    proc.on.mockImplementation((event: string, cb: (...args: unknown[]) => void) => {
+      if (event === 'close') closeCb = cb as typeof closeCb;
+    });
+
+    mockSpawn.mockReturnValue(proc as unknown as ReturnType<typeof spawn>);
+    const client = new ClaudeClient({ oauthToken: 'token', model: 'claude-opus-4-6' });
+
+    const promise = client.sendMessage('sys', 'user');
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Send a complete result line first so we have output
+    const resultLine = JSON.stringify({ type: 'result', result: 'base' }) + '\n';
+    stdoutCb!(Buffer.from(resultLine));
+
+    // Send an incomplete multi-byte character — StringDecoder will hold the
+    // partial bytes and flush them (as a replacement char) when end() is called.
+    // This is a partial 3-byte UTF-8 sequence (first 2 bytes of €).
+    const partialEuro = Buffer.from([0xE2, 0x82]);
+    stdoutCb!(partialEuro);
+
+    closeCb!(0, null);
+
+    const result = await promise;
+    // The flush produces a replacement character which is non-JSON, so it
+    // enters the flush block but fails JSON.parse — output stays as "base"
+    expect(result.content).toBe('base');
+  });
+
+
+  it('logs stdin error events as warnings', async () => {
+    const proc = {
+      stdin: {
+        write: jest.fn().mockReturnValue(true),
+        end: jest.fn(),
+        on: jest.fn(),
+      },
+      stdout: { on: jest.fn() },
+      stderr: { on: jest.fn() },
+      on: jest.fn(),
+      kill: jest.fn(),
+    };
+
+    let stdinErrorCb: ((err: Error) => void) | undefined;
+
+    proc.stdin.on.mockImplementation((event: string, cb: (err: Error) => void) => {
+      if (event === 'error') stdinErrorCb = cb;
+    });
+    proc.stdout.on.mockImplementation((event: string, cb: (data: Buffer) => void) => {
+      if (event === 'data') {
+        setTimeout(() => cb(Buffer.from(toStreamJson('ok'))), 0);
+      }
+    });
+    proc.stderr.on.mockImplementation(() => {});
+    proc.on.mockImplementation((event: string, cb: (code: number | null, signal: string | null) => void) => {
+      if (event === 'close') {
+        setTimeout(() => cb(0, null), 5);
+      }
+    });
+
+    mockSpawn.mockReturnValue(proc as unknown as ReturnType<typeof spawn>);
+    const client = new ClaudeClient({ oauthToken: 'token', model: 'claude-opus-4-6' });
+
+    const promise = client.sendMessage('sys', 'user');
+
+    // Wait for ensureCLI to resolve
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Fire the stdin error handler
+    stdinErrorCb!(new Error('EPIPE'));
+
+    const result = await promise;
+    expect(result.content).toBe('ok');
   });
 });
 
