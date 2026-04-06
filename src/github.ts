@@ -272,7 +272,7 @@ export function buildDashboard(data: DashboardData): string {
     reviewLines.push(`${INDENT}pending`);
   } else if (data.phase === 'started') {
     if (hasAgentProgress) {
-      const done = agents.filter(a => a.status === 'done' || a.status === 'failed').length;
+      const done = agents.filter(a => a.status === 'done' || a.status === 'failed' || a.status === 'retrying').length;
       reviewLines.push(`**Review** — ${done}/${agents.length} agents complete`);
       reviewLines.push(renderAgentLines(agents));
     } else {

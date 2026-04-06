@@ -1672,6 +1672,7 @@ describe('buildDashboard', () => {
       ],
     };
     const md = buildDashboard(data);
+    expect(md).toContain('2/3 agents complete');
     expect(md).toContain(`${INDENT}⟳ Security & Safety — retrying (2/3)...`);
     expect(md).toContain(`${INDENT}✓ Architecture & Design — 2 (3s)`);
     expect(md).toContain(`${INDENT}⏳ Correctness & Logic`);
@@ -1689,6 +1690,24 @@ describe('buildDashboard', () => {
     };
     const md = buildDashboard(data);
     expect(md).toContain(`${INDENT}✗ Security & Safety — failed after 3 attempts (2s)`);
+  });
+
+  it('done count does not decrease when a failed agent transitions to retrying', () => {
+    const agents: DashboardData['agentProgress'] = [
+      { name: 'Agent A', status: 'done', findingCount: 1, durationMs: 2000 },
+      { name: 'Agent B', status: 'failed', durationMs: 3000 },
+      { name: 'Agent C', status: 'reviewing' },
+    ];
+    const base: DashboardData = {
+      phase: 'started', lineCount: 100, agentCount: 3,
+      agentProgress: agents,
+    };
+    const beforeRetry = buildDashboard(base);
+    expect(beforeRetry).toContain('2/3 agents complete');
+
+    agents[1] = { name: 'Agent B', status: 'retrying', retryCount: 1 };
+    const afterRetry = buildDashboard(base);
+    expect(afterRetry).toContain('2/3 agents complete');
   });
 
   it('renders failed agent without retry count as before', () => {
