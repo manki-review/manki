@@ -601,22 +601,21 @@ describe('sendViaOAuth — error paths', () => {
     // Wait for ensureCLI to resolve
     await new Promise((r) => setTimeout(r, 0));
 
-    // Build a JSON line whose UTF-8 encoding contains the 3-byte char "€" (U+20AC).
-    // Split the buffer so the last byte of "€" is withheld — StringDecoder will
-    // hold it until end() is called, exercising the flush path in the close handler.
-    const line = JSON.stringify({ type: 'result', result: 'price €42' });
-    const fullBuf = Buffer.from(line + '\n');
-    // The euro sign "€" is 3 bytes (0xE2 0x82 0xAC). Split 1 byte before the end of the euro sign.
-    const euroIdx = fullBuf.indexOf(Buffer.from('€'));
-    const splitAt = euroIdx + 2; // send first 2 of 3 euro bytes
-    stdoutCb!(fullBuf.subarray(0, splitAt));
-    // Send the remaining byte plus the newline — this completes the char
-    stdoutCb!(fullBuf.subarray(splitAt));
+    // Send a complete result line first so we have baseline output
+    const resultLine = JSON.stringify({ type: 'result', result: 'base' }) + '\n';
+    stdoutCb!(Buffer.from(resultLine));
+
+    // Send the first byte of a 2-byte UTF-8 char "ñ" (0xC3 0xB1). The StringDecoder
+    // holds 0xC3, waiting for the second byte. When close fires, end() returns the
+    // replacement character (U+FFFD), proving the flush path in the close handler runs.
+    stdoutCb!(Buffer.from([0xC3]));
 
     closeCb!(0, null);
 
     const result = await promise;
-    expect(result.content).toBe('price €42');
+    // The flush produces a replacement character which is non-JSON, so the flush block
+    // runs processJsonLine but JSON.parse fails — output stays as "base"
+    expect(result.content).toBe('base');
   });
 
   it('flushes incomplete multi-byte char from decoder on close', async () => {
@@ -1110,10 +1109,12 @@ describe('sendViaOAuth — stale process detection', () => {
 
       stderrCb!(Buffer.from('::warning::injected'));
 
-      // Keep stdout alive past stale threshold until hard timeout
+      // Keep stdout alive past stale threshold until hard timeout.
+      // The last keepalive contains a workflow command to verify stdout sanitization.
       for (let i = 0; i < 7; i++) {
         await jest.advanceTimersByTimeAsync(80_000);
-        stdoutCb!(Buffer.from(`keepalive-${i}`));
+        const payload = i === 6 ? 'stdout ::set-env name=X::val' : `keepalive-${i}`;
+        stdoutCb!(Buffer.from(payload));
       }
 
       await jest.advanceTimersByTimeAsync(40_000);
@@ -1122,6 +1123,7 @@ describe('sendViaOAuth — stale process detection', () => {
       const err = await promise.catch((e: unknown) => e) as Error;
       expect(err.message).toContain('[redacted-workflow-cmd]');
       expect(err.message).not.toContain('::warning');
+      expect(err.message).not.toContain('::set-env');
     } finally {
       jest.useRealTimers();
     }

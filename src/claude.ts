@@ -217,7 +217,11 @@ export class ClaudeClient {
 
         // Decode once — avoids double decoding and multi-byte corruption at chunk boundaries
         const chunk = stdoutDecoder.write(data);
-        lastStdoutChunk = (lastStdoutChunk + chunk).slice(-500);
+        if (chunk.length >= 500) {
+          lastStdoutChunk = chunk.slice(-500);
+        } else {
+          lastStdoutChunk = (lastStdoutChunk + chunk).slice(-500);
+        }
         jsonBuffer += chunk;
         const lines = jsonBuffer.split('\n');
         jsonBuffer = lines.pop() ?? '';
