@@ -12,7 +12,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/xdustinface/manki"
+    "url": "https://github.com/manki-review/manki"
   },
   "license": "AGPL-3.0-or-later",
   "dependencies": {

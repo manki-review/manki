@@ -5,8 +5,8 @@
 <h1 align="center">Manki — curious, thorough, and always learning</h1>
 
 <p align="center">
-  <a href="https://github.com/xdustinface/manki/actions/workflows/ci.yml"><img src="https://github.com/xdustinface/manki/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-  <a href="https://codecov.io/gh/xdustinface/manki"><img src="https://codecov.io/gh/xdustinface/manki/graph/badge.svg" alt="codecov" /></a>
+  <a href="https://github.com/manki-review/manki/actions/workflows/ci.yml"><img src="https://github.com/manki-review/manki/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://codecov.io/gh/manki-review/manki"><img src="https://codecov.io/gh/manki-review/manki/graph/badge.svg" alt="codecov" /></a>
 </p>
 
 <p align="center"><strong>Your tokens, your rules.</strong> Self-hosted AI code review that runs on your own GitHub runners and learns from your team.</p>

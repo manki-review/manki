@@ -14,4 +14,4 @@ instructions: |
 
 memory:
   enabled: true
-  repo: "xdustinface/review-memory"
+  repo: "manki-review/review-memory"

@@ -159,7 +159,7 @@ jobs:
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       - name: Manki Review
-        uses: xdustinface/manki@v4
+        uses: manki-review/manki@v4
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}  # Alternative to OAuth
@@ -179,7 +179,7 @@ The action exposes outputs you can chain into later workflow steps: `review_id`,
 
 ```yaml
 # Fail CI when the judge requests changes
-- uses: xdustinface/manki@v4
+- uses: manki-review/manki@v4
   id: manki
   with:
     anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
