@@ -26,9 +26,9 @@ inputs:
     description: 'GitHub App private key (PEM format) for generating installation tokens'
     required: false
   manki_token_url:
-    description: 'Token service URL for GitHub App identity (default: https://manki.dustinface.me/token)'
+    description: 'Token service URL for GitHub App identity (default: https://manki-api.dustinface.me/token)'
     required: false
-    default: 'https://manki.dustinface.me/token'
+    default: 'https://manki-api.dustinface.me/token'
 
 outputs:
   review_id:

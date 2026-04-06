@@ -29,7 +29,7 @@ export async function resolveGitHubToken(
     // Request OIDC token from GitHub Actions
     let oidcToken: string;
     try {
-      oidcToken = await core.getIDToken('manki.dustinface.me');
+      oidcToken = await core.getIDToken('manki-api.dustinface.me');
     } catch {
       core.info('OIDC token not available — using github-actions[bot] identity');
       return { token: githubToken, identity: 'actions' };
@@ -89,7 +89,7 @@ export async function createAuthenticatedOctokit(): Promise<AuthResult> {
     throw new Error('No authentication configured. Provide either github_token or both github_app_id and github_app_private_key.');
   }
 
-  const tokenUrl = core.getInput('manki_token_url') || 'https://manki.dustinface.me/token';
+  const tokenUrl = core.getInput('manki_token_url') || 'https://manki-api.dustinface.me/token';
   const { owner, repo: repoName } = github.context.repo;
   const { token } = await resolveGitHubToken(githubToken, tokenUrl, owner, repoName);
 

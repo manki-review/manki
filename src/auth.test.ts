@@ -80,7 +80,7 @@ describe('getMemoryToken', () => {
 });
 
 const GITHUB_TOKEN = 'ghp_test_token_123';
-const TOKEN_URL = 'https://manki.dustinface.me/token';
+const TOKEN_URL = 'https://manki-api.dustinface.me/token';
 const OWNER = 'test-owner';
 const REPO = 'test-repo';
 const APP_TOKEN = 'ghs_app_token_456';
