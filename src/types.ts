@@ -1,3 +1,5 @@
+export const MAX_AGENT_RETRIES = 2;
+
 export type FindingSeverity = 'required' | 'suggestion' | 'nit' | 'ignore';
 
 export interface Finding {

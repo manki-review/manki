@@ -5,7 +5,7 @@ import * as github from '@actions/github';
 
 import { AgentProgressEntry, DashboardData, Finding, FindingSeverity, ParsedDiff, ReviewMetadata, ReviewResult, ReviewStats, ReviewVerdict } from './types';
 import { isLineInDiff, findClosestDiffLine } from './diff';
-import { MAX_AGENT_RETRIES } from './review';
+import { MAX_AGENT_RETRIES } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 

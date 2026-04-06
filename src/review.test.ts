@@ -17,11 +17,10 @@ import {
   AGENT_POOL,
   TRIVIAL_VERIFIER_AGENT,
   PLANNER_TIMEOUT_MS,
-  MAX_AGENT_RETRIES,
 } from './review';
 import * as core from '@actions/core';
 import { LinkedIssue } from './github';
-import { Finding, ReviewerAgent, ReviewConfig, ParsedDiff, DiffFile } from './types';
+import { Finding, ReviewerAgent, ReviewConfig, ParsedDiff, DiffFile, MAX_AGENT_RETRIES } from './types';
 import { runJudgeAgent } from './judge';
 import { applySuppressions } from './memory';
 

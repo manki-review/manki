@@ -5,12 +5,10 @@ import { runJudgeAgent, JudgeInput, ResolveThread } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { LinkedIssue } from './github';
 import { deduplicateFindings, llmDeduplicateFindings, PreviousFinding } from './recap';
-import { ReviewConfig, ReviewerAgent, Finding, ReviewResult, ReviewVerdict, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult } from './types';
+import { ReviewConfig, ReviewerAgent, Finding, ReviewResult, ReviewVerdict, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, MAX_AGENT_RETRIES } from './types';
 import { extractJSON } from './json';
 
 export const HIGH_CONF_SUGGESTION_THRESHOLD = 1;
-
-export const MAX_AGENT_RETRIES = 2;
 
 export const PLANNER_TIMEOUT_MS = 30_000;
 
@@ -499,7 +497,7 @@ export async function runReview(
         }
 
         if (retryPassFindings.length > 0) {
-          const threshold = Math.ceil(retryPassFindings.length / 2);
+          const threshold = Math.ceil(passes / 2);
           const consistent = intersectFindings(retryPassFindings, threshold);
           core.info(`Multi-pass retry: ${agent.name} — ${retryPassFindings.length} passes, ${consistent.length} consistent findings`);
           allFindings.push(...consistent);
