@@ -167,6 +167,18 @@ describe('parseFindings', () => {
     }
   });
 
+  it('warns when parsed result is null', () => {
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    try {
+      const findings = parseFindings('null', 'NullAgent');
+      expect(findings).toEqual([]);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy.mock.calls[0][0]).toMatch(/NullAgent.*null/);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it('handles missing fields gracefully', () => {
     const json = JSON.stringify([{ severity: 'required' }]);
 
