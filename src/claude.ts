@@ -209,7 +209,7 @@ export class ClaudeClient {
       const stdoutDecoder = new StringDecoder('utf8');
       const stderrDecoder = new StringDecoder('utf8');
       child.stdout.on('data', (data: Buffer) => {
-        if (outputExceeded || settled) return;
+        if (outputExceeded || settled || stale) return;
         clearTimeout(staleTimer);
         staleTimer = setTimeout(handleStale, STALE_TIMEOUT_MS);
         staleTimer.unref();
