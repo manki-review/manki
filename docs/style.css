@@ -54,6 +54,15 @@ section {
   height: auto;
 }
 
+.hero-name {
+  font-size: 2.5rem;
+  font-weight: 700;
+  color: #e8ecef;
+  margin: 0 0 16px;
+  text-align: center;
+  letter-spacing: 0.02em;
+}
+
 .hero h1 {
   font-size: 2.4rem;
   font-weight: 700;
