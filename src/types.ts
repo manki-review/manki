@@ -177,6 +177,7 @@ export interface DashboardData {
 export interface JudgeDecision {
   title: string;
   severity: FindingSeverity;
+  originalSeverity?: FindingSeverity;
   reasoning: string;
   confidence: 'high' | 'medium' | 'low';
   kept: boolean;

@@ -1520,6 +1520,29 @@ describe('buildDashboard', () => {
     expect(md).toContain(`${INDENT}dropped: 2 suggestion · 3 nit · 1 ignore`);
   });
 
+  it('renders plannerInfo in complete phase', () => {
+    const data: DashboardData = {
+      phase: 'complete', lineCount: 400, agentCount: 5,
+      keptCount: 3, droppedCount: 5, rawFindingCount: 8,
+      plannerInfo: { teamSize: 5, reviewerEffort: 'medium', judgeEffort: 'high', prType: 'bugfix' },
+    };
+    const md = buildDashboard(data);
+    expect(md).toContain('**Planner**');
+    expect(md).toContain(`${INDENT}bugfix · 400 lines · 5 agents`);
+    expect(md).toContain(`${INDENT}review effort: medium · judge effort: high`);
+  });
+
+  it('sanitizes unknown effort values in plannerInfo', () => {
+    const data: DashboardData = {
+      phase: 'started', lineCount: 100, agentCount: 3,
+      plannerInfo: { teamSize: 3, reviewerEffort: 'injected' as any, judgeEffort: 'high', prType: 'feature' },
+    };
+    const md = buildDashboard(data);
+    expect(md).toContain('review effort: unknown');
+    expect(md).toContain('judge effort: high');
+    expect(md).not.toContain('injected');
+  });
+
   it('omits severity breakdown lines when severities are not provided', () => {
     const data: DashboardData = {
       phase: 'complete', lineCount: 400, agentCount: 5,

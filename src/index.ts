@@ -729,8 +729,6 @@ async function runFullReview(
       });
     }
 
-    const droppedCount = rawFindingCount - result.findings.length;
-
     const allJudgedForDashboard = result.allJudgedFindings || result.findings;
     const rawForLookup = result.rawFindings ?? allJudgedForDashboard;
     const judgeDecisions = allJudgedForDashboard.map(f => {
@@ -758,11 +756,12 @@ async function runFullReview(
       }
     }
 
+    const judgeDroppedCount = judgeDecisions.filter(d => !d.kept).length;
     const completeDashboard: DashboardData = {
       ...dashboard,
       phase: 'complete',
       keptCount: result.findings.length,
-      droppedCount: droppedCount >= 0 ? droppedCount : 0,
+      droppedCount: judgeDroppedCount,
       keptSeverities,
       droppedSeverities,
     };

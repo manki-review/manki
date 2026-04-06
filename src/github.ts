@@ -218,6 +218,12 @@ function sanitizePrType(prType: string): string {
   return VALID_PR_TYPES.has(prType) ? prType : 'unknown';
 }
 
+const VALID_EFFORTS = new Set(['low', 'medium', 'high']);
+
+function sanitizeEffort(v: string): string {
+  return VALID_EFFORTS.has(v) ? v : 'unknown';
+}
+
 const SEVERITY_ORDER = ['required', 'suggestion', 'nit', 'ignore'];
 
 function renderSeverityBreakdown(severities: Record<string, number>): string {
@@ -244,7 +250,7 @@ export function buildDashboard(data: DashboardData): string {
     const prType = sanitizePrType(data.plannerInfo.prType);
     plannerLines.push(`**Planner**`);
     plannerLines.push(`${INDENT}${prType} · ${data.lineCount} lines · ${data.plannerInfo.teamSize} agents`);
-    plannerLines.push(`${INDENT}review effort: ${data.plannerInfo.reviewerEffort} · judge effort: ${data.plannerInfo.judgeEffort}`);
+    plannerLines.push(`${INDENT}review effort: ${sanitizeEffort(data.plannerInfo.reviewerEffort)} · judge effort: ${sanitizeEffort(data.plannerInfo.judgeEffort)}`);
   } else {
     plannerLines.push(`**Planner**`);
     plannerLines.push(`${INDENT}${data.lineCount} lines · ${data.agentCount} agents`);
