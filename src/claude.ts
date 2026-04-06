@@ -11,8 +11,24 @@ export const STALE_TIMEOUT_MS = 90_000;
 
 /** Strip GitHub Actions workflow commands to prevent injection when logging CLI output. */
 export function sanitizeLogOutput(text: string): string {
-  // Matches ::command params::message (with or without params between the :: markers)
-  return text.replace(/::[a-z-]+[^:\n]*::[^\n]*/gi, '[redacted-workflow-cmd]');
+  // Matches any line segment starting with :: followed by a letter — covers all workflow commands
+  // regardless of parameter format (e.g. ::error file=foo.ts,line=5::message)
+  return text.replace(/::[a-z].*$/gim, '[redacted-workflow-cmd]');
+}
+
+/** Parse a single JSON-stream line emitted by Claude CLI and accumulate into output. */
+function processJsonLine(line: string, state: { output: string }): void {
+  try {
+    const event = JSON.parse(line);
+    if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta' && event.delta.text) {
+      state.output += event.delta.text;
+    }
+    if (event.type === 'result' && typeof event.result === 'string') {
+      state.output = event.result;
+    }
+  } catch {
+    // Non-JSON line (e.g. verbose debug output) — skip silently
+  }
 }
 
 let cliInstallPromise: Promise<string> | null = null;
@@ -160,6 +176,7 @@ export class ClaudeClient {
 
       const handleStale = (): void => {
         stale = true;
+        clearTimeout(timer);
         child.kill('SIGTERM');
         staleKillTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, 5000);
         staleKillTimer.unref();
@@ -194,20 +211,12 @@ export class ClaudeClient {
         const lines = jsonBuffer.split('\n');
         jsonBuffer = lines.pop() ?? '';
 
+        const outputState = { output };
         for (const line of lines) {
           if (!line.trim()) continue;
-          try {
-            const event = JSON.parse(line);
-            if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta' && event.delta.text) {
-              output += event.delta.text;
-            }
-            if (event.type === 'result' && typeof event.result === 'string') {
-              output = event.result;
-            }
-          } catch {
-            // Non-JSON line (e.g. verbose debug output) — skip silently
-          }
+          processJsonLine(line, outputState);
         }
+        output = outputState.output;
       });
       child.stderr.on('data', (data: Buffer) => {
         if (outputExceeded || settled) return;
@@ -224,17 +233,9 @@ export class ClaudeClient {
         if (remaining) {
           jsonBuffer += remaining;
           if (jsonBuffer.trim()) {
-            try {
-              const event = JSON.parse(jsonBuffer);
-              if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta' && event.delta.text) {
-                output += event.delta.text;
-              }
-              if (event.type === 'result' && typeof event.result === 'string') {
-                output = event.result;
-              }
-            } catch {
-              // Non-JSON line (e.g. verbose debug output) — skip silently
-            }
+            const flushState = { output };
+            processJsonLine(jsonBuffer, flushState);
+            output = flushState.output;
           }
         }
         stderr += stderrDecoder.end();

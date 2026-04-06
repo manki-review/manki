@@ -1168,4 +1168,14 @@ describe('sanitizeLogOutput', () => {
   it('is case-insensitive', () => {
     expect(sanitizeLogOutput('::SET-OUTPUT::val')).toBe('[redacted-workflow-cmd]');
   });
+
+  it('handles colons in parameters', () => {
+    expect(sanitizeLogOutput('::error file=src/foo.ts,line=5,col=10::Something failed: timeout'))
+      .toBe('[redacted-workflow-cmd]');
+  });
+
+  it('strips command with complex parameter values containing colons', () => {
+    expect(sanitizeLogOutput('prefix ::warning file=a:b::msg:with:colons'))
+      .toBe('prefix [redacted-workflow-cmd]');
+  });
 });
