@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
 import Anthropic from '@anthropic-ai/sdk';
 
-import { ClaudeClient, resetCLIInstallPromise } from './claude';
+import { ClaudeClient, resetCLIInstallPromise, STALE_TIMEOUT_MS } from './claude';
 
 jest.mock('child_process', () => ({
   execFile: jest.fn(),
@@ -356,10 +356,13 @@ describe('sendViaOAuth — error paths', () => {
         kill: jest.fn(),
       };
 
+      let stdoutCb: ((data: Buffer) => void) | undefined;
       let stderrCb: ((data: Buffer) => void) | undefined;
       let closeCb: ((code: number | null, signal: string | null) => void) | undefined;
 
-      proc.stdout.on.mockImplementation(() => {});
+      proc.stdout.on.mockImplementation((event: string, cb: (data: Buffer) => void) => {
+        if (event === 'data') stdoutCb = cb;
+      });
       proc.stderr.on.mockImplementation((event: string, cb: (data: Buffer) => void) => {
         if (event === 'data') stderrCb = cb;
       });
@@ -378,13 +381,19 @@ describe('sendViaOAuth — error paths', () => {
       // Emit stderr before timeout
       stderrCb!(Buffer.from('some diagnostic output'));
 
-      // Fire the 600s timeout
-      await jest.advanceTimersByTimeAsync(600000);
+      // Keep stdout alive to prevent the stale checker from firing before hard timeout
+      for (let i = 0; i < 7; i++) {
+        await jest.advanceTimersByTimeAsync(80_000);
+        stdoutCb!(Buffer.from(`keepalive-${i}`));
+      }
+
+      // Fire the 600s timeout (advance remaining ~40s)
+      await jest.advanceTimersByTimeAsync(40_000);
 
       // Simulate process exit after SIGTERM
       closeCb!(null, 'SIGTERM');
 
-      await expect(promise).rejects.toThrow('Claude CLI timed out after 600s: some diagnostic output');
+      await expect(promise).rejects.toThrow('Claude CLI timed out after 600s. Last stdout: keepalive-6. stderr: some diagnostic output');
     } finally {
       jest.useRealTimers();
     }
@@ -401,9 +410,12 @@ describe('sendViaOAuth — error paths', () => {
         kill: jest.fn(),
       };
 
+      let stdoutCb: ((data: Buffer) => void) | undefined;
       let closeCb: ((code: number | null, signal: string | null) => void) | undefined;
 
-      proc.stdout.on.mockImplementation(() => {});
+      proc.stdout.on.mockImplementation((event: string, cb: (data: Buffer) => void) => {
+        if (event === 'data') stdoutCb = cb;
+      });
       proc.stderr.on.mockImplementation(() => {});
       proc.on.mockImplementation((event: string, cb: (...args: unknown[]) => void) => {
         if (event === 'close') closeCb = cb as typeof closeCb;
@@ -415,7 +427,14 @@ describe('sendViaOAuth — error paths', () => {
       const promise = client.sendMessage('sys', 'user');
 
       await jest.advanceTimersByTimeAsync(0);
-      await jest.advanceTimersByTimeAsync(600000);
+
+      // Keep stdout alive to prevent the stale checker from firing
+      for (let i = 0; i < 7; i++) {
+        await jest.advanceTimersByTimeAsync(80_000);
+        stdoutCb!(Buffer.from(`keepalive-${i}`));
+      }
+
+      await jest.advanceTimersByTimeAsync(40_000);
       closeCb!(null, 'SIGTERM');
 
       await expect(promise).rejects.toThrow('Claude CLI timed out after 600s');
@@ -538,5 +557,144 @@ describe('ensureCLI — install path', () => {
     const client2 = new ClaudeClient({ oauthToken: 'token', model: 'claude-opus-4-6' });
     const result = await client2.sendMessage('sys', 'retry');
     expect(result.content).toBe('should not reach');
+  });
+});
+
+describe('sendViaOAuth — stale process detection', () => {
+  beforeEach(() => {
+    mockSpawn.mockReset();
+    resetCLIInstallPromise();
+  });
+
+  it('kills process when no stdout for 90s', async () => {
+    jest.useFakeTimers();
+    try {
+      const proc = {
+        stdin: { write: jest.fn().mockReturnValue(true), end: jest.fn(), on: jest.fn() },
+        stdout: { on: jest.fn() },
+        stderr: { on: jest.fn() },
+        on: jest.fn(),
+        kill: jest.fn(),
+      };
+
+      let closeCb: ((code: number | null, signal: string | null) => void) | undefined;
+
+      proc.stdout.on.mockImplementation(() => {});
+      proc.stderr.on.mockImplementation(() => {});
+      proc.on.mockImplementation((event: string, cb: (...args: unknown[]) => void) => {
+        if (event === 'close') closeCb = cb as typeof closeCb;
+      });
+
+      mockSpawn.mockReturnValue(proc as unknown as ReturnType<typeof spawn>);
+      const client = new ClaudeClient({ oauthToken: 'token', model: 'claude-opus-4-6' });
+
+      const promise = client.sendMessage('sys', 'user');
+
+      // Flush microtasks so ensureCLI resolves and spawn is called
+      await jest.advanceTimersByTimeAsync(0);
+
+      // Advance past the stale timeout — the 10s interval checker fires at 100s (>90s idle)
+      await jest.advanceTimersByTimeAsync(STALE_TIMEOUT_MS + 10_000);
+
+      expect(proc.kill).toHaveBeenCalledWith('SIGTERM');
+
+      // Simulate process exit after SIGTERM
+      closeCb!(null, 'SIGTERM');
+
+      await expect(promise).rejects.toThrow('Claude CLI stale — no output for 90s');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('resets stale timer when stdout data arrives, then hard timeout fires', async () => {
+    jest.useFakeTimers();
+    try {
+      const proc = {
+        stdin: { write: jest.fn().mockReturnValue(true), end: jest.fn(), on: jest.fn() },
+        stdout: { on: jest.fn() },
+        stderr: { on: jest.fn() },
+        on: jest.fn(),
+        kill: jest.fn(),
+      };
+
+      let stdoutCb: ((data: Buffer) => void) | undefined;
+      let closeCb: ((code: number | null, signal: string | null) => void) | undefined;
+
+      proc.stdout.on.mockImplementation((event: string, cb: (data: Buffer) => void) => {
+        if (event === 'data') stdoutCb = cb;
+      });
+      proc.stderr.on.mockImplementation(() => {});
+      proc.on.mockImplementation((event: string, cb: (...args: unknown[]) => void) => {
+        if (event === 'close') closeCb = cb as typeof closeCb;
+      });
+
+      mockSpawn.mockReturnValue(proc as unknown as ReturnType<typeof spawn>);
+      const client = new ClaudeClient({ oauthToken: 'token', model: 'claude-opus-4-6' });
+
+      const promise = client.sendMessage('sys', 'user');
+
+      await jest.advanceTimersByTimeAsync(0);
+
+      // Keep producing stdout every 80s — always under the 90s stale threshold
+      for (let i = 0; i < 7; i++) {
+        await jest.advanceTimersByTimeAsync(80_000);
+        stdoutCb!(Buffer.from(`chunk-${i}`));
+      }
+
+      // At this point ~560s have passed. The stale timer keeps resetting.
+      // Advance to the hard 600s timeout
+      await jest.advanceTimersByTimeAsync(40_000);
+
+      expect(proc.kill).toHaveBeenCalledWith('SIGTERM');
+
+      closeCb!(null, 'SIGTERM');
+
+      await expect(promise).rejects.toThrow('Claude CLI timed out after 600s');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('includes last stdout chunk in stale error message', async () => {
+    jest.useFakeTimers();
+    try {
+      const proc = {
+        stdin: { write: jest.fn().mockReturnValue(true), end: jest.fn(), on: jest.fn() },
+        stdout: { on: jest.fn() },
+        stderr: { on: jest.fn() },
+        on: jest.fn(),
+        kill: jest.fn(),
+      };
+
+      let stdoutCb: ((data: Buffer) => void) | undefined;
+      let closeCb: ((code: number | null, signal: string | null) => void) | undefined;
+
+      proc.stdout.on.mockImplementation((event: string, cb: (data: Buffer) => void) => {
+        if (event === 'data') stdoutCb = cb;
+      });
+      proc.stderr.on.mockImplementation(() => {});
+      proc.on.mockImplementation((event: string, cb: (...args: unknown[]) => void) => {
+        if (event === 'close') closeCb = cb as typeof closeCb;
+      });
+
+      mockSpawn.mockReturnValue(proc as unknown as ReturnType<typeof spawn>);
+      const client = new ClaudeClient({ oauthToken: 'token', model: 'claude-opus-4-6' });
+
+      const promise = client.sendMessage('sys', 'user');
+
+      await jest.advanceTimersByTimeAsync(0);
+
+      // Emit one stdout chunk then go silent
+      stdoutCb!(Buffer.from('partial output here'));
+
+      await jest.advanceTimersByTimeAsync(STALE_TIMEOUT_MS + 10_000);
+
+      closeCb!(null, 'SIGTERM');
+
+      await expect(promise).rejects.toThrow('Last stdout: partial output here');
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

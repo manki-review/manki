@@ -7,6 +7,8 @@ import * as core from '@actions/core';
 
 const execFileAsync = promisify(execFile);
 
+export const STALE_TIMEOUT_MS = 90_000;
+
 let cliInstallPromise: Promise<string> | null = null;
 
 export function resetCLIInstallPromise(): void {
@@ -118,15 +120,19 @@ export class ClaudeClient {
       let stdout = '';
       let stderr = '';
       let timedOut = false;
+      let stale = false;
       let outputExceeded = false;
       let settled = false;
       let killTimer: NodeJS.Timeout | undefined;
       let outputKillTimer: NodeJS.Timeout | undefined;
       // Only set in the catch block below; clearTimeout(undefined) is a no-op on the normal path
       let stdinKillTimer: NodeJS.Timeout | undefined;
+      let lastStdoutAt = Date.now();
+      let lastStdoutChunk = '';
 
       const clearAllTimers = (): void => {
         clearTimeout(timer);
+        clearInterval(staleChecker);
         if (killTimer) clearTimeout(killTimer);
         if (outputKillTimer) clearTimeout(outputKillTimer);
         if (stdinKillTimer) clearTimeout(stdinKillTimer);
@@ -134,11 +140,22 @@ export class ClaudeClient {
 
       const timer = setTimeout(() => {
         timedOut = true;
+        clearInterval(staleChecker);
         child.kill('SIGTERM');
         killTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, 5000);
         killTimer.unref();
       }, 600000);
       timer.unref();
+
+      const staleChecker = setInterval(() => {
+        if (Date.now() - lastStdoutAt > STALE_TIMEOUT_MS) {
+          clearInterval(staleChecker);
+          stale = true;
+          child.kill('SIGTERM');
+          killTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, 5000);
+          killTimer.unref();
+        }
+      }, 10_000);
 
       const MAX_OUTPUT = 50 * 1024 * 1024; // 50 MB
       const killOnOutputExceeded = (): void => {
@@ -153,6 +170,8 @@ export class ClaudeClient {
       const stderrDecoder = new StringDecoder('utf8');
       child.stdout.on('data', (data: Buffer) => {
         if (outputExceeded || settled) return;
+        lastStdoutAt = Date.now();
+        lastStdoutChunk = data.toString().slice(-500);
         stdout += stdoutDecoder.write(data);
         if (stdout.length + stderr.length > MAX_OUTPUT) killOnOutputExceeded();
       });
@@ -168,12 +187,28 @@ export class ClaudeClient {
         settled = true;
         stdout += stdoutDecoder.end();
         stderr += stderrDecoder.end();
-        if (timedOut) {
+        if (stale) {
+          const stdoutSnippet = lastStdoutChunk.slice(-500);
           const stderrSnippet = stderr.slice(0, 500);
-          if (stderrSnippet) {
-            core.warning(`Claude CLI stderr at timeout: ${stderrSnippet}`);
-          }
-          reject(new Error(`Claude CLI timed out after 600s${stderrSnippet ? `: ${stderrSnippet}` : ''}`));
+          const details = [
+            stdoutSnippet ? `Last stdout: ${stdoutSnippet}` : '',
+            stderrSnippet ? `stderr: ${stderrSnippet}` : '',
+          ].filter(Boolean).join('. ');
+          const msg = `Claude CLI stale — no output for 90s${details ? `. ${details}` : ''}`;
+          core.warning(msg);
+          reject(new Error(msg));
+          return;
+        }
+        if (timedOut) {
+          const stdoutSnippet = lastStdoutChunk.slice(-500);
+          const stderrSnippet = stderr.slice(0, 500);
+          const details = [
+            stdoutSnippet ? `Last stdout: ${stdoutSnippet}` : '',
+            stderrSnippet ? `stderr: ${stderrSnippet}` : '',
+          ].filter(Boolean).join('. ');
+          const msg = `Claude CLI timed out after 600s${details ? `. ${details}` : ''}`;
+          core.warning(msg);
+          reject(new Error(msg));
           return;
         }
         if (outputExceeded) {
