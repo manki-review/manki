@@ -482,7 +482,6 @@ async function runFullReview(
 
     await dismissPreviousReviews(octokit, owner, repo, prNumber);
 
-    let rawFindingCount = 0;
     let reviewEndTime = parseEndTime;
 
     function scheduleDashboardFlush(): void {
@@ -514,7 +513,6 @@ async function runFullReview(
             scheduleDashboardFlush();
           }
         } else if (progress.phase === 'agent-complete') {
-          rawFindingCount = progress.rawFindingCount;
           if (dashboard.agentProgress && progress.agentName) {
             const entry = dashboard.agentProgress.find(a => a.name === progress.agentName);
             if (entry) {
@@ -529,7 +527,6 @@ async function runFullReview(
             clearTimeout(dashboardFlushTimer);
             dashboardFlushTimer = null;
           }
-          rawFindingCount = progress.rawFindingCount;
           reviewEndTime = Date.now();
           dashboard.phase = 'reviewed';
           dashboard.rawFindingCount = progress.rawFindingCount;

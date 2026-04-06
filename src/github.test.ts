@@ -1535,7 +1535,7 @@ describe('buildDashboard', () => {
   it('sanitizes unknown effort values in plannerInfo', () => {
     const data: DashboardData = {
       phase: 'started', lineCount: 100, agentCount: 3,
-      plannerInfo: { teamSize: 3, reviewerEffort: 'injected' as any, judgeEffort: 'high', prType: 'feature' },
+      plannerInfo: { teamSize: 3, reviewerEffort: 'injected' as unknown as 'low', judgeEffort: 'high', prType: 'feature' },
     };
     const md = buildDashboard(data);
     expect(md).toContain('review effort: unknown');
