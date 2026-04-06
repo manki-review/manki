@@ -57,6 +57,18 @@ describe('ClaudeClient', () => {
   // couple tests to implementation details without catching real regressions.
 });
 
+/** Encode a plain text response as stream-json output (newline-delimited JSON). */
+function toStreamJson(text: string): string {
+  return [
+    JSON.stringify({ type: 'message_start', message: {} }),
+    JSON.stringify({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
+    JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } }),
+    JSON.stringify({ type: 'content_block_stop', index: 0 }),
+    JSON.stringify({ type: 'result', result: text }),
+    '',
+  ].join('\n');
+}
+
 describe('sendMessage effort option (CLI path)', () => {
   beforeEach(() => {
     mockSpawn.mockReset();
@@ -74,7 +86,7 @@ describe('sendMessage effort option (CLI path)', () => {
     // Simulate stdout data and close event
     proc.stdout.on.mockImplementation((event: string, cb: (data: Buffer) => void) => {
       if (event === 'data') {
-        setTimeout(() => cb(Buffer.from(stdout)), 0);
+        setTimeout(() => cb(Buffer.from(toStreamJson(stdout))), 0);
       }
     });
     proc.stderr.on.mockImplementation(() => {});
@@ -223,6 +235,7 @@ describe('sendViaOAuth — error paths', () => {
     stderr?: string;
     error?: Error;
     closeDelay?: number;
+    rawStdout?: boolean;
   }): void {
     const proc = {
       stdin: { write: jest.fn().mockReturnValue(true), end: jest.fn(), on: jest.fn() },
@@ -234,7 +247,8 @@ describe('sendViaOAuth — error paths', () => {
 
     proc.stdout.on.mockImplementation((event: string, cb: (data: Buffer) => void) => {
       if (event === 'data' && opts.stdout) {
-        setTimeout(() => cb(Buffer.from(opts.stdout!)), 0);
+        const payload = opts.rawStdout ? opts.stdout! : toStreamJson(opts.stdout!);
+        setTimeout(() => cb(Buffer.from(payload)), 0);
       }
     });
     proc.stderr.on.mockImplementation((event: string, cb: (data: Buffer) => void) => {
@@ -297,6 +311,55 @@ describe('sendViaOAuth — error paths', () => {
     expect(spawnOpts.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('tok');
   });
 
+  it('passes --output-format stream-json and --include-partial-messages to CLI', async () => {
+    setupSpawnMock({ stdout: 'ok' });
+    const client = new ClaudeClient({ oauthToken: 'token', model: 'claude-opus-4-6' });
+
+    await client.sendMessage('sys', 'user');
+
+    const spawnArgs = mockSpawn.mock.calls[0][1] as string[];
+    const fmtIdx = spawnArgs.indexOf('--output-format');
+    expect(fmtIdx).toBeGreaterThan(-1);
+    expect(spawnArgs[fmtIdx + 1]).toBe('stream-json');
+    expect(spawnArgs).toContain('--include-partial-messages');
+  });
+
+  it('extracts text from content_block_delta events', async () => {
+    const streamOutput = [
+      JSON.stringify({ type: 'message_start', message: {} }),
+      JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'hello ' } }),
+      JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'world' } }),
+      JSON.stringify({ type: 'content_block_stop', index: 0 }),
+      '',
+    ].join('\n');
+    setupSpawnMock({ stdout: streamOutput, rawStdout: true });
+    const client = new ClaudeClient({ oauthToken: 'token', model: 'claude-opus-4-6' });
+
+    const result = await client.sendMessage('sys', 'user');
+    expect(result.content).toBe('hello world');
+  });
+
+  it('uses result event text when present (overrides deltas)', async () => {
+    const streamOutput = [
+      JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'partial' } }),
+      JSON.stringify({ type: 'result', result: 'final answer' }),
+      '',
+    ].join('\n');
+    setupSpawnMock({ stdout: streamOutput, rawStdout: true });
+    const client = new ClaudeClient({ oauthToken: 'token', model: 'claude-opus-4-6' });
+
+    const result = await client.sendMessage('sys', 'user');
+    expect(result.content).toBe('final answer');
+  });
+
+  it('falls back to raw text for non-JSON lines', async () => {
+    setupSpawnMock({ stdout: 'plain text fallback\n', rawStdout: true });
+    const client = new ClaudeClient({ oauthToken: 'token', model: 'claude-opus-4-6' });
+
+    const result = await client.sendMessage('sys', 'user');
+    expect(result.content).toBe('plain text fallback');
+  });
+
   it('includes exit signal in error message when present', async () => {
     setupSpawnMock({ exitCode: 1, signal: 'SIGTERM', stderr: 'killed' });
     const client = new ClaudeClient({ oauthToken: 'token', model: 'claude-opus-4-6' });
@@ -320,7 +383,7 @@ describe('sendViaOAuth — error paths', () => {
 
     proc.stdout.on.mockImplementation((event: string, cb: (data: Buffer) => void) => {
       if (event === 'data') {
-        setTimeout(() => cb(Buffer.from('drain response')), 0);
+        setTimeout(() => cb(Buffer.from(toStreamJson('drain response'))), 0);
       }
     });
     proc.stderr.on.mockImplementation(() => {});
@@ -486,7 +549,7 @@ describe('ensureCLI — install path', () => {
 
     proc.stdout.on.mockImplementation((event: string, cb: (data: Buffer) => void) => {
       if (event === 'data') {
-        setTimeout(() => cb(Buffer.from(stdout)), 0);
+        setTimeout(() => cb(Buffer.from(toStreamJson(stdout))), 0);
       }
     });
     proc.stderr.on.mockImplementation(() => {});

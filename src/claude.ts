@@ -99,7 +99,8 @@ export class ClaudeClient {
       // -p enables pipe mode — reads prompt from stdin when no argument follows
       const args = [
         '-p',
-        '--output-format', 'text',
+        '--output-format', 'stream-json',
+        '--include-partial-messages',
         '--model', this.model,
       ];
 
@@ -117,7 +118,8 @@ export class ClaudeClient {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 
-      let stdout = '';
+      let output = '';
+      let jsonBuffer = '';
       let stderr = '';
       let timedOut = false;
       let stale = false;
@@ -129,6 +131,7 @@ export class ClaudeClient {
       // Only set in the catch block below; clearTimeout(undefined) is a no-op on the normal path
       let stdinKillTimer: NodeJS.Timeout | undefined;
       let lastStdoutChunk = '';
+      let rawBytes = 0;
 
       const clearAllTimers = (): void => {
         clearTimeout(timer);
@@ -174,20 +177,58 @@ export class ClaudeClient {
         staleTimer = setTimeout(handleStale, STALE_TIMEOUT_MS);
         staleTimer.unref();
         lastStdoutChunk = data.toString().slice(-500);
-        stdout += stdoutDecoder.write(data);
-        if (stdout.length + stderr.length > MAX_OUTPUT) killOnOutputExceeded();
+
+        rawBytes += data.length;
+        if (rawBytes + stderr.length > MAX_OUTPUT) { killOnOutputExceeded(); return; }
+
+        jsonBuffer += stdoutDecoder.write(data);
+        const lines = jsonBuffer.split('\n');
+        jsonBuffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const event = JSON.parse(line);
+            if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta' && event.delta.text) {
+              output += event.delta.text;
+            }
+            if (event.type === 'result' && typeof event.result === 'string') {
+              output = event.result;
+            }
+          } catch {
+            // Non-JSON line — append as raw text fallback
+            output += line;
+          }
+        }
       });
       child.stderr.on('data', (data: Buffer) => {
         if (outputExceeded || settled) return;
         stderr += stderrDecoder.write(data);
-        if (stdout.length + stderr.length > MAX_OUTPUT) killOnOutputExceeded();
+        if (rawBytes + stderr.length > MAX_OUTPUT) killOnOutputExceeded();
       });
 
       child.on('close', (code, signal) => {
         clearAllTimers();
         if (settled) return;
         settled = true;
-        stdout += stdoutDecoder.end();
+        // Flush any remaining bytes from the decoders
+        const remaining = stdoutDecoder.end();
+        if (remaining) {
+          jsonBuffer += remaining;
+          if (jsonBuffer.trim()) {
+            try {
+              const event = JSON.parse(jsonBuffer);
+              if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta' && event.delta.text) {
+                output += event.delta.text;
+              }
+              if (event.type === 'result' && typeof event.result === 'string') {
+                output = event.result;
+              }
+            } catch {
+              output += jsonBuffer;
+            }
+          }
+        }
         stderr += stderrDecoder.end();
         if (stale) {
           const stdoutSnippet = lastStdoutChunk.slice(-500);
@@ -223,7 +264,7 @@ export class ClaudeClient {
           reject(new Error(`Claude CLI invocation failed (${msg})`));
           return;
         }
-        const content = stdout.trim();
+        const content = output.trim();
         core.startGroup('Claude CLI response');
         core.info(content);
         core.endGroup();
