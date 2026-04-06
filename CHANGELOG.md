@@ -5,6 +5,31 @@ All notable changes to Manki will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.0] - 2026-04-06
+
+### Added
+
+- Embed manki version in `manki-bot` comment marker for debugging (#468)
+- `trivial` review level variant for `teamSize=1` reviews (#465)
+- Landing page for GitHub Pages docs site (#478)
+
+### Changed
+
+- Redesign progress dashboard with stage grouping and unified icons (#476)
+- Run dedup before judge to fix stale summary on follow-up reviews (#472)
+- Migrate token service URL from `manki.dustinface.me` to `manki-api.dustinface.me` (#481)
+- Move repo to `manki-review` GitHub organization, update all references (#484)
+
+### Fixed
+
+- Progress dashboard stage grouping, icon consistency, and flicker on updates (#469)
+- Stale `review-in-progress` comments via Actions API verification (#466)
+
+### Docs
+
+- Add permission comments to workflow examples in SETUP.md (#480)
+- Restructure README for scannability (#456)
+
 ## [4.3.0] - 2026-04-05
 
 > **Rename note**: references to `@manki-labs` and `manki-labs[bot]` in the 4.0.0–4.2.0 entries below refer to the old command prefix and bot login, which were removed/renamed in 4.3.0. The current prefix is `@manki` and the bot login is `manki-review[bot]`.
@@ -273,6 +298,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic review posting with inline comments
 - Configuration via `.manki.yml`
 
+[4.4.0]: https://github.com/manki-review/manki/compare/v4.3.0...v4.4.0
 [4.3.0]: https://github.com/manki-review/manki/compare/v4.2.0...v4.3.0
 [4.2.0]: https://github.com/manki-review/manki/compare/v4.1.0...v4.2.0
 [4.1.0]: https://github.com/manki-review/manki/compare/v4.0.0...v4.1.0
