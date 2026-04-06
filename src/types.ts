@@ -44,11 +44,21 @@ export interface ReviewerAgent {
   focus: string;
 }
 
+export type EffortLevel = 'low' | 'medium' | 'high';
+
+export interface AgentPick {
+  name: string;
+  effort: EffortLevel;
+}
+
 export interface PlannerResult {
   teamSize: 1 | 3 | 5 | 7;
-  reviewerEffort: 'low' | 'medium' | 'high';
-  judgeEffort: 'low' | 'medium' | 'high';
+  reviewerEffort: EffortLevel;
+  judgeEffort: EffortLevel;
   prType: string;
+  agents?: AgentPick[];
+  language?: string;
+  context?: string;
 }
 
 export type ReviewLevel = 'auto' | 'small' | 'medium' | 'large';

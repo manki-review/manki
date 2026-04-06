@@ -5,7 +5,7 @@ import { runJudgeAgent, JudgeInput, ResolveThread } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { LinkedIssue } from './github';
 import { deduplicateFindings, llmDeduplicateFindings, PreviousFinding } from './recap';
-import { ReviewConfig, ReviewerAgent, Finding, ReviewResult, ReviewVerdict, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, MAX_AGENT_RETRIES } from './types';
+import { ReviewConfig, ReviewerAgent, Finding, ReviewResult, ReviewVerdict, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, EffortLevel, AgentPick, MAX_AGENT_RETRIES } from './types';
 import { extractJSON } from './json';
 
 export const HIGH_CONF_SUGGESTION_THRESHOLD = 1;
@@ -60,6 +60,7 @@ export function selectTeam(
   config: ReviewConfig,
   customReviewers?: ReviewerAgent[],
   teamSizeOverride?: 1 | 3 | 5 | 7,
+  agentPicks?: AgentPick[],
 ): TeamRoster {
   const lineCount = diff.totalAdditions + diff.totalDeletions;
 
@@ -71,6 +72,33 @@ export function selectTeam(
       core.info(`teamSize=1: skipping custom reviewers [${customReviewers.map(r => r.name).join(', ')}]`);
     }
     return { level: 'trivial', agents: [TRIVIAL_VERIFIER_AGENT], lineCount };
+  }
+
+  // Planner-driven agent selection: resolve each picked name from the pool
+  if (agentPicks && agentPicks.length > 0 && teamSizeOverride) {
+    const pool = [...AGENT_POOL];
+    for (const custom of (customReviewers || [])) {
+      if (!pool.some(p => p.name === custom.name)) {
+        pool.push(custom);
+      }
+    }
+    const poolMap = new Map(pool.map(a => [a.name, a]));
+    const resolved: ReviewerAgent[] = [];
+    for (const pick of agentPicks) {
+      const agent = poolMap.get(pick.name);
+      if (agent && !resolved.some(r => r.name === agent.name)) {
+        resolved.push(agent);
+      }
+    }
+
+    if (resolved.length > 0) {
+      let level: 'small' | 'medium' | 'large';
+      if (resolved.length <= 3) level = 'small';
+      else if (resolved.length <= 5) level = 'medium';
+      else level = 'large';
+      return { level, agents: resolved, lineCount };
+    }
+    // If resolution failed entirely, fall through to heuristic
   }
 
   if (teamSizeOverride) {
@@ -249,7 +277,10 @@ function buildPlannerSummary(diff: ParsedDiff, prContext?: PrContext): string {
   return summary.slice(0, 2000);
 }
 
-const PLANNER_SYSTEM_PROMPT = `You are a code review planning assistant. Analyze this PR and decide how to review it.
+export function buildPlannerSystemPrompt(agentNames: string[]): string {
+  const agentList = agentNames.map(n => `  - "${n}"`).join('\n');
+
+  return `You are a code review planning assistant. Analyze this PR and decide how to review it.
 
 Decide:
 1. teamSize: 1, 3, 5, or 7 reviewer agents (odd numbers for majority voting).
@@ -257,32 +288,66 @@ Decide:
    - 3: simple changes — small bug fixes, config tweaks, straightforward refactors
    - 5: typical features, moderate refactors, multi-file changes
    - 7: security-sensitive, complex architectural changes, crypto, auth
-2. reviewerEffort: "low", "medium", or "high" — how much effort each reviewer agent should spend.
-   - low: trivial changes, obvious intent
-   - medium: standard features and refactors
-   - high: complex logic, security-sensitive, subtle edge cases
+2. agents: pick exactly teamSize agents from the pool below, each with an effort level ("low", "medium", or "high"):
+${agentList}
+   Effort guidelines per agent:
+   - low: the agent's specialty is not very relevant to this PR
+   - medium: standard relevance
+   - high: the agent's specialty is critical for this PR (e.g., Security for auth changes)
 3. judgeEffort: "low", "medium", or "high" — how much effort the judge should spend evaluating findings.
    - low: few expected findings, straightforward changes
    - medium: moderate findings expected
    - high: many findings expected, nuanced severity decisions
 4. prType: one of "feature", "bugfix", "refactor", "docs", "test", "chore", "rename"
+5. language: the primary programming language of the changed code (e.g., "typescript", "rust", "python"). Omit if unclear.
+6. context: a short phrase describing the project domain (e.g., "blockchain consensus library", "REST API server"). Omit if unclear.
 
 Respond with ONLY a JSON object (no markdown fences):
 {
   "teamSize": 5,
-  "reviewerEffort": "medium",
   "judgeEffort": "medium",
-  "prType": "feature"
+  "prType": "feature",
+  "language": "typescript",
+  "context": "GitHub Actions bot",
+  "agents": [
+    { "name": "Security & Safety", "effort": "high" },
+    { "name": "Correctness & Logic", "effort": "high" },
+    { "name": "Architecture & Design", "effort": "medium" },
+    { "name": "Testing & Coverage", "effort": "medium" },
+    { "name": "Dependencies & Integration", "effort": "low" }
+  ]
 }`;
+}
 
 const VALID_TEAM_SIZES = new Set([1, 3, 5, 7]);
 const VALID_EFFORTS = new Set(['low', 'medium', 'high']);
 const VALID_PR_TYPES = new Set(['feature', 'bugfix', 'refactor', 'docs', 'test', 'chore', 'rename']);
 
+function parseAgentPicks(
+  raw: unknown,
+  availableNames: Set<string>,
+): AgentPick[] | null {
+  if (!Array.isArray(raw)) return null;
+
+  const picks: AgentPick[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') return null;
+    const name = typeof entry.name === 'string' ? entry.name : '';
+    const effort = typeof entry.effort === 'string' ? entry.effort : '';
+    if (!availableNames.has(name) || !VALID_EFFORTS.has(effort)) return null;
+    picks.push({ name, effort: effort as EffortLevel });
+  }
+
+  if (picks.length === 0) return null;
+
+  return picks;
+}
+
 export async function runPlanner(
   client: ClaudeClient,
   diff: ParsedDiff,
   prContext?: PrContext,
+  customReviewers?: ReviewerAgent[],
 ): Promise<PlannerResult | null> {
   let timeoutId: ReturnType<typeof setTimeout>;
   const timeoutPromise = new Promise<never>((_, reject) => {
@@ -290,9 +355,19 @@ export async function runPlanner(
   });
 
   try {
+    const pool = [...AGENT_POOL];
+    for (const custom of (customReviewers || [])) {
+      if (!pool.some(p => p.name === custom.name)) {
+        pool.push(custom);
+      }
+    }
+    const availableNames = new Set(pool.map(a => a.name));
+    const agentNames = pool.map(a => a.name);
+    const systemPrompt = buildPlannerSystemPrompt(agentNames);
+
     const userMessage = buildPlannerSummary(diff, prContext);
     const response = await Promise.race([
-      client.sendMessage(PLANNER_SYSTEM_PROMPT, userMessage, { effort: 'low' }),
+      client.sendMessage(systemPrompt, userMessage, { effort: 'high' }),
       timeoutPromise,
     ]);
     clearTimeout(timeoutId!);
@@ -300,23 +375,50 @@ export async function runPlanner(
     const jsonText = extractJSON(response.content);
     const parsed = JSON.parse(jsonText);
 
-    const teamSize = parsed.teamSize;
+    let teamSize = parsed.teamSize;
     if (!VALID_TEAM_SIZES.has(teamSize)) {
       core.warning(`Planner returned invalid teamSize ${teamSize} — falling back to heuristic`);
       return null;
     }
 
-    const reviewerEffort = parsed.reviewerEffort;
     const judgeEffort = parsed.judgeEffort;
-    if (!VALID_EFFORTS.has(reviewerEffort) || !VALID_EFFORTS.has(judgeEffort)) {
-      core.warning('Planner returned invalid effort values — falling back to heuristic');
+    if (!VALID_EFFORTS.has(judgeEffort)) {
+      core.warning('Planner returned invalid judgeEffort — falling back to heuristic');
       return null;
     }
+
+    // Parse reviewerEffort as fallback (backward compat)
+    const reviewerEffortRaw = parsed.reviewerEffort;
+    const reviewerEffort: EffortLevel = VALID_EFFORTS.has(reviewerEffortRaw)
+      ? (reviewerEffortRaw as EffortLevel)
+      : 'medium';
 
     const prTypeRaw = typeof parsed.prType === 'string' ? parsed.prType : 'unknown';
     const prType = VALID_PR_TYPES.has(prTypeRaw) ? prTypeRaw : 'unknown';
 
-    return { teamSize, reviewerEffort, judgeEffort, prType };
+    // Parse agent picks
+    const agents = parseAgentPicks(parsed.agents, availableNames);
+    if (agents) {
+      // Trust agents array length over teamSize when they differ
+      const validSizes = [1, 3, 5, 7];
+      const closestValid = validSizes.reduce((prev, curr) =>
+        Math.abs(curr - agents.length) < Math.abs(prev - agents.length) ? curr : prev,
+      );
+      if (agents.length !== teamSize) {
+        core.info(`Planner agents.length (${agents.length}) differs from teamSize (${teamSize}), using closest valid size ${closestValid}`);
+        teamSize = closestValid;
+      }
+    }
+
+    // Parse language and context
+    const language = typeof parsed.language === 'string' && parsed.language.trim()
+      ? parsed.language.trim().toLowerCase()
+      : undefined;
+    const context = typeof parsed.context === 'string' && parsed.context.trim()
+      ? parsed.context.trim()
+      : undefined;
+
+    return { teamSize, reviewerEffort, judgeEffort, prType, agents: agents ?? undefined, language, context };
   } catch (error) {
     clearTimeout(timeoutId!);
     core.warning(`Planner failed: ${error} — falling back to heuristic team selection`);
@@ -353,10 +455,10 @@ export async function runReview(
       onProgress({ phase: 'planning', rawFindingCount: 0 });
     }
     const plannerStart = Date.now();
-    plannerResult = await runPlanner(clients.planner, diff, prContext);
+    plannerResult = await runPlanner(clients.planner, diff, prContext, config.reviewers);
     const plannerDurationMs = Date.now() - plannerStart;
     if (plannerResult) {
-      team = selectTeam(diff, config, config.reviewers, plannerResult.teamSize);
+      team = selectTeam(diff, config, config.reviewers, plannerResult.teamSize, plannerResult.agents);
       core.info(`Planner: ${plannerResult.teamSize} agents, reviewer: ${plannerResult.reviewerEffort}, judge: ${plannerResult.judgeEffort} (${plannerResult.prType})`);
       if (plannerResult.teamSize === 1) {
         const totalLines = diff.totalAdditions + diff.totalDeletions;
@@ -373,7 +475,13 @@ export async function runReview(
   }
 
   const memoryContext = memory ? buildMemoryContext(memory) : '';
-  const reviewerEffort = plannerResult?.reviewerEffort;
+  const agentEffortMap = new Map<string, EffortLevel>();
+  if (plannerResult?.agents) {
+    for (const pick of plannerResult.agents) {
+      agentEffortMap.set(pick.name, pick.effort);
+    }
+  }
+  const defaultReviewerEffort = plannerResult?.reviewerEffort;
   const judgeEffort = plannerResult?.judgeEffort ?? 'high';
 
   const passes = config.review_passes ?? 1;
@@ -390,11 +498,12 @@ export async function runReview(
     core.info(`Running ${team.agents.length} reviewer agents with ${passes} passes each (multi-pass mode)...`);
     for (const agent of team.agents) {
       const startTime = Date.now();
+      const agentEffort = agentEffortMap.get(agent.name) ?? defaultReviewerEffort;
       const passResults = await Promise.allSettled(
         Array.from({ length: passes }, () => {
           const shuffledDiff = shuffleDiffFiles(diff);
           const shuffledRawDiff = rebuildRawDiff(shuffledDiff);
-          return runReviewerAgent(clients.reviewer, config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, reviewerEffort);
+          return runReviewerAgent(clients.reviewer, config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, agentEffort, plannerResult?.language, plannerResult?.context);
         })
       );
 
@@ -483,7 +592,8 @@ export async function runReview(
           Array.from({ length: passes }, () => {
             const shuffledDiff = shuffleDiffFiles(diff);
             const shuffledRawDiff = rebuildRawDiff(shuffledDiff);
-            return runReviewerAgent(clients.reviewer, config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, reviewerEffort);
+            const retryEffort = agentEffortMap.get(agent.name) ?? defaultReviewerEffort;
+            return runReviewerAgent(clients.reviewer, config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, retryEffort, plannerResult?.language, plannerResult?.context);
           })
         );
 
@@ -544,7 +654,8 @@ export async function runReview(
     core.info(`Running ${team.agents.length} reviewer agents in parallel...`);
     const agentPromises = team.agents.map(agent => {
       const startTime = Date.now();
-      return runReviewerAgent(clients.reviewer, config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, reviewerEffort)
+      const agentEffort = agentEffortMap.get(agent.name) ?? defaultReviewerEffort;
+      return runReviewerAgent(clients.reviewer, config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, agentEffort, plannerResult?.language, plannerResult?.context)
         .then(agentResult => {
           completedCount++;
           agentResponseLengths.set(agent.name, agentResult.responseLength);
@@ -624,7 +735,8 @@ export async function runReview(
 
       const retryPromises = agentsToRetry.map(agent => {
         const startTime = Date.now();
-        return runReviewerAgent(clients.reviewer, config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, reviewerEffort)
+        const retryEffort = agentEffortMap.get(agent.name) ?? defaultReviewerEffort;
+        return runReviewerAgent(clients.reviewer, config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, retryEffort, plannerResult?.language, plannerResult?.context)
           .then(agentResult => ({ agent, agentResult, durationMs: Date.now() - startTime }))
           .catch(() => ({ agent, agentResult: null as AgentResult | null, durationMs: Date.now() - startTime }));
       });
@@ -837,9 +949,11 @@ async function runReviewerAgent(
   prContext?: PrContext,
   memoryContext?: string,
   linkedIssues?: LinkedIssue[],
-  effort?: 'low' | 'medium' | 'high',
+  effort?: EffortLevel,
+  language?: string,
+  context?: string,
 ): Promise<AgentResult> {
-  const systemPrompt = buildReviewerSystemPrompt(reviewer, config);
+  const systemPrompt = buildReviewerSystemPrompt(reviewer, config, language, context);
   const userMessage = buildReviewerUserMessage(rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues);
 
   const options = effort ? { effort } : undefined;
@@ -848,10 +962,66 @@ async function runReviewerAgent(
   return { findings, responseLength: response.content.length };
 }
 
-export function buildReviewerSystemPrompt(reviewer: ReviewerAgent, config: ReviewConfig): string {
+const LANGUAGE_HINTS: Record<string, Record<string, string>> = {
+  'security & safety': {
+    rust: 'Focus on unsafe blocks, ownership violations, memory safety, and FFI boundaries.',
+    typescript: 'Focus on XSS, prototype pollution, injection, and unvalidated external input.',
+    javascript: 'Focus on XSS, prototype pollution, injection, and unvalidated external input.',
+    python: 'Focus on injection, pickle deserialization, eval/exec usage, and path traversal.',
+    go: 'Focus on goroutine leaks, unsafe pointer usage, and unchecked error returns.',
+  },
+  'correctness & logic': {
+    rust: 'Watch for integer overflow, unwrap on None/Err, and lifetime-related logic errors.',
+    typescript: 'Watch for null/undefined coercion, async/await pitfalls, and type assertion abuse.',
+    javascript: 'Watch for implicit type coercion, null/undefined confusion, and async pitfalls.',
+    python: 'Watch for mutable default arguments, off-by-one in range/slice, and exception swallowing.',
+    go: 'Watch for nil pointer dereference, ignored error returns, and goroutine race conditions.',
+  },
+  'testing & coverage': {
+    rust: 'Check for missing #[test] functions, untested error paths, and missing assertion macros.',
+    typescript: 'Check for missing test cases for new code paths and proper async test handling.',
+    javascript: 'Check for missing test cases for new code paths and proper async test handling.',
+    python: 'Check for missing pytest/unittest coverage and untested exception handlers.',
+    go: 'Check for missing test functions, table-driven test coverage, and error path testing.',
+  },
+  'performance & efficiency': {
+    rust: 'Watch for unnecessary clones, allocation in hot paths, and missing iterator combinators.',
+    typescript: 'Watch for unnecessary re-renders, synchronous blocking, and O(n^2) patterns.',
+    javascript: 'Watch for synchronous blocking, O(n^2) patterns, and memory leaks from closures.',
+    python: 'Watch for N+1 queries, unnecessary list copies, and blocking I/O in async code.',
+    go: 'Watch for unnecessary allocations, string concatenation in loops, and sync.Mutex contention.',
+  },
+};
+
+function getLanguageHint(reviewerName: string, language: string): string | undefined {
+  const key = reviewerName.toLowerCase();
+  const hints = LANGUAGE_HINTS[key];
+  if (!hints) return undefined;
+  return hints[language.toLowerCase()];
+}
+
+export function buildReviewerSystemPrompt(
+  reviewer: ReviewerAgent,
+  config: ReviewConfig,
+  language?: string,
+  context?: string,
+): string {
   let prompt = `You are a code reviewer specializing in: ${reviewer.focus}
 
 Your role: ${reviewer.name}`;
+
+  if (language || context) {
+    prompt += `\n\nThis PR is primarily ${language ?? 'unknown language'} code`;
+    if (context) prompt += ` in a ${context} project`;
+    prompt += '.';
+
+    if (language) {
+      const hint = getLanguageHint(reviewer.name, language);
+      if (hint) {
+        prompt += ` ${hint}`;
+      }
+    }
+  }
 
   prompt += `
 

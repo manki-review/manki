@@ -4,6 +4,7 @@ import {
   determineVerdict,
   buildReviewerSystemPrompt,
   buildReviewerUserMessage,
+  buildPlannerSystemPrompt,
   selectTeam,
   titlesMatch,
   truncateDiff,
@@ -20,7 +21,7 @@ import {
 } from './review';
 import * as core from '@actions/core';
 import { LinkedIssue } from './github';
-import { Finding, ReviewerAgent, ReviewConfig, ParsedDiff, DiffFile, MAX_AGENT_RETRIES } from './types';
+import { Finding, ReviewerAgent, ReviewConfig, ParsedDiff, DiffFile, AgentPick, MAX_AGENT_RETRIES } from './types';
 import { runJudgeAgent } from './judge';
 import { applySuppressions } from './memory';
 
@@ -2246,7 +2247,7 @@ describe('runPlanner', () => {
     expect(client.sendMessage).toHaveBeenCalledWith(
       expect.any(String),
       expect.any(String),
-      { effort: 'low' },
+      { effort: 'high' },
     );
   });
 
@@ -2279,16 +2280,29 @@ describe('runPlanner', () => {
     expect(result).toBeNull();
   });
 
-  it('returns null when effort values are invalid', async () => {
+  it('returns null when judgeEffort is invalid', async () => {
     const client = makeClient(JSON.stringify({
       teamSize: 5,
+      reviewerEffort: 'medium',
+      judgeEffort: 'max',
+      prType: 'feature',
+    }));
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const result = await runPlanner(client, diff);
+    expect(result).toBeNull();
+  });
+
+  it('defaults reviewerEffort to medium when invalid', async () => {
+    const client = makeClient(JSON.stringify({
+      teamSize: 3,
       reviewerEffort: 'max',
       judgeEffort: 'medium',
       prType: 'feature',
     }));
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
     const result = await runPlanner(client, diff);
-    expect(result).toBeNull();
+    expect(result).not.toBeNull();
+    expect(result!.reviewerEffort).toBe('medium');
   });
 
   it('returns null when response has wrong structure', async () => {
@@ -2533,5 +2547,379 @@ describe('selectTeam with teamSizeOverride', () => {
     const roster = selectTeam(diff, config, undefined, 5);
     expect(roster.agents).toHaveLength(5);
     expect(roster.agents.map(a => a.name)).toContain('Testing & Coverage');
+  });
+
+  it('uses planner agent picks when provided', () => {
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const config = makeConfig();
+    const picks: AgentPick[] = [
+      { name: 'Security & Safety', effort: 'high' },
+      { name: 'Testing & Coverage', effort: 'medium' },
+      { name: 'Correctness & Logic', effort: 'low' },
+    ];
+    const roster = selectTeam(diff, config, undefined, 3, picks);
+    expect(roster.agents).toHaveLength(3);
+    expect(roster.agents.map(a => a.name)).toEqual([
+      'Security & Safety',
+      'Testing & Coverage',
+      'Correctness & Logic',
+    ]);
+    expect(roster.level).toBe('small');
+  });
+
+  it('falls back to heuristic when agent picks contain unknown names', () => {
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const config = makeConfig();
+    const picks: AgentPick[] = [
+      { name: 'Nonexistent Agent', effort: 'high' },
+      { name: 'Another Fake', effort: 'medium' },
+      { name: 'Not Real', effort: 'low' },
+    ];
+    const roster = selectTeam(diff, config, undefined, 3, picks);
+    // Should fall through to heuristic since no picks resolved
+    expect(roster.agents).toHaveLength(3);
+    expect(roster.agents.map(a => a.name)).toContain('Security & Safety');
+  });
+
+  it('includes custom reviewers in planner agent picks', () => {
+    const custom: ReviewerAgent = { name: 'Protocol Expert', focus: 'protocol compliance' };
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const config = makeConfig();
+    const picks: AgentPick[] = [
+      { name: 'Security & Safety', effort: 'high' },
+      { name: 'Protocol Expert', effort: 'medium' },
+      { name: 'Correctness & Logic', effort: 'low' },
+    ];
+    const roster = selectTeam(diff, config, [custom], 3, picks);
+    expect(roster.agents).toHaveLength(3);
+    expect(roster.agents.map(a => a.name)).toContain('Protocol Expert');
+  });
+});
+
+describe('buildPlannerSystemPrompt', () => {
+  it('lists all agent names in the prompt', () => {
+    const names = ['Security & Safety', 'Correctness & Logic', 'Custom Agent'];
+    const prompt = buildPlannerSystemPrompt(names);
+    expect(prompt).toContain('"Security & Safety"');
+    expect(prompt).toContain('"Correctness & Logic"');
+    expect(prompt).toContain('"Custom Agent"');
+  });
+
+  it('includes agents array in the example output', () => {
+    const prompt = buildPlannerSystemPrompt(['A']);
+    expect(prompt).toContain('"agents"');
+    expect(prompt).toContain('"language"');
+    expect(prompt).toContain('"context"');
+  });
+
+  it('does not include reviewerEffort in required output', () => {
+    const prompt = buildPlannerSystemPrompt(['A']);
+    // The word "reviewerEffort" should not appear as a required field
+    // (it may appear in the example output but not in the "Decide" section)
+    expect(prompt).not.toContain('reviewerEffort:');
+  });
+});
+
+describe('runPlanner with agents and language', () => {
+  const makeClient = (response: string) => ({
+    sendMessage: jest.fn().mockResolvedValue({ content: response }),
+  } as unknown as import('./claude').ClaudeClient);
+
+  it('parses agents array, language, and context from planner response', async () => {
+    const response = JSON.stringify({
+      teamSize: 3,
+      judgeEffort: 'high',
+      prType: 'bugfix',
+      language: 'Rust',
+      context: 'blockchain consensus library',
+      agents: [
+        { name: 'Security & Safety', effort: 'high' },
+        { name: 'Correctness & Logic', effort: 'high' },
+        { name: 'Testing & Coverage', effort: 'medium' },
+      ],
+    });
+
+    const client = makeClient(response);
+    const diff = makeDiff({ totalAdditions: 50, totalDeletions: 10 });
+    const result = await runPlanner(client, diff);
+
+    expect(result).not.toBeNull();
+    expect(result!.agents).toHaveLength(3);
+    expect(result!.agents![0]).toEqual({ name: 'Security & Safety', effort: 'high' });
+    expect(result!.language).toBe('rust');
+    expect(result!.context).toBe('blockchain consensus library');
+  });
+
+  it('falls back gracefully when agents array has invalid names', async () => {
+    const response = JSON.stringify({
+      teamSize: 3,
+      reviewerEffort: 'medium',
+      judgeEffort: 'medium',
+      prType: 'feature',
+      agents: [
+        { name: 'Nonexistent Agent', effort: 'high' },
+        { name: 'Security & Safety', effort: 'medium' },
+        { name: 'Correctness & Logic', effort: 'low' },
+      ],
+    });
+
+    const client = makeClient(response);
+    const diff = makeDiff({ totalAdditions: 50, totalDeletions: 10 });
+    const result = await runPlanner(client, diff);
+
+    // Invalid agent name means agents array is null, falls back to reviewerEffort
+    expect(result).not.toBeNull();
+    expect(result!.agents).toBeUndefined();
+    expect(result!.reviewerEffort).toBe('medium');
+  });
+
+  it('falls back when agents array has invalid effort values', async () => {
+    const response = JSON.stringify({
+      teamSize: 3,
+      reviewerEffort: 'low',
+      judgeEffort: 'low',
+      prType: 'chore',
+      agents: [
+        { name: 'Security & Safety', effort: 'maximum' },
+        { name: 'Correctness & Logic', effort: 'low' },
+        { name: 'Architecture & Design', effort: 'medium' },
+      ],
+    });
+
+    const client = makeClient(response);
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const result = await runPlanner(client, diff);
+
+    expect(result).not.toBeNull();
+    expect(result!.agents).toBeUndefined();
+  });
+
+  it('adjusts teamSize to match agents array length', async () => {
+    const response = JSON.stringify({
+      teamSize: 3,
+      judgeEffort: 'medium',
+      prType: 'feature',
+      agents: [
+        { name: 'Security & Safety', effort: 'high' },
+        { name: 'Correctness & Logic', effort: 'high' },
+        { name: 'Architecture & Design', effort: 'medium' },
+        { name: 'Testing & Coverage', effort: 'medium' },
+        { name: 'Performance & Efficiency', effort: 'low' },
+      ],
+    });
+
+    const client = makeClient(response);
+    const diff = makeDiff({ totalAdditions: 50, totalDeletions: 10 });
+    const result = await runPlanner(client, diff);
+
+    expect(result).not.toBeNull();
+    expect(result!.teamSize).toBe(5);
+    expect(result!.agents).toHaveLength(5);
+  });
+
+  it('omits language and context when not provided', async () => {
+    const response = JSON.stringify({
+      teamSize: 3,
+      reviewerEffort: 'low',
+      judgeEffort: 'low',
+      prType: 'docs',
+    });
+
+    const client = makeClient(response);
+    const diff = makeDiff({ totalAdditions: 5, totalDeletions: 2 });
+    const result = await runPlanner(client, diff);
+
+    expect(result).not.toBeNull();
+    expect(result!.language).toBeUndefined();
+    expect(result!.context).toBeUndefined();
+    expect(result!.agents).toBeUndefined();
+  });
+
+  it('includes custom reviewers in available agent names', async () => {
+    const response = JSON.stringify({
+      teamSize: 3,
+      judgeEffort: 'medium',
+      prType: 'feature',
+      agents: [
+        { name: 'Security & Safety', effort: 'high' },
+        { name: 'Protocol Expert', effort: 'medium' },
+        { name: 'Correctness & Logic', effort: 'low' },
+      ],
+    });
+
+    const custom: ReviewerAgent = { name: 'Protocol Expert', focus: 'protocol compliance' };
+    const client = makeClient(response);
+    const diff = makeDiff({ totalAdditions: 50, totalDeletions: 10 });
+    const result = await runPlanner(client, diff, undefined, [custom]);
+
+    expect(result).not.toBeNull();
+    expect(result!.agents).toHaveLength(3);
+    expect(result!.agents!.map(a => a.name)).toContain('Protocol Expert');
+  });
+
+  it('passes planner system prompt containing available agent names', async () => {
+    const response = JSON.stringify({
+      teamSize: 3,
+      reviewerEffort: 'low',
+      judgeEffort: 'low',
+      prType: 'chore',
+    });
+
+    const custom: ReviewerAgent = { name: 'Domain Expert', focus: 'domain logic' };
+    const client = makeClient(response);
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    await runPlanner(client, diff, undefined, [custom]);
+
+    const systemPrompt = (client.sendMessage as jest.Mock).mock.calls[0][0] as string;
+    expect(systemPrompt).toContain('"Security & Safety"');
+    expect(systemPrompt).toContain('"Domain Expert"');
+    expect(systemPrompt).toContain('"agents"');
+  });
+});
+
+describe('buildReviewerSystemPrompt with language and context', () => {
+  const reviewer: ReviewerAgent = {
+    name: 'Security & Safety',
+    focus: 'Vulnerabilities, injection, auth, data leaks',
+  };
+
+  it('includes language and context when provided', () => {
+    const prompt = buildReviewerSystemPrompt(reviewer, makeConfig(), 'rust', 'blockchain consensus library');
+    expect(prompt).toContain('This PR is primarily rust code in a blockchain consensus library project.');
+  });
+
+  it('includes language-specific hint for security + rust', () => {
+    const prompt = buildReviewerSystemPrompt(reviewer, makeConfig(), 'rust');
+    expect(prompt).toContain('unsafe blocks');
+    expect(prompt).toContain('memory safety');
+  });
+
+  it('includes language-specific hint for security + typescript', () => {
+    const prompt = buildReviewerSystemPrompt(reviewer, makeConfig(), 'typescript');
+    expect(prompt).toContain('XSS');
+    expect(prompt).toContain('prototype pollution');
+  });
+
+  it('includes language without context', () => {
+    const prompt = buildReviewerSystemPrompt(reviewer, makeConfig(), 'python');
+    expect(prompt).toContain('This PR is primarily python code.');
+    expect(prompt).not.toContain('project.');
+  });
+
+  it('omits language section when not provided', () => {
+    const prompt = buildReviewerSystemPrompt(reviewer, makeConfig());
+    expect(prompt).not.toContain('This PR is primarily');
+  });
+
+  it('includes testing hints for testing agent + rust', () => {
+    const testReviewer: ReviewerAgent = { name: 'Testing & Coverage', focus: 'Missing tests' };
+    const prompt = buildReviewerSystemPrompt(testReviewer, makeConfig(), 'rust');
+    expect(prompt).toContain('#[test]');
+  });
+
+  it('includes correctness hints for correctness agent + typescript', () => {
+    const correctnessReviewer: ReviewerAgent = { name: 'Correctness & Logic', focus: 'Edge cases' };
+    const prompt = buildReviewerSystemPrompt(correctnessReviewer, makeConfig(), 'typescript');
+    expect(prompt).toContain('null/undefined coercion');
+  });
+
+  it('includes performance hints for performance agent + go', () => {
+    const perfReviewer: ReviewerAgent = { name: 'Performance & Efficiency', focus: 'Allocations' };
+    const prompt = buildReviewerSystemPrompt(perfReviewer, makeConfig(), 'go');
+    expect(prompt).toContain('sync.Mutex');
+  });
+
+  it('places language section before review instructions', () => {
+    const prompt = buildReviewerSystemPrompt(reviewer, makeConfig(), 'rust');
+    const langIdx = prompt.indexOf('This PR is primarily');
+    const reviewIdx = prompt.indexOf('Review the provided pull request diff');
+    expect(langIdx).toBeLessThan(reviewIdx);
+  });
+
+  it('places custom instructions after language hints', () => {
+    const config = makeConfig({ instructions: 'Check for Dash protocol compliance.' });
+    const prompt = buildReviewerSystemPrompt(reviewer, config, 'rust');
+    const langIdx = prompt.indexOf('This PR is primarily');
+    const instrIdx = prompt.indexOf('Check for Dash protocol compliance.');
+    expect(langIdx).toBeLessThan(instrIdx);
+  });
+});
+
+describe('per-agent effort in runReview', () => {
+  const mockedRunJudgeAgent = jest.mocked(runJudgeAgent);
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'All clear.' });
+  });
+
+  it('passes per-agent effort from planner picks to reviewer agents', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 3,
+      judgeEffort: 'medium',
+      prType: 'bugfix',
+      language: 'typescript',
+      agents: [
+        { name: 'Security & Safety', effort: 'high' },
+        { name: 'Architecture & Design', effort: 'low' },
+        { name: 'Correctness & Logic', effort: 'medium' },
+      ],
+    });
+
+    const clients: ReviewClients = {
+      reviewer: {
+        sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
+      } as unknown as import('./claude').ClaudeClient,
+      judge: {
+        sendMessage: jest.fn(),
+      } as unknown as import('./claude').ClaudeClient,
+      planner: {
+        sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
+      } as unknown as import('./claude').ClaudeClient,
+    };
+
+    const config = makeConfig({ review_level: 'auto' });
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+
+    const result = await runReview(clients, config, diff, 'raw diff', 'repo context');
+    expect(result.reviewComplete).toBe(true);
+
+    const reviewerCalls = (clients.reviewer.sendMessage as jest.Mock).mock.calls;
+    // Each agent should get its own effort level
+    const efforts = reviewerCalls.map((call: unknown[]) => (call[2] as { effort: string })?.effort);
+    expect(efforts).toContain('high');
+    expect(efforts).toContain('low');
+    expect(efforts).toContain('medium');
+  });
+
+  it('falls back to uniform reviewerEffort when agents array is missing', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 3,
+      reviewerEffort: 'high',
+      judgeEffort: 'medium',
+      prType: 'feature',
+    });
+
+    const clients: ReviewClients = {
+      reviewer: {
+        sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
+      } as unknown as import('./claude').ClaudeClient,
+      judge: {
+        sendMessage: jest.fn(),
+      } as unknown as import('./claude').ClaudeClient,
+      planner: {
+        sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
+      } as unknown as import('./claude').ClaudeClient,
+    };
+
+    const config = makeConfig({ review_level: 'auto' });
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+
+    await runReview(clients, config, diff, 'raw diff', 'repo context');
+
+    const reviewerCalls = (clients.reviewer.sendMessage as jest.Mock).mock.calls;
+    for (const call of reviewerCalls) {
+      expect(call[2]).toEqual({ effort: 'high' });
+    }
   });
 });
