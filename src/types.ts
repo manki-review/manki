@@ -28,6 +28,7 @@ export interface ReviewResult {
   resolveThreads?: Array<{ threadId: string; reason: string }>;
   plannerResult?: PlannerResult;
   failedAgents?: string[];
+  agentFailureReasons?: Record<string, string>;
   staticDedupCount?: number;
   llmDedupCount?: number;
   suppressionCount?: number;
@@ -133,6 +134,7 @@ export interface ReviewStats {
     name: string;
     findingsRaw: number;
     findingsKept: number;
+    failureReason?: string;
   }>;
 
   // Judge calibration

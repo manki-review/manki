@@ -137,7 +137,7 @@ export class ClaudeClient {
         child.kill('SIGTERM');
         killTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, 5000);
         killTimer.unref();
-      }, 300000);
+      }, 600000);
       timer.unref();
 
       const MAX_OUTPUT = 50 * 1024 * 1024; // 50 MB
@@ -169,7 +169,11 @@ export class ClaudeClient {
         stdout += stdoutDecoder.end();
         stderr += stderrDecoder.end();
         if (timedOut) {
-          reject(new Error('Claude CLI timed out after 300s'));
+          const stderrSnippet = stderr.slice(0, 500);
+          if (stderrSnippet) {
+            core.warning(`Claude CLI stderr at timeout: ${stderrSnippet}`);
+          }
+          reject(new Error(`Claude CLI timed out after 600s${stderrSnippet ? `: ${stderrSnippet}` : ''}`));
           return;
         }
         if (outputExceeded) {

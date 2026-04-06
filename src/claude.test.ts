@@ -345,6 +345,85 @@ describe('sendViaOAuth — error paths', () => {
     expect(proc.stdin.once).toHaveBeenCalledWith('drain', expect.any(Function));
   });
 
+  it('rejects with 600s timeout and includes stderr snippet', async () => {
+    jest.useFakeTimers();
+    try {
+      const proc = {
+        stdin: { write: jest.fn().mockReturnValue(true), end: jest.fn(), on: jest.fn() },
+        stdout: { on: jest.fn() },
+        stderr: { on: jest.fn() },
+        on: jest.fn(),
+        kill: jest.fn(),
+      };
+
+      let stderrCb: ((data: Buffer) => void) | undefined;
+      let closeCb: ((code: number | null, signal: string | null) => void) | undefined;
+
+      proc.stdout.on.mockImplementation(() => {});
+      proc.stderr.on.mockImplementation((event: string, cb: (data: Buffer) => void) => {
+        if (event === 'data') stderrCb = cb;
+      });
+      proc.on.mockImplementation((event: string, cb: (...args: unknown[]) => void) => {
+        if (event === 'close') closeCb = cb as typeof closeCb;
+      });
+
+      mockSpawn.mockReturnValue(proc as unknown as ReturnType<typeof spawn>);
+      const client = new ClaudeClient({ oauthToken: 'token', model: 'claude-opus-4-6' });
+
+      const promise = client.sendMessage('sys', 'user');
+
+      // Flush microtasks so ensureCLI resolves and spawn is called
+      await jest.advanceTimersByTimeAsync(0);
+
+      // Emit stderr before timeout
+      stderrCb!(Buffer.from('some diagnostic output'));
+
+      // Fire the 600s timeout
+      await jest.advanceTimersByTimeAsync(600000);
+
+      // Simulate process exit after SIGTERM
+      closeCb!(null, 'SIGTERM');
+
+      await expect(promise).rejects.toThrow('Claude CLI timed out after 600s: some diagnostic output');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('rejects with plain 600s timeout when stderr is empty', async () => {
+    jest.useFakeTimers();
+    try {
+      const proc = {
+        stdin: { write: jest.fn().mockReturnValue(true), end: jest.fn(), on: jest.fn() },
+        stdout: { on: jest.fn() },
+        stderr: { on: jest.fn() },
+        on: jest.fn(),
+        kill: jest.fn(),
+      };
+
+      let closeCb: ((code: number | null, signal: string | null) => void) | undefined;
+
+      proc.stdout.on.mockImplementation(() => {});
+      proc.stderr.on.mockImplementation(() => {});
+      proc.on.mockImplementation((event: string, cb: (...args: unknown[]) => void) => {
+        if (event === 'close') closeCb = cb as typeof closeCb;
+      });
+
+      mockSpawn.mockReturnValue(proc as unknown as ReturnType<typeof spawn>);
+      const client = new ClaudeClient({ oauthToken: 'token', model: 'claude-opus-4-6' });
+
+      const promise = client.sendMessage('sys', 'user');
+
+      await jest.advanceTimersByTimeAsync(0);
+      await jest.advanceTimersByTimeAsync(600000);
+      closeCb!(null, 'SIGTERM');
+
+      await expect(promise).rejects.toThrow('Claude CLI timed out after 600s');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('handles stdin.write throwing an error', async () => {
     const proc = {
       stdin: {
