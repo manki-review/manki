@@ -117,9 +117,9 @@
           <div class="step-number">2</div>
           <div class="step-content">
             <h3>Add your API key</h3>
-            <p>Set your Anthropic API key as a repository secret. Claude Max also works as an alternative.</p>
+            <p>Set your Claude Code OAuth token as a repository secret. An Anthropic API key also works as an alternative.</p>
             <div class="install-block">
-              <pre><code>gh secret set ANTHROPIC_API_KEY --repo &lt;owner&gt;/&lt;repo&gt;</code></pre>
+              <pre><code>gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo &lt;owner&gt;/&lt;repo&gt;</code></pre>
             </div>
           </div>
         </div>
@@ -130,23 +130,46 @@
             <p>Create <code>.github/workflows/manki.yml</code> in your repository:</p>
             <div class="install-block">
               <button class="copy-btn" data-copy="#install-code">Copy</button>
-              <pre><code id="install-code">name: Code Review
+              <pre><code id="install-code">name: Manki
+
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize]
+  pull_request_review:
+    types: [submitted, dismissed]
+  issue_comment:
+    types: [created, edited]
+  pull_request_review_comment:
+    types: [created]
 
 permissions:
   contents: read
   pull-requests: write
+  issues: write
+  id-token: write
+  actions: read
 
 jobs:
   review:
+    if: github.actor != 'manki-review[bot]'
+    concurrency:
+      group: manki-${{ github.event_name }}-${{ github.event.comment.id || github.event.pull_request.number || github.event.issue.number || github.run_id }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: xdustinface/manki@v4
+      - uses: actions/setup-node@v4
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}</code></pre>
+          node-version: '20'
+          cache: 'npm'
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      - name: Manki Review
+        uses: xdustinface/manki@v4
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}</code></pre>
             </div>
           </div>
         </div>
