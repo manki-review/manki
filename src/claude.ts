@@ -7,6 +7,41 @@ import * as core from '@actions/core';
 
 const execFileAsync = promisify(execFile);
 
+export const STALE_TIMEOUT_MS = 90_000;
+
+/** Strip GitHub Actions workflow commands to prevent injection when logging CLI output. */
+export function sanitizeLogOutput(text: string): string {
+  // Matches any line segment starting with :: followed by a letter — covers all workflow commands
+  // regardless of parameter format (e.g. ::error file=foo.ts,line=5::message)
+  return text.replace(/::[a-z].*$/gim, '[redacted-workflow-cmd]');
+}
+
+/** Parse a single JSON-stream line emitted by Claude CLI and return a text delta or final result. */
+function processJsonLine(line: string): { text: string; replace: boolean } {
+  try {
+    const event = JSON.parse(line);
+    if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta' && event.delta.text) {
+      return { text: event.delta.text, replace: false };
+    }
+    if (event.type === 'result' && typeof event.result === 'string') {
+      return { text: event.result, replace: true };
+    }
+  } catch {
+    // Non-JSON line (e.g. verbose debug output) — skip silently
+  }
+  return { text: '', replace: false };
+}
+
+/** Build diagnostic snippets for timeout/stale error messages. */
+function buildTimeoutDiagnostics(lastStdoutChunk: string, stderrText: string): string {
+  const stdoutSnippet = sanitizeLogOutput(lastStdoutChunk.slice(-500));
+  const stderrSnippet = sanitizeLogOutput(stderrText.slice(0, 500));
+  const parts: string[] = [];
+  if (stdoutSnippet) parts.push(`Last stdout: ${stdoutSnippet}`);
+  if (stderrSnippet) parts.push(`stderr: ${stderrSnippet}`);
+  return parts.join('. ');
+}
+
 let cliInstallPromise: Promise<string> | null = null;
 
 export function resetCLIInstallPromise(): void {
@@ -97,7 +132,9 @@ export class ClaudeClient {
       // -p enables pipe mode — reads prompt from stdin when no argument follows
       const args = [
         '-p',
-        '--output-format', 'text',
+        '--verbose',
+        '--output-format', 'stream-json',
+        '--include-partial-messages',
         '--model', this.model,
       ];
 
@@ -115,36 +152,56 @@ export class ClaudeClient {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 
-      let stdout = '';
+      let output = '';
+      let jsonBuffer = '';
       let stderr = '';
       let timedOut = false;
+      let stale = false;
       let outputExceeded = false;
       let settled = false;
       let killTimer: NodeJS.Timeout | undefined;
+      let staleKillTimer: NodeJS.Timeout | undefined;
       let outputKillTimer: NodeJS.Timeout | undefined;
       // Only set in the catch block below; clearTimeout(undefined) is a no-op on the normal path
       let stdinKillTimer: NodeJS.Timeout | undefined;
+      let lastStdoutChunk = '';
+      let rawBytes = 0;
 
       const clearAllTimers = (): void => {
         clearTimeout(timer);
+        clearTimeout(staleTimer);
         if (killTimer) clearTimeout(killTimer);
+        if (staleKillTimer) clearTimeout(staleKillTimer);
         if (outputKillTimer) clearTimeout(outputKillTimer);
         if (stdinKillTimer) clearTimeout(stdinKillTimer);
       };
 
       const timer = setTimeout(() => {
         timedOut = true;
+        clearTimeout(staleTimer);
         child.kill('SIGTERM');
         killTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, 5000);
         killTimer.unref();
       }, 600000);
       timer.unref();
 
+      const handleStale = (): void => {
+        if (outputExceeded || timedOut) return;
+        stale = true;
+        clearTimeout(timer);
+        child.kill('SIGTERM');
+        staleKillTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, 5000);
+        staleKillTimer.unref();
+      };
+      let staleTimer = setTimeout(handleStale, STALE_TIMEOUT_MS);
+      staleTimer.unref();
+
       const MAX_OUTPUT = 50 * 1024 * 1024; // 50 MB
       const killOnOutputExceeded = (): void => {
         if (outputExceeded) return;
         outputExceeded = true;
         clearTimeout(timer);
+        clearTimeout(staleTimer);
         child.kill('SIGTERM');
         outputKillTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, 5000);
         outputKillTimer.unref();
@@ -152,28 +209,71 @@ export class ClaudeClient {
       const stdoutDecoder = new StringDecoder('utf8');
       const stderrDecoder = new StringDecoder('utf8');
       child.stdout.on('data', (data: Buffer) => {
-        if (outputExceeded || settled) return;
-        stdout += stdoutDecoder.write(data);
-        if (stdout.length + stderr.length > MAX_OUTPUT) killOnOutputExceeded();
+        if (outputExceeded || settled || stale) return;
+        clearTimeout(staleTimer);
+        staleTimer = setTimeout(handleStale, STALE_TIMEOUT_MS);
+        staleTimer.unref();
+
+        rawBytes += data.length;
+        if (rawBytes + stderr.length > MAX_OUTPUT) { killOnOutputExceeded(); return; }
+
+        // Decode once — avoids double decoding and multi-byte corruption at chunk boundaries
+        const chunk = stdoutDecoder.write(data);
+        if (chunk.length >= 500) {
+          lastStdoutChunk = chunk.slice(-500);
+        } else {
+          lastStdoutChunk = (lastStdoutChunk + chunk).slice(-500);
+        }
+        jsonBuffer += chunk;
+        const lines = jsonBuffer.split('\n');
+        jsonBuffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const delta = processJsonLine(line);
+          if (delta.replace) {
+            output = delta.text;
+          } else {
+            output += delta.text;
+          }
+        }
       });
       child.stderr.on('data', (data: Buffer) => {
         if (outputExceeded || settled) return;
         stderr += stderrDecoder.write(data);
-        if (stdout.length + stderr.length > MAX_OUTPUT) killOnOutputExceeded();
+        if (rawBytes + stderr.length > MAX_OUTPUT) killOnOutputExceeded();
       });
 
       child.on('close', (code, signal) => {
         clearAllTimers();
         if (settled) return;
         settled = true;
-        stdout += stdoutDecoder.end();
-        stderr += stderrDecoder.end();
-        if (timedOut) {
-          const stderrSnippet = stderr.slice(0, 500);
-          if (stderrSnippet) {
-            core.warning(`Claude CLI stderr at timeout: ${stderrSnippet}`);
+        // Flush any remaining bytes from the decoders
+        const remaining = stdoutDecoder.end();
+        if (remaining) {
+          jsonBuffer += remaining;
+          if (jsonBuffer.trim()) {
+            const delta = processJsonLine(jsonBuffer);
+            if (delta.replace) {
+              output = delta.text;
+            } else {
+              output += delta.text;
+            }
           }
-          reject(new Error(`Claude CLI timed out after 600s${stderrSnippet ? `: ${stderrSnippet}` : ''}`));
+        }
+        stderr += stderrDecoder.end();
+        if (stale) {
+          const details = buildTimeoutDiagnostics(lastStdoutChunk, stderr);
+          const msg = `Claude CLI stale — no output for ${STALE_TIMEOUT_MS / 1000}s${details ? `. ${details}` : ''}`;
+          core.warning(msg);
+          reject(new Error(msg));
+          return;
+        }
+        if (timedOut) {
+          const details = buildTimeoutDiagnostics(lastStdoutChunk, stderr);
+          const msg = `Claude CLI timed out after 600s${details ? `. ${details}` : ''}`;
+          core.warning(msg);
+          reject(new Error(msg));
           return;
         }
         if (outputExceeded) {
@@ -186,10 +286,8 @@ export class ClaudeClient {
           reject(new Error(`Claude CLI invocation failed (${msg})`));
           return;
         }
-        const content = stdout.trim();
-        core.startGroup('Claude CLI response');
-        core.info(content);
-        core.endGroup();
+        const content = output.trim();
+        core.debug(sanitizeLogOutput(content.slice(0, 200)));
         resolve({ content });
       });
 
@@ -258,9 +356,7 @@ export class ClaudeClient {
 
     const textBlocks = response.content.filter((b) => b.type === 'text');
     const content = textBlocks.map((b) => 'text' in b ? b.text : '').join('\n');
-    core.startGroup('Claude API response');
-    core.info(content);
-    core.endGroup();
+    core.debug(sanitizeLogOutput(content.slice(0, 200)));
 
     return { content };
   }
