@@ -12,6 +12,8 @@ export const HIGH_CONF_SUGGESTION_THRESHOLD = 1;
 
 export const PLANNER_TIMEOUT_MS = 30_000;
 
+const SUSPICIOUS_FAST_THRESHOLD_MS = 15_000;
+
 // Standard reviewer pool used for teamSize >= 3. TRIVIAL_VERIFIER_AGENT is
 // intentionally excluded — it is only active for the teamSize=1 path and does
 // not participate in scoring, focusAreas validation, or planner prompts.
@@ -417,7 +419,7 @@ export async function runReview(
         allFindings.push(...consistent);
 
         const durationMs = Date.now() - startTime;
-        if (consistent.length === 0 && durationMs < 15_000) {
+        if (consistent.length === 0 && durationMs < SUSPICIOUS_FAST_THRESHOLD_MS) {
           core.warning(`${agent.name}: 0 findings in ${(durationMs / 1000).toFixed(1)}s — suspiciously fast`);
         }
 
@@ -463,7 +465,7 @@ export async function runReview(
           progressFindingCount += agentResult.findings.length;
           const durationMs = Date.now() - startTime;
 
-          if (agentResult.findings.length === 0 && durationMs < 15_000) {
+          if (agentResult.findings.length === 0 && durationMs < SUSPICIOUS_FAST_THRESHOLD_MS) {
             core.warning(`${agent.name}: 0 findings in ${(durationMs / 1000).toFixed(1)}s — suspiciously fast`);
           }
 
@@ -796,8 +798,12 @@ export function parseFindings(responseText: string, reviewerName: string): Findi
 
   try {
     const parsed = JSON.parse(jsonText);
+    if (parsed === null) {
+      core.warning(`${reviewerName} returned null instead of an array (length ${responseText.length})`);
+      return [];
+    }
     if (!Array.isArray(parsed)) {
-      core.warning(`${reviewerName}: expected array but got ${typeof parsed} (response length: ${responseText.length})`);
+      core.warning(`${reviewerName} did not return an array, got ${typeof parsed} (length ${responseText.length})`);
       return [];
     }
 
