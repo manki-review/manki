@@ -1395,6 +1395,8 @@ describe('runFullReview orchestration', () => {
     const dashboardArg = jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[4];
     expect(dashboardArg?.keptSeverities).toEqual({ required: 1, suggestion: 1, nit: 1 });
     expect(dashboardArg?.droppedSeverities).toEqual({ nit: 1 });
+    expect(dashboardArg?.droppedCount).toBe(1);
+    expect(dashboardArg?.keptCount).toBe(3);
   });
 
   it('adjusts mergedDuplicates and findingsRaw for pre-judge dedup counts', async () => {

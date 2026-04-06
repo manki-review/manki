@@ -732,7 +732,7 @@ async function runFullReview(
       const kept = f.severity !== 'ignore';
       const originalSeverity = kept
         ? f.severity
-        : rawForLookup.find(r => r.title === f.title && r.file === f.file)?.severity ?? f.severity;
+        : rawForLookup.find(r => r.title === f.title && r.file === f.file && r.line === f.line)?.severity ?? f.severity;
       return {
         title: f.title,
         severity: f.severity,
