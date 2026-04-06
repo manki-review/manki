@@ -1311,6 +1311,8 @@ describe('buildDashboard', () => {
     const data: DashboardData = { phase: 'started', lineCount: 150, agentCount: 5 };
     const md = buildDashboard(data);
     expect(md).toContain('**Manki** — Review in progress');
+    expect(md).toContain('**Planner**');
+    expect(md).toContain(`${INDENT}150 lines · 5 agents`);
     expect(md).toContain('**Review**');
     expect(md).toContain(`${INDENT}reviewing with 5 agents...`);
     expect(md).toContain('**Judge**');
@@ -1515,7 +1517,7 @@ describe('buildDashboard', () => {
     const md = buildDashboard(data);
     expect(md).toContain('**Judge** — 2 kept · 6 dropped');
     expect(md).toContain(`${INDENT}kept: 1 required · 1 suggestion`);
-    expect(md).toContain(`${INDENT}dropped: 3 nit · 2 suggestion · 1 ignore`);
+    expect(md).toContain(`${INDENT}dropped: 2 suggestion · 3 nit · 1 ignore`);
   });
 
   it('omits severity breakdown lines when severities are not provided', () => {

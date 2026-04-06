@@ -1342,6 +1342,10 @@ describe('runFullReview orchestration', () => {
       ...findings,
       { severity: 'ignore' as const, title: 'Dropped', file: 'src/app.ts', line: 2, description: 'dropped', reviewers: ['security'], judgeConfidence: 'high' as const, judgeNotes: 'not relevant' },
     ];
+    const rawFindings = [
+      ...findings,
+      { severity: 'nit' as const, title: 'Dropped', file: 'src/app.ts', line: 2, description: 'dropped', reviewers: ['security'] },
+    ];
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'REQUEST_CHANGES', summary: 'Issues found',
@@ -1351,6 +1355,7 @@ describe('runFullReview orchestration', () => {
       rawFindingCount: 6,
       agentNames: ['security', 'general'],
       allJudgedFindings: allJudged,
+      rawFindings,
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
     jest.mocked(reviewModule.determineVerdict).mockReturnValue('REQUEST_CHANGES');
@@ -1385,6 +1390,11 @@ describe('runFullReview orchestration', () => {
 
     // Backwards compatibility: model field still present
     expect(statsArg!.model).toBeDefined();
+
+    // keptSeverities/droppedSeverities passed to dashboard use original severity for dropped findings
+    const dashboardArg = jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[4];
+    expect(dashboardArg?.keptSeverities).toEqual({ required: 1, suggestion: 1, nit: 1 });
+    expect(dashboardArg?.droppedSeverities).toEqual({ nit: 1 });
   });
 
   it('adjusts mergedDuplicates and findingsRaw for pre-judge dedup counts', async () => {

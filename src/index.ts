@@ -731,19 +731,31 @@ async function runFullReview(
 
     const droppedCount = rawFindingCount - result.findings.length;
 
-    const judgeDecisions = (result.allJudgedFindings || result.findings).map(f => ({
-      title: f.title,
-      severity: f.severity,
-      reasoning: f.judgeNotes || '',
-      confidence: f.judgeConfidence || 'medium',
-      kept: f.severity !== 'ignore',
-    }));
+    const allJudgedForDashboard = result.allJudgedFindings || result.findings;
+    const rawForLookup = result.rawFindings ?? allJudgedForDashboard;
+    const judgeDecisions = allJudgedForDashboard.map(f => {
+      const kept = f.severity !== 'ignore';
+      const originalSeverity = kept
+        ? f.severity
+        : rawForLookup.find(r => r.title === f.title && r.file === f.file)?.severity ?? f.severity;
+      return {
+        title: f.title,
+        severity: f.severity,
+        reasoning: f.judgeNotes || '',
+        confidence: f.judgeConfidence || 'medium',
+        kept,
+        originalSeverity,
+      };
+    });
 
     const keptSeverities: Record<string, number> = {};
     const droppedSeverities: Record<string, number> = {};
     for (const d of judgeDecisions) {
-      const bucket = d.kept ? keptSeverities : droppedSeverities;
-      bucket[d.severity] = (bucket[d.severity] ?? 0) + 1;
+      if (d.kept) {
+        keptSeverities[d.severity] = (keptSeverities[d.severity] ?? 0) + 1;
+      } else {
+        droppedSeverities[d.originalSeverity] = (droppedSeverities[d.originalSeverity] ?? 0) + 1;
+      }
     }
 
     const completeDashboard: DashboardData = {

@@ -218,10 +218,12 @@ function sanitizePrType(prType: string): string {
   return VALID_PR_TYPES.has(prType) ? prType : 'unknown';
 }
 
+const SEVERITY_ORDER = ['required', 'suggestion', 'nit', 'ignore'];
+
 function renderSeverityBreakdown(severities: Record<string, number>): string {
-  return Object.entries(severities)
-    .filter(([, count]) => count > 0)
-    .map(([severity, count]) => `${count} ${severity}`)
+  return SEVERITY_ORDER
+    .filter(s => (severities[s] ?? 0) > 0)
+    .map(s => `${severities[s]} ${s}`)
     .join(' · ');
 }
 
