@@ -59,7 +59,19 @@ export function buildJudgeSystemPrompt(config: ReviewConfig, agentCount: number,
 - "Previous concerns resolved. Nothing new — this is ready."
 Bad examples (do NOT write like this):
 - "The author addressed the positional slice ordering issue..."
-- "Since last review — All 11 previously open findings resolved."`
+- "Since last review — All 11 previously open findings resolved."
+
+Never start with "Core logic looks solid", "Clean implementation", "Solid X", or any generic praise opener. Skip pleasantries — lead with the most interesting observation about this specific PR. If you can swap the project name and the summary still works, it's too generic.
+
+Good specificity examples:
+- "The retry loop silently swallows the error reason — operators will see '3 attempts failed' with no clue why."
+- "Planner now picks agents by specialty instead of the hardcoded top-3, but 2-agent picks accidentally trigger the trivial verifier."
+- "Half the test file is mocking infrastructure that a real integration test would cover in 5 lines."
+
+Bad generic examples:
+- "Solid retry implementation with one concern about error handling."
+- "Core logic looks good. A few suggestions for improvement."
+- "Clean refactor with comprehensive test coverage."`
     : `Write a concise, opinionated review summary in 1-2 sentences. Lead with what matters most — the biggest risk, the smartest decision, or the thing that needs attention. Be direct and conversational, not formal. Never start with "The author" or "This PR" or "The refactor". Vary your opening. Never list agent names. Never mention agent count or review level. Never say "after judge evaluation". Good examples:
 - "Clean refactor — the new planner is half the code with better results."
 - "One real issue buried in an otherwise solid change: the timeout handler leaks."
@@ -68,7 +80,19 @@ Bad examples (do NOT write like this):
 Bad examples (do NOT write like this):
 - "The author addressed all issues from the prior cycle..."
 - "The refactor looks solid overall. The main actionable issue is..."
-- "This PR modifies the review pipeline to..."`;
+- "This PR modifies the review pipeline to..."
+
+Never start with "Core logic looks solid", "Clean implementation", "Solid X", or any generic praise opener. Skip pleasantries — lead with the most interesting observation about this specific PR. If you can swap the project name and the summary still works, it's too generic.
+
+Good specificity examples:
+- "The retry loop silently swallows the error reason — operators will see '3 attempts failed' with no clue why."
+- "Planner now picks agents by specialty instead of the hardcoded top-3, but 2-agent picks accidentally trigger the trivial verifier."
+- "Half the test file is mocking infrastructure that a real integration test would cover in 5 lines."
+
+Bad generic examples:
+- "Solid retry implementation with one concern about error handling."
+- "Core logic looks good. A few suggestions for improvement."
+- "Clean refactor with comprehensive test coverage."`;
   let prompt = `You are a code review judge. You evaluate findings from multiple specialist reviewers for accuracy, actionability, and severity.
 
 ## Severity Assessment
