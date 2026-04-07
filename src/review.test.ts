@@ -3266,6 +3266,51 @@ describe('runPlanner teamSize correction', () => {
     expect(result!.teamSize).toBe(2);
   });
 
+  it('accepts teamSize 2 and 4 without correction when agents match', async () => {
+    for (const size of [2, 4] as const) {
+      const agents = [
+        { name: 'Security & Safety', effort: 'high' },
+        { name: 'Correctness & Logic', effort: 'medium' },
+        { name: 'Architecture & Design', effort: 'low' },
+        { name: 'Testing & Coverage', effort: 'medium' },
+      ].slice(0, size);
+
+      const response = JSON.stringify({
+        teamSize: size,
+        judgeEffort: 'medium',
+        prType: 'feature',
+        agents,
+      });
+
+      const client = makeClient(response);
+      const diff = makeDiff({ totalAdditions: 50, totalDeletions: 10 });
+      const result = await runPlanner(client, diff);
+
+      expect(result).not.toBeNull();
+      expect(result!.teamSize).toBe(size);
+      expect(result!.agents).toHaveLength(size);
+    }
+  });
+
+  it('corrects 1-agent pick to teamSize=2', async () => {
+    const response = JSON.stringify({
+      teamSize: 3,
+      judgeEffort: 'medium',
+      prType: 'bugfix',
+      agents: [
+        { name: 'Correctness & Logic', effort: 'high' },
+      ],
+    });
+
+    const client = makeClient(response);
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 2 });
+    const result = await runPlanner(client, diff);
+
+    expect(result).not.toBeNull();
+    expect(result!.agents).toHaveLength(1);
+    expect(result!.teamSize).toBe(2);
+  });
+
   it('sanitizes language field from planner', async () => {
     const response = JSON.stringify({
       teamSize: 3,

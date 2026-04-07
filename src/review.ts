@@ -96,7 +96,7 @@ export function selectTeam(
 
     if (resolved.length > 0) {
       let level: 'trivial' | 'small' | 'medium' | 'large';
-      if (resolved.length === 1) level = 'trivial';
+      if (resolved.length === 1) level = 'small';
       else if (resolved.length <= 3) level = 'small';
       else if (resolved.length <= 5) level = 'medium';
       else level = 'large';
