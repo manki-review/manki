@@ -662,13 +662,13 @@ describe('postReview partialNote', () => {
       findings: [],
       highlights: [],
       reviewComplete: true,
-      partialNote: '4 of 5 agents completed (Correctness & Logic failed after retries)',
+      partialNote: '4 of 5 agents completed (Correctness & Logic failed after 3 attempts)',
     };
 
     await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
     const body = mockCreateReview.mock.calls[0][0].body as string;
     expect(body).toContain('4 of 5 agents completed');
-    expect(body).toContain('Correctness & Logic failed after retries');
+    expect(body).toContain('Correctness & Logic failed after 3 attempts');
     expect(body).toContain('**Note:**');
   });
 

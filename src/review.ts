@@ -699,7 +699,7 @@ export async function runReview(
     }
 
     partialReview = true;
-    partialNote = `${succeededCount} of ${team.agents.length} agents completed (${failedAgents.join(', ')} failed after retries)`;
+    partialNote = `${succeededCount} of ${team.agents.length} agents completed (${failedAgents.join(', ')} failed after ${MAX_AGENT_RETRIES + 1} attempts)`;
     core.info(`Quorum met: ${partialNote}`);
   }
 

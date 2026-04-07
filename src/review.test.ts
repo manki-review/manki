@@ -2121,7 +2121,7 @@ describe('runReview', () => {
     expect(result.partialNote).toContain('3 of 5');
     expect(result.partialNote).toContain('Testing & Coverage');
     expect(result.partialNote).toContain('Performance & Efficiency');
-    expect(result.partialNote).toContain('failed after retries');
+    expect(result.partialNote).toContain('failed after 3 attempts');
   });
 
   it('increments completedCount on retry success in single-pass mode', async () => {
