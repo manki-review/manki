@@ -931,7 +931,7 @@ describe('sendViaOAuth — stale process detection', () => {
     }
   });
 
-  it('sanitizes workflow commands in stale warning output', async () => {
+  it('sanitizes workflow commands in both stdout and stderr of stale warning', async () => {
     jest.useFakeTimers();
     try {
       const proc = {
