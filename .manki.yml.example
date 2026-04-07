@@ -41,12 +41,12 @@
 # models:
 #   planner: claude-haiku-4-5      # fast pre-review planning pass
 #   reviewer: claude-sonnet-4-6    # fast, parallel reviewers
-#   judge: claude-opus-4-6         # precise, single judge
+#   judge: claude-sonnet-4-6        # precise, single judge
 #   dedup: claude-haiku-4-5        # fast LLM dedup against prior findings
 
 # Planner stage (default: enabled)
 # When enabled and review_level is "auto", a fast pre-review pass chooses the
-# team size (1/3/5/7), reviewer/judge effort, and PR type. teamSize=1 routes
+# team size (1/2/3/4/5/6/7), reviewer/judge effort, and PR type. teamSize=1 routes
 # trivial changes (docs, renames, comment-only edits) to a single Trivial
 # Change Verifier. Disable to always use the heuristic team selector.
 # planner:

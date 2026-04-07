@@ -5,6 +5,14 @@ All notable changes to Manki will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.5.2] - 2026-04-07
+
+### Changed
+
+- Default judge model changed from Opus to Sonnet (~5x cost reduction per review)
+- Team sizes 2, 4, and 6 now available — planner can pick more granular team sizes
+- Planner prompt updated with guidance for 2-agent and 4-agent teams
+
 ## [4.5.1] - 2026-04-07
 
 ### Changed
@@ -343,6 +351,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic review posting with inline comments
 - Configuration via `.manki.yml`
 
+[4.5.2]: https://github.com/manki-review/manki/compare/v4.5.1...v4.5.2
 [4.5.1]: https://github.com/manki-review/manki/compare/v4.5.0...v4.5.1
 [4.5.0]: https://github.com/manki-review/manki/compare/v4.4.0...v4.5.0
 [4.4.0]: https://github.com/manki-review/manki/compare/v4.3.0...v4.4.0

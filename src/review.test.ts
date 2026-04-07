@@ -2272,7 +2272,7 @@ describe('runPlanner', () => {
 
   it('returns null when teamSize is invalid', async () => {
     const client = makeClient(JSON.stringify({
-      teamSize: 4,
+      teamSize: 8,
       reviewerEffort: 'medium',
       judgeEffort: 'medium',
       prType: 'feature',
@@ -2315,7 +2315,7 @@ describe('runPlanner', () => {
   });
 
   it('accepts all valid team sizes', async () => {
-    for (const size of [1, 3, 5, 7]) {
+    for (const size of [1, 2, 3, 4, 5, 6, 7]) {
       const client = makeClient(JSON.stringify({
         teamSize: size,
         reviewerEffort: 'low',
@@ -2492,12 +2492,38 @@ describe('selectTeam with teamSizeOverride', () => {
     expect(roster.level).toBe('large');
   });
 
+  it('maps override of 2 to small level with agent picks', () => {
+    const diff = makeDiff({ totalAdditions: 30, totalDeletions: 5 });
+    const config = makeConfig();
+    const picks: AgentPick[] = [
+      { name: 'Security & Safety', effort: 'high' },
+      { name: 'Correctness & Logic', effort: 'medium' },
+    ];
+    const roster = selectTeam(diff, config, undefined, 2, picks);
+    expect(roster.agents).toHaveLength(2);
+    expect(roster.level).toBe('small');
+  });
+
   it('maps override of 3 to small level', () => {
     const diff = makeDiff({ totalAdditions: 500, totalDeletions: 500 });
     const config = makeConfig();
     const roster = selectTeam(diff, config, undefined, 3);
     expect(roster.agents).toHaveLength(3);
     expect(roster.level).toBe('small');
+  });
+
+  it('maps override of 4 to medium level with agent picks', () => {
+    const diff = makeDiff({ totalAdditions: 100, totalDeletions: 50 });
+    const config = makeConfig();
+    const picks: AgentPick[] = [
+      { name: 'Security & Safety', effort: 'high' },
+      { name: 'Correctness & Logic', effort: 'medium' },
+      { name: 'Architecture & Design', effort: 'medium' },
+      { name: 'Testing & Coverage', effort: 'low' },
+    ];
+    const roster = selectTeam(diff, config, undefined, 4, picks);
+    expect(roster.agents).toHaveLength(4);
+    expect(roster.level).toBe('medium');
   });
 
   it('maps override of 5 to medium level', () => {
@@ -2595,6 +2621,19 @@ describe('selectTeam with teamSizeOverride', () => {
     const roster = selectTeam(diff, config, [custom], 3, picks);
     expect(roster.agents).toHaveLength(3);
     expect(roster.agents.map(a => a.name)).toContain('Protocol Expert');
+  });
+
+  it('falls through to heuristic when teamSizeOverride=2 and no agentPicks', () => {
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const config = makeConfig();
+    const roster = selectTeam(diff, config, undefined, 2);
+    // With no picks, the heuristic starts with all 3 core agents.
+    // teamSize=2 only limits additional (non-core) agents, so at least the 3
+    // core agents are returned and the level is mapped to small.
+    expect(roster.agents.length).toBeGreaterThanOrEqual(2);
+    expect(roster.level).toBe('small');
+    expect(roster.agents.map(a => a.name)).toContain('Security & Safety');
+    expect(roster.agents.map(a => a.name)).toContain('Correctness & Logic');
   });
 });
 
@@ -2700,7 +2739,7 @@ describe('runPlanner with agents and language', () => {
     expect(result!.agents).toBeUndefined();
   });
 
-  it('adjusts teamSize to match agents array length', async () => {
+  it('returns null when agents array length does not match teamSize', async () => {
     const response = JSON.stringify({
       teamSize: 3,
       judgeEffort: 'medium',
@@ -2718,9 +2757,7 @@ describe('runPlanner with agents and language', () => {
     const diff = makeDiff({ totalAdditions: 50, totalDeletions: 10 });
     const result = await runPlanner(client, diff);
 
-    expect(result).not.toBeNull();
-    expect(result!.teamSize).toBe(5);
-    expect(result!.agents).toHaveLength(5);
+    expect(result).toBeNull();
   });
 
   it('omits language and context when not provided', async () => {
@@ -3153,7 +3190,7 @@ describe('runPlanner teamSize correction', () => {
     sendMessage: jest.fn().mockResolvedValue({ content: response }),
   } as unknown as import('./claude').ClaudeClient);
 
-  it('corrects teamSize when agents.length does not match', async () => {
+  it('returns null when agents.length does not match teamSize', async () => {
     const response = JSON.stringify({
       teamSize: 3,
       judgeEffort: 'medium',
@@ -3171,9 +3208,7 @@ describe('runPlanner teamSize correction', () => {
     const diff = makeDiff({ totalAdditions: 50, totalDeletions: 10 });
     const result = await runPlanner(client, diff);
 
-    expect(result).not.toBeNull();
-    expect(result!.agents).toHaveLength(5);
-    expect(result!.teamSize).toBe(5);
+    expect(result).toBeNull();
   });
 
   it('keeps teamSize when agents.length matches', async () => {
@@ -3197,7 +3232,7 @@ describe('runPlanner teamSize correction', () => {
     expect(result!.agents).toHaveLength(3);
   });
 
-  it('corrects to closest valid size for 4 agents', async () => {
+  it('returns null when 4 agents do not match teamSize=3', async () => {
     const response = JSON.stringify({
       teamSize: 3,
       judgeEffort: 'medium',
@@ -3214,13 +3249,10 @@ describe('runPlanner teamSize correction', () => {
     const diff = makeDiff({ totalAdditions: 50, totalDeletions: 10 });
     const result = await runPlanner(client, diff);
 
-    expect(result).not.toBeNull();
-    expect(result!.agents).toHaveLength(4);
-    // 4 is equidistant from 3 and 5; reduce keeps the first minimum (3)
-    expect(result!.teamSize).toBe(3);
+    expect(result).toBeNull();
   });
 
-  it('corrects 2-agent picks to teamSize=3, never teamSize=1', async () => {
+  it('returns null when 2 agents do not match teamSize=3', async () => {
     const response = JSON.stringify({
       teamSize: 3,
       judgeEffort: 'medium',
@@ -3235,9 +3267,50 @@ describe('runPlanner teamSize correction', () => {
     const diff = makeDiff({ totalAdditions: 30, totalDeletions: 5 });
     const result = await runPlanner(client, diff);
 
-    expect(result).not.toBeNull();
-    expect(result!.agents).toHaveLength(2);
-    expect(result!.teamSize).toBe(3);
+    expect(result).toBeNull();
+  });
+
+  it('accepts teamSize 2 and 4 without correction when agents match', async () => {
+    for (const size of [2, 4] as const) {
+      const agents = [
+        { name: 'Security & Safety', effort: 'high' },
+        { name: 'Correctness & Logic', effort: 'medium' },
+        { name: 'Architecture & Design', effort: 'low' },
+        { name: 'Testing & Coverage', effort: 'medium' },
+      ].slice(0, size);
+
+      const response = JSON.stringify({
+        teamSize: size,
+        judgeEffort: 'medium',
+        prType: 'feature',
+        agents,
+      });
+
+      const client = makeClient(response);
+      const diff = makeDiff({ totalAdditions: 50, totalDeletions: 10 });
+      const result = await runPlanner(client, diff);
+
+      expect(result).not.toBeNull();
+      expect(result!.teamSize).toBe(size);
+      expect(result!.agents).toHaveLength(size);
+    }
+  });
+
+  it('returns null when 1 agent does not match teamSize=3', async () => {
+    const response = JSON.stringify({
+      teamSize: 3,
+      judgeEffort: 'medium',
+      prType: 'bugfix',
+      agents: [
+        { name: 'Correctness & Logic', effort: 'high' },
+      ],
+    });
+
+    const client = makeClient(response);
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 2 });
+    const result = await runPlanner(client, diff);
+
+    expect(result).toBeNull();
   });
 
   it('sanitizes language field from planner', async () => {

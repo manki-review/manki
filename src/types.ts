@@ -52,7 +52,7 @@ export interface AgentPick {
 }
 
 export interface PlannerResult {
-  teamSize: 1 | 3 | 5 | 7;
+  teamSize: 1 | 2 | 3 | 4 | 5 | 6 | 7;
   reviewerEffort: EffortLevel;
   judgeEffort: EffortLevel;
   prType: string;

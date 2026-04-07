@@ -67,7 +67,7 @@ export function selectTeam(
   diff: ParsedDiff,
   config: ReviewConfig,
   customReviewers?: ReviewerAgent[],
-  teamSizeOverride?: 1 | 3 | 5 | 7,
+  teamSizeOverride?: 1 | 2 | 3 | 4 | 5 | 6 | 7,
   agentPicks?: AgentPick[],
 ): TeamRoster {
   const lineCount = diff.totalAdditions + diff.totalDeletions;
@@ -95,8 +95,9 @@ export function selectTeam(
     }
 
     if (resolved.length > 0) {
-      let level: 'small' | 'medium' | 'large';
-      if (resolved.length <= 3) level = 'small';
+      let level: 'trivial' | 'small' | 'medium' | 'large';
+      if (resolved.length === 1) level = 'small';
+      else if (resolved.length <= 3) level = 'small';
       else if (resolved.length <= 5) level = 'medium';
       else level = 'large';
       return { level, agents: resolved, lineCount };
@@ -281,12 +282,13 @@ export function buildPlannerSystemPrompt(agents: Array<{ name: string; focus: st
   return `You are a code review planning assistant. Analyze this PR and decide how to review it.
 
 Decide:
-1. teamSize: 1, 3, 5, or 7 reviewer agents (odd numbers for majority voting).
-   Default to 3. Scale to 5 when the PR touches core infrastructure, spans multiple subsystems, or has security implications. 7 is rare — reserve it for changes where missing a specialist would be dangerous. Diff size alone doesn't determine team size — a 50-line auth change needs more eyes than a 500-line rename.
+1. teamSize: 1-7 reviewer agents.
+   Default to 3. Use 2 when the change is small but non-trivial. Scale to 4-5 for broader changes. 7 is rare — reserve it for changes where missing a specialist would be dangerous. Diff size alone doesn't determine team size — a 50-line auth change needs more eyes than a 500-line rename.
    - 1: changes where a bug is unrealistic (docs, comments, renames)
-   - 3: most PRs — bug fixes, features, refactors
-   - 5: PRs that span multiple concerns or subsystems
-   - 7: security/crypto-critical, architectural overhauls
+   - 2: small focused changes — single bug fix, config tweak, one-file refactor
+   - 3: most PRs — features, refactors, multi-file changes
+   - 4-5: PRs spanning multiple concerns or subsystems
+   - 6-7: security/crypto-critical, architectural overhauls
 2. agents: pick exactly teamSize agents from the pool below, each with an effort level ("low", "medium", or "high"):
 ${agentList}
    Effort controls thinking depth and cost. low = fast pass, no extended reasoning. medium = moderate reasoning (~5K thinking tokens). high = deep analysis (~10K thinking tokens). Higher effort catches subtle bugs but costs more. Match effort to the risk level of each agent's assignment — security on auth code needs high, maintainability on a rename needs low.
@@ -316,7 +318,7 @@ Respond with ONLY a JSON object (no markdown fences):
 }`;
 }
 
-const VALID_TEAM_SIZES = new Set([1, 3, 5, 7]);
+const VALID_TEAM_SIZES = new Set([1, 2, 3, 4, 5, 6, 7]);
 const VALID_EFFORTS = new Set(['low', 'medium', 'high']);
 const VALID_PR_TYPES = new Set(['feature', 'bugfix', 'refactor', 'docs', 'test', 'chore', 'rename']);
 
@@ -388,7 +390,7 @@ export async function runPlanner(
     const jsonText = extractJSON(response.content);
     const parsed = JSON.parse(jsonText);
 
-    let teamSize = parsed.teamSize;
+    const teamSize = parsed.teamSize;
     if (!VALID_TEAM_SIZES.has(teamSize)) {
       core.warning(`Planner returned invalid teamSize ${teamSize} — falling back to heuristic`);
       return null;
@@ -412,16 +414,9 @@ export async function runPlanner(
     // Parse agent picks
     const agents = parseAgentPicks(parsed.agents, availableNames);
     if (agents) {
-      // Trust agents array length over teamSize when they differ.
-      // Exclude 1 from correction candidates — teamSize=1 is only valid when the
-      // planner explicitly requests it, not as a side-effect of rounding down.
-      const validSizes = [3, 5, 7];
-      const closestValid = validSizes.reduce((prev, curr) =>
-        Math.abs(curr - agents.length) < Math.abs(prev - agents.length) ? curr : prev,
-      );
       if (agents.length !== teamSize) {
-        core.info(`Planner agents.length (${agents.length}) differs from teamSize (${teamSize}), using closest valid size ${closestValid}`);
-        teamSize = closestValid;
+        core.warning(`Planner agents.length (${agents.length}) differs from teamSize (${teamSize}) — falling back to heuristic`);
+        return null;
       }
     }
 
