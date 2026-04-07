@@ -5,6 +5,43 @@ All notable changes to Manki will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.5.0] - 2026-04-07
+
+### Added
+
+- Smarter planner: picks specific agents from the pool with per-agent effort levels (#498)
+- Language/framework auto-detection injected into reviewer prompts (#498)
+- Planner prompt includes agent focus descriptions for better selection (#498)
+- Retry failed reviewer agents with majority quorum — 1 retry, proceeds if `ceil(teamSize/2)` agents succeed (#499)
+- Progress dashboard shows planner and judge runtime duration (#501)
+- Telemetry: distinguish empty vs malformed reviewer responses, suspicious-fast warning (#502)
+- Per-agent `failureReason` in Review Stats JSON (#509)
+- Stale CLI process detection (90s no stdout) with streaming JSON mode (#512)
+- CLI output sanitization against workflow-command injection (#512)
+
+### Changed
+
+- Planner effort bumped from `low` to `high` for more consistent decisions (#498)
+- Planner defaults to 3 agents; scales to 5 for multi-subsystem or security-critical PRs (#498)
+- CLI timeout increased from 300s to 20 minutes (#509, #518)
+- CLI switched from `--output-format text` to `stream-json` with `--include-partial-messages` for progress monitoring (#512)
+- Judge summary prompt includes anti-pattern guidance to avoid generic openers (#519)
+- `MAX_AGENT_RETRIES` set to 1 (2 total attempts per agent) (#499)
+- `SUSPICIOUS_FAST_THRESHOLD_MS` extracted as named constant (#513)
+
+### Fixed
+
+- Dashboard done count no longer decreases when failed agent transitions to retrying (#499)
+- `partialNote` surfaced in review summary when agents fail after retries (#499)
+- `typeof null` no longer produces misleading "got object" warning in `parseFindings` (#513)
+- Docs footer attribution updated from `xdustinface` to `manki-review` (#503)
+- `dist/` removed from git tracking — only committed by release workflow (#508)
+
+### Chores
+
+- Planner output sanitization: `language` and `context` fields stripped of injection patterns (#498)
+- `buildAgentPool` helper extracted to deduplicate pool-building logic (#498)
+
 ## [4.4.0] - 2026-04-06
 
 ### Added
@@ -298,6 +335,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic review posting with inline comments
 - Configuration via `.manki.yml`
 
+[4.5.0]: https://github.com/manki-review/manki/compare/v4.4.0...v4.5.0
 [4.4.0]: https://github.com/manki-review/manki/compare/v4.3.0...v4.4.0
 [4.3.0]: https://github.com/manki-review/manki/compare/v4.2.0...v4.3.0
 [4.2.0]: https://github.com/manki-review/manki/compare/v4.1.0...v4.2.0
