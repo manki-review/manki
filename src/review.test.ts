@@ -2272,7 +2272,7 @@ describe('runPlanner', () => {
 
   it('returns null when teamSize is invalid', async () => {
     const client = makeClient(JSON.stringify({
-      teamSize: 4,
+      teamSize: 6,
       reviewerEffort: 'medium',
       judgeEffort: 'medium',
       prType: 'feature',
@@ -2492,12 +2492,38 @@ describe('selectTeam with teamSizeOverride', () => {
     expect(roster.level).toBe('large');
   });
 
+  it('maps override of 2 to small level with agent picks', () => {
+    const diff = makeDiff({ totalAdditions: 30, totalDeletions: 5 });
+    const config = makeConfig();
+    const picks: AgentPick[] = [
+      { name: 'Security & Safety', effort: 'high' },
+      { name: 'Correctness & Logic', effort: 'medium' },
+    ];
+    const roster = selectTeam(diff, config, undefined, 2, picks);
+    expect(roster.agents).toHaveLength(2);
+    expect(roster.level).toBe('small');
+  });
+
   it('maps override of 3 to small level', () => {
     const diff = makeDiff({ totalAdditions: 500, totalDeletions: 500 });
     const config = makeConfig();
     const roster = selectTeam(diff, config, undefined, 3);
     expect(roster.agents).toHaveLength(3);
     expect(roster.level).toBe('small');
+  });
+
+  it('maps override of 4 to medium level with agent picks', () => {
+    const diff = makeDiff({ totalAdditions: 100, totalDeletions: 50 });
+    const config = makeConfig();
+    const picks: AgentPick[] = [
+      { name: 'Security & Safety', effort: 'high' },
+      { name: 'Correctness & Logic', effort: 'medium' },
+      { name: 'Architecture & Design', effort: 'medium' },
+      { name: 'Testing & Coverage', effort: 'low' },
+    ];
+    const roster = selectTeam(diff, config, undefined, 4, picks);
+    expect(roster.agents).toHaveLength(4);
+    expect(roster.level).toBe('medium');
   });
 
   it('maps override of 5 to medium level', () => {
@@ -3216,11 +3242,11 @@ describe('runPlanner teamSize correction', () => {
 
     expect(result).not.toBeNull();
     expect(result!.agents).toHaveLength(4);
-    // 4 is equidistant from 3 and 5; reduce keeps the first minimum (3)
-    expect(result!.teamSize).toBe(3);
+    // 4 is now a valid size directly
+    expect(result!.teamSize).toBe(4);
   });
 
-  it('corrects 2-agent picks to teamSize=3, never teamSize=1', async () => {
+  it('corrects 2-agent picks to teamSize=2', async () => {
     const response = JSON.stringify({
       teamSize: 3,
       judgeEffort: 'medium',
@@ -3237,7 +3263,7 @@ describe('runPlanner teamSize correction', () => {
 
     expect(result).not.toBeNull();
     expect(result!.agents).toHaveLength(2);
-    expect(result!.teamSize).toBe(3);
+    expect(result!.teamSize).toBe(2);
   });
 
   it('sanitizes language field from planner', async () => {

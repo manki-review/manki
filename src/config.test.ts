@@ -34,9 +34,9 @@ describe('config', () => {
       expect(DEFAULT_CONFIG.review_passes).toBe(1);
     });
 
-    it('defaults models.reviewer to Sonnet and models.judge to Opus', () => {
+    it('defaults models.reviewer and models.judge to Sonnet', () => {
       expect(DEFAULT_CONFIG.models?.reviewer).toBe('claude-sonnet-4-6');
-      expect(DEFAULT_CONFIG.models?.judge).toBe('claude-opus-4-6');
+      expect(DEFAULT_CONFIG.models?.judge).toBe('claude-sonnet-4-6');
     });
 
     it('has no default custom reviewers', () => {
@@ -257,7 +257,7 @@ models:
 `;
       const config = loadConfigFromContent(yaml);
       expect(config.models?.reviewer).toBe('claude-sonnet-4-6');
-      expect(config.models?.judge).toBe('claude-opus-4-6');
+      expect(config.models?.judge).toBe('claude-sonnet-4-6');
     });
 
     it('throws on invalid models type', () => {
@@ -322,7 +322,7 @@ models:
 `;
       const config = loadConfigFromContent(yaml);
       expect(config.models?.reviewer).toBe('claude-haiku-4-5');
-      expect(config.models?.judge).toBe('claude-opus-4-6');
+      expect(config.models?.judge).toBe('claude-sonnet-4-6');
     });
 
     it('accepts valid review_passes values', () => {
@@ -361,7 +361,7 @@ models:
 
     it('returns default stage-specific models from defaults', () => {
       expect(resolveModel(baseConfig, 'reviewer')).toBe('claude-sonnet-4-6');
-      expect(resolveModel(baseConfig, 'judge')).toBe('claude-opus-4-6');
+      expect(resolveModel(baseConfig, 'judge')).toBe('claude-sonnet-4-6');
       expect(resolveModel(baseConfig, 'dedup')).toBe('claude-haiku-4-5');
       expect(resolveModel(baseConfig, 'planner')).toBe('claude-haiku-4-5');
     });
@@ -379,7 +379,7 @@ models:
     it('falls back to default models when models is undefined', () => {
       const config: ReviewConfig = { ...baseConfig, models: undefined };
       expect(resolveModel(config, 'reviewer')).toBe('claude-sonnet-4-6');
-      expect(resolveModel(config, 'judge')).toBe('claude-opus-4-6');
+      expect(resolveModel(config, 'judge')).toBe('claude-sonnet-4-6');
       expect(resolveModel(config, 'dedup')).toBe('claude-haiku-4-5');
     });
 
@@ -389,13 +389,13 @@ models:
         models: { reviewer: 'claude-sonnet-4-6' },
       };
       expect(resolveModel(config, 'reviewer')).toBe('claude-sonnet-4-6');
-      expect(resolveModel(config, 'judge')).toBe('claude-opus-4-6');
+      expect(resolveModel(config, 'judge')).toBe('claude-sonnet-4-6');
     });
 
     it('falls back to default models when models is empty object', () => {
       const config: ReviewConfig = { ...baseConfig, models: {} };
       expect(resolveModel(config, 'reviewer')).toBe('claude-sonnet-4-6');
-      expect(resolveModel(config, 'judge')).toBe('claude-opus-4-6');
+      expect(resolveModel(config, 'judge')).toBe('claude-sonnet-4-6');
       expect(resolveModel(config, 'dedup')).toBe('claude-haiku-4-5');
       expect(resolveModel(config, 'planner')).toBe('claude-haiku-4-5');
     });
