@@ -1,5 +1,5 @@
-name: 'Manki'
-description: 'Multi-agent AI code review — automated reviews with specialist agents'
+name: 'Manki Review'
+description: 'Multi-agent AI code review for GitHub — a planner picks the team, agents review in parallel, a judge filters the noise.'
 author: 'xdustinface'
 
 inputs:
@@ -52,4 +52,4 @@ runs:
 
 branding:
   icon: 'eye'
-  color: 'orange'
+  color: 'green'

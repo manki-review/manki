@@ -5,6 +5,14 @@ All notable changes to Manki will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.5.1] - 2026-04-07
+
+### Changed
+
+- Renamed action from "Manki" to "Manki Review" for GitHub Marketplace uniqueness
+- Updated action description to highlight the planner/agent/judge pipeline
+- Changed marketplace branding color from orange to green
+
 ## [4.5.0] - 2026-04-07
 
 ### Added
@@ -335,6 +343,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic review posting with inline comments
 - Configuration via `.manki.yml`
 
+[4.5.1]: https://github.com/manki-review/manki/compare/v4.5.0...v4.5.1
 [4.5.0]: https://github.com/manki-review/manki/compare/v4.4.0...v4.5.0
 [4.4.0]: https://github.com/manki-review/manki/compare/v4.3.0...v4.4.0
 [4.3.0]: https://github.com/manki-review/manki/compare/v4.2.0...v4.3.0
