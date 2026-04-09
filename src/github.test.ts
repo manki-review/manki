@@ -1400,8 +1400,8 @@ describe('buildDashboard', () => {
     const md = buildDashboard(data);
     expect(md).toContain('**Manki** — Review in progress');
     expect(md).toContain('**Review** — 2/5 agents complete');
-    expect(md).toContain(`${INDENT}✓ Security & Safety — 2 (4s)`);
-    expect(md).toContain(`${INDENT}✓ Architecture & Design — 0 (3s)`);
+    expect(md).toContain(`${INDENT}✅ Security & Safety — 2 (4s)`);
+    expect(md).toContain(`${INDENT}✅ Architecture & Design — 0 (3s)`);
     expect(md).toContain(`${INDENT}⏳ Correctness & Logic`);
     expect(md).toContain(`${INDENT}○ Testing & Coverage`);
     expect(md).toContain(`${INDENT}○ Performance & Efficiency`);
@@ -1420,7 +1420,7 @@ describe('buildDashboard', () => {
     };
     const md = buildDashboard(data);
     expect(md).toContain(`${INDENT}✗ Security & Safety — failed (2s)`);
-    expect(md).toContain(`${INDENT}✓ Correctness & Logic — 1 (2s)`);
+    expect(md).toContain(`${INDENT}✅ Correctness & Logic — 1 (2s)`);
   });
 
   it('renders the reviewed phase with finding count and running judge', () => {
@@ -1451,9 +1451,9 @@ describe('buildDashboard', () => {
     const md = buildDashboard(data);
     expect(md).toContain('**Manki** — Review in progress');
     expect(md).toContain('**Review** — 7 findings');
-    expect(md).toContain(`${INDENT}✓ Security & Safety — 3 (4s)`);
-    expect(md).toContain(`${INDENT}✓ Correctness & Logic — 4 (3s)`);
-    expect(md).toContain(`${INDENT}✓ Architecture & Design — 0 (3s)`);
+    expect(md).toContain(`${INDENT}✅ Security & Safety — 3 (4s)`);
+    expect(md).toContain(`${INDENT}✅ Correctness & Logic — 4 (3s)`);
+    expect(md).toContain(`${INDENT}✅ Architecture & Design — 0 (3s)`);
     expect(md).toContain(`${INDENT}evaluating 7 findings...`);
   });
 
@@ -1482,11 +1482,11 @@ describe('buildDashboard', () => {
     };
     const md = buildDashboard(data);
     expect(md).toContain('**Review** — 17 findings');
-    expect(md).toContain(`${INDENT}✓ Security & Safety — 2 (4s)`);
-    expect(md).toContain(`${INDENT}✓ Architecture & Design — 3 (3s)`);
-    expect(md).toContain(`${INDENT}✓ Correctness & Logic — 5 (6s)`);
-    expect(md).toContain(`${INDENT}✓ Testing & Coverage — 4 (5s)`);
-    expect(md).toContain(`${INDENT}✓ Performance & Efficiency — 3 (4s)`);
+    expect(md).toContain(`${INDENT}✅ Security & Safety — 2 (4s)`);
+    expect(md).toContain(`${INDENT}✅ Architecture & Design — 3 (3s)`);
+    expect(md).toContain(`${INDENT}✅ Correctness & Logic — 5 (6s)`);
+    expect(md).toContain(`${INDENT}✅ Testing & Coverage — 4 (5s)`);
+    expect(md).toContain(`${INDENT}✅ Performance & Efficiency — 3 (4s)`);
     expect(md).toContain('**Judge** — 14 kept · 3 dropped');
   });
 
@@ -1500,7 +1500,7 @@ describe('buildDashboard', () => {
       ],
     };
     const md = buildDashboard(data);
-    expect(md).toContain(`${INDENT}✓ Security & Safety — 3 (2s)`);
+    expect(md).toContain(`${INDENT}✅ Security & Safety — 3 (2s)`);
     expect(md).toContain(`${INDENT}✗ Architecture & Design — failed (500ms)`);
     expect(md).toContain('**Judge** — 2 kept · 1 dropped');
   });
@@ -1674,7 +1674,7 @@ describe('buildDashboard', () => {
     const md = buildDashboard(data);
     expect(md).toContain('2/3 agents complete');
     expect(md).toContain(`${INDENT}⟳ Security & Safety — retrying (2/2)...`);
-    expect(md).toContain(`${INDENT}✓ Architecture & Design — 2 (3s)`);
+    expect(md).toContain(`${INDENT}✅ Architecture & Design — 2 (3s)`);
     expect(md).toContain(`${INDENT}⏳ Correctness & Logic`);
   });
 

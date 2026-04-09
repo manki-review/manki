@@ -197,7 +197,7 @@ export const INDENT = '&nbsp;&nbsp;&nbsp;&nbsp;';
 function renderAgentLines(agents: AgentProgressEntry[]): string {
   return agents.map(a => {
     if (a.status === 'done') {
-      return `${INDENT}✓ ${a.name} — ${a.findingCount ?? 0} (${formatDuration(a.durationMs ?? 0)})`;
+      return `${INDENT}✅ ${a.name} — ${a.findingCount ?? 0} (${formatDuration(a.durationMs ?? 0)})`;
     }
     if (a.status === 'failed') {
       if (a.retryCount && a.retryCount > 0) {
