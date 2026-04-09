@@ -738,7 +738,7 @@ describe('handleCommentTrigger', () => {
       payload: {
         action: 'created',
         issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } },
-        comment: { id: 42, body: '@manki review' },
+        comment: { id: 42, body: '@manki review', author_association: 'COLLABORATOR' },
       },
     });
 
@@ -764,7 +764,7 @@ describe('handleCommentTrigger', () => {
       payload: {
         action: 'created',
         issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } },
-        comment: { id: 42, body: '@manki-review review' },
+        comment: { id: 42, body: '@manki-review review', author_association: 'COLLABORATOR' },
       },
     });
 
@@ -867,7 +867,7 @@ describe('isApprovedOnCommit guard', () => {
   const commentPayload = {
     action: 'created',
     issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } },
-    comment: { id: 42, body: '@manki review' },
+    comment: { id: 42, body: '@manki review', author_association: 'COLLABORATOR' },
   };
 
   it('skips review when already approved on commit', async () => {

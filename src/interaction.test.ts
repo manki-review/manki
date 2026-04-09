@@ -724,7 +724,11 @@ describe('handlePRComment', () => {
     const octokit = createMockOctokit();
     const client = createMockClient();
     await handlePRComment(octokit, client, 'test-owner', 'test-repo', 1);
-    expect(client.sendMessage).toHaveBeenCalled();
+    expect(ghUtils.reactToIssueComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 42, 'eyes');
+    expect(client.sendMessage).toHaveBeenCalledWith(expect.any(String), expect.stringContaining('the changes'));
+    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.stringContaining('AI response here') }),
+    );
   });
 
   it('allows explain command from PR author with NONE association', async () => {
@@ -736,7 +740,11 @@ describe('handlePRComment', () => {
     const octokit = createMockOctokit();
     const client = createMockClient();
     await handlePRComment(octokit, client, 'test-owner', 'test-repo', 1);
-    expect(client.sendMessage).toHaveBeenCalled();
+    expect(ghUtils.reactToIssueComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 42, 'eyes');
+    expect(client.sendMessage).toHaveBeenCalledWith(expect.any(String), expect.stringContaining('the changes'));
+    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.stringContaining('AI response here') }),
+    );
   });
 
   it('does not block non-LLM commands for NONE association users', async () => {
@@ -805,6 +813,26 @@ describe('handleReviewCommentReply', () => {
     await handleReviewCommentReply(octokit, client, 'test-owner', 'test-repo', 1);
     expect(core.info).toHaveBeenCalledWith(expect.stringContaining('Ignoring reply from non-contributor stranger'));
     expect(client.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('allows reply from PR author with NONE association', async () => {
+    setContext({
+      comment: {
+        id: 1,
+        body: 'Actually this is intentional because we validate the input upstream before this point in the pipeline',
+        user: { type: 'User' },
+        in_reply_to_id: 99,
+        author_association: 'NONE',
+      },
+      pull_request: { number: 1, user: { login: 'pr-author' } },
+      sender: { login: 'pr-author' },
+    });
+    const octokit = createMockOctokit();
+    const client = createMockClient();
+    await handleReviewCommentReply(octokit, client, 'test-owner', 'test-repo', 1);
+    expect(core.info).not.toHaveBeenCalledWith(expect.stringContaining('Ignoring reply from non-contributor'));
+    expect(ghUtils.reactToReviewComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 1, 'eyes');
+    expect(client.sendMessage).toHaveBeenCalled();
   });
 
   it('skips when parent comment is not from bot', async () => {

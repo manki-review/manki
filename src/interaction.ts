@@ -48,7 +48,7 @@ export async function handleReviewCommentReply(
 
   const senderLogin = github.context.payload.sender?.login;
   const prAuthorLogin = github.context.payload.pull_request?.user?.login;
-  if (!isRepoUser(comment.author_association) && senderLogin !== prAuthorLogin) {
+  if (!isRepoUser(comment.author_association) && !(prAuthorLogin && senderLogin === prAuthorLogin)) {
     core.info(`Ignoring reply from non-contributor ${senderLogin} (${comment.author_association})`);
     return;
   }
@@ -189,7 +189,7 @@ export async function handlePRComment(
 
   switch (command.type) {
     case 'explain':
-      if (!isRepoUser(comment.author_association) && senderLogin !== prAuthorLogin) {
+      if (!isRepoUser(comment.author_association) && !(prAuthorLogin && senderLogin === prAuthorLogin)) {
         core.info(`Ignoring @manki command from non-contributor ${senderLogin} (${comment.author_association})`);
         return;
       }
@@ -222,7 +222,7 @@ export async function handlePRComment(
       await handleHelp(octokit, owner, repo, issueNumber);
       break;
     default:
-      if (!isRepoUser(comment.author_association) && senderLogin !== prAuthorLogin) {
+      if (!isRepoUser(comment.author_association) && !(prAuthorLogin && senderLogin === prAuthorLogin)) {
         core.info(`Ignoring @manki command from non-contributor ${senderLogin} (${comment.author_association})`);
         return;
       }
