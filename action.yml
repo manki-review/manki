@@ -1,5 +1,5 @@
 name: 'Manki Review'
-description: 'Multi-agent AI code review for GitHub — a planner picks the team, agents review in parallel, a judge filters the noise.'
+description: 'Multi-agent AI code review for GitHub — a planner picks the team, agents review in parallel, dedup removes repeats, and a judge filters the noise.'
 author: 'xdustinface'
 
 inputs:

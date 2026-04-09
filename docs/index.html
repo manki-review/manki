@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Manki — Multi-stage AI Code Review for GitHub</title>
-  <meta name="description" content="Self-hosted, multi-agent AI code review that runs as a GitHub Action. A planner picks the team, agents review in parallel, a judge filters the noise.">
+  <meta name="description" content="Self-hosted, multi-agent AI code review that runs as a GitHub Action. A planner picks the team, agents review in parallel, dedup removes repeats, and a judge filters the noise.">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -16,7 +16,7 @@
       <img src="assets/manki.png" alt="Manki" class="hero-logo" width="140">
       <p class="hero-name">Manki</p>
       <h1>Multi-stage, multi-agent AI code review for GitHub&nbsp;&mdash; self-hosted, provider-neutral.</h1>
-      <p class="subhead">A planner picks the team, agents review in parallel, a judge filters the noise.</p>
+      <p class="subhead">A planner picks the team, agents review in parallel, dedup removes repeats, and a judge filters the noise.</p>
       <div class="cta-group">
         <a href="https://github.com/manki-review/manki" class="btn-primary">Star on GitHub</a>
         <a href="#install" class="btn-secondary">Get started</a>
@@ -31,7 +31,7 @@
       <div class="pillars">
         <div class="pillar">
           <h3>Multi-stage pipeline</h3>
-          <p>Planner, Reviewer, Judge, Dedup. Each stage has a specific job; the judge filters noise before you see findings.</p>
+          <p>Planner, Reviewer, Dedup, Judge. Each stage has a specific job; dedup removes repeats before the judge classifies what survives.</p>
         </div>
         <div class="pillar">
           <h3>Bring your own model</h3>
@@ -61,13 +61,13 @@
         </div>
         <div class="pipeline-arrow" aria-hidden="true">&rarr;</div>
         <div class="pipeline-stage">
-          <h4>Judge</h4>
-          <p>Evaluates, filters, classifies findings by severity</p>
+          <h4>Dedup</h4>
+          <p>Filters findings that match previously-dismissed ones</p>
         </div>
         <div class="pipeline-arrow" aria-hidden="true">&rarr;</div>
         <div class="pipeline-stage">
-          <h4>Dedup</h4>
-          <p>Filters findings that match previously-dismissed ones</p>
+          <h4>Judge</h4>
+          <p>Evaluates, filters, classifies findings by severity</p>
         </div>
       </div>
     </div>
@@ -84,7 +84,7 @@
         </div>
         <div class="why-item">
           <h4>Multi-stage</h4>
-          <p>Planner + parallel reviewers + judge. Not a single LLM call &mdash; a coordinated review team.</p>
+          <p>Planner + parallel reviewers + dedup + judge. Not a single LLM call &mdash; a coordinated review team.</p>
         </div>
         <div class="why-item">
           <h4>Review memory</h4>
