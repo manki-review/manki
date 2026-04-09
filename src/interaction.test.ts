@@ -787,7 +787,7 @@ describe('handleReviewCommentReply', () => {
   });
 
   it('skips comments that are not replies', async () => {
-    setContext({ comment: { id: 1, body: 'standalone comment', user: { type: 'User' } }, pull_request: { number: 1 } });
+    setContext({ comment: { id: 1, body: 'standalone comment', user: { type: 'User' }, author_association: 'CONTRIBUTOR' }, pull_request: { number: 1 } });
     const octokit = createMockOctokit();
     const client = createMockClient();
     await handleReviewCommentReply(octokit, client, 'test-owner', 'test-repo', 1);
@@ -795,7 +795,7 @@ describe('handleReviewCommentReply', () => {
   });
 
   it('skips when parent comment is not from bot', async () => {
-    setContext({ comment: { id: 1, body: 'reply', user: { type: 'User' }, in_reply_to_id: 99 }, pull_request: { number: 1 } });
+    setContext({ comment: { id: 1, body: 'reply', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'CONTRIBUTOR' }, pull_request: { number: 1 } });
     const octokit = createMockOctokit();
     octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: 'not a bot comment', path: 'file.ts', line: 5 } });
     const client = createMockClient();
@@ -885,7 +885,7 @@ describe('handleReviewCommentReply', () => {
   });
 
   it('handles API errors gracefully', async () => {
-    setContext({ comment: { id: 1, body: 'reply text', user: { type: 'User' }, in_reply_to_id: 99 }, pull_request: { number: 1 } });
+    setContext({ comment: { id: 1, body: 'reply text', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'CONTRIBUTOR' }, pull_request: { number: 1 } });
     const octokit = createMockOctokit();
     octokit.rest.pulls.getReviewComment.mockRejectedValue(new Error('API error'));
     const client = createMockClient();

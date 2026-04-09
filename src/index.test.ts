@@ -805,6 +805,7 @@ describe('handleCommentTrigger', () => {
     await handleCommentTrigger();
 
     expect(jest.mocked(core.info)).not.toHaveBeenCalledWith(expect.stringContaining('Ignoring review request'));
+    expect(mockOctokitInstance.rest.pulls.get).toHaveBeenCalled();
   });
 
   it('allows review request from PR author with NONE association', async () => {
@@ -821,6 +822,24 @@ describe('handleCommentTrigger', () => {
     await handleCommentTrigger();
 
     expect(jest.mocked(core.info)).not.toHaveBeenCalledWith(expect.stringContaining('Ignoring review request'));
+    expect(mockOctokitInstance.rest.pulls.get).toHaveBeenCalled();
+  });
+
+  it('blocks force review from NONE-association non-PR-author', async () => {
+    setContext({
+      eventName: 'issue_comment',
+      payload: {
+        action: 'created',
+        issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' }, user: { login: 'pr-author' } },
+        comment: { id: 42, body: '@manki review', author_association: 'NONE' },
+        sender: { login: 'stranger' },
+      },
+    });
+
+    await handleCommentTrigger(true);
+
+    expect(jest.mocked(core.info)).toHaveBeenCalledWith(expect.stringContaining('Ignoring review request from stranger'));
+    expect(mockOctokitInstance.rest.pulls.get).not.toHaveBeenCalled();
   });
 });
 

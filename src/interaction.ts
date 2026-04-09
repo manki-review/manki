@@ -46,6 +46,11 @@ export async function handleReviewCommentReply(
     return;
   }
 
+  if (!isRepoUser(comment.author_association)) {
+    core.info(`Ignoring reply from non-contributor ${comment.user?.login} (${comment.author_association})`);
+    return;
+  }
+
   // Check if this is a reply to one of our comments
   const inReplyTo = comment.in_reply_to_id;
   if (!inReplyTo) {
