@@ -10,6 +10,12 @@ import { ReviewConfig } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
+// GitHub author_association values that indicate the user is a known repo participant.
+// Used to gate LLM-triggering commands — less strict than isTrusted (which guards write ops).
+export function isRepoUser(authorAssociation: string | null | undefined): boolean {
+  return ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR'].includes(authorAssociation ?? '');
+}
+
 interface MemoryConfig {
   enabled: boolean;
   repo: string;
@@ -106,9 +112,7 @@ export async function handleReviewCommentReply(
       const simpleAcks = ['ok', 'done', 'fixed', 'thanks', 'will do', 'got it'];
       const isSubstantive = replyBody.length > 50 && !simpleAcks.includes(replyBody.toLowerCase());
 
-      const authorAssociation = comment.author_association;
-      const isTrusted = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(authorAssociation ?? '');
-
+      const isTrusted = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(comment.author_association ?? '');
       if (isSubstantive && isTrusted) {
         try {
           const memoryOctokit = github.getOctokit(memoryToken);
@@ -173,8 +177,15 @@ export async function handlePRComment(
     return;
   }
 
+  const senderLogin = payload.sender?.login;
+  const prAuthorLogin = payload.issue?.user?.login;
+
   switch (command.type) {
     case 'explain':
+      if (!isRepoUser(comment.author_association) && senderLogin !== prAuthorLogin) {
+        core.info(`Ignoring @manki command from non-contributor ${senderLogin} (${comment.author_association})`);
+        return;
+      }
       if (!client) { core.warning('Claude client required for explain command'); return; }
       await reactToIssueComment(octokit, owner, repo, commentId, 'eyes');
       await handleExplain(octokit, client, owner, repo, issueNumber, command.args);
@@ -204,6 +215,10 @@ export async function handlePRComment(
       await handleHelp(octokit, owner, repo, issueNumber);
       break;
     default:
+      if (!isRepoUser(comment.author_association) && senderLogin !== prAuthorLogin) {
+        core.info(`Ignoring @manki command from non-contributor ${senderLogin} (${comment.author_association})`);
+        return;
+      }
       if (!client) { core.warning('Claude client required for generic questions'); return; }
       await reactToIssueComment(octokit, owner, repo, commentId, 'eyes');
       await handleGenericQuestion(octokit, client, owner, repo, issueNumber, body);

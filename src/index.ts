@@ -5,7 +5,7 @@ import { createAuthenticatedOctokit, getMemoryToken } from './auth';
 import { ClaudeClient } from './claude';
 import { loadConfig, resolveModel } from './config';
 import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
-import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand } from './interaction';
+import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isRepoUser } from './interaction';
 import { loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
 import { fetchRecapState } from './recap';
 import { runReview, determineVerdict, selectTeam } from './review';
@@ -240,6 +240,14 @@ async function handleCommentTrigger(forceReview?: boolean): Promise<void> {
 
   if (!payload.issue?.pull_request) {
     core.info('Comment is on an issue, not a PR — skipping');
+    return;
+  }
+
+  const authorAssociation = payload.comment?.author_association;
+  const senderLogin = payload.sender?.login;
+  const prAuthorLogin = payload.issue?.user?.login;
+  if (!isRepoUser(authorAssociation) && senderLogin !== prAuthorLogin) {
+    core.info(`Ignoring review request from ${senderLogin} (${authorAssociation ?? 'unknown association'})`);
     return;
   }
 

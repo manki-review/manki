@@ -1,4 +1,4 @@
-import { parseCommand, buildReplyContext, parseTriageBody, extractFindingContent, triageTitlePrefix, extractPrNumber, ParsedCommand, isBotComment, hasBotMention, isReviewRequest, isBotMentionNonReview, handlePRComment, handleReviewCommentReply, handleReviewCommentCommand, scopeDiffToFile } from './interaction';
+import { parseCommand, buildReplyContext, parseTriageBody, extractFindingContent, triageTitlePrefix, extractPrNumber, ParsedCommand, isBotComment, hasBotMention, isReviewRequest, isBotMentionNonReview, handlePRComment, handleReviewCommentReply, handleReviewCommentCommand, scopeDiffToFile, isRepoUser } from './interaction';
 import { ReviewConfig } from './types';
 import * as github from '@actions/github';
 import * as core from '@actions/core';
@@ -685,6 +685,87 @@ describe('handlePRComment', () => {
     const octokit = createMockOctokit();
     await handlePRComment(octokit, null, 'test-owner', 'test-repo', 1);
     expect(core.warning).toHaveBeenCalledWith('Claude client required for generic questions');
+  });
+
+  it('blocks explain command from NONE association non-PR-author', async () => {
+    setContext({
+      comment: { id: 42, body: '@manki explain something', user: { type: 'User' }, author_association: 'NONE' },
+      sender: { login: 'stranger' },
+      issue: { pull_request: { url: 'https://...' }, user: { login: 'pr-author' } },
+    });
+    const octokit = createMockOctokit();
+    const client = createMockClient();
+    await handlePRComment(octokit, client, 'test-owner', 'test-repo', 1);
+    expect(client.sendMessage).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.createComment).not.toHaveBeenCalled();
+    expect(core.info).toHaveBeenCalledWith(expect.stringContaining('Ignoring @manki command from non-contributor'));
+  });
+
+  it('blocks generic question from FIRST_TIME_CONTRIBUTOR non-PR-author', async () => {
+    setContext({
+      comment: { id: 42, body: '@manki what is this?', user: { type: 'User' }, author_association: 'FIRST_TIME_CONTRIBUTOR' },
+      sender: { login: 'newcomer' },
+      issue: { pull_request: { url: 'https://...' }, user: { login: 'pr-author' } },
+    });
+    const octokit = createMockOctokit();
+    const client = createMockClient();
+    await handlePRComment(octokit, client, 'test-owner', 'test-repo', 1);
+    expect(client.sendMessage).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.createComment).not.toHaveBeenCalled();
+    expect(core.info).toHaveBeenCalledWith(expect.stringContaining('Ignoring @manki command from non-contributor'));
+  });
+
+  it('allows explain command from CONTRIBUTOR', async () => {
+    setContext({
+      comment: { id: 42, body: '@manki explain the changes', user: { type: 'User' }, author_association: 'CONTRIBUTOR' },
+      sender: { login: 'contributor-user' },
+      issue: { pull_request: { url: 'https://...' }, user: { login: 'pr-author' } },
+    });
+    const octokit = createMockOctokit();
+    const client = createMockClient();
+    await handlePRComment(octokit, client, 'test-owner', 'test-repo', 1);
+    expect(client.sendMessage).toHaveBeenCalled();
+  });
+
+  it('allows explain command from PR author with NONE association', async () => {
+    setContext({
+      comment: { id: 42, body: '@manki explain the changes', user: { type: 'User' }, author_association: 'NONE' },
+      sender: { login: 'pr-author' },
+      issue: { pull_request: { url: 'https://...' }, user: { login: 'pr-author' } },
+    });
+    const octokit = createMockOctokit();
+    const client = createMockClient();
+    await handlePRComment(octokit, client, 'test-owner', 'test-repo', 1);
+    expect(client.sendMessage).toHaveBeenCalled();
+  });
+
+  it('does not block non-LLM commands for NONE association users', async () => {
+    setContext({
+      comment: { id: 42, body: '@manki help', user: { type: 'User' }, author_association: 'NONE' },
+      sender: { login: 'stranger' },
+      issue: { pull_request: { url: 'https://...' }, user: { login: 'pr-author' } },
+    });
+    const octokit = createMockOctokit();
+    await handlePRComment(octokit, null, 'test-owner', 'test-repo', 1);
+    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.stringContaining("Here's what I can do") }),
+    );
+  });
+});
+
+describe('isRepoUser', () => {
+  it('returns true for OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR', () => {
+    expect(isRepoUser('OWNER')).toBe(true);
+    expect(isRepoUser('MEMBER')).toBe(true);
+    expect(isRepoUser('COLLABORATOR')).toBe(true);
+    expect(isRepoUser('CONTRIBUTOR')).toBe(true);
+  });
+
+  it('returns false for NONE, FIRST_TIME_CONTRIBUTOR, null, undefined', () => {
+    expect(isRepoUser('NONE')).toBe(false);
+    expect(isRepoUser('FIRST_TIME_CONTRIBUTOR')).toBe(false);
+    expect(isRepoUser(null)).toBe(false);
+    expect(isRepoUser(undefined)).toBe(false);
   });
 });
 
