@@ -257,6 +257,7 @@ describe('createAuthenticatedOctokit', () => {
     expect(core.setSecret).toHaveBeenCalledWith('installation-token-abc');
     expect(result.octokit).toBeDefined();
     expect(result.resolvedToken).toBe('installation-token-abc');
+    expect(result.identity).toBe('app');
   });
 
   it('throws when github_app_id is not a number', async () => {
@@ -293,6 +294,7 @@ describe('createAuthenticatedOctokit', () => {
 
     expect(result.octokit).toBeDefined();
     expect(result.resolvedToken).toBe('ghp_fallback');
+    expect(result.identity).toBe('actions');
     expect(mockGetOctokit).toHaveBeenCalledWith('ghp_fallback');
   });
 
@@ -315,6 +317,7 @@ describe('createAuthenticatedOctokit', () => {
     const result = await createAuthenticatedOctokit();
 
     expect(result.resolvedToken).toBe('resolved-app-token');
+    expect(result.identity).toBe('app');
     expect(getMemoryToken(result.resolvedToken)).toBe('resolved-app-token');
   });
 

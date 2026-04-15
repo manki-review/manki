@@ -8,6 +8,7 @@ type Octokit = ReturnType<typeof github.getOctokit>;
 export interface AuthResult {
   octokit: Octokit;
   resolvedToken: string;
+  identity: 'app' | 'actions';
 }
 
 export interface TokenResult {
@@ -82,7 +83,7 @@ export async function createAuthenticatedOctokit(): Promise<AuthResult> {
   if (appId && privateKey) {
     core.info('Using GitHub App authentication for custom bot identity');
     const token = await getInstallationToken(appId, privateKey);
-    return { octokit: github.getOctokit(token), resolvedToken: token };
+    return { octokit: github.getOctokit(token), resolvedToken: token, identity: 'app' };
   }
 
   if (!githubToken) {
@@ -91,9 +92,9 @@ export async function createAuthenticatedOctokit(): Promise<AuthResult> {
 
   const tokenUrl = core.getInput('manki_token_url') || 'https://manki-api.dustinface.me/token';
   const { owner, repo: repoName } = github.context.repo;
-  const { token } = await resolveGitHubToken(githubToken, tokenUrl, owner, repoName);
+  const { token, identity } = await resolveGitHubToken(githubToken, tokenUrl, owner, repoName);
 
-  return { octokit: github.getOctokit(token), resolvedToken: token };
+  return { octokit: github.getOctokit(token), resolvedToken: token, identity };
 }
 
 /**

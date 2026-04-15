@@ -10,6 +10,7 @@ import { MAX_AGENT_RETRIES } from './types';
 type Octokit = ReturnType<typeof github.getOctokit>;
 
 const BOT_LOGIN = 'manki-review[bot]';
+const ACTIONS_BOT_LOGIN = 'github-actions[bot]';
 const BOT_MARKER = '<!-- manki-bot -->';
 const REVIEW_COMPLETE_MARKER = '<!-- manki-review-complete -->';
 const FORCE_REVIEW_MARKER = '<!-- manki-force-review -->';
@@ -1239,4 +1240,29 @@ async function isApprovedOnCommit(octokit: Octokit, owner: string, repo: string,
   }
 }
 
-export { dynamicFence, formatFindingComment, formatStatsJson, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, safeTruncate, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody };
+const APP_WARNING_MARKER = '<!-- manki-app-warning -->';
+
+async function postAppWarningIfNeeded(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  prNumber: number,
+): Promise<void> {
+  const comments = await octokit.paginate(octokit.rest.issues.listComments, {
+    owner, repo, issue_number: prNumber,
+  });
+
+  if (comments.some(c =>
+    (c.user?.login === BOT_LOGIN || c.user?.login === ACTIONS_BOT_LOGIN) &&
+    c.body?.includes(APP_WARNING_MARKER)
+  )) {
+    return;
+  }
+
+  await octokit.rest.issues.createComment({
+    owner, repo, issue_number: prNumber,
+    body: `${APP_WARNING_MARKER}\n**Manki** — The [Manki GitHub App](https://github.com/apps/manki-review) is not installed on this repository. Reviews are posting as \`github-actions[bot]\` instead of \`manki-review[bot]\`. Some features (memory repo access, bot identity for review dismissal) may not work correctly.\n\nInstall the app at: https://github.com/apps/manki-review`,
+  });
+}
+
+export { dynamicFence, formatFindingComment, formatStatsJson, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, safeTruncate, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody, APP_WARNING_MARKER, postAppWarningIfNeeded };

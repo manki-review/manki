@@ -30,6 +30,7 @@ import {
   isReviewInProgress,
   isApprovedOnCommit,
   markOwnProgressCommentCancelled,
+  postAppWarningIfNeeded,
 } from './github';
 import { checkAndAutoApprove, resolveStaleThreads } from './state';
 
@@ -38,13 +39,15 @@ type Octokit = ReturnType<typeof github.getOctokit>;
 const octokitCache = {
   instance: null as Octokit | null,
   resolvedToken: null as string | null,
+  identity: null as 'app' | 'actions' | null,
 };
 
 async function getOctokit(): Promise<Octokit> {
   if (!octokitCache.instance) {
-    const { octokit, resolvedToken } = await createAuthenticatedOctokit();
+    const { octokit, resolvedToken, identity } = await createAuthenticatedOctokit();
     octokitCache.instance = octokit;
     octokitCache.resolvedToken = resolvedToken;
+    octokitCache.identity = identity;
   }
   return octokitCache.instance;
 }
@@ -309,6 +312,14 @@ async function runFullReview(
   const startTime = Date.now();
   const configPathInput = core.getInput('config_path');
   const octokit = await getOctokit();
+
+  if (octokitCache.identity === 'actions') {
+    try {
+      await postAppWarningIfNeeded(octokit, owner, repo, prNumber);
+    } catch (error) {
+      core.warning(`Failed to post app warning: ${error}`);
+    }
+  }
 
   const progressCommentId = await postProgressComment(octokit, owner, repo, prNumber);
 
@@ -1073,6 +1084,7 @@ if (process.env.NODE_ENV !== 'test') {
 function _resetOctokitCache(): void {
   octokitCache.instance = null;
   octokitCache.resolvedToken = null;
+  octokitCache.identity = null;
 }
 
 export { run, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, runFullReview, main, _resetOctokitCache };

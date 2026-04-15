@@ -1,4 +1,4 @@
-import { buildDashboard, formatFindingComment, formatStatsJson, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, buildNitIssueBody, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, safeTruncate, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, createNitIssue, fetchPRDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody, INDENT } from './github';
+import { buildDashboard, formatFindingComment, formatStatsJson, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, buildNitIssueBody, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, safeTruncate, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, createNitIssue, fetchPRDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded } from './github';
 import { DashboardData, Finding, ParsedDiff, ReviewMetadata, ReviewResult, ReviewStats } from './types';
 
 describe('formatFindingComment', () => {
@@ -2836,5 +2836,73 @@ describe('isApprovedOnCommit', () => {
     ]);
 
     expect(await isApprovedOnCommit(octokit, 'owner', 'repo', 1, 'sha-123')).toBe(false);
+  });
+});
+
+describe('postAppWarningIfNeeded', () => {
+  type Octokit = ReturnType<typeof import('@actions/github').getOctokit>;
+
+  function makeOctokit(comments: Array<{ body: string; user: { login: string } | null }>) {
+    const createComment = jest.fn().mockResolvedValue({});
+    const paginate = jest.fn().mockResolvedValue(comments);
+    const octokit = {
+      paginate,
+      rest: { issues: { listComments: {}, createComment } },
+    } as unknown as Octokit;
+    return { octokit, createComment, paginate };
+  }
+
+  it('posts warning comment when no existing warning is present', async () => {
+    const { octokit, createComment } = makeOctokit([]);
+
+    await postAppWarningIfNeeded(octokit, 'owner', 'repo', 1);
+
+    expect(createComment).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.stringContaining(APP_WARNING_MARKER),
+    }));
+    expect(createComment).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.stringContaining('https://github.com/apps/manki-review'),
+    }));
+  });
+
+  it('skips posting when github-actions[bot] has already posted the warning', async () => {
+    const { octokit, createComment } = makeOctokit([
+      { body: `${APP_WARNING_MARKER}\nWarning text`, user: { login: 'github-actions[bot]' } },
+    ]);
+
+    await postAppWarningIfNeeded(octokit, 'owner', 'repo', 1);
+
+    expect(createComment).not.toHaveBeenCalled();
+  });
+
+  it('skips posting when manki-review[bot] has already posted the warning', async () => {
+    const { octokit, createComment } = makeOctokit([
+      { body: `${APP_WARNING_MARKER}\nWarning text`, user: { login: BOT_LOGIN } },
+    ]);
+
+    await postAppWarningIfNeeded(octokit, 'owner', 'repo', 1);
+
+    expect(createComment).not.toHaveBeenCalled();
+  });
+
+  it('posts warning when a human (not the bot) has the marker in their comment', async () => {
+    const { octokit, createComment } = makeOctokit([
+      { body: `${APP_WARNING_MARKER}\nCopied marker`, user: { login: 'some-human' } },
+    ]);
+
+    await postAppWarningIfNeeded(octokit, 'owner', 'repo', 1);
+
+    expect(createComment).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.stringContaining(APP_WARNING_MARKER),
+    }));
+  });
+
+  it('does not throw and re-posts warning when a comment has no user', async () => {
+    const { octokit, createComment } = makeOctokit([
+      { body: `${APP_WARNING_MARKER}\nWarning`, user: null },
+    ]);
+
+    await expect(postAppWarningIfNeeded(octokit, 'owner', 'repo', 1)).resolves.toBeUndefined();
+    expect(createComment).toHaveBeenCalled();
   });
 });
