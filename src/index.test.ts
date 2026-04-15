@@ -763,6 +763,31 @@ describe('handleCommentTrigger', () => {
     expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
   });
 
+  it('skips review after cancel when already approved on current commit', async () => {
+    jest.mocked(ghUtils.isReviewInProgress).mockResolvedValueOnce(true);
+    jest.mocked(ghUtils.cancelActiveReviewRun).mockResolvedValueOnce(true);
+    jest.mocked(ghUtils.isApprovedOnCommit).mockResolvedValueOnce(true);
+
+    setContext({
+      eventName: 'issue_comment',
+      payload: {
+        action: 'created',
+        issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } },
+        comment: { id: 42, body: '@manki review', author_association: 'COLLABORATOR' },
+      },
+    });
+
+    await handleCommentTrigger();
+
+    expect(jest.mocked(ghUtils.cancelActiveReviewRun)).toHaveBeenCalledWith(
+      expect.anything(), 'test-owner', 'test-repo', 1,
+    );
+    expect(jest.mocked(core.info)).toHaveBeenCalledWith('Cancelled in-progress review — proceeding with new review');
+    expect(jest.mocked(ghUtils.isApprovedOnCommit)).toHaveBeenCalled();
+    expect(jest.mocked(core.info)).toHaveBeenCalledWith('Already approved on this commit — skipping review');
+    expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
+  });
+
   it('proceeds even when cancel fails for in-progress review', async () => {
     jest.mocked(ghUtils.isReviewInProgress).mockResolvedValueOnce(true);
     jest.mocked(ghUtils.cancelActiveReviewRun).mockResolvedValueOnce(false);
