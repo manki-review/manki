@@ -2842,7 +2842,7 @@ describe('isApprovedOnCommit', () => {
 describe('postAppWarningIfNeeded', () => {
   type Octokit = ReturnType<typeof import('@actions/github').getOctokit>;
 
-  function makeOctokit(comments: Array<{ body: string; user: { login: string } }>) {
+  function makeOctokit(comments: Array<{ body: string; user: { login: string } | null }>) {
     const createComment = jest.fn().mockResolvedValue({});
     const paginate = jest.fn().mockResolvedValue(comments);
     const octokit = {
@@ -2895,5 +2895,14 @@ describe('postAppWarningIfNeeded', () => {
     expect(createComment).toHaveBeenCalledWith(expect.objectContaining({
       body: expect.stringContaining(APP_WARNING_MARKER),
     }));
+  });
+
+  it('does not throw and re-posts warning when a comment has no user', async () => {
+    const { octokit, createComment } = makeOctokit([
+      { body: `${APP_WARNING_MARKER}\nWarning`, user: null },
+    ]);
+
+    await expect(postAppWarningIfNeeded(octokit, 'owner', 'repo', 1)).resolves.toBeUndefined();
+    expect(createComment).toHaveBeenCalled();
   });
 });
