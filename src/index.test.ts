@@ -2362,6 +2362,7 @@ describe('runFullReview orchestration', () => {
   });
 
   it('posts app warning when identity is actions', async () => {
+    _resetOctokitCache();
     jest.mocked(authModule.createAuthenticatedOctokit).mockResolvedValue({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       octokit: mockOctokitInstance as any,
@@ -2377,6 +2378,7 @@ describe('runFullReview orchestration', () => {
   });
 
   it('does not post app warning when identity is app', async () => {
+    _resetOctokitCache();
     jest.mocked(authModule.createAuthenticatedOctokit).mockResolvedValue({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       octokit: mockOctokitInstance as any,

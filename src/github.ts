@@ -1247,11 +1247,11 @@ async function postAppWarningIfNeeded(
   repo: string,
   prNumber: number,
 ): Promise<void> {
-  const { data: comments } = await octokit.rest.issues.listComments({
-    owner, repo, issue_number: prNumber, per_page: 100,
+  const comments = await octokit.paginate(octokit.rest.issues.listComments, {
+    owner, repo, issue_number: prNumber,
   });
 
-  if (comments.some(c => c.body?.includes(APP_WARNING_MARKER))) {
+  if (comments.some(c => c.user?.login === BOT_LOGIN && c.body?.includes(APP_WARNING_MARKER))) {
     return;
   }
 

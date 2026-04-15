@@ -314,7 +314,11 @@ async function runFullReview(
   const octokit = await getOctokit();
 
   if (octokitCache.identity === 'actions') {
-    await postAppWarningIfNeeded(octokit, owner, repo, prNumber);
+    try {
+      await postAppWarningIfNeeded(octokit, owner, repo, prNumber);
+    } catch (error) {
+      core.warning(`Failed to post app warning: ${error}`);
+    }
   }
 
   const progressCommentId = await postProgressComment(octokit, owner, repo, prNumber);
