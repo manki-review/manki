@@ -2918,11 +2918,13 @@ describe('cancelActiveReviewRun', () => {
     comment?: { id: number; body: string } | null;
     cancelError?: Error;
     updateComment?: jest.Mock;
+    runStatus?: string;
   }) {
     const updateComment = opts.updateComment ?? jest.fn().mockResolvedValue({});
     const cancelWorkflowRun = opts.cancelError
       ? jest.fn().mockRejectedValue(opts.cancelError)
       : jest.fn().mockResolvedValue({});
+    const getWorkflowRun = jest.fn().mockResolvedValue({ data: { status: opts.runStatus ?? 'in_progress' } });
     const octokit = {
       rest: {
         issues: {
@@ -2935,10 +2937,11 @@ describe('cancelActiveReviewRun', () => {
         },
         actions: {
           cancelWorkflowRun,
+          getWorkflowRun,
         },
       },
     } as unknown as Octokit;
-    return { octokit, cancelWorkflowRun, updateComment };
+    return { octokit, cancelWorkflowRun, getWorkflowRun, updateComment };
   }
 
   it('returns false when no progress comment exists', async () => {
@@ -2991,11 +2994,11 @@ describe('cancelActiveReviewRun', () => {
 
     expect(result).toBe(true);
     expect(cancelWorkflowRun).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', run_id: 5555 });
-    expect(updateComment).toHaveBeenCalled();
+    expect(updateComment).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining(CANCELLED_MARKER) }));
   });
 
   it('returns false when cancelWorkflowRun throws', async () => {
-    const { octokit, cancelWorkflowRun } = makeMockOctokit({
+    const { octokit, cancelWorkflowRun, updateComment } = makeMockOctokit({
       comment: { id: 30, body: makeRunIdBody(7777) },
       cancelError: new Error('API failure'),
     });
@@ -3004,5 +3007,19 @@ describe('cancelActiveReviewRun', () => {
 
     expect(result).toBe(false);
     expect(cancelWorkflowRun).toHaveBeenCalled();
+    expect(updateComment).not.toHaveBeenCalled();
+  });
+
+  it('returns false when run is not in_progress or queued', async () => {
+    const { octokit, cancelWorkflowRun, updateComment } = makeMockOctokit({
+      comment: { id: 40, body: makeRunIdBody(8888) },
+      runStatus: 'completed',
+    });
+
+    const result = await cancelActiveReviewRun(octokit, 'owner', 'repo', 1);
+
+    expect(result).toBe(false);
+    expect(cancelWorkflowRun).not.toHaveBeenCalled();
+    expect(updateComment).not.toHaveBeenCalled();
   });
 });

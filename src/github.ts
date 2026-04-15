@@ -1268,6 +1268,8 @@ async function postAppWarningIfNeeded(
 /**
  * Cancel the in-progress review run for a PR, if one exists.
  * Returns true if a run was successfully cancelled, false otherwise.
+ *
+ * Requires actions: write permission on the workflow token.
  */
 async function cancelActiveReviewRun(
   octokit: Octokit,
@@ -1292,6 +1294,11 @@ async function cancelActiveReviewRun(
   }
 
   try {
+    const { data: runData } = await octokit.rest.actions.getWorkflowRun({ owner, repo, run_id: runId });
+    if (runData.status !== 'in_progress' && runData.status !== 'queued') {
+      core.info(`Run ${runId} is already ${runData.status} — skipping cancel`);
+      return false;
+    }
     await octokit.rest.actions.cancelWorkflowRun({ owner, repo, run_id: runId });
     // cancelWorkflowRun transitions the run to 'cancelling' — the old run may
     // still complete in-flight API calls before stopping.
