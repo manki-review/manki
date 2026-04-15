@@ -2860,6 +2860,9 @@ describe('postAppWarningIfNeeded', () => {
     expect(createComment).toHaveBeenCalledWith(expect.objectContaining({
       body: expect.stringContaining(APP_WARNING_MARKER),
     }));
+    expect(createComment).toHaveBeenCalledWith(expect.objectContaining({
+      body: expect.stringContaining('https://github.com/apps/manki-review'),
+    }));
   });
 
   it('skips posting when github-actions[bot] has already posted the warning', async () => {

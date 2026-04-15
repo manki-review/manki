@@ -2390,6 +2390,24 @@ describe('runFullReview orchestration', () => {
 
     expect(jest.mocked(ghUtils.postAppWarningIfNeeded)).not.toHaveBeenCalled();
   });
+
+  it('continues review and warns when postAppWarningIfNeeded throws', async () => {
+    _resetOctokitCache();
+    jest.mocked(authModule.createAuthenticatedOctokit).mockResolvedValue({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      octokit: mockOctokitInstance as any,
+      resolvedToken: 'mock-token',
+      identity: 'actions',
+    });
+    jest.mocked(ghUtils.postAppWarningIfNeeded).mockRejectedValueOnce(new Error('API error'));
+
+    await callRunFullReview();
+
+    expect(jest.mocked(core.warning)).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to post app warning'),
+    );
+    expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
+  });
 });
 
 describe('handleInteraction', () => {
