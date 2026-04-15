@@ -3061,4 +3061,17 @@ describe('cancelActiveReviewRun', () => {
       body: expect.stringContaining(CANCELLED_MARKER),
     }));
   });
+
+  it('returns false when getWorkflowRun throws', async () => {
+    const { octokit, getWorkflowRun, cancelWorkflowRun, updateComment } = makeMockOctokit({
+      comment: { id: 50, body: makeRunIdBody(6666) },
+    });
+    getWorkflowRun.mockRejectedValue(new Error('Not Found'));
+
+    const result = await cancelActiveReviewRun(octokit, 'owner', 'repo', 1);
+
+    expect(result).toBe(false);
+    expect(cancelWorkflowRun).not.toHaveBeenCalled();
+    expect(updateComment).not.toHaveBeenCalled();
+  });
 });
