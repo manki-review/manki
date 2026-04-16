@@ -3094,4 +3094,18 @@ describe('cancelActiveReviewRun', () => {
       }));
     },
   );
+
+  it('returns true when cancel succeeds but updateComment throws', async () => {
+    const updateComment = jest.fn().mockRejectedValue(new Error('forbidden'));
+    const { octokit, cancelWorkflowRun } = makeMockOctokit({
+      comment: { id: 99, body: makeRunIdBody(2222) },
+      updateComment,
+    });
+
+    const result = await cancelActiveReviewRun(octokit, 'owner', 'repo', 1);
+
+    expect(result).toBe(true);
+    expect(cancelWorkflowRun).toHaveBeenCalled();
+    expect(updateComment).toHaveBeenCalled();
+  });
 });
