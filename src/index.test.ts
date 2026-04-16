@@ -756,6 +756,9 @@ describe('handleCommentTrigger', () => {
       expect.anything(), 'test-owner', 'test-repo', 1,
     );
     expect(jest.mocked(core.info)).toHaveBeenCalledWith('Cancelled in-progress review — proceeding with new review');
+    expect(jest.mocked(ghUtils.isApprovedOnCommit)).toHaveBeenCalledWith(
+      expect.anything(), 'test-owner', 'test-repo', 1, expect.any(String),
+    );
     expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalledWith(
       expect.objectContaining({ body: expect.stringContaining('Review skipped') }),
     );
