@@ -31,6 +31,7 @@ import {
   isApprovedOnCommit,
   markOwnProgressCommentCancelled,
   postAppWarningIfNeeded,
+  cancelActiveReviewRun,
 } from './github';
 import { checkAndAutoApprove, resolveStaleThreads } from './state';
 
@@ -271,9 +272,12 @@ async function handleCommentTrigger(forceReview?: boolean): Promise<void> {
 
   if (!forceReview) {
     if (await isReviewInProgress(octokit, owner, repo, prNumber)) {
-      await postReviewSkippedComment(octokit, owner, repo, prNumber);
-      core.info('Review already in progress — skipping');
-      return;
+      const cancelled = await cancelActiveReviewRun(octokit, owner, repo, prNumber);
+      if (cancelled) {
+        core.info('Cancelled in-progress review — proceeding with new review');
+      } else {
+        core.info('Could not cancel in-progress review — proceeding anyway');
+      }
     }
 
     if (await isApprovedOnCommit(octokit, owner, repo, prNumber, pr.head.sha)) {

@@ -1138,6 +1138,10 @@ async function findProgressComment(
   return { id: match.id, body: match.body, runId: extractRunIdFromBody(match.body) };
 }
 
+const ACTIVE_RUN_STATUSES = new Set([
+  'in_progress', 'queued', 'waiting', 'pending', 'requested', 'action_required',
+]);
+
 /**
  * Check whether a review is currently in progress for a PR by verifying the
  * embedded Actions run_id via the GitHub Actions API. Zombie comments from
@@ -1178,7 +1182,7 @@ async function isReviewInProgress(octokit: Octokit, owner: string, repo: string,
     return false;
   }
 
-  if (status === 'in_progress' || status === 'queued' || status === 'waiting' || status === 'pending' || status === 'requested' || status === 'action_required') {
+  if (ACTIVE_RUN_STATUSES.has(status ?? '')) {
     core.info(`Skipping — review already in progress (run ${progress.runId}, status=${status})`);
     return true;
   }
@@ -1265,4 +1269,57 @@ async function postAppWarningIfNeeded(
   });
 }
 
-export { dynamicFence, formatFindingComment, formatStatsJson, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, safeTruncate, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody, APP_WARNING_MARKER, postAppWarningIfNeeded };
+/**
+ * Cancel the in-progress review run for a PR, if one exists.
+ * Returns true if a run was successfully cancelled, false otherwise.
+ *
+ * Requires actions: write permission on the workflow token.
+ */
+async function cancelActiveReviewRun(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  prNumber: number,
+): Promise<boolean> {
+  let progress: ProgressComment | null;
+  try {
+    progress = await findProgressComment(octokit, owner, repo, prNumber);
+  } catch {
+    return false;
+  }
+  if (!progress) return false;
+
+  const runId = progress.runId;
+  if (!runId) return false;
+
+  if (runId === github.context.runId) {
+    core.warning('Skipping self-cancellation');
+    return false;
+  }
+
+  let runData: { status?: string | null };
+  try {
+    const { data } = await octokit.rest.actions.getWorkflowRun({ owner, repo, run_id: runId });
+    runData = data;
+  } catch (error) {
+    core.warning(`Failed to query run ${runId}: ${error instanceof Error ? error.message : error}`);
+    return false;
+  }
+  if (!ACTIVE_RUN_STATUSES.has(runData.status ?? '')) {
+    core.info(`Run ${runId} is already ${runData.status} — skipping cancel`);
+    return false;
+  }
+  try {
+    await octokit.rest.actions.cancelWorkflowRun({ owner, repo, run_id: runId });
+    // cancelWorkflowRun transitions the run to 'cancelling' — the old run may
+    // still complete in-flight API calls before stopping.
+    core.info(`Cancelled in-progress review run ${runId}`);
+    await markProgressCommentCancelled(octokit, owner, repo, progress.id, progress.body);
+    return true;
+  } catch (error) {
+    core.warning(`Failed to cancel run ${runId}: ${error instanceof Error ? error.message : error}`);
+    return false;
+  }
+}
+
+export { dynamicFence, formatFindingComment, formatStatsJson, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, safeTruncate, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, APP_WARNING_MARKER, postAppWarningIfNeeded };
