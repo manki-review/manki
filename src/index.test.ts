@@ -812,6 +812,8 @@ describe('handleCommentTrigger', () => {
   });
 
   it('does not call cancelActiveReviewRun when forceReview is true', async () => {
+    jest.mocked(ghUtils.isReviewInProgress).mockResolvedValueOnce(true); // there IS an in-progress review
+
     setContext({
       eventName: 'issue_comment',
       payload: {
@@ -823,11 +825,14 @@ describe('handleCommentTrigger', () => {
 
     await handleCommentTrigger(true);
 
+    expect(jest.mocked(ghUtils.isReviewInProgress)).not.toHaveBeenCalled(); // entire block skipped
     expect(jest.mocked(ghUtils.cancelActiveReviewRun)).not.toHaveBeenCalled();
+    expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
   });
 
   it('does not call cancelActiveReviewRun when no review is in progress', async () => {
-    // isReviewInProgress defaults to false in module mock
+    // Reset to clear any once-values leaked from preceding tests
+    jest.mocked(ghUtils.isReviewInProgress).mockReset().mockResolvedValue(false);
     setContext({
       eventName: 'issue_comment',
       payload: {
