@@ -2967,7 +2967,8 @@ describe('cancelActiveReviewRun', () => {
   it('returns false and skips cancellation when runId matches current run', async () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const ghCtx = require('@actions/github').context;
-    const originalRunIdAttr = ghCtx.runId;
+    const hadOwnProp = Object.prototype.hasOwnProperty.call(ghCtx, 'runId');
+    const originalDescriptor = Object.getOwnPropertyDescriptor(ghCtx, 'runId');
     Object.defineProperty(ghCtx, 'runId', { value: 9999, configurable: true, writable: true });
     try {
       const { octokit, cancelWorkflowRun } = makeMockOctokit({
@@ -2979,7 +2980,11 @@ describe('cancelActiveReviewRun', () => {
       expect(result).toBe(false);
       expect(cancelWorkflowRun).not.toHaveBeenCalled();
     } finally {
-      Object.defineProperty(ghCtx, 'runId', { value: originalRunIdAttr, configurable: true, writable: true });
+      if (hadOwnProp && originalDescriptor) {
+        Object.defineProperty(ghCtx, 'runId', originalDescriptor);
+      } else {
+        delete (ghCtx as Record<string, unknown>).runId; // restore prototype getter
+      }
     }
   });
 

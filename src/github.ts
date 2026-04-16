@@ -1138,6 +1138,10 @@ async function findProgressComment(
   return { id: match.id, body: match.body, runId: extractRunIdFromBody(match.body) };
 }
 
+const ACTIVE_RUN_STATUSES = new Set([
+  'in_progress', 'queued', 'waiting', 'pending', 'requested', 'action_required',
+]);
+
 /**
  * Check whether a review is currently in progress for a PR by verifying the
  * embedded Actions run_id via the GitHub Actions API. Zombie comments from
@@ -1178,7 +1182,7 @@ async function isReviewInProgress(octokit: Octokit, owner: string, repo: string,
     return false;
   }
 
-  if (status === 'in_progress' || status === 'queued' || status === 'waiting' || status === 'pending' || status === 'requested' || status === 'action_required') {
+  if (ACTIVE_RUN_STATUSES.has(status ?? '')) {
     core.info(`Skipping — review already in progress (run ${progress.runId}, status=${status})`);
     return true;
   }
@@ -1301,8 +1305,7 @@ async function cancelActiveReviewRun(
     core.warning(`Failed to query run ${runId}: ${error instanceof Error ? error.message : error}`);
     return false;
   }
-  const cancellableStatuses = new Set(['in_progress', 'queued', 'waiting', 'pending', 'requested', 'action_required']);
-  if (!cancellableStatuses.has(runData.status ?? '')) {
+  if (!ACTIVE_RUN_STATUSES.has(runData.status ?? '')) {
     core.info(`Run ${runId} is already ${runData.status} — skipping cancel`);
     return false;
   }
