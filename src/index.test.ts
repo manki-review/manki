@@ -810,6 +810,9 @@ describe('handleCommentTrigger', () => {
       expect.anything(), 'test-owner', 'test-repo', 1,
     );
     expect(jest.mocked(core.info)).toHaveBeenCalledWith('Could not cancel in-progress review — proceeding anyway');
+    expect(jest.mocked(ghUtils.isApprovedOnCommit)).toHaveBeenCalledWith(
+      expect.anything(), 'test-owner', 'test-repo', 1, expect.any(String),
+    );
     expect(mockOctokitInstance.rest.pulls.get).toHaveBeenCalled();
     expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
   });
