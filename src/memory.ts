@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { minimatch } from 'minimatch';
 
-import { Finding, FindingSeverity } from './types';
+import { Finding, FindingSeverity, PrHandover } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -509,6 +509,58 @@ export async function batchUpdatePatternDecisions(
 
   const content = stringifyYaml(existing);
   await writeFile(octokit, owner, repo, path, content, `Update ${decisions.length} pattern decisions`);
+}
+
+/** Path for a per-PR handover file in the memory repo. */
+function handoverPath(targetRepo: string, prNumber: number): string {
+  return `${targetRepo}/prs/${prNumber}/handover.json`;
+}
+
+async function fetchJsonFile<T>(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  path: string,
+): Promise<T | null> {
+  try {
+    const { data } = await octokit.rest.repos.getContent({ owner, repo, path });
+    if ('content' in data && data.encoding === 'base64') {
+      const content = Buffer.from(data.content, 'base64').toString('utf-8');
+      return JSON.parse(content) as T;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Load the per-PR handover file, or null if it does not yet exist.
+ */
+export async function loadHandover(
+  octokit: Octokit,
+  memoryRepo: string,
+  targetRepo: string,
+  prNumber: number,
+): Promise<PrHandover | null> {
+  const [owner, repo] = memoryRepo.split('/');
+  return fetchJsonFile<PrHandover>(octokit, owner, repo, handoverPath(targetRepo, prNumber));
+}
+
+/**
+ * Write the per-PR handover file, replacing any existing content.
+ */
+export async function writeHandover(
+  octokit: Octokit,
+  memoryRepo: string,
+  targetRepo: string,
+  prNumber: number,
+  handover: PrHandover,
+): Promise<void> {
+  const [owner, repo] = memoryRepo.split('/');
+  const path = handoverPath(targetRepo, prNumber);
+  const content = JSON.stringify(handover, null, 2);
+  await writeFile(octokit, owner, repo, path, content, `Update handover for PR #${prNumber}`);
 }
 
 async function getFileSha(
