@@ -13,7 +13,7 @@ import {
 import { ClaudeClient } from './claude';
 import { RepoMemory, Learning, Suppression } from './memory';
 import { LinkedIssue } from './github';
-import { Finding, ReviewConfig, ParsedDiff, DiffFile, DiffHunk } from './types';
+import { Finding, HandoverRound, ReviewConfig, ParsedDiff, DiffFile, DiffHunk } from './types';
 
 const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
   auto_review: true,
@@ -357,6 +357,91 @@ describe('buildJudgeUserMessage', () => {
     const msg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, []);
 
     expect(msg).not.toContain('## Open Review Threads');
+  });
+
+  it('includes prior rounds section when priorRounds provided', () => {
+    const findings = [makeFinding()];
+    const priorRounds: HandoverRound[] = [{
+      round: 1,
+      commitSha: 'abc',
+      timestamp: 't',
+      findings: [
+        {
+          fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: 'Null-check' },
+          severity: 'required',
+          title: 'Null check',
+          authorReply: 'agree',
+          threadId: 'PRRT_1',
+        },
+        {
+          fingerprint: { file: 'src/b.ts', lineStart: 20, lineEnd: 20, slug: 'Unused-import' },
+          severity: 'nit',
+          title: 'Unused import',
+          authorReply: 'disagree',
+        },
+      ],
+    }];
+    const msg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, priorRounds);
+
+    expect(msg).toContain('## Prior Round Findings');
+    expect(msg).toContain('"authorReply": "agree"');
+    expect(msg).toContain('"authorReply": "disagree"');
+    expect(msg).toContain('"slug": "Null-check"');
+  });
+
+  it('omits prior rounds section when priorRounds is undefined or empty', () => {
+    const findings = [makeFinding()];
+    expect(buildJudgeUserMessage(findings, new Map(), '')).not.toContain('## Prior Round Findings');
+    expect(buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, [])).not.toContain('## Prior Round Findings');
+  });
+
+  it('caps prior rounds at 3 most recent when more are provided', () => {
+    const findings = [makeFinding()];
+    const priorRounds: HandoverRound[] = Array.from({ length: 5 }, (_, i) => ({
+      round: i + 1,
+      commitSha: `sha${i + 1}`,
+      timestamp: 't',
+      findings: [{
+        fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: `F${i + 1}` },
+        severity: 'suggestion',
+        title: `Finding ${i + 1}`,
+        authorReply: 'none',
+      }],
+    }));
+    const msg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, priorRounds);
+
+    expect(msg).not.toContain('"round": 1');
+    expect(msg).not.toContain('"round": 2');
+    expect(msg).toContain('"round": 3');
+    expect(msg).toContain('"round": 4');
+    expect(msg).toContain('"round": 5');
+  });
+
+  it('filters ignore-severity findings from prior rounds', () => {
+    const findings = [makeFinding()];
+    const priorRounds: HandoverRound[] = [{
+      round: 1,
+      commitSha: 'a',
+      timestamp: 't',
+      findings: [
+        {
+          fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 'Real' },
+          severity: 'required',
+          title: 'Real',
+          authorReply: 'none',
+        },
+        {
+          fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 'Ignored' },
+          severity: 'ignore',
+          title: 'Ignored',
+          authorReply: 'none',
+        },
+      ],
+    }];
+    const msg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, priorRounds);
+
+    expect(msg).toContain('"title": "Real"');
+    expect(msg).not.toContain('"title": "Ignored"');
   });
 });
 

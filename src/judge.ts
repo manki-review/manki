@@ -13,7 +13,10 @@ import {
 import { LinkedIssue } from './github';
 import { sanitize, titlesOverlap } from './recap';
 import { validateSeverity } from './review';
-import { DEFENSIVE_HARDENING_TAG, DiffFile, Finding, FindingReachability, FindingSeverity, ReviewConfig, ParsedDiff, PrContext } from './types';
+import { DEFENSIVE_HARDENING_TAG, DiffFile, Finding, FindingReachability, FindingSeverity, HandoverRound, ReviewConfig, ParsedDiff, PrContext } from './types';
+
+/** Cap on how many prior rounds we pass to the judge. */
+const PRIOR_ROUNDS_WINDOW = 3;
 
 export interface JudgeInput {
   findings: Finding[];
@@ -26,6 +29,7 @@ export interface JudgeInput {
   agentCount: number;
   isFollowUp?: boolean;
   openThreads?: Array<{ threadId: string; title: string; file: string; line: number; severity: string }>;
+  priorRounds?: HandoverRound[];
   effort?: 'low' | 'medium' | 'high';
 }
 
@@ -260,6 +264,7 @@ export function buildJudgeUserMessage(
   linkedIssues?: LinkedIssue[],
   changedFiles?: DiffFile[],
   openThreads?: Array<{ threadId: string; title: string; file: string; line: number; severity: string }>,
+  priorRounds?: HandoverRound[],
 ): string {
   const parts: string[] = [];
 
@@ -275,6 +280,28 @@ export function buildJudgeUserMessage(
     for (const t of openThreads) {
       parts.push(`- **${t.threadId}**: [${t.severity}] "${sanitize(t.title)}" at ${sanitize(t.file)}:${t.line}`);
     }
+    parts.push('');
+  }
+
+  if (priorRounds && priorRounds.length > 0) {
+    const recent = priorRounds.slice(-PRIOR_ROUNDS_WINDOW);
+    const payload = recent.map(r => ({
+      round: r.round,
+      commitSha: r.commitSha,
+      findings: r.findings
+        .filter(f => f.severity !== 'ignore')
+        .map(f => ({
+          fingerprint: f.fingerprint,
+          severity: f.severity,
+          title: f.title,
+          authorReply: f.authorReply,
+        })),
+    }));
+    parts.push(`## Prior Round Findings\n`);
+    parts.push('Use these to avoid re-raising findings the author disagreed with, note where the author acknowledged the finding, and avoid flip-flopping on design questions covered in prior rounds.\n');
+    parts.push('```json');
+    parts.push(JSON.stringify(payload, null, 2));
+    parts.push('```');
     parts.push('');
   }
 
@@ -491,7 +518,7 @@ export async function runJudgeAgent(
   config: ReviewConfig,
   input: JudgeInput,
 ): Promise<{ findings: Finding[]; summary: string; resolveThreads?: ResolveThread[] }> {
-  const { findings, diff, memory, prContext, linkedIssues, agentCount, isFollowUp, openThreads } = input;
+  const { findings, diff, memory, prContext, linkedIssues, agentCount, isFollowUp, openThreads, priorRounds } = input;
 
   const hasOpenThreads = (openThreads?.length ?? 0) > 0;
 
@@ -510,7 +537,7 @@ export async function runJudgeAgent(
   const changedFiles = diff.files;
 
   const systemPrompt = buildJudgeSystemPrompt(config, agentCount, isFollowUp, hasOpenThreads);
-  const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads);
+  const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads, priorRounds);
 
   const response = await client.sendMessage(systemPrompt, userMessage, { effort: input.effort ?? 'high' });
   const judgeResult = parseJudgeResponse(response.content);
