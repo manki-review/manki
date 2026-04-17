@@ -607,6 +607,10 @@ export async function appendHandoverRound(
     ? existingHandover
     : await loadHandover(octokit, memoryRepo, targetRepo, prNumber);
   const handover: PrHandover = loaded ?? { prNumber, repo: targetRepo, rounds: [] };
+  if (!Array.isArray(handover.rounds)) {
+    core.warning(`Handover for PR #${prNumber} is missing a rounds array — starting fresh`);
+    handover.rounds = [];
+  }
 
   // Build a lookup from thread ID and from file:line to the previous-finding record.
   const replyByThread = new Map<string, HandoverPreviousFinding>();

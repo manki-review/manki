@@ -1105,6 +1105,26 @@ describe('appendHandoverRound', () => {
     // getContent is called at most once (for the SHA lookup), not twice (load + SHA)
     expect(getContentCallCount).toBeLessThanOrEqual(1);
   });
+
+  it('treats a handover with a missing rounds field as empty and logs a warning', async () => {
+    // Simulates a corrupt handover where `rounds` is absent after JSON parse.
+    const malformed = { prNumber: 106, repo: 'rust-dashcore' } as unknown as PrHandover;
+    const octokit = mockJsonOctokit({});
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => undefined);
+
+    await appendHandoverRound(
+      octokit, 'owner/memory', 'rust-dashcore', 106,
+      'sha1', [], [],
+      'Summary', noopFingerprint, noopClassify, malformed,
+    );
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('missing a rounds array'),
+    );
+    warnSpy.mockRestore();
+    const loaded = await loadHandover(octokit, 'owner/memory', 'rust-dashcore', 106);
+    expect(loaded!.rounds).toHaveLength(1);
+  });
 });
 
 describe('fetchJsonFile error handling', () => {
