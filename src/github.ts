@@ -722,6 +722,11 @@ function sanitizeMarkdown(text: string): string {
     .replace(/(?<![a-zA-Z0-9.])@([a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)?)/g, '@\u200B$1');
 }
 
+/** Reduce a finding title to a URL-safe slug for use in HTML comment markers and fingerprints. */
+export function titleToSlug(title: string): string {
+  return title.replace(/[^a-zA-Z0-9]/g, '-');
+}
+
 function formatFindingComment(finding: Finding): string {
   const severityEmoji = getSeverityEmoji(finding.severity);
   const severityLabel = getSeverityLabel(finding.severity);
@@ -763,8 +768,7 @@ function formatFindingComment(finding: Finding): string {
   };
   comment += `\n\n<details>\n<summary>AI context</summary>\n\n\`\`\`json\n${JSON.stringify(aiContext, null, 2)}\n\`\`\`\n</details>`;
 
-  // The replace strips all non-alphanumeric chars, so the title is safe for use in an HTML comment marker
-  comment += `\n\n<!-- manki:${finding.severity}:${finding.title.replace(/[^a-zA-Z0-9]/g, '-')} -->`;
+  comment += `\n\n<!-- manki:${finding.severity}:${titleToSlug(finding.title)} -->`;
 
   return comment;
 }

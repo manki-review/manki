@@ -1,6 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { ClaudeClient } from './claude';
+import { titleToSlug } from './github';
 import { matchesSuppression, Suppression } from './memory';
 import { AuthorReplyClass, Finding, FindingFingerprint, FindingSeverity } from './types';
 
@@ -30,7 +31,7 @@ function fingerprintFinding(
     file,
     lineStart,
     lineEnd,
-    slug: title.replace(/[^a-zA-Z0-9]/g, '-'),
+    slug: titleToSlug(title),
   };
 }
 
