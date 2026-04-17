@@ -13,7 +13,7 @@ import {
 import { LinkedIssue } from './github';
 import { sanitize, titlesOverlap } from './recap';
 import { validateSeverity } from './review';
-import { DiffFile, Finding, FindingSeverity, ReviewConfig, ParsedDiff, PrContext } from './types';
+import { DiffFile, Finding, FindingReachability, FindingSeverity, ReviewConfig, ParsedDiff, PrContext } from './types';
 
 export interface JudgeInput {
   findings: Finding[];
@@ -34,6 +34,8 @@ export interface JudgedFinding {
   severity: FindingSeverity;
   reasoning: string;
   confidence: 'high' | 'medium' | 'low';
+  reachability?: FindingReachability;
+  reachabilityReasoning?: string;
 }
 
 export interface ResolveThread {

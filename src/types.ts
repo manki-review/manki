@@ -2,6 +2,8 @@ export const MAX_AGENT_RETRIES = 1;
 
 export type FindingSeverity = 'required' | 'suggestion' | 'nit' | 'ignore';
 
+export type FindingReachability = 'reachable' | 'hypothetical' | 'unknown';
+
 export interface Finding {
   severity: FindingSeverity;
   title: string;
@@ -13,6 +15,10 @@ export interface Finding {
   codeContext?: string;
   judgeNotes?: string;
   judgeConfidence?: 'high' | 'medium' | 'low';
+  reachability?: FindingReachability;
+  reachabilityReasoning?: string;
+  tags?: string[];
+  originalSeverity?: FindingSeverity;
 }
 
 export type ReviewVerdict = 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES';
