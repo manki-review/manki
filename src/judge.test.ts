@@ -1827,4 +1827,34 @@ describe('runJudgeAgent cross-round suppression', () => {
     expect(result.findings[0].severity).toBe('nit');
     expect(result.findings[0].tags).toContain('contradicts-prior-round');
   });
+
+  it('applies cross-round suppression on early return when judge returns empty findings', async () => {
+    const emptyJudgeResponse = JSON.stringify({ summary: 'Nothing left.', findings: [] });
+    mockSendMessage.mockResolvedValue({ content: emptyJudgeResponse });
+
+    const input: JudgeInput = {
+      findings: [makeFinding({ title: 'Unused variable', file: 'src/index.ts', line: 10 })],
+      diff: makeDiff(),
+      rawDiff: '',
+      repoContext: '',
+      agentCount: 3,
+      priorRounds: [{
+        round: 1,
+        commitSha: 'abc',
+        timestamp: 't',
+        findings: [{
+          fingerprint: { file: 'src/index.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
+          severity: 'suggestion',
+          title: 'Unused variable',
+          authorReply: 'agree',
+        }],
+      }],
+    };
+
+    const result = await runJudgeAgent(mockClient, makeConfig(), input);
+    expect(result.crossRoundSuppressed).toBe(1);
+    expect(result.crossRoundDemoted).toBeUndefined();
+    expect(result.findings[0].severity).toBe('ignore');
+    expect(result.findings[0].tags).toContain('suppressed-by-ratchet');
+  });
 });

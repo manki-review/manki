@@ -559,7 +559,14 @@ export async function runJudgeAgent(
     if (findings.length > 0) {
       core.warning('Judge returned no findings — returning originals unchanged');
     }
-    return { findings, summary: judgeResult.summary, resolveThreads: judgeResult.resolveThreads };
+    const earlySuppress = applyCrossRoundSuppression(findings, priorRounds);
+    return {
+      findings: earlySuppress.findings,
+      summary: judgeResult.summary,
+      resolveThreads: judgeResult.resolveThreads,
+      ...(earlySuppress.suppressedCount > 0 && { crossRoundSuppressed: earlySuppress.suppressedCount }),
+      ...(earlySuppress.demotedCount > 0 && { crossRoundDemoted: earlySuppress.demotedCount }),
+    };
   }
 
   const mapped = deduplicateFindings(mapJudgedToFindings(findings, judgeResult.findings));
