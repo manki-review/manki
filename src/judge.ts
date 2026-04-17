@@ -730,7 +730,7 @@ export function applyCrossRoundSuppression(
       ),
     );
     if (contradictionMatch && hasReversalWord(current) && current.severity === 'suggestion') {
-      current.originalSeverity = current.severity;
+      current.originalSeverity ??= current.severity;
       current.severity = 'nit';
       current.tags = addTag(current.tags, CONTRADICTION_TAG);
       const note = `Contradicts round ${contradictionMatch.round} guidance accepted by author`;
