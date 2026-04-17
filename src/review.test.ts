@@ -1898,6 +1898,112 @@ describe('runReview', () => {
     expect(result.agentNames).toContain('Domain Expert');
   });
 
+  it('clamps high effort to low when last-round dismiss rate is 100% with sample size >= 2', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 3,
+      reviewerEffort: 'medium',
+      judgeEffort: 'medium',
+      prType: 'feature',
+      agents: [
+        { name: 'Security & Safety', effort: 'high' },
+        { name: 'Correctness & Logic', effort: 'high' },
+        { name: 'Architecture & Design', effort: 'medium' },
+      ],
+    });
+    const clients: ReviewClients = {
+      reviewer: {
+        sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
+      } as unknown as import('./claude').ClaudeClient,
+      judge: {
+        sendMessage: jest.fn(),
+      } as unknown as import('./claude').ClaudeClient,
+      planner: {
+        sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
+      } as unknown as import('./claude').ClaudeClient,
+    };
+    const config = makeConfig({ review_level: 'auto' });
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
+
+    const hints = [
+      {
+        round: 1,
+        specialistOutcomes: [
+          { specialist: 'Security & Safety', findingsKept: 0, findingsDismissed: 3 },
+          { specialist: 'Correctness & Logic', findingsKept: 1, findingsDismissed: 2 },
+        ],
+      },
+    ];
+
+    const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
+    try {
+      const result = await runReview(
+        clients, config, diff, 'raw diff', 'repo context',
+        undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+        hints,
+      );
+      expect(result.plannerResult?.agents).toBeDefined();
+      const secPick = result.plannerResult!.agents!.find(a => a.name === 'Security & Safety');
+      const corPick = result.plannerResult!.agents!.find(a => a.name === 'Correctness & Logic');
+      // 100% dismiss rate with sample >= 2 and effort high -> clamp to low
+      expect(secPick?.effort).toBe('low');
+      // Non-zero keep rate, guard does not fire
+      expect(corPick?.effort).toBe('high');
+
+      const clampLogs = infoSpy.mock.calls.filter(
+        c => typeof c[0] === 'string' && c[0].includes('Downgrading "Security & Safety"'),
+      );
+      expect(clampLogs.length).toBe(1);
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  it('does not downgrade effort when dismiss sample is below threshold', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 3,
+      reviewerEffort: 'medium',
+      judgeEffort: 'medium',
+      prType: 'feature',
+      agents: [
+        { name: 'Security & Safety', effort: 'high' },
+        { name: 'Correctness & Logic', effort: 'medium' },
+        { name: 'Architecture & Design', effort: 'low' },
+      ],
+    });
+    const clients: ReviewClients = {
+      reviewer: {
+        sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
+      } as unknown as import('./claude').ClaudeClient,
+      judge: {
+        sendMessage: jest.fn(),
+      } as unknown as import('./claude').ClaudeClient,
+      planner: {
+        sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
+      } as unknown as import('./claude').ClaudeClient,
+    };
+    const config = makeConfig({ review_level: 'auto' });
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
+
+    const hints = [
+      {
+        round: 1,
+        specialistOutcomes: [
+          { specialist: 'Security & Safety', findingsKept: 0, findingsDismissed: 1 },
+        ],
+      },
+    ];
+
+    const result = await runReview(
+      clients, config, diff, 'raw diff', 'repo context',
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      hints,
+    );
+    const secPick = result.plannerResult!.agents!.find(a => a.name === 'Security & Safety');
+    expect(secPick?.effort).toBe('high');
+  });
+
   it('forwards priorRoundHints to the planner prompt', async () => {
     const plannerResponse = JSON.stringify({
       teamSize: 3,

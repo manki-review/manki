@@ -498,6 +498,34 @@ function heuristicFallback(diff: ParsedDiff, config: ReviewConfig): TeamRoster {
   return team;
 }
 
+/** Minimum dismissed-finding sample size required before a 100% dismiss rate triggers an effort downgrade. */
+const EFFORT_DOWNGRADE_MIN_SAMPLE = 2;
+
+/**
+ * Safety net for when the planner LLM keeps an agent at \`high\` effort despite
+ * the most recent round dismissing all of that specialist's findings. Clamps
+ * such picks to \`low\` and logs the change. Mutates picks in place for
+ * simplicity; the planner result object is not shared across reviews.
+ */
+function applyEffortDowngrade(picks: AgentPick[], hints: PlannerRoundHint[]): void {
+  if (hints.length === 0) return;
+
+  const lastHint = hints[hints.length - 1];
+  const byName = new Map(lastHint.specialistOutcomes.map(o => [o.specialist, o]));
+
+  for (const pick of picks) {
+    if (pick.effort !== 'high') continue;
+    const outcome = byName.get(pick.name);
+    if (!outcome) continue;
+    if (outcome.findingsDismissed < EFFORT_DOWNGRADE_MIN_SAMPLE) continue;
+    if (outcome.findingsKept !== 0) continue;
+    core.info(
+      `Downgrading "${pick.name}" effort from high to low — round ${lastHint.round} dismissed all ${outcome.findingsDismissed} findings from this specialist`,
+    );
+    pick.effort = 'low';
+  }
+}
+
 export async function runReview(
   clients: ReviewClients,
   config: ReviewConfig,
@@ -526,6 +554,9 @@ export async function runReview(
     plannerResult = await runPlanner(clients.planner, diff, prContext, config.reviewers, priorRoundHints);
     const plannerDurationMs = Date.now() - plannerStart;
     if (plannerResult) {
+      if (plannerResult.agents && priorRoundHints && priorRoundHints.length > 0) {
+        applyEffortDowngrade(plannerResult.agents, priorRoundHints);
+      }
       team = selectTeam(diff, config, config.reviewers, plannerResult.teamSize, plannerResult.agents);
       core.info(`Planner: ${plannerResult.teamSize} agents, reviewer: ${plannerResult.reviewerEffort}, judge: ${plannerResult.judgeEffort} (${plannerResult.prType})`);
       if (plannerResult.teamSize === 1) {
