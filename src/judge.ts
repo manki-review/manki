@@ -152,6 +152,18 @@ Examples of **ignore**:
   - Known workaround documented in comments
   - Style preference that does not affect correctness
 
+## Practical Reachability
+
+For every finding, decide whether the failure mode it describes is **practically reachable** given the code you can see in this PR and the surrounding diff context. Classify into exactly one of:
+
+- **reachable**: there is a concrete call site, input path, or execution flow visible in the diff (or the changed files it touches) that would actually trigger the failure described by the finding. Defaults here when in doubt about active code paths.
+- **hypothetical**: the finding is technically correct about the code as written, but no caller, input, or control flow visible in the diff would exercise the failure mode. Typical examples: defensive guards on values that are always produced by trusted internal code, branches that cannot be reached with the current call graph, edge cases that would require the author to change unrelated code to trigger.
+- **unknown**: you cannot determine reachability from the diff alone. Use this when the flagged code is exported or called from outside the changed files and you have no visibility into its callers.
+
+Populate \`reachability\` on every finding. When you choose \`hypothetical\`, also give a one-sentence \`reachabilityReasoning\` explaining why no current caller triggers the failure — this is how the author audits a demotion.
+
+Reachability is independent of severity. A finding can be \`required\` and \`hypothetical\`, or \`nit\` and \`reachable\`. Severity captures how bad the failure is; reachability captures whether it can actually happen today.
+
 ## Evaluation Criteria
 
 For each finding, evaluate:
@@ -159,6 +171,7 @@ For each finding, evaluate:
 1. **Accuracy**: Is the finding technically correct given the code context?
 2. **Actionability**: Can the developer fix this? Is the fix clear?
 3. **Severity**: Based on actual impact, not the reviewer's original assessment.
+4. **Reachability**: See "Practical Reachability" above.
 
 ## Guidelines
 
@@ -214,7 +227,9 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
       "title": "Short title matching or close to the original finding title",
       "severity": "required" | "suggestion" | "nit" | "ignore",
       "reasoning": "1-2 sentences explaining your judgment",
-      "confidence": "high" | "medium" | "low"
+      "confidence": "high" | "medium" | "low",
+      "reachability": "reachable" | "hypothetical" | "unknown",
+      "reachabilityReasoning": "Required when reachability is 'hypothetical'. One sentence explaining why no current caller triggers the failure"
     }
   ]${hasOpenThreads ? `,
   "resolveThreads": [

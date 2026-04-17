@@ -212,6 +212,21 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).not.toContain('resolveThreads');
   });
 
+  it('contains Practical Reachability section and classification values', () => {
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
+    expect(prompt).toContain('## Practical Reachability');
+    expect(prompt).toContain('**reachable**');
+    expect(prompt).toContain('**hypothetical**');
+    expect(prompt).toContain('**unknown**');
+  });
+
+  it('lists reachability fields in the output schema', () => {
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
+    expect(prompt).toContain('"reachability"');
+    expect(prompt).toContain('"reachabilityReasoning"');
+    expect(prompt).toContain('"reachable" | "hypothetical" | "unknown"');
+  });
+
 });
 
 describe('buildJudgeUserMessage', () => {
