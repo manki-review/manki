@@ -10,13 +10,19 @@ import {
   Suppression,
   RepoMemory,
 } from './memory';
-import { LinkedIssue } from './github';
+import { LinkedIssue, titleToSlug } from './github';
 import { sanitize, titlesOverlap } from './recap';
 import { validateSeverity } from './review';
-import { DEFENSIVE_HARDENING_TAG, DiffFile, Finding, FindingReachability, FindingSeverity, HandoverRound, ReviewConfig, ParsedDiff, PrContext } from './types';
+import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DiffFile, Finding, FindingReachability, FindingSeverity, HandoverFinding, HandoverRound, RATCHET_SUPPRESSED_TAG, ReviewConfig, ParsedDiff, PrContext } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
+
+/** Line-delta window used when matching a current finding to a prior-round finding. */
+const LINE_WINDOW = 5;
+
+/** Words that, when present in a current finding, suggest it reverses prior guidance. */
+const REVERSAL_WORDS = ['remove', 'delete', 'add', 'use', 'avoid', 'replace', 'revert', 'undo', 'instead'];
 
 export interface JudgeInput {
   findings: Finding[];
@@ -518,7 +524,13 @@ export async function runJudgeAgent(
   client: ClaudeClient,
   config: ReviewConfig,
   input: JudgeInput,
-): Promise<{ findings: Finding[]; summary: string; resolveThreads?: ResolveThread[] }> {
+): Promise<{
+  findings: Finding[];
+  summary: string;
+  resolveThreads?: ResolveThread[];
+  crossRoundSuppressed?: number;
+  crossRoundDemoted?: number;
+}> {
   const { findings, diff, memory, prContext, linkedIssues, agentCount, isFollowUp, openThreads, priorRounds } = input;
 
   const hasOpenThreads = (openThreads?.length ?? 0) > 0;
@@ -550,10 +562,15 @@ export async function runJudgeAgent(
     return { findings, summary: judgeResult.summary, resolveThreads: judgeResult.resolveThreads };
   }
 
+  const mapped = deduplicateFindings(mapJudgedToFindings(findings, judgeResult.findings));
+  const suppression = applyCrossRoundSuppression(mapped, priorRounds);
+
   return {
-    findings: deduplicateFindings(mapJudgedToFindings(findings, judgeResult.findings)),
+    findings: suppression.findings,
     summary: judgeResult.summary,
     resolveThreads: judgeResult.resolveThreads,
+    ...(suppression.suppressedCount > 0 && { crossRoundSuppressed: suppression.suppressedCount }),
+    ...(suppression.demotedCount > 0 && { crossRoundDemoted: suppression.demotedCount }),
   };
 }
 
@@ -652,6 +669,79 @@ function mapMergedFindings(original: Finding[], judged: JudgedFinding[]): Findin
   }
 
   return result;
+}
+
+/**
+ * Apply cross-round suppression rules using prior-round handover state.
+ *
+ * Ratchet: if a prior finding with the same slug + file exists and the author
+ * agreed, suppress the current finding unless it is `required`.
+ *
+ * Contradiction: if a prior finding with the same slug + file + line proximity
+ * exists, the author agreed, and the current finding uses a reversal word,
+ * demote `required`/`suggestion` to `nit` and annotate `judgeNotes`.
+ */
+export function applyCrossRoundSuppression(
+  findings: Finding[],
+  priorRounds: HandoverRound[] | undefined,
+): { findings: Finding[]; suppressedCount: number; demotedCount: number } {
+  if (!priorRounds || priorRounds.length === 0) {
+    return { findings, suppressedCount: 0, demotedCount: 0 };
+  }
+
+  const acceptedPriors: Array<{ round: number; finding: HandoverFinding }> = [];
+  for (const round of priorRounds) {
+    for (const f of round.findings) {
+      if (f.authorReply === 'agree') {
+        acceptedPriors.push({ round: round.round, finding: f });
+      }
+    }
+  }
+
+  if (acceptedPriors.length === 0) {
+    return { findings, suppressedCount: 0, demotedCount: 0 };
+  }
+
+  let suppressedCount = 0;
+  let demotedCount = 0;
+
+  const updated = findings.map((finding) => {
+    const current = { ...finding };
+    const slug = titleToSlug(current.title);
+
+    const ratchetMatch = acceptedPriors.find(({ finding: prior }) =>
+      prior.fingerprint.file === current.file && prior.fingerprint.slug === slug,
+    );
+    if (ratchetMatch && current.severity !== 'required') {
+      current.severity = 'ignore';
+      current.tags = addTag(current.tags, RATCHET_SUPPRESSED_TAG);
+      suppressedCount++;
+      return current;
+    }
+
+    const contradictionMatch = acceptedPriors.find(({ finding: prior }) =>
+      prior.fingerprint.file === current.file
+      && prior.fingerprint.slug === slug
+      && Math.abs(current.line - prior.fingerprint.lineStart) <= LINE_WINDOW,
+    );
+    if (contradictionMatch && hasReversalWord(current) && (current.severity === 'required' || current.severity === 'suggestion')) {
+      current.originalSeverity = current.severity;
+      current.severity = 'nit';
+      current.tags = addTag(current.tags, CONTRADICTION_TAG);
+      const note = `Contradicts round ${contradictionMatch.round} guidance accepted by author`;
+      current.judgeNotes = current.judgeNotes ? `${current.judgeNotes} ${note}` : note;
+      demotedCount++;
+    }
+
+    return current;
+  });
+
+  return { findings: updated, suppressedCount, demotedCount };
+}
+
+function hasReversalWord(finding: Finding): boolean {
+  const haystack = `${finding.description} ${finding.suggestedFix ?? ''}`.toLowerCase();
+  return REVERSAL_WORDS.some(word => new RegExp(`\\b${word}\\b`).test(haystack));
 }
 
 export function deduplicateFindings(findings: Finding[]): Finding[] {
