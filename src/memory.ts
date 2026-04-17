@@ -644,6 +644,8 @@ export async function appendHandoverRound(
       title: f.title,
       authorReply: 'none',
     };
+    const specialist = f.reviewers?.[0];
+    if (specialist) entry.specialist = specialist;
     return entry;
   });
 

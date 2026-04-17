@@ -44,6 +44,8 @@ export interface HandoverFinding {
   title: string;
   authorReply: AuthorReplyClass;
   threadId?: string;
+  /** Originating specialist name (from `Finding.reviewers[0]`). Absent in handover files written before this field was added. */
+  specialist?: string;
 }
 
 /** A single completed review round recorded in the per-PR handover. */

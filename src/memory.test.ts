@@ -1049,7 +1049,9 @@ describe('appendHandoverRound', () => {
 
   it('appends a new round without overwriting prior rounds', async () => {
     const octokit = mockJsonOctokit({});
-    const finding = makeFinding({ title: 'Null check', file: 'src/a.ts', line: 5 });
+    const finding = makeFinding({
+      title: 'Null check', file: 'src/a.ts', line: 5, reviewers: ['Security & Safety'],
+    });
 
     await appendHandoverRound(
       octokit, 'owner/memory', 'rust-dashcore', 106,
@@ -1062,6 +1064,7 @@ describe('appendHandoverRound', () => {
     expect(loaded!.rounds[0].round).toBe(1);
     expect(loaded!.rounds[0].findings[0].title).toBe('Null check');
     expect(loaded!.rounds[0].findings[0].authorReply).toBe('none');
+    expect(loaded!.rounds[0].findings[0].specialist).toBe('Security & Safety');
     expect(loaded!.rounds[0].judgeSummary).toBe('One issue found');
 
     await appendHandoverRound(
@@ -1073,6 +1076,20 @@ describe('appendHandoverRound', () => {
     const reloaded = await loadHandover(octokit, 'owner/memory', 'rust-dashcore', 106);
     expect(reloaded!.rounds).toHaveLength(2);
     expect(reloaded!.rounds[1].round).toBe(2);
+  });
+
+  it('omits specialist when the finding has no reviewers', async () => {
+    const octokit = mockJsonOctokit({});
+    const finding = makeFinding({ title: 'Null check', file: 'src/a.ts', line: 5, reviewers: [] });
+
+    await appendHandoverRound(
+      octokit, 'owner/memory', 'rust-dashcore', 106,
+      'sha1', [finding], [],
+      'One issue found', noopFingerprint, noopClassify,
+    );
+
+    const loaded = await loadHandover(octokit, 'owner/memory', 'rust-dashcore', 106);
+    expect(loaded!.rounds[0].findings[0]).not.toHaveProperty('specialist');
   });
 
   it('uses pre-loaded handover and skips the extra loadHandover fetch', async () => {
