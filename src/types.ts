@@ -164,6 +164,7 @@ export interface ReviewStats {
     confidenceDistribution: { high: number; medium: number; low: number };
     severityChanges: number;
     mergedDuplicates: number;
+    defensiveHardeningCount?: number;
   };
 
   // File analysis

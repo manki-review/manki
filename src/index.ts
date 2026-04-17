@@ -640,7 +640,7 @@ async function runFullReview(
       : undefined;
 
     // Judge calibration metrics
-    let judgeMetrics: { confidenceDistribution: { high: number; medium: number; low: number }; severityChanges: number; mergedDuplicates: number } | undefined;
+    let judgeMetrics: { confidenceDistribution: { high: number; medium: number; low: number }; severityChanges: number; mergedDuplicates: number; defensiveHardeningCount?: number } | undefined;
     if (allJudged.length > 0) {
       const confidenceDistribution = { high: 0, medium: 0, low: 0 };
       for (const f of allJudged) {
@@ -652,7 +652,13 @@ async function runFullReview(
         - (result.staticDedupCount ?? 0)
         - (result.llmDedupCount ?? 0)
         - allJudged.length;
-      judgeMetrics = { confidenceDistribution, severityChanges, mergedDuplicates };
+      const defensiveHardeningCount = allJudged.filter(f => f.tags?.includes('defensive-hardening')).length;
+      judgeMetrics = {
+        confidenceDistribution,
+        severityChanges,
+        mergedDuplicates,
+        ...(defensiveHardeningCount > 0 && { defensiveHardeningCount }),
+      };
     }
 
     // File analysis metrics

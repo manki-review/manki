@@ -1678,6 +1678,41 @@ describe('runFullReview orchestration', () => {
     expect(statsArg!.judgeMetrics?.mergedDuplicates).toBe(1);
   });
 
+  it('counts defensive-hardening findings in judgeMetrics', async () => {
+    const testFiles = [
+      { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] },
+    ];
+    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+      files: testFiles, totalAdditions: 20, totalDeletions: 5,
+    });
+    jest.mocked(diffModule.filterFiles).mockReturnValue(testFiles);
+
+    const findings = [
+      { severity: 'nit' as const, title: 'Guard', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const, tags: ['defensive-hardening'], originalSeverity: 'required' as const, reachability: 'hypothetical' as const },
+      { severity: 'required' as const, title: 'Real', file: 'src/app.ts', line: 6, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const, reachability: 'reachable' as const },
+    ];
+    const allJudged = [...findings];
+
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'REQUEST_CHANGES', summary: 'Issues found',
+      findings,
+      highlights: [],
+      reviewComplete: true,
+      rawFindingCount: 2,
+      agentNames: ['security'],
+      allJudgedFindings: allJudged,
+      rawFindings: [...findings],
+    });
+    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue('REQUEST_CHANGES');
+
+    await callRunFullReview();
+
+    const statsArg = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+    expect(statsArg!.judgeMetrics?.defensiveHardeningCount).toBe(1);
+  });
+
   it('creates nit issues when nit_handling is "issues"', async () => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
