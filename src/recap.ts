@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { ClaudeClient } from './claude';
 import { matchesSuppression, Suppression } from './memory';
-import { Finding, FindingFingerprint, FindingSeverity } from './types';
+import { AuthorReplyClass, Finding, FindingFingerprint, FindingSeverity } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -14,8 +14,6 @@ export function sanitize(s: string, maxLength = 200): string {
   return cleaned.length > maxLength ? cleaned.slice(0, maxLength) + '...' : cleaned;
 }
 
-
-type AuthorReplyClass = 'agree' | 'disagree' | 'partial' | 'none';
 
 /**
  * Build a stable fingerprint for a finding. The slug mirrors the regex used
@@ -393,4 +391,4 @@ async function llmDeduplicateFindings(
   }
 }
 
-export { AuthorReplyClass, DuplicateMatch, PreviousFinding, RecapState, classifyAuthorReply, fingerprintFinding, fetchRecapState, deduplicateFindings, titlesOverlap, llmDeduplicateFindings };
+export { DuplicateMatch, PreviousFinding, RecapState, classifyAuthorReply, fingerprintFinding, fetchRecapState, deduplicateFindings, titlesOverlap, llmDeduplicateFindings };

@@ -35,6 +35,33 @@ export interface FindingFingerprint {
   slug: string;
 }
 
+export type AuthorReplyClass = 'agree' | 'disagree' | 'partial' | 'none';
+
+/** One finding as captured in a prior review round. */
+export interface HandoverFinding {
+  fingerprint: FindingFingerprint;
+  severity: FindingSeverity | 'unknown';
+  title: string;
+  authorReply: AuthorReplyClass;
+  threadId?: string;
+}
+
+/** A single completed review round recorded in the per-PR handover. */
+export interface HandoverRound {
+  round: number;
+  commitSha: string;
+  timestamp: string;
+  findings: HandoverFinding[];
+  judgeSummary?: string;
+}
+
+/** Per-PR cross-round state stored at `{targetRepo}/prs/{prNumber}/handover.json`. */
+export interface PrHandover {
+  prNumber: number;
+  repo: string;
+  rounds: HandoverRound[];
+}
+
 export type ReviewVerdict = 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES';
 
 export interface ReviewResult {
