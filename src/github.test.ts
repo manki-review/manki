@@ -147,6 +147,39 @@ describe('formatFindingComment', () => {
     const comment = formatFindingComment(baseFinding);
     expect(comment).not.toContain('confidence]');
   });
+
+  it('renders defensive-hardening tag with original severity when tagged', () => {
+    const finding: Finding = {
+      ...baseFinding,
+      severity: 'nit',
+      tags: ['defensive-hardening'],
+      originalSeverity: 'required',
+      reachability: 'hypothetical',
+    };
+    const comment = formatFindingComment(finding);
+    expect(comment).toContain('[defensive hardening — capped from required]');
+    const jsonMatch = comment.match(/```json\n([\s\S]*?)\n```/);
+    const parsed = JSON.parse(jsonMatch![1]);
+    expect(parsed.tags).toEqual(['defensive-hardening']);
+    expect(parsed.reachability).toBe('hypothetical');
+    expect(parsed.originalSeverity).toBe('required');
+  });
+
+  it('omits defensive-hardening line when finding has no tags', () => {
+    const comment = formatFindingComment(baseFinding);
+    expect(comment).not.toContain('defensive hardening');
+    const jsonMatch = comment.match(/```json\n([\s\S]*?)\n```/);
+    const parsed = JSON.parse(jsonMatch![1]);
+    expect(parsed.tags).toBeUndefined();
+    expect(parsed.reachability).toBeUndefined();
+    expect(parsed.originalSeverity).toBeUndefined();
+  });
+
+  it('omits defensive-hardening line when tag is absent but originalSeverity is set', () => {
+    const finding: Finding = { ...baseFinding, originalSeverity: 'required' };
+    const comment = formatFindingComment(finding);
+    expect(comment).not.toContain('defensive hardening');
+  });
 });
 
 describe('mapVerdictToEvent', () => {
