@@ -89,6 +89,8 @@ export interface ReviewResult {
   llmDedupCount?: number;
   suppressionCount?: number;
   agentResponseLengths?: Map<string, number>;
+  crossRoundSuppressed?: number;
+  crossRoundDemoted?: number;
 }
 
 export interface ReviewerAgent {

@@ -873,6 +873,8 @@ export async function runReview(
   let allJudgedFindings: Finding[] | undefined;
   let judgeSummary = 'Review complete.';
   let judgeResolveThreads: ResolveThread[] | undefined;
+  let judgeCrossRoundSuppressed: number | undefined;
+  let judgeCrossRoundDemoted: number | undefined;
   try {
     core.info(`Running judge on ${findingsForJudge.length} findings...`);
     const judgeInput: JudgeInput = {
@@ -893,6 +895,8 @@ export async function runReview(
     judgeSummary = judgeResult.summary;
     allJudgedFindings = judgeResult.findings;
     judgeResolveThreads = judgeResult.resolveThreads;
+    judgeCrossRoundSuppressed = judgeResult.crossRoundSuppressed;
+    judgeCrossRoundDemoted = judgeResult.crossRoundDemoted;
     finalFindings = judgeResult.findings.filter(f => f.severity !== 'ignore');
     core.info(`Judge complete: ${finalFindings.length} findings survived (${judgeResult.findings.length - finalFindings.length} ignored)`);
   } catch (error) {
@@ -943,6 +947,8 @@ export async function runReview(
     llmDedupCount,
     suppressionCount,
     agentResponseLengths,
+    crossRoundSuppressed: judgeCrossRoundSuppressed,
+    crossRoundDemoted: judgeCrossRoundDemoted,
   };
 }
 

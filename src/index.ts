@@ -9,7 +9,7 @@ import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, 
 import { appendHandoverRound, loadHandover, loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
 import { classifyAuthorReply, fetchRecapState, fingerprintFinding } from './recap';
 import { runReview, determineVerdict, selectTeam } from './review';
-import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DashboardData, PrContext, PrHandover, RATCHET_SUPPRESSED_TAG, ReviewMetadata, ReviewStats } from './types';
+import { DEFENSIVE_HARDENING_TAG, DashboardData, PrContext, PrHandover, ReviewMetadata, ReviewStats } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -667,16 +667,16 @@ async function runFullReview(
         - allJudged.length
       : 0;
     const defensiveHardeningCount = allJudged.filter(f => f.tags?.includes(DEFENSIVE_HARDENING_TAG)).length;
-    const crossRoundSuppressed = allJudged.filter(f => f.tags?.includes(RATCHET_SUPPRESSED_TAG)).length;
-    const crossRoundDemoted = allJudged.filter(f => f.tags?.includes(CONTRADICTION_TAG)).length;
+    const crossRoundSuppressed = result.crossRoundSuppressed;
+    const crossRoundDemoted = result.crossRoundDemoted;
     const judgeMetrics: ReviewStats['judgeMetrics'] = {
       confidenceDistribution,
       severityChanges,
       mergedDuplicates,
       ...(defensiveHardeningCount > 0 && { defensiveHardeningCount }),
       verdictReason,
-      ...(crossRoundSuppressed > 0 && { crossRoundSuppressed }),
-      ...(crossRoundDemoted > 0 && { crossRoundDemoted }),
+      ...(crossRoundSuppressed != null && crossRoundSuppressed > 0 && { crossRoundSuppressed }),
+      ...(crossRoundDemoted != null && crossRoundDemoted > 0 && { crossRoundDemoted }),
     };
 
     // File analysis metrics
