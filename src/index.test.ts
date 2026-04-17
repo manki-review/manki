@@ -1746,7 +1746,7 @@ describe('runFullReview orchestration', () => {
       crossRoundDemoted: 1,
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue('REQUEST_CHANGES');
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'required_present' });
 
     await callRunFullReview();
 
