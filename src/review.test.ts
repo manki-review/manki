@@ -1898,6 +1898,47 @@ describe('runReview', () => {
     expect(result.agentNames).toContain('Domain Expert');
   });
 
+  it('forwards priorRoundHints to the planner prompt', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 3,
+      reviewerEffort: 'medium',
+      judgeEffort: 'medium',
+      prType: 'feature',
+    });
+    const plannerSpy = jest.fn().mockResolvedValue({ content: plannerResponse });
+    const clients: ReviewClients = {
+      reviewer: {
+        sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
+      } as unknown as import('./claude').ClaudeClient,
+      judge: {
+        sendMessage: jest.fn(),
+      } as unknown as import('./claude').ClaudeClient,
+      planner: { sendMessage: plannerSpy } as unknown as import('./claude').ClaudeClient,
+    };
+    const config = makeConfig({ review_level: 'auto' });
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
+
+    const hints = [
+      {
+        round: 1,
+        specialistOutcomes: [
+          { specialist: 'Architecture & Design', findingsKept: 3, findingsDismissed: 2 },
+        ],
+      },
+    ];
+
+    await runReview(
+      clients, config, diff, 'raw diff', 'repo context',
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      hints,
+    );
+
+    const systemPrompt = plannerSpy.mock.calls[0][0] as string;
+    expect(systemPrompt).toContain('Prior Round Outcomes');
+    expect(systemPrompt).toContain('"Architecture & Design" — 3 kept, 2 dismissed');
+  });
+
   it('falls back to selectTeam when planner returns error', async () => {
     const clients: ReviewClients = {
       reviewer: {
@@ -3044,6 +3085,31 @@ describe('runPlanner with agents and language', () => {
     expect(systemPrompt).toContain('"Security & Safety"');
     expect(systemPrompt).toContain('"Domain Expert"');
     expect(systemPrompt).toContain('"agents"');
+  });
+
+  it('forwards prior-round hints into the planner system prompt', async () => {
+    const response = JSON.stringify({
+      teamSize: 3,
+      reviewerEffort: 'low',
+      judgeEffort: 'low',
+      prType: 'chore',
+    });
+    const client = makeClient(response);
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const hints = [
+      {
+        round: 1,
+        specialistOutcomes: [
+          { specialist: 'Testing & Coverage', findingsKept: 0, findingsDismissed: 3 },
+        ],
+      },
+    ];
+
+    await runPlanner(client, diff, undefined, undefined, hints);
+
+    const systemPrompt = (client.sendMessage as jest.Mock).mock.calls[0][0] as string;
+    expect(systemPrompt).toContain('Prior Round Outcomes');
+    expect(systemPrompt).toContain('"Testing & Coverage" — 0 kept, 3 dismissed');
   });
 });
 

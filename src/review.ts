@@ -426,6 +426,7 @@ export async function runPlanner(
   diff: ParsedDiff,
   prContext?: PrContext,
   customReviewers?: ReviewerAgent[],
+  priorRoundHints?: PlannerRoundHint[],
 ): Promise<PlannerResult | null> {
   let timeoutId: ReturnType<typeof setTimeout>;
   const timeoutPromise = new Promise<never>((_, reject) => {
@@ -435,7 +436,7 @@ export async function runPlanner(
   try {
     const pool = buildAgentPool(customReviewers);
     const availableNames = new Set(pool.map(a => a.name));
-    const systemPrompt = buildPlannerSystemPrompt(pool);
+    const systemPrompt = buildPlannerSystemPrompt(pool, priorRoundHints);
 
     const userMessage = buildPlannerSummary(diff, prContext);
     const response = await Promise.race([
@@ -512,6 +513,7 @@ export async function runReview(
   openThreads?: Array<{ threadId: string; title: string; file: string; line: number; severity: string }>,
   previousFindings?: PreviousFinding[],
   priorRounds?: HandoverRound[],
+  priorRoundHints?: PlannerRoundHint[],
 ): Promise<ReviewResult> {
   let team: TeamRoster;
   let plannerResult: PlannerResult | null = null;
@@ -521,7 +523,7 @@ export async function runReview(
       onProgress({ phase: 'planning', rawFindingCount: 0 });
     }
     const plannerStart = Date.now();
-    plannerResult = await runPlanner(clients.planner, diff, prContext, config.reviewers);
+    plannerResult = await runPlanner(clients.planner, diff, prContext, config.reviewers, priorRoundHints);
     const plannerDurationMs = Date.now() - plannerStart;
     if (plannerResult) {
       team = selectTeam(diff, config, config.reviewers, plannerResult.teamSize, plannerResult.agents);
