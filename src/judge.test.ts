@@ -1455,6 +1455,23 @@ describe('mapJudgedToFindings own-proposal demotion', () => {
     expect(result[0].tags).toBeUndefined();
   });
 
+  it('demotes a reachable+suggestion finding (guard only exempts reachable+required)', () => {
+    const originals = [makeFinding({ title: 'Style issue', severity: 'suggestion', line: 9 })];
+    const judged: JudgedFinding[] = [
+      {
+        title: 'Style issue',
+        severity: 'suggestion',
+        reasoning: 'Minor.',
+        confidence: 'medium',
+        reachability: 'reachable',
+      },
+    ];
+
+    const result = mapJudgedToFindings(originals, judged, [makeProvenance()]);
+    expect(result[0].severity).toBe('nit');
+    expect(result[0].tags).toContain('own-proposal-followup');
+  });
+
   it('leaves findings outside the provenance range unchanged', () => {
     const originals = [makeFinding({ title: 'Elsewhere', severity: 'suggestion', line: 50 })];
     const judged: JudgedFinding[] = [
