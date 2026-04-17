@@ -1013,9 +1013,9 @@ describe('appendHandoverRound', () => {
     expect(reloaded!.rounds[0].findings[0].authorReply).toBe('agree');
   });
 
-  it('retroactively sets threadId on multi-line findings using lineStart from previousFindings', async () => {
-    // lineStart=40, line=44 (multi-line annotation): fingerprint uses lineStart=40,
-    // but pf.line is 44. Without pf.lineStart the lookup would miss.
+  it('retroactively sets threadId on multi-line findings using end line', async () => {
+    // lineStart=40, line=44 (multi-line annotation): both map key and lookup use the
+    // end line (pf.line=44, f.fingerprint.lineEnd=44) so they match symmetrically.
     const existing = makeHandover({
       rounds: [{
         round: 1,

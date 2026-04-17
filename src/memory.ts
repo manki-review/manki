@@ -576,9 +576,9 @@ export interface HandoverPreviousFinding {
   threadId?: string;
   authorReplyText?: string;
   file: string;
-  /** End line (annotation `line`). Use `lineStart` when available for key lookups. */
+  /** End line (annotation `line`). Used as the key for thread lookups. */
   line: number;
-  /** Start line of the annotation range. When set, preferred over `line` for key matching. */
+  /** Start line of the annotation range. Stored for reference but not used for key matching. */
   lineStart?: number;
 }
 
@@ -618,7 +618,7 @@ export async function appendHandoverRound(
   for (const pf of previousFindings) {
     if (pf.threadId) {
       replyByThread.set(pf.threadId, pf);
-      threadByKey.set(`${pf.file}:${pf.lineStart ?? pf.line}`, pf.threadId);
+      threadByKey.set(`${pf.file}:${pf.line}`, pf.threadId);
     }
   }
 
@@ -626,7 +626,7 @@ export async function appendHandoverRound(
   for (const round of handover.rounds) {
     for (const f of round.findings) {
       if (!f.threadId) {
-        const key = `${f.fingerprint.file}:${f.fingerprint.lineStart}`;
+        const key = `${f.fingerprint.file}:${f.fingerprint.lineEnd}`;
         const tid = threadByKey.get(key);
         if (tid) f.threadId = tid;
       }
