@@ -1592,6 +1592,30 @@ describe('applyCrossRoundSuppression', () => {
     expect(result.findings[0].tags).not.toContain('suppressed-by-ratchet');
   });
 
+  it('does not demote nit findings via contradiction', () => {
+    const findings = [makeFinding({
+      title: 'Naming convention',
+      file: 'src/a.ts',
+      line: 12,
+      severity: 'nit',
+      description: 'Replace the old helper instead.',
+    })];
+    const prior = [makePriorRound([{
+      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: 'Naming-convention' },
+      severity: 'suggestion',
+      title: 'Naming convention',
+      authorReply: 'agree',
+    }])];
+
+    const result = applyCrossRoundSuppression(findings, prior);
+    // Contradiction guard requires required|suggestion — nit is not demoted.
+    expect(result.demotedCount).toBe(0);
+    expect(result.findings[0].originalSeverity).toBeUndefined();
+    expect(result.findings[0].tags ?? []).not.toContain('contradicts-prior-round');
+    // Ratchet still fires for non-required findings, so severity ends up as ignore.
+    expect(result.suppressedCount).toBe(1);
+  });
+
   it('does not demote contradiction when line delta exceeds the window', () => {
     const findings = [makeFinding({
       title: 'Naming convention',
