@@ -13,7 +13,7 @@ import {
 } from './judge';
 import { ClaudeClient } from './claude';
 import { RepoMemory, Learning, Suppression } from './memory';
-import { LinkedIssue } from './github';
+import { LinkedIssue, titleToSlug } from './github';
 import { Finding, HandoverRound, ReviewConfig, ParsedDiff, DiffFile, DiffHunk } from './types';
 
 const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
@@ -368,14 +368,14 @@ describe('buildJudgeUserMessage', () => {
       timestamp: 't',
       findings: [
         {
-          fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: 'Null-check' },
+          fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Null check') },
           severity: 'required',
           title: 'Null check',
           authorReply: 'agree',
           threadId: 'PRRT_1',
         },
         {
-          fingerprint: { file: 'src/b.ts', lineStart: 20, lineEnd: 20, slug: 'Unused-import' },
+          fingerprint: { file: 'src/b.ts', lineStart: 20, lineEnd: 20, slug: titleToSlug('Unused import') },
           severity: 'nit',
           title: 'Unused import',
           authorReply: 'disagree',
@@ -403,7 +403,7 @@ describe('buildJudgeUserMessage', () => {
       commitSha: `sha${i + 1}`,
       timestamp: 't',
       findings: [{
-        fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: `F${i + 1}` },
+        fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: titleToSlug(`Finding ${i + 1}`) },
         severity: 'suggestion',
         title: `Finding ${i + 1}`,
         authorReply: 'none',
@@ -426,13 +426,13 @@ describe('buildJudgeUserMessage', () => {
       timestamp: 't',
       findings: [
         {
-          fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 'Real' },
+          fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: titleToSlug('Real') },
           severity: 'required',
           title: 'Real',
           authorReply: 'none',
         },
         {
-          fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 'Ignored' },
+          fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: titleToSlug('Ignored') },
           severity: 'ignore',
           title: 'Ignored',
           authorReply: 'none',
@@ -452,7 +452,7 @@ describe('buildJudgeUserMessage', () => {
       commitSha: 'a',
       timestamp: 't',
       findings: [{
-        fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 'Finding' },
+        fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: titleToSlug('Finding') },
         severity: 'required',
         title: 'Finding',
         authorReply: 'none',
@@ -472,7 +472,7 @@ describe('buildJudgeUserMessage', () => {
       commitSha: 'a',
       timestamp: 't',
       findings: [{
-        fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 'Long' },
+        fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: titleToSlug('Long') },
         severity: 'required',
         title: longTitle,
         authorReply: 'none',
@@ -1439,7 +1439,7 @@ describe('applyCrossRoundSuppression', () => {
   it('suppresses suggestion findings when slug, file, and line match a prior agreed finding', () => {
     const findings = [makeFinding({ title: 'Unused variable', file: 'src/a.ts', line: 10, severity: 'suggestion' })];
     const prior = [makePriorRound([{
-      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: 'Unused-variable' },
+      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
       severity: 'suggestion',
       title: 'Unused variable',
       authorReply: 'agree',
@@ -1455,7 +1455,7 @@ describe('applyCrossRoundSuppression', () => {
   it('does not suppress required findings even when prior agreed match exists', () => {
     const findings = [makeFinding({ title: 'Unused variable', file: 'src/a.ts', line: 10, severity: 'required' })];
     const prior = [makePriorRound([{
-      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: 'Unused-variable' },
+      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
       severity: 'required',
       title: 'Unused variable',
       authorReply: 'agree',
@@ -1470,7 +1470,7 @@ describe('applyCrossRoundSuppression', () => {
   it('does not suppress when prior authorReply is disagree', () => {
     const findings = [makeFinding({ title: 'Unused variable', file: 'src/a.ts', line: 10, severity: 'suggestion' })];
     const prior = [makePriorRound([{
-      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: 'Unused-variable' },
+      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
       severity: 'suggestion',
       title: 'Unused variable',
       authorReply: 'disagree',
@@ -1484,7 +1484,7 @@ describe('applyCrossRoundSuppression', () => {
   it('does not suppress when slug differs', () => {
     const findings = [makeFinding({ title: 'Different title', file: 'src/a.ts', line: 10, severity: 'suggestion' })];
     const prior = [makePriorRound([{
-      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: 'Unused-variable' },
+      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
       severity: 'suggestion',
       title: 'Unused variable',
       authorReply: 'agree',
@@ -1498,7 +1498,7 @@ describe('applyCrossRoundSuppression', () => {
   it('does not suppress when file differs', () => {
     const findings = [makeFinding({ title: 'Unused variable', file: 'src/b.ts', line: 10, severity: 'suggestion' })];
     const prior = [makePriorRound([{
-      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: 'Unused-variable' },
+      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
       severity: 'suggestion',
       title: 'Unused variable',
       authorReply: 'agree',
@@ -1512,7 +1512,7 @@ describe('applyCrossRoundSuppression', () => {
   it('suppresses by ratchet even when line delta exceeds the window', () => {
     const findings = [makeFinding({ title: 'Unused variable', file: 'src/a.ts', line: 100, severity: 'suggestion' })];
     const prior = [makePriorRound([{
-      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: 'Unused-variable' },
+      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
       severity: 'suggestion',
       title: 'Unused variable',
       authorReply: 'agree',
@@ -1532,7 +1532,7 @@ describe('applyCrossRoundSuppression', () => {
       description: 'Replace the old helper and avoid the previous pattern instead.',
     })];
     const prior = [makePriorRound([{
-      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: 'Naming-convention' },
+      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
       severity: 'suggestion',
       title: 'Naming convention',
       authorReply: 'agree',
@@ -1557,7 +1557,7 @@ describe('applyCrossRoundSuppression', () => {
       judgeNotes: 'Prior note',
     })];
     const prior = [makePriorRound([{
-      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: 'Naming-convention' },
+      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
       severity: 'suggestion',
       title: 'Naming convention',
       authorReply: 'agree',
@@ -1577,7 +1577,7 @@ describe('applyCrossRoundSuppression', () => {
       description: 'Replace the old helper and avoid the previous pattern instead.',
     })];
     const prior = [makePriorRound([{
-      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: 'Naming-convention' },
+      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
       severity: 'suggestion',
       title: 'Naming convention',
       authorReply: 'agree',
@@ -1602,7 +1602,7 @@ describe('applyCrossRoundSuppression', () => {
       suggestedFix: 'Replace it with the newer utility instead.',
     })];
     const prior = [makePriorRound([{
-      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: 'Naming-convention' },
+      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
       severity: 'suggestion',
       title: 'Naming convention',
       authorReply: 'agree',
@@ -1623,7 +1623,7 @@ describe('applyCrossRoundSuppression', () => {
       description: 'Replace the old helper instead.',
     })];
     const prior = [makePriorRound([{
-      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: 'Naming-convention' },
+      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
       severity: 'suggestion',
       title: 'Naming convention',
       authorReply: 'agree',
@@ -1647,7 +1647,7 @@ describe('applyCrossRoundSuppression', () => {
       description: 'Replace the old helper instead.',
     })];
     const prior = [makePriorRound([{
-      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: 'Naming-convention' },
+      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
       severity: 'suggestion',
       title: 'Naming convention',
       authorReply: 'agree',
@@ -1668,7 +1668,7 @@ describe('applyCrossRoundSuppression', () => {
       description: 'Replace the old helper instead.',
     })];
     const prior = [makePriorRound([{
-      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 30, slug: 'Naming-convention' },
+      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 30, slug: titleToSlug('Naming convention') },
       severity: 'suggestion',
       title: 'Naming convention',
       authorReply: 'agree',
@@ -1702,7 +1702,7 @@ describe('applyCrossRoundSuppression', () => {
       tags: ['security'],
     })];
     const prior = [makePriorRound([{
-      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: 'Unused-variable' },
+      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
       severity: 'suggestion',
       title: 'Unused variable',
       authorReply: 'agree',
@@ -1744,7 +1744,7 @@ describe('runJudgeAgent cross-round suppression', () => {
         commitSha: 'abc',
         timestamp: 't',
         findings: [{
-          fingerprint: { file: 'src/index.ts', lineStart: 10, lineEnd: 10, slug: 'Unused-variable' },
+          fingerprint: { file: 'src/index.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
           severity: 'suggestion',
           title: 'Unused variable',
           authorReply: 'agree',
@@ -1785,7 +1785,7 @@ describe('runJudgeAgent cross-round suppression', () => {
         commitSha: 'abc',
         timestamp: 't',
         findings: [{
-          fingerprint: { file: 'src/index.ts', lineStart: 10, lineEnd: 10, slug: 'Naming-convention' },
+          fingerprint: { file: 'src/index.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
           severity: 'suggestion',
           title: 'Naming convention',
           authorReply: 'agree',
