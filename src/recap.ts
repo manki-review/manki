@@ -49,16 +49,51 @@ const PARTIAL_SIGNALS = [
   'mostly', 'working on', 'follow-up',
 ];
 
+const NEGATION_WORDS = new Set([
+  'not', "don't", "doesn't", "didn't", "won't", "can't", "isn't", "wasn't", 'never',
+]);
+
+/**
+ * Tokenize text by splitting on whitespace and stripping leading/trailing
+ * ASCII punctuation from each token. Emoji and other non-ASCII characters
+ * are preserved so emoji signals match correctly.
+ */
+function tokenize(text: string): string[] {
+  return text.split(/\s+/).map(t => t.replace(/^[\x21-\x2F\x3A-\x40\x5B-\x60\x7B-\x7E]+|[\x21-\x2F\x3A-\x40\x5B-\x60\x7B-\x7E]+$/g, ''));
+}
+
+/**
+ * Returns true if the signal (a phrase) appears in `tokens` starting at some
+ * index, AND none of the two tokens immediately before that index is a
+ * negation word. Multi-word signals are matched as a contiguous token run.
+ */
+function hasSignalWithoutNegation(tokens: string[], signal: string): boolean {
+  const sigTokens = signal.split(/\s+/);
+  outer: for (let i = 0; i <= tokens.length - sigTokens.length; i++) {
+    for (let j = 0; j < sigTokens.length; j++) {
+      if (tokens[i + j] !== sigTokens[j]) continue outer;
+    }
+    // Found signal at index i — check for preceding negation
+    for (let offset = 1; offset <= 2; offset++) {
+      const prev = i - offset;
+      if (prev >= 0 && NEGATION_WORDS.has(tokens[prev])) return false;
+    }
+    return true;
+  }
+  return false;
+}
+
 /**
  * Classify an author reply body into a coarse stance.
  * Keyword order matters: agree wins over disagree, which wins over partial.
+ * Signals preceded by a negation word within two tokens are skipped.
  */
 function classifyAuthorReply(text: string | undefined): AuthorReplyClass {
   if (!text) return 'none';
-  const lower = text.toLowerCase();
-  if (AGREE_SIGNALS.some(s => lower.includes(s))) return 'agree';
-  if (DISAGREE_SIGNALS.some(s => lower.includes(s))) return 'disagree';
-  if (PARTIAL_SIGNALS.some(s => lower.includes(s))) return 'partial';
+  const tokens = tokenize(text.toLowerCase());
+  if (AGREE_SIGNALS.some(s => hasSignalWithoutNegation(tokens, s))) return 'agree';
+  if (DISAGREE_SIGNALS.some(s => hasSignalWithoutNegation(tokens, s))) return 'disagree';
+  if (PARTIAL_SIGNALS.some(s => hasSignalWithoutNegation(tokens, s))) return 'partial';
   return 'none';
 }
 
