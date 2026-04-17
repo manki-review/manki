@@ -1547,6 +1547,27 @@ describe('applyCrossRoundSuppression', () => {
     expect(result.findings[0].judgeNotes).toContain('Contradicts round 3 guidance accepted by author');
   });
 
+  it('appends contradiction note to pre-existing judgeNotes', () => {
+    const findings = [makeFinding({
+      title: 'Naming convention',
+      file: 'src/a.ts',
+      line: 12,
+      severity: 'required',
+      description: 'Replace the old helper and avoid the previous pattern instead.',
+      judgeNotes: 'Prior note',
+    })];
+    const prior = [makePriorRound([{
+      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: 'Naming-convention' },
+      severity: 'suggestion',
+      title: 'Naming convention',
+      authorReply: 'agree',
+    }], 2)];
+
+    const result = applyCrossRoundSuppression(findings, prior);
+    expect(result.demotedCount).toBe(1);
+    expect(result.findings[0].judgeNotes).toBe('Prior note Contradicts round 2 guidance accepted by author');
+  });
+
   it('demotes suggestion to nit via contradiction when reversal word matches within line window', () => {
     const findings = [makeFinding({
       title: 'Naming convention',
