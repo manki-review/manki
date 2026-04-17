@@ -3,12 +3,12 @@ import * as core from '@actions/core';
 import { ClaudeClient } from './claude';
 import { runJudgeAgent, JudgeInput, ResolveThread } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
-import { LinkedIssue } from './github';
+import { LinkedIssue, titleToSlug } from './github';
 import { deduplicateFindings, llmDeduplicateFindings, PreviousFinding } from './recap';
-import { ReviewConfig, ReviewerAgent, Finding, HandoverRound, ReviewResult, ReviewVerdict, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, EffortLevel, AgentPick, MAX_AGENT_RETRIES } from './types';
+import { ReviewConfig, ReviewerAgent, Finding, HandoverFinding, HandoverRound, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, EffortLevel, AgentPick, MAX_AGENT_RETRIES } from './types';
 import { extractJSON } from './json';
 
-export const HIGH_CONF_SUGGESTION_THRESHOLD = 1;
+const DISMISSED_LINE_TOLERANCE = 5;
 
 export const PLANNER_TIMEOUT_MS = 30_000;
 
@@ -906,7 +906,8 @@ export async function runReview(
     };
   }
 
-  const verdict = determineVerdict(finalFindings);
+  const priorFindingsFlat: HandoverFinding[] = (priorRounds ?? []).flatMap(r => r.findings);
+  const { verdict, verdictReason } = determineVerdict(finalFindings, priorFindingsFlat);
 
   const summary = judgeSummary;
 
@@ -924,6 +925,7 @@ export async function runReview(
 
   return {
     verdict,
+    verdictReason,
     summary,
     findings: finalFindings,
     highlights: [],
@@ -1146,16 +1148,54 @@ export function validateSeverity(severity: unknown): Finding['severity'] {
   return 'suggestion';
 }
 
-export function determineVerdict(findings: Finding[]): ReviewVerdict {
-  const hasRequired = findings.some(f => f.severity === 'required');
-  if (hasRequired) return 'REQUEST_CHANGES';
+/**
+ * Check whether a current finding matches a prior-round `HandoverFinding`.
+ * Uses file + title-slug with a line-window tolerance so small drift between
+ * rounds does not break the match. Thread-resolved status is not consulted
+ * (not in the handover today).
+ */
+function matchesDismissedPrior(finding: Finding, prior: HandoverFinding): boolean {
+  if (finding.file !== prior.fingerprint.file) return false;
+  if (titleToSlug(finding.title) !== prior.fingerprint.slug) return false;
+  const line = finding.line;
+  const lo = prior.fingerprint.lineStart - DISMISSED_LINE_TOLERANCE;
+  const hi = prior.fingerprint.lineEnd + DISMISSED_LINE_TOLERANCE;
+  return line >= lo && line <= hi;
+}
 
-  const highConfSuggestions = findings.filter(
-    f => f.severity === 'suggestion' && f.judgeConfidence === 'high',
+function wasDismissedInPriorRound(finding: Finding, priorRounds: HandoverFinding[]): boolean {
+  return priorRounds.some(p => p.authorReply === 'agree' && matchesDismissedPrior(finding, p));
+}
+
+/**
+ * Pick a verdict plus a machine-readable reason.
+ *
+ * Decision order:
+ *   1. any surviving `required` finding → REQUEST_CHANGES / required_present
+ *   2. any `suggestion` that is NOT a prior-round dismissed match → REQUEST_CHANGES / novel_suggestion
+ *   3. otherwise (only nits / previously-dismissed suggestions / empty) → COMMENT / only_dismissed_or_nit
+ *
+ * Empty `findings` yields APPROVE / only_dismissed_or_nit so callers can still
+ * distinguish "clean review" from "ceiling triggered".
+ */
+export function determineVerdict(
+  findings: Finding[],
+  priorRounds?: HandoverFinding[],
+): { verdict: ReviewVerdict; verdictReason: VerdictReason } {
+  if (findings.some(f => f.severity === 'required')) {
+    return { verdict: 'REQUEST_CHANGES', verdictReason: 'required_present' };
+  }
+
+  const prior = priorRounds ?? [];
+  const hasNovelSuggestion = findings.some(
+    f => f.severity === 'suggestion' && !wasDismissedInPriorRound(f, prior),
   );
-  if (highConfSuggestions.length >= HIGH_CONF_SUGGESTION_THRESHOLD) return 'REQUEST_CHANGES';
+  if (hasNovelSuggestion) {
+    return { verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion' };
+  }
 
-  return 'APPROVE';
+  const verdict: ReviewVerdict = findings.length === 0 ? 'APPROVE' : 'COMMENT';
+  return { verdict, verdictReason: 'only_dismissed_or_nit' };
 }
 
 export function truncateDiff(rawDiff: string, maxLength: number = 50000): string {

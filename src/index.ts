@@ -598,10 +598,13 @@ async function runFullReview(
       return;
     }
 
+    const priorFindingsFlat = handover?.rounds.flatMap(r => r.findings) ?? [];
     if (memory && memory.patterns.length > 0) {
       result.findings = applyEscalations(result.findings, memory.patterns);
-      result.verdict = determineVerdict(result.findings);
     }
+    const { verdict: recomputedVerdict, verdictReason } = determineVerdict(result.findings, priorFindingsFlat);
+    result.verdict = recomputedVerdict;
+    result.verdictReason = verdictReason;
 
     // Enrich findings with code context from the diff for nit issues
     for (const finding of result.findings) {
@@ -651,26 +654,26 @@ async function runFullReview(
       : undefined;
 
     // Judge calibration metrics
-    let judgeMetrics: ReviewStats['judgeMetrics'];
-    if (allJudged.length > 0) {
-      const confidenceDistribution = { high: 0, medium: 0, low: 0 };
-      for (const f of allJudged) {
-        if (f.judgeConfidence) confidenceDistribution[f.judgeConfidence]++;
-      }
-      const severityChanges = allJudged.filter(f => f.judgeNotes).length;
-      const mergedDuplicates = (result.rawFindingCount ?? 0)
+    const confidenceDistribution = { high: 0, medium: 0, low: 0 };
+    for (const f of allJudged) {
+      if (f.judgeConfidence) confidenceDistribution[f.judgeConfidence]++;
+    }
+    const severityChanges = allJudged.filter(f => f.judgeNotes).length;
+    const mergedDuplicates = allJudged.length > 0
+      ? (result.rawFindingCount ?? 0)
         - (result.suppressionCount ?? 0)
         - (result.staticDedupCount ?? 0)
         - (result.llmDedupCount ?? 0)
-        - allJudged.length;
-      const defensiveHardeningCount = allJudged.filter(f => f.tags?.includes(DEFENSIVE_HARDENING_TAG)).length;
-      judgeMetrics = {
-        confidenceDistribution,
-        severityChanges,
-        mergedDuplicates,
-        ...(defensiveHardeningCount > 0 && { defensiveHardeningCount }),
-      };
-    }
+        - allJudged.length
+      : 0;
+    const defensiveHardeningCount = allJudged.filter(f => f.tags?.includes(DEFENSIVE_HARDENING_TAG)).length;
+    const judgeMetrics: ReviewStats['judgeMetrics'] = {
+      confidenceDistribution,
+      severityChanges,
+      mergedDuplicates,
+      ...(defensiveHardeningCount > 0 && { defensiveHardeningCount }),
+      verdictReason,
+    };
 
     // File analysis metrics
     const fileTypes: Record<string, number> = {};
