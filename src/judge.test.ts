@@ -1592,6 +1592,28 @@ describe('applyCrossRoundSuppression', () => {
     expect(result.findings[0].tags).not.toContain('suppressed-by-ratchet');
   });
 
+  it('demotes via contradiction when reversal word is in suggestedFix only', () => {
+    const findings = [makeFinding({
+      title: 'Naming convention',
+      file: 'src/a.ts',
+      line: 12,
+      severity: 'required',
+      description: 'The helper should be updated.',
+      suggestedFix: 'Replace it with the newer utility instead.',
+    })];
+    const prior = [makePriorRound([{
+      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: 'Naming-convention' },
+      severity: 'suggestion',
+      title: 'Naming convention',
+      authorReply: 'agree',
+    }])];
+
+    const result = applyCrossRoundSuppression(findings, prior);
+    expect(result.demotedCount).toBe(1);
+    expect(result.findings[0].severity).toBe('nit');
+    expect(result.findings[0].tags).toContain('contradicts-prior-round');
+  });
+
   it('does not demote nit findings via contradiction', () => {
     const findings = [makeFinding({
       title: 'Naming convention',
