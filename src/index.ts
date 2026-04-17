@@ -600,7 +600,7 @@ async function runFullReview(
 
     if (memory && memory.patterns.length > 0) {
       result.findings = applyEscalations(result.findings, memory.patterns);
-      result.verdict = determineVerdict(result.findings);
+      result.verdict = determineVerdict(result.findings).verdict;
     }
 
     // Enrich findings with code context from the diff for nit issues

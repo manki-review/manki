@@ -110,7 +110,7 @@ jest.mock('./review', () => ({
     highlights: [],
     reviewComplete: true,
   }),
-  determineVerdict: jest.fn().mockReturnValue('APPROVE'),
+  determineVerdict: jest.fn().mockReturnValue({ verdict: 'APPROVE', verdictReason: 'only_dismissed_or_nit' }),
   selectTeam: jest.fn().mockReturnValue({ level: 'standard', agents: [{ name: 'general' }] }),
 }));
 
@@ -1339,7 +1339,7 @@ describe('runFullReview orchestration', () => {
       verdict: 'APPROVE', summary: 'Looks good',
       findings: [], highlights: [], reviewComplete: true,
     });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue('APPROVE');
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'APPROVE', verdictReason: 'only_dismissed_or_nit' });
     jest.mocked(reviewModule.selectTeam).mockReturnValue({ level: 'standard' as 'small', agents: [{ name: 'general', focus: '' }], lineCount: 0 });
     jest.mocked(ghUtils.postProgressComment).mockResolvedValue(1);
     jest.mocked(ghUtils.postReview).mockResolvedValue(123);
@@ -1489,7 +1489,7 @@ describe('runFullReview orchestration', () => {
       reviewComplete: true,
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue('REQUEST_CHANGES');
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion' });
 
     await callRunFullReview();
 
@@ -1543,7 +1543,7 @@ describe('runFullReview orchestration', () => {
       rawFindings,
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue('REQUEST_CHANGES');
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion' });
 
     await callRunFullReview();
 
@@ -1620,7 +1620,7 @@ describe('runFullReview orchestration', () => {
       llmDedupCount: 1,
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue('REQUEST_CHANGES');
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion' });
 
     await callRunFullReview();
 
@@ -1672,7 +1672,7 @@ describe('runFullReview orchestration', () => {
       suppressionCount: 2,
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue('REQUEST_CHANGES');
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion' });
 
     await callRunFullReview();
 
@@ -1710,7 +1710,7 @@ describe('runFullReview orchestration', () => {
       rawFindings: [...findings],
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue('REQUEST_CHANGES');
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion' });
 
     await callRunFullReview();
 
@@ -1748,7 +1748,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({
       unique: [nitFinding], duplicates: [],
     });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue('COMMENT');
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'COMMENT', verdictReason: 'only_dismissed_or_nit' });
 
     await callRunFullReview();
 
@@ -1788,7 +1788,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({
       unique: [nitFinding], duplicates: [],
     });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue('COMMENT');
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'COMMENT', verdictReason: 'only_dismissed_or_nit' });
 
     await callRunFullReview();
 
@@ -1986,7 +1986,7 @@ describe('runFullReview orchestration', () => {
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
     jest.mocked(memoryModule.applyEscalations).mockReturnValue([escalated]);
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue('REQUEST_CHANGES');
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion' });
 
     await callRunFullReview();
 
@@ -2018,7 +2018,7 @@ describe('runFullReview orchestration', () => {
       findings: [finding], highlights: [], reviewComplete: true,
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue('COMMENT');
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'COMMENT', verdictReason: 'only_dismissed_or_nit' });
 
     await callRunFullReview();
 
@@ -2286,7 +2286,7 @@ describe('runFullReview orchestration', () => {
         };
       },
     );
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue('COMMENT');
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'COMMENT', verdictReason: 'only_dismissed_or_nit' });
 
     await callRunFullReview();
 

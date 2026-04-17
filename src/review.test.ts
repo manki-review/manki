@@ -22,8 +22,8 @@ import {
   PLANNER_TIMEOUT_MS,
 } from './review';
 import * as core from '@actions/core';
-import { LinkedIssue } from './github';
-import { Finding, ReviewerAgent, ReviewConfig, ParsedDiff, DiffFile, AgentPick, MAX_AGENT_RETRIES } from './types';
+import { LinkedIssue, titleToSlug } from './github';
+import { Finding, HandoverFinding, ReviewerAgent, ReviewConfig, ParsedDiff, DiffFile, AgentPick, MAX_AGENT_RETRIES } from './types';
 import { runJudgeAgent } from './judge';
 import { applySuppressions } from './memory';
 
@@ -241,48 +241,136 @@ describe('determineVerdict', () => {
       makeFinding({ severity: 'suggestion' }),
       makeFinding({ severity: 'required' }),
     ];
-    expect(determineVerdict(findings)).toBe('REQUEST_CHANGES');
+    expect(determineVerdict(findings).verdict).toBe('REQUEST_CHANGES');
+    expect(determineVerdict(findings).verdictReason).toBe('required_present');
   });
 
-  it('returns APPROVE when there are only suggestions', () => {
+  it('returns REQUEST_CHANGES when a novel suggestion exists', () => {
     const findings: Finding[] = [makeFinding({ severity: 'suggestion' })];
-    expect(determineVerdict(findings)).toBe('APPROVE');
+    expect(determineVerdict(findings).verdict).toBe('REQUEST_CHANGES');
+    expect(determineVerdict(findings).verdictReason).toBe('novel_suggestion');
   });
 
-  it('returns APPROVE when there are only nits', () => {
+  it('returns COMMENT when there are only nits', () => {
     const findings: Finding[] = [makeFinding({ severity: 'nit' })];
-    expect(determineVerdict(findings)).toBe('APPROVE');
+    expect(determineVerdict(findings).verdict).toBe('COMMENT');
+    expect(determineVerdict(findings).verdictReason).toBe('only_dismissed_or_nit');
   });
 
-  it('returns APPROVE when there are only ignores', () => {
+  it('returns COMMENT when there are only ignores', () => {
     const findings: Finding[] = [makeFinding({ severity: 'ignore' })];
-    expect(determineVerdict(findings)).toBe('APPROVE');
+    expect(determineVerdict(findings).verdict).toBe('COMMENT');
+    expect(determineVerdict(findings).verdictReason).toBe('only_dismissed_or_nit');
   });
 
   it('returns APPROVE when there are no findings', () => {
-    expect(determineVerdict([])).toBe('APPROVE');
+    expect(determineVerdict([]).verdict).toBe('APPROVE');
+    expect(determineVerdict([]).verdictReason).toBe('only_dismissed_or_nit');
   });
 
-  it('should REQUEST_CHANGES when 1+ high-confidence suggestions exist', () => {
+  it('returns REQUEST_CHANGES when a suggestion has no matching prior-round dismissal', () => {
     const findings: Finding[] = [
       { severity: 'suggestion', title: 'Missing null check', file: 'src/handler.ts', line: 1, description: 'The return value should be checked for null', reviewers: ['reviewer-1'], judgeConfidence: 'high' },
     ];
-    expect(determineVerdict(findings)).toBe('REQUEST_CHANGES');
+    const result = determineVerdict(findings, []);
+    expect(result.verdict).toBe('REQUEST_CHANGES');
+    expect(result.verdictReason).toBe('novel_suggestion');
   });
 
-  it('should APPROVE when no high-confidence suggestions exist', () => {
-    const findings: Finding[] = [];
-    expect(determineVerdict(findings)).toBe('APPROVE');
-  });
-
-  it('should APPROVE when suggestions are not high-confidence', () => {
+  it('returns COMMENT when the only suggestion matches a prior-round agreement', () => {
     const findings: Finding[] = [
-      { severity: 'suggestion', title: 'Missing null check', file: 'src/handler.ts', line: 1, description: 'The return value should be checked for null', reviewers: ['reviewer-1'], judgeConfidence: 'medium' },
-      { severity: 'suggestion', title: 'Unused import detected', file: 'src/handler.ts', line: 2, description: 'This import is not referenced anywhere', reviewers: ['reviewer-1'], judgeConfidence: 'low' },
-      { severity: 'suggestion', title: 'Consider using const', file: 'src/utils.ts', line: 3, description: 'Variable is never reassigned', reviewers: ['reviewer-1'], judgeConfidence: 'medium' },
-      { severity: 'suggestion', title: 'Potential memory leak', file: 'src/utils.ts', line: 4, description: 'Event listener is never removed', reviewers: ['reviewer-1'] },
+      { severity: 'suggestion', title: 'Missing null check', file: 'src/handler.ts', line: 10, description: 'desc', reviewers: ['reviewer-1'] },
     ];
-    expect(determineVerdict(findings)).toBe('APPROVE');
+    const priors: HandoverFinding[] = [{
+      fingerprint: { file: 'src/handler.ts', lineStart: 10, lineEnd: 10, slug: 'Missing-null-check' },
+      severity: 'suggestion',
+      title: 'Missing null check',
+      authorReply: 'agree',
+    }];
+    const result = determineVerdict(findings, priors);
+    expect(result.verdict).toBe('COMMENT');
+    expect(result.verdictReason).toBe('only_dismissed_or_nit');
+  });
+
+  it('returns REQUEST_CHANGES when mixing dismissed and novel suggestions', () => {
+    const findings: Finding[] = [
+      { severity: 'suggestion', title: 'Missing null check', file: 'src/handler.ts', line: 10, description: 'desc', reviewers: ['reviewer-1'] },
+      { severity: 'suggestion', title: 'Unused import', file: 'src/handler.ts', line: 20, description: 'desc', reviewers: ['reviewer-1'] },
+    ];
+    const priors: HandoverFinding[] = [{
+      fingerprint: { file: 'src/handler.ts', lineStart: 10, lineEnd: 10, slug: 'Missing-null-check' },
+      severity: 'suggestion',
+      title: 'Missing null check',
+      authorReply: 'agree',
+    }];
+    const result = determineVerdict(findings, priors);
+    expect(result.verdict).toBe('REQUEST_CHANGES');
+    expect(result.verdictReason).toBe('novel_suggestion');
+  });
+
+  it('treats undefined priorRounds as "all suggestions novel"', () => {
+    const findings: Finding[] = [
+      { severity: 'suggestion', title: 'Something', file: 'a.ts', line: 3, description: 'desc', reviewers: ['r'] },
+    ];
+    expect(determineVerdict(findings).verdict).toBe('REQUEST_CHANGES');
+    expect(determineVerdict(findings).verdictReason).toBe('novel_suggestion');
+  });
+
+  it('only dismisses when the prior authorReply is "agree"', () => {
+    const findings: Finding[] = [
+      { severity: 'suggestion', title: 'T', file: 'f.ts', line: 5, description: 'd', reviewers: ['r'] },
+    ];
+    const priors: HandoverFinding[] = [{
+      fingerprint: { file: 'f.ts', lineStart: 5, lineEnd: 5, slug: 'T' },
+      severity: 'suggestion',
+      title: 'T',
+      authorReply: 'disagree',
+    }];
+    expect(determineVerdict(findings, priors).verdict).toBe('REQUEST_CHANGES');
+  });
+
+  it('tolerates ±5 line drift when matching a prior dismissal', () => {
+    const findings: Finding[] = [
+      { severity: 'suggestion', title: 'Drifted', file: 'f.ts', line: 15, description: 'd', reviewers: ['r'] },
+    ];
+    const priors: HandoverFinding[] = [{
+      fingerprint: { file: 'f.ts', lineStart: 10, lineEnd: 10, slug: 'Drifted' },
+      severity: 'suggestion',
+      title: 'Drifted',
+      authorReply: 'agree',
+    }];
+    expect(determineVerdict(findings, priors).verdict).toBe('COMMENT');
+  });
+
+  it('rejects matches outside the ±5 line tolerance', () => {
+    const findings: Finding[] = [
+      { severity: 'suggestion', title: 'FarAway', file: 'f.ts', line: 100, description: 'd', reviewers: ['r'] },
+    ];
+    const priors: HandoverFinding[] = [{
+      fingerprint: { file: 'f.ts', lineStart: 10, lineEnd: 10, slug: 'FarAway' },
+      severity: 'suggestion',
+      title: 'FarAway',
+      authorReply: 'agree',
+    }];
+    expect(determineVerdict(findings, priors).verdict).toBe('REQUEST_CHANGES');
+  });
+
+  it('returns COMMENT for a PR #106 R7 replay (4 suggestions all dismissed)', () => {
+    const findings: Finding[] = [
+      { severity: 'suggestion', title: 'F1', file: 'src/a.ts', line: 10, description: 'd', reviewers: ['r'] },
+      { severity: 'suggestion', title: 'F2', file: 'src/b.ts', line: 20, description: 'd', reviewers: ['r'] },
+      { severity: 'suggestion', title: 'F3', file: 'src/c.ts', line: 30, description: 'd', reviewers: ['r'] },
+      { severity: 'suggestion', title: 'F4', file: 'src/d.ts', line: 40, description: 'd', reviewers: ['r'] },
+    ];
+    const priors: HandoverFinding[] = findings.map(f => ({
+      fingerprint: { file: f.file, lineStart: f.line, lineEnd: f.line, slug: titleToSlug(f.title) },
+      severity: 'suggestion' as const,
+      title: f.title,
+      authorReply: 'agree' as const,
+    }));
+    const result = determineVerdict(findings, priors);
+    expect(result.verdict).toBe('COMMENT');
+    expect(result.verdictReason).toBe('only_dismissed_or_nit');
   });
 });
 
