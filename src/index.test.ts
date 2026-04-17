@@ -1928,6 +1928,26 @@ describe('runFullReview orchestration', () => {
     expect(appendCall[10]).toEqual({ prNumber: 1, repo: 'test-repo', rounds: priorRounds });
   });
 
+  it('does not load or write handover when memory is disabled', async () => {
+    const testFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+    };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+      files: [testFile], totalAdditions: 10, totalDeletions: 5,
+    });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    // Default config already has memory.enabled = false, so no override needed.
+
+    await callRunFullReview();
+
+    expect(jest.mocked(memoryModule.loadHandover)).not.toHaveBeenCalled();
+    expect(jest.mocked(memoryModule.appendHandoverRound)).not.toHaveBeenCalled();
+    const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0];
+    // priorRounds param (index 13) should be undefined when memory is disabled
+    expect(runReviewCall[13]).toBeUndefined();
+  });
+
   it('applies memory escalations when patterns exist', async () => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
