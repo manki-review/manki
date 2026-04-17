@@ -907,7 +907,7 @@ export async function runReview(
   }
 
   const priorFindingsFlat: HandoverFinding[] = (priorRounds ?? []).flatMap(r => r.findings);
-  const { verdict } = determineVerdict(finalFindings, priorFindingsFlat);
+  const { verdict, verdictReason } = determineVerdict(finalFindings, priorFindingsFlat);
 
   const summary = judgeSummary;
 
@@ -925,6 +925,7 @@ export async function runReview(
 
   return {
     verdict,
+    verdictReason,
     summary,
     findings: finalFindings,
     highlights: [],

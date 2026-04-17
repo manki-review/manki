@@ -68,6 +68,7 @@ export type VerdictReason = 'required_present' | 'novel_suggestion' | 'only_dism
 
 export interface ReviewResult {
   verdict: ReviewVerdict;
+  verdictReason?: VerdictReason;
   summary: string;
   findings: Finding[];
   highlights: string[];
