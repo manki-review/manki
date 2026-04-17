@@ -1561,6 +1561,7 @@ describe('runFullReview orchestration', () => {
       confidenceDistribution: { high: 2, medium: 1, low: 1 },
       severityChanges: 2,
       mergedDuplicates: 2,
+      verdictReason: 'novel_suggestion',
     });
 
     // fileMetrics

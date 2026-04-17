@@ -9,7 +9,7 @@ import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, 
 import { appendHandoverRound, loadHandover, loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
 import { classifyAuthorReply, fetchRecapState, fingerprintFinding } from './recap';
 import { runReview, determineVerdict, selectTeam } from './review';
-import { DEFENSIVE_HARDENING_TAG, DashboardData, PrContext, PrHandover, ReviewMetadata, ReviewStats } from './types';
+import { DEFENSIVE_HARDENING_TAG, DashboardData, PrContext, PrHandover, ReviewMetadata, ReviewStats, VerdictReason } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -598,10 +598,12 @@ async function runFullReview(
       return;
     }
 
+    const priorFindingsFlat = handover?.rounds.flatMap(r => r.findings) ?? [];
     if (memory && memory.patterns.length > 0) {
       result.findings = applyEscalations(result.findings, memory.patterns);
-      result.verdict = determineVerdict(result.findings).verdict;
+      result.verdict = determineVerdict(result.findings, priorFindingsFlat).verdict;
     }
+    const verdictReason: VerdictReason = determineVerdict(result.findings, priorFindingsFlat).verdictReason;
 
     // Enrich findings with code context from the diff for nit issues
     for (const finding of result.findings) {
@@ -669,6 +671,7 @@ async function runFullReview(
         severityChanges,
         mergedDuplicates,
         ...(defensiveHardeningCount > 0 && { defensiveHardeningCount }),
+        verdictReason,
       };
     }
 
