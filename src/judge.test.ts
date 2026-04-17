@@ -2,6 +2,7 @@ import {
   applyCrossRoundSuppression,
   buildJudgeSystemPrompt,
   buildJudgeUserMessage,
+  computeProvenanceMap,
   extractCodeContext,
   parseJudgeResponse,
   filterMemoryForFindings,
@@ -14,7 +15,7 @@ import {
 import { ClaudeClient } from './claude';
 import { RepoMemory, Learning, Suppression } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
-import { Finding, HandoverRound, ReviewConfig, ParsedDiff, DiffFile, DiffHunk } from './types';
+import { Finding, HandoverFinding, HandoverRound, ReviewConfig, ParsedDiff, DiffFile, DiffHunk } from './types';
 
 const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
   auto_review: true,
@@ -1373,6 +1374,107 @@ describe('mapJudgedToFindings', () => {
     expect(result[0].originalSeverity).toBeUndefined();
     expect(result[0].tags).toBeUndefined();
     expect(result[0].reachability).toBe(reachability);
+  });
+});
+
+describe('computeProvenanceMap', () => {
+  const makeHandoverFinding = (overrides: Partial<HandoverFinding> = {}): HandoverFinding => ({
+    fingerprint: { file: 'src/a.ts', lineStart: 1, lineEnd: 1, slug: 'Clamp-future-time' },
+    severity: 'required',
+    title: 'Clamp future time',
+    authorReply: 'none',
+    ...overrides,
+  });
+
+  const makeRound = (round: number, findings: HandoverFinding[]): HandoverRound => ({
+    round,
+    commitSha: `sha${round}`,
+    timestamp: `2025-01-0${round}T00:00:00Z`,
+    findings,
+  });
+
+  const longFix = 'let clamped = std::cmp::min(value, SYSTEM_TIME_MAX);';
+
+  const buildDiff = (file: string, startLine: number, addedLines: string[]): string => {
+    const header = `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}`;
+    const hunkHeader = `@@ -${startLine},0 +${startLine},${addedLines.length} @@`;
+    const body = addedLines.map(l => `+${l}`).join('\n');
+    return `${header}\n${hunkHeader}\n${body}\n`;
+  };
+
+  it('returns empty array when no prior rounds', () => {
+    expect(computeProvenanceMap([], 'raw')).toEqual([]);
+    expect(computeProvenanceMap(undefined, 'raw')).toEqual([]);
+  });
+
+  it('skips findings without suggestedFix', () => {
+    const rounds = [makeRound(1, [makeHandoverFinding()])];
+    const diff = buildDiff('src/a.ts', 10, [longFix]);
+    expect(computeProvenanceMap(rounds, diff)).toEqual([]);
+  });
+
+  it('skips suggestedFix shorter than 30 chars after normalization', () => {
+    const shortFix = 'return null;';
+    const rounds = [makeRound(1, [makeHandoverFinding({ suggestedFix: shortFix })])];
+    const diff = buildDiff('src/a.ts', 10, [shortFix]);
+    expect(computeProvenanceMap(rounds, diff)).toEqual([]);
+  });
+
+  it('returns an entry for an exact match in the added lines', () => {
+    const rounds = [makeRound(1, [makeHandoverFinding({ suggestedFix: longFix })])];
+    const diff = buildDiff('src/a.ts', 42, ['fn helper() {', longFix, '}']);
+
+    const entries = computeProvenanceMap(rounds, diff);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toEqual({
+      file: 'src/a.ts',
+      lineStart: 42,
+      lineEnd: 44,
+      originatingRound: 1,
+      originatingTitle: 'Clamp future time',
+    });
+  });
+
+  it('matches when whitespace differs between suggestion and diff', () => {
+    const suggestion = 'let clamped = std::cmp::min(value,   SYSTEM_TIME_MAX);';
+    const diffLine = '    let clamped  =  std::cmp::min(value, SYSTEM_TIME_MAX);';
+    const rounds = [makeRound(1, [makeHandoverFinding({ suggestedFix: suggestion })])];
+    const diff = buildDiff('src/a.ts', 5, [diffLine]);
+
+    const entries = computeProvenanceMap(rounds, diff);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].lineStart).toBe(5);
+    expect(entries[0].lineEnd).toBe(5);
+  });
+
+  it('does not match when the fix text lands in a different file', () => {
+    const rounds = [
+      makeRound(1, [makeHandoverFinding({
+        fingerprint: { file: 'src/a.ts', lineStart: 1, lineEnd: 1, slug: 'Clamp-future-time' },
+        suggestedFix: longFix,
+      })]),
+    ];
+    const diff = buildDiff('src/b.ts', 10, [longFix]);
+    expect(computeProvenanceMap(rounds, diff)).toEqual([]);
+  });
+
+  it('tracks originatingRound when the match comes from the older of multiple rounds', () => {
+    const rounds = [
+      makeRound(1, [makeHandoverFinding({ suggestedFix: longFix, title: 'Clamp future time' })]),
+      makeRound(2, [makeHandoverFinding({ suggestedFix: 'something else entirely that is long', title: 'Unrelated' })]),
+    ];
+    const diff = buildDiff('src/a.ts', 7, [longFix]);
+
+    const entries = computeProvenanceMap(rounds, diff);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].originatingRound).toBe(1);
+    expect(entries[0].originatingTitle).toBe('Clamp future time');
+  });
+
+  it('does not match text that only appears in context or removed lines', () => {
+    const contextDiff = `diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -10,3 +10,1 @@\n ${longFix}\n-${longFix}\n+unrelated;\n`;
+    const rounds = [makeRound(1, [makeHandoverFinding({ suggestedFix: longFix })])];
+    expect(computeProvenanceMap(rounds, contextDiff)).toEqual([]);
   });
 });
 

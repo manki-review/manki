@@ -24,6 +24,164 @@ const LINE_WINDOW = 5;
 /** Words that, when present in a current finding, suggest it reverses prior guidance. */
 const REVERSAL_WORDS = ['remove', 'delete', 'avoid', 'replace', 'revert', 'undo', 'instead'];
 
+/**
+ * Minimum `suggestedFix` length (after whitespace normalization) required to
+ * participate in provenance matching. Shorter snippets match too many unrelated
+ * lines (e.g. `return null;`).
+ */
+const OWN_PROPOSAL_MIN_MATCH_LENGTH = 30;
+
+/**
+ * Block of contiguous added lines in a diff hunk, used for provenance matching.
+ */
+interface AddedLineBlock {
+  file: string;
+  lineStart: number;
+  lineEnd: number;
+  /** Original text of the added lines, joined by newlines (no `+` prefix). */
+  text: string;
+}
+
+/**
+ * Normalize text for provenance matching: trim each line and collapse runs of
+ * internal whitespace to a single space. Blank lines are dropped so trailing
+ * newlines in a suggestedFix don't prevent a match.
+ */
+function normalizeForMatch(text: string): string {
+  return text
+    .split('\n')
+    .map(line => line.trim().replace(/\s+/g, ' '))
+    .filter(line => line.length > 0)
+    .join('\n');
+}
+
+/**
+ * Parse a raw unified diff into runs of contiguous added lines, tracking the
+ * file and new-line range for each run.
+ */
+function extractAddedLineBlocks(rawDiff: string): AddedLineBlock[] {
+  const blocks: AddedLineBlock[] = [];
+  const lines = rawDiff.split('\n');
+
+  let currentFile: string | null = null;
+  let newLineNum = 0;
+  let inHunk = false;
+
+  let blockLines: string[] = [];
+  let blockStart = 0;
+
+  const flush = (): void => {
+    if (blockLines.length > 0 && currentFile) {
+      blocks.push({
+        file: currentFile,
+        lineStart: blockStart,
+        lineEnd: blockStart + blockLines.length - 1,
+        text: blockLines.join('\n'),
+      });
+    }
+    blockLines = [];
+  };
+
+  for (const line of lines) {
+    if (line.startsWith('diff --git ')) {
+      flush();
+      inHunk = false;
+      // `diff --git a/path b/path` — take the `b/` path
+      const match = /^diff --git a\/.+? b\/(.+)$/.exec(line);
+      currentFile = match ? match[1] : null;
+      continue;
+    }
+
+    if (line.startsWith('+++ ')) {
+      // Alternative source of the file path, used when no `diff --git` header.
+      if (!currentFile) {
+        const m = /^\+\+\+ b\/(.+)$/.exec(line) ?? /^\+\+\+ (.+)$/.exec(line);
+        currentFile = m ? m[1] : null;
+      }
+      continue;
+    }
+
+    if (line.startsWith('--- ')) {
+      continue;
+    }
+
+    if (line.startsWith('@@ ')) {
+      flush();
+      inHunk = true;
+      const match = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+      newLineNum = match ? parseInt(match[1], 10) : 0;
+      continue;
+    }
+
+    if (!inHunk || !currentFile) continue;
+
+    if (line.startsWith('+')) {
+      if (blockLines.length === 0) blockStart = newLineNum;
+      blockLines.push(line.slice(1));
+      newLineNum++;
+      continue;
+    }
+
+    flush();
+
+    if (line.startsWith('-')) {
+      // Deletion: does not advance the new-line counter.
+      continue;
+    }
+
+    // Context line (leading space, or bare continuation) advances the counter.
+    newLineNum++;
+  }
+
+  flush();
+
+  return blocks;
+}
+
+/**
+ * Find regions of `rawDiff` that implement `suggestedFix` text from prior
+ * rounds. Used to detect own-proposal follow-ups that should be demoted to
+ * nits rather than re-flagged as new required/suggestion findings.
+ */
+export function computeProvenanceMap(
+  priorRounds: HandoverRound[] | undefined,
+  rawDiff: string,
+): ProvenanceEntry[] {
+  if (!priorRounds || priorRounds.length === 0) return [];
+
+  const blocks = extractAddedLineBlocks(rawDiff);
+  if (blocks.length === 0) return [];
+
+  // Precompute normalized block text keyed by block index to avoid redundant work.
+  const normalizedBlocks = blocks.map(b => normalizeForMatch(b.text));
+
+  const entries: ProvenanceEntry[] = [];
+
+  for (const round of priorRounds) {
+    for (const finding of round.findings) {
+      if (!finding.suggestedFix) continue;
+      const normalizedFix = normalizeForMatch(finding.suggestedFix);
+      if (normalizedFix.length < OWN_PROPOSAL_MIN_MATCH_LENGTH) continue;
+
+      for (let i = 0; i < blocks.length; i++) {
+        const block = blocks[i];
+        if (block.file !== finding.fingerprint.file) continue;
+        if (!normalizedBlocks[i].includes(normalizedFix)) continue;
+
+        entries.push({
+          file: block.file,
+          lineStart: block.lineStart,
+          lineEnd: block.lineEnd,
+          originatingRound: round.round,
+          originatingTitle: finding.title,
+        });
+      }
+    }
+  }
+
+  return entries;
+}
+
 export interface JudgeInput {
   findings: Finding[];
   diff: ParsedDiff;
