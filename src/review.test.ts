@@ -461,6 +461,13 @@ describe('buildReviewerSystemPrompt', () => {
     expect(prompt).toContain('Unrelated change');
     expect(prompt).toContain('splitting into a separate PR');
   });
+
+  it('instructs the reviewer to list caveats of any suggestedFix in the description', () => {
+    const prompt = buildReviewerSystemPrompt(reviewer, makeConfig());
+    expect(prompt).toContain('When you include a `suggestedFix`');
+    expect(prompt).toContain('caveats');
+    expect(prompt).toContain('description');
+  });
 });
 
 describe('buildReviewerUserMessage', () => {

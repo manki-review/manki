@@ -1116,6 +1116,8 @@ Respond with ONLY a JSON array (no markdown fences, no explanation). Each findin
 ]
 \`\`\`
 
+When you include a \`suggestedFix\`, list any known caveats of the proposed shape in the same finding's \`description\` — for example, missing bounds checks, untested edge cases, or follow-up work. This prevents a later round from flagging those caveats as new findings.
+
 ## Severity Guidelines
 
 - **required**: Bugs, security vulnerabilities, data corruption risks, crashes, incorrect behavior. These MUST be fixed before merge.
