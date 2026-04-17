@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { ClaudeClient } from './claude';
 import { matchesSuppression, Suppression } from './memory';
-import { Finding, FindingSeverity } from './types';
+import { Finding, FindingFingerprint, FindingSeverity } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -16,6 +16,25 @@ export function sanitize(s: string, maxLength = 200): string {
 
 
 type AuthorReplyClass = 'agree' | 'disagree' | 'partial' | 'none';
+
+/**
+ * Build a stable fingerprint for a finding. The slug mirrors the regex used
+ * when writing the `<!-- manki:severity:SLUG -->` HTML marker in `github.ts`,
+ * so fingerprints round-trip through posted review comments.
+ */
+function fingerprintFinding(
+  title: string,
+  file: string,
+  lineStart: number,
+  lineEnd: number = lineStart,
+): FindingFingerprint {
+  return {
+    file,
+    lineStart,
+    lineEnd,
+    slug: title.replace(/[^a-zA-Z0-9]/g, '-'),
+  };
+}
 
 const AGREE_SIGNALS = [
   'fixed', 'done', "you're right", 'good catch', 'addressed',
@@ -374,4 +393,4 @@ async function llmDeduplicateFindings(
   }
 }
 
-export { AuthorReplyClass, DuplicateMatch, PreviousFinding, RecapState, classifyAuthorReply, fetchRecapState, deduplicateFindings, titlesOverlap, llmDeduplicateFindings };
+export { AuthorReplyClass, DuplicateMatch, PreviousFinding, RecapState, classifyAuthorReply, fingerprintFinding, fetchRecapState, deduplicateFindings, titlesOverlap, llmDeduplicateFindings };

@@ -23,6 +23,18 @@ export interface Finding {
   originalSeverity?: FindingSeverity;
 }
 
+/**
+ * Stable identifier for a finding across review rounds.
+ * Title is reduced to a slug using the same expression used when posting the
+ * `<!-- manki:severity:SLUG -->` HTML comment marker in review threads.
+ */
+export interface FindingFingerprint {
+  file: string;
+  lineStart: number;
+  lineEnd: number;
+  slug: string;
+}
+
 export type ReviewVerdict = 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES';
 
 export interface ReviewResult {

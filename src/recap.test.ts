@@ -1,6 +1,6 @@
 import { Finding } from './types';
 import { Suppression } from './memory';
-import { classifyAuthorReply, deduplicateFindings, PreviousFinding, fetchRecapState, titlesOverlap, llmDeduplicateFindings } from './recap';
+import { classifyAuthorReply, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, titlesOverlap, llmDeduplicateFindings } from './recap';
 
 const makeFinding = (overrides: Partial<Finding> = {}): Finding => ({
   severity: 'suggestion',
@@ -313,6 +313,33 @@ describe('classifyAuthorReply', () => {
 
   it('prefers agree over disagree when both signals are present', () => {
     expect(classifyAuthorReply('Good catch, but I disagree on severity.')).toBe('agree');
+  });
+});
+
+describe('fingerprintFinding', () => {
+  it('replaces non-alphanumeric characters in the slug', () => {
+    const fp = fingerprintFinding('Hardcoded ServiceFlags::NETWORK', 'src/peer_store.rs', 42);
+    expect(fp.slug).toBe('Hardcoded-ServiceFlags--NETWORK');
+    expect(fp.file).toBe('src/peer_store.rs');
+    expect(fp.lineStart).toBe(42);
+    expect(fp.lineEnd).toBe(42);
+  });
+
+  it('supports multi-line ranges', () => {
+    const fp = fingerprintFinding('Fix this', 'src/a.ts', 10, 15);
+    expect(fp.lineStart).toBe(10);
+    expect(fp.lineEnd).toBe(15);
+  });
+
+  it('collapses lineEnd to lineStart when omitted', () => {
+    const fp = fingerprintFinding('Fix this', 'src/a.ts', 7);
+    expect(fp.lineStart).toBe(7);
+    expect(fp.lineEnd).toBe(7);
+  });
+
+  it('preserves alphanumeric characters in the slug', () => {
+    const fp = fingerprintFinding('Null123 Check', 'a.ts', 1);
+    expect(fp.slug).toBe('Null123-Check');
   });
 });
 
