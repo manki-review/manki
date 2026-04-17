@@ -2004,6 +2004,163 @@ describe('runReview', () => {
     expect(secPick?.effort).toBe('high');
   });
 
+  it('uses only the most recent hint when an older round has 100% dismissals but the latest does not', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 1,
+      reviewerEffort: 'medium',
+      judgeEffort: 'medium',
+      prType: 'feature',
+      agents: [{ name: 'Security & Safety', effort: 'high' }],
+    });
+    const clients: ReviewClients = {
+      reviewer: {
+        sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
+      } as unknown as import('./claude').ClaudeClient,
+      judge: { sendMessage: jest.fn() } as unknown as import('./claude').ClaudeClient,
+      planner: {
+        sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
+      } as unknown as import('./claude').ClaudeClient,
+    };
+    const config = makeConfig({ review_level: 'auto' });
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
+
+    // Round 1: 100% dismiss rate (would trigger downgrade). Round 2 (most recent): 50% keep rate (guard must NOT fire).
+    const hints = [
+      {
+        round: 1,
+        specialistOutcomes: [
+          { specialist: 'Security & Safety', findingsKept: 0, findingsDismissed: 3 },
+        ],
+      },
+      {
+        round: 2,
+        specialistOutcomes: [
+          { specialist: 'Security & Safety', findingsKept: 2, findingsDismissed: 2 },
+        ],
+      },
+    ];
+
+    const result = await runReview(
+      clients, config, diff, 'raw diff', 'repo context',
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      hints,
+    );
+    const secPick = result.plannerResult!.agents!.find(a => a.name === 'Security & Safety');
+    // Most recent round has kept findings — guard must not fire even though round 1 had 100% dismissals.
+    expect(secPick?.effort).toBe('high');
+  });
+
+  it('downgrades based on most recent hint when an older round has non-zero keeps', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 1,
+      reviewerEffort: 'medium',
+      judgeEffort: 'medium',
+      prType: 'feature',
+      agents: [{ name: 'Security & Safety', effort: 'high' }],
+    });
+    const clients: ReviewClients = {
+      reviewer: {
+        sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
+      } as unknown as import('./claude').ClaudeClient,
+      judge: { sendMessage: jest.fn() } as unknown as import('./claude').ClaudeClient,
+      planner: {
+        sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
+      } as unknown as import('./claude').ClaudeClient,
+    };
+    const config = makeConfig({ review_level: 'auto' });
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
+
+    // Round 1: non-zero keeps (guard would not fire). Round 2 (most recent): 100% dismissals (guard SHOULD fire).
+    const hints = [
+      {
+        round: 1,
+        specialistOutcomes: [
+          { specialist: 'Security & Safety', findingsKept: 2, findingsDismissed: 1 },
+        ],
+      },
+      {
+        round: 2,
+        specialistOutcomes: [
+          { specialist: 'Security & Safety', findingsKept: 0, findingsDismissed: 3 },
+        ],
+      },
+    ];
+
+    const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
+    try {
+      const result = await runReview(
+        clients, config, diff, 'raw diff', 'repo context',
+        undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+        hints,
+      );
+      const secPick = result.plannerResult!.agents!.find(a => a.name === 'Security & Safety');
+      // Most recent round dismissed all findings — guard fires based on last hint.
+      expect(secPick?.effort).toBe('low');
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  it('applies effort downgrade per-specialist independently when hints cover multiple specialists', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 3,
+      reviewerEffort: 'medium',
+      judgeEffort: 'medium',
+      prType: 'feature',
+      agents: [
+        { name: 'Security & Safety', effort: 'high' },
+        { name: 'Correctness & Logic', effort: 'high' },
+        { name: 'Architecture & Design', effort: 'high' },
+      ],
+    });
+    const clients: ReviewClients = {
+      reviewer: {
+        sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
+      } as unknown as import('./claude').ClaudeClient,
+      judge: { sendMessage: jest.fn() } as unknown as import('./claude').ClaudeClient,
+      planner: {
+        sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
+      } as unknown as import('./claude').ClaudeClient,
+    };
+    const config = makeConfig({ review_level: 'auto' });
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
+
+    // Single round hint with three specialists: two should downgrade, one should not.
+    const hints = [
+      {
+        round: 1,
+        specialistOutcomes: [
+          { specialist: 'Security & Safety', findingsKept: 0, findingsDismissed: 3 },
+          { specialist: 'Correctness & Logic', findingsKept: 1, findingsDismissed: 2 },
+          { specialist: 'Architecture & Design', findingsKept: 0, findingsDismissed: 4 },
+        ],
+      },
+    ];
+
+    const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
+    try {
+      const result = await runReview(
+        clients, config, diff, 'raw diff', 'repo context',
+        undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+        hints,
+      );
+      const secPick = result.plannerResult!.agents!.find(a => a.name === 'Security & Safety');
+      const corPick = result.plannerResult!.agents!.find(a => a.name === 'Correctness & Logic');
+      const archPick = result.plannerResult!.agents!.find(a => a.name === 'Architecture & Design');
+      // 100% dismiss, sample >= 2 -> downgrade
+      expect(secPick?.effort).toBe('low');
+      // Non-zero keeps -> no downgrade
+      expect(corPick?.effort).toBe('high');
+      // 100% dismiss, sample >= 2 -> downgrade
+      expect(archPick?.effort).toBe('low');
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
   it('forwards priorRoundHints to the planner prompt', async () => {
     const plannerResponse = JSON.stringify({
       teamSize: 3,
