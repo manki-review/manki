@@ -1062,6 +1062,7 @@ describe('appendHandoverRound', () => {
     expect(loaded!.rounds[0].round).toBe(1);
     expect(loaded!.rounds[0].findings[0].title).toBe('Null check');
     expect(loaded!.rounds[0].findings[0].authorReply).toBe('none');
+    expect(loaded!.rounds[0].judgeSummary).toBe('One issue found');
 
     await appendHandoverRound(
       octokit, 'owner/memory', 'rust-dashcore', 106,
