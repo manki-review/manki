@@ -554,6 +554,52 @@ describe('parseJudgeResponse', () => {
     expect(result.findings[0].severity).toBe('required');
     expect(result.findings[1].severity).toBe('ignore');
   });
+
+  it.each(['reachable', 'hypothetical', 'unknown'] as const)(
+    'parses reachability value %s and reachabilityReasoning when present',
+    (value) => {
+      const json = JSON.stringify([
+        {
+          title: 'T',
+          severity: 'suggestion',
+          reasoning: 'x',
+          confidence: 'medium',
+          reachability: value,
+          reachabilityReasoning: 'because reasons',
+        },
+      ]);
+
+      const result = parseJudgeResponse(json);
+      expect(result.findings[0].reachability).toBe(value);
+      expect(result.findings[0].reachabilityReasoning).toBe('because reasons');
+    },
+  );
+
+  it('falls back to undefined for invalid reachability value', () => {
+    const json = JSON.stringify([
+      {
+        title: 'T',
+        severity: 'suggestion',
+        reasoning: 'x',
+        confidence: 'medium',
+        reachability: 'yes',
+      },
+    ]);
+
+    const result = parseJudgeResponse(json);
+    expect(result.findings[0].reachability).toBeUndefined();
+    expect(result.findings[0].reachabilityReasoning).toBeUndefined();
+  });
+
+  it('leaves reachability undefined when missing from the response', () => {
+    const json = JSON.stringify([
+      { title: 'T', severity: 'suggestion', reasoning: 'x', confidence: 'medium' },
+    ]);
+
+    const result = parseJudgeResponse(json);
+    expect(result.findings[0].reachability).toBeUndefined();
+    expect(result.findings[0].reachabilityReasoning).toBeUndefined();
+  });
 });
 
 describe('filterMemoryForFindings', () => {

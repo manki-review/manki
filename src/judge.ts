@@ -430,12 +430,20 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
     const parsed = JSON.parse(jsonText);
 
     const parseFindings = (arr: unknown[]): JudgedFinding[] =>
-      arr.map((item: unknown) => item as Record<string, unknown>).map((f) => ({
-        title: String(f.title || 'Untitled'),
-        severity: validateSeverity(f.severity),
-        reasoning: String(f.reasoning || ''),
-        confidence: validateConfidence(f.confidence),
-      }));
+      arr.map((item: unknown) => item as Record<string, unknown>).map((f) => {
+        const reachability = validateReachability(f.reachability);
+        const reachabilityReasoning = typeof f.reachabilityReasoning === 'string' && f.reachabilityReasoning
+          ? f.reachabilityReasoning
+          : undefined;
+        return {
+          title: String(f.title || 'Untitled'),
+          severity: validateSeverity(f.severity),
+          reasoning: String(f.reasoning || ''),
+          confidence: validateConfidence(f.confidence),
+          ...(reachability && { reachability }),
+          ...(reachabilityReasoning && { reachabilityReasoning }),
+        };
+      });
 
     // New object format with summary + findings + resolveThreads
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
@@ -469,6 +477,13 @@ function validateConfidence(value: unknown): 'high' | 'medium' | 'low' {
     return value;
   }
   return 'medium';
+}
+
+function validateReachability(value: unknown): FindingReachability | undefined {
+  if (value === 'reachable' || value === 'hypothetical' || value === 'unknown') {
+    return value;
+  }
+  return undefined;
 }
 
 export async function runJudgeAgent(
