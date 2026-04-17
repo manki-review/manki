@@ -1996,6 +1996,32 @@ describe('runFullReview orchestration', () => {
     );
     // Verdict recalculated after escalation
     expect(jest.mocked(reviewModule.determineVerdict)).toHaveBeenCalled();
+
+    const statsArg = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+    expect(statsArg?.judgeMetrics?.verdictReason).toBe('novel_suggestion');
+  });
+
+  it('populates verdictReason in judgeMetrics on clean APPROVE with no findings', async () => {
+    const testFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+    };
+    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+      files: [testFile], totalAdditions: 10, totalDeletions: 5,
+    });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'APPROVE', summary: 'Looks good',
+      findings: [], highlights: [], reviewComplete: true,
+    });
+    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [], duplicates: [] });
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'APPROVE', verdictReason: 'only_dismissed_or_nit' });
+
+    await callRunFullReview();
+
+    const statsArg = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+    expect(statsArg?.judgeMetrics?.verdictReason).toBe('only_dismissed_or_nit');
   });
 
   it('enriches findings with code context from diff hunks', async () => {

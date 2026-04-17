@@ -329,6 +329,20 @@ describe('determineVerdict', () => {
     expect(determineVerdict(findings, priors).verdict).toBe('REQUEST_CHANGES');
   });
 
+  it.each(['partial', 'none'] as const)('does not dismiss when authorReply is "%s"', (reply) => {
+    const findings: Finding[] = [
+      { severity: 'suggestion', title: 'T', file: 'f.ts', line: 5, description: 'd', reviewers: ['r'] },
+    ];
+    const priors: HandoverFinding[] = [{
+      fingerprint: { file: 'f.ts', lineStart: 5, lineEnd: 5, slug: 'T' },
+      severity: 'suggestion',
+      title: 'T',
+      authorReply: reply,
+    }];
+    expect(determineVerdict(findings, priors).verdict).toBe('REQUEST_CHANGES');
+    expect(determineVerdict(findings, priors).verdictReason).toBe('novel_suggestion');
+  });
+
   it('tolerates ±5 line drift when matching a prior dismissal', () => {
     const findings: Finding[] = [
       { severity: 'suggestion', title: 'Drifted', file: 'f.ts', line: 15, description: 'd', reviewers: ['r'] },
@@ -1094,6 +1108,7 @@ describe('runReview', () => {
 
     const result = await runReview(clients, config, diff, 'raw diff', 'repo context');
     expect(result.verdict).toBe('APPROVE');
+    expect(result.verdictReason).toBe('only_dismissed_or_nit');
     expect(result.reviewComplete).toBe(true);
     expect(result.findings).toEqual([]);
   });
