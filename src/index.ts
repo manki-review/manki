@@ -8,7 +8,7 @@ import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { appendHandoverRound, loadHandover, loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
 import { classifyAuthorReply, fetchRecapState, fingerprintFinding } from './recap';
-import { runReview, determineVerdict, selectTeam } from './review';
+import { runReview, determineVerdict, selectTeam, buildPlannerHints } from './review';
 import { DEFENSIVE_HARDENING_TAG, DashboardData, PrContext, PrHandover, ReviewMetadata, ReviewStats } from './types';
 import {
   fetchPRDiff,
@@ -582,6 +582,7 @@ async function runFullReview(
       openThreads,
       recap.previousFindings,
       handover?.rounds,
+      buildPlannerHints(handover?.rounds),
     );
     const judgeEndTime = Date.now();
 

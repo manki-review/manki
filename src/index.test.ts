@@ -102,17 +102,21 @@ jest.mock('./recap', () => ({
   fingerprintFinding: jest.fn((title: string, file: string, line: number) => ({ file, lineStart: line, lineEnd: line, slug: title })),
 }));
 
-jest.mock('./review', () => ({
-  runReview: jest.fn().mockResolvedValue({
-    verdict: 'APPROVE',
-    summary: 'Looks good',
-    findings: [],
-    highlights: [],
-    reviewComplete: true,
-  }),
-  determineVerdict: jest.fn().mockReturnValue({ verdict: 'APPROVE', verdictReason: 'only_dismissed_or_nit' }),
-  selectTeam: jest.fn().mockReturnValue({ level: 'standard', agents: [{ name: 'general' }] }),
-}));
+jest.mock('./review', () => {
+  const actual = jest.requireActual('./review') as typeof import('./review');
+  return {
+    runReview: jest.fn().mockResolvedValue({
+      verdict: 'APPROVE',
+      summary: 'Looks good',
+      findings: [],
+      highlights: [],
+      reviewComplete: true,
+    }),
+    determineVerdict: jest.fn().mockReturnValue({ verdict: 'APPROVE', verdictReason: 'only_dismissed_or_nit' }),
+    selectTeam: jest.fn().mockReturnValue({ level: 'standard', agents: [{ name: 'general' }] }),
+    buildPlannerHints: actual.buildPlannerHints,
+  };
+});
 
 jest.mock('./github', () => ({
   fetchPRDiff: jest.fn().mockResolvedValue(''),
@@ -1911,7 +1915,22 @@ describe('runFullReview orchestration', () => {
       round: 1,
       commitSha: 'abc',
       timestamp: '2025-01-01T00:00:00Z',
-      findings: [],
+      findings: [
+        {
+          fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's' },
+          severity: 'required' as const,
+          title: 't',
+          authorReply: 'agree' as const,
+          specialist: 'Security & Safety',
+        },
+        {
+          fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' },
+          severity: 'required' as const,
+          title: 't2',
+          authorReply: 'agree' as const,
+          specialist: 'Security & Safety',
+        },
+      ],
     }];
     jest.mocked(memoryModule.loadHandover).mockResolvedValue({
       prNumber: 1, repo: 'test-repo', rounds: priorRounds,
@@ -1921,6 +1940,15 @@ describe('runFullReview orchestration', () => {
 
     const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0];
     expect(runReviewCall[13]).toEqual(priorRounds);
+    // priorRoundHints (index 14) should be derived from the loaded handover rounds.
+    expect(runReviewCall[14]).toEqual([
+      {
+        round: 1,
+        specialistOutcomes: [
+          { specialist: 'Security & Safety', findingsKept: 0, findingsDismissed: 2 },
+        ],
+      },
+    ]);
 
     // Write path: appendHandoverRound must be called once with the loaded handover
     expect(jest.mocked(memoryModule.appendHandoverRound)).toHaveBeenCalledTimes(1);
@@ -1947,6 +1975,8 @@ describe('runFullReview orchestration', () => {
     const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0];
     // priorRounds param (index 13) should be undefined when memory is disabled
     expect(runReviewCall[13]).toBeUndefined();
+    // priorRoundHints (index 14) falls back to [] when no handover is loaded
+    expect(runReviewCall[14]).toEqual([]);
   });
 
   it('applies memory escalations when patterns exist', async () => {
