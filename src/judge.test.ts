@@ -1186,6 +1186,32 @@ describe('mapJudgedToFindings', () => {
     expect(result[0].tags).toEqual(['defensive-hardening']);
     expect(result[0].reachability).toBe('hypothetical');
   });
+
+  it.each([
+    ['reachable' as const],
+    ['unknown' as const],
+  ])('preserves severity when merging duplicates with reachability %s', (reachability) => {
+    const originals = [
+      makeFinding({ title: 'Null check', severity: 'suggestion', reviewers: ['R1'] }),
+      makeFinding({ title: 'Null check missing', severity: 'required', reviewers: ['R2'] }),
+    ];
+    const judged: JudgedFinding[] = [
+      {
+        title: 'Null check',
+        severity: 'required',
+        reasoning: 'Merged.',
+        confidence: 'high',
+        reachability,
+      },
+    ];
+
+    const result = mapJudgedToFindings(originals, judged);
+    expect(result).toHaveLength(1);
+    expect(result[0].severity).toBe('required');
+    expect(result[0].originalSeverity).toBeUndefined();
+    expect(result[0].tags).toBeUndefined();
+    expect(result[0].reachability).toBe(reachability);
+  });
 });
 
 describe('buildJudgeUserMessage with linked issues', () => {
