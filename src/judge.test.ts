@@ -839,6 +839,67 @@ describe('runJudgeAgent', () => {
     expect(userMessage).toContain('Null check missing');
   });
 
+  it('demotes hypothetical required findings to nit with defensive-hardening tag', async () => {
+    const judgedResponse = JSON.stringify({
+      summary: 'One defensive guard flagged.',
+      findings: [
+        {
+          title: 'Unused variable',
+          severity: 'required',
+          reasoning: 'Technically a bug.',
+          confidence: 'high',
+          reachability: 'hypothetical',
+          reachabilityReasoning: 'No visible caller triggers the failure.',
+        },
+      ],
+    });
+    mockSendMessage.mockResolvedValue({ content: judgedResponse });
+
+    const input: JudgeInput = {
+      findings: [makeFinding()],
+      diff: makeDiff(),
+      rawDiff: '',
+      repoContext: '',
+      agentCount: 3,
+    };
+
+    const result = await runJudgeAgent(mockClient, makeConfig(), input);
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].severity).toBe('nit');
+    expect(result.findings[0].originalSeverity).toBe('required');
+    expect(result.findings[0].tags).toEqual(['defensive-hardening']);
+    expect(result.findings[0].reachability).toBe('hypothetical');
+  });
+
+  it('preserves severity when judge marks finding reachable', async () => {
+    const judgedResponse = JSON.stringify({
+      summary: 'Real bug.',
+      findings: [
+        {
+          title: 'Unused variable',
+          severity: 'required',
+          reasoning: 'Null deref on every call.',
+          confidence: 'high',
+          reachability: 'reachable',
+        },
+      ],
+    });
+    mockSendMessage.mockResolvedValue({ content: judgedResponse });
+
+    const input: JudgeInput = {
+      findings: [makeFinding()],
+      diff: makeDiff(),
+      rawDiff: '',
+      repoContext: '',
+      agentCount: 3,
+    };
+
+    const result = await runJudgeAgent(mockClient, makeConfig(), input);
+    expect(result.findings[0].severity).toBe('required');
+    expect(result.findings[0].tags).toBeUndefined();
+    expect(result.findings[0].reachability).toBe('reachable');
+  });
+
   it('calls judge with only openThreads when findings are empty', async () => {
     const judgedResponse = JSON.stringify({
       summary: 'Threads evaluated.',
@@ -938,6 +999,124 @@ describe('mapJudgedToFindings', () => {
     const result = mapJudgedToFindings(originals, judged);
     expect(result).toHaveLength(1);
     expect(result[0].description).toBe('This is a much more detailed description of the null check issue.');
+  });
+
+  it.each([
+    ['required' as const],
+    ['suggestion' as const],
+  ])('demotes hypothetical %s findings to nit and tags defensive-hardening', (severity) => {
+    const originals = [makeFinding({ title: 'Bug', severity: 'suggestion' })];
+    const judged: JudgedFinding[] = [
+      {
+        title: 'Bug',
+        severity,
+        reasoning: 'Correct but unreachable.',
+        confidence: 'high',
+        reachability: 'hypothetical',
+        reachabilityReasoning: 'No caller passes negative values.',
+      },
+    ];
+
+    const result = mapJudgedToFindings(originals, judged);
+    expect(result[0].severity).toBe('nit');
+    expect(result[0].originalSeverity).toBe(severity);
+    expect(result[0].tags).toEqual(['defensive-hardening']);
+    expect(result[0].reachability).toBe('hypothetical');
+    expect(result[0].reachabilityReasoning).toBe('No caller passes negative values.');
+  });
+
+  it('leaves hypothetical nit findings unchanged and does not tag', () => {
+    const originals = [makeFinding({ title: 'Bug', severity: 'suggestion' })];
+    const judged: JudgedFinding[] = [
+      {
+        title: 'Bug',
+        severity: 'nit',
+        reasoning: 'Minor.',
+        confidence: 'low',
+        reachability: 'hypothetical',
+      },
+    ];
+
+    const result = mapJudgedToFindings(originals, judged);
+    expect(result[0].severity).toBe('nit');
+    expect(result[0].originalSeverity).toBeUndefined();
+    expect(result[0].tags).toBeUndefined();
+    expect(result[0].reachability).toBe('hypothetical');
+  });
+
+  it('preserves severity when reachability is reachable', () => {
+    const originals = [makeFinding({ title: 'Bug', severity: 'suggestion' })];
+    const judged: JudgedFinding[] = [
+      {
+        title: 'Bug',
+        severity: 'required',
+        reasoning: 'Real bug.',
+        confidence: 'high',
+        reachability: 'reachable',
+      },
+    ];
+
+    const result = mapJudgedToFindings(originals, judged);
+    expect(result[0].severity).toBe('required');
+    expect(result[0].originalSeverity).toBeUndefined();
+    expect(result[0].tags).toBeUndefined();
+    expect(result[0].reachability).toBe('reachable');
+  });
+
+  it('preserves severity when reachability is unknown', () => {
+    const originals = [makeFinding({ title: 'Bug', severity: 'suggestion' })];
+    const judged: JudgedFinding[] = [
+      {
+        title: 'Bug',
+        severity: 'required',
+        reasoning: 'Callers outside diff.',
+        confidence: 'medium',
+        reachability: 'unknown',
+      },
+    ];
+
+    const result = mapJudgedToFindings(originals, judged);
+    expect(result[0].severity).toBe('required');
+    expect(result[0].originalSeverity).toBeUndefined();
+    expect(result[0].tags).toBeUndefined();
+    expect(result[0].reachability).toBe('unknown');
+  });
+
+  it('does not demote when reachability is absent', () => {
+    const originals = [makeFinding({ title: 'Bug', severity: 'suggestion' })];
+    const judged: JudgedFinding[] = [
+      { title: 'Bug', severity: 'required', reasoning: 'Real bug.', confidence: 'high' },
+    ];
+
+    const result = mapJudgedToFindings(originals, judged);
+    expect(result[0].severity).toBe('required');
+    expect(result[0].originalSeverity).toBeUndefined();
+    expect(result[0].tags).toBeUndefined();
+    expect(result[0].reachability).toBeUndefined();
+  });
+
+  it('demotes hypothetical findings when merging duplicates', () => {
+    const originals = [
+      makeFinding({ title: 'Defensive guard', severity: 'required', reviewers: ['R1'] }),
+      makeFinding({ title: 'Defensive guard missing', severity: 'suggestion', reviewers: ['R2'] }),
+    ];
+    const judged: JudgedFinding[] = [
+      {
+        title: 'Defensive guard',
+        severity: 'required',
+        reasoning: 'Merged.',
+        confidence: 'high',
+        reachability: 'hypothetical',
+        reachabilityReasoning: 'No caller exercises this branch.',
+      },
+    ];
+
+    const result = mapJudgedToFindings(originals, judged);
+    expect(result).toHaveLength(1);
+    expect(result[0].severity).toBe('nit');
+    expect(result[0].originalSeverity).toBe('required');
+    expect(result[0].tags).toEqual(['defensive-hardening']);
+    expect(result[0].reachability).toBe('hypothetical');
   });
 });
 

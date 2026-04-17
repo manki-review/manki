@@ -557,12 +557,32 @@ export function mapJudgedToFindings(original: Finding[], judged: JudgedFinding[]
       finding.severity = match.severity;
       finding.judgeNotes = match.reasoning;
       finding.judgeConfidence = match.confidence;
+      applyReachability(finding, match);
     }
 
     result.push(finding);
   }
 
   return result;
+}
+
+function applyReachability(finding: Finding, judged: JudgedFinding): void {
+  if (!judged.reachability) return;
+  finding.reachability = judged.reachability;
+  if (judged.reachabilityReasoning) {
+    finding.reachabilityReasoning = judged.reachabilityReasoning;
+  }
+  if (judged.reachability !== 'hypothetical') return;
+  if (finding.severity !== 'required' && finding.severity !== 'suggestion') return;
+  finding.originalSeverity = finding.severity;
+  finding.severity = 'nit';
+  finding.tags = addTag(finding.tags, 'defensive-hardening');
+}
+
+function addTag(tags: string[] | undefined, tag: string): string[] {
+  if (!tags || tags.length === 0) return [tag];
+  if (tags.includes(tag)) return tags;
+  return [...tags, tag];
 }
 
 function mapMergedFindings(original: Finding[], judged: JudgedFinding[]): Finding[] {
@@ -582,6 +602,7 @@ function mapMergedFindings(original: Finding[], judged: JudgedFinding[]): Findin
     merged.severity = j.severity;
     merged.judgeNotes = j.reasoning;
     merged.judgeConfidence = j.confidence;
+    applyReachability(merged, j);
 
     // Combine reviewers from all matched originals
     const allReviewers = new Set<string>();
