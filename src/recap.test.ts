@@ -1,6 +1,6 @@
 import { Finding } from './types';
 import { Suppression } from './memory';
-import { deduplicateFindings, PreviousFinding, fetchRecapState, titlesOverlap, llmDeduplicateFindings } from './recap';
+import { classifyAuthorReply, deduplicateFindings, PreviousFinding, fetchRecapState, titlesOverlap, llmDeduplicateFindings } from './recap';
 
 const makeFinding = (overrides: Partial<Finding> = {}): Finding => ({
   severity: 'suggestion',
@@ -275,6 +275,44 @@ describe('deduplicateFindings', () => {
     const result = deduplicateFindings(findings, previous);
     expect(result.unique).toHaveLength(1);
     expect(result.duplicates).toHaveLength(0);
+  });
+});
+
+describe('classifyAuthorReply', () => {
+  it('classifies acknowledgments as agree', () => {
+    expect(classifyAuthorReply('Fixed, done.')).toBe('agree');
+    expect(classifyAuthorReply('Good catch, will fix.')).toBe('agree');
+    expect(classifyAuthorReply('Addressed in latest push.')).toBe('agree');
+  });
+
+  it('classifies pushback as disagree', () => {
+    expect(classifyAuthorReply('This is intentional by design')).toBe('disagree');
+    expect(classifyAuthorReply('Disagree, keeping as-is.')).toBe('disagree');
+    expect(classifyAuthorReply('Not a bug, this is fine.')).toBe('disagree');
+  });
+
+  it('classifies partial acknowledgments as partial', () => {
+    expect(classifyAuthorReply("I'll handle most of it in a follow-up")).toBe('partial');
+    expect(classifyAuthorReply('Working on it')).toBe('partial');
+    expect(classifyAuthorReply('Partially handled')).toBe('partial');
+  });
+
+  it('returns none for undefined or empty text', () => {
+    expect(classifyAuthorReply(undefined)).toBe('none');
+    expect(classifyAuthorReply('')).toBe('none');
+  });
+
+  it('classifies emoji reactions', () => {
+    expect(classifyAuthorReply('\u{1F44D}')).toBe('agree');
+    expect(classifyAuthorReply('\u{1F44E}')).toBe('disagree');
+  });
+
+  it('returns none for neutral text with no signal words', () => {
+    expect(classifyAuthorReply('I will take a look later.')).toBe('none');
+  });
+
+  it('prefers agree over disagree when both signals are present', () => {
+    expect(classifyAuthorReply('Good catch, but I disagree on severity.')).toBe('agree');
   });
 });
 

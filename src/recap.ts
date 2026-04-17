@@ -15,6 +15,36 @@ export function sanitize(s: string, maxLength = 200): string {
 }
 
 
+type AuthorReplyClass = 'agree' | 'disagree' | 'partial' | 'none';
+
+const AGREE_SIGNALS = [
+  'fixed', 'done', "you're right", 'good catch', 'addressed',
+  'resolved', 'agreed', 'will do', '\u{1F44D}',
+];
+
+const DISAGREE_SIGNALS = [
+  'disagree', 'intentional', 'keeping', "won't", 'wontfix',
+  'by design', 'not a bug', 'unnecessary', 'this is fine', '\u{1F44E}',
+];
+
+const PARTIAL_SIGNALS = [
+  'partially', 'sort of', 'kind of', 'some of', 'most of',
+  'mostly', 'working on', 'follow-up',
+];
+
+/**
+ * Classify an author reply body into a coarse stance.
+ * Keyword order matters: agree wins over disagree, which wins over partial.
+ */
+function classifyAuthorReply(text: string | undefined): AuthorReplyClass {
+  if (!text) return 'none';
+  const lower = text.toLowerCase();
+  if (AGREE_SIGNALS.some(s => lower.includes(s))) return 'agree';
+  if (DISAGREE_SIGNALS.some(s => lower.includes(s))) return 'disagree';
+  if (PARTIAL_SIGNALS.some(s => lower.includes(s))) return 'partial';
+  return 'none';
+}
+
 interface PreviousFinding {
   title: string;
   file: string;
@@ -344,4 +374,4 @@ async function llmDeduplicateFindings(
   }
 }
 
-export { DuplicateMatch, PreviousFinding, RecapState, fetchRecapState, deduplicateFindings, titlesOverlap, llmDeduplicateFindings };
+export { AuthorReplyClass, DuplicateMatch, PreviousFinding, RecapState, classifyAuthorReply, fetchRecapState, deduplicateFindings, titlesOverlap, llmDeduplicateFindings };
