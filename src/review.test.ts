@@ -317,26 +317,28 @@ describe('determineVerdict', () => {
   });
 
   it('only dismisses when the prior authorReply is "agree"', () => {
+    const title = 'T';
     const findings: Finding[] = [
-      { severity: 'suggestion', title: 'T', file: 'f.ts', line: 5, description: 'd', reviewers: ['r'] },
+      { severity: 'suggestion', title, file: 'f.ts', line: 5, description: 'd', reviewers: ['r'] },
     ];
     const priors: HandoverFinding[] = [{
-      fingerprint: { file: 'f.ts', lineStart: 5, lineEnd: 5, slug: 'T' },
+      fingerprint: { file: 'f.ts', lineStart: 5, lineEnd: 5, slug: titleToSlug(title) },
       severity: 'suggestion',
-      title: 'T',
+      title,
       authorReply: 'disagree',
     }];
     expect(determineVerdict(findings, priors).verdict).toBe('REQUEST_CHANGES');
   });
 
   it.each(['partial', 'none'] as const)('does not dismiss when authorReply is "%s"', (reply) => {
+    const title = 'T';
     const findings: Finding[] = [
-      { severity: 'suggestion', title: 'T', file: 'f.ts', line: 5, description: 'd', reviewers: ['r'] },
+      { severity: 'suggestion', title, file: 'f.ts', line: 5, description: 'd', reviewers: ['r'] },
     ];
     const priors: HandoverFinding[] = [{
-      fingerprint: { file: 'f.ts', lineStart: 5, lineEnd: 5, slug: 'T' },
+      fingerprint: { file: 'f.ts', lineStart: 5, lineEnd: 5, slug: titleToSlug(title) },
       severity: 'suggestion',
-      title: 'T',
+      title,
       authorReply: reply,
     }];
     expect(determineVerdict(findings, priors).verdict).toBe('REQUEST_CHANGES');
