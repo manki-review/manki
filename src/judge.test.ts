@@ -1093,6 +1093,25 @@ describe('mapJudgedToFindings', () => {
     expect(result[0].reachability).toBe('hypothetical');
   });
 
+  it('leaves hypothetical ignore findings unchanged and does not tag', () => {
+    const originals = [makeFinding({ title: 'Bug', severity: 'required' })];
+    const judged: JudgedFinding[] = [
+      {
+        title: 'Bug',
+        severity: 'ignore',
+        reasoning: 'False positive.',
+        confidence: 'high',
+        reachability: 'hypothetical',
+      },
+    ];
+
+    const result = mapJudgedToFindings(originals, judged);
+    expect(result[0].severity).toBe('ignore');
+    expect(result[0].originalSeverity).toBeUndefined();
+    expect(result[0].tags).toBeUndefined();
+    expect(result[0].reachability).toBe('hypothetical');
+  });
+
   it('preserves severity when reachability is reachable', () => {
     const originals = [makeFinding({ title: 'Bug', severity: 'suggestion' })];
     const judged: JudgedFinding[] = [
