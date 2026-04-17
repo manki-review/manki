@@ -1691,4 +1691,45 @@ describe('runJudgeAgent cross-round suppression', () => {
     expect(result.findings[0].severity).toBe('ignore');
     expect(result.findings[0].tags).toContain('suppressed-by-ratchet');
   });
+
+  it('reports crossRoundDemoted when prior contradiction fires', async () => {
+    const judgedResponse = JSON.stringify({
+      summary: 'Unchanged.',
+      findings: [
+        { title: 'Naming convention', severity: 'required', reasoning: 'Still present.', confidence: 'high' },
+      ],
+    });
+    mockSendMessage.mockResolvedValue({ content: judgedResponse });
+
+    const input: JudgeInput = {
+      findings: [makeFinding({
+        title: 'Naming convention',
+        file: 'src/index.ts',
+        line: 12,
+        severity: 'required',
+        description: 'Replace the old helper instead.',
+      })],
+      diff: makeDiff(),
+      rawDiff: '',
+      repoContext: '',
+      agentCount: 3,
+      priorRounds: [{
+        round: 1,
+        commitSha: 'abc',
+        timestamp: 't',
+        findings: [{
+          fingerprint: { file: 'src/index.ts', lineStart: 10, lineEnd: 10, slug: 'Naming-convention' },
+          severity: 'suggestion',
+          title: 'Naming convention',
+          authorReply: 'agree',
+        }],
+      }],
+    };
+
+    const result = await runJudgeAgent(mockClient, makeConfig(), input);
+    expect(result.crossRoundDemoted).toBe(1);
+    expect(result.crossRoundSuppressed).toBeUndefined();
+    expect(result.findings[0].severity).toBe('nit');
+    expect(result.findings[0].tags).toContain('contradicts-prior-round');
+  });
 });
