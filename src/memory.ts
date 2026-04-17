@@ -605,34 +605,38 @@ export async function appendHandoverRound(
     : await loadHandover(octokit, memoryRepo, targetRepo, prNumber);
   const handover: PrHandover = loaded ?? { prNumber, repo: targetRepo, rounds: [] };
 
+  // Build a lookup from thread ID and from file:line to the previous-finding record.
   const replyByThread = new Map<string, HandoverPreviousFinding>();
-  for (const pf of previousFindings) {
-    if (pf.threadId) replyByThread.set(pf.threadId, pf);
-  }
-  for (const round of handover.rounds) {
-    for (const f of round.findings) {
-      if (!f.threadId) continue;
-      const pf = replyByThread.get(f.threadId);
-      if (pf) f.authorReply = classifyFn(pf.authorReplyText);
-    }
-  }
-
   const threadByKey = new Map<string, string>();
   for (const pf of previousFindings) {
     if (pf.threadId) {
+      replyByThread.set(pf.threadId, pf);
       threadByKey.set(`${pf.file}:${pf.line}`, pf.threadId);
     }
   }
 
+  // Backfill prior rounds: first populate any missing threadIds, then update authorReply.
+  for (const round of handover.rounds) {
+    for (const f of round.findings) {
+      if (!f.threadId) {
+        const key = `${f.fingerprint.file}:${f.fingerprint.lineStart}`;
+        const tid = threadByKey.get(key);
+        if (tid) f.threadId = tid;
+      }
+      if (f.threadId) {
+        const pf = replyByThread.get(f.threadId);
+        if (pf) f.authorReply = classifyFn(pf.authorReplyText);
+      }
+    }
+  }
+
   const roundFindings: HandoverFinding[] = findings.map(f => {
-    const threadId = threadByKey.get(`${f.file}:${f.line}`);
     const entry: HandoverFinding = {
       fingerprint: fingerprintFn(f.title, f.file, f.line),
       severity: f.severity,
       title: f.title,
       authorReply: 'none',
     };
-    if (threadId !== undefined) entry.threadId = threadId;
     return entry;
   });
 
