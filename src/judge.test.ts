@@ -1181,6 +1181,50 @@ describe('runJudgeAgent', () => {
     expect(result.resolveThreads![0].threadId).toBe('PRRT_xyz');
   });
 
+  it('priorRounds with partial authorReply does not suppress the finding', async () => {
+    // Only 'agree' triggers dismissal; 'partial' leaves the finding in play.
+    const judgedResponse = JSON.stringify({
+      summary: 'Finding still live.',
+      findings: [
+        { title: 'Unused variable', severity: 'suggestion', reasoning: 'Still relevant.', confidence: 'medium' },
+      ],
+    });
+    mockSendMessage.mockResolvedValue({ content: judgedResponse });
+
+    const priorRounds: HandoverRound[] = [{
+      round: 1,
+      commitSha: 'abc',
+      timestamp: 't',
+      findings: [{
+        fingerprint: { file: 'src/index.ts', lineStart: 10, lineEnd: 10, slug: 'Unused-variable' },
+        severity: 'suggestion',
+        title: 'Unused variable',
+        authorReply: 'partial',
+      }],
+    }];
+
+    const input: JudgeInput = {
+      findings: [makeFinding({ title: 'Unused variable', severity: 'suggestion' })],
+      diff: makeDiff(),
+      rawDiff: '',
+      repoContext: '',
+      agentCount: 3,
+      priorRounds,
+    };
+
+    const result = await runJudgeAgent(mockClient, makeConfig(), input);
+
+    // Finding should not be suppressed — partial reply does not trigger dismissal.
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].severity).toBe('suggestion');
+    expect(result.findings[0].title).toBe('Unused variable');
+
+    // Prompt must include the prior round so the model has context.
+    const [, userMessage] = mockSendMessage.mock.calls[0];
+    expect(userMessage).toContain('"authorReply": "partial"');
+    expect(userMessage).toContain('Prior Round Findings');
+  });
+
   it('passes priorRounds end-to-end: prompt includes prior round data and findings flow through', async () => {
     const judgedResponse = JSON.stringify({
       summary: 'One surviving finding.',
