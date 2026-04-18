@@ -1775,6 +1775,19 @@ describe('computeProvenanceMap', () => {
     expect(computeProvenanceMap(rounds, contextDiff)).toEqual([]);
   });
 
+  it('matches a suggestedFix containing backticks against the raw diff', () => {
+    // Storage no longer mutates backticks, so template-literal fixes round-trip
+    // faithfully and provenance matching succeeds.
+    const templateLiteralFix = 'const msg = `Hello, ${name}! You have ${count} items.`;';
+    const rounds = [makeRound(1, [makeHandoverFinding({ suggestedFix: templateLiteralFix })])];
+    const diff = buildDiff('src/a.ts', 15, [templateLiteralFix]);
+
+    const entries = computeProvenanceMap(rounds, diff);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].lineStart).toBe(15);
+    expect(entries[0].lineEnd).toBe(15);
+  });
+
   it('skips suggestedFix exceeding MAX_PROVENANCE_FIX_LEN after normalization (legacy oversized entry)', () => {
     // A legacy handover entry with an unsanitized, very long suggestedFix should be
     // skipped without crashing or degrading performance.
