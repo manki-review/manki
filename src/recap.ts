@@ -128,6 +128,7 @@ function collectInPrSuppressions(previousFindings: PreviousFinding[]): InPrSuppr
   const suppressions: InPrSuppression[] = [];
   for (const pf of previousFindings) {
     if (!pf.title || pf.title.length < 3) continue;
+    if (!pf.line) continue;
     const reason = inPrSuppressionReasonFor(pf);
     if (!reason) continue;
     const lineStart = pf.lineStart ?? pf.line;
