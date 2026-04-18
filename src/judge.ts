@@ -805,10 +805,10 @@ export function applyInPrSuppression(
     if (finding.tags?.includes(IN_PR_SUPPRESSED_TAG)) return finding;
     const match = suppressions.find(s => matchesInPrSuppression(finding, s));
     if (!match) return finding;
-    count++;
     core.info(`In-PR suppression (${match.reason}): "${finding.title}" at ${finding.file}:${finding.line}`);
     const next: Finding = { ...finding };
     if (finding.severity !== 'ignore') {
+      count++;
       next.originalSeverity = next.originalSeverity ?? finding.severity;
       next.severity = 'ignore';
     }
