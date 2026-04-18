@@ -1687,11 +1687,14 @@ describe('applyCrossRoundSuppression', () => {
   });
 
   it('does not demote contradiction when line delta exceeds the window', () => {
+    // Use `suggestion` severity so only the line-window guard prevents contradiction demotion.
+    // With `required`, both the severity guard and the window guard would block it, making the
+    // test ambiguous about which one is responsible.
     const findings = [makeFinding({
       title: 'Naming convention',
       file: 'src/a.ts',
       line: 100,
-      severity: 'required',
+      severity: 'suggestion',
       description: 'Replace the old helper instead.',
     })];
     const prior = [makePriorRound([{
@@ -1703,8 +1706,10 @@ describe('applyCrossRoundSuppression', () => {
 
     const result = applyCrossRoundSuppression(findings, prior);
     expect(result.demotedCount).toBe(0);
-    expect(result.findings[0].severity).toBe('required');
     expect(result.findings[0].tags ?? []).not.toContain('contradicts-prior-round');
+    // Ratchet fires since the match is file+slug only (no line constraint), suppressing the finding.
+    expect(result.suppressedCount).toBe(1);
+    expect(result.findings[0].severity).toBe('ignore');
   });
 
   it('demotes suggestion via contradiction at exact LINE_WINDOW boundary (inside)', () => {
