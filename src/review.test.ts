@@ -1790,6 +1790,25 @@ describe('runReview', () => {
     expect(judgeInput.findings.length).toBe(3);
   });
 
+  it('propagates inPrSuppressedCount from judgeResult to ReviewResult', async () => {
+    const clients = makeClients();
+    const config = makeConfig();
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const previousFindings = [
+      { title: 'Unused variable', file: 'src/a.ts', line: 10, severity: 'suggestion' as const, status: 'resolved' as const },
+    ];
+
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'All clear.', inPrSuppressedCount: 1 });
+
+    const result = await runReview(
+      clients, config, diff, 'raw diff', 'repo context',
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      previousFindings,
+    );
+
+    expect(result.inPrSuppressedCount).toBe(1);
+  });
+
   it('leaves dedup counts at zero when no previous findings are supplied', async () => {
     const findingJson = JSON.stringify([
       { severity: 'blocker', title: 'A bug', file: 'src/a.ts', line: 10, description: 'Bug.' },
