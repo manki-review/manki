@@ -1187,6 +1187,33 @@ describe('appendHandoverRound', () => {
     expect(round1Findings[1].threadId).toBe('t2');
     expect(round1Findings[1].authorReply).toBe('agree');
   });
+
+  it('backfills threadId via fallback key when previousFinding has no title', async () => {
+    const existing = makeHandover({
+      rounds: [{
+        round: 1,
+        commitSha: 'abc',
+        timestamp: '2025-01-01T00:00:00Z',
+        findings: [{
+          fingerprint: { file: 'src/a.ts', lineStart: 5, lineEnd: 5, slug: 'Null-check' },
+          severity: 'required',
+          title: 'Null check',
+          authorReply: 'none',
+        }],
+      }],
+    });
+    const octokit = mockJsonOctokit({ 'rust-dashcore/prs/106/handover.json': existing });
+    // no title: forces the fallback key `file:line:`
+    const previousFindings = [{ threadId: 't1', authorReplyText: 'Fixed!', file: 'src/a.ts', line: 5 }];
+    await appendHandoverRound(
+      octokit, 'owner/memory', 'rust-dashcore', 106,
+      'def', [], previousFindings,
+      'No issues', noopFingerprint, () => 'agree',
+    );
+    const reloaded = await loadHandover(octokit, 'owner/memory', 'rust-dashcore', 106);
+    expect(reloaded!.rounds[0].findings[0].threadId).toBe('t1');
+    expect(reloaded!.rounds[0].findings[0].authorReply).toBe('agree');
+  });
 });
 
 describe('fetchJsonFile error handling', () => {

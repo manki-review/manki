@@ -482,6 +482,43 @@ describe('buildJudgeUserMessage', () => {
     expect(msg).not.toContain('"title": "All ignored"');
   });
 
+  it('omits the Prior Round Findings section entirely when all rounds are all-ignore', () => {
+    const priorRounds: HandoverRound[] = [{
+      round: 1,
+      commitSha: 'a',
+      timestamp: 't',
+      findings: [{
+        fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 'x' },
+        severity: 'ignore',
+        title: 'x',
+        authorReply: 'none',
+      }],
+    }];
+    const msg = buildJudgeUserMessage([makeFinding()], new Map(), '', undefined, undefined, undefined, undefined, priorRounds);
+    expect(msg).not.toContain('## Prior Round Findings');
+  });
+
+  it('includes only non-ignore rounds when rounds are mixed', () => {
+    const priorRounds: HandoverRound[] = [
+      {
+        round: 1,
+        commitSha: 'a',
+        timestamp: 't',
+        findings: [{ fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 'x' }, severity: 'ignore', title: 'IgnoredFinding', authorReply: 'none' }],
+      },
+      {
+        round: 2,
+        commitSha: 'b',
+        timestamp: 't',
+        findings: [{ fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 'y' }, severity: 'required', title: 'RealFinding', authorReply: 'none' }],
+      },
+    ];
+    const msg = buildJudgeUserMessage([makeFinding()], new Map(), '', undefined, undefined, undefined, undefined, priorRounds);
+    expect(msg).toContain('## Prior Round Findings');
+    expect(msg).not.toContain('IgnoredFinding');
+    expect(msg).toContain('RealFinding');
+  });
+
   it('includes untrusted-content disclaimer in prior rounds section', () => {
     const findings = [makeFinding()];
     const priorRounds: HandoverRound[] = [{
