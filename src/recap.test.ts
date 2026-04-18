@@ -825,6 +825,13 @@ describe('collectInPrSuppressions', () => {
     expect(result).toHaveLength(0);
   });
 
+  it('does not suppress replied threads with no author reply', () => {
+    const result = collectInPrSuppressions([
+      makePrevious({ title: 'Some issue', file: 'src/a.ts', line: 10, status: 'replied' }),
+    ]);
+    expect(result).toHaveLength(0);
+  });
+
   it('skips file-level threads with no line anchor (line is 0 or null)', () => {
     const result = collectInPrSuppressions([
       makePrevious({ title: 'File-level note', file: 'src/a.ts', line: 0, status: 'resolved' }),
