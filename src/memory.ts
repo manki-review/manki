@@ -4,6 +4,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { minimatch } from 'minimatch';
 
 import { AuthorReplyClass, Finding, FindingSeverity, HandoverFinding, HandoverRound, PrHandover } from './types';
+import { titleToSlug } from './github';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -580,6 +581,8 @@ export interface HandoverPreviousFinding {
   line: number;
   /** Start line of the annotation range. Stored for reference but not used for key matching. */
   lineStart?: number;
+  /** Finding title used to disambiguate same-line threads in `threadByKey`. */
+  title?: string;
 }
 
 /**
@@ -612,13 +615,15 @@ export async function appendHandoverRound(
     handover.rounds = [];
   }
 
-  // Build a lookup from thread ID and from file:line to the previous-finding record.
+  // Build a lookup from thread ID and from file:line:slug to the previous-finding record.
+  // The slug disambiguates threads posted on the same file+line.
   const replyByThread = new Map<string, HandoverPreviousFinding>();
   const threadByKey = new Map<string, string>();
   for (const pf of previousFindings) {
     if (pf.threadId) {
       replyByThread.set(pf.threadId, pf);
-      threadByKey.set(`${pf.file}:${pf.line}`, pf.threadId);
+      const slug = pf.title ? titleToSlug(pf.title) : '';
+      threadByKey.set(`${pf.file}:${pf.line}:${slug}`, pf.threadId);
     }
   }
 
@@ -626,8 +631,9 @@ export async function appendHandoverRound(
   for (const round of handover.rounds) {
     for (const f of round.findings) {
       if (!f.threadId) {
-        const key = `${f.fingerprint.file}:${f.fingerprint.lineEnd}`;
-        const tid = threadByKey.get(key);
+        const slugKey = `${f.fingerprint.file}:${f.fingerprint.lineEnd}:${f.fingerprint.slug}`;
+        const fallbackKey = `${f.fingerprint.file}:${f.fingerprint.lineEnd}:`;
+        const tid = threadByKey.get(slugKey) ?? threadByKey.get(fallbackKey);
         if (tid) f.threadId = tid;
       }
       if (f.threadId) {

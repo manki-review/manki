@@ -1143,6 +1143,50 @@ describe('appendHandoverRound', () => {
     const loaded = await loadHandover(octokit, 'owner/memory', 'rust-dashcore', 106);
     expect(loaded!.rounds).toHaveLength(1);
   });
+
+  it('backfills both findings when two prior-round findings share the same file+line but differ in title', async () => {
+    const existing = makeHandover({
+      rounds: [{
+        round: 1,
+        commitSha: 'abc',
+        timestamp: '2025-01-01T00:00:00Z',
+        findings: [
+          {
+            fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: 'Null-check' },
+            severity: 'required',
+            title: 'Null check',
+            authorReply: 'none',
+          },
+          {
+            fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: 'Missing-error-handling' },
+            severity: 'suggestion',
+            title: 'Missing error handling',
+            authorReply: 'none',
+          },
+        ],
+      }],
+    });
+    const octokit = mockJsonOctokit({ 'rust-dashcore/prs/106/handover.json': existing });
+
+    const classifyFn = (): AuthorReplyClass => 'agree';
+    const previousFindings = [
+      { threadId: 't1', authorReplyText: 'Fixed!', file: 'src/a.ts', line: 10, title: 'Null check' },
+      { threadId: 't2', authorReplyText: 'Fixed!', file: 'src/a.ts', line: 10, title: 'Missing error handling' },
+    ];
+
+    await appendHandoverRound(
+      octokit, 'owner/memory', 'rust-dashcore', 106,
+      'def', [], previousFindings,
+      'No issues', noopFingerprint, classifyFn,
+    );
+
+    const reloaded = await loadHandover(octokit, 'owner/memory', 'rust-dashcore', 106);
+    const round1Findings = reloaded!.rounds[0].findings;
+    expect(round1Findings[0].threadId).toBe('t1');
+    expect(round1Findings[0].authorReply).toBe('agree');
+    expect(round1Findings[1].threadId).toBe('t2');
+    expect(round1Findings[1].authorReply).toBe('agree');
+  });
 });
 
 describe('fetchJsonFile error handling', () => {
