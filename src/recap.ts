@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 import { ClaudeClient } from './claude';
 import { titleToSlug } from './github';
 import { matchesSuppression, Suppression } from './memory';
-import { AuthorReplyClass, Finding, FindingFingerprint, FindingSeverity } from './types';
+import { AuthorReplyClass, Finding, FindingFingerprint, FindingSeverity, InPrSuppression, InPrSuppressionReason } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -107,15 +107,6 @@ interface PreviousFinding {
   status: 'open' | 'resolved' | 'replied';
   threadId?: string;
   authorReplyText?: string;
-}
-
-/** Reason why a prior-round thread's fingerprint is suppressing current findings. */
-export type InPrSuppressionReason = 'resolved-thread' | 'agree-reply';
-
-/** Fingerprint-level suppression derived from the current PR's thread state. */
-export interface InPrSuppression {
-  fingerprint: FindingFingerprint;
-  reason: InPrSuppressionReason;
 }
 
 /**

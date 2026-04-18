@@ -12,9 +12,9 @@ import {
   RepoMemory,
 } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
-import { InPrSuppression, sanitize, titlesOverlap } from './recap';
+import { sanitize, titlesOverlap } from './recap';
 import { validateSeverity } from './review';
-import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DiffFile, Finding, FindingReachability, FindingSeverity, HandoverFinding, HandoverRound, IN_PR_SUPPRESSED_TAG, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, ReviewConfig, ParsedDiff, PrContext } from './types';
+import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DiffFile, Finding, FindingReachability, FindingSeverity, HandoverFinding, HandoverRound, IN_PR_SUPPRESSED_TAG, InPrSuppression, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, ReviewConfig, ParsedDiff, PrContext } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;

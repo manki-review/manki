@@ -16,8 +16,7 @@ import {
 import { ClaudeClient } from './claude';
 import { RepoMemory, Learning, Suppression } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
-import { InPrSuppression } from './recap';
-import { Finding, HandoverFinding, HandoverRound, IN_PR_SUPPRESSED_TAG, ProvenanceEntry, ReviewConfig, ParsedDiff, DiffFile, DiffHunk } from './types';
+import { Finding, HandoverFinding, HandoverRound, IN_PR_SUPPRESSED_TAG, InPrSuppression, ProvenanceEntry, ReviewConfig, ParsedDiff, DiffFile, DiffHunk } from './types';
 
 const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
   auto_review: true,

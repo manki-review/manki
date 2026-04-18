@@ -54,6 +54,15 @@ export interface FindingFingerprint {
 
 export type AuthorReplyClass = 'agree' | 'disagree' | 'partial' | 'none';
 
+/** Reason why a prior-round thread's fingerprint is suppressing current findings. */
+export type InPrSuppressionReason = 'resolved-thread' | 'agree-reply';
+
+/** Fingerprint-level suppression derived from the current PR's thread state. */
+export interface InPrSuppression {
+  fingerprint: FindingFingerprint;
+  reason: InPrSuppressionReason;
+}
+
 /** One finding as captured in a prior review round. */
 export interface HandoverFinding {
   fingerprint: FindingFingerprint;
