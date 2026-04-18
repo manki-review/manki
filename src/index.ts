@@ -669,11 +669,13 @@ async function runFullReview(
     const defensiveHardeningCount = allJudged.filter(f => f.tags?.includes(DEFENSIVE_HARDENING_TAG)).length;
     const crossRoundSuppressed = result.crossRoundSuppressed;
     const crossRoundDemoted = result.crossRoundDemoted;
+    const inPrSuppressedCount = result.inPrSuppressedCount ?? 0;
     const judgeMetrics: ReviewStats['judgeMetrics'] = {
       confidenceDistribution,
       severityChanges,
       mergedDuplicates,
       ...(defensiveHardeningCount > 0 && { defensiveHardeningCount }),
+      ...(inPrSuppressedCount > 0 && { inPrSuppressedCount }),
       verdictReason,
       ...(crossRoundSuppressed != null && crossRoundSuppressed > 0 && { crossRoundSuppressed }),
       ...(crossRoundDemoted != null && crossRoundDemoted > 0 && { crossRoundDemoted }),
