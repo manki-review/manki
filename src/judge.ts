@@ -528,7 +528,7 @@ export function buildJudgeUserMessage(
     parts.push(`- **Original severity**: ${f.severity}`);
     parts.push(`- **File**: ${f.file}:${f.line}`);
     parts.push(`- **Reviewers**: ${f.reviewers.join(', ')}`);
-    parts.push(`- **Description**: ${f.description}`);
+    parts.push(`- **Description**: ${sanitizeForPromptEmbed(f.description)}`);
 
     if (f.suggestedFix) {
       parts.push(`- **Suggested fix**: ${sanitizeForPromptEmbed(f.suggestedFix)}`);
