@@ -1600,6 +1600,21 @@ describe('applyInPrSuppression', () => {
     expect(result.findings[0].severity).toBe('suggestion');
   });
 
+  it('suppresses a finding at exactly lineEnd + tolerance', () => {
+    // makeSuppression defaults to lineEnd: 10; tolerance is 5, so 15 is the inclusive boundary
+    const findings = [makeFinding({ line: 15 })];
+    const result = applyInPrSuppression(findings, [makeSuppression()]);
+    expect(result.count).toBe(1);
+    expect(result.findings[0].severity).toBe('ignore');
+  });
+
+  it('does not suppress a finding one line beyond lineEnd + tolerance', () => {
+    const findings = [makeFinding({ line: 16 })];
+    const result = applyInPrSuppression(findings, [makeSuppression()]);
+    expect(result.count).toBe(0);
+    expect(result.findings[0].severity).toBe('suggestion');
+  });
+
   it('does not match when file differs', () => {
     const findings = [makeFinding({ file: 'src/other.ts' })];
     const result = applyInPrSuppression(findings, [makeSuppression()]);
