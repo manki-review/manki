@@ -784,9 +784,16 @@ describe('collectInPrSuppressions', () => {
     expect(result).toHaveLength(0);
   });
 
-  it('does not suppress open threads whose author reply is partial', () => {
+  it('does not suppress replied threads whose author reply is partial', () => {
     const result = collectInPrSuppressions([
       makePrevious({ title: 'Unused var', file: 'src/a.ts', line: 10, status: 'replied', authorReplyText: 'Still working on it.' }),
+    ]);
+    expect(result).toHaveLength(0);
+  });
+
+  it('does not suppress open threads whose author reply is partial', () => {
+    const result = collectInPrSuppressions([
+      makePrevious({ title: 'Unused var', file: 'src/a.ts', line: 10, status: 'open', authorReplyText: 'Working on it.' }),
     ]);
     expect(result).toHaveLength(0);
   });
