@@ -1480,6 +1480,31 @@ describe('runJudgeAgent', () => {
     expect(result.findings[0].tags).toBeUndefined();
     expect(result.inPrSuppressedCount).toBeUndefined();
   });
+
+  it('applies in-PR suppression when judge returns no findings', async () => {
+    mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 'empty', findings: [] }) });
+
+    const inPrSuppressions: InPrSuppression[] = [
+      {
+        fingerprint: { file: 'src/index.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
+        reason: 'resolved-thread',
+      },
+    ];
+
+    const input: JudgeInput = {
+      findings: [makeFinding()],
+      diff: makeDiff(),
+      rawDiff: '',
+      repoContext: '',
+      agentCount: 1,
+      inPrSuppressions,
+    };
+
+    const result = await runJudgeAgent(mockClient, makeConfig(), input);
+    expect(result.findings[0].severity).toBe('ignore');
+    expect(result.findings[0].tags).toContain(IN_PR_SUPPRESSED_TAG);
+    expect(result.inPrSuppressedCount).toBe(1);
+  });
 });
 
 describe('applyInPrSuppression', () => {
