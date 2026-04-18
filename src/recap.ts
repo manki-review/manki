@@ -109,6 +109,43 @@ interface PreviousFinding {
   authorReplyText?: string;
 }
 
+/** Reason why a prior-round thread's fingerprint is suppressing current findings. */
+export type InPrSuppressionReason = 'resolved-thread' | 'agree-reply';
+
+/** Fingerprint-level suppression derived from the current PR's thread state. */
+export interface InPrSuppression {
+  fingerprint: FindingFingerprint;
+  reason: InPrSuppressionReason;
+}
+
+/**
+ * Build suppression entries from the current PR's review threads. Returns one
+ * entry per manki-authored thread that is either resolved or whose latest
+ * author reply is classified `agree`. Threads without a parseable title
+ * (missing severity marker) are skipped.
+ */
+function collectInPrSuppressions(previousFindings: PreviousFinding[]): InPrSuppression[] {
+  const suppressions: InPrSuppression[] = [];
+  for (const pf of previousFindings) {
+    if (!pf.title || pf.title.length < 3) continue;
+    const reason = inPrSuppressionReasonFor(pf);
+    if (!reason) continue;
+    const lineStart = pf.lineStart ?? pf.line;
+    const lineEnd = pf.line;
+    suppressions.push({
+      fingerprint: fingerprintFinding(pf.title, pf.file, lineStart, lineEnd),
+      reason,
+    });
+  }
+  return suppressions;
+}
+
+function inPrSuppressionReasonFor(pf: PreviousFinding): InPrSuppressionReason | undefined {
+  if (pf.status === 'resolved') return 'resolved-thread';
+  if (classifyAuthorReply(pf.authorReplyText) === 'agree') return 'agree-reply';
+  return undefined;
+}
+
 interface RecapState {
   previousFindings: PreviousFinding[];
   recapContext: string;
@@ -429,4 +466,4 @@ async function llmDeduplicateFindings(
   }
 }
 
-export { DuplicateMatch, PreviousFinding, RecapState, classifyAuthorReply, fingerprintFinding, fetchRecapState, deduplicateFindings, titlesOverlap, llmDeduplicateFindings };
+export { DuplicateMatch, PreviousFinding, RecapState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchRecapState, deduplicateFindings, titlesOverlap, llmDeduplicateFindings };
