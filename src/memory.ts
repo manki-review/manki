@@ -207,6 +207,18 @@ export function sanitizeSuggestedFix(value: string): string {
 }
 
 /**
+ * Sanitize text before embedding it into a prompt context.
+ * Replaces angle brackets with fullwidth equivalents to prevent XML-style tag
+ * injection, and strips backticks to avoid breaking fenced code block delimiters.
+ */
+export function sanitizeForPromptEmbed(text: string): string {
+  return text
+    .replace(/`/g, "'")
+    .replace(/</g, '\uFF1C')
+    .replace(/>/g, '\uFF1E');
+}
+
+/**
  * Build a context string from memory to inject into reviewer prompts.
  */
 export function buildMemoryContext(memory: RepoMemory): string {

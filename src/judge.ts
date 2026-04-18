@@ -5,6 +5,7 @@ import { extractJSON } from './json';
 import {
   filterLearningsForFinding,
   filterSuppressionsForFinding,
+  sanitizeForPromptEmbed,
   sanitizeMemoryField,
   Learning,
   Suppression,
@@ -510,7 +511,7 @@ export function buildJudgeUserMessage(
     parts.push(`- **Description**: ${f.description}`);
 
     if (f.suggestedFix) {
-      parts.push(`- **Suggested fix**: ${f.suggestedFix}`);
+      parts.push(`- **Suggested fix**: ${sanitizeForPromptEmbed(f.suggestedFix)}`);
     }
 
     if (ctx) {
