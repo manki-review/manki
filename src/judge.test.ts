@@ -1081,6 +1081,51 @@ describe('runJudgeAgent', () => {
     expect(result.resolveThreads).toHaveLength(1);
     expect(result.resolveThreads![0].threadId).toBe('PRRT_xyz');
   });
+
+  it('passes priorRounds end-to-end: prompt includes prior round data and findings flow through', async () => {
+    const judgedResponse = JSON.stringify({
+      summary: 'One surviving finding.',
+      findings: [
+        { title: 'Null check missing', severity: 'suggestion', reasoning: 'Still unaddressed.', confidence: 'high' },
+      ],
+    });
+    mockSendMessage.mockResolvedValue({ content: judgedResponse });
+
+    const priorRounds: HandoverRound[] = [{
+      round: 1,
+      commitSha: 'abc123',
+      timestamp: '2025-01-01T00:00:00Z',
+      findings: [{
+        fingerprint: { file: 'src/handler.ts', lineStart: 20, lineEnd: 20, slug: 'Null-check-missing' },
+        severity: 'suggestion',
+        title: 'Null check missing',
+        authorReply: 'agree',
+        threadId: 'PRRT_prior',
+      }],
+    }];
+
+    const input: JudgeInput = {
+      findings: [makeFinding({ title: 'Null check missing', file: 'src/handler.ts', line: 20 })],
+      diff: makeDiff(),
+      rawDiff: '',
+      repoContext: '',
+      agentCount: 3,
+      priorRounds,
+    };
+
+    const result = await runJudgeAgent(mockClient, makeConfig(), input);
+
+    expect(mockSendMessage).toHaveBeenCalledTimes(1);
+    const [, userMessage] = mockSendMessage.mock.calls[0];
+    expect(userMessage).toContain('Prior Round Findings');
+    expect(userMessage).toContain('"authorReply": "agree"');
+    expect(userMessage).toContain('"slug": "Null-check-missing"');
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].title).toBe('Null check missing');
+    expect(result.findings[0].severity).toBe('suggestion');
+    expect(result.summary).toBe('One surviving finding.');
+  });
 });
 
 describe('mapJudgedToFindings', () => {
