@@ -1225,6 +1225,60 @@ describe('runJudgeAgent', () => {
     expect(userMessage).toContain('Prior Round Findings');
   });
 
+  it('non-matching findings in mixed priorRounds array pass through unchanged', async () => {
+    // Finding A matches a prior agree; finding B does not. Both should come back
+    // from the judge — B with its original severity intact.
+    const judgedResponse = JSON.stringify({
+      summary: 'Two findings, one prior match.',
+      findings: [
+        { title: 'Null check', severity: 'suggestion', reasoning: 'Prior agreed.', confidence: 'high' },
+        { title: 'Missing error handler', severity: 'required', reasoning: 'Real bug.', confidence: 'high' },
+      ],
+    });
+    mockSendMessage.mockResolvedValue({ content: judgedResponse });
+
+    const priorRounds: HandoverRound[] = [{
+      round: 1,
+      commitSha: 'abc',
+      timestamp: 't',
+      findings: [{
+        fingerprint: { file: 'src/index.ts', lineStart: 10, lineEnd: 10, slug: 'Null-check' },
+        severity: 'suggestion',
+        title: 'Null check',
+        authorReply: 'agree',
+      }],
+    }];
+
+    const input: JudgeInput = {
+      findings: [
+        makeFinding({ title: 'Null check', severity: 'suggestion', line: 10 }),
+        makeFinding({ title: 'Missing error handler', severity: 'required', line: 50 }),
+      ],
+      diff: makeDiff([
+        makeDiffFile(),
+        makeDiffFile({ path: 'src/index.ts', hunks: [makeHunk({ newStart: 45, newLines: 10, oldStart: 45, oldLines: 10, content: Array.from({ length: 10 }, (_, i) => `+line ${i + 45}`).join('\n') })] }),
+      ]),
+      rawDiff: '',
+      repoContext: '',
+      agentCount: 3,
+      priorRounds,
+    };
+
+    const result = await runJudgeAgent(mockClient, makeConfig(), input);
+
+    expect(result.findings).toHaveLength(2);
+    const nullCheck = result.findings.find(f => f.title === 'Null check');
+    const errorHandler = result.findings.find(f => f.title === 'Missing error handler');
+
+    expect(nullCheck).toBeDefined();
+    expect(nullCheck!.severity).toBe('suggestion');
+
+    // Non-matching finding must be returned with judge-assigned severity unchanged.
+    expect(errorHandler).toBeDefined();
+    expect(errorHandler!.severity).toBe('required');
+    expect(errorHandler!.tags).toBeUndefined();
+  });
+
   it('passes priorRounds end-to-end: prompt includes prior round data and findings flow through', async () => {
     const judgedResponse = JSON.stringify({
       summary: 'One surviving finding.',
