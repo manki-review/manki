@@ -1173,6 +1173,7 @@ describe('runJudgeAgent', () => {
 
     expect(nullCheck).toBeDefined();
     expect(nullCheck!.severity).toBe('suggestion');
+    expect(nullCheck!.tags).toBeUndefined();
 
     // Non-matching finding must be returned with judge-assigned severity unchanged.
     expect(errorHandler).toBeDefined();
