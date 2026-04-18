@@ -25,6 +25,7 @@ export const RATCHET_SUPPRESSED_TAG = 'suppressed-by-ratchet' as const;
 export const CONTRADICTION_TAG = 'contradicts-prior-round' as const;
 
 export const OWN_PROPOSAL_TAG = 'own-proposal-followup' as const;
+export const IN_PR_SUPPRESSED_TAG = 'suppressed-in-pr' as const;
 
 /**
  * A region of the current diff that implements code manki itself suggested in a
@@ -38,7 +39,6 @@ export interface ProvenanceEntry {
   originatingRound: number;
   originatingTitle: string;
 }
-
 export interface Finding {
   severity: FindingSeverity;
   title: string;
@@ -267,6 +267,7 @@ export interface ReviewStats {
     severityChanges: number;
     mergedDuplicates: number;
     defensiveHardeningCount?: number;
+    inPrSuppressedCount?: number;
     verdictReason?: VerdictReason;
     crossRoundSuppressed?: number;
     crossRoundDemoted?: number;
