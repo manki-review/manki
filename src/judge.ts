@@ -557,7 +557,7 @@ export async function runJudgeAgent(
 
   if (judgeResult.findings.length === 0) {
     if (findings.length > 0) {
-      core.warning('Judge returned no findings — returning originals unchanged');
+      core.warning('Judge returned no findings — applying cross-round suppression to originals');
     }
     const earlySuppress = applyCrossRoundSuppression(findings, priorRounds);
     return {
@@ -723,25 +723,27 @@ export function applyCrossRoundSuppression(
 
     const slug = titleToSlug(current.title);
 
-    // Contradiction is checked before ratchet for `suggestion` findings only.
-    // `required` and `nit` skip this branch: required is protected from any
-    // silent demotion (prompt-injection guard); nit falls through to ratchet.
-    const contradictionMatch = acceptedPriors.find(({ finding: prior }) =>
-      prior.fingerprint.file === current.file
-      && prior.fingerprint.slug === slug
-      && (
-        current.line >= prior.fingerprint.lineStart - LINE_WINDOW
-        && current.line <= prior.fingerprint.lineEnd + LINE_WINDOW
-      ),
-    );
-    if (contradictionMatch && hasReversalWord(current) && current.severity === 'suggestion') {
-      current.originalSeverity ??= current.severity;
-      current.severity = 'nit';
-      current.tags = addTag(current.tags, CONTRADICTION_TAG);
-      const note = `Contradicts round ${contradictionMatch.round} guidance accepted by author`;
-      current.judgeNotes = current.judgeNotes ? `${current.judgeNotes} ${note}` : note;
-      demotedCount++;
-      return current;
+    // Contradiction demotion applies to `suggestion` only.
+    // `required` is guarded against silent demotion (prompt-injection guard);
+    // `nit` falls through to ratchet.
+    if (current.severity === 'suggestion') {
+      const contradictionMatch = acceptedPriors.find(({ finding: prior }) =>
+        prior.fingerprint.file === current.file
+        && prior.fingerprint.slug === slug
+        && (
+          current.line >= prior.fingerprint.lineStart - LINE_WINDOW
+          && current.line <= prior.fingerprint.lineEnd + LINE_WINDOW
+        ),
+      );
+      if (contradictionMatch && hasReversalWord(current)) {
+        current.originalSeverity ??= current.severity;
+        current.severity = 'nit';
+        current.tags = addTag(current.tags, CONTRADICTION_TAG);
+        const note = `Contradicts round ${contradictionMatch.round} guidance accepted by author`;
+        current.judgeNotes = current.judgeNotes ? `${current.judgeNotes} ${note}` : note;
+        demotedCount++;
+        return current;
+      }
     }
 
     const ratchetMatch = acceptedPriors.find(({ finding: prior }) =>
