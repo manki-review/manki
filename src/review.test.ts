@@ -2269,6 +2269,36 @@ describe('runReview', () => {
     expect(systemPrompt).not.toContain('Prior Round Outcomes');
   });
 
+  it('passes empty hints to planner when priorRounds is empty array', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 3,
+      reviewerEffort: 'medium',
+      judgeEffort: 'medium',
+      prType: 'feature',
+    });
+    const plannerSpy = jest.fn().mockResolvedValue({ content: plannerResponse });
+    const clients: ReviewClients = {
+      reviewer: {
+        sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
+      } as unknown as import('./claude').ClaudeClient,
+      judge: {
+        sendMessage: jest.fn(),
+      } as unknown as import('./claude').ClaudeClient,
+      planner: { sendMessage: plannerSpy } as unknown as import('./claude').ClaudeClient,
+    };
+    const config = makeConfig({ review_level: 'auto' });
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
+
+    await runReview(clients, config, diff, 'raw diff', 'repo context',
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      [],
+    );
+
+    const systemPrompt = plannerSpy.mock.calls[0][0] as string;
+    expect(systemPrompt).not.toContain('Prior Round Outcomes');
+  });
+
   it('falls back to selectTeam when planner returns error', async () => {
     const clients: ReviewClients = {
       reviewer: {
