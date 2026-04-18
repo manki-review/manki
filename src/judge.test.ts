@@ -1625,6 +1625,31 @@ describe('applyInPrSuppression', () => {
     expect(result.count).toBe(0);
     expect(result.findings[0]).toBe(findings[0]);
   });
+
+  it('tags an already-ignored finding without incrementing count', () => {
+    const findings = [makeFinding({ severity: 'ignore' })];
+    const result = applyInPrSuppression(findings, [makeSuppression()]);
+    expect(result.count).toBe(0);
+    expect(result.findings[0].tags).toContain(IN_PR_SUPPRESSED_TAG);
+    expect(result.findings[0].severity).toBe('ignore');
+    expect(result.findings[0].originalSeverity).toBeUndefined();
+  });
+
+  it('counts all matching findings across multiple suppressions', () => {
+    const findings = [
+      makeFinding({ title: 'Unused variable', line: 10 }),
+      makeFinding({ title: 'Missing null check', line: 20, file: 'src/other.ts' }),
+      makeFinding({ title: 'Type error', line: 30, file: 'src/third.ts' }),
+    ];
+    const suppressions = [
+      makeSuppression({}, 'resolved-thread'),
+      { fingerprint: { file: 'src/other.ts', lineStart: 20, lineEnd: 20, slug: titleToSlug('Missing null check') }, reason: 'agree-reply' as const },
+    ];
+    const result = applyInPrSuppression(findings, suppressions);
+    expect(result.count).toBe(2);
+    expect(result.findings.filter(f => f.severity === 'ignore')).toHaveLength(2);
+    expect(result.findings[2].severity).toBe('suggestion');
+  });
 });
 
 describe('mapJudgedToFindings', () => {
