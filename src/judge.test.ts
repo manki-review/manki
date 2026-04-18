@@ -1172,6 +1172,42 @@ describe('runJudgeAgent', () => {
     expect(result.findings[0].tags).toContain('own-proposal-followup');
     expect(result.findings[0].judgeNotes).toContain('Own-proposal follow-up: implements round 1 finding "Clamp value to safe integer"');
   });
+
+  it('does not throw and applies no provenance demotions when rawDiff is undefined', async () => {
+    const judgedResponse = JSON.stringify({
+      summary: 'One suggestion.',
+      findings: [
+        { title: 'Unused variable', severity: 'suggestion', reasoning: 'Minor.', confidence: 'medium' },
+      ],
+    });
+    mockSendMessage.mockResolvedValue({ content: judgedResponse });
+
+    const input = {
+      findings: [makeFinding({ title: 'Unused variable', severity: 'suggestion' })],
+      diff: makeDiff(),
+      rawDiff: undefined as unknown as string,
+      repoContext: '',
+      agentCount: 1,
+      priorRounds: [
+        {
+          round: 1,
+          commitSha: 'abc',
+          timestamp: '2025-01-01T00:00:00Z',
+          findings: [{
+            fingerprint: { file: 'src/a.ts', lineStart: 1, lineEnd: 1, slug: 'unused-variable' },
+            severity: 'suggestion' as const,
+            title: 'Unused variable',
+            authorReply: 'none' as const,
+            suggestedFix: 'const x = 1;'.repeat(5),
+          }],
+        },
+      ],
+    };
+
+    const result = await runJudgeAgent(mockClient, makeConfig(), input as unknown as JudgeInput);
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].tags ?? []).not.toContain('own-proposal-followup');
+  });
 });
 
 describe('mapJudgedToFindings', () => {

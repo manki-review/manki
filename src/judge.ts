@@ -692,7 +692,7 @@ export async function runJudgeAgent(
   crossRoundDemoted?: number;
 }> {
   const { findings, diff, rawDiff, memory, prContext, linkedIssues, agentCount, isFollowUp, openThreads, priorRounds } = input;
-  const provenanceMap = computeProvenanceMap(priorRounds, rawDiff);
+  const provenanceMap = rawDiff ? computeProvenanceMap(priorRounds, rawDiff) : [];
 
   const hasOpenThreads = (openThreads?.length ?? 0) > 0;
 
