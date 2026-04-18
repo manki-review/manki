@@ -389,6 +389,21 @@ describe('determineVerdict', () => {
     expect(result.verdict).toBe('COMMENT');
     expect(result.verdictReason).toBe('only_dismissed_or_nit');
   });
+
+  it('does not dismiss a finding with line === 0 even when file and slug match', () => {
+    const title = 'Null check';
+    const findings: Finding[] = [
+      { severity: 'suggestion', title, file: 'f.ts', line: 0, description: 'd', reviewers: ['r'] },
+    ];
+    const priors: HandoverFinding[] = [{
+      fingerprint: { file: 'f.ts', lineStart: 3, lineEnd: 3, slug: titleToSlug(title) },
+      severity: 'suggestion',
+      title,
+      authorReply: 'agree',
+    }];
+    expect(determineVerdict(findings, priors).verdict).toBe('REQUEST_CHANGES');
+    expect(determineVerdict(findings, priors).verdictReason).toBe('novel_suggestion');
+  });
 });
 
 describe('buildReviewerSystemPrompt', () => {

@@ -1245,6 +1245,7 @@ export function validateSeverity(severity: unknown): Finding['severity'] {
  * (not in the handover today).
  */
 function matchesDismissedPrior(finding: Finding, prior: HandoverFinding): boolean {
+  if (finding.line === 0) return false;
   if (finding.file !== prior.fingerprint.file) return false;
   if (titleToSlug(finding.title) !== prior.fingerprint.slug) return false;
   const line = finding.line;
