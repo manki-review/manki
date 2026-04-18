@@ -1,5 +1,6 @@
 import {
   applyCrossRoundSuppression,
+  applyInPrSuppression,
   buildJudgeSystemPrompt,
   buildJudgeUserMessage,
   computeProvenanceMap,
@@ -15,7 +16,8 @@ import {
 import { ClaudeClient } from './claude';
 import { RepoMemory, Learning, Suppression } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
-import { Finding, HandoverFinding, HandoverRound, ProvenanceEntry, ReviewConfig, ParsedDiff, DiffFile, DiffHunk } from './types';
+import { InPrSuppression } from './recap';
+import { Finding, HandoverFinding, HandoverRound, IN_PR_SUPPRESSED_TAG, ProvenanceEntry, ReviewConfig, ParsedDiff, DiffFile, DiffHunk } from './types';
 
 const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
   auto_review: true,
@@ -1414,6 +1416,137 @@ describe('runJudgeAgent', () => {
     const result = await runJudgeAgent(mockClient, makeConfig(), input as unknown as JudgeInput);
     expect(result.findings).toHaveLength(1);
     expect(result.findings[0].tags ?? []).not.toContain('own-proposal-followup');
+  });
+
+  it('flips findings matching an in-PR suppression to ignore and tags them', async () => {
+    const judgedResponse = JSON.stringify({
+      summary: 'Same finding.',
+      findings: [
+        { title: 'Unused variable', severity: 'suggestion', reasoning: 'Still there.', confidence: 'high' },
+      ],
+    });
+    mockSendMessage.mockResolvedValue({ content: judgedResponse });
+
+    const inPrSuppressions: InPrSuppression[] = [
+      {
+        fingerprint: { file: 'src/index.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
+        reason: 'resolved-thread',
+      },
+    ];
+
+    const input: JudgeInput = {
+      findings: [makeFinding()],
+      diff: makeDiff(),
+      rawDiff: '',
+      repoContext: '',
+      agentCount: 3,
+      inPrSuppressions,
+    };
+
+    const result = await runJudgeAgent(mockClient, makeConfig(), input);
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].severity).toBe('ignore');
+    expect(result.findings[0].tags).toContain(IN_PR_SUPPRESSED_TAG);
+    expect(result.findings[0].originalSeverity).toBe('suggestion');
+    expect(result.inPrSuppressedCount).toBe(1);
+  });
+
+  it('leaves non-matching findings untouched when inPrSuppressions provided', async () => {
+    const judgedResponse = JSON.stringify({
+      summary: 'New finding.',
+      findings: [
+        { title: 'Unused variable', severity: 'suggestion', reasoning: 'Real.', confidence: 'high' },
+      ],
+    });
+    mockSendMessage.mockResolvedValue({ content: judgedResponse });
+
+    const inPrSuppressions: InPrSuppression[] = [
+      {
+        fingerprint: { file: 'src/other.ts', lineStart: 1, lineEnd: 1, slug: 'different-slug' },
+        reason: 'agree-reply',
+      },
+    ];
+
+    const input: JudgeInput = {
+      findings: [makeFinding()],
+      diff: makeDiff(),
+      rawDiff: '',
+      repoContext: '',
+      agentCount: 3,
+      inPrSuppressions,
+    };
+
+    const result = await runJudgeAgent(mockClient, makeConfig(), input);
+    expect(result.findings[0].severity).toBe('suggestion');
+    expect(result.findings[0].tags).toBeUndefined();
+    expect(result.inPrSuppressedCount).toBeUndefined();
+  });
+});
+
+describe('applyInPrSuppression', () => {
+  const makeSuppression = (overrides: Partial<InPrSuppression['fingerprint']> = {}, reason: InPrSuppression['reason'] = 'resolved-thread'): InPrSuppression => ({
+    fingerprint: {
+      file: 'src/index.ts',
+      lineStart: 10,
+      lineEnd: 10,
+      slug: titleToSlug('Unused variable'),
+      ...overrides,
+    },
+    reason,
+  });
+
+  it('returns findings unchanged when no suppressions', () => {
+    const findings = [makeFinding()];
+    const result = applyInPrSuppression(findings, undefined);
+    expect(result.findings).toBe(findings);
+    expect(result.count).toBe(0);
+  });
+
+  it('returns findings unchanged when suppressions list is empty', () => {
+    const findings = [makeFinding()];
+    const result = applyInPrSuppression(findings, []);
+    expect(result.findings).toBe(findings);
+    expect(result.count).toBe(0);
+  });
+
+  it('matches on file + slug + line within tolerance', () => {
+    const findings = [makeFinding({ line: 14 })];
+    const result = applyInPrSuppression(findings, [makeSuppression()]);
+    expect(result.count).toBe(1);
+    expect(result.findings[0].severity).toBe('ignore');
+  });
+
+  it('does not match when line is outside tolerance', () => {
+    const findings = [makeFinding({ line: 50 })];
+    const result = applyInPrSuppression(findings, [makeSuppression()]);
+    expect(result.count).toBe(0);
+    expect(result.findings[0].severity).toBe('suggestion');
+  });
+
+  it('does not match when file differs', () => {
+    const findings = [makeFinding({ file: 'src/other.ts' })];
+    const result = applyInPrSuppression(findings, [makeSuppression()]);
+    expect(result.count).toBe(0);
+  });
+
+  it('does not match when slug differs', () => {
+    const findings = [makeFinding({ title: 'Completely different title' })];
+    const result = applyInPrSuppression(findings, [makeSuppression()]);
+    expect(result.count).toBe(0);
+  });
+
+  it('preserves originalSeverity from the incoming severity', () => {
+    const findings = [makeFinding({ severity: 'required' })];
+    const result = applyInPrSuppression(findings, [makeSuppression()]);
+    expect(result.findings[0].severity).toBe('ignore');
+    expect(result.findings[0].originalSeverity).toBe('required');
+  });
+
+  it('is idempotent on already-suppressed findings', () => {
+    const findings = [makeFinding({ tags: [IN_PR_SUPPRESSED_TAG], severity: 'ignore' })];
+    const result = applyInPrSuppression(findings, [makeSuppression()]);
+    expect(result.count).toBe(0);
+    expect(result.findings[0]).toBe(findings[0]);
   });
 });
 
