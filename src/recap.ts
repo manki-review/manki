@@ -167,7 +167,10 @@ async function fetchRecapState(
       authorReplyText: t.authorReplyText,
     }));
 
-  const resolved = previousFindings.filter(f => f.status === 'resolved');
+  const resolved = previousFindings.filter(
+    f => f.status === 'resolved' ||
+    (f.status === 'replied' && classifyAuthorReply(f.authorReplyText) === 'agree'),
+  );
   const open = previousFindings.filter(f => f.status === 'open');
 
   let recapContext = '';
