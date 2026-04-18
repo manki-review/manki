@@ -2335,7 +2335,7 @@ describe('runReview', () => {
     }
   });
 
-  it('fires effort downgrade when findingsDismissed equals EFFORT_DOWNGRADE_MIN_SAMPLE (2)', async () => {
+  function makeEffortDowngradeFixture() {
     const plannerResponse = JSON.stringify({
       teamSize: 1,
       reviewerEffort: 'medium',
@@ -2355,6 +2355,11 @@ describe('runReview', () => {
     const config = makeConfig({ review_level: 'auto' });
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
     mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
+    return { clients, config, diff };
+  }
+
+  it('fires effort downgrade when findingsDismissed equals EFFORT_DOWNGRADE_MIN_SAMPLE (2)', async () => {
+    const { clients, config, diff } = makeEffortDowngradeFixture();
 
     // Exactly 2 dismissed, 0 kept → 100% dismiss rate at EFFORT_DOWNGRADE_MIN_SAMPLE boundary.
     const priorRounds: HandoverRound[] = [{
@@ -2382,25 +2387,7 @@ describe('runReview', () => {
   });
 
   it('does not fire effort downgrade when findingsDismissed is below EFFORT_DOWNGRADE_MIN_SAMPLE (1 < 2)', async () => {
-    const plannerResponse = JSON.stringify({
-      teamSize: 1,
-      reviewerEffort: 'medium',
-      judgeEffort: 'medium',
-      prType: 'feature',
-      agents: [{ name: 'Security & Safety', effort: 'high' }],
-    });
-    const clients: ReviewClients = {
-      reviewer: {
-        sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-      } as unknown as import('./claude').ClaudeClient,
-      judge: { sendMessage: jest.fn() } as unknown as import('./claude').ClaudeClient,
-      planner: {
-        sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
-      } as unknown as import('./claude').ClaudeClient,
-    };
-    const config = makeConfig({ review_level: 'auto' });
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
-    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
+    const { clients, config, diff } = makeEffortDowngradeFixture();
 
     // Only 1 dismissed — below the minimum sample threshold, guard must not fire.
     const priorRounds: HandoverRound[] = [{
@@ -2425,25 +2412,7 @@ describe('runReview', () => {
     // When hints are out of order by round number, the guard reads hints[hints.length - 1]
     // (the last element by position). This test documents that coupling so future changes
     // to sort hints before reading are caught.
-    const plannerResponse = JSON.stringify({
-      teamSize: 1,
-      reviewerEffort: 'medium',
-      judgeEffort: 'medium',
-      prType: 'feature',
-      agents: [{ name: 'Security & Safety', effort: 'high' }],
-    });
-    const clients: ReviewClients = {
-      reviewer: {
-        sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-      } as unknown as import('./claude').ClaudeClient,
-      judge: { sendMessage: jest.fn() } as unknown as import('./claude').ClaudeClient,
-      planner: {
-        sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
-      } as unknown as import('./claude').ClaudeClient,
-    };
-    const config = makeConfig({ review_level: 'auto' });
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
-    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
+    const { clients, config, diff } = makeEffortDowngradeFixture();
 
     // priorRounds in non-chronological order: round 3 first in the array, round 1 last.
     // buildPlannerHints preserves array order, so hints[hints.length - 1] = round 1 (100%
