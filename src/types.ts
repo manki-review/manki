@@ -111,6 +111,7 @@ export interface ReviewResult {
   staticDedupCount?: number;
   llmDedupCount?: number;
   suppressionCount?: number;
+  inPrSuppressedCount?: number;
   agentResponseLengths?: Map<string, number>;
   crossRoundSuppressed?: number;
   crossRoundDemoted?: number;
