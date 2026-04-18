@@ -1203,7 +1203,7 @@ describe('appendHandoverRound', () => {
       }],
     });
     const octokit = mockJsonOctokit({ 'rust-dashcore/prs/106/handover.json': existing });
-    // no title — forces the fallback key `file:line:`
+    // no title: forces the fallback key `file:line:`
     const previousFindings = [{ threadId: 't1', authorReplyText: 'Fixed!', file: 'src/a.ts', line: 5 }];
     await appendHandoverRound(
       octokit, 'owner/memory', 'rust-dashcore', 106,
