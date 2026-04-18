@@ -1,6 +1,7 @@
 import { Finding } from './types';
 import { Suppression } from './memory';
-import { classifyAuthorReply, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, titlesOverlap, llmDeduplicateFindings } from './recap';
+import { classifyAuthorReply, collectInPrSuppressions, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, titlesOverlap, llmDeduplicateFindings } from './recap';
+import { titleToSlug } from './github';
 
 const makeFinding = (overrides: Partial<Finding> = {}): Finding => ({
   severity: 'suggestion',
@@ -742,6 +743,76 @@ describe('fetchRecapState', () => {
     const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
     expect(state.recapContext).not.toContain('Resolved');
     expect(state.recapContext).toContain('Still Open (1 findings');
+  });
+});
+
+describe('collectInPrSuppressions', () => {
+  it('suppresses resolved threads regardless of reply', () => {
+    const result = collectInPrSuppressions([
+      makePrevious({ title: 'Missing null check', file: 'src/a.ts', line: 10, status: 'resolved' }),
+    ]);
+    expect(result).toHaveLength(1);
+    expect(result[0].reason).toBe('resolved-thread');
+    expect(result[0].fingerprint).toEqual({
+      file: 'src/a.ts',
+      lineStart: 10,
+      lineEnd: 10,
+      slug: titleToSlug('Missing null check'),
+    });
+  });
+
+  it('suppresses open threads whose latest author reply is agree', () => {
+    const result = collectInPrSuppressions([
+      makePrevious({ title: 'Unused var', file: 'src/a.ts', line: 10, status: 'open', authorReplyText: 'Fixed, thanks!' }),
+    ]);
+    expect(result).toHaveLength(1);
+    expect(result[0].reason).toBe('agree-reply');
+  });
+
+  it('does not suppress open threads whose author reply is disagree', () => {
+    const result = collectInPrSuppressions([
+      makePrevious({ title: 'Unused var', file: 'src/a.ts', line: 10, status: 'open', authorReplyText: 'I disagree, this is intentional.' }),
+    ]);
+    expect(result).toHaveLength(0);
+  });
+
+  it('does not suppress open threads whose author reply is partial', () => {
+    const result = collectInPrSuppressions([
+      makePrevious({ title: 'Unused var', file: 'src/a.ts', line: 10, status: 'replied', authorReplyText: 'Still working on it.' }),
+    ]);
+    expect(result).toHaveLength(0);
+  });
+
+  it('does not suppress open threads with no author reply', () => {
+    const result = collectInPrSuppressions([
+      makePrevious({ title: 'Unused var', file: 'src/a.ts', line: 10, status: 'open' }),
+    ]);
+    expect(result).toHaveLength(0);
+  });
+
+  it('skips threads missing a parseable title', () => {
+    const result = collectInPrSuppressions([
+      makePrevious({ title: '', file: 'src/a.ts', line: 10, status: 'resolved' }),
+      makePrevious({ title: 'AB', file: 'src/a.ts', line: 11, status: 'resolved' }),
+    ]);
+    expect(result).toHaveLength(0);
+  });
+
+  it('uses lineStart when present for multi-line annotations', () => {
+    const result = collectInPrSuppressions([
+      makePrevious({ title: 'Range issue', file: 'src/a.ts', line: 44, lineStart: 40, status: 'resolved' }),
+    ]);
+    expect(result[0].fingerprint.lineStart).toBe(40);
+    expect(result[0].fingerprint.lineEnd).toBe(44);
+  });
+
+  it('collects a mix of resolved and agree-reply reasons in one pass', () => {
+    const result = collectInPrSuppressions([
+      makePrevious({ title: 'Resolved finding', file: 'f.ts', line: 1, status: 'resolved' }),
+      makePrevious({ title: 'Agreed finding', file: 'f.ts', line: 2, status: 'open', authorReplyText: 'addressed in a1b2c3d' }),
+      makePrevious({ title: 'Kept finding', file: 'f.ts', line: 3, status: 'open', authorReplyText: "no, keeping it" }),
+    ]);
+    expect(result.map(r => r.reason)).toEqual(['resolved-thread', 'agree-reply']);
   });
 });
 
