@@ -5,6 +5,8 @@ export type FindingSeverity = 'required' | 'suggestion' | 'nit' | 'ignore';
 export type FindingReachability = 'reachable' | 'hypothetical' | 'unknown';
 
 export const DEFENSIVE_HARDENING_TAG = 'defensive-hardening' as const;
+export const RATCHET_SUPPRESSED_TAG = 'suppressed-by-ratchet' as const;
+export const CONTRADICTION_TAG = 'contradicts-prior-round' as const;
 
 export interface Finding {
   severity: FindingSeverity;
@@ -89,6 +91,8 @@ export interface ReviewResult {
   llmDedupCount?: number;
   suppressionCount?: number;
   agentResponseLengths?: Map<string, number>;
+  crossRoundSuppressed?: number;
+  crossRoundDemoted?: number;
 }
 
 export interface ReviewerAgent {
@@ -227,6 +231,8 @@ export interface ReviewStats {
     mergedDuplicates: number;
     defensiveHardeningCount?: number;
     verdictReason?: VerdictReason;
+    crossRoundSuppressed?: number;
+    crossRoundDemoted?: number;
   };
 
   // File analysis

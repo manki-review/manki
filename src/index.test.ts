@@ -1723,6 +1723,42 @@ describe('runFullReview orchestration', () => {
     expect(statsArg!.judgeMetrics?.defensiveHardeningCount).toBe(1);
   });
 
+  it('surfaces crossRoundSuppressed and crossRoundDemoted counts in judgeMetrics', async () => {
+    const testFiles = [
+      { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] },
+    ];
+    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+      files: testFiles, totalAdditions: 20, totalDeletions: 5,
+    });
+    jest.mocked(diffModule.filterFiles).mockReturnValue(testFiles);
+
+    const findings = [
+      { severity: 'required' as const, title: 'Real', file: 'src/app.ts', line: 6, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const },
+    ];
+
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'REQUEST_CHANGES', summary: 'Issues found',
+      findings,
+      highlights: [],
+      reviewComplete: true,
+      rawFindingCount: 3,
+      agentNames: ['security'],
+      allJudgedFindings: [...findings],
+      rawFindings: [...findings],
+      crossRoundSuppressed: 1,
+      crossRoundDemoted: 1,
+    });
+    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'required_present' });
+
+    await callRunFullReview();
+
+    const statsArg = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+    expect(statsArg!.judgeMetrics?.crossRoundSuppressed).toBe(1);
+    expect(statsArg!.judgeMetrics?.crossRoundDemoted).toBe(1);
+  });
+
   it('creates nit issues when nit_handling is "issues"', async () => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
