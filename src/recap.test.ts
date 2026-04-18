@@ -796,6 +796,14 @@ describe('collectInPrSuppressions', () => {
     expect(result[0].reason).toBe('agree-reply');
   });
 
+  it('suppresses replied threads whose author reply is agree', () => {
+    const result = collectInPrSuppressions([
+      makePrevious({ title: 'Null check', file: 'src/a.ts', line: 10, status: 'replied', authorReplyText: 'Fixed, done.' }),
+    ]);
+    expect(result).toHaveLength(1);
+    expect(result[0].reason).toBe('agree-reply');
+  });
+
   it('does not suppress open threads whose author reply is disagree', () => {
     const result = collectInPrSuppressions([
       makePrevious({ title: 'Unused var', file: 'src/a.ts', line: 10, status: 'open', authorReplyText: 'I disagree, this is intentional.' }),
@@ -813,6 +821,13 @@ describe('collectInPrSuppressions', () => {
   it('does not suppress open threads with no author reply', () => {
     const result = collectInPrSuppressions([
       makePrevious({ title: 'Unused var', file: 'src/a.ts', line: 10, status: 'open' }),
+    ]);
+    expect(result).toHaveLength(0);
+  });
+
+  it('skips file-level threads with no line anchor (line is 0 or null)', () => {
+    const result = collectInPrSuppressions([
+      makePrevious({ title: 'File-level note', file: 'src/a.ts', line: 0, status: 'resolved' }),
     ]);
     expect(result).toHaveLength(0);
   });
