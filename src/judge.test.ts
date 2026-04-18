@@ -1245,7 +1245,7 @@ describe('runJudgeAgent', () => {
         fingerprint: { file: 'src/index.ts', lineStart: 10, lineEnd: 10, slug: 'Null-check' },
         severity: 'suggestion',
         title: 'Null check',
-        authorReply: 'agree',
+        authorReply: 'none',
       }],
     }];
 
