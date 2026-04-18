@@ -1180,6 +1180,7 @@ describe('runJudgeAgent', () => {
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
     expect(result.findings).toHaveLength(1);
     expect(result.findings[0].severity).toBe('nit');
+    expect(result.findings[0].originalSeverity).toBe('suggestion');
     expect(result.findings[0].tags).toContain('own-proposal-followup');
     expect(result.findings[0].judgeNotes).toContain('Own-proposal follow-up: implements round 1 finding "Clamp value to safe integer"');
   });
