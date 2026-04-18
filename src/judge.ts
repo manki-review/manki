@@ -33,6 +33,13 @@ const REVERSAL_WORDS = ['remove', 'delete', 'avoid', 'replace', 'revert', 'undo'
 const OWN_PROPOSAL_MIN_MATCH_LENGTH = 30;
 
 /**
+ * Maximum normalized `suggestedFix` length allowed in a provenance scan.
+ * Legacy handover files may contain unsanitized oversized fixes; skipping
+ * entries above this cap prevents unbounded substring scans.
+ */
+const MAX_PROVENANCE_FIX_LEN = 4000;
+
+/**
  * Block of contiguous added lines in a diff hunk, used for provenance matching.
  */
 interface AddedLineBlock {
@@ -163,6 +170,7 @@ export function computeProvenanceMap(
       if (!finding.suggestedFix) continue;
       const normalizedFix = normalizeForMatch(finding.suggestedFix);
       if (normalizedFix.length < OWN_PROPOSAL_MIN_MATCH_LENGTH) continue;
+      if (normalizedFix.length > MAX_PROVENANCE_FIX_LEN) continue;
 
       for (let i = 0; i < blocks.length; i++) {
         const block = blocks[i];

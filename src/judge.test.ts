@@ -1775,6 +1775,15 @@ describe('computeProvenanceMap', () => {
     expect(computeProvenanceMap(rounds, contextDiff)).toEqual([]);
   });
 
+  it('skips suggestedFix exceeding MAX_PROVENANCE_FIX_LEN after normalization (legacy oversized entry)', () => {
+    // A legacy handover entry with an unsanitized, very long suggestedFix should be
+    // skipped without crashing or degrading performance.
+    const oversizedFix = 'const x = '.repeat(500); // well over 4000 chars normalized
+    const rounds = [makeRound(1, [makeHandoverFinding({ suggestedFix: oversizedFix })])];
+    const diff = buildDiff('src/a.ts', 1, [oversizedFix.slice(0, 100)]);
+    expect(computeProvenanceMap(rounds, diff)).toEqual([]);
+  });
+
   it('treats an added line starting with "+++ " as content, not a file header', () => {
     // A line whose diff content begins with "++ " (two pluses + space) produces a raw
     // diff line starting with "+++ " (three pluses + space). The buildDiff helper puts
