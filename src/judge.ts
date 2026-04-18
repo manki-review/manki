@@ -190,7 +190,17 @@ export function computeProvenanceMap(
     }
   }
 
-  return entries;
+  // Dedup by region, keeping the highest originatingRound so multi-round PRs
+  // cite the most recent prior finding that proposed the fix.
+  const byRegion = new Map<string, ProvenanceEntry>();
+  for (const entry of entries) {
+    const key = `${entry.file}:${entry.lineStart}:${entry.lineEnd}`;
+    const existing = byRegion.get(key);
+    if (!existing || entry.originatingRound > existing.originatingRound) {
+      byRegion.set(key, entry);
+    }
+  }
+  return [...byRegion.values()];
 }
 
 export interface JudgeInput {
@@ -732,8 +742,11 @@ export async function runJudgeAgent(
       core.warning('Judge returned no findings — returning originals unchanged');
     }
     const earlySuppress = applyCrossRoundSuppression(findings, priorRounds);
+    const earlyMapped = provenanceMap.length > 0
+      ? earlySuppress.findings.map(f => { const copy = { ...f }; applyOwnProposal(copy, provenanceMap); return copy; })
+      : earlySuppress.findings;
     return {
-      findings: earlySuppress.findings,
+      findings: earlyMapped,
       summary: judgeResult.summary,
       resolveThreads: judgeResult.resolveThreads,
       ...(earlySuppress.suppressedCount > 0 && { crossRoundSuppressed: earlySuppress.suppressedCount }),
