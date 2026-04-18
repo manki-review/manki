@@ -716,6 +716,11 @@ export function applyCrossRoundSuppression(
 
   const updated = findings.map((finding) => {
     const current = { ...finding };
+
+    // Findings the judge already dropped need no further action — skip both paths to
+    // avoid inflating suppressedCount with judge-dropped findings.
+    if (current.severity === 'ignore') return current;
+
     const slug = titleToSlug(current.title);
 
     // Contradiction has a more specific predicate (line proximity + reversal word) so it

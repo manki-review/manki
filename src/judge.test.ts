@@ -1662,6 +1662,30 @@ describe('applyCrossRoundSuppression', () => {
     expect(result.suppressedCount).toBe(1);
   });
 
+  it('does not tag or count findings already marked ignore by the judge', () => {
+    // The judge may return findings with severity `ignore` (explicitly dropped). The ratchet
+    // condition `current.severity !== 'required'` is true for `ignore`, so without an early
+    // return the ratchet would fire, add a tag, and inflate suppressedCount.
+    const findings = [makeFinding({
+      title: 'Naming convention',
+      file: 'src/a.ts',
+      line: 12,
+      severity: 'ignore',
+      description: 'Replace the old helper instead.',
+    })];
+    const prior = [makePriorRound([{
+      fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Naming convention') },
+      severity: 'suggestion',
+      title: 'Naming convention',
+      authorReply: 'agree',
+    }])];
+
+    const result = applyCrossRoundSuppression(findings, prior);
+    expect(result.suppressedCount).toBe(0);
+    expect(result.findings[0].severity).toBe('ignore');
+    expect(result.findings[0].tags ?? []).not.toContain('suppressed-by-ratchet');
+  });
+
   it('does not demote contradiction when line delta exceeds the window', () => {
     const findings = [makeFinding({
       title: 'Naming convention',
