@@ -1211,9 +1211,10 @@ describe('sanitizeSuggestedFix', () => {
     expect(result.endsWith('...')).toBe(true);
   });
 
-  it('strips backticks', () => {
+  it('preserves backticks so provenance matching works for template-literal fixes', () => {
     const result = sanitizeSuggestedFix('use `Option<T>` here');
-    expect(result).not.toContain('`');
+    expect(result).toContain('`');
+    expect(result).toBe('use `Option<T>` here');
   });
 
   it('collapses runs of 3+ newlines to two newlines', () => {
@@ -1221,19 +1222,19 @@ describe('sanitizeSuggestedFix', () => {
     expect(result).toBe('a\n\nb');
   });
 
-  it('sanitizes a 10000-char value with newlines and backticks', () => {
+  it('caps length and collapses newlines but preserves backticks', () => {
     const value = ('`fix`\n\n\n' + 'a'.repeat(50) + '\n').repeat(100);
     const result = sanitizeSuggestedFix(value);
     expect(result.length).toBeLessThanOrEqual(2003);
-    expect(result).not.toContain('`');
+    expect(result).toContain('`');
     expect(result).not.toMatch(/\n{3,}/);
   });
 });
 
 describe('appendHandoverRound suggestedFix sanitization', () => {
-  it('caps and sanitizes a long suggestedFix before persisting to handover', async () => {
+  it('caps length and collapses newlines but preserves backticks in persisted suggestedFix', async () => {
     const octokit = mockJsonOctokit({});
-    const longFix = '`injection`\n\n\n' + 'x'.repeat(9990);
+    const longFix = '`fix`\n\n\n' + 'x'.repeat(9990);
     const finding = makeFinding({ title: 'Long fix finding', file: 'src/a.ts', line: 1, suggestedFix: longFix });
 
     await appendHandoverRound(
@@ -1245,7 +1246,7 @@ describe('appendHandoverRound suggestedFix sanitization', () => {
     const loaded = await loadHandover(octokit, 'owner/memory', 'rust-dashcore', 200);
     const stored = loaded!.rounds[0].findings[0].suggestedFix!;
     expect(stored.length).toBeLessThanOrEqual(2003);
-    expect(stored).not.toContain('`');
+    expect(stored).toContain('`');
     expect(stored).not.toMatch(/\n{3,}/);
   });
 });
