@@ -1252,11 +1252,11 @@ describe('runJudgeAgent', () => {
     const input: JudgeInput = {
       findings: [
         makeFinding({ title: 'Null check', severity: 'suggestion', line: 10 }),
-        makeFinding({ title: 'Missing error handler', severity: 'required', line: 50 }),
+        makeFinding({ title: 'Missing error handler', severity: 'required', line: 50, file: 'src/other.ts' }),
       ],
       diff: makeDiff([
         makeDiffFile(),
-        makeDiffFile({ path: 'src/index.ts', hunks: [makeHunk({ newStart: 45, newLines: 10, oldStart: 45, oldLines: 10, content: Array.from({ length: 10 }, (_, i) => `+line ${i + 45}`).join('\n') })] }),
+        makeDiffFile({ path: 'src/other.ts', hunks: [makeHunk({ newStart: 45, newLines: 10, oldStart: 45, oldLines: 10, content: Array.from({ length: 10 }, (_, i) => `+line ${i + 45}`).join('\n') })] }),
       ]),
       rawDiff: '',
       repoContext: '',
