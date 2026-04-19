@@ -382,7 +382,9 @@ describe('determineVerdict', () => {
     const atBoundary: Finding[] = [
       { severity: 'suggestion', title: 'Boundary', file: 'f.ts', line: 15, description: 'd', reviewers: ['r'] },
     ];
-    expect(determineVerdict(atBoundary, [prior]).verdict).toBe('COMMENT');
+    const { verdict: v1, verdictReason: vr1 } = determineVerdict(atBoundary, [prior]);
+    expect(v1).toBe('COMMENT');
+    expect(vr1).toBe('only_dismissed_or_nit');
   });
 
   it('does not match when finding.line equals lineStart + 6 (one outside tolerance)', () => {
@@ -408,7 +410,9 @@ describe('determineVerdict', () => {
     const atEndBoundary: Finding[] = [
       { severity: 'suggestion', title: 'Boundary2', file: 'f.ts', line: 25, description: 'd', reviewers: ['r'] },
     ];
-    expect(determineVerdict(atEndBoundary, [prior]).verdict).toBe('COMMENT');
+    const { verdict: v2, verdictReason: vr2 } = determineVerdict(atEndBoundary, [prior]);
+    expect(v2).toBe('COMMENT');
+    expect(vr2).toBe('only_dismissed_or_nit');
   });
 
   it('does not match when finding.line equals lineEnd + 6 (one outside lineEnd tolerance)', () => {
@@ -434,7 +438,9 @@ describe('determineVerdict', () => {
     const atLowerBoundary: Finding[] = [
       { severity: 'suggestion', title: 'Boundary', file: 'f.ts', line: 5, description: 'd', reviewers: ['r'] },
     ];
-    expect(determineVerdict(atLowerBoundary, [prior]).verdict).toBe('COMMENT');
+    const { verdict: v3, verdictReason: vr3 } = determineVerdict(atLowerBoundary, [prior]);
+    expect(v3).toBe('COMMENT');
+    expect(vr3).toBe('only_dismissed_or_nit');
   });
 
   it('does not match when finding.line equals lineStart - 6 (one outside tolerance below lineStart)', () => {
