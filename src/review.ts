@@ -1011,7 +1011,7 @@ export async function runReview(
   core.info(`Verdict: ${verdict}`);
   core.info(`Findings: ${finalFindings.length}`);
   for (const f of finalFindings) {
-    const icon = f.severity === 'required' ? '\u2717' : f.severity === 'suggestion' ? '\u25CB' : f.severity === 'nit' ? '\u00B7' : '\u2205';
+    const icon = f.severity === 'blocker' ? '\u2717' : f.severity === 'warning' ? '\u26A0' : f.severity === 'suggestion' ? '\u25CB' : f.severity === 'nitpick' ? '\u00B7' : '\u2205';
     core.info(`  ${icon} [${f.severity}] ${f.title}`);
     core.info(`    ${f.file}:${f.line}`);
   }
@@ -1101,7 +1101,7 @@ Respond with ONLY a JSON array (no markdown fences, no explanation). Each findin
 \`\`\`
 [
   {
-    "severity": "required" | "suggestion" | "nit" | "ignore",
+    "severity": "blocker" | "warning" | "suggestion" | "nitpick" | "ignore",
     "title": "Short descriptive title",
     "file": "path/to/file.ext",
     "line": <line number in the NEW file>,
@@ -1115,15 +1115,19 @@ When you include a \`suggestedFix\`, list any known caveats of the proposed shap
 
 ## Severity Guidelines
 
-- **required**: Bugs, security vulnerabilities, data corruption risks, crashes, incorrect behavior. These MUST be fixed before merge.
+- **blocker**: Correctness bug, data loss risk, or security issue. Must be fixed before merge.
   - SQL injection via unsanitized user input in a database query
   - Null/undefined dereference in an error handling path that will crash at runtime
   - Off-by-one in array bounds causing data corruption or out-of-bounds access
-- **suggestion**: Meaningful improvements — missing error context, suboptimal patterns, incomplete handling. Worth addressing for code quality.
-  - Error message lacks context (e.g., logging "failed" without the error reason)
+- **warning**: Real behavioral concern — an edge case that will fail, misuse of an API that produces wrong output, a race condition. Not catastrophic but shouldn't ship.
+  - Missing timeout on a network request that could hang indefinitely
+  - Race condition on shared state without synchronization
+  - Error message lacks context that would help debugging a real failure
+- **suggestion**: Improvement open to discussion — refactoring, deduplication, API clarity, code style. Works today but could be cleaner.
   - Variable could be \`const\` instead of \`let\` since it is never reassigned
   - Function could be simplified by extracting a reusable helper
-- **nit**: Trivial nitpicks — naming, formatting, minor style preferences. Collected separately for triage.
+  - Duplicate logic that could be deduplicated
+- **nitpick**: Minor cosmetic — wording, formatting, tiny naming tweaks. Purely optional.
   - Variable name could be more descriptive (e.g., \`x\` → \`connectionCount\`)
   - Inconsistent import ordering compared to rest of file
   - Missing JSDoc on an exported function
@@ -1240,7 +1244,7 @@ export function parseFindings(responseText: string, reviewerName: string): Findi
 }
 
 export function validateSeverity(severity: unknown): Finding['severity'] {
-  if (severity === 'required' || severity === 'suggestion' || severity === 'nit' || severity === 'ignore') {
+  if (severity === 'blocker' || severity === 'warning' || severity === 'suggestion' || severity === 'nitpick' || severity === 'ignore') {
     return severity;
   }
   return 'suggestion';
@@ -1270,30 +1274,30 @@ function wasDismissedInPriorRound(finding: Finding, priorRounds: HandoverFinding
  * Pick a verdict plus a machine-readable reason.
  *
  * Decision order:
- *   1. any surviving `required` finding → REQUEST_CHANGES / required_present
- *   2. any `suggestion` that is NOT a prior-round dismissed match → REQUEST_CHANGES / novel_suggestion
- *   3. otherwise (only nits / previously-dismissed suggestions / empty) → APPROVE / only_dismissed_or_nit
+ *   1. any surviving `blocker` finding → REQUEST_CHANGES / required_present
+ *   2. any `warning` that is NOT a prior-round dismissed match → REQUEST_CHANGES / novel_suggestion
+ *   3. otherwise (only suggestions/nitpicks / previously-dismissed warnings / empty) → APPROVE / only_nit_or_suggestion
  *
- * Nits are cosmetic and non-blocking, and prior-round dismissed suggestions
- * have already been acknowledged by the author. Both cases approve the PR.
+ * Nitpicks and suggestions are non-blocking, and prior-round dismissed warnings
+ * have already been acknowledged by the author. All these cases approve the PR.
  */
 export function determineVerdict(
   findings: Finding[],
   priorRounds?: HandoverFinding[],
 ): { verdict: ReviewVerdict; verdictReason: VerdictReason } {
-  if (findings.some(f => f.severity === 'required')) {
+  if (findings.some(f => f.severity === 'blocker')) {
     return { verdict: 'REQUEST_CHANGES', verdictReason: 'required_present' };
   }
 
   const prior = priorRounds ?? [];
-  const hasNovelSuggestion = findings.some(
-    f => f.severity === 'suggestion' && !wasDismissedInPriorRound(f, prior),
+  const hasNovelWarning = findings.some(
+    f => f.severity === 'warning' && !wasDismissedInPriorRound(f, prior),
   );
-  if (hasNovelSuggestion) {
+  if (hasNovelWarning) {
     return { verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion' };
   }
 
-  return { verdict: 'APPROVE', verdictReason: 'only_dismissed_or_nit' };
+  return { verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion' };
 }
 
 export function truncateDiff(rawDiff: string, maxLength: number = 50000): string {

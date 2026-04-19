@@ -112,7 +112,7 @@ jest.mock('./review', () => {
       highlights: [],
       reviewComplete: true,
     }),
-    determineVerdict: jest.fn().mockReturnValue({ verdict: 'APPROVE', verdictReason: 'only_dismissed_or_nit' }),
+    determineVerdict: jest.fn().mockReturnValue({ verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion' }),
     selectTeam: jest.fn().mockReturnValue({ level: 'standard', agents: [{ name: 'general' }] }),
     buildPlannerHints: actual.buildPlannerHints,
   };
@@ -1343,7 +1343,7 @@ describe('runFullReview orchestration', () => {
       verdict: 'APPROVE', summary: 'Looks good',
       findings: [], highlights: [], reviewComplete: true,
     });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'APPROVE', verdictReason: 'only_dismissed_or_nit' });
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion' });
     jest.mocked(reviewModule.selectTeam).mockReturnValue({ level: 'standard' as 'small', agents: [{ name: 'general', focus: '' }], lineCount: 0 });
     jest.mocked(ghUtils.postProgressComment).mockResolvedValue(1);
     jest.mocked(ghUtils.postReview).mockResolvedValue(123);
@@ -1483,7 +1483,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
 
     const findings = [
-      { severity: 'required' as const, title: 'Bug found', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['general'] },
+      { severity: 'blocker' as const, title: 'Bug found', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['general'] },
     ];
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'REQUEST_CHANGES',
@@ -1523,9 +1523,9 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFiles).mockReturnValue(testFiles);
 
     const findings = [
-      { severity: 'required' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const, judgeNotes: 'confirmed' },
+      { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const, judgeNotes: 'confirmed' },
       { severity: 'suggestion' as const, title: 'Style', file: 'src/app.ts', line: 8, description: 'desc', reviewers: ['general'], judgeConfidence: 'medium' as const },
-      { severity: 'nit' as const, title: 'Nit', file: 'src/utils.js', line: 1, description: 'desc', reviewers: ['general', 'security'], judgeConfidence: 'low' as const },
+      { severity: 'nitpick' as const, title: 'Nit', file: 'src/utils.js', line: 1, description: 'desc', reviewers: ['general', 'security'], judgeConfidence: 'low' as const },
     ];
     const allJudged = [
       ...findings,
@@ -1533,7 +1533,7 @@ describe('runFullReview orchestration', () => {
     ];
     const rawFindings = [
       ...findings,
-      { severity: 'nit' as const, title: 'Dropped', file: 'src/app.ts', line: 2, description: 'dropped', reviewers: ['security'] },
+      { severity: 'nitpick' as const, title: 'Dropped', file: 'src/app.ts', line: 2, description: 'dropped', reviewers: ['security'] },
     ];
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
@@ -1583,8 +1583,8 @@ describe('runFullReview orchestration', () => {
 
     // keptSeverities/droppedSeverities passed to dashboard use original severity for dropped findings
     const dashboardArg = jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[4];
-    expect(dashboardArg?.keptSeverities).toEqual({ required: 1, suggestion: 1, nit: 1 });
-    expect(dashboardArg?.droppedSeverities).toEqual({ nit: 1 });
+    expect(dashboardArg?.keptSeverities).toEqual({ blocker: 1, suggestion: 1, nitpick: 1 });
+    expect(dashboardArg?.droppedSeverities).toEqual({ nitpick: 1 });
     expect(dashboardArg?.droppedCount).toBe(1);
     expect(dashboardArg?.keptCount).toBe(3);
   });
@@ -1600,14 +1600,14 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFiles).mockReturnValue(testFiles);
 
     const findings = [
-      { severity: 'required' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const },
+      { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const },
     ];
     const allJudged = [...findings];
     // rawFindings: 5 findings from agents (pre-suppression, pre-dedup)
     const rawFindings = [
-      { severity: 'required' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'] },
-      { severity: 'required' as const, title: 'Dup1', file: 'src/app.ts', line: 6, description: 'desc', reviewers: ['security'] },
-      { severity: 'required' as const, title: 'Dup2', file: 'src/app.ts', line: 7, description: 'desc', reviewers: ['general'] },
+      { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'] },
+      { severity: 'blocker' as const, title: 'Dup1', file: 'src/app.ts', line: 6, description: 'desc', reviewers: ['security'] },
+      { severity: 'blocker' as const, title: 'Dup2', file: 'src/app.ts', line: 7, description: 'desc', reviewers: ['general'] },
       { severity: 'suggestion' as const, title: 'Judge-merged', file: 'src/app.ts', line: 8, description: 'desc', reviewers: ['general'] },
       { severity: 'suggestion' as const, title: 'Judge-merged-2', file: 'src/app.ts', line: 9, description: 'desc', reviewers: ['general'] },
     ];
@@ -1653,13 +1653,13 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFiles).mockReturnValue(testFiles);
 
     const findings = [
-      { severity: 'required' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const },
+      { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const },
     ];
     const allJudged = [...findings];
     const rawFindings = [
-      { severity: 'required' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'] },
-      { severity: 'nit' as const, title: 'Suppressed1', file: 'src/app.ts', line: 6, description: 'desc', reviewers: ['security'] },
-      { severity: 'nit' as const, title: 'Suppressed2', file: 'src/app.ts', line: 7, description: 'desc', reviewers: ['general'] },
+      { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'] },
+      { severity: 'nitpick' as const, title: 'Suppressed1', file: 'src/app.ts', line: 6, description: 'desc', reviewers: ['security'] },
+      { severity: 'nitpick' as const, title: 'Suppressed2', file: 'src/app.ts', line: 7, description: 'desc', reviewers: ['general'] },
       { severity: 'suggestion' as const, title: 'Judge-merged', file: 'src/app.ts', line: 8, description: 'desc', reviewers: ['general'] },
     ];
 
@@ -1699,8 +1699,8 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFiles).mockReturnValue(testFiles);
 
     const findings = [
-      { severity: 'nit' as const, title: 'Guard', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const, tags: ['defensive-hardening'], originalSeverity: 'required' as const, reachability: 'hypothetical' as const },
-      { severity: 'required' as const, title: 'Real', file: 'src/app.ts', line: 6, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const, reachability: 'reachable' as const },
+      { severity: 'nitpick' as const, title: 'Guard', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const, tags: ['defensive-hardening'], originalSeverity: 'blocker' as const, reachability: 'hypothetical' as const },
+      { severity: 'blocker' as const, title: 'Real', file: 'src/app.ts', line: 6, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const, reachability: 'reachable' as const },
     ];
     const allJudged = [...findings];
 
@@ -1734,7 +1734,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFiles).mockReturnValue(testFiles);
 
     const findings = [
-      { severity: 'required' as const, title: 'Real', file: 'src/app.ts', line: 6, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const },
+      { severity: 'blocker' as const, title: 'Real', file: 'src/app.ts', line: 6, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const },
     ];
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
@@ -1779,7 +1779,7 @@ describe('runFullReview orchestration', () => {
     });
 
     const nitFinding = {
-      severity: 'nit' as const, title: 'Style nit', file: 'src/app.ts',
+      severity: 'nitpick' as const, title: 'Style nit', file: 'src/app.ts',
       line: 3, description: 'nit desc', reviewers: ['general'],
     };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
@@ -1789,13 +1789,13 @@ describe('runFullReview orchestration', () => {
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({
       unique: [nitFinding], duplicates: [],
     });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'COMMENT', verdictReason: 'only_dismissed_or_nit' });
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'COMMENT', verdictReason: 'only_nit_or_suggestion' });
 
     await callRunFullReview();
 
     expect(jest.mocked(ghUtils.createNitIssue)).toHaveBeenCalledWith(
       expect.anything(), 'test-owner', 'test-repo', 42,
-      [expect.objectContaining({ severity: 'nit' })], 'abc123',
+      [expect.objectContaining({ severity: 'nitpick' })], 'abc123',
     );
   });
 
@@ -1819,7 +1819,7 @@ describe('runFullReview orchestration', () => {
     });
 
     const nitFinding = {
-      severity: 'nit' as const, title: 'Style nit', file: 'src/app.ts',
+      severity: 'nitpick' as const, title: 'Style nit', file: 'src/app.ts',
       line: 3, description: 'nit desc', reviewers: ['general'],
     };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
@@ -1829,7 +1829,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({
       unique: [nitFinding], duplicates: [],
     });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'COMMENT', verdictReason: 'only_dismissed_or_nit' });
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'COMMENT', verdictReason: 'only_nit_or_suggestion' });
 
     await callRunFullReview();
 
@@ -1839,7 +1839,7 @@ describe('runFullReview orchestration', () => {
     expect(jest.mocked(ghUtils.postReview)).toHaveBeenCalledWith(
       expect.anything(), 'test-owner', 'test-repo', 42, 'abc123',
       expect.objectContaining({
-        findings: [expect.objectContaining({ severity: 'nit' })],
+        findings: [expect.objectContaining({ severity: 'nitpick' })],
       }),
       expect.anything(), expect.anything(),
     );
@@ -1904,14 +1904,14 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
 
     const previousFindings = [
-      { title: 'Bug', file: 'src/app.ts', line: 5, severity: 'required' as const, status: 'resolved' as const },
+      { title: 'Bug', file: 'src/app.ts', line: 5, severity: 'blocker' as const, status: 'resolved' as const },
     ];
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings,
       recapContext: 'previous context',
     });
 
-    const finding2 = { severity: 'nit' as const, title: 'Style', file: 'src/app.ts', line: 8, description: 'desc', reviewers: ['general'] };
+    const finding2 = { severity: 'nitpick' as const, title: 'Style', file: 'src/app.ts', line: 8, description: 'desc', reviewers: ['general'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'COMMENT', summary: 'Issues',
       findings: [finding2], highlights: [], reviewComplete: true,
@@ -1954,14 +1954,14 @@ describe('runFullReview orchestration', () => {
       findings: [
         {
           fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's' },
-          severity: 'required' as const,
+          severity: 'blocker' as const,
           title: 't',
           authorReply: 'agree' as const,
           specialist: 'Security & Safety',
         },
         {
           fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' },
-          severity: 'required' as const,
+          severity: 'blocker' as const,
           title: 't2',
           authorReply: 'agree' as const,
           specialist: 'Security & Safety',
@@ -2034,8 +2034,8 @@ describe('runFullReview orchestration', () => {
     };
     jest.mocked(memoryModule.loadMemory).mockResolvedValue(memory);
 
-    const finding = { severity: 'nit' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['general'] };
-    const escalated = { ...finding, severity: 'required' as const };
+    const finding = { severity: 'nitpick' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['general'] };
+    const escalated = { ...finding, severity: 'blocker' as const };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'COMMENT', summary: 'Nits',
       findings: [finding], highlights: [], reviewComplete: true,
@@ -2074,12 +2074,12 @@ describe('runFullReview orchestration', () => {
       findings: [], highlights: [], reviewComplete: true,
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [], duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'APPROVE', verdictReason: 'only_dismissed_or_nit' });
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion' });
 
     await callRunFullReview();
 
     const statsArg = jest.mocked(ghUtils.postReview).mock.calls[0][7];
-    expect(statsArg?.judgeMetrics?.verdictReason).toBe('only_dismissed_or_nit');
+    expect(statsArg?.judgeMetrics?.verdictReason).toBe('only_nit_or_suggestion');
   });
 
   it('enriches findings with code context from diff hunks', async () => {
@@ -2103,7 +2103,7 @@ describe('runFullReview orchestration', () => {
       findings: [finding], highlights: [], reviewComplete: true,
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'COMMENT', verdictReason: 'only_dismissed_or_nit' });
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'COMMENT', verdictReason: 'only_nit_or_suggestion' });
 
     await callRunFullReview();
 
@@ -2354,7 +2354,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(memoryModule.loadMemory).mockResolvedValue(memory);
 
     const finding1 = { severity: 'suggestion' as const, title: 'Real issue', file: 'src/app.ts', line: 3, description: 'desc', reviewers: ['general'] };
-    const finding2 = { severity: 'nit' as const, title: 'Noise', file: 'src/app.ts', line: 7, description: 'desc', reviewers: ['general'] };
+    const finding2 = { severity: 'nitpick' as const, title: 'Noise', file: 'src/app.ts', line: 7, description: 'desc', reviewers: ['general'] };
 
     jest.mocked(reviewModule.runReview).mockImplementation(
       async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
@@ -2371,7 +2371,7 @@ describe('runFullReview orchestration', () => {
         };
       },
     );
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'COMMENT', verdictReason: 'only_dismissed_or_nit' });
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'COMMENT', verdictReason: 'only_nit_or_suggestion' });
 
     await callRunFullReview();
 
@@ -2396,7 +2396,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
 
     const previousFindings = [
-      { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'required' as const, status: 'resolved' as const },
+      { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'blocker' as const, status: 'resolved' as const },
       { title: 'Bug B', file: 'src/app.ts', line: 2, severity: 'suggestion' as const, status: 'open' as const, threadId: 'PRRT_123' },
     ];
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
@@ -2472,7 +2472,7 @@ describe('runFullReview orchestration', () => {
 
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings: [
-        { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'required' as const, status: 'open' as const, threadId: 'PRRT_abc' },
+        { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_abc' },
         { title: 'Bug B', file: 'src/app.ts', line: 2, severity: 'suggestion' as const, status: 'open' as const, threadId: 'PRRT_def' },
       ],
       recapContext: 'previous context',
@@ -2515,7 +2515,7 @@ describe('runFullReview orchestration', () => {
 
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings: [
-        { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'required' as const, status: 'open' as const, threadId: 'PRRT_known' },
+        { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_known' },
       ],
       recapContext: 'previous context',
     });
@@ -2557,9 +2557,9 @@ describe('runFullReview orchestration', () => {
 
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings: [
-        { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'required' as const, status: 'open' as const, threadId: 'PRRT_open' },
+        { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_open' },
         { title: 'Bug B', file: 'src/app.ts', line: 2, severity: 'suggestion' as const, status: 'replied' as const, threadId: 'PRRT_replied' },
-        { title: 'Bug C', file: 'src/app.ts', line: 3, severity: 'nit' as const, status: 'resolved' as const, threadId: 'PRRT_resolved' },
+        { title: 'Bug C', file: 'src/app.ts', line: 3, severity: 'nitpick' as const, status: 'resolved' as const, threadId: 'PRRT_resolved' },
       ],
       recapContext: 'previous context',
     });
@@ -2588,7 +2588,7 @@ describe('runFullReview orchestration', () => {
 
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings: [
-        { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'required' as const, status: 'open' as const, threadId: 'PRRT_fail' },
+        { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_fail' },
       ],
       recapContext: 'previous context',
     });

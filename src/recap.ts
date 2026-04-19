@@ -248,10 +248,10 @@ async function fetchReviewThreads(
       const hasHumanReply = firstNonBotReply !== undefined;
       const authorReplyText = firstNonBotReply?.body;
 
-      const severityMatch = firstComment?.body?.match(/manki:(required|suggestion|nit|ignore):/);
+      const severityMatch = firstComment?.body?.match(/manki:(blocker|warning|suggestion|nitpick|ignore):/);
       const severity = (severityMatch?.[1] ?? 'unknown') as FindingSeverity | 'unknown';
 
-      const titleMatch = firstComment?.body?.match(/\*\*(?:Required|Suggestion|Nit|Ignore)\*\*(?:\s*<sub>\[[^\]]*\]<\/sub>)?\s*:\s*(.+?)(?:\n|$)/);
+      const titleMatch = firstComment?.body?.match(/\*\*(?:Blocker|Warning|Suggestion|Nitpick|Ignore)\*\*(?:\s*<sub>\[[^\]]*\]<\/sub>)?\s*:\s*(.+?)(?:\n|$)/);
       const findingTitle = titleMatch?.[1]?.trim() ?? '';
 
       const line = thread.line ?? 0;

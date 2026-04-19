@@ -1,6 +1,6 @@
 export const MAX_AGENT_RETRIES = 1;
 
-export type FindingSeverity = 'required' | 'suggestion' | 'nit' | 'ignore';
+export type FindingSeverity = 'blocker' | 'warning' | 'suggestion' | 'nitpick' | 'ignore';
 
 export type FindingReachability = 'reachable' | 'hypothetical' | 'unknown';
 
@@ -89,7 +89,7 @@ export interface PrHandover {
 
 export type ReviewVerdict = 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES';
 
-export type VerdictReason = 'required_present' | 'novel_suggestion' | 'only_dismissed_or_nit';
+export type VerdictReason = 'required_present' | 'novel_suggestion' | 'only_nit_or_suggestion';
 
 export interface ReviewResult {
   verdict: ReviewVerdict;

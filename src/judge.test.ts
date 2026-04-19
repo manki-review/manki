@@ -91,9 +91,9 @@ const makeMemory = (overrides: Partial<RepoMemory> = {}): RepoMemory => ({
 describe('buildJudgeSystemPrompt', () => {
   it('contains severity definitions', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
-    expect(prompt).toContain('required');
+    expect(prompt).toContain('blocker');
     expect(prompt).toContain('suggestion');
-    expect(prompt).toContain('nit');
+    expect(prompt).toContain('nitpick');
     expect(prompt).toContain('ignore');
   });
 
@@ -183,7 +183,7 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('**Impact**');
     expect(prompt).toContain('**Likelihood**');
     expect(prompt).toContain('**Severity mapping:**');
-    expect(prompt).toContain('Critical/High impact + Certain/Probable likelihood');
+    expect(prompt).toContain('correctness bug, data loss risk, or security issue');
   });
 
   it('uses follow-up summary instruction when isFollowUp is true', () => {
@@ -358,7 +358,7 @@ describe('buildJudgeUserMessage', () => {
   it('includes open threads section when openThreads provided', () => {
     const findings = [makeFinding()];
     const openThreads = [
-      { threadId: 'PRRT_abc', title: 'Null check missing', file: 'src/foo.ts', line: 10, severity: 'required' },
+      { threadId: 'PRRT_abc', title: 'Null check missing', file: 'src/foo.ts', line: 10, severity: 'blocker' },
       { threadId: 'PRRT_def', title: 'Unused import', file: 'src/bar.ts', line: 20, severity: 'suggestion' },
     ];
     const msg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, openThreads);
@@ -393,14 +393,14 @@ describe('buildJudgeUserMessage', () => {
       findings: [
         {
           fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Null check') },
-          severity: 'required',
+          severity: 'blocker',
           title: 'Null check',
           authorReply: 'agree',
           threadId: 'PRRT_1',
         },
         {
           fingerprint: { file: 'src/b.ts', lineStart: 20, lineEnd: 20, slug: titleToSlug('Unused import') },
-          severity: 'nit',
+          severity: 'nitpick',
           title: 'Unused import',
           authorReply: 'disagree',
         },
@@ -451,7 +451,7 @@ describe('buildJudgeUserMessage', () => {
       findings: [
         {
           fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: titleToSlug('Real') },
-          severity: 'required',
+          severity: 'blocker',
           title: 'Real',
           authorReply: 'none',
         },
@@ -492,7 +492,7 @@ describe('buildJudgeUserMessage', () => {
         findings: [
           {
             fingerprint: { file: 'b.ts', lineStart: 5, lineEnd: 5, slug: 'Real' },
-            severity: 'required',
+            severity: 'blocker',
             title: 'Real finding',
             authorReply: 'none',
           },
@@ -534,7 +534,7 @@ describe('buildJudgeUserMessage', () => {
         round: 2,
         commitSha: 'b',
         timestamp: 't',
-        findings: [{ fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 'y' }, severity: 'required', title: 'RealFinding', authorReply: 'none' }],
+        findings: [{ fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 'y' }, severity: 'blocker', title: 'RealFinding', authorReply: 'none' }],
       },
     ];
     const msg = buildJudgeUserMessage([makeFinding()], new Map(), '', undefined, undefined, undefined, undefined, priorRounds);
@@ -551,7 +551,7 @@ describe('buildJudgeUserMessage', () => {
       timestamp: 't',
       findings: [{
         fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: titleToSlug('Finding') },
-        severity: 'required',
+        severity: 'blocker',
         title: 'Finding',
         authorReply: 'none',
       }],
@@ -571,7 +571,7 @@ describe('buildJudgeUserMessage', () => {
       timestamp: 't',
       findings: [{
         fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: titleToSlug('Long') },
-        severity: 'required',
+        severity: 'blocker',
         title: longTitle,
         authorReply: 'none',
       }],
@@ -636,7 +636,7 @@ describe('parseJudgeResponse', () => {
     const json = JSON.stringify({
       summary: 'Clean PR with one minor issue.',
       findings: [
-        { title: 'Bug found', severity: 'required', reasoning: 'This is a real bug.', confidence: 'high' },
+        { title: 'Bug found', severity: 'blocker', reasoning: 'This is a real bug.', confidence: 'high' },
       ],
     });
 
@@ -644,14 +644,14 @@ describe('parseJudgeResponse', () => {
     expect(result.summary).toBe('Clean PR with one minor issue.');
     expect(result.findings).toHaveLength(1);
     expect(result.findings[0].title).toBe('Bug found');
-    expect(result.findings[0].severity).toBe('required');
+    expect(result.findings[0].severity).toBe('blocker');
     expect(result.findings[0].reasoning).toBe('This is a real bug.');
     expect(result.findings[0].confidence).toBe('high');
   });
 
   it('falls back to default summary when plain array is returned', () => {
     const json = JSON.stringify([
-      { title: 'Bug found', severity: 'required', reasoning: 'This is a real bug.', confidence: 'high' },
+      { title: 'Bug found', severity: 'blocker', reasoning: 'This is a real bug.', confidence: 'high' },
     ]);
 
     const result = parseJudgeResponse(json);
@@ -758,7 +758,7 @@ describe('parseJudgeResponse', () => {
   });
 
   it('handles missing title and reasoning gracefully', () => {
-    const json = JSON.stringify([{ severity: 'nit' }]);
+    const json = JSON.stringify([{ severity: 'nitpick' }]);
 
     const result = parseJudgeResponse(json);
     expect(result.findings).toHaveLength(1);
@@ -768,13 +768,13 @@ describe('parseJudgeResponse', () => {
 
   it('parses multiple findings', () => {
     const json = JSON.stringify([
-      { title: 'A', severity: 'required', reasoning: 'Bug.', confidence: 'high' },
+      { title: 'A', severity: 'blocker', reasoning: 'Bug.', confidence: 'high' },
       { title: 'B', severity: 'ignore', reasoning: 'False positive.', confidence: 'low' },
     ]);
 
     const result = parseJudgeResponse(json);
     expect(result.findings).toHaveLength(2);
-    expect(result.findings[0].severity).toBe('required');
+    expect(result.findings[0].severity).toBe('blocker');
     expect(result.findings[1].severity).toBe('ignore');
   });
 
@@ -956,7 +956,7 @@ describe('runJudgeAgent', () => {
   it('returns originals when judge response is empty', async () => {
     mockSendMessage.mockResolvedValue({ content: '' });
 
-    const finding = makeFinding({ severity: 'required' });
+    const finding = makeFinding({ severity: 'blocker' });
     const input: JudgeInput = {
       findings: [finding],
       diff: makeDiff(),
@@ -967,7 +967,7 @@ describe('runJudgeAgent', () => {
 
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
     expect(result.findings).toHaveLength(1);
-    expect(result.findings[0].severity).toBe('required');
+    expect(result.findings[0].severity).toBe('blocker');
     expect(result.findings[0].judgeNotes).toBeUndefined();
   });
 
@@ -975,7 +975,7 @@ describe('runJudgeAgent', () => {
     const judgedResponse = JSON.stringify({
       summary: 'Mixed findings.',
       findings: [
-        { title: 'Different title', severity: 'nit', reasoning: 'Minor.', confidence: 'low' },
+        { title: 'Different title', severity: 'nitpick', reasoning: 'Minor.', confidence: 'low' },
         { title: 'Unused variable cleanup', severity: 'ignore', reasoning: 'Not real.', confidence: 'high' },
       ],
     });
@@ -1000,8 +1000,8 @@ describe('runJudgeAgent', () => {
     // "Unused variable" should fuzzy-match "Unused variable cleanup" => severity 'ignore'
     expect(result.findings[0].severity).toBe('ignore');
     expect(result.findings[0].judgeNotes).toBe('Not real.');
-    // "Something completely different" matches "Different title" by position => severity 'nit'
-    expect(result.findings[1].severity).toBe('nit');
+    // "Something completely different" matches "Different title" by position => severity 'nitpick'
+    expect(result.findings[1].severity).toBe('nitpick');
     expect(result.findings[1].judgeNotes).toBe('Minor.');
   });
 
@@ -1048,7 +1048,7 @@ describe('runJudgeAgent', () => {
       repoContext: '',
       agentCount: 3,
       openThreads: [
-        { threadId: 'PRRT_abc', title: 'Null check missing', file: 'src/foo.ts', line: 10, severity: 'required' },
+        { threadId: 'PRRT_abc', title: 'Null check missing', file: 'src/foo.ts', line: 10, severity: 'blocker' },
       ],
     };
 
@@ -1069,7 +1069,7 @@ describe('runJudgeAgent', () => {
       findings: [
         {
           title: 'Unused variable',
-          severity: 'required',
+          severity: 'blocker',
           reasoning: 'Technically a bug.',
           confidence: 'high',
           reachability: 'hypothetical',
@@ -1089,8 +1089,8 @@ describe('runJudgeAgent', () => {
 
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
     expect(result.findings).toHaveLength(1);
-    expect(result.findings[0].severity).toBe('nit');
-    expect(result.findings[0].originalSeverity).toBe('required');
+    expect(result.findings[0].severity).toBe('nitpick');
+    expect(result.findings[0].originalSeverity).toBe('blocker');
     expect(result.findings[0].tags).toEqual(['defensive-hardening']);
     expect(result.findings[0].reachability).toBe('hypothetical');
   });
@@ -1120,7 +1120,7 @@ describe('runJudgeAgent', () => {
     };
 
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
-    expect(result.findings[0].severity).toBe('nit');
+    expect(result.findings[0].severity).toBe('nitpick');
     expect(result.findings[0].originalSeverity).toBe('suggestion');
     expect(result.findings[0].tags).toEqual(['defensive-hardening']);
   });
@@ -1131,7 +1131,7 @@ describe('runJudgeAgent', () => {
       findings: [
         {
           title: 'Unused variable',
-          severity: 'required',
+          severity: 'blocker',
           reasoning: 'Null deref on every call.',
           confidence: 'high',
           reachability: 'reachable',
@@ -1149,7 +1149,7 @@ describe('runJudgeAgent', () => {
     };
 
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
-    expect(result.findings[0].severity).toBe('required');
+    expect(result.findings[0].severity).toBe('blocker');
     expect(result.findings[0].tags).toBeUndefined();
     expect(result.findings[0].reachability).toBe('reachable');
   });
@@ -1234,7 +1234,7 @@ describe('runJudgeAgent', () => {
       summary: 'Two findings, one prior match.',
       findings: [
         { title: 'Null check', severity: 'suggestion', reasoning: 'Prior agreed.', confidence: 'high' },
-        { title: 'Missing error handler', severity: 'required', reasoning: 'Real bug.', confidence: 'high' },
+        { title: 'Missing error handler', severity: 'blocker', reasoning: 'Real bug.', confidence: 'high' },
       ],
     });
     mockSendMessage.mockResolvedValue({ content: judgedResponse });
@@ -1254,7 +1254,7 @@ describe('runJudgeAgent', () => {
     const input: JudgeInput = {
       findings: [
         makeFinding({ title: 'Null check', severity: 'suggestion', line: 10 }),
-        makeFinding({ title: 'Missing error handler', severity: 'required', line: 50, file: 'src/other.ts' }),
+        makeFinding({ title: 'Missing error handler', severity: 'blocker', line: 50, file: 'src/other.ts' }),
       ],
       diff: makeDiff([
         makeDiffFile(),
@@ -1278,7 +1278,7 @@ describe('runJudgeAgent', () => {
 
     // Non-matching finding must be returned with judge-assigned severity unchanged.
     expect(errorHandler).toBeDefined();
-    expect(errorHandler!.severity).toBe('required');
+    expect(errorHandler!.severity).toBe('blocker');
     expect(errorHandler!.tags).toBeUndefined();
   });
 
@@ -1343,7 +1343,7 @@ describe('runJudgeAgent', () => {
         findings: [
           {
             fingerprint: { file: diffFile, lineStart: 10, lineEnd: 10, slug: 'clamp-value' },
-            severity: 'required',
+            severity: 'blocker',
             title: 'Clamp value to safe integer',
             authorReply: 'none',
             suggestedFix,
@@ -1374,7 +1374,7 @@ describe('runJudgeAgent', () => {
 
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
     expect(result.findings).toHaveLength(1);
-    expect(result.findings[0].severity).toBe('nit');
+    expect(result.findings[0].severity).toBe('nitpick');
     expect(result.findings[0].originalSeverity).toBe('suggestion');
     expect(result.findings[0].tags).toContain('own-proposal-followup');
     expect(result.findings[0].judgeNotes).toContain('Own-proposal follow-up: implements round 1 finding "Clamp value to safe integer"');
@@ -1477,38 +1477,38 @@ describe('mapJudgedToFindings', () => {
       makeFinding({ title: 'Bug B', severity: 'suggestion', reviewers: ['R2'], file: 'b.ts' }),
     ];
     const judged: JudgedFinding[] = [
-      { title: 'Bug A', severity: 'required', reasoning: 'Real bug.', confidence: 'high' },
-      { title: 'Bug B', severity: 'nit', reasoning: 'Minor.', confidence: 'low' },
+      { title: 'Bug A', severity: 'blocker', reasoning: 'Real bug.', confidence: 'high' },
+      { title: 'Bug B', severity: 'nitpick', reasoning: 'Minor.', confidence: 'low' },
     ];
 
     const result = mapJudgedToFindings(originals, judged);
     expect(result).toHaveLength(2);
-    expect(result[0].severity).toBe('required');
-    expect(result[1].severity).toBe('nit');
+    expect(result[0].severity).toBe('blocker');
+    expect(result[1].severity).toBe('nitpick');
   });
 
   it('handles fewer judge results by merging duplicates', () => {
     const originals = [
       makeFinding({ title: 'Null check missing', severity: 'suggestion', reviewers: ['SecurityReviewer'] }),
-      makeFinding({ title: 'Missing null check', severity: 'required', reviewers: ['BugReviewer'] }),
-      makeFinding({ title: 'Unused import', severity: 'nit', reviewers: ['StyleReviewer'] }),
+      makeFinding({ title: 'Missing null check', severity: 'blocker', reviewers: ['BugReviewer'] }),
+      makeFinding({ title: 'Unused import', severity: 'nitpick', reviewers: ['StyleReviewer'] }),
     ];
     const judged: JudgedFinding[] = [
-      { title: 'Null check missing', severity: 'required', reasoning: 'Merged findings 1 and 2 — same issue.', confidence: 'high' },
-      { title: 'Unused import', severity: 'nit', reasoning: 'Minor style issue.', confidence: 'medium' },
+      { title: 'Null check missing', severity: 'blocker', reasoning: 'Merged findings 1 and 2 — same issue.', confidence: 'high' },
+      { title: 'Unused import', severity: 'nitpick', reasoning: 'Minor style issue.', confidence: 'medium' },
     ];
 
     const result = mapJudgedToFindings(originals, judged);
     expect(result).toHaveLength(2);
 
     // First result should have merged reviewers from both null-check findings
-    expect(result[0].severity).toBe('required');
+    expect(result[0].severity).toBe('blocker');
     expect(result[0].reviewers).toContain('SecurityReviewer');
     expect(result[0].reviewers).toContain('BugReviewer');
     expect(result[0].judgeNotes).toContain('Merged findings 1 and 2');
 
     // Second result maps normally
-    expect(result[1].severity).toBe('nit');
+    expect(result[1].severity).toBe('nitpick');
     expect(result[1].reviewers).toEqual(['StyleReviewer']);
   });
 
@@ -1535,7 +1535,7 @@ describe('mapJudgedToFindings', () => {
       makeFinding({ title: 'Null check missing', description: 'This is a much more detailed description of the null check issue.' }),
     ];
     const judged: JudgedFinding[] = [
-      { title: 'Null check', severity: 'required', reasoning: 'Merged.', confidence: 'high' },
+      { title: 'Null check', severity: 'blocker', reasoning: 'Merged.', confidence: 'high' },
     ];
 
     const result = mapJudgedToFindings(originals, judged);
@@ -1544,7 +1544,7 @@ describe('mapJudgedToFindings', () => {
   });
 
   it.each([
-    ['required' as const],
+    ['blocker' as const],
     ['suggestion' as const],
   ])('demotes hypothetical %s findings to nit and tags defensive-hardening', (severity) => {
     const originals = [makeFinding({ title: 'Bug', severity: 'suggestion' })];
@@ -1560,7 +1560,7 @@ describe('mapJudgedToFindings', () => {
     ];
 
     const result = mapJudgedToFindings(originals, judged);
-    expect(result[0].severity).toBe('nit');
+    expect(result[0].severity).toBe('nitpick');
     expect(result[0].originalSeverity).toBe(severity);
     expect(result[0].tags).toEqual(['defensive-hardening']);
     expect(result[0].reachability).toBe('hypothetical');
@@ -1568,11 +1568,11 @@ describe('mapJudgedToFindings', () => {
   });
 
   it('appends defensive-hardening without dropping pre-existing tags', () => {
-    const originals = [makeFinding({ title: 'Bug', severity: 'required', tags: ['security'] })];
+    const originals = [makeFinding({ title: 'Bug', severity: 'blocker', tags: ['security'] })];
     const judged: JudgedFinding[] = [
       {
         title: 'Bug',
-        severity: 'required',
+        severity: 'blocker',
         reasoning: 'Correct but unreachable.',
         confidence: 'high',
         reachability: 'hypothetical',
@@ -1590,7 +1590,7 @@ describe('mapJudgedToFindings', () => {
     const judged: JudgedFinding[] = [
       {
         title: 'Bug',
-        severity: 'nit',
+        severity: 'nitpick',
         reasoning: 'Minor.',
         confidence: 'low',
         reachability: 'hypothetical',
@@ -1598,14 +1598,14 @@ describe('mapJudgedToFindings', () => {
     ];
 
     const result = mapJudgedToFindings(originals, judged);
-    expect(result[0].severity).toBe('nit');
+    expect(result[0].severity).toBe('nitpick');
     expect(result[0].originalSeverity).toBeUndefined();
     expect(result[0].tags).toBeUndefined();
     expect(result[0].reachability).toBe('hypothetical');
   });
 
   it('leaves hypothetical ignore findings unchanged and does not tag', () => {
-    const originals = [makeFinding({ title: 'Bug', severity: 'required' })];
+    const originals = [makeFinding({ title: 'Bug', severity: 'blocker' })];
     const judged: JudgedFinding[] = [
       {
         title: 'Bug',
@@ -1628,7 +1628,7 @@ describe('mapJudgedToFindings', () => {
     const judged: JudgedFinding[] = [
       {
         title: 'Bug',
-        severity: 'required',
+        severity: 'blocker',
         reasoning: 'Real bug.',
         confidence: 'high',
         reachability: 'reachable',
@@ -1636,7 +1636,7 @@ describe('mapJudgedToFindings', () => {
     ];
 
     const result = mapJudgedToFindings(originals, judged);
-    expect(result[0].severity).toBe('required');
+    expect(result[0].severity).toBe('blocker');
     expect(result[0].originalSeverity).toBeUndefined();
     expect(result[0].tags).toBeUndefined();
     expect(result[0].reachability).toBe('reachable');
@@ -1647,7 +1647,7 @@ describe('mapJudgedToFindings', () => {
     const judged: JudgedFinding[] = [
       {
         title: 'Bug',
-        severity: 'required',
+        severity: 'blocker',
         reasoning: 'Callers outside diff.',
         confidence: 'medium',
         reachability: 'unknown',
@@ -1655,7 +1655,7 @@ describe('mapJudgedToFindings', () => {
     ];
 
     const result = mapJudgedToFindings(originals, judged);
-    expect(result[0].severity).toBe('required');
+    expect(result[0].severity).toBe('blocker');
     expect(result[0].originalSeverity).toBeUndefined();
     expect(result[0].tags).toBeUndefined();
     expect(result[0].reachability).toBe('unknown');
@@ -1664,11 +1664,11 @@ describe('mapJudgedToFindings', () => {
   it('does not demote when reachability is absent', () => {
     const originals = [makeFinding({ title: 'Bug', severity: 'suggestion' })];
     const judged: JudgedFinding[] = [
-      { title: 'Bug', severity: 'required', reasoning: 'Real bug.', confidence: 'high' },
+      { title: 'Bug', severity: 'blocker', reasoning: 'Real bug.', confidence: 'high' },
     ];
 
     const result = mapJudgedToFindings(originals, judged);
-    expect(result[0].severity).toBe('required');
+    expect(result[0].severity).toBe('blocker');
     expect(result[0].originalSeverity).toBeUndefined();
     expect(result[0].tags).toBeUndefined();
     expect(result[0].reachability).toBeUndefined();
@@ -1676,13 +1676,13 @@ describe('mapJudgedToFindings', () => {
 
   it('demotes hypothetical findings when merging duplicates', () => {
     const originals = [
-      makeFinding({ title: 'Defensive guard', severity: 'required', reviewers: ['R1'] }),
+      makeFinding({ title: 'Defensive guard', severity: 'blocker', reviewers: ['R1'] }),
       makeFinding({ title: 'Defensive guard missing', severity: 'suggestion', reviewers: ['R2'] }),
     ];
     const judged: JudgedFinding[] = [
       {
         title: 'Defensive guard',
-        severity: 'required',
+        severity: 'blocker',
         reasoning: 'Merged.',
         confidence: 'high',
         reachability: 'hypothetical',
@@ -1692,8 +1692,8 @@ describe('mapJudgedToFindings', () => {
 
     const result = mapJudgedToFindings(originals, judged);
     expect(result).toHaveLength(1);
-    expect(result[0].severity).toBe('nit');
-    expect(result[0].originalSeverity).toBe('required');
+    expect(result[0].severity).toBe('nitpick');
+    expect(result[0].originalSeverity).toBe('blocker');
     expect(result[0].tags).toEqual(['defensive-hardening']);
     expect(result[0].reachability).toBe('hypothetical');
   });
@@ -1704,12 +1704,12 @@ describe('mapJudgedToFindings', () => {
   ])('preserves severity when merging duplicates with reachability %s', (reachability) => {
     const originals = [
       makeFinding({ title: 'Null check', severity: 'suggestion', reviewers: ['R1'] }),
-      makeFinding({ title: 'Null check missing', severity: 'required', reviewers: ['R2'] }),
+      makeFinding({ title: 'Null check missing', severity: 'blocker', reviewers: ['R2'] }),
     ];
     const judged: JudgedFinding[] = [
       {
         title: 'Null check',
-        severity: 'required',
+        severity: 'blocker',
         reasoning: 'Merged.',
         confidence: 'high',
         reachability,
@@ -1718,7 +1718,7 @@ describe('mapJudgedToFindings', () => {
 
     const result = mapJudgedToFindings(originals, judged);
     expect(result).toHaveLength(1);
-    expect(result[0].severity).toBe('required');
+    expect(result[0].severity).toBe('blocker');
     expect(result[0].originalSeverity).toBeUndefined();
     expect(result[0].tags).toBeUndefined();
     expect(result[0].reachability).toBe(reachability);
@@ -1742,7 +1742,7 @@ describe('mapJudgedToFindings own-proposal demotion', () => {
     ];
 
     const result = mapJudgedToFindings(originals, judged, [makeProvenance()]);
-    expect(result[0].severity).toBe('nit');
+    expect(result[0].severity).toBe('nitpick');
     expect(result[0].originalSeverity).toBe('suggestion');
     expect(result[0].tags).toEqual(['own-proposal-followup']);
     expect(result[0].judgeNotes).toContain('Own-proposal follow-up: implements round 2 finding "Clamp future time"');
@@ -1755,7 +1755,7 @@ describe('mapJudgedToFindings own-proposal demotion', () => {
     ];
 
     const result = mapJudgedToFindings(originals, judged, [makeProvenance()]);
-    expect(result[0].severity).toBe('nit');
+    expect(result[0].severity).toBe('nitpick');
     expect(result[0].originalSeverity).toBe('suggestion');
     expect(result[0].tags).toEqual(['own-proposal-followup']);
   });
@@ -1763,11 +1763,11 @@ describe('mapJudgedToFindings own-proposal demotion', () => {
   it('tags a nit finding without setting originalSeverity', () => {
     const originals = [makeFinding({ title: 'Style nit', severity: 'suggestion', line: 12 })];
     const judged: JudgedFinding[] = [
-      { title: 'Style nit', severity: 'nit', reasoning: 'Tiny.', confidence: 'low' },
+      { title: 'Style nit', severity: 'nitpick', reasoning: 'Tiny.', confidence: 'low' },
     ];
 
     const result = mapJudgedToFindings(originals, judged, [makeProvenance()]);
-    expect(result[0].severity).toBe('nit');
+    expect(result[0].severity).toBe('nitpick');
     expect(result[0].originalSeverity).toBeUndefined();
     expect(result[0].tags).toEqual(['own-proposal-followup']);
   });
@@ -1789,7 +1789,7 @@ describe('mapJudgedToFindings own-proposal demotion', () => {
     const judged: JudgedFinding[] = [
       {
         title: 'Real bug',
-        severity: 'required',
+        severity: 'blocker',
         reasoning: 'Triggered by caller X.',
         confidence: 'high',
         reachability: 'reachable',
@@ -1797,24 +1797,24 @@ describe('mapJudgedToFindings own-proposal demotion', () => {
     ];
 
     const result = mapJudgedToFindings(originals, judged, [makeProvenance()]);
-    expect(result[0].severity).toBe('required');
+    expect(result[0].severity).toBe('blocker');
     expect(result[0].reachability).toBe('reachable');
     expect(result[0].originalSeverity).toBeUndefined();
     expect(result[0].tags).toBeUndefined();
   });
 
   it('does not demote a required finding when judge omits reachability annotation', () => {
-    // Guard must fire on severity alone: when the judge says 'required' but provides
+    // Guard must fire on severity alone: when the judge says 'blocker' but provides
     // no reachability, applyReachability leaves finding.reachability undefined.
-    // The old compound guard (reachability === 'reachable' && severity === 'required')
+    // The old compound guard (reachability === 'reachable' && severity === 'blocker')
     // would be false here, incorrectly demoting the finding to nit.
     const originals = [makeFinding({ title: 'Confirmed bug', severity: 'suggestion', line: 10 })];
     const judged: JudgedFinding[] = [
-      { title: 'Confirmed bug', severity: 'required', reasoning: 'Real.', confidence: 'high' },
+      { title: 'Confirmed bug', severity: 'blocker', reasoning: 'Real.', confidence: 'high' },
     ];
 
     const result = mapJudgedToFindings(originals, judged, [makeProvenance()]);
-    expect(result[0].severity).toBe('required');
+    expect(result[0].severity).toBe('blocker');
     expect(result[0].originalSeverity).toBeUndefined();
     expect(result[0].tags).toBeUndefined();
   });
@@ -1846,18 +1846,18 @@ describe('mapJudgedToFindings own-proposal demotion', () => {
     ];
 
     const result = mapJudgedToFindings(originals, judged, [makeProvenance()]);
-    expect(result[0].severity).toBe('nit');
+    expect(result[0].severity).toBe('nitpick');
     expect(result[0].tags).toContain('own-proposal-followup');
   });
 
   it('leaves findings outside the provenance range unchanged', () => {
     const originals = [makeFinding({ title: 'Elsewhere', severity: 'suggestion', line: 50 })];
     const judged: JudgedFinding[] = [
-      { title: 'Elsewhere', severity: 'required', reasoning: 'Different spot.', confidence: 'high' },
+      { title: 'Elsewhere', severity: 'blocker', reasoning: 'Different spot.', confidence: 'high' },
     ];
 
     const result = mapJudgedToFindings(originals, judged, [makeProvenance()]);
-    expect(result[0].severity).toBe('required');
+    expect(result[0].severity).toBe('blocker');
     expect(result[0].tags).toBeUndefined();
     expect(result[0].originalSeverity).toBeUndefined();
   });
@@ -1881,7 +1881,7 @@ describe('mapJudgedToFindings own-proposal demotion', () => {
     const judged: JudgedFinding[] = [
       {
         title: 'Guard',
-        severity: 'required',
+        severity: 'blocker',
         reasoning: 'Unreachable.',
         confidence: 'high',
         reachability: 'hypothetical',
@@ -1890,15 +1890,15 @@ describe('mapJudgedToFindings own-proposal demotion', () => {
     ];
 
     const result = mapJudgedToFindings(originals, judged, [makeProvenance()]);
-    expect(result[0].severity).toBe('nit');
-    expect(result[0].originalSeverity).toBe('required');
+    expect(result[0].severity).toBe('nitpick');
+    expect(result[0].originalSeverity).toBe('blocker');
     expect(result[0].tags).toContain('defensive-hardening');
     expect(result[0].tags).toContain('own-proposal-followup');
   });
 
   it('demotes through mapMergedFindings when judge merges duplicates', () => {
     const originals = [
-      makeFinding({ title: 'Clamp A', severity: 'required', line: 10, reviewers: ['R1'] }),
+      makeFinding({ title: 'Clamp A', severity: 'blocker', line: 10, reviewers: ['R1'] }),
       makeFinding({ title: 'Clamp A missing', severity: 'suggestion', line: 10, reviewers: ['R2'] }),
     ];
     const judged: JudgedFinding[] = [
@@ -1907,7 +1907,7 @@ describe('mapJudgedToFindings own-proposal demotion', () => {
 
     const result = mapJudgedToFindings(originals, judged, [makeProvenance()]);
     expect(result).toHaveLength(1);
-    expect(result[0].severity).toBe('nit');
+    expect(result[0].severity).toBe('nitpick');
     expect(result[0].originalSeverity).toBe('suggestion');
     expect(result[0].tags).toEqual(['own-proposal-followup']);
   });
@@ -1915,11 +1915,11 @@ describe('mapJudgedToFindings own-proposal demotion', () => {
   it('is a no-op when provenanceMap is undefined or empty', () => {
     const originals = [makeFinding({ title: 'Bug', severity: 'suggestion', line: 10 })];
     const judged: JudgedFinding[] = [
-      { title: 'Bug', severity: 'required', reasoning: 'Real.', confidence: 'high' },
+      { title: 'Bug', severity: 'blocker', reasoning: 'Real.', confidence: 'high' },
     ];
 
-    expect(mapJudgedToFindings(originals, judged)[0].severity).toBe('required');
-    expect(mapJudgedToFindings(originals, judged, [])[0].severity).toBe('required');
+    expect(mapJudgedToFindings(originals, judged)[0].severity).toBe('blocker');
+    expect(mapJudgedToFindings(originals, judged, [])[0].severity).toBe('blocker');
   });
 
   it('sanitizes newlines and backticks in originatingTitle embedded in judgeNotes', () => {
@@ -1941,7 +1941,7 @@ describe('mapJudgedToFindings own-proposal demotion', () => {
 describe('computeProvenanceMap', () => {
   const makeHandoverFinding = (overrides: Partial<HandoverFinding> = {}): HandoverFinding => ({
     fingerprint: { file: 'src/a.ts', lineStart: 1, lineEnd: 1, slug: 'Clamp-future-time' },
-    severity: 'required',
+    severity: 'blocker',
     title: 'Clamp future time',
     authorReply: 'none',
     ...overrides,
@@ -2153,14 +2153,14 @@ describe('deduplicateFindings', () => {
 
   it('preserves the first occurrence and drops subsequent duplicates', () => {
     const findings = [
-      makeFinding({ title: 'Bug', file: 'x.ts', severity: 'required', description: 'First' }),
-      makeFinding({ title: 'Bug', file: 'x.ts', severity: 'nit', description: 'Second' }),
+      makeFinding({ title: 'Bug', file: 'x.ts', severity: 'blocker', description: 'First' }),
+      makeFinding({ title: 'Bug', file: 'x.ts', severity: 'nitpick', description: 'Second' }),
       makeFinding({ title: 'Bug', file: 'x.ts', severity: 'suggestion', description: 'Third' }),
     ];
 
     const result = deduplicateFindings(findings);
     expect(result).toHaveLength(1);
-    expect(result[0].severity).toBe('required');
+    expect(result[0].severity).toBe('blocker');
     expect(result[0].description).toBe('First');
   });
 
@@ -2205,17 +2205,17 @@ describe('applyCrossRoundSuppression', () => {
   });
 
   it('does not suppress required findings even when prior agreed match exists', () => {
-    const findings = [makeFinding({ title: 'Unused variable', file: 'src/a.ts', line: 10, severity: 'required' })];
+    const findings = [makeFinding({ title: 'Unused variable', file: 'src/a.ts', line: 10, severity: 'blocker' })];
     const prior = [makePriorRound([{
       fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
-      severity: 'required',
+      severity: 'blocker',
       title: 'Unused variable',
       authorReply: 'agree',
     }])];
 
     const result = applyCrossRoundSuppression(findings, prior);
     expect(result.suppressedCount).toBe(0);
-    expect(result.findings[0].severity).toBe('required');
+    expect(result.findings[0].severity).toBe('blocker');
     expect(result.findings[0].tags).toBeUndefined();
   });
 
@@ -2280,7 +2280,7 @@ describe('applyCrossRoundSuppression', () => {
       title: 'Naming convention',
       file: 'src/a.ts',
       line: 12,
-      severity: 'required',
+      severity: 'blocker',
       description: 'Replace the old helper and avoid the previous pattern instead.',
     })];
     const prior = [makePriorRound([{
@@ -2293,7 +2293,7 @@ describe('applyCrossRoundSuppression', () => {
     const result = applyCrossRoundSuppression(findings, prior);
     expect(result.suppressedCount).toBe(0);
     expect(result.demotedCount).toBe(0);
-    expect(result.findings[0].severity).toBe('required');
+    expect(result.findings[0].severity).toBe('blocker');
     expect(result.findings[0].originalSeverity).toBeUndefined();
     expect(result.findings[0].tags ?? []).not.toContain('contradicts-prior-round');
   });
@@ -2326,7 +2326,7 @@ describe('applyCrossRoundSuppression', () => {
       title: 'Null pointer dereference',
       file: 'src/a.ts',
       line: 20,
-      severity: 'required',
+      severity: 'blocker',
       description: 'Remove the null check — avoid dereferencing here instead.',
     })];
     const prior = [makePriorRound([{
@@ -2339,7 +2339,7 @@ describe('applyCrossRoundSuppression', () => {
     const result = applyCrossRoundSuppression(findings, prior);
     expect(result.demotedCount).toBe(0);
     expect(result.suppressedCount).toBe(0);
-    expect(result.findings[0].severity).toBe('required');
+    expect(result.findings[0].severity).toBe('blocker');
     expect(result.findings[0].originalSeverity).toBeUndefined();
     expect(result.findings[0].tags ?? []).not.toContain('contradicts-prior-round');
   });
@@ -2362,7 +2362,7 @@ describe('applyCrossRoundSuppression', () => {
     const result = applyCrossRoundSuppression(findings, prior);
     expect(result.suppressedCount).toBe(0);
     expect(result.demotedCount).toBe(1);
-    expect(result.findings[0].severity).toBe('nit');
+    expect(result.findings[0].severity).toBe('nitpick');
     expect(result.findings[0].originalSeverity).toBe('suggestion');
     expect(result.findings[0].tags).toContain('contradicts-prior-round');
     expect(result.findings[0].tags).not.toContain('suppressed-by-ratchet');
@@ -2386,7 +2386,7 @@ describe('applyCrossRoundSuppression', () => {
 
     const result = applyCrossRoundSuppression(findings, prior);
     expect(result.demotedCount).toBe(1);
-    expect(result.findings[0].severity).toBe('nit');
+    expect(result.findings[0].severity).toBe('nitpick');
     expect(result.findings[0].tags).toContain('contradicts-prior-round');
   });
 
@@ -2395,7 +2395,7 @@ describe('applyCrossRoundSuppression', () => {
       title: 'Naming convention',
       file: 'src/a.ts',
       line: 12,
-      severity: 'nit',
+      severity: 'nitpick',
       description: 'Replace the old helper instead.',
     })];
     const prior = [makePriorRound([{
@@ -2416,7 +2416,7 @@ describe('applyCrossRoundSuppression', () => {
 
   it('does not tag or count findings already marked ignore by the judge', () => {
     // The judge may return findings with severity `ignore` (explicitly dropped). The ratchet
-    // condition `current.severity !== 'required'` is true for `ignore`, so without an early
+    // condition `current.severity !== 'blocker'` is true for `ignore`, so without an early
     // return the ratchet would fire, add a tag, and inflate suppressedCount.
     const findings = [makeFinding({
       title: 'Naming convention',
@@ -2482,7 +2482,7 @@ describe('applyCrossRoundSuppression', () => {
 
     const result = applyCrossRoundSuppression(findings, prior);
     expect(result.demotedCount).toBe(1);
-    expect(result.findings[0].severity).toBe('nit');
+    expect(result.findings[0].severity).toBe('nitpick');
     expect(result.findings[0].originalSeverity).toBe('suggestion');
     expect(result.findings[0].tags).toContain('contradicts-prior-round');
   });
@@ -2505,7 +2505,7 @@ describe('applyCrossRoundSuppression', () => {
 
     const result = applyCrossRoundSuppression(findings, prior);
     expect(result.demotedCount).toBe(0);
-    expect(result.findings[0].severity).not.toBe('nit');
+    expect(result.findings[0].severity).not.toBe('nitpick');
     expect(result.findings[0].tags ?? []).not.toContain('contradicts-prior-round');
   });
 
@@ -2526,19 +2526,19 @@ describe('applyCrossRoundSuppression', () => {
 
     const result = applyCrossRoundSuppression(findings, prior);
     expect(result.demotedCount).toBe(1);
-    expect(result.findings[0].severity).toBe('nit');
+    expect(result.findings[0].severity).toBe('nitpick');
     expect(result.findings[0].tags).toContain('contradicts-prior-round');
   });
 
   it('does not overwrite pre-existing originalSeverity when contradiction fires', () => {
-    // Simulates a finding that was already demoted by applyReachability (originalSeverity='required')
+    // Simulates a finding that was already demoted by applyReachability (originalSeverity='blocker')
     // before applyCrossRoundSuppression runs. The contradiction path must preserve it.
     const findings = [makeFinding({
       title: 'Naming convention',
       file: 'src/a.ts',
       line: 12,
       severity: 'suggestion',
-      originalSeverity: 'required',
+      originalSeverity: 'blocker',
       description: 'Replace the old helper instead.',
     })];
     const prior = [makePriorRound([{
@@ -2550,8 +2550,8 @@ describe('applyCrossRoundSuppression', () => {
 
     const result = applyCrossRoundSuppression(findings, prior);
     expect(result.demotedCount).toBe(1);
-    expect(result.findings[0].severity).toBe('nit');
-    expect(result.findings[0].originalSeverity).toBe('required');
+    expect(result.findings[0].severity).toBe('nitpick');
+    expect(result.findings[0].originalSeverity).toBe('blocker');
     expect(result.findings[0].tags).toContain('contradicts-prior-round');
   });
 
@@ -2699,7 +2699,7 @@ describe('runJudgeAgent cross-round suppression', () => {
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
     expect(result.crossRoundDemoted).toBe(1);
     expect(result.crossRoundSuppressed).toBeUndefined();
-    expect(result.findings[0].severity).toBe('nit');
+    expect(result.findings[0].severity).toBe('nitpick');
     expect(result.findings[0].tags).toContain('contradicts-prior-round');
   });
 

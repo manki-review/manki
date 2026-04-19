@@ -656,7 +656,7 @@ describe('handlePRComment', () => {
   it('dispatches triage command', async () => {
     setContext({ comment: { id: 42, body: '@manki triage', user: { type: 'User' }, author_association: 'COLLABORATOR' } });
     const octokit = createMockOctokit();
-    octokit.rest.issues.get.mockResolvedValue({ data: { body: '- [x] 💡 **Fix bug** — `src/a.ts:1`\n- [ ] 💡 **Nit** — `src/b.ts:2`' } });
+    octokit.rest.issues.get.mockResolvedValue({ data: { body: '- [x] 💡 **Fix bug** — `src/a.ts:1`\n- [ ] 💡 **Nitpick** — `src/b.ts:2`' } });
     await handlePRComment(octokit, null, 'test-owner', 'test-repo', 1);
     expect(ghUtils.reactToIssueComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 42, 'eyes');
     expect(octokit.rest.issues.create).toHaveBeenCalled();

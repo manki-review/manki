@@ -76,8 +76,8 @@ async function fetchBotReviewThreads(
     })
     .map(thread => {
       const body = thread.comments.nodes[0]?.body ?? '';
-      const severityMatch = body.match(/<!-- manki:(required|suggestion|nit|ignore):/);
-      const isRequired = severityMatch?.[1] === 'required';
+      const severityMatch = body.match(/<!-- manki:(blocker|warning|suggestion|nitpick|ignore):/);
+      const isRequired = severityMatch?.[1] === 'blocker';
       const titleMatch = body.match(/<!-- manki:\w+:(.+?) -->/);
       const findingTitle = titleMatch?.[1]?.replace(/-/g, ' ') ?? 'Unknown';
 
@@ -91,9 +91,9 @@ async function fetchBotReviewThreads(
 }
 
 /**
- * Check if all bot review threads (required, suggestion, nit) are resolved.
+ * Check if all bot review threads (blocker, warning, suggestion, nitpick) are resolved.
  * Auto-approve should only fire when every finding is resolved, because
- * CHANGES_REQUESTED can be caused by high-confidence suggestions too.
+ * CHANGES_REQUESTED can be caused by high-confidence warnings too.
  */
 function areAllFindingsResolved(threads: ReviewThread[]): boolean {
   return threads.every(t => t.isResolved);
