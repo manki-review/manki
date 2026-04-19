@@ -1151,6 +1151,12 @@ When you include a \`suggestedFix\`, list any known caveats of the proposed shap
   return prompt;
 }
 
+function commentPrefixForPath(path: string): string {
+  const ext = path.split('.').pop() ?? '';
+  if (['py', 'rb', 'sh', 'bash', 'zsh', 'pl', 'r'].includes(ext)) return '#';
+  return '//';
+}
+
 // Line shifts in annotated content are safe — reviewers derive line numbers from the raw diff.
 function annotateFileContentWithProvenance(
   content: string,
@@ -1163,9 +1169,11 @@ function annotateFileContentWithProvenance(
   if (forFile.length === 0) return content;
 
   const lines = content.split('\n');
+  const prefix = commentPrefixForPath(path);
   for (const entry of forFile) {
-    const insertAt = Math.max(0, Math.min(lines.length, entry.lineStart - 1));
-    lines.splice(insertAt, 0, `// [manki: added in round ${entry.originatingRound}]`);
+    const insertAt = entry.lineStart - 1;
+    if (insertAt < 0 || insertAt >= lines.length) continue;
+    lines.splice(insertAt, 0, `${prefix} [manki: added in round ${entry.originatingRound}]`);
   }
   return lines.join('\n');
 }
