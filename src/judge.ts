@@ -303,19 +303,20 @@ Evaluate each finding on two dimensions:
 - Unlikely: requires unusual circumstances or rare conditions
 
 **Severity mapping:**
-- **required**: Critical/High impact + Certain/Probable likelihood, OR any Critical impact, OR patterns flagged as important in project memory
-- **suggestion**: High impact + Possible likelihood, OR Medium impact + Certain/Probable likelihood
-- **nit**: Low impact regardless of likelihood, or Medium impact + Unlikely likelihood
-- **ignore**: False positives, intentional patterns, style preferences, reviewer misunderstandings
+- **blocker**: correctness bug, data loss risk, or security issue. Must be fixed.
+- **warning**: real behavioral concern — e.g., an edge case that will fail, a misuse of an API that will produce wrong output, a race condition. Not catastrophic but shouldn't ship.
+- **suggestion**: improvement open to discussion — refactoring, deduplication, API clarity, code style. The code works today but could be cleaner.
+- **nitpick**: minor cosmetic — wording, formatting, tiny naming tweaks. Purely optional.
+- **ignore**: False positives, intentional patterns, style preferences, reviewer misunderstandings.
 
 **Calibration note**: LLMs tend toward leniency when judging code review findings. Counteract this bias:
 - When a finding is borderline between two severities, choose the higher one
-- A finding that "could cause problems" under realistic conditions is \`required\`, not \`suggestion\`
+- A finding that "could cause problems" under realistic conditions is \`blocker\`, not \`warning\`
 - Only downgrade a finding if you can articulate a specific reason the issue won't manifest
 
-Include your impact and likelihood assessment in the reasoning field (e.g., "Impact: High (silent data loss), Likelihood: Probable (happens on every error path) → required").
+Include your impact and likelihood assessment in the reasoning field (e.g., "Impact: High (silent data loss), Likelihood: Probable (happens on every error path) → blocker").
 
-Examples of **required** (high impact, certain/probable):
+Examples of **blocker** (correctness bug, data loss, or security):
   - SQL injection or unsanitized user input passed to any external system
   - Null/undefined dereference that will crash at runtime
   - Missing error handling that silently swallows failures
@@ -323,15 +324,22 @@ Examples of **required** (high impact, certain/probable):
   - Breaking API change without migration path
   - Unchecked return value where the error is silently discarded
   - Resource leak (file handle, connection, listener) not cleaned up on error path
-  - Race condition in concurrent code (shared mutable state without synchronization)
   - Missing input validation at a trust boundary (API endpoint, user input, external data)
 
-Examples of **suggestion** (medium impact, or high impact with lower likelihood):
-  - Error message lacks context that would help debugging (impact: medium, likelihood: certain)
-  - Function could be split to improve testability (impact: medium, likelihood: N/A)
-  - Missing timeout on HTTP request that could hang indefinitely (impact: high, likelihood: possible)
+Examples of **warning** (real behavioral concern, not catastrophic):
+  - Edge case that will produce wrong output under specific input
+  - Race condition in concurrent code (shared mutable state without synchronization)
+  - Missing timeout on HTTP request that could hang indefinitely
+  - Misuse of an API that will return stale or incorrect data
+  - Error message lacks context that would help debugging when a real failure occurs
 
-Examples of **nit**:
+Examples of **suggestion** (improvement open to discussion):
+  - Function could be split to improve testability
+  - Duplicate logic that could be deduplicated into a helper
+  - API could be clarified with better parameter names or return types
+  - Code style inconsistency within the module
+
+Examples of **nitpick** (minor cosmetic):
   - Variable name could be more descriptive
   - Inconsistent import ordering
   - Missing JSDoc on an exported function
@@ -351,7 +359,7 @@ For every finding, decide whether the failure mode it describes is **practically
 
 Populate \`reachability\` on every finding. When you choose \`hypothetical\`, also give a one-sentence \`reachabilityReasoning\` explaining why no current caller triggers the failure — this is how the author audits a demotion.
 
-Reachability is independent of severity. A finding can be \`required\` and \`hypothetical\`, or \`nit\` and \`reachable\`. Severity captures how bad the failure is; reachability captures whether it can actually happen today.
+Reachability is independent of severity. A finding can be \`blocker\` and \`hypothetical\`, or \`nitpick\` and \`reachable\`. Severity captures how bad the failure is; reachability captures whether it can actually happen today.
 
 ## Evaluation Criteria
 
@@ -384,8 +392,8 @@ Multiple independent reviewers reaching the same conclusion is strong evidence t
 
 If the PR description or linked issues contain acceptance criteria (checkbox items like "- [ ] criterion"):
 - Check if each criterion is addressed by the changes in this PR
-- An unmet acceptance criterion that the PR claims to implement should be flagged as \`required\`
-- A partially met criterion should be flagged as \`suggestion\` with details on what's missing
+- An unmet acceptance criterion that the PR claims to implement should be flagged as \`blocker\`
+- A partially met criterion should be flagged as \`warning\` with details on what's missing
 - Acceptance criteria from the issue that are clearly out of scope for this specific PR can be ignored
 
 ## Duplicate Detection
@@ -414,7 +422,7 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
   "findings": [
     {
       "title": "Short title matching or close to the original finding title",
-      "severity": "required" | "suggestion" | "nit" | "ignore",
+      "severity": "blocker" | "warning" | "suggestion" | "nitpick" | "ignore",
       "reasoning": "1-2 sentences explaining your judgment",
       "confidence": "high" | "medium" | "low",
       "reachability": "reachable" | "hypothetical" | "unknown",
@@ -817,16 +825,16 @@ function applyReachability(finding: Finding, judged: JudgedFinding): void {
     finding.reachabilityReasoning = judged.reachabilityReasoning;
   }
   if (judged.reachability !== 'hypothetical') return;
-  if (judged.severity !== 'required' && judged.severity !== 'suggestion') return;
+  if (judged.severity !== 'blocker' && judged.severity !== 'warning' && judged.severity !== 'suggestion') return;
   finding.originalSeverity = judged.severity;
-  finding.severity = 'nit';
+  finding.severity = 'nitpick';
   finding.tags = addTag(finding.tags, DEFENSIVE_HARDENING_TAG);
 }
 
 /**
  * Demote findings that flag code implementing a prior-round `suggestedFix`.
- * A reachable required bug introduced by the fix itself is preserved — only
- * caveat-level concerns are capped to nit.
+ * A reachable blocker bug introduced by the fix itself is preserved. Only
+ * caveat-level concerns are capped to nitpick.
  */
 function applyOwnProposal(finding: Finding, provenanceMap?: ProvenanceEntry[]): void {
   if (!provenanceMap || provenanceMap.length === 0) return;
@@ -839,11 +847,11 @@ function applyOwnProposal(finding: Finding, provenanceMap?: ProvenanceEntry[]): 
   if (!match) return;
 
   if (finding.severity === 'ignore') return;
-  if (finding.severity === 'required') return;
+  if (finding.severity === 'blocker') return;
 
-  if (finding.severity !== 'nit') {
+  if (finding.severity !== 'nitpick') {
     finding.originalSeverity ??= finding.severity;
-    finding.severity = 'nit';
+    finding.severity = 'nitpick';
   }
 
   finding.tags = addTag(finding.tags, OWN_PROPOSAL_TAG);
@@ -909,13 +917,13 @@ function mapMergedFindings(
  * Apply cross-round suppression rules using prior-round handover state.
  *
  * Ratchet: if a prior finding with the same slug + file exists and the author
- * agreed, suppress the current finding unless it is `required`.
+ * agreed, suppress the current finding unless it is `blocker`.
  *
  * Contradiction: if a prior finding with the same slug + file + line proximity
  * exists, the author agreed, and the current finding uses a reversal word,
- * demote `suggestion` to `nit` and annotate `judgeNotes`. `required` findings
- * are intentionally excluded from contradiction demotion to prevent prompt
- * injection attacks where adversarial PR content could silently hide real bugs.
+ * demote `suggestion`/`warning` to `nitpick` and annotate `judgeNotes`. `blocker`
+ * findings are intentionally excluded from contradiction demotion to prevent
+ * prompt injection attacks where adversarial PR content could silently hide real bugs.
  */
 export function applyCrossRoundSuppression(
   findings: Finding[],
@@ -950,9 +958,9 @@ export function applyCrossRoundSuppression(
 
     const slug = titleToSlug(current.title);
 
-    // Contradiction is checked before ratchet for `suggestion` findings only.
-    // `required` and `nit` skip this branch: required is protected from any
-    // silent demotion (prompt-injection guard); nit falls through to ratchet.
+    // Contradiction is checked before ratchet for `warning`/`suggestion` findings only.
+    // `blocker` and `nitpick` skip this branch: blocker is protected from any
+    // silent demotion (prompt-injection guard); nitpick falls through to ratchet.
     const contradictionMatch = acceptedPriors.find(({ finding: prior }) =>
       prior.fingerprint.file === current.file
       && prior.fingerprint.slug === slug
@@ -961,9 +969,9 @@ export function applyCrossRoundSuppression(
         && current.line <= prior.fingerprint.lineEnd + LINE_WINDOW
       ),
     );
-    if (contradictionMatch && hasReversalWord(current) && current.severity === 'suggestion') {
+    if (contradictionMatch && hasReversalWord(current) && (current.severity === 'warning' || current.severity === 'suggestion')) {
       current.originalSeverity ??= current.severity;
-      current.severity = 'nit';
+      current.severity = 'nitpick';
       current.tags = addTag(current.tags, CONTRADICTION_TAG);
       const note = `Contradicts round ${contradictionMatch.round} guidance accepted by author`;
       current.judgeNotes = current.judgeNotes ? `${current.judgeNotes} ${note}` : note;
@@ -974,7 +982,7 @@ export function applyCrossRoundSuppression(
     const ratchetMatch = acceptedPriors.find(({ finding: prior }) =>
       prior.fingerprint.file === current.file && prior.fingerprint.slug === slug,
     );
-    if (ratchetMatch && current.severity !== 'required') {
+    if (ratchetMatch && current.severity !== 'blocker') {
       current.severity = 'ignore';
       current.tags = addTag(current.tags, RATCHET_SUPPRESSED_TAG);
       suppressedCount++;

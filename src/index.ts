@@ -626,16 +626,16 @@ async function runFullReview(
     }
 
     // Route findings based on nit_handling config:
-    // - required + suggestion: always go to inline PR comments
-    // - nit: inline comments if nit_handling === 'comments', nit issue if 'issues'
+    // - blocker + warning + suggestion: always go to inline PR comments
+    // - nitpick: inline comments if nit_handling === 'comments', nit issue if 'issues'
     const nitHandling = config.nit_handling ?? 'issues';
-    const nitFindings = result.findings.filter(f => f.severity === 'nit');
+    const nitFindings = result.findings.filter(f => f.severity === 'nitpick');
     const inlineFindings = nitHandling === 'comments'
       ? result.findings
-      : result.findings.filter(f => f.severity !== 'nit');
+      : result.findings.filter(f => f.severity !== 'nitpick');
 
     const reviewTimeMs = Date.now() - startTime;
-    const severityMap: Record<string, number> = { required: 0, suggestion: 0, nit: 0 };
+    const severityMap: Record<string, number> = { blocker: 0, warning: 0, suggestion: 0, nitpick: 0 };
     for (const f of result.findings) {
       if (f.severity in severityMap) severityMap[f.severity]++;
     }
@@ -860,7 +860,7 @@ async function runFullReview(
     core.setOutput('findings_count', result.findings.length.toString());
     core.setOutput('findings_json', JSON.stringify(result.findings));
 
-    const severityCounts = { required: 0, suggestion: 0, nit: 0, ignore: 0 };
+    const severityCounts = { blocker: 0, warning: 0, suggestion: 0, nitpick: 0, ignore: 0 };
     for (const f of result.findings) {
       severityCounts[f.severity]++;
     }
@@ -869,7 +869,7 @@ async function runFullReview(
     core.setOutput('judge_model', judgeModel);
 
     core.info(`Review complete: ${result.verdict} with ${result.findings.length} findings`);
-    core.info(`Severity breakdown: ${severityCounts.required} required, ${severityCounts.suggestion} suggestion, ${severityCounts.nit} nit, ${severityCounts.ignore} ignore`);
+    core.info(`Severity breakdown: ${severityCounts.blocker} blocker, ${severityCounts.warning} warning, ${severityCounts.suggestion} suggestion, ${severityCounts.nitpick} nitpick, ${severityCounts.ignore} ignore`);
   } catch (error) {
     if (dashboardFlushTimer) {
       clearTimeout(dashboardFlushTimer);
