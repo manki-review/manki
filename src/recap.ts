@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 import { ClaudeClient } from './claude';
 import { titleToSlug } from './github';
 import { matchesSuppression, Suppression } from './memory';
-import { AuthorReplyClass, Finding, FindingFingerprint, FindingSeverity } from './types';
+import { AuthorReplyClass, Finding, FindingFingerprint, FindingSeverity, InPrSuppression, InPrSuppressionReason } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -109,6 +109,35 @@ interface PreviousFinding {
   authorReplyText?: string;
 }
 
+/**
+ * Build suppression entries from the current PR's review threads. Returns one
+ * entry per manki-authored thread that is either resolved or whose latest
+ * author reply is classified `agree`. Threads without a parseable title
+ * (missing severity marker) are skipped.
+ */
+function collectInPrSuppressions(previousFindings: PreviousFinding[]): InPrSuppression[] {
+  const suppressions: InPrSuppression[] = [];
+  for (const pf of previousFindings) {
+    if (!pf.title || pf.title.length < 3) continue;
+    if (!pf.line) continue;
+    const reason = inPrSuppressionReasonFor(pf);
+    if (!reason) continue;
+    const lineStart = pf.lineStart ?? pf.line;
+    const lineEnd = pf.line;
+    suppressions.push({
+      fingerprint: fingerprintFinding(pf.title, pf.file, lineStart, lineEnd),
+      reason,
+    });
+  }
+  return suppressions;
+}
+
+function inPrSuppressionReasonFor(pf: PreviousFinding): InPrSuppressionReason | undefined {
+  if (pf.status === 'resolved') return 'resolved-thread';
+  if (classifyAuthorReply(pf.authorReplyText) === 'agree') return 'agree-reply';
+  return undefined;
+}
+
 interface RecapState {
   previousFindings: PreviousFinding[];
   recapContext: string;
@@ -138,7 +167,10 @@ async function fetchRecapState(
       authorReplyText: t.authorReplyText,
     }));
 
-  const resolved = previousFindings.filter(f => f.status === 'resolved');
+  const resolved = previousFindings.filter(
+    f => f.status === 'resolved' ||
+    (f.status === 'replied' && classifyAuthorReply(f.authorReplyText) === 'agree'),
+  );
   const open = previousFindings.filter(f => f.status === 'open');
 
   let recapContext = '';
@@ -242,11 +274,17 @@ async function fetchReviewThreads(
       const firstComment = thread.comments.nodes[0];
       const isBotThread = firstComment?.body?.includes(BOT_MARKER) ?? false;
 
-      const firstNonBotReply = thread.comments.nodes.find((c, i) =>
+      // Use the latest non-bot reply so evolving threads (e.g. initial
+      // "Fixed!" followed by a retraction) classify by the author's current
+      // stance rather than their first reaction. The `comments(first: 10)`
+      // cap above means threads with more than 10 replies can still miss the
+      // true last reply.
+      const nonBotReplies = thread.comments.nodes.filter((c, i) =>
         i > 0 && c.author?.login !== 'github-actions[bot]'
       );
-      const hasHumanReply = firstNonBotReply !== undefined;
-      const authorReplyText = firstNonBotReply?.body;
+      const lastNonBotReply = nonBotReplies[nonBotReplies.length - 1];
+      const hasHumanReply = lastNonBotReply !== undefined;
+      const authorReplyText = lastNonBotReply?.body;
 
       const severityMatch = firstComment?.body?.match(/manki:(required|suggestion|nit|ignore):/);
       const severity = (severityMatch?.[1] ?? 'unknown') as FindingSeverity | 'unknown';
@@ -427,4 +465,4 @@ async function llmDeduplicateFindings(
   }
 }
 
-export { DuplicateMatch, PreviousFinding, RecapState, classifyAuthorReply, fingerprintFinding, fetchRecapState, deduplicateFindings, titlesOverlap, llmDeduplicateFindings };
+export { DuplicateMatch, PreviousFinding, RecapState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchRecapState, deduplicateFindings, titlesOverlap, llmDeduplicateFindings };
