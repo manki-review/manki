@@ -833,7 +833,7 @@ function applyReachability(finding: Finding, judged: JudgedFinding): void {
 
 /**
  * Demote findings that flag code implementing a prior-round `suggestedFix`.
- * A reachable blocker bug introduced by the fix itself is preserved — only
+ * A reachable blocker bug introduced by the fix itself is preserved. Only
  * caveat-level concerns are capped to nitpick.
  */
 function applyOwnProposal(finding: Finding, provenanceMap?: ProvenanceEntry[]): void {
