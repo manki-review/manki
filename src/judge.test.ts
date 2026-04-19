@@ -1218,6 +1218,7 @@ describe('runJudgeAgent', () => {
     expect(result.findings).toHaveLength(1);
     expect(result.findings[0].severity).toBe('suggestion');
     expect(result.findings[0].title).toBe('Unused variable');
+    expect(result.findings[0].tags).toBeUndefined();
 
     // Prompt must include the prior round so the model has context.
     const [, userMessage] = mockSendMessage.mock.calls[0];
