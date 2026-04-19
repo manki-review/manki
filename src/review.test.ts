@@ -25,7 +25,7 @@ import {
 import * as core from '@actions/core';
 import { LinkedIssue, titleToSlug } from './github';
 import { Finding, HandoverFinding, HandoverRound, ReviewerAgent, ReviewConfig, ParsedDiff, DiffFile, AgentPick, ProvenanceEntry, MAX_AGENT_RETRIES } from './types';
-import { runJudgeAgent } from './judge';
+import { runJudgeAgent, computeProvenanceMap } from './judge';
 import { applySuppressions } from './memory';
 
 const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
@@ -2813,6 +2813,45 @@ describe('runReview', () => {
     // Other agents produced no findings — only the retry contributed
     expect(result.findings).toHaveLength(1);
     expect(result.findings[0].title).toBe('SQL injection');
+  });
+
+  it('threads a non-empty provenance map to reviewer agents and judge', async () => {
+    const mockedComputeProvenanceMap = jest.mocked(computeProvenanceMap);
+    const provenance: ProvenanceEntry[] = [{
+      file: 'src/foo.ts',
+      lineStart: 2,
+      lineEnd: 3,
+      originatingRound: 2,
+      originatingTitle: 'Prior finding',
+    }];
+    mockedComputeProvenanceMap.mockReturnValueOnce(provenance);
+
+    const reviewerSendMessage = jest.fn().mockResolvedValue({ content: '[]' });
+    const clients: ReviewClients = {
+      reviewer: { sendMessage: reviewerSendMessage } as unknown as import('./claude').ClaudeClient,
+      judge: {
+        sendMessage: jest.fn().mockResolvedValue({ content: '{"summary":"ok","findings":[]}' }),
+      } as unknown as import('./claude').ClaudeClient,
+    };
+    const config = makeConfig();
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const fileContents = new Map([
+      ['src/foo.ts', 'const a = 1;\nconst b = 2;\nconst c = 3;\nconst d = 4;'],
+    ]);
+
+    await runReview(clients, config, diff, 'raw diff', 'repo context', undefined, fileContents);
+
+    // Each reviewer agent should have received the annotated content in its user message
+    expect(reviewerSendMessage).toHaveBeenCalled();
+    for (const call of reviewerSendMessage.mock.calls) {
+      const userMessage = call[1] as string;
+      expect(userMessage).toContain('// [manki: added in round 2]');
+    }
+
+    // Judge should receive the same computed map through JudgeInput, not recompute it
+    expect(mockedRunJudgeAgent).toHaveBeenCalledTimes(1);
+    const judgeInput = mockedRunJudgeAgent.mock.calls[0][2];
+    expect(judgeInput.provenanceMap).toEqual(provenance);
   });
 });
 
