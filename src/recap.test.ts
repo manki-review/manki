@@ -700,7 +700,7 @@ describe('fetchRecapState', () => {
     expect(state.previousFindings[0].line).toBe(0);
   });
 
-  it('treats first non-bot comment body as author reply text', async () => {
+  it('treats last non-bot comment body as author reply text', async () => {
     const octokit = mockOctokit([
       makeThread({
         id: 't1',
@@ -722,6 +722,34 @@ describe('fetchRecapState', () => {
 
     const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
     expect(state.previousFindings[0].authorReplyText).toBe('Fixed, done.');
+  });
+
+  it('uses the latest non-bot reply when multiple human replies exist', async () => {
+    const octokit = mockOctokit([
+      makeThread({
+        id: 't1',
+        isResolved: false,
+        comments: {
+          nodes: [
+            {
+              body: '<!-- manki:required:Bug --> \u{1F6AB} **Required**: Bug found\n\nDesc.',
+              author: { login: 'github-actions[bot]' },
+            },
+            {
+              body: 'Fixed, done.',
+              author: { login: 'developer' },
+            },
+            {
+              body: 'Actually, disagree -- reverting.',
+              author: { login: 'developer' },
+            },
+          ],
+        },
+      }),
+    ]);
+
+    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    expect(state.previousFindings[0].authorReplyText).toBe('Actually, disagree -- reverting.');
   });
 
   it('leaves authorReplyText undefined for threads with only bot comments', async () => {
