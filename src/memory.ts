@@ -620,7 +620,7 @@ export interface HandoverPreviousFinding {
  * Prior rounds' findings are backfilled with fresh `authorReply` classifications
  * drawn from the latest recap state, matched by thread ID.
  *
- * Pass the already-loaded `handover` to avoid a redundant fetch; if omitted,
+ * Pass the already-loaded `handover` to avoid a redundant fetch. If omitted,
  * the function loads it from the memory repo.
  */
 export async function appendHandoverRound(

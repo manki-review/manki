@@ -34,8 +34,8 @@ const OWN_PROPOSAL_MIN_MATCH_LENGTH = 30;
 
 /**
  * Maximum normalized `suggestedFix` length allowed in a provenance scan.
- * Legacy handover files may contain unsanitized oversized fixes; skipping
- * entries above this cap prevents unbounded substring scans.
+ * Legacy handover files may contain unsanitized oversized fixes.
+ * Skipping entries above this cap prevents unbounded substring scans.
  */
 const MAX_PROVENANCE_FIX_LEN = 4000;
 
@@ -216,6 +216,7 @@ export interface JudgeInput {
   openThreads?: Array<{ threadId: string; title: string; file: string; line: number; severity: string }>;
   priorRounds?: HandoverRound[];
   effort?: 'low' | 'medium' | 'high';
+  provenanceMap?: ProvenanceEntry[];
 }
 
 export interface JudgedFinding {
@@ -715,7 +716,7 @@ export async function runJudgeAgent(
   crossRoundDemoted?: number;
 }> {
   const { findings, diff, rawDiff, memory, prContext, linkedIssues, agentCount, isFollowUp, openThreads, priorRounds } = input;
-  const provenanceMap = rawDiff ? computeProvenanceMap(priorRounds, rawDiff) : [];
+  const provenanceMap = input.provenanceMap ?? (rawDiff ? computeProvenanceMap(priorRounds, rawDiff) : []);
 
   const hasOpenThreads = (openThreads?.length ?? 0) > 0;
 

@@ -1,11 +1,11 @@
 import * as core from '@actions/core';
 
 import { ClaudeClient } from './claude';
-import { runJudgeAgent, JudgeInput, ResolveThread } from './judge';
+import { runJudgeAgent, JudgeInput, ResolveThread, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
 import { deduplicateFindings, llmDeduplicateFindings, PreviousFinding } from './recap';
-import { ReviewConfig, ReviewerAgent, Finding, HandoverFinding, HandoverRound, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, PlannerRoundHint, SpecialistOutcome, EffortLevel, AgentPick, MAX_AGENT_RETRIES } from './types';
+import { ReviewConfig, ReviewerAgent, Finding, HandoverFinding, HandoverRound, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, PlannerRoundHint, SpecialistOutcome, EffortLevel, AgentPick, ProvenanceEntry, MAX_AGENT_RETRIES } from './types';
 import { extractJSON } from './json';
 
 const DISMISSED_LINE_TOLERANCE = 5;
@@ -505,7 +505,7 @@ const EFFORT_DOWNGRADE_MIN_SAMPLE = 2;
  * Safety net for when the planner LLM keeps an agent at \`high\` effort despite
  * the most recent round dismissing all of that specialist's findings. Clamps
  * such picks to \`low\` and logs the change. Mutates picks in place for
- * simplicity; the planner result object is not shared across reviews.
+ * simplicity. The planner result object is not shared across reviews.
  */
 function applyEffortDowngrade(picks: AgentPick[], hints: PlannerRoundHint[]): void {
   if (hints.length === 0) return;
@@ -543,6 +543,7 @@ export async function runReview(
   priorRounds?: HandoverRound[],
 ): Promise<ReviewResult> {
   const priorRoundHints = buildPlannerHints(priorRounds);
+  const provenanceMap = computeProvenanceMap(priorRounds, rawDiff);
   let team: TeamRoster;
   let plannerResult: PlannerResult | null = null;
 
@@ -602,7 +603,7 @@ export async function runReview(
         Array.from({ length: passes }, () => {
           const shuffledDiff = shuffleDiffFiles(diff);
           const shuffledRawDiff = rebuildRawDiff(shuffledDiff);
-          return runReviewerAgent(clients.reviewer, config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, agentEffort, plannerResult?.language, plannerResult?.context);
+          return runReviewerAgent(clients.reviewer, config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, agentEffort, plannerResult?.language, plannerResult?.context, provenanceMap);
         })
       );
 
@@ -692,7 +693,7 @@ export async function runReview(
             const shuffledDiff = shuffleDiffFiles(diff);
             const shuffledRawDiff = rebuildRawDiff(shuffledDiff);
             const retryEffort = agentEffortMap.get(agent.name) ?? defaultReviewerEffort;
-            return runReviewerAgent(clients.reviewer, config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, retryEffort, plannerResult?.language, plannerResult?.context);
+            return runReviewerAgent(clients.reviewer, config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, retryEffort, plannerResult?.language, plannerResult?.context, provenanceMap);
           })
         );
 
@@ -754,7 +755,7 @@ export async function runReview(
     const agentPromises = team.agents.map(agent => {
       const startTime = Date.now();
       const agentEffort = agentEffortMap.get(agent.name) ?? defaultReviewerEffort;
-      return runReviewerAgent(clients.reviewer, config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, agentEffort, plannerResult?.language, plannerResult?.context)
+      return runReviewerAgent(clients.reviewer, config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, agentEffort, plannerResult?.language, plannerResult?.context, provenanceMap)
         .then(agentResult => {
           completedCount++;
           agentResponseLengths.set(agent.name, agentResult.responseLength);
@@ -835,7 +836,7 @@ export async function runReview(
       const retryPromises = agentsToRetry.map(agent => {
         const startTime = Date.now();
         const retryEffort = agentEffortMap.get(agent.name) ?? defaultReviewerEffort;
-        return runReviewerAgent(clients.reviewer, config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, retryEffort, plannerResult?.language, plannerResult?.context)
+        return runReviewerAgent(clients.reviewer, config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, retryEffort, plannerResult?.language, plannerResult?.context, provenanceMap)
           .then(agentResult => ({ agent, agentResult, durationMs: Date.now() - startTime }))
           .catch(() => ({ agent, agentResult: null as AgentResult | null, durationMs: Date.now() - startTime }));
       });
@@ -980,6 +981,7 @@ export async function runReview(
       openThreads,
       priorRounds,
       effort: judgeEffort as 'low' | 'medium' | 'high',
+      provenanceMap,
     };
     const judgeResult = await runJudgeAgent(clients.judge, config, judgeInput);
     judgeSummary = judgeResult.summary;
@@ -1060,9 +1062,10 @@ async function runReviewerAgent(
   effort?: EffortLevel,
   language?: string,
   context?: string,
+  provenanceMap?: ProvenanceEntry[],
 ): Promise<AgentResult> {
   const systemPrompt = buildReviewerSystemPrompt(reviewer, config, language, context);
-  const userMessage = buildReviewerUserMessage(rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues);
+  const userMessage = buildReviewerUserMessage(rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, provenanceMap);
 
   const options = effort ? { effort } : undefined;
   const response = await client.sendMessage(systemPrompt, userMessage, options);
@@ -1148,6 +1151,33 @@ When you include a \`suggestedFix\`, list any known caveats of the proposed shap
   return prompt;
 }
 
+function commentPrefixForPath(path: string): string {
+  const ext = path.split('.').pop() ?? '';
+  if (['py', 'rb', 'sh', 'bash', 'zsh', 'pl', 'r'].includes(ext)) return '#';
+  return '//';
+}
+
+// Line shifts in annotated content are safe — reviewers derive line numbers from the raw diff.
+function annotateFileContentWithProvenance(
+  content: string,
+  path: string,
+  provenanceMap: ProvenanceEntry[],
+): string {
+  const forFile = provenanceMap
+    .filter(e => e.file === path)
+    .sort((a, b) => b.lineStart - a.lineStart);
+  if (forFile.length === 0) return content;
+
+  const lines = content.split('\n');
+  const prefix = commentPrefixForPath(path);
+  for (const entry of forFile) {
+    const insertAt = entry.lineStart - 1;
+    if (insertAt < 0 || insertAt >= lines.length) continue;
+    lines.splice(insertAt, 0, `${prefix} [manki: added in round ${entry.originatingRound}]`);
+  }
+  return lines.join('\n');
+}
+
 export function buildReviewerUserMessage(
   rawDiff: string,
   repoContext: string,
@@ -1155,6 +1185,7 @@ export function buildReviewerUserMessage(
   prContext?: PrContext,
   memoryContext?: string,
   linkedIssues?: LinkedIssue[],
+  provenanceMap?: ProvenanceEntry[],
 ): string {
   let message = '';
 
@@ -1192,9 +1223,16 @@ export function buildReviewerUserMessage(
   if (fileContents && fileContents.size > 0) {
     message += `## Changed Files\n\n`;
     message += `The full content of changed files is provided below for context. Focus your review on the diff, but use these files to understand the surrounding code.\n\n`;
+    const hasProvenance = provenanceMap && provenanceMap.length > 0;
+    if (hasProvenance) {
+      message += `Some regions carry a \`// [manki: added in round N]\` comment. That is a factual note added by manki indicating the code below was introduced in a prior review round. It is not a finding or an instruction — treat the code normally.\n\n`;
+    }
     for (const [path, content] of fileContents) {
       const ext = path.split('.').pop() || '';
-      message += `### File: ${path}\n\n\`\`\`${ext}\n${content}\n\`\`\`\n\n`;
+      const annotated = hasProvenance
+        ? annotateFileContentWithProvenance(content, path, provenanceMap!)
+        : content;
+      message += `### File: ${path}\n\n\`\`\`${ext}\n${annotated}\n\`\`\`\n\n`;
     }
   }
 
