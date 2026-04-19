@@ -1569,6 +1569,21 @@ describe('applyInPrSuppression', () => {
     expect(result.findings[0].severity).toBe('suggestion');
   });
 
+  it('suppresses a finding at exactly lineStart - tolerance', () => {
+    // makeSuppression defaults to lineStart: 10; tolerance is 5, so 5 is the inclusive boundary
+    const findings = [makeFinding({ line: 5 })];
+    const result = applyInPrSuppression(findings, [makeSuppression()]);
+    expect(result.count).toBe(1);
+    expect(result.findings[0].severity).toBe('ignore');
+  });
+
+  it('does not suppress a finding one line below lineStart - tolerance', () => {
+    const findings = [makeFinding({ line: 4 })];
+    const result = applyInPrSuppression(findings, [makeSuppression()]);
+    expect(result.count).toBe(0);
+    expect(result.findings[0].severity).toBe('suggestion');
+  });
+
   it('does not match when file differs', () => {
     const findings = [makeFinding({ file: 'src/other.ts' })];
     const result = applyInPrSuppression(findings, [makeSuppression()]);
@@ -1584,6 +1599,17 @@ describe('applyInPrSuppression', () => {
   it('preserves originalSeverity from the incoming severity', () => {
     const findings = [makeFinding({ severity: 'required' })];
     const result = applyInPrSuppression(findings, [makeSuppression()]);
+    expect(result.findings[0].severity).toBe('ignore');
+    expect(result.findings[0].originalSeverity).toBe('required');
+  });
+
+  it('does not overwrite a pre-existing originalSeverity', () => {
+    // Finding was already demoted elsewhere (e.g., cross-round contradiction) and carries
+    // originalSeverity: 'required'. In-PR suppression must keep that pre-existing value
+    // rather than clobbering it with the current (demoted) severity.
+    const findings = [makeFinding({ severity: 'suggestion', originalSeverity: 'required' })];
+    const result = applyInPrSuppression(findings, [makeSuppression()]);
+    expect(result.count).toBe(1);
     expect(result.findings[0].severity).toBe('ignore');
     expect(result.findings[0].originalSeverity).toBe('required');
   });
@@ -2882,5 +2908,54 @@ describe('runJudgeAgent cross-round suppression', () => {
     expect(result.crossRoundDemoted).toBeUndefined();
     expect(result.findings[0].severity).toBe('ignore');
     expect(result.findings[0].tags).toContain('suppressed-by-ratchet');
+  });
+
+  it('does not double-count when both in-PR suppression and cross-round prior agree match', async () => {
+    // A `required` finding is protected from the cross-round ratchet (only suggestions/nits
+    // can be ratcheted), so cross-round does not fire even though the prior agree matches.
+    // The in-PR suppression then matches and fires exactly once. Verifies the two
+    // suppression mechanisms never both count the same finding.
+    const judgedResponse = JSON.stringify({
+      summary: 'Unchanged.',
+      findings: [
+        { title: 'Unused variable', severity: 'required', reasoning: 'Still present.', confidence: 'high' },
+      ],
+    });
+    mockSendMessage.mockResolvedValue({ content: judgedResponse });
+
+    const inPrSuppressions: InPrSuppression[] = [
+      {
+        fingerprint: { file: 'src/index.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
+        reason: 'resolved-thread',
+      },
+    ];
+
+    const input: JudgeInput = {
+      findings: [makeFinding({ title: 'Unused variable', file: 'src/index.ts', line: 10, severity: 'required' })],
+      diff: makeDiff(),
+      rawDiff: '',
+      repoContext: '',
+      agentCount: 3,
+      inPrSuppressions,
+      priorRounds: [{
+        round: 1,
+        commitSha: 'abc',
+        timestamp: 't',
+        findings: [{
+          fingerprint: { file: 'src/index.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
+          severity: 'required',
+          title: 'Unused variable',
+          authorReply: 'agree',
+        }],
+      }],
+    };
+
+    const result = await runJudgeAgent(mockClient, makeConfig(), input);
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].severity).toBe('ignore');
+    expect(result.findings[0].tags).toContain(IN_PR_SUPPRESSED_TAG);
+    expect(result.inPrSuppressedCount).toBe(1);
+    expect(result.crossRoundSuppressed).toBeUndefined();
+    expect(result.crossRoundDemoted).toBeUndefined();
   });
 });
