@@ -274,11 +274,17 @@ async function fetchReviewThreads(
       const firstComment = thread.comments.nodes[0];
       const isBotThread = firstComment?.body?.includes(BOT_MARKER) ?? false;
 
-      const firstNonBotReply = thread.comments.nodes.find((c, i) =>
+      // Use the latest non-bot reply so evolving threads (e.g. initial
+      // "Fixed!" followed by a retraction) classify by the author's current
+      // stance rather than their first reaction. The `comments(first: 10)`
+      // cap above means threads with more than 10 replies can still miss the
+      // true last reply.
+      const nonBotReplies = thread.comments.nodes.filter((c, i) =>
         i > 0 && c.author?.login !== 'github-actions[bot]'
       );
-      const hasHumanReply = firstNonBotReply !== undefined;
-      const authorReplyText = firstNonBotReply?.body;
+      const lastNonBotReply = nonBotReplies[nonBotReplies.length - 1];
+      const hasHumanReply = lastNonBotReply !== undefined;
+      const authorReplyText = lastNonBotReply?.body;
 
       const severityMatch = firstComment?.body?.match(/manki:(required|suggestion|nit|ignore):/);
       const severity = (severityMatch?.[1] ?? 'unknown') as FindingSeverity | 'unknown';
