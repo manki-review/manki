@@ -1804,6 +1804,8 @@ describe('runReview', () => {
     );
 
     expect('inPrSuppressedCount' in result).toBe(false);
+    const judgeInput = mockedRunJudgeAgent.mock.calls[0][2];
+    expect(judgeInput.inPrSuppressions ?? []).toEqual([]);
   });
 
   it('propagates inPrSuppressedCount from judgeResult to ReviewResult', async () => {
@@ -1823,6 +1825,13 @@ describe('runReview', () => {
     );
 
     expect(result.inPrSuppressedCount).toBe(1);
+    expect(mockedRunJudgeAgent).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ inPrSuppressions: expect.any(Array) }),
+    );
+    const judgeInput = mockedRunJudgeAgent.mock.calls[0][2];
+    expect(judgeInput.inPrSuppressions?.length ?? 0).toBeGreaterThan(0);
   });
 
   it('leaves dedup counts at zero when no previous findings are supplied', async () => {

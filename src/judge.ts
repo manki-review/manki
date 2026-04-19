@@ -823,7 +823,7 @@ function matchesInPrSuppression(finding: Finding, suppression: InPrSuppression):
   const fp = suppression.fingerprint;
   if (finding.file !== fp.file) return false;
   if (titleToSlug(finding.title) !== fp.slug) return false;
-  const lo = fp.lineStart - IN_PR_SUPPRESSION_LINE_TOLERANCE;
+  const lo = Math.max(1, fp.lineStart - IN_PR_SUPPRESSION_LINE_TOLERANCE);
   const hi = fp.lineEnd + IN_PR_SUPPRESSION_LINE_TOLERANCE;
   return finding.line >= lo && finding.line <= hi;
 }

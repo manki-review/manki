@@ -1600,6 +1600,13 @@ describe('applyInPrSuppression', () => {
     expect(result.findings[0].severity).toBe('suggestion');
   });
 
+  it('does not suppress a file-level finding (line: 0) when lineStart is small', () => {
+    const findings = [makeFinding({ line: 0 })];
+    const result = applyInPrSuppression(findings, [makeSuppression({ lineStart: 2, lineEnd: 2 })]);
+    expect(result.count).toBe(0);
+    expect(result.findings[0].severity).toBe('suggestion');
+  });
+
   it('suppresses a finding at exactly lineEnd + tolerance', () => {
     // makeSuppression defaults to lineEnd: 10; tolerance is 5, so 15 is the inclusive boundary
     const findings = [makeFinding({ line: 15 })];
