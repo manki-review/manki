@@ -24,6 +24,12 @@ describe('formatFindingComment', () => {
     expect(comment).toContain('✨ **Suggestion**');
   });
 
+  it('formats a warning finding with correct emoji and label', () => {
+    const finding: Finding = { ...baseFinding, severity: 'warning' };
+    const comment = formatFindingComment(finding);
+    expect(comment).toContain('⚠️ **Warning**');
+  });
+
   it('formats a nit finding with correct emoji and label', () => {
     const finding: Finding = { ...baseFinding, severity: 'nitpick' };
     const comment = formatFindingComment(finding);
@@ -616,7 +622,7 @@ describe('formatStatsOneLiner', () => {
     findingsRaw: 10,
     findingsKept: 4,
     findingsDropped: 6,
-    severity: { required: 1, suggestion: 2, nit: 1 },
+    severity: { blocker: 1, warning: 0, suggestion: 2, nitpick: 1 },
     verdict: 'REQUEST_CHANGES',
     prNumber: 42,
     commitSha: 'abc123',
@@ -624,11 +630,11 @@ describe('formatStatsOneLiner', () => {
 
   it('formats a one-liner with severity breakdown', () => {
     const result = formatStatsOneLiner(baseStats);
-    expect(result).toBe('\u{1F4CA} 4 findings (1 required, 2 suggestion, 1 nit) \u00B7 120 lines \u00B7 45s');
+    expect(result).toBe('\u{1F4CA} 4 findings (1 blocker, 2 suggestion, 1 nitpick) \u00B7 120 lines \u00B7 45s');
   });
 
   it('omits zero-count severities', () => {
-    const stats = { ...baseStats, severity: { required: 0, suggestion: 3, nit: 0 }, findingsKept: 3 };
+    const stats = { ...baseStats, severity: { blocker: 0, warning: 0, suggestion: 3, nitpick: 0 }, findingsKept: 3 };
     const result = formatStatsOneLiner(stats);
     expect(result).toContain('(3 suggestion)');
     expect(result).not.toContain('blocker');
@@ -636,7 +642,7 @@ describe('formatStatsOneLiner', () => {
   });
 
   it('shows none when all severities are zero', () => {
-    const stats = { ...baseStats, severity: { required: 0, suggestion: 0, nit: 0 }, findingsKept: 0 };
+    const stats = { ...baseStats, severity: { blocker: 0, warning: 0, suggestion: 0, nitpick: 0 }, findingsKept: 0 };
     const result = formatStatsOneLiner(stats);
     expect(result).toContain('(none)');
   });
@@ -661,7 +667,7 @@ describe('formatStatsJson', () => {
       findingsRaw: 5,
       findingsKept: 2,
       findingsDropped: 3,
-      severity: { required: 1, suggestion: 1, nit: 0 },
+      severity: { blocker: 1, warning: 0, suggestion: 1, nitpick: 0 },
       verdict: 'APPROVE',
       prNumber: 10,
       commitSha: 'def456',
@@ -709,7 +715,7 @@ describe('postReview with stats', () => {
       findingsRaw: 6,
       findingsKept: 3,
       findingsDropped: 3,
-      severity: { required: 0, suggestion: 2, nit: 1 },
+      severity: { blocker: 0, warning: 0, suggestion: 2, nitpick: 1 },
       verdict: 'APPROVE',
       prNumber: 99,
       commitSha: 'abc',

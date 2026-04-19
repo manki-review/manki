@@ -457,9 +457,10 @@ export async function dismissPreviousReviews(
 
 function formatStatsOneLiner(stats: ReviewStats): string {
   const parts: string[] = [];
-  if (stats.severity.required) parts.push(`${stats.severity.required} required`);
+  if (stats.severity.blocker) parts.push(`${stats.severity.blocker} blocker`);
+  if (stats.severity.warning) parts.push(`${stats.severity.warning} warning`);
   if (stats.severity.suggestion) parts.push(`${stats.severity.suggestion} suggestion`);
-  if (stats.severity.nit) parts.push(`${stats.severity.nit} nit`);
+  if (stats.severity.nitpick) parts.push(`${stats.severity.nitpick} nitpick`);
   const breakdown = parts.length > 0 ? parts.join(', ') : 'none';
   const total = stats.findingsKept;
   const time = Math.round(stats.reviewTimeMs / 1000);
