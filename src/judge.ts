@@ -34,8 +34,8 @@ const OWN_PROPOSAL_MIN_MATCH_LENGTH = 30;
 
 /**
  * Maximum normalized `suggestedFix` length allowed in a provenance scan.
- * Legacy handover files may contain unsanitized oversized fixes; skipping
- * entries above this cap prevents unbounded substring scans.
+ * Legacy handover files may contain unsanitized oversized fixes.
+ * Skipping entries above this cap prevents unbounded substring scans.
  */
 const MAX_PROVENANCE_FIX_LEN = 4000;
 

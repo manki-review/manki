@@ -505,7 +505,7 @@ const EFFORT_DOWNGRADE_MIN_SAMPLE = 2;
  * Safety net for when the planner LLM keeps an agent at \`high\` effort despite
  * the most recent round dismissing all of that specialist's findings. Clamps
  * such picks to \`low\` and logs the change. Mutates picks in place for
- * simplicity; the planner result object is not shared across reviews.
+ * simplicity. The planner result object is not shared across reviews.
  */
 function applyEffortDowngrade(picks: AgentPick[], hints: PlannerRoundHint[]): void {
   if (hints.length === 0) return;
