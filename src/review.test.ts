@@ -397,7 +397,9 @@ describe('determineVerdict', () => {
     const outsideBoundary: Finding[] = [
       { severity: 'suggestion', title: 'Boundary', file: 'f.ts', line: 16, description: 'd', reviewers: ['r'] },
     ];
-    expect(determineVerdict(outsideBoundary, [prior]).verdict).toBe('REQUEST_CHANGES');
+    const { verdict: v4, verdictReason: vr4 } = determineVerdict(outsideBoundary, [prior]);
+    expect(v4).toBe('REQUEST_CHANGES');
+    expect(vr4).toBe('novel_suggestion');
   });
 
   it('matches when finding.line equals lineEnd + 5 (exact tolerance on lineEnd endpoint)', () => {
@@ -425,7 +427,9 @@ describe('determineVerdict', () => {
     const outsideEndBoundary: Finding[] = [
       { severity: 'suggestion', title: 'Boundary2', file: 'f.ts', line: 26, description: 'd', reviewers: ['r'] },
     ];
-    expect(determineVerdict(outsideEndBoundary, [prior]).verdict).toBe('REQUEST_CHANGES');
+    const { verdict: v5, verdictReason: vr5 } = determineVerdict(outsideEndBoundary, [prior]);
+    expect(v5).toBe('REQUEST_CHANGES');
+    expect(vr5).toBe('novel_suggestion');
   });
 
   it('matches when finding.line equals lineStart - 5 (exact tolerance below lineStart)', () => {
@@ -453,7 +457,9 @@ describe('determineVerdict', () => {
     const outsideLowerBoundary: Finding[] = [
       { severity: 'suggestion', title: 'Boundary', file: 'f.ts', line: 4, description: 'd', reviewers: ['r'] },
     ];
-    expect(determineVerdict(outsideLowerBoundary, [prior]).verdict).toBe('REQUEST_CHANGES');
+    const { verdict: v6, verdictReason: vr6 } = determineVerdict(outsideLowerBoundary, [prior]);
+    expect(v6).toBe('REQUEST_CHANGES');
+    expect(vr6).toBe('novel_suggestion');
   });
 
   it('returns COMMENT for a PR #106 R7 replay (4 suggestions all dismissed)', () => {
