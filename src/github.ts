@@ -235,7 +235,7 @@ function sanitizeEffort(v: string): string {
   return VALID_EFFORTS.has(v) ? v : 'unknown';
 }
 
-const SEVERITY_ORDER = ['required', 'suggestion', 'nit', 'ignore'];
+const SEVERITY_ORDER = ['blocker', 'warning', 'suggestion', 'nitpick', 'ignore'];
 
 function renderSeverityBreakdown(severities: Record<string, number>): string {
   return SEVERITY_ORDER
@@ -663,16 +663,18 @@ function mapVerdictToEvent(verdict: ReviewVerdict): 'APPROVE' | 'COMMENT' | 'REQ
 }
 
 const severityLabels: Record<FindingSeverity, string> = {
-  required: 'Required',
+  blocker: 'Blocker',
+  warning: 'Warning',
   suggestion: 'Suggestion',
-  nit: 'Nit',
+  nitpick: 'Nitpick',
   ignore: 'Ignore',
 };
 
 const severityEmojis: Record<FindingSeverity, string> = {
-  required: '🚫',
-  suggestion: '💡',
-  nit: '📝',
+  blocker: '🚫',
+  warning: '⚠️',
+  suggestion: '✨',
+  nitpick: '📝',
   ignore: '⚪',
 };
 
@@ -733,8 +735,13 @@ function formatFindingComment(finding: Finding): string {
   const safeTitle = sanitizeMarkdown(finding.title);
   const safeDescription = sanitizeMarkdown(finding.description);
 
-  const confidence = finding.judgeConfidence ? ` <sub>[${finding.judgeConfidence} confidence]</sub>` : '';
-  let comment = `${severityEmoji} **${severityLabel}**${confidence}: ${safeTitle}`;
+  const confidenceDots: Record<'high' | 'medium' | 'low', string> = {
+    high: '🔴',
+    medium: '🟠',
+    low: '🟡',
+  };
+  const confidenceDot = finding.judgeConfidence ? `${confidenceDots[finding.judgeConfidence]} ` : '';
+  let comment = `${confidenceDot}${severityEmoji} **${severityLabel}**: ${safeTitle}`;
   if (finding.tags?.includes(DEFENSIVE_HARDENING_TAG) && finding.originalSeverity) {
     comment += `\n<sub>[defensive hardening — capped from ${finding.originalSeverity}]</sub>`;
   }
@@ -764,7 +771,6 @@ function formatFindingComment(finding: Finding): string {
     file: finding.file,
     line: finding.line,
     severity: finding.severity,
-    ...(finding.judgeConfidence && { confidence: finding.judgeConfidence }),
     flaggedBy: finding.reviewers,
     title: finding.title,
     ...(finding.suggestedFix && { fix: finding.suggestedFix.slice(0, 200) }),
@@ -791,7 +797,7 @@ export function buildNitIssueBody(
   repo: string,
   commitSha: string,
 ): string {
-  const nits = findings.filter(f => f.severity === 'nit');
+  const nits = findings.filter(f => f.severity === 'nitpick');
 
   const checklist = nits.map(f => {
     const icon = '\u{1F4DD}';
@@ -840,7 +846,7 @@ export async function createNitIssue(
   findings: Finding[],
   commitSha: string,
 ): Promise<number | null> {
-  const nits = findings.filter(f => f.severity === 'nit');
+  const nits = findings.filter(f => f.severity === 'nitpick');
   if (nits.length === 0) return null;
 
   const searchQuery = `repo:${owner}/${repo} is:issue "triage: findings from PR #${prNumber}" label:needs-human`;
