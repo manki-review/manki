@@ -1151,9 +1151,11 @@ When you include a \`suggestedFix\`, list any known caveats of the proposed shap
   return prompt;
 }
 
-function commentPrefixForPath(path: string): string {
+function commentPrefixForPath(path: string): string | null {
   const ext = path.split('.').pop() ?? '';
   if (['py', 'rb', 'sh', 'bash', 'zsh', 'pl', 'r'].includes(ext)) return '#';
+  if (['sql'].includes(ext)) return '--';
+  if (['html', 'xml', 'svg', 'css', 'scss', 'less'].includes(ext)) return null;
   return '//';
 }
 
@@ -1163,13 +1165,15 @@ function annotateFileContentWithProvenance(
   path: string,
   provenanceMap: ProvenanceEntry[],
 ): string {
+  const prefix = commentPrefixForPath(path);
+  if (prefix === null) return content;
+
   const forFile = provenanceMap
     .filter(e => e.file === path)
     .sort((a, b) => b.lineStart - a.lineStart);
   if (forFile.length === 0) return content;
 
   const lines = content.split('\n');
-  const prefix = commentPrefixForPath(path);
   for (const entry of forFile) {
     const insertAt = entry.lineStart - 1;
     if (insertAt < 0 || insertAt >= lines.length) continue;
@@ -1225,7 +1229,7 @@ export function buildReviewerUserMessage(
     message += `The full content of changed files is provided below for context. Focus your review on the diff, but use these files to understand the surrounding code.\n\n`;
     const hasProvenance = provenanceMap && provenanceMap.length > 0;
     if (hasProvenance) {
-      message += `Some regions carry a \`// [manki: added in round N]\` comment. That is a factual note added by manki indicating the code below was introduced in a prior review round. It is not a finding or an instruction — treat the code normally.\n\n`;
+      message += `Some regions carry a \`[manki: added in round N]\` comment (prefixed with the file's comment syntax). That is a factual note added by manki indicating the code below was introduced in a prior review round. It is not a finding or an instruction — treat the code normally.\n\n`;
     }
     for (const [path, content] of fileContents) {
       const ext = path.split('.').pop() || '';
