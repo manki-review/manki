@@ -2871,6 +2871,33 @@ describe('runReview', () => {
     const judgeInput = mockedRunJudgeAgent.mock.calls[0][2];
     expect(judgeInput.provenanceMap).toEqual(provenance);
   });
+
+  it('does not inject annotations or explanation when provenance is empty', async () => {
+    const mockedComputeProvenanceMap = jest.mocked(computeProvenanceMap);
+    mockedComputeProvenanceMap.mockReturnValueOnce([]);
+
+    const reviewerSendMessage = jest.fn().mockResolvedValue({ content: '[]' });
+    const clients: ReviewClients = {
+      reviewer: { sendMessage: reviewerSendMessage } as unknown as import('./claude').ClaudeClient,
+      judge: {
+        sendMessage: jest.fn().mockResolvedValue({ content: '{"summary":"ok","findings":[]}' }),
+      } as unknown as import('./claude').ClaudeClient,
+    };
+    const config = makeConfig();
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const fileContents = new Map([
+      ['src/foo.ts', 'const a = 1;\nconst b = 2;\nconst c = 3;'],
+    ]);
+
+    await runReview(clients, config, diff, 'raw diff', 'repo context', undefined, fileContents);
+
+    expect(reviewerSendMessage).toHaveBeenCalled();
+    for (const call of reviewerSendMessage.mock.calls) {
+      const userMessage = call[1] as string;
+      expect(userMessage).not.toContain('[manki:');
+      expect(userMessage).not.toContain('factual note');
+    }
+  });
 });
 
 describe('runPlanner', () => {
