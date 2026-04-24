@@ -82,12 +82,19 @@ describe('formatFindingComment', () => {
     expect(parsed.fix).toBeUndefined();
   });
 
-  it('includes fix in AI context JSON when present and omits confidence', () => {
+  it('includes fix and confidence in AI context JSON when present', () => {
     const finding: Finding = { ...baseFinding, suggestedFix: 'if (value != null) { use(value); }', judgeConfidence: 'high' };
     const comment = formatFindingComment(finding);
     const jsonMatch = comment.match(/```json\n([\s\S]*?)\n```/);
     const parsed = JSON.parse(jsonMatch![1]);
     expect(parsed.fix).toBe('if (value != null) { use(value); }');
+    expect(parsed.confidence).toBe('high');
+  });
+
+  it('omits confidence from AI context JSON when judgeConfidence is absent', () => {
+    const comment = formatFindingComment(baseFinding);
+    const jsonMatch = comment.match(/```json\n([\s\S]*?)\n```/);
+    const parsed = JSON.parse(jsonMatch![1]);
     expect(parsed.confidence).toBeUndefined();
   });
 

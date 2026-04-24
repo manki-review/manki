@@ -772,6 +772,7 @@ function formatFindingComment(finding: Finding): string {
     file: finding.file,
     line: finding.line,
     severity: finding.severity,
+    ...(finding.judgeConfidence && { confidence: finding.judgeConfidence }),
     flaggedBy: finding.reviewers,
     title: finding.title,
     ...(finding.suggestedFix && { fix: finding.suggestedFix.slice(0, 200) }),
