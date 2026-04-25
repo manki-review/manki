@@ -999,6 +999,15 @@ describe('buildReviewerUserMessage with provenance map', () => {
     expect(message).toContain('# [manki: added in round 1]');
     expect(message).not.toContain('// [manki: added in round 1]');
   });
+
+  it('skips annotation and explanation for HTML files with no comment syntax', () => {
+    const fileContents = new Map([['src/template.html', '<div>\n<span>hi</span>\n</div>']]);
+    const provenance = [makeEntry({ file: 'src/template.html', lineStart: 2, lineEnd: 2, originatingRound: 1 })];
+    const message = buildReviewerUserMessage('diff', '', fileContents, undefined, undefined, undefined, provenance);
+    expect(message).not.toContain('[manki:');
+    expect(message).not.toContain('factual note');
+    expect(message).toContain('<span>hi</span>');
+  });
 });
 
 describe('shuffleDiffFiles', () => {

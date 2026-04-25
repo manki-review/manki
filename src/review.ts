@@ -1227,7 +1227,12 @@ export function buildReviewerUserMessage(
   if (fileContents && fileContents.size > 0) {
     message += `## Changed Files\n\n`;
     message += `The full content of changed files is provided below for context. Focus your review on the diff, but use these files to understand the surrounding code.\n\n`;
-    const hasProvenance = provenanceMap && provenanceMap.length > 0;
+    const hasProvenance = Boolean(
+      provenanceMap?.length &&
+      [...fileContents.keys()].some(
+        p => provenanceMap.some(e => e.file === p) && commentPrefixForPath(p) !== null,
+      )
+    );
     if (hasProvenance) {
       message += `Some regions carry a \`[manki: added in round N]\` comment (prefixed with the file's comment syntax). That is a factual note added by manki indicating the code below was introduced in a prior review round. It is not a finding or an instruction — treat the code normally.\n\n`;
     }
