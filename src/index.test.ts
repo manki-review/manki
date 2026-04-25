@@ -773,6 +773,7 @@ describe('handleCommentTrigger', () => {
     expect(jest.mocked(core.info)).toHaveBeenCalledWith('Review already in progress — skipping');
     expect(jest.mocked(ghUtils.isApprovedOnCommit)).not.toHaveBeenCalled();
     expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
+    expect(mockOctokitInstance.rest.pulls.get).not.toHaveBeenCalled();
   });
 
   it('updates existing skip comment instead of creating a duplicate', async () => {
