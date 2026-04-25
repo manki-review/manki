@@ -171,6 +171,8 @@ async function fetchRecapState(
     f => f.status === 'resolved' ||
     (f.status === 'replied' && classifyAuthorReply(f.authorReplyText) === 'agree'),
   );
+  // open+agree findings deliberately stay in 'Still Open' so agents remain unbiased;
+  // applyInPrSuppression removes them post-LLM.
   const open = previousFindings.filter(f => f.status === 'open');
 
   let recapContext = '';
