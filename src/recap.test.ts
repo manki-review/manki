@@ -799,6 +799,29 @@ describe('fetchRecapState', () => {
     expect(state.recapContext).not.toContain('Resolved');
     expect(state.recapContext).toContain('Still Open (1 findings');
   });
+
+  it('includes replied+agree findings in the resolved section of recapContext', async () => {
+    const octokit = mockOctokit([
+      makeThread({
+        id: 't1',
+        isResolved: false,
+        comments: {
+          nodes: [
+            {
+              body: '<!-- manki:suggestion:unused-var --> 💡 **Suggestion**: Unused variable\n\nDesc.',
+              author: { login: 'github-actions[bot]' },
+            },
+            { body: 'Fixed, done.', author: { login: 'developer' } },
+          ],
+        },
+      }),
+    ]);
+
+    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    expect(state.recapContext).toContain('### Resolved');
+    expect(state.recapContext).toContain('Unused variable');
+    expect(state.recapContext).not.toContain('### Still Open');
+  });
 });
 
 describe('collectInPrSuppressions', () => {
