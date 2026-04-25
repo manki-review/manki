@@ -1272,10 +1272,10 @@ function wasDismissedInPriorRound(finding: Finding, priorRounds: HandoverFinding
  * Decision order:
  *   1. any surviving `required` finding → REQUEST_CHANGES / required_present
  *   2. any `suggestion` that is NOT a prior-round dismissed match → REQUEST_CHANGES / novel_suggestion
- *   3. otherwise (only nits / previously-dismissed suggestions / empty) → COMMENT / only_dismissed_or_nit
+ *   3. otherwise (only nits / previously-dismissed suggestions / empty) → APPROVE / only_dismissed_or_nit
  *
- * Empty `findings` yields APPROVE / only_dismissed_or_nit so callers can still
- * distinguish "clean review" from "ceiling triggered".
+ * Nits are cosmetic and non-blocking, and prior-round dismissed suggestions
+ * have already been acknowledged by the author. Both cases approve the PR.
  */
 export function determineVerdict(
   findings: Finding[],
@@ -1293,8 +1293,7 @@ export function determineVerdict(
     return { verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion' };
   }
 
-  const verdict: ReviewVerdict = findings.length === 0 ? 'APPROVE' : 'COMMENT';
-  return { verdict, verdictReason: 'only_dismissed_or_nit' };
+  return { verdict: 'APPROVE', verdictReason: 'only_dismissed_or_nit' };
 }
 
 export function truncateDiff(rawDiff: string, maxLength: number = 50000): string {

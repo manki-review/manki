@@ -252,15 +252,15 @@ describe('determineVerdict', () => {
     expect(determineVerdict(findings).verdictReason).toBe('novel_suggestion');
   });
 
-  it('returns COMMENT when there are only nits', () => {
+  it('returns APPROVE when there are only nits', () => {
     const findings: Finding[] = [makeFinding({ severity: 'nit' })];
-    expect(determineVerdict(findings).verdict).toBe('COMMENT');
+    expect(determineVerdict(findings).verdict).toBe('APPROVE');
     expect(determineVerdict(findings).verdictReason).toBe('only_dismissed_or_nit');
   });
 
-  it('returns COMMENT when there are only ignores', () => {
+  it('returns APPROVE when there are only ignores', () => {
     const findings: Finding[] = [makeFinding({ severity: 'ignore' })];
-    expect(determineVerdict(findings).verdict).toBe('COMMENT');
+    expect(determineVerdict(findings).verdict).toBe('APPROVE');
     expect(determineVerdict(findings).verdictReason).toBe('only_dismissed_or_nit');
   });
 
@@ -278,7 +278,7 @@ describe('determineVerdict', () => {
     expect(result.verdictReason).toBe('novel_suggestion');
   });
 
-  it('returns COMMENT when the only suggestion matches a prior-round agreement', () => {
+  it('returns APPROVE when the only suggestion matches a prior-round agreement', () => {
     const findings: Finding[] = [
       { severity: 'suggestion', title: 'Missing null check', file: 'src/handler.ts', line: 10, description: 'desc', reviewers: ['reviewer-1'] },
     ];
@@ -289,7 +289,23 @@ describe('determineVerdict', () => {
       authorReply: 'agree',
     }];
     const result = determineVerdict(findings, priors);
-    expect(result.verdict).toBe('COMMENT');
+    expect(result.verdict).toBe('APPROVE');
+    expect(result.verdictReason).toBe('only_dismissed_or_nit');
+  });
+
+  it('returns APPROVE for a mix of nits and dismissed suggestions', () => {
+    const findings: Finding[] = [
+      makeFinding({ severity: 'nit' }),
+      { severity: 'suggestion', title: 'Missing null check', file: 'src/handler.ts', line: 10, description: 'desc', reviewers: ['reviewer-1'] },
+    ];
+    const priors: HandoverFinding[] = [{
+      fingerprint: { file: 'src/handler.ts', lineStart: 10, lineEnd: 10, slug: 'Missing-null-check' },
+      severity: 'suggestion',
+      title: 'Missing null check',
+      authorReply: 'agree',
+    }];
+    const result = determineVerdict(findings, priors);
+    expect(result.verdict).toBe('APPROVE');
     expect(result.verdictReason).toBe('only_dismissed_or_nit');
   });
 
@@ -356,7 +372,7 @@ describe('determineVerdict', () => {
       title: 'Drifted',
       authorReply: 'agree',
     }];
-    expect(determineVerdict(findings, priors).verdict).toBe('COMMENT');
+    expect(determineVerdict(findings, priors).verdict).toBe('APPROVE');
   });
 
   it('rejects matches outside the ±5 line tolerance', () => {
@@ -383,7 +399,7 @@ describe('determineVerdict', () => {
       { severity: 'suggestion', title: 'Boundary', file: 'f.ts', line: 15, description: 'd', reviewers: ['r'] },
     ];
     const { verdict: v1, verdictReason: vr1 } = determineVerdict(atBoundary, [prior]);
-    expect(v1).toBe('COMMENT');
+    expect(v1).toBe('APPROVE');
     expect(vr1).toBe('only_dismissed_or_nit');
   });
 
@@ -413,7 +429,7 @@ describe('determineVerdict', () => {
       { severity: 'suggestion', title: 'Boundary2', file: 'f.ts', line: 25, description: 'd', reviewers: ['r'] },
     ];
     const { verdict: v2, verdictReason: vr2 } = determineVerdict(atEndBoundary, [prior]);
-    expect(v2).toBe('COMMENT');
+    expect(v2).toBe('APPROVE');
     expect(vr2).toBe('only_dismissed_or_nit');
   });
 
@@ -443,7 +459,7 @@ describe('determineVerdict', () => {
       { severity: 'suggestion', title: 'Boundary', file: 'f.ts', line: 5, description: 'd', reviewers: ['r'] },
     ];
     const { verdict: v3, verdictReason: vr3 } = determineVerdict(atLowerBoundary, [prior]);
-    expect(v3).toBe('COMMENT');
+    expect(v3).toBe('APPROVE');
     expect(vr3).toBe('only_dismissed_or_nit');
   });
 
@@ -462,7 +478,7 @@ describe('determineVerdict', () => {
     expect(vr6).toBe('novel_suggestion');
   });
 
-  it('returns COMMENT for a PR #106 R7 replay (4 suggestions all dismissed)', () => {
+  it('returns APPROVE for a PR #106 R7 replay (4 suggestions all dismissed)', () => {
     const findings: Finding[] = [
       { severity: 'suggestion', title: 'F1', file: 'src/a.ts', line: 10, description: 'd', reviewers: ['r'] },
       { severity: 'suggestion', title: 'F2', file: 'src/b.ts', line: 20, description: 'd', reviewers: ['r'] },
@@ -476,7 +492,7 @@ describe('determineVerdict', () => {
       authorReply: 'agree' as const,
     }));
     const result = determineVerdict(findings, priors);
-    expect(result.verdict).toBe('COMMENT');
+    expect(result.verdict).toBe('APPROVE');
     expect(result.verdictReason).toBe('only_dismissed_or_nit');
   });
 
@@ -1767,7 +1783,7 @@ describe('runReview', () => {
     expect(mockedRunJudgeAgent).toHaveBeenCalledTimes(1);
   });
 
-  it('returns COMMENT when priorRounds agreed suggestion matches current finding (verdict ceiling)', async () => {
+  it('returns APPROVE when priorRounds agreed suggestion matches current finding (verdict ceiling)', async () => {
     const findingTitle = 'Missing null check';
     const findingFile = 'src/handler.ts';
     const findingLine = 10;
@@ -1802,7 +1818,7 @@ describe('runReview', () => {
       priorRounds,
     );
 
-    expect(result.verdict).toBe('COMMENT');
+    expect(result.verdict).toBe('APPROVE');
     expect(result.verdictReason).toBe('only_dismissed_or_nit');
     expect(result.reviewComplete).toBe(true);
   });
