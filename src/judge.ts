@@ -791,6 +791,11 @@ export async function runJudgeAgent(
  * tag them with `IN_PR_SUPPRESSED_TAG`. Returns the new findings array and the
  * number of findings that were suppressed on this pass (idempotent: a finding
  * already tagged with `IN_PR_SUPPRESSED_TAG` is not double-counted).
+ *
+ * `required` findings are protected from suppression (mirrors the cross-round
+ * ratchet guard): a prior resolved or author-agreed thread must not silently
+ * drop a current `required` finding, since severity inflation could come from
+ * prompt injection or from a genuine regression after a thread was resolved.
  */
 export function applyInPrSuppression(
   findings: Finding[],
@@ -803,6 +808,7 @@ export function applyInPrSuppression(
   let count = 0;
   const result = findings.map(finding => {
     if (finding.tags?.includes(IN_PR_SUPPRESSED_TAG)) return finding;
+    if (finding.severity === 'required') return finding;
     const match = suppressions.find(s => matchesInPrSuppression(finding, s));
     if (!match) return finding;
     const next: Finding = { ...finding };

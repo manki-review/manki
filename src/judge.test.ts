@@ -1650,10 +1650,22 @@ describe('applyInPrSuppression', () => {
   });
 
   it('preserves originalSeverity from the incoming severity', () => {
-    const findings = [makeFinding({ severity: 'required' })];
+    const findings = [makeFinding({ severity: 'nit' })];
     const result = applyInPrSuppression(findings, [makeSuppression()]);
     expect(result.findings[0].severity).toBe('ignore');
-    expect(result.findings[0].originalSeverity).toBe('required');
+    expect(result.findings[0].originalSeverity).toBe('nit');
+  });
+
+  it('does not suppress required findings even on fingerprint match', () => {
+    // Mirrors the cross-round ratchet guard: a prior resolved or author-agreed
+    // thread must never silently drop a current `required` finding (regression
+    // or prompt-injection guard).
+    const findings = [makeFinding({ severity: 'required' })];
+    const result = applyInPrSuppression(findings, [makeSuppression()]);
+    expect(result.count).toBe(0);
+    expect(result.findings[0].severity).toBe('required');
+    expect(result.findings[0].originalSeverity).toBeUndefined();
+    expect(result.findings[0].tags ?? []).not.toContain(IN_PR_SUPPRESSED_TAG);
   });
 
   it('does not overwrite a pre-existing originalSeverity', () => {
@@ -2964,14 +2976,14 @@ describe('runJudgeAgent cross-round suppression', () => {
   });
 
   it('does not double-count when both in-PR suppression and cross-round prior agree match', async () => {
-    // A `required` finding is protected from the cross-round ratchet (only suggestions/nits
-    // can be ratcheted), so cross-round does not fire even though the prior agree matches.
-    // The in-PR suppression then matches and fires exactly once. Verifies the two
-    // suppression mechanisms never both count the same finding.
+    // Cross-round ratchet fires first and tags the finding with `suppressed-by-ratchet`,
+    // setting severity to `ignore`. In-PR suppression then sees an already-ignored finding
+    // and does not increment its counter (idempotency on already-suppressed findings).
+    // Verifies the two suppression mechanisms never both count the same finding.
     const judgedResponse = JSON.stringify({
       summary: 'Unchanged.',
       findings: [
-        { title: 'Unused variable', severity: 'required', reasoning: 'Still present.', confidence: 'high' },
+        { title: 'Unused variable', severity: 'suggestion', reasoning: 'Still present.', confidence: 'high' },
       ],
     });
     mockSendMessage.mockResolvedValue({ content: judgedResponse });
@@ -2984,7 +2996,7 @@ describe('runJudgeAgent cross-round suppression', () => {
     ];
 
     const input: JudgeInput = {
-      findings: [makeFinding({ title: 'Unused variable', file: 'src/index.ts', line: 10, severity: 'required' })],
+      findings: [makeFinding({ title: 'Unused variable', file: 'src/index.ts', line: 10, severity: 'suggestion' })],
       diff: makeDiff(),
       rawDiff: '',
       repoContext: '',
@@ -2996,7 +3008,7 @@ describe('runJudgeAgent cross-round suppression', () => {
         timestamp: 't',
         findings: [{
           fingerprint: { file: 'src/index.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
-          severity: 'required',
+          severity: 'suggestion',
           title: 'Unused variable',
           authorReply: 'agree',
         }],
@@ -3006,9 +3018,10 @@ describe('runJudgeAgent cross-round suppression', () => {
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
     expect(result.findings).toHaveLength(1);
     expect(result.findings[0].severity).toBe('ignore');
-    expect(result.findings[0].tags).toContain(IN_PR_SUPPRESSED_TAG);
-    expect(result.inPrSuppressedCount).toBe(1);
-    expect(result.crossRoundSuppressed).toBeUndefined();
+    expect(result.findings[0].tags).toContain('suppressed-by-ratchet');
+    expect(result.crossRoundSuppressed).toBe(1);
+    // In-PR suppression must not double-count an already-suppressed finding.
+    expect(result.inPrSuppressedCount).toBeUndefined();
     expect(result.crossRoundDemoted).toBeUndefined();
   });
 });
