@@ -1831,7 +1831,17 @@ describe('runReview', () => {
       expect.objectContaining({ inPrSuppressions: expect.any(Array) }),
     );
     const judgeInput = mockedRunJudgeAgent.mock.calls[0][2];
-    expect(judgeInput.inPrSuppressions?.length ?? 0).toBeGreaterThan(0);
+    expect(judgeInput.inPrSuppressions).toEqual([
+      {
+        fingerprint: {
+          file: 'src/a.ts',
+          lineStart: 10,
+          lineEnd: 10,
+          slug: 'Unused-variable',
+        },
+        reason: 'resolved-thread',
+      },
+    ]);
   });
 
   it('leaves dedup counts at zero when no previous findings are supplied', async () => {
