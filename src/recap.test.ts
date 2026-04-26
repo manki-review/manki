@@ -843,6 +843,58 @@ describe('fetchRecapState', () => {
     expect(state.recapContext).toContain('Unused variable');
     expect(state.recapContext).not.toContain('### Still Open');
   });
+
+  // Locks in the bias-prevention invariant documented at recap.ts:174-176:
+  // open+agree findings must remain in 'Still Open' (not promoted to Resolved
+  // alongside replied+agree). Post-LLM `applyInPrSuppression` removes them so
+  // agents see them as still-open context but they are not surfaced again.
+  it('keeps open+agree findings in Still Open section of recapContext (not Resolved)', async () => {
+    const octokit = mockOctokit([
+      makeThread({
+        id: 't1',
+        isResolved: false,
+        path: 'src/foo.ts',
+        line: 10,
+        comments: {
+          nodes: [
+            {
+              body: '<!-- manki:suggestion:unused-var --> 💡 **Suggestion**: Unused variable\n\nDesc.',
+              author: { login: 'github-actions[bot]' },
+            },
+          ],
+        },
+      }),
+    ]);
+
+    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    expect(state.previousFindings[0].status).toBe('open');
+    expect(state.recapContext).toContain('### Still Open');
+    expect(state.recapContext).toContain('Unused variable');
+    expect(state.recapContext).not.toContain('### Resolved');
+  });
+
+  it('captures authorReplyLogin from the latest non-bot reply', async () => {
+    const octokit = mockOctokit([
+      makeThread({
+        id: 't1',
+        isResolved: false,
+        comments: {
+          nodes: [
+            {
+              body: '<!-- manki:suggestion:unused-var --> 💡 **Suggestion**: Unused variable\n\nDesc.',
+              author: { login: 'github-actions[bot]' },
+            },
+            { body: 'Working on it.', author: { login: 'someone-else' } },
+            { body: 'Fixed, done.', author: { login: 'pr-author' } },
+          ],
+        },
+      }),
+    ]);
+
+    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    expect(state.previousFindings[0].authorReplyLogin).toBe('pr-author');
+    expect(state.previousFindings[0].authorReplyText).toBe('Fixed, done.');
+  });
 });
 
 describe('collectInPrSuppressions', () => {
