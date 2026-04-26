@@ -1,5 +1,6 @@
 import {
   applyCrossRoundSuppression,
+  applyInPrSuppression,
   buildJudgeSystemPrompt,
   buildJudgeUserMessage,
   computeProvenanceMap,
@@ -15,7 +16,7 @@ import {
 import { ClaudeClient } from './claude';
 import { RepoMemory, Learning, Suppression } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
-import { Finding, HandoverFinding, HandoverRound, ProvenanceEntry, ReviewConfig, ParsedDiff, DiffFile, DiffHunk } from './types';
+import { Finding, HandoverFinding, HandoverRound, IN_PR_SUPPRESSED_TAG, InPrSuppression, ProvenanceEntry, ReviewConfig, ParsedDiff, DiffFile, DiffHunk } from './types';
 
 const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
   auto_review: true,
@@ -1468,6 +1469,247 @@ describe('runJudgeAgent', () => {
     expect(result.findings).toHaveLength(1);
     expect(result.findings[0].tags ?? []).not.toContain('own-proposal-followup');
   });
+
+  it('flips findings matching an in-PR suppression to ignore and tags them', async () => {
+    const judgedResponse = JSON.stringify({
+      summary: 'Same finding.',
+      findings: [
+        { title: 'Unused variable', severity: 'suggestion', reasoning: 'Still there.', confidence: 'high' },
+      ],
+    });
+    mockSendMessage.mockResolvedValue({ content: judgedResponse });
+
+    const inPrSuppressions: InPrSuppression[] = [
+      {
+        fingerprint: { file: 'src/index.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
+        reason: 'resolved-thread',
+      },
+    ];
+
+    const input: JudgeInput = {
+      findings: [makeFinding()],
+      diff: makeDiff(),
+      rawDiff: '',
+      repoContext: '',
+      agentCount: 3,
+      inPrSuppressions,
+    };
+
+    const result = await runJudgeAgent(mockClient, makeConfig(), input);
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].severity).toBe('ignore');
+    expect(result.findings[0].tags).toContain(IN_PR_SUPPRESSED_TAG);
+    expect(result.findings[0].originalSeverity).toBe('suggestion');
+    expect(result.inPrSuppressedCount).toBe(1);
+  });
+
+  it('leaves non-matching findings untouched when inPrSuppressions provided', async () => {
+    const judgedResponse = JSON.stringify({
+      summary: 'New finding.',
+      findings: [
+        { title: 'Unused variable', severity: 'suggestion', reasoning: 'Real.', confidence: 'high' },
+      ],
+    });
+    mockSendMessage.mockResolvedValue({ content: judgedResponse });
+
+    const inPrSuppressions: InPrSuppression[] = [
+      {
+        fingerprint: { file: 'src/other.ts', lineStart: 1, lineEnd: 1, slug: 'different-slug' },
+        reason: 'agree-reply',
+      },
+    ];
+
+    const input: JudgeInput = {
+      findings: [makeFinding()],
+      diff: makeDiff(),
+      rawDiff: '',
+      repoContext: '',
+      agentCount: 3,
+      inPrSuppressions,
+    };
+
+    const result = await runJudgeAgent(mockClient, makeConfig(), input);
+    expect(result.findings[0].severity).toBe('suggestion');
+    expect(result.findings[0].tags).toBeUndefined();
+    expect(result.inPrSuppressedCount).toBeUndefined();
+  });
+
+  it('applies in-PR suppression when judge returns no findings', async () => {
+    mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 'empty', findings: [] }) });
+
+    const inPrSuppressions: InPrSuppression[] = [
+      {
+        fingerprint: { file: 'src/index.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
+        reason: 'resolved-thread',
+      },
+    ];
+
+    const input: JudgeInput = {
+      findings: [makeFinding()],
+      diff: makeDiff(),
+      rawDiff: '',
+      repoContext: '',
+      agentCount: 1,
+      inPrSuppressions,
+    };
+
+    const result = await runJudgeAgent(mockClient, makeConfig(), input);
+    expect(result.findings[0].severity).toBe('ignore');
+    expect(result.findings[0].tags).toContain(IN_PR_SUPPRESSED_TAG);
+    expect(result.inPrSuppressedCount).toBe(1);
+  });
+});
+
+describe('applyInPrSuppression', () => {
+  const makeSuppression = (overrides: Partial<InPrSuppression['fingerprint']> = {}, reason: InPrSuppression['reason'] = 'resolved-thread'): InPrSuppression => ({
+    fingerprint: {
+      file: 'src/index.ts',
+      lineStart: 10,
+      lineEnd: 10,
+      slug: titleToSlug('Unused variable'),
+      ...overrides,
+    },
+    reason,
+  });
+
+  it('returns findings unchanged when no suppressions', () => {
+    const findings = [makeFinding()];
+    const result = applyInPrSuppression(findings, undefined);
+    expect(result.findings).toBe(findings);
+    expect(result.count).toBe(0);
+  });
+
+  it('returns findings unchanged when suppressions list is empty', () => {
+    const findings = [makeFinding()];
+    const result = applyInPrSuppression(findings, []);
+    expect(result.findings).toBe(findings);
+    expect(result.count).toBe(0);
+  });
+
+  it('matches on file + slug + line within tolerance', () => {
+    const findings = [makeFinding({ line: 14 })];
+    const result = applyInPrSuppression(findings, [makeSuppression()]);
+    expect(result.count).toBe(1);
+    expect(result.findings[0].severity).toBe('ignore');
+  });
+
+  it('does not match when line is outside tolerance', () => {
+    const findings = [makeFinding({ line: 50 })];
+    const result = applyInPrSuppression(findings, [makeSuppression()]);
+    expect(result.count).toBe(0);
+    expect(result.findings[0].severity).toBe('suggestion');
+  });
+
+  it('does not suppress a file-level finding (line: 0) when lineStart is small', () => {
+    const findings = [makeFinding({ line: 0 })];
+    const result = applyInPrSuppression(findings, [makeSuppression({ lineStart: 2, lineEnd: 2 })]);
+    expect(result.count).toBe(0);
+    expect(result.findings[0].severity).toBe('suggestion');
+  });
+
+  it('suppresses a finding at exactly lineEnd + tolerance', () => {
+    // makeSuppression defaults to lineEnd: 10; tolerance is 5, so 15 is the inclusive boundary
+    const findings = [makeFinding({ line: 15 })];
+    const result = applyInPrSuppression(findings, [makeSuppression()]);
+    expect(result.count).toBe(1);
+    expect(result.findings[0].severity).toBe('ignore');
+  });
+
+  it('does not suppress a finding one line beyond lineEnd + tolerance', () => {
+    const findings = [makeFinding({ line: 16 })];
+    const result = applyInPrSuppression(findings, [makeSuppression()]);
+    expect(result.count).toBe(0);
+    expect(result.findings[0].severity).toBe('suggestion');
+  });
+
+  it('suppresses a finding at exactly lineStart - tolerance', () => {
+    // makeSuppression defaults to lineStart: 10; tolerance is 5, so 5 is the inclusive boundary
+    const findings = [makeFinding({ line: 5 })];
+    const result = applyInPrSuppression(findings, [makeSuppression()]);
+    expect(result.count).toBe(1);
+    expect(result.findings[0].severity).toBe('ignore');
+  });
+
+  it('does not suppress a finding one line below lineStart - tolerance', () => {
+    const findings = [makeFinding({ line: 4 })];
+    const result = applyInPrSuppression(findings, [makeSuppression()]);
+    expect(result.count).toBe(0);
+    expect(result.findings[0].severity).toBe('suggestion');
+  });
+
+  it('does not match when file differs', () => {
+    const findings = [makeFinding({ file: 'src/other.ts' })];
+    const result = applyInPrSuppression(findings, [makeSuppression()]);
+    expect(result.count).toBe(0);
+  });
+
+  it('does not match when slug differs', () => {
+    const findings = [makeFinding({ title: 'Completely different title' })];
+    const result = applyInPrSuppression(findings, [makeSuppression()]);
+    expect(result.count).toBe(0);
+  });
+
+  it('preserves originalSeverity from the incoming severity', () => {
+    const findings = [makeFinding({ severity: 'nitpick' })];
+    const result = applyInPrSuppression(findings, [makeSuppression()]);
+    expect(result.findings[0].severity).toBe('ignore');
+    expect(result.findings[0].originalSeverity).toBe('nitpick');
+  });
+
+  it('does not suppress blocker findings even on fingerprint match', () => {
+    // Mirrors the cross-round ratchet guard: a prior resolved or author-agreed
+    // thread must never silently drop a current `blocker` finding (regression
+    // or prompt-injection guard).
+    const findings = [makeFinding({ severity: 'blocker' })];
+    const result = applyInPrSuppression(findings, [makeSuppression()]);
+    expect(result.count).toBe(0);
+    expect(result.findings[0].severity).toBe('blocker');
+    expect(result.findings[0].originalSeverity).toBeUndefined();
+    expect(result.findings[0].tags ?? []).not.toContain(IN_PR_SUPPRESSED_TAG);
+  });
+
+  it('does not overwrite a pre-existing originalSeverity', () => {
+    // Finding was already demoted elsewhere (e.g., cross-round contradiction) and carries
+    // originalSeverity: 'blocker'. In-PR suppression must keep that pre-existing value
+    // rather than clobbering it with the current (demoted) severity.
+    const findings = [makeFinding({ severity: 'suggestion', originalSeverity: 'blocker' })];
+    const result = applyInPrSuppression(findings, [makeSuppression()]);
+    expect(result.count).toBe(1);
+    expect(result.findings[0].severity).toBe('ignore');
+    expect(result.findings[0].originalSeverity).toBe('blocker');
+  });
+
+  it('is idempotent on already-suppressed findings', () => {
+    const findings = [makeFinding({ tags: [IN_PR_SUPPRESSED_TAG], severity: 'ignore' })];
+    const result = applyInPrSuppression(findings, [makeSuppression()]);
+    expect(result.count).toBe(0);
+    expect(result.findings[0]).toBe(findings[0]);
+  });
+
+  it('tags an already-ignored finding without incrementing count', () => {
+    const findings = [makeFinding({ severity: 'ignore' })];
+    const result = applyInPrSuppression(findings, [makeSuppression()]);
+    expect(result.count).toBe(0);
+    expect(result.findings[0].tags).toContain(IN_PR_SUPPRESSED_TAG);
+    expect(result.findings[0].severity).toBe('ignore');
+    expect(result.findings[0].originalSeverity).toBeUndefined();
+  });
+
+  it('counts all matching findings across multiple suppressions', () => {
+    const findings = [
+      makeFinding({ title: 'Unused variable', line: 10 }),
+      makeFinding({ title: 'Missing null check', line: 20, file: 'src/other.ts' }),
+      makeFinding({ title: 'Type error', line: 30, file: 'src/third.ts' }),
+    ];
+    const suppressions = [
+      makeSuppression({}, 'resolved-thread'),
+      { fingerprint: { file: 'src/other.ts', lineStart: 20, lineEnd: 20, slug: titleToSlug('Missing null check') }, reason: 'agree-reply' as const },
+    ];
+    const result = applyInPrSuppression(findings, suppressions);
+    expect(result.count).toBe(2);
+    expect(result.findings.filter(f => f.severity === 'ignore')).toHaveLength(2);
+    expect(result.findings[2].severity).toBe('suggestion');
+  });
 });
 
 describe('mapJudgedToFindings', () => {
@@ -2731,5 +2973,55 @@ describe('runJudgeAgent cross-round suppression', () => {
     expect(result.crossRoundDemoted).toBeUndefined();
     expect(result.findings[0].severity).toBe('ignore');
     expect(result.findings[0].tags).toContain('suppressed-by-ratchet');
+  });
+
+  it('does not double-count when both in-PR suppression and cross-round prior agree match', async () => {
+    // Cross-round ratchet fires first and tags the finding with `suppressed-by-ratchet`,
+    // setting severity to `ignore`. In-PR suppression then sees an already-ignored finding
+    // and does not increment its counter (idempotency on already-suppressed findings).
+    // Verifies the two suppression mechanisms never both count the same finding.
+    const judgedResponse = JSON.stringify({
+      summary: 'Unchanged.',
+      findings: [
+        { title: 'Unused variable', severity: 'suggestion', reasoning: 'Still present.', confidence: 'high' },
+      ],
+    });
+    mockSendMessage.mockResolvedValue({ content: judgedResponse });
+
+    const inPrSuppressions: InPrSuppression[] = [
+      {
+        fingerprint: { file: 'src/index.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
+        reason: 'resolved-thread',
+      },
+    ];
+
+    const input: JudgeInput = {
+      findings: [makeFinding({ title: 'Unused variable', file: 'src/index.ts', line: 10, severity: 'suggestion' })],
+      diff: makeDiff(),
+      rawDiff: '',
+      repoContext: '',
+      agentCount: 3,
+      inPrSuppressions,
+      priorRounds: [{
+        round: 1,
+        commitSha: 'abc',
+        timestamp: 't',
+        findings: [{
+          fingerprint: { file: 'src/index.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
+          severity: 'suggestion',
+          title: 'Unused variable',
+          authorReply: 'agree',
+        }],
+      }],
+    };
+
+    const result = await runJudgeAgent(mockClient, makeConfig(), input);
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].severity).toBe('ignore');
+    expect(result.findings[0].tags).toContain('suppressed-by-ratchet');
+    expect(result.crossRoundSuppressed).toBe(1);
+    // In-PR suppression must not double-count an already-suppressed finding.
+    expect(result.inPrSuppressedCount).toBeUndefined();
+    expect(result.crossRoundDemoted).toBeUndefined();
   });
 });

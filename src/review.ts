@@ -4,7 +4,7 @@ import { ClaudeClient } from './claude';
 import { runJudgeAgent, JudgeInput, ResolveThread, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
-import { deduplicateFindings, llmDeduplicateFindings, PreviousFinding } from './recap';
+import { collectInPrSuppressions, deduplicateFindings, llmDeduplicateFindings, PreviousFinding } from './recap';
 import { ReviewConfig, ReviewerAgent, Finding, HandoverFinding, HandoverRound, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, PlannerRoundHint, SpecialistOutcome, EffortLevel, AgentPick, ProvenanceEntry, MAX_AGENT_RETRIES } from './types';
 import { extractJSON } from './json';
 
@@ -541,6 +541,7 @@ export async function runReview(
   openThreads?: Array<{ threadId: string; title: string; file: string; line: number; severity: string }>,
   previousFindings?: PreviousFinding[],
   priorRounds?: HandoverRound[],
+  prAuthorLogin?: string,
 ): Promise<ReviewResult> {
   const priorRoundHints = buildPlannerHints(priorRounds);
   const provenanceMap = computeProvenanceMap(priorRounds, rawDiff);
@@ -960,12 +961,20 @@ export async function runReview(
     });
   }
 
+  const inPrSuppressions = previousFindings && previousFindings.length > 0
+    ? collectInPrSuppressions(previousFindings, prAuthorLogin)
+    : [];
+  if (inPrSuppressions.length > 0) {
+    core.info(`In-PR suppressions: ${inPrSuppressions.length} fingerprints (resolved or author-agreed)`);
+  }
+
   let finalFindings: Finding[];
   let allJudgedFindings: Finding[] | undefined;
   let judgeSummary = 'Review complete.';
   let judgeResolveThreads: ResolveThread[] | undefined;
   let judgeCrossRoundSuppressed: number | undefined;
   let judgeCrossRoundDemoted: number | undefined;
+  let inPrSuppressedCount = 0;
   try {
     core.info(`Running judge on ${findingsForJudge.length} findings...`);
     const judgeInput: JudgeInput = {
@@ -980,6 +989,7 @@ export async function runReview(
       isFollowUp,
       openThreads,
       priorRounds,
+      inPrSuppressions,
       effort: judgeEffort as 'low' | 'medium' | 'high',
       provenanceMap,
     };
@@ -989,6 +999,7 @@ export async function runReview(
     judgeResolveThreads = judgeResult.resolveThreads;
     judgeCrossRoundSuppressed = judgeResult.crossRoundSuppressed;
     judgeCrossRoundDemoted = judgeResult.crossRoundDemoted;
+    inPrSuppressedCount = judgeResult.inPrSuppressedCount ?? 0;
     finalFindings = judgeResult.findings.filter(f => f.severity !== 'ignore');
     core.info(`Judge complete: ${finalFindings.length} findings survived (${judgeResult.findings.length - finalFindings.length} ignored)`);
   } catch (error) {
@@ -1038,6 +1049,7 @@ export async function runReview(
     staticDedupCount,
     llmDedupCount,
     suppressionCount,
+    ...(inPrSuppressedCount > 0 && { inPrSuppressedCount }),
     agentResponseLengths,
     crossRoundSuppressed: judgeCrossRoundSuppressed,
     crossRoundDemoted: judgeCrossRoundDemoted,

@@ -25,6 +25,7 @@ export const RATCHET_SUPPRESSED_TAG = 'suppressed-by-ratchet' as const;
 export const CONTRADICTION_TAG = 'contradicts-prior-round' as const;
 
 export const OWN_PROPOSAL_TAG = 'own-proposal-followup' as const;
+export const IN_PR_SUPPRESSED_TAG = 'suppressed-in-pr' as const;
 
 /**
  * A region of the current diff that implements code manki itself suggested in a
@@ -38,7 +39,6 @@ export interface ProvenanceEntry {
   originatingRound: number;
   originatingTitle: string;
 }
-
 export interface Finding {
   severity: FindingSeverity;
   title: string;
@@ -69,6 +69,20 @@ export interface FindingFingerprint {
 }
 
 export type AuthorReplyClass = 'agree' | 'disagree' | 'partial' | 'none';
+
+/** Reason why a prior-round thread's fingerprint is suppressing current findings. */
+export type InPrSuppressionReason = 'resolved-thread' | 'agree-reply';
+
+/** Fingerprint-level suppression derived from the current PR's thread state. */
+export interface InPrSuppression {
+  fingerprint: FindingFingerprint;
+  reason: InPrSuppressionReason;
+  /**
+   * Login of the commenter whose reply triggered an `agree-reply` suppression.
+   * Absent for `resolved-thread` reasons. Used for audit-log attribution.
+   */
+  authorLogin?: string;
+}
 
 /** One finding as captured in a prior review round. */
 export interface HandoverFinding {
@@ -127,6 +141,7 @@ export interface ReviewResult {
   staticDedupCount?: number;
   llmDedupCount?: number;
   suppressionCount?: number;
+  inPrSuppressedCount?: number;
   agentResponseLengths?: Map<string, number>;
   crossRoundSuppressed?: number;
   crossRoundDemoted?: number;
@@ -267,6 +282,7 @@ export interface ReviewStats {
     severityChanges: number;
     mergedDuplicates: number;
     defensiveHardeningCount?: number;
+    inPrSuppressedCount?: number;
     verdictReason?: VerdictReason;
     crossRoundSuppressed?: number;
     crossRoundDemoted?: number;
