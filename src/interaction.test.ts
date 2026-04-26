@@ -245,6 +245,20 @@ describe('parseTriageBody', () => {
     expect(result.accepted).toEqual([]);
     expect(result.rejected).toEqual([]);
   });
+
+  it('still parses legacy 💡 suggestion emoji from pre-rename triage comments', () => {
+    const body = [
+      '- [x] 💡 **Legacy accepted** — `src/legacy.ts:1`',
+      '- [ ] 💡 **Legacy rejected** — `src/legacy.ts:2`',
+    ].join('\n');
+    const result = parseTriageBody(body);
+    expect(result.accepted).toHaveLength(1);
+    expect(result.accepted[0].title).toBe('Legacy accepted');
+    expect(result.accepted[0].ref).toBe('src/legacy.ts:1');
+    expect(result.rejected).toHaveLength(1);
+    expect(result.rejected[0].title).toBe('Legacy rejected');
+    expect(result.rejected[0].ref).toBe('src/legacy.ts:2');
+  });
 });
 
 describe('extractFindingContent', () => {
