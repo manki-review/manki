@@ -370,6 +370,34 @@ describe('buildJudgeUserMessage', () => {
     expect(msg).toContain('Unused import');
   });
 
+  it('renders thread reference as markdown link when threadUrl is provided', () => {
+    const findings = [makeFinding()];
+    const openThreads = [
+      {
+        threadId: 'PRRT_abc',
+        threadUrl: 'https://github.com/owner/repo/pull/1#discussion_r123',
+        title: 'Null check missing',
+        file: 'src/foo.ts',
+        line: 10,
+        severity: 'required',
+      },
+    ];
+    const msg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, openThreads);
+
+    expect(msg).toContain('[PRRT_abc](https://github.com/owner/repo/pull/1#discussion_r123)');
+  });
+
+  it('renders thread reference as plain id when threadUrl is absent', () => {
+    const findings = [makeFinding()];
+    const openThreads = [
+      { threadId: 'PRRT_abc', title: 'Null check missing', file: 'src/foo.ts', line: 10, severity: 'required' },
+    ];
+    const msg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, openThreads);
+
+    expect(msg).toContain('**PRRT_abc**');
+    expect(msg).not.toContain('[PRRT_abc](');
+  });
+
   it('omits open threads section when openThreads is undefined', () => {
     const findings = [makeFinding()];
     const msg = buildJudgeUserMessage(findings, new Map(), '');
