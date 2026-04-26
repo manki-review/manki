@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { minimatch } from 'minimatch';
 
-import { AuthorReplyClass, Finding, FindingSeverity, HandoverFinding, HandoverRound, PrHandover } from './types';
+import { AuthorReplyClass, Finding, FindingSeverity, HandoverFinding, HandoverRound, PrHandover, migrateLegacySeverity } from './types';
 import { titleToSlug } from './github';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -119,7 +119,7 @@ async function fetchTextFile(
 }
 
 /** Severities that are allowed to be suppressed by stored suppressions. */
-const SUPPRESSIBLE_SEVERITIES: ReadonlySet<FindingSeverity> = new Set<FindingSeverity>(['suggestion', 'nit']);
+const SUPPRESSIBLE_SEVERITIES: ReadonlySet<FindingSeverity> = new Set<FindingSeverity>(['warning', 'suggestion', 'nitpick']);
 
 /**
  * Filter findings against stored suppressions.
@@ -475,7 +475,7 @@ export function applyEscalations(
   patterns: Pattern[],
 ): Finding[] {
   return findings.map(f => {
-    if (f.severity !== 'suggestion' && f.severity !== 'nit') return f;
+    if (f.severity !== 'warning' && f.severity !== 'suggestion' && f.severity !== 'nitpick') return f;
 
     const normalized = f.title.toLowerCase().trim();
     const pattern = patterns.find(p =>
@@ -483,8 +483,8 @@ export function applyEscalations(
     );
 
     if (pattern) {
-      core.info(`Escalating "${f.title}" from ${f.severity} to required (pattern accepted ${pattern.accepted_count || 0} times)`);
-      return { ...f, severity: 'required' as const };
+      core.info(`Escalating "${f.title}" from ${f.severity} to blocker (pattern accepted ${pattern.accepted_count || 0} times)`);
+      return { ...f, severity: 'blocker' as const };
     }
 
     return f;
@@ -575,6 +575,10 @@ async function fetchJsonFile<T>(
 
 /**
  * Load the per-PR handover file, or null if it does not yet exist.
+ *
+ * Legacy severity values written by older versions (`'required'`, `'nit'`)
+ * are migrated to the current vocabulary on read so downstream code only ever
+ * sees `FindingSeverity` values it recognizes.
  */
 export async function loadHandover(
   octokit: Octokit,
@@ -583,7 +587,22 @@ export async function loadHandover(
   prNumber: number,
 ): Promise<PrHandover | null> {
   const [owner, repo] = memoryRepo.split('/');
-  return fetchJsonFile<PrHandover>(octokit, owner, repo, handoverPath(targetRepo, prNumber));
+  const loaded = await fetchJsonFile<PrHandover>(octokit, owner, repo, handoverPath(targetRepo, prNumber));
+  return loaded ? migrateHandover(loaded) : null;
+}
+
+/** Apply `migrateLegacySeverity` to every finding's severity in a loaded handover. */
+function migrateHandover(handover: PrHandover): PrHandover {
+  return {
+    ...handover,
+    rounds: handover.rounds.map(round => ({
+      ...round,
+      findings: round.findings.map(f => ({
+        ...f,
+        severity: migrateLegacySeverity(f.severity) as HandoverFinding['severity'],
+      })),
+    })),
+  };
 }
 
 /**

@@ -62,7 +62,7 @@ describe('parseFindings', () => {
   it('parses valid JSON array', () => {
     const json = JSON.stringify([
       {
-        severity: 'required',
+        severity: 'blocker',
         title: 'Bug found',
         file: 'src/index.ts',
         line: 10,
@@ -73,7 +73,7 @@ describe('parseFindings', () => {
 
     const findings = parseFindings(json, 'TestReviewer');
     expect(findings).toHaveLength(1);
-    expect(findings[0].severity).toBe('required');
+    expect(findings[0].severity).toBe('blocker');
     expect(findings[0].title).toBe('Bug found');
     expect(findings[0].file).toBe('src/index.ts');
     expect(findings[0].line).toBe(10);
@@ -91,11 +91,11 @@ describe('parseFindings', () => {
   });
 
   it('parses markdown-wrapped JSON without language tag', () => {
-    const json = '```\n[{"severity":"nit","title":"Why?","file":"b.ts","line":5,"description":"Unclear code."}]\n```';
+    const json = '```\n[{"severity":"nitpick","title":"Why?","file":"b.ts","line":5,"description":"Unclear code."}]\n```';
 
     const findings = parseFindings(json, 'Reviewer');
     expect(findings).toHaveLength(1);
-    expect(findings[0].severity).toBe('nit');
+    expect(findings[0].severity).toBe('nitpick');
   });
 
   it('returns empty array for invalid JSON', () => {
@@ -184,7 +184,7 @@ describe('parseFindings', () => {
   });
 
   it('handles missing fields gracefully', () => {
-    const json = JSON.stringify([{ severity: 'required' }]);
+    const json = JSON.stringify([{ severity: 'blocker' }]);
 
     const findings = parseFindings(json, 'Reviewer');
     expect(findings).toHaveLength(1);
@@ -211,7 +211,7 @@ describe('parseFindings', () => {
 
 describe('validateSeverity', () => {
   it('accepts required', () => {
-    expect(validateSeverity('required')).toBe('required');
+    expect(validateSeverity('blocker')).toBe('blocker');
   });
 
   it('accepts suggestion', () => {
@@ -219,7 +219,7 @@ describe('validateSeverity', () => {
   });
 
   it('accepts nit', () => {
-    expect(validateSeverity('nit')).toBe('nit');
+    expect(validateSeverity('nitpick')).toBe('nitpick');
   });
 
   it('accepts ignore', () => {
@@ -239,39 +239,39 @@ describe('validateSeverity', () => {
 describe('determineVerdict', () => {
   it('returns REQUEST_CHANGES when any finding is required', () => {
     const findings: Finding[] = [
-      makeFinding({ severity: 'suggestion' }),
-      makeFinding({ severity: 'required' }),
+      makeFinding({ severity: 'warning' }),
+      makeFinding({ severity: 'blocker' }),
     ];
     expect(determineVerdict(findings).verdict).toBe('REQUEST_CHANGES');
     expect(determineVerdict(findings).verdictReason).toBe('required_present');
   });
 
   it('returns REQUEST_CHANGES when a novel suggestion exists', () => {
-    const findings: Finding[] = [makeFinding({ severity: 'suggestion' })];
+    const findings: Finding[] = [makeFinding({ severity: 'warning' })];
     expect(determineVerdict(findings).verdict).toBe('REQUEST_CHANGES');
     expect(determineVerdict(findings).verdictReason).toBe('novel_suggestion');
   });
 
-  it('returns APPROVE when there are only nits', () => {
-    const findings: Finding[] = [makeFinding({ severity: 'nit' })];
+  it('returns APPROVE when there are only nitpicks', () => {
+    const findings: Finding[] = [makeFinding({ severity: 'nitpick' })];
     expect(determineVerdict(findings).verdict).toBe('APPROVE');
-    expect(determineVerdict(findings).verdictReason).toBe('only_dismissed_or_nit');
+    expect(determineVerdict(findings).verdictReason).toBe('only_nit_or_suggestion');
   });
 
   it('returns APPROVE when there are only ignores', () => {
     const findings: Finding[] = [makeFinding({ severity: 'ignore' })];
     expect(determineVerdict(findings).verdict).toBe('APPROVE');
-    expect(determineVerdict(findings).verdictReason).toBe('only_dismissed_or_nit');
+    expect(determineVerdict(findings).verdictReason).toBe('only_nit_or_suggestion');
   });
 
   it('returns APPROVE when there are no findings', () => {
     expect(determineVerdict([]).verdict).toBe('APPROVE');
-    expect(determineVerdict([]).verdictReason).toBe('only_dismissed_or_nit');
+    expect(determineVerdict([]).verdictReason).toBe('only_nit_or_suggestion');
   });
 
   it('returns REQUEST_CHANGES when a suggestion has no matching prior-round dismissal', () => {
     const findings: Finding[] = [
-      { severity: 'suggestion', title: 'Missing null check', file: 'src/handler.ts', line: 1, description: 'The return value should be checked for null', reviewers: ['reviewer-1'], judgeConfidence: 'high' },
+      { severity: 'warning', title: 'Missing null check', file: 'src/handler.ts', line: 1, description: 'The return value should be checked for null', reviewers: ['reviewer-1'], judgeConfidence: 'high' },
     ];
     const result = determineVerdict(findings, []);
     expect(result.verdict).toBe('REQUEST_CHANGES');
@@ -280,43 +280,43 @@ describe('determineVerdict', () => {
 
   it('returns APPROVE when the only suggestion matches a prior-round agreement', () => {
     const findings: Finding[] = [
-      { severity: 'suggestion', title: 'Missing null check', file: 'src/handler.ts', line: 10, description: 'desc', reviewers: ['reviewer-1'] },
+      { severity: 'warning', title: 'Missing null check', file: 'src/handler.ts', line: 10, description: 'desc', reviewers: ['reviewer-1'] },
     ];
     const priors: HandoverFinding[] = [{
       fingerprint: { file: 'src/handler.ts', lineStart: 10, lineEnd: 10, slug: 'Missing-null-check' },
-      severity: 'suggestion',
+      severity: 'warning',
       title: 'Missing null check',
       authorReply: 'agree',
     }];
     const result = determineVerdict(findings, priors);
     expect(result.verdict).toBe('APPROVE');
-    expect(result.verdictReason).toBe('only_dismissed_or_nit');
+    expect(result.verdictReason).toBe('only_nit_or_suggestion');
   });
 
-  it('returns APPROVE for a mix of nits and dismissed suggestions', () => {
+  it('returns APPROVE for a mix of nitpicks and dismissed warnings', () => {
     const findings: Finding[] = [
-      makeFinding({ severity: 'nit' }),
-      { severity: 'suggestion', title: 'Missing null check', file: 'src/handler.ts', line: 10, description: 'desc', reviewers: ['reviewer-1'] },
+      makeFinding({ severity: 'nitpick' }),
+      { severity: 'warning', title: 'Missing null check', file: 'src/handler.ts', line: 10, description: 'desc', reviewers: ['reviewer-1'] },
     ];
     const priors: HandoverFinding[] = [{
       fingerprint: { file: 'src/handler.ts', lineStart: 10, lineEnd: 10, slug: 'Missing-null-check' },
-      severity: 'suggestion',
+      severity: 'warning',
       title: 'Missing null check',
       authorReply: 'agree',
     }];
     const result = determineVerdict(findings, priors);
     expect(result.verdict).toBe('APPROVE');
-    expect(result.verdictReason).toBe('only_dismissed_or_nit');
+    expect(result.verdictReason).toBe('only_nit_or_suggestion');
   });
 
   it('returns REQUEST_CHANGES when mixing dismissed and novel suggestions', () => {
     const findings: Finding[] = [
-      { severity: 'suggestion', title: 'Missing null check', file: 'src/handler.ts', line: 10, description: 'desc', reviewers: ['reviewer-1'] },
-      { severity: 'suggestion', title: 'Unused import', file: 'src/handler.ts', line: 20, description: 'desc', reviewers: ['reviewer-1'] },
+      { severity: 'warning', title: 'Missing null check', file: 'src/handler.ts', line: 10, description: 'desc', reviewers: ['reviewer-1'] },
+      { severity: 'warning', title: 'Unused import', file: 'src/handler.ts', line: 20, description: 'desc', reviewers: ['reviewer-1'] },
     ];
     const priors: HandoverFinding[] = [{
       fingerprint: { file: 'src/handler.ts', lineStart: 10, lineEnd: 10, slug: 'Missing-null-check' },
-      severity: 'suggestion',
+      severity: 'warning',
       title: 'Missing null check',
       authorReply: 'agree',
     }];
@@ -327,7 +327,7 @@ describe('determineVerdict', () => {
 
   it('treats undefined priorRounds as "all suggestions novel"', () => {
     const findings: Finding[] = [
-      { severity: 'suggestion', title: 'Something', file: 'a.ts', line: 3, description: 'desc', reviewers: ['r'] },
+      { severity: 'warning', title: 'Something', file: 'a.ts', line: 3, description: 'desc', reviewers: ['r'] },
     ];
     expect(determineVerdict(findings).verdict).toBe('REQUEST_CHANGES');
     expect(determineVerdict(findings).verdictReason).toBe('novel_suggestion');
@@ -336,11 +336,11 @@ describe('determineVerdict', () => {
   it('only dismisses when the prior authorReply is "agree"', () => {
     const title = 'T';
     const findings: Finding[] = [
-      { severity: 'suggestion', title, file: 'f.ts', line: 5, description: 'd', reviewers: ['r'] },
+      { severity: 'warning', title, file: 'f.ts', line: 5, description: 'd', reviewers: ['r'] },
     ];
     const priors: HandoverFinding[] = [{
       fingerprint: { file: 'f.ts', lineStart: 5, lineEnd: 5, slug: titleToSlug(title) },
-      severity: 'suggestion',
+      severity: 'warning',
       title,
       authorReply: 'disagree',
     }];
@@ -350,11 +350,11 @@ describe('determineVerdict', () => {
   it.each(['partial', 'none'] as const)('does not dismiss when authorReply is "%s"', (reply) => {
     const title = 'T';
     const findings: Finding[] = [
-      { severity: 'suggestion', title, file: 'f.ts', line: 5, description: 'd', reviewers: ['r'] },
+      { severity: 'warning', title, file: 'f.ts', line: 5, description: 'd', reviewers: ['r'] },
     ];
     const priors: HandoverFinding[] = [{
       fingerprint: { file: 'f.ts', lineStart: 5, lineEnd: 5, slug: titleToSlug(title) },
-      severity: 'suggestion',
+      severity: 'warning',
       title,
       authorReply: reply,
     }];
@@ -364,11 +364,11 @@ describe('determineVerdict', () => {
 
   it('tolerates ±5 line drift when matching a prior dismissal', () => {
     const findings: Finding[] = [
-      { severity: 'suggestion', title: 'Drifted', file: 'f.ts', line: 15, description: 'd', reviewers: ['r'] },
+      { severity: 'warning', title: 'Drifted', file: 'f.ts', line: 15, description: 'd', reviewers: ['r'] },
     ];
     const priors: HandoverFinding[] = [{
       fingerprint: { file: 'f.ts', lineStart: 10, lineEnd: 10, slug: 'Drifted' },
-      severity: 'suggestion',
+      severity: 'warning',
       title: 'Drifted',
       authorReply: 'agree',
     }];
@@ -377,11 +377,11 @@ describe('determineVerdict', () => {
 
   it('rejects matches outside the ±5 line tolerance', () => {
     const findings: Finding[] = [
-      { severity: 'suggestion', title: 'FarAway', file: 'f.ts', line: 100, description: 'd', reviewers: ['r'] },
+      { severity: 'warning', title: 'FarAway', file: 'f.ts', line: 100, description: 'd', reviewers: ['r'] },
     ];
     const priors: HandoverFinding[] = [{
       fingerprint: { file: 'f.ts', lineStart: 10, lineEnd: 10, slug: 'FarAway' },
-      severity: 'suggestion',
+      severity: 'warning',
       title: 'FarAway',
       authorReply: 'agree',
     }];
@@ -391,27 +391,27 @@ describe('determineVerdict', () => {
   it('matches when finding.line equals lineStart + 5 (exact tolerance boundary)', () => {
     const prior: HandoverFinding = {
       fingerprint: { file: 'f.ts', lineStart: 10, lineEnd: 10, slug: 'Boundary' },
-      severity: 'suggestion',
+      severity: 'warning',
       title: 'Boundary',
       authorReply: 'agree',
     };
     const atBoundary: Finding[] = [
-      { severity: 'suggestion', title: 'Boundary', file: 'f.ts', line: 15, description: 'd', reviewers: ['r'] },
+      { severity: 'warning', title: 'Boundary', file: 'f.ts', line: 15, description: 'd', reviewers: ['r'] },
     ];
     const { verdict: v1, verdictReason: vr1 } = determineVerdict(atBoundary, [prior]);
     expect(v1).toBe('APPROVE');
-    expect(vr1).toBe('only_dismissed_or_nit');
+    expect(vr1).toBe('only_nit_or_suggestion');
   });
 
   it('does not match when finding.line equals lineStart + 6 (one outside tolerance)', () => {
     const prior: HandoverFinding = {
       fingerprint: { file: 'f.ts', lineStart: 10, lineEnd: 10, slug: 'Boundary' },
-      severity: 'suggestion',
+      severity: 'warning',
       title: 'Boundary',
       authorReply: 'agree',
     };
     const outsideBoundary: Finding[] = [
-      { severity: 'suggestion', title: 'Boundary', file: 'f.ts', line: 16, description: 'd', reviewers: ['r'] },
+      { severity: 'warning', title: 'Boundary', file: 'f.ts', line: 16, description: 'd', reviewers: ['r'] },
     ];
     const { verdict: v4, verdictReason: vr4 } = determineVerdict(outsideBoundary, [prior]);
     expect(v4).toBe('REQUEST_CHANGES');
@@ -421,27 +421,27 @@ describe('determineVerdict', () => {
   it('matches when finding.line equals lineEnd + 5 (exact tolerance on lineEnd endpoint)', () => {
     const prior: HandoverFinding = {
       fingerprint: { file: 'f.ts', lineStart: 10, lineEnd: 20, slug: 'Boundary2' },
-      severity: 'suggestion',
+      severity: 'warning',
       title: 'Boundary2',
       authorReply: 'agree',
     };
     const atEndBoundary: Finding[] = [
-      { severity: 'suggestion', title: 'Boundary2', file: 'f.ts', line: 25, description: 'd', reviewers: ['r'] },
+      { severity: 'warning', title: 'Boundary2', file: 'f.ts', line: 25, description: 'd', reviewers: ['r'] },
     ];
     const { verdict: v2, verdictReason: vr2 } = determineVerdict(atEndBoundary, [prior]);
     expect(v2).toBe('APPROVE');
-    expect(vr2).toBe('only_dismissed_or_nit');
+    expect(vr2).toBe('only_nit_or_suggestion');
   });
 
   it('does not match when finding.line equals lineEnd + 6 (one outside lineEnd tolerance)', () => {
     const prior: HandoverFinding = {
       fingerprint: { file: 'f.ts', lineStart: 10, lineEnd: 20, slug: 'Boundary2' },
-      severity: 'suggestion',
+      severity: 'warning',
       title: 'Boundary2',
       authorReply: 'agree',
     };
     const outsideEndBoundary: Finding[] = [
-      { severity: 'suggestion', title: 'Boundary2', file: 'f.ts', line: 26, description: 'd', reviewers: ['r'] },
+      { severity: 'warning', title: 'Boundary2', file: 'f.ts', line: 26, description: 'd', reviewers: ['r'] },
     ];
     const { verdict: v5, verdictReason: vr5 } = determineVerdict(outsideEndBoundary, [prior]);
     expect(v5).toBe('REQUEST_CHANGES');
@@ -451,27 +451,27 @@ describe('determineVerdict', () => {
   it('matches when finding.line equals lineStart - 5 (exact tolerance below lineStart)', () => {
     const prior: HandoverFinding = {
       fingerprint: { file: 'f.ts', lineStart: 10, lineEnd: 10, slug: 'Boundary' },
-      severity: 'suggestion',
+      severity: 'warning',
       title: 'Boundary',
       authorReply: 'agree',
     };
     const atLowerBoundary: Finding[] = [
-      { severity: 'suggestion', title: 'Boundary', file: 'f.ts', line: 5, description: 'd', reviewers: ['r'] },
+      { severity: 'warning', title: 'Boundary', file: 'f.ts', line: 5, description: 'd', reviewers: ['r'] },
     ];
     const { verdict: v3, verdictReason: vr3 } = determineVerdict(atLowerBoundary, [prior]);
     expect(v3).toBe('APPROVE');
-    expect(vr3).toBe('only_dismissed_or_nit');
+    expect(vr3).toBe('only_nit_or_suggestion');
   });
 
   it('does not match when finding.line equals lineStart - 6 (one outside tolerance below lineStart)', () => {
     const prior: HandoverFinding = {
       fingerprint: { file: 'f.ts', lineStart: 10, lineEnd: 10, slug: 'Boundary' },
-      severity: 'suggestion',
+      severity: 'warning',
       title: 'Boundary',
       authorReply: 'agree',
     };
     const outsideLowerBoundary: Finding[] = [
-      { severity: 'suggestion', title: 'Boundary', file: 'f.ts', line: 4, description: 'd', reviewers: ['r'] },
+      { severity: 'warning', title: 'Boundary', file: 'f.ts', line: 4, description: 'd', reviewers: ['r'] },
     ];
     const { verdict: v6, verdictReason: vr6 } = determineVerdict(outsideLowerBoundary, [prior]);
     expect(v6).toBe('REQUEST_CHANGES');
@@ -480,30 +480,30 @@ describe('determineVerdict', () => {
 
   it('returns APPROVE for a PR #106 R7 replay (4 suggestions all dismissed)', () => {
     const findings: Finding[] = [
-      { severity: 'suggestion', title: 'F1', file: 'src/a.ts', line: 10, description: 'd', reviewers: ['r'] },
-      { severity: 'suggestion', title: 'F2', file: 'src/b.ts', line: 20, description: 'd', reviewers: ['r'] },
-      { severity: 'suggestion', title: 'F3', file: 'src/c.ts', line: 30, description: 'd', reviewers: ['r'] },
-      { severity: 'suggestion', title: 'F4', file: 'src/d.ts', line: 40, description: 'd', reviewers: ['r'] },
+      { severity: 'warning', title: 'F1', file: 'src/a.ts', line: 10, description: 'd', reviewers: ['r'] },
+      { severity: 'warning', title: 'F2', file: 'src/b.ts', line: 20, description: 'd', reviewers: ['r'] },
+      { severity: 'warning', title: 'F3', file: 'src/c.ts', line: 30, description: 'd', reviewers: ['r'] },
+      { severity: 'warning', title: 'F4', file: 'src/d.ts', line: 40, description: 'd', reviewers: ['r'] },
     ];
     const priors: HandoverFinding[] = findings.map(f => ({
       fingerprint: { file: f.file, lineStart: f.line, lineEnd: f.line, slug: titleToSlug(f.title) },
-      severity: 'suggestion' as const,
+      severity: 'warning' as const,
       title: f.title,
       authorReply: 'agree' as const,
     }));
     const result = determineVerdict(findings, priors);
     expect(result.verdict).toBe('APPROVE');
-    expect(result.verdictReason).toBe('only_dismissed_or_nit');
+    expect(result.verdictReason).toBe('only_nit_or_suggestion');
   });
 
   it('does not dismiss a finding with line === 0 even when file and slug match', () => {
     const title = 'Null check';
     const findings: Finding[] = [
-      { severity: 'suggestion', title, file: 'f.ts', line: 0, description: 'd', reviewers: ['r'] },
+      { severity: 'warning', title, file: 'f.ts', line: 0, description: 'd', reviewers: ['r'] },
     ];
     const priors: HandoverFinding[] = [{
       fingerprint: { file: 'f.ts', lineStart: 3, lineEnd: 3, slug: titleToSlug(title) },
-      severity: 'suggestion',
+      severity: 'warning',
       title,
       authorReply: 'agree',
     }];
@@ -548,15 +548,17 @@ describe('buildReviewerSystemPrompt', () => {
 
   it('includes severity examples for each level', () => {
     const prompt = buildReviewerSystemPrompt(reviewer, makeConfig());
-    // required examples
+    // blocker examples
     expect(prompt).toContain('SQL injection');
     expect(prompt).toContain('Null/undefined dereference');
     expect(prompt).toContain('Off-by-one');
+    // warning examples
+    expect(prompt).toContain('Race condition');
+    expect(prompt).toContain('Missing timeout');
     // suggestion examples
-    expect(prompt).toContain('logging "failed"');
     expect(prompt).toContain('const');
     expect(prompt).toContain('reusable helper');
-    // nit examples
+    // nitpick examples
     expect(prompt).toContain('connectionCount');
     expect(prompt).toContain('import ordering');
     expect(prompt).toContain('JSDoc');
@@ -1361,14 +1363,14 @@ describe('runReview', () => {
 
     const result = await runReview(clients, config, diff, 'raw diff', 'repo context');
     expect(result.verdict).toBe('APPROVE');
-    expect(result.verdictReason).toBe('only_dismissed_or_nit');
+    expect(result.verdictReason).toBe('only_nit_or_suggestion');
     expect(result.reviewComplete).toBe(true);
     expect(result.findings).toEqual([]);
   });
 
   it('collects findings from reviewer agents and passes to judge', async () => {
     const findingJson = JSON.stringify([
-      { severity: 'required', title: 'Null dereference bug', file: 'src/a.ts', line: 10, description: 'Bug found.' },
+      { severity: 'blocker', title: 'Null dereference bug', file: 'src/a.ts', line: 10, description: 'Bug found.' },
     ]);
     const clients = makeClients(findingJson);
     const config = makeConfig();
@@ -1376,7 +1378,7 @@ describe('runReview', () => {
 
     mockedRunJudgeAgent.mockResolvedValue({
       findings: [
-        { severity: 'required', title: 'Null dereference bug', file: 'src/a.ts', line: 10, description: 'Bug found.', reviewers: ['Security & Safety'] },
+        { severity: 'blocker', title: 'Null dereference bug', file: 'src/a.ts', line: 10, description: 'Bug found.', reviewers: ['Security & Safety'] },
       ],
       summary: 'One required finding.',
     });
@@ -1502,7 +1504,7 @@ describe('runReview', () => {
 
   it('fires onProgress per agent in multi-pass mode', async () => {
     const findingJson = JSON.stringify([
-      { severity: 'required', title: 'Consistent bug across passes', file: 'src/a.ts', line: 10, description: 'Bug.' },
+      { severity: 'blocker', title: 'Consistent bug across passes', file: 'src/a.ts', line: 10, description: 'Bug.' },
     ]);
     const clients = makeClients(findingJson);
     const config = makeConfig({ review_passes: 2 });
@@ -1601,7 +1603,7 @@ describe('runReview', () => {
 
   it('proceeds with quorum when one agent fails all retries in multi-pass mode', async () => {
     const findingJson = JSON.stringify([
-      { severity: 'required', title: 'Found a bug', file: 'src/a.ts', line: 10, description: 'Bug.' },
+      { severity: 'blocker', title: 'Found a bug', file: 'src/a.ts', line: 10, description: 'Bug.' },
     ]);
     const clients: ReviewClients = {
       reviewer: {
@@ -1662,13 +1664,13 @@ describe('runReview', () => {
 
   it('drops findings matching dismissed previous ones before judge sees them', async () => {
     const findingJson = JSON.stringify([
-      { severity: 'required', title: 'Null dereference bug', file: 'src/a.ts', line: 10, description: 'Bug found.' },
+      { severity: 'blocker', title: 'Null dereference bug', file: 'src/a.ts', line: 10, description: 'Bug found.' },
     ]);
     const clients = makeClients(findingJson);
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
     const previousFindings = [
-      { title: 'Null dereference bug', file: 'src/a.ts', line: 10, severity: 'required' as const, status: 'resolved' as const },
+      { title: 'Null dereference bug', file: 'src/a.ts', line: 10, severity: 'blocker' as const, status: 'resolved' as const },
     ];
 
     // Judge should not be called (findings all deduped away before judge).
@@ -1688,7 +1690,7 @@ describe('runReview', () => {
 
   it('emits judgeInputCount in judging progress event reflecting post-suppression post-dedup count', async () => {
     const findingJson = JSON.stringify([
-      { severity: 'required', title: 'Null dereference bug', file: 'src/a.ts', line: 10, description: 'Bug found.' },
+      { severity: 'blocker', title: 'Null dereference bug', file: 'src/a.ts', line: 10, description: 'Bug found.' },
     ]);
     const clients = makeClients(findingJson);
     const config = makeConfig();
@@ -1701,15 +1703,15 @@ describe('runReview', () => {
     // Suppress 1 of the 3 identical raw findings, keep 2 for dedup to handle.
     mockedApplySuppressions.mockReturnValue({
       kept: [
-        { severity: 'required', title: 'Null dereference bug', file: 'src/a.ts', line: 10, description: 'Bug found.', reviewers: ['Security & Safety'] },
-        { severity: 'required', title: 'Null dereference bug', file: 'src/a.ts', line: 10, description: 'Bug found.', reviewers: ['Security & Safety'] },
+        { severity: 'blocker', title: 'Null dereference bug', file: 'src/a.ts', line: 10, description: 'Bug found.', reviewers: ['Security & Safety'] },
+        { severity: 'blocker', title: 'Null dereference bug', file: 'src/a.ts', line: 10, description: 'Bug found.', reviewers: ['Security & Safety'] },
       ],
       suppressed: [
-        { severity: 'required', title: 'Null dereference bug', file: 'src/a.ts', line: 10, description: 'Bug found.', reviewers: ['Security & Safety'] },
+        { severity: 'blocker', title: 'Null dereference bug', file: 'src/a.ts', line: 10, description: 'Bug found.', reviewers: ['Security & Safety'] },
       ],
     });
     const previousFindings = [
-      { title: 'Null dereference bug', file: 'src/a.ts', line: 10, severity: 'required' as const, status: 'resolved' as const },
+      { title: 'Null dereference bug', file: 'src/a.ts', line: 10, severity: 'blocker' as const, status: 'resolved' as const },
     ];
 
     const onProgress = jest.fn();
@@ -1732,7 +1734,7 @@ describe('runReview', () => {
 
   it('runs LLM dedup after static dedup when a dedup client is provided', async () => {
     const findingJson = JSON.stringify([
-      { severity: 'required', title: 'Totally different wording of same bug', file: 'src/a.ts', line: 10, description: 'Bug.' },
+      { severity: 'blocker', title: 'Totally different wording of same bug', file: 'src/a.ts', line: 10, description: 'Bug.' },
     ]);
     const clients: ReviewClients = {
       ...makeClients(findingJson),
@@ -1749,7 +1751,7 @@ describe('runReview', () => {
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
     const previousFindings = [
-      { title: 'Unrelated title that static wont match', file: 'src/a.ts', line: 10, severity: 'required' as const, status: 'resolved' as const },
+      { title: 'Unrelated title that static wont match', file: 'src/a.ts', line: 10, severity: 'blocker' as const, status: 'resolved' as const },
     ];
 
     const result = await runReview(
@@ -1767,13 +1769,13 @@ describe('runReview', () => {
 
   it('skips LLM dedup when no dedup client is provided', async () => {
     const findingJson = JSON.stringify([
-      { severity: 'required', title: 'Something brand new', file: 'src/a.ts', line: 10, description: 'Bug.' },
+      { severity: 'blocker', title: 'Something brand new', file: 'src/a.ts', line: 10, description: 'Bug.' },
     ]);
     const clients = makeClients(findingJson);
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
     const previousFindings = [
-      { title: 'Unrelated dismissed thing', file: 'src/other.ts', line: 99, severity: 'required' as const, status: 'resolved' as const },
+      { title: 'Unrelated dismissed thing', file: 'src/other.ts', line: 99, severity: 'blocker' as const, status: 'resolved' as const },
     ];
 
     const result = await runReview(
@@ -1790,7 +1792,7 @@ describe('runReview', () => {
 
   it('leaves dedup counts at zero when no previous findings are supplied', async () => {
     const findingJson = JSON.stringify([
-      { severity: 'required', title: 'A bug', file: 'src/a.ts', line: 10, description: 'Bug.' },
+      { severity: 'blocker', title: 'A bug', file: 'src/a.ts', line: 10, description: 'Bug.' },
     ]);
     const clients: ReviewClients = {
       ...makeClients(findingJson),
@@ -1826,7 +1828,7 @@ describe('runReview', () => {
 
   it('runs multi-pass review with review_passes > 1', async () => {
     const findingJson = JSON.stringify([
-      { severity: 'required', title: 'Consistent bug across passes', file: 'src/a.ts', line: 10, description: 'Bug.' },
+      { severity: 'blocker', title: 'Consistent bug across passes', file: 'src/a.ts', line: 10, description: 'Bug.' },
     ]);
     const clients = makeClients(findingJson);
     const config = makeConfig({ review_passes: 2 });
@@ -1834,7 +1836,7 @@ describe('runReview', () => {
 
     mockedRunJudgeAgent.mockResolvedValue({
       findings: [
-        { severity: 'required', title: 'Consistent bug across passes', file: 'src/a.ts', line: 10, description: 'Bug.', reviewers: ['Security & Safety'] },
+        { severity: 'blocker', title: 'Consistent bug across passes', file: 'src/a.ts', line: 10, description: 'Bug.', reviewers: ['Security & Safety'] },
       ],
       summary: 'One finding.',
     });
@@ -1941,7 +1943,7 @@ describe('runReview', () => {
     );
 
     expect(result.verdict).toBe('APPROVE');
-    expect(result.verdictReason).toBe('only_dismissed_or_nit');
+    expect(result.verdictReason).toBe('only_nit_or_suggestion');
     expect(result.reviewComplete).toBe(true);
   });
 
@@ -2060,7 +2062,7 @@ describe('runReview', () => {
     });
 
     const findingJson = JSON.stringify([{
-      severity: 'required', title: 'Bug', file: 'a.ts', line: 1,
+      severity: 'blocker', title: 'Bug', file: 'a.ts', line: 1,
       description: 'desc', suggestedFix: '', reviewers: [],
     }]);
 
@@ -2090,7 +2092,7 @@ describe('runReview', () => {
 
   it('uses default judgeEffort of high when planner is absent', async () => {
     const findingJson = JSON.stringify([{
-      severity: 'required', title: 'Bug', file: 'a.ts', line: 1,
+      severity: 'blocker', title: 'Bug', file: 'a.ts', line: 1,
       description: 'desc', suggestedFix: '', reviewers: [],
     }]);
 
@@ -2221,12 +2223,12 @@ describe('runReview', () => {
         commitSha: 'sha1',
         timestamp: '2024-01-01T00:00:00Z',
         findings: [
-          { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'required', title: 't1', authorReply: 'agree', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'required', title: 't2', authorReply: 'agree', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 3, lineEnd: 3, slug: 's3' }, severity: 'required', title: 't3', authorReply: 'agree', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 4, lineEnd: 4, slug: 's4' }, severity: 'required', title: 't4', authorReply: 'none', specialist: 'Correctness & Logic' },
-          { fingerprint: { file: 'a.ts', lineStart: 5, lineEnd: 5, slug: 's5' }, severity: 'required', title: 't5', authorReply: 'agree', specialist: 'Correctness & Logic' },
-          { fingerprint: { file: 'a.ts', lineStart: 6, lineEnd: 6, slug: 's6' }, severity: 'required', title: 't6', authorReply: 'agree', specialist: 'Correctness & Logic' },
+          { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'blocker', title: 't1', authorReply: 'agree', specialist: 'Security & Safety' },
+          { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'blocker', title: 't2', authorReply: 'agree', specialist: 'Security & Safety' },
+          { fingerprint: { file: 'a.ts', lineStart: 3, lineEnd: 3, slug: 's3' }, severity: 'blocker', title: 't3', authorReply: 'agree', specialist: 'Security & Safety' },
+          { fingerprint: { file: 'a.ts', lineStart: 4, lineEnd: 4, slug: 's4' }, severity: 'blocker', title: 't4', authorReply: 'none', specialist: 'Correctness & Logic' },
+          { fingerprint: { file: 'a.ts', lineStart: 5, lineEnd: 5, slug: 's5' }, severity: 'blocker', title: 't5', authorReply: 'agree', specialist: 'Correctness & Logic' },
+          { fingerprint: { file: 'a.ts', lineStart: 6, lineEnd: 6, slug: 's6' }, severity: 'blocker', title: 't6', authorReply: 'agree', specialist: 'Correctness & Logic' },
         ],
       },
     ];
@@ -2288,7 +2290,7 @@ describe('runReview', () => {
         commitSha: 'sha1',
         timestamp: '2024-01-01T00:00:00Z',
         findings: [
-          { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'required', title: 't1', authorReply: 'agree', specialist: 'Security & Safety' },
+          { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'blocker', title: 't1', authorReply: 'agree', specialist: 'Security & Safety' },
         ],
       },
     ];
@@ -2330,9 +2332,9 @@ describe('runReview', () => {
         commitSha: 'sha1',
         timestamp: '2024-01-01T00:00:00Z',
         findings: [
-          { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'required', title: 't1', authorReply: 'agree', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'required', title: 't2', authorReply: 'agree', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 3, lineEnd: 3, slug: 's3' }, severity: 'required', title: 't3', authorReply: 'agree', specialist: 'Security & Safety' },
+          { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'blocker', title: 't1', authorReply: 'agree', specialist: 'Security & Safety' },
+          { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'blocker', title: 't2', authorReply: 'agree', specialist: 'Security & Safety' },
+          { fingerprint: { file: 'a.ts', lineStart: 3, lineEnd: 3, slug: 's3' }, severity: 'blocker', title: 't3', authorReply: 'agree', specialist: 'Security & Safety' },
         ],
       },
       {
@@ -2340,10 +2342,10 @@ describe('runReview', () => {
         commitSha: 'sha2',
         timestamp: '2024-01-02T00:00:00Z',
         findings: [
-          { fingerprint: { file: 'a.ts', lineStart: 4, lineEnd: 4, slug: 's4' }, severity: 'required', title: 't4', authorReply: 'none', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 5, lineEnd: 5, slug: 's5' }, severity: 'required', title: 't5', authorReply: 'none', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 6, lineEnd: 6, slug: 's6' }, severity: 'required', title: 't6', authorReply: 'agree', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 7, lineEnd: 7, slug: 's7' }, severity: 'required', title: 't7', authorReply: 'agree', specialist: 'Security & Safety' },
+          { fingerprint: { file: 'a.ts', lineStart: 4, lineEnd: 4, slug: 's4' }, severity: 'blocker', title: 't4', authorReply: 'none', specialist: 'Security & Safety' },
+          { fingerprint: { file: 'a.ts', lineStart: 5, lineEnd: 5, slug: 's5' }, severity: 'blocker', title: 't5', authorReply: 'none', specialist: 'Security & Safety' },
+          { fingerprint: { file: 'a.ts', lineStart: 6, lineEnd: 6, slug: 's6' }, severity: 'blocker', title: 't6', authorReply: 'agree', specialist: 'Security & Safety' },
+          { fingerprint: { file: 'a.ts', lineStart: 7, lineEnd: 7, slug: 's7' }, severity: 'blocker', title: 't7', authorReply: 'agree', specialist: 'Security & Safety' },
         ],
       },
     ];
@@ -2386,9 +2388,9 @@ describe('runReview', () => {
         commitSha: 'sha1',
         timestamp: '2024-01-01T00:00:00Z',
         findings: [
-          { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'required', title: 't1', authorReply: 'none', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'required', title: 't2', authorReply: 'none', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 3, lineEnd: 3, slug: 's3' }, severity: 'required', title: 't3', authorReply: 'agree', specialist: 'Security & Safety' },
+          { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'blocker', title: 't1', authorReply: 'none', specialist: 'Security & Safety' },
+          { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'blocker', title: 't2', authorReply: 'none', specialist: 'Security & Safety' },
+          { fingerprint: { file: 'a.ts', lineStart: 3, lineEnd: 3, slug: 's3' }, severity: 'blocker', title: 't3', authorReply: 'agree', specialist: 'Security & Safety' },
         ],
       },
       {
@@ -2396,9 +2398,9 @@ describe('runReview', () => {
         commitSha: 'sha2',
         timestamp: '2024-01-02T00:00:00Z',
         findings: [
-          { fingerprint: { file: 'a.ts', lineStart: 4, lineEnd: 4, slug: 's4' }, severity: 'required', title: 't4', authorReply: 'agree', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 5, lineEnd: 5, slug: 's5' }, severity: 'required', title: 't5', authorReply: 'agree', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 6, lineEnd: 6, slug: 's6' }, severity: 'required', title: 't6', authorReply: 'agree', specialist: 'Security & Safety' },
+          { fingerprint: { file: 'a.ts', lineStart: 4, lineEnd: 4, slug: 's4' }, severity: 'blocker', title: 't4', authorReply: 'agree', specialist: 'Security & Safety' },
+          { fingerprint: { file: 'a.ts', lineStart: 5, lineEnd: 5, slug: 's5' }, severity: 'blocker', title: 't5', authorReply: 'agree', specialist: 'Security & Safety' },
+          { fingerprint: { file: 'a.ts', lineStart: 6, lineEnd: 6, slug: 's6' }, severity: 'blocker', title: 't6', authorReply: 'agree', specialist: 'Security & Safety' },
         ],
       },
     ];
@@ -2450,16 +2452,16 @@ describe('runReview', () => {
         commitSha: 'sha1',
         timestamp: '2024-01-01T00:00:00Z',
         findings: [
-          { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'required', title: 't1', authorReply: 'agree', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'required', title: 't2', authorReply: 'agree', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 3, lineEnd: 3, slug: 's3' }, severity: 'required', title: 't3', authorReply: 'agree', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 4, lineEnd: 4, slug: 's4' }, severity: 'required', title: 't4', authorReply: 'none', specialist: 'Correctness & Logic' },
-          { fingerprint: { file: 'a.ts', lineStart: 5, lineEnd: 5, slug: 's5' }, severity: 'required', title: 't5', authorReply: 'agree', specialist: 'Correctness & Logic' },
-          { fingerprint: { file: 'a.ts', lineStart: 6, lineEnd: 6, slug: 's6' }, severity: 'required', title: 't6', authorReply: 'agree', specialist: 'Correctness & Logic' },
-          { fingerprint: { file: 'a.ts', lineStart: 7, lineEnd: 7, slug: 's7' }, severity: 'required', title: 't7', authorReply: 'agree', specialist: 'Architecture & Design' },
-          { fingerprint: { file: 'a.ts', lineStart: 8, lineEnd: 8, slug: 's8' }, severity: 'required', title: 't8', authorReply: 'agree', specialist: 'Architecture & Design' },
-          { fingerprint: { file: 'a.ts', lineStart: 9, lineEnd: 9, slug: 's9' }, severity: 'required', title: 't9', authorReply: 'agree', specialist: 'Architecture & Design' },
-          { fingerprint: { file: 'a.ts', lineStart: 10, lineEnd: 10, slug: 's10' }, severity: 'required', title: 't10', authorReply: 'agree', specialist: 'Architecture & Design' },
+          { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'blocker', title: 't1', authorReply: 'agree', specialist: 'Security & Safety' },
+          { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'blocker', title: 't2', authorReply: 'agree', specialist: 'Security & Safety' },
+          { fingerprint: { file: 'a.ts', lineStart: 3, lineEnd: 3, slug: 's3' }, severity: 'blocker', title: 't3', authorReply: 'agree', specialist: 'Security & Safety' },
+          { fingerprint: { file: 'a.ts', lineStart: 4, lineEnd: 4, slug: 's4' }, severity: 'blocker', title: 't4', authorReply: 'none', specialist: 'Correctness & Logic' },
+          { fingerprint: { file: 'a.ts', lineStart: 5, lineEnd: 5, slug: 's5' }, severity: 'blocker', title: 't5', authorReply: 'agree', specialist: 'Correctness & Logic' },
+          { fingerprint: { file: 'a.ts', lineStart: 6, lineEnd: 6, slug: 's6' }, severity: 'blocker', title: 't6', authorReply: 'agree', specialist: 'Correctness & Logic' },
+          { fingerprint: { file: 'a.ts', lineStart: 7, lineEnd: 7, slug: 's7' }, severity: 'blocker', title: 't7', authorReply: 'agree', specialist: 'Architecture & Design' },
+          { fingerprint: { file: 'a.ts', lineStart: 8, lineEnd: 8, slug: 's8' }, severity: 'blocker', title: 't8', authorReply: 'agree', specialist: 'Architecture & Design' },
+          { fingerprint: { file: 'a.ts', lineStart: 9, lineEnd: 9, slug: 's9' }, severity: 'blocker', title: 't9', authorReply: 'agree', specialist: 'Architecture & Design' },
+          { fingerprint: { file: 'a.ts', lineStart: 10, lineEnd: 10, slug: 's10' }, severity: 'blocker', title: 't10', authorReply: 'agree', specialist: 'Architecture & Design' },
         ],
       },
     ];
@@ -2633,11 +2635,11 @@ describe('runReview', () => {
         commitSha: 'sha1',
         timestamp: '2024-01-01T00:00:00Z',
         findings: [
-          { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'required', title: 't1', authorReply: 'none', specialist: 'Architecture & Design' },
-          { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'required', title: 't2', authorReply: 'none', specialist: 'Architecture & Design' },
-          { fingerprint: { file: 'a.ts', lineStart: 3, lineEnd: 3, slug: 's3' }, severity: 'required', title: 't3', authorReply: 'none', specialist: 'Architecture & Design' },
-          { fingerprint: { file: 'a.ts', lineStart: 4, lineEnd: 4, slug: 's4' }, severity: 'required', title: 't4', authorReply: 'agree', specialist: 'Architecture & Design' },
-          { fingerprint: { file: 'a.ts', lineStart: 5, lineEnd: 5, slug: 's5' }, severity: 'required', title: 't5', authorReply: 'agree', specialist: 'Architecture & Design' },
+          { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'blocker', title: 't1', authorReply: 'none', specialist: 'Architecture & Design' },
+          { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'blocker', title: 't2', authorReply: 'none', specialist: 'Architecture & Design' },
+          { fingerprint: { file: 'a.ts', lineStart: 3, lineEnd: 3, slug: 's3' }, severity: 'blocker', title: 't3', authorReply: 'none', specialist: 'Architecture & Design' },
+          { fingerprint: { file: 'a.ts', lineStart: 4, lineEnd: 4, slug: 's4' }, severity: 'blocker', title: 't4', authorReply: 'agree', specialist: 'Architecture & Design' },
+          { fingerprint: { file: 'a.ts', lineStart: 5, lineEnd: 5, slug: 's5' }, severity: 'blocker', title: 't5', authorReply: 'agree', specialist: 'Architecture & Design' },
         ],
       },
     ];
@@ -3067,7 +3069,7 @@ describe('runReview', () => {
 
   it('retries failed agents in multi-pass mode and recovers on subsequent pass', async () => {
     const callsByAgent: Record<string, number> = {};
-    const securityFinding = { severity: 'required' as const, title: 'SQL injection', file: 'src/db.ts', line: 42, description: 'Unsanitized input.' };
+    const securityFinding = { severity: 'blocker' as const, title: 'SQL injection', file: 'src/db.ts', line: 42, description: 'Unsanitized input.' };
     const emptyFindings = JSON.stringify([]);
     const clients: ReviewClients = {
       reviewer: {
@@ -3647,8 +3649,8 @@ describe('buildPlannerHints', () => {
   it('groups findings by specialist with kept/dismissed counts', () => {
     const rounds = [
       makeRound(1, [
-        { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'required', title: 't1', authorReply: 'agree', specialist: 'Security & Safety' },
-        { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'required', title: 't2', authorReply: 'agree', specialist: 'Security & Safety' },
+        { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'blocker', title: 't1', authorReply: 'agree', specialist: 'Security & Safety' },
+        { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'blocker', title: 't2', authorReply: 'agree', specialist: 'Security & Safety' },
         { fingerprint: { file: 'a.ts', lineStart: 3, lineEnd: 3, slug: 's3' }, severity: 'suggestion', title: 't3', authorReply: 'none', specialist: 'Testing & Coverage' },
       ]),
     ];
@@ -3664,8 +3666,8 @@ describe('buildPlannerHints', () => {
   it('skips findings without a specialist field (legacy handover entries)', () => {
     const rounds = [
       makeRound(1, [
-        { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'required', title: 't1', authorReply: 'agree' },
-        { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'required', title: 't2', authorReply: 'none', specialist: 'Correctness & Logic' },
+        { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'blocker', title: 't1', authorReply: 'agree' },
+        { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'blocker', title: 't2', authorReply: 'none', specialist: 'Correctness & Logic' },
       ]),
     ];
     const hints = buildPlannerHints(rounds);
@@ -3676,7 +3678,7 @@ describe('buildPlannerHints', () => {
 
   it('consumes only the last two rounds when more are present', () => {
     const make = (n: number, spec: string): HandoverRound => makeRound(n, [
-      { fingerprint: { file: 'a.ts', lineStart: n, lineEnd: n, slug: `s${n}` }, severity: 'required', title: `t${n}`, authorReply: 'none', specialist: spec },
+      { fingerprint: { file: 'a.ts', lineStart: n, lineEnd: n, slug: `s${n}` }, severity: 'blocker', title: `t${n}`, authorReply: 'none', specialist: spec },
     ]);
     const rounds = [make(1, 'Security & Safety'), make(2, 'Architecture & Design'), make(3, 'Testing & Coverage')];
     const hints = buildPlannerHints(rounds);
@@ -3686,10 +3688,10 @@ describe('buildPlannerHints', () => {
   it('omits rounds whose findings all lack a specialist', () => {
     const rounds = [
       makeRound(1, [
-        { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'required', title: 't1', authorReply: 'agree' },
+        { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'blocker', title: 't1', authorReply: 'agree' },
       ]),
       makeRound(2, [
-        { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'required', title: 't2', authorReply: 'none', specialist: 'Correctness & Logic' },
+        { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'blocker', title: 't2', authorReply: 'none', specialist: 'Correctness & Logic' },
       ]),
     ];
     const hints = buildPlannerHints(rounds);
@@ -3699,9 +3701,9 @@ describe('buildPlannerHints', () => {
   it('treats disagree/partial/none replies as kept', () => {
     const rounds = [
       makeRound(1, [
-        { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'required', title: 't1', authorReply: 'disagree', specialist: 'Security & Safety' },
-        { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'required', title: 't2', authorReply: 'partial', specialist: 'Security & Safety' },
-        { fingerprint: { file: 'a.ts', lineStart: 3, lineEnd: 3, slug: 's3' }, severity: 'required', title: 't3', authorReply: 'none', specialist: 'Security & Safety' },
+        { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'blocker', title: 't1', authorReply: 'disagree', specialist: 'Security & Safety' },
+        { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'blocker', title: 't2', authorReply: 'partial', specialist: 'Security & Safety' },
+        { fingerprint: { file: 'a.ts', lineStart: 3, lineEnd: 3, slug: 's3' }, severity: 'blocker', title: 't3', authorReply: 'none', specialist: 'Security & Safety' },
       ]),
     ];
     const hints = buildPlannerHints(rounds);

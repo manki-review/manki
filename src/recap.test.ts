@@ -496,7 +496,7 @@ describe('fetchRecapState', () => {
       line: 10,
       comments: {
         nodes: [{
-          body: '<!-- manki:required:Null-check --> \u{1F6AB} **Required**: Missing null check\n\nDescription here.',
+          body: '<!-- manki:blocker:Null-check --> \u{1F6AB} **Blocker**: Missing null check\n\nDescription here.',
           author: { login: 'github-actions[bot]' },
         }],
       },
@@ -570,7 +570,7 @@ describe('fetchRecapState', () => {
         comments: {
           nodes: [
             {
-              body: '<!-- manki:required:Bug --> \u{1F6AB} **Required**: Bug found\n\nDesc.',
+              body: '<!-- manki:blocker:Bug --> \u{1F6AB} **Blocker**: Bug found\n\nDesc.',
               author: { login: 'github-actions[bot]' },
             },
             {
@@ -604,7 +604,7 @@ describe('fetchRecapState', () => {
         isResolved: false,
         comments: {
           nodes: [{
-            body: '<!-- manki:nit:Style-issue --> \u{1F4DD} **Nit**: Style issue\n\nMinor.',
+            body: '<!-- manki:nitpick:Style-issue --> \u{1F4DD} **Nitpick**: Style issue\n\nMinor.',
             author: { login: 'github-actions[bot]' },
           }],
         },
@@ -612,7 +612,7 @@ describe('fetchRecapState', () => {
     ]);
 
     const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
-    expect(state.previousFindings[0].severity).toBe('nit');
+    expect(state.previousFindings[0].severity).toBe('nitpick');
   });
 
   it('returns unknown severity when marker is missing', async () => {
@@ -632,6 +632,33 @@ describe('fetchRecapState', () => {
     expect(state.previousFindings[0].severity).toBe('unknown');
   });
 
+  it('migrates legacy severity markers (`required`, `nit`) on read', async () => {
+    const octokit = mockOctokit([
+      makeThread({
+        id: 't1',
+        comments: {
+          nodes: [{
+            body: '<!-- manki:required:Old-blocker --> **Required**: legacy blocker',
+            author: { login: 'github-actions[bot]' },
+          }],
+        },
+      }),
+      makeThread({
+        id: 't2',
+        comments: {
+          nodes: [{
+            body: '<!-- manki:nit:Old-nit --> **Nit**: legacy nitpick',
+            author: { login: 'github-actions[bot]' },
+          }],
+        },
+      }),
+    ]);
+
+    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    expect(state.previousFindings[0].severity).toBe('blocker');
+    expect(state.previousFindings[1].severity).toBe('nitpick');
+  });
+
   it('extracts title when confidence sub tag is present', async () => {
     const octokit = mockOctokit([
       makeThread({
@@ -639,7 +666,7 @@ describe('fetchRecapState', () => {
         isResolved: false,
         comments: {
           nodes: [{
-            body: '<!-- manki:required:Prompt-injection --> 🚫 **Required** <sub>[high confidence]</sub>: Prompt injection via unsanitized file paths\n\nDescription.',
+            body: '<!-- manki:blocker:Prompt-injection --> 🚫 **Blocker** <sub>[high confidence]</sub>: Prompt injection via unsanitized file paths\n\nDescription.',
             author: { login: 'github-actions[bot]' },
           }],
         },
@@ -680,7 +707,7 @@ describe('fetchRecapState', () => {
         comments: {
           nodes: [
             {
-              body: '<!-- manki:required:Bug --> \u{1F6AB} **Required**: Bug found\n\nDesc.',
+              body: '<!-- manki:blocker:Bug --> \u{1F6AB} **Blocker**: Bug found\n\nDesc.',
               author: { login: 'github-actions[bot]' },
             },
             {

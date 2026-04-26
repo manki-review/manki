@@ -245,6 +245,20 @@ describe('parseTriageBody', () => {
     expect(result.accepted).toEqual([]);
     expect(result.rejected).toEqual([]);
   });
+
+  it('still parses legacy 💡 suggestion emoji from pre-rename triage comments', () => {
+    const body = [
+      '- [x] 💡 **Legacy accepted** — `src/legacy.ts:1`',
+      '- [ ] 💡 **Legacy rejected** — `src/legacy.ts:2`',
+    ].join('\n');
+    const result = parseTriageBody(body);
+    expect(result.accepted).toHaveLength(1);
+    expect(result.accepted[0].title).toBe('Legacy accepted');
+    expect(result.accepted[0].ref).toBe('src/legacy.ts:1');
+    expect(result.rejected).toHaveLength(1);
+    expect(result.rejected[0].title).toBe('Legacy rejected');
+    expect(result.rejected[0].ref).toBe('src/legacy.ts:2');
+  });
 });
 
 describe('extractFindingContent', () => {
@@ -656,7 +670,7 @@ describe('handlePRComment', () => {
   it('dispatches triage command', async () => {
     setContext({ comment: { id: 42, body: '@manki triage', user: { type: 'User' }, author_association: 'COLLABORATOR' } });
     const octokit = createMockOctokit();
-    octokit.rest.issues.get.mockResolvedValue({ data: { body: '- [x] 💡 **Fix bug** — `src/a.ts:1`\n- [ ] 💡 **Nit** — `src/b.ts:2`' } });
+    octokit.rest.issues.get.mockResolvedValue({ data: { body: '- [x] ✨ **Fix bug** — `src/a.ts:1`\n- [ ] 📝 **Nitpick** — `src/b.ts:2`' } });
     await handlePRComment(octokit, null, 'test-owner', 'test-repo', 1);
     expect(ghUtils.reactToIssueComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 42, 'eyes');
     expect(octokit.rest.issues.create).toHaveBeenCalled();

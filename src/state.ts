@@ -2,6 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { dismissPreviousReviews, isReviewInProgress } from './github';
+import { migrateLegacySeverity, SEVERITY_TOKEN_PATTERN } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -76,8 +77,10 @@ async function fetchBotReviewThreads(
     })
     .map(thread => {
       const body = thread.comments.nodes[0]?.body ?? '';
-      const severityMatch = body.match(/<!-- manki:(required|suggestion|nit|ignore):/);
-      const isRequired = severityMatch?.[1] === 'required';
+      const severityMatch = body.match(new RegExp(`<!-- manki:(${SEVERITY_TOKEN_PATTERN}):`));
+      const isRequired = severityMatch?.[1]
+        ? migrateLegacySeverity(severityMatch[1]) === 'blocker'
+        : false;
       const titleMatch = body.match(/<!-- manki:\w+:(.+?) -->/);
       const findingTitle = titleMatch?.[1]?.replace(/-/g, ' ') ?? 'Unknown';
 
@@ -91,9 +94,9 @@ async function fetchBotReviewThreads(
 }
 
 /**
- * Check if all bot review threads (required, suggestion, nit) are resolved.
+ * Check if all bot review threads (blocker, warning, suggestion, nitpick) are resolved.
  * Auto-approve should only fire when every finding is resolved, because
- * CHANGES_REQUESTED can be caused by high-confidence suggestions too.
+ * CHANGES_REQUESTED can be caused by high-confidence warnings too.
  */
 function areAllFindingsResolved(threads: ReviewThread[]): boolean {
   return threads.every(t => t.isResolved);

@@ -189,9 +189,9 @@ The action exposes outputs you can chain into later workflow steps: `review_id`,
 ```
 
 ```yaml
-# Label PRs that have any required-severity findings
+# Label PRs that have any blocker-severity findings
 - name: Label blocking PRs
-  if: fromJSON(steps.manki.outputs.severity_counts).required > 0
+  if: fromJSON(steps.manki.outputs.severity_counts).blocker > 0
   run: gh pr edit ${{ github.event.number }} --add-label blocking-findings
   env:
     GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -283,8 +283,8 @@ Manki reviews run in these stages:
 
 1. **Planner** (pre-review, `review_level: auto` only) -- A fast Haiku pass analyzes the diff and picks team size (1/3/5/7), reviewer/judge effort, and PR type. teamSize=1 routes trivial changes (docs, renames, comment-only edits) to a single **Trivial Change Verifier** agent. Falls back to the heuristic team selector if the planner fails or is disabled.
 2. **Reviewer agents** -- The chosen team of specialist agents (security, architecture, correctness, etc.) review the diff in parallel. Each produces raw findings.
-3. **Dedup** -- A two-tier dedup pass filters findings already posted on the PR before judge evaluation. A static matcher handles exact/near-exact matches, then an LLM dedup pass (Haiku) catches semantic duplicates.
-4. **Judge agent** -- A single agent evaluates the deduplicated reviewer findings for accuracy, actionability, and severity. It filters out noise, merges any remaining overlap, and assigns a 4-tier severity to each surviving finding.
+3. **Dedup**: A two-tier dedup pass filters findings already posted on the PR before judge evaluation. A static matcher handles exact/near-exact matches, then an LLM dedup pass (Haiku) catches semantic duplicates.
+4. **Judge agent**: A single agent evaluates the deduplicated reviewer findings for accuracy, actionability, and severity. It filters out noise, merges any remaining overlap, and assigns a 4-tier severity to each surviving finding.
 5. **Recap** -- Surviving findings are posted as inline PR comments with a summary review.
 
 ### Severity tiers

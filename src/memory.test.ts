@@ -103,14 +103,14 @@ describe('applySuppressions', () => {
 
   it('never suppresses required-severity findings', () => {
     const findings = [
-      makeFinding({ severity: 'required', title: 'Unused variable in auth' }),
+      makeFinding({ severity: 'blocker', title: 'Unused variable in auth' }),
     ];
     const suppressions = [makeSuppression({ pattern: 'unused variable' })];
 
     const { kept, suppressed } = applySuppressions(findings, suppressions);
     expect(kept).toHaveLength(1);
     expect(suppressed).toHaveLength(0);
-    expect(kept[0].severity).toBe('required');
+    expect(kept[0].severity).toBe('blocker');
   });
 
   it('never suppresses ignore-severity findings', () => {
@@ -127,15 +127,15 @@ describe('applySuppressions', () => {
 
   it('suppresses suggestion and nit but keeps required with same pattern', () => {
     const findings = [
-      makeFinding({ severity: 'required', title: 'Unused variable causes crash' }),
+      makeFinding({ severity: 'blocker', title: 'Unused variable causes crash' }),
       makeFinding({ severity: 'suggestion', title: 'Unused variable cleanup' }),
-      makeFinding({ severity: 'nit', title: 'Unused variable — rename?' }),
+      makeFinding({ severity: 'nitpick', title: 'Unused variable — rename?' }),
     ];
     const suppressions = [makeSuppression({ pattern: 'unused variable' })];
 
     const { kept, suppressed } = applySuppressions(findings, suppressions);
     expect(kept).toHaveLength(1);
-    expect(kept[0].severity).toBe('required');
+    expect(kept[0].severity).toBe('blocker');
     expect(suppressed).toHaveLength(2);
   });
 });
@@ -352,16 +352,16 @@ describe('applyEscalations', () => {
 
     const result = applyEscalations(findings, patterns);
     expect(result).toHaveLength(1);
-    expect(result[0].severity).toBe('required');
+    expect(result[0].severity).toBe('blocker');
   });
 
   it('does not escalate required findings', () => {
-    const findings = [makeFinding({ severity: 'required', title: 'Unused variable' })];
+    const findings = [makeFinding({ severity: 'blocker', title: 'Unused variable' })];
     const patterns = [makePattern({ finding_title: 'unused variable', escalated: true })];
 
     const result = applyEscalations(findings, patterns);
     expect(result).toHaveLength(1);
-    expect(result[0].severity).toBe('required');
+    expect(result[0].severity).toBe('blocker');
   });
 
   it('does not escalate non-matching patterns', () => {
@@ -383,16 +383,16 @@ describe('applyEscalations', () => {
 
     const result = applyEscalations(findings, patterns);
     expect(result).toHaveLength(1);
-    expect(result[0].severity).toBe('required');
+    expect(result[0].severity).toBe('blocker');
   });
 
   it('escalates nit severity findings', () => {
-    const findings = [makeFinding({ severity: 'nit', title: 'Unused variable' })];
+    const findings = [makeFinding({ severity: 'nitpick', title: 'Unused variable' })];
     const patterns = [makePattern({ finding_title: 'unused variable', escalated: true })];
 
     const result = applyEscalations(findings, patterns);
     expect(result).toHaveLength(1);
-    expect(result[0].severity).toBe('required');
+    expect(result[0].severity).toBe('blocker');
   });
 
   it('does not escalate when pattern is not escalated', () => {
@@ -887,7 +887,7 @@ describe('loadHandover', () => {
           findings: [
             {
               fingerprint: { file: 'src/a.rs', lineStart: 10, lineEnd: 10, slug: 'Null-check' },
-              severity: 'required',
+              severity: 'blocker',
               title: 'Null check',
               authorReply: 'agree',
               threadId: 'PRRT_1',
@@ -901,6 +901,46 @@ describe('loadHandover', () => {
 
     const result = await loadHandover(octokit, 'owner/memory', 'rust-dashcore', 106);
     expect(result).toEqual(handover);
+  });
+
+  it('migrates legacy severity values (`required` -> `blocker`, `nit` -> `nitpick`)', async () => {
+    const persisted = {
+      prNumber: 106,
+      repo: 'rust-dashcore',
+      rounds: [
+        {
+          round: 1,
+          commitSha: 'abc123',
+          timestamp: '2025-01-01T00:00:00Z',
+          findings: [
+            {
+              fingerprint: { file: 'src/a.rs', lineStart: 10, lineEnd: 10, slug: 'Old-blocker' },
+              severity: 'required',
+              title: 'Old blocker',
+              authorReply: 'agree',
+            },
+            {
+              fingerprint: { file: 'src/b.rs', lineStart: 20, lineEnd: 20, slug: 'Old-nit' },
+              severity: 'nit',
+              title: 'Old nit',
+              authorReply: 'none',
+            },
+            {
+              fingerprint: { file: 'src/c.rs', lineStart: 30, lineEnd: 30, slug: 'Current' },
+              severity: 'suggestion',
+              title: 'Current suggestion',
+              authorReply: 'none',
+            },
+          ],
+        },
+      ],
+    };
+    const octokit = mockJsonOctokit({ 'rust-dashcore/prs/106/handover.json': persisted });
+
+    const result = await loadHandover(octokit, 'owner/memory', 'rust-dashcore', 106);
+    expect(result!.rounds[0].findings[0].severity).toBe('blocker');
+    expect(result!.rounds[0].findings[1].severity).toBe('nitpick');
+    expect(result!.rounds[0].findings[2].severity).toBe('suggestion');
   });
 });
 
@@ -990,7 +1030,7 @@ describe('appendHandoverRound', () => {
         timestamp: '2025-01-01T00:00:00Z',
         findings: [{
           fingerprint: { file: 'src/a.ts', lineStart: 5, lineEnd: 5, slug: 'Null-check' },
-          severity: 'required',
+          severity: 'blocker',
           title: 'Null check',
           authorReply: 'none',
           threadId: 't1',
@@ -1020,7 +1060,7 @@ describe('appendHandoverRound', () => {
         timestamp: '2025-01-01T00:00:00Z',
         findings: [{
           fingerprint: { file: 'src/a.ts', lineStart: 5, lineEnd: 5, slug: 'Null-check' },
-          severity: 'required',
+          severity: 'blocker',
           title: 'Null check',
           authorReply: 'none',
           // no threadId yet
@@ -1053,7 +1093,7 @@ describe('appendHandoverRound', () => {
         timestamp: '2025-01-01T00:00:00Z',
         findings: [{
           fingerprint: { file: 'src/a.ts', lineStart: 40, lineEnd: 44, slug: 'Range-check' },
-          severity: 'required',
+          severity: 'blocker',
           title: 'Range check',
           authorReply: 'none',
           // no threadId yet
@@ -1192,7 +1232,7 @@ describe('appendHandoverRound', () => {
         findings: [
           {
             fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: 'Null-check' },
-            severity: 'required',
+            severity: 'blocker',
             title: 'Null check',
             authorReply: 'none',
           },
@@ -1235,7 +1275,7 @@ describe('appendHandoverRound', () => {
         timestamp: '2025-01-01T00:00:00Z',
         findings: [{
           fingerprint: { file: 'src/a.ts', lineStart: 5, lineEnd: 5, slug: 'Null-check' },
-          severity: 'required',
+          severity: 'blocker',
           title: 'Null check',
           authorReply: 'none',
         }],

@@ -3,7 +3,7 @@ import { DashboardData, Finding, ParsedDiff, ReviewMetadata, ReviewResult, Revie
 
 describe('formatFindingComment', () => {
   const baseFinding: Finding = {
-    severity: 'required',
+    severity: 'blocker',
     title: 'Null pointer dereference',
     file: 'src/main.ts',
     line: 42,
@@ -13,7 +13,7 @@ describe('formatFindingComment', () => {
 
   it('formats a required finding with correct emoji and label', () => {
     const comment = formatFindingComment(baseFinding);
-    expect(comment).toContain('🚫 **Required**');
+    expect(comment).toContain('🚫 **Blocker**');
     expect(comment).toContain(baseFinding.title);
     expect(comment).toContain(baseFinding.description);
   });
@@ -21,13 +21,19 @@ describe('formatFindingComment', () => {
   it('formats a suggestion finding with correct emoji and label', () => {
     const finding: Finding = { ...baseFinding, severity: 'suggestion' };
     const comment = formatFindingComment(finding);
-    expect(comment).toContain('💡 **Suggestion**');
+    expect(comment).toContain('✨ **Suggestion**');
+  });
+
+  it('formats a warning finding with correct emoji and label', () => {
+    const finding: Finding = { ...baseFinding, severity: 'warning' };
+    const comment = formatFindingComment(finding);
+    expect(comment).toContain('⚠️ **Warning**');
   });
 
   it('formats a nit finding with correct emoji and label', () => {
-    const finding: Finding = { ...baseFinding, severity: 'nit' };
+    const finding: Finding = { ...baseFinding, severity: 'nitpick' };
     const comment = formatFindingComment(finding);
-    expect(comment).toContain('📝 **Nit**');
+    expect(comment).toContain('📝 **Nitpick**');
   });
 
   it('formats an ignore finding with correct emoji and label', () => {
@@ -85,6 +91,13 @@ describe('formatFindingComment', () => {
     expect(parsed.confidence).toBe('high');
   });
 
+  it('omits confidence from AI context JSON when judgeConfidence is absent', () => {
+    const comment = formatFindingComment(baseFinding);
+    const jsonMatch = comment.match(/```json\n([\s\S]*?)\n```/);
+    const parsed = JSON.parse(jsonMatch![1]);
+    expect(parsed.confidence).toBeUndefined();
+  });
+
   it('truncates long suggestedFix in AI context JSON to 200 chars', () => {
     const longFix = 'a'.repeat(250);
     const finding: Finding = { ...baseFinding, suggestedFix: longFix };
@@ -122,49 +135,57 @@ describe('formatFindingComment', () => {
 
   it('includes metadata marker with severity and sanitized title', () => {
     const comment = formatFindingComment(baseFinding);
-    expect(comment).toContain('<!-- manki:required:Null-pointer-dereference -->');
+    expect(comment).toContain('<!-- manki:blocker:Null-pointer-dereference -->');
   });
 
   it('sanitizes special characters in metadata marker title', () => {
     const finding: Finding = { ...baseFinding, title: 'Bug: foo() returns "bar"!' };
     const comment = formatFindingComment(finding);
-    expect(comment).toContain('<!-- manki:required:Bug--foo---returns--bar-- -->');
+    expect(comment).toContain('<!-- manki:blocker:Bug--foo---returns--bar-- -->');
   });
 
-  it('shows judge confidence when present', () => {
+  it('shows judge confidence as a red dot when high', () => {
     const finding: Finding = { ...baseFinding, judgeConfidence: 'high' };
     const comment = formatFindingComment(finding);
-    expect(comment).toContain('<sub>[high confidence]</sub>');
+    expect(comment).toContain('🔴 🚫 **Blocker**');
   });
 
-  it('shows medium judge confidence', () => {
+  it('shows judge confidence as an orange dot when medium', () => {
     const finding: Finding = { ...baseFinding, judgeConfidence: 'medium' };
     const comment = formatFindingComment(finding);
-    expect(comment).toContain('<sub>[medium confidence]</sub>');
+    expect(comment).toContain('🟠 🚫 **Blocker**');
   });
 
-  it('omits judge confidence when absent', () => {
+  it('shows judge confidence as a yellow dot when low', () => {
+    const finding: Finding = { ...baseFinding, judgeConfidence: 'low' };
+    const comment = formatFindingComment(finding);
+    expect(comment).toContain('🟡 🚫 **Blocker**');
+  });
+
+  it('omits judge confidence dot when absent', () => {
     const comment = formatFindingComment(baseFinding);
-    expect(comment).not.toContain('confidence]');
+    expect(comment).not.toContain('🔴');
+    expect(comment).not.toContain('🟠');
+    expect(comment).not.toContain('🟡');
   });
 
   it('renders defensive-hardening tag with original severity when tagged', () => {
     const finding: Finding = {
       ...baseFinding,
-      severity: 'nit',
+      severity: 'nitpick',
       tags: ['defensive-hardening'],
-      originalSeverity: 'required',
+      originalSeverity: 'blocker',
       reachability: 'hypothetical',
       reachabilityReasoning: 'no caller passes a negative value',
     };
     const comment = formatFindingComment(finding);
-    expect(comment).toContain('[defensive hardening — capped from required]');
+    expect(comment).toContain('[defensive hardening — capped from blocker]');
     const jsonMatch = comment.match(/```json\n([\s\S]*?)\n```/);
     const parsed = JSON.parse(jsonMatch![1]);
     expect(parsed.tags).toEqual(['defensive-hardening']);
     expect(parsed.reachability).toBe('hypothetical');
     expect(parsed.reachabilityReasoning).toBe('no caller passes a negative value');
-    expect(parsed.originalSeverity).toBe('required');
+    expect(parsed.originalSeverity).toBe('blocker');
   });
 
   it('omits defensive-hardening line when finding has no tags', () => {
@@ -178,7 +199,7 @@ describe('formatFindingComment', () => {
   });
 
   it('omits defensive-hardening line when tag is absent but originalSeverity is set', () => {
-    const finding: Finding = { ...baseFinding, originalSeverity: 'required' };
+    const finding: Finding = { ...baseFinding, originalSeverity: 'blocker' };
     const comment = formatFindingComment(finding);
     expect(comment).not.toContain('defensive hardening');
   });
@@ -186,22 +207,22 @@ describe('formatFindingComment', () => {
   it('renders own-proposal-followup tag with originalSeverity when present', () => {
     const finding: Finding = {
       ...baseFinding,
-      severity: 'nit',
+      severity: 'nitpick',
       tags: ['own-proposal-followup'],
-      originalSeverity: 'required',
+      originalSeverity: 'blocker',
     };
     const comment = formatFindingComment(finding);
-    expect(comment).toContain('[own-proposal followup — capped from required]');
+    expect(comment).toContain('[own-proposal followup — capped from blocker]');
     const jsonMatch = comment.match(/```json\n([\s\S]*?)\n```/);
     const parsed = JSON.parse(jsonMatch![1]);
     expect(parsed.tags).toEqual(['own-proposal-followup']);
-    expect(parsed.originalSeverity).toBe('required');
+    expect(parsed.originalSeverity).toBe('blocker');
   });
 
   it('renders own-proposal-followup without "capped from" when originalSeverity is absent', () => {
     const finding: Finding = {
       ...baseFinding,
-      severity: 'nit',
+      severity: 'nitpick',
       tags: ['own-proposal-followup'],
     };
     const comment = formatFindingComment(finding);
@@ -212,8 +233,8 @@ describe('formatFindingComment', () => {
   it('renders own-proposal-followup without "capped from" when originalSeverity equals severity', () => {
     const finding: Finding = {
       ...baseFinding,
-      severity: 'nit',
-      originalSeverity: 'nit',
+      severity: 'nitpick',
+      originalSeverity: 'nitpick',
       tags: ['own-proposal-followup'],
     };
     const comment = formatFindingComment(finding);
@@ -224,14 +245,14 @@ describe('formatFindingComment', () => {
   it('renders both defensive-hardening and own-proposal-followup tags when both are present', () => {
     const finding: Finding = {
       ...baseFinding,
-      severity: 'nit',
+      severity: 'nitpick',
       tags: ['defensive-hardening', 'own-proposal-followup'],
-      originalSeverity: 'required',
+      originalSeverity: 'blocker',
       reachability: 'hypothetical',
     };
     const comment = formatFindingComment(finding);
-    expect(comment).toContain('[defensive hardening — capped from required]');
-    expect(comment).toContain('[own-proposal followup — capped from required]');
+    expect(comment).toContain('[defensive hardening — capped from blocker]');
+    expect(comment).toContain('[own-proposal followup — capped from blocker]');
   });
 
   it('omits own-proposal-followup line when tag is absent', () => {
@@ -287,7 +308,7 @@ describe('BOT_MARKER', () => {
 
 describe('buildNitIssueBody', () => {
   const nit: Finding = {
-    severity: 'nit',
+    severity: 'nitpick',
     title: 'Use const instead of let',
     file: 'src/utils.ts',
     line: 10,
@@ -305,7 +326,7 @@ describe('buildNitIssueBody', () => {
   };
 
   const required: Finding = {
-    severity: 'required',
+    severity: 'blocker',
     title: 'Null dereference',
     file: 'src/main.ts',
     line: 1,
@@ -313,10 +334,20 @@ describe('buildNitIssueBody', () => {
     reviewers: ['Security'],
   };
 
+  const warning: Finding = {
+    severity: 'warning',
+    title: 'Race condition in cache',
+    file: 'src/cache.ts',
+    line: 5,
+    description: 'Concurrent reads may observe stale state.',
+    reviewers: ['Concurrency'],
+  };
+
   it('filters to only nit findings', () => {
-    const body = buildNitIssueBody(42, [required, nit, suggestion], 'testowner', 'testrepo', 'abc123');
+    const body = buildNitIssueBody(42, [required, warning, nit, suggestion], 'testowner', 'testrepo', 'abc123');
     expect(body).toContain('Use const instead of let');
     expect(body).not.toContain('Null dereference');
+    expect(body).not.toContain('Race condition in cache');
     expect(body).not.toContain('Is this timeout intentional?');
   });
 
@@ -608,7 +639,7 @@ describe('formatStatsOneLiner', () => {
     findingsRaw: 10,
     findingsKept: 4,
     findingsDropped: 6,
-    severity: { required: 1, suggestion: 2, nit: 1 },
+    severity: { blocker: 1, warning: 0, suggestion: 2, nitpick: 1 },
     verdict: 'REQUEST_CHANGES',
     prNumber: 42,
     commitSha: 'abc123',
@@ -616,21 +647,30 @@ describe('formatStatsOneLiner', () => {
 
   it('formats a one-liner with severity breakdown', () => {
     const result = formatStatsOneLiner(baseStats);
-    expect(result).toBe('\u{1F4CA} 4 findings (1 required, 2 suggestion, 1 nit) \u00B7 120 lines \u00B7 45s');
+    expect(result).toBe('\u{1F4CA} 4 findings (1 blocker, 2 suggestion, 1 nitpick) \u00B7 120 lines \u00B7 45s');
   });
 
   it('omits zero-count severities', () => {
-    const stats = { ...baseStats, severity: { required: 0, suggestion: 3, nit: 0 }, findingsKept: 3 };
+    const stats = { ...baseStats, severity: { blocker: 0, warning: 0, suggestion: 3, nitpick: 0 }, findingsKept: 3 };
     const result = formatStatsOneLiner(stats);
     expect(result).toContain('(3 suggestion)');
-    expect(result).not.toContain('required');
-    expect(result).not.toContain('nit');
+    expect(result).not.toContain('blocker');
+    expect(result).not.toContain('nitpick');
   });
 
   it('shows none when all severities are zero', () => {
-    const stats = { ...baseStats, severity: { required: 0, suggestion: 0, nit: 0 }, findingsKept: 0 };
+    const stats = { ...baseStats, severity: { blocker: 0, warning: 0, suggestion: 0, nitpick: 0 }, findingsKept: 0 };
     const result = formatStatsOneLiner(stats);
     expect(result).toContain('(none)');
+  });
+
+  it('includes non-zero warning count in output', () => {
+    const stats = { ...baseStats, severity: { blocker: 0, warning: 2, suggestion: 1, nitpick: 0 }, findingsKept: 3 };
+    const result = formatStatsOneLiner(stats);
+    expect(result).toContain('2 warning');
+    expect(result).toContain('1 suggestion');
+    expect(result).not.toContain('blocker');
+    expect(result).not.toContain('nitpick');
   });
 
   it('rounds review time to nearest second', () => {
@@ -653,7 +693,7 @@ describe('formatStatsJson', () => {
       findingsRaw: 5,
       findingsKept: 2,
       findingsDropped: 3,
-      severity: { required: 1, suggestion: 1, nit: 0 },
+      severity: { blocker: 1, warning: 0, suggestion: 1, nitpick: 0 },
       verdict: 'APPROVE',
       prNumber: 10,
       commitSha: 'def456',
@@ -701,7 +741,7 @@ describe('postReview with stats', () => {
       findingsRaw: 6,
       findingsKept: 3,
       findingsDropped: 3,
-      severity: { required: 0, suggestion: 2, nit: 1 },
+      severity: { blocker: 0, warning: 0, suggestion: 2, nitpick: 1 },
       verdict: 'APPROVE',
       prNumber: 99,
       commitSha: 'abc',
@@ -779,16 +819,20 @@ describe('postReview partialNote', () => {
 });
 
 describe('getSeverityLabel', () => {
-  it('returns Required for required severity', () => {
-    expect(getSeverityLabel('required')).toBe('Required');
+  it('returns Blocker for blocker severity', () => {
+    expect(getSeverityLabel('blocker')).toBe('Blocker');
+  });
+
+  it('returns Warning for warning severity', () => {
+    expect(getSeverityLabel('warning')).toBe('Warning');
   });
 
   it('returns Suggestion for suggestion severity', () => {
     expect(getSeverityLabel('suggestion')).toBe('Suggestion');
   });
 
-  it('returns Nit for nit severity', () => {
-    expect(getSeverityLabel('nit')).toBe('Nit');
+  it('returns Nitpick for nitpick severity', () => {
+    expect(getSeverityLabel('nitpick')).toBe('Nitpick');
   });
 
   it('returns Ignore for ignore severity', () => {
@@ -1648,13 +1692,25 @@ describe('buildDashboard', () => {
     const data: DashboardData = {
       phase: 'complete', lineCount: 400, agentCount: 5,
       rawFindingCount: 8, keptCount: 2, droppedCount: 6,
-      keptSeverities: { required: 1, suggestion: 1 },
-      droppedSeverities: { nit: 3, suggestion: 2, ignore: 1 },
+      keptSeverities: { blocker: 1, suggestion: 1 },
+      droppedSeverities: { nitpick: 3, suggestion: 2, ignore: 1 },
     };
     const md = buildDashboard(data);
     expect(md).toContain('**Judge** — 2 kept · 6 dropped');
-    expect(md).toContain(`${INDENT}kept: 1 required · 1 suggestion`);
-    expect(md).toContain(`${INDENT}dropped: 2 suggestion · 3 nit · 1 ignore`);
+    expect(md).toContain(`${INDENT}kept: 1 blocker · 1 suggestion`);
+    expect(md).toContain(`${INDENT}dropped: 2 suggestion · 3 nitpick · 1 ignore`);
+  });
+
+  it('renders warning in severity breakdown when warning count is non-zero', () => {
+    const data: DashboardData = {
+      phase: 'complete', lineCount: 200, agentCount: 3,
+      rawFindingCount: 5, keptCount: 3, droppedCount: 2,
+      keptSeverities: { blocker: 1, warning: 2 },
+      droppedSeverities: { warning: 1, nitpick: 1 },
+    };
+    const md = buildDashboard(data);
+    expect(md).toContain(`${INDENT}kept: 1 blocker · 2 warning`);
+    expect(md).toContain(`${INDENT}dropped: 1 warning · 1 nitpick`);
   });
 
   it('renders plannerInfo in complete phase', () => {
@@ -1847,7 +1903,7 @@ describe('updateProgressComment', () => {
       nitHandling: 'issues',
     },
     judgeDecisions: [
-      { title: 'Null dereference', severity: 'required', reasoning: 'Valid bug', confidence: 'high', kept: true },
+      { title: 'Null dereference', severity: 'blocker', reasoning: 'Valid bug', confidence: 'high', kept: true },
       { title: 'Style nitpick', severity: 'ignore', reasoning: 'Intentional pattern', confidence: 'medium', kept: false },
     ],
     timing: {
@@ -1890,7 +1946,7 @@ describe('updateProgressComment', () => {
     const body = mockUpdateComment.mock.calls[0][0].body as string;
     expect(body).toContain('**Judge decisions:**');
     expect(body).toContain('\u2713 Kept: "Null dereference"');
-    expect(body).toContain('(required, high confidence)');
+    expect(body).toContain('(blocker, high confidence)');
     expect(body).toContain('\u2717 Dropped: "Style nitpick"');
     expect(body).toContain('(ignore, medium confidence)');
   });
@@ -2225,7 +2281,7 @@ describe('createNitIssue', () => {
   it('returns null when no nit findings exist', async () => {
     const mockOctokit = {} as unknown as Parameters<typeof createNitIssue>[0];
     const findings: Finding[] = [
-      { severity: 'required', title: 'Bug', file: 'a.ts', line: 1, description: 'Desc', reviewers: [] },
+      { severity: 'blocker', title: 'Bug', file: 'a.ts', line: 1, description: 'Desc', reviewers: [] },
     ];
 
     const result = await createNitIssue(mockOctokit, 'owner', 'repo', 1, findings, 'sha');
@@ -2244,7 +2300,7 @@ describe('createNitIssue', () => {
     } as unknown as Parameters<typeof createNitIssue>[0];
 
     const findings: Finding[] = [
-      { severity: 'nit', title: 'Style', file: 'a.ts', line: 1, description: 'Desc', reviewers: [] },
+      { severity: 'nitpick', title: 'Style', file: 'a.ts', line: 1, description: 'Desc', reviewers: [] },
     ];
 
     const result = await createNitIssue(mockOctokit, 'owner', 'repo', 1, findings, 'sha');
@@ -2266,7 +2322,7 @@ describe('createNitIssue', () => {
     } as unknown as Parameters<typeof createNitIssue>[0];
 
     const findings: Finding[] = [
-      { severity: 'nit', title: 'Style issue', file: 'a.ts', line: 5, description: 'Minor style.', reviewers: [] },
+      { severity: 'nitpick', title: 'Style issue', file: 'a.ts', line: 5, description: 'Minor style.', reviewers: [] },
     ];
 
     const result = await createNitIssue(mockOctokit, 'owner', 'repo', 42, findings, 'abc123');
@@ -2293,7 +2349,7 @@ describe('createNitIssue', () => {
     } as unknown as Parameters<typeof createNitIssue>[0];
 
     const findings: Finding[] = [
-      { severity: 'nit', title: 'Nit', file: 'a.ts', line: 1, description: 'Desc', reviewers: [] },
+      { severity: 'nitpick', title: 'Nit', file: 'a.ts', line: 1, description: 'Desc', reviewers: [] },
     ];
 
     await createNitIssue(mockOctokit, 'owner', 'repo', 1, findings, 'sha');
@@ -2375,7 +2431,7 @@ describe('postReview fallback paths', () => {
       verdict: 'REQUEST_CHANGES',
       summary: 'Issues found.',
       findings: [{
-        severity: 'required',
+        severity: 'blocker',
         title: 'Critical bug here',
         file: 'src/a.ts',
         line: 10,
@@ -2489,9 +2545,10 @@ describe('postReview fallback paths', () => {
 
 describe('getSeverityEmoji', () => {
   it('returns correct emoji for each severity', () => {
-    expect(getSeverityEmoji('required')).toBe('\u{1F6AB}');
-    expect(getSeverityEmoji('suggestion')).toBe('\u{1F4A1}');
-    expect(getSeverityEmoji('nit')).toBe('\u{1F4DD}');
+    expect(getSeverityEmoji('blocker')).toBe('\u{1F6AB}');
+    expect(getSeverityEmoji('warning')).toBe('\u26A0\uFE0F');
+    expect(getSeverityEmoji('suggestion')).toBe('\u2728');
+    expect(getSeverityEmoji('nitpick')).toBe('\u{1F4DD}');
     expect(getSeverityEmoji('ignore')).toBe('\u26AA');
   });
 });

@@ -854,7 +854,7 @@ interface FindingContent {
 }
 
 function parseTriageBody(body: string): TriageResult {
-  const headerRegex = /^- \[([ x])\] (?:<details><summary>)?[📝💡❓🚫] \*\*(.+?)\*\* — (?:`|<code>)(.+?)(?:`|<\/code>)/gmiu;
+  const headerRegex = /^- \[([ x])\] (?:<details><summary>)?(?:📝|💡|✨|⚠️|❓|🚫|⚪) \*\*(.+?)\*\* — (?:`|<code>)(.+?)(?:`|<\/code>)/gmiu;
 
   const accepted: TriageFinding[] = [];
   const rejected: TriageFinding[] = [];
