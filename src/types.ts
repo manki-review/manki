@@ -235,6 +235,19 @@ export interface PrContext {
   baseBranch: string;
 }
 
+/**
+ * An unresolved review thread carried into a follow-up review so the judge
+ * can decide whether the new diff addresses it.
+ */
+export interface OpenThread {
+  threadId: string;
+  threadUrl?: string;
+  title: string;
+  file: string;
+  line: number;
+  severity: FindingSeverity | 'unknown';
+}
+
 
 export interface ReviewStats {
   model: string;

@@ -106,6 +106,7 @@ interface PreviousFinding {
   severity: FindingSeverity | 'unknown';
   status: 'open' | 'resolved' | 'replied';
   threadId?: string;
+  threadUrl?: string;
   authorReplyText?: string;
 }
 
@@ -135,6 +136,7 @@ async function fetchRecapState(
       severity: t.severity,
       status: t.isResolved ? 'resolved' as const : (t.hasHumanReply ? 'replied' as const : 'open' as const),
       threadId: t.threadId,
+      threadUrl: t.threadUrl,
       authorReplyText: t.authorReplyText,
     }));
 
@@ -170,6 +172,7 @@ async function fetchRecapState(
 
 interface ReviewThread {
   threadId: string;
+  threadUrl: string;
   isBotThread: boolean;
   isResolved: boolean;
   hasHumanReply: boolean;
@@ -203,6 +206,7 @@ async function fetchReviewThreads(
               comments(first: 10) {
                 nodes {
                   body
+                  url
                   author {
                     login
                   }
@@ -229,6 +233,7 @@ async function fetchReviewThreads(
               comments: {
                 nodes: Array<{
                   body: string;
+                  url?: string;
                   author: { login: string } | null;
                 }>;
               };
@@ -261,6 +266,7 @@ async function fetchReviewThreads(
 
       return {
         threadId: thread.id,
+        threadUrl: firstComment?.url ?? '',
         isBotThread,
         isResolved: thread.isResolved,
         hasHumanReply,

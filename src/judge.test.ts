@@ -358,8 +358,8 @@ describe('buildJudgeUserMessage', () => {
   it('includes open threads section when openThreads provided', () => {
     const findings = [makeFinding()];
     const openThreads = [
-      { threadId: 'PRRT_abc', title: 'Null check missing', file: 'src/foo.ts', line: 10, severity: 'blocker' },
-      { threadId: 'PRRT_def', title: 'Unused import', file: 'src/bar.ts', line: 20, severity: 'suggestion' },
+      { threadId: 'PRRT_abc', title: 'Null check missing', file: 'src/foo.ts', line: 10, severity: 'blocker' as const },
+      { threadId: 'PRRT_def', title: 'Unused import', file: 'src/bar.ts', line: 20, severity: 'suggestion' as const },
     ];
     const msg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, openThreads);
 
@@ -368,6 +368,45 @@ describe('buildJudgeUserMessage', () => {
     expect(msg).toContain('Null check missing');
     expect(msg).toContain('PRRT_def');
     expect(msg).toContain('Unused import');
+  });
+
+  it('renders thread reference with view link suffix when threadUrl is provided', () => {
+    const findings = [makeFinding()];
+    const openThreads = [
+      {
+        threadId: 'PRRT_abc',
+        threadUrl: 'https://github.com/owner/repo/pull/1#discussion_r123',
+        title: 'Null check missing',
+        file: 'src/foo.ts',
+        line: 10,
+        severity: 'warning' as const,
+      },
+    ];
+    const msg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, openThreads);
+
+    expect(msg).toContain('**PRRT_abc** ([view](https://github.com/owner/repo/pull/1#discussion_r123))');
+  });
+
+  it('renders thread reference as plain id when threadUrl is absent', () => {
+    const findings = [makeFinding()];
+    const openThreads = [
+      { threadId: 'PRRT_abc', title: 'Null check missing', file: 'src/foo.ts', line: 10, severity: 'warning' as const },
+    ];
+    const msg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, openThreads);
+
+    expect(msg).toContain('**PRRT_abc**');
+    expect(msg).not.toContain('[view]');
+  });
+
+  it('renders thread reference as plain id when threadUrl is an empty string', () => {
+    const findings = [makeFinding()];
+    const openThreads = [
+      { threadId: 'PRRT_abc', threadUrl: '', title: 'Null check missing', file: 'src/foo.ts', line: 10, severity: 'warning' as const },
+    ];
+    const msg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, openThreads);
+
+    expect(msg).toContain('**PRRT_abc**');
+    expect(msg).not.toContain('[view]');
   });
 
   it('omits open threads section when openThreads is undefined', () => {

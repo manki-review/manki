@@ -5,7 +5,7 @@ import { runJudgeAgent, JudgeInput, ResolveThread, computeProvenanceMap } from '
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
 import { deduplicateFindings, llmDeduplicateFindings, PreviousFinding } from './recap';
-import { ReviewConfig, ReviewerAgent, Finding, HandoverFinding, HandoverRound, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, PlannerRoundHint, SpecialistOutcome, EffortLevel, AgentPick, ProvenanceEntry, MAX_AGENT_RETRIES } from './types';
+import { ReviewConfig, ReviewerAgent, Finding, HandoverFinding, HandoverRound, OpenThread, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, PlannerRoundHint, SpecialistOutcome, EffortLevel, AgentPick, ProvenanceEntry, MAX_AGENT_RETRIES } from './types';
 import { extractJSON } from './json';
 
 const DISMISSED_LINE_TOLERANCE = 5;
@@ -538,7 +538,7 @@ export async function runReview(
   linkedIssues?: LinkedIssue[],
   onProgress?: (progress: ReviewProgress) => void,
   isFollowUp?: boolean,
-  openThreads?: Array<{ threadId: string; title: string; file: string; line: number; severity: string }>,
+  openThreads?: OpenThread[],
   previousFindings?: PreviousFinding[],
   priorRounds?: HandoverRound[],
 ): Promise<ReviewResult> {

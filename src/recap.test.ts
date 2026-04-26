@@ -699,6 +699,41 @@ describe('fetchRecapState', () => {
     expect(state.previousFindings[0].line).toBe(0);
   });
 
+  it('extracts threadUrl from the first comment and exposes it on PreviousFinding', async () => {
+    const octokit = mockOctokit([
+      makeThread({
+        id: 't1',
+        comments: {
+          nodes: [{
+            body: '<!-- manki:blocker:Null-check --> \u{1F6AB} **Blocker**: Missing null check',
+            url: 'https://github.com/owner/repo/pull/1#discussion_r123',
+            author: { login: 'github-actions[bot]' },
+          }],
+        },
+      }),
+    ]);
+
+    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    expect(state.previousFindings[0].threadUrl).toBe('https://github.com/owner/repo/pull/1#discussion_r123');
+  });
+
+  it('falls back to empty-string threadUrl when the first comment has no url', async () => {
+    const octokit = mockOctokit([
+      makeThread({
+        id: 't1',
+        comments: {
+          nodes: [{
+            body: '<!-- manki:blocker:Null-check --> \u{1F6AB} **Blocker**: Missing null check',
+            author: { login: 'github-actions[bot]' },
+          }],
+        },
+      }),
+    ]);
+
+    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    expect(state.previousFindings[0].threadUrl).toBe('');
+  });
+
   it('treats first non-bot comment body as author reply text', async () => {
     const octokit = mockOctokit([
       makeThread({
