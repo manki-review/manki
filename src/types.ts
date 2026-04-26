@@ -77,6 +77,11 @@ export type InPrSuppressionReason = 'resolved-thread' | 'agree-reply';
 export interface InPrSuppression {
   fingerprint: FindingFingerprint;
   reason: InPrSuppressionReason;
+  /**
+   * Login of the commenter whose reply triggered an `agree-reply` suppression.
+   * Absent for `resolved-thread` reasons. Used for audit-log attribution.
+   */
+  authorLogin?: string;
 }
 
 /** One finding as captured in a prior review round. */

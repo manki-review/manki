@@ -541,6 +541,7 @@ export async function runReview(
   openThreads?: Array<{ threadId: string; title: string; file: string; line: number; severity: string }>,
   previousFindings?: PreviousFinding[],
   priorRounds?: HandoverRound[],
+  prAuthorLogin?: string,
 ): Promise<ReviewResult> {
   const priorRoundHints = buildPlannerHints(priorRounds);
   const provenanceMap = computeProvenanceMap(priorRounds, rawDiff);
@@ -961,7 +962,7 @@ export async function runReview(
   }
 
   const inPrSuppressions = previousFindings && previousFindings.length > 0
-    ? collectInPrSuppressions(previousFindings)
+    ? collectInPrSuppressions(previousFindings, prAuthorLogin)
     : [];
   if (inPrSuppressions.length > 0) {
     core.info(`In-PR suppressions: ${inPrSuppressions.length} fingerprints (resolved or author-agreed)`);

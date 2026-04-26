@@ -860,54 +860,79 @@ describe('collectInPrSuppressions', () => {
     });
   });
 
-  it('suppresses open threads whose latest author reply is agree', () => {
+  it('suppresses open threads whose latest author reply is agree from PR author', () => {
     const result = collectInPrSuppressions([
-      makePrevious({ title: 'Unused var', file: 'src/a.ts', line: 10, status: 'open', authorReplyText: 'Fixed, thanks!' }),
-    ]);
+      makePrevious({ title: 'Unused var', file: 'src/a.ts', line: 10, status: 'open', authorReplyText: 'Fixed, thanks!', authorReplyLogin: 'pr-author' }),
+    ], 'pr-author');
     expect(result).toHaveLength(1);
     expect(result[0].reason).toBe('agree-reply');
+    expect(result[0].authorLogin).toBe('pr-author');
   });
 
-  it('suppresses replied threads whose author reply is agree', () => {
+  it('suppresses replied threads whose author reply is agree from PR author', () => {
     const result = collectInPrSuppressions([
-      makePrevious({ title: 'Null check', file: 'src/a.ts', line: 10, status: 'replied', authorReplyText: 'Fixed, done.' }),
-    ]);
+      makePrevious({ title: 'Null check', file: 'src/a.ts', line: 10, status: 'replied', authorReplyText: 'Fixed, done.', authorReplyLogin: 'pr-author' }),
+    ], 'pr-author');
     expect(result).toHaveLength(1);
     expect(result[0].reason).toBe('agree-reply');
+    expect(result[0].authorLogin).toBe('pr-author');
+  });
+
+  it('does not suppress agree-reply from a third-party commenter (different login than PR author)', () => {
+    const result = collectInPrSuppressions([
+      makePrevious({ title: 'Unused var', file: 'src/a.ts', line: 10, status: 'open', authorReplyText: 'Fixed!', authorReplyLogin: 'random-user' }),
+    ], 'pr-author');
+    expect(result).toHaveLength(0);
+  });
+
+  it('does not suppress agree-reply when prAuthorLogin is undefined', () => {
+    const result = collectInPrSuppressions([
+      makePrevious({ title: 'Unused var', file: 'src/a.ts', line: 10, status: 'open', authorReplyText: 'Fixed!', authorReplyLogin: 'pr-author' }),
+    ]);
+    expect(result).toHaveLength(0);
+  });
+
+  it('still suppresses resolved threads even when reply login does not match PR author', () => {
+    const result = collectInPrSuppressions([
+      makePrevious({ title: 'Resolved by maintainer', file: 'src/a.ts', line: 10, status: 'resolved', authorReplyLogin: 'maintainer' }),
+    ], 'pr-author');
+    expect(result).toHaveLength(1);
+    expect(result[0].reason).toBe('resolved-thread');
+    expect(result[0].authorLogin).toBeUndefined();
   });
 
   it('does not suppress open threads whose author reply is disagree', () => {
     const result = collectInPrSuppressions([
-      makePrevious({ title: 'Unused var', file: 'src/a.ts', line: 10, status: 'open', authorReplyText: 'I disagree, this is intentional.' }),
-    ]);
+      makePrevious({ title: 'Unused var', file: 'src/a.ts', line: 10, status: 'open', authorReplyText: 'I disagree, this is intentional.', authorReplyLogin: 'pr-author' }),
+    ], 'pr-author');
     expect(result).toHaveLength(0);
   });
 
   it('does not suppress replied threads whose author reply is partial', () => {
     const result = collectInPrSuppressions([
-      makePrevious({ title: 'Unused var', file: 'src/a.ts', line: 10, status: 'replied', authorReplyText: 'Still working on it.' }),
-    ]);
+      makePrevious({ title: 'Unused var', file: 'src/a.ts', line: 10, status: 'replied', authorReplyText: 'Still working on it.', authorReplyLogin: 'pr-author' }),
+    ], 'pr-author');
     expect(result).toHaveLength(0);
   });
 
   it('does not suppress open threads whose author reply is partial', () => {
     const result = collectInPrSuppressions([
-      makePrevious({ title: 'Unused var', file: 'src/a.ts', line: 10, status: 'open', authorReplyText: 'Working on it.' }),
-    ]);
+      makePrevious({ title: 'Unused var', file: 'src/a.ts', line: 10, status: 'open', authorReplyText: 'Working on it.', authorReplyLogin: 'pr-author' }),
+    ], 'pr-author');
     expect(result).toHaveLength(0);
   });
 
   it('does not suppress open threads with no author reply', () => {
     const result = collectInPrSuppressions([
       makePrevious({ title: 'Unused var', file: 'src/a.ts', line: 10, status: 'open' }),
-    ]);
+    ], 'pr-author');
     expect(result).toHaveLength(0);
   });
 
   it('does not suppress replied threads with no author reply', () => {
     const result = collectInPrSuppressions([
       makePrevious({ title: 'Some issue', file: 'src/a.ts', line: 10, status: 'replied' }),
-    ]);
+    ], 'pr-author');
     expect(result).toHaveLength(0);
   });
 
@@ -937,9 +962,9 @@ describe('collectInPrSuppressions', () => {
   it('collects a mix of resolved and agree-reply reasons in one pass', () => {
     const result = collectInPrSuppressions([
       makePrevious({ title: 'Resolved finding', file: 'f.ts', line: 1, status: 'resolved' }),
-      makePrevious({ title: 'Agreed finding', file: 'f.ts', line: 2, status: 'open', authorReplyText: 'addressed in a1b2c3d' }),
-      makePrevious({ title: 'Kept finding', file: 'f.ts', line: 3, status: 'open', authorReplyText: "no, keeping it" }),
-    ]);
+      makePrevious({ title: 'Agreed finding', file: 'f.ts', line: 2, status: 'open', authorReplyText: 'addressed in a1b2c3d', authorReplyLogin: 'pr-author' }),
+      makePrevious({ title: 'Kept finding', file: 'f.ts', line: 3, status: 'open', authorReplyText: "no, keeping it", authorReplyLogin: 'pr-author' }),
+    ], 'pr-author');
     expect(result.map(r => r.reason)).toEqual(['resolved-thread', 'agree-reply']);
   });
 });

@@ -814,7 +814,8 @@ export function applyInPrSuppression(
     const next: Finding = { ...finding };
     if (finding.severity !== 'ignore') {
       count++;
-      core.info(`In-PR suppression (${match.reason}): "${finding.title}" at ${finding.file}:${finding.line}`);
+      const attribution = match.authorLogin ? ` [reply by @${match.authorLogin}]` : '';
+      core.info(`In-PR suppression (${match.reason}): "${finding.title}" at ${finding.file}:${finding.line}${attribution}`);
       next.originalSeverity = next.originalSeverity ?? finding.severity;
       next.severity = 'ignore';
     }

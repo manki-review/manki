@@ -229,7 +229,7 @@ async function handlePullRequest(): Promise<void> {
     baseBranch: pr.base.ref,
   };
 
-  await runFullReview(owner, repo, prNumber, commitSha, pr.base.ref, prContext);
+  await runFullReview(owner, repo, prNumber, commitSha, pr.base.ref, prContext, pr.user?.login);
 }
 
 async function handleCommentTrigger(forceReview?: boolean): Promise<void> {
@@ -290,7 +290,7 @@ async function handleCommentTrigger(forceReview?: boolean): Promise<void> {
     baseBranch: pr.base.ref,
   };
 
-  await runFullReview(owner, repo, prNumber, pr.head.sha, pr.base.ref, prContext);
+  await runFullReview(owner, repo, prNumber, pr.head.sha, pr.base.ref, prContext, pr.user?.login);
 }
 
 async function runFullReview(
@@ -300,6 +300,7 @@ async function runFullReview(
   commitSha: string,
   baseRef: string,
   prContext?: PrContext,
+  prAuthorLogin?: string,
 ): Promise<void> {
   core.info(`Starting review for ${owner}/${repo}#${prNumber}`);
 
@@ -580,6 +581,7 @@ async function runFullReview(
       openThreads,
       recap.previousFindings,
       handover?.rounds,
+      prAuthorLogin,
     );
     const judgeEndTime = Date.now();
 
