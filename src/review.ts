@@ -538,7 +538,7 @@ export async function runReview(
   linkedIssues?: LinkedIssue[],
   onProgress?: (progress: ReviewProgress) => void,
   isFollowUp?: boolean,
-  openThreads?: Array<{ threadId: string; title: string; file: string; line: number; severity: string }>,
+  openThreads?: Array<{ threadId: string; threadUrl?: string; title: string; file: string; line: number; severity: string }>,
   previousFindings?: PreviousFinding[],
   priorRounds?: HandoverRound[],
 ): Promise<ReviewResult> {

@@ -213,7 +213,7 @@ export interface JudgeInput {
   linkedIssues?: LinkedIssue[];
   agentCount: number;
   isFollowUp?: boolean;
-  openThreads?: Array<{ threadId: string; title: string; file: string; line: number; severity: string }>;
+  openThreads?: Array<{ threadId: string; threadUrl?: string; title: string; file: string; line: number; severity: string }>;
   priorRounds?: HandoverRound[];
   effort?: 'low' | 'medium' | 'high';
   provenanceMap?: ProvenanceEntry[];
@@ -457,7 +457,7 @@ export function buildJudgeUserMessage(
   prContext?: PrContext,
   linkedIssues?: LinkedIssue[],
   changedFiles?: DiffFile[],
-  openThreads?: Array<{ threadId: string; title: string; file: string; line: number; severity: string }>,
+  openThreads?: Array<{ threadId: string; threadUrl?: string; title: string; file: string; line: number; severity: string }>,
   priorRounds?: HandoverRound[],
 ): string {
   const parts: string[] = [];
@@ -472,7 +472,8 @@ export function buildJudgeUserMessage(
     parts.push(`## Open Review Threads\n`);
     parts.push('These are unresolved review threads from the previous review. If the new changes address any of them, include them in `resolveThreads`.\n');
     for (const t of openThreads) {
-      parts.push(`- **${t.threadId}**: [${t.severity}] "${sanitize(t.title)}" at ${sanitize(t.file)}:${t.line}`);
+      const ref = t.threadUrl ? `[${t.threadId}](${t.threadUrl})` : t.threadId;
+      parts.push(`- **${ref}**: [${t.severity}] "${sanitize(t.title)}" at ${sanitize(t.file)}:${t.line}`);
     }
     parts.push('');
   }

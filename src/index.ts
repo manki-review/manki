@@ -474,6 +474,7 @@ async function runFullReview(
       .filter(f => (f.status === 'open' || f.status === 'replied') && f.threadId)
       .map(f => ({
         threadId: f.threadId!,
+        threadUrl: f.threadUrl,
         title: f.title,
         file: f.file,
         line: f.line,
