@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { ClaudeClient } from './claude';
-import { titleToSlug } from './github';
+import { ACTIONS_BOT_LOGIN, BOT_LOGIN, titleToSlug } from './github';
 import { matchesSuppression, Suppression } from './memory';
 import { AuthorReplyClass, Finding, FindingFingerprint, FindingSeverity, InPrSuppression, InPrSuppressionReason, migrateLegacySeverity, SEVERITY_TOKEN_PATTERN } from './types';
 
@@ -282,7 +282,7 @@ async function fetchReviewThreads(
       // cap above means threads with more than 10 replies can still miss the
       // true last reply.
       const nonBotReplies = thread.comments.nodes.filter((c, i) =>
-        i > 0 && c.author?.login !== 'github-actions[bot]'
+        i > 0 && c.author?.login !== BOT_LOGIN && c.author?.login !== ACTIONS_BOT_LOGIN
       );
       const lastNonBotReply = nonBotReplies[nonBotReplies.length - 1];
       const hasHumanReply = lastNonBotReply !== undefined;

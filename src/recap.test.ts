@@ -755,10 +755,31 @@ describe('fetchRecapState', () => {
   it('leaves authorReplyText undefined for threads with only bot comments', async () => {
     const octokit = mockOctokit([
       makeThread({ id: 't1' }),
+      makeThread({
+        id: 't2',
+        comments: {
+          nodes: [
+            {
+              body: '<!-- manki:required:Bug --> \u{1F6AB} **Required**: Bug found\n\nDesc.',
+              author: { login: 'github-actions[bot]' },
+            },
+            {
+              body: 'Follow-up bot reply from the App identity.',
+              author: { login: 'manki-review[bot]' },
+            },
+            {
+              body: 'Another follow-up from the Actions identity.',
+              author: { login: 'github-actions[bot]' },
+            },
+          ],
+        },
+      }),
     ]);
 
     const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
     expect(state.previousFindings[0].authorReplyText).toBeUndefined();
+    expect(state.previousFindings[1].authorReplyText).toBeUndefined();
+    expect(state.previousFindings[1].status).toBe('open');
   });
 
   it('populates lineStart from startLine when present for multi-line annotations', async () => {
