@@ -334,10 +334,20 @@ describe('buildNitIssueBody', () => {
     reviewers: ['Security'],
   };
 
+  const warning: Finding = {
+    severity: 'warning',
+    title: 'Race condition in cache',
+    file: 'src/cache.ts',
+    line: 5,
+    description: 'Concurrent reads may observe stale state.',
+    reviewers: ['Concurrency'],
+  };
+
   it('filters to only nit findings', () => {
-    const body = buildNitIssueBody(42, [required, nit, suggestion], 'testowner', 'testrepo', 'abc123');
+    const body = buildNitIssueBody(42, [required, warning, nit, suggestion], 'testowner', 'testrepo', 'abc123');
     expect(body).toContain('Use const instead of let');
     expect(body).not.toContain('Null dereference');
+    expect(body).not.toContain('Race condition in cache');
     expect(body).not.toContain('Is this timeout intentional?');
   });
 
