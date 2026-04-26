@@ -808,7 +808,7 @@ export function applyInPrSuppression(
   let count = 0;
   const result = findings.map(finding => {
     if (finding.tags?.includes(IN_PR_SUPPRESSED_TAG)) return finding;
-    if (finding.severity === 'required') return finding;
+    if (finding.severity === 'blocker') return finding;
     const match = suppressions.find(s => matchesInPrSuppression(finding, s));
     if (!match) return finding;
     const next: Finding = { ...finding };

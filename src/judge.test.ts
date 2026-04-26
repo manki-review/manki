@@ -1650,33 +1650,33 @@ describe('applyInPrSuppression', () => {
   });
 
   it('preserves originalSeverity from the incoming severity', () => {
-    const findings = [makeFinding({ severity: 'nit' })];
+    const findings = [makeFinding({ severity: 'nitpick' })];
     const result = applyInPrSuppression(findings, [makeSuppression()]);
     expect(result.findings[0].severity).toBe('ignore');
-    expect(result.findings[0].originalSeverity).toBe('nit');
+    expect(result.findings[0].originalSeverity).toBe('nitpick');
   });
 
-  it('does not suppress required findings even on fingerprint match', () => {
+  it('does not suppress blocker findings even on fingerprint match', () => {
     // Mirrors the cross-round ratchet guard: a prior resolved or author-agreed
-    // thread must never silently drop a current `required` finding (regression
+    // thread must never silently drop a current `blocker` finding (regression
     // or prompt-injection guard).
-    const findings = [makeFinding({ severity: 'required' })];
+    const findings = [makeFinding({ severity: 'blocker' })];
     const result = applyInPrSuppression(findings, [makeSuppression()]);
     expect(result.count).toBe(0);
-    expect(result.findings[0].severity).toBe('required');
+    expect(result.findings[0].severity).toBe('blocker');
     expect(result.findings[0].originalSeverity).toBeUndefined();
     expect(result.findings[0].tags ?? []).not.toContain(IN_PR_SUPPRESSED_TAG);
   });
 
   it('does not overwrite a pre-existing originalSeverity', () => {
     // Finding was already demoted elsewhere (e.g., cross-round contradiction) and carries
-    // originalSeverity: 'required'. In-PR suppression must keep that pre-existing value
+    // originalSeverity: 'blocker'. In-PR suppression must keep that pre-existing value
     // rather than clobbering it with the current (demoted) severity.
-    const findings = [makeFinding({ severity: 'suggestion', originalSeverity: 'required' })];
+    const findings = [makeFinding({ severity: 'suggestion', originalSeverity: 'blocker' })];
     const result = applyInPrSuppression(findings, [makeSuppression()]);
     expect(result.count).toBe(1);
     expect(result.findings[0].severity).toBe('ignore');
-    expect(result.findings[0].originalSeverity).toBe('required');
+    expect(result.findings[0].originalSeverity).toBe('blocker');
   });
 
   it('is idempotent on already-suppressed findings', () => {
