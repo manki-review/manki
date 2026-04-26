@@ -245,7 +245,7 @@ export interface OpenThread {
   title: string;
   file: string;
   line: number;
-  severity: string;
+  severity: FindingSeverity | 'unknown';
 }
 
 

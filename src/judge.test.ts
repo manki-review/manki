@@ -358,8 +358,8 @@ describe('buildJudgeUserMessage', () => {
   it('includes open threads section when openThreads provided', () => {
     const findings = [makeFinding()];
     const openThreads = [
-      { threadId: 'PRRT_abc', title: 'Null check missing', file: 'src/foo.ts', line: 10, severity: 'blocker' },
-      { threadId: 'PRRT_def', title: 'Unused import', file: 'src/bar.ts', line: 20, severity: 'suggestion' },
+      { threadId: 'PRRT_abc', title: 'Null check missing', file: 'src/foo.ts', line: 10, severity: 'blocker' as const },
+      { threadId: 'PRRT_def', title: 'Unused import', file: 'src/bar.ts', line: 20, severity: 'suggestion' as const },
     ];
     const msg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, openThreads);
 
@@ -379,7 +379,7 @@ describe('buildJudgeUserMessage', () => {
         title: 'Null check missing',
         file: 'src/foo.ts',
         line: 10,
-        severity: 'required',
+        severity: 'warning' as const,
       },
     ];
     const msg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, openThreads);
@@ -390,7 +390,7 @@ describe('buildJudgeUserMessage', () => {
   it('renders thread reference as plain id when threadUrl is absent', () => {
     const findings = [makeFinding()];
     const openThreads = [
-      { threadId: 'PRRT_abc', title: 'Null check missing', file: 'src/foo.ts', line: 10, severity: 'required' },
+      { threadId: 'PRRT_abc', title: 'Null check missing', file: 'src/foo.ts', line: 10, severity: 'warning' as const },
     ];
     const msg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, openThreads);
 
@@ -401,7 +401,7 @@ describe('buildJudgeUserMessage', () => {
   it('renders thread reference as plain id when threadUrl is an empty string', () => {
     const findings = [makeFinding()];
     const openThreads = [
-      { threadId: 'PRRT_abc', threadUrl: '', title: 'Null check missing', file: 'src/foo.ts', line: 10, severity: 'required' },
+      { threadId: 'PRRT_abc', threadUrl: '', title: 'Null check missing', file: 'src/foo.ts', line: 10, severity: 'warning' as const },
     ];
     const msg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, openThreads);
 
