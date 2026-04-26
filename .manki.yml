@@ -1,6 +1,5 @@
 models:
   reviewer: claude-sonnet-4-6
-  judge: claude-sonnet-4-6
 auto_review: true
 auto_approve: true
 

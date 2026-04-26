@@ -16,7 +16,7 @@ export const DEFAULT_CONFIG: ReviewConfig = {
   models: {
     planner: 'claude-haiku-4-5',
     reviewer: 'claude-sonnet-4-6',
-    judge: 'claude-sonnet-4-6',
+    judge: 'claude-opus-4-7',
     dedup: 'claude-haiku-4-5',
   },
   planner: {
