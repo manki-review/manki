@@ -42,6 +42,7 @@ jobs:
       - name: Install Codex CLI
         if: env.OPENAI_OAUTH_TOKEN != ''
         # Pin and `--ignore-scripts` mirror the runtime fallback in `src/providers/openai.ts`.
+        # If you update `CODEX_CLI_VERSION` in `src/providers/openai.ts`, update the version here too.
         run: npm install -g --ignore-scripts '@openai/codex@0.129.0'
         env:
           OPENAI_OAUTH_TOKEN: ${{ secrets.OPENAI_OAUTH_TOKEN }}
