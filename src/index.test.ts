@@ -3831,6 +3831,23 @@ describe('runFullReview orchestration', () => {
   });
 
 
+  it('fails with Invalid model config when only anthropic_api_key is set but model is gemini', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'anthropic_api_key' ? 'sk-test' : '',
+    );
+    jest.mocked(configModule.resolveModel).mockReturnValue('gemini-3.1-flash-lite');
+    jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'gemini', model: m }));
+
+    await callRunFullReview();
+
+    expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(
+      expect.stringContaining('Invalid model config'),
+    );
+
+    jest.mocked(configModule.resolveModel).mockReturnValue('claude-sonnet-4-20250514');
+    jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
+  });
+
   it('posts app warning when identity is actions', async () => {
     _resetOctokitCache();
     jest.mocked(authModule.createAuthenticatedOctokit).mockResolvedValue({
@@ -4363,6 +4380,32 @@ describe('handleInteraction', () => {
     );
     expect(jest.mocked(createLLMClient)).not.toHaveBeenCalled();
   });
+
+  it('proceeds when gemini_api_key is set and routes via gemini provider', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'gemini_api_key' ? 'gem-key' : '',
+    );
+    jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'gemini', model: m }));
+    setContext({
+      eventName: 'issue_comment',
+      payload: {
+        action: 'created',
+        comment: { body: '@manki help' },
+        issue: { number: 7, pull_request: { url: 'https://...' } },
+      },
+    });
+
+    await handleInteraction();
+
+    expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
+    expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
+      'gemini',
+      expect.any(String),
+      { kind: 'apiKey', key: 'gem-key' },
+    );
+
+    jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
+  });
 });
 
 describe('handleIssueInteraction', () => {
@@ -4586,6 +4629,37 @@ describe('handleReviewCommentInteraction auto-approve', () => {
       expect.any(String),
       { kind: 'apiKey', key: 'sk-api-key' },
     );
+  });
+
+  it('proceeds when gemini_api_key is set and routes via gemini provider', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'gemini_api_key' ? 'gem-key' : '',
+    );
+    jest.mocked(interaction.hasBotMention).mockReturnValue(true);
+    jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'gemini', model: m }));
+
+    setContext({
+      eventName: 'pull_request_review_comment',
+      payload: {
+        action: 'created',
+        comment: {
+          body: '@manki help',
+          user: { type: 'User' },
+        },
+        pull_request: { number: 9, base: { ref: 'main' } },
+      },
+    });
+
+    await handleReviewCommentInteraction();
+
+    expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
+    expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
+      'gemini',
+      expect.any(String),
+      { kind: 'apiKey', key: 'gem-key' },
+    );
+
+    jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
   });
 });
 
