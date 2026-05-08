@@ -18,12 +18,13 @@ describe('extractCurrentCodeWindow', () => {
   });
 
   it('includes a fix located 10 lines from the anchor (PMPX-style drift case)', () => {
-    // GitHub-anchored thread line points at an unrelated structural element;
-    // the actual fix lives 10 lines away. The widened window must cover it.
+    // GitHub-anchored thread line points at anchor=35; the actual fix lives at
+    // line 10 (25 lines away). The widened ±25 window reaches line 10 but the
+    // old ±5 window would have stopped at line 30. Assert the boundary.
     const fileContents = new Map([['src/a.ts', makeFile(80)]]);
-    const out = extractCurrentCodeWindow(fileContents, 'src/a.ts', 40);
-    expect(out).toContain('   30: line 30');
-    expect(out).toContain('   50: line 50');
+    const out = extractCurrentCodeWindow(fileContents, 'src/a.ts', 35);
+    expect(out).toContain('   10: line 10');
+    expect(out).not.toContain('   9: line 9');
   });
 
   it('clamps the window start at line 1 for early flagged lines', () => {
