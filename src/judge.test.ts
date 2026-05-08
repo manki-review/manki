@@ -1512,10 +1512,14 @@ describe('runJudgeAgent', () => {
       { threadId: 'PRRT_pmpa', status: 'addressed', reason: 'Current code shows the variant; line 27 region is fixed' },
     ]);
 
-    const [systemPrompt] = mockSendMessage.mock.calls[0];
+    const [systemPrompt, userMessage] = mockSendMessage.mock.calls[0];
     expect(systemPrompt).toContain('Either signal alone is sufficient');
     expect(systemPrompt).toContain('GitHub-anchored');
     expect(systemPrompt).not.toMatch(/Do not pick this when the inter-round diff is empty or contains no changes touching/);
+    expect(userMessage).toContain('**Original concern**');
+    expect(userMessage).toContain('rotation chainlock sigs');
+    expect(userMessage).toContain('**Original suggested fix**');
+    expect(userMessage).toContain('MissingRotationChainLockSigs(QuorumHash)');
   });
 
   it('returns not_addressed when current code still shows the concern and diff misses the file (PMPa negative case)', async () => {
