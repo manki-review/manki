@@ -307,6 +307,18 @@ describe('GeminiClient OAuth path', () => {
     }
   });
 
+  it('passes --model flag with the configured model name to the CLI', async () => {
+    setupOAuthSpawnMock({ stdout: 'ok' });
+    const client = new GeminiClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gemini-3.1-pro-preview' });
+
+    await client.sendMessage('sys', 'user');
+
+    const args = mockSpawn.mock.calls[0][1] as string[];
+    const idx = args.indexOf('--model');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(args[idx + 1]).toBe('gemini-3.1-pro-preview');
+  });
+
   it('uses untrusted-content delimiter when concatenating prompts on stdin', async () => {
     const proc = setupOAuthSpawnMock({ stdout: 'ok' });
     const client = new GeminiClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gemini-3.1-flash-lite' });

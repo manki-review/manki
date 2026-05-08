@@ -4411,6 +4411,34 @@ describe('handleInteraction', () => {
       jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
     }
   });
+
+  it('proceeds when gemini_oauth_token is set and routes via gemini provider', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'gemini_oauth_token' ? 'gem-tok' : '',
+    );
+    jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'gemini', model: m }));
+    try {
+      setContext({
+        eventName: 'issue_comment',
+        payload: {
+          action: 'created',
+          comment: { body: '@manki help' },
+          issue: { number: 7, pull_request: { url: 'https://...' } },
+        },
+      });
+
+      await handleInteraction();
+
+      expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
+      expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
+        'gemini',
+        expect.any(String),
+        { kind: 'oauth', token: 'gem-tok' },
+      );
+    } finally {
+      jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
+    }
+  });
 });
 
 describe('handleIssueInteraction', () => {
@@ -4662,6 +4690,38 @@ describe('handleReviewCommentInteraction auto-approve', () => {
         'gemini',
         expect.any(String),
         { kind: 'apiKey', key: 'gem-key' },
+      );
+    } finally {
+      jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
+    }
+  });
+
+  it('proceeds when gemini_oauth_token is set and routes via gemini provider', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'gemini_oauth_token' ? 'gem-tok' : '',
+    );
+    jest.mocked(interaction.hasBotMention).mockReturnValue(true);
+    jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'gemini', model: m }));
+    try {
+      setContext({
+        eventName: 'pull_request_review_comment',
+        payload: {
+          action: 'created',
+          comment: {
+            body: '@manki help',
+            user: { type: 'User' },
+          },
+          pull_request: { number: 9, base: { ref: 'main' } },
+        },
+      });
+
+      await handleReviewCommentInteraction();
+
+      expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
+      expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
+        'gemini',
+        expect.any(String),
+        { kind: 'oauth', token: 'gem-tok' },
       );
     } finally {
       jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
