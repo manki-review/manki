@@ -393,6 +393,11 @@ async function runFullReview(
     const judgeModel = resolveModel(config, 'judge');
     const dedupModel = resolveModel(config, 'dedup');
     core.info(`Models — planner: ${plannerModel}, reviewer: ${reviewerModel}, judge: ${judgeModel}, dedup: ${dedupModel}`);
+    const agentOverrides = config.models?.agents;
+    if (agentOverrides && Object.keys(agentOverrides).length > 0) {
+      const formatted = Object.entries(agentOverrides).map(([n, m]) => `${n}=${m}`).join(', ');
+      core.info(`Per-agent model overrides — ${formatted}`);
+    }
 
     const buildClient = (model: string) => {
       const spec = parseModelSpec(model);
@@ -400,11 +405,15 @@ async function runFullReview(
     };
     let reviewerClient: LLMClient, judgeClient: LLMClient, dedupClient: LLMClient;
     let plannerClient: LLMClient | undefined;
+    const perAgentClients = new Map<string, LLMClient>();
     try {
       reviewerClient = buildClient(reviewerModel);
       judgeClient = buildClient(judgeModel);
       plannerClient = config.planner?.enabled !== false ? buildClient(plannerModel) : undefined;
       dedupClient = buildClient(dedupModel);
+      for (const [name, model] of Object.entries(config.models?.agents ?? {})) {
+        if (model !== reviewerModel) perAgentClients.set(name, buildClient(model));
+      }
     } catch (error) {
       core.setFailed(`Invalid model config: ${error instanceof Error ? error.message : error}`);
       await octokit.rest.issues.deleteComment({ owner, repo, comment_id: progressCommentId }).catch(() => {});
@@ -637,7 +646,14 @@ async function runFullReview(
     }
 
     const result = await runReview(
-      { reviewer: reviewerClient, judge: judgeClient, planner: plannerClient, dedup: dedupClient }, config, diff, rawDiff, fullContext,
+      {
+        reviewer: reviewerClient,
+        judge: judgeClient,
+        planner: plannerClient,
+        dedup: dedupClient,
+        reviewerForAgent: (agentName: string) =>
+          perAgentClients.get(agentName) ?? reviewerClient,
+      }, config, diff, rawDiff, fullContext,
       memory, fileContents, prContext, linkedIssues,
       (progress) => {
         if (progress.phase === 'planning') {

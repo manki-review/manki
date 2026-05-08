@@ -2,7 +2,9 @@ import * as core from '@actions/core';
 import * as fs from 'fs';
 import { parse as parseYaml } from 'yaml';
 
-import { ReviewConfig } from './types';
+import { ReviewerAgent, ReviewConfig } from './types';
+// TODO: layering, temporary import from review.ts, cleanup tracked at https://github.com/manki-review/manki/issues/676
+import { buildAgentPool } from './review';
 
 export const DEFAULT_CONFIG: ReviewConfig = {
   auto_review: true,
@@ -63,6 +65,20 @@ interface ConfigValidationResult {
 function validateConfig(config: Record<string, unknown>): ConfigValidationResult {
   const errors: string[] = [];
   const warnings: string[] = [];
+
+  const customReviewers = Array.isArray(config.reviewers)
+    ? (config.reviewers as Array<Record<string, unknown>>)
+        .filter(r => r && typeof r === 'object' && typeof r.name === 'string' && typeof r.focus === 'string')
+        .map(r => ({ name: r.name as string, focus: r.focus as string }))
+    : [];
+  const knownAgentNames = new Set(buildAgentPool(customReviewers as ReviewerAgent[]).map(a => a.name));
+  const declaredReviewerNames = new Set(
+    Array.isArray(config.reviewers)
+      ? (config.reviewers as Array<Record<string, unknown>>)
+          .filter(r => r && typeof r === 'object' && typeof r.name === 'string' && (r.name as string).length > 0)
+          .map(r => r.name as string)
+      : [],
+  );
 
   for (const key of Object.keys(config)) {
     if (!KNOWN_KEYS.has(key)) {
@@ -158,6 +174,27 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
       if ('dedup' in models && typeof models.dedup !== 'string') {
         errors.push('`models.dedup` must be a string');
       }
+      if ('agents' in models) {
+        const agents = models.agents as Record<string, unknown>;
+        if (!agents || typeof agents !== 'object' || Array.isArray(agents)) {
+          errors.push('`models.agents` must be an object mapping agent names to model strings');
+        } else {
+          for (const [agentName, modelValue] of Object.entries(agents)) {
+            if (typeof modelValue !== 'string' || modelValue === '') {
+              errors.push(`\`models.agents.${agentName}\` must be a non-empty string`);
+              continue;
+            }
+            if (!knownAgentNames.has(agentName)) {
+              if (declaredReviewerNames.has(agentName)) {
+                errors.push(`Agent "${agentName}" in \`models.agents\` matches a reviewer declared under \`reviewers:\` but that entry is invalid. Check its \`name\` and \`focus\` fields.`);
+              } else {
+                const known = Array.from(knownAgentNames).map(n => `"${n}"`).join(', ');
+                errors.push(`Unknown agent name "${agentName}" in \`models.agents\`. Known agents: ${known}`);
+              }
+            }
+          }
+        }
+      }
     }
   }
 
@@ -245,7 +282,16 @@ function deepMerge(defaults: ReviewConfig, overrides: Record<string, unknown>): 
     if (key === 'memory' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
       result.memory = { ...defaults.memory, ...(value as Record<string, unknown>) } as ReviewConfig['memory'];
     } else if (key === 'models' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
-      result.models = { ...defaults.models, ...(value as Record<string, unknown>) } as ReviewConfig['models'];
+      const incoming = value as Record<string, unknown>;
+      const incomingAgents = incoming.agents as Record<string, string> | undefined;
+      const existingAgents = defaults.models?.agents;
+      const merged = { ...defaults.models, ...incoming } as ReviewConfig['models'];
+      if (merged) {
+        merged.agents = (existingAgents || incomingAgents)
+          ? { ...(existingAgents ?? {}), ...(incomingAgents ?? {}) }
+          : undefined;
+      }
+      result.models = merged;
     } else if (key === 'planner' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
       result.planner = { ...defaults.planner, ...(value as Record<string, unknown>) } as ReviewConfig['planner'];
     } else if (key === 'review_thresholds' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
@@ -314,6 +360,20 @@ export function loadConfigFromFile(filePath: string): ReviewConfig {
 
 export function resolveModel(config: ReviewConfig, stage: 'planner' | 'reviewer' | 'judge' | 'dedup'): string {
   return config.models?.[stage] || DEFAULT_CONFIG.models![stage]!;
+}
+
+/**
+ * Resolves the model for a specific reviewer agent. Resolution order:
+ * `models.agents[agentName]` → `models[stage]` → built-in default for `stage`.
+ */
+export function resolveAgentModel(
+  config: ReviewConfig,
+  agentName: string,
+  stage: 'planner' | 'reviewer' | 'judge' | 'dedup',
+): string {
+  const override = config.models?.agents?.[agentName];
+  if (override) return override;
+  return resolveModel(config, stage);
 }
 
 export function loadConfig(yamlContent: string | undefined): ReviewConfig {
