@@ -48,6 +48,13 @@
 #   # Resolution order per agent: agents[name] -> models.reviewer -> default.
 #   agents:
 #     "Security & Safety": claude-opus-4-7
+#
+# To use Gemini, set `gemini_api_key` (or `gemini_oauth_token`) and override models:
+# models:
+#   planner: gemini-2.5-flash
+#   reviewer: gemini-2.5-flash
+#   judge: gemini-2.5-pro
+#   dedup: gemini-2.5-flash
 
 # Planner stage (default: enabled)
 # When enabled and review_level is "auto", a fast pre-review pass chooses the
