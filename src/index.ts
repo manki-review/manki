@@ -591,26 +591,37 @@ async function runFullReview(
     // can ground per-thread resolution in actual changes since last review.
     let interRoundDiff: string | undefined;
     const lastPriorSha = handover?.rounds.at(-1)?.commitSha;
-    if (lastPriorSha && lastPriorSha !== commitSha) {
-      try {
-        interRoundDiff = await fetchInterRoundDiff(octokit, owner, repo, lastPriorSha, commitSha);
-      } catch (error) {
-        core.warning(`Failed to fetch inter-round diff: ${error}`);
+    const shouldFetchDiff = !!(lastPriorSha && lastPriorSha !== commitSha);
+    const prBody = prContext?.body;
+
+    let linkedIssues;
+    const diffPromise: Promise<string | undefined> = shouldFetchDiff && lastPriorSha
+      ? fetchInterRoundDiff(octokit, owner, repo, lastPriorSha, commitSha)
+      : Promise.resolve(undefined);
+    const linkedIssuesPromise = prBody
+      ? fetchLinkedIssues(octokit, owner, repo, prBody)
+      : Promise.resolve(undefined);
+    const [diffResult, linkedIssuesResult] = await Promise.allSettled([diffPromise, linkedIssuesPromise]);
+
+    if (shouldFetchDiff) {
+      if (diffResult.status === 'fulfilled') {
+        interRoundDiff = diffResult.value;
+      } else {
+        core.warning(`Failed to fetch inter-round diff: ${diffResult.reason}`);
       }
     } else if (lastPriorSha === commitSha) {
       // Same SHA as last round (force-push to same tree, or replay) — empty diff.
       interRoundDiff = '';
     }
 
-    let linkedIssues;
-    if (prContext?.body) {
-      try {
-        linkedIssues = await fetchLinkedIssues(octokit, owner, repo, prContext.body);
-        if (linkedIssues.length > 0) {
+    if (prBody) {
+      if (linkedIssuesResult.status === 'fulfilled') {
+        linkedIssues = linkedIssuesResult.value;
+        if (linkedIssues && linkedIssues.length > 0) {
           core.info(`Fetched ${linkedIssues.length} linked issue(s) from PR body`);
         }
-      } catch (error) {
-        core.warning(`Failed to fetch linked issues: ${error}`);
+      } else {
+        core.warning(`Failed to fetch linked issues: ${linkedIssuesResult.reason}`);
       }
     }
 

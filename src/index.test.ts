@@ -1391,6 +1391,7 @@ describe('runFullReview orchestration', () => {
   const RUN_REVIEW_OPEN_THREADS_ARG = 11;
   const RUN_REVIEW_PREVIOUS_FINDINGS_ARG = 12;
   const RUN_REVIEW_PRIOR_ROUNDS_ARG = 13;
+  const RUN_REVIEW_LINKED_ISSUES_ARG = 8;
   const RUN_REVIEW_INTER_ROUND_DIFF_ARG = 15;
 
   beforeEach(() => {
@@ -3128,6 +3129,169 @@ describe('runFullReview orchestration', () => {
     const runReviewArgs = jest.mocked(reviewModule.runReview).mock.calls[0];
     const passedInterRoundDiff = runReviewArgs[RUN_REVIEW_INTER_ROUND_DIFF_ARG];
     expect(passedInterRoundDiff).toBe('');
+  });
+
+  // Common setup for the parallel-fetch partial-rejection cases below: prior
+  // round SHA distinct from the current commit (so `shouldFetchDiff` is true)
+  // and a non-empty PR body (so `shouldFetchLinkedIssues` is true).
+  function setupParallelFetchCase(): void {
+    // Guard the second invariant: the cases below assume `shouldFetchLinkedIssues`
+    // is true via `baseArgs.prContext.body`. Fail loudly if a future edit empties
+    // the default body, otherwise the linked-issues rejection test would pass
+    // trivially without exercising `fetchLinkedIssues`.
+    expect(baseArgs.prContext?.body).toBeTruthy();
+    const testFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+    };
+    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+      files: [testFile], totalAdditions: 10, totalDeletions: 5,
+    });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
+      previousFindings: [], recapContext: '',
+    });
+    jest.mocked(configModule.loadConfig).mockReturnValue({
+      auto_review: true, auto_approve: false, exclude_paths: [], max_diff_lines: 10000,
+      reviewers: [], instructions: '', review_level: 'auto',
+      review_thresholds: { small: 200, medium: 800 },
+      memory: { enabled: true, repo: 'owner/memory' },
+    });
+    jest.mocked(authModule.getMemoryToken).mockReturnValue('token123');
+    jest.mocked(memoryModule.loadMemory).mockResolvedValue({
+      learnings: [], suppressions: [], patterns: [],
+    });
+    jest.mocked(memoryModule.loadHandover).mockResolvedValue({
+      prNumber: 42, repo: 'test-repo', rounds: [{
+        round: 1, commitSha: 'prior-sha', timestamp: '2025-01-01T00:00:00Z', findings: [],
+      }],
+    });
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'COMMENT', summary: 'ok', findings: [],
+      highlights: [], reviewComplete: true,
+      agentNames: ['general'],
+      threadEvaluations: [],
+    });
+  }
+
+  it('handles inter-round diff fetch rejection while linked issues fetch fulfills', async () => {
+    // Promise.allSettled isolates failures: a rejected diffPromise must not
+    // cancel the linked-issues fetch, and `interRoundDiff` must remain
+    // undefined so the judge's known-empty override does not engage.
+    setupParallelFetchCase();
+    jest.mocked(ghUtils.fetchInterRoundDiff).mockRejectedValue(new Error('diff API down'));
+    jest.mocked(ghUtils.fetchLinkedIssues).mockResolvedValue([
+      { number: 7, title: 'Linked issue', body: 'Issue body' },
+    ]);
+
+    await callRunFullReview();
+
+    expect(jest.mocked(core.warning)).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to fetch inter-round diff'),
+    );
+    expect(jest.mocked(core.warning)).not.toHaveBeenCalledWith(
+      expect.stringContaining('Failed to fetch linked issues'),
+    );
+    const runReviewArgs = jest.mocked(reviewModule.runReview).mock.calls[0];
+    expect(runReviewArgs[RUN_REVIEW_INTER_ROUND_DIFF_ARG]).toBeUndefined();
+    expect(runReviewArgs[RUN_REVIEW_LINKED_ISSUES_ARG]).toEqual([
+      { number: 7, title: 'Linked issue', body: 'Issue body' },
+    ]);
+  });
+
+  it('handles linked issues fetch rejection while inter-round diff fetch fulfills', async () => {
+    // Mirror image: a rejected linkedIssuesPromise must not lose the
+    // successfully-fetched inter-round diff, and the warning must mention
+    // linked issues only.
+    setupParallelFetchCase();
+    jest.mocked(ghUtils.fetchInterRoundDiff).mockResolvedValue(
+      'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
+    );
+    jest.mocked(ghUtils.fetchLinkedIssues).mockRejectedValue(new Error('issues API down'));
+
+    await callRunFullReview();
+
+    expect(jest.mocked(core.warning)).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to fetch linked issues'),
+    );
+    expect(jest.mocked(core.warning)).not.toHaveBeenCalledWith(
+      expect.stringContaining('Failed to fetch inter-round diff'),
+    );
+    const runReviewArgs = jest.mocked(reviewModule.runReview).mock.calls[0];
+    expect(runReviewArgs[RUN_REVIEW_INTER_ROUND_DIFF_ARG]).toBe(
+      'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
+    );
+    expect(runReviewArgs[RUN_REVIEW_LINKED_ISSUES_ARG]).toBeUndefined();
+  });
+
+  it('handles both inter-round diff and linked issues fetch rejecting simultaneously', async () => {
+    // `Promise.allSettled` reports both rejections independently: each warning
+    // must be emitted on its own and both values must remain `undefined`. Guards
+    // against a future regression where one rejection silently suppresses the
+    // other warning.
+    setupParallelFetchCase();
+    jest.mocked(ghUtils.fetchInterRoundDiff).mockRejectedValue(new Error('diff API down'));
+    jest.mocked(ghUtils.fetchLinkedIssues).mockRejectedValue(new Error('issues API down'));
+
+    await callRunFullReview();
+
+    expect(jest.mocked(core.warning)).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to fetch inter-round diff'),
+    );
+    expect(jest.mocked(core.warning)).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to fetch linked issues'),
+    );
+    const runReviewArgs = jest.mocked(reviewModule.runReview).mock.calls[0];
+    expect(runReviewArgs[RUN_REVIEW_INTER_ROUND_DIFF_ARG]).toBeUndefined();
+    expect(runReviewArgs[RUN_REVIEW_LINKED_ISSUES_ARG]).toBeUndefined();
+  });
+
+  it('fetches inter-round diff but skips linked issues fetch when PR body is empty', async () => {
+    // Covers the `shouldFetchDiff=true` / `shouldFetchLinkedIssues=false`
+    // combination: prior round SHA differs from current head (diff fetched)
+    // but the PR body is empty so `fetchLinkedIssues` must not be invoked.
+    setupParallelFetchCase();
+    jest.mocked(ghUtils.fetchInterRoundDiff).mockResolvedValue(
+      'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
+    );
+
+    await runFullReview(
+      baseArgs.owner, baseArgs.repo, baseArgs.prNumber,
+      baseArgs.commitSha, baseArgs.baseRef,
+      { title: 'Test PR', body: '', baseBranch: 'main' },
+    );
+
+    expect(jest.mocked(ghUtils.fetchInterRoundDiff)).toHaveBeenCalledTimes(1);
+    expect(jest.mocked(ghUtils.fetchLinkedIssues)).not.toHaveBeenCalled();
+    const runReviewArgs = jest.mocked(reviewModule.runReview).mock.calls[0];
+    expect(runReviewArgs[RUN_REVIEW_INTER_ROUND_DIFF_ARG]).toBe(
+      'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
+    );
+    expect(runReviewArgs[RUN_REVIEW_LINKED_ISSUES_ARG]).toBeUndefined();
+  });
+
+  it('fetches linked issues but skips inter-round diff fetch when no prior round exists', async () => {
+    // Covers the `shouldFetchDiff=false` / `shouldFetchLinkedIssues=true`
+    // combination: no prior handover round (so `lastPriorSha` is undefined and
+    // `fetchInterRoundDiff` must not be invoked) but the PR body is non-empty
+    // so `fetchLinkedIssues` is called. `interRoundDiff` must remain `undefined`
+    // (not the empty-string assigned in the same-SHA branch).
+    setupParallelFetchCase();
+    jest.mocked(memoryModule.loadHandover).mockResolvedValue(null);
+    jest.mocked(ghUtils.fetchLinkedIssues).mockResolvedValue([
+      { number: 11, title: 'First-round linked issue', body: 'Issue body' },
+    ]);
+
+    await callRunFullReview();
+
+    expect(jest.mocked(ghUtils.fetchInterRoundDiff)).not.toHaveBeenCalled();
+    expect(jest.mocked(ghUtils.fetchLinkedIssues)).toHaveBeenCalledTimes(1);
+    const runReviewArgs = jest.mocked(reviewModule.runReview).mock.calls[0];
+    expect(runReviewArgs[RUN_REVIEW_INTER_ROUND_DIFF_ARG]).toBeUndefined();
+    expect(runReviewArgs[RUN_REVIEW_LINKED_ISSUES_ARG]).toEqual([
+      { number: 11, title: 'First-round linked issue', body: 'Issue body' },
+    ]);
   });
 
   it('suppresses addressed verdict from judge when inter-round diff is known-empty (defense-in-depth override)', async () => {
