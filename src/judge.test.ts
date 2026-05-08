@@ -1564,6 +1564,54 @@ describe('runJudgeAgent', () => {
     expect(userMessage).toContain('   25: pub enum');
   });
 
+  it('returns not_addressed when code window is unavailable and diff does not touch the file', async () => {
+    // When currentCode is absent and the inter-round diff touches only an
+    // unrelated file, the judge prompt instructs the LLM to default to
+    // `not_addressed`. This test verifies the prompt wiring: the system prompt
+    // carries the fallback clause, the user message shows the placeholder, and
+    // the verdict passes through as not_addressed.
+    mockSendMessage.mockResolvedValue({
+      content: JSON.stringify({
+        summary: 'No evidence of fix.',
+        findings: [],
+        threadEvaluations: [
+          { threadId: 'PRRT_nocode', status: 'not_addressed', reason: 'Code window unavailable and diff does not touch the file' },
+        ],
+      }),
+    });
+
+    const result = await runJudgeAgent(mockClient, makeConfig(), {
+      findings: [],
+      diff: makeDiff(),
+      rawDiff: '',
+      repoContext: '',
+      agentCount: 3,
+      openThreads: [{
+        threadId: 'PRRT_nocode',
+        title: 'Missing null check',
+        file: 'src/auth.ts',
+        line: 42,
+        severity: 'warning',
+        // currentCode intentionally omitted — window is unavailable
+      }],
+      priorRounds: [{ round: 1, commitSha: 'abc', timestamp: 't', findings: [] }],
+      interRoundDiff: 'diff --git a/src/unrelated.ts b/src/unrelated.ts\n@@ -1 +1 @@\n-old\n+new\n',
+    });
+
+    expect(result.threadEvaluations).toEqual([
+      { threadId: 'PRRT_nocode', status: 'not_addressed', reason: expect.any(String) },
+    ]);
+
+    const [systemPrompt, userMessage] = mockSendMessage.mock.calls[0];
+    // System prompt must carry the fallback instruction.
+    expect(systemPrompt).toContain('code window is unavailable');
+    expect(systemPrompt).toContain('not_addressed');
+    // User message must render the placeholder instead of a code fence.
+    expect(userMessage).toContain('(no current code available)');
+    // User message must include the inter-round diff section.
+    expect(userMessage).toContain('## Inter-Round Diff');
+  });
+
   it('omits description/suggestedFix labels when fields are absent on OpenThread', async () => {
     mockSendMessage.mockResolvedValue({
       content: JSON.stringify({ summary: 'x', findings: [], threadEvaluations: [] }),
