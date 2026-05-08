@@ -158,7 +158,7 @@ jest.mock('./state', () => ({
 
 import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, main, _resetOctokitCache } from './index';
 import { FORCE_REVIEW_MARKER } from './github';
-import { parseModelSpec } from './providers';
+import { createLLMClient, parseModelSpec } from './providers';
 import * as interaction from './interaction';
 import * as ghUtils from './github';
 import * as diffModule from './diff';
@@ -3727,6 +3727,11 @@ describe('handleInteraction', () => {
 
     await handleInteraction();
 
+    expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
+      'anthropic',
+      expect.any(String),
+      { kind: 'oauth', token: 'oauth-tok' },
+    );
     expect(jest.mocked(interaction.handlePRComment)).toHaveBeenCalledWith(
       expect.anything(),  // octokit
       expect.anything(),  // claude client
@@ -3919,6 +3924,9 @@ describe('handleReviewCommentInteraction auto-approve', () => {
   });
 
   it('triggers auto-approve after handling review comment reply', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'claude_code_oauth_token' ? 'oauth-tok' : '',
+    );
     jest.mocked(interaction.hasBotMention).mockReturnValue(true);
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: true, max_diff_lines: 5000,
@@ -3944,6 +3952,11 @@ describe('handleReviewCommentInteraction auto-approve', () => {
 
     await handleReviewCommentInteraction();
 
+    expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
+      'anthropic',
+      expect.any(String),
+      { kind: 'oauth', token: 'oauth-tok' },
+    );
     expect(jest.mocked(interaction.handleReviewCommentReply)).toHaveBeenCalled();
     expect(jest.mocked(stateModule.checkAndAutoApprove)).toHaveBeenCalledWith(
       expect.anything(), 'test-owner', 'test-repo', 8,
