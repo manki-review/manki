@@ -6,3 +6,13 @@ export function sanitizeLogOutput(text: string): string {
   // regardless of parameter format (e.g. ::error file=foo.ts,line=5::message)
   return text.replace(/::[a-z].*$/gim, '[redacted-workflow-cmd]');
 }
+
+/** Build diagnostic snippets for timeout/stale error messages. */
+export function buildTimeoutDiagnostics(lastStdoutChunk: string, stderrText: string): string {
+  const stdoutSnippet = sanitizeLogOutput(lastStdoutChunk.slice(-500));
+  const stderrSnippet = sanitizeLogOutput(stderrText.slice(0, 500));
+  const parts: string[] = [];
+  if (stdoutSnippet) parts.push(`Last stdout: ${stdoutSnippet}`);
+  if (stderrSnippet) parts.push(`stderr: ${stderrSnippet}`);
+  return parts.join('. ');
+}

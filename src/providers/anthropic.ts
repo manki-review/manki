@@ -5,7 +5,7 @@ import { promisify } from 'util';
 import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
-import { sanitizeLogOutput, STALE_TIMEOUT_MS } from './cli-utils';
+import { sanitizeLogOutput, STALE_TIMEOUT_MS, buildTimeoutDiagnostics } from './cli-utils';
 import { AnthropicAuth, LLMClient, LLMResponse, SendMessageOptions } from './types';
 
 // Re-export for backward compatibility with existing test imports.
@@ -35,15 +35,6 @@ function processJsonLine(line: string): { text: string; replace: boolean } {
   return { text: '', replace: false };
 }
 
-/** Build diagnostic snippets for timeout/stale error messages. */
-function buildTimeoutDiagnostics(lastStdoutChunk: string, stderrText: string): string {
-  const stdoutSnippet = sanitizeLogOutput(lastStdoutChunk.slice(-500));
-  const stderrSnippet = sanitizeLogOutput(stderrText.slice(0, 500));
-  const parts: string[] = [];
-  if (stdoutSnippet) parts.push(`Last stdout: ${stdoutSnippet}`);
-  if (stderrSnippet) parts.push(`stderr: ${stderrSnippet}`);
-  return parts.join('. ');
-}
 
 let cliInstallPromise: Promise<string> | null = null;
 

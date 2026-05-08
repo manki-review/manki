@@ -5,7 +5,7 @@ import { promisify } from 'util';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import * as core from '@actions/core';
 
-import { sanitizeLogOutput, STALE_TIMEOUT_MS } from './cli-utils';
+import { sanitizeLogOutput, STALE_TIMEOUT_MS, buildTimeoutDiagnostics } from './cli-utils';
 import { GeminiAuth, LLMClient, LLMResponse, SendMessageOptions } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -221,24 +221,14 @@ export class GeminiClient implements LLMClient {
         if (remaining) output += remaining;
         stderr += stderrDecoder.end();
         if (stale) {
-          const stdoutSnippet = sanitizeLogOutput(lastStdoutChunk.slice(-500));
-          const stderrSnippet = sanitizeLogOutput(stderr.slice(0, 500));
-          const parts: string[] = [];
-          if (stdoutSnippet) parts.push(`Last stdout: ${stdoutSnippet}`);
-          if (stderrSnippet) parts.push(`stderr: ${stderrSnippet}`);
-          const details = parts.join('. ');
+          const details = buildTimeoutDiagnostics(lastStdoutChunk, stderr);
           const msg = `Gemini CLI stale — no output for ${STALE_TIMEOUT_MS / 1000}s${details ? `. ${details}` : ''}`;
           core.warning(msg);
           reject(new Error(msg));
           return;
         }
         if (timedOut) {
-          const stdoutSnippet = sanitizeLogOutput(lastStdoutChunk.slice(-500));
-          const stderrSnippet = sanitizeLogOutput(stderr.slice(0, 500));
-          const parts: string[] = [];
-          if (stdoutSnippet) parts.push(`Last stdout: ${stdoutSnippet}`);
-          if (stderrSnippet) parts.push(`stderr: ${stderrSnippet}`);
-          const details = parts.join('. ');
+          const details = buildTimeoutDiagnostics(lastStdoutChunk, stderr);
           const msg = `Gemini CLI timed out after 1200s${details ? `. ${details}` : ''}`;
           core.warning(msg);
           reject(new Error(msg));
