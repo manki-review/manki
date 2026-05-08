@@ -3224,6 +3224,28 @@ describe('runFullReview orchestration', () => {
     expect(runReviewArgs[RUN_REVIEW_LINKED_ISSUES_ARG]).toBeUndefined();
   });
 
+  it('handles both inter-round diff and linked issues fetch rejecting simultaneously', async () => {
+    // `Promise.allSettled` reports both rejections independently: each warning
+    // must be emitted on its own and both values must remain `undefined`. Guards
+    // against a future regression where one rejection silently suppresses the
+    // other warning.
+    setupParallelFetchCase();
+    jest.mocked(ghUtils.fetchInterRoundDiff).mockRejectedValue(new Error('diff API down'));
+    jest.mocked(ghUtils.fetchLinkedIssues).mockRejectedValue(new Error('issues API down'));
+
+    await callRunFullReview();
+
+    expect(jest.mocked(core.warning)).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to fetch inter-round diff'),
+    );
+    expect(jest.mocked(core.warning)).toHaveBeenCalledWith(
+      expect.stringContaining('Failed to fetch linked issues'),
+    );
+    const runReviewArgs = jest.mocked(reviewModule.runReview).mock.calls[0];
+    expect(runReviewArgs[RUN_REVIEW_INTER_ROUND_DIFF_ARG]).toBeUndefined();
+    expect(runReviewArgs[RUN_REVIEW_LINKED_ISSUES_ARG]).toBeUndefined();
+  });
+
   it('fetches inter-round diff but skips linked issues fetch when PR body is empty', async () => {
     // Covers the `shouldFetchDiff=true` / `shouldFetchLinkedIssues=false`
     // combination: prior round SHA differs from current head (diff fetched)
