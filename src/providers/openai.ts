@@ -3,6 +3,7 @@ import { StringDecoder } from 'string_decoder';
 import { promisify } from 'util';
 
 import OpenAI from 'openai';
+import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import * as core from '@actions/core';
 
 import { LLMClient, LLMResponse, OpenAIAuth, SendMessageOptions } from './types';
@@ -324,8 +325,7 @@ export class OpenAIClient implements LLMClient {
       core.warning(`Ignoring effort=${options.effort} — model "${this.model}" is not a reasoning model`);
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const params: any = {
+    const params: ChatCompletionCreateParamsNonStreaming = {
       model: this.model,
       messages: [
         { role: 'system', content: systemPrompt },
@@ -334,7 +334,10 @@ export class OpenAIClient implements LLMClient {
     };
 
     if (reasoning && options?.effort) {
-      params.reasoning_effort = resolveCLIEffort(options.effort);
+      // `reasoning_effort` is only valid on o-series chat completions; the SDK type
+      // for the non-streaming union doesn't always surface it on every model branch,
+      // so write through a record cast to keep the rest of the call site fully typed.
+      (params as unknown as Record<string, unknown>).reasoning_effort = resolveCLIEffort(options.effort);
     }
 
     const response = await this.openai.chat.completions.create(params);
