@@ -9,6 +9,12 @@ inputs:
   anthropic_api_key:
     description: 'Anthropic API key (alternative to OAuth token)'
     required: false
+  openai_oauth_token:
+    description: 'OpenAI Codex CLI OAuth token (for Plus/Pro subscription authentication via the Codex CLI)'
+    required: false
+  openai_api_key:
+    description: 'OpenAI API key (alternative to OAuth token)'
+    required: false
   github_token:
     description: 'GitHub token for posting reviews and comments (not required when using GitHub App auth)'
     required: false

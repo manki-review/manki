@@ -39,9 +39,18 @@ jobs:
         run: npm install -g @anthropic-ai/claude-code
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      - name: Install Codex CLI
+        if: env.OPENAI_OAUTH_TOKEN != ''
+        # Pin and `--ignore-scripts` mirror the runtime fallback in `src/providers/openai.ts`.
+        # If you update `CODEX_CLI_VERSION` in `src/providers/openai.ts`, update the version here too.
+        run: npm install -g --ignore-scripts '@openai/codex@0.129.0'
+        env:
+          OPENAI_OAUTH_TOKEN: ${{ secrets.OPENAI_OAUTH_TOKEN }}
       - name: Manki Review
         uses: ./  # Use local action for self-testing
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          openai_oauth_token: ${{ secrets.OPENAI_OAUTH_TOKEN }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           memory_repo_token: ${{ secrets.REVIEW_MEMORY_TOKEN }}

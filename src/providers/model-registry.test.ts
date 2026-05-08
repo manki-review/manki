@@ -13,12 +13,29 @@ describe('parseModelSpec', () => {
     expect(parseModelSpec('anthropic/claude-opus-4-6/v1')).toEqual({ provider: 'anthropic', model: 'claude-opus-4-6/v1' });
   });
 
+  it('parses gpt- prefix as openai', () => {
+    expect(parseModelSpec('gpt-4o')).toEqual({ provider: 'openai', model: 'gpt-4o' });
+    expect(parseModelSpec('gpt-4.1')).toEqual({ provider: 'openai', model: 'gpt-4.1' });
+    expect(parseModelSpec('gpt-4o-mini')).toEqual({ provider: 'openai', model: 'gpt-4o-mini' });
+  });
+
+  it('parses o-series (o3/o4) prefix as openai', () => {
+    expect(parseModelSpec('o3')).toEqual({ provider: 'openai', model: 'o3' });
+    expect(parseModelSpec('o3-mini')).toEqual({ provider: 'openai', model: 'o3-mini' });
+    expect(parseModelSpec('o4-mini')).toEqual({ provider: 'openai', model: 'o4-mini' });
+  });
+
+  it('parses openai/model syntax', () => {
+    expect(parseModelSpec('openai/gpt-4o')).toEqual({ provider: 'openai', model: 'gpt-4o' });
+    expect(parseModelSpec('openai/o3')).toEqual({ provider: 'openai', model: 'o3' });
+  });
+
   it('throws on bare model with unknown prefix', () => {
-    expect(() => parseModelSpec('gpt-4o')).toThrow(/Unknown model "gpt-4o"/);
+    expect(() => parseModelSpec('mistral-large')).toThrow(/Unknown model "mistral-large"/);
   });
 
   it('throws on explicit unknown provider', () => {
-    expect(() => parseModelSpec('openai/gpt-4o')).toThrow(/Unknown provider "openai"/);
+    expect(() => parseModelSpec('mistral/mistral-large')).toThrow(/Unknown provider "mistral"/);
   });
 
   it('throws on empty model after slash', () => {
