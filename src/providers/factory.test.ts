@@ -14,6 +14,9 @@ describe('createLLMClient', () => {
   it('forwards model and apiKey auth to AnthropicClient constructor', () => {
     const auth = { kind: 'apiKey' as const, key: 'sk-test' };
     const RealAnthropicClient = AnthropicModule.AnthropicClient;
+    // jest.spyOn works here because Jest compiles TypeScript to CJS and factory.ts
+    // accesses AnthropicClient via the module namespace object (anthropic_1.AnthropicClient),
+    // so replacing the property on the namespace object intercepts the call.
     const spy = jest.spyOn(AnthropicModule, 'AnthropicClient').mockImplementation(
       (opts) => new RealAnthropicClient(opts),
     );
