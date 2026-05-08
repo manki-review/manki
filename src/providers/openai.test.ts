@@ -628,6 +628,13 @@ describe('ensureCLI auto-install', () => {
 
     const spawnPath = mockSpawn.mock.calls[0][0];
     expect(spawnPath).toBe('/usr/local/bin/codex');
+
+    // Pinning + `--ignore-scripts` are the supply-chain hardening for the auto-install path.
+    const npmCall = mockExecFileAsync.mock.calls.find((c) => c[0] === 'npm');
+    expect(npmCall).toBeDefined();
+    const npmArgs = npmCall![1] as string[];
+    expect(npmArgs).toContain('--ignore-scripts');
+    expect(npmArgs.some((a) => /^@openai\/codex@\d+\.\d+\.\d+/.test(a))).toBe(true);
   });
 
   it('rejects when npm install succeeds but codex still cannot be located', async () => {
@@ -638,6 +645,29 @@ describe('ensureCLI auto-install', () => {
 
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-4o' });
     await expect(client.sendMessage('sys', 'user')).rejects.toThrow('Failed to locate Codex CLI on PATH');
+  });
+
+  it('deduplicates concurrent installs so npm install runs once for parallel callers', async () => {
+    let resolveInstall!: () => void;
+    const installBarrier = new Promise<void>((r) => { resolveInstall = r; });
+
+    mockExecFileAsync
+      .mockRejectedValueOnce(new Error('not found')) // which codex — client A
+      .mockRejectedValueOnce(new Error('not found')) // which codex — client B
+      .mockImplementationOnce(() => installBarrier.then(() => ({ stdout: '' }))) // npm install (shared)
+      .mockResolvedValueOnce({ stdout: '/usr/local/bin/codex\n' }); // post-install which
+    setupSpawnSuccess();
+
+    const clientA = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-4o' });
+    const clientB = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-4o' });
+
+    const p1 = clientA.sendMessage('s', 'u');
+    const p2 = clientB.sendMessage('s', 'u');
+    resolveInstall();
+    await Promise.all([p1, p2]);
+
+    const npmCalls = mockExecFileAsync.mock.calls.filter((c) => c[0] === 'npm');
+    expect(npmCalls).toHaveLength(1);
   });
 
   it('clears the cached install promise on failure so retries can succeed', async () => {
