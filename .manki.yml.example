@@ -51,10 +51,10 @@
 #
 # To use Gemini, set `gemini_api_key` (or `gemini_oauth_token`) and override models:
 # models:
-#   planner: gemini-2.5-flash
-#   reviewer: gemini-2.5-flash
-#   judge: gemini-2.5-pro
-#   dedup: gemini-2.5-flash
+#   planner: gemini-3.1-flash-lite
+#   reviewer: gemini-3.1-flash-lite
+#   judge: gemini-3.1-pro-preview
+#   dedup: gemini-3.1-flash-lite
 
 # Planner stage (default: enabled)
 # When enabled and review_level is "auto", a fast pre-review pass chooses the
