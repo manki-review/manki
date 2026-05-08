@@ -22,6 +22,7 @@
     "@octokit/auth-app": "^8.2.0",
     "@octokit/rest": "^21.1.1",
     "minimatch": "^10.2.4",
+    "openai": "^6.37.0",
     "parse-diff": "^0.11.1",
     "yaml": "^2.8.3"
   },
