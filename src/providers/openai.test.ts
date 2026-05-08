@@ -466,6 +466,35 @@ describe('sendViaOAuth — extended coverage', () => {
     }
   });
 
+  it('rejects with hard timeout error after 1200s even with periodic stdout', async () => {
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'queueMicrotask', 'nextTick'] });
+    try {
+      const wiring = makeProc();
+      const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-4o' });
+      const promise = client.sendMessage('sys', 'user');
+      promise.catch(() => {});
+
+      await waitForListeners(wiring);
+      // Emit stdout periodically so the stale timer keeps resetting; only the hard
+      // 1200s deadline should fire. Step strictly shorter than STALE_TIMEOUT_MS, with
+      // a final stdout chunk after the loop so stale always has > step time remaining.
+      const step = STALE_TIMEOUT_MS - 10_000;
+      let elapsed = 0;
+      while (elapsed + step < 1_200_000) {
+        wiring.stdoutHandlers['data']?.(Buffer.from('partial'));
+        jest.advanceTimersByTime(step);
+        elapsed += step;
+      }
+      wiring.stdoutHandlers['data']?.(Buffer.from('partial'));
+      jest.advanceTimersByTime(1_200_000 - elapsed + 100);
+      wiring.procHandlers['close']?.(null, 'SIGTERM');
+
+      await expect(promise).rejects.toThrow(/timed out after 1200s/);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('rejects when output exceeds the 50 MB cap', async () => {
     const wiring = makeProc();
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-4o' });
