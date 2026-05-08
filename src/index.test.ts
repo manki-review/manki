@@ -1335,8 +1335,11 @@ describe('postCleanup (via main dispatch)', () => {
 });
 
 describe('runFullReview orchestration', () => {
-  // Index of the `interRoundDiff` parameter in the `runReview` argument list.
-  // Mirrors the trailing slot in `runReview`'s signature in `src/review.ts`.
+  // Named indices for positional parameters of `runReview` (src/review.ts).
+  const RUN_REVIEW_IS_FOLLOW_UP_ARG = 10;
+  const RUN_REVIEW_OPEN_THREADS_ARG = 11;
+  const RUN_REVIEW_PREVIOUS_FINDINGS_ARG = 12;
+  const RUN_REVIEW_PRIOR_ROUNDS_ARG = 13;
   const RUN_REVIEW_INTER_ROUND_DIFF_ARG = 15;
 
   beforeEach(() => {
@@ -1960,7 +1963,7 @@ describe('runFullReview orchestration', () => {
     // runReview should receive previousFindings as the last positional arg so
     // dedup runs before the judge stage.
     const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0];
-    expect(runReviewCall[12]).toEqual(previousFindings);
+    expect(runReviewCall[RUN_REVIEW_PREVIOUS_FINDINGS_ARG]).toEqual(previousFindings);
   });
 
   it('loads handover and forwards its rounds to runReview when memory is enabled', async () => {
@@ -2013,7 +2016,7 @@ describe('runFullReview orchestration', () => {
     await callRunFullReview();
 
     const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0];
-    expect(runReviewCall[13]).toEqual(priorRounds);
+    expect(runReviewCall[RUN_REVIEW_PRIOR_ROUNDS_ARG]).toEqual(priorRounds);
 
     // Write path: appendHandoverRound must be called once with the loaded handover
     expect(jest.mocked(memoryModule.appendHandoverRound)).toHaveBeenCalledTimes(1);
@@ -2309,8 +2312,7 @@ describe('runFullReview orchestration', () => {
     expect(jest.mocked(memoryModule.loadHandover)).not.toHaveBeenCalled();
     expect(jest.mocked(memoryModule.appendHandoverRound)).not.toHaveBeenCalled();
     const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0];
-    // priorRounds param (index 13) should be undefined when memory is disabled
-    expect(runReviewCall[13]).toBeUndefined();
+    expect(runReviewCall[RUN_REVIEW_PRIOR_ROUNDS_ARG]).toBeUndefined();
   });
 
   it('applies memory escalations when patterns exist', async () => {
@@ -2725,8 +2727,8 @@ describe('runFullReview orchestration', () => {
 
     // runReview should receive isFollowUp and openThreads as the last two args
     const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0];
-    const isFollowUp = runReviewCall[10];
-    const openThreads = runReviewCall[11];
+    const isFollowUp = runReviewCall[RUN_REVIEW_IS_FOLLOW_UP_ARG];
+    const openThreads = runReviewCall[RUN_REVIEW_OPEN_THREADS_ARG];
 
     expect(isFollowUp).toBe(true);
     expect(openThreads).toEqual([
@@ -2815,7 +2817,7 @@ describe('runFullReview orchestration', () => {
     await callRunFullReview();
 
     const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0];
-    const openThreads = runReviewCall[11] as Array<{ threadId: string; description?: string; suggestedFix?: string }>;
+    const openThreads = runReviewCall[RUN_REVIEW_OPEN_THREADS_ARG] as Array<{ threadId: string; description?: string; suggestedFix?: string }>;
     expect(openThreads).toHaveLength(1);
     expect(openThreads[0].threadId).toBe('PRRT_meta');
     expect(openThreads[0].description).toBe('Error enum lacks the rotation chainlock variant.');
@@ -2845,7 +2847,7 @@ describe('runFullReview orchestration', () => {
     await callRunFullReview();
 
     const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0];
-    const openThreads = runReviewCall[11];
+    const openThreads = runReviewCall[RUN_REVIEW_OPEN_THREADS_ARG];
     expect(openThreads).toHaveLength(1);
     expect(openThreads![0].currentCode).toContain('>>> 10: line 10');
     expect(openThreads![0].currentCode).toContain('   5: line 5');
@@ -3326,7 +3328,7 @@ describe('runFullReview orchestration', () => {
     await callRunFullReview();
 
     const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0];
-    const openThreads = runReviewCall[11] as Array<{ threadId: string }>;
+    const openThreads = runReviewCall[RUN_REVIEW_OPEN_THREADS_ARG] as Array<{ threadId: string }>;
     const threadIds = openThreads.map(t => t.threadId);
 
     expect(threadIds).toContain('PRRT_open');
