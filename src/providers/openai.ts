@@ -42,11 +42,9 @@ export function isReasoningModel(model: string): boolean {
  * stack accepts. Both the chat completions API and the Codex CLI cap reasoning
  * effort at `'high'`, so manki's `'max'` collapses to `'high'` on both paths.
  */
-export function resolveEffortTier(effort: string): 'low' | 'medium' | 'high' {
-  const map: Record<string, 'low' | 'medium' | 'high'> = {
-    low: 'low', medium: 'medium', high: 'high', max: 'high',
-  };
-  return map[effort] ?? 'high';
+export function resolveEffortTier(effort: 'low' | 'medium' | 'high' | 'max'): 'low' | 'medium' | 'high' {
+  if (effort === 'max') return 'high';
+  return effort;
 }
 
 /** Build diagnostic snippets for timeout/stale error messages. */

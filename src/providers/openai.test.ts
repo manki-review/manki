@@ -399,9 +399,6 @@ describe('resolveEffortTier', () => {
     expect(resolveEffortTier('max')).toBe('high');
   });
 
-  it('falls back to high for unknown inputs', () => {
-    expect(resolveEffortTier('extreme')).toBe('high');
-  });
 });
 
 describe('sendViaOAuth — extended coverage', () => {
