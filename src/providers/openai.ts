@@ -130,11 +130,11 @@ export class OpenAIClient implements LLMClient {
       const child = spawn(cliPath, args, {
         env: {
           // process.env spread intentionally — Codex CLI requires PATH, HOME, and other system vars.
-          // OPENAI_API_KEY (when in OAuth mode the CLI uses its own session, but some versions accept
-          // OPENAI_OAUTH_TOKEN). We pass the OAuth token via CODEX_OAUTH_TOKEN, mirroring the
-          // CLAUDE_CODE_OAUTH_TOKEN convention.
+          // The OAuth token is passed via CODEX_OAUTH_TOKEN (mirroring the CLAUDE_CODE_OAUTH_TOKEN
+          // convention) and OPENAI_OAUTH_TOKEN as a fallback for CLI versions that read it. Aliasing
+          // an OAuth subscription token as OPENAI_API_KEY would be a credential type confusion.
           ...process.env,
-          ...(oauthToken ? { CODEX_OAUTH_TOKEN: oauthToken, OPENAI_API_KEY: oauthToken } : {}),
+          ...(oauthToken ? { CODEX_OAUTH_TOKEN: oauthToken, OPENAI_OAUTH_TOKEN: oauthToken } : {}),
         },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
