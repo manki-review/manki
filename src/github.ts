@@ -6,6 +6,7 @@ import * as github from '@actions/github';
 import { AgentProgressEntry, DEFENSIVE_HARDENING_TAG, DashboardData, Finding, FindingSeverity, OWN_PROPOSAL_TAG, ParsedDiff, ReviewMetadata, ReviewResult, ReviewStats, ReviewVerdict } from './types';
 import { isLineInDiff, findClosestDiffLine } from './diff';
 import { MAX_AGENT_RETRIES } from './types';
+import { safeTruncate } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -674,15 +675,6 @@ function truncateBody(text: string, maxLength: number = 60000): string {
   const safeMax = Math.max(0, maxLength - notice.length);
   const cutoff = text.lastIndexOf(' ', safeMax);
   return text.slice(0, cutoff > safeMax - 100 ? cutoff : safeMax) + notice;
-}
-
-function safeTruncate(text: string, maxLen: number): string {
-  if (text.length <= maxLen) return text;
-  let end = maxLen;
-  if (end > 0 && text.charCodeAt(end - 1) >= 0xD800 && text.charCodeAt(end - 1) <= 0xDBFF) {
-    end--;
-  }
-  return text.slice(0, end) + '...';
 }
 
 function sanitizeFilePath(file: string): string {
@@ -1384,4 +1376,4 @@ async function cancelActiveReviewRun(
   }
 }
 
-export { dynamicFence, formatFindingComment, formatStatsJson, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, safeTruncate, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, APP_WARNING_MARKER, postAppWarningIfNeeded };
+export { dynamicFence, formatFindingComment, formatStatsJson, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, APP_WARNING_MARKER, postAppWarningIfNeeded };

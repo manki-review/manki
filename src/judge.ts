@@ -11,7 +11,8 @@ import {
   Suppression,
   RepoMemory,
 } from './memory';
-import { dynamicFence, LinkedIssue, safeTruncate, titleToSlug } from './github';
+import { dynamicFence, LinkedIssue, titleToSlug } from './github';
+import { safeTruncate } from './utils';
 import { sanitize, titlesOverlap } from './recap';
 import { validateSeverity } from './review';
 import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DiffFile, Finding, FindingReachability, FindingSeverity, HandoverFinding, HandoverRound, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ParsedDiff, PrContext, ThreadEvaluation } from './types';

@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 
-import { buildDashboard, formatFindingComment, formatStatsJson, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, buildNitIssueBody, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, safeTruncate, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, createNitIssue, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded } from './github';
+import { buildDashboard, formatFindingComment, formatStatsJson, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, buildNitIssueBody, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, createNitIssue, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded } from './github';
 import { DashboardData, Finding, ParsedDiff, ReviewMetadata, ReviewResult, ReviewStats } from './types';
 
 describe('formatFindingComment', () => {
@@ -1019,24 +1019,6 @@ describe('dynamicFence', () => {
 
   it('handles content with long backtick runs', () => {
     expect(dynamicFence('`````')).toBe('``````');
-  });
-});
-
-describe('safeTruncate', () => {
-  it('returns text unchanged when shorter than max', () => {
-    expect(safeTruncate('hello', 10)).toBe('hello');
-  });
-
-  it('truncates normal text at boundary', () => {
-    expect(safeTruncate('hello world', 5)).toBe('hello...');
-  });
-
-  it('avoids splitting a surrogate pair at the boundary', () => {
-    // U+1F600 (grinning face) is a surrogate pair: \uD83D\uDE00
-    const text = 'ab\u{1F600}cd';
-    // maxLen=3 would land between the high and low surrogate; safeTruncate backs up
-    const result = safeTruncate(text, 3);
-    expect(result).toBe('ab...');
   });
 });
 
