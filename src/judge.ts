@@ -468,8 +468,8 @@ ${hasOpenThreads ? `
 
 Return one \`threadEvaluations\` entry for every open review thread listed in the user message. Status values:
 
-- **addressed**: the current code at the flagged region clearly no longer exhibits the original concern, OR the inter-round diff contains an explicit fix for it. Either signal alone is sufficient — you may pick \`addressed\` even when the inter-round diff does not touch the thread's file, as long as the current code window plainly resolves the concern.
-- **not_addressed**: the current code still exhibits the concern (and the inter-round diff did not fix it).
+- **addressed**: the current code at the flagged region clearly no longer exhibits the original concern, OR the inter-round diff contains an explicit fix for it. Either signal alone is sufficient — you may pick \`addressed\` even when the inter-round diff does not touch the thread's file, as long as the current code window plainly resolves the concern. (Note: when the inter-round diff is known-empty the resolver may override this verdict as a safety measure.)
+- **not_addressed**: the current code still exhibits the concern (and the inter-round diff did not fix it). When the code window is unavailable and the inter-round diff does not touch the file, default to \`not_addressed\` rather than \`uncertain\`.
 - **uncertain**: insufficient evidence to decide. The downstream resolver treats this as not-addressed, so prefer it over a speculative \`addressed\`.
 
 The flagged thread \`line\` is GitHub-anchored from when the thread was created and may have drifted relative to the current head. Treat it as a hint, not a strict boundary: scan the full provided code window for the fix. Resolution requires concrete evidence — cite the changed lines or current-code excerpt that supports your call in \`reason\`. Use the thread IDs provided in the open threads section below.
