@@ -1,4 +1,4 @@
-export type ProviderName = 'anthropic' | 'openai';
+export type ProviderName = 'anthropic' | 'openai' | 'gemini';
 
 export interface LLMResponse {
   content: string;
@@ -20,4 +20,8 @@ export type OpenAIAuth =
   | { kind: 'oauth'; token: string }
   | { kind: 'apiKey'; key: string };
 
-export type ProviderAuth = AnthropicAuth | OpenAIAuth;
+export type GeminiAuth =
+  | { kind: 'oauth'; token: string }
+  | { kind: 'apiKey'; key: string };
+
+export type ProviderAuth = AnthropicAuth | OpenAIAuth | GeminiAuth;
