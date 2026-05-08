@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { createAuthenticatedOctokit, getMemoryToken } from './auth';
-import { loadConfig, resolveModel } from './config';
+import { loadConfig, resolveAgentModel, resolveModel } from './config';
 import { buildAnthropicAuth, createLLMClient, parseModelSpec } from './providers';
 import type { LLMClient } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
@@ -393,6 +393,11 @@ async function runFullReview(
     const judgeModel = resolveModel(config, 'judge');
     const dedupModel = resolveModel(config, 'dedup');
     core.info(`Models — planner: ${plannerModel}, reviewer: ${reviewerModel}, judge: ${judgeModel}, dedup: ${dedupModel}`);
+    const agentOverrides = config.models?.agents;
+    if (agentOverrides && Object.keys(agentOverrides).length > 0) {
+      const formatted = Object.entries(agentOverrides).map(([n, m]) => `${n}=${m}`).join(', ');
+      core.info(`Per-agent model overrides — ${formatted}`);
+    }
 
     const buildClient = (model: string) => {
       const spec = parseModelSpec(model);
@@ -637,7 +642,16 @@ async function runFullReview(
     }
 
     const result = await runReview(
-      { reviewer: reviewerClient, judge: judgeClient, planner: plannerClient, dedup: dedupClient }, config, diff, rawDiff, fullContext,
+      {
+        reviewer: reviewerClient,
+        judge: judgeClient,
+        planner: plannerClient,
+        dedup: dedupClient,
+        reviewerForAgent: (agentName: string) => {
+          const model = resolveAgentModel(config, agentName, 'reviewer');
+          return model === reviewerModel ? reviewerClient : buildClient(model);
+        },
+      }, config, diff, rawDiff, fullContext,
       memory, fileContents, prContext, linkedIssues,
       (progress) => {
         if (progress.phase === 'planning') {

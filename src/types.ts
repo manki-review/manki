@@ -230,6 +230,12 @@ export interface ReviewConfig {
     reviewer?: string;
     judge?: string;
     dedup?: string;
+    /**
+     * Per-agent model overrides. Keys are reviewer agent names (built-in or
+     * custom). When set, the resolver picks this model for the named agent
+     * instead of `models.reviewer`.
+     */
+    agents?: Record<string, string>;
   };
   planner?: {
     enabled?: boolean;

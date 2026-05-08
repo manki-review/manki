@@ -326,6 +326,16 @@ export interface ReviewClients {
   judge: LLMClient;
   planner?: LLMClient;
   dedup?: LLMClient;
+  /**
+   * Optional resolver returning the reviewer client for a specific agent. When
+   * present, it takes precedence over `reviewer`. Used to apply per-agent
+   * model overrides from `models.agents`.
+   */
+  reviewerForAgent?: (agentName: string) => LLMClient;
+}
+
+function pickReviewerClient(clients: ReviewClients, agentName: string): LLMClient {
+  return clients.reviewerForAgent?.(agentName) ?? clients.reviewer;
 }
 
 export interface ReviewProgress {
@@ -721,7 +731,7 @@ export async function runReview(
         Array.from({ length: passes }, () => {
           const shuffledDiff = shuffleDiffFiles(diff);
           const shuffledRawDiff = rebuildRawDiff(shuffledDiff);
-          return runReviewerAgent(clients.reviewer, config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: agentEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap });
+          return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: agentEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap });
         })
       );
 
@@ -811,7 +821,7 @@ export async function runReview(
             const shuffledDiff = shuffleDiffFiles(diff);
             const shuffledRawDiff = rebuildRawDiff(shuffledDiff);
             const retryEffort = agentEffortMap.get(agent.name) ?? defaultReviewerEffort;
-            return runReviewerAgent(clients.reviewer, config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: retryEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap });
+            return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: retryEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap });
           })
         );
 
@@ -873,7 +883,7 @@ export async function runReview(
     const agentPromises = team.agents.map(agent => {
       const startTime = Date.now();
       const agentEffort = agentEffortMap.get(agent.name) ?? defaultReviewerEffort;
-      return runReviewerAgent(clients.reviewer, config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: agentEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap })
+      return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: agentEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap })
         .then(agentResult => {
           completedCount++;
           agentResponseLengths.set(agent.name, agentResult.responseLength);
@@ -954,7 +964,7 @@ export async function runReview(
       const retryPromises = agentsToRetry.map(agent => {
         const startTime = Date.now();
         const retryEffort = agentEffortMap.get(agent.name) ?? defaultReviewerEffort;
-        return runReviewerAgent(clients.reviewer, config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: retryEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap })
+        return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: retryEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap })
           .then(agentResult => ({ agent, agentResult, durationMs: Date.now() - startTime }))
           .catch(() => ({ agent, agentResult: null as AgentResult | null, durationMs: Date.now() - startTime }));
       });
