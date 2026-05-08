@@ -1816,9 +1816,20 @@ describe('buildDashboard', () => {
     };
     const md = buildDashboard(data);
     expect(md).toContain('2/3 agents complete');
-    expect(md).toContain(`${INDENT}⟳ Security & Safety — retrying (2/2)...`);
+    expect(md).toContain(`${INDENT}🔄 Security & Safety — retrying (2/2)...`);
     expect(md).toContain(`${INDENT}✅ Architecture & Design — 2 (3s)`);
     expect(md).toContain(`${INDENT}⏳ Correctness & Logic`);
+  });
+
+  it('renders retrying agent status without retry count', () => {
+    const data: DashboardData = {
+      phase: 'started', lineCount: 100, agentCount: 1,
+      agentProgress: [
+        { name: 'Security & Safety', status: 'retrying' },
+      ],
+    };
+    const md = buildDashboard(data);
+    expect(md).toContain(`${INDENT}🔄 Security & Safety — retrying...`);
   });
 
   it('renders failed agent with retry count showing total attempts', () => {
