@@ -12,6 +12,11 @@ const execFileAsync = promisify(execFile);
 
 export const STALE_TIMEOUT_MS = 90_000;
 
+// Pin Codex CLI to a known-good version and disable lifecycle scripts on install
+// to mitigate supply-chain risk if a compromised release is published. Keep this
+// in sync with the explicit install step in `.github/workflows/manki.yml`.
+export const CODEX_CLI_VERSION = '0.129.0';
+
 export function buildOpenAIAuth(oauthToken: string, apiKey: string): OpenAIAuth {
   if (oauthToken) return { kind: 'oauth', token: oauthToken };
   if (apiKey) return { kind: 'apiKey', key: apiKey };
@@ -222,7 +227,7 @@ export class OpenAIClient implements LLMClient {
       const stdoutDecoder = new StringDecoder('utf8');
       const stderrDecoder = new StringDecoder('utf8');
       child.stdout.on('data', (data: Buffer) => {
-        if (outputExceeded || settled || stale) return;
+        if (outputExceeded || settled || stale || timedOut) return;
         clearTimeout(staleTimer);
         staleTimer = setTimeout(handleStale, STALE_TIMEOUT_MS);
         staleTimer.unref();
