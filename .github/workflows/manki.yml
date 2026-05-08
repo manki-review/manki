@@ -59,4 +59,5 @@ jobs:
           openai_oauth_token: ${{ secrets.OPENAI_OAUTH_TOKEN }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           gemini_oauth_token: ${{ secrets.GEMINI_OAUTH_TOKEN }}
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
           memory_repo_token: ${{ secrets.REVIEW_MEMORY_TOKEN }}
