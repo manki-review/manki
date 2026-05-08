@@ -698,8 +698,10 @@ describe('ensureCLI auto-install', () => {
     const p1 = clientA.sendMessage('s', 'u');
     const p2 = clientB.sendMessage('s', 'u');
     resolveInstall();
-    await Promise.all([p1, p2]);
+    const [r1, r2] = await Promise.all([p1, p2]);
 
+    expect(r1.content).toBe('ok');
+    expect(r2.content).toBe('ok');
     const npmCalls = mockExecFileAsync.mock.calls.filter((c) => c[0] === 'npm');
     expect(npmCalls).toHaveLength(1);
   });
