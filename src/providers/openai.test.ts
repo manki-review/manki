@@ -194,6 +194,8 @@ describe('sendViaOAuth (Codex CLI path)', () => {
   beforeEach(() => {
     mockSpawn.mockReset();
     resetCLIInstallPromise();
+    mockExecFileAsync.mockReset();
+    mockExecFileAsync.mockResolvedValue({ stdout: '/usr/bin/codex' });
   });
 
   function setupSpawnMock(stdout: string, opts: { exitCode?: number; stderr?: string } = {}): void {
