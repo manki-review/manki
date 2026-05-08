@@ -1160,6 +1160,7 @@ describe('handleReviewCommentInteraction', () => {
       expect.stringContaining('Unknown model "gpt-4o"'),
     );
     expect(jest.mocked(interaction.handleReviewCommentReply)).not.toHaveBeenCalled();
+    expect(jest.mocked(interaction.handleReviewCommentCommand)).not.toHaveBeenCalled();
   });
 });
 
