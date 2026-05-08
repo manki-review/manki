@@ -101,14 +101,24 @@ export class OpenAIClient implements LLMClient {
       if (!cliInstallPromise) {
         cliInstallPromise = (async () => {
           core.info('Codex CLI not found, installing via npm...');
-          await execFileAsync('npm', ['install', '-g', '@openai/codex'], {
-            timeout: 120000,
-          });
+          let npmOutput = '';
+          try {
+            const { stdout: npmStdout, stderr: npmStderr } = await execFileAsync(
+              'npm',
+              ['install', '-g', '@openai/codex'],
+              { timeout: 120000 },
+            );
+            npmOutput = [npmStdout, npmStderr].filter(Boolean).join(' | ').trim();
+          } catch (npmErr) {
+            const message = (npmErr as Error).message;
+            throw new Error(`Failed to install Codex CLI via npm: ${message}`);
+          }
           try {
             const { stdout } = await execFileAsync('which', ['codex']);
             return stdout.trim();
           } catch {
-            throw new Error('Failed to install Codex CLI');
+            const suffix = npmOutput ? ` (npm output: ${sanitizeLogOutput(npmOutput).slice(0, 500)})` : '';
+            throw new Error(`Failed to locate Codex CLI on PATH after npm install${suffix}`);
           }
         })();
       }

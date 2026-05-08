@@ -579,7 +579,7 @@ describe('ensureCLI auto-install', () => {
       .mockRejectedValueOnce(new Error('still not found'));
 
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-4o' });
-    await expect(client.sendMessage('sys', 'user')).rejects.toThrow('Failed to install Codex CLI');
+    await expect(client.sendMessage('sys', 'user')).rejects.toThrow('Failed to locate Codex CLI on PATH');
   });
 
   it('clears the cached install promise on failure so retries can succeed', async () => {
