@@ -54,6 +54,7 @@ jest.mock('./auth', () => ({
 
 jest.mock('./providers', () => ({
   buildAnthropicAuth: jest.requireActual('./providers').buildAnthropicAuth,
+  buildOpenAIAuth: jest.requireActual('./providers').buildOpenAIAuth,
   createLLMClient: jest.fn().mockImplementation(() => ({ sendMessage: jest.fn() })),
   parseModelSpec: jest.fn().mockImplementation((m: string) => ({ provider: 'anthropic', model: m })),
 }));
@@ -4083,6 +4084,52 @@ describe('handleInteraction', () => {
       'anthropic',
       expect.any(String),
       { kind: 'apiKey', key: 'sk-api-key' },
+    );
+  });
+
+  it('routes openai-prefixed models to OpenAI auth dispatch', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'openai_api_key' ? 'sk-openai-key' : '',
+    );
+    jest.mocked(parseModelSpec).mockImplementationOnce((m: string) => ({ provider: 'openai', model: m }));
+    setContext({
+      eventName: 'issue_comment',
+      payload: {
+        action: 'created',
+        comment: { body: '@manki help' },
+        issue: { number: 7, pull_request: { url: 'https://...' } },
+      },
+    });
+
+    await handleInteraction();
+
+    expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
+      'openai',
+      expect.any(String),
+      { kind: 'apiKey', key: 'sk-openai-key' },
+    );
+  });
+
+  it('uses oauth auth when openai_oauth_token is set', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'openai_oauth_token' ? 'codex-oauth-tok' : '',
+    );
+    jest.mocked(parseModelSpec).mockImplementationOnce((m: string) => ({ provider: 'openai', model: m }));
+    setContext({
+      eventName: 'issue_comment',
+      payload: {
+        action: 'created',
+        comment: { body: '@manki help' },
+        issue: { number: 7, pull_request: { url: 'https://...' } },
+      },
+    });
+
+    await handleInteraction();
+
+    expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
+      'openai',
+      expect.any(String),
+      { kind: 'oauth', token: 'codex-oauth-tok' },
     );
   });
 });
