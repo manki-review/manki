@@ -1050,6 +1050,12 @@ async function handleReviewStateCheck(): Promise<void> {
 async function handleInteraction(): Promise<void> {
   const oauthToken = core.getInput('claude_code_oauth_token');
   const apiKey = core.getInput('anthropic_api_key');
+
+  if (!oauthToken && !apiKey) {
+    core.setFailed('No API key configured — set claude_code_oauth_token or anthropic_api_key');
+    return;
+  }
+
   const configPathInput = core.getInput('config_path');
 
   const octokit = await getOctokit();
@@ -1132,6 +1138,12 @@ async function handleReviewCommentInteraction(): Promise<void> {
 
   const oauthToken = core.getInput('claude_code_oauth_token');
   const apiKey = core.getInput('anthropic_api_key');
+
+  if (!oauthToken && !apiKey) {
+    core.setFailed('No API key configured — set claude_code_oauth_token or anthropic_api_key');
+    return;
+  }
+
   const configPathInput = core.getInput('config_path');
 
   const octokit = await getOctokit();

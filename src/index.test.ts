@@ -1113,6 +1113,26 @@ describe('handleReviewCommentInteraction', () => {
       'Review comment is not a reply to bot or @manki mention — skipping',
     );
   });
+
+  it('calls setFailed when no auth tokens are configured', async () => {
+    jest.mocked(core.getInput).mockReturnValue('');
+    jest.mocked(interaction.hasBotMention).mockReturnValue(true);
+
+    setContext({
+      eventName: 'pull_request_review_comment',
+      payload: {
+        action: 'created',
+        comment: { body: '@manki help', user: { type: 'User' } },
+      },
+    });
+
+    await handleReviewCommentInteraction();
+
+    expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(
+      'No API key configured — set claude_code_oauth_token or anthropic_api_key',
+    );
+    expect(jest.mocked(interaction.handleReviewCommentReply)).not.toHaveBeenCalled();
+  });
 });
 
 describe('handleReviewStateCheck', () => {
@@ -3622,7 +3642,21 @@ describe('handleInteraction', () => {
     });
   });
 
+  it('calls setFailed when no auth tokens are configured', async () => {
+    jest.mocked(core.getInput).mockReturnValue('');
+
+    await handleInteraction();
+
+    expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(
+      'No API key configured — set claude_code_oauth_token or anthropic_api_key',
+    );
+    expect(jest.mocked(interaction.handlePRComment)).not.toHaveBeenCalled();
+  });
+
   it('returns early when no issue number in payload', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'claude_code_oauth_token' ? 'oauth-tok' : '',
+    );
     setContext({
       eventName: 'issue_comment',
       payload: {
@@ -3638,6 +3672,9 @@ describe('handleInteraction', () => {
   });
 
   it('routes PR comment to handlePRComment with correct params', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'claude_code_oauth_token' ? 'oauth-tok' : '',
+    );
     setContext({
       eventName: 'issue_comment',
       payload: {
