@@ -1,4 +1,4 @@
-const OPEN_THREAD_CODE_WINDOW = 5;
+const OPEN_THREAD_CODE_WINDOW = 25;
 
 /**
  * Extract a small line window (line ± `OPEN_THREAD_CODE_WINDOW`) from the

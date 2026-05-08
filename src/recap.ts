@@ -110,6 +110,10 @@ interface PreviousFinding {
   authorReplyText?: string;
   /** Login of the latest non-bot replier on this thread, if any. */
   authorReplyLogin?: string;
+  /** Original finding description recovered from the thread comment body. */
+  description?: string;
+  /** Original suggested fix excerpt recovered from the thread comment's AI context block. */
+  suggestedFix?: string;
 }
 
 /**
@@ -194,6 +198,8 @@ async function fetchRecapState(
       threadUrl: t.threadUrl,
       authorReplyText: t.authorReplyText,
       authorReplyLogin: t.authorReplyLogin,
+      description: t.findingDescription,
+      suggestedFix: t.findingSuggestedFix,
     }));
 
   // Mirror the `prAuthorLogin` gate from inPrSuppressionReasonFor: only the
@@ -249,12 +255,60 @@ interface ReviewThread {
   isResolved: boolean;
   hasHumanReply: boolean;
   findingTitle: string;
+  findingDescription?: string;
+  findingSuggestedFix?: string;
   file: string;
   line: number;
   lineStart: number;
   severity: FindingSeverity | 'unknown';
   authorReplyText?: string;
   authorReplyLogin?: string;
+}
+
+/**
+ * Parse the prose description and suggested-fix excerpt from a manki-authored
+ * thread's first comment body. Returns `undefined` for either field when the
+ * comment doesn't match the expected layout — the judge tolerates missing
+ * fields. Pure string scan, no markdown parser, intentionally conservative so
+ * unexpected layouts skip extraction rather than emit garbage.
+ */
+function parseFindingFromComment(body: string): { description?: string; suggestedFix?: string } {
+  const titleLineRe = /\*\*(?:Blocker|Warning|Suggestion|Nitpick|Ignore)\*\*(?:\s*<sub>\[[^\]]*\]<\/sub>)?\s*:\s*.+(?:\n|$)/;
+  const titleMatch = body.match(titleLineRe);
+  if (!titleMatch || titleMatch.index === undefined) return {};
+  const afterTitle = body.slice(titleMatch.index + titleMatch[0].length);
+
+  let descSlice = afterTitle;
+  const stopMarkers = [
+    '\n```',
+    '\n<details>',
+    '\n<!-- manki:',
+  ];
+  let earliest = descSlice.length;
+  for (const marker of stopMarkers) {
+    const idx = descSlice.indexOf(marker);
+    if (idx >= 0 && idx < earliest) earliest = idx;
+  }
+  descSlice = descSlice.slice(0, earliest).replace(/^[\s\n]+|[\s\n]+$/g, '');
+  const remainingSubs = descSlice.match(/^(?:<sub>[^\n]*<\/sub>\s*\n?)+/);
+  if (remainingSubs) descSlice = descSlice.slice(remainingSubs[0].length).replace(/^\s+/, '');
+  const description = descSlice.length > 0 ? descSlice : undefined;
+
+  let suggestedFix: string | undefined;
+  const aiContextMatch = body.match(/<summary>AI context<\/summary>[\s\S]*?```json\s*([\s\S]*?)```/);
+  if (aiContextMatch) {
+    try {
+      const parsed: unknown = JSON.parse(aiContextMatch[1]);
+      if (parsed && typeof parsed === 'object' && 'fix' in parsed) {
+        const fix = (parsed as { fix?: unknown }).fix;
+        if (typeof fix === 'string' && fix.length > 0) suggestedFix = fix;
+      }
+    } catch {
+      // Malformed AI context JSON — skip suggestedFix, keep description.
+    }
+  }
+
+  return { description, suggestedFix };
 }
 
 async function fetchReviewThreads(
@@ -341,6 +395,10 @@ async function fetchReviewThreads(
       const titleMatch = firstComment?.body?.match(/\*\*(?:Blocker|Warning|Suggestion|Nitpick|Ignore)\*\*(?:\s*<sub>\[[^\]]*\]<\/sub>)?\s*:\s*(.+?)(?:\n|$)/);
       const findingTitle = titleMatch?.[1]?.trim() ?? '';
 
+      const { description: findingDescription, suggestedFix: findingSuggestedFix } = isBotThread && firstComment?.body
+        ? parseFindingFromComment(firstComment.body)
+        : {};
+
       const line = thread.line ?? 0;
       const lineStart = thread.startLine ?? line;
 
@@ -351,6 +409,8 @@ async function fetchReviewThreads(
         isResolved: thread.isResolved,
         hasHumanReply,
         findingTitle,
+        findingDescription,
+        findingSuggestedFix,
         file: thread.path ?? '',
         line,
         lineStart,

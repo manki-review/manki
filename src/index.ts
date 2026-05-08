@@ -530,6 +530,8 @@ async function runFullReview(
         file: f.file,
         line: f.line,
         severity: f.severity,
+        description: f.description,
+        suggestedFix: f.suggestedFix,
       }));
 
     // Fetch full file contents for changed files so reviewers have surrounding context.

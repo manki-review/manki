@@ -1406,6 +1406,117 @@ describe('runJudgeAgent', () => {
     expect(userMessage).toContain('>>> 5: flagged()');
   });
 
+  it('renders OpenThread `description` and `suggestedFix` in the open-thread block', async () => {
+    // PMPX-style: the GitHub-anchored line points at an unrelated structural
+    // block (e.g. `impl Display`); the actual fix sits inside the widened
+    // window. The judge needs the original description and suggested-fix text
+    // to recognise the fix in the current code window.
+    mockSendMessage.mockResolvedValue({
+      content: JSON.stringify({
+        summary: 'Thread addressed.',
+        findings: [],
+        threadEvaluations: [
+          { threadId: 'PRRT_pmpx', status: 'addressed', reason: 'Variant added in widened window' },
+        ],
+      }),
+    });
+
+    const priorRounds: HandoverRound[] = [{
+      round: 1, commitSha: 'abc', timestamp: 't', findings: [],
+    }];
+
+    const drifted = [
+      ...Array.from({ length: 25 }, (_, i) => `   ${i + 87}: variant_${i + 87}`),
+      '   112: }',
+      '   113: ',
+      '   114: impl Display for QuorumVerificationError {',
+      '   115:     fn fmt(&self, f: &mut Formatter) -> fmt::Result {',
+      '>>> 116:         match self {',
+    ].join('\n');
+
+    const result = await runJudgeAgent(mockClient, makeConfig(), {
+      findings: [],
+      diff: makeDiff(),
+      rawDiff: '',
+      repoContext: '',
+      agentCount: 3,
+      openThreads: [{
+        threadId: 'PRRT_pmpx',
+        title: 'Missing variant for rotation chainlock sigs',
+        file: 'src/llmq_entry_verification.rs',
+        line: 116,
+        severity: 'warning',
+        description: 'The error enum does not cover the rotation chainlock signature absence.',
+        suggestedFix: 'Add `MissingRotationChainLockSigs(QuorumHash)` to the error enum.',
+        currentCode: drifted,
+      }],
+      priorRounds,
+      interRoundDiff: 'diff --git a/src/llmq_entry_verification.rs b/src/llmq_entry_verification.rs\n@@ -85,3 +85,4 @@\n existing\n+    MissingRotationChainLockSigs(QuorumHash),\n existing\n existing\n',
+    });
+
+    expect(result.threadEvaluations).toEqual([
+      { threadId: 'PRRT_pmpx', status: 'addressed', reason: 'Variant added in widened window' },
+    ]);
+
+    const [, userMessage] = mockSendMessage.mock.calls[0];
+    expect(userMessage).toContain('Original concern');
+    expect(userMessage).toContain('rotation chainlock signature absence');
+    expect(userMessage).toContain('Original suggested fix');
+    expect(userMessage).toContain('MissingRotationChainLockSigs(QuorumHash)');
+    expect(userMessage).toContain('   87: variant_87');
+    expect(userMessage).toContain('>>> 116:');
+  });
+
+  it('passes `addressed` through when current code resolves the concern but inter-round diff does not touch the file (PMPa-style)', async () => {
+    // PMPa-style: the fix is visible in the current code window but the
+    // inter-round diff is force-push-poisoned and contains no changes
+    // touching the thread's file. Under the prior strict clause the judge was
+    // forbidden from picking `addressed`. Under the reworded contract the
+    // verdict must pass through to the resolver.
+    mockSendMessage.mockResolvedValue({
+      content: JSON.stringify({
+        summary: 'Thread addressed.',
+        findings: [],
+        threadEvaluations: [
+          { threadId: 'PRRT_pmpa', status: 'addressed', reason: 'Current code shows the variant; line 27 region is fixed' },
+        ],
+      }),
+    });
+
+    const priorRounds: HandoverRound[] = [{
+      round: 1, commitSha: 'abc', timestamp: 't', findings: [],
+    }];
+
+    const result = await runJudgeAgent(mockClient, makeConfig(), {
+      findings: [],
+      diff: makeDiff(),
+      rawDiff: '',
+      repoContext: '',
+      agentCount: 3,
+      openThreads: [{
+        threadId: 'PRRT_pmpa',
+        title: 'Add MissingRotationChainLockSigs variant',
+        file: 'src/llmq_entry_verification.rs',
+        line: 27,
+        severity: 'warning',
+        description: 'Error enum lacks variant for missing rotation chainlock sigs.',
+        suggestedFix: 'Add `MissingRotationChainLockSigs(QuorumHash)`.',
+        currentCode: '   25: pub enum QuorumVerificationError {\n   26:     MissingMember(QuorumHash),\n>>> 27:     MissingRotationChainLockSigs(QuorumHash),\n   28: }',
+      }],
+      priorRounds,
+      interRoundDiff: 'diff --git a/src/unrelated.rs b/src/unrelated.rs\n@@ -1 +1 @@\n-old\n+new\n',
+    });
+
+    expect(result.threadEvaluations).toEqual([
+      { threadId: 'PRRT_pmpa', status: 'addressed', reason: 'Current code shows the variant; line 27 region is fixed' },
+    ]);
+
+    const [systemPrompt] = mockSendMessage.mock.calls[0];
+    expect(systemPrompt).toContain('Either signal alone is sufficient');
+    expect(systemPrompt).toContain('GitHub-anchored');
+    expect(systemPrompt).not.toMatch(/Do not pick this when the inter-round diff is empty or contains no changes touching/);
+  });
+
   it('uses a dynamic fence for the inter-round diff when content contains triple-backticks', async () => {
     mockSendMessage.mockResolvedValue({ content: '{"summary":"x","findings":[]}' });
 

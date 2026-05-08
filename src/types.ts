@@ -289,6 +289,18 @@ export interface OpenThread {
    * exists at the head commit.
    */
   currentCode?: string;
+  /**
+   * Original finding description text, when recoverable from the thread comment
+   * body. Optional so legacy serialized payloads remain compatible. Used by the
+   * judge for pattern-matching against the current code window and inter-round
+   * diff.
+   */
+  description?: string;
+  /**
+   * Original suggested fix excerpt (truncated), when present in the thread
+   * comment's AI context block. Optional for backward compat.
+   */
+  suggestedFix?: string;
 }
 
 /**
