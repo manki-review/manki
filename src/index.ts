@@ -40,7 +40,7 @@ import { checkAndAutoApprove, resolveStaleThreads } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
-function buildAnthropicLLMClient(opts: {
+function buildLLMClientFromInputs(opts: {
   oauthToken: string;
   apiKey: string;
   model: string;
@@ -1094,7 +1094,7 @@ async function handleInteraction(): Promise<void> {
   }
   const config = loadConfig(configContent ?? undefined);
 
-  const built = buildAnthropicLLMClient({ oauthToken, apiKey, model: resolveModel(config, 'judge') });
+  const built = buildLLMClientFromInputs({ oauthToken, apiKey, model: resolveModel(config, 'judge') });
   if (!built) return;
   const { client: claude } = built;
 
@@ -1175,7 +1175,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
   }
   const config = loadConfig(configContent ?? undefined);
 
-  const built = buildAnthropicLLMClient({ oauthToken, apiKey, model: resolveModel(config, 'judge') });
+  const built = buildLLMClientFromInputs({ oauthToken, apiKey, model: resolveModel(config, 'judge') });
   if (!built) return;
   const { client: claude } = built;
 
