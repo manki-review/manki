@@ -12,6 +12,10 @@ const KNOWN_PREFIXES: ReadonlyArray<readonly [RegExp, ProviderName]> = [
 ];
 
 export function parseModelSpec(input: string): ModelSpec {
+  input = input.trim();
+  if (!input) {
+    throw new Error('Unknown model "". Use a known prefix (e.g., "claude-...") or "provider/model" syntax.');
+  }
   const slash = input.indexOf('/');
   if (slash !== -1) {
     const provider = input.slice(0, slash);
