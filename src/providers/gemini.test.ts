@@ -286,6 +286,11 @@ describe('GeminiClient OAuth path', () => {
     process.env.CLAUDE_CODE_OAUTH_TOKEN = 'claude-tok';
     process.env.REVIEW_MEMORY_TOKEN = 'mem-tok';
     process.env.GITHUB_TOKEN = 'gh-tok';
+    process.env.GEMINI_API_KEY = 'gem-api';
+    process.env.GITHUB_APP_PRIVATE_KEY = 'pem-key';
+    process.env.INPUT_ANTHROPIC_API_KEY = 'input-sk';
+    process.env.INPUT_GEMINI_API_KEY = 'input-gem';
+    process.env.INPUT_GITHUB_TOKEN = 'input-ghtok';
     try {
       setupOAuthSpawnMock({ stdout: 'ok' });
       const client = new GeminiClient({ auth: { kind: 'oauth', token: 'gem-tok' }, model: 'gemini-3.1-flash-lite' });
@@ -297,6 +302,11 @@ describe('GeminiClient OAuth path', () => {
       expect(spawnOpts.env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
       expect(spawnOpts.env.REVIEW_MEMORY_TOKEN).toBeUndefined();
       expect(spawnOpts.env.GITHUB_TOKEN).toBeUndefined();
+      expect(spawnOpts.env.GEMINI_API_KEY).toBeUndefined();
+      expect(spawnOpts.env.GITHUB_APP_PRIVATE_KEY).toBeUndefined();
+      expect(spawnOpts.env.INPUT_ANTHROPIC_API_KEY).toBeUndefined();
+      expect(spawnOpts.env.INPUT_GEMINI_API_KEY).toBeUndefined();
+      expect(spawnOpts.env.INPUT_GITHUB_TOKEN).toBeUndefined();
       expect(spawnOpts.env.GOOGLE_GENAI_USE_GCA).toBe('true');
       expect(spawnOpts.env.GOOGLE_CLOUD_ACCESS_TOKEN).toBe('gem-tok');
     } finally {
@@ -304,6 +314,11 @@ describe('GeminiClient OAuth path', () => {
       delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
       delete process.env.REVIEW_MEMORY_TOKEN;
       delete process.env.GITHUB_TOKEN;
+      delete process.env.GEMINI_API_KEY;
+      delete process.env.GITHUB_APP_PRIVATE_KEY;
+      delete process.env.INPUT_ANTHROPIC_API_KEY;
+      delete process.env.INPUT_GEMINI_API_KEY;
+      delete process.env.INPUT_GITHUB_TOKEN;
     }
   });
 
@@ -348,18 +363,21 @@ describe('GeminiClient OAuth path', () => {
     warnSpy.mockRestore();
   });
 
-  it('warns and proceeds when effort > low is requested on OAuth path', async () => {
-    setupOAuthSpawnMock({ stdout: 'ok' });
-    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
-    const client = new GeminiClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gemini-3.1-flash-lite' });
+  it.each(['medium', 'high', 'max'] as const)(
+    'warns and proceeds when effort is %s on OAuth path',
+    async (effort) => {
+      setupOAuthSpawnMock({ stdout: 'ok' });
+      const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+      const client = new GeminiClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gemini-3.1-flash-lite' });
 
-    const result = await client.sendMessage('sys', 'user', { effort: 'high' });
+      const result = await client.sendMessage('sys', 'user', { effort });
 
-    expect(result.content).toBe('ok');
-    const allWarnings = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
-    expect(allWarnings).toContain('does not support effort=high');
-    warnSpy.mockRestore();
-  });
+      expect(result.content).toBe('ok');
+      const allWarnings = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(allWarnings).toContain(`does not support effort=${effort}`);
+      warnSpy.mockRestore();
+    },
+  );
 
   it('does not warn when effort is low or omitted', async () => {
     setupOAuthSpawnMock({ stdout: 'ok' });

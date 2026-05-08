@@ -114,16 +114,19 @@ export class GeminiClient implements LLMClient {
         '--model', this.model,
       ];
 
-      // Strip other providers' secrets from the forwarded env so a compromised
-      // Gemini CLI cannot exfiltrate them. PATH/HOME etc. flow through `safeEnv`.
-      const {
-        ANTHROPIC_API_KEY: _anthropicApiKey,
-        CLAUDE_CODE_OAUTH_TOKEN: _claudeOauthToken,
-        REVIEW_MEMORY_TOKEN: _memoryToken,
-        GITHUB_TOKEN: _githubToken,
-        ...safeEnv
-      } = process.env;
-      void _anthropicApiKey; void _claudeOauthToken; void _memoryToken; void _githubToken;
+      // Strip other providers' secrets and all INPUT_* vars (GitHub Actions delivers
+      // every action input as INPUT_<NAME>, which would otherwise bypass bare-name
+      // stripping) from the forwarded env. PATH/HOME etc. flow through `safeEnv`.
+      const BLOCKED_BARE = new Set([
+        'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
+        'REVIEW_MEMORY_TOKEN', 'GITHUB_TOKEN',
+        'GEMINI_API_KEY', 'GITHUB_APP_PRIVATE_KEY',
+      ]);
+      const safeEnv = Object.fromEntries(
+        Object.entries(process.env).filter(
+          ([k]) => !BLOCKED_BARE.has(k) && !/^INPUT_/i.test(k),
+        ),
+      ) as NodeJS.ProcessEnv;
 
       const child = spawn(cliPath, args, {
         env: {
