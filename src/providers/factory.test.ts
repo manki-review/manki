@@ -1,9 +1,11 @@
 import * as AnthropicModule from './anthropic';
 import { AnthropicClient } from './anthropic';
+import { OpenAIClient } from './openai';
 import { createLLMClient } from './factory';
 import { ProviderName } from './types';
 
 jest.mock('@anthropic-ai/sdk');
+jest.mock('openai');
 
 describe('createLLMClient', () => {
   it('returns an AnthropicClient for the anthropic provider', () => {
@@ -41,8 +43,18 @@ describe('createLLMClient', () => {
     expect(client).toBeInstanceOf(AnthropicClient);
   });
 
+  it('returns an OpenAIClient for the openai provider with apiKey auth', () => {
+    const client = createLLMClient('openai', 'gpt-4o', { kind: 'apiKey', key: 'sk-test' });
+    expect(client).toBeInstanceOf(OpenAIClient);
+  });
+
+  it('returns an OpenAIClient for the openai provider with oauth auth', () => {
+    const client = createLLMClient('openai', 'o3', { kind: 'oauth', token: 'tok' });
+    expect(client).toBeInstanceOf(OpenAIClient);
+  });
+
   it('throws on unknown provider', () => {
-    const bogus = 'openai' as unknown as ProviderName;
-    expect(() => createLLMClient(bogus, 'gpt-4o', { kind: 'apiKey', key: 'sk' })).toThrow(/Unsupported provider/);
+    const bogus = 'mistral' as unknown as ProviderName;
+    expect(() => createLLMClient(bogus, 'mistral-large', { kind: 'apiKey', key: 'sk' })).toThrow(/Unsupported provider/);
   });
 });
