@@ -188,6 +188,13 @@ describe('sendMessage (API path)', () => {
 
     await expect(sendViaAPI.call(client, 'sys', 'user')).rejects.toThrow('OpenAI client not initialized');
   });
+
+  it('propagates SDK errors from chat.completions.create to the caller', async () => {
+    mockCreate.mockRejectedValueOnce(new Error('rate limited'));
+    const client = new OpenAIClient({ auth: { kind: 'apiKey', key: 'sk' }, model: 'gpt-4o' });
+
+    await expect(client.sendMessage('sys', 'user')).rejects.toThrow('rate limited');
+  });
 });
 
 describe('sendViaOAuth (Codex CLI path)', () => {
