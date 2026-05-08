@@ -31,6 +31,18 @@ export function isReasoningModel(model: string): boolean {
   return /^o\d/i.test(model);
 }
 
+/**
+ * Map manki's effort tiers (`low|medium|high|max`) to the values the OpenAI
+ * stack accepts. Both the chat completions API and the Codex CLI cap reasoning
+ * effort at `'high'`, so manki's `'max'` collapses to `'high'` on both paths.
+ */
+export function resolveCLIEffort(effort: string): 'low' | 'medium' | 'high' {
+  const map: Record<string, 'low' | 'medium' | 'high'> = {
+    low: 'low', medium: 'medium', high: 'high', max: 'high',
+  };
+  return map[effort] ?? 'high';
+}
+
 /** Build diagnostic snippets for timeout/stale error messages. */
 function buildTimeoutDiagnostics(lastStdoutChunk: string, stderrText: string): string {
   const stdoutSnippet = sanitizeLogOutput(lastStdoutChunk.slice(-500));
@@ -121,7 +133,7 @@ export class OpenAIClient implements LLMClient {
       const args = ['exec', '--model', this.model];
 
       if (options?.effort && isReasoningModel(this.model)) {
-        args.push('-c', `model_reasoning_effort="${options.effort}"`);
+        args.push('-c', `model_reasoning_effort="${resolveCLIEffort(options.effort)}"`);
       } else if (options?.effort) {
         core.warning(`Ignoring effort=${options.effort} — model "${this.model}" is not a reasoning model`);
       }
@@ -308,12 +320,7 @@ export class OpenAIClient implements LLMClient {
     };
 
     if (reasoning && options?.effort) {
-      // OpenAI's reasoning_effort param accepts 'low' | 'medium' | 'high'.
-      // Manki's 'max' maps to 'high' (the highest tier the API exposes).
-      const map: Record<string, 'low' | 'medium' | 'high'> = {
-        low: 'low', medium: 'medium', high: 'high', max: 'high',
-      };
-      params.reasoning_effort = map[options.effort];
+      params.reasoning_effort = resolveCLIEffort(options.effort);
     }
 
     const response = await this.openai.chat.completions.create(params);
