@@ -2,8 +2,8 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { createAuthenticatedOctokit, getMemoryToken } from './auth';
-import { ClaudeClient } from './claude';
 import { loadConfig, resolveModel } from './config';
+import { AnthropicAuth, createLLMClient, parseModelSpec } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
 import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
@@ -38,6 +38,12 @@ import {
 import { checkAndAutoApprove, resolveStaleThreads } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
+
+function buildAnthropicAuth(oauthToken: string, apiKey: string): AnthropicAuth {
+  if (oauthToken) return { kind: 'oauth', token: oauthToken };
+  if (apiKey) return { kind: 'apiKey', key: apiKey };
+  throw new Error('Either claude_code_oauth_token or anthropic_api_key must be provided');
+}
 
 const octokitCache = {
   instance: null as Octokit | null,
@@ -371,22 +377,21 @@ async function runFullReview(
       return;
     }
 
-    const authOptions = {
-      oauthToken: oauthToken || undefined,
-      apiKey: apiKey || undefined,
-    };
+    const anthropicAuth = buildAnthropicAuth(oauthToken, apiKey);
     const plannerModel = resolveModel(config, 'planner');
     const reviewerModel = resolveModel(config, 'reviewer');
     const judgeModel = resolveModel(config, 'judge');
     const dedupModel = resolveModel(config, 'dedup');
     core.info(`Models — planner: ${plannerModel}, reviewer: ${reviewerModel}, judge: ${judgeModel}, dedup: ${dedupModel}`);
 
-    const reviewerClient = new ClaudeClient({ ...authOptions, model: reviewerModel });
-    const judgeClient = new ClaudeClient({ ...authOptions, model: judgeModel });
-    const plannerClient = config.planner?.enabled !== false
-      ? new ClaudeClient({ ...authOptions, model: plannerModel })
-      : undefined;
-    const dedupClient = new ClaudeClient({ ...authOptions, model: dedupModel });
+    const buildClient = (model: string) => {
+      const spec = parseModelSpec(model);
+      return createLLMClient(spec.provider, spec.model, anthropicAuth);
+    };
+    const reviewerClient = buildClient(reviewerModel);
+    const judgeClient = buildClient(judgeModel);
+    const plannerClient = config.planner?.enabled !== false ? buildClient(plannerModel) : undefined;
+    const dedupClient = buildClient(dedupModel);
 
     const rawDiff = await fetchPRDiff(octokit, owner, repo, prNumber);
     const diff = parsePRDiff(rawDiff);
@@ -1066,11 +1071,9 @@ async function handleInteraction(): Promise<void> {
   const config = loadConfig(configContent ?? undefined);
 
   const interactionModel = resolveModel(config, 'judge');
-  const claude = new ClaudeClient({
-    oauthToken: oauthToken || undefined,
-    apiKey: apiKey || undefined,
-    model: interactionModel,
-  });
+  const interactionAuth = buildAnthropicAuth(oauthToken, apiKey);
+  const interactionSpec = parseModelSpec(interactionModel);
+  const claude = createLLMClient(interactionSpec.provider, interactionSpec.model, interactionAuth);
 
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;
   const memoryToken = config.memory?.enabled ? getMemoryToken(octokitCache.resolvedToken) ?? undefined : undefined;
@@ -1143,11 +1146,9 @@ async function handleReviewCommentInteraction(): Promise<void> {
   }
   const config = loadConfig(configContent ?? undefined);
 
-  const claude = new ClaudeClient({
-    oauthToken: oauthToken || undefined,
-    apiKey: apiKey || undefined,
-    model: resolveModel(config, 'judge'),
-  });
+  const reviewCommentAuth = buildAnthropicAuth(oauthToken, apiKey);
+  const reviewCommentSpec = parseModelSpec(resolveModel(config, 'judge'));
+  const claude = createLLMClient(reviewCommentSpec.provider, reviewCommentSpec.model, reviewCommentAuth);
 
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;
   const memoryToken = config.memory?.enabled ? getMemoryToken(octokitCache.resolvedToken) ?? undefined : undefined;

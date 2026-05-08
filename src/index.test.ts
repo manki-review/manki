@@ -52,8 +52,10 @@ jest.mock('./auth', () => ({
   getMemoryToken: jest.fn().mockReturnValue(null),
 }));
 
-jest.mock('./claude', () => ({
-  ClaudeClient: jest.fn().mockImplementation(() => ({})),
+jest.mock('./providers', () => ({
+  AnthropicClient: jest.fn().mockImplementation(() => ({})),
+  createLLMClient: jest.fn().mockImplementation(() => ({ sendMessage: jest.fn() })),
+  parseModelSpec: jest.fn().mockImplementation((m: string) => ({ provider: 'anthropic', model: m })),
 }));
 
 jest.mock('./config', () => ({
