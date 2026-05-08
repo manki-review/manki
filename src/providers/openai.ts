@@ -19,7 +19,7 @@ export function buildOpenAIAuth(oauthToken: string, apiKey: string): OpenAIAuth 
 
 /** Strip GitHub Actions workflow commands to prevent injection when logging CLI output. */
 export function sanitizeLogOutput(text: string): string {
-  return text.replace(/::[a-z].*$/gim, '[redacted-workflow-cmd]');
+  return text.replace(/^::[a-z].*$/gim, '[redacted-workflow-cmd]');
 }
 
 /**

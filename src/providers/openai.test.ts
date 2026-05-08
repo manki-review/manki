@@ -334,6 +334,13 @@ describe('sanitizeLogOutput', () => {
     expect(sanitizeLogOutput('A line :: with double colons mid-text')).toBe('A line :: with double colons mid-text');
   });
 
+  it('does not redact `::identifier` patterns mid-line', () => {
+    // `^` anchor (with multiline flag) ensures `std::io::Error` and similar
+    // namespace syntax in code output is preserved.
+    expect(sanitizeLogOutput('error: std::io::Error at module::path')).toBe('error: std::io::Error at module::path');
+    expect(sanitizeLogOutput('caller foo::bar::baz failed')).toBe('caller foo::bar::baz failed');
+  });
+
   it('redacts per line in multiline input', () => {
     const input = 'safe line\n::set-env name=X::val\nother safe';
     expect(sanitizeLogOutput(input)).toBe('safe line\n[redacted-workflow-cmd]\nother safe');
