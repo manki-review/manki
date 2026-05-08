@@ -4,7 +4,7 @@ import * as github from '@actions/github';
 import { createAuthenticatedOctokit, getMemoryToken } from './auth';
 import { loadConfig, resolveModel } from './config';
 import { buildAnthropicAuth, createLLMClient, parseModelSpec } from './providers';
-import type { LLMClient } from './providers';
+import type { AnthropicAuth, LLMClient } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
 import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
@@ -39,6 +39,21 @@ import {
 import { checkAndAutoApprove, resolveStaleThreads } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
+
+function buildAnthropicLLMClient(opts: {
+  oauthToken: string;
+  apiKey: string;
+  model: string;
+}): { client: LLMClient; auth: AnthropicAuth } | null {
+  const auth = buildAnthropicAuth(opts.oauthToken, opts.apiKey);
+  try {
+    const spec = parseModelSpec(opts.model);
+    return { client: createLLMClient(spec.provider, spec.model, auth), auth };
+  } catch (error) {
+    core.setFailed(`Invalid model config: ${error instanceof Error ? error.message : error}`);
+    return null;
+  }
+}
 
 const octokitCache = {
   instance: null as Octokit | null,
@@ -1079,16 +1094,9 @@ async function handleInteraction(): Promise<void> {
   }
   const config = loadConfig(configContent ?? undefined);
 
-  const interactionModel = resolveModel(config, 'judge');
-  const interactionAuth = buildAnthropicAuth(oauthToken, apiKey);
-  let interactionSpec;
-  try {
-    interactionSpec = parseModelSpec(interactionModel);
-  } catch (error) {
-    core.setFailed(`Invalid model config: ${error instanceof Error ? error.message : error}`);
-    return;
-  }
-  const claude = createLLMClient(interactionSpec.provider, interactionSpec.model, interactionAuth);
+  const built = buildAnthropicLLMClient({ oauthToken, apiKey, model: resolveModel(config, 'judge') });
+  if (!built) return;
+  const { client: claude } = built;
 
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;
   const memoryToken = config.memory?.enabled ? getMemoryToken(octokitCache.resolvedToken) ?? undefined : undefined;
@@ -1167,15 +1175,9 @@ async function handleReviewCommentInteraction(): Promise<void> {
   }
   const config = loadConfig(configContent ?? undefined);
 
-  const reviewCommentAuth = buildAnthropicAuth(oauthToken, apiKey);
-  let reviewCommentSpec;
-  try {
-    reviewCommentSpec = parseModelSpec(resolveModel(config, 'judge'));
-  } catch (error) {
-    core.setFailed(`Invalid model config: ${error instanceof Error ? error.message : error}`);
-    return;
-  }
-  const claude = createLLMClient(reviewCommentSpec.provider, reviewCommentSpec.model, reviewCommentAuth);
+  const built = buildAnthropicLLMClient({ oauthToken, apiKey, model: resolveModel(config, 'judge') });
+  if (!built) return;
+  const { client: claude } = built;
 
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;
   const memoryToken = config.memory?.enabled ? getMemoryToken(octokitCache.resolvedToken) ?? undefined : undefined;
