@@ -55,6 +55,7 @@ jest.mock('./auth', () => ({
 jest.mock('./providers', () => ({
   buildAnthropicAuth: jest.requireActual('./providers').buildAnthropicAuth,
   buildOpenAIAuth: jest.requireActual('./providers').buildOpenAIAuth,
+  buildGeminiAuth: jest.requireActual('./providers').buildGeminiAuth,
   createLLMClient: jest.fn().mockImplementation(() => ({ sendMessage: jest.fn() })),
   parseModelSpec: jest.fn().mockImplementation((m: string) => ({ provider: 'anthropic', model: m })),
 }));
@@ -3796,6 +3797,39 @@ describe('runFullReview orchestration', () => {
       jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
     }
   });
+
+  it('proceeds when gemini_api_key is set and resolves auth via the gemini branch', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'gemini_api_key' ? 'gem-key' : '',
+    );
+    jest.mocked(configModule.resolveModel).mockReturnValue('gemini-3.1-flash-lite');
+    jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'gemini', model: m }));
+
+    await callRunFullReview();
+
+    expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
+    expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
+
+    jest.mocked(configModule.resolveModel).mockReturnValue('claude-sonnet-4-20250514');
+    jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
+  });
+
+  it('proceeds when gemini_oauth_token is set', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'gemini_oauth_token' ? 'gem-tok' : '',
+    );
+    jest.mocked(configModule.resolveModel).mockReturnValue('gemini-3.1-flash-lite');
+    jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'gemini', model: m }));
+
+    await callRunFullReview();
+
+    expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
+    expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
+
+    jest.mocked(configModule.resolveModel).mockReturnValue('claude-sonnet-4-20250514');
+    jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
+  });
+
 
   it('posts app warning when identity is actions', async () => {
     _resetOctokitCache();
