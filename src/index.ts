@@ -1072,7 +1072,13 @@ async function handleInteraction(): Promise<void> {
 
   const interactionModel = resolveModel(config, 'judge');
   const interactionAuth = buildAnthropicAuth(oauthToken, apiKey);
-  const interactionSpec = parseModelSpec(interactionModel);
+  let interactionSpec;
+  try {
+    interactionSpec = parseModelSpec(interactionModel);
+  } catch (error) {
+    core.setFailed(`Invalid model config: ${error instanceof Error ? error.message : error}`);
+    return;
+  }
   const claude = createLLMClient(interactionSpec.provider, interactionSpec.model, interactionAuth);
 
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;
@@ -1153,7 +1159,13 @@ async function handleReviewCommentInteraction(): Promise<void> {
   const config = loadConfig(configContent ?? undefined);
 
   const reviewCommentAuth = buildAnthropicAuth(oauthToken, apiKey);
-  const reviewCommentSpec = parseModelSpec(resolveModel(config, 'judge'));
+  let reviewCommentSpec;
+  try {
+    reviewCommentSpec = parseModelSpec(resolveModel(config, 'judge'));
+  } catch (error) {
+    core.setFailed(`Invalid model config: ${error instanceof Error ? error.message : error}`);
+    return;
+  }
   const claude = createLLMClient(reviewCommentSpec.provider, reviewCommentSpec.model, reviewCommentAuth);
 
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;

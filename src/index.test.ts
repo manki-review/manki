@@ -1135,6 +1135,32 @@ describe('handleReviewCommentInteraction', () => {
     );
     expect(jest.mocked(interaction.handleReviewCommentReply)).not.toHaveBeenCalled();
   });
+
+  it('calls setFailed when parseModelSpec throws for an unknown model', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'claude_code_oauth_token' ? 'oauth-tok' : '',
+    );
+    jest.mocked(interaction.hasBotMention).mockReturnValue(true);
+    jest.mocked(parseModelSpec).mockImplementationOnce(() => {
+      throw new Error('Unknown model "gpt-4o"');
+    });
+
+    setContext({
+      eventName: 'pull_request_review_comment',
+      payload: {
+        action: 'created',
+        comment: { body: '@manki help', user: { type: 'User' } },
+        pull_request: { base: { ref: 'main' }, number: 42 },
+      },
+    });
+
+    await handleReviewCommentInteraction();
+
+    expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(
+      expect.stringContaining('Unknown model "gpt-4o"'),
+    );
+    expect(jest.mocked(interaction.handleReviewCommentReply)).not.toHaveBeenCalled();
+  });
 });
 
 describe('handleReviewStateCheck', () => {
@@ -3709,6 +3735,30 @@ describe('handleInteraction', () => {
       undefined,          // memoryToken
       expect.anything(),  // config
     );
+  });
+
+  it('calls setFailed when parseModelSpec throws for an unknown model', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'claude_code_oauth_token' ? 'oauth-tok' : '',
+    );
+    jest.mocked(parseModelSpec).mockImplementationOnce(() => {
+      throw new Error('Unknown model "gpt-4o"');
+    });
+    setContext({
+      eventName: 'issue_comment',
+      payload: {
+        action: 'created',
+        comment: { body: '@manki help' },
+        issue: { number: 7, pull_request: { url: 'https://...' } },
+      },
+    });
+
+    await handleInteraction();
+
+    expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(
+      expect.stringContaining('Unknown model "gpt-4o"'),
+    );
+    expect(jest.mocked(interaction.handlePRComment)).not.toHaveBeenCalled();
   });
 });
 
