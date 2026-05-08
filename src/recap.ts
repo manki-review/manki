@@ -265,7 +265,7 @@ interface ReviewThread extends FindingMetadata {
 /**
  * Parse the prose description and suggested-fix excerpt from a manki-authored
  * thread's first comment body. Returns `undefined` for either field when the
- * comment doesn't match the expected layout — the judge tolerates missing
+ * comment doesn't match the expected layout. The judge tolerates missing
  * fields. Pure string scan, no markdown parser, intentionally conservative so
  * unexpected layouts skip extraction rather than emit garbage.
  */

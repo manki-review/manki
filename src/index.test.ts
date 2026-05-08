@@ -3080,9 +3080,9 @@ describe('runFullReview orchestration', () => {
   });
 
   it('suppresses addressed verdict from judge when inter-round diff is known-empty (defense-in-depth override)', async () => {
-    // The prompt now allows `addressed` based on current-code evidence alone.
-    // The index.ts override must still block resolution when the inter-round
-    // diff is known-empty, so a force-push-to-same-tree cannot resolve threads.
+    // The judge allows `addressed` on current-code evidence alone, but the
+    // index.ts override must still block resolution when the inter-round diff
+    // is known-empty so a force-push-to-same-tree cannot resolve threads.
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],

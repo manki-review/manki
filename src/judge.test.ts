@@ -1471,9 +1471,8 @@ describe('runJudgeAgent', () => {
   it('passes `addressed` through when current code resolves the concern but inter-round diff does not touch the file (PMPa-style)', async () => {
     // PMPa-style: the fix is visible in the current code window but the
     // inter-round diff is force-push-poisoned and contains no changes
-    // touching the thread's file. Under the prior strict clause the judge was
-    // forbidden from picking `addressed`. Under the reworded contract the
-    // verdict must pass through to the resolver.
+    // touching the thread's file. The judge contract allows `addressed` on
+    // current-code evidence alone, so the verdict must pass through to the resolver.
     mockSendMessage.mockResolvedValue({
       content: JSON.stringify({
         summary: 'Thread addressed.',
