@@ -1,4 +1,4 @@
-import { truncate, formatDuration, safeJsonParse } from './utils';
+import { truncate, formatDuration, safeJsonParse, safeTruncate } from './utils';
 
 describe('utils', () => {
   describe('truncate', () => {
@@ -16,6 +16,23 @@ describe('utils', () => {
 
     it('handles empty strings', () => {
       expect(truncate('', 5)).toBe('');
+    });
+  });
+
+  describe('safeTruncate', () => {
+    it('returns text unchanged when shorter than max', () => {
+      expect(safeTruncate('hello', 10)).toBe('hello');
+    });
+
+    it('truncates normal text at boundary', () => {
+      expect(safeTruncate('hello world', 5)).toBe('hello...');
+    });
+
+    it('avoids splitting a surrogate pair at the boundary', () => {
+      // U+1F600 (grinning face) is a surrogate pair: 😀
+      const text = 'ab\u{1F600}cd';
+      const result = safeTruncate(text, 3);
+      expect(result).toBe('ab...');
     });
   });
 

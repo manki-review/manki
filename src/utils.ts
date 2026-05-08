@@ -7,6 +7,19 @@ export function truncate(text: string, maxLength: number): string {
 }
 
 /**
+ * Truncate a string to `maxLen` code units, backing off one position if the
+ * boundary would land inside a UTF-16 surrogate pair, then appending "...".
+ */
+export function safeTruncate(text: string, maxLen: number): string {
+  if (text.length <= maxLen) return text;
+  let end = maxLen;
+  if (end > 0 && text.charCodeAt(end - 1) >= 0xD800 && text.charCodeAt(end - 1) <= 0xDBFF) {
+    end--;
+  }
+  return text.slice(0, end) + '...';
+}
+
+/**
  * Format a duration in milliseconds to a human-readable string.
  */
 export function formatDuration(ms: number): string {
