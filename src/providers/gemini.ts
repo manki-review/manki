@@ -298,7 +298,9 @@ export class GeminiClient implements LLMClient {
     // The underlying REST API accepts `thinkingConfig.thinkingBudget` — pass it
     // through with a cast so we don't have to wait for the SDK types to catch up.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const generationConfig: any = {};
+    const generationConfig: any = {
+      maxOutputTokens: thinkingBudget !== undefined ? 32768 : 16384,
+    };
     if (thinkingBudget !== undefined) {
       generationConfig.thinkingConfig = { thinkingBudget };
     }

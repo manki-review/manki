@@ -133,6 +133,24 @@ describe('sendMessage effort option (API path)', () => {
     expect(params.generationConfig.thinkingConfig).toBeUndefined();
   });
 
+  it('sets maxOutputTokens to 16384 when thinking is disabled', async () => {
+    const client = new GeminiClient({ auth: { kind: 'apiKey', key: 'k' }, model: 'gemini-3.1-flash-lite' });
+
+    await client.sendMessage('system', 'user', { effort: 'low' });
+
+    const params = mockGenerateContent.mock.calls[0][0];
+    expect(params.generationConfig.maxOutputTokens).toBe(16384);
+  });
+
+  it('sets maxOutputTokens to 32768 when thinking is enabled', async () => {
+    const client = new GeminiClient({ auth: { kind: 'apiKey', key: 'k' }, model: 'gemini-3.1-pro-preview' });
+
+    await client.sendMessage('system', 'user', { effort: 'high' });
+
+    const params = mockGenerateContent.mock.calls[0][0];
+    expect(params.generationConfig.maxOutputTokens).toBe(32768);
+  });
+
   it('returns the response text', async () => {
     mockGenerateContent.mockResolvedValue({
       response: { text: () => 'hello there' },
