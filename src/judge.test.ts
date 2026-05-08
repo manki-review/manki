@@ -1518,6 +1518,43 @@ describe('runJudgeAgent', () => {
     expect(systemPrompt).not.toMatch(/Do not pick this when the inter-round diff is empty or contains no changes touching/);
   });
 
+  it('returns not_addressed when current code still shows the concern and diff misses the file (PMPa negative case)', async () => {
+    // PMPa negative: inter-round diff touches an unrelated file and the current
+    // code window still exhibits the original concern — verdict must be not_addressed.
+    mockSendMessage.mockResolvedValue({
+      content: JSON.stringify({
+        summary: 'Thread not addressed.',
+        findings: [],
+        threadEvaluations: [
+          { threadId: 'PRRT_pmpa_neg', status: 'not_addressed', reason: 'Variant still absent in current code' },
+        ],
+      }),
+    });
+
+    const result = await runJudgeAgent(mockClient, makeConfig(), {
+      findings: [],
+      diff: makeDiff(),
+      rawDiff: '',
+      repoContext: '',
+      agentCount: 3,
+      openThreads: [{
+        threadId: 'PRRT_pmpa_neg',
+        title: 'Add MissingRotationChainLockSigs variant',
+        file: 'src/llmq_entry_verification.rs',
+        line: 27,
+        severity: 'warning',
+        description: 'Error enum lacks variant.',
+        currentCode: '   25: pub enum QuorumVerificationError {\n   26:     MissingMember(QuorumHash),\n>>> 27: }',
+      }],
+      priorRounds: [{ round: 1, commitSha: 'abc', timestamp: 't', findings: [] }],
+      interRoundDiff: 'diff --git a/src/unrelated.rs b/src/unrelated.rs\n@@ -1 +1 @@\n-old\n+new\n',
+    });
+
+    expect(result.threadEvaluations).toEqual([
+      { threadId: 'PRRT_pmpa_neg', status: 'not_addressed', reason: expect.any(String) },
+    ]);
+  });
+
   it('omits description/suggestedFix labels when fields are absent on OpenThread', async () => {
     mockSendMessage.mockResolvedValue({
       content: JSON.stringify({ summary: 'x', findings: [], threadEvaluations: [] }),
