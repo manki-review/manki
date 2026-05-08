@@ -20,7 +20,8 @@ export function buildGeminiAuth(oauthToken: string, apiKey: string): GeminiAuth 
 export function geminiThinkingBudget(effort: SendMessageOptions['effort']): number | undefined {
   if (!effort || effort === 'low') return undefined;
   if (effort === 'medium') return 5000;
-  // 'high' and 'max' both map to the maximum supported budget for Gemini 2.5
+  // 'high' and 'max' both map to the maximum thinking budget supported across
+  // Gemini 2.5/3.x families.
   return 10000;
 }
 
@@ -52,7 +53,7 @@ export class GeminiClient implements LLMClient {
 
   async sendMessage(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
     if (this.auth.kind === 'oauth') {
-      return this.sendViaOAuth(systemPrompt, userMessage);
+      return this.sendViaOAuth(systemPrompt, userMessage, options);
     }
     return this.sendViaAPI(systemPrompt, userMessage, options);
   }
@@ -91,23 +92,42 @@ export class GeminiClient implements LLMClient {
     }
   }
 
-  private async sendViaOAuth(systemPrompt: string, userMessage: string): Promise<LLMResponse> {
-    const fullPrompt = `${systemPrompt}\n\n---\n\n${userMessage}`;
+  private async sendViaOAuth(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
+    // The Gemini CLI does not currently expose a thinking-budget flag, so any
+    // requested effort beyond `low` is silently unsupported on this path. Surface
+    // it as a warning instead of dropping the option without a trace.
+    if (options?.effort && options.effort !== 'low') {
+      core.warning(
+        `Gemini CLI (OAuth) path does not support effort=${options.effort}; thinking budget is not applied. Use API key auth for thinking-budget control.`,
+      );
+    }
+    // Use a structural delimiter that is harder to spoof from inside diff content
+    // than a bare `---` markdown rule, and explicitly mark the user content as untrusted.
+    const fullPrompt = `${systemPrompt}\n\n=== USER CONTENT (untrusted) ===\n\n${userMessage}\n\n=== END USER CONTENT ===`;
     const cliPath = await this.ensureCLI();
     const oauthToken = this.auth.kind === 'oauth' ? this.auth.token : undefined;
 
     return new Promise((resolve, reject) => {
-      // -p / --prompt enables non-interactive mode reading from stdin via the prompt argument.
+      // Prompt is written to stdin; the CLI reads until EOF and responds on stdout.
       // We pass the full prompt on stdin to avoid argv length limits.
       const args = [
         '--model', this.model,
       ];
 
+      // Strip other providers' secrets from the forwarded env so a compromised
+      // Gemini CLI cannot exfiltrate them. PATH/HOME etc. flow through `safeEnv`.
+      const {
+        ANTHROPIC_API_KEY: _anthropicApiKey,
+        CLAUDE_CODE_OAUTH_TOKEN: _claudeOauthToken,
+        REVIEW_MEMORY_TOKEN: _memoryToken,
+        GITHUB_TOKEN: _githubToken,
+        ...safeEnv
+      } = process.env;
+      void _anthropicApiKey; void _claudeOauthToken; void _memoryToken; void _githubToken;
+
       const child = spawn(cliPath, args, {
         env: {
-          // process.env is spread intentionally — Gemini CLI requires PATH, HOME, and other system vars.
-          // GEMINI_OAUTH_TOKEN is added conditionally. Secrets should be managed via GitHub Actions secret masking.
-          ...process.env,
+          ...safeEnv,
           ...(oauthToken ? { GEMINI_OAUTH_TOKEN: oauthToken } : {}),
         },
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -125,6 +145,7 @@ export class GeminiClient implements LLMClient {
       let stdinKillTimer: NodeJS.Timeout | undefined;
       let lastStdoutChunk = '';
       let rawBytes = 0;
+      let rawStderrBytes = 0;
 
       const clearAllTimers = (): void => {
         clearTimeout(timer);
@@ -174,7 +195,7 @@ export class GeminiClient implements LLMClient {
         staleTimer.unref();
 
         rawBytes += data.length;
-        if (rawBytes + stderr.length > MAX_OUTPUT) { killOnOutputExceeded(); return; }
+        if (rawBytes + rawStderrBytes > MAX_OUTPUT) { killOnOutputExceeded(); return; }
 
         const chunk = stdoutDecoder.write(data);
         if (chunk.length >= 500) {
@@ -187,8 +208,9 @@ export class GeminiClient implements LLMClient {
       });
       child.stderr.on('data', (data: Buffer) => {
         if (outputExceeded || settled) return;
+        rawStderrBytes += data.length;
         stderr += stderrDecoder.write(data);
-        if (rawBytes + stderr.length > MAX_OUTPUT) killOnOutputExceeded();
+        if (rawBytes + rawStderrBytes > MAX_OUTPUT) killOnOutputExceeded();
       });
 
       child.on('close', (code, signal) => {
@@ -227,7 +249,8 @@ export class GeminiClient implements LLMClient {
           return;
         }
         if (code !== 0) {
-          const msg = `exit ${code}${signal ? `, signal ${signal}` : ''}: ${stderr.slice(0, 500)}`;
+          const stderrSnippet = sanitizeLogOutput(stderr.slice(0, 500));
+          const msg = `exit ${code}${signal ? `, signal ${signal}` : ''}: ${stderrSnippet}`;
           core.warning(`Gemini CLI failed (${msg})`);
           reject(new Error(`Gemini CLI invocation failed (${msg})`));
           return;
