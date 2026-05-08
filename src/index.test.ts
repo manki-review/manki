@@ -3655,14 +3655,14 @@ describe('runFullReview orchestration', () => {
     });
   });
 
-  it('warns and returns gracefully when parseModelSpec throws for an unknown model', async () => {
+  it('calls setFailed when parseModelSpec throws for an unknown model', async () => {
     jest.mocked(parseModelSpec).mockImplementationOnce(() => {
       throw new Error('Unknown model "x"');
     });
 
     await callRunFullReview();
 
-    expect(jest.mocked(core.warning)).toHaveBeenCalledWith(
+    expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(
       expect.stringContaining('Unknown model "x"'),
     );
     expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();

@@ -4,6 +4,7 @@ import * as github from '@actions/github';
 import { createAuthenticatedOctokit, getMemoryToken } from './auth';
 import { loadConfig, resolveModel } from './config';
 import { buildAnthropicAuth, createLLMClient, parseModelSpec } from './providers';
+import type { LLMClient } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
 import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
@@ -382,10 +383,18 @@ async function runFullReview(
       const spec = parseModelSpec(model);
       return createLLMClient(spec.provider, spec.model, anthropicAuth);
     };
-    const reviewerClient = buildClient(reviewerModel);
-    const judgeClient = buildClient(judgeModel);
-    const plannerClient = config.planner?.enabled !== false ? buildClient(plannerModel) : undefined;
-    const dedupClient = buildClient(dedupModel);
+    let reviewerClient: LLMClient, judgeClient: LLMClient, dedupClient: LLMClient;
+    let plannerClient: LLMClient | undefined;
+    try {
+      reviewerClient = buildClient(reviewerModel);
+      judgeClient = buildClient(judgeModel);
+      plannerClient = config.planner?.enabled !== false ? buildClient(plannerModel) : undefined;
+      dedupClient = buildClient(dedupModel);
+    } catch (error) {
+      core.setFailed(`Invalid model config: ${error instanceof Error ? error.message : error}`);
+      await octokit.rest.issues.deleteComment({ owner, repo, comment_id: progressCommentId }).catch(() => {});
+      return;
+    }
 
     const rawDiff = await fetchPRDiff(octokit, owner, repo, prNumber);
     const diff = parsePRDiff(rawDiff);
