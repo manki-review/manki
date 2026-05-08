@@ -1839,6 +1839,17 @@ describe('buildDashboard', () => {
     expect(md).toContain(`${INDENT}⏳ Correctness & Logic`);
   });
 
+  it('renders retrying agent status without retry count', () => {
+    const data: DashboardData = {
+      phase: 'started', lineCount: 100, agentCount: 1,
+      agentProgress: [
+        { name: 'Security & Safety', status: 'retrying' },
+      ],
+    };
+    const md = buildDashboard(data);
+    expect(md).toContain(`${INDENT}🔄 Security & Safety — retrying...`);
+  });
+
   it('renders failed agent with retry count showing total attempts', () => {
     const data: DashboardData = {
       phase: 'complete', lineCount: 100, agentCount: 3,
