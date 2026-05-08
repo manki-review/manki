@@ -540,10 +540,10 @@ export function buildJudgeUserMessage(
     for (const t of openThreads) {
       parts.push(`### ${t.threadId} — ${sanitize(t.file)}:${t.line}`);
       if (t.description) {
-        parts.push(`- **Original concern**: ${sanitizeForPromptEmbed(t.description)}`);
+        parts.push(`- **Original concern**: ${sanitizeForPromptEmbed(t.description.replace(/[\r\n]+/g, ' '))}`);
       }
       if (t.suggestedFix) {
-        parts.push(`- **Original suggested fix**: ${sanitizeForPromptEmbed(t.suggestedFix)}`);
+        parts.push(`- **Original suggested fix**: ${sanitizeForPromptEmbed(t.suggestedFix.replace(/[\r\n]+/g, ' '))}`);
       }
       const snippet = t.currentCode && t.currentCode.length > 0 ? t.currentCode : '(no current code available)';
       const snippetFence = dynamicFence(snippet);

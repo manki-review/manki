@@ -296,9 +296,9 @@ function parseFindingFromComment(body: string): { description?: string; suggeste
   descSlice = descSlice.slice(0, earliest).replace(/^[\s\n]+|[\s\n]+$/g, '');
   const remainingSubs = descSlice.match(/^(?:<sub>[^\n]*<\/sub>\s*\n?)+/);
   if (remainingSubs) descSlice = descSlice.slice(remainingSubs[0].length).replace(/^\s+/, '');
-  if (truncatingStop && descSlice.length > 0) descSlice += '…(truncated)';
-  let description: string | undefined = descSlice.length > 0 ? descSlice : undefined;
-  if (description && description.length > 500) description = description.slice(0, 500) + '...';
+  if (descSlice.length > 500) descSlice = descSlice.slice(0, 500) + '...';
+  else if (truncatingStop && descSlice.length > 0) descSlice += '…(truncated)';
+  const description: string | undefined = descSlice.length > 0 ? descSlice : undefined;
 
   let suggestedFix: string | undefined;
   const aiContextMatch = body.match(/<summary>AI context<\/summary>[\s\S]*?```json\s*([\s\S]*?)```/);
