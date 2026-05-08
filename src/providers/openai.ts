@@ -326,7 +326,14 @@ export class OpenAIClient implements LLMClient {
       core.warning(`Ignoring effort=${options.effort} — model "${this.model}" is not a reasoning model`);
     }
 
-    const params: ChatCompletionCreateParamsNonStreaming = {
+    // `reasoning_effort` is only valid on o-series chat completions and the SDK's
+    // non-streaming union doesn't always surface it on every model branch. Intersecting
+    // with a narrow `{ reasoning_effort?: ... }` keeps the rest of the call site fully
+    // typed while letting us assign the field with compile-time checking.
+    type ParamsWithReasoningEffort = ChatCompletionCreateParamsNonStreaming & {
+      reasoning_effort?: 'low' | 'medium' | 'high';
+    };
+    const params: ParamsWithReasoningEffort = {
       model: this.model,
       messages: [
         { role: 'system', content: systemPrompt },
@@ -335,10 +342,7 @@ export class OpenAIClient implements LLMClient {
     };
 
     if (reasoning && options?.effort) {
-      // `reasoning_effort` is only valid on o-series chat completions; the SDK type
-      // for the non-streaming union doesn't always surface it on every model branch,
-      // so write through a record cast to keep the rest of the call site fully typed.
-      (params as unknown as Record<string, unknown>).reasoning_effort = resolveCLIEffort(options.effort);
+      params.reasoning_effort = resolveCLIEffort(options.effort);
     }
 
     const response = await this.openai.chat.completions.create(params);
