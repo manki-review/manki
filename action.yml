@@ -45,7 +45,7 @@ outputs:
     description: 'Model used for the judge agent'
 
 runs:
-  using: 'node22'
+  using: 'node24'
   main: 'dist/index.js'
   post: 'dist/index.js'
   post-if: cancelled() || failure()
