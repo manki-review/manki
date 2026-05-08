@@ -13,7 +13,7 @@ jobs:
       - uses: actions/checkout@v4  # first-party GitHub action
       - uses: actions/setup-node@v4  # first-party GitHub action
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
       - run: npm ci
       - run: npm run lint
