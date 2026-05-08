@@ -1173,12 +1173,12 @@ async function handleInteraction(): Promise<void> {
 
   const built = buildLLMClientFromInputs({ inputs: providerInputs, model: resolveModel(config, 'judge') });
   if (!built) return;
-  const { client: claude } = built;
+  const { client } = built;
 
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;
   const memoryToken = config.memory?.enabled ? getMemoryToken(octokitCache.resolvedToken) ?? undefined : undefined;
 
-  await handlePRComment(octokit, claude, owner, repo, prNumber, memoryConfig, memoryToken, config);
+  await handlePRComment(octokit, client, owner, repo, prNumber, memoryConfig, memoryToken, config);
 }
 
 async function handleIssueInteraction(): Promise<void> {
@@ -1253,7 +1253,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
 
   const built = buildLLMClientFromInputs({ inputs: providerInputs, model: resolveModel(config, 'judge') });
   if (!built) return;
-  const { client: claude } = built;
+  const { client } = built;
 
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;
   const memoryToken = config.memory?.enabled ? getMemoryToken(octokitCache.resolvedToken) ?? undefined : undefined;
@@ -1272,7 +1272,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
       core.warning('Cannot handle reply — pull request number not available');
       return;
     }
-    await handleReviewCommentReply(octokit, claude, owner, repo, prNumber, memoryConfig, memoryToken);
+    await handleReviewCommentReply(octokit, client, owner, repo, prNumber, memoryConfig, memoryToken);
   }
 
   // Check if all review threads are now resolved (e.g. the reply resolved the last conversation)
