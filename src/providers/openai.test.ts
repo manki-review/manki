@@ -7,7 +7,7 @@ import {
   isReasoningModel,
   OpenAIClient,
   resetCLIInstallPromise,
-  resolveCLIEffort,
+  resolveEffortTier,
   sanitizeLogOutput,
   STALE_TIMEOUT_MS,
 } from './openai';
@@ -364,19 +364,19 @@ describe('sanitizeLogOutput', () => {
   });
 });
 
-describe('resolveCLIEffort', () => {
+describe('resolveEffortTier', () => {
   it('passes through low/medium/high unchanged', () => {
-    expect(resolveCLIEffort('low')).toBe('low');
-    expect(resolveCLIEffort('medium')).toBe('medium');
-    expect(resolveCLIEffort('high')).toBe('high');
+    expect(resolveEffortTier('low')).toBe('low');
+    expect(resolveEffortTier('medium')).toBe('medium');
+    expect(resolveEffortTier('high')).toBe('high');
   });
 
   it('collapses max to high', () => {
-    expect(resolveCLIEffort('max')).toBe('high');
+    expect(resolveEffortTier('max')).toBe('high');
   });
 
   it('falls back to high for unknown inputs', () => {
-    expect(resolveCLIEffort('extreme')).toBe('high');
+    expect(resolveEffortTier('extreme')).toBe('high');
   });
 });
 
