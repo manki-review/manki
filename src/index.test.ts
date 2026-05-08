@@ -3043,6 +3043,63 @@ describe('runFullReview orchestration', () => {
     expect(passedInterRoundDiff).toBe('');
   });
 
+  it('suppresses addressed verdict from judge when inter-round diff is known-empty (defense-in-depth override)', async () => {
+    // The prompt now allows `addressed` based on current-code evidence alone.
+    // The index.ts override must still block resolution when the inter-round
+    // diff is known-empty, so a force-push-to-same-tree cannot resolve threads.
+    const testFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+    };
+    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+      files: [testFile], totalAdditions: 10, totalDeletions: 5,
+    });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+
+    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
+      previousFindings: [
+        { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_override' },
+      ],
+      recapContext: 'previous context',
+    });
+
+    jest.mocked(configModule.loadConfig).mockReturnValue({
+      auto_review: true, auto_approve: false, exclude_paths: [], max_diff_lines: 10000,
+      reviewers: [], instructions: '', review_level: 'auto',
+      review_thresholds: { small: 200, medium: 800 },
+      memory: { enabled: true, repo: 'owner/memory' },
+    });
+    jest.mocked(authModule.getMemoryToken).mockReturnValue('token123');
+    jest.mocked(memoryModule.loadMemory).mockResolvedValue({
+      learnings: [], suppressions: [], patterns: [],
+    });
+    jest.mocked(memoryModule.loadHandover).mockResolvedValue({
+      prNumber: 42, repo: 'test-repo', rounds: [{
+        round: 1, commitSha: baseArgs.commitSha, timestamp: '2025-01-01T00:00:00Z', findings: [],
+      }],
+    });
+
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'APPROVE', summary: 'ok', findings: [],
+      highlights: [], reviewComplete: true,
+      agentNames: ['general'],
+      threadEvaluations: [
+        { threadId: 'PRRT_override', status: 'addressed', reason: 'Current code resolves the concern' },
+      ],
+    });
+
+    await callRunFullReview();
+
+    expect(mockGraphql).not.toHaveBeenCalledWith(
+      expect.stringContaining('resolveReviewThread'),
+      { threadId: 'PRRT_override' },
+    );
+    expect(jest.mocked(core.info)).toHaveBeenCalledWith(
+      expect.stringContaining("ignoring 'addressed' verdict — inter-round diff is empty"),
+    );
+  });
+
   it('resolves addressed thread when prior rounds exist and inter-round diff is non-empty', async () => {
     // End-to-end happy path for the post-#624 thread-resolution flow:
     // memory enabled, `loadHandover` returns a prior round with a SHA distinct
