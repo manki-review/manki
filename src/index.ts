@@ -583,18 +583,14 @@ async function runFullReview(
     let interRoundDiff: string | undefined;
     const lastPriorSha = handover?.rounds.at(-1)?.commitSha;
     const shouldFetchDiff = !!(lastPriorSha && lastPriorSha !== commitSha);
-    const shouldFetchLinkedIssues = !!prContext?.body;
-    if (lastPriorSha === commitSha) {
-      // Same SHA as last round (force-push to same tree, or replay) — empty diff.
-      interRoundDiff = '';
-    }
+    const prBody = prContext?.body;
 
     let linkedIssues;
-    const diffPromise: Promise<string | undefined> = shouldFetchDiff
-      ? fetchInterRoundDiff(octokit, owner, repo, lastPriorSha!, commitSha)
+    const diffPromise: Promise<string | undefined> = shouldFetchDiff && lastPriorSha
+      ? fetchInterRoundDiff(octokit, owner, repo, lastPriorSha, commitSha)
       : Promise.resolve(undefined);
-    const linkedIssuesPromise = shouldFetchLinkedIssues
-      ? fetchLinkedIssues(octokit, owner, repo, prContext!.body!)
+    const linkedIssuesPromise = prBody
+      ? fetchLinkedIssues(octokit, owner, repo, prBody)
       : Promise.resolve(undefined);
     const [diffResult, linkedIssuesResult] = await Promise.allSettled([diffPromise, linkedIssuesPromise]);
 
@@ -604,9 +600,12 @@ async function runFullReview(
       } else {
         core.warning(`Failed to fetch inter-round diff: ${diffResult.reason}`);
       }
+    } else if (lastPriorSha === commitSha) {
+      // Same SHA as last round (force-push to same tree, or replay) — empty diff.
+      interRoundDiff = '';
     }
 
-    if (shouldFetchLinkedIssues) {
+    if (prBody) {
       if (linkedIssuesResult.status === 'fulfilled') {
         linkedIssues = linkedIssuesResult.value;
         if (linkedIssues && linkedIssues.length > 0) {
