@@ -1,5 +1,5 @@
 export { buildAnthropicAuth } from './anthropic';
-export { buildOpenAIAuth, isReasoningModel } from './openai';
+export { buildOpenAIAuth } from './openai';
 export { createLLMClient } from './factory';
 export { parseModelSpec } from './model-registry';
 export type { ModelSpec } from './model-registry';
