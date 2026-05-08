@@ -3,8 +3,8 @@ import * as github from '@actions/github';
 
 import { createAuthenticatedOctokit, getMemoryToken } from './auth';
 import { loadConfig, resolveModel } from './config';
-import { buildAnthropicAuth, createLLMClient, parseModelSpec } from './providers';
-import type { LLMClient } from './providers';
+import { buildAnthropicAuth, buildOpenAIAuth, createLLMClient, parseModelSpec } from './providers';
+import type { LLMClient, ProviderAuth, ProviderName } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
 import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
@@ -40,14 +40,46 @@ import { checkAndAutoApprove, resolveStaleThreads } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
+interface ProviderInputs {
+  anthropicOauthToken: string;
+  anthropicApiKey: string;
+  openaiOauthToken: string;
+  openaiApiKey: string;
+}
+
+function buildAuthForProvider(provider: ProviderName, inputs: ProviderInputs): ProviderAuth {
+  switch (provider) {
+    case 'anthropic':
+      return buildAnthropicAuth(inputs.anthropicOauthToken, inputs.anthropicApiKey);
+    case 'openai':
+      return buildOpenAIAuth(inputs.openaiOauthToken, inputs.openaiApiKey);
+    default: {
+      const exhaustive: never = provider;
+      throw new Error(`Unsupported provider: ${exhaustive as string}`);
+    }
+  }
+}
+
+function readProviderInputs(): ProviderInputs {
+  return {
+    anthropicOauthToken: core.getInput('claude_code_oauth_token'),
+    anthropicApiKey: core.getInput('anthropic_api_key'),
+    openaiOauthToken: core.getInput('openai_oauth_token'),
+    openaiApiKey: core.getInput('openai_api_key'),
+  };
+}
+
+function hasAnyProviderCredentials(inputs: ProviderInputs): boolean {
+  return !!(inputs.anthropicOauthToken || inputs.anthropicApiKey || inputs.openaiOauthToken || inputs.openaiApiKey);
+}
+
 function buildLLMClientFromInputs(opts: {
-  oauthToken: string;
-  apiKey: string;
+  inputs: ProviderInputs;
   model: string;
 }): { client: LLMClient } | null {
-  const auth = buildAnthropicAuth(opts.oauthToken, opts.apiKey);
   try {
     const spec = parseModelSpec(opts.model);
+    const auth = buildAuthForProvider(spec.provider, opts.inputs);
     return { client: createLLMClient(spec.provider, spec.model, auth) };
   } catch (error) {
     core.setFailed(`Invalid model config: ${error instanceof Error ? error.message : error}`);
@@ -339,11 +371,10 @@ async function runFullReview(
 ): Promise<void> {
   core.info(`Starting review for ${owner}/${repo}#${prNumber}`);
 
-  const oauthToken = core.getInput('claude_code_oauth_token');
-  const apiKey = core.getInput('anthropic_api_key');
+  const providerInputs = readProviderInputs();
 
-  if (!oauthToken && !apiKey) {
-    core.setFailed('No API key configured — set claude_code_oauth_token or anthropic_api_key');
+  if (!hasAnyProviderCredentials(providerInputs)) {
+    core.setFailed('No API key configured — set claude_code_oauth_token, anthropic_api_key, openai_oauth_token, or openai_api_key');
     return;
   }
 
@@ -387,7 +418,6 @@ async function runFullReview(
       return;
     }
 
-    const anthropicAuth = buildAnthropicAuth(oauthToken, apiKey);
     const plannerModel = resolveModel(config, 'planner');
     const reviewerModel = resolveModel(config, 'reviewer');
     const judgeModel = resolveModel(config, 'judge');
@@ -401,7 +431,8 @@ async function runFullReview(
 
     const buildClient = (model: string) => {
       const spec = parseModelSpec(model);
-      return createLLMClient(spec.provider, spec.model, anthropicAuth);
+      const auth = buildAuthForProvider(spec.provider, providerInputs);
+      return createLLMClient(spec.provider, spec.model, auth);
     };
     let reviewerClient: LLMClient, judgeClient: LLMClient, dedupClient: LLMClient;
     let plannerClient: LLMClient | undefined;
@@ -1101,11 +1132,10 @@ async function handleReviewStateCheck(): Promise<void> {
 
 
 async function handleInteraction(): Promise<void> {
-  const oauthToken = core.getInput('claude_code_oauth_token');
-  const apiKey = core.getInput('anthropic_api_key');
+  const providerInputs = readProviderInputs();
 
-  if (!oauthToken && !apiKey) {
-    core.setFailed('No API key configured — set claude_code_oauth_token or anthropic_api_key');
+  if (!hasAnyProviderCredentials(providerInputs)) {
+    core.setFailed('No API key configured — set claude_code_oauth_token, anthropic_api_key, openai_oauth_token, or openai_api_key');
     return;
   }
 
@@ -1129,7 +1159,7 @@ async function handleInteraction(): Promise<void> {
   }
   const config = loadConfig(configContent ?? undefined);
 
-  const built = buildLLMClientFromInputs({ oauthToken, apiKey, model: resolveModel(config, 'judge') });
+  const built = buildLLMClientFromInputs({ inputs: providerInputs, model: resolveModel(config, 'judge') });
   if (!built) return;
   const { client: claude } = built;
 
@@ -1188,11 +1218,10 @@ async function handleReviewCommentInteraction(): Promise<void> {
     return;
   }
 
-  const oauthToken = core.getInput('claude_code_oauth_token');
-  const apiKey = core.getInput('anthropic_api_key');
+  const providerInputs = readProviderInputs();
 
-  if (!oauthToken && !apiKey) {
-    core.setFailed('No API key configured — set claude_code_oauth_token or anthropic_api_key');
+  if (!hasAnyProviderCredentials(providerInputs)) {
+    core.setFailed('No API key configured — set claude_code_oauth_token, anthropic_api_key, openai_oauth_token, or openai_api_key');
     return;
   }
 
@@ -1210,7 +1239,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
   }
   const config = loadConfig(configContent ?? undefined);
 
-  const built = buildLLMClientFromInputs({ oauthToken, apiKey, model: resolveModel(config, 'judge') });
+  const built = buildLLMClientFromInputs({ inputs: providerInputs, model: resolveModel(config, 'judge') });
   if (!built) return;
   const { client: claude } = built;
 

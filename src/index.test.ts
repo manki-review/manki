@@ -1132,7 +1132,7 @@ describe('handleReviewCommentInteraction', () => {
     await handleReviewCommentInteraction();
 
     expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(
-      'No API key configured — set claude_code_oauth_token or anthropic_api_key',
+      'No API key configured — set claude_code_oauth_token, anthropic_api_key, openai_oauth_token, or openai_api_key',
     );
     expect(jest.mocked(interaction.handleReviewCommentReply)).not.toHaveBeenCalled();
   });
@@ -3593,7 +3593,7 @@ describe('runFullReview orchestration', () => {
     await callRunFullReview();
 
     expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(
-      'No API key configured — set claude_code_oauth_token or anthropic_api_key',
+      'No API key configured — set claude_code_oauth_token, anthropic_api_key, openai_oauth_token, or openai_api_key',
     );
     expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
     expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
@@ -3987,7 +3987,7 @@ describe('handleInteraction', () => {
     await handleInteraction();
 
     expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(
-      'No API key configured — set claude_code_oauth_token or anthropic_api_key',
+      'No API key configured — set claude_code_oauth_token, anthropic_api_key, openai_oauth_token, or openai_api_key',
     );
     expect(jest.mocked(interaction.handlePRComment)).not.toHaveBeenCalled();
   });
