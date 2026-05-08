@@ -3,11 +3,14 @@ import * as github from '@actions/github';
 import { ClaudeClient } from './claude';
 import { ACTIONS_BOT_LOGIN, BOT_LOGIN, titleToSlug } from './github';
 import { matchesSuppression, Suppression } from './memory';
-import { AuthorReplyClass, Finding, FindingFingerprint, FindingSeverity, InPrSuppression, InPrSuppressionReason, migrateLegacySeverity, SEVERITY_TOKEN_PATTERN } from './types';
+import { AuthorReplyClass, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, migrateLegacySeverity, SEVERITY_TOKEN_PATTERN } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
 const BOT_MARKER = '<!-- manki';
+
+/** Shared prefix that identifies a severity title line in a manki comment body. */
+const FINDING_TITLE_RE = /\*\*(?:Blocker|Warning|Suggestion|Nitpick|Ignore)\*\*(?:\s*<sub>\[[^\]]*\]<\/sub>)?\s*:\s*/;
 
 /** Escape double quotes and strip triple-backtick sequences from untrusted text before LLM interpolation. */
 export function sanitize(s: string, maxLength = 200): string {
@@ -98,7 +101,7 @@ function classifyAuthorReply(text: string | undefined): AuthorReplyClass {
   return 'none';
 }
 
-interface PreviousFinding {
+interface PreviousFinding extends FindingMetadata {
   title: string;
   file: string;
   line: number;
@@ -110,10 +113,6 @@ interface PreviousFinding {
   authorReplyText?: string;
   /** Login of the latest non-bot replier on this thread, if any. */
   authorReplyLogin?: string;
-  /** Original finding description recovered from the thread comment body. */
-  description?: string;
-  /** Original suggested fix excerpt recovered from the thread comment's AI context block. */
-  suggestedFix?: string;
 }
 
 /**
@@ -198,8 +197,8 @@ async function fetchRecapState(
       threadUrl: t.threadUrl,
       authorReplyText: t.authorReplyText,
       authorReplyLogin: t.authorReplyLogin,
-      description: t.findingDescription,
-      suggestedFix: t.findingSuggestedFix,
+      description: t.description,
+      suggestedFix: t.suggestedFix,
     }));
 
   // Mirror the `prAuthorLogin` gate from inPrSuppressionReasonFor: only the
@@ -248,15 +247,13 @@ async function fetchRecapState(
   return { previousFindings, recapContext };
 }
 
-interface ReviewThread {
+interface ReviewThread extends FindingMetadata {
   threadId: string;
   threadUrl: string;
   isBotThread: boolean;
   isResolved: boolean;
   hasHumanReply: boolean;
   findingTitle: string;
-  findingDescription?: string;
-  findingSuggestedFix?: string;
   file: string;
   line: number;
   lineStart: number;
@@ -272,9 +269,8 @@ interface ReviewThread {
  * fields. Pure string scan, no markdown parser, intentionally conservative so
  * unexpected layouts skip extraction rather than emit garbage.
  */
-function parseFindingFromComment(body: string): { description?: string; suggestedFix?: string } {
-  const titleLineRe = /\*\*(?:Blocker|Warning|Suggestion|Nitpick|Ignore)\*\*(?:\s*<sub>\[[^\]]*\]<\/sub>)?\s*:\s*.+(?:\n|$)/;
-  const titleMatch = body.match(titleLineRe);
+function parseFindingFromComment(body: string): FindingMetadata {
+  const titleMatch = body.match(new RegExp(FINDING_TITLE_RE.source + '.+(?:\\n|$)'));
   if (!titleMatch || titleMatch.index === undefined) return {};
   const afterTitle = body.slice(titleMatch.index + titleMatch[0].length);
 
@@ -399,10 +395,10 @@ async function fetchReviewThreads(
         ? migrateLegacySeverity(severityMatch[1])
         : 'unknown') as FindingSeverity | 'unknown';
 
-      const titleMatch = firstComment?.body?.match(/\*\*(?:Blocker|Warning|Suggestion|Nitpick|Ignore)\*\*(?:\s*<sub>\[[^\]]*\]<\/sub>)?\s*:\s*(.+?)(?:\n|$)/);
+      const titleMatch = firstComment?.body?.match(new RegExp(FINDING_TITLE_RE.source + '(.+?)(?:\\n|$)'));
       const findingTitle = titleMatch?.[1]?.trim() ?? '';
 
-      const { description: findingDescription, suggestedFix: findingSuggestedFix } = isBotThread && firstComment?.body
+      const { description, suggestedFix } = isBotThread && firstComment?.body
         ? parseFindingFromComment(firstComment.body)
         : {};
 
@@ -416,8 +412,8 @@ async function fetchReviewThreads(
         isResolved: thread.isResolved,
         hasHumanReply,
         findingTitle,
-        findingDescription,
-        findingSuggestedFix,
+        description,
+        suggestedFix,
         file: thread.path ?? '',
         line,
         lineStart,
