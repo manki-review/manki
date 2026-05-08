@@ -156,7 +156,7 @@ jest.mock('./state', () => ({
   resolveStaleThreads: jest.fn().mockResolvedValue(0),
 }));
 
-import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, main, _resetOctokitCache, buildAnthropicAuth } from './index';
+import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, main, _resetOctokitCache } from './index';
 import { FORCE_REVIEW_MARKER } from './github';
 import { parseModelSpec } from './providers';
 import * as interaction from './interaction';
@@ -4002,24 +4002,3 @@ describe('force review checkbox', () => {
     expect(jest.mocked(ghUtils.reactToIssueComment)).not.toHaveBeenCalled();
   });
 });
-
-describe('buildAnthropicAuth', () => {
-  it('throws when neither token is present', () => {
-    expect(() => buildAnthropicAuth('', '')).toThrow(
-      'Either claude_code_oauth_token or anthropic_api_key must be provided',
-    );
-  });
-
-  it('returns oauth kind when only oauth token is present', () => {
-    expect(buildAnthropicAuth('oauth-tok', '')).toEqual({ kind: 'oauth', token: 'oauth-tok' });
-  });
-
-  it('returns apiKey kind when only api key is present', () => {
-    expect(buildAnthropicAuth('', 'sk-key')).toEqual({ kind: 'apiKey', key: 'sk-key' });
-  });
-
-  it('oauth wins when both tokens are present', () => {
-    expect(buildAnthropicAuth('oauth-tok', 'sk-key')).toEqual({ kind: 'oauth', token: 'oauth-tok' });
-  });
-});
-

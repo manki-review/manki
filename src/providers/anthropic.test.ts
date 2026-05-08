@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
 import Anthropic from '@anthropic-ai/sdk';
 
-import { AnthropicClient, resetCLIInstallPromise, sanitizeLogOutput, STALE_TIMEOUT_MS } from './anthropic';
+import { AnthropicClient, buildAnthropicAuth, resetCLIInstallPromise, sanitizeLogOutput, STALE_TIMEOUT_MS } from './anthropic';
 
 jest.mock('child_process', () => ({
   execFile: jest.fn(),
@@ -1201,5 +1201,25 @@ describe('sanitizeLogOutput', () => {
   it('strips command with complex parameter values containing colons', () => {
     expect(sanitizeLogOutput('prefix ::warning file=a:b::msg:with:colons'))
       .toBe('prefix [redacted-workflow-cmd]');
+  });
+});
+
+describe('buildAnthropicAuth', () => {
+  it('throws when neither token is present', () => {
+    expect(() => buildAnthropicAuth('', '')).toThrow(
+      'Either claude_code_oauth_token or anthropic_api_key must be provided',
+    );
+  });
+
+  it('returns oauth kind when only oauth token is present', () => {
+    expect(buildAnthropicAuth('oauth-tok', '')).toEqual({ kind: 'oauth', token: 'oauth-tok' });
+  });
+
+  it('returns apiKey kind when only api key is present', () => {
+    expect(buildAnthropicAuth('', 'sk-key')).toEqual({ kind: 'apiKey', key: 'sk-key' });
+  });
+
+  it('oauth wins when both tokens are present', () => {
+    expect(buildAnthropicAuth('oauth-tok', 'sk-key')).toEqual({ kind: 'oauth', token: 'oauth-tok' });
   });
 });
