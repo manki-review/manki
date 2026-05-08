@@ -285,6 +285,30 @@ describe('sendViaOAuth (Codex CLI path)', () => {
     expect(spawnOpts.env.OPENAI_API_KEY).not.toBe('my-tok');
   });
 
+  it('maps low effort to model_reasoning_effort=low on o-series CLI invocation', async () => {
+    setupSpawnMock('ok\n');
+    const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'o3' });
+
+    await client.sendMessage('sys', 'user', { effort: 'low' });
+
+    const spawnArgs = mockSpawn.mock.calls[0][1] as string[];
+    const overrideIdx = spawnArgs.findIndex(a => a.startsWith('model_reasoning_effort'));
+    expect(overrideIdx).toBeGreaterThan(-1);
+    expect(spawnArgs[overrideIdx]).toBe('model_reasoning_effort=low');
+  });
+
+  it('maps medium effort to model_reasoning_effort=medium on o-series CLI invocation', async () => {
+    setupSpawnMock('ok\n');
+    const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'o3' });
+
+    await client.sendMessage('sys', 'user', { effort: 'medium' });
+
+    const spawnArgs = mockSpawn.mock.calls[0][1] as string[];
+    const overrideIdx = spawnArgs.findIndex(a => a.startsWith('model_reasoning_effort'));
+    expect(overrideIdx).toBeGreaterThan(-1);
+    expect(spawnArgs[overrideIdx]).toBe('model_reasoning_effort=medium');
+  });
+
   it('maps max effort to model_reasoning_effort=high on o-series CLI invocation', async () => {
     setupSpawnMock('ok\n');
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'o4-mini' });
@@ -508,6 +532,7 @@ describe('sendViaOAuth — extended coverage', () => {
     wiring.procHandlers['close']?.(null, 'SIGTERM');
 
     await expect(promise).rejects.toThrow(/exceeded 50MB/);
+    expect(wiring.proc.kill).toHaveBeenCalledWith('SIGTERM');
   });
 
   it('warns and continues on stdin error event', async () => {
