@@ -390,6 +390,7 @@ describe('sendViaOAuth — extended coverage', () => {
     proc: MockProc;
     procHandlers: Record<string, (...a: unknown[]) => void>;
     stdoutHandlers: Record<string, (data: Buffer) => void>;
+    stderrHandlers: Record<string, (data: Buffer) => void>;
     stdinHandlers: Record<string, (...a: unknown[]) => void>;
   }
 
@@ -425,7 +426,7 @@ describe('sendViaOAuth — extended coverage', () => {
       kill: jest.fn(),
     };
     mockSpawn.mockReturnValue(proc as unknown as ReturnType<typeof spawn>);
-    return { proc, procHandlers, stdoutHandlers, stdinHandlers };
+    return { proc, procHandlers, stdoutHandlers, stderrHandlers, stdinHandlers };
   }
 
   // Wait for the OpenAIClient to finish ensureCLI() and wire up its listeners on the mock proc.
