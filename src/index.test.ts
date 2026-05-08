@@ -1164,6 +1164,80 @@ describe('handleReviewCommentInteraction', () => {
     expect(jest.mocked(interaction.handleReviewCommentReply)).not.toHaveBeenCalled();
     expect(jest.mocked(interaction.handleReviewCommentCommand)).not.toHaveBeenCalled();
   });
+
+  it('routes openai-prefixed models to OpenAI apiKey auth dispatch', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'openai_api_key' ? 'sk-openai-key' : '',
+    );
+    jest.mocked(interaction.hasBotMention).mockReturnValue(true);
+    jest.mocked(parseModelSpec).mockImplementationOnce((m: string) => ({ provider: 'openai', model: m }));
+
+    setContext({
+      eventName: 'pull_request_review_comment',
+      payload: {
+        action: 'created',
+        comment: { body: '@manki help', user: { type: 'User' } },
+        pull_request: { base: { ref: 'main' }, number: 42 },
+      },
+    });
+
+    await handleReviewCommentInteraction();
+
+    expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
+      'openai',
+      expect.any(String),
+      { kind: 'apiKey', key: 'sk-openai-key' },
+    );
+  });
+
+  it('uses oauth auth when openai_oauth_token is set', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'openai_oauth_token' ? 'codex-oauth-tok' : '',
+    );
+    jest.mocked(interaction.hasBotMention).mockReturnValue(true);
+    jest.mocked(parseModelSpec).mockImplementationOnce((m: string) => ({ provider: 'openai', model: m }));
+
+    setContext({
+      eventName: 'pull_request_review_comment',
+      payload: {
+        action: 'created',
+        comment: { body: '@manki help', user: { type: 'User' } },
+        pull_request: { base: { ref: 'main' }, number: 42 },
+      },
+    });
+
+    await handleReviewCommentInteraction();
+
+    expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
+      'openai',
+      expect.any(String),
+      { kind: 'oauth', token: 'codex-oauth-tok' },
+    );
+  });
+
+  it('sets failed when openai model is selected but only anthropic credentials are configured', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'anthropic_api_key' ? 'sk-anthropic' : '',
+    );
+    jest.mocked(interaction.hasBotMention).mockReturnValue(true);
+    jest.mocked(parseModelSpec).mockImplementationOnce((m: string) => ({ provider: 'openai', model: m }));
+
+    setContext({
+      eventName: 'pull_request_review_comment',
+      payload: {
+        action: 'created',
+        comment: { body: '@manki help', user: { type: 'User' } },
+        pull_request: { base: { ref: 'main' }, number: 42 },
+      },
+    });
+
+    await handleReviewCommentInteraction();
+
+    expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(
+      expect.stringContaining('Either openai_oauth_token or openai_api_key must be provided'),
+    );
+    expect(jest.mocked(createLLMClient)).not.toHaveBeenCalled();
+  });
 });
 
 describe('handleReviewStateCheck', () => {
@@ -3654,6 +3728,47 @@ describe('runFullReview orchestration', () => {
       );
       expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
     } finally {
+      jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
+    }
+  });
+
+  it('routes each stage to its own provider when planner/reviewer/judge models cross provider boundaries', async () => {
+    // Mixed-provider scenario: planner on anthropic, reviewer on openai, judge on anthropic.
+    // Both credential sets are set so each stage can resolve.
+    jest.mocked(core.getInput).mockImplementation((name: string) => {
+      if (name === 'anthropic_api_key') return 'sk-anthropic';
+      if (name === 'openai_api_key') return 'sk-openai';
+      return '';
+    });
+    jest.mocked(configModule.resolveModel).mockImplementation((_cfg, stage: string) => {
+      if (stage === 'planner') return 'claude-sonnet-4-20250514';
+      if (stage === 'reviewer') return 'gpt-4o';
+      if (stage === 'judge') return 'claude-opus-4-7';
+      return 'claude-sonnet-4-20250514'; // dedup
+    });
+    jest.mocked(parseModelSpec).mockImplementation((m: string) =>
+      m.startsWith('gpt-') || /^o\d/.test(m)
+        ? { provider: 'openai', model: m }
+        : { provider: 'anthropic', model: m },
+    );
+    try {
+      await callRunFullReview();
+
+      expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
+      // Reviewer stage routed to OpenAI with apiKey auth.
+      expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
+        'openai', 'gpt-4o', { kind: 'apiKey', key: 'sk-openai' },
+      );
+      // Judge stage routed to Anthropic with apiKey auth.
+      expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
+        'anthropic', 'claude-opus-4-7', { kind: 'apiKey', key: 'sk-anthropic' },
+      );
+      // Planner stage routed to Anthropic.
+      expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
+        'anthropic', 'claude-sonnet-4-20250514', { kind: 'apiKey', key: 'sk-anthropic' },
+      );
+    } finally {
+      jest.mocked(configModule.resolveModel).mockReturnValue('claude-sonnet-4-20250514');
       jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
     }
   });
