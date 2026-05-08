@@ -4,7 +4,7 @@ import * as github from '@actions/github';
 import { createAuthenticatedOctokit, getMemoryToken } from './auth';
 import { loadConfig, resolveModel } from './config';
 import { buildAnthropicAuth, createLLMClient, parseModelSpec } from './providers';
-import type { AnthropicAuth, LLMClient } from './providers';
+import type { LLMClient } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
 import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
@@ -44,11 +44,11 @@ function buildLLMClientFromInputs(opts: {
   oauthToken: string;
   apiKey: string;
   model: string;
-}): { client: LLMClient; auth: AnthropicAuth } | null {
+}): { client: LLMClient } | null {
   const auth = buildAnthropicAuth(opts.oauthToken, opts.apiKey);
   try {
     const spec = parseModelSpec(opts.model);
-    return { client: createLLMClient(spec.provider, spec.model, auth), auth };
+    return { client: createLLMClient(spec.provider, spec.model, auth) };
   } catch (error) {
     core.setFailed(`Invalid model config: ${error instanceof Error ? error.message : error}`);
     return null;
