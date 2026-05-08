@@ -2787,6 +2787,40 @@ describe('runFullReview orchestration', () => {
     expect(reviewResultArg?.verdictReason).toBe('prior_unaddressed');
   });
 
+  it('forwards `description` and `suggestedFix` from `previousFindings` into `baseOpenThreads`', async () => {
+    const testFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+    };
+    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+      files: [testFile], totalAdditions: 10, totalDeletions: 5,
+    });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+
+    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
+      previousFindings: [{
+        title: 'Missing variant',
+        file: 'src/app.ts',
+        line: 5,
+        severity: 'warning' as const,
+        status: 'open' as const,
+        threadId: 'PRRT_meta',
+        description: 'Error enum lacks the rotation chainlock variant.',
+        suggestedFix: 'Add `MissingRotationChainLockSigs(QuorumHash)` to the enum.',
+      }],
+      recapContext: '',
+    });
+
+    await callRunFullReview();
+
+    const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0];
+    const openThreads = runReviewCall[11] as Array<{ threadId: string; description?: string; suggestedFix?: string }>;
+    expect(openThreads).toHaveLength(1);
+    expect(openThreads[0].threadId).toBe('PRRT_meta');
+    expect(openThreads[0].description).toBe('Error enum lacks the rotation chainlock variant.');
+    expect(openThreads[0].suggestedFix).toBe('Add `MissingRotationChainLockSigs(QuorumHash)` to the enum.');
+  });
   it('populates openThreads[].currentCode with a windowed snippet when file contents are available', async () => {
     const threadFile = 'src/app.ts';
     const fileText = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n');
