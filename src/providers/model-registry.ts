@@ -9,8 +9,8 @@ const KNOWN_PROVIDERS: ReadonlySet<ProviderName> = new Set<ProviderName>(['anthr
 
 const KNOWN_PREFIXES: ReadonlyArray<readonly [RegExp, ProviderName]> = [
   [/^claude-/, 'anthropic'],
-  [/^gpt-/i, 'openai'],
-  [/^o\d/i, 'openai'],
+  [/^gpt-/, 'openai'],
+  [/^o\d/, 'openai'],
 ];
 
 export function parseModelSpec(input: string): ModelSpec {
