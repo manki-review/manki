@@ -5,23 +5,18 @@ import { promisify } from 'util';
 import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
+import { sanitizeLogOutput, STALE_TIMEOUT_MS } from './cli-utils';
 import { AnthropicAuth, LLMClient, LLMResponse, SendMessageOptions } from './types';
 
-const execFileAsync = promisify(execFile);
+// Re-export for backward compatibility with existing test imports.
+export { sanitizeLogOutput, STALE_TIMEOUT_MS };
 
-export const STALE_TIMEOUT_MS = 90_000;
+const execFileAsync = promisify(execFile);
 
 export function buildAnthropicAuth(oauthToken: string, apiKey: string): AnthropicAuth {
   if (oauthToken) return { kind: 'oauth', token: oauthToken };
   if (apiKey) return { kind: 'apiKey', key: apiKey };
   throw new Error('Either claude_code_oauth_token or anthropic_api_key must be provided');
-}
-
-/** Strip GitHub Actions workflow commands to prevent injection when logging CLI output. */
-export function sanitizeLogOutput(text: string): string {
-  // Matches any line segment starting with :: followed by a letter — covers all workflow commands
-  // regardless of parameter format (e.g. ::error file=foo.ts,line=5::message)
-  return text.replace(/::[a-z].*$/gim, '[redacted-workflow-cmd]');
 }
 
 /** Parse a single JSON-stream line emitted by Claude CLI and return a text delta or final result. */

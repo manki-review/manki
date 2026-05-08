@@ -5,8 +5,8 @@ import { promisify } from 'util';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import * as core from '@actions/core';
 
+import { sanitizeLogOutput, STALE_TIMEOUT_MS } from './cli-utils';
 import { GeminiAuth, LLMClient, LLMResponse, SendMessageOptions } from './types';
-import { sanitizeLogOutput, STALE_TIMEOUT_MS } from './anthropic';
 
 const execFileAsync = promisify(execFile);
 
