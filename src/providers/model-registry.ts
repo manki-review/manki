@@ -5,18 +5,19 @@ export interface ModelSpec {
   model: string;
 }
 
-const KNOWN_PROVIDERS: ReadonlySet<ProviderName> = new Set<ProviderName>(['anthropic', 'openai']);
+const KNOWN_PROVIDERS: ReadonlySet<ProviderName> = new Set<ProviderName>(['anthropic', 'openai', 'gemini']);
 
 const KNOWN_PREFIXES: ReadonlyArray<readonly [RegExp, ProviderName]> = [
   [/^claude-/, 'anthropic'],
   [/^gpt-/, 'openai'],
   [/^o\d/, 'openai'],
+  [/^gemini-/, 'gemini'],
 ];
 
 export function parseModelSpec(input: string): ModelSpec {
   input = input.trim();
   if (!input) {
-    throw new Error('Unknown model "". Use a known prefix (e.g., "claude-...", "gpt-...", "o3...") or "provider/model" syntax.');
+    throw new Error('Unknown model "". Use a known prefix (e.g., "claude-...", "gpt-...", "o3...", "gemini-...") or "provider/model" syntax.');
   }
   const slash = input.indexOf('/');
   if (slash !== -1) {
@@ -37,5 +38,5 @@ export function parseModelSpec(input: string): ModelSpec {
     }
   }
 
-  throw new Error(`Unknown model "${input}". Use a known prefix (e.g., "claude-...", "gpt-...", "o3...") or "provider/model" syntax.`);
+  throw new Error(`Unknown model "${input}". Use a known prefix (e.g., "claude-...", "gpt-...", "o3...", "gemini-...") or "provider/model" syntax.`);
 }

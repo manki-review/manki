@@ -30,6 +30,14 @@ describe('parseModelSpec', () => {
     expect(parseModelSpec('openai/o3')).toEqual({ provider: 'openai', model: 'o3' });
   });
 
+  it('parses bare gemini model with known prefix', () => {
+    expect(parseModelSpec('gemini-2.5-flash')).toEqual({ provider: 'gemini', model: 'gemini-2.5-flash' });
+  });
+
+  it('parses gemini provider/model syntax', () => {
+    expect(parseModelSpec('gemini/gemini-2.5-pro')).toEqual({ provider: 'gemini', model: 'gemini-2.5-pro' });
+  });
+
   it('throws on bare model with unknown prefix', () => {
     expect(() => parseModelSpec('mistral-large')).toThrow(/Unknown model "mistral-large"/);
   });

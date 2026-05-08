@@ -46,6 +46,11 @@ jobs:
         run: npm install -g --ignore-scripts '@openai/codex@0.129.0'
         env:
           OPENAI_OAUTH_TOKEN: ${{ secrets.OPENAI_OAUTH_TOKEN }}
+      - name: Install Gemini CLI
+        if: env.GEMINI_OAUTH_TOKEN != ''
+        run: npm install -g @google/gemini-cli
+        env:
+          GEMINI_OAUTH_TOKEN: ${{ secrets.GEMINI_OAUTH_TOKEN }}
       - name: Manki Review
         uses: ./  # Use local action for self-testing
         with:
@@ -53,4 +58,6 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           openai_oauth_token: ${{ secrets.OPENAI_OAUTH_TOKEN }}
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          gemini_oauth_token: ${{ secrets.GEMINI_OAUTH_TOKEN }}
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
           memory_repo_token: ${{ secrets.REVIEW_MEMORY_TOKEN }}

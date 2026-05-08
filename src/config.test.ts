@@ -37,6 +37,8 @@ describe('config', () => {
     it('defaults models.reviewer to Sonnet and models.judge to Opus', () => {
       expect(DEFAULT_CONFIG.models?.reviewer).toBe('claude-sonnet-4-6');
       expect(DEFAULT_CONFIG.models?.judge).toBe('claude-opus-4-7');
+      expect(DEFAULT_CONFIG.models?.planner).toBe('claude-haiku-4-5');
+      expect(DEFAULT_CONFIG.models?.dedup).toBe('claude-haiku-4-5');
     });
 
     it('has no default custom reviewers', () => {

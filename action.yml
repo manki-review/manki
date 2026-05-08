@@ -15,6 +15,12 @@ inputs:
   openai_api_key:
     description: 'OpenAI API key (alternative to OAuth token)'
     required: false
+  gemini_oauth_token:
+    description: 'Gemini OAuth token for Gemini CLI (uses google-gemini/gemini-cli)'
+    required: false
+  gemini_api_key:
+    description: 'Google Generative AI API key (alternative to Gemini OAuth token)'
+    required: false
   github_token:
     description: 'GitHub token for posting reviews and comments (not required when using GitHub App auth)'
     required: false

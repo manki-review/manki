@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 
 import { createAuthenticatedOctokit, getMemoryToken } from './auth';
 import { loadConfig, resolveModel } from './config';
-import { buildAnthropicAuth, buildOpenAIAuth, createLLMClient, parseModelSpec } from './providers';
+import { buildAnthropicAuth, buildOpenAIAuth, buildGeminiAuth, createLLMClient, parseModelSpec } from './providers';
 import type { LLMClient, ProviderAuth, ProviderName } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
 import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
@@ -45,6 +45,8 @@ interface ProviderInputs {
   anthropicApiKey: string;
   openaiOauthToken: string;
   openaiApiKey: string;
+  geminiOauthToken: string;
+  geminiApiKey: string;
 }
 
 function buildAuthForProvider(provider: ProviderName, inputs: ProviderInputs): ProviderAuth {
@@ -53,6 +55,8 @@ function buildAuthForProvider(provider: ProviderName, inputs: ProviderInputs): P
       return buildAnthropicAuth(inputs.anthropicOauthToken, inputs.anthropicApiKey);
     case 'openai':
       return buildOpenAIAuth(inputs.openaiOauthToken, inputs.openaiApiKey);
+    case 'gemini':
+      return buildGeminiAuth(inputs.geminiOauthToken, inputs.geminiApiKey);
     default: {
       const exhaustive: never = provider;
       throw new Error(`Unsupported provider: ${exhaustive as string}`);
@@ -66,12 +70,15 @@ function readProviderInputs(): ProviderInputs {
     anthropicApiKey: core.getInput('anthropic_api_key'),
     openaiOauthToken: core.getInput('openai_oauth_token'),
     openaiApiKey: core.getInput('openai_api_key'),
+    geminiOauthToken: core.getInput('gemini_oauth_token'),
+    geminiApiKey: core.getInput('gemini_api_key'),
   };
 }
 
 function hasAnyProviderCredentials(inputs: ProviderInputs): boolean {
-  return !!(inputs.anthropicOauthToken || inputs.anthropicApiKey || inputs.openaiOauthToken || inputs.openaiApiKey);
+  return !!(inputs.anthropicOauthToken || inputs.anthropicApiKey || inputs.openaiOauthToken || inputs.openaiApiKey || inputs.geminiOauthToken || inputs.geminiApiKey);
 }
+
 
 function buildLLMClientFromInputs(opts: {
   inputs: ProviderInputs;
@@ -386,7 +393,7 @@ async function runFullReview(
   const providerInputs = readProviderInputs();
 
   if (!hasAnyProviderCredentials(providerInputs)) {
-    core.setFailed('No API key configured — set claude_code_oauth_token, anthropic_api_key, openai_oauth_token, or openai_api_key');
+    core.setFailed('No API key configured — set claude_code_oauth_token, anthropic_api_key, openai_oauth_token, openai_api_key, gemini_oauth_token, or gemini_api_key');
     return;
   }
 
@@ -1147,7 +1154,7 @@ async function handleInteraction(): Promise<void> {
   const providerInputs = readProviderInputs();
 
   if (!hasAnyProviderCredentials(providerInputs)) {
-    core.setFailed('No API key configured — set claude_code_oauth_token, anthropic_api_key, openai_oauth_token, or openai_api_key');
+    core.setFailed('No API key configured — set claude_code_oauth_token, anthropic_api_key, openai_oauth_token, openai_api_key, gemini_oauth_token, or gemini_api_key');
     return;
   }
 
@@ -1233,7 +1240,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
   const providerInputs = readProviderInputs();
 
   if (!hasAnyProviderCredentials(providerInputs)) {
-    core.setFailed('No API key configured — set claude_code_oauth_token, anthropic_api_key, openai_oauth_token, or openai_api_key');
+    core.setFailed('No API key configured — set claude_code_oauth_token, anthropic_api_key, openai_oauth_token, openai_api_key, gemini_oauth_token, or gemini_api_key');
     return;
   }
 

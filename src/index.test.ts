@@ -55,6 +55,7 @@ jest.mock('./auth', () => ({
 jest.mock('./providers', () => ({
   buildAnthropicAuth: jest.requireActual('./providers').buildAnthropicAuth,
   buildOpenAIAuth: jest.requireActual('./providers').buildOpenAIAuth,
+  buildGeminiAuth: jest.requireActual('./providers').buildGeminiAuth,
   createLLMClient: jest.fn().mockImplementation(() => ({ sendMessage: jest.fn() })),
   parseModelSpec: jest.fn().mockImplementation((m: string) => ({ provider: 'anthropic', model: m })),
 }));
@@ -1133,7 +1134,7 @@ describe('handleReviewCommentInteraction', () => {
     await handleReviewCommentInteraction();
 
     expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(
-      'No API key configured — set claude_code_oauth_token, anthropic_api_key, openai_oauth_token, or openai_api_key',
+      'No API key configured — set claude_code_oauth_token, anthropic_api_key, openai_oauth_token, openai_api_key, gemini_oauth_token, or gemini_api_key',
     );
     expect(jest.mocked(interaction.handleReviewCommentReply)).not.toHaveBeenCalled();
   });
@@ -3692,7 +3693,7 @@ describe('runFullReview orchestration', () => {
     await callRunFullReview();
 
     expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(
-      'No API key configured — set claude_code_oauth_token, anthropic_api_key, openai_oauth_token, or openai_api_key',
+      'No API key configured — set claude_code_oauth_token, anthropic_api_key, openai_oauth_token, openai_api_key, gemini_oauth_token, or gemini_api_key',
     );
     expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
     expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
@@ -3790,6 +3791,59 @@ describe('runFullReview orchestration', () => {
       // Planner stage routed to Anthropic.
       expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
         'anthropic', 'claude-sonnet-4-20250514', { kind: 'apiKey', key: 'sk-anthropic' },
+      );
+    } finally {
+      jest.mocked(configModule.resolveModel).mockReturnValue('claude-sonnet-4-20250514');
+      jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
+    }
+  });
+
+  it('proceeds when gemini_api_key is set and resolves auth via the gemini branch', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'gemini_api_key' ? 'gem-key' : '',
+    );
+    jest.mocked(configModule.resolveModel).mockReturnValue('gemini-3.1-flash-lite');
+    jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'gemini', model: m }));
+    try {
+      await callRunFullReview();
+
+      expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
+      expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
+    } finally {
+      jest.mocked(configModule.resolveModel).mockReturnValue('claude-sonnet-4-20250514');
+      jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
+    }
+  });
+
+  it('proceeds when gemini_oauth_token is set', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'gemini_oauth_token' ? 'gem-tok' : '',
+    );
+    jest.mocked(configModule.resolveModel).mockReturnValue('gemini-3.1-flash-lite');
+    jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'gemini', model: m }));
+    try {
+      await callRunFullReview();
+
+      expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
+      expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
+    } finally {
+      jest.mocked(configModule.resolveModel).mockReturnValue('claude-sonnet-4-20250514');
+      jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
+    }
+  });
+
+
+  it('fails with Invalid model config when only anthropic_api_key is set but model is gemini', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'anthropic_api_key' ? 'sk-test' : '',
+    );
+    jest.mocked(configModule.resolveModel).mockReturnValue('gemini-3.1-flash-lite');
+    jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'gemini', model: m }));
+    try {
+      await callRunFullReview();
+
+      expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(
+        expect.stringContaining('Invalid model config'),
       );
     } finally {
       jest.mocked(configModule.resolveModel).mockReturnValue('claude-sonnet-4-20250514');
@@ -4163,7 +4217,7 @@ describe('handleInteraction', () => {
     await handleInteraction();
 
     expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(
-      'No API key configured — set claude_code_oauth_token, anthropic_api_key, openai_oauth_token, or openai_api_key',
+      'No API key configured — set claude_code_oauth_token, anthropic_api_key, openai_oauth_token, openai_api_key, gemini_oauth_token, or gemini_api_key',
     );
     expect(jest.mocked(interaction.handlePRComment)).not.toHaveBeenCalled();
   });
@@ -4328,6 +4382,62 @@ describe('handleInteraction', () => {
       expect.stringContaining('Either openai_oauth_token or openai_api_key must be provided'),
     );
     expect(jest.mocked(createLLMClient)).not.toHaveBeenCalled();
+  });
+
+  it('proceeds when gemini_api_key is set and routes via gemini provider', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'gemini_api_key' ? 'gem-key' : '',
+    );
+    jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'gemini', model: m }));
+    try {
+      setContext({
+        eventName: 'issue_comment',
+        payload: {
+          action: 'created',
+          comment: { body: '@manki help' },
+          issue: { number: 7, pull_request: { url: 'https://...' } },
+        },
+      });
+
+      await handleInteraction();
+
+      expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
+      expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
+        'gemini',
+        expect.any(String),
+        { kind: 'apiKey', key: 'gem-key' },
+      );
+    } finally {
+      jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
+    }
+  });
+
+  it('proceeds when gemini_oauth_token is set and routes via gemini provider', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'gemini_oauth_token' ? 'gem-tok' : '',
+    );
+    jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'gemini', model: m }));
+    try {
+      setContext({
+        eventName: 'issue_comment',
+        payload: {
+          action: 'created',
+          comment: { body: '@manki help' },
+          issue: { number: 7, pull_request: { url: 'https://...' } },
+        },
+      });
+
+      await handleInteraction();
+
+      expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
+      expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
+        'gemini',
+        expect.any(String),
+        { kind: 'oauth', token: 'gem-tok' },
+      );
+    } finally {
+      jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
+    }
   });
 });
 
@@ -4552,6 +4662,70 @@ describe('handleReviewCommentInteraction auto-approve', () => {
       expect.any(String),
       { kind: 'apiKey', key: 'sk-api-key' },
     );
+  });
+
+  it('proceeds when gemini_api_key is set and routes via gemini provider', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'gemini_api_key' ? 'gem-key' : '',
+    );
+    jest.mocked(interaction.hasBotMention).mockReturnValue(true);
+    jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'gemini', model: m }));
+    try {
+      setContext({
+        eventName: 'pull_request_review_comment',
+        payload: {
+          action: 'created',
+          comment: {
+            body: '@manki help',
+            user: { type: 'User' },
+          },
+          pull_request: { number: 9, base: { ref: 'main' } },
+        },
+      });
+
+      await handleReviewCommentInteraction();
+
+      expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
+      expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
+        'gemini',
+        expect.any(String),
+        { kind: 'apiKey', key: 'gem-key' },
+      );
+    } finally {
+      jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
+    }
+  });
+
+  it('proceeds when gemini_oauth_token is set and routes via gemini provider', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'gemini_oauth_token' ? 'gem-tok' : '',
+    );
+    jest.mocked(interaction.hasBotMention).mockReturnValue(true);
+    jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'gemini', model: m }));
+    try {
+      setContext({
+        eventName: 'pull_request_review_comment',
+        payload: {
+          action: 'created',
+          comment: {
+            body: '@manki help',
+            user: { type: 'User' },
+          },
+          pull_request: { number: 9, base: { ref: 'main' } },
+        },
+      });
+
+      await handleReviewCommentInteraction();
+
+      expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
+      expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
+        'gemini',
+        expect.any(String),
+        { kind: 'oauth', token: 'gem-tok' },
+      );
+    } finally {
+      jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
+    }
   });
 });
 

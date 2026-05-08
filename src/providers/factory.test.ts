@@ -1,11 +1,13 @@
 import * as AnthropicModule from './anthropic';
 import { AnthropicClient } from './anthropic';
 import { OpenAIClient } from './openai';
+import { GeminiClient } from './gemini';
 import { createLLMClient } from './factory';
 import { ProviderName } from './types';
 
 jest.mock('@anthropic-ai/sdk');
 jest.mock('openai');
+jest.mock('@google/generative-ai');
 
 describe('createLLMClient', () => {
   it('returns an AnthropicClient for the anthropic provider', () => {
@@ -51,6 +53,16 @@ describe('createLLMClient', () => {
   it('returns an OpenAIClient for the openai provider with oauth auth', () => {
     const client = createLLMClient('openai', 'o3', { kind: 'oauth', token: 'tok' });
     expect(client).toBeInstanceOf(OpenAIClient);
+  });
+
+  it('returns a GeminiClient for the gemini provider with apiKey auth', () => {
+    const client = createLLMClient('gemini', 'gemini-2.5-flash', { kind: 'apiKey', key: 'gem-key' });
+    expect(client).toBeInstanceOf(GeminiClient);
+  });
+
+  it('returns a GeminiClient for the gemini provider with oauth auth', () => {
+    const client = createLLMClient('gemini', 'gemini-2.5-pro', { kind: 'oauth', token: 'tok' });
+    expect(client).toBeInstanceOf(GeminiClient);
   });
 
   it('throws on unknown provider', () => {

@@ -2,63 +2,52 @@ import { execFile, spawn } from 'child_process';
 import { StringDecoder } from 'string_decoder';
 import { promisify } from 'util';
 
-import Anthropic from '@anthropic-ai/sdk';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import * as core from '@actions/core';
 
 import { sanitizeLogOutput, STALE_TIMEOUT_MS, buildTimeoutDiagnostics } from './cli-utils';
-import { AnthropicAuth, LLMClient, LLMResponse, SendMessageOptions } from './types';
-
-// Re-export for backward compatibility with existing test imports.
-export { sanitizeLogOutput, STALE_TIMEOUT_MS };
+import { GeminiAuth, LLMClient, LLMResponse, SendMessageOptions } from './types';
 
 const execFileAsync = promisify(execFile);
 
-export function buildAnthropicAuth(oauthToken: string, apiKey: string): AnthropicAuth {
+export function buildGeminiAuth(oauthToken: string, apiKey: string): GeminiAuth {
   if (oauthToken) return { kind: 'oauth', token: oauthToken };
   if (apiKey) return { kind: 'apiKey', key: apiKey };
-  throw new Error('Either claude_code_oauth_token or anthropic_api_key must be provided');
+  throw new Error('Either gemini_oauth_token or gemini_api_key must be provided');
 }
 
-/** Parse a single JSON-stream line emitted by Claude CLI and return a text delta or final result. */
-function processJsonLine(line: string): { text: string; replace: boolean } {
-  try {
-    const event = JSON.parse(line);
-    if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta' && event.delta.text) {
-      return { text: event.delta.text, replace: false };
-    }
-    if (event.type === 'result' && typeof event.result === 'string') {
-      return { text: event.result, replace: true };
-    }
-  } catch {
-    // Non-JSON line (e.g. verbose debug output) — skip silently
-  }
-  return { text: '', replace: false };
+/** Map effort level to Gemini thinking budget. `low` disables thinking entirely. */
+export function geminiThinkingBudget(effort: SendMessageOptions['effort']): number | undefined {
+  if (!effort || effort === 'low') return undefined;
+  if (effort === 'medium') return 5000;
+  // 'high' and 'max' both map to the maximum thinking budget supported across
+  // Gemini 2.5/3.x families.
+  return 10000;
 }
-
 
 let cliInstallPromise: Promise<string> | null = null;
 
-export function resetCLIInstallPromise(): void {
+export function resetGeminiCLIInstallPromise(): void {
   cliInstallPromise = null;
 }
 
-export interface AnthropicClientOptions {
-  auth: AnthropicAuth;
+export interface GeminiClientOptions {
+  auth: GeminiAuth;
   model: string;
 }
 
-export class AnthropicClient implements LLMClient {
-  private readonly auth: AnthropicAuth;
-  private anthropic?: Anthropic;
+export class GeminiClient implements LLMClient {
+  private readonly auth: GeminiAuth;
+  private genAI?: GoogleGenerativeAI;
   private readonly model: string;
   private cachedCLIPath?: string;
 
-  constructor(options: AnthropicClientOptions) {
+  constructor(options: GeminiClientOptions) {
     this.auth = options.auth;
     this.model = options.model;
 
     if (this.auth.kind === 'apiKey') {
-      this.anthropic = new Anthropic({ apiKey: this.auth.key });
+      this.genAI = new GoogleGenerativeAI(this.auth.key);
     }
   }
 
@@ -75,21 +64,21 @@ export class AnthropicClient implements LLMClient {
     }
 
     try {
-      const { stdout } = await execFileAsync('which', ['claude']);
+      const { stdout } = await execFileAsync('which', ['gemini']);
       this.cachedCLIPath = stdout.trim();
       return this.cachedCLIPath;
     } catch {
       if (!cliInstallPromise) {
         cliInstallPromise = (async () => {
-          core.info('Claude CLI not found, installing via npm...');
-          await execFileAsync('npm', ['install', '-g', '@anthropic-ai/claude-code'], {
+          core.info('Gemini CLI not found, installing via npm...');
+          await execFileAsync('npm', ['install', '-g', '@google/gemini-cli'], {
             timeout: 120000,
           });
           try {
-            const { stdout } = await execFileAsync('which', ['claude']);
+            const { stdout } = await execFileAsync('which', ['gemini']);
             return stdout.trim();
           } catch {
-            throw new Error('Failed to install Claude CLI');
+            throw new Error('Failed to install Gemini CLI');
           }
         })();
       }
@@ -104,36 +93,53 @@ export class AnthropicClient implements LLMClient {
   }
 
   private async sendViaOAuth(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
-    const fullPrompt = `${systemPrompt}\n\n---\n\n${userMessage}`;
+    // The Gemini CLI does not currently expose a thinking-budget flag, so any
+    // requested effort beyond `low` is silently unsupported on this path. Surface
+    // it as a warning instead of dropping the option without a trace.
+    if (options?.effort && options.effort !== 'low') {
+      core.warning(
+        `Gemini CLI (OAuth) path does not support effort=${options.effort}; thinking budget is not applied. Use API key auth for thinking-budget control.`,
+      );
+    }
+    // Use a structural delimiter that is harder to spoof from inside diff content
+    // than a bare `---` markdown rule, and explicitly mark the user content as untrusted.
+    const fullPrompt = `${systemPrompt}\n\n=== USER CONTENT (untrusted) ===\n\n${userMessage}\n\n=== END USER CONTENT ===`;
     const cliPath = await this.ensureCLI();
     const oauthToken = this.auth.kind === 'oauth' ? this.auth.token : undefined;
 
     return new Promise((resolve, reject) => {
-      // -p enables pipe mode — reads prompt from stdin when no argument follows
+      // Prompt is written to stdin; the CLI reads until EOF and responds on stdout.
+      // We pass the full prompt on stdin to avoid argv length limits.
       const args = [
-        '-p',
-        '--verbose',
-        '--output-format', 'stream-json',
-        '--include-partial-messages',
         '--model', this.model,
       ];
 
-      if (options?.effort) {
-        args.push('--effort', options.effort);
-      }
+      // Strip other providers' secrets and all INPUT_* vars (GitHub Actions delivers
+      // every action input as INPUT_<NAME>, which would otherwise bypass bare-name
+      // stripping) from the forwarded env. PATH/HOME etc. flow through `safeEnv`.
+      const BLOCKED_BARE = new Set([
+        'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
+        'REVIEW_MEMORY_TOKEN', 'GITHUB_TOKEN',
+        'GEMINI_API_KEY', 'GITHUB_APP_PRIVATE_KEY',
+      ]);
+      const safeEnv = Object.fromEntries(
+        Object.entries(process.env).filter(
+          ([k]) => !BLOCKED_BARE.has(k) && !/^INPUT_/i.test(k),
+        ),
+      ) as NodeJS.ProcessEnv;
 
       const child = spawn(cliPath, args, {
         env: {
-          // process.env is spread intentionally — Claude CLI requires PATH, HOME, and other system vars.
-          // CLAUDE_CODE_OAUTH_TOKEN is added conditionally. Secrets should be managed via GitHub Actions secret masking.
-          ...process.env,
-          ...(oauthToken ? { CLAUDE_CODE_OAUTH_TOKEN: oauthToken } : {}),
+          ...safeEnv,
+          // The Gemini CLI reads GOOGLE_CLOUD_ACCESS_TOKEN when GOOGLE_GENAI_USE_GCA
+          // is set to authenticate with an existing OAuth access token, per
+          // @google/gemini-cli bundle/chunk-6DSAZLFF.js.
+          ...(oauthToken ? { GOOGLE_GENAI_USE_GCA: 'true', GOOGLE_CLOUD_ACCESS_TOKEN: oauthToken } : {}),
         },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 
       let output = '';
-      let jsonBuffer = '';
       let stderr = '';
       let timedOut = false;
       let stale = false;
@@ -142,10 +148,10 @@ export class AnthropicClient implements LLMClient {
       let killTimer: NodeJS.Timeout | undefined;
       let staleKillTimer: NodeJS.Timeout | undefined;
       let outputKillTimer: NodeJS.Timeout | undefined;
-      // Only set in the catch block below; clearTimeout(undefined) is a no-op on the normal path
       let stdinKillTimer: NodeJS.Timeout | undefined;
       let lastStdoutChunk = '';
       let rawBytes = 0;
+      let rawStderrBytes = 0;
 
       const clearAllTimers = (): void => {
         clearTimeout(timer);
@@ -195,75 +201,54 @@ export class AnthropicClient implements LLMClient {
         staleTimer.unref();
 
         rawBytes += data.length;
-        if (rawBytes + stderr.length > MAX_OUTPUT) { killOnOutputExceeded(); return; }
+        if (rawBytes + rawStderrBytes > MAX_OUTPUT) { killOnOutputExceeded(); return; }
 
-        // Decode once — avoids double decoding and multi-byte corruption at chunk boundaries
         const chunk = stdoutDecoder.write(data);
         if (chunk.length >= 500) {
           lastStdoutChunk = chunk.slice(-500);
         } else {
           lastStdoutChunk = (lastStdoutChunk + chunk).slice(-500);
         }
-        jsonBuffer += chunk;
-        const lines = jsonBuffer.split('\n');
-        jsonBuffer = lines.pop() ?? '';
-
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          const delta = processJsonLine(line);
-          if (delta.replace) {
-            output = delta.text;
-          } else {
-            output += delta.text;
-          }
-        }
+        // Gemini CLI emits plain text on stdout — concatenate verbatim.
+        output += chunk;
       });
       child.stderr.on('data', (data: Buffer) => {
         if (outputExceeded || settled) return;
+        rawStderrBytes += data.length;
         stderr += stderrDecoder.write(data);
-        if (rawBytes + stderr.length > MAX_OUTPUT) killOnOutputExceeded();
+        if (rawBytes + rawStderrBytes > MAX_OUTPUT) killOnOutputExceeded();
       });
 
       child.on('close', (code, signal) => {
         clearAllTimers();
         if (settled) return;
         settled = true;
-        // Flush any remaining bytes from the decoders
         const remaining = stdoutDecoder.end();
-        if (remaining) {
-          jsonBuffer += remaining;
-          if (jsonBuffer.trim()) {
-            const delta = processJsonLine(jsonBuffer);
-            if (delta.replace) {
-              output = delta.text;
-            } else {
-              output += delta.text;
-            }
-          }
-        }
+        if (remaining) output += remaining;
         stderr += stderrDecoder.end();
         if (stale) {
           const details = buildTimeoutDiagnostics(lastStdoutChunk, stderr);
-          const msg = `Claude CLI stale — no output for ${STALE_TIMEOUT_MS / 1000}s${details ? `. ${details}` : ''}`;
+          const msg = `Gemini CLI stale — no output for ${STALE_TIMEOUT_MS / 1000}s${details ? `. ${details}` : ''}`;
           core.warning(msg);
           reject(new Error(msg));
           return;
         }
         if (timedOut) {
           const details = buildTimeoutDiagnostics(lastStdoutChunk, stderr);
-          const msg = `Claude CLI timed out after 1200s${details ? `. ${details}` : ''}`;
+          const msg = `Gemini CLI timed out after 1200s${details ? `. ${details}` : ''}`;
           core.warning(msg);
           reject(new Error(msg));
           return;
         }
         if (outputExceeded) {
-          reject(new Error('Claude CLI output exceeded 50MB limit'));
+          reject(new Error('Gemini CLI output exceeded 50MB limit'));
           return;
         }
         if (code !== 0) {
-          const msg = `exit ${code}${signal ? `, signal ${signal}` : ''}: ${stderr.slice(0, 500)}`;
-          core.warning(`Claude CLI failed (${msg})`);
-          reject(new Error(`Claude CLI invocation failed (${msg})`));
+          const stderrSnippet = sanitizeLogOutput(stderr.slice(0, 500));
+          const msg = `exit ${code}${signal ? `, signal ${signal}` : ''}: ${stderrSnippet}`;
+          core.warning(`Gemini CLI failed (${msg})`);
+          reject(new Error(`Gemini CLI invocation failed (${msg})`));
           return;
         }
         const content = output.trim();
@@ -275,22 +260,16 @@ export class AnthropicClient implements LLMClient {
         clearAllTimers();
         if (settled) return;
         settled = true;
-        reject(new Error(`Claude CLI spawn failed: ${error.message}`));
+        reject(new Error(`Gemini CLI spawn failed: ${error.message}`));
       });
 
       child.stdin.on('error', (err) => {
         core.warning(`stdin write error: ${err.message}`);
       });
 
-      // Node.js stream.write() buffers data internally — it never does partial writes.
-      // When write() returns false, the data is still fully queued; it just means the
-      // internal buffer exceeded highWaterMark. We wait for 'drain' before calling end()
-      // to avoid unnecessary buffering pressure.
       try {
         const canWrite = child.stdin.write(fullPrompt);
         if (!canWrite) {
-          // The drain handler stays registered until fired or GC. The `settled` guard
-          // ensures it won't call end() after the process has already exited.
           child.stdin.once('drain', () => {
             if (!settled) {
               try { child.stdin.end(); } catch { /* stream already destroyed */ }
@@ -307,7 +286,6 @@ export class AnthropicClient implements LLMClient {
           reject(new Error(`stdin write failed: ${(err as Error).message}`));
         }
         try { child.kill('SIGTERM'); } catch { /* already dead */ }
-        // Assigned after clearAllTimers — the close handler's clearAllTimers will clear this new timer
         stdinKillTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, 5000);
         stdinKillTimer.unref();
       }
@@ -315,27 +293,37 @@ export class AnthropicClient implements LLMClient {
   }
 
   private async sendViaAPI(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
-    if (!this.anthropic) throw new Error('Anthropic client not initialized');
+    if (!this.genAI) throw new Error('Gemini client not initialized');
 
-    const useThinking = options?.effort && options.effort !== 'low';
-    const budgetMap: Record<string, number> = { medium: 5000, high: 10000, max: 16000 };
+    const thinkingBudget = geminiThinkingBudget(options?.effort);
 
+    // The SDK type for GenerationConfig predates Gemini 2.5 thinking config.
+    // The underlying REST API accepts `thinkingConfig.thinkingBudget` — pass it
+    // through with a cast so we don't have to wait for the SDK types to catch up.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const params: any = {
-      model: this.model,
-      max_tokens: useThinking ? 32768 : 16384,
-      system: systemPrompt,
-      messages: [{ role: 'user', content: userMessage }],
+    const generationConfig: any = {
+      maxOutputTokens: thinkingBudget !== undefined ? 32768 : 16384,
     };
-
-    if (useThinking) {
-      params.thinking = { type: 'enabled', budget_tokens: budgetMap[options!.effort!] };
+    if (thinkingBudget !== undefined) {
+      generationConfig.thinkingConfig = { thinkingBudget };
     }
 
-    const response = await this.anthropic.messages.create(params);
+    const model = this.genAI.getGenerativeModel({
+      model: this.model,
+      systemInstruction: systemPrompt,
+    });
 
-    const textBlocks = response.content.filter((b) => b.type === 'text');
-    const content = textBlocks.map((b) => 'text' in b ? b.text : '').join('\n');
+    const response = await model.generateContent({
+      contents: [{ role: 'user', parts: [{ text: userMessage }] }],
+      generationConfig,
+    });
+
+    let content: string;
+    try {
+      content = response.response.text();
+    } catch (err) {
+      throw new Error(`Gemini API returned no usable content: ${(err as Error).message}`);
+    }
     core.debug(sanitizeLogOutput(content.slice(0, 200)));
 
     return { content };
