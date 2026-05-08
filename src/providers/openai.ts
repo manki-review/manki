@@ -111,7 +111,7 @@ export class OpenAIClient implements LLMClient {
           try {
             const { stdout: npmStdout, stderr: npmStderr } = await execFileAsync(
               'npm',
-              ['install', '-g', '@openai/codex'],
+              ['install', '-g', '--ignore-scripts', `@openai/codex@${CODEX_CLI_VERSION}`],
               { timeout: 120000 },
             );
             npmOutput = [npmStdout, npmStderr].filter(Boolean).join(' | ').trim();
@@ -244,7 +244,12 @@ export class OpenAIClient implements LLMClient {
         output += chunk;
       });
       child.stderr.on('data', (data: Buffer) => {
-        if (outputExceeded || settled) return;
+        if (outputExceeded || settled || stale || timedOut) return;
+        // Stderr counts as forward progress: long-running CLI invocations may write
+        // diagnostics exclusively to stderr while still actively making progress.
+        clearTimeout(staleTimer);
+        staleTimer = setTimeout(handleStale, STALE_TIMEOUT_MS);
+        staleTimer.unref();
         rawStderrBytes += data.length;
         stderr += stderrDecoder.write(data);
         if (rawStdoutBytes + rawStderrBytes > MAX_OUTPUT) killOnOutputExceeded();
