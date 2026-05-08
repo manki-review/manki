@@ -1543,7 +1543,8 @@ describe('runJudgeAgent', () => {
         file: 'src/llmq_entry_verification.rs',
         line: 27,
         severity: 'warning',
-        description: 'Error enum lacks variant.',
+        description: 'Error enum lacks variant for rotation chainlock sigs.',
+        suggestedFix: 'Add `MissingRotationChainLockSigs(QuorumHash)` to the error enum.',
         currentCode: '   25: pub enum QuorumVerificationError {\n   26:     MissingMember(QuorumHash),\n>>> 27: }',
       }],
       priorRounds: [{ round: 1, commitSha: 'abc', timestamp: 't', findings: [] }],
@@ -1553,6 +1554,14 @@ describe('runJudgeAgent', () => {
     expect(result.threadEvaluations).toEqual([
       { threadId: 'PRRT_pmpa_neg', status: 'not_addressed', reason: expect.any(String) },
     ]);
+
+    const [, userMessage] = mockSendMessage.mock.calls[0];
+    expect(userMessage).toContain('Original concern');
+    expect(userMessage).toContain('rotation chainlock sigs');
+    expect(userMessage).toContain('Original suggested fix');
+    expect(userMessage).toContain('MissingRotationChainLockSigs(QuorumHash)');
+    expect(userMessage).toContain('>>> 27: }');
+    expect(userMessage).toContain('   25: pub enum');
   });
 
   it('omits description/suggestedFix labels when fields are absent on OpenThread', async () => {
