@@ -63,7 +63,9 @@ export class OpenAIClient implements LLMClient {
     this.model = options.model;
 
     if (this.auth.kind === 'apiKey') {
-      this.openai = new OpenAI({ apiKey: this.auth.key });
+      // Explicit timeout makes the bound visible and consistent with the OAuth/CLI path's
+      // 1200s hard deadline. The SDK default (600s) leaves the action hanging on slow calls.
+      this.openai = new OpenAI({ apiKey: this.auth.key, timeout: 300_000 });
     }
   }
 
