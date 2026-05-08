@@ -1238,6 +1238,30 @@ describe('handleReviewCommentInteraction', () => {
     );
     expect(jest.mocked(createLLMClient)).not.toHaveBeenCalled();
   });
+
+  it('sets failed when createLLMClient throws after valid model spec and auth', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'claude_code_oauth_token' ? 'oauth-tok' : '',
+    );
+    jest.mocked(interaction.hasBotMention).mockReturnValue(true);
+    jest.mocked(createLLMClient).mockImplementationOnce(() => { throw new Error('unsupported model variant'); });
+
+    setContext({
+      eventName: 'pull_request_review_comment',
+      payload: {
+        action: 'created',
+        comment: { body: '@manki help', user: { type: 'User' } },
+        pull_request: { base: { ref: 'main' }, number: 42 },
+      },
+    });
+
+    await handleReviewCommentInteraction();
+
+    expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(
+      expect.stringContaining('Invalid model config'),
+    );
+    expect(jest.mocked(interaction.handleReviewCommentReply)).not.toHaveBeenCalled();
+  });
 });
 
 describe('handleReviewStateCheck', () => {
