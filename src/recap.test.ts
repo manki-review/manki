@@ -1010,6 +1010,92 @@ describe('fetchRecapState', () => {
     expect(state.previousFindings[0].authorReplyLogin).toBe('pr-author');
     expect(state.previousFindings[0].authorReplyText).toBe('Fixed, done.');
   });
+
+  it('recovers `description` and `suggestedFix` from AI context JSON block in first comment', async () => {
+    const aiContext = JSON.stringify({ fix: 'Add null check before dereferencing ptr.', flaggedBy: ['SecurityReviewer'] });
+    const body = [
+      '<!-- manki:blocker:Null-ptr --> 🚫 **Blocker**: Null pointer dereference',
+      '',
+      'The pointer is dereferenced without a prior null check.',
+      '',
+      '<details>',
+      '<summary>AI context</summary>',
+      '',
+      '```json',
+      aiContext,
+      '```',
+      '</details>',
+    ].join('\n');
+
+    const octokit = mockOctokit([
+      makeThread({
+        id: 't1',
+        isResolved: false,
+        comments: { nodes: [{ body, author: { login: 'github-actions[bot]' } }] },
+      }),
+    ]);
+
+    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    expect(state.previousFindings[0].description).toBe('The pointer is dereferenced without a prior null check.');
+    expect(state.previousFindings[0].suggestedFix).toBe('Add null check before dereferencing ptr.');
+  });
+
+  it('skips `suggestedFix` when AI context JSON is malformed, still recovers `description`', async () => {
+    const body = [
+      '<!-- manki:warning:Bad-cast --> ⚠️ **Warning**: Unsafe cast',
+      '',
+      'Cast lacks a type guard.',
+      '',
+      '<details>',
+      '<summary>AI context</summary>',
+      '',
+      '```json',
+      '{ not valid json !!!',
+      '```',
+      '</details>',
+    ].join('\n');
+
+    const octokit = mockOctokit([
+      makeThread({
+        id: 't1',
+        isResolved: false,
+        comments: { nodes: [{ body, author: { login: 'github-actions[bot]' } }] },
+      }),
+    ]);
+
+    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    expect(state.previousFindings[0].description).toBe('Cast lacks a type guard.');
+    expect(state.previousFindings[0].suggestedFix).toBeUndefined();
+  });
+
+  it('skips `suggestedFix` when AI context JSON has no `fix` field', async () => {
+    const aiContext = JSON.stringify({ flaggedBy: ['Reviewer'], confidence: 'high' });
+    const body = [
+      '<!-- manki:suggestion:Rename --> 💡 **Suggestion**: Rename for clarity',
+      '',
+      'The variable name is misleading.',
+      '',
+      '<details>',
+      '<summary>AI context</summary>',
+      '',
+      '```json',
+      aiContext,
+      '```',
+      '</details>',
+    ].join('\n');
+
+    const octokit = mockOctokit([
+      makeThread({
+        id: 't1',
+        isResolved: false,
+        comments: { nodes: [{ body, author: { login: 'github-actions[bot]' } }] },
+      }),
+    ]);
+
+    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    expect(state.previousFindings[0].description).toBe('The variable name is misleading.');
+    expect(state.previousFindings[0].suggestedFix).toBeUndefined();
+  });
 });
 
 describe('collectInPrSuppressions', () => {
