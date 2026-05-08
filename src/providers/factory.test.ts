@@ -1,3 +1,4 @@
+import * as AnthropicModule from './anthropic';
 import { AnthropicClient } from './anthropic';
 import { createLLMClient } from './factory';
 import { ProviderName } from './types';
@@ -10,24 +11,26 @@ describe('createLLMClient', () => {
     expect(client).toBeInstanceOf(AnthropicClient);
   });
 
-  it('forwards the model to the constructed client', () => {
-    const client = createLLMClient('anthropic', 'claude-sonnet-4-20250514', { kind: 'apiKey', key: 'sk-test' });
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect((client as any).model).toBe('claude-sonnet-4-20250514');
-  });
-
-  it('forwards apiKey auth to the constructed client', () => {
+  it('forwards model and apiKey auth to AnthropicClient constructor', () => {
     const auth = { kind: 'apiKey' as const, key: 'sk-test' };
-    const client = createLLMClient('anthropic', 'claude-opus-4-6', auth);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect((client as any).auth).toEqual(auth);
+    const RealAnthropicClient = AnthropicModule.AnthropicClient;
+    const spy = jest.spyOn(AnthropicModule, 'AnthropicClient').mockImplementation(
+      (opts) => new RealAnthropicClient(opts),
+    );
+    createLLMClient('anthropic', 'claude-sonnet-4-20250514', auth);
+    expect(spy).toHaveBeenCalledWith({ auth, model: 'claude-sonnet-4-20250514' });
+    spy.mockRestore();
   });
 
-  it('forwards oauth auth to the constructed client', () => {
+  it('forwards oauth auth to AnthropicClient constructor', () => {
     const auth = { kind: 'oauth' as const, token: 'tok' };
-    const client = createLLMClient('anthropic', 'claude-opus-4-6', auth);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    expect((client as any).auth).toEqual(auth);
+    const RealAnthropicClient = AnthropicModule.AnthropicClient;
+    const spy = jest.spyOn(AnthropicModule, 'AnthropicClient').mockImplementation(
+      (opts) => new RealAnthropicClient(opts),
+    );
+    createLLMClient('anthropic', 'claude-opus-4-6', auth);
+    expect(spy).toHaveBeenCalledWith({ auth, model: 'claude-opus-4-6' });
+    spy.mockRestore();
   });
 
   it('accepts oauth auth for anthropic', () => {
