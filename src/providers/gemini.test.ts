@@ -263,7 +263,8 @@ describe('GeminiClient OAuth path', () => {
       expect(spawnOpts.env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
       expect(spawnOpts.env.REVIEW_MEMORY_TOKEN).toBeUndefined();
       expect(spawnOpts.env.GITHUB_TOKEN).toBeUndefined();
-      expect(spawnOpts.env.GEMINI_OAUTH_TOKEN).toBe('gem-tok');
+      expect(spawnOpts.env.GOOGLE_GENAI_USE_GCA).toBe('true');
+      expect(spawnOpts.env.GOOGLE_CLOUD_ACCESS_TOKEN).toBe('gem-tok');
     } finally {
       delete process.env.ANTHROPIC_API_KEY;
       delete process.env.CLAUDE_CODE_OAUTH_TOKEN;

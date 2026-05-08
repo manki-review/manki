@@ -128,7 +128,10 @@ export class GeminiClient implements LLMClient {
       const child = spawn(cliPath, args, {
         env: {
           ...safeEnv,
-          ...(oauthToken ? { GEMINI_OAUTH_TOKEN: oauthToken } : {}),
+          // The Gemini CLI reads GOOGLE_CLOUD_ACCESS_TOKEN when GOOGLE_GENAI_USE_GCA
+          // is set to authenticate with an existing OAuth access token, per
+          // @google/gemini-cli bundle/chunk-6DSAZLFF.js.
+          ...(oauthToken ? { GOOGLE_GENAI_USE_GCA: 'true', GOOGLE_CLOUD_ACCESS_TOKEN: oauthToken } : {}),
         },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
