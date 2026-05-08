@@ -313,7 +313,12 @@ export class GeminiClient implements LLMClient {
       generationConfig,
     });
 
-    const content = response.response.text();
+    let content: string;
+    try {
+      content = response.response.text();
+    } catch (err) {
+      throw new Error(`Gemini API returned no usable content: ${(err as Error).message}`);
+    }
     core.debug(sanitizeLogOutput(content.slice(0, 200)));
 
     return { content };

@@ -143,6 +143,22 @@ describe('sendMessage effort option (API path)', () => {
     expect(result.content).toBe('hello there');
   });
 
+  it('wraps GoogleGenerativeAIResponseError from .text() with a descriptive message', async () => {
+    mockGenerateContent.mockResolvedValue({
+      response: { text: () => { throw new Error('SAFETY'); } },
+    });
+    const client = new GeminiClient({ auth: { kind: 'apiKey', key: 'k' }, model: 'gemini-3.1-flash-lite' });
+
+    await expect(client.sendMessage('system', 'user')).rejects.toThrow('Gemini API returned no usable content: SAFETY');
+  });
+
+  it('propagates SDK errors from generateContent', async () => {
+    mockGenerateContent.mockRejectedValue(new Error('quota exceeded'));
+    const client = new GeminiClient({ auth: { kind: 'apiKey', key: 'k' }, model: 'gemini-3.1-flash-lite' });
+
+    await expect(client.sendMessage('system', 'user')).rejects.toThrow('quota exceeded');
+  });
+
   it('throws when SDK client is not initialized (oauth-only construction)', async () => {
     const client = new GeminiClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gemini-3.1-flash-lite' });
 
