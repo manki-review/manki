@@ -1537,13 +1537,18 @@ function dedupePriorFindings(priorRounds: HandoverFinding[]): HandoverFinding[] 
  * `authorReply: 'none'` would still match `.some(...)` even if round 2
  * captured an `agree` for the same thread.
  *
- * Contract for `openThreads`: callers must pass the result of a successful
- * GitHub thread fetch. Both `undefined` and `[]` are interpreted the same way
- * (no thread is open on GitHub), so any prior finding with a `threadId` that
- * does not appear in the set is treated as resolved. Callers that fail to
- * fetch thread state must abort before reaching this function rather than
- * pass a partial or empty list, otherwise unaddressed warnings could be
- * silently approved.
+ * Contract for `openThreads`: three states with distinct meaning.
+ *   - `null` / omitted → "unknown": caller did not (or could not) fetch open
+ *     threads. Treated conservatively: any prior `warning`/`blocker` with a
+ *     non-`agree` `authorReply` and a `threadId` is assumed still open and
+ *     blocks APPROVE with `prior_unaddressed`. Use this when the GitHub fetch
+ *     failed, or at call sites that intentionally bypass the open-thread
+ *     check, so unresolved priors can never be silently approved.
+ *   - `[]` → "fetched, none open": GitHub confirmed no review threads are
+ *     open on the PR. Prior findings with a `threadId` that does not appear
+ *     here are treated as resolved.
+ *   - `OpenThread[]` (non-empty) → "fetched, here they are": only priors
+ *     whose `threadId` appears in the set are treated as still open.
  *
  * Nitpicks and suggestions are non-blocking, and prior-round dismissed warnings
  * have already been acknowledged by the author. All these cases approve the PR.
@@ -1551,7 +1556,7 @@ function dedupePriorFindings(priorRounds: HandoverFinding[]): HandoverFinding[] 
 export function determineVerdict(
   findings: Finding[],
   priorRounds?: HandoverFinding[],
-  openThreads?: OpenThread[],
+  openThreads?: OpenThread[] | null,
 ): { verdict: ReviewVerdict; verdictReason: VerdictReason } {
   if (findings.some(f => f.severity === 'blocker')) {
     return { verdict: 'REQUEST_CHANGES', verdictReason: 'required_present' };
@@ -1565,11 +1570,13 @@ export function determineVerdict(
     return { verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion' };
   }
 
+  const openThreadsUnknown = openThreads == null;
   const openThreadIds = new Set((openThreads ?? []).map(t => t.threadId));
   const hasUnresolvedPrior = prior.some(p => {
     if (p.severity !== 'warning' && p.severity !== 'blocker') return false;
     if (p.authorReply === 'agree') return false;
     if (!p.threadId) return true;
+    if (openThreadsUnknown) return true;
     return openThreadIds.has(p.threadId);
   });
   if (hasUnresolvedPrior) {
