@@ -3743,6 +3743,12 @@ describe('runFullReview orchestration', () => {
           body: expect.stringContaining('Automatic review is paused'),
         }),
       );
+      const capCall = jest.mocked(mockOctokitInstance.rest.issues.createComment).mock.calls
+        .find(([args]) => typeof args.body === 'string' && args.body.includes('Automatic review is paused'));
+      expect(capCall).toBeDefined();
+      const capBody = capCall![0].body as string;
+      expect(capBody).toContain(FORCE_REVIEW_MARKER);
+      expect(capBody).toContain('- [ ] Force review');
     });
 
     it('bypasses the cap when forceReview is true', async () => {
@@ -3805,6 +3811,12 @@ describe('runFullReview orchestration', () => {
       expect(mockOctokitInstance.rest.issues.createComment).toHaveBeenCalledWith(
         expect.objectContaining({ body: expect.stringContaining('Automatic review is paused') }),
       );
+      const capCall = jest.mocked(mockOctokitInstance.rest.issues.createComment).mock.calls
+        .find(([args]) => typeof args.body === 'string' && args.body.includes('Automatic review is paused'));
+      expect(capCall).toBeDefined();
+      const capBody = capCall![0].body as string;
+      expect(capBody).toContain(FORCE_REVIEW_MARKER);
+      expect(capBody).toContain('- [ ] Force review');
     });
 
     it('runs review normally when below cap (test-nit suppression path exercises review.ts, not index.ts)', async () => {
@@ -4325,6 +4337,30 @@ describe('force review checkbox', () => {
 
     expect(jest.mocked(ghUtils.reactToIssueComment)).toHaveBeenCalledWith(
       expect.anything(), 'test-owner', 'test-repo', 42, 'eyes',
+    );
+    // force review bypasses the isReviewInProgress check entirely
+    expect(jest.mocked(ghUtils.isReviewInProgress)).not.toHaveBeenCalled();
+    expect(mockPullsGet).toHaveBeenCalled();
+  });
+
+  it('routes round-cap notice force review checkbox edit to handleCommentTrigger with forceReview', async () => {
+    // Simulate a round-cap notice that the author has just checked. handleCommentTrigger
+    // must run review with forceReview=true so the cap guard is bypassed.
+    const capNoticeBody = `<!-- manki-bot -->\nManki has completed 5/5 review rounds on this PR. Automatic review is paused. Force another round:\n\n- [x] Force review\n\n${FORCE_REVIEW_MARKER}`;
+    setContext({
+      eventName: 'issue_comment',
+      payload: {
+        action: 'edited',
+        sender: { login: 'user' },
+        issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } },
+        comment: { id: 99, body: capNoticeBody, author_association: 'COLLABORATOR' },
+      },
+    });
+
+    await run();
+
+    expect(jest.mocked(ghUtils.reactToIssueComment)).toHaveBeenCalledWith(
+      expect.anything(), 'test-owner', 'test-repo', 99, 'eyes',
     );
     // force review bypasses the isReviewInProgress check entirely
     expect(jest.mocked(ghUtils.isReviewInProgress)).not.toHaveBeenCalled();

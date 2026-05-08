@@ -538,11 +538,19 @@ async function runFullReview(
         core.warning(`Failed to delete progress comment: ${error}`);
       }
       try {
+        const body = [
+          PROGRESS_MARKER,
+          `Manki has completed ${priorRoundCount}/${maxAutoRounds} review rounds on this PR. Automatic review is paused. Force another round:`,
+          '',
+          '- [ ] Force review',
+          '',
+          FORCE_REVIEW_MARKER,
+        ].join('\n');
         await octokit.rest.issues.createComment({
           owner,
           repo,
           issue_number: prNumber,
-          body: `${PROGRESS_MARKER}\nManki has completed ${priorRoundCount} review rounds on this PR. Automatic review is paused; comment \`@manki review\` to force another round.`,
+          body,
         });
       } catch (error) {
         core.warning(`Failed to post round-cap notice: ${error}`);
