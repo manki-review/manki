@@ -24,4 +24,16 @@ describe('parseModelSpec', () => {
   it('throws on empty model after slash', () => {
     expect(() => parseModelSpec('anthropic/')).toThrow(/Empty model/);
   });
+
+  it('throws on empty string', () => {
+    expect(() => parseModelSpec('')).toThrow(/Unknown model/);
+  });
+
+  it('throws on slash-only input', () => {
+    expect(() => parseModelSpec('/')).toThrow(/Unknown provider/);
+  });
+
+  it('throws on whitespace-only input', () => {
+    expect(() => parseModelSpec('   ')).toThrow(/Unknown model/);
+  });
 });
