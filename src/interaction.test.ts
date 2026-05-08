@@ -2,7 +2,7 @@ import { parseCommand, buildReplyContext, parseTriageBody, extractFindingContent
 import { ReviewConfig } from './types';
 import * as github from '@actions/github';
 import * as core from '@actions/core';
-import { ClaudeClient } from './claude';
+import { LLMClient } from './providers';
 import * as memory from './memory';
 import * as ghUtils from './github';
 import * as state from './state';
@@ -529,7 +529,7 @@ function createMockOctokit() {
 function createMockClient() {
   return {
     sendMessage: jest.fn().mockResolvedValue({ content: 'AI response here' }),
-  } as unknown as ClaudeClient;
+  } as unknown as LLMClient;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

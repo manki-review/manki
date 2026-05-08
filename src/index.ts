@@ -2,8 +2,9 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { createAuthenticatedOctokit, getMemoryToken } from './auth';
-import { ClaudeClient } from './claude';
 import { loadConfig, resolveModel } from './config';
+import { buildAnthropicAuth, createLLMClient, parseModelSpec } from './providers';
+import type { LLMClient } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
 import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
@@ -38,6 +39,21 @@ import {
 import { checkAndAutoApprove, resolveStaleThreads } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
+
+function buildLLMClientFromInputs(opts: {
+  oauthToken: string;
+  apiKey: string;
+  model: string;
+}): { client: LLMClient } | null {
+  const auth = buildAnthropicAuth(opts.oauthToken, opts.apiKey);
+  try {
+    const spec = parseModelSpec(opts.model);
+    return { client: createLLMClient(spec.provider, spec.model, auth) };
+  } catch (error) {
+    core.setFailed(`Invalid model config: ${error instanceof Error ? error.message : error}`);
+    return null;
+  }
+}
 
 const octokitCache = {
   instance: null as Octokit | null,
@@ -371,22 +387,29 @@ async function runFullReview(
       return;
     }
 
-    const authOptions = {
-      oauthToken: oauthToken || undefined,
-      apiKey: apiKey || undefined,
-    };
+    const anthropicAuth = buildAnthropicAuth(oauthToken, apiKey);
     const plannerModel = resolveModel(config, 'planner');
     const reviewerModel = resolveModel(config, 'reviewer');
     const judgeModel = resolveModel(config, 'judge');
     const dedupModel = resolveModel(config, 'dedup');
     core.info(`Models — planner: ${plannerModel}, reviewer: ${reviewerModel}, judge: ${judgeModel}, dedup: ${dedupModel}`);
 
-    const reviewerClient = new ClaudeClient({ ...authOptions, model: reviewerModel });
-    const judgeClient = new ClaudeClient({ ...authOptions, model: judgeModel });
-    const plannerClient = config.planner?.enabled !== false
-      ? new ClaudeClient({ ...authOptions, model: plannerModel })
-      : undefined;
-    const dedupClient = new ClaudeClient({ ...authOptions, model: dedupModel });
+    const buildClient = (model: string) => {
+      const spec = parseModelSpec(model);
+      return createLLMClient(spec.provider, spec.model, anthropicAuth);
+    };
+    let reviewerClient: LLMClient, judgeClient: LLMClient, dedupClient: LLMClient;
+    let plannerClient: LLMClient | undefined;
+    try {
+      reviewerClient = buildClient(reviewerModel);
+      judgeClient = buildClient(judgeModel);
+      plannerClient = config.planner?.enabled !== false ? buildClient(plannerModel) : undefined;
+      dedupClient = buildClient(dedupModel);
+    } catch (error) {
+      core.setFailed(`Invalid model config: ${error instanceof Error ? error.message : error}`);
+      await octokit.rest.issues.deleteComment({ owner, repo, comment_id: progressCommentId }).catch(() => {});
+      return;
+    }
 
     const rawDiff = await fetchPRDiff(octokit, owner, repo, prNumber);
     const diff = parsePRDiff(rawDiff);
@@ -1045,6 +1068,12 @@ async function handleReviewStateCheck(): Promise<void> {
 async function handleInteraction(): Promise<void> {
   const oauthToken = core.getInput('claude_code_oauth_token');
   const apiKey = core.getInput('anthropic_api_key');
+
+  if (!oauthToken && !apiKey) {
+    core.setFailed('No API key configured — set claude_code_oauth_token or anthropic_api_key');
+    return;
+  }
+
   const configPathInput = core.getInput('config_path');
 
   const octokit = await getOctokit();
@@ -1065,12 +1094,9 @@ async function handleInteraction(): Promise<void> {
   }
   const config = loadConfig(configContent ?? undefined);
 
-  const interactionModel = resolveModel(config, 'judge');
-  const claude = new ClaudeClient({
-    oauthToken: oauthToken || undefined,
-    apiKey: apiKey || undefined,
-    model: interactionModel,
-  });
+  const built = buildLLMClientFromInputs({ oauthToken, apiKey, model: resolveModel(config, 'judge') });
+  if (!built) return;
+  const { client: claude } = built;
 
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;
   const memoryToken = config.memory?.enabled ? getMemoryToken(octokitCache.resolvedToken) ?? undefined : undefined;
@@ -1129,6 +1155,12 @@ async function handleReviewCommentInteraction(): Promise<void> {
 
   const oauthToken = core.getInput('claude_code_oauth_token');
   const apiKey = core.getInput('anthropic_api_key');
+
+  if (!oauthToken && !apiKey) {
+    core.setFailed('No API key configured — set claude_code_oauth_token or anthropic_api_key');
+    return;
+  }
+
   const configPathInput = core.getInput('config_path');
 
   const octokit = await getOctokit();
@@ -1143,11 +1175,9 @@ async function handleReviewCommentInteraction(): Promise<void> {
   }
   const config = loadConfig(configContent ?? undefined);
 
-  const claude = new ClaudeClient({
-    oauthToken: oauthToken || undefined,
-    apiKey: apiKey || undefined,
-    model: resolveModel(config, 'judge'),
-  });
+  const built = buildLLMClientFromInputs({ oauthToken, apiKey, model: resolveModel(config, 'judge') });
+  if (!built) return;
+  const { client: claude } = built;
 
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;
   const memoryToken = config.memory?.enabled ? getMemoryToken(octokitCache.resolvedToken) ?? undefined : undefined;
@@ -1249,4 +1279,4 @@ function _resetOctokitCache(): void {
   octokitCache.identity = null;
 }
 
-export { run, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, runFullReview, main, _resetOctokitCache };
+export { run, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, runFullReview, main, _resetOctokitCache, buildAnthropicAuth };

@@ -13,7 +13,7 @@ import {
   JudgeInput,
   JudgedFinding,
 } from './judge';
-import { ClaudeClient } from './claude';
+import { LLMClient } from './providers';
 import { RepoMemory, Learning, Suppression } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
 import { Finding, HandoverFinding, HandoverRound, IN_PR_SUPPRESSED_TAG, InPrSuppression, ProvenanceEntry, ReviewConfig, ParsedDiff, DiffFile, DiffHunk } from './types';
@@ -925,7 +925,7 @@ describe('runJudgeAgent', () => {
   const mockSendMessage = jest.fn();
   const mockClient = {
     sendMessage: mockSendMessage,
-  } as unknown as ClaudeClient;
+  } as unknown as LLMClient;
 
   beforeEach(() => {
     mockSendMessage.mockReset();
@@ -3744,7 +3744,7 @@ describe('runJudgeAgent cross-round suppression', () => {
   const mockSendMessage = jest.fn();
   const mockClient = {
     sendMessage: mockSendMessage,
-  } as unknown as ClaudeClient;
+  } as unknown as LLMClient;
 
   beforeEach(() => {
     mockSendMessage.mockReset();

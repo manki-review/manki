@@ -5,9 +5,17 @@ import { promisify } from 'util';
 import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
+import { AnthropicAuth, LLMClient, LLMResponse, SendMessageOptions } from './types';
+
 const execFileAsync = promisify(execFile);
 
 export const STALE_TIMEOUT_MS = 90_000;
+
+export function buildAnthropicAuth(oauthToken: string, apiKey: string): AnthropicAuth {
+  if (oauthToken) return { kind: 'oauth', token: oauthToken };
+  if (apiKey) return { kind: 'apiKey', key: apiKey };
+  throw new Error('Either claude_code_oauth_token or anthropic_api_key must be provided');
+}
 
 /** Strip GitHub Actions workflow commands to prevent injection when logging CLI output. */
 export function sanitizeLogOutput(text: string): string {
@@ -48,43 +56,28 @@ export function resetCLIInstallPromise(): void {
   cliInstallPromise = null;
 }
 
-export interface ClaudeClientOptions {
-  oauthToken?: string;
-  apiKey?: string;
+export interface AnthropicClientOptions {
+  auth: AnthropicAuth;
   model: string;
 }
 
-export interface ClaudeResponse {
-  content: string;
-}
-
-export interface SendMessageOptions {
-  effort?: 'low' | 'medium' | 'high' | 'max';
-}
-
-export class ClaudeClient {
-  private oauthToken?: string;
-  private apiKey?: string;
+export class AnthropicClient implements LLMClient {
+  private readonly auth: AnthropicAuth;
   private anthropic?: Anthropic;
-  private model: string;
+  private readonly model: string;
   private cachedCLIPath?: string;
 
-  constructor(options: ClaudeClientOptions) {
-    this.oauthToken = options.oauthToken;
-    this.apiKey = options.apiKey;
+  constructor(options: AnthropicClientOptions) {
+    this.auth = options.auth;
     this.model = options.model;
 
-    if (!this.oauthToken && !this.apiKey) {
-      throw new Error('Either claude_code_oauth_token or anthropic_api_key must be provided');
-    }
-
-    if (this.apiKey) {
-      this.anthropic = new Anthropic({ apiKey: this.apiKey });
+    if (this.auth.kind === 'apiKey') {
+      this.anthropic = new Anthropic({ apiKey: this.auth.key });
     }
   }
 
-  async sendMessage(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<ClaudeResponse> {
-    if (this.oauthToken) {
+  async sendMessage(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
+    if (this.auth.kind === 'oauth') {
       return this.sendViaOAuth(systemPrompt, userMessage, options);
     }
     return this.sendViaAPI(systemPrompt, userMessage, options);
@@ -124,9 +117,10 @@ export class ClaudeClient {
     }
   }
 
-  private async sendViaOAuth(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<ClaudeResponse> {
+  private async sendViaOAuth(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
     const fullPrompt = `${systemPrompt}\n\n---\n\n${userMessage}`;
     const cliPath = await this.ensureCLI();
+    const oauthToken = this.auth.kind === 'oauth' ? this.auth.token : undefined;
 
     return new Promise((resolve, reject) => {
       // -p enables pipe mode — reads prompt from stdin when no argument follows
@@ -147,7 +141,7 @@ export class ClaudeClient {
           // process.env is spread intentionally — Claude CLI requires PATH, HOME, and other system vars.
           // CLAUDE_CODE_OAUTH_TOKEN is added conditionally. Secrets should be managed via GitHub Actions secret masking.
           ...process.env,
-          ...(this.oauthToken ? { CLAUDE_CODE_OAUTH_TOKEN: this.oauthToken } : {}),
+          ...(oauthToken ? { CLAUDE_CODE_OAUTH_TOKEN: oauthToken } : {}),
         },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
@@ -334,7 +328,7 @@ export class ClaudeClient {
     });
   }
 
-  private async sendViaAPI(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<ClaudeResponse> {
+  private async sendViaAPI(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
     if (!this.anthropic) throw new Error('Anthropic client not initialized');
 
     const useThinking = options?.effort && options.effort !== 'low';

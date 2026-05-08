@@ -52,8 +52,10 @@ jest.mock('./auth', () => ({
   getMemoryToken: jest.fn().mockReturnValue(null),
 }));
 
-jest.mock('./claude', () => ({
-  ClaudeClient: jest.fn().mockImplementation(() => ({})),
+jest.mock('./providers', () => ({
+  buildAnthropicAuth: jest.requireActual('./providers').buildAnthropicAuth,
+  createLLMClient: jest.fn().mockImplementation(() => ({ sendMessage: jest.fn() })),
+  parseModelSpec: jest.fn().mockImplementation((m: string) => ({ provider: 'anthropic', model: m })),
 }));
 
 jest.mock('./config', () => ({
@@ -156,6 +158,7 @@ jest.mock('./state', () => ({
 
 import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, main, _resetOctokitCache } from './index';
 import { FORCE_REVIEW_MARKER } from './github';
+import { createLLMClient, parseModelSpec } from './providers';
 import * as interaction from './interaction';
 import * as ghUtils from './github';
 import * as diffModule from './diff';
@@ -1111,6 +1114,53 @@ describe('handleReviewCommentInteraction', () => {
     expect(jest.mocked(core.info)).toHaveBeenCalledWith(
       'Review comment is not a reply to bot or @manki mention — skipping',
     );
+  });
+
+  it('calls setFailed when no auth tokens are configured', async () => {
+    jest.mocked(core.getInput).mockReturnValue('');
+    jest.mocked(interaction.hasBotMention).mockReturnValue(true);
+
+    setContext({
+      eventName: 'pull_request_review_comment',
+      payload: {
+        action: 'created',
+        comment: { body: '@manki help', user: { type: 'User' } },
+      },
+    });
+
+    await handleReviewCommentInteraction();
+
+    expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(
+      'No API key configured — set claude_code_oauth_token or anthropic_api_key',
+    );
+    expect(jest.mocked(interaction.handleReviewCommentReply)).not.toHaveBeenCalled();
+  });
+
+  it('calls setFailed when parseModelSpec throws for an unknown model', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'claude_code_oauth_token' ? 'oauth-tok' : '',
+    );
+    jest.mocked(interaction.hasBotMention).mockReturnValue(true);
+    jest.mocked(parseModelSpec).mockImplementationOnce(() => {
+      throw new Error('Unknown model "gpt-4o"');
+    });
+
+    setContext({
+      eventName: 'pull_request_review_comment',
+      payload: {
+        action: 'created',
+        comment: { body: '@manki help', user: { type: 'User' } },
+        pull_request: { base: { ref: 'main' }, number: 42 },
+      },
+    });
+
+    await handleReviewCommentInteraction();
+
+    expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(
+      expect.stringContaining('Unknown model "gpt-4o"'),
+    );
+    expect(jest.mocked(interaction.handleReviewCommentReply)).not.toHaveBeenCalled();
+    expect(jest.mocked(interaction.handleReviewCommentCommand)).not.toHaveBeenCalled();
   });
 });
 
@@ -3605,6 +3655,19 @@ describe('runFullReview orchestration', () => {
       expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
     });
   });
+
+  it('calls setFailed when parseModelSpec throws for an unknown model', async () => {
+    jest.mocked(parseModelSpec).mockImplementationOnce(() => {
+      throw new Error('Unknown model "x"');
+    });
+
+    await callRunFullReview();
+
+    expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(
+      expect.stringContaining('Unknown model "x"'),
+    );
+    expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+  });
 });
 
 describe('handleInteraction', () => {
@@ -3621,7 +3684,21 @@ describe('handleInteraction', () => {
     });
   });
 
+  it('calls setFailed when no auth tokens are configured', async () => {
+    jest.mocked(core.getInput).mockReturnValue('');
+
+    await handleInteraction();
+
+    expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(
+      'No API key configured — set claude_code_oauth_token or anthropic_api_key',
+    );
+    expect(jest.mocked(interaction.handlePRComment)).not.toHaveBeenCalled();
+  });
+
   it('returns early when no issue number in payload', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'claude_code_oauth_token' ? 'oauth-tok' : '',
+    );
     setContext({
       eventName: 'issue_comment',
       payload: {
@@ -3637,6 +3714,9 @@ describe('handleInteraction', () => {
   });
 
   it('routes PR comment to handlePRComment with correct params', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'claude_code_oauth_token' ? 'oauth-tok' : '',
+    );
     setContext({
       eventName: 'issue_comment',
       payload: {
@@ -3648,6 +3728,11 @@ describe('handleInteraction', () => {
 
     await handleInteraction();
 
+    expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
+      'anthropic',
+      expect.any(String),
+      { kind: 'oauth', token: 'oauth-tok' },
+    );
     expect(jest.mocked(interaction.handlePRComment)).toHaveBeenCalledWith(
       expect.anything(),  // octokit
       expect.anything(),  // claude client
@@ -3655,6 +3740,52 @@ describe('handleInteraction', () => {
       undefined,          // memoryConfig (memory not enabled)
       undefined,          // memoryToken
       expect.anything(),  // config
+    );
+  });
+
+  it('calls setFailed when parseModelSpec throws for an unknown model', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'claude_code_oauth_token' ? 'oauth-tok' : '',
+    );
+    jest.mocked(parseModelSpec).mockImplementationOnce(() => {
+      throw new Error('Unknown model "gpt-4o"');
+    });
+    setContext({
+      eventName: 'issue_comment',
+      payload: {
+        action: 'created',
+        comment: { body: '@manki help' },
+        issue: { number: 7, pull_request: { url: 'https://...' } },
+      },
+    });
+
+    await handleInteraction();
+
+    expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(
+      expect.stringContaining('Unknown model "gpt-4o"'),
+    );
+    expect(jest.mocked(interaction.handlePRComment)).not.toHaveBeenCalled();
+  });
+
+  it('uses apiKey auth when only anthropic_api_key is set', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'anthropic_api_key' ? 'sk-api-key' : '',
+    );
+    setContext({
+      eventName: 'issue_comment',
+      payload: {
+        action: 'created',
+        comment: { body: '@manki help' },
+        issue: { number: 7, pull_request: { url: 'https://...' } },
+      },
+    });
+
+    await handleInteraction();
+
+    expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
+      'anthropic',
+      expect.any(String),
+      { kind: 'apiKey', key: 'sk-api-key' },
     );
   });
 });
@@ -3816,6 +3947,9 @@ describe('handleReviewCommentInteraction auto-approve', () => {
   });
 
   it('triggers auto-approve after handling review comment reply', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'claude_code_oauth_token' ? 'oauth-tok' : '',
+    );
     jest.mocked(interaction.hasBotMention).mockReturnValue(true);
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: true, max_diff_lines: 5000,
@@ -3841,9 +3975,41 @@ describe('handleReviewCommentInteraction auto-approve', () => {
 
     await handleReviewCommentInteraction();
 
+    expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
+      'anthropic',
+      expect.any(String),
+      { kind: 'oauth', token: 'oauth-tok' },
+    );
     expect(jest.mocked(interaction.handleReviewCommentReply)).toHaveBeenCalled();
     expect(jest.mocked(stateModule.checkAndAutoApprove)).toHaveBeenCalledWith(
       expect.anything(), 'test-owner', 'test-repo', 8,
+    );
+  });
+
+  it('uses apiKey auth when only anthropic_api_key is set', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'anthropic_api_key' ? 'sk-api-key' : '',
+    );
+    jest.mocked(interaction.hasBotMention).mockReturnValue(true);
+
+    setContext({
+      eventName: 'pull_request_review_comment',
+      payload: {
+        action: 'created',
+        comment: {
+          body: '@manki help',
+          user: { type: 'User' },
+        },
+        pull_request: { number: 9, base: { ref: 'main' } },
+      },
+    });
+
+    await handleReviewCommentInteraction();
+
+    expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
+      'anthropic',
+      expect.any(String),
+      { kind: 'apiKey', key: 'sk-api-key' },
     );
   });
 });
@@ -3899,4 +4065,3 @@ describe('force review checkbox', () => {
     expect(jest.mocked(ghUtils.reactToIssueComment)).not.toHaveBeenCalled();
   });
 });
-

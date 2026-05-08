@@ -1653,10 +1653,10 @@ describe('runReview', () => {
     return {
       reviewer: {
         sendMessage: jest.fn().mockResolvedValue({ content: reviewerResponse }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn().mockResolvedValue({ content: '{"summary":"ok","findings":[]}' }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
   }
 
@@ -1734,10 +1734,10 @@ describe('runReview', () => {
     const clients: ReviewClients = {
       reviewer: {
         sendMessage: jest.fn().mockRejectedValue(new Error('API error')),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -1813,10 +1813,10 @@ describe('runReview', () => {
           if (callCount === 1) return Promise.reject(new Error('API error'));
           return Promise.resolve({ content: '[]' });
         }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn().mockResolvedValue({ content: '{"summary":"ok","findings":[]}' }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -1871,10 +1871,10 @@ describe('runReview', () => {
     const clients: ReviewClients = {
       reviewer: {
         sendMessage: jest.fn().mockRejectedValue(new Error('API error')),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -1911,10 +1911,10 @@ describe('runReview', () => {
     const clients: ReviewClients = {
       reviewer: {
         sendMessage: jest.fn().mockRejectedValue(new Error('API error')),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig({ review_passes: 2 });
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -1955,10 +1955,10 @@ describe('runReview', () => {
           }
           return Promise.resolve({ content: findingJson });
         }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig({ review_passes: 2 });
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -2087,7 +2087,7 @@ describe('runReview', () => {
             { index: 3, matchedDismissed: 1 },
           ]),
         }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -2235,7 +2235,7 @@ describe('runReview', () => {
       ...makeClients(findingJson),
       dedup: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -2326,10 +2326,10 @@ describe('runReview', () => {
           }
           return Promise.resolve({ content: '[]' });
         }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -2577,13 +2577,13 @@ describe('runReview', () => {
     const clients: ReviewClients = {
       reviewer: {
         sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       planner: {
         sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
 
     const config = makeConfig({ review_level: 'auto' });
@@ -2630,13 +2630,13 @@ describe('runReview', () => {
     const clients: ReviewClients = {
       reviewer: {
         sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       planner: {
         sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
 
     const config = makeConfig({ review_level: 'auto' });
@@ -2688,13 +2688,13 @@ describe('runReview', () => {
     const clients: ReviewClients = {
       reviewer: {
         sendMessage: jest.fn().mockResolvedValue({ content: findingJson }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       planner: {
         sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
 
     const config = makeConfig({ review_level: 'auto' });
@@ -2718,10 +2718,10 @@ describe('runReview', () => {
     const clients: ReviewClients = {
       reviewer: {
         sendMessage: jest.fn().mockResolvedValue({ content: findingJson }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
 
     const config = makeConfig({ review_level: 'auto' });
@@ -2740,10 +2740,10 @@ describe('runReview', () => {
     const clients: ReviewClients = {
       reviewer: {
         sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
 
     const config = makeConfig({ review_level: 'auto', planner: { enabled: false } });
@@ -2759,13 +2759,13 @@ describe('runReview', () => {
     const clients: ReviewClients = {
       reviewer: {
         sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       planner: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
 
     const config = makeConfig({ review_level: 'large' });
@@ -2791,13 +2791,13 @@ describe('runReview', () => {
     const clients: ReviewClients = {
       reviewer: {
         sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       planner: {
         sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
 
     const config = makeConfig({ review_level: 'auto', reviewers: [customReviewer] });
@@ -2824,13 +2824,13 @@ describe('runReview', () => {
     const clients: ReviewClients = {
       reviewer: {
         sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       planner: {
         sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig({ review_level: 'auto' });
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -2891,13 +2891,13 @@ describe('runReview', () => {
     const clients: ReviewClients = {
       reviewer: {
         sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       planner: {
         sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig({ review_level: 'auto' });
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -2934,11 +2934,11 @@ describe('runReview', () => {
     const clients: ReviewClients = {
       reviewer: {
         sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-      } as unknown as import('./claude').ClaudeClient,
-      judge: { sendMessage: jest.fn() } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
+      judge: { sendMessage: jest.fn() } as unknown as import('./providers').LLMClient,
       planner: {
         sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig({ review_level: 'auto' });
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -2990,11 +2990,11 @@ describe('runReview', () => {
     const clients: ReviewClients = {
       reviewer: {
         sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-      } as unknown as import('./claude').ClaudeClient,
-      judge: { sendMessage: jest.fn() } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
+      judge: { sendMessage: jest.fn() } as unknown as import('./providers').LLMClient,
       planner: {
         sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig({ review_level: 'auto' });
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -3054,11 +3054,11 @@ describe('runReview', () => {
     const clients: ReviewClients = {
       reviewer: {
         sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-      } as unknown as import('./claude').ClaudeClient,
-      judge: { sendMessage: jest.fn() } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
+      judge: { sendMessage: jest.fn() } as unknown as import('./providers').LLMClient,
       planner: {
         sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig({ review_level: 'auto' });
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -3117,11 +3117,11 @@ describe('runReview', () => {
     const clients: ReviewClients = {
       reviewer: {
         sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-      } as unknown as import('./claude').ClaudeClient,
-      judge: { sendMessage: jest.fn() } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
+      judge: { sendMessage: jest.fn() } as unknown as import('./providers').LLMClient,
       planner: {
         sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig({ review_level: 'auto' });
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -3238,11 +3238,11 @@ describe('runReview', () => {
     const clients: ReviewClients = {
       reviewer: {
         sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
-      planner: { sendMessage: plannerSpy } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
+      planner: { sendMessage: plannerSpy } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig({ review_level: 'auto' });
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -3285,11 +3285,11 @@ describe('runReview', () => {
     const clients: ReviewClients = {
       reviewer: {
         sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
-      planner: { sendMessage: plannerSpy } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
+      planner: { sendMessage: plannerSpy } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig({ review_level: 'auto' });
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -3305,13 +3305,13 @@ describe('runReview', () => {
     const clients: ReviewClients = {
       reviewer: {
         sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       planner: {
         sendMessage: jest.fn().mockRejectedValue(new Error('Planner API error')),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
 
     const config = makeConfig({ review_level: 'auto' });
@@ -3355,10 +3355,10 @@ describe('runReview', () => {
           jest.advanceTimersByTime(20_000);
           return Promise.resolve({ content: '[]' });
         }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -3424,10 +3424,10 @@ describe('runReview', () => {
           }
           return Promise.resolve({ content: findingJson });
         }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -3452,10 +3452,10 @@ describe('runReview', () => {
           }
           return Promise.reject(new Error('Permanent failure'));
         }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -3478,13 +3478,13 @@ describe('runReview', () => {
     const clients: ReviewClients = {
       reviewer: {
         sendMessage: jest.fn().mockRejectedValue(new Error('Timeout')),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       planner: {
         sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig({ review_level: 'auto' });
     const diff = makeDiff({ totalAdditions: 2, totalDeletions: 0 });
@@ -3508,10 +3508,10 @@ describe('runReview', () => {
           }
           return Promise.resolve({ content: '[]' });
         }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -3543,10 +3543,10 @@ describe('runReview', () => {
           }
           return Promise.resolve({ content: '[]' });
         }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig({ review_level: 'medium' });
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -3571,10 +3571,10 @@ describe('runReview', () => {
           }
           return Promise.resolve({ content: '[]' });
         }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig({ review_level: 'medium' });
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -3591,10 +3591,10 @@ describe('runReview', () => {
     const clients: ReviewClients = {
       reviewer: {
         sendMessage: jest.fn().mockRejectedValue(new Error('Permanent failure')),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig({ review_level: 'medium' });
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -3617,10 +3617,10 @@ describe('runReview', () => {
           }
           return Promise.resolve({ content: '[]' });
         }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig({ review_level: 'medium' });
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -3651,10 +3651,10 @@ describe('runReview', () => {
           }
           return Promise.resolve({ content: '[]' });
         }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -3705,10 +3705,10 @@ describe('runReview', () => {
           }
           return Promise.resolve({ content: emptyFindings });
         }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig({ review_passes: 2 });
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -3740,10 +3740,10 @@ describe('runReview', () => {
 
     const reviewerSendMessage = jest.fn().mockResolvedValue({ content: '[]' });
     const clients: ReviewClients = {
-      reviewer: { sendMessage: reviewerSendMessage } as unknown as import('./claude').ClaudeClient,
+      reviewer: { sendMessage: reviewerSendMessage } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn().mockResolvedValue({ content: '{"summary":"ok","findings":[]}' }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -3785,10 +3785,10 @@ describe('runReview', () => {
 
     const reviewerSendMessage = jest.fn().mockResolvedValue({ content: '[]' });
     const clients: ReviewClients = {
-      reviewer: { sendMessage: reviewerSendMessage } as unknown as import('./claude').ClaudeClient,
+      reviewer: { sendMessage: reviewerSendMessage } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn().mockResolvedValue({ content: '{"summary":"ok","findings":[]}' }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -3812,10 +3812,10 @@ describe('runReview', () => {
 
     const reviewerSendMessage = jest.fn().mockResolvedValue({ content: '[]' });
     const clients: ReviewClients = {
-      reviewer: { sendMessage: reviewerSendMessage } as unknown as import('./claude').ClaudeClient,
+      reviewer: { sendMessage: reviewerSendMessage } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn().mockResolvedValue({ content: '{"summary":"ok","findings":[]}' }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -3877,10 +3877,10 @@ describe('runReview test-file nit suppression', () => {
     return {
       reviewer: {
         sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn().mockResolvedValue({ content: '{"summary":"ok","findings":[]}' }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
   }
 
@@ -3987,7 +3987,7 @@ describe('runReview test-file nit suppression', () => {
 describe('runPlanner', () => {
   const makeClient = (response: string) => ({
     sendMessage: jest.fn().mockResolvedValue({ content: response }),
-  } as unknown as import('./claude').ClaudeClient);
+  } as unknown as import('./providers').LLMClient);
 
   it('returns valid PlannerResult from mocked LLM response', async () => {
     const response = JSON.stringify({
@@ -4021,7 +4021,7 @@ describe('runPlanner', () => {
   it('returns null on LLM error', async () => {
     const client = {
       sendMessage: jest.fn().mockRejectedValue(new Error('API error')),
-    } as unknown as import('./claude').ClaudeClient;
+    } as unknown as import('./providers').LLMClient;
 
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
     const result = await runPlanner(client, diff);
@@ -4234,7 +4234,7 @@ describe('runPlanner', () => {
     try {
       const client = {
         sendMessage: jest.fn().mockImplementation(() => new Promise(() => {})),
-      } as unknown as import('./claude').ClaudeClient;
+      } as unknown as import('./providers').LLMClient;
 
       const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
       const resultPromise = runPlanner(client, diff);
@@ -4909,7 +4909,7 @@ describe('buildPlannerSystemPrompt', () => {
 describe('runPlanner with agents and language', () => {
   const makeClient = (response: string) => ({
     sendMessage: jest.fn().mockResolvedValue({ content: response }),
-  } as unknown as import('./claude').ClaudeClient);
+  } as unknown as import('./providers').LLMClient);
 
   it('parses agents array, language, and context from planner response', async () => {
     const response = JSON.stringify({
@@ -5154,13 +5154,13 @@ describe('per-agent effort in runReview', () => {
     const clients: ReviewClients = {
       reviewer: {
         sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       planner: {
         sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
 
     const config = makeConfig({ review_level: 'auto' });
@@ -5195,13 +5195,13 @@ describe('per-agent effort in runReview', () => {
     const clients: ReviewClients = {
       reviewer: {
         sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
       planner: {
         sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
-      } as unknown as import('./claude').ClaudeClient,
+      } as unknown as import('./providers').LLMClient,
     };
 
     const config = makeConfig({ review_level: 'auto' });
@@ -5461,7 +5461,7 @@ describe('buildReviewerSystemPrompt sanitized context', () => {
 describe('runPlanner teamSize correction', () => {
   const makeClient = (response: string) => ({
     sendMessage: jest.fn().mockResolvedValue({ content: response }),
-  } as unknown as import('./claude').ClaudeClient);
+  } as unknown as import('./providers').LLMClient);
 
   it('returns null when agents.length does not match teamSize', async () => {
     const response = JSON.stringify({

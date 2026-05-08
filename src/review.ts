@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import { minimatch } from 'minimatch';
 
-import { ClaudeClient } from './claude';
+import { LLMClient } from './providers';
 import { runJudgeAgent, JudgeInput, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
@@ -322,10 +322,10 @@ export function intersectFindings(passes: Finding[][], threshold: number): Findi
 }
 
 export interface ReviewClients {
-  reviewer: ClaudeClient;
-  judge: ClaudeClient;
-  planner?: ClaudeClient;
-  dedup?: ClaudeClient;
+  reviewer: LLMClient;
+  judge: LLMClient;
+  planner?: LLMClient;
+  dedup?: LLMClient;
 }
 
 export interface ReviewProgress {
@@ -515,7 +515,7 @@ export function parseAgentPicks(
 }
 
 export async function runPlanner(
-  client: ClaudeClient,
+  client: LLMClient,
   diff: ParsedDiff,
   prContext?: PrContext,
   customReviewers?: ReviewerAgent[],
@@ -1223,7 +1223,7 @@ interface RunReviewerAgentOptions {
 }
 
 async function runReviewerAgent(
-  client: ClaudeClient,
+  client: LLMClient,
   config: ReviewConfig,
   reviewer: ReviewerAgent,
   rawDiff: string,
