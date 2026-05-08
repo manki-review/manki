@@ -77,9 +77,21 @@ function buildLLMClientFromInputs(opts: {
   inputs: ProviderInputs;
   model: string;
 }): { client: LLMClient } | null {
+  let spec: ReturnType<typeof parseModelSpec>;
   try {
-    const spec = parseModelSpec(opts.model);
-    const auth = buildAuthForProvider(spec.provider, opts.inputs);
+    spec = parseModelSpec(opts.model);
+  } catch (error) {
+    core.setFailed(`Invalid model config: ${error instanceof Error ? error.message : error}`);
+    return null;
+  }
+  let auth: ProviderAuth;
+  try {
+    auth = buildAuthForProvider(spec.provider, opts.inputs);
+  } catch (error) {
+    core.setFailed(`Missing credentials for provider "${spec.provider}": ${error instanceof Error ? error.message : error}`);
+    return null;
+  }
+  try {
     return { client: createLLMClient(spec.provider, spec.model, auth) };
   } catch (error) {
     core.setFailed(`Invalid model config: ${error instanceof Error ? error.message : error}`);
