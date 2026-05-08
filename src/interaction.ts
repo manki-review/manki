@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { ClaudeClient } from './claude';
+import { LLMClient } from './providers';
 import { writeSuppression, writeLearning, removeLearning, removeSuppression, batchUpdatePatternDecisions, sanitizeMemoryField } from './memory';
 import { reactToIssueComment, reactToReviewComment, fetchPRDiff } from './github';
 import { truncateDiff } from './review';
@@ -43,7 +43,7 @@ const BOT_MARKER = '<!-- manki -->';
  */
 export async function handleReviewCommentReply(
   octokit: Octokit,
-  client: ClaudeClient,
+  client: LLMClient,
   owner: string,
   repo: string,
   prNumber: number,
@@ -164,7 +164,7 @@ export async function handleReviewCommentReply(
  */
 export async function handlePRComment(
   octokit: Octokit,
-  client: ClaudeClient | null,
+  client: LLMClient | null,
   owner: string,
   repo: string,
   issueNumber: number,
@@ -285,7 +285,7 @@ function parseCommand(body: string): ParsedCommand {
 
 async function handleExplain(
   octokit: Octokit,
-  client: ClaudeClient,
+  client: LLMClient,
   owner: string,
   repo: string,
   prNumber: number,
@@ -760,7 +760,7 @@ async function handleTriage(
 
 async function handleGenericQuestion(
   octokit: Octokit,
-  client: ClaudeClient,
+  client: LLMClient,
   owner: string,
   repo: string,
   prNumber: number,

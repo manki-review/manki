@@ -1233,7 +1233,7 @@ describe('llmDeduplicateFindings', () => {
   it('returns all findings when no dismissed findings exist', async () => {
     const findings = [makeFinding({ title: 'Null check missing', file: 'src/foo.ts', line: 10 })];
     const previous = [makePrevious({ status: 'open' })];
-    const mockClient = { sendMessage: jest.fn() } as unknown as import('./claude').ClaudeClient;
+    const mockClient = { sendMessage: jest.fn() } as unknown as import('./providers').LLMClient;
 
     const result = await llmDeduplicateFindings(findings, previous, mockClient);
     expect(result.unique).toHaveLength(1);
@@ -1243,7 +1243,7 @@ describe('llmDeduplicateFindings', () => {
 
   it('returns all findings when no findings to check', async () => {
     const previous = [makePrevious({ status: 'resolved' })];
-    const mockClient = { sendMessage: jest.fn() } as unknown as import('./claude').ClaudeClient;
+    const mockClient = { sendMessage: jest.fn() } as unknown as import('./providers').LLMClient;
 
     const result = await llmDeduplicateFindings([], previous, mockClient);
     expect(result.unique).toHaveLength(0);
@@ -1263,7 +1263,7 @@ describe('llmDeduplicateFindings', () => {
       sendMessage: jest.fn().mockResolvedValue({
         content: '[{ "index": 1, "matchedDismissed": 1 }]',
       }),
-    } as unknown as import('./claude').ClaudeClient;
+    } as unknown as import('./providers').LLMClient;
 
     const result = await llmDeduplicateFindings(findings, previous, mockClient);
     expect(result.unique).toHaveLength(1);
@@ -1282,7 +1282,7 @@ describe('llmDeduplicateFindings', () => {
     ];
     const mockClient = {
       sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-    } as unknown as import('./claude').ClaudeClient;
+    } as unknown as import('./providers').LLMClient;
 
     const result = await llmDeduplicateFindings(findings, previous, mockClient);
     expect(result.unique).toHaveLength(1);
@@ -1298,7 +1298,7 @@ describe('llmDeduplicateFindings', () => {
     ];
     const mockClient = {
       sendMessage: jest.fn().mockRejectedValue(new Error('API error')),
-    } as unknown as import('./claude').ClaudeClient;
+    } as unknown as import('./providers').LLMClient;
 
     const result = await llmDeduplicateFindings(findings, previous, mockClient);
     expect(result.unique).toHaveLength(1);
@@ -1308,7 +1308,7 @@ describe('llmDeduplicateFindings', () => {
   it('does not treat replied findings as dismissed', async () => {
     const findings = [makeFinding({ title: 'Missing null check', file: 'src/foo.ts', line: 10 })];
     const previous = [makePrevious({ title: 'Missing null check', status: 'replied' })];
-    const mockClient = { sendMessage: jest.fn() } as unknown as import('./claude').ClaudeClient;
+    const mockClient = { sendMessage: jest.fn() } as unknown as import('./providers').LLMClient;
 
     const result = await llmDeduplicateFindings(findings, previous, mockClient);
     expect(result.unique).toHaveLength(1);
@@ -1328,7 +1328,7 @@ describe('llmDeduplicateFindings', () => {
       sendMessage: jest.fn().mockResolvedValue({
         content: '```json\n[{ "index": 1, "matchedDismissed": 1 }]\n```',
       }),
-    } as unknown as import('./claude').ClaudeClient;
+    } as unknown as import('./providers').LLMClient;
 
     const result = await llmDeduplicateFindings(findings, previous, mockClient);
     expect(result.unique).toHaveLength(1);
@@ -1350,7 +1350,7 @@ describe('llmDeduplicateFindings', () => {
       sendMessage: jest.fn().mockResolvedValue({
         content: '[{ "index": 1, "matchedDismissed": 99 }]',
       }),
-    } as unknown as import('./claude').ClaudeClient;
+    } as unknown as import('./providers').LLMClient;
 
     const result = await llmDeduplicateFindings(findings, previous, mockClient);
     expect(result.unique).toHaveLength(1);

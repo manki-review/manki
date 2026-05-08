@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 
-import { ClaudeClient } from './claude';
+import { LLMClient } from './providers';
 import { extractJSON } from './json';
 import {
   filterLearningsForFinding,
@@ -801,7 +801,7 @@ function validateReachability(value: unknown): FindingReachability | undefined {
 }
 
 export async function runJudgeAgent(
-  client: ClaudeClient,
+  client: LLMClient,
   config: ReviewConfig,
   input: JudgeInput,
 ): Promise<{

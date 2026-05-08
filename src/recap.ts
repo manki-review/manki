@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import { ClaudeClient } from './claude';
+import { LLMClient } from './providers';
 import { ACTIONS_BOT_LOGIN, BOT_LOGIN, titleToSlug } from './github';
 import { matchesSuppression, Suppression } from './memory';
 import { AuthorReplyClass, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, migrateLegacySeverity, SEVERITY_TOKEN_PATTERN } from './types';
@@ -517,7 +517,7 @@ function matchesPrevious(finding: Finding, previous: PreviousFinding): boolean {
 async function llmDeduplicateFindings(
   findings: Finding[],
   previousFindings: PreviousFinding[],
-  client: ClaudeClient,
+  client: LLMClient,
 ): Promise<{ unique: Finding[]; duplicates: DuplicateMatch[] }> {
   const dismissed = previousFindings.filter(f => f.status === 'resolved');
   if (findings.length === 0 || dismissed.length === 0) {
