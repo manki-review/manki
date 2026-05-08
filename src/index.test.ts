@@ -3765,6 +3765,28 @@ describe('handleInteraction', () => {
     );
     expect(jest.mocked(interaction.handlePRComment)).not.toHaveBeenCalled();
   });
+
+  it('uses apiKey auth when only anthropic_api_key is set', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'anthropic_api_key' ? 'sk-api-key' : '',
+    );
+    setContext({
+      eventName: 'issue_comment',
+      payload: {
+        action: 'created',
+        comment: { body: '@manki help' },
+        issue: { number: 7, pull_request: { url: 'https://...' } },
+      },
+    });
+
+    await handleInteraction();
+
+    expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
+      'anthropic',
+      expect.any(String),
+      { kind: 'apiKey', key: 'sk-api-key' },
+    );
+  });
 });
 
 describe('handleIssueInteraction', () => {
@@ -3960,6 +3982,33 @@ describe('handleReviewCommentInteraction auto-approve', () => {
     expect(jest.mocked(interaction.handleReviewCommentReply)).toHaveBeenCalled();
     expect(jest.mocked(stateModule.checkAndAutoApprove)).toHaveBeenCalledWith(
       expect.anything(), 'test-owner', 'test-repo', 8,
+    );
+  });
+
+  it('uses apiKey auth when only anthropic_api_key is set', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'anthropic_api_key' ? 'sk-api-key' : '',
+    );
+    jest.mocked(interaction.hasBotMention).mockReturnValue(true);
+
+    setContext({
+      eventName: 'pull_request_review_comment',
+      payload: {
+        action: 'created',
+        comment: {
+          body: '@manki help',
+          user: { type: 'User' },
+        },
+        pull_request: { number: 9, base: { ref: 'main' } },
+      },
+    });
+
+    await handleReviewCommentInteraction();
+
+    expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
+      'anthropic',
+      expect.any(String),
+      { kind: 'apiKey', key: 'sk-api-key' },
     );
   });
 });
