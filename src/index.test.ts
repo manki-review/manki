@@ -158,6 +158,7 @@ jest.mock('./state', () => ({
 
 import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, main, _resetOctokitCache, buildAnthropicAuth } from './index';
 import { FORCE_REVIEW_MARKER } from './github';
+import { parseModelSpec } from './providers';
 import * as interaction from './interaction';
 import * as ghUtils from './github';
 import * as diffModule from './diff';
@@ -3626,6 +3627,19 @@ describe('runFullReview orchestration', () => {
       // suppression is exercised inside review.ts (tested in review.test.ts).
       expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
     });
+  });
+
+  it('warns and returns gracefully when parseModelSpec throws for an unknown model', async () => {
+    jest.mocked(parseModelSpec).mockImplementationOnce(() => {
+      throw new Error('Unknown model "x"');
+    });
+
+    await callRunFullReview();
+
+    expect(jest.mocked(core.warning)).toHaveBeenCalledWith(
+      expect.stringContaining('Unknown model "x"'),
+    );
+    expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
   });
 });
 
