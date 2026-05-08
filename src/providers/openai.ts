@@ -176,7 +176,8 @@ export class OpenAIClient implements LLMClient {
       let outputKillTimer: NodeJS.Timeout | undefined;
       let stdinKillTimer: NodeJS.Timeout | undefined;
       let lastStdoutChunk = '';
-      let rawBytes = 0;
+      let rawStdoutBytes = 0;
+      let rawStderrBytes = 0;
 
       const clearAllTimers = (): void => {
         clearTimeout(timer);
@@ -225,8 +226,8 @@ export class OpenAIClient implements LLMClient {
         staleTimer = setTimeout(handleStale, STALE_TIMEOUT_MS);
         staleTimer.unref();
 
-        rawBytes += data.length;
-        if (rawBytes + stderr.length > MAX_OUTPUT) { killOnOutputExceeded(); return; }
+        rawStdoutBytes += data.length;
+        if (rawStdoutBytes + rawStderrBytes > MAX_OUTPUT) { killOnOutputExceeded(); return; }
 
         const chunk = stdoutDecoder.write(data);
         if (chunk.length >= 500) {
@@ -238,8 +239,9 @@ export class OpenAIClient implements LLMClient {
       });
       child.stderr.on('data', (data: Buffer) => {
         if (outputExceeded || settled) return;
+        rawStderrBytes += data.length;
         stderr += stderrDecoder.write(data);
-        if (rawBytes + stderr.length > MAX_OUTPUT) killOnOutputExceeded();
+        if (rawStdoutBytes + rawStderrBytes > MAX_OUTPUT) killOnOutputExceeded();
       });
 
       child.on('close', (code, signal) => {
