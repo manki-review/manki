@@ -3,11 +3,14 @@ import * as github from '@actions/github';
 import { ClaudeClient } from './claude';
 import { ACTIONS_BOT_LOGIN, BOT_LOGIN, titleToSlug } from './github';
 import { matchesSuppression, Suppression } from './memory';
-import { AuthorReplyClass, Finding, FindingFingerprint, FindingSeverity, InPrSuppression, InPrSuppressionReason, migrateLegacySeverity, SEVERITY_TOKEN_PATTERN } from './types';
+import { AuthorReplyClass, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, migrateLegacySeverity, SEVERITY_TOKEN_PATTERN } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
 const BOT_MARKER = '<!-- manki';
+
+/** Shared prefix that identifies a severity title line in a manki comment body. */
+const FINDING_TITLE_RE = /\*\*(?:Blocker|Warning|Suggestion|Nitpick|Ignore)\*\*(?:\s*<sub>\[[^\]]*\]<\/sub>)?\s*:\s*/;
 
 /** Escape double quotes and strip triple-backtick sequences from untrusted text before LLM interpolation. */
 export function sanitize(s: string, maxLength = 200): string {
@@ -98,7 +101,7 @@ function classifyAuthorReply(text: string | undefined): AuthorReplyClass {
   return 'none';
 }
 
-interface PreviousFinding {
+interface PreviousFinding extends FindingMetadata {
   title: string;
   file: string;
   line: number;
@@ -194,6 +197,8 @@ async function fetchRecapState(
       threadUrl: t.threadUrl,
       authorReplyText: t.authorReplyText,
       authorReplyLogin: t.authorReplyLogin,
+      description: t.description,
+      suggestedFix: t.suggestedFix,
     }));
 
   // Mirror the `prAuthorLogin` gate from inPrSuppressionReasonFor: only the
@@ -242,7 +247,7 @@ async function fetchRecapState(
   return { previousFindings, recapContext };
 }
 
-interface ReviewThread {
+interface ReviewThread extends FindingMetadata {
   threadId: string;
   threadUrl: string;
   isBotThread: boolean;
@@ -255,6 +260,58 @@ interface ReviewThread {
   severity: FindingSeverity | 'unknown';
   authorReplyText?: string;
   authorReplyLogin?: string;
+}
+
+/**
+ * Parse the prose description and suggested-fix excerpt from a manki-authored
+ * thread's first comment body. Returns `undefined` for either field when the
+ * comment doesn't match the expected layout. The judge tolerates missing
+ * fields. Pure string scan, no markdown parser, intentionally conservative so
+ * unexpected layouts skip extraction rather than emit garbage.
+ */
+function parseFindingFromComment(body: string): FindingMetadata {
+  const titleMatch = body.match(new RegExp(FINDING_TITLE_RE.source + '.+(?:\\n|$)'));
+  if (!titleMatch || titleMatch.index === undefined) return {};
+  const afterTitle = body.slice(titleMatch.index + titleMatch[0].length);
+
+  let descSlice = afterTitle;
+  const stopMarkers = [
+    '\n```',
+    '\n<details>',
+    '\n<!-- manki:',
+  ];
+  let earliest = descSlice.length;
+  let truncatingStop = false;
+  for (const marker of stopMarkers) {
+    const idx = descSlice.indexOf(marker);
+    if (idx >= 0 && idx < earliest) {
+      earliest = idx;
+      truncatingStop = marker === '\n```';
+    }
+  }
+  descSlice = descSlice.slice(0, earliest).replace(/^[\s\n]+|[\s\n]+$/g, '');
+  const remainingSubs = descSlice.match(/^(?:<sub>[^\n]*<\/sub>\s*\n?)+/);
+  if (remainingSubs) descSlice = descSlice.slice(remainingSubs[0].length).replace(/^\s+/, '');
+  if (descSlice.length > 500) descSlice = descSlice.slice(0, 500) + '...';
+  else if (truncatingStop && descSlice.length > 0) descSlice += '…(truncated)';
+  const description: string | undefined = descSlice.length > 0 ? descSlice : undefined;
+
+  let suggestedFix: string | undefined;
+  const aiContextMatch = body.match(/<summary>AI context<\/summary>[\s\S]*?```json\s*([\s\S]*?)```/);
+  if (aiContextMatch) {
+    try {
+      const parsed: unknown = JSON.parse(aiContextMatch[1]);
+      if (parsed && typeof parsed === 'object' && 'fix' in parsed) {
+        const fix = (parsed as { fix?: unknown }).fix;
+        if (typeof fix === 'string' && fix.length > 0) suggestedFix = fix;
+      }
+    } catch {
+      // Malformed AI context JSON — skip suggestedFix, keep description.
+    }
+  }
+  if (suggestedFix && suggestedFix.length > 300) suggestedFix = suggestedFix.slice(0, 300) + '...';
+
+  return { description, suggestedFix };
 }
 
 async function fetchReviewThreads(
@@ -338,8 +395,12 @@ async function fetchReviewThreads(
         ? migrateLegacySeverity(severityMatch[1])
         : 'unknown') as FindingSeverity | 'unknown';
 
-      const titleMatch = firstComment?.body?.match(/\*\*(?:Blocker|Warning|Suggestion|Nitpick|Ignore)\*\*(?:\s*<sub>\[[^\]]*\]<\/sub>)?\s*:\s*(.+?)(?:\n|$)/);
+      const titleMatch = firstComment?.body?.match(new RegExp(FINDING_TITLE_RE.source + '(.+?)(?:\\n|$)'));
       const findingTitle = titleMatch?.[1]?.trim() ?? '';
+
+      const { description, suggestedFix } = isBotThread && firstComment?.body
+        ? parseFindingFromComment(firstComment.body)
+        : {};
 
       const line = thread.line ?? 0;
       const lineStart = thread.startLine ?? line;
@@ -351,6 +412,8 @@ async function fetchReviewThreads(
         isResolved: thread.isResolved,
         hasHumanReply,
         findingTitle,
+        description,
+        suggestedFix,
         file: thread.path ?? '',
         line,
         lineStart,
@@ -516,4 +579,4 @@ async function llmDeduplicateFindings(
   }
 }
 
-export { DuplicateMatch, PreviousFinding, RecapState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchRecapState, deduplicateFindings, titlesOverlap, llmDeduplicateFindings };
+export { DuplicateMatch, PreviousFinding, RecapState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchRecapState, deduplicateFindings, titlesOverlap, llmDeduplicateFindings, parseFindingFromComment };

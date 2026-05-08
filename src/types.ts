@@ -28,6 +28,12 @@ export const RESOLVED_THREAD_SUPPRESSED_TAG = 'suppressed-by-resolved-thread' as
 export const OWN_PROPOSAL_TAG = 'own-proposal-followup' as const;
 export const IN_PR_SUPPRESSED_TAG = 'suppressed-in-pr' as const;
 
+/** Shared shape for the prose extracted from a review-thread comment body. */
+export interface FindingMetadata {
+  description?: string;
+  suggestedFix?: string;
+}
+
 /**
  * A region of the current diff that implements code manki itself suggested in a
  * prior review round. Produced by matching prior-round `suggestedFix` text
@@ -275,7 +281,7 @@ export interface PrContext {
  * An unresolved review thread carried into a follow-up review so the judge
  * can decide whether the new diff addresses it.
  */
-export interface OpenThread {
+export interface OpenThread extends FindingMetadata {
   threadId: string;
   threadUrl?: string;
   title: string;
