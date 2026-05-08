@@ -71,6 +71,13 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
         .map(r => ({ name: r.name as string, focus: r.focus as string }))
     : [];
   const knownAgentNames = new Set(buildAgentPool(customReviewers as ReviewerAgent[]).map(a => a.name));
+  const declaredReviewerNames = new Set(
+    Array.isArray(config.reviewers)
+      ? (config.reviewers as Array<Record<string, unknown>>)
+          .filter(r => r && typeof r === 'object' && typeof r.name === 'string' && (r.name as string).length > 0)
+          .map(r => r.name as string)
+      : [],
+  );
 
   for (const key of Object.keys(config)) {
     if (!KNOWN_KEYS.has(key)) {
@@ -177,8 +184,12 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
               continue;
             }
             if (!knownAgentNames.has(agentName)) {
-              const known = Array.from(knownAgentNames).map(n => `"${n}"`).join(', ');
-              errors.push(`Unknown agent name "${agentName}" in \`models.agents\`. Known agents: ${known}`);
+              if (declaredReviewerNames.has(agentName)) {
+                errors.push(`Agent "${agentName}" in \`models.agents\` matches a reviewer declared under \`reviewers:\` but that entry is invalid. Check its \`name\` and \`focus\` fields.`);
+              } else {
+                const known = Array.from(knownAgentNames).map(n => `"${n}"`).join(', ');
+                errors.push(`Unknown agent name "${agentName}" in \`models.agents\`. Known agents: ${known}`);
+              }
             }
           }
         }
@@ -271,17 +282,14 @@ function deepMerge(defaults: ReviewConfig, overrides: Record<string, unknown>): 
       result.memory = { ...defaults.memory, ...(value as Record<string, unknown>) } as ReviewConfig['memory'];
     } else if (key === 'models' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
       const incoming = value as Record<string, unknown>;
-      const mergedAgents = (() => {
-        const existing = defaults.models?.agents;
-        const next = incoming.agents;
-        if (!existing && (!next || typeof next !== 'object' || Array.isArray(next))) return undefined;
-        return {
-          ...(existing ?? {}),
-          ...((next && typeof next === 'object' && !Array.isArray(next)) ? (next as Record<string, string>) : {}),
-        };
-      })();
+      const incomingAgents = incoming.agents as Record<string, string> | undefined;
+      const existingAgents = defaults.models?.agents;
       const merged = { ...defaults.models, ...incoming } as ReviewConfig['models'];
-      if (mergedAgents !== undefined && merged) merged.agents = mergedAgents;
+      if (merged) {
+        merged.agents = (existingAgents || incomingAgents)
+          ? { ...(existingAgents ?? {}), ...(incomingAgents ?? {}) }
+          : undefined;
+      }
       result.models = merged;
     } else if (key === 'planner' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
       result.planner = { ...defaults.planner, ...(value as Record<string, unknown>) } as ReviewConfig['planner'];

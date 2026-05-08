@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { createAuthenticatedOctokit, getMemoryToken } from './auth';
-import { loadConfig, resolveAgentModel, resolveModel } from './config';
+import { loadConfig, resolveModel } from './config';
 import { buildAnthropicAuth, createLLMClient, parseModelSpec } from './providers';
 import type { LLMClient } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
@@ -405,11 +405,15 @@ async function runFullReview(
     };
     let reviewerClient: LLMClient, judgeClient: LLMClient, dedupClient: LLMClient;
     let plannerClient: LLMClient | undefined;
+    const perAgentClients = new Map<string, LLMClient>();
     try {
       reviewerClient = buildClient(reviewerModel);
       judgeClient = buildClient(judgeModel);
       plannerClient = config.planner?.enabled !== false ? buildClient(plannerModel) : undefined;
       dedupClient = buildClient(dedupModel);
+      for (const [name, model] of Object.entries(config.models?.agents ?? {})) {
+        if (model !== reviewerModel) perAgentClients.set(name, buildClient(model));
+      }
     } catch (error) {
       core.setFailed(`Invalid model config: ${error instanceof Error ? error.message : error}`);
       await octokit.rest.issues.deleteComment({ owner, repo, comment_id: progressCommentId }).catch(() => {});
@@ -647,10 +651,8 @@ async function runFullReview(
         judge: judgeClient,
         planner: plannerClient,
         dedup: dedupClient,
-        reviewerForAgent: (agentName: string) => {
-          const model = resolveAgentModel(config, agentName, 'reviewer');
-          return model === reviewerModel ? reviewerClient : buildClient(model);
-        },
+        reviewerForAgent: (agentName: string) =>
+          perAgentClients.get(agentName) ?? reviewerClient,
       }, config, diff, rawDiff, fullContext,
       memory, fileContents, prContext, linkedIssues,
       (progress) => {

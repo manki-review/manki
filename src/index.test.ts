@@ -158,6 +158,7 @@ jest.mock('./state', () => ({
 
 import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, main, _resetOctokitCache } from './index';
 import { FORCE_REVIEW_MARKER } from './github';
+import type { ReviewConfig } from './types';
 import { createLLMClient, parseModelSpec } from './providers';
 import * as interaction from './interaction';
 import * as ghUtils from './github';
@@ -3667,6 +3668,126 @@ describe('runFullReview orchestration', () => {
       expect.stringContaining('Unknown model "x"'),
     );
     expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+  });
+
+  describe('per-agent model overrides', () => {
+    function configWithAgents(agents: Record<string, string>): ReviewConfig {
+      return {
+        auto_review: true, auto_approve: false, max_diff_lines: 5000,
+        exclude_paths: [], nit_handling: 'issues',
+        reviewers: [], instructions: '', review_level: 'auto',
+        review_thresholds: { small: 200, medium: 800 },
+        memory: { enabled: false, repo: '' },
+        models: { reviewer: 'claude-sonnet-4-6', agents },
+      };
+    }
+
+    it('logs per-agent model overrides when configured', async () => {
+      jest.mocked(configModule.loadConfig).mockReturnValue(
+        configWithAgents({ 'Security & Safety': 'claude-opus-4-7' }),
+      );
+
+      await callRunFullReview();
+
+      expect(jest.mocked(core.info)).toHaveBeenCalledWith(
+        expect.stringContaining('Per-agent model overrides — Security & Safety=claude-opus-4-7'),
+      );
+    });
+
+    it('does not log per-agent overrides when models.agents is absent or empty', async () => {
+      jest.mocked(configModule.loadConfig).mockReturnValue(configWithAgents({}));
+
+      await callRunFullReview();
+
+      const infoCalls = jest.mocked(core.info).mock.calls.map(c => c[0]);
+      expect(infoCalls.some((m: string) => m?.includes('Per-agent model overrides'))).toBe(false);
+    });
+
+    it('eagerly constructs per-agent clients and surfaces failures via setFailed', async () => {
+      jest.mocked(configModule.loadConfig).mockReturnValue(
+        configWithAgents({ 'Security & Safety': 'bogus-model' }),
+      );
+      jest.mocked(parseModelSpec).mockImplementation((m: string) => {
+        if (m === 'bogus-model') throw new Error('Unsupported provider for "bogus-model"');
+        return { provider: 'anthropic', model: m };
+      });
+
+      await callRunFullReview();
+
+      expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(
+        expect.stringContaining('Unsupported provider'),
+      );
+      expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+    });
+
+    it('passes a reviewerForAgent callback that returns the override client for overridden agents', async () => {
+      const overrideClient = { sendMessage: jest.fn() };
+      jest.mocked(createLLMClient).mockImplementation((_p: unknown, model: unknown) =>
+        model === 'claude-opus-4-7' ? overrideClient : { sendMessage: jest.fn() },
+      );
+      jest.mocked(configModule.loadConfig).mockReturnValue(
+        configWithAgents({ 'Security & Safety': 'claude-opus-4-7' }),
+      );
+      const testFile = {
+        path: 'src/app.ts', changeType: 'modified' as const,
+        hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: '' }],
+      };
+      jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+        files: [testFile], totalAdditions: 10, totalDeletions: 5,
+      });
+      jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+
+      await callRunFullReview();
+
+      const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0];
+      expect(runReviewCall).toBeDefined();
+      const clientsArg = runReviewCall[0] as { reviewerForAgent: (n: string) => unknown };
+      expect(clientsArg.reviewerForAgent('Security & Safety')).toBe(overrideClient);
+    });
+
+    it('reviewerForAgent falls back to the default reviewer client when no override is configured', async () => {
+      const defaultClient = { sendMessage: jest.fn(), tag: 'default' };
+      jest.mocked(createLLMClient).mockReturnValue(defaultClient);
+      jest.mocked(configModule.loadConfig).mockReturnValue(configWithAgents({}));
+      const testFile = {
+        path: 'src/app.ts', changeType: 'modified' as const,
+        hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: '' }],
+      };
+      jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+        files: [testFile], totalAdditions: 10, totalDeletions: 5,
+      });
+      jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+
+      await callRunFullReview();
+
+      const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0];
+      const clientsArg = runReviewCall[0] as { reviewerForAgent: (n: string) => unknown; reviewer: unknown };
+      expect(clientsArg.reviewerForAgent('Architecture & Design')).toBe(clientsArg.reviewer);
+    });
+
+    it('reviewerForAgent caches per-agent clients across repeated invocations', async () => {
+      jest.mocked(configModule.loadConfig).mockReturnValue(
+        configWithAgents({ 'Security & Safety': 'claude-opus-4-7' }),
+      );
+      const testFile = {
+        path: 'src/app.ts', changeType: 'modified' as const,
+        hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: '' }],
+      };
+      jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+        files: [testFile], totalAdditions: 10, totalDeletions: 5,
+      });
+      jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+
+      await callRunFullReview();
+
+      const callsBefore = jest.mocked(createLLMClient).mock.calls.length;
+      const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0];
+      const clientsArg = runReviewCall[0] as { reviewerForAgent: (n: string) => unknown };
+      const a = clientsArg.reviewerForAgent('Security & Safety');
+      const b = clientsArg.reviewerForAgent('Security & Safety');
+      expect(a).toBe(b);
+      expect(jest.mocked(createLLMClient).mock.calls.length).toBe(callsBefore);
+    });
   });
 });
 

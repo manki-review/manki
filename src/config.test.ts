@@ -478,6 +478,36 @@ models:
       const config: ReviewConfig = { ...baseConfig, models: { reviewer: 'claude-haiku-4-5' } };
       expect(resolveAgentModel(config, 'Security & Safety', 'reviewer')).toBe('claude-haiku-4-5');
     });
+
+    it('resolves the per-agent override regardless of stage', () => {
+      const config: ReviewConfig = {
+        ...baseConfig,
+        models: {
+          planner: 'claude-haiku-4-5',
+          judge: 'claude-opus-4-7',
+          dedup: 'claude-haiku-4-5',
+          agents: { 'Security & Safety': 'claude-opus-4-7' },
+        },
+      };
+      expect(resolveAgentModel(config, 'Security & Safety', 'planner')).toBe('claude-opus-4-7');
+      expect(resolveAgentModel(config, 'Security & Safety', 'judge')).toBe('claude-opus-4-7');
+      expect(resolveAgentModel(config, 'Security & Safety', 'dedup')).toBe('claude-opus-4-7');
+    });
+
+    it('falls back to the requested stage default for non-overridden agents', () => {
+      const config: ReviewConfig = {
+        ...baseConfig,
+        models: {
+          planner: 'planner-model',
+          judge: 'judge-model',
+          dedup: 'dedup-model',
+          reviewer: 'reviewer-model',
+        },
+      };
+      expect(resolveAgentModel(config, 'Architecture & Design', 'planner')).toBe('planner-model');
+      expect(resolveAgentModel(config, 'Architecture & Design', 'judge')).toBe('judge-model');
+      expect(resolveAgentModel(config, 'Architecture & Design', 'dedup')).toBe('dedup-model');
+    });
   });
 
   describe('models.agents config', () => {
@@ -534,6 +564,51 @@ models:
     it('omits agents key when not provided', () => {
       const config = loadConfig('models:\n  reviewer: claude-sonnet-4-6\n');
       expect(config.models?.agents).toBeUndefined();
+    });
+
+    it('rejects non-string (number) value for an agent override', () => {
+      const yaml = `
+models:
+  agents:
+    "Security & Safety": 42
+`;
+      expect(() => loadConfig(yaml)).toThrow(/`models.agents.Security & Safety` must be a non-empty string/);
+    });
+
+    it('rejects array value for models.agents', () => {
+      const yaml = `
+models:
+  agents:
+    - "Security & Safety"
+`;
+      expect(() => loadConfig(yaml)).toThrow(/`models.agents` must be an object/);
+    });
+
+    it('points malformed reviewer entries at the right error when an override targets them', () => {
+      const yaml = `
+reviewers:
+  - name: "Protocol Compliance"
+models:
+  agents:
+    "Protocol Compliance": claude-opus-4-7
+`;
+      expect(() => loadConfig(yaml)).toThrow(/Agent "Protocol Compliance" in `models.agents` matches a reviewer declared under `reviewers:` but that entry is invalid/);
+    });
+
+    it('merges per-agent overrides through deepMerge without dropping prior entries', () => {
+      const config = loadConfigFromContent(`
+reviewers:
+  - name: "Protocol Compliance"
+    focus: "DIP compliance"
+models:
+  agents:
+    "Security & Safety": claude-opus-4-7
+    "Protocol Compliance": claude-haiku-4-5
+`);
+      expect(config.models?.agents).toEqual({
+        'Security & Safety': 'claude-opus-4-7',
+        'Protocol Compliance': 'claude-haiku-4-5',
+      });
     });
   });
 
