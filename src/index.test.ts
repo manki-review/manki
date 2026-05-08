@@ -3804,14 +3804,15 @@ describe('runFullReview orchestration', () => {
     );
     jest.mocked(configModule.resolveModel).mockReturnValue('gemini-3.1-flash-lite');
     jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'gemini', model: m }));
+    try {
+      await callRunFullReview();
 
-    await callRunFullReview();
-
-    expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
-    expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
-
-    jest.mocked(configModule.resolveModel).mockReturnValue('claude-sonnet-4-20250514');
-    jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
+      expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
+      expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
+    } finally {
+      jest.mocked(configModule.resolveModel).mockReturnValue('claude-sonnet-4-20250514');
+      jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
+    }
   });
 
   it('proceeds when gemini_oauth_token is set', async () => {
@@ -3820,14 +3821,15 @@ describe('runFullReview orchestration', () => {
     );
     jest.mocked(configModule.resolveModel).mockReturnValue('gemini-3.1-flash-lite');
     jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'gemini', model: m }));
+    try {
+      await callRunFullReview();
 
-    await callRunFullReview();
-
-    expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
-    expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
-
-    jest.mocked(configModule.resolveModel).mockReturnValue('claude-sonnet-4-20250514');
-    jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
+      expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
+      expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
+    } finally {
+      jest.mocked(configModule.resolveModel).mockReturnValue('claude-sonnet-4-20250514');
+      jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
+    }
   });
 
 
@@ -3837,15 +3839,16 @@ describe('runFullReview orchestration', () => {
     );
     jest.mocked(configModule.resolveModel).mockReturnValue('gemini-3.1-flash-lite');
     jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'gemini', model: m }));
+    try {
+      await callRunFullReview();
 
-    await callRunFullReview();
-
-    expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(
-      expect.stringContaining('Invalid model config'),
-    );
-
-    jest.mocked(configModule.resolveModel).mockReturnValue('claude-sonnet-4-20250514');
-    jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
+      expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(
+        expect.stringContaining('Invalid model config'),
+      );
+    } finally {
+      jest.mocked(configModule.resolveModel).mockReturnValue('claude-sonnet-4-20250514');
+      jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
+    }
   });
 
   it('posts app warning when identity is actions', async () => {
@@ -4386,25 +4389,27 @@ describe('handleInteraction', () => {
       name === 'gemini_api_key' ? 'gem-key' : '',
     );
     jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'gemini', model: m }));
-    setContext({
-      eventName: 'issue_comment',
-      payload: {
-        action: 'created',
-        comment: { body: '@manki help' },
-        issue: { number: 7, pull_request: { url: 'https://...' } },
-      },
-    });
+    try {
+      setContext({
+        eventName: 'issue_comment',
+        payload: {
+          action: 'created',
+          comment: { body: '@manki help' },
+          issue: { number: 7, pull_request: { url: 'https://...' } },
+        },
+      });
 
-    await handleInteraction();
+      await handleInteraction();
 
-    expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
-    expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
-      'gemini',
-      expect.any(String),
-      { kind: 'apiKey', key: 'gem-key' },
-    );
-
-    jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
+      expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
+      expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
+        'gemini',
+        expect.any(String),
+        { kind: 'apiKey', key: 'gem-key' },
+      );
+    } finally {
+      jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
+    }
   });
 });
 
@@ -4637,29 +4642,30 @@ describe('handleReviewCommentInteraction auto-approve', () => {
     );
     jest.mocked(interaction.hasBotMention).mockReturnValue(true);
     jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'gemini', model: m }));
-
-    setContext({
-      eventName: 'pull_request_review_comment',
-      payload: {
-        action: 'created',
-        comment: {
-          body: '@manki help',
-          user: { type: 'User' },
+    try {
+      setContext({
+        eventName: 'pull_request_review_comment',
+        payload: {
+          action: 'created',
+          comment: {
+            body: '@manki help',
+            user: { type: 'User' },
+          },
+          pull_request: { number: 9, base: { ref: 'main' } },
         },
-        pull_request: { number: 9, base: { ref: 'main' } },
-      },
-    });
+      });
 
-    await handleReviewCommentInteraction();
+      await handleReviewCommentInteraction();
 
-    expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
-    expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
-      'gemini',
-      expect.any(String),
-      { kind: 'apiKey', key: 'gem-key' },
-    );
-
-    jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
+      expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
+      expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
+        'gemini',
+        expect.any(String),
+        { kind: 'apiKey', key: 'gem-key' },
+      );
+    } finally {
+      jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
+    }
   });
 });
 
