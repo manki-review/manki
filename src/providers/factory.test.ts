@@ -11,20 +11,23 @@ describe('createLLMClient', () => {
   });
 
   it('forwards the model to the constructed client', () => {
-    const client = createLLMClient('anthropic', 'claude-sonnet-4-20250514', { kind: 'apiKey', key: 'sk-test' }) as AnthropicClient;
-    expect(client.model).toBe('claude-sonnet-4-20250514');
+    const client = createLLMClient('anthropic', 'claude-sonnet-4-20250514', { kind: 'apiKey', key: 'sk-test' });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((client as any).model).toBe('claude-sonnet-4-20250514');
   });
 
   it('forwards apiKey auth to the constructed client', () => {
     const auth = { kind: 'apiKey' as const, key: 'sk-test' };
-    const client = createLLMClient('anthropic', 'claude-opus-4-6', auth) as AnthropicClient;
-    expect(client.auth).toEqual(auth);
+    const client = createLLMClient('anthropic', 'claude-opus-4-6', auth);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((client as any).auth).toEqual(auth);
   });
 
   it('forwards oauth auth to the constructed client', () => {
     const auth = { kind: 'oauth' as const, token: 'tok' };
-    const client = createLLMClient('anthropic', 'claude-opus-4-6', auth) as AnthropicClient;
-    expect(client.auth).toEqual(auth);
+    const client = createLLMClient('anthropic', 'claude-opus-4-6', auth);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((client as any).auth).toEqual(auth);
   });
 
   it('accepts oauth auth for anthropic', () => {

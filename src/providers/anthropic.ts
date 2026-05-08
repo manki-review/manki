@@ -56,9 +56,9 @@ export interface AnthropicClientOptions {
 }
 
 export class AnthropicClient implements LLMClient {
-  readonly auth: AnthropicAuth;
+  private readonly auth: AnthropicAuth;
   private anthropic?: Anthropic;
-  readonly model: string;
+  private readonly model: string;
   private cachedCLIPath?: string;
 
   constructor(options: AnthropicClientOptions) {
