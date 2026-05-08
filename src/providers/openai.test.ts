@@ -273,16 +273,20 @@ describe('sendViaOAuth (Codex CLI path)', () => {
 
   it('sets CODEX_OAUTH_TOKEN and OPENAI_OAUTH_TOKEN in spawn env', async () => {
     setupSpawnMock('ok\n');
-    const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'my-tok' }, model: 'gpt-4o' });
+    const savedKey = process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_API_KEY;
 
-    await client.sendMessage('sys', 'user');
+    try {
+      const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'my-tok' }, model: 'gpt-4o' });
+      await client.sendMessage('sys', 'user');
 
-    const spawnOpts = mockSpawn.mock.calls[0][2] as { env: Record<string, string> };
-    expect(spawnOpts.env.CODEX_OAUTH_TOKEN).toBe('my-tok');
-    expect(spawnOpts.env.OPENAI_OAUTH_TOKEN).toBe('my-tok');
-    // Aliasing an OAuth subscription token as OPENAI_API_KEY would cause
-    // credential type confusion inside the CLI's bundled OpenAI SDK.
-    expect(spawnOpts.env.OPENAI_API_KEY).not.toBe('my-tok');
+      const spawnOpts = mockSpawn.mock.calls[0][2] as { env: Record<string, string> };
+      expect(spawnOpts.env.CODEX_OAUTH_TOKEN).toBe('my-tok');
+      expect(spawnOpts.env.OPENAI_OAUTH_TOKEN).toBe('my-tok');
+      expect(spawnOpts.env.OPENAI_API_KEY).toBeUndefined();
+    } finally {
+      if (savedKey !== undefined) process.env.OPENAI_API_KEY = savedKey;
+    }
   });
 
   it('maps low effort to model_reasoning_effort=low on o-series CLI invocation', async () => {
