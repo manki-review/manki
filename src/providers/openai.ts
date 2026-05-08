@@ -271,7 +271,8 @@ export class OpenAIClient implements LLMClient {
           return;
         }
         if (code !== 0) {
-          const msg = `exit ${code}${signal ? `, signal ${signal}` : ''}: ${stderr.slice(0, 500)}`;
+          const sanitizedStderr = sanitizeLogOutput(stderr.slice(0, 500));
+          const msg = `exit ${code}${signal ? `, signal ${signal}` : ''}: ${sanitizedStderr}`;
           core.warning(`Codex CLI failed (${msg})`);
           reject(new Error(`Codex CLI invocation failed (${msg})`));
           return;
