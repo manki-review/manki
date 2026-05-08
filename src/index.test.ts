@@ -53,7 +53,6 @@ jest.mock('./auth', () => ({
 }));
 
 jest.mock('./providers', () => ({
-  AnthropicClient: jest.fn().mockImplementation(() => ({})),
   createLLMClient: jest.fn().mockImplementation(() => ({ sendMessage: jest.fn() })),
   parseModelSpec: jest.fn().mockImplementation((m: string) => ({ provider: 'anthropic', model: m })),
 }));
