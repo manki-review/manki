@@ -3622,6 +3622,42 @@ describe('runFullReview orchestration', () => {
     expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
   });
 
+  it('routes openai models to OpenAI auth in buildClient', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'openai_api_key' ? 'sk-openai-key' : '',
+    );
+    jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'openai', model: m }));
+    try {
+      await callRunFullReview();
+
+      expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
+      expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
+        'openai',
+        expect.any(String),
+        { kind: 'apiKey', key: 'sk-openai-key' },
+      );
+    } finally {
+      jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
+    }
+  });
+
+  it('fails fast when an openai model is selected but only anthropic credentials are set', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'anthropic_api_key' ? 'sk-anthropic' : '',
+    );
+    jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'openai', model: m }));
+    try {
+      await callRunFullReview();
+
+      expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(
+        expect.stringContaining('Either openai_oauth_token or openai_api_key must be provided'),
+      );
+      expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+    } finally {
+      jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
+    }
+  });
+
   it('posts app warning when identity is actions', async () => {
     _resetOctokitCache();
     jest.mocked(authModule.createAuthenticatedOctokit).mockResolvedValue({
@@ -4131,6 +4167,28 @@ describe('handleInteraction', () => {
       expect.any(String),
       { kind: 'oauth', token: 'codex-oauth-tok' },
     );
+  });
+
+  it('sets failed when openai model is selected but only anthropic credentials are configured', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'anthropic_api_key' ? 'sk-anthropic' : '',
+    );
+    jest.mocked(parseModelSpec).mockImplementationOnce((m: string) => ({ provider: 'openai', model: m }));
+    setContext({
+      eventName: 'issue_comment',
+      payload: {
+        action: 'created',
+        comment: { body: '@manki help' },
+        issue: { number: 7, pull_request: { url: 'https://...' } },
+      },
+    });
+
+    await handleInteraction();
+
+    expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(
+      expect.stringContaining('Either openai_oauth_token or openai_api_key must be provided'),
+    );
+    expect(jest.mocked(createLLMClient)).not.toHaveBeenCalled();
   });
 });
 
