@@ -555,7 +555,7 @@ describe('sendViaOAuth — extended coverage', () => {
     await promise;
   });
 
-  it('preserves last 500 bytes of stdout for diagnostic snippets', async () => {
+  it('accumulates multi-chunk stdout and returns trimmed content on success', async () => {
     const wiring = makeProc();
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-4o' });
     const promise = client.sendMessage('sys', 'user');
@@ -568,6 +568,25 @@ describe('sendViaOAuth — extended coverage', () => {
     wiring.procHandlers['close']?.(0, null);
     const result = await promise;
     expect(result.content).toContain('A');
+  });
+
+  it('includes last 500 bytes of stdout in stale error message', async () => {
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'queueMicrotask', 'nextTick'] });
+    try {
+      const wiring = makeProc();
+      const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-4o' });
+      const promise = client.sendMessage('sys', 'user');
+      promise.catch(() => {});
+
+      await waitForListeners(wiring);
+      wiring.stdoutHandlers['data']?.(Buffer.from('UNIQUE_DIAGNOSTIC_MARKER'));
+      jest.advanceTimersByTime(STALE_TIMEOUT_MS + 100);
+      wiring.procHandlers['close']?.(null, 'SIGTERM');
+
+      await expect(promise).rejects.toThrow(/UNIQUE_DIAGNOSTIC_MARKER/);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 
