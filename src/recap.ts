@@ -285,14 +285,20 @@ function parseFindingFromComment(body: string): { description?: string; suggeste
     '\n<!-- manki:',
   ];
   let earliest = descSlice.length;
+  let truncatingStop = false;
   for (const marker of stopMarkers) {
     const idx = descSlice.indexOf(marker);
-    if (idx >= 0 && idx < earliest) earliest = idx;
+    if (idx >= 0 && idx < earliest) {
+      earliest = idx;
+      truncatingStop = marker === '\n```';
+    }
   }
   descSlice = descSlice.slice(0, earliest).replace(/^[\s\n]+|[\s\n]+$/g, '');
   const remainingSubs = descSlice.match(/^(?:<sub>[^\n]*<\/sub>\s*\n?)+/);
   if (remainingSubs) descSlice = descSlice.slice(remainingSubs[0].length).replace(/^\s+/, '');
-  const description = descSlice.length > 0 ? descSlice : undefined;
+  if (truncatingStop && descSlice.length > 0) descSlice += '…(truncated)';
+  let description: string | undefined = descSlice.length > 0 ? descSlice : undefined;
+  if (description && description.length > 500) description = description.slice(0, 500) + '...';
 
   let suggestedFix: string | undefined;
   const aiContextMatch = body.match(/<summary>AI context<\/summary>[\s\S]*?```json\s*([\s\S]*?)```/);
@@ -307,6 +313,7 @@ function parseFindingFromComment(body: string): { description?: string; suggeste
       // Malformed AI context JSON — skip suggestedFix, keep description.
     }
   }
+  if (suggestedFix && suggestedFix.length > 300) suggestedFix = suggestedFix.slice(0, 300) + '...';
 
   return { description, suggestedFix };
 }
@@ -576,4 +583,4 @@ async function llmDeduplicateFindings(
   }
 }
 
-export { DuplicateMatch, PreviousFinding, RecapState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchRecapState, deduplicateFindings, titlesOverlap, llmDeduplicateFindings };
+export { DuplicateMatch, PreviousFinding, RecapState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchRecapState, deduplicateFindings, titlesOverlap, llmDeduplicateFindings, parseFindingFromComment };

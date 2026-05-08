@@ -1,6 +1,6 @@
 import { Finding } from './types';
 import { Suppression } from './memory';
-import { classifyAuthorReply, collectInPrSuppressions, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, titlesOverlap, llmDeduplicateFindings } from './recap';
+import { classifyAuthorReply, collectInPrSuppressions, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, titlesOverlap, llmDeduplicateFindings, parseFindingFromComment } from './recap';
 import { titleToSlug } from './github';
 
 const makeFinding = (overrides: Partial<Finding> = {}): Finding => ({
@@ -1355,5 +1355,85 @@ describe('llmDeduplicateFindings', () => {
     const result = await llmDeduplicateFindings(findings, previous, mockClient);
     expect(result.unique).toHaveLength(1);
     expect(result.duplicates).toHaveLength(0);
+  });
+});
+
+const makeCommentBody = (description: string, aiContextJson?: string): string => {
+  const ai = aiContextJson
+    ? `\n<details>\n<summary>AI context</summary>\n\n\`\`\`json\n${aiContextJson}\n\`\`\`\n</details>`
+    : '';
+  return `🟠 ✨ **Suggestion**: Title text\n\n${description}\n\n<details>\n<summary>Suggested fix</summary>\n\n\`\`\`suggestion\nsome fix\n\`\`\`\n</details>${ai}\n\n<!-- manki:suggestion:Title-text -->`;
+};
+
+describe('parseFindingFromComment', () => {
+  it('extracts description up to the <details> stop marker', () => {
+    const body = makeCommentBody('The variable is never checked for null.');
+    const result = parseFindingFromComment(body);
+    expect(result.description).toBe('The variable is never checked for null.');
+  });
+
+  it('extracts description truncated by code-fence stop marker and appends truncation marker', () => {
+    const body = `🟠 ✨ **Suggestion**: Title\n\nDescription with\n\`\`\`code\nexample\n\`\`\`\nmore text\n\n<!-- manki:suggestion:Title -->`;
+    const result = parseFindingFromComment(body);
+    expect(result.description).toBe('Description with…(truncated)');
+  });
+
+  it('extracts description terminated by <!-- manki: stop marker without truncation marker', () => {
+    const body = `🟠 ✨ **Suggestion**: Title\n\nSome description\n<!-- manki:suggestion:Title -->`;
+    const result = parseFindingFromComment(body);
+    expect(result.description).toBe('Some description');
+  });
+
+  it('extracts suggestedFix from AI context JSON', () => {
+    const body = makeCommentBody('Desc.', '{"fix":"Add null check before access","severity":"suggestion","confidence":"high","flaggedBy":["Correctness"]}');
+    const result = parseFindingFromComment(body);
+    expect(result.suggestedFix).toBe('Add null check before access');
+  });
+
+  it('returns undefined suggestedFix for malformed AI context JSON but keeps description', () => {
+    const body = `🟠 ✨ **Suggestion**: Title\n\nValid description.\n\n<details>\n<summary>AI context</summary>\n\n\`\`\`json\n{not valid json}\n\`\`\`\n</details>`;
+    const result = parseFindingFromComment(body);
+    expect(result.description).toBe('Valid description.');
+    expect(result.suggestedFix).toBeUndefined();
+  });
+
+  it('returns undefined suggestedFix when fix key is absent from valid JSON', () => {
+    const body = makeCommentBody('Desc.', '{"severity":"suggestion","confidence":"high","flaggedBy":["Correctness"]}');
+    const result = parseFindingFromComment(body);
+    expect(result.description).toBe('Desc.');
+    expect(result.suggestedFix).toBeUndefined();
+  });
+
+  it('returns {} when no severity heading is found', () => {
+    const result = parseFindingFromComment('No heading here, just random text.');
+    expect(result).toEqual({});
+  });
+
+  it('returns description: undefined when no prose between title and first stop marker', () => {
+    const body = `🟠 ✨ **Suggestion**: Title\n\n<details>\n<summary>Suggested fix</summary>\n\`\`\`suggestion\nfix\n\`\`\`\n</details>`;
+    const result = parseFindingFromComment(body);
+    expect(result.description).toBeUndefined();
+  });
+
+  it('strips leading <sub> lines from description', () => {
+    const body = `🟠 ✨ **Suggestion**: Title\n\n<sub>[Confidence: high]</sub>\nActual description text.\n\n<details>\n<summary>AI context</summary>\n\n\`\`\`json\n{}\n\`\`\`\n</details>`;
+    const result = parseFindingFromComment(body);
+    expect(result.description).toBe('Actual description text.');
+  });
+
+  it('caps description at 500 chars and appends ellipsis', () => {
+    const longDesc = 'x'.repeat(600);
+    const body = makeCommentBody(longDesc);
+    const result = parseFindingFromComment(body);
+    expect(result.description).toHaveLength(503);
+    expect(result.description).toMatch(/\.\.\.$/);
+  });
+
+  it('caps suggestedFix at 300 chars and appends ellipsis', () => {
+    const longFix = 'y'.repeat(400);
+    const body = makeCommentBody('Desc.', `{"fix":"${longFix}","severity":"suggestion"}`);
+    const result = parseFindingFromComment(body);
+    expect(result.suggestedFix).toHaveLength(303);
+    expect(result.suggestedFix).toMatch(/\.\.\.$/);
   });
 });
