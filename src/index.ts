@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 
 import { createAuthenticatedOctokit, getMemoryToken } from './auth';
 import { loadConfig, resolveModel } from './config';
-import { AnthropicAuth, createLLMClient, parseModelSpec } from './providers';
+import { AnthropicAuth, buildAnthropicAuth, createLLMClient, parseModelSpec } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
 import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
@@ -38,12 +38,6 @@ import {
 import { checkAndAutoApprove, resolveStaleThreads } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
-
-function buildAnthropicAuth(oauthToken: string, apiKey: string): AnthropicAuth {
-  if (oauthToken) return { kind: 'oauth', token: oauthToken };
-  if (apiKey) return { kind: 'apiKey', key: apiKey };
-  throw new Error('Either claude_code_oauth_token or anthropic_api_key must be provided');
-}
 
 const octokitCache = {
   instance: null as Octokit | null,

@@ -1,3 +1,4 @@
+export { buildAnthropicAuth } from './anthropic';
 export { createLLMClient } from './factory';
 export { parseModelSpec } from './model-registry';
 export type { ModelSpec } from './model-registry';

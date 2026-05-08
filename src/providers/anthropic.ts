@@ -11,6 +11,12 @@ const execFileAsync = promisify(execFile);
 
 export const STALE_TIMEOUT_MS = 90_000;
 
+export function buildAnthropicAuth(oauthToken: string, apiKey: string): AnthropicAuth {
+  if (oauthToken) return { kind: 'oauth', token: oauthToken };
+  if (apiKey) return { kind: 'apiKey', key: apiKey };
+  throw new Error('Either claude_code_oauth_token or anthropic_api_key must be provided');
+}
+
 /** Strip GitHub Actions workflow commands to prevent injection when logging CLI output. */
 export function sanitizeLogOutput(text: string): string {
   // Matches any line segment starting with :: followed by a letter — covers all workflow commands
