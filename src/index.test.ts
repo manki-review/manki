@@ -3134,6 +3134,11 @@ describe('runFullReview orchestration', () => {
   // round SHA distinct from the current commit (so `shouldFetchDiff` is true)
   // and a non-empty PR body (so `shouldFetchLinkedIssues` is true).
   function setupParallelFetchCase(): void {
+    // Guard the second invariant: the cases below assume `shouldFetchLinkedIssues`
+    // is true via `baseArgs.prContext.body`. Fail loudly if a future edit empties
+    // the default body, otherwise the linked-issues rejection test would pass
+    // trivially without exercising `fetchLinkedIssues`.
+    expect(baseArgs.prContext?.body).toBeTruthy();
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
@@ -3241,6 +3246,29 @@ describe('runFullReview orchestration', () => {
       'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
     );
     expect(runReviewArgs[RUN_REVIEW_LINKED_ISSUES_ARG]).toBeUndefined();
+  });
+
+  it('fetches linked issues but skips inter-round diff fetch when no prior round exists', async () => {
+    // Covers the `shouldFetchDiff=false` / `shouldFetchLinkedIssues=true`
+    // combination: no prior handover round (so `lastPriorSha` is undefined and
+    // `fetchInterRoundDiff` must not be invoked) but the PR body is non-empty
+    // so `fetchLinkedIssues` is called. `interRoundDiff` must remain `undefined`
+    // (not the empty-string assigned in the same-SHA branch).
+    setupParallelFetchCase();
+    jest.mocked(memoryModule.loadHandover).mockResolvedValue(null);
+    jest.mocked(ghUtils.fetchLinkedIssues).mockResolvedValue([
+      { number: 11, title: 'First-round linked issue', body: 'Issue body' },
+    ]);
+
+    await callRunFullReview();
+
+    expect(jest.mocked(ghUtils.fetchInterRoundDiff)).not.toHaveBeenCalled();
+    expect(jest.mocked(ghUtils.fetchLinkedIssues)).toHaveBeenCalledTimes(1);
+    const runReviewArgs = jest.mocked(reviewModule.runReview).mock.calls[0];
+    expect(runReviewArgs[RUN_REVIEW_INTER_ROUND_DIFF_ARG]).toBeUndefined();
+    expect(runReviewArgs[RUN_REVIEW_LINKED_ISSUES_ARG]).toEqual([
+      { number: 11, title: 'First-round linked issue', body: 'Issue body' },
+    ]);
   });
 
   it('suppresses addressed verdict from judge when inter-round diff is known-empty (defense-in-depth override)', async () => {
