@@ -246,7 +246,7 @@ describe('sendViaOAuth (Codex CLI path)', () => {
     const spawnArgs = mockSpawn.mock.calls[0][1] as string[];
     const overrideIdx = spawnArgs.findIndex(a => a.startsWith('model_reasoning_effort'));
     expect(overrideIdx).toBeGreaterThan(-1);
-    expect(spawnArgs[overrideIdx]).toBe('model_reasoning_effort="high"');
+    expect(spawnArgs[overrideIdx]).toBe('model_reasoning_effort=high');
   });
 
   it('warns and skips reasoning override on non-reasoning models', async () => {
@@ -276,7 +276,7 @@ describe('sendViaOAuth (Codex CLI path)', () => {
     expect(spawnOpts.env.OPENAI_API_KEY).not.toBe('my-tok');
   });
 
-  it('maps max effort to model_reasoning_effort="high" on o-series CLI invocation', async () => {
+  it('maps max effort to model_reasoning_effort=high on o-series CLI invocation', async () => {
     setupSpawnMock('ok\n');
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'o4-mini' });
 
@@ -284,7 +284,7 @@ describe('sendViaOAuth (Codex CLI path)', () => {
 
     const spawnArgs = mockSpawn.mock.calls[0][1] as string[];
     const overrideIdx = spawnArgs.findIndex(a => a.startsWith('model_reasoning_effort'));
-    expect(spawnArgs[overrideIdx]).toBe('model_reasoning_effort="high"');
+    expect(spawnArgs[overrideIdx]).toBe('model_reasoning_effort=high');
   });
 
   it('returns trimmed stdout content on success', async () => {

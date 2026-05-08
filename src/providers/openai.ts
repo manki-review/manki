@@ -143,7 +143,9 @@ export class OpenAIClient implements LLMClient {
       const args = ['exec', '--model', this.model];
 
       if (options?.effort && isReasoningModel(this.model)) {
-        args.push('-c', `model_reasoning_effort="${resolveCLIEffort(options.effort)}"`);
+        // Codex CLI's `-c` accepts bare `key=value` overrides; embedded double-quotes
+        // here would be passed as literal characters because `spawn` bypasses the shell.
+        args.push('-c', `model_reasoning_effort=${resolveCLIEffort(options.effort)}`);
       } else if (options?.effort) {
         core.warning(`Ignoring effort=${options.effort} — model "${this.model}" is not a reasoning model`);
       }
