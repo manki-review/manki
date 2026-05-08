@@ -2742,6 +2742,51 @@ describe('runFullReview orchestration', () => {
     ]);
   });
 
+  it('passes openThreads to the post-escalation `determineVerdict` so prior unaddressed warnings block APPROVE', async () => {
+    // Regression for the dispatch-site bug: `runFullReview` recomputes the
+    // verdict after memory escalations and must forward `openThreads` so the
+    // `prior_unaddressed` branch can fire. Without the third argument every
+    // unresolved prior warning silently falls through to APPROVE.
+    const testFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+    };
+    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+      files: [testFile], totalAdditions: 10, totalDeletions: 5,
+    });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+
+    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
+      previousFindings: [
+        { title: 'Old warning', file: 'src/app.ts', line: 5, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_OPEN' },
+      ],
+      recapContext: '',
+    });
+
+    const finding = { severity: 'nitpick' as const, title: 'Tiny', file: 'src/app.ts', line: 9, description: 'd', reviewers: ['general'] };
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'APPROVE', summary: 'Nits',
+      findings: [finding], highlights: [], reviewComplete: true,
+      agentNames: ['general'],
+    });
+    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'prior_unaddressed' });
+
+    await callRunFullReview();
+
+    const determineVerdictCalls = jest.mocked(reviewModule.determineVerdict).mock.calls;
+    expect(determineVerdictCalls.length).toBeGreaterThan(0);
+    const lastCall = determineVerdictCalls[determineVerdictCalls.length - 1];
+    expect(lastCall[2]).toEqual([
+      expect.objectContaining({ threadId: 'PRRT_OPEN', file: 'src/app.ts', line: 5 }),
+    ]);
+
+    const reviewResultArg = jest.mocked(ghUtils.postReview).mock.calls[0][5];
+    expect(reviewResultArg?.verdict).toBe('REQUEST_CHANGES');
+    expect(reviewResultArg?.verdictReason).toBe('prior_unaddressed');
+  });
+
   it('populates openThreads[].currentCode with a windowed snippet when file contents are available', async () => {
     const threadFile = 'src/app.ts';
     const fileText = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n');

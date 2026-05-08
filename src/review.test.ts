@@ -612,17 +612,22 @@ describe('determineVerdict', () => {
       expect(result.verdictReason).toBe('only_nit_or_suggestion');
     });
 
-    it('approves when `openThreads` is undefined and a prior has a `threadId` (legacy two-arg callers)', () => {
-      // Pre-`openThreads` callers omit the third argument. The `?? []`
-      // fallback treats every prior as resolved on GitHub, which lets the
-      // verdict fall through to the existing `only_nit_or_suggestion` rule.
+    it.each([
+      ['undefined', undefined],
+      ['null', null],
+    ] as const)('blocks APPROVE when `openThreads` is %s and a prior has a `threadId` (unknown thread state, conservative block)', (_label, sentinel) => {
+      // Both `undefined` and `null` mean "caller did not provide thread
+      // state". Treating either as "no threads open" would let a caller that
+      // failed to fetch (or simply forgot to pass) silently approve a PR
+      // with an unresolved prior warning. The unknown sentinel forces a
+      // conservative block until the caller passes an explicit list.
       const priors = [makePriorWarning()];
-      const result = determineVerdict([nitpick], priors, undefined);
-      expect(result.verdict).toBe('APPROVE');
-      expect(result.verdictReason).toBe('only_nit_or_suggestion');
+      const result = determineVerdict([nitpick], priors, sentinel);
+      expect(result.verdict).toBe('REQUEST_CHANGES');
+      expect(result.verdictReason).toBe('prior_unaddressed');
     });
 
-    it('approves when the prior thread is no longer in openThreads (resolved on GitHub)', () => {
+    it('approves when the prior thread is no longer in openThreads (fetched, none open)', () => {
       const priors = [makePriorWarning()];
       const result = determineVerdict([nitpick], priors, []);
       expect(result.verdict).toBe('APPROVE');

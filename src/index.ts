@@ -697,7 +697,7 @@ async function runFullReview(
     if (memory && memory.patterns.length > 0) {
       result.findings = applyEscalations(result.findings, memory.patterns);
     }
-    const { verdict: recomputedVerdict, verdictReason } = determineVerdict(result.findings, priorFindingsFlat);
+    const { verdict: recomputedVerdict, verdictReason } = determineVerdict(result.findings, priorFindingsFlat, openThreads);
     result.verdict = recomputedVerdict;
     result.verdictReason = verdictReason;
 
