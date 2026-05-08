@@ -16,10 +16,10 @@ export const DEFAULT_CONFIG: ReviewConfig = {
   review_level: 'auto',
   review_thresholds: { small: 200, medium: 1000 },
   models: {
-    planner: 'gemini-2.5-flash',
-    reviewer: 'gemini-2.5-flash',
-    judge: 'gemini-2.5-pro',
-    dedup: 'gemini-2.5-flash',
+    planner: 'claude-haiku-4-5',
+    reviewer: 'claude-sonnet-4-6',
+    judge: 'claude-opus-4-7',
+    dedup: 'claude-haiku-4-5',
   },
   planner: {
     enabled: true,

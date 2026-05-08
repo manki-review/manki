@@ -34,11 +34,11 @@ describe('config', () => {
       expect(DEFAULT_CONFIG.review_passes).toBe(1);
     });
 
-    it('defaults models.reviewer to gemini-2.5-flash and models.judge to gemini-2.5-pro', () => {
-      expect(DEFAULT_CONFIG.models?.reviewer).toBe('gemini-2.5-flash');
-      expect(DEFAULT_CONFIG.models?.judge).toBe('gemini-2.5-pro');
-      expect(DEFAULT_CONFIG.models?.planner).toBe('gemini-2.5-flash');
-      expect(DEFAULT_CONFIG.models?.dedup).toBe('gemini-2.5-flash');
+    it('defaults models.reviewer to Sonnet and models.judge to Opus', () => {
+      expect(DEFAULT_CONFIG.models?.reviewer).toBe('claude-sonnet-4-6');
+      expect(DEFAULT_CONFIG.models?.judge).toBe('claude-opus-4-7');
+      expect(DEFAULT_CONFIG.models?.planner).toBe('claude-haiku-4-5');
+      expect(DEFAULT_CONFIG.models?.dedup).toBe('claude-haiku-4-5');
     });
 
     it('has no default custom reviewers', () => {
@@ -294,7 +294,7 @@ models:
 `;
       const config = loadConfigFromContent(yaml);
       expect(config.models?.reviewer).toBe('claude-sonnet-4-6');
-      expect(config.models?.judge).toBe('gemini-2.5-pro');
+      expect(config.models?.judge).toBe('claude-opus-4-7');
     });
 
     it('throws on invalid models type', () => {
@@ -359,7 +359,7 @@ models:
 `;
       const config = loadConfigFromContent(yaml);
       expect(config.models?.reviewer).toBe('claude-haiku-4-5');
-      expect(config.models?.judge).toBe('gemini-2.5-pro');
+      expect(config.models?.judge).toBe('claude-opus-4-7');
     });
 
     it('accepts valid review_passes values', () => {
@@ -397,10 +397,10 @@ models:
     };
 
     it('returns default stage-specific models from defaults', () => {
-      expect(resolveModel(baseConfig, 'reviewer')).toBe('gemini-2.5-flash');
-      expect(resolveModel(baseConfig, 'judge')).toBe('gemini-2.5-pro');
-      expect(resolveModel(baseConfig, 'dedup')).toBe('gemini-2.5-flash');
-      expect(resolveModel(baseConfig, 'planner')).toBe('gemini-2.5-flash');
+      expect(resolveModel(baseConfig, 'reviewer')).toBe('claude-sonnet-4-6');
+      expect(resolveModel(baseConfig, 'judge')).toBe('claude-opus-4-7');
+      expect(resolveModel(baseConfig, 'dedup')).toBe('claude-haiku-4-5');
+      expect(resolveModel(baseConfig, 'planner')).toBe('claude-haiku-4-5');
     });
 
     it('returns overridden stage-specific model', () => {
@@ -415,9 +415,9 @@ models:
 
     it('falls back to default models when models is undefined', () => {
       const config: ReviewConfig = { ...baseConfig, models: undefined };
-      expect(resolveModel(config, 'reviewer')).toBe('gemini-2.5-flash');
-      expect(resolveModel(config, 'judge')).toBe('gemini-2.5-pro');
-      expect(resolveModel(config, 'dedup')).toBe('gemini-2.5-flash');
+      expect(resolveModel(config, 'reviewer')).toBe('claude-sonnet-4-6');
+      expect(resolveModel(config, 'judge')).toBe('claude-opus-4-7');
+      expect(resolveModel(config, 'dedup')).toBe('claude-haiku-4-5');
     });
 
     it('falls back to default model when stage key is missing', () => {
@@ -426,15 +426,15 @@ models:
         models: { reviewer: 'claude-sonnet-4-6' },
       };
       expect(resolveModel(config, 'reviewer')).toBe('claude-sonnet-4-6');
-      expect(resolveModel(config, 'judge')).toBe('gemini-2.5-pro');
+      expect(resolveModel(config, 'judge')).toBe('claude-opus-4-7');
     });
 
     it('falls back to default models when models is empty object', () => {
       const config: ReviewConfig = { ...baseConfig, models: {} };
-      expect(resolveModel(config, 'reviewer')).toBe('gemini-2.5-flash');
-      expect(resolveModel(config, 'judge')).toBe('gemini-2.5-pro');
-      expect(resolveModel(config, 'dedup')).toBe('gemini-2.5-flash');
-      expect(resolveModel(config, 'planner')).toBe('gemini-2.5-flash');
+      expect(resolveModel(config, 'reviewer')).toBe('claude-sonnet-4-6');
+      expect(resolveModel(config, 'judge')).toBe('claude-opus-4-7');
+      expect(resolveModel(config, 'dedup')).toBe('claude-haiku-4-5');
+      expect(resolveModel(config, 'planner')).toBe('claude-haiku-4-5');
     });
 
     it('returns overridden planner model', () => {
@@ -473,7 +473,7 @@ models:
 
     it('falls back to built-in default when no stage override and no agent override', () => {
       const config: ReviewConfig = { ...baseConfig, models: undefined };
-      expect(resolveAgentModel(config, 'Security & Safety', 'reviewer')).toBe('gemini-2.5-flash');
+      expect(resolveAgentModel(config, 'Security & Safety', 'reviewer')).toBe('claude-sonnet-4-6');
     });
 
     it('falls back to built-in default when models.agents is undefined', () => {
