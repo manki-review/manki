@@ -178,6 +178,14 @@ describe('sendMessage (API path)', () => {
     expect(result.content).toBe('');
   });
 
+  it('returns empty string when choices array is empty', async () => {
+    mockCreate.mockResolvedValueOnce({ choices: [] });
+    const client = new OpenAIClient({ auth: { kind: 'apiKey', key: 'sk' }, model: 'gpt-4o' });
+
+    const result = await client.sendMessage('sys', 'user');
+    expect(result.content).toBe('');
+  });
+
   it('throws when client is not initialized (oauth path called via API method)', async () => {
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-4o' });
 
