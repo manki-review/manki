@@ -22,6 +22,15 @@ export function resolveGeminiCredsDir(): string {
 const GEMINI_OAUTH_BOOTSTRAP_HINT =
   'Bootstrap with `gemini` (sign in with Google) then `cat ~/.gemini/oauth_creds.json | base64 | gh secret set GEMINI_OAUTH_TOKEN`. Re-run the bootstrap when the refresh_token expires.';
 
+const GEMINI_BLOCKED_BARE = new Set([
+  'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
+  'REVIEW_MEMORY_TOKEN', 'GITHUB_TOKEN',
+  'GEMINI_API_KEY', 'GEMINI_OAUTH_TOKEN', 'GITHUB_APP_PRIVATE_KEY',
+  'GOOGLE_CLOUD_ACCESS_TOKEN',
+  'OPENAI_API_KEY', 'OPENAI_OAUTH_TOKEN', 'CODEX_OAUTH_TOKEN',
+  'ACTIONS_RUNTIME_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'ACTIONS_RESULTS_URL',
+]);
+
 export function buildGeminiAuth(oauthToken: string, apiKey: string): GeminiAuth {
   if (oauthToken) return { kind: 'oauth', token: oauthToken };
   if (apiKey) return { kind: 'apiKey', key: apiKey };
@@ -139,17 +148,9 @@ export class GeminiClient implements LLMClient {
       // Strip other providers' secrets and all INPUT_* vars (GitHub Actions delivers
       // every action input as INPUT_<NAME>, which would otherwise bypass bare-name
       // stripping) from the forwarded env. PATH/HOME etc. flow through `safeEnv`.
-      const BLOCKED_BARE = new Set([
-        'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
-        'REVIEW_MEMORY_TOKEN', 'GITHUB_TOKEN',
-        'GEMINI_API_KEY', 'GEMINI_OAUTH_TOKEN', 'GITHUB_APP_PRIVATE_KEY',
-        'GOOGLE_CLOUD_ACCESS_TOKEN',
-        'OPENAI_API_KEY', 'OPENAI_OAUTH_TOKEN', 'CODEX_OAUTH_TOKEN',
-        'ACTIONS_RUNTIME_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'ACTIONS_RESULTS_URL',
-      ]);
       const safeEnv = Object.fromEntries(
         Object.entries(process.env).filter(
-          ([k]) => !BLOCKED_BARE.has(k) && !/^INPUT_/i.test(k),
+          ([k]) => !GEMINI_BLOCKED_BARE.has(k) && !/^INPUT_/i.test(k),
         ),
       ) as NodeJS.ProcessEnv;
 
