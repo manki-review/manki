@@ -313,6 +313,9 @@ describe('GeminiClient OAuth path', () => {
     process.env.ACTIONS_RUNTIME_TOKEN = 'art';
     process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN = 'oidc-tok';
     process.env.ACTIONS_RESULTS_URL = 'https://results.actions.githubusercontent.com/';
+    process.env.OPENAI_API_KEY = 'sk-openai';
+    process.env.OPENAI_OAUTH_TOKEN = 'openai-oauth';
+    process.env.CODEX_OAUTH_TOKEN = 'codex-oauth';
     try {
       setupOAuthSpawnMock({ stdout: 'ok' });
       const client = new GeminiClient({ auth: { kind: 'oauth', token: 'gem-tok' }, model: 'gemini-3.1-flash-lite' });
@@ -333,6 +336,9 @@ describe('GeminiClient OAuth path', () => {
       expect(spawnOpts.env.ACTIONS_RUNTIME_TOKEN).toBeUndefined();
       expect(spawnOpts.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN).toBeUndefined();
       expect(spawnOpts.env.ACTIONS_RESULTS_URL).toBeUndefined();
+      expect(spawnOpts.env.OPENAI_API_KEY).toBeUndefined();
+      expect(spawnOpts.env.OPENAI_OAUTH_TOKEN).toBeUndefined();
+      expect(spawnOpts.env.CODEX_OAUTH_TOKEN).toBeUndefined();
       // GOOGLE_GENAI_USE_GCA selects the LOGIN_WITH_GOOGLE auth type non-interactively.
       // The actual credentials come from the seeded `~/.gemini/oauth_creds.json` file.
       expect(spawnOpts.env.GOOGLE_GENAI_USE_GCA).toBe('true');
@@ -350,6 +356,9 @@ describe('GeminiClient OAuth path', () => {
       delete process.env.ACTIONS_RUNTIME_TOKEN;
       delete process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
       delete process.env.ACTIONS_RESULTS_URL;
+      delete process.env.OPENAI_API_KEY;
+      delete process.env.OPENAI_OAUTH_TOKEN;
+      delete process.env.CODEX_OAUTH_TOKEN;
     }
   });
 
