@@ -17,10 +17,10 @@ import {
   buildAuthForProvider,
   createLLMClient,
   parseModelSpec,
+  sanitizeLogOutput,
   type ProviderInputs,
   type SendMessageOptions,
 } from '../src/providers';
-import { sanitizeLogOutput } from '../src/providers/cli-utils';
 
 interface SmokeArgs {
   model: string;
