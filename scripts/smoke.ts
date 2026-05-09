@@ -20,6 +20,7 @@ import {
   type ProviderInputs,
   type SendMessageOptions,
 } from '../src/providers';
+import { sanitizeLogOutput } from '../src/providers/cli-utils';
 
 interface SmokeArgs {
   model: string;
@@ -155,7 +156,7 @@ async function main(): Promise<number> {
 
   console.log(`ok latency_ms=${ms} response_chars=${response.content.length}`);
   console.log('---');
-  console.log(response.content);
+  console.log(sanitizeLogOutput(response.content));
   console.log('---');
   return 0;
 }
