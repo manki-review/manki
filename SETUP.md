@@ -568,12 +568,12 @@ Each review run posts fresh inline comments. The recap phase deduplicates agains
 
 | Secret | Required | Purpose |
 |--------|----------|---------|
-| `ANTHROPIC_API_KEY` | Yes* | Anthropic API auth |
-| `CLAUDE_CODE_OAUTH_TOKEN` | Yes* | Claude Max subscription auth (deprecated) |
-| `OPENAI_OAUTH_TOKEN` | No | Base64-encoded `~/.codex/auth.json` for Codex CLI OAuth |
-| `OPENAI_API_KEY` | No | OpenAI API key (alternative to Codex OAuth) |
-| `GEMINI_OAUTH_TOKEN` | No | Base64-encoded `~/.gemini/oauth_creds.json` for Gemini CLI OAuth |
-| `GEMINI_API_KEY` | No | Google Generative AI API key (alternative to Gemini OAuth) |
+| `ANTHROPIC_API_KEY` | Yes† | Anthropic API auth |
+| `CLAUDE_CODE_OAUTH_TOKEN` | No (deprecated) | Claude Max subscription auth (deprecated, prefer `ANTHROPIC_API_KEY`) |
+| `OPENAI_API_KEY` | Yes† | OpenAI API key |
+| `OPENAI_OAUTH_TOKEN` | Yes† | Base64-encoded `~/.codex/auth.json` for Codex CLI OAuth |
+| `GEMINI_API_KEY` | Yes† | Google Generative AI API key |
+| `GEMINI_OAUTH_TOKEN` | Yes† | Base64-encoded `~/.gemini/oauth_creds.json` for Gemini CLI OAuth |
 | `REVIEW_MEMORY_TOKEN` | No | Fine-grained PAT for memory repo writes |
 
-\* At least one provider credential is required. The active provider for each agent is selected by the model ID in `.manki.yml`.
+† At least one provider credential is required — pick one auth method from one provider. The active provider per agent is selected by the model ID in `.manki.yml`.
