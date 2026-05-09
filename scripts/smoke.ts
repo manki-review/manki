@@ -72,7 +72,7 @@ function parseArgs(): SmokeArgs {
       effort = val;
     } else if (arg === '--prompt') {
       const val = argv[++i];
-      if (val === undefined) throw new Error('--prompt requires a value.');
+      if (!val) throw new Error('--prompt requires a non-empty value.');
       prompt = val;
     } else if (arg === '--help' || arg === '-h') {
       printHelp();

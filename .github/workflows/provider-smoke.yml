@@ -13,16 +13,20 @@ jobs:
   smoke:
     name: ${{ matrix.provider }} (${{ matrix.model }})
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     strategy:
       fail-fast: false
       matrix:
         include:
           - provider: anthropic
             model: claude-haiku-4-5
+            effort: low
           - provider: openai
             model: o4-mini
+            effort: low
           - provider: gemini
             model: gemini-2.5-flash
+            effort: low
     steps:
       - uses: actions/checkout@v4
 
@@ -37,6 +41,7 @@ jobs:
         shell: bash
         env:
           MODEL: ${{ matrix.model }}
+          EFFORT: ${{ matrix.effort }}
           PROVIDER: ${{ matrix.provider }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -46,7 +51,7 @@ jobs:
           GEMINI_OAUTH_TOKEN: ${{ secrets.GEMINI_OAUTH_TOKEN }}
         run: |
           set +e
-          npm run smoke -- --model "${MODEL}"
+          npm run smoke -- --model "${MODEL}" --effort "${EFFORT}"
           rc=$?
           if [ $rc -eq 2 ]; then
             echo "::notice title=Smoke skipped::No credentials configured for ${PROVIDER}"
