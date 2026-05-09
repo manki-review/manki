@@ -8,6 +8,7 @@
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit",
     "test": "jest --passWithNoTests",
+    "smoke": "tsx scripts/smoke.ts",
     "all": "npm run lint && npm run typecheck && npm run test && npm run build"
   },
   "repository": {
@@ -36,6 +37,7 @@
     "eslint": "^9.0.0",
     "jest": "^29.7.0",
     "ts-jest": "^29.2.0",
+    "tsx": "^4.20.6",
     "typescript": "^5.7.0",
     "typescript-eslint": "^8.0.0"
   }
