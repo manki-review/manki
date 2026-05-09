@@ -103,7 +103,7 @@ async function main(): Promise<number> {
   try {
     args = parseArgs();
   } catch (err) {
-    console.error((err as Error).message);
+    console.error(err instanceof Error ? err.message : String(err));
     return 1;
   }
 
@@ -111,7 +111,7 @@ async function main(): Promise<number> {
   try {
     spec = parseModelSpec(args.model);
   } catch (err) {
-    console.error((err as Error).message);
+    console.error(err instanceof Error ? err.message : String(err));
     return 1;
   }
 
@@ -120,7 +120,7 @@ async function main(): Promise<number> {
   try {
     auth = buildAuthForProvider(spec.provider, inputs);
   } catch (err) {
-    console.error(`No credentials found for provider "${spec.provider}": ${(err as Error).message}`);
+    console.error(`No credentials found for provider "${spec.provider}": ${err instanceof Error ? err.message : String(err)}`);
     return 2;
   }
 
@@ -131,9 +131,13 @@ async function main(): Promise<number> {
   console.log(`prompt=${JSON.stringify(args.prompt)}`);
 
   const TIMEOUT_MS = 60_000;
-  const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error(`timed out after ${TIMEOUT_MS}ms`)), TIMEOUT_MS),
-  );
+  let timeoutHandle: ReturnType<typeof setTimeout>;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(
+      () => reject(new Error(`timed out after ${TIMEOUT_MS}ms`)),
+      TIMEOUT_MS,
+    );
+  });
 
   const t0 = Date.now();
   let response;
@@ -144,8 +148,10 @@ async function main(): Promise<number> {
     ]);
   } catch (err) {
     const ms = Date.now() - t0;
-    console.error(`transport error after ${ms}ms: ${(err as Error).message}`);
+    console.error(`transport error after ${ms}ms: ${err instanceof Error ? err.message : String(err)}`);
     return 1;
+  } finally {
+    clearTimeout(timeoutHandle!);
   }
   const ms = Date.now() - t0;
 
