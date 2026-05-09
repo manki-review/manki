@@ -795,7 +795,7 @@ describe('truncateContextToFitBody', () => {
     expect(twice.findings.entries).toEqual(once.findings.entries);
   });
 
-  it('returns over-budget context with truncated flag when body exceeds budget even after all entries dropped', () => {
+  it('returns over-budget context without truncated flag when no entries were dropped', () => {
     const ctx = makeContext({
       judge: { summary: 'x'.repeat(200) },
       findings: { count: 0, severityCounts: { blocker: 0, warning: 0, suggestion: 0, nitpick: 0 }, entries: [] },
@@ -804,6 +804,7 @@ describe('truncateContextToFitBody', () => {
     const { context: out, droppedCount } = truncateContextToFitBody(ctx, render, 1);
     expect(droppedCount).toBe(0);
     expect(out.findings.entries).toEqual([]);
+    expect(out.findings.truncated).toBeUndefined();
     expect(render(out).length).toBeGreaterThan(1);
   });
 

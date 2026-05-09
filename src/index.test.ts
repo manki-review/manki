@@ -2217,6 +2217,57 @@ describe('runFullReview orchestration', () => {
     expect(roundContextArg!.meta.round).toBe(2);
   });
 
+  describe('meta.round derivation', () => {
+    const roundTestFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+    };
+
+    it('sets meta.round to 1 when no handover is present', async () => {
+      jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+        files: [roundTestFile], totalAdditions: 10, totalDeletions: 5,
+      });
+      jest.mocked(diffModule.filterFiles).mockReturnValue([roundTestFile]);
+      jest.mocked(memoryModule.loadHandover).mockResolvedValue(null);
+
+      await callRunFullReview();
+
+      const roundContextArg = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+      expect(roundContextArg!.meta.round).toBe(1);
+    });
+
+    it('sets meta.round to N+1 when handover has N prior rounds', async () => {
+      jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+        files: [roundTestFile], totalAdditions: 10, totalDeletions: 5,
+      });
+      jest.mocked(diffModule.filterFiles).mockReturnValue([roundTestFile]);
+      jest.mocked(configModule.loadConfig).mockReturnValue({
+        auto_review: true, auto_approve: false, exclude_paths: [], max_diff_lines: 10000,
+        reviewers: [], instructions: '', review_level: 'auto',
+        review_thresholds: { small: 200, medium: 800 },
+        memory: { enabled: true, repo: 'owner/memory' },
+      });
+      jest.mocked(authModule.getMemoryToken).mockReturnValue('token123');
+      jest.mocked(memoryModule.loadMemory).mockResolvedValue({
+        learnings: [], suppressions: [], patterns: [],
+      });
+
+      const priorRounds = [
+        { round: 1, commitSha: 'sha1', timestamp: '2025-01-01T00:00:00Z', findings: [] },
+        { round: 2, commitSha: 'sha2', timestamp: '2025-01-02T00:00:00Z', findings: [] },
+        { round: 3, commitSha: 'sha3', timestamp: '2025-01-03T00:00:00Z', findings: [] },
+      ];
+      jest.mocked(memoryModule.loadHandover).mockResolvedValue({
+        prNumber: 1, repo: 'test-repo', rounds: priorRounds,
+      });
+
+      await callRunFullReview();
+
+      const roundContextArg = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+      expect(roundContextArg!.meta.round).toBe(4);
+    });
+  });
+
   describe('prior-round agent pinning', () => {
     const pinTestFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
