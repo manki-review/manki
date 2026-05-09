@@ -93,6 +93,8 @@ describe('sendMessage effort option (API path)', () => {
       model: 'gemini-3.1-flash-lite',
       systemInstruction: 'system',
     });
+    const { seedAuthFile } = jest.requireMock('./cli-utils') as { seedAuthFile: jest.Mock };
+    expect(seedAuthFile).not.toHaveBeenCalled();
   });
 
   it('passes user message as content with role user', async () => {

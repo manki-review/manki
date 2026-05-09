@@ -114,6 +114,8 @@ describe('sendMessage (API path)', () => {
       { role: 'system', content: 'sys-prompt' },
       { role: 'user', content: 'user-msg' },
     ]);
+    const { seedAuthFile } = jest.requireMock('./cli-utils') as { seedAuthFile: jest.Mock };
+    expect(seedAuthFile).not.toHaveBeenCalled();
   });
 
   it('omits reasoning_effort for non-reasoning models', async () => {
