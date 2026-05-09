@@ -5,6 +5,15 @@ All notable changes to Manki will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.0.0] - unreleased
+
+### Changed (BREAKING)
+
+- `openai_oauth_token` and `gemini_oauth_token` inputs now expect the **base64-encoded contents of the CLI's auth JSON file**, not a single-string token. Both CLIs read OAuth credentials from disk (`$CODEX_HOME/auth.json` for Codex, `~/.gemini/oauth_creds.json` for Gemini) and there is no portable single-string equivalent that the spawned subprocesses honor with refresh-token semantics. On invocation the action seeds the file with mode `0600` only when absent, so refreshed tokens written by the CLI on persistent runners are preserved across runs. Re-bootstrap when the `refresh_token` expires (#695).
+  - Bootstrap (Codex): ``codex login`` then ``cat ~/.codex/auth.json | base64 | gh secret set OPENAI_OAUTH_TOKEN``
+  - Bootstrap (Gemini): sign in with ``gemini`` then ``cat ~/.gemini/oauth_creds.json | base64 | gh secret set GEMINI_OAUTH_TOKEN``
+  - The legacy single-token shape is rejected fast with an error pointing to the bootstrap command. No fallback or compat shim.
+
 ## [4.7.0] - 2026-04-28
 
 ### Added
@@ -408,6 +417,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic review posting with inline comments
 - Configuration via `.manki.yml`
 
+[5.0.0]: https://github.com/manki-review/manki/compare/v4.7.0...v5.0.0
 [4.7.0]: https://github.com/manki-review/manki/compare/v4.6.1...v4.7.0
 [4.6.1]: https://github.com/manki-review/manki/compare/v4.6.0...v4.6.1
 [4.6.0]: https://github.com/manki-review/manki/compare/v4.5.3...v4.6.0

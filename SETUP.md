@@ -101,6 +101,48 @@ This allows the action to use your Claude Max subscription -- no extra API costs
    gh secret set ANTHROPIC_API_KEY --repo <owner>/<repo>
    ```
 
+### OpenAI (Optional)
+
+Use OpenAI models (via API key or Codex CLI OAuth) instead of Claude.
+
+**Option A: OpenAI API key**
+
+```bash
+gh secret set OPENAI_API_KEY --repo <owner>/<repo>
+```
+
+**Option B: Codex CLI OAuth** (uses your OpenAI subscription, no per-token billing)
+
+Bootstrap once on a machine where you are already logged into the Codex CLI:
+
+```bash
+codex login
+cat ~/.codex/auth.json | base64 | gh secret set OPENAI_OAUTH_TOKEN --repo <owner>/<repo>
+```
+
+The secret must be the base64-encoded contents of `~/.codex/auth.json`, which contains `tokens.access_token` and `tokens.refresh_token`. Re-run the bootstrap command when the refresh token expires.
+
+### Gemini (Optional)
+
+Use Gemini models (via API key or Gemini CLI OAuth) instead of Claude.
+
+**Option A: Gemini API key**
+
+```bash
+gh secret set GEMINI_API_KEY --repo <owner>/<repo>
+```
+
+**Option B: Gemini CLI OAuth** (uses your Google account, no per-token billing)
+
+Bootstrap once on a machine where you are already logged into the Gemini CLI:
+
+```bash
+gemini  # sign in with Google when prompted
+cat ~/.gemini/oauth_creds.json | base64 | gh secret set GEMINI_OAUTH_TOKEN --repo <owner>/<repo>
+```
+
+The secret must be the base64-encoded contents of `~/.gemini/oauth_creds.json`, which contains `access_token` and `refresh_token`. Re-run the bootstrap command when the refresh token expires.
+
 ### Review Memory Token (Optional)
 
 Required only if you enable the review memory system. This is a fine-grained PAT scoped to the memory repo only.
@@ -432,8 +474,12 @@ Each review run posts fresh inline comments. The recap phase deduplicates agains
 
 | Secret | Required | Purpose |
 |--------|----------|---------|
-| `CLAUDE_CODE_OAUTH_TOKEN` | Yes* | Claude Max subscription auth |
-| `ANTHROPIC_API_KEY` | Yes* | Anthropic API auth (alternative) |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Yes* | Claude Max subscription auth (Codex OAuth) |
+| `ANTHROPIC_API_KEY` | Yes* | Anthropic API auth (alternative to OAuth) |
+| `OPENAI_OAUTH_TOKEN` | No | Base64-encoded `~/.codex/auth.json` for Codex CLI OAuth |
+| `OPENAI_API_KEY` | No | OpenAI API key (alternative to Codex OAuth) |
+| `GEMINI_OAUTH_TOKEN` | No | Base64-encoded `~/.gemini/oauth_creds.json` for Gemini CLI OAuth |
+| `GEMINI_API_KEY` | No | Google Generative AI API key (alternative to Gemini OAuth) |
 | `REVIEW_MEMORY_TOKEN` | No | Fine-grained PAT for memory repo writes |
 
-\* One of `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` is required.
+\* One of `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` is required when using Claude (the default provider).

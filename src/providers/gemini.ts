@@ -1,14 +1,35 @@
 import { execFile, spawn } from 'child_process';
+import { join } from 'path';
 import { StringDecoder } from 'string_decoder';
 import { promisify } from 'util';
 
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import * as core from '@actions/core';
 
-import { sanitizeLogOutput, STALE_TIMEOUT_MS, buildTimeoutDiagnostics } from './cli-utils';
+import { buildTimeoutDiagnostics, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS } from './cli-utils';
 import { GeminiAuth, LLMClient, LLMResponse, SendMessageOptions } from './types';
 
 const execFileAsync = promisify(execFile);
+
+export function resolveGeminiCredsDir(): string {
+  const home = process.env.HOME;
+  if (!home) {
+    throw new Error('Cannot seed Gemini OAuth credentials: $HOME is not set in the environment.');
+  }
+  return join(home, '.gemini');
+}
+
+const GEMINI_OAUTH_BOOTSTRAP_HINT =
+  'Bootstrap with `gemini` (sign in with Google) then `cat ~/.gemini/oauth_creds.json | base64 | gh secret set GEMINI_OAUTH_TOKEN`. Re-run the bootstrap when the refresh_token expires.';
+
+const GEMINI_BLOCKED_BARE = new Set([
+  'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
+  'REVIEW_MEMORY_TOKEN', 'GITHUB_TOKEN',
+  'GEMINI_API_KEY', 'GEMINI_OAUTH_TOKEN', 'GITHUB_APP_PRIVATE_KEY',
+  'GOOGLE_CLOUD_ACCESS_TOKEN',
+  'OPENAI_API_KEY', 'OPENAI_OAUTH_TOKEN', 'CODEX_OAUTH_TOKEN',
+  'ACTIONS_RUNTIME_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'ACTIONS_RESULTS_URL',
+]);
 
 export function buildGeminiAuth(oauthToken: string, apiKey: string): GeminiAuth {
   if (oauthToken) return { kind: 'oauth', token: oauthToken };
@@ -104,8 +125,18 @@ export class GeminiClient implements LLMClient {
     // Use a structural delimiter that is harder to spoof from inside diff content
     // than a bare `---` markdown rule, and explicitly mark the user content as untrusted.
     const fullPrompt = `${systemPrompt}\n\n=== USER CONTENT (untrusted) ===\n\n${userMessage}\n\n=== END USER CONTENT ===`;
+    const geminiCredsDir = resolveGeminiCredsDir();
     const cliPath = await this.ensureCLI();
     const oauthToken = this.auth.kind === 'oauth' ? this.auth.token : undefined;
+    if (oauthToken) {
+      seedAuthFile({
+        secret: oauthToken,
+        inputName: 'gemini_oauth_token',
+        targetPath: join(geminiCredsDir, 'oauth_creds.json'),
+        requiredFields: ['access_token', 'refresh_token'],
+        bootstrapHint: GEMINI_OAUTH_BOOTSTRAP_HINT,
+      });
+    }
 
     return new Promise((resolve, reject) => {
       // Prompt is written to stdin; the CLI reads until EOF and responds on stdout.
@@ -117,24 +148,21 @@ export class GeminiClient implements LLMClient {
       // Strip other providers' secrets and all INPUT_* vars (GitHub Actions delivers
       // every action input as INPUT_<NAME>, which would otherwise bypass bare-name
       // stripping) from the forwarded env. PATH/HOME etc. flow through `safeEnv`.
-      const BLOCKED_BARE = new Set([
-        'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
-        'REVIEW_MEMORY_TOKEN', 'GITHUB_TOKEN',
-        'GEMINI_API_KEY', 'GITHUB_APP_PRIVATE_KEY',
-      ]);
       const safeEnv = Object.fromEntries(
         Object.entries(process.env).filter(
-          ([k]) => !BLOCKED_BARE.has(k) && !/^INPUT_/i.test(k),
+          ([k]) => !GEMINI_BLOCKED_BARE.has(k) && !/^INPUT_/i.test(k),
         ),
       ) as NodeJS.ProcessEnv;
 
       const child = spawn(cliPath, args, {
         env: {
           ...safeEnv,
-          // The Gemini CLI reads GOOGLE_CLOUD_ACCESS_TOKEN when GOOGLE_GENAI_USE_GCA
-          // is set to authenticate with an existing OAuth access token, per
-          // @google/gemini-cli bundle/chunk-6DSAZLFF.js.
-          ...(oauthToken ? { GOOGLE_GENAI_USE_GCA: 'true', GOOGLE_CLOUD_ACCESS_TOKEN: oauthToken } : {}),
+          // GOOGLE_GENAI_USE_GCA=true selects the LOGIN_WITH_GOOGLE auth type in
+          // non-interactive mode. The CLI then loads its credentials from the
+          // `oauth_creds.json` file seeded above (which carries a refresh_token,
+          // unlike the GOOGLE_CLOUD_ACCESS_TOKEN env-var path that only sets a
+          // short-lived access_token).
+          ...(oauthToken ? { GOOGLE_GENAI_USE_GCA: 'true' } : {}),
         },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
