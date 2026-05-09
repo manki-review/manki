@@ -136,6 +136,7 @@ export class GeminiClient implements LLMClient {
         'REVIEW_MEMORY_TOKEN', 'GITHUB_TOKEN',
         'GEMINI_API_KEY', 'GITHUB_APP_PRIVATE_KEY',
         'GOOGLE_CLOUD_ACCESS_TOKEN',
+        'ACTIONS_RUNTIME_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'ACTIONS_RESULTS_URL',
       ]);
       const safeEnv = Object.fromEntries(
         Object.entries(process.env).filter(

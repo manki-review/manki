@@ -178,6 +178,7 @@ export class OpenAIClient implements LLMClient {
         'OPENAI_API_KEY', 'OPENAI_OAUTH_TOKEN', 'CODEX_OAUTH_TOKEN',
         'GITHUB_TOKEN', 'GITHUB_APP_PRIVATE_KEY',
         'REVIEW_MEMORY_TOKEN',
+        'ACTIONS_RUNTIME_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'ACTIONS_RESULTS_URL',
         ...Object.keys(process.env).filter(k => k.startsWith('INPUT_')),
       ]);
       const safeCodexEnv = Object.fromEntries(
