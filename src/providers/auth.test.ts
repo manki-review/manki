@@ -73,4 +73,9 @@ describe('buildAuthForProvider', () => {
     const inputs = { ...empty, geminiOauthToken: 'gemini-tok', geminiApiKey: 'gemini-key' };
     expect(buildAuthForProvider('gemini', inputs)).toEqual({ kind: 'oauth', token: 'gemini-tok' });
   });
+
+  it('throws for an unsupported/unknown provider', () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect(() => buildAuthForProvider('unknown' as any, empty)).toThrow('Unsupported provider: unknown');
+  });
 });
