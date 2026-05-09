@@ -83,7 +83,7 @@ The app requires these permissions:
 
 ### Choosing a provider
 
-Manki supports Anthropic, OpenAI, and Gemini. You only need credentials for the provider(s) you actually use. The model ID in `.manki.yml` selects the provider automatically (`claude-*` routes to Anthropic, `gpt-*` and `o*` to OpenAI, `gemini-*` to Gemini), or use `provider/model` syntax to be explicit.
+Manki supports Anthropic, OpenAI, and Gemini. You only need credentials for the provider(s) you actually use. The model ID in `.manki.yml` selects the provider automatically (`claude-*` routes to Anthropic, `gpt-*` and `o1`/`o3`/`o4`/... to OpenAI, `gemini-*` to Gemini), or use `provider/model` syntax to be explicit.
 
 | Provider | API key input | OAuth input |
 |----------|--------------|-------------|
@@ -104,7 +104,7 @@ The `low | medium | high | max` knobs map per provider as follows. Manki passes 
 | high   | `budget_tokens: 10000` | `reasoning_effort: high` | (ignored, warning) | `thinkingBudget: 10000` |
 | max    | `budget_tokens: 16000` | `reasoning_effort: high` (collapsed) | (ignored, warning) | `thinkingBudget: 10000` (collapsed) |
 
-The Gemini OAuth (CLI) path passes prompts through the Gemini CLI binary and does not support effort tiers. Use API key auth if you need thinking budgets on Gemini.
+The `max` tier collapses silently to `high` for OpenAI o-series and Gemini — no warning is emitted, unlike the GPT non-reasoning path which logs a warning when effort is ignored. The Gemini OAuth (CLI) path passes prompts through the Gemini CLI binary and does not support effort tiers. Use API key auth if you need thinking budgets on Gemini.
 
 ### Anthropic
 
