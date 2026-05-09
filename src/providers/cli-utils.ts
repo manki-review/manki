@@ -73,6 +73,9 @@ export function seedAuthFile(opts: SeedAuthFileOptions): void {
 
   mkdirSync(dirname(opts.targetPath), { recursive: true, mode: 0o700 });
   if (process.platform !== 'win32') {
+    // mkdirSync's mode hint only applies to newly created directories; on persistent
+    // runners the direct parent may already exist with a broader mode. chmodSync
+    // unconditionally tightens it. Grandparent directories are the caller's responsibility.
     chmodSync(dirname(opts.targetPath), 0o700);
   }
   try {
