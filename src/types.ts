@@ -562,6 +562,12 @@ export interface RoundFindings {
   count: number;
   severityCounts: Record<string, number>;
   entries: FindingFingerprintEntry[];
+  /**
+   * True when the emit-side budget enforcer dropped one or more entries from
+   * `entries[]` to fit the review-comment body limit. Set by the truncation
+   * helper at emit time, never by upstream pipeline stages.
+   */
+  truncated?: boolean;
 }
 
 export interface FindingFingerprintEntry {

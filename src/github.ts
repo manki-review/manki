@@ -3,7 +3,7 @@ import { createRequire } from 'module';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { AgentProgressEntry, DEFENSIVE_HARDENING_TAG, DashboardData, Finding, FindingSeverity, OWN_PROPOSAL_TAG, ParsedDiff, ReviewMetadata, ReviewResult, ReviewStats, ReviewVerdict } from './types';
+import { AgentProgressEntry, DEFENSIVE_HARDENING_TAG, DashboardData, Finding, FindingFingerprintEntry, FindingSeverity, OWN_PROPOSAL_TAG, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, ReviewVerdict } from './types';
 import { isLineInDiff, findClosestDiffLine } from './diff';
 import { MAX_AGENT_RETRIES } from './types';
 import { safeTruncate } from './utils';
@@ -490,22 +490,68 @@ export async function dismissPreviousReviews(
   }
 }
 
-function formatStatsOneLiner(stats: ReviewStats): string {
+function formatStatsOneLiner(context: RoundContext, reviewTimeMs: number): string {
+  const sev = context.findings.severityCounts;
   const parts: string[] = [];
-  if (stats.severity.blocker) parts.push(`${stats.severity.blocker} blocker`);
-  if (stats.severity.warning) parts.push(`${stats.severity.warning} warning`);
-  if (stats.severity.suggestion) parts.push(`${stats.severity.suggestion} suggestion`);
-  if (stats.severity.nitpick) parts.push(`${stats.severity.nitpick} nitpick`);
+  if (sev.blocker) parts.push(`${sev.blocker} blocker`);
+  if (sev.warning) parts.push(`${sev.warning} warning`);
+  if (sev.suggestion) parts.push(`${sev.suggestion} suggestion`);
+  if (sev.nitpick) parts.push(`${sev.nitpick} nitpick`);
   const breakdown = parts.length > 0 ? parts.join(', ') : 'none';
-  const total = stats.findingsKept;
-  const time = Math.round(stats.reviewTimeMs / 1000);
-  return `\u{1F4CA} ${total} findings (${breakdown}) \u00B7 ${stats.diffLines} lines \u00B7 ${time}s`;
+  const total = context.findings.count;
+  const time = Math.round(reviewTimeMs / 1000);
+  return `\u{1F4CA} ${total} findings (${breakdown}) \u00B7 ${context.diff.lines} lines \u00B7 ${time}s`;
 }
 
-function formatStatsJson(stats: ReviewStats): string {
-  const json = JSON.stringify(stats, null, 2);
-  return `<details>\n<summary>Review stats</summary>\n\n\`\`\`json\n${json}\n\`\`\`\n</details>`;
+function formatContextBlock(context: RoundContext): string {
+  const json = JSON.stringify(context, null, 2);
+  return `<details>\n<summary>Manki context</summary>\n\n\`\`\`json\n${json}\n\`\`\`\n</details>`;
 }
+
+/**
+ * Severity drop order when shrinking `findings.entries[]` to fit the review
+ * body budget. Lowest-impact severities go first; metadata, agents, judge
+ * summary, models, and usage are preserved unconditionally.
+ */
+const TRUNCATION_PRIORITY: ReadonlyArray<FindingFingerprintEntry['severity']> = [
+  'nitpick', 'suggestion', 'warning', 'blocker', 'unknown', 'ignore',
+];
+
+/**
+ * Drop entries from `findings.entries[]` in priority order until the
+ * rendered review body is within `maxBodyLength`. Returns the (possibly
+ * mutated) context and the count of entries dropped. Caller is expected to
+ * `core.warning` when `droppedCount > 0`.
+ */
+function truncateContextToFitBody(
+  context: RoundContext,
+  renderBody: (ctx: RoundContext) => string,
+  maxBodyLength: number,
+): { context: RoundContext; droppedCount: number } {
+  if (renderBody(context).length <= maxBodyLength) {
+    return { context, droppedCount: 0 };
+  }
+  const remaining = [...context.findings.entries];
+  let dropped = 0;
+  for (const target of TRUNCATION_PRIORITY) {
+    while (renderBody({ ...context, findings: { ...context.findings, entries: remaining, truncated: true } }).length > maxBodyLength) {
+      const idx = remaining.findIndex(e => e.severity === target);
+      if (idx === -1) break;
+      remaining.splice(idx, 1);
+      dropped++;
+    }
+    if (renderBody({ ...context, findings: { ...context.findings, entries: remaining, truncated: true } }).length <= maxBodyLength) {
+      break;
+    }
+  }
+  const truncated: RoundContext = {
+    ...context,
+    findings: { ...context.findings, entries: remaining, truncated: true },
+  };
+  return { context: truncated, droppedCount: dropped };
+}
+
+const REVIEW_BODY_BUDGET = 60000;
 
 /**
  * Post the review with inline comments.
@@ -518,7 +564,8 @@ export async function postReview(
   commitSha: string,
   result: ReviewResult,
   diff?: ParsedDiff,
-  stats?: ReviewStats,
+  context?: RoundContext,
+  reviewTimeMs?: number,
 ): Promise<number> {
   const event = mapVerdictToEvent(result.verdict);
 
@@ -576,20 +623,37 @@ export async function postReview(
     }
   }
 
-  let body = `${BOT_MARKERS}\n${sanitizeMarkdown(result.summary)}`;
-  if (result.partialNote) {
-    body += `\n\n> **Note:** ${sanitizeMarkdown(result.partialNote)}`;
+  const renderBody = (ctx: RoundContext | undefined): string => {
+    let b = `${BOT_MARKERS}\n${sanitizeMarkdown(result.summary)}`;
+    if (result.partialNote) {
+      b += `\n\n> **Note:** ${sanitizeMarkdown(result.partialNote)}`;
+    }
+    if (ctx) {
+      b += `\n\n${formatStatsOneLiner(ctx, reviewTimeMs ?? 0)}`;
+      b += `\n\n${formatContextBlock(ctx)}`;
+    }
+    if (generalFindings.length > 0) {
+      b += `\n\n**General findings:**\n${generalFindings.map(c => `- ${c}`).join('\n')}`;
+    }
+    if (invalidComments.length > 0) {
+      b += `\n\n**Findings (not on changed lines):**\n${invalidComments.map(c => `- ${c}`).join('\n')}`;
+    }
+    return b;
+  };
+
+  let effectiveContext = context;
+  if (context) {
+    const { context: maybeTruncated, droppedCount } = truncateContextToFitBody(
+      context,
+      ctx => renderBody(ctx),
+      REVIEW_BODY_BUDGET,
+    );
+    if (droppedCount > 0) {
+      core.warning(`Manki context truncated: dropped ${droppedCount} finding entries to fit comment body`);
+      effectiveContext = maybeTruncated;
+    }
   }
-  if (stats) {
-    body += `\n\n${formatStatsOneLiner(stats)}`;
-    body += `\n\n${formatStatsJson(stats)}`;
-  }
-  if (generalFindings.length > 0) {
-    body += `\n\n**General findings:**\n${generalFindings.map(c => `- ${c}`).join('\n')}`;
-  }
-  if (invalidComments.length > 0) {
-    body += `\n\n**Findings (not on changed lines):**\n${invalidComments.map(c => `- ${c}`).join('\n')}`;
-  }
+  const body = renderBody(effectiveContext);
 
   if (invalidComments.length > 0) {
     core.info(`Moved ${invalidComments.length} comments to review body (lines not in diff)`);
@@ -1376,4 +1440,4 @@ async function cancelActiveReviewRun(
   }
 }
 
-export { dynamicFence, formatFindingComment, formatStatsJson, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, APP_WARNING_MARKER, postAppWarningIfNeeded };
+export { dynamicFence, formatContextBlock, formatFindingComment, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, APP_WARNING_MARKER, postAppWarningIfNeeded };
