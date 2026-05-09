@@ -461,11 +461,9 @@ export interface RoundMeta {
   round: number;
   /** ISO 8601 timestamp at which the round completed. */
   timestamp: string;
-  /** GitHub Actions `run_id` that produced this round. */
-  runId: number;
   /** `version` from `package.json` of the manki release that produced this round. */
   mankiVersion: string;
-  promptVersions: PromptVersions;
+  promptVersions?: PromptVersions;
 }
 
 /** Version identifiers for the prompt templates used by each pipeline stage. */

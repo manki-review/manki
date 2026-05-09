@@ -2560,6 +2560,8 @@ describe('runFullReview orchestration', () => {
     // result.verdictReason must also be updated alongside result.verdict after escalation
     const reviewResultArg = jest.mocked(ghUtils.postReview).mock.calls[0][5];
     expect(reviewResultArg?.verdictReason).toBe('novel_suggestion');
+    // one finding changed severity → escalationsApplied must reflect that
+    expect(statsArg?.memory.escalationsApplied).toBe(1);
   });
 
   it('populates verdictReason in judge on clean APPROVE with no findings', async () => {

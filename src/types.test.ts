@@ -32,7 +32,6 @@ function fullyPopulatedContext(): RoundContext {
       commitSha: 'abc123',
       round: 2,
       timestamp: '2026-01-01T00:00:00.000Z',
-      runId: 9876543210,
       mankiVersion: '4.7.0',
       promptVersions: { judge: 'j1', reviewer: 'r1', planner: 'p1' },
     },
@@ -182,7 +181,7 @@ describe('roundContextToFlatAliases', () => {
 
   it('handles minimal context with no optional fields', () => {
     const ctx: RoundContext = {
-      meta: { prNumber: 1, commitSha: 'sha', round: 1, timestamp: 'ts', runId: 1, mankiVersion: '5.0.0', promptVersions: { judge: 'j', reviewer: 'r', planner: 'p' } },
+      meta: { prNumber: 1, commitSha: 'sha', round: 1, timestamp: 'ts', mankiVersion: '5.0.0' },
       config: { reviewLevel: 'small', nitHandling: 'comments', memoryEnabled: false },
       diff: { lines: 10, additions: 10, deletions: 0, filesReviewed: 1, fileTypes: {} },
       models: { reviewer: 'model-a', judge: 'model-b' },

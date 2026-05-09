@@ -905,9 +905,7 @@ async function runFullReview(
         commitSha,
         round,
         timestamp: new Date().toISOString(),
-        runId: github.context.runId,
         mankiVersion: MANKI_VERSION,
-        promptVersions: { judge: 'unversioned', reviewer: 'unversioned', planner: 'unversioned' },
       },
       config: {
         reviewLevel: config.review_level,

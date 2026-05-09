@@ -644,9 +644,7 @@ function makeContext(overrides: Partial<RoundContext> = {}): RoundContext {
       commitSha: 'abc123',
       round: 1,
       timestamp: '2026-01-01T00:00:00.000Z',
-      runId: 1,
       mankiVersion: '4.7.0',
-      promptVersions: { judge: 'unversioned', reviewer: 'unversioned', planner: 'unversioned' },
     },
     config: { reviewLevel: 'medium', nitHandling: 'issues', memoryEnabled: false },
     diff: { lines: 120, additions: 80, deletions: 40, filesReviewed: 5, fileTypes: { '.ts': 5 } },
@@ -709,8 +707,7 @@ describe('formatContextBlock', () => {
     const ctx = makeContext({
       meta: {
         prNumber: 10, commitSha: 'def456', round: 2, timestamp: '2026-01-01T00:00:00.000Z',
-        runId: 99, mankiVersion: '4.7.0',
-        promptVersions: { judge: 'unversioned', reviewer: 'unversioned', planner: 'unversioned' },
+        mankiVersion: '4.7.0',
       },
       findings: { count: 2, severityCounts: { blocker: 1, warning: 0, suggestion: 1, nitpick: 0 }, entries: [] },
       verdict: 'APPROVE',
@@ -808,6 +805,25 @@ describe('truncateContextToFitBody', () => {
     expect(droppedCount).toBe(0);
     expect(out.findings.entries).toEqual([]);
     expect(render(out).length).toBeGreaterThan(1);
+  });
+
+  it('truncates judge.summary when it alone exceeds budget after entries are exhausted', () => {
+    const longSummary = 'a'.repeat(3000);
+    const ctx = makeContext({
+      judge: { summary: longSummary },
+      findings: { count: 0, severityCounts: { blocker: 0, warning: 0, suggestion: 0, nitpick: 0 }, entries: [] },
+    });
+    const render = (c: RoundContext) => JSON.stringify(c);
+    // Set budget just below the size of the bare context with the long summary so
+    // summary truncation is what pulls it under.
+    const fullSize = render(ctx).length;
+    const budget = fullSize - 500;
+    const { context: out, droppedCount } = truncateContextToFitBody(ctx, render, budget);
+    expect(droppedCount).toBe(0);
+    expect(out.judge.summary.length).toBeLessThan(longSummary.length);
+    // safeTruncate(summary, 2000) yields at most 2003 chars (2000 + ellipsis)
+    expect(out.judge.summary.length).toBeLessThanOrEqual(2003);
+    expect(render(out).length).toBeLessThanOrEqual(budget);
   });
 });
 
@@ -907,6 +923,9 @@ describe('postReview with context', () => {
     const bySev = (s: string) => parsed.findings.entries.filter(e => e.severity === s).length;
     // At least some nitpicks must have been dropped — the budget is tight enough to require it.
     expect(bySev('nitpick')).toBeLessThan(250);
+    // Nitpicks are always dropped before suggestions. With 1000 entries and 4 tiers the budget
+    // is designed so that suggestions must also be dropped, so we can assert this unconditionally.
+    expect(bySev('nitpick')).toBe(0);
     const droppedSuggestion = 250 - bySev('suggestion');
     const droppedWarning = 250 - bySev('warning');
     const droppedBlocker = 250 - bySev('blocker');
