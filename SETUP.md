@@ -91,6 +91,8 @@ Manki supports Anthropic, OpenAI, and Gemini. You only need credentials for the 
 | OpenAI | `openai_api_key` | `openai_oauth_token` (Codex CLI) |
 | Gemini | `gemini_api_key` | `gemini_oauth_token` (Gemini CLI) |
 
+The table lists action input names (lowercase, passed in `with:`). The corresponding GitHub secret is the uppercase version: `anthropic_api_key` reads from `secrets.ANTHROPIC_API_KEY`, and so on, as shown in the workflow examples below.
+
 > **`claude_code_oauth_token` is deprecated.** Anthropic restricted Claude Code OAuth tokens for third-party tools on April 4, 2026. The input still works and the action emits a one-line `core.warning` per run. New setups should use `anthropic_api_key`. If you want a subscription-based path with no extra API charges, switch to `openai_oauth_token` (Codex CLI) or `gemini_oauth_token` (Gemini CLI).
 
 #### Effort mapping
@@ -256,7 +258,7 @@ OpenAI Codex CLI OAuth (requires the CLI on the runner):
 
 ```yaml
       - name: Install Codex CLI
-        run: npm install -g @openai/codex
+        run: npm install -g --ignore-scripts '@openai/codex@0.129.0'
       - name: Manki Review
         uses: manki-review/manki@v5
         with:
@@ -315,7 +317,7 @@ The action exposes outputs you can chain into later workflow steps: `review_id`,
 
 ```yaml
 # Fail CI when the judge requests changes
-- uses: manki-review/manki@v4
+- uses: manki-review/manki@v5
   id: manki
   with:
     anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
