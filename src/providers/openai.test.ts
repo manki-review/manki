@@ -213,13 +213,22 @@ describe('sendMessage (API path)', () => {
 });
 
 describe('sendViaOAuth (Codex CLI path)', () => {
+  let savedCodexHome: string | undefined;
+
   beforeEach(() => {
+    savedCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = '/tmp/manki-test-codex';
     mockSpawn.mockReset();
     resetCLIInstallPromise();
     mockExecFileAsync.mockReset();
     mockExecFileAsync.mockResolvedValue({ stdout: '/usr/bin/codex' });
     const { seedAuthFile } = jest.requireMock('./cli-utils') as { seedAuthFile: jest.Mock };
     seedAuthFile.mockReset();
+  });
+
+  afterEach(() => {
+    if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = savedCodexHome;
   });
 
   function setupSpawnMock(stdout: string, opts: { exitCode?: number; stderr?: string } = {}): void {
@@ -291,8 +300,12 @@ describe('sendViaOAuth (Codex CLI path)', () => {
   it('does not pass the OAuth secret as a CLI env var (auth flows via $CODEX_HOME/auth.json)', async () => {
     setupSpawnMock('ok\n');
     const savedKey = process.env.OPENAI_API_KEY;
+    const savedOauthToken = process.env.OPENAI_OAUTH_TOKEN;
+    const savedCodexOauth = process.env.CODEX_OAUTH_TOKEN;
     const savedCodexHome = process.env.CODEX_HOME;
-    delete process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = 'sk-ambient-key';
+    process.env.OPENAI_OAUTH_TOKEN = 'legacy-oauth-blob';
+    process.env.CODEX_OAUTH_TOKEN = 'legacy-codex-blob';
     process.env.CODEX_HOME = '/tmp/manki-codex-fixture';
 
     try {
@@ -305,7 +318,9 @@ describe('sendViaOAuth (Codex CLI path)', () => {
       expect(spawnOpts.env.OPENAI_API_KEY).toBeUndefined();
       expect(spawnOpts.env.CODEX_HOME).toBe('/tmp/manki-codex-fixture');
     } finally {
-      if (savedKey !== undefined) process.env.OPENAI_API_KEY = savedKey;
+      if (savedKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = savedKey;
+      if (savedOauthToken === undefined) delete process.env.OPENAI_OAUTH_TOKEN; else process.env.OPENAI_OAUTH_TOKEN = savedOauthToken;
+      if (savedCodexOauth === undefined) delete process.env.CODEX_OAUTH_TOKEN; else process.env.CODEX_OAUTH_TOKEN = savedCodexOauth;
       if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = savedCodexHome;
     }
@@ -507,13 +522,22 @@ describe('resolveEffortTier', () => {
 });
 
 describe('sendViaOAuth — extended coverage', () => {
+  let savedCodexHome: string | undefined;
+
   beforeEach(() => {
+    savedCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = '/tmp/manki-test-codex';
     mockSpawn.mockReset();
     resetCLIInstallPromise();
     mockExecFileAsync.mockReset();
     mockExecFileAsync.mockResolvedValue({ stdout: '/usr/bin/codex' });
     const { seedAuthFile } = jest.requireMock('./cli-utils') as { seedAuthFile: jest.Mock };
     seedAuthFile.mockReset();
+  });
+
+  afterEach(() => {
+    if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = savedCodexHome;
   });
 
   interface MockProc {
@@ -720,12 +744,21 @@ describe('sendViaOAuth — extended coverage', () => {
 });
 
 describe('ensureCLI auto-install', () => {
+  let savedCodexHome: string | undefined;
+
   beforeEach(() => {
+    savedCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = '/tmp/manki-test-codex';
     mockSpawn.mockReset();
     resetCLIInstallPromise();
     mockExecFileAsync.mockReset();
     const { seedAuthFile } = jest.requireMock('./cli-utils') as { seedAuthFile: jest.Mock };
     seedAuthFile.mockReset();
+  });
+
+  afterEach(() => {
+    if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = savedCodexHome;
   });
 
   function setupSpawnSuccess(): void {

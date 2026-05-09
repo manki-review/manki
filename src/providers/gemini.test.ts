@@ -273,13 +273,22 @@ function setupOAuthSpawnMock(opts: {
 }
 
 describe('GeminiClient OAuth path', () => {
+  let savedHome: string | undefined;
+
   beforeEach(() => {
+    savedHome = process.env.HOME;
+    process.env.HOME = '/tmp/manki-gemini-test-home';
     mockSpawn.mockReset();
     mockExecFileAsync.mockReset();
     mockExecFileAsync.mockResolvedValue({ stdout: '/usr/bin/gemini' });
     resetGeminiCLIInstallPromise();
     const { seedAuthFile } = jest.requireMock('./cli-utils') as { seedAuthFile: jest.Mock };
     seedAuthFile.mockReset();
+  });
+
+  afterEach(() => {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
   });
 
   it('returns trimmed stdout content on success', async () => {
@@ -300,6 +309,7 @@ describe('GeminiClient OAuth path', () => {
     process.env.INPUT_ANTHROPIC_API_KEY = 'input-sk';
     process.env.INPUT_GEMINI_API_KEY = 'input-gem';
     process.env.INPUT_GITHUB_TOKEN = 'input-ghtok';
+    process.env.GOOGLE_CLOUD_ACCESS_TOKEN = 'ambient-gcp-tok';
     try {
       setupOAuthSpawnMock({ stdout: 'ok' });
       const client = new GeminiClient({ auth: { kind: 'oauth', token: 'gem-tok' }, model: 'gemini-3.1-flash-lite' });
@@ -316,10 +326,10 @@ describe('GeminiClient OAuth path', () => {
       expect(spawnOpts.env.INPUT_ANTHROPIC_API_KEY).toBeUndefined();
       expect(spawnOpts.env.INPUT_GEMINI_API_KEY).toBeUndefined();
       expect(spawnOpts.env.INPUT_GITHUB_TOKEN).toBeUndefined();
+      expect(spawnOpts.env.GOOGLE_CLOUD_ACCESS_TOKEN).toBeUndefined();
       // GOOGLE_GENAI_USE_GCA selects the LOGIN_WITH_GOOGLE auth type non-interactively.
       // The actual credentials come from the seeded `~/.gemini/oauth_creds.json` file.
       expect(spawnOpts.env.GOOGLE_GENAI_USE_GCA).toBe('true');
-      expect(spawnOpts.env.GOOGLE_CLOUD_ACCESS_TOKEN).toBeUndefined();
     } finally {
       delete process.env.ANTHROPIC_API_KEY;
       delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
@@ -330,6 +340,7 @@ describe('GeminiClient OAuth path', () => {
       delete process.env.INPUT_ANTHROPIC_API_KEY;
       delete process.env.INPUT_GEMINI_API_KEY;
       delete process.env.INPUT_GITHUB_TOKEN;
+      delete process.env.GOOGLE_CLOUD_ACCESS_TOKEN;
     }
   });
 

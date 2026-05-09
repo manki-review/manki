@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { buildTimeoutDiagnostics, sanitizeLogOutput, seedAuthFile } from './cli-utils';
+import { buildTimeoutDiagnostics, resolveCodexHome, resolveGeminiCredsDir, sanitizeLogOutput, seedAuthFile } from './cli-utils';
 
 function encode(json: unknown): string {
   return Buffer.from(JSON.stringify(json), 'utf8').toString('base64');
@@ -145,5 +145,68 @@ describe('seedAuthFile', () => {
   it('passes the inputName and bootstrapHint through to error messages', () => {
     expect(() => seedAuthFile(opts({ inputName: 'gemini_oauth_token', secret: '' })))
       .toThrow(/gemini_oauth_token is empty\. Bootstrap with `cmd`\./);
+  });
+
+  it('rejects when a required field is an empty string', () => {
+    const blob = { tokens: { access_token: '', refresh_token: 'r' } };
+    expect(() => seedAuthFile(opts({ secret: encode(blob) })))
+      .toThrow(/missing required field `tokens.access_token`/);
+  });
+});
+
+describe('resolveCodexHome', () => {
+  let savedCodexHome: string | undefined;
+  let savedHome: string | undefined;
+
+  beforeEach(() => {
+    savedCodexHome = process.env.CODEX_HOME;
+    savedHome = process.env.HOME;
+  });
+
+  afterEach(() => {
+    if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = savedCodexHome;
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+  });
+
+  it('returns CODEX_HOME when set', () => {
+    process.env.CODEX_HOME = '/explicit';
+    expect(resolveCodexHome()).toBe('/explicit');
+  });
+
+  it('returns $HOME/.codex when CODEX_HOME is unset', () => {
+    delete process.env.CODEX_HOME;
+    process.env.HOME = '/h';
+    expect(resolveCodexHome()).toBe('/h/.codex');
+  });
+
+  it('throws when neither CODEX_HOME nor HOME is set', () => {
+    delete process.env.CODEX_HOME;
+    delete process.env.HOME;
+    expect(() => resolveCodexHome()).toThrow(/neither \$CODEX_HOME nor \$HOME/);
+  });
+});
+
+describe('resolveGeminiCredsDir', () => {
+  let savedHome: string | undefined;
+
+  beforeEach(() => {
+    savedHome = process.env.HOME;
+  });
+
+  afterEach(() => {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+  });
+
+  it('returns $HOME/.gemini when HOME is set', () => {
+    process.env.HOME = '/h';
+    expect(resolveGeminiCredsDir()).toBe('/h/.gemini');
+  });
+
+  it('throws when HOME is not set', () => {
+    delete process.env.HOME;
+    expect(() => resolveGeminiCredsDir()).toThrow(/\$HOME is not set/);
   });
 });
