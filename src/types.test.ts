@@ -189,8 +189,22 @@ describe('roundContextToFlatAliases', () => {
       verdict: 'APPROVE',
     };
     const aliases = roundContextToFlatAliases(ctx);
-    expect(aliases.findingsRaw).toBe(0);
-    expect(aliases.findingsDropped).toBe(0);
-    expect(aliases.agents).toEqual([]);
+    expect(aliases).toEqual({
+      prNumber: 1,
+      commitSha: 'sha',
+      verdict: 'APPROVE',
+      diffLines: 10,
+      diffAdditions: 10,
+      diffDeletions: 0,
+      filesReviewed: 1,
+      agents: [],
+      findingsRaw: 0,
+      findingsKept: 0,
+      findingsDropped: 0,
+      severity: {},
+      model: 'model-a',
+      reviewerModel: 'model-a',
+      judgeModel: 'model-b',
+    });
   });
 });
