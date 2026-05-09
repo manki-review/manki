@@ -504,7 +504,8 @@ function formatStatsOneLiner(context: RoundContext, reviewTimeMs: number): strin
 }
 
 function formatContextBlock(context: RoundContext): string {
-  const json = JSON.stringify(context, null, 2);
+  const json = JSON.stringify(context, null, 2)
+    .replace(/`{3,}/g, match => match.replace(/`/g, '\\u0060'));
   return `<details>\n<summary>Manki context</summary>\n\n\`\`\`json\n${json}\n\`\`\`\n</details>`;
 }
 
@@ -1440,4 +1441,4 @@ async function cancelActiveReviewRun(
   }
 }
 
-export { dynamicFence, formatContextBlock, formatFindingComment, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, APP_WARNING_MARKER, postAppWarningIfNeeded };
+export { dynamicFence, formatContextBlock, formatFindingComment, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, APP_WARNING_MARKER, postAppWarningIfNeeded };

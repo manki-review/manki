@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 
-import { buildDashboard, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, buildNitIssueBody, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, createNitIssue, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded } from './github';
+import { buildDashboard, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, buildNitIssueBody, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, truncateContextToFitBody, dynamicFence, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, createNitIssue, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded } from './github';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 
 describe('formatFindingComment', () => {
@@ -726,6 +726,18 @@ describe('formatContextBlock', () => {
     expect(result).not.toContain('Review stats');
   });
 
+  it('escapes triple-backtick runs in the serialized JSON to avoid breaking the code fence', () => {
+    const ctx = makeContext({ judge: { summary: 'Use ```json``` fences in examples.' } });
+    const result = formatContextBlock(ctx);
+    // The JSON blob between the opening ```json fence and closing ``` must not
+    // contain a raw triple-backtick sequence that would close the fence early.
+    const fenceOpen = result.indexOf('```json\n');
+    const fenceClose = result.indexOf('\n```\n', fenceOpen + 8);
+    const jsonBlob = result.slice(fenceOpen + 8, fenceClose);
+    expect(jsonBlob).not.toContain('```');
+    expect(result).toContain('\\u0060\\u0060\\u0060');
+  });
+
   it('round-trips the flat-alias projection for a representative round', () => {
     const ctx = makeContext({
       dedup: { staticDropped: 1, llmDropped: 2 },
@@ -751,6 +763,39 @@ describe('formatContextBlock', () => {
       reviewerModel: 'claude-sonnet-4-20250514',
       judgeModel: 'claude-opus-4-20250514',
     });
+  });
+
+  it('uses zero defaults when optional dedup/judge counts are absent', () => {
+    const ctx = makeContext();
+    const aliases = roundContextToFlatAliases(ctx);
+    expect(aliases.findingsRaw).toBe(4);
+    expect(aliases.findingsDropped).toBe(0);
+  });
+});
+
+describe('truncateContextToFitBody', () => {
+  it('returns original context unchanged when body is already within budget', () => {
+    const ctx = makeContext();
+    const render = (c: RoundContext) => JSON.stringify(c);
+    const { context: out, droppedCount } = truncateContextToFitBody(ctx, render, 1_000_000);
+    expect(droppedCount).toBe(0);
+    expect(out).toBe(ctx);
+  });
+
+  it('is idempotent — calling twice on an already-truncated context is a no-op', () => {
+    const entries: FindingFingerprintEntry[] = Array.from({ length: 50 }, (_, i) => ({
+      fingerprint: { file: `src/f-${i}.ts`, lineStart: i, lineEnd: i, slug: 'slug-'.repeat(20) + i },
+      severity: 'nitpick' as const,
+    }));
+    const ctx = makeContext({
+      findings: { count: entries.length, severityCounts: { blocker: 0, warning: 0, suggestion: 0, nitpick: entries.length }, entries },
+    });
+    const render = (c: RoundContext) => JSON.stringify(c);
+    const budget = render(ctx).length - 100;
+    const { context: once } = truncateContextToFitBody(ctx, render, budget);
+    const { context: twice, droppedCount } = truncateContextToFitBody(once, render, budget);
+    expect(droppedCount).toBe(0);
+    expect(twice.findings.entries).toEqual(once.findings.entries);
   });
 });
 
@@ -849,13 +894,16 @@ describe('postReview with context', () => {
     expect(parsed.findings.entries.length).toBeLessThan(entries.length);
     // Nitpicks are dropped first, so any survivor must be a higher-priority severity
     // unless every nitpick was preserved (which would mean no truncation).
-    const survivingNitpicks = parsed.findings.entries.filter(e => e.severity === 'nitpick').length;
-    const survivingSuggestions = parsed.findings.entries.filter(e => e.severity === 'suggestion').length;
-    const survivingWarnings = parsed.findings.entries.filter(e => e.severity === 'warning').length;
-    const survivingBlockers = parsed.findings.entries.filter(e => e.severity === 'blocker').length;
-    if (survivingSuggestions > 0) expect(survivingNitpicks).toBe(0);
-    if (survivingWarnings > 0) expect(survivingSuggestions).toBe(0);
-    if (survivingBlockers > 0) expect(survivingWarnings).toBe(0);
+    const bySev = (s: string) => parsed.findings.entries.filter(e => e.severity === s).length;
+    const droppedSuggestion = 250 - bySev('suggestion');
+    const droppedWarning = 250 - bySev('warning');
+    const droppedBlocker = 250 - bySev('blocker');
+    // Nitpicks are dropped first: any dropped suggestion implies all nitpicks gone.
+    if (droppedSuggestion > 0) expect(bySev('nitpick')).toBe(0);
+    // Suggestions are dropped before warnings: any dropped warning implies all suggestions gone.
+    if (droppedWarning > 0) expect(bySev('suggestion')).toBe(0);
+    // Warnings are dropped before blockers: any dropped blocker implies all warnings gone.
+    if (droppedBlocker > 0) expect(bySev('warning')).toBe(0);
 
     expect(warningSpy).toHaveBeenCalledWith(expect.stringMatching(/Manki context truncated: dropped \d+ finding entries/));
   });
