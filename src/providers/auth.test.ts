@@ -58,4 +58,19 @@ describe('buildAuthForProvider', () => {
     expect(() => buildAuthForProvider('openai', empty)).toThrow();
     expect(() => buildAuthForProvider('gemini', empty)).toThrow();
   });
+
+  it('prefers OAuth token over API key when both are present for anthropic', () => {
+    const inputs = { ...empty, anthropicOauthToken: 'oauth-tok', anthropicApiKey: 'sk-ant' };
+    expect(buildAuthForProvider('anthropic', inputs)).toEqual({ kind: 'oauth', token: 'oauth-tok' });
+  });
+
+  it('prefers OAuth token over API key when both are present for openai', () => {
+    const inputs = { ...empty, openaiOauthToken: 'codex-tok', openaiApiKey: 'sk-openai' };
+    expect(buildAuthForProvider('openai', inputs)).toEqual({ kind: 'oauth', token: 'codex-tok' });
+  });
+
+  it('prefers OAuth token over API key when both are present for gemini', () => {
+    const inputs = { ...empty, geminiOauthToken: 'gemini-tok', geminiApiKey: 'gemini-key' };
+    expect(buildAuthForProvider('gemini', inputs)).toEqual({ kind: 'oauth', token: 'gemini-tok' });
+  });
 });
