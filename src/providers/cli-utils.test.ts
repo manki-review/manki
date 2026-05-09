@@ -152,6 +152,28 @@ describe('seedAuthFile', () => {
     expect(() => seedAuthFile(opts({ secret: encode(blob) })))
       .toThrow(/missing required field `tokens.access_token`/);
   });
+
+  it('accepts a flat-field (Gemini-shaped) blob with single-segment required fields', () => {
+    const blob = { access_token: 'a', refresh_token: 'r' };
+    expect(() =>
+      seedAuthFile({
+        ...opts(),
+        secret: encode(blob),
+        requiredFields: ['access_token', 'refresh_token'],
+      })
+    ).not.toThrow();
+  });
+
+  it('rejects a flat-field blob missing a top-level required field', () => {
+    const blob = { access_token: 'a' };
+    expect(() =>
+      seedAuthFile({
+        ...opts(),
+        secret: encode(blob),
+        requiredFields: ['access_token', 'refresh_token'],
+      })
+    ).toThrow(/missing required field `refresh_token`/);
+  });
 });
 
 describe('resolveCodexHome', () => {
