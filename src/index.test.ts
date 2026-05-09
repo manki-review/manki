@@ -53,9 +53,8 @@ jest.mock('./auth', () => ({
 }));
 
 jest.mock('./providers', () => ({
-  buildAnthropicAuth: jest.requireActual('./providers').buildAnthropicAuth,
-  buildOpenAIAuth: jest.requireActual('./providers').buildOpenAIAuth,
-  buildGeminiAuth: jest.requireActual('./providers').buildGeminiAuth,
+  buildAuthForProvider: jest.requireActual('./providers').buildAuthForProvider,
+  hasAnyProviderCredentials: jest.requireActual('./providers').hasAnyProviderCredentials,
   createLLMClient: jest.fn().mockImplementation(() => ({ sendMessage: jest.fn() })),
   parseModelSpec: jest.fn().mockImplementation((m: string) => ({ provider: 'anthropic', model: m })),
 }));

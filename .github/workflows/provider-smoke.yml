@@ -1,0 +1,62 @@
+name: Provider smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Mondays at 09:00 UTC
+    - cron: '0 9 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: ${{ matrix.provider }} (${{ matrix.model }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - provider: anthropic
+            model: claude-haiku-4-5
+            effort: low
+          - provider: openai
+            model: o4-mini
+            effort: low
+          - provider: gemini
+            model: gemini-2.5-flash
+            effort: low
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run smoke
+        shell: bash
+        env:
+          MODEL: ${{ matrix.model }}
+          EFFORT: ${{ matrix.effort }}
+          PROVIDER: ${{ matrix.provider }}
+          ANTHROPIC_API_KEY: ${{ matrix.provider == 'anthropic' && secrets.ANTHROPIC_API_KEY || '' }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ matrix.provider == 'anthropic' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+          OPENAI_API_KEY: ${{ matrix.provider == 'openai' && secrets.OPENAI_API_KEY || '' }}
+          OPENAI_OAUTH_TOKEN: ${{ matrix.provider == 'openai' && secrets.OPENAI_OAUTH_TOKEN || '' }}
+          GEMINI_API_KEY: ${{ matrix.provider == 'gemini' && secrets.GEMINI_API_KEY || '' }}
+          GEMINI_OAUTH_TOKEN: ${{ matrix.provider == 'gemini' && secrets.GEMINI_OAUTH_TOKEN || '' }}
+        run: |
+          set +e
+          EFFORT_ARG=""
+          [ -n "${EFFORT}" ] && EFFORT_ARG="--effort ${EFFORT}"
+          npm run smoke -- --model "${MODEL}" ${EFFORT_ARG}
+          rc=$?
+          if [ $rc -eq 2 ]; then
+            echo "::notice title=Smoke skipped::No credentials configured for ${PROVIDER}"
+            exit 0
+          fi
+          exit $rc
