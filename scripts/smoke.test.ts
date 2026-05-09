@@ -62,6 +62,23 @@ describe('parseArgs', () => {
       expect(() => parseArgs(['--model', 'm', '--unknown'])).toThrow('Unknown argument: --unknown');
     });
   });
+
+  describe('--help / -h', () => {
+    it.each(['--help', '-h'])('prints help and exits 0 for %s', (flag) => {
+      const exitSpy = jest.spyOn(process, 'exit').mockImplementation(() => {
+        throw new Error('process.exit');
+      });
+      const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+      try {
+        expect(() => parseArgs([flag])).toThrow('process.exit');
+        expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('--model'));
+        expect(exitSpy).toHaveBeenCalledWith(0);
+      } finally {
+        exitSpy.mockRestore();
+        logSpy.mockRestore();
+      }
+    });
+  });
 });
 
 describe('readProviderInputsFromEnv', () => {
