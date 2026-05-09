@@ -10,16 +10,20 @@ Install [Manki](https://github.com/apps/manki-review) on the repositories you wa
 
 ### 2. Add Secrets
 
-Add your Claude authentication to the repository:
+Manki supports three providers. Add credentials for the one you want to use:
 
 ```bash
-# Option A: Claude Max subscription (no extra API costs)
-claude setup-token
-gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo <owner>/<repo>
-
-# Option B: Anthropic API key (pay-per-use)
+# Anthropic (default)
 gh secret set ANTHROPIC_API_KEY --repo <owner>/<repo>
+
+# OpenAI
+gh secret set OPENAI_API_KEY --repo <owner>/<repo>
+
+# Gemini
+gh secret set GEMINI_API_KEY --repo <owner>/<repo>
 ```
+
+OAuth alternatives that ride your existing CLI subscription are also supported. See [Step 2](#step-2-authentication-secrets) for the full matrix.
 
 ### 3. Add the Workflow
 
@@ -30,7 +34,7 @@ Create `.github/workflows/manki.yml` -- see [full workflow below](#step-3-add-th
 ## Prerequisites
 
 - A GitHub repository
-- A Claude Max subscription (or Anthropic API key)
+- Credentials for at least one provider (Anthropic, OpenAI, or Gemini)
 - Repository admin access (for settings changes)
 
 ### Enable GitHub Actions PR Approval
@@ -77,23 +81,34 @@ The app requires these permissions:
 
 > **When do you need a GitHub token?** If you installed the GitHub App (Step 1), you do **not** need to pass `github_token` -- the App handles PR access. The `memory_repo_token` input is only required when your memory repo is a **separate** repository (the App can't reach it). Users who skip the GitHub App can fall back to `github_token: ${{ secrets.GITHUB_TOKEN }}`.
 
-### Claude Code OAuth Token (Max Subscription)
+### Choosing a provider
 
-This allows the action to use your Claude Max subscription -- no extra API costs.
+Manki supports Anthropic, OpenAI, and Gemini. You only need credentials for the provider(s) you actually use. The model ID in `.manki.yml` selects the provider automatically (`claude-*` routes to Anthropic, `gpt-*` and `o*` to OpenAI, `gemini-*` to Gemini), or use `provider/model` syntax to be explicit.
 
-1. Run locally:
-   ```bash
-   claude setup-token
-   ```
-2. Copy the generated token
-3. Add as a repository secret:
-   ```bash
-   gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo <owner>/<repo>
-   ```
+| Provider | API key input | OAuth input |
+|----------|--------------|-------------|
+| Anthropic | `anthropic_api_key` | `claude_code_oauth_token` (deprecated, see note) |
+| OpenAI | `openai_api_key` | `openai_oauth_token` (Codex CLI) |
+| Gemini | `gemini_api_key` | `gemini_oauth_token` (Gemini CLI) |
 
-**OR**
+> **`claude_code_oauth_token` is deprecated.** Anthropic restricted Claude Code OAuth tokens for third-party tools on April 4, 2026. The input still works and the action emits a one-line `core.warning` per run. New setups should use `anthropic_api_key`. If you want a subscription-based path with no extra API charges, switch to `openai_oauth_token` (Codex CLI) or `gemini_oauth_token` (Gemini CLI).
 
-### Anthropic API Key (Pay-per-use)
+#### Effort mapping
+
+The `low | medium | high | max` knobs map per provider as follows. Manki passes effort tiers per stage and per agent based on planner decisions and config.
+
+| Effort | Anthropic | OpenAI o-series | OpenAI GPT | Gemini |
+|--------|-----------|-----------------|------------|--------|
+| low    | no thinking | `reasoning_effort: low` | (ignored, warning) | no thinking |
+| medium | `budget_tokens: 5000` | `reasoning_effort: medium` | (ignored, warning) | `thinkingBudget: 5000` |
+| high   | `budget_tokens: 10000` | `reasoning_effort: high` | (ignored, warning) | `thinkingBudget: 10000` |
+| max    | `budget_tokens: 16000` | `reasoning_effort: high` (collapsed) | (ignored, warning) | `thinkingBudget: 10000` (collapsed) |
+
+The Gemini OAuth (CLI) path passes prompts through the Gemini CLI binary and does not support effort tiers. Use API key auth if you need thinking budgets on Gemini.
+
+### Anthropic
+
+#### Anthropic API Key (recommended)
 
 1. Get your API key from [console.anthropic.com](https://console.anthropic.com)
 2. Add as a repository secret:
@@ -101,47 +116,64 @@ This allows the action to use your Claude Max subscription -- no extra API costs
    gh secret set ANTHROPIC_API_KEY --repo <owner>/<repo>
    ```
 
-### OpenAI (Optional)
+#### Claude Code OAuth Token (deprecated)
 
-Use OpenAI models (via API key or Codex CLI OAuth) instead of Claude.
+Older setups used `claude_code_oauth_token` to ride a Claude Max subscription. Anthropic restricted this token type for third-party tools on April 4, 2026. Existing tokens still work, the action prints a deprecation warning. New installations should use `ANTHROPIC_API_KEY` or one of the other providers below.
 
-**Option A: OpenAI API key**
-
-```bash
-gh secret set OPENAI_API_KEY --repo <owner>/<repo>
-```
-
-**Option B: Codex CLI OAuth** (uses your OpenAI subscription, no per-token billing)
-
-Bootstrap once on a machine where you are already logged into the Codex CLI:
+For reference, the original setup was:
 
 ```bash
-codex login
-cat ~/.codex/auth.json | base64 | gh secret set OPENAI_OAUTH_TOKEN --repo <owner>/<repo>
+claude setup-token
+gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo <owner>/<repo>
 ```
 
-The secret must be the base64-encoded contents of `~/.codex/auth.json`, which contains `tokens.access_token` and `tokens.refresh_token`. Re-run the bootstrap command when the refresh token expires.
+### OpenAI
 
-### Gemini (Optional)
+#### OpenAI API Key
 
-Use Gemini models (via API key or Gemini CLI OAuth) instead of Claude.
+1. Get your API key from [platform.openai.com/api-keys](https://platform.openai.com/api-keys)
+2. Add as a repository secret:
+   ```bash
+   gh secret set OPENAI_API_KEY --repo <owner>/<repo>
+   ```
 
-**Option A: Gemini API key**
+Reasoning models (`o1`, `o3`, `o4`, ...) accept the effort tiers above. Non-reasoning chat models (`gpt-4o`, `gpt-4.1`, ...) ignore effort and log a warning.
 
-```bash
-gh secret set GEMINI_API_KEY --repo <owner>/<repo>
-```
+#### Codex CLI OAuth Token (subscription)
 
-**Option B: Gemini CLI OAuth** (uses your Google account, no per-token billing)
+If you have a ChatGPT Plus or Pro subscription, the Codex CLI generates an OAuth token that the action can ride to avoid per-token API charges.
 
-Bootstrap once on a machine where you are already logged into the Gemini CLI:
+1. Install the Codex CLI: `npm install -g @openai/codex`
+2. Run `codex login` and complete the browser flow
+3. Bootstrap the secret from `~/.codex/auth.json`:
+   ```bash
+   cat ~/.codex/auth.json | base64 | gh secret set OPENAI_OAUTH_TOKEN --repo <owner>/<repo>
+   ```
+   The secret must be the base64-encoded contents of `~/.codex/auth.json`, which contains `tokens.access_token` and `tokens.refresh_token`. Re-run when the refresh token expires.
+4. The workflow needs to install the Codex CLI on the runner (see [Step 3](#step-3-add-the-workflow))
 
-```bash
-gemini  # sign in with Google when prompted
-cat ~/.gemini/oauth_creds.json | base64 | gh secret set GEMINI_OAUTH_TOKEN --repo <owner>/<repo>
-```
+### Gemini
 
-The secret must be the base64-encoded contents of `~/.gemini/oauth_creds.json`, which contains `access_token` and `refresh_token`. Re-run the bootstrap command when the refresh token expires.
+#### Gemini API Key
+
+1. Get your API key from [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)
+2. Add as a repository secret:
+   ```bash
+   gh secret set GEMINI_API_KEY --repo <owner>/<repo>
+   ```
+
+#### Gemini CLI OAuth Token (subscription)
+
+Rides a Google AI subscription via the Gemini CLI binary. Effort tiers are not honored on this path.
+
+1. Install the Gemini CLI: see [github.com/google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli)
+2. Sign in with Google when prompted (`gemini` opens a browser flow)
+3. Bootstrap the secret from `~/.gemini/oauth_creds.json`:
+   ```bash
+   cat ~/.gemini/oauth_creds.json | base64 | gh secret set GEMINI_OAUTH_TOKEN --repo <owner>/<repo>
+   ```
+   The secret must be the base64-encoded contents of `~/.gemini/oauth_creds.json`, which contains `access_token` and `refresh_token`. Re-run when the refresh token expires.
+4. The workflow needs to install the Gemini CLI on the runner (see [Step 3](#step-3-add-the-workflow))
 
 ### Review Memory Token (Optional)
 
@@ -196,22 +228,79 @@ jobs:
         with:
           node-version: '24'
           cache: 'npm'
-      - name: Install Claude Code CLI
-        run: npm install -g @anthropic-ai/claude-code
-        env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       - name: Manki Review
-        uses: manki-review/manki@v4
+        uses: manki-review/manki@v5
         with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}  # Alternative to OAuth
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           # github_token: ${{ secrets.GITHUB_TOKEN }}  # Only if not using the GitHub App
           # memory_repo_token: ${{ secrets.REVIEW_MEMORY_TOKEN }}  # Only if memory repo is separate
 ```
 
+#### Workflow examples per provider
+
+OpenAI API key:
+
+```yaml
+      - name: Manki Review
+        uses: manki-review/manki@v5
+        with:
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+```
+
+OpenAI Codex CLI OAuth (requires the CLI on the runner):
+
+```yaml
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex
+      - name: Manki Review
+        uses: manki-review/manki@v5
+        with:
+          openai_oauth_token: ${{ secrets.OPENAI_OAUTH_TOKEN }}
+```
+
+Gemini API key:
+
+```yaml
+      - name: Manki Review
+        uses: manki-review/manki@v5
+        with:
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+```
+
+Gemini CLI OAuth (requires the CLI on the runner):
+
+```yaml
+      - name: Install Gemini CLI
+        run: npm install -g @google/gemini-cli
+      - name: Manki Review
+        uses: manki-review/manki@v5
+        with:
+          gemini_oauth_token: ${{ secrets.GEMINI_OAUTH_TOKEN }}
+```
+
+You can pass multiple credentials at once. The active provider for each agent is chosen by the model ID in `.manki.yml`.
+
+Pair each workflow with a matching `models:` block in `.manki.yml`, for example:
+
+```yaml
+# OpenAI
+models:
+  planner: gpt-4o-mini
+  reviewer: gpt-4o-mini
+  judge: o4-mini
+  dedup: gpt-4o-mini
+
+# Gemini
+models:
+  planner: gemini-2.5-flash
+  reviewer: gemini-2.5-flash
+  judge: gemini-2.5-pro
+  dedup: gemini-2.5-flash
+```
+
 ### Action inputs
 
-The workflow above uses the only inputs most setups need: `claude_code_oauth_token` (or `anthropic_api_key`), `github_token`, and optionally `memory_repo_token`. To point at a config file outside the repo root, set `config_path` (default: `.manki.yml`). For GitHub App identity, set `github_app_id`, `github_app_private_key`, and `manki_token_url`. See [`action.yml`](action.yml) for the full input reference.
+The workflow above uses the only inputs most setups need: a provider credential (e.g. `anthropic_api_key`, `openai_api_key`, `gemini_api_key`, or one of the OAuth equivalents), `github_token` (only if you skipped the GitHub App), and optionally `memory_repo_token`. To point at a config file outside the repo root, set `config_path` (default: `.manki.yml`). For GitHub App identity, set `github_app_id`, `github_app_private_key`, and `manki_token_url`. See [`action.yml`](action.yml) for the full input reference.
 
 ### Action outputs
 
@@ -474,12 +563,12 @@ Each review run posts fresh inline comments. The recap phase deduplicates agains
 
 | Secret | Required | Purpose |
 |--------|----------|---------|
-| `CLAUDE_CODE_OAUTH_TOKEN` | Yes* | Claude Max subscription auth (Codex OAuth) |
-| `ANTHROPIC_API_KEY` | Yes* | Anthropic API auth (alternative to OAuth) |
+| `ANTHROPIC_API_KEY` | Yes* | Anthropic API auth |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Yes* | Claude Max subscription auth (deprecated) |
 | `OPENAI_OAUTH_TOKEN` | No | Base64-encoded `~/.codex/auth.json` for Codex CLI OAuth |
 | `OPENAI_API_KEY` | No | OpenAI API key (alternative to Codex OAuth) |
 | `GEMINI_OAUTH_TOKEN` | No | Base64-encoded `~/.gemini/oauth_creds.json` for Gemini CLI OAuth |
 | `GEMINI_API_KEY` | No | Google Generative AI API key (alternative to Gemini OAuth) |
 | `REVIEW_MEMORY_TOKEN` | No | Fine-grained PAT for memory repo writes |
 
-\* One of `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` is required when using Claude (the default provider).
+\* At least one provider credential is required. The active provider for each agent is selected by the model ID in `.manki.yml`.
