@@ -62,14 +62,18 @@ function parseArgs(): SmokeArgs {
     const arg = argv[i];
     if (arg === '--model') {
       model = argv[++i];
+      if (!model) throw new Error('--model requires a value.');
     } else if (arg === '--effort') {
       const val = argv[++i];
+      if (!val) throw new Error('--effort requires a value.');
       if (val !== 'low' && val !== 'medium' && val !== 'high' && val !== 'max') {
         throw new Error(`Invalid --effort "${val}". Use: low | medium | high | max.`);
       }
       effort = val;
     } else if (arg === '--prompt') {
-      prompt = argv[++i];
+      const val = argv[++i];
+      if (val === undefined) throw new Error('--prompt requires a value.');
+      prompt = val;
     } else if (arg === '--help' || arg === '-h') {
       printHelp();
       process.exit(0);
@@ -126,10 +130,18 @@ async function main(): Promise<number> {
   console.log(`provider=${spec.provider} model=${spec.model} effort=${args.effort ?? 'default'}`);
   console.log(`prompt=${JSON.stringify(args.prompt)}`);
 
+  const TIMEOUT_MS = 60_000;
+  const timeoutPromise = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error(`timed out after ${TIMEOUT_MS}ms`)), TIMEOUT_MS),
+  );
+
   const t0 = Date.now();
   let response;
   try {
-    response = await client.sendMessage(SYSTEM_PROMPT, args.prompt, opts);
+    response = await Promise.race([
+      client.sendMessage(SYSTEM_PROMPT, args.prompt, opts),
+      timeoutPromise,
+    ]);
   } catch (err) {
     const ms = Date.now() - t0;
     console.error(`transport error after ${ms}ms: ${(err as Error).message}`);
