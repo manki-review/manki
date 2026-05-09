@@ -192,6 +192,47 @@ describe('run', () => {
     );
   });
 
+  describe('claude_code_oauth_token deprecation warning', () => {
+    it('warns once when claude_code_oauth_token is set', async () => {
+      setContext({
+        eventName: 'pull_request',
+        payload: {
+          action: 'opened',
+          sender: { login: 'alice', type: 'User' },
+          pull_request: { number: 1, head: { sha: 'abc' }, base: { ref: 'main' } },
+        },
+      });
+      jest.mocked(core.getInput).mockImplementation((name: string) =>
+        name === 'claude_code_oauth_token' ? 'oauth-tok' : '',
+      );
+
+      await run();
+
+      const deprecationCalls = jest.mocked(core.warning).mock.calls.filter(([msg]) =>
+        typeof msg === 'string' && msg.includes('`claude_code_oauth_token` is deprecated'),
+      );
+      expect(deprecationCalls).toHaveLength(1);
+    });
+
+    it('does not warn when claude_code_oauth_token is unset', async () => {
+      setContext({
+        eventName: 'pull_request',
+        payload: {
+          action: 'opened',
+          sender: { login: 'alice', type: 'User' },
+          pull_request: { number: 1, head: { sha: 'abc' }, base: { ref: 'main' } },
+        },
+      });
+      jest.mocked(core.getInput).mockImplementation(() => '');
+
+      await run();
+
+      expect(jest.mocked(core.warning)).not.toHaveBeenCalledWith(
+        expect.stringContaining('`claude_code_oauth_token` is deprecated'),
+      );
+    });
+  });
+
   describe('bot self-triggering prevention', () => {
     it('ignores events from any bot sender', async () => {
       setContext({
