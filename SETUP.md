@@ -153,6 +153,8 @@ If you have a ChatGPT Plus or Pro subscription and the Codex CLI installed:
    The secret must be the base64-encoded contents of `~/.codex/auth.json`, which contains `tokens.access_token` and `tokens.refresh_token`. Re-run when the refresh token expires.
 3. The workflow needs to install the Codex CLI on the runner (see [Step 3](#step-3-add-the-workflow))
 
+> **Security note:** The base64 encoding is for transport format only — it is not encrypted. Anyone with access to repository secrets can decode the full credential, including the refresh token, which grants ongoing access to your ChatGPT Plus/Pro subscription. If this secret is ever compromised, revoke the OAuth session immediately at [platform.openai.com/account/sessions](https://platform.openai.com/account/sessions). For production use, prefer the API key path (`OPENAI_API_KEY`), which can be rotated without affecting your account session.
+
 ### Gemini
 
 #### Gemini API Key
@@ -175,6 +177,8 @@ Rides a Google AI subscription via the Gemini CLI binary. Effort tiers are not h
    ```
    The secret must be the base64-encoded contents of `~/.gemini/oauth_creds.json`, which contains `access_token` and `refresh_token`. Re-run when the refresh token expires.
 4. The workflow needs to install the Gemini CLI on the runner (see [Step 3](#step-3-add-the-workflow))
+
+> **Security note:** The base64 encoding is for transport format only — it is not encrypted. Anyone with access to repository secrets can decode the full credential, including the refresh token, which grants ongoing access to your Google AI subscription. If this secret is ever compromised, revoke the OAuth session immediately at [myaccount.google.com/permissions](https://myaccount.google.com/permissions). For production use, prefer the API key path (`GEMINI_API_KEY`), which can be rotated without affecting your account session.
 
 ### Review Memory Token (Optional)
 
