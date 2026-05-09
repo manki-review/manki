@@ -172,4 +172,25 @@ describe('roundContextToFlatAliases', () => {
     expect(aliases.findingsRaw).toBe(ctx.findings.count);
     expect(aliases.findingsDropped).toBe(0);
   });
+
+  it('handles minimal context with no optional fields', () => {
+    const ctx: RoundContext = {
+      meta: { prNumber: 1, commitSha: 'sha', round: 1, timestamp: 'ts', runId: 1, mankiVersion: '5.0.0', promptVersions: { judge: 'j', reviewer: 'r', planner: 'p' } },
+      config: { reviewLevel: 'small', nitHandling: 'comments', memoryEnabled: false },
+      diff: { lines: 10, additions: 10, deletions: 0, filesReviewed: 1, fileTypes: {} },
+      models: { reviewer: 'model-a', judge: 'model-b' },
+      planner: { used: false },
+      reviewers: { agents: [] },
+      judge: { summary: '' },
+      dedup: {},
+      memory: {},
+      findings: { count: 0, severityCounts: {}, entries: [] },
+      usage: {},
+      verdict: 'APPROVE',
+    };
+    const aliases = roundContextToFlatAliases(ctx);
+    expect(aliases.findingsRaw).toBe(0);
+    expect(aliases.findingsDropped).toBe(0);
+    expect(aliases.agents).toEqual([]);
+  });
 });

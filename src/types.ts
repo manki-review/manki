@@ -477,8 +477,8 @@ export interface PromptVersions {
 
 /** Effective config snapshot for the round, narrowed to fields that affect outcomes. */
 export interface RoundConfig {
-  reviewLevel: string;
-  nitHandling: string;
+  reviewLevel: ReviewLevel;
+  nitHandling: 'issues' | 'comments';
   memoryEnabled: boolean;
   reviewPasses?: number;
 }
@@ -576,7 +576,7 @@ export interface RoundUsage {
   outputTokens?: number;
   totalTokens?: number;
   estimatedCostUsd?: number;
-  perStage?: Record<'planner' | 'reviewer' | 'judge' | 'dedup', RoundUsageStage | undefined>;
+  perStage?: Partial<Record<'planner' | 'reviewer' | 'judge' | 'dedup', RoundUsageStage>>;
 }
 
 export interface RoundUsageStage {
