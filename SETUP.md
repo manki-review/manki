@@ -566,14 +566,20 @@ Each review run posts fresh inline comments. The recap phase deduplicates agains
 
 ## Quick Reference: All Secrets
 
-| Secret | Required | Purpose |
-|--------|----------|---------|
-| `ANTHROPIC_API_KEY` | Yes† | Anthropic API auth |
-| `CLAUDE_CODE_OAUTH_TOKEN` | No (deprecated) | Claude Max subscription auth (deprecated, prefer `ANTHROPIC_API_KEY`) |
-| `OPENAI_API_KEY` | Yes† | OpenAI API key |
-| `OPENAI_OAUTH_TOKEN` | Yes† | Base64-encoded `~/.codex/auth.json` for Codex CLI OAuth |
-| `GEMINI_API_KEY` | Yes† | Google Generative AI API key |
-| `GEMINI_OAUTH_TOKEN` | Yes† | Base64-encoded `~/.gemini/oauth_creds.json` for Gemini CLI OAuth |
-| `REVIEW_MEMORY_TOKEN` | No | Fine-grained PAT for memory repo writes |
+Provide credentials for the providers you actually use. The model ID in `.manki.yml` picks the provider per agent (`claude-*` → Anthropic, `gpt-*` and `o1`/`o3`/`o4`/... → OpenAI, `gemini-*` → Gemini), or use `provider/model` syntax to be explicit. The action fails fast with a clear error if a configured provider's credentials are missing.
 
-† At least one provider credential is required — pick one auth method from one provider. The active provider per agent is selected by the model ID in `.manki.yml`.
+### Provider credentials
+
+| Provider | API key | OAuth alternative |
+|----------|---------|-------------------|
+| Anthropic | `ANTHROPIC_API_KEY` | `CLAUDE_CODE_OAUTH_TOKEN` (deprecated) |
+| OpenAI | `OPENAI_API_KEY` | `OPENAI_OAUTH_TOKEN` (base64 of `~/.codex/auth.json`) |
+| Gemini | `GEMINI_API_KEY` | `GEMINI_OAUTH_TOKEN` (base64 of `~/.gemini/oauth_creds.json`) |
+
+When both are set for a provider, OAuth takes precedence.
+
+### Other
+
+| Secret | Purpose |
+|--------|---------|
+| `REVIEW_MEMORY_TOKEN` | Fine-grained PAT for memory repo writes (only when the memory repo is a separate repository — see [Review memory](#review-memory)) |
