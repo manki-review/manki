@@ -196,7 +196,11 @@ describe('run', () => {
     it('warns once when claude_code_oauth_token is set', async () => {
       setContext({
         eventName: 'pull_request',
-        payload: { action: 'opened', sender: { login: 'dependabot[bot]', type: 'Bot' } },
+        payload: {
+          action: 'opened',
+          sender: { login: 'alice', type: 'User' },
+          pull_request: { number: 1, head: { sha: 'abc' }, base: { ref: 'main' } },
+        },
       });
       jest.mocked(core.getInput).mockImplementation((name: string) =>
         name === 'claude_code_oauth_token' ? 'oauth-tok' : '',
@@ -204,6 +208,7 @@ describe('run', () => {
 
       await run();
 
+      expect(jest.mocked(core.warning)).toHaveBeenCalledTimes(1);
       expect(jest.mocked(core.warning)).toHaveBeenCalledWith(
         expect.stringContaining('`claude_code_oauth_token` is deprecated'),
       );
@@ -212,7 +217,11 @@ describe('run', () => {
     it('does not warn when claude_code_oauth_token is unset', async () => {
       setContext({
         eventName: 'pull_request',
-        payload: { action: 'opened', sender: { login: 'dependabot[bot]', type: 'Bot' } },
+        payload: {
+          action: 'opened',
+          sender: { login: 'alice', type: 'User' },
+          pull_request: { number: 1, head: { sha: 'abc' }, base: { ref: 'main' } },
+        },
       });
 
       await run();
