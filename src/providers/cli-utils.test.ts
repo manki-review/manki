@@ -142,6 +142,11 @@ describe('seedAuthFile', () => {
       .toThrow(/must decode to a JSON object/);
   });
 
+  it('rejects when decoded JSON is an array', () => {
+    expect(() => seedAuthFile(opts({ secret: encode([1, 2, 3]) })))
+      .toThrow(/must decode to a JSON object/);
+  });
+
   it('passes the inputName and bootstrapHint through to error messages', () => {
     expect(() => seedAuthFile(opts({ inputName: 'gemini_oauth_token', secret: '' })))
       .toThrow(/gemini_oauth_token is empty\. Bootstrap with `cmd`\./);
