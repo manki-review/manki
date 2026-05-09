@@ -134,6 +134,7 @@ export class GeminiClient implements LLMClient {
         'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
         'REVIEW_MEMORY_TOKEN', 'GITHUB_TOKEN',
         'GEMINI_API_KEY', 'GITHUB_APP_PRIVATE_KEY',
+        'GOOGLE_CLOUD_ACCESS_TOKEN',
       ]);
       const safeEnv = Object.fromEntries(
         Object.entries(process.env).filter(

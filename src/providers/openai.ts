@@ -175,6 +175,7 @@ export class OpenAIClient implements LLMClient {
       const BLOCKED_FROM_CODEX = new Set([
         'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
         'GEMINI_API_KEY', 'GEMINI_OAUTH_TOKEN',
+        'OPENAI_API_KEY', 'OPENAI_OAUTH_TOKEN', 'CODEX_OAUTH_TOKEN',
         'GITHUB_TOKEN', 'GITHUB_APP_PRIVATE_KEY',
         'REVIEW_MEMORY_TOKEN',
         ...Object.keys(process.env).filter(k => k.startsWith('INPUT_')),
