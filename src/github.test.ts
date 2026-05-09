@@ -797,6 +797,18 @@ describe('truncateContextToFitBody', () => {
     expect(droppedCount).toBe(0);
     expect(twice.findings.entries).toEqual(once.findings.entries);
   });
+
+  it('returns over-budget context with truncated flag when body exceeds budget even after all entries dropped', () => {
+    const ctx = makeContext({
+      judge: { summary: 'x'.repeat(200) },
+      findings: { count: 0, severityCounts: { blocker: 0, warning: 0, suggestion: 0, nitpick: 0 }, entries: [] },
+    });
+    const render = (c: RoundContext) => JSON.stringify(c);
+    const { context: out, droppedCount } = truncateContextToFitBody(ctx, render, 1);
+    expect(droppedCount).toBe(0);
+    expect(out.findings.entries).toEqual([]);
+    expect(render(out).length).toBeGreaterThan(1);
+  });
 });
 
 describe('postReview with context', () => {
@@ -885,8 +897,6 @@ describe('postReview with context', () => {
     const body = mockCreateReview.mock.calls[0][0].body as string;
     expect(body.length).toBeLessThanOrEqual(60000);
 
-    // Re-extract the embedded context JSON to assert priority ordering and the
-    // `truncated` flag.
     const match = body.match(/```json\n([\s\S]*?)\n```/);
     expect(match).not.toBeNull();
     const parsed = JSON.parse(match![1]) as RoundContext;
@@ -895,6 +905,8 @@ describe('postReview with context', () => {
     // Nitpicks are dropped first, so any survivor must be a higher-priority severity
     // unless every nitpick was preserved (which would mean no truncation).
     const bySev = (s: string) => parsed.findings.entries.filter(e => e.severity === s).length;
+    // At least some nitpicks must have been dropped — the budget is tight enough to require it.
+    expect(bySev('nitpick')).toBeLessThan(250);
     const droppedSuggestion = 250 - bySev('suggestion');
     const droppedWarning = 250 - bySev('warning');
     const droppedBlocker = 250 - bySev('blocker');

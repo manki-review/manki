@@ -515,7 +515,7 @@ function formatContextBlock(context: RoundContext): string {
  * summary, models, and usage are preserved unconditionally.
  */
 const TRUNCATION_PRIORITY: ReadonlyArray<FindingFingerprintEntry['severity']> = [
-  'nitpick', 'suggestion', 'warning', 'blocker', 'unknown', 'ignore',
+  'ignore', 'nitpick', 'suggestion', 'warning', 'blocker', 'unknown',
 ];
 
 /**
@@ -545,10 +545,16 @@ function truncateContextToFitBody(
       break;
     }
   }
-  const truncated: RoundContext = {
+  let truncated: RoundContext = {
     ...context,
     findings: { ...context.findings, entries: remaining, truncated: true },
   };
+  if (renderBody(truncated).length > maxBodyLength && truncated.judge.summary) {
+    truncated = {
+      ...truncated,
+      judge: { ...truncated.judge, summary: safeTruncate(truncated.judge.summary, 2000) },
+    };
+  }
   return { context: truncated, droppedCount: dropped };
 }
 

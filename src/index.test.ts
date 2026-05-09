@@ -1803,6 +1803,8 @@ describe('runFullReview orchestration', () => {
     expect(statsArg!.models.reviewer).toBeDefined();
     expect(statsArg!.models.judge).toBeDefined();
 
+    expect(statsArg!.meta.round).toBe(1);
+
     // keptSeverities/droppedSeverities passed to dashboard use original severity for dropped findings
     const dashboardArg = jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[4];
     expect(dashboardArg?.keptSeverities).toEqual({ blocker: 1, suggestion: 1, nitpick: 1 });
@@ -2209,6 +2211,10 @@ describe('runFullReview orchestration', () => {
     const { 11: existingHandoverArg } = appendCall;
     // existingHandover param should be the already-loaded handover, not re-fetched
     expect(existingHandoverArg).toEqual({ prNumber: 1, repo: 'test-repo', rounds: priorRounds });
+
+    // With 1 prior round in handover, meta.round must be 2
+    const roundContextArg = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+    expect(roundContextArg!.meta.round).toBe(2);
   });
 
   describe('prior-round agent pinning', () => {
