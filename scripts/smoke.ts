@@ -53,8 +53,7 @@ Exit codes:
 `);
 }
 
-function parseArgs(): SmokeArgs {
-  const argv = process.argv.slice(2);
+export function parseArgs(argv: string[] = process.argv.slice(2)): SmokeArgs {
   let model: string | undefined;
   let effort: SmokeArgs['effort'];
   let prompt: string | undefined;
@@ -161,9 +160,11 @@ async function main(): Promise<number> {
   return 0;
 }
 
-main()
-  .then((code) => process.exit(code))
-  .catch((err) => {
-    console.error(err);
-    process.exit(1);
-  });
+if (require.main === module) {
+  main()
+    .then((code) => process.exit(code))
+    .catch((err) => {
+      console.error(err);
+      process.exit(1);
+    });
+}
