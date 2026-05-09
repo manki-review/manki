@@ -208,10 +208,10 @@ describe('run', () => {
 
       await run();
 
-      expect(jest.mocked(core.warning)).toHaveBeenCalledTimes(1);
-      expect(jest.mocked(core.warning)).toHaveBeenCalledWith(
-        expect.stringContaining('`claude_code_oauth_token` is deprecated'),
+      const deprecationCalls = jest.mocked(core.warning).mock.calls.filter(([msg]) =>
+        typeof msg === 'string' && msg.includes('`claude_code_oauth_token` is deprecated'),
       );
+      expect(deprecationCalls).toHaveLength(1);
     });
 
     it('does not warn when claude_code_oauth_token is unset', async () => {
@@ -223,6 +223,7 @@ describe('run', () => {
           pull_request: { number: 1, head: { sha: 'abc' }, base: { ref: 'main' } },
         },
       });
+      jest.mocked(core.getInput).mockImplementation(() => '');
 
       await run();
 

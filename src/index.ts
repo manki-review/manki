@@ -142,7 +142,7 @@ async function run(): Promise<void> {
   if (core.getInput('claude_code_oauth_token')) {
     core.warning(
       '`claude_code_oauth_token` is deprecated. Anthropic restricts Claude Code OAuth tokens for third-party tools. ' +
-      'Use `anthropic_api_key` instead, or use `openai_oauth_token` / `gemini_oauth_token` once provider OAuth paths are stable in v5.0.0.',
+      'Use `anthropic_api_key` instead, or use `openai_oauth_token` / `gemini_oauth_token` once those provider OAuth paths are stable.',
     );
   }
 
