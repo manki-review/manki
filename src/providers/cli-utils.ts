@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, writeFileSync } from 'fs';
-import { dirname } from 'path';
+import { mkdirSync, writeFileSync } from 'fs';
+import { dirname, join } from 'path';
 
 export const STALE_TIMEOUT_MS = 90_000;
 
@@ -18,6 +18,26 @@ export function buildTimeoutDiagnostics(lastStdoutChunk: string, stderrText: str
   if (stdoutSnippet) parts.push(`Last stdout: ${stdoutSnippet}`);
   if (stderrSnippet) parts.push(`stderr: ${stderrSnippet}`);
   return parts.join('. ');
+}
+
+export function resolveCodexHome(): string {
+  const explicit = process.env.CODEX_HOME;
+  if (explicit) return explicit;
+  const home = process.env.HOME;
+  if (!home) {
+    throw new Error(
+      'Cannot resolve CODEX_HOME: neither $CODEX_HOME nor $HOME is set in the environment.',
+    );
+  }
+  return join(home, '.codex');
+}
+
+export function resolveGeminiCredsDir(): string {
+  const home = process.env.HOME;
+  if (!home) {
+    throw new Error('Cannot seed Gemini OAuth credentials: $HOME is not set in the environment.');
+  }
+  return join(home, '.gemini');
 }
 
 export interface SeedAuthFileOptions {
@@ -43,19 +63,12 @@ export interface SeedAuthFileOptions {
  * across invocations on persistent runners.
  */
 export function seedAuthFile(opts: SeedAuthFileOptions): void {
-  if (existsSync(opts.targetPath)) return;
-
   const trimmed = opts.secret.trim();
   if (!trimmed) {
     throw new Error(`${opts.inputName} is empty. ${opts.bootstrapHint}`);
   }
 
-  let decoded: string;
-  try {
-    decoded = Buffer.from(trimmed, 'base64').toString('utf8');
-  } catch {
-    throw new Error(`${opts.inputName} is not valid base64. ${opts.bootstrapHint}`);
-  }
+  const decoded = Buffer.from(trimmed, 'base64').toString('utf8');
 
   let parsed: unknown;
   try {
@@ -66,7 +79,7 @@ export function seedAuthFile(opts: SeedAuthFileOptions): void {
     );
   }
 
-  if (!parsed || typeof parsed !== 'object') {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error(`${opts.inputName} must decode to a JSON object. ${opts.bootstrapHint}`);
   }
 
@@ -79,7 +92,12 @@ export function seedAuthFile(opts: SeedAuthFileOptions): void {
   }
 
   mkdirSync(dirname(opts.targetPath), { recursive: true, mode: 0o700 });
-  writeFileSync(opts.targetPath, decoded, { mode: 0o600 });
+  try {
+    writeFileSync(opts.targetPath, decoded, { mode: 0o600, flag: 'wx' });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') return;
+    throw err;
+  }
 }
 
 function hasNestedString(obj: Record<string, unknown>, dottedPath: string): boolean {

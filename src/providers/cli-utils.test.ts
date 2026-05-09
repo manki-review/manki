@@ -105,9 +105,9 @@ describe('seedAuthFile', () => {
   });
 
   it('writes the file with mode 0600 and creates the parent dir', () => {
+    if (process.platform === 'win32') return; // Windows does not model Unix permission bits
     const target = join(tmpRoot, 'sub', 'auth.json');
     seedAuthFile(opts());
-    // POSIX permission bits — skip on platforms that don't expose them faithfully.
     const mode = statSync(target).mode & 0o777;
     expect(mode).toBe(0o600);
   });
