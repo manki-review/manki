@@ -258,7 +258,7 @@ OpenAI Codex CLI OAuth (requires the CLI on the runner):
 
 ```yaml
       - name: Install Codex CLI
-        # --ignore-scripts is safe: @openai/codex@0.129.0 ships a plain JS bin with no postinstall steps.
+        # --ignore-scripts is safe: @openai/codex@0.129.0 ships a plain JS bin with no postinstall steps. Re-verify if you bump the version pin.
         run: npm install -g --ignore-scripts '@openai/codex@0.129.0'
       - name: Manki Review
         uses: manki-review/manki@v5
