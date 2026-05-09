@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'fs';
+import { chmodSync, mkdirSync, writeFileSync } from 'fs';
 import { dirname } from 'path';
 
 export const STALE_TIMEOUT_MS = 90_000;
@@ -72,6 +72,9 @@ export function seedAuthFile(opts: SeedAuthFileOptions): void {
   }
 
   mkdirSync(dirname(opts.targetPath), { recursive: true, mode: 0o700 });
+  if (process.platform !== 'win32') {
+    chmodSync(dirname(opts.targetPath), 0o700);
+  }
   try {
     writeFileSync(opts.targetPath, decoded, { mode: 0o600, flag: 'wx' });
   } catch (err) {
