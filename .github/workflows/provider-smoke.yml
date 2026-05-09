@@ -51,7 +51,9 @@ jobs:
           GEMINI_OAUTH_TOKEN: ${{ secrets.GEMINI_OAUTH_TOKEN }}
         run: |
           set +e
-          npm run smoke -- --model "${MODEL}" --effort "${EFFORT}"
+          EFFORT_ARG=""
+          [ -n "${EFFORT}" ] && EFFORT_ARG="--effort ${EFFORT}"
+          npm run smoke -- --model "${MODEL}" ${EFFORT_ARG}
           rc=$?
           if [ $rc -eq 2 ]; then
             echo "::notice title=Smoke skipped::No credentials configured for ${PROVIDER}"
