@@ -128,6 +128,13 @@ async function run(): Promise<void> {
 
   core.info(`Event: ${eventName}, Action: ${action}`);
 
+  if (core.getInput('claude_code_oauth_token')) {
+    core.warning(
+      '`claude_code_oauth_token` is deprecated. Anthropic restricts Claude Code OAuth tokens for third-party tools. ' +
+      'Use `anthropic_api_key` instead, or switch to `openai_oauth_token` (Codex CLI) or `gemini_oauth_token` (Gemini CLI) for subscription-based access.',
+    );
+  }
+
   // Prevent self-triggering — skip events caused by any bot
   const senderType = github.context.payload.sender?.type ?? '';
   const reviewAuthorType = github.context.payload.review?.user?.type ?? '';

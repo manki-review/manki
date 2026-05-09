@@ -192,6 +192,37 @@ describe('run', () => {
     );
   });
 
+  describe('claude_code_oauth_token deprecation warning', () => {
+    it('warns once when claude_code_oauth_token is set', async () => {
+      setContext({
+        eventName: 'pull_request',
+        payload: { action: 'opened', sender: { login: 'dependabot[bot]', type: 'Bot' } },
+      });
+      jest.mocked(core.getInput).mockImplementation((name: string) =>
+        name === 'claude_code_oauth_token' ? 'oauth-tok' : '',
+      );
+
+      await run();
+
+      expect(jest.mocked(core.warning)).toHaveBeenCalledWith(
+        expect.stringContaining('`claude_code_oauth_token` is deprecated'),
+      );
+    });
+
+    it('does not warn when claude_code_oauth_token is unset', async () => {
+      setContext({
+        eventName: 'pull_request',
+        payload: { action: 'opened', sender: { login: 'dependabot[bot]', type: 'Bot' } },
+      });
+
+      await run();
+
+      expect(jest.mocked(core.warning)).not.toHaveBeenCalledWith(
+        expect.stringContaining('`claude_code_oauth_token` is deprecated'),
+      );
+    });
+  });
+
   describe('bot self-triggering prevention', () => {
     it('ignores events from any bot sender', async () => {
       setContext({
