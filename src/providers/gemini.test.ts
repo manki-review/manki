@@ -318,6 +318,7 @@ describe('GeminiClient OAuth path', () => {
     process.env.OPENAI_API_KEY = 'sk-openai';
     process.env.OPENAI_OAUTH_TOKEN = 'openai-oauth';
     process.env.CODEX_OAUTH_TOKEN = 'codex-oauth';
+    process.env.INPUT_GEMINI_OAUTH_TOKEN = 'input-gem-oauth';
     try {
       setupOAuthSpawnMock({ stdout: 'ok' });
       const client = new GeminiClient({ auth: { kind: 'oauth', token: 'gem-tok' }, model: 'gemini-3.1-flash-lite' });
@@ -333,6 +334,7 @@ describe('GeminiClient OAuth path', () => {
       expect(spawnOpts.env.GITHUB_APP_PRIVATE_KEY).toBeUndefined();
       expect(spawnOpts.env.INPUT_ANTHROPIC_API_KEY).toBeUndefined();
       expect(spawnOpts.env.INPUT_GEMINI_API_KEY).toBeUndefined();
+      expect(spawnOpts.env.INPUT_GEMINI_OAUTH_TOKEN).toBeUndefined();
       expect(spawnOpts.env.INPUT_GITHUB_TOKEN).toBeUndefined();
       expect(spawnOpts.env.GOOGLE_CLOUD_ACCESS_TOKEN).toBeUndefined();
       expect(spawnOpts.env.ACTIONS_RUNTIME_TOKEN).toBeUndefined();
@@ -361,6 +363,7 @@ describe('GeminiClient OAuth path', () => {
       delete process.env.OPENAI_API_KEY;
       delete process.env.OPENAI_OAUTH_TOKEN;
       delete process.env.CODEX_OAUTH_TOKEN;
+      delete process.env.INPUT_GEMINI_OAUTH_TOKEN;
     }
   });
 
