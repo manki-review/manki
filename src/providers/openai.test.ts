@@ -303,10 +303,14 @@ describe('sendViaOAuth (Codex CLI path)', () => {
     const savedOauthToken = process.env.OPENAI_OAUTH_TOKEN;
     const savedCodexOauth = process.env.CODEX_OAUTH_TOKEN;
     const savedCodexHome = process.env.CODEX_HOME;
+    const savedInputOpenAI = process.env.INPUT_OPENAI_API_KEY;
+    const savedInputGemini = process.env.INPUT_GEMINI_API_KEY;
     process.env.OPENAI_API_KEY = 'sk-ambient-key';
     process.env.OPENAI_OAUTH_TOKEN = 'legacy-oauth-blob';
     process.env.CODEX_OAUTH_TOKEN = 'legacy-codex-blob';
     process.env.CODEX_HOME = '/tmp/manki-codex-fixture';
+    process.env.INPUT_OPENAI_API_KEY = 'input-openai';
+    process.env.INPUT_GEMINI_API_KEY = 'input-gemini';
 
     try {
       const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'my-tok' }, model: 'gpt-4o' });
@@ -316,13 +320,16 @@ describe('sendViaOAuth (Codex CLI path)', () => {
       expect(spawnOpts.env.CODEX_OAUTH_TOKEN).toBeUndefined();
       expect(spawnOpts.env.OPENAI_OAUTH_TOKEN).toBeUndefined();
       expect(spawnOpts.env.OPENAI_API_KEY).toBeUndefined();
+      expect(spawnOpts.env.INPUT_OPENAI_API_KEY).toBeUndefined();
+      expect(spawnOpts.env.INPUT_GEMINI_API_KEY).toBeUndefined();
       expect(spawnOpts.env.CODEX_HOME).toBe('/tmp/manki-codex-fixture');
     } finally {
       if (savedKey === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = savedKey;
       if (savedOauthToken === undefined) delete process.env.OPENAI_OAUTH_TOKEN; else process.env.OPENAI_OAUTH_TOKEN = savedOauthToken;
       if (savedCodexOauth === undefined) delete process.env.CODEX_OAUTH_TOKEN; else process.env.CODEX_OAUTH_TOKEN = savedCodexOauth;
-      if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
-      else process.env.CODEX_HOME = savedCodexHome;
+      if (savedCodexHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = savedCodexHome;
+      if (savedInputOpenAI === undefined) delete process.env.INPUT_OPENAI_API_KEY; else process.env.INPUT_OPENAI_API_KEY = savedInputOpenAI;
+      if (savedInputGemini === undefined) delete process.env.INPUT_GEMINI_API_KEY; else process.env.INPUT_GEMINI_API_KEY = savedInputGemini;
     }
   });
 
