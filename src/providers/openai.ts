@@ -34,6 +34,15 @@ const OPENAI_OAUTH_BOOTSTRAP_HINT =
 // in sync with the explicit install step in `.github/workflows/manki.yml`.
 export const CODEX_CLI_VERSION = '0.129.0';
 
+const CODEX_BLOCKED_BARE = new Set([
+  'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
+  'GEMINI_API_KEY', 'GEMINI_OAUTH_TOKEN',
+  'OPENAI_API_KEY', 'OPENAI_OAUTH_TOKEN', 'CODEX_OAUTH_TOKEN',
+  'GITHUB_TOKEN', 'GITHUB_APP_PRIVATE_KEY',
+  'REVIEW_MEMORY_TOKEN',
+  'ACTIONS_RUNTIME_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'ACTIONS_RESULTS_URL',
+]);
+
 export function buildOpenAIAuth(oauthToken: string, apiKey: string): OpenAIAuth {
   if (oauthToken) return { kind: 'oauth', token: oauthToken };
   if (apiKey) return { kind: 'apiKey', key: apiKey };
@@ -156,7 +165,6 @@ export class OpenAIClient implements LLMClient {
   private async sendViaOAuth(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
     const fullPrompt = `${systemPrompt}\n\n---\n\n${userMessage}`;
     const codexHome = resolveCodexHome();
-    const cliPath = await this.ensureCLI();
     const oauthToken = this.auth.kind === 'oauth' ? this.auth.token : undefined;
     if (oauthToken) {
       seedAuthFile({
@@ -167,6 +175,7 @@ export class OpenAIClient implements LLMClient {
         bootstrapHint: OPENAI_OAUTH_BOOTSTRAP_HINT,
       });
     }
+    const cliPath = await this.ensureCLI();
 
     return new Promise((resolve, reject) => {
       // `codex exec` runs a non-interactive completion, reading the prompt from stdin
@@ -184,17 +193,10 @@ export class OpenAIClient implements LLMClient {
       // Read prompt from stdin
       args.push('-');
 
-      const BLOCKED_FROM_CODEX = new Set([
-        'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
-        'GEMINI_API_KEY', 'GEMINI_OAUTH_TOKEN',
-        'OPENAI_API_KEY', 'OPENAI_OAUTH_TOKEN', 'CODEX_OAUTH_TOKEN',
-        'GITHUB_TOKEN', 'GITHUB_APP_PRIVATE_KEY',
-        'REVIEW_MEMORY_TOKEN',
-        'ACTIONS_RUNTIME_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'ACTIONS_RESULTS_URL',
-        ...Object.keys(process.env).filter(k => k.startsWith('INPUT_')),
-      ]);
       const safeCodexEnv = Object.fromEntries(
-        Object.entries(process.env).filter(([k]) => !BLOCKED_FROM_CODEX.has(k)),
+        Object.entries(process.env).filter(
+          ([k]) => !CODEX_BLOCKED_BARE.has(k) && !k.startsWith('INPUT_'),
+        ),
       ) as NodeJS.ProcessEnv;
 
       const child = spawn(cliPath, args, {
