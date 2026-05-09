@@ -87,7 +87,7 @@ export function parseArgs(argv: string[] = process.argv.slice(2)): SmokeArgs {
   return { model, effort, prompt: prompt ?? DEFAULT_PROMPT };
 }
 
-function readProviderInputsFromEnv(): ProviderInputs {
+export function readProviderInputsFromEnv(): ProviderInputs {
   return {
     anthropicOauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? '',
     anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? '',
