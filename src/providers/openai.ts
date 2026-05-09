@@ -143,9 +143,9 @@ export class OpenAIClient implements LLMClient {
 
   private async sendViaOAuth(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
     const fullPrompt = `${systemPrompt}\n\n---\n\n${userMessage}`;
+    const codexHome = resolveCodexHome();
     const cliPath = await this.ensureCLI();
     const oauthToken = this.auth.kind === 'oauth' ? this.auth.token : undefined;
-    const codexHome = resolveCodexHome();
     if (oauthToken) {
       seedAuthFile({
         secret: oauthToken,

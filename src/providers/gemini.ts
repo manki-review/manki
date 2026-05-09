@@ -108,13 +108,14 @@ export class GeminiClient implements LLMClient {
     // Use a structural delimiter that is harder to spoof from inside diff content
     // than a bare `---` markdown rule, and explicitly mark the user content as untrusted.
     const fullPrompt = `${systemPrompt}\n\n=== USER CONTENT (untrusted) ===\n\n${userMessage}\n\n=== END USER CONTENT ===`;
+    const geminiCredsDir = resolveGeminiCredsDir();
     const cliPath = await this.ensureCLI();
     const oauthToken = this.auth.kind === 'oauth' ? this.auth.token : undefined;
     if (oauthToken) {
       seedAuthFile({
         secret: oauthToken,
         inputName: 'gemini_oauth_token',
-        targetPath: join(resolveGeminiCredsDir(), 'oauth_creds.json'),
+        targetPath: join(geminiCredsDir, 'oauth_creds.json'),
         requiredFields: ['access_token', 'refresh_token'],
         bootstrapHint: GEMINI_OAUTH_BOOTSTRAP_HINT,
       });
