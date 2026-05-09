@@ -139,18 +139,19 @@ gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo <owner>/<repo>
 
 Reasoning models (`o1`, `o3`, `o4`, ...) accept the effort tiers above. Non-reasoning chat models (`gpt-4o`, `gpt-4.1`, ...) ignore effort and log a warning.
 
-#### Codex CLI OAuth Token (subscription)
+#### Codex CLI OAuth Token (subscription, experimental)
 
-If you have a ChatGPT Plus or Pro subscription, the Codex CLI generates an OAuth token that the action can ride to avoid per-token API charges.
+> **Status: experimental for CI.** The Codex CLI stores subscription auth in `~/.codex/auth.json` as short-lived tokens (`access_token` ~1h) refreshed automatically when the CLI runs. For CI workflows, use the API-key path above unless you can keep the secret refreshed externally.
 
-1. Install the Codex CLI: `npm install -g @openai/codex`
-2. Run `codex login` and complete the browser flow
-3. Bootstrap the secret from `~/.codex/auth.json`:
+If you have a ChatGPT Plus or Pro subscription and the Codex CLI installed:
+
+1. Run `codex login` and complete the browser flow. This populates `~/.codex/auth.json`.
+2. Bootstrap the secret from that file:
    ```bash
    cat ~/.codex/auth.json | base64 | gh secret set OPENAI_OAUTH_TOKEN --repo <owner>/<repo>
    ```
    The secret must be the base64-encoded contents of `~/.codex/auth.json`, which contains `tokens.access_token` and `tokens.refresh_token`. Re-run when the refresh token expires.
-4. The workflow needs to install the Codex CLI on the runner (see [Step 3](#step-3-add-the-workflow))
+3. The workflow needs to install the Codex CLI on the runner (see [Step 3](#step-3-add-the-workflow))
 
 ### Gemini
 
