@@ -416,3 +416,230 @@ export interface ReviewMetadata {
     totalMs: number;
   };
 }
+
+/**
+ * Per-round semantic state of a manki review, grouped by pipeline stage.
+ *
+ * Single source of truth for per-round context, consumed by two surfaces:
+ *
+ * 1. The PR-embedded `Manki context` block — the structured payload manki
+ *    attaches to its review comment. Replaces the ad-hoc `Review stats` JSON
+ *    grown organically over time and consolidates everything `HandoverRound`
+ *    used to carry in the per-PR handover file.
+ * 2. Local replay bundles — the `context` sub-field of the bundles produced for
+ *    offline replay, so a replay carries the full prior-round state without
+ *    having to re-derive it from the review comment.
+ *
+ * Both consumers see the same shape, version-stamped via `meta.mankiVersion`
+ * (per the schema-versioning decision in #461). Flat-compat aliases used by
+ * legacy downstream workflows (`verdict`, `findingsRaw`, `findingsKept`,
+ * `severity`, `reviewTimeMs`, `diffLines`, etc.) are derived at emit time via
+ * `roundContextToFlatAliases` rather than duplicated in the type.
+ *
+ * Sub-issues #686, #687, #688, #689, #690 wire the emitter, HTML render,
+ * recap aggregator, consumer migration, and handover deletion.
+ */
+export interface RoundContext {
+  meta: RoundMeta;
+  config: RoundConfig;
+  diff: RoundDiff;
+  models: RoundModels;
+  planner: RoundPlanner;
+  reviewers: RoundReviewers;
+  judge: RoundJudge;
+  dedup: RoundDedup;
+  memory: RoundMemory;
+  findings: RoundFindings;
+  usage: RoundUsage;
+  verdict: ReviewVerdict;
+}
+
+/** Identity, provenance, and versioning for a single completed review round. */
+export interface RoundMeta {
+  prNumber: number;
+  commitSha: string;
+  round: number;
+  /** ISO 8601 timestamp at which the round completed. */
+  timestamp: string;
+  /** GitHub Actions `run_id` that produced this round. */
+  runId: number;
+  /** `version` from `package.json` of the manki release that produced this round. */
+  mankiVersion: string;
+  promptVersions: PromptVersions;
+}
+
+/** Version identifiers for the prompt templates used by each pipeline stage. */
+export interface PromptVersions {
+  judge: string;
+  reviewer: string;
+  planner: string;
+}
+
+/** Effective config snapshot for the round, narrowed to fields that affect outcomes. */
+export interface RoundConfig {
+  reviewLevel: string;
+  nitHandling: string;
+  memoryEnabled: boolean;
+  reviewPasses?: number;
+}
+
+export interface RoundDiff {
+  lines: number;
+  additions: number;
+  deletions: number;
+  filesReviewed: number;
+  fileTypes: Record<string, number>;
+}
+
+/** Resolved model IDs per pipeline stage. */
+export interface RoundModels {
+  planner?: string;
+  reviewer: string;
+  judge: string;
+  dedup?: string;
+}
+
+export interface RoundPlanner {
+  /** False when the planner was disabled or fell back to the heuristic team selector. */
+  used: boolean;
+  teamSize?: PlannerResult['teamSize'];
+  reviewerEffort?: EffortLevel;
+  judgeEffort?: EffortLevel;
+  prType?: string;
+  durationMs?: number;
+}
+
+export interface RoundReviewers {
+  /** Reviewer agent names that participated in this round (subsumes `HandoverRound.agents`). */
+  agents: string[];
+  agentMetrics?: RoundAgentMetric[];
+}
+
+export interface RoundAgentMetric {
+  name: string;
+  findingsRaw: number;
+  findingsKept: number;
+  durationMs?: number;
+  status?: 'success' | 'failed';
+  responseLength?: number;
+  warnings?: string[];
+  inputTokens?: number;
+  outputTokens?: number;
+  failureReason?: string;
+}
+
+export interface RoundJudge {
+  /** Narrative summary used today by `buildPlannerHints` and surfaced in handover. */
+  summary: string;
+  confidenceDistribution?: { high: number; medium: number; low: number };
+  severityChanges?: number;
+  mergedDuplicates?: number;
+  durationMs?: number;
+  verdictReason?: VerdictReason;
+  defensiveHardeningCount?: number;
+  inPrSuppressedCount?: number;
+  crossRoundSuppressed?: number;
+  crossRoundDemoted?: number;
+}
+
+export interface RoundDedup {
+  staticDropped?: number;
+  llmDropped?: number;
+  durationMs?: number;
+}
+
+export interface RoundMemory {
+  patternsApplied?: number;
+  suppressionsApplied?: number;
+  escalationsApplied?: number;
+}
+
+/**
+ * Per-round fingerprint table. Carries identity and outcome of each finding,
+ * never the body. Replaces `HandoverRound.findings` in the new shape.
+ */
+export interface RoundFindings {
+  count: number;
+  severityCounts: Record<string, number>;
+  entries: FindingFingerprintEntry[];
+}
+
+export interface FindingFingerprintEntry {
+  fingerprint: FindingFingerprint;
+  threadId?: string;
+  severity: FindingSeverity | 'unknown';
+  authorReplyClass?: AuthorReplyClass;
+}
+
+export interface RoundUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  estimatedCostUsd?: number;
+  perStage?: Record<'planner' | 'reviewer' | 'judge' | 'dedup', RoundUsageStage | undefined>;
+}
+
+export interface RoundUsageStage {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  estimatedCostUsd?: number;
+}
+
+/**
+ * Flat-compat aliases preserved for downstream workflows that read the legacy
+ * `Review stats` keys (`fromJSON(steps.manki.outputs.severity_counts)` etc.).
+ * Derived from a `RoundContext` at emit time so the type itself stays free of
+ * duplicated fields. Slated for removal in v5.0.0 per the #461 decision log.
+ */
+export interface RoundContextFlatAliases {
+  prNumber: number;
+  commitSha: string;
+  verdict: ReviewVerdict;
+  diffLines: number;
+  diffAdditions: number;
+  diffDeletions: number;
+  filesReviewed: number;
+  agents: string[];
+  findingsRaw: number;
+  findingsKept: number;
+  findingsDropped: number;
+  severity: Record<string, number>;
+  model: string;
+  reviewerModel: string;
+  judgeModel: string;
+}
+
+/**
+ * Project a `RoundContext` to the legacy flat-key shape consumed by older
+ * downstream workflows. Keep this the single derivation point so removing the
+ * aliases in v5.0.0 is a one-file change.
+ *
+ * `findingsRaw` is reconstructed as `findings.count + dedup.staticDropped +
+ * dedup.llmDropped + judge.mergedDuplicates`, matching the pre-grouping
+ * `ReviewStats.findingsRaw` definition.
+ */
+export function roundContextToFlatAliases(ctx: RoundContext): RoundContextFlatAliases {
+  const kept = ctx.findings.count;
+  const staticDropped = ctx.dedup.staticDropped ?? 0;
+  const llmDropped = ctx.dedup.llmDropped ?? 0;
+  const mergedDuplicates = ctx.judge.mergedDuplicates ?? 0;
+  const raw = kept + staticDropped + llmDropped + mergedDuplicates;
+  return {
+    prNumber: ctx.meta.prNumber,
+    commitSha: ctx.meta.commitSha,
+    verdict: ctx.verdict,
+    diffLines: ctx.diff.lines,
+    diffAdditions: ctx.diff.additions,
+    diffDeletions: ctx.diff.deletions,
+    filesReviewed: ctx.diff.filesReviewed,
+    agents: ctx.reviewers.agents,
+    findingsRaw: raw,
+    findingsKept: kept,
+    findingsDropped: raw - kept,
+    severity: ctx.findings.severityCounts,
+    model: ctx.models.reviewer,
+    reviewerModel: ctx.models.reviewer,
+    judgeModel: ctx.models.judge,
+  };
+}
