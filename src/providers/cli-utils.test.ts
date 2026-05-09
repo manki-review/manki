@@ -112,6 +112,13 @@ describe('seedAuthFile', () => {
     expect(mode).toBe(0o600);
   });
 
+  it('creates parent directory with mode 0700', () => {
+    if (process.platform === 'win32') return;
+    seedAuthFile(opts());
+    const dirMode = statSync(join(tmpRoot, 'sub')).mode & 0o777;
+    expect(dirMode).toBe(0o700);
+  });
+
   it('preserves an existing file (does not overwrite refreshed tokens)', () => {
     const target = join(tmpRoot, 'sub', 'auth.json');
     seedAuthFile(opts());
