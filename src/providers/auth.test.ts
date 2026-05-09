@@ -54,9 +54,9 @@ describe('buildAuthForProvider', () => {
   });
 
   it('throws for each provider when no matching credential is present', () => {
-    expect(() => buildAuthForProvider('anthropic', empty)).toThrow();
-    expect(() => buildAuthForProvider('openai', empty)).toThrow();
-    expect(() => buildAuthForProvider('gemini', empty)).toThrow();
+    expect(() => buildAuthForProvider('anthropic', empty)).toThrow(/credential|api.?key|token/i);
+    expect(() => buildAuthForProvider('openai', empty)).toThrow(/credential|api.?key|token/i);
+    expect(() => buildAuthForProvider('gemini', empty)).toThrow(/credential|api.?key|token/i);
   });
 
   it('prefers OAuth token over API key when both are present for anthropic', () => {
