@@ -475,7 +475,7 @@ export interface PromptVersions {
   planner: string;
 }
 
-/** Effective config snapshot for the round, narrowed to fields that affect outcomes. */
+/** Effective config snapshot for the round: AI pipeline behavior fields (model behavior, pass configuration, memory). Convergence/post-processing rules are not included. */
 export interface RoundConfig {
   reviewLevel: ReviewLevel;
   nitHandling: 'issues' | 'comments';
@@ -517,8 +517,8 @@ export interface RoundReviewers {
 
 export interface RoundAgentMetric {
   name: string;
-  findingsRaw: number;
-  findingsKept: number;
+  findingsRaw?: number;
+  findingsKept?: number;
   durationMs?: number;
   status?: 'success' | 'failed';
   responseLength?: number;

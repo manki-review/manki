@@ -173,6 +173,13 @@ describe('roundContextToFlatAliases', () => {
     expect(aliases.findingsDropped).toBe(0);
   });
 
+  it('uses findings.count, not entries.length, for findingsKept', () => {
+    const ctx = fullyPopulatedContext();
+    ctx.findings.count = 5;
+    const aliases = roundContextToFlatAliases(ctx);
+    expect(aliases.findingsKept).toBe(5);
+  });
+
   it('handles minimal context with no optional fields', () => {
     const ctx: RoundContext = {
       meta: { prNumber: 1, commitSha: 'sha', round: 1, timestamp: 'ts', runId: 1, mankiVersion: '5.0.0', promptVersions: { judge: 'j', reviewer: 'r', planner: 'p' } },
