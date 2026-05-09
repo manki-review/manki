@@ -515,7 +515,7 @@ function formatContextBlock(context: RoundContext): string {
  * summary, models, and usage are preserved unconditionally.
  */
 const TRUNCATION_PRIORITY: ReadonlyArray<FindingFingerprintEntry['severity']> = [
-  'ignore', 'nitpick', 'suggestion', 'warning', 'blocker', 'unknown',
+  'ignore', 'nitpick', 'suggestion', 'warning', 'unknown', 'blocker',
 ];
 
 /**
@@ -547,7 +547,7 @@ function truncateContextToFitBody(
   }
   let truncated: RoundContext = {
     ...context,
-    findings: { ...context.findings, entries: remaining, truncated: true },
+    findings: { ...context.findings, entries: remaining, ...(dropped > 0 && { truncated: true }) },
   };
   if (renderBody(truncated).length > maxBodyLength && truncated.judge.summary) {
     truncated = {
@@ -562,6 +562,9 @@ const REVIEW_BODY_BUDGET = 60000;
 
 /**
  * Post the review with inline comments.
+ *
+ * When `context` is provided without `reviewTimeMs`, the stats one-liner
+ * will display `0s` for review time. Pass both together to avoid this.
  */
 export async function postReview(
   octokit: Octokit,
@@ -655,9 +658,9 @@ export async function postReview(
       ctx => renderBody(ctx),
       REVIEW_BODY_BUDGET,
     );
+    effectiveContext = maybeTruncated;
     if (droppedCount > 0) {
       core.warning(`Manki context truncated: dropped ${droppedCount} finding entries to fit comment body`);
-      effectiveContext = maybeTruncated;
     }
   }
   const body = renderBody(effectiveContext);
