@@ -22,6 +22,7 @@ Manki assembles a dynamic review team sized to your PR's content and complexity.
 - **Multi-stage pipeline** — a planner picks the team, agents review in parallel, dedup catches repeats from prior reviews, a judge filters noise and classifies findings by severity
 - **Adaptive team sizing** — 1, 3, 5, or 7 reviewers chosen per PR based on content and complexity
 - **Smart verdicts** — blocks PRs on real issues, approves over style nitpicks; auto-approves when all blocking threads resolve
+- **Multi-provider** — Anthropic, OpenAI, and Gemini, mix-and-match per agent via `.manki.yml`
 - **Self-learning memory** — `/manki remember` teaches conventions, `/manki dismiss` suppresses false positives, patterns stick across PRs
 - **Conversational** — reply to any review comment to discuss, or use `@manki explain`/`triage`/`forget` inline
 - **Self-hosted GitHub Action** — your API key, your compute, no SaaS intermediary
@@ -29,7 +30,7 @@ Manki assembles a dynamic review team sized to your PR's content and complexity.
 ## Quick start
 
 1. **Install the app** — [github.com/apps/manki-review](https://github.com/apps/manki-review)
-2. **Add a Claude secret** — `gh secret set CLAUDE_CODE_OAUTH_TOKEN`
+2. **Add a provider secret** — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY` (OAuth subscription paths are also supported, see [SETUP.md](SETUP.md#choosing-a-provider))
 3. **Add the workflow** — copy the YAML from the [Setup Guide](SETUP.md#step-3-add-the-workflow)
 
 Full setup guide with memory, triage, and troubleshooting: **[SETUP.md](SETUP.md)**
