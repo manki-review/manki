@@ -6,6 +6,13 @@ import * as core from '@actions/core';
 import { buildGeminiAuth, GeminiClient, geminiThinkingBudget, resetGeminiCLIInstallPromise } from './gemini';
 import { parseModelSpec } from './model-registry';
 
+// Seeding `~/.gemini/oauth_creds.json` is exercised separately in `cli-utils.test.ts`.
+// Stub it out here so the provider tests don't touch the filesystem.
+jest.mock('./cli-utils', () => ({
+  ...jest.requireActual('./cli-utils'),
+  seedAuthFile: jest.fn(),
+}));
+
 jest.mock('child_process', () => ({
   execFile: jest.fn(),
   spawn: jest.fn(),
@@ -271,6 +278,8 @@ describe('GeminiClient OAuth path', () => {
     mockExecFileAsync.mockReset();
     mockExecFileAsync.mockResolvedValue({ stdout: '/usr/bin/gemini' });
     resetGeminiCLIInstallPromise();
+    const { seedAuthFile } = jest.requireMock('./cli-utils') as { seedAuthFile: jest.Mock };
+    seedAuthFile.mockReset();
   });
 
   it('returns trimmed stdout content on success', async () => {
@@ -281,7 +290,7 @@ describe('GeminiClient OAuth path', () => {
     expect(result.content).toBe('hello there');
   });
 
-  it('strips known provider secrets from forwarded env', async () => {
+  it('strips known provider secrets from forwarded env and does not pass the OAuth secret as an env var', async () => {
     process.env.ANTHROPIC_API_KEY = 'sk-anthropic';
     process.env.CLAUDE_CODE_OAUTH_TOKEN = 'claude-tok';
     process.env.REVIEW_MEMORY_TOKEN = 'mem-tok';
@@ -307,8 +316,10 @@ describe('GeminiClient OAuth path', () => {
       expect(spawnOpts.env.INPUT_ANTHROPIC_API_KEY).toBeUndefined();
       expect(spawnOpts.env.INPUT_GEMINI_API_KEY).toBeUndefined();
       expect(spawnOpts.env.INPUT_GITHUB_TOKEN).toBeUndefined();
+      // GOOGLE_GENAI_USE_GCA selects the LOGIN_WITH_GOOGLE auth type non-interactively.
+      // The actual credentials come from the seeded `~/.gemini/oauth_creds.json` file.
       expect(spawnOpts.env.GOOGLE_GENAI_USE_GCA).toBe('true');
-      expect(spawnOpts.env.GOOGLE_CLOUD_ACCESS_TOKEN).toBe('gem-tok');
+      expect(spawnOpts.env.GOOGLE_CLOUD_ACCESS_TOKEN).toBeUndefined();
     } finally {
       delete process.env.ANTHROPIC_API_KEY;
       delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
@@ -320,6 +331,57 @@ describe('GeminiClient OAuth path', () => {
       delete process.env.INPUT_GEMINI_API_KEY;
       delete process.env.INPUT_GITHUB_TOKEN;
     }
+  });
+
+  it('seeds `$HOME/.gemini/oauth_creds.json` from the OAuth secret before invoking the CLI', async () => {
+    const { seedAuthFile } = jest.requireMock('./cli-utils') as { seedAuthFile: jest.Mock };
+    seedAuthFile.mockClear();
+    setupOAuthSpawnMock({ stdout: 'ok' });
+    const savedHome = process.env.HOME;
+    process.env.HOME = '/tmp/manki-gemini-home-fixture';
+
+    try {
+      const client = new GeminiClient({ auth: { kind: 'oauth', token: 'b64-blob' }, model: 'gemini-3.1-flash-lite' });
+      await client.sendMessage('sys', 'user');
+
+      expect(seedAuthFile).toHaveBeenCalledWith({
+        secret: 'b64-blob',
+        inputName: 'gemini_oauth_token',
+        targetPath: '/tmp/manki-gemini-home-fixture/.gemini/oauth_creds.json',
+        requiredFields: ['access_token', 'refresh_token'],
+        bootstrapHint: expect.stringContaining('gemini'),
+      });
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+    }
+  });
+
+  it('throws a clear error when $HOME is not set', async () => {
+    setupOAuthSpawnMock({ stdout: 'ok' });
+    const savedHome = process.env.HOME;
+    delete process.env.HOME;
+
+    try {
+      const client = new GeminiClient({ auth: { kind: 'oauth', token: 'b64-blob' }, model: 'gemini-3.1-flash-lite' });
+      await expect(client.sendMessage('sys', 'user')).rejects.toThrow(
+        /Cannot seed Gemini OAuth credentials.*\$HOME is not set/,
+      );
+    } finally {
+      if (savedHome !== undefined) process.env.HOME = savedHome;
+    }
+  });
+
+  it('propagates seedAuthFile errors (e.g. legacy single-token shape) to the caller', async () => {
+    const { seedAuthFile } = jest.requireMock('./cli-utils') as { seedAuthFile: jest.Mock };
+    seedAuthFile.mockImplementationOnce(() => {
+      throw new Error('gemini_oauth_token did not decode to JSON. Bootstrap with `gemini` ...');
+    });
+    setupOAuthSpawnMock({ stdout: 'ok' });
+
+    const client = new GeminiClient({ auth: { kind: 'oauth', token: 'legacy' }, model: 'gemini-3.1-flash-lite' });
+    await expect(client.sendMessage('sys', 'user')).rejects.toThrow(
+      /gemini_oauth_token did not decode to JSON.*gemini/,
+    );
   });
 
   it('passes --model flag with the configured model name to the CLI', async () => {

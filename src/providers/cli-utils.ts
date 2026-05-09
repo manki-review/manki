@@ -1,3 +1,6 @@
+import { existsSync, mkdirSync, writeFileSync } from 'fs';
+import { dirname } from 'path';
+
 export const STALE_TIMEOUT_MS = 90_000;
 
 /** Strip GitHub Actions workflow commands to prevent injection when logging CLI output. */
@@ -15,4 +18,76 @@ export function buildTimeoutDiagnostics(lastStdoutChunk: string, stderrText: str
   if (stdoutSnippet) parts.push(`Last stdout: ${stdoutSnippet}`);
   if (stderrSnippet) parts.push(`stderr: ${stderrSnippet}`);
   return parts.join('. ');
+}
+
+export interface SeedAuthFileOptions {
+  /** Base64-encoded JSON blob from a GitHub secret. */
+  secret: string;
+  /** Action input name, used in error messages. */
+  inputName: string;
+  /** Absolute path the CLI reads on disk. */
+  targetPath: string;
+  /**
+   * Dotted JSON paths the decoded blob must contain (e.g. `tokens.access_token`).
+   * Used to fail fast on malformed secrets and to reject the legacy single-token shape.
+   */
+  requiredFields: string[];
+  /** Bootstrap command shown to the user when validation fails. */
+  bootstrapHint: string;
+}
+
+/**
+ * Decode a base64-encoded auth file from a GitHub secret and write it to disk
+ * with mode 0600, only when the target file is absent. Preserving an existing
+ * file lets CLIs that refresh tokens in place keep their refreshed credentials
+ * across invocations on persistent runners.
+ */
+export function seedAuthFile(opts: SeedAuthFileOptions): void {
+  if (existsSync(opts.targetPath)) return;
+
+  const trimmed = opts.secret.trim();
+  if (!trimmed) {
+    throw new Error(`${opts.inputName} is empty. ${opts.bootstrapHint}`);
+  }
+
+  let decoded: string;
+  try {
+    decoded = Buffer.from(trimmed, 'base64').toString('utf8');
+  } catch {
+    throw new Error(`${opts.inputName} is not valid base64. ${opts.bootstrapHint}`);
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(decoded);
+  } catch {
+    throw new Error(
+      `${opts.inputName} did not decode to JSON (got the legacy single-token shape?). ${opts.bootstrapHint}`,
+    );
+  }
+
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error(`${opts.inputName} must decode to a JSON object. ${opts.bootstrapHint}`);
+  }
+
+  for (const field of opts.requiredFields) {
+    if (!hasNestedString(parsed as Record<string, unknown>, field)) {
+      throw new Error(
+        `${opts.inputName} is missing required field \`${field}\`. ${opts.bootstrapHint}`,
+      );
+    }
+  }
+
+  mkdirSync(dirname(opts.targetPath), { recursive: true, mode: 0o700 });
+  writeFileSync(opts.targetPath, decoded, { mode: 0o600 });
+}
+
+function hasNestedString(obj: Record<string, unknown>, dottedPath: string): boolean {
+  const parts = dottedPath.split('.');
+  let current: unknown = obj;
+  for (const part of parts) {
+    if (!current || typeof current !== 'object') return false;
+    current = (current as Record<string, unknown>)[part];
+  }
+  return typeof current === 'string' && current.length > 0;
 }

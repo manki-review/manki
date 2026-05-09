@@ -10,13 +10,13 @@ inputs:
     description: 'Anthropic API key (alternative to OAuth token)'
     required: false
   openai_oauth_token:
-    description: 'OpenAI Codex CLI OAuth token (for Plus/Pro subscription authentication via the Codex CLI)'
+    description: 'Base64-encoded contents of `~/.codex/auth.json` (Codex CLI OAuth credentials, including `tokens.access_token` and `tokens.refresh_token`). Bootstrap with `cat ~/.codex/auth.json | base64 | gh secret set OPENAI_OAUTH_TOKEN`. Re-run when the refresh_token expires.'
     required: false
   openai_api_key:
     description: 'OpenAI API key (alternative to OAuth token)'
     required: false
   gemini_oauth_token:
-    description: 'Gemini OAuth token for Gemini CLI (uses google-gemini/gemini-cli)'
+    description: 'Base64-encoded contents of `~/.gemini/oauth_creds.json` (Gemini CLI OAuth credentials, including `access_token` and `refresh_token`). Bootstrap with `cat ~/.gemini/oauth_creds.json | base64 | gh secret set GEMINI_OAUTH_TOKEN`. Re-run when the refresh_token expires.'
     required: false
   gemini_api_key:
     description: 'Google Generative AI API key (alternative to Gemini OAuth token)'

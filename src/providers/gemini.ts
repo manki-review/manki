@@ -1,14 +1,18 @@
 import { execFile, spawn } from 'child_process';
+import { join } from 'path';
 import { StringDecoder } from 'string_decoder';
 import { promisify } from 'util';
 
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import * as core from '@actions/core';
 
-import { sanitizeLogOutput, STALE_TIMEOUT_MS, buildTimeoutDiagnostics } from './cli-utils';
+import { sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, buildTimeoutDiagnostics } from './cli-utils';
 import { GeminiAuth, LLMClient, LLMResponse, SendMessageOptions } from './types';
 
 const execFileAsync = promisify(execFile);
+
+const GEMINI_OAUTH_BOOTSTRAP_HINT =
+  'Bootstrap with `gemini` (sign in with Google) then `cat ~/.gemini/oauth_creds.json | base64 | gh secret set GEMINI_OAUTH_TOKEN`. Re-run the bootstrap when the refresh_token expires.';
 
 export function buildGeminiAuth(oauthToken: string, apiKey: string): GeminiAuth {
   if (oauthToken) return { kind: 'oauth', token: oauthToken };
@@ -106,6 +110,19 @@ export class GeminiClient implements LLMClient {
     const fullPrompt = `${systemPrompt}\n\n=== USER CONTENT (untrusted) ===\n\n${userMessage}\n\n=== END USER CONTENT ===`;
     const cliPath = await this.ensureCLI();
     const oauthToken = this.auth.kind === 'oauth' ? this.auth.token : undefined;
+    if (oauthToken) {
+      const home = process.env.HOME;
+      if (!home) {
+        throw new Error('Cannot seed Gemini OAuth credentials: $HOME is not set in the environment.');
+      }
+      seedAuthFile({
+        secret: oauthToken,
+        inputName: 'gemini_oauth_token',
+        targetPath: join(home, '.gemini', 'oauth_creds.json'),
+        requiredFields: ['access_token', 'refresh_token'],
+        bootstrapHint: GEMINI_OAUTH_BOOTSTRAP_HINT,
+      });
+    }
 
     return new Promise((resolve, reject) => {
       // Prompt is written to stdin; the CLI reads until EOF and responds on stdout.
@@ -131,10 +148,12 @@ export class GeminiClient implements LLMClient {
       const child = spawn(cliPath, args, {
         env: {
           ...safeEnv,
-          // The Gemini CLI reads GOOGLE_CLOUD_ACCESS_TOKEN when GOOGLE_GENAI_USE_GCA
-          // is set to authenticate with an existing OAuth access token, per
-          // @google/gemini-cli bundle/chunk-6DSAZLFF.js.
-          ...(oauthToken ? { GOOGLE_GENAI_USE_GCA: 'true', GOOGLE_CLOUD_ACCESS_TOKEN: oauthToken } : {}),
+          // GOOGLE_GENAI_USE_GCA=true selects the LOGIN_WITH_GOOGLE auth type in
+          // non-interactive mode. The CLI then loads its credentials from the
+          // `oauth_creds.json` file seeded above (which carries a refresh_token,
+          // unlike the GOOGLE_CLOUD_ACCESS_TOKEN env-var path that only sets a
+          // short-lived access_token).
+          ...(oauthToken ? { GOOGLE_GENAI_USE_GCA: 'true' } : {}),
         },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
