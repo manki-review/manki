@@ -3,8 +3,8 @@ import * as github from '@actions/github';
 
 import { createAuthenticatedOctokit, getMemoryToken } from './auth';
 import { loadConfig, resolveModel } from './config';
-import { buildAnthropicAuth, buildOpenAIAuth, buildGeminiAuth, createLLMClient, parseModelSpec } from './providers';
-import type { LLMClient, ProviderAuth, ProviderName } from './providers';
+import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec } from './providers';
+import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
 import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
@@ -40,30 +40,6 @@ import { checkAndAutoApprove, resolveStaleThreads } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
-interface ProviderInputs {
-  anthropicOauthToken: string;
-  anthropicApiKey: string;
-  openaiOauthToken: string;
-  openaiApiKey: string;
-  geminiOauthToken: string;
-  geminiApiKey: string;
-}
-
-function buildAuthForProvider(provider: ProviderName, inputs: ProviderInputs): ProviderAuth {
-  switch (provider) {
-    case 'anthropic':
-      return buildAnthropicAuth(inputs.anthropicOauthToken, inputs.anthropicApiKey);
-    case 'openai':
-      return buildOpenAIAuth(inputs.openaiOauthToken, inputs.openaiApiKey);
-    case 'gemini':
-      return buildGeminiAuth(inputs.geminiOauthToken, inputs.geminiApiKey);
-    default: {
-      const exhaustive: never = provider;
-      throw new Error(`Unsupported provider: ${exhaustive as string}`);
-    }
-  }
-}
-
 function readProviderInputs(): ProviderInputs {
   return {
     anthropicOauthToken: core.getInput('claude_code_oauth_token'),
@@ -74,11 +50,6 @@ function readProviderInputs(): ProviderInputs {
     geminiApiKey: core.getInput('gemini_api_key'),
   };
 }
-
-function hasAnyProviderCredentials(inputs: ProviderInputs): boolean {
-  return !!(inputs.anthropicOauthToken || inputs.anthropicApiKey || inputs.openaiOauthToken || inputs.openaiApiKey || inputs.geminiOauthToken || inputs.geminiApiKey);
-}
-
 
 function buildLLMClientFromInputs(opts: {
   inputs: ProviderInputs;
@@ -1362,4 +1333,4 @@ function _resetOctokitCache(): void {
   octokitCache.identity = null;
 }
 
-export { run, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, runFullReview, main, _resetOctokitCache, buildAnthropicAuth };
+export { run, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, runFullReview, main, _resetOctokitCache };

@@ -1,6 +1,8 @@
 export { buildAnthropicAuth } from './anthropic';
 export { buildOpenAIAuth } from './openai';
 export { buildGeminiAuth } from './gemini';
+export { buildAuthForProvider, hasAnyProviderCredentials } from './auth';
+export type { ProviderInputs } from './auth';
 export { createLLMClient } from './factory';
 export { parseModelSpec } from './model-registry';
 export type { ModelSpec } from './model-registry';
