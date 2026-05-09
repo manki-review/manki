@@ -258,6 +258,7 @@ OpenAI Codex CLI OAuth (requires the CLI on the runner):
 
 ```yaml
       - name: Install Codex CLI
+        # --ignore-scripts is safe: @openai/codex@0.129.0 ships a plain JS bin with no postinstall steps.
         run: npm install -g --ignore-scripts '@openai/codex@0.129.0'
       - name: Manki Review
         uses: manki-review/manki@v5
@@ -578,7 +579,7 @@ Provide credentials for the providers you actually use. The model ID in `.manki.
 | OpenAI | `OPENAI_API_KEY` | `OPENAI_OAUTH_TOKEN` (base64 of `~/.codex/auth.json`) |
 | Gemini | `GEMINI_API_KEY` | `GEMINI_OAUTH_TOKEN` (base64 of `~/.gemini/oauth_creds.json`) |
 
-When both are set for a provider, OAuth takes precedence.
+When both are set for a provider, OAuth takes precedence (the action checks the OAuth input before the API key for each provider).
 
 ### Other
 
