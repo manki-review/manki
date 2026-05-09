@@ -43,12 +43,12 @@ jobs:
           MODEL: ${{ matrix.model }}
           EFFORT: ${{ matrix.effort }}
           PROVIDER: ${{ matrix.provider }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_OAUTH_TOKEN: ${{ secrets.OPENAI_OAUTH_TOKEN }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_OAUTH_TOKEN: ${{ secrets.GEMINI_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ matrix.provider == 'anthropic' && secrets.ANTHROPIC_API_KEY || '' }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ matrix.provider == 'anthropic' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+          OPENAI_API_KEY: ${{ matrix.provider == 'openai' && secrets.OPENAI_API_KEY || '' }}
+          OPENAI_OAUTH_TOKEN: ${{ matrix.provider == 'openai' && secrets.OPENAI_OAUTH_TOKEN || '' }}
+          GEMINI_API_KEY: ${{ matrix.provider == 'gemini' && secrets.GEMINI_API_KEY || '' }}
+          GEMINI_OAUTH_TOKEN: ${{ matrix.provider == 'gemini' && secrets.GEMINI_OAUTH_TOKEN || '' }}
         run: |
           set +e
           EFFORT_ARG=""
