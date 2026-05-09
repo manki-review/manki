@@ -6,7 +6,7 @@ import { promisify } from 'util';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import * as core from '@actions/core';
 
-import { sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS, buildTimeoutDiagnostics } from './cli-utils';
+import { buildTimeoutDiagnostics, resolveGeminiCredsDir, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS } from './cli-utils';
 import { GeminiAuth, LLMClient, LLMResponse, SendMessageOptions } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -111,14 +111,10 @@ export class GeminiClient implements LLMClient {
     const cliPath = await this.ensureCLI();
     const oauthToken = this.auth.kind === 'oauth' ? this.auth.token : undefined;
     if (oauthToken) {
-      const home = process.env.HOME;
-      if (!home) {
-        throw new Error('Cannot seed Gemini OAuth credentials: $HOME is not set in the environment.');
-      }
       seedAuthFile({
         secret: oauthToken,
         inputName: 'gemini_oauth_token',
-        targetPath: join(home, '.gemini', 'oauth_creds.json'),
+        targetPath: join(resolveGeminiCredsDir(), 'oauth_creds.json'),
         requiredFields: ['access_token', 'refresh_token'],
         bootstrapHint: GEMINI_OAUTH_BOOTSTRAP_HINT,
       });

@@ -7,7 +7,7 @@ import OpenAI from 'openai';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import * as core from '@actions/core';
 
-import { seedAuthFile } from './cli-utils';
+import { resolveCodexHome, seedAuthFile } from './cli-utils';
 import { LLMClient, LLMResponse, OpenAIAuth, SendMessageOptions } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -66,18 +66,6 @@ let cliInstallPromise: Promise<string> | null = null;
 
 export function resetCLIInstallPromise(): void {
   cliInstallPromise = null;
-}
-
-function resolveCodexHome(): string {
-  const explicit = process.env.CODEX_HOME;
-  if (explicit) return explicit;
-  const home = process.env.HOME;
-  if (!home) {
-    throw new Error(
-      'Cannot resolve CODEX_HOME: neither $CODEX_HOME nor $HOME is set in the environment.',
-    );
-  }
-  return join(home, '.codex');
 }
 
 export interface OpenAIClientOptions {
@@ -184,14 +172,19 @@ export class OpenAIClient implements LLMClient {
       // Read prompt from stdin
       args.push('-');
 
+      const BLOCKED_FROM_CODEX = new Set([
+        'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
+        'GEMINI_API_KEY', 'GEMINI_OAUTH_TOKEN',
+        'GITHUB_TOKEN', 'GITHUB_APP_PRIVATE_KEY',
+        'REVIEW_MEMORY_TOKEN',
+        ...Object.keys(process.env).filter(k => k.startsWith('INPUT_')),
+      ]);
+      const safeCodexEnv = Object.fromEntries(
+        Object.entries(process.env).filter(([k]) => !BLOCKED_FROM_CODEX.has(k)),
+      ) as NodeJS.ProcessEnv;
+
       const child = spawn(cliPath, args, {
-        env: {
-          // process.env spread intentionally — Codex CLI requires PATH, HOME, and other system vars.
-          // Auth flows entirely through `$CODEX_HOME/auth.json` (seeded above); passing the same
-          // secret as a CLI env var has no effect and would risk credential type confusion.
-          ...process.env,
-          CODEX_HOME: codexHome,
-        },
+        env: { ...safeCodexEnv, CODEX_HOME: codexHome },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
 
