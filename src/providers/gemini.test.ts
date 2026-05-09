@@ -3,7 +3,7 @@ import { spawn } from 'child_process';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import * as core from '@actions/core';
 
-import { buildGeminiAuth, GeminiClient, geminiThinkingBudget, resetGeminiCLIInstallPromise } from './gemini';
+import { buildGeminiAuth, GeminiClient, geminiThinkingBudget, resetGeminiCLIInstallPromise, resolveGeminiCredsDir } from './gemini';
 import { parseModelSpec } from './model-registry';
 
 // Seeding `~/.gemini/oauth_creds.json` is exercised separately in `cli-utils.test.ts`.
@@ -783,5 +783,28 @@ describe('GeminiClient OAuth path', () => {
     expect(result.content).toBe('second');
     // No additional `which`/`npm` calls — path is cached on the instance.
     expect(mockExecFileAsync).not.toHaveBeenCalled();
+  });
+});
+
+describe('resolveGeminiCredsDir', () => {
+  let savedHome: string | undefined;
+
+  beforeEach(() => {
+    savedHome = process.env.HOME;
+  });
+
+  afterEach(() => {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+  });
+
+  it('returns $HOME/.gemini when HOME is set', () => {
+    process.env.HOME = '/h';
+    expect(resolveGeminiCredsDir()).toBe('/h/.gemini');
+  });
+
+  it('throws when HOME is not set', () => {
+    delete process.env.HOME;
+    expect(() => resolveGeminiCredsDir()).toThrow(/\$HOME is not set/);
   });
 });

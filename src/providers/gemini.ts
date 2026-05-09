@@ -6,10 +6,18 @@ import { promisify } from 'util';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import * as core from '@actions/core';
 
-import { buildTimeoutDiagnostics, resolveGeminiCredsDir, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS } from './cli-utils';
+import { buildTimeoutDiagnostics, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS } from './cli-utils';
 import { GeminiAuth, LLMClient, LLMResponse, SendMessageOptions } from './types';
 
 const execFileAsync = promisify(execFile);
+
+export function resolveGeminiCredsDir(): string {
+  const home = process.env.HOME;
+  if (!home) {
+    throw new Error('Cannot seed Gemini OAuth credentials: $HOME is not set in the environment.');
+  }
+  return join(home, '.gemini');
+}
 
 const GEMINI_OAUTH_BOOTSTRAP_HINT =
   'Bootstrap with `gemini` (sign in with Google) then `cat ~/.gemini/oauth_creds.json | base64 | gh secret set GEMINI_OAUTH_TOKEN`. Re-run the bootstrap when the refresh_token expires.';

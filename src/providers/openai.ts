@@ -7,12 +7,24 @@ import OpenAI from 'openai';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import * as core from '@actions/core';
 
-import { resolveCodexHome, seedAuthFile } from './cli-utils';
+import { seedAuthFile } from './cli-utils';
 import { LLMClient, LLMResponse, OpenAIAuth, SendMessageOptions } from './types';
 
 const execFileAsync = promisify(execFile);
 
 export const STALE_TIMEOUT_MS = 90_000;
+
+export function resolveCodexHome(): string {
+  const explicit = process.env.CODEX_HOME;
+  if (explicit) return explicit;
+  const home = process.env.HOME;
+  if (!home) {
+    throw new Error(
+      'Cannot resolve CODEX_HOME: neither $CODEX_HOME nor $HOME is set in the environment.',
+    );
+  }
+  return join(home, '.codex');
+}
 
 const OPENAI_OAUTH_BOOTSTRAP_HINT =
   'Bootstrap with `codex login` then `cat ~/.codex/auth.json | base64 | gh secret set OPENAI_OAUTH_TOKEN`. Re-run the bootstrap when the refresh_token expires.';

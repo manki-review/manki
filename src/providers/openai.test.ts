@@ -7,6 +7,7 @@ import {
   isReasoningModel,
   OpenAIClient,
   resetCLIInstallPromise,
+  resolveCodexHome,
   resolveEffortTier,
   sanitizeLogOutput,
   STALE_TIMEOUT_MS,
@@ -872,5 +873,39 @@ describe('ensureCLI auto-install', () => {
 
     const result = await client.sendMessage('sys', 'user');
     expect(result.content).toBe('ok');
+  });
+});
+
+describe('resolveCodexHome', () => {
+  let savedCodexHome: string | undefined;
+  let savedHome: string | undefined;
+
+  beforeEach(() => {
+    savedCodexHome = process.env.CODEX_HOME;
+    savedHome = process.env.HOME;
+  });
+
+  afterEach(() => {
+    if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = savedCodexHome;
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+  });
+
+  it('returns CODEX_HOME when set', () => {
+    process.env.CODEX_HOME = '/explicit';
+    expect(resolveCodexHome()).toBe('/explicit');
+  });
+
+  it('returns $HOME/.codex when CODEX_HOME is unset', () => {
+    delete process.env.CODEX_HOME;
+    process.env.HOME = '/h';
+    expect(resolveCodexHome()).toBe('/h/.codex');
+  });
+
+  it('throws when neither CODEX_HOME nor HOME is set', () => {
+    delete process.env.CODEX_HOME;
+    delete process.env.HOME;
+    expect(() => resolveCodexHome()).toThrow(/neither \$CODEX_HOME nor \$HOME/);
   });
 });

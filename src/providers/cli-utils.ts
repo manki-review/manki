@@ -1,5 +1,5 @@
 import { mkdirSync, writeFileSync } from 'fs';
-import { dirname, join } from 'path';
+import { dirname } from 'path';
 
 export const STALE_TIMEOUT_MS = 90_000;
 
@@ -18,26 +18,6 @@ export function buildTimeoutDiagnostics(lastStdoutChunk: string, stderrText: str
   if (stdoutSnippet) parts.push(`Last stdout: ${stdoutSnippet}`);
   if (stderrSnippet) parts.push(`stderr: ${stderrSnippet}`);
   return parts.join('. ');
-}
-
-export function resolveCodexHome(): string {
-  const explicit = process.env.CODEX_HOME;
-  if (explicit) return explicit;
-  const home = process.env.HOME;
-  if (!home) {
-    throw new Error(
-      'Cannot resolve CODEX_HOME: neither $CODEX_HOME nor $HOME is set in the environment.',
-    );
-  }
-  return join(home, '.codex');
-}
-
-export function resolveGeminiCredsDir(): string {
-  const home = process.env.HOME;
-  if (!home) {
-    throw new Error('Cannot seed Gemini OAuth credentials: $HOME is not set in the environment.');
-  }
-  return join(home, '.gemini');
 }
 
 export interface SeedAuthFileOptions {
