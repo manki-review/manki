@@ -98,7 +98,7 @@ jest.mock('./memory', () => ({
 }));
 
 jest.mock('./recap', () => ({
-  fetchRecapState: jest.fn().mockResolvedValue({ previousFindings: [], recapContext: '' }),
+  fetchRecapState: jest.fn().mockResolvedValue({ previousFindings: [], recapContext: '', priorRounds: [] }),
   deduplicateFindings: jest.fn().mockReturnValue({ unique: [], duplicates: [] }),
   llmDeduplicateFindings: jest.fn().mockResolvedValue({ unique: [], duplicates: [] }),
   classifyAuthorReply: jest.fn().mockReturnValue('none'),
@@ -1555,7 +1555,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [], totalAdditions: 0, totalDeletions: 0 });
     jest.mocked(diffModule.filterFiles).mockReturnValue([]);
     jest.mocked(authModule.getMemoryToken).mockReturnValue(null);
-    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], recapContext: '' });
+    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], recapContext: '', priorRounds: [] });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [], duplicates: [] });
     jest.mocked(stateModule.resolveStaleThreads).mockResolvedValue(0);
     jest.mocked(reviewModule.runReview).mockResolvedValue({
@@ -2135,6 +2135,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings,
       recapContext: 'previous context',
+      priorRounds: [],
     });
 
     const finding2 = { severity: 'nitpick' as const, title: 'Style', file: 'src/app.ts', line: 8, description: 'desc', reviewers: ['general'] };
@@ -2964,6 +2965,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings,
       recapContext: 'previous context',
+      priorRounds: [],
     });
 
     await callRunFullReview();
@@ -3007,6 +3009,7 @@ describe('runFullReview orchestration', () => {
         { title: 'Old warning', file: 'src/app.ts', line: 5, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_OPEN' },
       ],
       recapContext: '',
+      priorRounds: [],
     });
 
     const finding = { severity: 'nitpick' as const, title: 'Tiny', file: 'src/app.ts', line: 9, description: 'd', reviewers: ['general'] };
@@ -3055,6 +3058,7 @@ describe('runFullReview orchestration', () => {
         suggestedFix: 'Add `MissingRotationChainLockSigs(QuorumHash)` to the enum.',
       }],
       recapContext: '',
+      priorRounds: [],
     });
 
     await callRunFullReview();
@@ -3085,6 +3089,7 @@ describe('runFullReview orchestration', () => {
         { title: 'Bug A', file: threadFile, line: 10, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_code' },
       ],
       recapContext: '',
+      priorRounds: [],
     });
 
     await callRunFullReview();
@@ -3117,6 +3122,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings,
       recapContext: '',
+      priorRounds: [],
     });
 
     await callRunFullReview();
@@ -3147,6 +3153,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings,
       recapContext: '',
+      priorRounds: [],
     });
 
     await callRunFullReview();
@@ -3217,6 +3224,7 @@ describe('runFullReview orchestration', () => {
         { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_a' },
       ],
       recapContext: 'previous context',
+      priorRounds: [],
     });
 
     // Enable memory so loadHandover runs and fetchInterRoundDiff is invoked
@@ -3286,6 +3294,7 @@ describe('runFullReview orchestration', () => {
         { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_a' },
       ],
       recapContext: 'previous context',
+      priorRounds: [],
     });
 
     jest.mocked(configModule.loadConfig).mockReturnValue({
@@ -3341,7 +3350,7 @@ describe('runFullReview orchestration', () => {
     });
     jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
-      previousFindings: [], recapContext: '',
+      previousFindings: [], recapContext: '', priorRounds: [],
     });
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, exclude_paths: [], max_diff_lines: 10000,
@@ -3504,6 +3513,7 @@ describe('runFullReview orchestration', () => {
         { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_override' },
       ],
       recapContext: 'previous context',
+      priorRounds: [],
     });
 
     jest.mocked(configModule.loadConfig).mockReturnValue({
@@ -3565,6 +3575,7 @@ describe('runFullReview orchestration', () => {
         { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_abc' },
       ],
       recapContext: 'previous context',
+      priorRounds: [],
     });
 
     jest.mocked(configModule.loadConfig).mockReturnValue({
@@ -3630,6 +3641,7 @@ describe('runFullReview orchestration', () => {
         { title: 'Bug C', file: 'src/app.ts', line: 3, severity: 'suggestion' as const, status: 'open' as const, threadId: 'PRRT_ghi' },
       ],
       recapContext: 'previous context',
+      priorRounds: [],
     });
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
@@ -3684,6 +3696,7 @@ describe('runFullReview orchestration', () => {
         { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_known' },
       ],
       recapContext: 'previous context',
+      priorRounds: [],
     });
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
@@ -3729,6 +3742,7 @@ describe('runFullReview orchestration', () => {
         { title: 'Bug C', file: 'src/app.ts', line: 3, severity: 'nitpick' as const, status: 'resolved' as const, threadId: 'PRRT_resolved' },
       ],
       recapContext: 'previous context',
+      priorRounds: [],
     });
 
     await callRunFullReview();
@@ -3758,6 +3772,7 @@ describe('runFullReview orchestration', () => {
         { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_fail' },
       ],
       recapContext: 'previous context',
+      priorRounds: [],
     });
 
     mockGraphql.mockRejectedValueOnce(new Error('GraphQL error'));
