@@ -200,8 +200,10 @@ function parseContextBlocks(
     for (const m of review.body.matchAll(CONTEXT_BLOCK_DETAILS_RE)) {
       candidates.push(m[1].replace(/\\u0060/g, '`'));
     }
-    for (const m of review.body.matchAll(CONTEXT_BLOCK_HTML_COMMENT_RE)) {
-      candidates.push(m[1].replace(/\\u003E/g, '>'));
+    if (candidates.length === 0) {
+      for (const m of review.body.matchAll(CONTEXT_BLOCK_HTML_COMMENT_RE)) {
+        candidates.push(m[1].replace(/\\u003E/g, '>'));
+      }
     }
 
     for (const raw of candidates) {
@@ -209,11 +211,9 @@ function parseContextBlocks(
       try {
         parsed = JSON.parse(raw);
       } catch (e) {
-        if (e instanceof SyntaxError) {
-          core.warning(`Skipping malformed Manki context block at ${reviewUrl}: ${e.message}`);
-          continue;
-        }
-        throw e;
+        const msg = e instanceof Error ? e.message : String(e);
+        core.warning(`Skipping malformed Manki context block at ${reviewUrl}: ${msg}`);
+        continue;
       }
 
       if (!parsed || typeof parsed !== 'object') {
@@ -269,8 +269,10 @@ async function fetchRecapState(
   prNumber: number,
   prAuthorLogin?: string,
 ): Promise<RecapState> {
-  const threads = await fetchReviewThreads(octokit, owner, repo, prNumber);
-  const priorRounds = await fetchPriorRoundContexts(octokit, owner, repo, prNumber);
+  const [threads, priorRounds] = await Promise.all([
+    fetchReviewThreads(octokit, owner, repo, prNumber),
+    fetchPriorRoundContexts(octokit, owner, repo, prNumber),
+  ]);
 
   const previousFindings = threads
     .filter(t => t.isBotThread)
@@ -348,6 +350,9 @@ async function fetchPriorRoundContexts(
       pull_number: prNumber,
       per_page: 100,
     });
+    if (reviews.length === 100) {
+      core.warning(`fetchPriorRoundContexts: received exactly 100 reviews for PR #${prNumber}; earlier rounds may be missing (pagination not implemented).`);
+    }
     const candidates = reviews
       .filter((r): r is typeof r & { body: string; id: number } => {
         const body = r.body;

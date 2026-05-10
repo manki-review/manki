@@ -10,7 +10,7 @@ import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
 import { appendHandoverRound, loadHandover, loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
-import { classifyAuthorReply, fetchRecapState, fingerprintFinding } from './recap';
+import { classifyAuthorReply, fetchRecapState, fingerprintFinding, sanitize } from './recap';
 import { buildAgentPool, collectPriorRoundAgents, runReview, determineVerdict, selectTeam, TRIVIAL_VERIFIER_AGENT } from './review';
 import { DEFENSIVE_HARDENING_TAG, DashboardData, PrContext, PrHandover, ReviewMetadata, RoundContext, roundContextToFlatAliases } from './types';
 import {
@@ -870,8 +870,8 @@ async function runFullReview(
       fingerprint: fingerprintFinding(f.title, f.file ?? '', f.line || 0),
       severity: f.severity,
       ...(f.reviewers[0] && { specialist: f.reviewers[0] }),
-      ...(f.suggestedFix && { suggestedFix: f.suggestedFix }),
-      ...(f.title && { title: f.title }),
+      ...(f.suggestedFix && { suggestedFix: sanitize(f.suggestedFix, 300) }),
+      ...(f.title && { title: sanitize(f.title, 200) }),
     }));
     const context: RoundContext = {
       meta: {
