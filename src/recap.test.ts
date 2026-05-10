@@ -1185,6 +1185,19 @@ describe('fetchRecapState', () => {
       expect(state.priorRounds[0].meta.round).toBe(2);
     });
 
+    it('ignores HTML-comment block when a details block is present in the same review', async () => {
+      const ctxDetails = makeRoundContext(1, { judge: { summary: 'from details' } });
+      const ctxHtml = makeRoundContext(2, { judge: { summary: 'from html comment' } });
+      const body = `${detailsBlock(ctxDetails)}\n${htmlCommentBlock(ctxHtml)}`;
+      const octokit = mockOctokit([], [
+        { id: 100, body, user: { login: BOT_LOGIN } },
+      ]);
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.priorRounds).toHaveLength(1);
+      expect(state.priorRounds[0].meta.round).toBe(1);
+      expect(state.priorRounds[0].judge.summary).toBe('from details');
+    });
+
     it('round-trips findings.entries with specialist, suggestedFix, and title fields', async () => {
       const entry = {
         fingerprint: { file: 'src/foo.ts', lineStart: 10, lineEnd: 12, slug: 'misleading-variable-name' },

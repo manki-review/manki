@@ -2539,7 +2539,7 @@ describe('runFullReview orchestration', () => {
     });
   });
 
-  it('includes sanitized specialist, suggestedFix, and title in RoundContext findingEntries', async () => {
+  it('includes specialist, suggestedFix, and title in RoundContext findingEntries', async () => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
@@ -2569,7 +2569,7 @@ describe('runFullReview orchestration', () => {
     const roundContextArg = jest.mocked(ghUtils.postReview).mock.calls[0][7];
     const entry = roundContextArg!.findings.entries[0];
     expect(entry.specialist).toBe('Correctness & Logic');
-    expect(entry.suggestedFix).toBe('Rename x to userCount.');
+    expect(entry.suggestedFix).toBe('Rename `x` to `userCount`.');
     expect(entry.title).toBe('Misleading variable');
   });
 
