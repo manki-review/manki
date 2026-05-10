@@ -27,7 +27,7 @@ OAuth alternatives that ride your existing CLI subscription are also supported. 
 
 ### 3. Add the Workflow
 
-Create `.github/workflows/manki.yml` -- see [full workflow below](#step-3-add-the-workflow).
+Create `.github/workflows/manki.yml`. See [full workflow below](#step-3-add-the-workflow).
 
 ---
 
@@ -37,16 +37,18 @@ Create `.github/workflows/manki.yml` -- see [full workflow below](#step-3-add-th
 - Credentials for at least one provider (Anthropic, OpenAI, or Gemini)
 - Repository admin access (for settings changes)
 
-### Enable GitHub Actions PR Approval
+## Required Repository Settings
 
-**Required** -- without this, the action cannot approve PRs.
+### Enable PR Approvals and Change Requests
+
+**Required.** Without this setting, the action cannot post APPROVE or REQUEST_CHANGES reviews. The "Failed to post APPROVE review" error in CI means this is not enabled.
 
 1. Go to **Settings > Actions > General**
 2. Scroll to **Workflow permissions**
 3. Check **"Allow GitHub Actions to create and approve pull requests"**
 4. Click Save
 
-### Branch Protection (Optional)
+## Branch Protection (Optional)
 
 If you use branch protection rules and want Manki to be a required check:
 
@@ -63,7 +65,7 @@ If you use branch protection rules and want Manki to be a required check:
 
 ## Step 1: Install the GitHub App
 
-Install the [Manki GitHub App](https://github.com/apps/manki-review) on the repositories you want reviewed. This gives Manki its own identity -- reviews appear as `manki-review[bot]` with a distinct avatar instead of the generic `github-actions[bot]`.
+Install the [Manki GitHub App](https://github.com/apps/manki-review) on the repositories you want reviewed. This gives Manki its own identity: reviews appear as `manki-review[bot]` with a distinct avatar instead of the generic `github-actions[bot]`.
 
 1. Go to [github.com/apps/manki-review](https://github.com/apps/manki-review)
 2. Click **Install**
