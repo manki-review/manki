@@ -792,6 +792,14 @@ describe('roundContextToFlatAliases', () => {
     expect(inner).toContain('--\\u003E');
   });
 
+  it('hidden mode neutralises `--!>` inside the JSON payload', () => {
+    const ctx = makeContext({ judge: { summary: 'bang close --!> here' } });
+    const result = formatContextBlock(ctx, true);
+    const inner = result.slice('<!-- manki-context: '.length, -' -->'.length);
+    expect(inner).not.toContain('--!>');
+    expect(inner).toContain('--!\\u003E');
+  });
+
   it('hidden mode JSON round-trips back to the original context after un-escaping', () => {
     const ctx = makeContext({ judge: { summary: 'arrow --> token preserved' } });
     const result = formatContextBlock(ctx, true);
