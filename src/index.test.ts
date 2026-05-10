@@ -103,6 +103,7 @@ jest.mock('./recap', () => ({
   llmDeduplicateFindings: jest.fn().mockResolvedValue({ unique: [], duplicates: [] }),
   classifyAuthorReply: jest.fn().mockReturnValue('none'),
   fingerprintFinding: jest.fn((title: string, file: string, line: number) => ({ file, lineStart: line, lineEnd: line, slug: title })),
+  sanitize: jest.requireActual('./recap').sanitize,
 }));
 
 jest.mock('./review', () => {
@@ -2536,6 +2537,40 @@ describe('runFullReview orchestration', () => {
         .filter(c => String(c[0]).includes('Bogus Unknown Agent'));
       expect(bogusWarnings).toHaveLength(0);
     });
+  });
+
+  it('includes sanitized specialist, suggestedFix, and title in RoundContext findingEntries', async () => {
+    const testFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+    };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+      files: [testFile], totalAdditions: 10, totalDeletions: 5,
+    });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'COMMENT', summary: 'Issues',
+      findings: [{
+        severity: 'warning' as const,
+        title: 'Misleading variable',
+        file: 'src/app.ts',
+        line: 5,
+        description: 'The variable name is misleading.',
+        reviewers: ['Correctness & Logic'],
+        suggestedFix: 'Rename `x` to `userCount`.',
+      }],
+      highlights: [],
+      reviewComplete: true,
+      agentNames: ['Correctness & Logic'],
+    });
+
+    await callRunFullReview();
+
+    const roundContextArg = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+    const entry = roundContextArg!.findings.entries[0];
+    expect(entry.specialist).toBe('Correctness & Logic');
+    expect(entry.suggestedFix).toBe('Rename x to userCount.');
+    expect(entry.title).toBe('Misleading variable');
   });
 
   it('does not load or write handover when memory is disabled', async () => {

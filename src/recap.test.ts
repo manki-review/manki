@@ -1,7 +1,7 @@
 import { Finding, RoundContext } from './types';
 import { Suppression } from './memory';
 import { classifyAuthorReply, collectInPrSuppressions, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, titlesOverlap, llmDeduplicateFindings, parseFindingFromComment } from './recap';
-import { titleToSlug } from './github';
+import { BOT_LOGIN, titleToSlug } from './github';
 
 jest.mock('@actions/core', () => ({
   info: jest.fn(),
@@ -1120,8 +1120,6 @@ describe('fetchRecapState', () => {
   });
 
   describe('priorRounds parsing', () => {
-    const BOT_LOGIN = 'manki-review[bot]';
-
     function makeRoundContext(round: number, overrides: Partial<RoundContext> = {}): RoundContext {
       const base: RoundContext = {
         meta: {
@@ -1339,7 +1337,7 @@ describe('fetchRecapState', () => {
       );
     });
 
-    it('returns empty priorRounds when a non-SyntaxError is thrown from JSON.parse (caught by outer handler)', async () => {
+    it('skips a block when a non-SyntaxError is thrown from JSON.parse and emits core.warning', async () => {
       const sentinel = '"__sentinel_throw__"';
       const body = `<details>\n<summary>Manki context</summary>\n\n\`\`\`json\n${sentinel}\n\`\`\`\n</details>`;
       const octokit = mockOctokit([], [
@@ -1354,8 +1352,52 @@ describe('fetchRecapState', () => {
       spy.mockRestore();
       expect(state.priorRounds).toEqual([]);
       expect(core.warning).toHaveBeenCalledWith(
-        expect.stringContaining('Failed to fetch prior round contexts'),
+        expect.stringContaining('https://github.com/owner/repo/pull/1#pullrequestreview-999'),
       );
+    });
+
+    it('excludes reviews from non-bot users', async () => {
+      const ctx = makeRoundContext(1);
+      const octokit = mockOctokit([], [
+        { id: 100, body: detailsBlock(ctx), user: { login: 'some-user' } },
+      ]);
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.priorRounds).toEqual([]);
+    });
+
+    it('skips malformed JSON block but still loads subsequent valid blocks', async () => {
+      const ctx3 = makeRoundContext(3);
+      const malformed = '<details>\n<summary>Manki context</summary>\n\n```json\n{bad}\n```\n</details>';
+      const octokit = mockOctokit([], [
+        { id: 500, body: malformed, user: { login: BOT_LOGIN } },
+        { id: 501, body: detailsBlock(ctx3), user: { login: BOT_LOGIN } },
+      ]);
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.priorRounds).toHaveLength(1);
+      expect(state.priorRounds[0].meta.round).toBe(3);
+      expect(core.warning).toHaveBeenCalledWith(
+        expect.stringContaining('https://github.com/owner/repo/pull/1#pullrequestreview-500'),
+      );
+    });
+
+    it('round-trips a field containing backticks through the details wrapper', async () => {
+      const ctx = makeRoundContext(9, { judge: { summary: 'use `foo()` here' } });
+      const octokit = mockOctokit([], [
+        { id: 400, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
+      ]);
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.priorRounds).toHaveLength(1);
+      expect(state.priorRounds[0].judge.summary).toBe('use `foo()` here');
+    });
+
+    it('round-trips a field containing --> through the HTML-comment wrapper', async () => {
+      const ctx = makeRoundContext(1, { judge: { summary: 'Verdict --> pass' } });
+      const octokit = mockOctokit([], [
+        { id: 300, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } },
+      ]);
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.priorRounds).toHaveLength(1);
+      expect(state.priorRounds[0].judge.summary).toBe('Verdict --> pass');
     });
   });
 });
