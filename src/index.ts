@@ -814,9 +814,9 @@ async function runFullReview(
     const priorFindingsFlat = handover?.rounds.flatMap(r => r.findings) ?? [];
     let escalationsApplied = 0;
     if (memory && memory.patterns.length > 0) {
-      const beforeEscalation = result.findings;
+      const beforeSeverities = result.findings.map(f => f.severity);
       result.findings = applyEscalations(result.findings, memory.patterns);
-      escalationsApplied = result.findings.filter((f, i) => f.severity !== beforeEscalation[i].severity).length;
+      escalationsApplied = result.findings.filter((f, i) => f.severity !== beforeSeverities[i]).length;
     }
     const { verdict: recomputedVerdict, verdictReason } = determineVerdict(result.findings, priorFindingsFlat, openThreads);
     result.verdict = recomputedVerdict;
