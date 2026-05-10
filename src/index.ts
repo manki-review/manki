@@ -12,7 +12,7 @@ import { isEmptyInterRoundDiff } from './judge';
 import { appendHandoverRound, loadHandover, loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
 import { classifyAuthorReply, fetchRecapState, fingerprintFinding } from './recap';
 import { buildAgentPool, collectPriorRoundAgents, runReview, determineVerdict, selectTeam, TRIVIAL_VERIFIER_AGENT } from './review';
-import { DEFENSIVE_HARDENING_TAG, DashboardData, PrContext, PrHandover, ReviewMetadata, ReviewStats } from './types';
+import { DEFENSIVE_HARDENING_TAG, DashboardData, PrContext, PrHandover, ReviewMetadata, RoundContext, roundContextToFlatAliases } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -31,6 +31,7 @@ import {
   BOT_LOGIN,
   BOT_MARKER as PROGRESS_MARKER,
   FORCE_REVIEW_MARKER,
+  MANKI_VERSION,
   isReviewInProgress,
   isApprovedOnCommit,
   markOwnProgressCommentCancelled,
@@ -782,8 +783,11 @@ async function runFullReview(
     }
 
     const priorFindingsFlat = handover?.rounds.flatMap(r => r.findings) ?? [];
+    let escalationsApplied = 0;
     if (memory && memory.patterns.length > 0) {
+      const beforeSeverities = result.findings.map(f => f.severity);
       result.findings = applyEscalations(result.findings, memory.patterns);
+      escalationsApplied = result.findings.filter((f, i) => f.severity !== beforeSeverities[i]).length;
     }
     const { verdict: recomputedVerdict, verdictReason } = determineVerdict(result.findings, priorFindingsFlat, openThreads);
     result.verdict = recomputedVerdict;
@@ -853,17 +857,6 @@ async function runFullReview(
     const crossRoundSuppressed = result.crossRoundSuppressed;
     const crossRoundDemoted = result.crossRoundDemoted;
     const inPrSuppressedCount = result.inPrSuppressedCount ?? 0;
-    const judgeMetrics: ReviewStats['judgeMetrics'] = {
-      confidenceDistribution,
-      severityChanges,
-      mergedDuplicates,
-      ...(defensiveHardeningCount > 0 && { defensiveHardeningCount }),
-      ...(inPrSuppressedCount > 0 && { inPrSuppressedCount }),
-      verdictReason,
-      ...(crossRoundSuppressed != null && crossRoundSuppressed > 0 && { crossRoundSuppressed }),
-      ...(crossRoundDemoted != null && crossRoundDemoted > 0 && { crossRoundDemoted }),
-    };
-
     // File analysis metrics
     const fileTypes: Record<string, number> = {};
     for (const file of filteredFiles) {
@@ -871,33 +864,83 @@ async function runFullReview(
       const ext = dotIdx !== -1 ? file.path.slice(dotIdx) : '(none)';
       fileTypes[ext] = (fileTypes[ext] ?? 0) + 1;
     }
-    const findingsPerFile: Record<string, number> = {};
-    for (const f of result.findings) {
-      if (f.file) findingsPerFile[f.file] = (findingsPerFile[f.file] ?? 0) + 1;
-    }
-    const fileMetrics = { fileTypes, findingsPerFile };
 
-    const stats: ReviewStats = {
-      model: reviewerModel,
-      reviewTimeMs,
-      diffLines: diff.totalAdditions + diff.totalDeletions,
-      diffAdditions: diff.totalAdditions,
-      diffDeletions: diff.totalDeletions,
-      filesReviewed: filteredFiles.length,
-      agents: result.agentNames,
-      findingsRaw: result.rawFindingCount ?? result.findings.length,
-      findingsKept: result.findings.length,
-      findingsDropped: (result.rawFindingCount ?? result.findings.length) - result.findings.length,
-      severity: severityMap,
+    const round = (handover?.rounds.length ?? 0) + 1;
+    const findingEntries = result.findings.map(f => ({
+      fingerprint: fingerprintFinding(f.title, f.file ?? '', f.line || 0),
+      severity: f.severity,
+    }));
+    const context: RoundContext = {
+      meta: {
+        prNumber,
+        commitSha,
+        round,
+        timestamp: new Date().toISOString(),
+        mankiVersion: MANKI_VERSION,
+      },
+      config: {
+        reviewLevel: team.level === 'trivial' ? 'small' : team.level,
+        nitHandling,
+        memoryEnabled: config.memory?.enabled ?? false,
+        ...(config.review_passes != null && { reviewPasses: config.review_passes }),
+      },
+      diff: {
+        lines: diff.totalAdditions + diff.totalDeletions,
+        additions: diff.totalAdditions,
+        deletions: diff.totalDeletions,
+        filesReviewed: filteredFiles.length,
+        fileTypes,
+      },
+      models: {
+        ...(plannerClient && { planner: plannerModel }),
+        reviewer: reviewerModel,
+        judge: judgeModel,
+        dedup: dedupModel,
+      },
+      planner: result.plannerResult
+        ? {
+            used: true,
+            teamSize: result.plannerResult.teamSize,
+            reviewerEffort: result.plannerResult.reviewerEffort,
+            judgeEffort: result.plannerResult.judgeEffort,
+            prType: result.plannerResult.prType,
+            ...(dashboard.plannerDurationMs != null && { durationMs: dashboard.plannerDurationMs }),
+          }
+        : { used: false },
+      reviewers: {
+        agents: result.agentNames,
+        ...(agentMetrics && { agentMetrics }),
+      },
+      judge: {
+        summary: result.summary,
+        confidenceDistribution,
+        severityChanges,
+        mergedDuplicates,
+        durationMs: judgeEndTime - reviewEndTime,
+        ...(verdictReason && { verdictReason }),
+        ...(defensiveHardeningCount > 0 && { defensiveHardeningCount }),
+        ...(inPrSuppressedCount > 0 && { inPrSuppressedCount }),
+        ...(crossRoundSuppressed != null && crossRoundSuppressed > 0 && { crossRoundSuppressed }),
+        ...(crossRoundDemoted != null && crossRoundDemoted > 0 && { crossRoundDemoted }),
+      },
+      dedup: {
+        ...(result.staticDedupCount != null && { staticDropped: result.staticDedupCount }),
+        ...(result.llmDedupCount != null && { llmDropped: result.llmDedupCount }),
+      },
+      memory: {
+        ...(memory && memory.patterns.length > 0 && { patternsApplied: memory.patterns.length }),
+        ...(result.suppressionCount != null && result.suppressionCount > 0 && { suppressionsApplied: result.suppressionCount }),
+        ...(escalationsApplied > 0 && { escalationsApplied }),
+      },
+      findings: {
+        count: result.findings.length,
+        severityCounts: severityMap,
+        entries: findingEntries,
+      },
+      usage: {},
       verdict: result.verdict,
-      prNumber,
-      commitSha,
-      agentMetrics,
-      judgeMetrics,
-      fileMetrics,
-      reviewerModel,
-      judgeModel,
     };
+    const flatAliases = roundContextToFlatAliases(context);
 
     // Resolve threads the judge marked `addressed`. Other statuses
     // (`not_addressed`, `uncertain`) are logged for audit but never trigger a
@@ -934,7 +977,7 @@ async function runFullReview(
     }
 
     const reviewResult = { ...result, findings: inlineFindings };
-    const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, reviewResult, diff, stats);
+    const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, reviewResult, diff, context, reviewTimeMs);
 
     if (nitHandling === 'issues' && nitFindings.length > 0) {
       try {
@@ -1060,17 +1103,17 @@ async function runFullReview(
     await updateProgressComment(octokit, owner, repo, progressCommentId, completeDashboard, metadata);
 
     core.setOutput('review_id', reviewId.toString());
-    core.setOutput('verdict', result.verdict);
-    core.setOutput('findings_count', result.findings.length.toString());
+    core.setOutput('verdict', flatAliases.verdict);
+    core.setOutput('findings_count', flatAliases.findingsKept.toString());
     core.setOutput('findings_json', JSON.stringify(result.findings));
 
     // `result.findings` excludes 'ignore' severity (filtered in review.ts), so
-    // the counts here mirror `severityMap` above and the `stats.severity` output.
-    core.setOutput('severity_counts', JSON.stringify(severityMap));
+    // the counts here mirror `severityMap` above and the legacy `severity` alias.
+    core.setOutput('severity_counts', JSON.stringify(flatAliases.severity));
 
-    core.setOutput('judge_model', judgeModel);
+    core.setOutput('judge_model', flatAliases.judgeModel);
 
-    core.info(`Review complete: ${result.verdict} with ${result.findings.length} findings`);
+    core.info(`Review complete: ${result.verdict} with ${flatAliases.findingsKept} findings`);
     core.info(`Severity breakdown: ${severityMap.blocker} blocker, ${severityMap.warning} warning, ${severityMap.suggestion} suggestion, ${severityMap.nitpick} nitpick`);
   } catch (error) {
     if (dashboardFlushTimer) {

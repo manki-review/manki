@@ -1726,6 +1726,7 @@ describe('runFullReview orchestration', () => {
       expect.objectContaining({ verdict: 'REQUEST_CHANGES' }),
       expect.anything(),
       expect.anything(),
+      expect.anything(),
     );
     // Outputs set
     expect(jest.mocked(core.setOutput)).toHaveBeenCalledWith('verdict', 'REQUEST_CHANGES');
@@ -1784,31 +1785,24 @@ describe('runFullReview orchestration', () => {
     expect(statsArg).toBeDefined();
 
     // agentMetrics: third finding has both reviewers, so security gets 3 raw / 2 kept
-    expect(statsArg!.agentMetrics).toEqual([
+    expect(statsArg!.reviewers.agentMetrics).toEqual([
       { name: 'security', findingsRaw: 3, findingsKept: 2 },
       { name: 'general', findingsRaw: 2, findingsKept: 2 },
     ]);
 
-    // judgeMetrics
-    expect(statsArg!.judgeMetrics).toEqual({
+    expect(statsArg!.judge).toEqual(expect.objectContaining({
       confidenceDistribution: { high: 2, medium: 1, low: 1 },
       severityChanges: 2,
       mergedDuplicates: 2,
       verdictReason: 'novel_suggestion',
-    });
+    }));
 
-    // fileMetrics
-    expect(statsArg!.fileMetrics).toEqual({
-      fileTypes: { '.ts': 1, '.js': 1 },
-      findingsPerFile: { 'src/app.ts': 2, 'src/utils.js': 1 },
-    });
+    expect(statsArg!.diff.fileTypes).toEqual({ '.ts': 1, '.js': 1 });
 
-    // Model split
-    expect(statsArg!.reviewerModel).toBeDefined();
-    expect(statsArg!.judgeModel).toBeDefined();
+    expect(statsArg!.models.reviewer).toBeDefined();
+    expect(statsArg!.models.judge).toBeDefined();
 
-    // Backwards compatibility: model field still present
-    expect(statsArg!.model).toBeDefined();
+    expect(statsArg!.meta.round).toBe(1);
 
     // keptSeverities/droppedSeverities passed to dashboard use original severity for dropped findings
     const dashboardArg = jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[4];
@@ -1862,10 +1856,10 @@ describe('runFullReview orchestration', () => {
     expect(statsArg).toBeDefined();
 
     // mergedDuplicates excludes pre-judge dedup: 5 - 1 (static) - 1 (llm) - 1 (judged) = 2
-    expect(statsArg!.judgeMetrics?.mergedDuplicates).toBe(2);
+    expect(statsArg!.judge.mergedDuplicates).toBe(2);
 
     // findingsRaw comes from rawFindings (pre-dedup per-agent counts)
-    expect(statsArg!.agentMetrics).toEqual([
+    expect(statsArg!.reviewers.agentMetrics).toEqual([
       { name: 'security', findingsRaw: 2, findingsKept: 1 },
       { name: 'general', findingsRaw: 3, findingsKept: 0 },
     ]);
@@ -1914,7 +1908,7 @@ describe('runFullReview orchestration', () => {
     expect(statsArg).toBeDefined();
 
     // mergedDuplicates excludes memory suppressions: 4 - 2 (suppressed) - 0 - 0 - 1 (judged) = 1
-    expect(statsArg!.judgeMetrics?.mergedDuplicates).toBe(1);
+    expect(statsArg!.judge.mergedDuplicates).toBe(1);
   });
 
   it('counts defensive-hardening findings in judgeMetrics', async () => {
@@ -1949,7 +1943,7 @@ describe('runFullReview orchestration', () => {
     await callRunFullReview();
 
     const statsArg = jest.mocked(ghUtils.postReview).mock.calls[0][7];
-    expect(statsArg!.judgeMetrics?.defensiveHardeningCount).toBe(1);
+    expect(statsArg!.judge.defensiveHardeningCount).toBe(1);
   });
 
   it('surfaces crossRoundSuppressed and crossRoundDemoted counts in judgeMetrics', async () => {
@@ -1984,8 +1978,8 @@ describe('runFullReview orchestration', () => {
     await callRunFullReview();
 
     const statsArg = jest.mocked(ghUtils.postReview).mock.calls[0][7];
-    expect(statsArg!.judgeMetrics?.crossRoundSuppressed).toBe(1);
-    expect(statsArg!.judgeMetrics?.crossRoundDemoted).toBe(1);
+    expect(statsArg!.judge.crossRoundSuppressed).toBe(1);
+    expect(statsArg!.judge.crossRoundDemoted).toBe(1);
   });
 
   it('creates nit issues when nit_handling is "issues"', async () => {
@@ -2072,7 +2066,7 @@ describe('runFullReview orchestration', () => {
       expect.objectContaining({
         findings: [expect.objectContaining({ severity: 'nitpick' })],
       }),
-      expect.anything(), expect.anything(),
+      expect.anything(), expect.anything(), expect.anything(),
     );
   });
 
@@ -2216,6 +2210,61 @@ describe('runFullReview orchestration', () => {
     const { 11: existingHandoverArg } = appendCall;
     // existingHandover param should be the already-loaded handover, not re-fetched
     expect(existingHandoverArg).toEqual({ prNumber: 1, repo: 'test-repo', rounds: priorRounds });
+
+    // With 1 prior round in handover, meta.round must be 2
+    const roundContextArg = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+    expect(roundContextArg!.meta.round).toBe(2);
+  });
+
+  describe('meta.round derivation', () => {
+    const roundTestFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+    };
+
+    it('sets meta.round to 1 when no handover is present', async () => {
+      jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+        files: [roundTestFile], totalAdditions: 10, totalDeletions: 5,
+      });
+      jest.mocked(diffModule.filterFiles).mockReturnValue([roundTestFile]);
+      jest.mocked(memoryModule.loadHandover).mockResolvedValue(null);
+
+      await callRunFullReview();
+
+      const roundContextArg = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+      expect(roundContextArg!.meta.round).toBe(1);
+    });
+
+    it('sets meta.round to N+1 when handover has N prior rounds', async () => {
+      jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+        files: [roundTestFile], totalAdditions: 10, totalDeletions: 5,
+      });
+      jest.mocked(diffModule.filterFiles).mockReturnValue([roundTestFile]);
+      jest.mocked(configModule.loadConfig).mockReturnValue({
+        auto_review: true, auto_approve: false, exclude_paths: [], max_diff_lines: 10000,
+        reviewers: [], instructions: '', review_level: 'auto',
+        review_thresholds: { small: 200, medium: 800 },
+        memory: { enabled: true, repo: 'owner/memory' },
+      });
+      jest.mocked(authModule.getMemoryToken).mockReturnValue('token123');
+      jest.mocked(memoryModule.loadMemory).mockResolvedValue({
+        learnings: [], suppressions: [], patterns: [],
+      });
+
+      const priorRounds = [
+        { round: 1, commitSha: 'sha1', timestamp: '2025-01-01T00:00:00Z', findings: [] },
+        { round: 2, commitSha: 'sha2', timestamp: '2025-01-02T00:00:00Z', findings: [] },
+        { round: 3, commitSha: 'sha3', timestamp: '2025-01-03T00:00:00Z', findings: [] },
+      ];
+      jest.mocked(memoryModule.loadHandover).mockResolvedValue({
+        prNumber: 1, repo: 'test-repo', rounds: priorRounds,
+      });
+
+      await callRunFullReview();
+
+      const roundContextArg = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+      expect(roundContextArg!.meta.round).toBe(4);
+    });
   });
 
   describe('prior-round agent pinning', () => {
@@ -2557,13 +2606,15 @@ describe('runFullReview orchestration', () => {
     expect(jest.mocked(reviewModule.determineVerdict)).toHaveBeenCalled();
 
     const statsArg = jest.mocked(ghUtils.postReview).mock.calls[0][7];
-    expect(statsArg?.judgeMetrics?.verdictReason).toBe('novel_suggestion');
+    expect(statsArg?.judge.verdictReason).toBe('novel_suggestion');
     // result.verdictReason must also be updated alongside result.verdict after escalation
     const reviewResultArg = jest.mocked(ghUtils.postReview).mock.calls[0][5];
     expect(reviewResultArg?.verdictReason).toBe('novel_suggestion');
+    // one finding changed severity → escalationsApplied must reflect that
+    expect(statsArg?.memory.escalationsApplied).toBe(1);
   });
 
-  it('populates verdictReason in judgeMetrics on clean APPROVE with no findings', async () => {
+  it('populates verdictReason in judge on clean APPROVE with no findings', async () => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
@@ -2584,7 +2635,7 @@ describe('runFullReview orchestration', () => {
     await callRunFullReview();
 
     const statsArg = jest.mocked(ghUtils.postReview).mock.calls[0][7];
-    expect(statsArg?.judgeMetrics?.verdictReason).toBe('only_nit_or_suggestion');
+    expect(statsArg?.judge.verdictReason).toBe('only_nit_or_suggestion');
   });
 
   it('enriches findings with code context from diff hunks', async () => {

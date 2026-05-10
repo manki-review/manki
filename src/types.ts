@@ -461,11 +461,9 @@ export interface RoundMeta {
   round: number;
   /** ISO 8601 timestamp at which the round completed. */
   timestamp: string;
-  /** GitHub Actions `run_id` that produced this round. */
-  runId: number;
   /** `version` from `package.json` of the manki release that produced this round. */
   mankiVersion: string;
-  promptVersions: PromptVersions;
+  promptVersions?: PromptVersions;
 }
 
 /** Version identifiers for the prompt templates used by each pipeline stage. */
@@ -562,6 +560,12 @@ export interface RoundFindings {
   count: number;
   severityCounts: Record<string, number>;
   entries: FindingFingerprintEntry[];
+  /**
+   * True when the emit-side budget enforcer dropped one or more entries from
+   * `entries[]` to fit the review-comment body limit. Set by the truncation
+   * helper at emit time, never by upstream pipeline stages.
+   */
+  truncated?: boolean;
 }
 
 export interface FindingFingerprintEntry {

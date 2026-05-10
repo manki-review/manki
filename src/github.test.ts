@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 
-import { buildDashboard, formatFindingComment, formatStatsJson, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, buildNitIssueBody, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, createNitIssue, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded } from './github';
-import { DashboardData, Finding, ParsedDiff, ReviewMetadata, ReviewResult, ReviewStats } from './types';
+import { buildDashboard, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, buildNitIssueBody, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, truncateContextToFitBody, dynamicFence, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, createNitIssue, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded } from './github';
+import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 
 describe('formatFindingComment', () => {
   const baseFinding: Finding = {
@@ -637,46 +637,59 @@ describe('postReview generalFindings', () => {
   });
 });
 
-describe('formatStatsOneLiner', () => {
-  const baseStats: ReviewStats = {
-    model: 'claude-sonnet-4-20250514',
-    reviewTimeMs: 45000,
-    diffLines: 120,
-    diffAdditions: 80,
-    diffDeletions: 40,
-    filesReviewed: 5,
-    agents: ['Security & Safety', 'Correctness'],
-    findingsRaw: 10,
-    findingsKept: 4,
-    findingsDropped: 6,
-    severity: { blocker: 1, warning: 0, suggestion: 2, nitpick: 1 },
+function makeContext(overrides: Partial<RoundContext> = {}): RoundContext {
+  const base: RoundContext = {
+    meta: {
+      prNumber: 42,
+      commitSha: 'abc123',
+      round: 1,
+      timestamp: '2026-01-01T00:00:00.000Z',
+      mankiVersion: '4.7.0',
+    },
+    config: { reviewLevel: 'medium', nitHandling: 'issues', memoryEnabled: false },
+    diff: { lines: 120, additions: 80, deletions: 40, filesReviewed: 5, fileTypes: { '.ts': 5 } },
+    models: { reviewer: 'claude-sonnet-4-20250514', judge: 'claude-opus-4-20250514' },
+    planner: { used: false },
+    reviewers: { agents: ['Security & Safety', 'Correctness'] },
+    judge: { summary: 'All checks done.' },
+    dedup: {},
+    memory: {},
+    findings: { count: 4, severityCounts: { blocker: 1, warning: 0, suggestion: 2, nitpick: 1 }, entries: [] },
+    usage: {},
     verdict: 'REQUEST_CHANGES',
-    prNumber: 42,
-    commitSha: 'abc123',
   };
+  return { ...base, ...overrides };
+}
 
+describe('formatStatsOneLiner', () => {
   it('formats a one-liner with severity breakdown', () => {
-    const result = formatStatsOneLiner(baseStats);
+    const result = formatStatsOneLiner(makeContext(), 45000);
     expect(result).toBe('\u{1F4CA} 4 findings (1 blocker, 2 suggestion, 1 nitpick) \u00B7 120 lines \u00B7 45s');
   });
 
   it('omits zero-count severities', () => {
-    const stats = { ...baseStats, severity: { blocker: 0, warning: 0, suggestion: 3, nitpick: 0 }, findingsKept: 3 };
-    const result = formatStatsOneLiner(stats);
+    const ctx = makeContext({
+      findings: { count: 3, severityCounts: { blocker: 0, warning: 0, suggestion: 3, nitpick: 0 }, entries: [] },
+    });
+    const result = formatStatsOneLiner(ctx, 45000);
     expect(result).toContain('(3 suggestion)');
     expect(result).not.toContain('blocker');
     expect(result).not.toContain('nitpick');
   });
 
   it('shows none when all severities are zero', () => {
-    const stats = { ...baseStats, severity: { blocker: 0, warning: 0, suggestion: 0, nitpick: 0 }, findingsKept: 0 };
-    const result = formatStatsOneLiner(stats);
+    const ctx = makeContext({
+      findings: { count: 0, severityCounts: { blocker: 0, warning: 0, suggestion: 0, nitpick: 0 }, entries: [] },
+    });
+    const result = formatStatsOneLiner(ctx, 45000);
     expect(result).toContain('(none)');
   });
 
   it('includes non-zero warning count in output', () => {
-    const stats = { ...baseStats, severity: { blocker: 0, warning: 2, suggestion: 1, nitpick: 0 }, findingsKept: 3 };
-    const result = formatStatsOneLiner(stats);
+    const ctx = makeContext({
+      findings: { count: 3, severityCounts: { blocker: 0, warning: 2, suggestion: 1, nitpick: 0 }, entries: [] },
+    });
+    const result = formatStatsOneLiner(ctx, 45000);
     expect(result).toContain('2 warning');
     expect(result).toContain('1 suggestion');
     expect(result).not.toContain('blocker');
@@ -684,41 +697,184 @@ describe('formatStatsOneLiner', () => {
   });
 
   it('rounds review time to nearest second', () => {
-    const stats = { ...baseStats, reviewTimeMs: 1500 };
-    const result = formatStatsOneLiner(stats);
+    const result = formatStatsOneLiner(makeContext(), 1500);
     expect(result).toContain('2s');
   });
 });
 
-describe('formatStatsJson', () => {
-  it('wraps stats in a collapsed details block with JSON', () => {
-    const stats: ReviewStats = {
-      model: 'claude-sonnet-4-20250514',
-      reviewTimeMs: 30000,
-      diffLines: 50,
-      diffAdditions: 30,
-      diffDeletions: 20,
-      filesReviewed: 3,
-      agents: ['Security'],
-      findingsRaw: 5,
-      findingsKept: 2,
-      findingsDropped: 3,
-      severity: { blocker: 1, warning: 0, suggestion: 1, nitpick: 0 },
+describe('formatContextBlock', () => {
+  it('wraps the round context in a collapsed details block with JSON', () => {
+    const ctx = makeContext({
+      meta: {
+        prNumber: 10, commitSha: 'def456', round: 2, timestamp: '2026-01-01T00:00:00.000Z',
+        mankiVersion: '4.7.0',
+      },
+      findings: { count: 2, severityCounts: { blocker: 1, warning: 0, suggestion: 1, nitpick: 0 }, entries: [] },
       verdict: 'APPROVE',
-      prNumber: 10,
-      commitSha: 'def456',
-    };
-    const result = formatStatsJson(stats);
+    });
+    const result = formatContextBlock(ctx);
     expect(result).toContain('<details>');
-    expect(result).toContain('<summary>Review stats</summary>');
+    expect(result).toContain('<summary>Manki context</summary>');
     expect(result).toContain('```json');
-    expect(result).toContain('"model": "claude-sonnet-4-20250514"');
-    expect(result).toContain('"findingsKept": 2');
+    expect(result).toContain('"reviewer": "claude-sonnet-4-20250514"');
+    expect(result).toContain('"count": 2');
+    expect(result).toContain('"verdict": "APPROVE"');
     expect(result).toContain('</details>');
+    expect(result).not.toContain('Review stats');
+  });
+
+  it('escapes triple-backtick runs in the serialized JSON to avoid breaking the code fence', () => {
+    const ctx = makeContext({ judge: { summary: 'Use ```json``` fences in examples.' } });
+    const result = formatContextBlock(ctx);
+    // The JSON blob between the opening ```json fence and closing ``` must not
+    // contain a raw triple-backtick sequence that would close the fence early.
+    const fenceOpen = result.indexOf('```json\n');
+    const fenceClose = result.indexOf('\n```\n', fenceOpen + 8);
+    const jsonBlob = result.slice(fenceOpen + 8, fenceClose);
+    expect(jsonBlob).not.toContain('```');
+    expect(result).toContain('\\u0060\\u0060\\u0060');
+  });
+
+});
+
+describe('roundContextToFlatAliases', () => {
+  it('round-trips the flat-alias projection for a representative round', () => {
+    const ctx = makeContext({
+      dedup: { staticDropped: 1, llmDropped: 2 },
+      judge: { summary: 'sum', mergedDuplicates: 3 },
+      findings: { count: 4, severityCounts: { blocker: 1, warning: 0, suggestion: 2, nitpick: 1 }, entries: [] },
+      diff: { lines: 120, additions: 80, deletions: 40, filesReviewed: 5, fileTypes: { '.ts': 5 } },
+    });
+    const aliases = roundContextToFlatAliases(ctx);
+    expect(aliases).toEqual({
+      prNumber: 42,
+      commitSha: 'abc123',
+      verdict: 'REQUEST_CHANGES',
+      diffLines: 120,
+      diffAdditions: 80,
+      diffDeletions: 40,
+      filesReviewed: 5,
+      agents: ['Security & Safety', 'Correctness'],
+      findingsRaw: 10,
+      findingsKept: 4,
+      findingsDropped: 6,
+      severity: { blocker: 1, warning: 0, suggestion: 2, nitpick: 1 },
+      model: 'claude-sonnet-4-20250514',
+      reviewerModel: 'claude-sonnet-4-20250514',
+      judgeModel: 'claude-opus-4-20250514',
+    });
+  });
+
+  it('uses zero defaults when optional dedup/judge counts are absent', () => {
+    const ctx = makeContext();
+    const aliases = roundContextToFlatAliases(ctx);
+    expect(aliases.findingsRaw).toBe(4);
+    expect(aliases.findingsDropped).toBe(0);
   });
 });
 
-describe('postReview with stats', () => {
+describe('truncateContextToFitBody', () => {
+  it('returns original context unchanged when body is already within budget', () => {
+    const ctx = makeContext();
+    const render = (c: RoundContext) => JSON.stringify(c);
+    const { context: out, droppedCount, summaryCapped } = truncateContextToFitBody(ctx, render, 1_000_000);
+    expect(droppedCount).toBe(0);
+    expect(summaryCapped).toBe(false);
+    expect(out).toBe(ctx);
+  });
+
+  it('is idempotent — calling twice on an already-truncated context is a no-op', () => {
+    const entries: FindingFingerprintEntry[] = Array.from({ length: 50 }, (_, i) => ({
+      fingerprint: { file: `src/f-${i}.ts`, lineStart: i, lineEnd: i, slug: 'slug-'.repeat(20) + i },
+      severity: 'nitpick' as const,
+    }));
+    const ctx = makeContext({
+      findings: { count: entries.length, severityCounts: { blocker: 0, warning: 0, suggestion: 0, nitpick: entries.length }, entries },
+    });
+    const render = (c: RoundContext) => JSON.stringify(c);
+    const budget = render(ctx).length - 100;
+    const { context: once } = truncateContextToFitBody(ctx, render, budget);
+    expect(once.findings.entries.length).toBeLessThan(entries.length);
+    const { context: twice, droppedCount } = truncateContextToFitBody(once, render, budget);
+    expect(droppedCount).toBe(0);
+    expect(twice.findings.entries).toEqual(once.findings.entries);
+  });
+
+  it('returns over-budget context without truncated flag when no entries were dropped', () => {
+    const ctx = makeContext({
+      judge: { summary: 'x'.repeat(200) },
+      findings: { count: 0, severityCounts: { blocker: 0, warning: 0, suggestion: 0, nitpick: 0 }, entries: [] },
+    });
+    const render = (c: RoundContext) => JSON.stringify(c);
+    const { context: out, droppedCount } = truncateContextToFitBody(ctx, render, 1);
+    expect(droppedCount).toBe(0);
+    expect(out.findings.entries).toEqual([]);
+    expect(out.findings.truncated).toBeUndefined();
+    expect(render(out).length).toBeGreaterThan(1);
+  });
+
+  it('truncates judge.summary when it alone exceeds budget after entries are exhausted', () => {
+    const longSummary = 'a'.repeat(3000);
+    const ctx = makeContext({
+      judge: { summary: longSummary },
+      findings: { count: 0, severityCounts: { blocker: 0, warning: 0, suggestion: 0, nitpick: 0 }, entries: [] },
+    });
+    const render = (c: RoundContext) => JSON.stringify(c);
+    // Set budget just below the size of the bare context with the long summary so
+    // summary truncation is what pulls it under.
+    const fullSize = render(ctx).length;
+    const budget = fullSize - 500;
+    const { context: out, droppedCount, summaryCapped } = truncateContextToFitBody(ctx, render, budget);
+    expect(droppedCount).toBe(0);
+    expect(summaryCapped).toBe(true);
+    expect(out.judge.summary.length).toBeLessThan(longSummary.length);
+    // safeTruncate(summary, 2000) yields at most 2003 chars (2000 + ellipsis)
+    expect(out.judge.summary.length).toBeLessThanOrEqual(2003);
+    expect(render(out).length).toBeLessThanOrEqual(budget);
+  });
+
+  it('drops ignore entries before nitpick entries', () => {
+    const entries: FindingFingerprintEntry[] = [
+      { fingerprint: { file: 'f.ts', lineStart: 1, lineEnd: 1, slug: 'a' }, severity: 'ignore' },
+      { fingerprint: { file: 'f.ts', lineStart: 2, lineEnd: 2, slug: 'b' }, severity: 'nitpick' },
+    ];
+    const ctx = makeContext({ findings: { count: 2, severityCounts: {}, entries } });
+    const render = (c: RoundContext) => JSON.stringify(c);
+    // Budget must fit one entry with `truncated: true` but not two entries.
+    const oneEntryTruncated = makeContext({ findings: { count: 1, severityCounts: {}, entries: [entries[1]], truncated: true } });
+    const budget = render(oneEntryTruncated).length;
+    const { context: out } = truncateContextToFitBody(ctx, render, budget);
+    expect(out.findings.entries.map(e => e.severity)).toEqual(['nitpick']);
+  });
+
+  it('drops unknown entries before blocker entries', () => {
+    const entries: FindingFingerprintEntry[] = [
+      { fingerprint: { file: 'f.ts', lineStart: 1, lineEnd: 1, slug: 'a' }, severity: 'unknown' },
+      { fingerprint: { file: 'f.ts', lineStart: 2, lineEnd: 2, slug: 'b' }, severity: 'blocker' },
+    ];
+    const ctx = makeContext({ findings: { count: 2, severityCounts: {}, entries } });
+    const render = (c: RoundContext) => JSON.stringify(c);
+    // Budget must fit one entry with `truncated: true` but not two entries.
+    const oneEntryTruncated = makeContext({ findings: { count: 1, severityCounts: {}, entries: [entries[1]], truncated: true } });
+    const budget = render(oneEntryTruncated).length;
+    const { context: out } = truncateContextToFitBody(ctx, render, budget);
+    expect(out.findings.entries.map(e => e.severity)).toEqual(['blocker']);
+  });
+
+  it('does not set summaryCapped when judge.summary is already within 2000 chars', () => {
+    const shortSummary = 'short summary';
+    const ctx = makeContext({
+      judge: { summary: shortSummary },
+      findings: { count: 0, severityCounts: {}, entries: [] },
+    });
+    const render = (c: RoundContext) => JSON.stringify(c) + 'x'.repeat(1000);
+    const { summaryCapped, context: out } = truncateContextToFitBody(ctx, render, 1);
+    expect(summaryCapped).toBe(false);
+    expect(out.judge.summary).toBe(shortSummary);
+  });
+});
+
+describe('postReview with context', () => {
   const mockCreateReview = jest.fn().mockResolvedValue({ data: { id: 1 } });
   const mockOctokit = {
     rest: {
@@ -728,11 +884,19 @@ describe('postReview with stats', () => {
     },
   } as unknown as Parameters<typeof postReview>[0];
 
+  let warningSpy: jest.SpyInstance;
+
   beforeEach(() => {
     mockCreateReview.mockClear();
+    warningSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    warningSpy.mockClear();
   });
 
-  it('includes stats one-liner and collapsed JSON in review body', async () => {
+  afterEach(() => {
+    warningSpy.mockRestore();
+  });
+
+  it('includes stats one-liner and Manki context block in review body', async () => {
     const result: ReviewResult = {
       verdict: 'APPROVE',
       summary: 'All good.',
@@ -741,33 +905,23 @@ describe('postReview with stats', () => {
       reviewComplete: true,
       agentNames: [],
     };
-    const stats: ReviewStats = {
-      model: 'claude-sonnet-4-20250514',
-      reviewTimeMs: 60000,
-      diffLines: 200,
-      diffAdditions: 150,
-      diffDeletions: 50,
-      filesReviewed: 8,
-      agents: ['Security', 'Correctness'],
-      findingsRaw: 6,
-      findingsKept: 3,
-      findingsDropped: 3,
-      severity: { blocker: 0, warning: 0, suggestion: 2, nitpick: 1 },
+    const ctx = makeContext({
+      diff: { lines: 200, additions: 150, deletions: 50, filesReviewed: 8, fileTypes: { '.ts': 8 } },
+      reviewers: { agents: ['Security', 'Correctness'] },
+      findings: { count: 3, severityCounts: { blocker: 0, warning: 0, suggestion: 2, nitpick: 1 }, entries: [] },
       verdict: 'APPROVE',
-      prNumber: 99,
-      commitSha: 'abc',
-    };
+    });
 
-    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, stats);
+    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, ctx, 60000);
     const body = mockCreateReview.mock.calls[0][0].body as string;
     expect(body).toContain('\u{1F4CA} 3 findings');
     expect(body).toContain('200 lines');
     expect(body).toContain('60s');
-    expect(body).toContain('<details>');
-    expect(body).toContain('"model": "claude-sonnet-4-20250514"');
+    expect(body).toContain('<summary>Manki context</summary>');
+    expect(body).toContain('"reviewer": "claude-sonnet-4-20250514"');
   });
 
-  it('omits stats section when stats not provided', async () => {
+  it('omits stats section when context not provided', async () => {
     const result: ReviewResult = {
       verdict: 'APPROVE',
       summary: 'All good.',
@@ -780,7 +934,118 @@ describe('postReview with stats', () => {
     await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
     const body = mockCreateReview.mock.calls[0][0].body as string;
     expect(body).not.toContain('\u{1F4CA}');
+    expect(body).not.toContain('Manki context');
     expect(body).not.toContain('Review stats');
+  });
+
+  it('truncates findings.entries in priority order when body exceeds 60k chars', async () => {
+    const result: ReviewResult = {
+      verdict: 'COMMENT',
+      summary: 'Many findings.',
+      findings: [],
+      highlights: [],
+      reviewComplete: true,
+      agentNames: [],
+    };
+    // Each fingerprint slug is ~120 chars; 1000 entries with mixed severities push the
+    // serialized JSON over the 60k budget so truncation must drop the lowest-priority
+    // entries first.
+    const longSlug = 'long-slug-token-'.repeat(8);
+    const entries: FindingFingerprintEntry[] = [];
+    for (let i = 0; i < 250; i++) {
+      entries.push({ fingerprint: { file: `src/file-${i}.ts`, lineStart: i, lineEnd: i, slug: `nit-${longSlug}${i}` }, severity: 'nitpick' });
+      entries.push({ fingerprint: { file: `src/file-${i}.ts`, lineStart: i, lineEnd: i, slug: `sug-${longSlug}${i}` }, severity: 'suggestion' });
+      entries.push({ fingerprint: { file: `src/file-${i}.ts`, lineStart: i, lineEnd: i, slug: `warn-${longSlug}${i}` }, severity: 'warning' });
+      entries.push({ fingerprint: { file: `src/file-${i}.ts`, lineStart: i, lineEnd: i, slug: `block-${longSlug}${i}` }, severity: 'blocker' });
+    }
+    const ctx = makeContext({
+      findings: { count: entries.length, severityCounts: { blocker: 250, warning: 250, suggestion: 250, nitpick: 250 }, entries },
+    });
+
+    const preTruncationBody = JSON.stringify(ctx);
+    expect(preTruncationBody.length).toBeGreaterThan(60_000);
+
+    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, ctx, 1000);
+    const body = mockCreateReview.mock.calls[0][0].body as string;
+    expect(body.length).toBeLessThanOrEqual(60000);
+
+    const match = body.match(/```json\n([\s\S]*?)\n```/);
+    expect(match).not.toBeNull();
+    const parsed = JSON.parse(match![1]) as RoundContext;
+    expect(parsed.findings.truncated).toBe(true);
+    expect(parsed.findings.entries.length).toBeLessThan(entries.length);
+    // Nitpicks are dropped first, so any survivor must be a higher-priority severity
+    // unless every nitpick was preserved (which would mean no truncation).
+    const bySev = (s: string) => parsed.findings.entries.filter(e => e.severity === s).length;
+    // At least some nitpicks must have been dropped — the budget is tight enough to require it.
+    expect(bySev('nitpick')).toBeLessThan(250);
+    // Nitpicks are always dropped before suggestions. With 1000 entries and 4 tiers the budget
+    // is designed so that suggestions must also be dropped, so we can assert this unconditionally.
+    expect(bySev('nitpick')).toBe(0);
+    const droppedSuggestion = 250 - bySev('suggestion');
+    const droppedWarning = 250 - bySev('warning');
+    const droppedBlocker = 250 - bySev('blocker');
+    // Nitpicks are dropped first: any dropped suggestion implies all nitpicks gone.
+    if (droppedSuggestion > 0) expect(bySev('nitpick')).toBe(0);
+    // Suggestions are dropped before warnings: any dropped warning implies all suggestions gone.
+    if (droppedWarning > 0) expect(bySev('suggestion')).toBe(0);
+    // Warnings are dropped before blockers: any dropped blocker implies all warnings gone.
+    if (droppedBlocker > 0) expect(bySev('warning')).toBe(0);
+
+    expect(warningSpy).toHaveBeenCalledWith(expect.stringMatching(/Manki context truncated: dropped \d+ finding entries/));
+  });
+
+  it('does not truncate when rendered body is under the 60k budget', async () => {
+    const result: ReviewResult = {
+      verdict: 'APPROVE',
+      summary: 'Small review.',
+      findings: [],
+      highlights: [],
+      reviewComplete: true,
+      agentNames: [],
+    };
+    const ctx = makeContext({
+      findings: {
+        count: 1,
+        severityCounts: { blocker: 0, warning: 0, suggestion: 1, nitpick: 0 },
+        entries: [{ fingerprint: { file: 'src/a.ts', lineStart: 1, lineEnd: 1, slug: 'tiny' }, severity: 'suggestion' }],
+      },
+    });
+    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, ctx, 1000);
+    const body = mockCreateReview.mock.calls[0][0].body as string;
+    const match = body.match(/```json\n([\s\S]*?)\n```/);
+    const parsed = JSON.parse(match![1]) as RoundContext;
+    expect(parsed.findings.truncated).toBeUndefined();
+    expect(parsed.findings.entries).toHaveLength(1);
+    expect(warningSpy).not.toHaveBeenCalledWith(expect.stringMatching(/Manki context truncated/));
+  });
+
+  it('shows 0s for review time when reviewTimeMs is omitted', async () => {
+    const result: ReviewResult = {
+      verdict: 'APPROVE', summary: '', findings: [],
+      highlights: [], reviewComplete: true, agentNames: [],
+    };
+    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, makeContext());
+    const body = mockCreateReview.mock.calls[0][0].body as string;
+    expect(body).toContain('0s');
+  });
+
+  it('fires core.warning and caps summary when only judge.summary exceeds budget', async () => {
+    const result: ReviewResult = {
+      verdict: 'APPROVE', summary: '', findings: [],
+      highlights: [], reviewComplete: true, agentNames: [],
+    };
+    const ctx = makeContext({
+      judge: { summary: 'a'.repeat(65000) },
+      findings: { count: 0, severityCounts: {}, entries: [] },
+    });
+    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, ctx, 0);
+    expect(warningSpy).toHaveBeenCalledWith(expect.stringMatching(/judge summary capped/));
+    const body = mockCreateReview.mock.calls[0][0].body as string;
+    const match = body.match(/```json\n([\s\S]*?)\n```/);
+    const parsed = JSON.parse(match![1]) as RoundContext;
+    expect(parsed.findings.truncated).toBeUndefined();
+    expect(parsed.judge.summary.length).toBeLessThanOrEqual(2003);
   });
 });
 
