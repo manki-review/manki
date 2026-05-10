@@ -48,7 +48,7 @@ Create `.github/workflows/manki.yml`. See [full workflow below](#step-3-add-the-
 3. Check **"Allow GitHub Actions to create and approve pull requests"**
 4. Click Save
 
-### Branch Protection (Optional)
+## Branch Protection (Optional)
 
 If you use branch protection rules and want Manki to be a required check:
 
