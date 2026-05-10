@@ -1145,7 +1145,7 @@ describe('fetchRecapState', () => {
     }
 
     function detailsBlock(ctx: RoundContext): string {
-      const json = JSON.stringify(ctx, null, 2).replace(/`{3,}/g, m => m.replace(/`/g, '\\u0060'));
+      const json = JSON.stringify(ctx, null, 2).replace(/`/g, '\\u0060');
       return `<details>\n<summary>Manki context</summary>\n\n\`\`\`json\n${json}\n\`\`\`\n</details>`;
     }
 
@@ -1202,6 +1202,28 @@ describe('fetchRecapState', () => {
       const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
       expect(state.priorRounds).toHaveLength(1);
       expect(state.priorRounds[0].findings.entries).toEqual([entry]);
+    });
+
+    it('round-trips suggestedFix containing a literal \\u0060 escape sequence without parse error', async () => {
+      // Regression: suggestedFix containing a regex like /`/g (literal backslash + u0060)
+      // was stored as \\u0060 in the JSON, which the old parser's naive .replace(/\\u0060/g, '`')
+      // turned into \\` — an invalid JSON escape sequence.
+      const entry = {
+        fingerprint: { file: 'src/recap.ts', lineStart: 201, lineEnd: 201, slug: 'backtick-unescape' },
+        severity: 'warning' as const,
+        specialist: 'Correctness',
+        suggestedFix: "candidates.push(m[1].replace(/\\u0060/g, '`'));",
+        title: 'Parser unescapes \\u0060 incorrectly',
+      };
+      const ctx = makeRoundContext(1, {
+        findings: { count: 1, severityCounts: { blocker: 0, warning: 1, suggestion: 0, nitpick: 0 }, entries: [entry] },
+      });
+      const octokit = mockOctokit([], [
+        { id: 100, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
+      ]);
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.priorRounds).toHaveLength(1);
+      expect(state.priorRounds[0].findings.entries[0].suggestedFix).toBe(entry.suggestedFix);
     });
 
     it('round-trips findings.entries through the HTML-comment wrapper', async () => {

@@ -198,7 +198,7 @@ function parseContextBlocks(
     const candidates: string[] = [];
 
     for (const m of review.body.matchAll(CONTEXT_BLOCK_DETAILS_RE)) {
-      candidates.push(m[1].replace(/\\u0060/g, '`'));
+      candidates.push(m[1]);
     }
     if (candidates.length === 0) {
       for (const m of review.body.matchAll(CONTEXT_BLOCK_HTML_COMMENT_RE)) {

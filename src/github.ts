@@ -505,7 +505,7 @@ function formatStatsOneLiner(context: RoundContext, reviewTimeMs: number): strin
 
 function formatContextBlock(context: RoundContext): string {
   const json = JSON.stringify(context, null, 2)
-    .replace(/`{3,}/g, match => match.replace(/`/g, '\\u0060'));
+    .replace(/`/g, '\\u0060');
   return `<details>\n<summary>Manki context</summary>\n\n\`\`\`json\n${json}\n\`\`\`\n</details>`;
 }
 
