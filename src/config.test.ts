@@ -93,6 +93,11 @@ describe('config', () => {
       expect(config.stats?.hidden).toBe(true);
     });
 
+    it('keeps stats.hidden false when stats key is present but hidden is omitted', () => {
+      const config = loadConfigFromContent('stats: {}');
+      expect(config.stats?.hidden).toBe(false);
+    });
+
     it('rejects non-boolean stats.hidden', () => {
       expect(() => loadConfigFromContent('stats:\n  hidden: "yes"\n'))
         .toThrow(/stats\.hidden/);
