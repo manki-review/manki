@@ -82,6 +82,10 @@
 # Must be an integer between 1 and 5. Default: 1 (no multi-pass).
 # review_passes: 1
 
+# Hide the structured `Manki context` block as an HTML comment instead of a `<details>` block (default: false)
+# stats:
+#   hidden: false
+
 # Review memory (requires memory_repo_token)
 # Stores learnings, suppressions, and patterns to improve reviews over time
 # memory:

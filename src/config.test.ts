@@ -81,6 +81,29 @@ describe('config', () => {
     });
   });
 
+  describe('stats config', () => {
+    it('defaults stats.hidden to false', () => {
+      expect(DEFAULT_CONFIG.stats?.hidden).toBe(false);
+      const config = loadConfigFromContent('');
+      expect(config.stats?.hidden).toBe(false);
+    });
+
+    it('merges user-provided stats.hidden over defaults', () => {
+      const config = loadConfigFromContent('stats:\n  hidden: true\n');
+      expect(config.stats?.hidden).toBe(true);
+    });
+
+    it('rejects non-boolean stats.hidden', () => {
+      expect(() => loadConfigFromContent('stats:\n  hidden: "yes"\n'))
+        .toThrow(/stats\.hidden/);
+    });
+
+    it('rejects non-object stats', () => {
+      expect(() => loadConfigFromContent('stats: "nope"\n'))
+        .toThrow(/`stats` must be an object/);
+    });
+  });
+
   describe('loadConfig', () => {
     it('returns defaults when no content provided', () => {
       const config = loadConfig(undefined);
