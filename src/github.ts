@@ -550,7 +550,7 @@ function truncateContextToFitBody(
   }
   let truncated: RoundContext = {
     ...context,
-    findings: { ...context.findings, entries: remaining, ...(dropped > 0 && { truncated: true }) },
+    findings: { ...context.findings, entries: remaining, count: remaining.length, ...(dropped > 0 && { truncated: true }) },
   };
   let summaryCapped = false;
   if (renderBody(truncated).length > maxBodyLength && truncated.judge.summary) {
