@@ -774,8 +774,9 @@ describe('truncateContextToFitBody', () => {
   it('returns original context unchanged when body is already within budget', () => {
     const ctx = makeContext();
     const render = (c: RoundContext) => JSON.stringify(c);
-    const { context: out, droppedCount } = truncateContextToFitBody(ctx, render, 1_000_000);
+    const { context: out, droppedCount, summaryCapped } = truncateContextToFitBody(ctx, render, 1_000_000);
     expect(droppedCount).toBe(0);
+    expect(summaryCapped).toBe(false);
     expect(out).toBe(ctx);
   });
 
@@ -820,8 +821,9 @@ describe('truncateContextToFitBody', () => {
     // summary truncation is what pulls it under.
     const fullSize = render(ctx).length;
     const budget = fullSize - 500;
-    const { context: out, droppedCount } = truncateContextToFitBody(ctx, render, budget);
+    const { context: out, droppedCount, summaryCapped } = truncateContextToFitBody(ctx, render, budget);
     expect(droppedCount).toBe(0);
+    expect(summaryCapped).toBe(true);
     expect(out.judge.summary.length).toBeLessThan(longSummary.length);
     // safeTruncate(summary, 2000) yields at most 2003 chars (2000 + ellipsis)
     expect(out.judge.summary.length).toBeLessThanOrEqual(2003);
@@ -968,6 +970,16 @@ describe('postReview with context', () => {
     expect(parsed.findings.truncated).toBeUndefined();
     expect(parsed.findings.entries).toHaveLength(1);
     expect(warningSpy).not.toHaveBeenCalledWith(expect.stringMatching(/Manki context truncated/));
+  });
+
+  it('shows 0s for review time when reviewTimeMs is omitted', async () => {
+    const result: ReviewResult = {
+      verdict: 'APPROVE', summary: '', findings: [],
+      highlights: [], reviewComplete: true, agentNames: [],
+    };
+    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, makeContext());
+    const body = mockCreateReview.mock.calls[0][0].body as string;
+    expect(body).toContain('0s');
   });
 });
 

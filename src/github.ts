@@ -524,16 +524,16 @@ const TRUNCATION_PRIORITY: ReadonlyArray<FindingFingerprintEntry['severity']> = 
 /**
  * Drop entries from `findings.entries[]` in priority order until the
  * rendered review body is within `maxBodyLength`. Returns the (possibly
- * mutated) context and the count of entries dropped. Caller is expected to
- * `core.warning` when `droppedCount > 0`.
+ * mutated) context, the count of entries dropped, and whether the judge
+ * summary was capped. Caller is expected to `core.warning` on either signal.
  */
 function truncateContextToFitBody(
   context: RoundContext,
   renderBody: (ctx: RoundContext) => string,
   maxBodyLength: number,
-): { context: RoundContext; droppedCount: number } {
+): { context: RoundContext; droppedCount: number; summaryCapped: boolean } {
   if (renderBody(context).length <= maxBodyLength) {
-    return { context, droppedCount: 0 };
+    return { context, droppedCount: 0, summaryCapped: false };
   }
   const remaining = [...context.findings.entries];
   let dropped = 0;
@@ -552,13 +552,15 @@ function truncateContextToFitBody(
     ...context,
     findings: { ...context.findings, entries: remaining, ...(dropped > 0 && { truncated: true }) },
   };
+  let summaryCapped = false;
   if (renderBody(truncated).length > maxBodyLength && truncated.judge.summary) {
     truncated = {
       ...truncated,
       judge: { ...truncated.judge, summary: safeTruncate(truncated.judge.summary, 2000) },
     };
+    summaryCapped = true;
   }
-  return { context: truncated, droppedCount: dropped };
+  return { context: truncated, droppedCount: dropped, summaryCapped };
 }
 
 const REVIEW_BODY_BUDGET = 60000;
@@ -656,14 +658,14 @@ export async function postReview(
 
   let effectiveContext = context;
   if (context) {
-    const { context: maybeTruncated, droppedCount } = truncateContextToFitBody(
+    const { context: maybeTruncated, droppedCount, summaryCapped } = truncateContextToFitBody(
       context,
       ctx => renderBody(ctx),
       REVIEW_BODY_BUDGET,
     );
     effectiveContext = maybeTruncated;
-    if (droppedCount > 0) {
-      core.warning(`Manki context truncated: dropped ${droppedCount} finding entries to fit comment body`);
+    if (droppedCount > 0 || summaryCapped) {
+      core.warning(`Manki context truncated: dropped ${droppedCount} finding entries${summaryCapped ? ', judge summary capped at 2000 chars' : ''} to fit comment body`);
     }
   }
   const body = renderBody(effectiveContext);
