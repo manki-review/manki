@@ -809,6 +809,14 @@ describe('roundContextToFlatAliases', () => {
     expect(parsed.judge.summary).toBe('arrow --> token preserved');
   });
 
+  it('hidden mode --!> round-trips back to original value', () => {
+    const ctx = makeContext({ judge: { summary: 'bang close --!> here' } });
+    const result = formatContextBlock(ctx, true);
+    const inner = result.slice('<!-- manki-context: '.length, -' -->'.length);
+    const parsed = JSON.parse(inner) as RoundContext;
+    expect(parsed.judge.summary).toBe('bang close --!> here');
+  });
+
   describe('sanitizeHtmlCommentJson (via formatContextBlock hidden path)', () => {
     it('replaces all --> occurrences', () => {
       const ctx = makeContext({ judge: { summary: '--> first --> second' } });
@@ -1049,7 +1057,7 @@ describe('postReview with context', () => {
     expect(warningSpy).toHaveBeenCalledWith(expect.stringMatching(/Manki context truncated: dropped \d+ finding entries/));
   });
 
-  it('hidden mode renders HTML-comment block instead of `<details>` while preserving stats one-liner and action outputs', async () => {
+  it('hidden mode renders HTML-comment block instead of `<details>` while preserving the stats one-liner', async () => {
     const result: ReviewResult = {
       verdict: 'APPROVE',
       summary: 'All good.',
