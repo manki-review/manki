@@ -513,6 +513,9 @@ function formatContextBlock(context: RoundContext): string {
  * Severity drop order when shrinking `findings.entries[]` to fit the review
  * body budget. Lowest-impact severities go first; metadata, agents, judge
  * summary, models, and usage are preserved unconditionally.
+ *
+ * `'unknown'` is placed before `'blocker'` because a confirmed blocker carries
+ * more informational value than an entry whose severity could not be determined.
  */
 const TRUNCATION_PRIORITY: ReadonlyArray<FindingFingerprintEntry['severity']> = [
   'ignore', 'nitpick', 'suggestion', 'warning', 'unknown', 'blocker',
