@@ -554,11 +554,11 @@ function truncateContextToFitBody(
   };
   let summaryCapped = false;
   if (renderBody(truncated).length > maxBodyLength && truncated.judge.summary) {
-    truncated = {
-      ...truncated,
-      judge: { ...truncated.judge, summary: safeTruncate(truncated.judge.summary, 2000) },
-    };
-    summaryCapped = true;
+    const cappedSummary = safeTruncate(truncated.judge.summary, 2000);
+    if (cappedSummary !== truncated.judge.summary) {
+      truncated = { ...truncated, judge: { ...truncated.judge, summary: cappedSummary } };
+      summaryCapped = true;
+    }
   }
   return { context: truncated, droppedCount: dropped, summaryCapped };
 }

@@ -832,6 +832,46 @@ describe('truncateContextToFitBody', () => {
     expect(out.judge.summary.length).toBeLessThanOrEqual(2003);
     expect(render(out).length).toBeLessThanOrEqual(budget);
   });
+
+  it('drops ignore entries before nitpick entries', () => {
+    const entries: FindingFingerprintEntry[] = [
+      { fingerprint: { file: 'f.ts', lineStart: 1, lineEnd: 1, slug: 'a' }, severity: 'ignore' },
+      { fingerprint: { file: 'f.ts', lineStart: 2, lineEnd: 2, slug: 'b' }, severity: 'nitpick' },
+    ];
+    const ctx = makeContext({ findings: { count: 2, severityCounts: {}, entries } });
+    const render = (c: RoundContext) => JSON.stringify(c);
+    // Budget must fit one entry with `truncated: true` but not two entries.
+    const oneEntryTruncated = makeContext({ findings: { count: 1, severityCounts: {}, entries: [entries[1]], truncated: true } });
+    const budget = render(oneEntryTruncated).length;
+    const { context: out } = truncateContextToFitBody(ctx, render, budget);
+    expect(out.findings.entries.map(e => e.severity)).toEqual(['nitpick']);
+  });
+
+  it('drops unknown entries before blocker entries', () => {
+    const entries: FindingFingerprintEntry[] = [
+      { fingerprint: { file: 'f.ts', lineStart: 1, lineEnd: 1, slug: 'a' }, severity: 'unknown' },
+      { fingerprint: { file: 'f.ts', lineStart: 2, lineEnd: 2, slug: 'b' }, severity: 'blocker' },
+    ];
+    const ctx = makeContext({ findings: { count: 2, severityCounts: {}, entries } });
+    const render = (c: RoundContext) => JSON.stringify(c);
+    // Budget must fit one entry with `truncated: true` but not two entries.
+    const oneEntryTruncated = makeContext({ findings: { count: 1, severityCounts: {}, entries: [entries[1]], truncated: true } });
+    const budget = render(oneEntryTruncated).length;
+    const { context: out } = truncateContextToFitBody(ctx, render, budget);
+    expect(out.findings.entries.map(e => e.severity)).toEqual(['blocker']);
+  });
+
+  it('does not set summaryCapped when judge.summary is already within 2000 chars', () => {
+    const shortSummary = 'short summary';
+    const ctx = makeContext({
+      judge: { summary: shortSummary },
+      findings: { count: 0, severityCounts: {}, entries: [] },
+    });
+    const render = (c: RoundContext) => JSON.stringify(c) + 'x'.repeat(1000);
+    const { summaryCapped, context: out } = truncateContextToFitBody(ctx, render, 1);
+    expect(summaryCapped).toBe(false);
+    expect(out.judge.summary).toBe(shortSummary);
+  });
 });
 
 describe('postReview with context', () => {
