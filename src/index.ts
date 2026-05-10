@@ -908,7 +908,7 @@ async function runFullReview(
         mankiVersion: MANKI_VERSION,
       },
       config: {
-        reviewLevel: config.review_level,
+        reviewLevel: team.level === 'trivial' ? 'small' : team.level,
         nitHandling,
         memoryEnabled: config.memory?.enabled ?? false,
         ...(config.review_passes != null && { reviewPasses: config.review_passes }),
