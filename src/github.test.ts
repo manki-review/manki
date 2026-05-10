@@ -790,6 +790,7 @@ describe('truncateContextToFitBody', () => {
     const render = (c: RoundContext) => JSON.stringify(c);
     const budget = render(ctx).length - 100;
     const { context: once } = truncateContextToFitBody(ctx, render, budget);
+    expect(once.findings.entries.length).toBeLessThan(entries.length);
     const { context: twice, droppedCount } = truncateContextToFitBody(once, render, budget);
     expect(droppedCount).toBe(0);
     expect(twice.findings.entries).toEqual(once.findings.entries);
@@ -908,6 +909,9 @@ describe('postReview with context', () => {
     const ctx = makeContext({
       findings: { count: entries.length, severityCounts: { blocker: 250, warning: 250, suggestion: 250, nitpick: 250 }, entries },
     });
+
+    const preTruncationBody = JSON.stringify(ctx);
+    expect(preTruncationBody.length).toBeGreaterThan(60_000);
 
     const warningSpy = jest.spyOn(core, 'warning');
     await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, ctx, 1000);
