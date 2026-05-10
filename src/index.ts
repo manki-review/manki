@@ -869,6 +869,9 @@ async function runFullReview(
     const findingEntries = result.findings.map(f => ({
       fingerprint: fingerprintFinding(f.title, f.file ?? '', f.line || 0),
       severity: f.severity,
+      ...(f.reviewers[0] && { specialist: f.reviewers[0] }),
+      ...(f.suggestedFix && { suggestedFix: f.suggestedFix }),
+      ...(f.title && { title: f.title }),
     }));
     const context: RoundContext = {
       meta: {

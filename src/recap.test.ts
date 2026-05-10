@@ -1187,6 +1187,45 @@ describe('fetchRecapState', () => {
       expect(state.priorRounds[0].meta.round).toBe(2);
     });
 
+    it('round-trips findings.entries with specialist, suggestedFix, and title fields', async () => {
+      const entry = {
+        fingerprint: { file: 'src/foo.ts', lineStart: 10, lineEnd: 12, slug: 'misleading-variable-name' },
+        severity: 'warning' as const,
+        specialist: 'Correctness',
+        suggestedFix: 'Rename `x` to `userCount`.',
+        title: 'Misleading variable name',
+      };
+      const ctx = makeRoundContext(1, {
+        findings: { count: 1, severityCounts: { blocker: 0, warning: 1, suggestion: 0, nitpick: 0 }, entries: [entry] },
+      });
+      const octokit = mockOctokit([], [
+        { id: 100, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
+      ]);
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.priorRounds).toHaveLength(1);
+      expect(state.priorRounds[0].findings.entries).toEqual([entry]);
+    });
+
+    it('round-trips findings.entries through the HTML-comment wrapper', async () => {
+      const entry = {
+        fingerprint: { file: 'src/bar.ts', lineStart: 5, lineEnd: 5, slug: 'unused-import' },
+        severity: 'nitpick' as const,
+        specialist: 'Style',
+        suggestedFix: 'Remove the unused `path` import.',
+        title: 'Unused import',
+      };
+      const ctx = makeRoundContext(2, {
+        findings: { count: 1, severityCounts: { blocker: 0, warning: 0, suggestion: 0, nitpick: 1 }, entries: [entry] },
+      });
+      const octokit = mockOctokit([], [
+        { id: 200, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } },
+      ]);
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.priorRounds[0].findings.entries[0].specialist).toBe('Style');
+      expect(state.priorRounds[0].findings.entries[0].suggestedFix).toBe('Remove the unused `path` import.');
+      expect(state.priorRounds[0].findings.entries[0].title).toBe('Unused import');
+    });
+
     it('sorts multiple rounds chronologically by meta.round', async () => {
       const c3 = makeRoundContext(3);
       const c1 = makeRoundContext(1);

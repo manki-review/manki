@@ -573,6 +573,12 @@ export interface FindingFingerprintEntry {
   threadId?: string;
   severity: FindingSeverity | 'unknown';
   authorReplyClass?: AuthorReplyClass;
+  /** Originating specialist name (from `Finding.reviewers[0]`). */
+  specialist?: string;
+  /** Reviewer's proposed fix at the time the finding was raised. Stored so later rounds can detect code that implements a prior-round proposal (own-proposal caveat rule). */
+  suggestedFix?: string;
+  /** Human-readable finding title. */
+  title?: string;
 }
 
 export interface RoundUsage {
