@@ -977,7 +977,7 @@ async function runFullReview(
     }
 
     const reviewResult = { ...result, findings: inlineFindings };
-    const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, reviewResult, diff, context, reviewTimeMs);
+    const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, reviewResult, diff, context, reviewTimeMs, config);
 
     if (nitHandling === 'issues' && nitFindings.length > 0) {
       try {

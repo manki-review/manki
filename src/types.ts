@@ -254,6 +254,15 @@ export interface ReviewConfig {
     /** When true, a prior-round finding whose thread is currently resolved on GitHub suppresses matching current findings. */
     suppress_resolved_threads?: boolean;
   };
+  stats?: {
+    /**
+     * When true, the `Manki context` block is rendered as an HTML comment
+     * (`<!-- manki-context: ... -->`) instead of a `<details>` block. Hides
+     * the structured payload from the rendered review while keeping it
+     * machine-readable.
+     */
+    hidden?: boolean;
+  };
 }
 
 export interface DiffFile {

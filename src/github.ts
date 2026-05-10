@@ -3,7 +3,7 @@ import { createRequire } from 'module';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { AgentProgressEntry, DEFENSIVE_HARDENING_TAG, DashboardData, Finding, FindingFingerprintEntry, FindingSeverity, OWN_PROPOSAL_TAG, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, ReviewVerdict } from './types';
+import { AgentProgressEntry, DEFENSIVE_HARDENING_TAG, DashboardData, Finding, FindingFingerprintEntry, FindingSeverity, OWN_PROPOSAL_TAG, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, ReviewVerdict } from './types';
 import { isLineInDiff, findClosestDiffLine } from './diff';
 import { MAX_AGENT_RETRIES } from './types';
 import { safeTruncate } from './utils';
@@ -503,7 +503,20 @@ function formatStatsOneLiner(context: RoundContext, reviewTimeMs: number): strin
   return `\u{1F4CA} ${total} findings (${breakdown}) \u00B7 ${context.diff.lines} lines \u00B7 ${time}s`;
 }
 
-function formatContextBlock(context: RoundContext): string {
+/**
+ * Neutralise any `-->` or `--!>` inside a JSON payload by escaping the
+ * closing `>` as the JSON Unicode escape. Both sequences close HTML5 comments.
+ * Reversible: JSON parsing un-escapes back to `>`.
+ */
+function sanitizeHtmlCommentJson(json: string): string {
+  return json.replace(/--(!?)>/g, '--$1\\u003E');
+}
+
+function formatContextBlock(context: RoundContext, hidden = false): string {
+  if (hidden) {
+    const json = sanitizeHtmlCommentJson(JSON.stringify(context));
+    return `<!-- manki-context: ${json} -->`;
+  }
   const json = JSON.stringify(context, null, 2)
     .replace(/`{3,}/g, match => match.replace(/`/g, '\\u0060'));
   return `<details>\n<summary>Manki context</summary>\n\n\`\`\`json\n${json}\n\`\`\`\n</details>`;
@@ -581,7 +594,9 @@ export async function postReview(
   diff?: ParsedDiff,
   context?: RoundContext,
   reviewTimeMs?: number,
+  config?: ReviewConfig,
 ): Promise<number> {
+  const statsHidden = config?.stats?.hidden ?? false;
   const event = mapVerdictToEvent(result.verdict);
 
   // Validate and filter inline comments against the diff
@@ -645,7 +660,7 @@ export async function postReview(
     }
     if (ctx) {
       b += `\n\n${formatStatsOneLiner(ctx, reviewTimeMs ?? 0)}`;
-      b += `\n\n${formatContextBlock(ctx)}`;
+      b += `\n\n${formatContextBlock(ctx, statsHidden)}`;
     }
     if (generalFindings.length > 0) {
       b += `\n\n**General findings:**\n${generalFindings.map(c => `- ${c}`).join('\n')}`;

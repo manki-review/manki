@@ -1727,6 +1727,7 @@ describe('runFullReview orchestration', () => {
       expect.anything(),
       expect.anything(),
       expect.anything(),
+      expect.anything(),
     );
     // Outputs set
     expect(jest.mocked(core.setOutput)).toHaveBeenCalledWith('verdict', 'REQUEST_CHANGES');
@@ -2066,7 +2067,7 @@ describe('runFullReview orchestration', () => {
       expect.objectContaining({
         findings: [expect.objectContaining({ severity: 'nitpick' })],
       }),
-      expect.anything(), expect.anything(), expect.anything(),
+      expect.anything(), expect.anything(), expect.anything(), expect.anything(),
     );
   });
 

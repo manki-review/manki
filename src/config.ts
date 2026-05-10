@@ -35,6 +35,9 @@ export const DEFAULT_CONFIG: ReviewConfig = {
     test_path_patterns: ['**/*.test.*', '**/*.spec.*', '**/tests/**', '**/__tests__/**'],
     suppress_resolved_threads: true,
   },
+  stats: {
+    hidden: false,
+  },
 };
 
 const KNOWN_KEYS = new Set([
@@ -52,6 +55,7 @@ const KNOWN_KEYS = new Set([
   'nit_handling',
   'review_passes',
   'convergence',
+  'stats',
 ]);
 
 const REPO_FORMAT = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
@@ -252,6 +256,17 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
     }
   }
 
+  if ('stats' in config) {
+    const stats = config.stats as Record<string, unknown>;
+    if (!stats || typeof stats !== 'object' || Array.isArray(stats)) {
+      errors.push('`stats` must be an object');
+    } else {
+      if ('hidden' in stats && typeof stats.hidden !== 'boolean') {
+        errors.push('`stats.hidden` must be a boolean');
+      }
+    }
+  }
+
   if ('memory' in config) {
     const memory = config.memory as Record<string, unknown>;
     if (!memory || typeof memory !== 'object' || Array.isArray(memory)) {
@@ -298,6 +313,8 @@ function deepMerge(defaults: ReviewConfig, overrides: Record<string, unknown>): 
       result.review_thresholds = { ...defaults.review_thresholds, ...(value as Record<string, unknown>) } as ReviewConfig['review_thresholds'];
     } else if (key === 'convergence' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
       result.convergence = { ...defaults.convergence, ...(value as Record<string, unknown>) } as ReviewConfig['convergence'];
+    } else if (key === 'stats' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      result.stats = { ...defaults.stats, ...(value as Record<string, unknown>) } as ReviewConfig['stats'];
     } else {
       (result as Record<string, unknown>)[key] = value;
     }

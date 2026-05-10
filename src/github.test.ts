@@ -2,6 +2,7 @@ import * as core from '@actions/core';
 
 import { buildDashboard, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, buildNitIssueBody, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, truncateContextToFitBody, dynamicFence, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, createNitIssue, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded } from './github';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
+import { DEFAULT_CONFIG } from './config';
 
 describe('formatFindingComment', () => {
   const baseFinding: Finding = {
@@ -771,6 +772,67 @@ describe('roundContextToFlatAliases', () => {
     expect(aliases.findingsRaw).toBe(4);
     expect(aliases.findingsDropped).toBe(0);
   });
+
+  it('hidden mode emits a single HTML comment with no details/code-fence', () => {
+    const ctx = makeContext();
+    const result = formatContextBlock(ctx, true);
+    expect(result.startsWith('<!-- manki-context: ')).toBe(true);
+    expect(result.endsWith(' -->')).toBe(true);
+    expect(result).not.toContain('<details>');
+    expect(result).not.toContain('<summary>');
+    expect(result).not.toContain('```');
+    expect(result.split('\n')).toHaveLength(1);
+  });
+
+  it('hidden mode neutralises `-->` inside the JSON payload', () => {
+    const ctx = makeContext({ judge: { summary: 'closes html comment with --> here' } });
+    const result = formatContextBlock(ctx, true);
+    const inner = result.slice('<!-- manki-context: '.length, -' -->'.length);
+    expect(inner).not.toContain('-->');
+    expect(inner).toContain('--\\u003E');
+  });
+
+  it('hidden mode neutralises `--!>` inside the JSON payload', () => {
+    const ctx = makeContext({ judge: { summary: 'bang close --!> here' } });
+    const result = formatContextBlock(ctx, true);
+    const inner = result.slice('<!-- manki-context: '.length, -' -->'.length);
+    expect(inner).not.toContain('--!>');
+    expect(inner).toContain('--!\\u003E');
+  });
+
+  it('hidden mode JSON round-trips back to the original context after un-escaping', () => {
+    const ctx = makeContext({ judge: { summary: 'arrow --> token preserved' } });
+    const result = formatContextBlock(ctx, true);
+    const inner = result.slice('<!-- manki-context: '.length, -' -->'.length);
+    const parsed = JSON.parse(inner) as RoundContext;
+    expect(parsed).toEqual(ctx);
+    expect(parsed.judge.summary).toBe('arrow --> token preserved');
+  });
+
+  it('hidden mode --!> round-trips back to original value', () => {
+    const ctx = makeContext({ judge: { summary: 'bang close --!> here' } });
+    const result = formatContextBlock(ctx, true);
+    const inner = result.slice('<!-- manki-context: '.length, -' -->'.length);
+    const parsed = JSON.parse(inner) as RoundContext;
+    expect(parsed.judge.summary).toBe('bang close --!> here');
+  });
+
+  describe('sanitizeHtmlCommentJson (via formatContextBlock hidden path)', () => {
+    it('replaces all --> occurrences', () => {
+      const ctx = makeContext({ judge: { summary: '--> first --> second' } });
+      const result = formatContextBlock(ctx, true);
+      const inner = result.slice('<!-- manki-context: '.length, -' -->'.length);
+      expect(inner).not.toContain('-->');
+      expect((inner.match(/--\\u003E/g) ?? []).length).toBe(2);
+    });
+
+    it('is a no-op when no --> is present', () => {
+      const ctx = makeContext({ judge: { summary: 'clean summary' } });
+      const result = formatContextBlock(ctx, true);
+      const inner = result.slice('<!-- manki-context: '.length, -' -->'.length);
+      expect(JSON.parse(inner).judge.summary).toBe('clean summary');
+    });
+  });
 });
 
 describe('truncateContextToFitBody', () => {
@@ -993,6 +1055,39 @@ describe('postReview with context', () => {
     if (droppedBlocker > 0) expect(bySev('warning')).toBe(0);
 
     expect(warningSpy).toHaveBeenCalledWith(expect.stringMatching(/Manki context truncated: dropped \d+ finding entries/));
+  });
+
+  it('hidden mode renders HTML-comment block instead of `<details>` while preserving the stats one-liner', async () => {
+    const result: ReviewResult = {
+      verdict: 'APPROVE',
+      summary: 'All good.',
+      findings: [],
+      highlights: [],
+      reviewComplete: true,
+      agentNames: [],
+    };
+    const ctx = makeContext({
+      diff: { lines: 200, additions: 150, deletions: 50, filesReviewed: 8, fileTypes: { '.ts': 8 } },
+      reviewers: { agents: ['Security', 'Correctness'] },
+      findings: { count: 3, severityCounts: { blocker: 0, warning: 0, suggestion: 2, nitpick: 1 }, entries: [] },
+      verdict: 'APPROVE',
+    });
+    const config = { ...DEFAULT_CONFIG, stats: { hidden: true } };
+
+    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, ctx, 60000, config);
+    const body = mockCreateReview.mock.calls[0][0].body as string;
+    expect(body).toContain('\u{1F4CA} 3 findings');
+    expect(body).toContain('200 lines');
+    expect(body).toContain('60s');
+    expect(body).toContain('<!-- manki-context: ');
+    expect(body).not.toContain('<details>');
+    expect(body).not.toContain('<summary>Manki context</summary>');
+    expect(body).not.toContain('```json');
+    const match = body.match(/<!-- manki-context: ([\s\S]*?) -->/);
+    expect(match).not.toBeNull();
+    const parsed = JSON.parse(match![1]) as RoundContext;
+    expect(parsed.findings.count).toBe(3);
+    expect(parsed.verdict).toBe('APPROVE');
   });
 
   it('does not truncate when rendered body is under the 60k budget', async () => {
