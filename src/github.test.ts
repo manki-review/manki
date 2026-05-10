@@ -735,6 +735,9 @@ describe('formatContextBlock', () => {
     expect(result).toContain('\\u0060\\u0060\\u0060');
   });
 
+});
+
+describe('roundContextToFlatAliases', () => {
   it('round-trips the flat-alias projection for a representative round', () => {
     const ctx = makeContext({
       dedup: { staticDropped: 1, llmDropped: 2 },
@@ -980,6 +983,25 @@ describe('postReview with context', () => {
     await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, makeContext());
     const body = mockCreateReview.mock.calls[0][0].body as string;
     expect(body).toContain('0s');
+  });
+
+  it('fires core.warning and caps summary when only judge.summary exceeds budget', async () => {
+    const result: ReviewResult = {
+      verdict: 'APPROVE', summary: '', findings: [],
+      highlights: [], reviewComplete: true, agentNames: [],
+    };
+    const ctx = makeContext({
+      judge: { summary: 'a'.repeat(65000) },
+      findings: { count: 0, severityCounts: {}, entries: [] },
+    });
+    const warningSpy = jest.spyOn(core, 'warning');
+    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, ctx, 0);
+    expect(warningSpy).toHaveBeenCalledWith(expect.stringMatching(/judge summary capped/));
+    const body = mockCreateReview.mock.calls[0][0].body as string;
+    const match = body.match(/```json\n([\s\S]*?)\n```/);
+    const parsed = JSON.parse(match![1]) as RoundContext;
+    expect(parsed.findings.truncated).toBeUndefined();
+    expect(parsed.judge.summary.length).toBeLessThanOrEqual(2003);
   });
 });
 
