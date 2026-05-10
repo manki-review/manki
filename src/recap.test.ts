@@ -1239,6 +1239,85 @@ describe('fetchRecapState', () => {
         expect.stringContaining('Duplicate Manki context blocks for round 1'),
       );
     });
+
+    it('skips a context block whose parsed value is null (not an object)', async () => {
+      const body = '<details>\n<summary>Manki context</summary>\n\n```json\nnull\n```\n</details>';
+      const octokit = mockOctokit([], [
+        { id: 700, body, user: { login: BOT_LOGIN } },
+      ]);
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.priorRounds).toEqual([]);
+      expect(core.warning).toHaveBeenCalledWith(
+        expect.stringContaining('not an object'),
+      );
+    });
+
+    it('skips a context block whose meta is not an object', async () => {
+      const badJson = JSON.stringify({ meta: 'not-an-object', verdict: 'COMMENT' });
+      const body = `<!-- manki-context: ${badJson} -->`;
+      const octokit = mockOctokit([], [
+        { id: 800, body, user: { login: BOT_LOGIN } },
+      ]);
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.priorRounds).toEqual([]);
+      expect(core.warning).toHaveBeenCalledWith(
+        expect.stringContaining('missing meta'),
+      );
+    });
+
+    it('skips a context block missing meta.mankiVersion', async () => {
+      const badJson = JSON.stringify({ meta: { round: 1 }, verdict: 'COMMENT' });
+      const body = `<!-- manki-context: ${badJson} -->`;
+      const octokit = mockOctokit([], [
+        { id: 900, body, user: { login: BOT_LOGIN } },
+      ]);
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.priorRounds).toEqual([]);
+      expect(core.warning).toHaveBeenCalledWith(
+        expect.stringContaining('meta.mankiVersion'),
+      );
+    });
+
+    it('returns empty priorRounds and warns when listReviews throws', async () => {
+      const octokit = {
+        graphql: jest.fn().mockResolvedValue({
+          repository: {
+            pullRequest: {
+              reviewThreads: { nodes: [] },
+            },
+          },
+        }),
+        rest: {
+          pulls: {
+            listReviews: jest.fn().mockRejectedValue(new Error('API unavailable')),
+          },
+        },
+      } as unknown as ReturnType<typeof import('@actions/github').getOctokit>;
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.priorRounds).toEqual([]);
+      expect(core.warning).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to fetch prior round contexts'),
+      );
+    });
+
+    it('returns empty priorRounds when a non-SyntaxError is thrown from JSON.parse (caught by outer handler)', async () => {
+      const sentinel = '"__sentinel_throw__"';
+      const body = `<details>\n<summary>Manki context</summary>\n\n\`\`\`json\n${sentinel}\n\`\`\`\n</details>`;
+      const octokit = mockOctokit([], [
+        { id: 999, body, user: { login: BOT_LOGIN } },
+      ]);
+      const original = JSON.parse.bind(JSON);
+      const spy = jest.spyOn(JSON, 'parse').mockImplementation((text: string) => {
+        if (text.trim() === sentinel) throw new TypeError('unexpected mock error');
+        return original(text);
+      });
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      spy.mockRestore();
+      expect(state.priorRounds).toEqual([]);
+      expect(core.warning).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to fetch prior round contexts'),
+      );
+    });
   });
 });
 
