@@ -504,11 +504,12 @@ function formatStatsOneLiner(context: RoundContext, reviewTimeMs: number): strin
 }
 
 /**
- * Neutralise any `-->` inside a JSON payload by escaping the closing `>` as
- * the JSON `>` Unicode escape. Reversible: parsing un-escapes back to `>`.
+ * Neutralise any `-->` or `--!>` inside a JSON payload by escaping the
+ * closing `>` as the JSON Unicode escape. Both sequences close HTML5 comments.
+ * Reversible: JSON parsing un-escapes back to `>`.
  */
 function sanitizeHtmlCommentJson(json: string): string {
-  return json.replace(/-->/g, '--\\u003E');
+  return json.replace(/--(!?)>/g, '--$1\\u003E');
 }
 
 function formatContextBlock(context: RoundContext, hidden = false): string {
