@@ -808,6 +808,23 @@ describe('roundContextToFlatAliases', () => {
     expect(parsed).toEqual(ctx);
     expect(parsed.judge.summary).toBe('arrow --> token preserved');
   });
+
+  describe('sanitizeHtmlCommentJson (via formatContextBlock hidden path)', () => {
+    it('replaces all --> occurrences', () => {
+      const ctx = makeContext({ judge: { summary: '--> first --> second' } });
+      const result = formatContextBlock(ctx, true);
+      const inner = result.slice('<!-- manki-context: '.length, -' -->'.length);
+      expect(inner).not.toContain('-->');
+      expect((inner.match(/--\\u003E/g) ?? []).length).toBe(2);
+    });
+
+    it('is a no-op when no --> is present', () => {
+      const ctx = makeContext({ judge: { summary: 'clean summary' } });
+      const result = formatContextBlock(ctx, true);
+      const inner = result.slice('<!-- manki-context: '.length, -' -->'.length);
+      expect(JSON.parse(inner).judge.summary).toBe('clean summary');
+    });
+  });
 });
 
 describe('truncateContextToFitBody', () => {
