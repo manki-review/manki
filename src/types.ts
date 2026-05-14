@@ -91,46 +91,6 @@ export interface InPrSuppression {
   authorLogin?: string;
 }
 
-/** One finding as captured in a prior review round. */
-export interface HandoverFinding {
-  fingerprint: FindingFingerprint;
-  severity: FindingSeverity | 'unknown';
-  title: string;
-  authorReply: AuthorReplyClass;
-  threadId?: string;
-  /** Originating specialist name (from `Finding.reviewers[0]`). Absent in handover files written before this field was added. */
-  specialist?: string;
-  /**
-   * Text of the reviewer's proposed fix at the time the finding was raised.
-   * Stored so later rounds can detect code that implements a prior-round
-   * proposal (own-proposal caveat rule).
-   */
-  suggestedFix?: string;
-}
-
-/** A single completed review round recorded in the per-PR handover. */
-export interface HandoverRound {
-  round: number;
-  commitSha: string;
-  timestamp: string;
-  findings: HandoverFinding[];
-  judgeSummary?: string;
-  /**
-   * Names of the reviewer agents that participated in this round. Used by
-   * later rounds to pin the team across rounds (monotonic growth): an agent
-   * present in any prior round is always carried forward. Optional so older
-   * serialized handovers without this field still parse.
-   */
-  agents?: string[];
-}
-
-/** Per-PR cross-round state stored at `{targetRepo}/prs/{prNumber}/handover.json`. */
-export interface PrHandover {
-  prNumber: number;
-  repo: string;
-  rounds: HandoverRound[];
-}
-
 export type ReviewVerdict = 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES';
 
 export type VerdictReason = 'required_present' | 'novel_suggestion' | 'prior_unaddressed' | 'only_nit_or_suggestion';
@@ -432,21 +392,16 @@ export interface ReviewMetadata {
  * Single source of truth for per-round context, consumed by two surfaces:
  *
  * 1. The PR-embedded `Manki context` block — the structured payload manki
- *    attaches to its review comment. Replaces the ad-hoc `Review stats` JSON
- *    grown organically over time and consolidates everything `HandoverRound`
- *    used to carry in the per-PR handover file.
+ *    attaches to its review comment.
  * 2. Local replay bundles — the `context` sub-field of the bundles produced for
  *    offline replay, so a replay carries the full prior-round state without
  *    having to re-derive it from the review comment.
  *
- * Both consumers see the same shape, version-stamped via `meta.mankiVersion`
- * (per the schema-versioning decision in #461). Flat-compat aliases used by
- * legacy downstream workflows (`verdict`, `findingsRaw`, `findingsKept`,
- * `severity`, `reviewTimeMs`, `diffLines`, etc.) are derived at emit time via
- * `roundContextToFlatAliases` rather than duplicated in the type.
- *
- * Sub-issues #686, #687, #688, #689, #690 wire the emitter, HTML render,
- * recap aggregator, consumer migration, and handover deletion.
+ * Both consumers see the same shape, version-stamped via `meta.mankiVersion`.
+ * Flat-compat aliases used by legacy downstream workflows (`verdict`,
+ * `findingsRaw`, `findingsKept`, `severity`, `reviewTimeMs`, `diffLines`,
+ * etc.) are derived at emit time via `roundContextToFlatAliases` rather than
+ * duplicated in the type.
  */
 export interface RoundContext {
   meta: RoundMeta;
@@ -517,7 +472,7 @@ export interface RoundPlanner {
 }
 
 export interface RoundReviewers {
-  /** Reviewer agent names that participated in this round (subsumes `HandoverRound.agents`). */
+  /** Reviewer agent names that participated in this round. */
   agents: string[];
   agentMetrics?: RoundAgentMetric[];
 }
@@ -536,7 +491,7 @@ export interface RoundAgentMetric {
 }
 
 export interface RoundJudge {
-  /** Narrative summary used today by `buildPlannerHints` and surfaced in handover. */
+  /** Narrative summary used by `buildPlannerHints`. */
   summary: string;
   confidenceDistribution?: { high: number; medium: number; low: number };
   severityChanges?: number;
@@ -563,7 +518,7 @@ export interface RoundMemory {
 
 /**
  * Per-round fingerprint table. Carries identity and outcome of each finding,
- * never the body. Replaces `HandoverRound.findings` in the new shape.
+ * never the body.
  */
 export interface RoundFindings {
   count: number;

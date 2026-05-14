@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Bootstrap (Codex): ``codex login`` then ``cat ~/.codex/auth.json | base64 | gh secret set OPENAI_OAUTH_TOKEN``
   - Bootstrap (Gemini): sign in with ``gemini`` then ``cat ~/.gemini/oauth_creds.json | base64 | gh secret set GEMINI_OAUTH_TOKEN``
   - The legacy single-token shape is rejected fast with an error pointing to the bootstrap command. No fallback or compat shim.
+- Removed the per-PR `prs/{n}/handover.json` write path from the memory repo. Prior-round state is now sourced entirely from the `Manki context` block embedded in each review summary, so the memory repo only retains cross-PR data (`learnings.yml`, `patterns.yml`, `suppressions.yml`). Existing `handover.json` files are no longer read or written and become orphaned but harmless. In-flight PRs upgrading mid-review may see one round of regressed prior-round context until the next manki comment lands the embedded block (#690).
 
 ## [4.7.0] - 2026-04-28
 

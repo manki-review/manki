@@ -3,8 +3,7 @@ import * as github from '@actions/github';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { minimatch } from 'minimatch';
 
-import { AuthorReplyClass, Finding, FindingSeverity, HandoverFinding, HandoverRound, PrHandover, migrateLegacySeverity } from './types';
-import { titleToSlug } from './github';
+import { Finding, FindingSeverity } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -185,24 +184,6 @@ export function sanitizeMemoryField(value: string): string {
     : value;
   // Escape angle brackets to prevent XML-style boundary injection
   sanitized = sanitized.replace(/</g, '\uFF1C').replace(/>/g, '\uFF1E');
-  return sanitized;
-}
-
-const MAX_SUGGESTED_FIX_LENGTH = 2000;
-
-/**
- * Sanitize a `suggestedFix` value before persisting it to handover storage.
- * Caps length and collapses excessive newline runs. Content is preserved
- * faithfully so provenance matching against the raw diff continues to work.
- * Prompt-injection concerns are handled at the embedding boundary instead.
- */
-export function sanitizeSuggestedFix(value: string): string {
-  let sanitized = value.trim();
-  // Collapse runs of more than two consecutive newlines.
-  sanitized = sanitized.replace(/\n{3,}/g, '\n\n');
-  if (sanitized.length > MAX_SUGGESTED_FIX_LENGTH) {
-    sanitized = sanitized.slice(0, MAX_SUGGESTED_FIX_LENGTH) + '...';
-  }
   return sanitized;
 }
 
@@ -540,184 +521,6 @@ export async function batchUpdatePatternDecisions(
 
   const content = stringifyYaml(existing);
   await writeFile(octokit, owner, repo, path, content, `Update ${decisions.length} pattern decisions`);
-}
-
-/** Path for a per-PR handover file in the memory repo. */
-function handoverPath(targetRepo: string, prNumber: number): string {
-  return `${targetRepo}/prs/${prNumber}/handover.json`;
-}
-
-async function fetchJsonFile<T>(
-  octokit: Octokit,
-  owner: string,
-  repo: string,
-  path: string,
-): Promise<T | null> {
-  try {
-    const { data } = await octokit.rest.repos.getContent({ owner, repo, path });
-    if ('content' in data && data.encoding === 'base64') {
-      const content = Buffer.from(data.content, 'base64').toString('utf-8');
-      try {
-        return JSON.parse(content) as T;
-      } catch (parseError) {
-        core.warning(`Failed to parse JSON at ${path}: ${parseError}`);
-        return null;
-      }
-    }
-    return null;
-  } catch (error) {
-    const status = (error as { status?: number }).status;
-    if (status === 404) return null;
-    core.warning(`Failed to fetch ${path}: ${error}`);
-    return null;
-  }
-}
-
-/**
- * Load the per-PR handover file, or null if it does not yet exist.
- *
- * Legacy severity values written by older versions (`'required'`, `'nit'`)
- * are migrated to the current vocabulary on read so downstream code only ever
- * sees `FindingSeverity` values it recognizes.
- */
-export async function loadHandover(
-  octokit: Octokit,
-  memoryRepo: string,
-  targetRepo: string,
-  prNumber: number,
-): Promise<PrHandover | null> {
-  const [owner, repo] = memoryRepo.split('/');
-  const loaded = await fetchJsonFile<PrHandover>(octokit, owner, repo, handoverPath(targetRepo, prNumber));
-  return loaded ? migrateHandover(loaded) : null;
-}
-
-/** Apply `migrateLegacySeverity` to every finding's severity in a loaded handover. */
-function migrateHandover(handover: PrHandover): PrHandover {
-  return {
-    ...handover,
-    rounds: handover.rounds.map(round => ({
-      ...round,
-      findings: round.findings.map(f => ({
-        ...f,
-        severity: migrateLegacySeverity(f.severity) as HandoverFinding['severity'],
-      })),
-    })),
-  };
-}
-
-/**
- * Write the per-PR handover file, replacing any existing content.
- */
-export async function writeHandover(
-  octokit: Octokit,
-  memoryRepo: string,
-  targetRepo: string,
-  prNumber: number,
-  handover: PrHandover,
-): Promise<void> {
-  const [owner, repo] = memoryRepo.split('/');
-  const path = handoverPath(targetRepo, prNumber);
-  const content = JSON.stringify(handover, null, 2);
-  await writeFile(octokit, owner, repo, path, content, `Update handover for PR #${prNumber}`);
-}
-
-/** Minimal shape of a previous finding required by `appendHandoverRound`. */
-export interface HandoverPreviousFinding {
-  threadId?: string;
-  authorReplyText?: string;
-  file: string;
-  /** End line (annotation `line`). Used as the key for thread lookups. */
-  line: number;
-  /** Start line of the annotation range. Stored for reference but not used for key matching. */
-  lineStart?: number;
-  /** Finding title used to disambiguate same-line threads in `threadByKey`. */
-  title?: string;
-}
-
-/**
- * Append a new round to the per-PR handover.
- * Prior rounds' findings are backfilled with fresh `authorReply` classifications
- * drawn from the latest recap state, matched by thread ID.
- *
- * Pass the already-loaded `handover` to avoid a redundant fetch. If omitted,
- * the function loads it from the memory repo.
- */
-export async function appendHandoverRound(
-  octokit: Octokit,
-  memoryRepo: string,
-  targetRepo: string,
-  prNumber: number,
-  commitSha: string,
-  findings: Finding[],
-  previousFindings: HandoverPreviousFinding[],
-  judgeSummary: string,
-  agents: string[],
-  fingerprintFn: (title: string, file: string, line: number) => HandoverFinding['fingerprint'],
-  classifyFn: (text: string | undefined) => AuthorReplyClass,
-  existingHandover?: PrHandover | null,
-): Promise<void> {
-  const loaded = existingHandover !== undefined
-    ? existingHandover
-    : await loadHandover(octokit, memoryRepo, targetRepo, prNumber);
-  const handover: PrHandover = loaded ?? { prNumber, repo: targetRepo, rounds: [] };
-  if (!Array.isArray(handover.rounds)) {
-    core.warning(`Handover for PR #${prNumber} is missing a rounds array — starting fresh`);
-    handover.rounds = [];
-  }
-
-  // Build a lookup from thread ID and from file:line:slug to the previous-finding record.
-  // The slug disambiguates threads posted on the same file+line.
-  const replyByThread = new Map<string, HandoverPreviousFinding>();
-  const threadByKey = new Map<string, string>();
-  for (const pf of previousFindings) {
-    if (pf.threadId) {
-      replyByThread.set(pf.threadId, pf);
-      const slug = pf.title ? titleToSlug(pf.title) : '';
-      threadByKey.set(`${pf.file}:${pf.line}:${slug}`, pf.threadId);
-    }
-  }
-
-  // Backfill prior rounds: first populate any missing threadIds, then update authorReply.
-  for (const round of handover.rounds) {
-    for (const f of round.findings) {
-      if (!f.threadId) {
-        const slugKey = `${f.fingerprint.file}:${f.fingerprint.lineEnd}:${f.fingerprint.slug}`;
-        const fallbackKey = `${f.fingerprint.file}:${f.fingerprint.lineEnd}:`;
-        const tid = threadByKey.get(slugKey) ?? threadByKey.get(fallbackKey);
-        if (tid) f.threadId = tid;
-      }
-      if (f.threadId) {
-        const pf = replyByThread.get(f.threadId);
-        if (pf) f.authorReply = classifyFn(pf.authorReplyText);
-      }
-    }
-  }
-
-  const roundFindings: HandoverFinding[] = findings.map(f => {
-    const entry: HandoverFinding = {
-      fingerprint: fingerprintFn(f.title, f.file, f.line),
-      severity: f.severity,
-      title: f.title,
-      authorReply: 'none',
-    };
-    const specialist = f.reviewers?.[0];
-    if (specialist) entry.specialist = specialist;
-    if (f.suggestedFix) entry.suggestedFix = sanitizeSuggestedFix(f.suggestedFix);
-    return entry;
-  });
-
-  const newRound: HandoverRound = {
-    round: handover.rounds.length + 1,
-    commitSha,
-    timestamp: new Date().toISOString(),
-    findings: roundFindings,
-    judgeSummary,
-  };
-  if (agents.length > 0) newRound.agents = [...agents];
-  handover.rounds.push(newRound);
-
-  await writeHandover(octokit, memoryRepo, targetRepo, prNumber, handover);
-  core.info(`Handover updated for PR #${prNumber}: ${handover.rounds.length} round(s)`);
 }
 
 async function getFileSha(
