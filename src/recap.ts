@@ -340,7 +340,44 @@ async function fetchRecapState(
 
   core.info(`Recap: ${resolved.length} resolved, ${open.length} open, ${previousFindings.length} total previous findings`);
 
-  return { previousFindings, recapContext, priorRounds };
+  const enrichedPriorRounds = refreshAuthorReplyClass(priorRounds, previousFindings);
+
+  return { previousFindings, recapContext, priorRounds: enrichedPriorRounds };
+}
+
+/**
+ * Re-derive `authorReplyClass` on each prior-round fingerprint from the live
+ * `previousFindings` thread state. The value cached at emit time is always
+ * `'none'` (the round just completed, no reply existed yet) and would otherwise
+ * stay frozen across later rounds, breaking cross-round suppression, planner
+ * hints, and the prior-unaddressed verdict gate. Matching is by `threadId`
+ * when present, then falls back to fingerprint slug + file so older context
+ * blocks written before threadId stabilisation still re-classify correctly.
+ */
+function refreshAuthorReplyClass(rounds: RoundContext[], previousFindings: PreviousFinding[]): RoundContext[] {
+  if (rounds.length === 0) return rounds;
+  const byThread = new Map<string, PreviousFinding>();
+  const bySlugFile = new Map<string, PreviousFinding>();
+  for (const pf of previousFindings) {
+    if (pf.threadId) {
+      byThread.set(pf.threadId, pf);
+    } else {
+      bySlugFile.set(`${pf.file}:${titleToSlug(pf.title)}`, pf);
+    }
+  }
+  return rounds.map(r => ({
+    ...r,
+    findings: {
+      ...r.findings,
+      entries: r.findings.entries.map(entry => {
+        const pf = entry.threadId
+          ? byThread.get(entry.threadId)
+          : bySlugFile.get(`${entry.fingerprint.file}:${entry.fingerprint.slug}`);
+        if (!pf) return entry;
+        return { ...entry, authorReplyClass: classifyAuthorReply(pf.authorReplyText) };
+      }),
+    },
+  }));
 }
 
 async function fetchPriorRoundContexts(

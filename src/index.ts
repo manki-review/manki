@@ -553,7 +553,7 @@ async function runFullReview(
       }
     }
 
-    const priorRoundCount = handover?.rounds.length ?? 0;
+    const priorRoundCount = recap.priorRounds.length;
     const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
     if (
       maxAutoRounds > 0 &&
@@ -627,7 +627,7 @@ async function runFullReview(
     // Fetch inter-round diff (prior round commit -> current head) so the judge
     // can ground per-thread resolution in actual changes since last review.
     let interRoundDiff: string | undefined;
-    const lastPriorSha = handover?.rounds.at(-1)?.commitSha;
+    const lastPriorSha = recap.priorRounds.at(-1)?.meta.commitSha;
     const shouldFetchDiff = !!(lastPriorSha && lastPriorSha !== commitSha);
     const prBody = prContext?.body;
 
@@ -669,7 +669,7 @@ async function runFullReview(
     // Names of every agent that participated in any prior round of this PR.
     // Used to pin the team across rounds so the roster grows monotonically:
     // an agent that flagged something earlier always reviews later rounds.
-    const priorRoundAgents = collectPriorRoundAgents(handover?.rounds);
+    const priorRoundAgents = collectPriorRoundAgents(recap.priorRounds);
 
     // On the non-planner path the dashboard was seeded with the heuristic team
     // before prior-round agents were known. Pre-populate any pinned agents now
@@ -763,7 +763,7 @@ async function runFullReview(
       isFollowUp,
       openThreads,
       recap.previousFindings,
-      handover?.rounds,
+      recap.priorRounds,
       prAuthorLogin,
       interRoundDiff,
     );
@@ -782,7 +782,7 @@ async function runFullReview(
       return;
     }
 
-    const priorFindingsFlat = handover?.rounds.flatMap(r => r.findings) ?? [];
+    const priorFindingsFlat = recap.priorRounds.flatMap(r => r.findings.entries ?? []);
     let escalationsApplied = 0;
     if (memory && memory.patterns.length > 0) {
       const beforeSeverities = result.findings.map(f => f.severity);
@@ -865,7 +865,7 @@ async function runFullReview(
       fileTypes[ext] = (fileTypes[ext] ?? 0) + 1;
     }
 
-    const round = (handover?.rounds.length ?? 0) + 1;
+    const round = priorRoundCount + 1;
     const findingEntries = result.findings.map(f => ({
       fingerprint: fingerprintFinding(f.title, f.file ?? '', f.line || 0),
       severity: f.severity,
@@ -955,7 +955,7 @@ async function runFullReview(
     // refactor that bypasses `runJudgeAgent` would lose that guarantee. Drop
     // any `addressed` evaluation here as a second layer. `undefined` is the
     // unknown sentinel (compare-API failure) and must not trigger the guard.
-    const hasPriorRounds = (handover?.rounds.length ?? 0) > 0;
+    const hasPriorRounds = recap.priorRounds.length > 0;
     const interRoundDiffKnownEmpty = hasPriorRounds && isEmptyInterRoundDiff(interRoundDiff);
     if (result.threadEvaluations && result.threadEvaluations.length > 0) {
       const knownThreadIds = new Set(openThreads.map(t => t.threadId));
