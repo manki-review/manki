@@ -17,20 +17,28 @@ export function sanitizeLogOutput(text: string): string {
  * whole is more useful than a fixed head slice, which routinely cuts the JSON
  * mid-string. When no `ERROR:` line is present, falls back to the first
  * `maxFallbackChars` characters. Always applies `sanitizeLogOutput`.
+ * `maxErrorLineLen` caps the returned ERROR line to avoid embedding
+ * pathologically large strings in annotations and error objects.
  */
-export function extractCliErrorSnippet(stderrText: string, maxFallbackChars = 500): string {
+export function extractCliErrorSnippet(
+  stderrText: string,
+  maxFallbackChars = 500,
+  maxErrorLineLen = 16_384,
+): string {
   const sanitized = sanitizeLogOutput(stderrText);
   if (!sanitized) return '';
-  const errorLine = findLastErrorLine(sanitized);
+  const errorLine = findLastErrorLine(sanitized, maxErrorLineLen);
   if (errorLine) return errorLine;
   return sanitized.slice(0, maxFallbackChars);
 }
 
-function findLastErrorLine(text: string): string | null {
+function findLastErrorLine(text: string, maxLen = 16_384): string | null {
   const lines = text.split(/\r?\n/);
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i].trim();
-    if (/^ERROR:\s/.test(line)) return line;
+    if (/^ERROR:\s/.test(line)) {
+      return line.length <= maxLen ? line : line.slice(0, maxLen) + '…';
+    }
   }
   return null;
 }

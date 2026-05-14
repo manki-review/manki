@@ -137,6 +137,20 @@ describe('extractCliErrorSnippet', () => {
     const stderr = 'noise\n   ERROR: trimmed payload   \nmore noise\n';
     expect(extractCliErrorSnippet(stderr)).toBe('ERROR: trimmed payload');
   });
+
+  it('truncates an ERROR line exceeding the default 16 384-char cap with an ellipsis', () => {
+    const longPayload = 'x'.repeat(20_000);
+    const stderr = `ERROR: ${longPayload}`;
+    const snippet = extractCliErrorSnippet(stderr);
+    expect(snippet.endsWith('…')).toBe(true);
+    expect(snippet.length).toBe(16_384 + 1); // cap chars + ellipsis
+  });
+
+  it('respects a custom maxErrorLineLen cap', () => {
+    const stderr = `ERROR: ${'y'.repeat(200)}`;
+    const snippet = extractCliErrorSnippet(stderr, 500, 100);
+    expect(snippet).toBe('ERROR: ' + 'y'.repeat(93) + '…');
+  });
 });
 
 describe('seedAuthFile', () => {
