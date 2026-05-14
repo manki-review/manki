@@ -15,6 +15,7 @@ const ACTIONS_BOT_LOGIN = 'github-actions[bot]';
 const BOT_MARKER = '<!-- manki-bot -->';
 const REVIEW_COMPLETE_MARKER = '<!-- manki-review-complete -->';
 const FORCE_REVIEW_MARKER = '<!-- manki-force-review -->';
+const FORCE_CAP_MARKER = '<!-- manki-force-cap -->';
 const RUN_ID_MARKER_PREFIX = '<!-- manki-run-id:';
 const CANCELLED_MARKER = '<!-- manki-review-cancelled -->';
 const VERSION_MARKER_PREFIX = '<!-- manki-version:';
@@ -1280,6 +1281,7 @@ async function findProgressComment(
     c.body?.includes(BOT_MARKER) &&
     !c.body?.includes(REVIEW_COMPLETE_MARKER) &&
     !c.body?.includes(FORCE_REVIEW_MARKER) &&
+    !c.body?.includes(FORCE_CAP_MARKER) &&
     !c.body?.includes(CANCELLED_MARKER)
   );
   if (!match || !match.body) return null;
@@ -1470,4 +1472,4 @@ async function cancelActiveReviewRun(
   }
 }
 
-export { dynamicFence, formatContextBlock, formatFindingComment, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, APP_WARNING_MARKER, postAppWarningIfNeeded };
+export { dynamicFence, formatContextBlock, formatFindingComment, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, APP_WARNING_MARKER, postAppWarningIfNeeded };
