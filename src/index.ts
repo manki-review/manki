@@ -782,7 +782,7 @@ async function runFullReview(
       return;
     }
 
-    const priorFindingsFlat = recap.priorRounds.flatMap(r => r.findings.entries);
+    const priorFindingsFlat = recap.priorRounds.flatMap(r => r.findings.entries ?? []);
     let escalationsApplied = 0;
     if (memory && memory.patterns.length > 0) {
       const beforeSeverities = result.findings.map(f => f.severity);

@@ -169,7 +169,7 @@ export function computeProvenanceMap(
   const entries: ProvenanceEntry[] = [];
 
   for (const round of priorRounds) {
-    for (const finding of round.findings.entries) {
+    for (const finding of (round.findings.entries ?? [])) {
       if (!finding.suggestedFix) continue;
       const normalizedFix = normalizeForMatch(finding.suggestedFix);
       if (normalizedFix.length < OWN_PROPOSAL_MIN_MATCH_LENGTH) continue;
@@ -560,7 +560,7 @@ export function buildJudgeUserMessage(
       .map(r => ({
         round: r.meta.round,
         commitSha: r.meta.commitSha,
-        findings: r.findings.entries
+        findings: (r.findings.entries ?? [])
           .filter(f => f.severity !== 'ignore')
           .map(f => ({
             fingerprint: f.fingerprint,
@@ -1129,7 +1129,7 @@ export function applyCrossRoundSuppression(
   };
   const acceptedPriors: Prior[] = [];
   for (const round of priorRounds) {
-    for (const f of round.findings.entries) {
+    for (const f of (round.findings.entries ?? [])) {
       if (f.authorReplyClass === 'agree') {
         acceptedPriors.push({ round: round.meta.round, finding: f, source: 'agree' });
       } else if (useResolved && f.threadId && resolvedThreadIds!.has(f.threadId)) {
