@@ -120,6 +120,9 @@ async function run(): Promise<void> {
     );
   }
 
+  const commentAuthorLogin = github.context.payload.comment?.user?.login as string | undefined;
+  const isBotComment = commentAuthorLogin === BOT_LOGIN || commentAuthorLogin === ACTIONS_BOT_LOGIN;
+
   // Event filtering — exit immediately for irrelevant events.
   // Tested via integration (live PR reviews) since it depends on GitHub Actions context.
   if (eventName === 'pull_request') {
@@ -133,8 +136,6 @@ async function run(): Promise<void> {
       return;
     }
     const body = github.context.payload.comment?.body ?? '';
-    const commentAuthorLogin = github.context.payload.comment?.user?.login as string | undefined;
-    const isBotComment = commentAuthorLogin === BOT_LOGIN || commentAuthorLogin === ACTIONS_BOT_LOGIN;
     const isForceReviewChecked = action === 'edited' && isBotComment &&
       (body.includes(FORCE_REVIEW_MARKER) || body.includes(FORCE_CAP_MARKER)) &&
       body.includes('- [x] Force review');
@@ -194,10 +195,8 @@ async function run(): Promise<void> {
 
     case 'issue_comment': {
       const commentBody = github.context.payload.comment?.body ?? '';
-      const dispatchAuthor = github.context.payload.comment?.user?.login as string | undefined;
-      const isDispatchBotComment = dispatchAuthor === BOT_LOGIN || dispatchAuthor === ACTIONS_BOT_LOGIN;
-      const forceReviewTickbox = action === 'edited' && isDispatchBotComment && commentBody.includes(FORCE_REVIEW_MARKER) && commentBody.includes('- [x] Force review');
-      const forceCapTickbox = action === 'edited' && isDispatchBotComment && commentBody.includes(FORCE_CAP_MARKER) && commentBody.includes('- [x] Force review');
+      const forceReviewTickbox = action === 'edited' && isBotComment && commentBody.includes(FORCE_REVIEW_MARKER) && commentBody.includes('- [x] Force review');
+      const forceCapTickbox = action === 'edited' && isBotComment && commentBody.includes(FORCE_CAP_MARKER) && commentBody.includes('- [x] Force review');
       if (forceCapTickbox && github.context.payload.issue?.pull_request) {
         await handleCommentTrigger(true, true);
       } else if (forceReviewTickbox && github.context.payload.issue?.pull_request) {
