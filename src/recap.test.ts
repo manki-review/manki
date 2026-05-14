@@ -1458,6 +1458,36 @@ describe('fetchRecapState', () => {
       const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
       expect(state.priorRounds.map(r => r.meta.round)).toEqual([1, 2]);
     });
+
+    it('re-derives authorReplyClass from current thread state, overriding the stale emit-time cache', async () => {
+      const ctx = makeRoundContext(1, {
+        findings: {
+          count: 1,
+          severityCounts: { blocker: 1 },
+          entries: [{
+            fingerprint: { file: 'src/foo.ts', lineStart: 10, lineEnd: 10, slug: 'Null-check' },
+            severity: 'blocker',
+            threadId: 'thread-1',
+            authorReplyClass: 'none',
+            title: 'Null check',
+          }],
+        },
+      });
+      const thread = makeThread({
+        id: 'thread-1',
+        comments: {
+          nodes: [
+            { body: '<!-- manki:blocker:Null-check --> \u{1F6AB} **Blocker**: Null check\n\nDescription.', author: { login: 'github-actions[bot]' } },
+            { body: 'Fixed in latest push', author: { login: 'author' } },
+          ],
+        },
+      });
+      const octokit = mockOctokit([thread], [
+        { id: 200, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
+      ]);
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.priorRounds[0].findings.entries[0].authorReplyClass).toBe('agree');
+    });
   });
 });
 
