@@ -168,6 +168,7 @@ import * as diffModule from './diff';
 import * as configModule from './config';
 import * as reviewModule from './review';
 import * as recapModule from './recap';
+import type { RecapState } from './recap';
 import * as memoryModule from './memory';
 import * as stateModule from './state';
 import * as authModule from './auth';
@@ -180,11 +181,17 @@ import { LegacyHandoverRoundFixture, roundContextFromLegacy } from './test-utils
  * (the consumer surface for round cap, `lastPriorSha`, planner hints, etc.)
  * alongside the legacy file fixture that `appendHandoverRound` still observes.
  */
-function seedPriorRounds(prNumber: number, repo: string, rounds: LegacyHandoverRoundFixture[]): void {
+function seedPriorRounds(
+  prNumber: number,
+  repo: string,
+  rounds: LegacyHandoverRoundFixture[],
+  previousFindings: RecapState['previousFindings'] = [],
+  recapContext = '',
+): void {
   jest.mocked(memoryModule.loadHandover).mockResolvedValue({ prNumber, repo, rounds });
   jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
-    previousFindings: [],
-    recapContext: '',
+    previousFindings,
+    recapContext,
     priorRounds: rounds.map(roundContextFromLegacy),
   });
 }
@@ -3618,19 +3625,12 @@ describe('runFullReview orchestration', () => {
     jest.mocked(memoryModule.loadMemory).mockResolvedValue({
       learnings: [], suppressions: [], patterns: [],
     });
-    seedPriorRounds(42, 'test-repo', [{
-      round: 1, commitSha: baseArgs.commitSha, timestamp: '2025-01-01T00:00:00Z', findings: [],
-    }]);
-    // Override the recap state seeded above so previousFindings + recapContext reflect this test's intent.
-    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
-      previousFindings: [
-        { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_override' },
-      ],
-      recapContext: 'previous context',
-      priorRounds: [roundContextFromLegacy({
-        round: 1, commitSha: baseArgs.commitSha, timestamp: '2025-01-01T00:00:00Z', findings: [],
-      })],
-    });
+    seedPriorRounds(
+      42, 'test-repo',
+      [{ round: 1, commitSha: baseArgs.commitSha, timestamp: '2025-01-01T00:00:00Z', findings: [] }],
+      [{ title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_override' }],
+      'previous context',
+    );
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'APPROVE', summary: 'ok', findings: [],
@@ -3680,19 +3680,12 @@ describe('runFullReview orchestration', () => {
     jest.mocked(memoryModule.loadMemory).mockResolvedValue({
       learnings: [], suppressions: [], patterns: [],
     });
-    seedPriorRounds(42, 'test-repo', [{
-      round: 1, commitSha: 'prior-sha', timestamp: '2025-01-01T00:00:00Z', findings: [],
-    }]);
-    // Override the recap state seeded above so previousFindings + recapContext reflect this test's intent.
-    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
-      previousFindings: [
-        { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_abc' },
-      ],
-      recapContext: 'previous context',
-      priorRounds: [roundContextFromLegacy({
-        round: 1, commitSha: 'prior-sha', timestamp: '2025-01-01T00:00:00Z', findings: [],
-      })],
-    });
+    seedPriorRounds(
+      42, 'test-repo',
+      [{ round: 1, commitSha: 'prior-sha', timestamp: '2025-01-01T00:00:00Z', findings: [] }],
+      [{ title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_abc' }],
+      'previous context',
+    );
     jest.mocked(ghUtils.fetchInterRoundDiff).mockResolvedValue(
       'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
     );
@@ -4270,6 +4263,20 @@ describe('runFullReview orchestration', () => {
       expect(mockOctokitInstance.rest.issues.createComment).toHaveBeenCalledWith(
         expect.objectContaining({ body: expect.stringContaining('Automatic review is paused') }),
       );
+    });
+
+    it('proceeds to review when below cap and handover file is absent (recap has 4 of 5 rounds)', async () => {
+      jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(5));
+      jest.mocked(memoryModule.loadHandover).mockResolvedValue(null);
+      jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
+        previousFindings: [],
+        recapContext: '',
+        priorRounds: priorRounds(4).map(roundContextFromLegacy),
+      });
+
+      await callRunFullReview();
+
+      expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
     });
   });
 
