@@ -108,7 +108,7 @@ The `low | medium | high | max` knobs map per provider as follows. Manki passes 
 | high   | `budget_tokens: 10000` | `reasoning_effort: high` | (ignored, warning) | `thinkingBudget: 10000` |
 | max    | `budget_tokens: 16000` | `reasoning_effort: high` (collapsed) | (ignored, warning) | `thinkingBudget: 10000` (collapsed) |
 
-The `max` tier collapses silently to `high` for OpenAI o-series and Gemini — no warning is emitted, unlike the GPT non-reasoning path which logs a warning when effort is ignored. The Gemini OAuth (CLI) path passes prompts through the Gemini CLI binary and does not support effort tiers. Use API key auth if you need thinking budgets on Gemini.
+The `max` tier collapses silently to `high` for OpenAI o-series and Gemini — no warning is emitted, unlike the GPT non-reasoning path which logs a warning when effort is ignored. For GPT models via the Codex CLI (OAuth path), the warning notes that the CLI will apply its own default effort (which may differ from the requested tier). For GPT models via the API, the warning notes that effort has no effect. The Gemini OAuth (CLI) path passes prompts through the Gemini CLI binary and does not support effort tiers. Use API key auth if you need thinking budgets on Gemini.
 
 ### Anthropic
 

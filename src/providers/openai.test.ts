@@ -104,6 +104,10 @@ describe('sendMessage (API path)', () => {
     }));
   });
 
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
   it('sends model, system message, and user message in chat completions request', async () => {
     const client = new OpenAIClient({ auth: { kind: 'apiKey', key: 'sk' }, model: 'gpt-4o' });
     await client.sendMessage('sys-prompt', 'user-msg');
@@ -134,8 +138,22 @@ describe('sendMessage (API path)', () => {
 
     const params = mockCreate.mock.calls[0][0];
     expect(params.reasoning_effort).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Ignoring effort=high'));
-    warnSpy.mockRestore();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Effort has no effect via the OpenAI API'));
+  });
+
+  it('warns and ignores non-high effort on non-reasoning models', async () => {
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const client = new OpenAIClient({ auth: { kind: 'apiKey', key: 'sk' }, model: 'gpt-4o' });
+
+    await client.sendMessage('sys', 'user', { effort: 'low' });
+
+    const params = mockCreate.mock.calls[0][0];
+    expect(params.reasoning_effort).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Ignoring effort=low'));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Effort has no effect via the OpenAI API'));
   });
 
   it('maps low effort to reasoning_effort=low for o3', async () => {
@@ -232,6 +250,7 @@ describe('sendViaOAuth (Codex CLI path)', () => {
   afterEach(() => {
     if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = savedCodexHome;
+    jest.restoreAllMocks();
   });
 
   function setupSpawnMock(stdout: string, opts: { exitCode?: number; stderr?: string } = {}): void {
@@ -296,8 +315,23 @@ describe('sendViaOAuth (Codex CLI path)', () => {
 
     const spawnArgs = mockSpawn.mock.calls[0][1] as string[];
     expect(spawnArgs.find(a => a.startsWith('model_reasoning_effort'))).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Ignoring effort=high'));
-    warnSpy.mockRestore();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Codex CLI will apply its own default effort'));
+  });
+
+  it('warns and skips reasoning override for non-high effort on non-reasoning models', async () => {
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    setupSpawnMock('ok\n');
+    const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-4o' });
+
+    await client.sendMessage('sys', 'user', { effort: 'low' });
+
+    const spawnArgs = mockSpawn.mock.calls[0][1] as string[];
+    expect(spawnArgs.find(a => a.startsWith('model_reasoning_effort'))).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Ignoring effort=low'));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Codex CLI will apply its own default effort'));
   });
 
   it('does not pass the OAuth secret as a CLI env var (auth flows via $CODEX_HOME/auth.json)', async () => {
@@ -560,6 +594,7 @@ describe('sendViaOAuth — extended coverage', () => {
   afterEach(() => {
     if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = savedCodexHome;
+    jest.restoreAllMocks();
   });
 
   interface MockProc {
@@ -698,7 +733,6 @@ describe('sendViaOAuth — extended coverage', () => {
 
     await promise;
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('stdin write error'));
-    warnSpy.mockRestore();
   });
 
   it('rejects when stdin.write throws synchronously', async () => {

@@ -39,6 +39,10 @@ Arguments:
              Examples: claude-haiku-4-5, gpt-4o-mini, o4-mini, gemini-2.5-flash.
              Or use provider/model syntax: anthropic/claude-..., openai/gpt-..., gemini/gemini-...
   --effort   Optional. low | medium | high | max. Provider behaviour varies.
+             For non-reasoning OpenAI models (GPT family), --effort is ignored.
+             The Codex CLI (OAuth path) applies its own default effort; the API
+             path silently omits reasoning_effort. A warning is emitted in both
+             cases so the effective effort is visible in CI logs.
   --prompt   Optional. Override the default test prompt.
   --help     Print this message.
 
