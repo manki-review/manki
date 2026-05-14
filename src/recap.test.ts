@@ -1488,6 +1488,106 @@ describe('fetchRecapState', () => {
       const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
       expect(state.priorRounds[0].findings.entries[0].authorReplyClass).toBe('agree');
     });
+
+    it('re-derives authorReplyClass via slug+file fallback when entry has no threadId', async () => {
+      const ctx = makeRoundContext(1, {
+        findings: {
+          count: 1,
+          severityCounts: { warning: 1 },
+          entries: [{
+            fingerprint: { file: 'src/foo.ts', lineStart: 10, lineEnd: 10, slug: 'Null-check' },
+            severity: 'warning',
+            authorReplyClass: 'none',
+            title: 'Null check',
+          }],
+        },
+      });
+      const thread = makeThread({
+        id: undefined,
+        comments: {
+          nodes: [
+            { body: '<!-- manki:warning:Null-check --> ⚠️ **Warning**: Null check\n\nDescription.', author: { login: 'github-actions[bot]' } },
+            { body: 'Agreed, will fix', author: { login: 'author' } },
+          ],
+        },
+      });
+      const octokit = mockOctokit([thread], [
+        { id: 200, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
+      ]);
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.priorRounds[0].findings.entries[0].authorReplyClass).toBe('agree');
+    });
+
+    it('leaves authorReplyClass unchanged when entry has no threadId and no slug+file match', async () => {
+      const ctx = makeRoundContext(1, {
+        findings: {
+          count: 1,
+          severityCounts: { warning: 1 },
+          entries: [{
+            fingerprint: { file: 'src/foo.ts', lineStart: 10, lineEnd: 10, slug: 'Null-check' },
+            severity: 'warning',
+            authorReplyClass: 'none',
+            title: 'Null check',
+          }],
+        },
+      });
+      const octokit = mockOctokit([], [
+        { id: 200, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
+      ]);
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.priorRounds[0].findings.entries[0].authorReplyClass).toBe('none');
+    });
+
+    it('leaves authorReplyClass unchanged when threadId present but not found in live threads', async () => {
+      const ctx = makeRoundContext(1, {
+        findings: {
+          count: 1,
+          severityCounts: { warning: 1 },
+          entries: [{
+            fingerprint: { file: 'src/foo.ts', lineStart: 10, lineEnd: 10, slug: 'Null-check' },
+            severity: 'warning',
+            threadId: 'unknown-thread',
+            authorReplyClass: 'none',
+            title: 'Null check',
+          }],
+        },
+      });
+      const octokit = mockOctokit([], [
+        { id: 200, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
+      ]);
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.priorRounds[0].findings.entries[0].authorReplyClass).toBe('none');
+    });
+
+    it('re-classifies to disagree when author reply signals disagreement', async () => {
+      const ctx = makeRoundContext(1, {
+        findings: {
+          count: 1,
+          severityCounts: { blocker: 1 },
+          entries: [{
+            fingerprint: { file: 'src/foo.ts', lineStart: 10, lineEnd: 10, slug: 'Null-check' },
+            severity: 'blocker',
+            threadId: 'thread-disagree',
+            authorReplyClass: 'none',
+            title: 'Null check',
+          }],
+        },
+      });
+      const thread = makeThread({
+        id: 'thread-disagree',
+        comments: {
+          nodes: [
+            { body: '<!-- manki:blocker:Null-check --> \u{1F6AB} **Blocker**: Null check\n\nDescription.', author: { login: 'github-actions[bot]' } },
+            { body: 'I disagree with this finding, the code is correct', author: { login: 'author' } },
+          ],
+        },
+      });
+      const octokit = mockOctokit([thread], [
+        { id: 200, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
+      ]);
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.priorRounds[0].findings.entries[0].authorReplyClass).toBe('disagree');
+    });
   });
 });
 
