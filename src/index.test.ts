@@ -176,8 +176,6 @@ import { LegacyHandoverRoundFixture, roundContextFromLegacy } from './test-utils
  * `lastPriorSha`, planner hints, etc.) with the given prior-round fixtures.
  */
 function seedPriorRounds(
-  _prNumber: number,
-  _repo: string,
   rounds: LegacyHandoverRoundFixture[],
   previousFindings: RecapState['previousFindings'] = [],
   recapContext = '',
@@ -2215,7 +2213,7 @@ describe('runFullReview orchestration', () => {
         },
       ],
     }];
-    seedPriorRounds(1, 'test-repo', priorRounds);
+    seedPriorRounds(priorRounds);
 
     await callRunFullReview();
 
@@ -2266,7 +2264,7 @@ describe('runFullReview orchestration', () => {
         { round: 2, commitSha: 'sha2', timestamp: '2025-01-02T00:00:00Z', findings: [] },
         { round: 3, commitSha: 'sha3', timestamp: '2025-01-03T00:00:00Z', findings: [] },
       ];
-      seedPriorRounds(1, 'test-repo', priorRounds);
+      seedPriorRounds(priorRounds);
 
       await callRunFullReview();
 
@@ -2307,7 +2305,7 @@ describe('runFullReview orchestration', () => {
         findings: [],
         agents: ['Security & Safety', 'Architecture & Design', 'Correctness & Logic', 'Testing & Coverage'],
       }];
-      seedPriorRounds(1, 'test-repo', priorRounds);
+      seedPriorRounds(priorRounds);
 
       // Trigger the planning-phase progress callback so the dashboard selectTeam runs.
       jest.mocked(reviewModule.runReview).mockImplementation(async (_clients, _config, _diff, _rawDiff, _ctx, _mem, _files, _pr, _issues, onProgress) => {
@@ -2357,7 +2355,7 @@ describe('runFullReview orchestration', () => {
         findings: [],
         agents: ['Security & Safety', 'Architecture & Design'],
       }];
-      seedPriorRounds(1, 'test-repo', priorRounds);
+      seedPriorRounds(priorRounds);
 
       const resolvedNames = ['Security & Safety', 'Architecture & Design', 'Correctness & Logic'];
       // Override selectTeam so the planning-phase callback seeds the dashboard with the
@@ -2438,7 +2436,7 @@ describe('runFullReview orchestration', () => {
         findings: [],
         agents: ['Security & Safety', 'Architecture & Design', 'Correctness & Logic', 'Testing & Coverage'],
       }];
-      seedPriorRounds(1, 'test-repo', priorRounds);
+      seedPriorRounds(priorRounds);
 
       const resolvedNames = ['Security & Safety', 'Architecture & Design', 'Correctness & Logic', 'Testing & Coverage'];
       jest.mocked(reviewModule.runReview).mockResolvedValue({
@@ -2475,7 +2473,7 @@ describe('runFullReview orchestration', () => {
         findings: [],
         agents: ['Security & Safety', 'Bogus Unknown Agent'],
       }];
-      seedPriorRounds(1, 'test-repo', priorRounds);
+      seedPriorRounds(priorRounds);
 
       const resolvedNames = ['Security & Safety'];
       jest.mocked(reviewModule.runReview).mockResolvedValue({
@@ -3300,7 +3298,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(memoryModule.loadMemory).mockResolvedValue({
       learnings: [], suppressions: [], patterns: [],
     });
-    seedPriorRounds(42, 'test-repo', [{
+    seedPriorRounds([{
       round: 1, commitSha: 'prior-sha', timestamp: '2025-01-01T00:00:00Z', findings: [],
     }]);
     // fetchInterRoundDiff returns '' to simulate a force-pushed rebase whose
@@ -3367,7 +3365,7 @@ describe('runFullReview orchestration', () => {
       learnings: [], suppressions: [], patterns: [],
     });
     // Prior round commit equals the current commitSha (`baseArgs.commitSha`).
-    seedPriorRounds(42, 'test-repo', [{
+    seedPriorRounds([{
       round: 1, commitSha: baseArgs.commitSha, timestamp: '2025-01-01T00:00:00Z', findings: [],
     }]);
 
@@ -3419,7 +3417,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(memoryModule.loadMemory).mockResolvedValue({
       learnings: [], suppressions: [], patterns: [],
     });
-    seedPriorRounds(42, 'test-repo', [{
+    seedPriorRounds([{
       round: 1, commitSha: 'prior-sha', timestamp: '2025-01-01T00:00:00Z', findings: [],
     }]);
     jest.mocked(reviewModule.runReview).mockResolvedValue({
@@ -3576,7 +3574,6 @@ describe('runFullReview orchestration', () => {
       learnings: [], suppressions: [], patterns: [],
     });
     seedPriorRounds(
-      42, 'test-repo',
       [{ round: 1, commitSha: baseArgs.commitSha, timestamp: '2025-01-01T00:00:00Z', findings: [] }],
       [{ title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_override' }],
       'previous context',
@@ -3631,7 +3628,6 @@ describe('runFullReview orchestration', () => {
       learnings: [], suppressions: [], patterns: [],
     });
     seedPriorRounds(
-      42, 'test-repo',
       [{ round: 1, commitSha: 'prior-sha', timestamp: '2025-01-01T00:00:00Z', findings: [] }],
       [{ title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_abc' }],
       'previous context',
@@ -4091,7 +4087,7 @@ describe('runFullReview orchestration', () => {
 
     it('runs review normally when prior rounds are below the cap', async () => {
       jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(5));
-      seedPriorRounds(42, 'test-repo', priorRounds(4));
+      seedPriorRounds(priorRounds(4));
 
       await callRunFullReview();
 
@@ -4100,7 +4096,7 @@ describe('runFullReview orchestration', () => {
 
     it('skips review and posts notice when prior rounds reach the cap on auto trigger', async () => {
       jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(5));
-      seedPriorRounds(42, 'test-repo', priorRounds(5));
+      seedPriorRounds(priorRounds(5));
 
       await callRunFullReview();
 
@@ -4123,7 +4119,7 @@ describe('runFullReview orchestration', () => {
 
     it('bypasses the cap when forceReview is true', async () => {
       jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(5));
-      seedPriorRounds(42, 'test-repo', priorRounds(5));
+      seedPriorRounds(priorRounds(5));
 
       await runFullReview(
         baseArgs.owner, baseArgs.repo, baseArgs.prNumber,
@@ -4136,7 +4132,7 @@ describe('runFullReview orchestration', () => {
 
     it('does nothing when max_auto_rounds is 0 (cap disabled)', async () => {
       jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(0));
-      seedPriorRounds(42, 'test-repo', priorRounds(20));
+      seedPriorRounds(priorRounds(20));
 
       await callRunFullReview();
 
@@ -4158,7 +4154,7 @@ describe('runFullReview orchestration', () => {
 
     it('reproduces the round-9 nit-spam scenario by posting cap notice', async () => {
       jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(5));
-      seedPriorRounds(42, 'test-repo', priorRounds(5));
+      seedPriorRounds(priorRounds(5));
       const testFile = {
         path: 'src/foo.test.ts', changeType: 'modified' as const,
         hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
@@ -4184,7 +4180,7 @@ describe('runFullReview orchestration', () => {
 
     it('runs review normally when below cap (test-nit suppression path exercises review.ts, not index.ts)', async () => {
       jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(5));
-      seedPriorRounds(42, 'test-repo', priorRounds(1));
+      seedPriorRounds(priorRounds(1));
 
       await callRunFullReview();
 
