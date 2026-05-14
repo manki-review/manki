@@ -351,22 +351,28 @@ async function fetchRecapState(
  * `'none'` (the round just completed, no reply existed yet) and would otherwise
  * stay frozen across later rounds, breaking cross-round suppression, planner
  * hints, and the prior-unaddressed verdict gate. Matching is by `threadId`
- * when present, then falls back to fingerprint slug + file + line proximity
- * so older context blocks written before threadId stabilisation still
- * re-classify correctly.
+ * when present, then falls back to fingerprint slug + file so older context
+ * blocks written before threadId stabilisation still re-classify correctly.
  */
 function refreshAuthorReplyClass(rounds: RoundContext[], previousFindings: PreviousFinding[]): RoundContext[] {
   if (rounds.length === 0) return rounds;
   const byThread = new Map<string, PreviousFinding>();
+  const bySlugFile = new Map<string, PreviousFinding>();
   for (const pf of previousFindings) {
-    if (pf.threadId) byThread.set(pf.threadId, pf);
+    if (pf.threadId) {
+      byThread.set(pf.threadId, pf);
+    } else {
+      bySlugFile.set(`${pf.file}:${titleToSlug(pf.title)}`, pf);
+    }
   }
   return rounds.map(r => ({
     ...r,
     findings: {
       ...r.findings,
       entries: r.findings.entries.map(entry => {
-        const pf = entry.threadId ? byThread.get(entry.threadId) : undefined;
+        const pf = entry.threadId
+          ? byThread.get(entry.threadId)
+          : bySlugFile.get(`${entry.fingerprint.file}:${entry.fingerprint.slug}`);
         if (!pf) return entry;
         return { ...entry, authorReplyClass: classifyAuthorReply(pf.authorReplyText) };
       }),
