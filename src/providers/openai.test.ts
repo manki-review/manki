@@ -135,6 +135,7 @@ describe('sendMessage (API path)', () => {
     const params = mockCreate.mock.calls[0][0];
     expect(params.reasoning_effort).toBeUndefined();
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Ignoring effort=high'));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Effort has no effect via the OpenAI API'));
     warnSpy.mockRestore();
   });
 
@@ -297,6 +298,7 @@ describe('sendViaOAuth (Codex CLI path)', () => {
     const spawnArgs = mockSpawn.mock.calls[0][1] as string[];
     expect(spawnArgs.find(a => a.startsWith('model_reasoning_effort'))).toBeUndefined();
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Ignoring effort=high'));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Codex CLI will apply its own default effort'));
     warnSpy.mockRestore();
   });
 

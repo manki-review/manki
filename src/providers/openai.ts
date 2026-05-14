@@ -187,7 +187,7 @@ export class OpenAIClient implements LLMClient {
         // here would be passed as literal characters because `spawn` bypasses the shell.
         args.push('-c', `model_reasoning_effort=${resolveEffortTier(options.effort)}`);
       } else if (options?.effort) {
-        core.warning(`Ignoring effort=${options.effort} — model "${this.model}" is not a reasoning model`);
+        core.warning(`Ignoring effort=${options.effort} for model "${this.model}" — not a reasoning model. The Codex CLI will apply its own default effort instead.`);
       }
 
       // Read prompt from stdin
@@ -366,7 +366,7 @@ export class OpenAIClient implements LLMClient {
 
     const reasoning = isReasoningModel(this.model);
     if (options?.effort && !reasoning) {
-      core.warning(`Ignoring effort=${options.effort} — model "${this.model}" is not a reasoning model`);
+      core.warning(`Ignoring effort=${options.effort} for model "${this.model}" — not a reasoning model. Effort has no effect via the OpenAI API for GPT-family models.`);
     }
 
     // `reasoning_effort` is only valid on o-series chat completions and the SDK's
