@@ -2566,7 +2566,10 @@ describe('runFullReview orchestration', () => {
 
     await callRunFullReview();
 
-    const roundContextArg = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+    const calls = jest.mocked(ghUtils.postReview).mock.calls;
+    expect(calls).toHaveLength(1);
+    const [,,,,,,,roundContextArg] = calls[0];
+    expect(roundContextArg).toBeDefined();
     const entry = roundContextArg!.findings.entries[0];
     expect(entry.specialist).toBe('Correctness & Logic');
     expect(entry.suggestedFix).toBe('Rename `x` to `userCount`.');

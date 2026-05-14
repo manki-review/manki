@@ -175,6 +175,7 @@ interface RecapState {
 
 const CONTEXT_BLOCK_DETAILS_RE = /<details>\s*<summary>Manki context<\/summary>\s*```json\s*([\s\S]*?)```\s*<\/details>/g;
 const CONTEXT_BLOCK_HTML_COMMENT_RE = /<!-- manki-context: (.+?) -->/g;
+const REQUIRED_ROUND_CONTEXT_KEYS = ['meta', 'config', 'diff', 'models', 'planner', 'reviewers', 'judge', 'dedup', 'memory', 'findings', 'usage', 'verdict'] as const;
 
 /**
  * Parse Manki context blocks from PR-level review bodies. Supports both the
@@ -233,6 +234,11 @@ function parseContextBlocks(
       }
       if (typeof mankiVersion !== 'string') {
         core.warning(`Skipping Manki context block at ${reviewUrl}: missing meta.mankiVersion`);
+        continue;
+      }
+      const missingKey = REQUIRED_ROUND_CONTEXT_KEYS.find(k => !(k in (parsed as object)));
+      if (missingKey) {
+        core.warning(`Skipping Manki context block at ${reviewUrl}: missing required field '${missingKey}'`);
         continue;
       }
 
