@@ -200,6 +200,8 @@ Required only if you enable the review memory system. This is a fine-grained PAT
    gh secret set REVIEW_MEMORY_TOKEN --repo <owner>/<repo>
    ```
 
+The token's write surface is limited to cross-PR memory files (`learnings.yml`, `patterns.yml`, `suppressions.yml`). As of v5.0.0, per-round state lives in a `Manki context` block embedded in each review summary on the PR, so the memory repo no longer receives `prs/{n}/handover.json` writes. Existing `handover.json` files in older memory repos are orphaned but harmless and require no migration.
+
 ## Step 3: Add the Workflow
 
 Create `.github/workflows/manki.yml`:
@@ -400,6 +402,11 @@ nit_handling: issues
 # Multi-pass verification (integer 1-5, default: 1). Runs each reviewer N
 # times with shuffled file ordering; only consistent findings are kept.
 # review_passes: 1
+
+# Hide the structured `Manki context` block as an HTML comment
+# (`<!-- manki-context: ... -->`) instead of a `<details>` block (default: false).
+# stats:
+#   hidden: false
 
 # Additional context for reviewers
 instructions: |

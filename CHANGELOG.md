@@ -7,13 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [5.0.0] - unreleased
 
+### Added
+
+- `stats.hidden` config (default `false`). When `true`, the per-round `Manki context` payload renders as an HTML comment (`<!-- manki-context: ... -->`) instead of a `<details>` block, keeping the payload machine-readable while hiding it from the rendered review (#711).
+
 ### Changed (BREAKING)
 
 - `openai_oauth_token` and `gemini_oauth_token` inputs now expect the **base64-encoded contents of the CLI's auth JSON file**, not a single-string token. Both CLIs read OAuth credentials from disk (`$CODEX_HOME/auth.json` for Codex, `~/.gemini/oauth_creds.json` for Gemini) and there is no portable single-string equivalent that the spawned subprocesses honor with refresh-token semantics. On invocation the action seeds the file with mode `0600` only when absent, so refreshed tokens written by the CLI on persistent runners are preserved across runs. Re-bootstrap when the `refresh_token` expires (#695).
   - Bootstrap (Codex): ``codex login`` then ``cat ~/.codex/auth.json | base64 | gh secret set OPENAI_OAUTH_TOKEN``
   - Bootstrap (Gemini): sign in with ``gemini`` then ``cat ~/.gemini/oauth_creds.json | base64 | gh secret set GEMINI_OAUTH_TOKEN``
   - The legacy single-token shape is rejected fast with an error pointing to the bootstrap command. No fallback or compat shim.
-- Removed the per-PR `prs/{n}/handover.json` write path from the memory repo. Prior-round state is now sourced entirely from the `Manki context` block embedded in each review summary, so the memory repo only retains cross-PR data (`learnings.yml`, `patterns.yml`, `suppressions.yml`). Existing `handover.json` files are no longer read or written and become orphaned but harmless. In-flight PRs upgrading mid-review may see one round of regressed prior-round context until the next manki comment lands the embedded block (#690).
+- Per-round state moved from the memory repo (`prs/{n}/handover.json`) to a `Manki context` block embedded in each review summary on the PR itself. The memory repo now retains only cross-PR data (`learnings.yml`, `patterns.yml`, `suppressions.yml`), so `memory_repo_token` no longer needs write access to `prs/{n}/handover.json`. Existing `handover.json` files in memory repos are orphaned but harmless and require no migration. In-flight PRs upgrading mid-review see one round of regressed prior-round context (round cap, cross-round suppression, planner team carry-over, etc.) until the next manki comment lands the embedded block. Parent: #684. Implementation: #706 (emit), #712 (aggregate), #723 (consumers), #728 (drop write path).
+- `Force review` tickbox on the round-cap notice now only bypasses the round cap, not other gating. `forceReview` and `skipCap` are now distinct flags on `ReviewConfig`, so ticking the box re-enables a single follow-up review without disabling other safeguards (#727).
 
 ## [4.7.0] - 2026-04-28
 
