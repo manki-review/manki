@@ -627,6 +627,19 @@ describe('buildJudgeUserMessage', () => {
     expect(msg).toContain('"title": "' + 'A'.repeat(200) + '"');
     expect(msg).not.toContain('"title": "' + longTitle + '"');
   });
+
+  it('falls back to empty string for absent title and "none" for absent authorReplyClass in prior round entry', () => {
+    const entry = {
+      fingerprint: { file: 'src/a.ts', lineStart: 1, lineEnd: 1, slug: 'x' },
+      severity: 'blocker' as const,
+    };
+    const round = makeRoundContext(1, {
+      findings: { count: 1, severityCounts: { blocker: 1 }, entries: [entry] },
+    });
+    const msg = buildJudgeUserMessage([makeFinding()], new Map(), '', undefined, undefined, undefined, undefined, [round]);
+    expect(msg).toContain('"title": ""');
+    expect(msg).toContain('"authorReply": "none"');
+  });
 });
 
 describe('extractCodeContext', () => {
