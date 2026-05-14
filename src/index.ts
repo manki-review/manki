@@ -9,10 +9,10 @@ import { extractCurrentCodeWindow } from './code-window';
 import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
-import { appendHandoverRound, loadHandover, loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
-import { classifyAuthorReply, fetchRecapState, fingerprintFinding } from './recap';
-import { buildAgentPool, collectPriorRoundAgents, runReview, determineVerdict, selectTeam, TRIVIAL_VERIFIER_AGENT } from './review';
-import { DEFENSIVE_HARDENING_TAG, DashboardData, PrContext, PrHandover, ReviewMetadata, RoundContext, roundContextToFlatAliases } from './types';
+import { loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
+import { fetchRecapState, fingerprintFinding } from './recap';
+import { buildAgentPool, collectPriorRoundAgents, runReview, determineVerdict, selectTeam } from './review';
+import { DEFENSIVE_HARDENING_TAG, DashboardData, PrContext, ReviewMetadata, RoundContext, roundContextToFlatAliases } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -526,7 +526,6 @@ async function runFullReview(
     }
 
     let memory: RepoMemory | null = null;
-    let handover: PrHandover | null = null;
     if (config.memory?.enabled) {
       const memoryToken = getMemoryToken(octokitCache.resolvedToken);
       if (!memoryToken) {
@@ -540,15 +539,6 @@ async function runFullReview(
           core.info(`Loaded memory: ${memory.learnings.length} learnings, ${memory.suppressions.length} suppressions`);
         } catch (error) {
           core.warning(`Failed to load review memory: ${error}`);
-        }
-
-        try {
-          handover = await loadHandover(memoryOctokit, memoryRepo, repo, prNumber);
-          if (handover) {
-            core.info(`Loaded handover: ${handover.rounds.length} prior round(s)`);
-          }
-        } catch (error) {
-          core.warning(`Failed to load handover for PR #${prNumber}: ${error}`);
         }
       }
     }
@@ -1006,25 +996,6 @@ async function runFullReview(
           }
         }
         core.info(`Updated ${result.findings.length} patterns in memory repo`);
-
-        try {
-          await appendHandoverRound(
-            memoryOctokit,
-            memoryRepo,
-            repo,
-            prNumber,
-            commitSha,
-            result.findings,
-            recap.previousFindings,
-            result.summary,
-            result.agentNames.filter(n => n !== TRIVIAL_VERIFIER_AGENT.name),
-            fingerprintFinding,
-            classifyAuthorReply,
-            handover,
-          );
-        } catch (error) {
-          core.warning(`Failed to write handover for PR #${prNumber}: ${error}`);
-        }
       }
     }
 
