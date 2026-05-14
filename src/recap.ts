@@ -203,7 +203,7 @@ function parseContextBlocks(
     }
     if (candidates.length === 0) {
       for (const m of review.body.matchAll(CONTEXT_BLOCK_HTML_COMMENT_RE)) {
-        candidates.push(m[1].replace(/\\u003E/g, '>'));
+        candidates.push(m[1]);
       }
     }
 
