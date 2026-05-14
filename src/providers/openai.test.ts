@@ -134,7 +134,22 @@ describe('sendMessage (API path)', () => {
 
     const params = mockCreate.mock.calls[0][0];
     expect(params.reasoning_effort).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Ignoring effort=high'));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Effort has no effect via the OpenAI API'));
+    warnSpy.mockRestore();
+  });
+
+  it('warns and ignores non-high effort on non-reasoning models', async () => {
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const client = new OpenAIClient({ auth: { kind: 'apiKey', key: 'sk' }, model: 'gpt-4o' });
+
+    await client.sendMessage('sys', 'user', { effort: 'low' });
+
+    const params = mockCreate.mock.calls[0][0];
+    expect(params.reasoning_effort).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Ignoring effort=low'));
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Effort has no effect via the OpenAI API'));
     warnSpy.mockRestore();
   });
@@ -297,7 +312,23 @@ describe('sendViaOAuth (Codex CLI path)', () => {
 
     const spawnArgs = mockSpawn.mock.calls[0][1] as string[];
     expect(spawnArgs.find(a => a.startsWith('model_reasoning_effort'))).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Ignoring effort=high'));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Codex CLI will apply its own default effort'));
+    warnSpy.mockRestore();
+  });
+
+  it('warns and skips reasoning override for non-high effort on non-reasoning models', async () => {
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    setupSpawnMock('ok\n');
+    const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-4o' });
+
+    await client.sendMessage('sys', 'user', { effort: 'low' });
+
+    const spawnArgs = mockSpawn.mock.calls[0][1] as string[];
+    expect(spawnArgs.find(a => a.startsWith('model_reasoning_effort'))).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Ignoring effort=low'));
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Codex CLI will apply its own default effort'));
     warnSpy.mockRestore();
   });
