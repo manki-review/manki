@@ -4135,7 +4135,7 @@ describe('runFullReview orchestration', () => {
 
     it('does not bypass the cap when only forceReview is true', async () => {
       jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(5));
-      seedPriorRounds(42, 'test-repo', priorRounds(5));
+      seedPriorRounds(priorRounds(5));
 
       await runFullReview(
         baseArgs.owner, baseArgs.repo, baseArgs.prNumber,
@@ -4240,7 +4240,7 @@ describe('runFullReview orchestration', () => {
 
     it('@manki review bypasses the round cap (skipCap=true)', async () => {
       jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(5));
-      seedPriorRounds(42, 'test-repo', priorRounds(5));
+      seedPriorRounds(priorRounds(5));
 
       jest.mocked(interaction.isReviewRequest).mockReturnValue(true);
       setContext({
@@ -5066,7 +5066,7 @@ describe('force review checkbox', () => {
     const rounds = Array.from({ length: 5 }, (_, i) => ({
       round: i + 1, commitSha: `sha${i + 1}`, timestamp: '2025-01-01T00:00:00Z', findings: [],
     }));
-    seedPriorRounds(1, 'test-repo', rounds);
+    seedPriorRounds(rounds);
 
     const forceBody = `<!-- manki-bot -->\n**Review skipped** — a review is currently in progress. Retry when it completes, or force now:\n\n- [x] Force review\n\n${FORCE_REVIEW_MARKER}`;
     setContext({
@@ -5111,7 +5111,7 @@ describe('force review checkbox', () => {
     const rounds = Array.from({ length: 5 }, (_, i) => ({
       round: i + 1, commitSha: `sha${i + 1}`, timestamp: '2025-01-01T00:00:00Z', findings: [],
     }));
-    seedPriorRounds(1, 'test-repo', rounds);
+    seedPriorRounds(rounds);
 
     const capNoticeBody = `<!-- manki-bot -->\nManki has completed 5/5 review rounds on this PR. Automatic review is paused. Tick the box to force another round, or comment \`@manki review\`:\n\n- [x] Force review\n\n${FORCE_CAP_MARKER}`;
     setContext({
