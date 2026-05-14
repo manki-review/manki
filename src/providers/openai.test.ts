@@ -104,6 +104,10 @@ describe('sendMessage (API path)', () => {
     }));
   });
 
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
   it('sends model, system message, and user message in chat completions request', async () => {
     const client = new OpenAIClient({ auth: { kind: 'apiKey', key: 'sk' }, model: 'gpt-4o' });
     await client.sendMessage('sys-prompt', 'user-msg');
@@ -137,7 +141,6 @@ describe('sendMessage (API path)', () => {
     expect(warnSpy).toHaveBeenCalledTimes(1);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Ignoring effort=high'));
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Effort has no effect via the OpenAI API'));
-    warnSpy.mockRestore();
   });
 
   it('warns and ignores non-high effort on non-reasoning models', async () => {
@@ -151,7 +154,6 @@ describe('sendMessage (API path)', () => {
     expect(warnSpy).toHaveBeenCalledTimes(1);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Ignoring effort=low'));
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Effort has no effect via the OpenAI API'));
-    warnSpy.mockRestore();
   });
 
   it('maps low effort to reasoning_effort=low for o3', async () => {
@@ -248,6 +250,7 @@ describe('sendViaOAuth (Codex CLI path)', () => {
   afterEach(() => {
     if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = savedCodexHome;
+    jest.restoreAllMocks();
   });
 
   function setupSpawnMock(stdout: string, opts: { exitCode?: number; stderr?: string } = {}): void {
@@ -315,7 +318,6 @@ describe('sendViaOAuth (Codex CLI path)', () => {
     expect(warnSpy).toHaveBeenCalledTimes(1);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Ignoring effort=high'));
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Codex CLI will apply its own default effort'));
-    warnSpy.mockRestore();
   });
 
   it('warns and skips reasoning override for non-high effort on non-reasoning models', async () => {
@@ -330,7 +332,6 @@ describe('sendViaOAuth (Codex CLI path)', () => {
     expect(warnSpy).toHaveBeenCalledTimes(1);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Ignoring effort=low'));
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Codex CLI will apply its own default effort'));
-    warnSpy.mockRestore();
   });
 
   it('does not pass the OAuth secret as a CLI env var (auth flows via $CODEX_HOME/auth.json)', async () => {
@@ -593,6 +594,7 @@ describe('sendViaOAuth — extended coverage', () => {
   afterEach(() => {
     if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
     else process.env.CODEX_HOME = savedCodexHome;
+    jest.restoreAllMocks();
   });
 
   interface MockProc {
@@ -731,7 +733,6 @@ describe('sendViaOAuth — extended coverage', () => {
 
     await promise;
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('stdin write error'));
-    warnSpy.mockRestore();
   });
 
   it('rejects when stdin.write throws synchronously', async () => {
