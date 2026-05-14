@@ -144,9 +144,11 @@ jest.mock('./github', () => ({
   postAppWarningIfNeeded: jest.fn().mockResolvedValue(undefined),
   cancelActiveReviewRun: jest.fn().mockResolvedValue(false),
   BOT_LOGIN: 'manki-review[bot]',
+  ACTIONS_BOT_LOGIN: 'github-actions[bot]',
   BOT_MARKER: '<!-- manki-bot -->',
   REVIEW_COMPLETE_MARKER: '<!-- manki-review-complete -->',
   FORCE_REVIEW_MARKER: '<!-- manki-force-review -->',
+  FORCE_CAP_MARKER: '<!-- manki-force-cap -->',
   APP_WARNING_MARKER: '<!-- manki-app-warning -->',
 }));
 
@@ -156,7 +158,7 @@ jest.mock('./state', () => ({
 }));
 
 import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, main, _resetOctokitCache } from './index';
-import { FORCE_REVIEW_MARKER } from './github';
+import { FORCE_REVIEW_MARKER, FORCE_CAP_MARKER } from './github';
 import type { ReviewConfig } from './types';
 import { createLLMClient, parseModelSpec } from './providers';
 import * as interaction from './interaction';
@@ -4113,21 +4115,38 @@ describe('runFullReview orchestration', () => {
         .find(([args]) => typeof args.body === 'string' && args.body.includes('Automatic review is paused'));
       expect(capCall).toBeDefined();
       const capBody = capCall![0].body as string;
-      expect(capBody).toContain(FORCE_REVIEW_MARKER);
+      expect(capBody).toContain(FORCE_CAP_MARKER);
+      expect(capBody).not.toContain(FORCE_REVIEW_MARKER);
       expect(capBody).toContain('- [ ] Force review');
     });
 
-    it('bypasses the cap when forceReview is true', async () => {
+    it('bypasses the cap when skipCap is true', async () => {
       jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(5));
       seedPriorRounds(priorRounds(5));
 
       await runFullReview(
         baseArgs.owner, baseArgs.repo, baseArgs.prNumber,
         baseArgs.commitSha, baseArgs.baseRef, baseArgs.prContext,
-        undefined, true,
+        undefined, false, true,
       );
 
       expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
+    });
+
+    it('does not bypass the cap when only forceReview is true', async () => {
+      jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(5));
+      seedPriorRounds(priorRounds(5));
+
+      await runFullReview(
+        baseArgs.owner, baseArgs.repo, baseArgs.prNumber,
+        baseArgs.commitSha, baseArgs.baseRef, baseArgs.prContext,
+        undefined, true, false,
+      );
+
+      expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+      expect(mockOctokitInstance.rest.issues.createComment).toHaveBeenCalledWith(
+        expect.objectContaining({ body: expect.stringContaining('Automatic review is paused') }),
+      );
     });
 
     it('does nothing when max_auto_rounds is 0 (cap disabled)', async () => {
@@ -4174,7 +4193,8 @@ describe('runFullReview orchestration', () => {
         .find(([args]) => typeof args.body === 'string' && args.body.includes('Automatic review is paused'));
       expect(capCall).toBeDefined();
       const capBody = capCall![0].body as string;
-      expect(capBody).toContain(FORCE_REVIEW_MARKER);
+      expect(capBody).toContain(FORCE_CAP_MARKER);
+      expect(capBody).not.toContain(FORCE_REVIEW_MARKER);
       expect(capBody).toContain('- [ ] Force review');
     });
 
@@ -4214,6 +4234,26 @@ describe('runFullReview orchestration', () => {
       });
 
       await callRunFullReview();
+
+      expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
+    });
+
+    it('@manki review bypasses the round cap (skipCap=true)', async () => {
+      jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(5));
+      seedPriorRounds(priorRounds(5));
+
+      jest.mocked(interaction.isReviewRequest).mockReturnValue(true);
+      setContext({
+        eventName: 'issue_comment',
+        payload: {
+          action: 'created',
+          sender: { login: 'owner' },
+          issue: { number: 42, pull_request: { url: 'https://api.github.com/repos/test-owner/test-repo/pulls/42' } },
+          comment: { id: 1, body: '@manki review', author_association: 'OWNER' },
+        },
+      });
+
+      await run();
 
       expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
     });
@@ -4903,7 +4943,7 @@ describe('force review checkbox', () => {
         action: 'edited',
         sender: { login: 'user' },
         issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } },
-        comment: { id: 42, body: forceBody, author_association: 'COLLABORATOR' },
+        comment: { id: 42, body: forceBody, user: { login: ghUtils.BOT_LOGIN }, author_association: 'COLLABORATOR' },
       },
     });
 
@@ -4917,17 +4957,19 @@ describe('force review checkbox', () => {
     expect(mockPullsGet).toHaveBeenCalled();
   });
 
-  it('routes round-cap notice force review checkbox edit to handleCommentTrigger with forceReview', async () => {
+  it('routes round-cap notice force review checkbox edit to handleCommentTrigger with skipCap only', async () => {
     // Simulate a round-cap notice that the author has just checked. handleCommentTrigger
-    // must run review with forceReview=true so the cap guard is bypassed.
-    const capNoticeBody = `<!-- manki-bot -->\nManki has completed 5/5 review rounds on this PR. Automatic review is paused. Force another round:\n\n- [x] Force review\n\n${FORCE_REVIEW_MARKER}`;
+    // must run review with skipCap=true so the cap guard is bypassed, but forceReview=false
+    // so the in-progress guard still fires if a review is already running.
+    jest.mocked(ghUtils.isReviewInProgress).mockReset().mockResolvedValue(false);
+    const capNoticeBody = `<!-- manki-bot -->\nManki has completed 5/5 review rounds on this PR. Automatic review is paused. Tick the box to force another round, or comment \`@manki review\`:\n\n- [x] Force review\n\n${FORCE_CAP_MARKER}`;
     setContext({
       eventName: 'issue_comment',
       payload: {
         action: 'edited',
         sender: { login: 'user' },
         issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } },
-        comment: { id: 99, body: capNoticeBody, author_association: 'COLLABORATOR' },
+        comment: { id: 99, body: capNoticeBody, user: { login: ghUtils.BOT_LOGIN }, author_association: 'COLLABORATOR' },
       },
     });
 
@@ -4936,9 +4978,29 @@ describe('force review checkbox', () => {
     expect(jest.mocked(ghUtils.reactToIssueComment)).toHaveBeenCalledWith(
       expect.anything(), 'test-owner', 'test-repo', 99, 'eyes',
     );
-    // force review bypasses the isReviewInProgress check entirely
-    expect(jest.mocked(ghUtils.isReviewInProgress)).not.toHaveBeenCalled();
+    // forceReview=false, so the in-progress guard runs (returns false by default — no concurrent review)
+    expect(jest.mocked(ghUtils.isReviewInProgress)).toHaveBeenCalled();
     expect(mockPullsGet).toHaveBeenCalled();
+  });
+
+  it('cap-notice tickbox does not bypass in-progress guard when a review is running', async () => {
+    jest.mocked(ghUtils.isReviewInProgress).mockResolvedValueOnce(true);
+    const capNoticeBody = `<!-- manki-bot -->\nManki has completed 5/5 review rounds on this PR. Automatic review is paused. Tick the box to force another round, or comment \`@manki review\`:\n\n- [x] Force review\n\n${FORCE_CAP_MARKER}`;
+    setContext({
+      eventName: 'issue_comment',
+      payload: {
+        action: 'edited',
+        sender: { login: 'user' },
+        issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } },
+        comment: { id: 99, body: capNoticeBody, user: { login: ghUtils.BOT_LOGIN }, author_association: 'COLLABORATOR' },
+      },
+    });
+
+    await run();
+
+    // forceReview=false so the in-progress guard fires — concurrent review is blocked
+    expect(jest.mocked(ghUtils.isReviewInProgress)).toHaveBeenCalled();
+    expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
   });
 
   it('ignores force review checkbox when unchecked', async () => {
@@ -4956,6 +5018,153 @@ describe('force review checkbox', () => {
     await run();
 
     // Unchecked checkbox should not trigger a review
+    expect(mockPullsGet).not.toHaveBeenCalled();
+    expect(jest.mocked(ghUtils.reactToIssueComment)).not.toHaveBeenCalled();
+  });
+
+  it('ignores cap-notice tickbox when unchecked', async () => {
+    const uncheckedCapBody = `<!-- manki-bot -->\nManki has completed 5/5 review rounds on this PR. Automatic review is paused. Tick the box to force another round, or comment \`@manki review\`:\n\n- [ ] Force review\n\n${FORCE_CAP_MARKER}`;
+    setContext({
+      eventName: 'issue_comment',
+      payload: {
+        action: 'edited',
+        sender: { login: 'user' },
+        issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } },
+        comment: { id: 99, body: uncheckedCapBody, user: { login: ghUtils.BOT_LOGIN } },
+      },
+    });
+
+    await run();
+
+    expect(mockPullsGet).not.toHaveBeenCalled();
+    expect(jest.mocked(ghUtils.reactToIssueComment)).not.toHaveBeenCalled();
+  });
+
+  it('in-progress tickbox passes forceReview but not skipCap to handleCommentTrigger', async () => {
+    // The in-progress tickbox carries FORCE_REVIEW_MARKER. The dispatcher must pass
+    // forceReview=true (bypass in-progress) but skipCap=false so the cap guard still fires.
+    const forceBody = `<!-- manki-bot -->\n**Review skipped** — a review is currently in progress. Retry when it completes, or force now:\n\n- [x] Force review\n\n${FORCE_REVIEW_MARKER}`;
+    setContext({
+      eventName: 'issue_comment',
+      payload: {
+        action: 'edited',
+        sender: { login: 'user' },
+        issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } },
+        comment: { id: 42, body: forceBody, user: { login: ghUtils.BOT_LOGIN }, author_association: 'COLLABORATOR' },
+      },
+    });
+
+    await run();
+
+    // forceReview=true bypasses the in-progress check
+    expect(jest.mocked(ghUtils.isReviewInProgress)).not.toHaveBeenCalled();
+    // runFullReview was invoked with forceReview=true, skipCap=false. We assert this
+    // by verifying the pulls.get call (entry into runFullReview) since runFullReview
+    // is the real implementation here, not a mock.
+    expect(mockPullsGet).toHaveBeenCalled();
+  });
+
+  it('in-progress tickbox still blocked by cap when rounds at limit (skipCap=false)', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'anthropic_api_key' ? 'test-api-key' : '',
+    );
+    const reviewableFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+    };
+    jest.mocked(authModule.getMemoryToken).mockReturnValue('mem-token');
+    jest.mocked(memoryModule.loadMemory).mockResolvedValue({ learnings: [], suppressions: [], patterns: [] });
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [reviewableFile], totalAdditions: 5, totalDeletions: 5 });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([reviewableFile]);
+    jest.mocked(configModule.loadConfig).mockReturnValue({
+      auto_review: true, auto_approve: false, max_diff_lines: 5000,
+      exclude_paths: [], nit_handling: 'issues',
+      reviewers: [], instructions: '', review_level: 'auto',
+      review_thresholds: { small: 200, medium: 800 },
+      memory: { enabled: true, repo: 'owner/memory' },
+      convergence: { max_auto_rounds: 5, test_path_patterns: ['**/*.test.*'], suppress_resolved_threads: true },
+    });
+    const rounds = Array.from({ length: 5 }, (_, i) => ({
+      round: i + 1, commitSha: `sha${i + 1}`, timestamp: '2025-01-01T00:00:00Z', findings: [],
+    }));
+    seedPriorRounds(rounds);
+
+    const forceBody = `<!-- manki-bot -->\n**Review skipped** — a review is currently in progress. Retry when it completes, or force now:\n\n- [x] Force review\n\n${FORCE_REVIEW_MARKER}`;
+    setContext({
+      eventName: 'issue_comment',
+      payload: {
+        action: 'edited',
+        sender: { login: 'user' },
+        issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/test-owner/test-repo/pulls/1' } },
+        comment: { id: 42, body: forceBody, user: { login: ghUtils.BOT_LOGIN }, author_association: 'COLLABORATOR' },
+      },
+    });
+
+    await run();
+
+    // cap fires because skipCap=false — forceReview only bypasses in-progress check, not cap
+    expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+    expect(mockOctokitInstance.rest.issues.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.stringContaining('Automatic review is paused') }),
+    );
+  });
+
+  it('cap-notice tickbox bypasses cap end-to-end when rounds at limit (skipCap=true)', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'anthropic_api_key' ? 'test-api-key' : '',
+    );
+    const reviewableFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+    };
+    jest.mocked(authModule.getMemoryToken).mockReturnValue('mem-token');
+    jest.mocked(memoryModule.loadMemory).mockResolvedValue({ learnings: [], suppressions: [], patterns: [] });
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [reviewableFile], totalAdditions: 5, totalDeletions: 5 });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([reviewableFile]);
+    jest.mocked(configModule.loadConfig).mockReturnValue({
+      auto_review: true, auto_approve: false, max_diff_lines: 5000,
+      exclude_paths: [], nit_handling: 'issues',
+      reviewers: [], instructions: '', review_level: 'auto',
+      review_thresholds: { small: 200, medium: 800 },
+      memory: { enabled: true, repo: 'owner/memory' },
+      convergence: { max_auto_rounds: 5, test_path_patterns: ['**/*.test.*'], suppress_resolved_threads: true },
+    });
+    const rounds = Array.from({ length: 5 }, (_, i) => ({
+      round: i + 1, commitSha: `sha${i + 1}`, timestamp: '2025-01-01T00:00:00Z', findings: [],
+    }));
+    seedPriorRounds(rounds);
+
+    const capNoticeBody = `<!-- manki-bot -->\nManki has completed 5/5 review rounds on this PR. Automatic review is paused. Tick the box to force another round, or comment \`@manki review\`:\n\n- [x] Force review\n\n${FORCE_CAP_MARKER}`;
+    setContext({
+      eventName: 'issue_comment',
+      payload: {
+        action: 'edited',
+        sender: { login: 'user' },
+        issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/test-owner/test-repo/pulls/1' } },
+        comment: { id: 99, body: capNoticeBody, user: { login: ghUtils.BOT_LOGIN }, author_association: 'COLLABORATOR' },
+      },
+    });
+
+    await run();
+
+    // skipCap=true bypasses the cap guard — review runs despite rounds at limit
+    expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
+  });
+
+  it('ignores force review tickbox when comment is not from the bot', async () => {
+    const forceBody = `<!-- manki-bot -->\n**Review skipped** — a review is currently in progress. Retry when it completes, or force now:\n\n- [x] Force review\n\n${FORCE_REVIEW_MARKER}`;
+    setContext({
+      eventName: 'issue_comment',
+      payload: {
+        action: 'edited',
+        sender: { login: 'attacker' },
+        issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } },
+        comment: { id: 77, body: forceBody, user: { login: 'attacker' } },
+      },
+    });
+
+    await run();
+
     expect(mockPullsGet).not.toHaveBeenCalled();
     expect(jest.mocked(ghUtils.reactToIssueComment)).not.toHaveBeenCalled();
   });

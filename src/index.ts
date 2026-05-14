@@ -31,6 +31,7 @@ import {
   BOT_LOGIN,
   BOT_MARKER as PROGRESS_MARKER,
   FORCE_REVIEW_MARKER,
+  FORCE_CAP_MARKER,
   MANKI_VERSION,
   isReviewInProgress,
   isApprovedOnCommit,
@@ -118,6 +119,9 @@ async function run(): Promise<void> {
     );
   }
 
+  const commentAuthorLogin = github.context.payload.comment?.user?.login as string | undefined;
+  const isBotComment = commentAuthorLogin === BOT_LOGIN;
+
   // Event filtering — exit immediately for irrelevant events.
   // Tested via integration (live PR reviews) since it depends on GitHub Actions context.
   if (eventName === 'pull_request') {
@@ -131,9 +135,10 @@ async function run(): Promise<void> {
       return;
     }
     const body = github.context.payload.comment?.body ?? '';
-    const isForceReview = action === 'edited' &&
-      body.includes(FORCE_REVIEW_MARKER) && body.includes('- [x] Force review');
-    if (!isForceReview && !hasBotMention(body) && !isReviewRequest(body)) {
+    const isForceReviewChecked = action === 'edited' && isBotComment &&
+      (body.includes(FORCE_REVIEW_MARKER) || body.includes(FORCE_CAP_MARKER)) &&
+      body.includes('- [x] Force review');
+    if (!isForceReviewChecked && !hasBotMention(body) && !isReviewRequest(body)) {
       core.info('Comment does not mention Manki — ignoring');
       return;
     }
@@ -189,11 +194,15 @@ async function run(): Promise<void> {
 
     case 'issue_comment': {
       const commentBody = github.context.payload.comment?.body ?? '';
-      const forceReviewChecked = action === 'edited' && commentBody.includes(FORCE_REVIEW_MARKER) && commentBody.includes('- [x] Force review');
-      if (forceReviewChecked && github.context.payload.issue?.pull_request) {
-        await handleCommentTrigger(true);
+      const isBotTickboxEdit = action === 'edited' && isBotComment && commentBody.includes('- [x] Force review');
+      const forceReviewTickbox = isBotTickboxEdit && commentBody.includes(FORCE_REVIEW_MARKER);
+      const forceCapTickbox = isBotTickboxEdit && commentBody.includes(FORCE_CAP_MARKER);
+      if (forceCapTickbox && github.context.payload.issue?.pull_request) {
+        await handleCommentTrigger(false, true);
+      } else if (forceReviewTickbox && github.context.payload.issue?.pull_request) {
+        await handleCommentTrigger(true, false);
       } else if (isReviewRequest(commentBody) && github.context.payload.issue?.pull_request) {
-        await handleCommentTrigger();
+        await handleCommentTrigger(true, true);
       } else if (isBotMentionNonReview(commentBody) && github.context.payload.issue?.pull_request) {
         await handleInteraction();
       } else if (isBotMentionNonReview(commentBody) && !github.context.payload.issue?.pull_request) {
@@ -281,7 +290,7 @@ async function handlePullRequest(): Promise<void> {
   await runFullReview(owner, repo, prNumber, commitSha, pr.base.ref, prContext, pr.user?.login);
 }
 
-async function handleCommentTrigger(forceReview?: boolean): Promise<void> {
+async function handleCommentTrigger(forceReview?: boolean, skipCap?: boolean): Promise<void> {
   const payload = github.context.payload;
 
   if (!payload.issue?.pull_request) {
@@ -339,7 +348,7 @@ async function handleCommentTrigger(forceReview?: boolean): Promise<void> {
     baseBranch: pr.base.ref,
   };
 
-  await runFullReview(owner, repo, prNumber, pr.head.sha, pr.base.ref, prContext, pr.user?.login, forceReview);
+  await runFullReview(owner, repo, prNumber, pr.head.sha, pr.base.ref, prContext, pr.user?.login, forceReview, skipCap);
 }
 
 function reconcileDashboardAgents(dashboard: DashboardData, names: string[]): void {
@@ -366,6 +375,7 @@ async function runFullReview(
   prContext?: PrContext,
   prAuthorLogin?: string,
   forceReview?: boolean,
+  skipCap?: boolean,
 ): Promise<void> {
   core.info(`Starting review for ${owner}/${repo}#${prNumber}`);
 
@@ -548,7 +558,7 @@ async function runFullReview(
     if (
       maxAutoRounds > 0 &&
       priorRoundCount >= maxAutoRounds &&
-      !forceReview
+      !skipCap
     ) {
       core.info(`Round cap reached (${priorRoundCount} prior rounds >= max ${maxAutoRounds}) — skipping auto review`);
       try {
@@ -559,11 +569,11 @@ async function runFullReview(
       try {
         const body = [
           PROGRESS_MARKER,
-          `Manki has completed ${priorRoundCount}/${maxAutoRounds} review rounds on this PR. Automatic review is paused. Force another round:`,
+          `Manki has completed ${priorRoundCount}/${maxAutoRounds} review rounds on this PR. Automatic review is paused. Tick the box to force another round, or comment \`@manki review\`:`,
           '',
           '- [ ] Force review',
           '',
-          FORCE_REVIEW_MARKER,
+          FORCE_CAP_MARKER,
         ].join('\n');
         await octokit.rest.issues.createComment({
           owner,
