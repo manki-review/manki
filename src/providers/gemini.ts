@@ -6,7 +6,7 @@ import { promisify } from 'util';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import * as core from '@actions/core';
 
-import { buildTimeoutDiagnostics, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS } from './cli-utils';
+import { buildTimeoutDiagnostics, extractCliErrorSnippet, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS } from './cli-utils';
 import { GeminiAuth, LLMClient, LLMResponse, SendMessageOptions } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -273,7 +273,7 @@ export class GeminiClient implements LLMClient {
           return;
         }
         if (code !== 0) {
-          const stderrSnippet = sanitizeLogOutput(stderr.slice(0, 500));
+          const stderrSnippet = extractCliErrorSnippet(stderr);
           const msg = `exit ${code}${signal ? `, signal ${signal}` : ''}: ${stderrSnippet}`;
           core.warning(`Gemini CLI failed (${msg})`);
           reject(new Error(`Gemini CLI invocation failed (${msg})`));

@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { buildTimeoutDiagnostics, sanitizeLogOutput, seedAuthFile } from './cli-utils';
+import { buildTimeoutDiagnostics, extractCliErrorSnippet, sanitizeLogOutput, seedAuthFile } from './cli-utils';
 
 function encode(json: unknown): string {
   return Buffer.from(JSON.stringify(json), 'utf8').toString('base64');
@@ -62,11 +62,20 @@ describe('buildTimeoutDiagnostics', () => {
     expect(result).not.toContain('x'.repeat(501));
   });
 
-  it('truncates stderr to first 500 chars', () => {
+  it('falls back to first 500 chars of stderr when no ERROR line is present', () => {
     const long = 'y'.repeat(600);
     const result = buildTimeoutDiagnostics('', long);
     expect(result).toContain('stderr: ' + 'y'.repeat(500));
     expect(result).not.toContain('y'.repeat(501));
+  });
+
+  it('preserves a long final ERROR line in stderr without truncation', () => {
+    const longMessage = 'The model id is not supported for this account. '.repeat(20);
+    const errorLine = `ERROR: {"type":"error","status":400,"error":{"type":"invalid_request_error","message":"${longMessage}"}}`;
+    const stderr = `noise line 1\nnoise line 2\n${errorLine}\n`;
+    const result = buildTimeoutDiagnostics('', stderr);
+    expect(result).toContain(errorLine);
+    expect(result).toContain(longMessage);
   });
 
   it('sanitizes workflow commands in both snippets', () => {
@@ -74,6 +83,73 @@ describe('buildTimeoutDiagnostics', () => {
     expect(result).not.toContain('::error');
     expect(result).not.toContain('::warning');
     expect(result).toContain('[redacted-workflow-cmd]');
+  });
+});
+
+describe('extractCliErrorSnippet', () => {
+  it('returns the empty string for empty input', () => {
+    expect(extractCliErrorSnippet('')).toBe('');
+  });
+
+  it('returns the last ERROR line whole when present', () => {
+    const stderr = 'warm-up line\nERROR: short error 1\nlater noise\nERROR: short error 2\n';
+    expect(extractCliErrorSnippet(stderr)).toBe('ERROR: short error 2');
+  });
+
+  it('preserves a >500-char ERROR JSON payload end-to-end including the message field', () => {
+    const fullMessage = "The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account.";
+    const payload = JSON.stringify({
+      type: 'error',
+      status: 400,
+      error: {
+        type: 'invalid_request_error',
+        message: fullMessage,
+        details: 'x'.repeat(600),
+      },
+    });
+    const stderr = `2025-05-14T00:00:00Z some preamble\nERROR: ${payload}\n`;
+    expect(stderr.length).toBeGreaterThan(500);
+    const snippet = extractCliErrorSnippet(stderr);
+    expect(snippet).toContain(`"message":"${fullMessage}"`);
+    expect(snippet.endsWith('}')).toBe(true);
+    expect(snippet.length).toBeGreaterThan(500);
+  });
+
+  it('falls back to head slice when no ERROR line is present', () => {
+    const stderr = 'z'.repeat(800);
+    const snippet = extractCliErrorSnippet(stderr);
+    expect(snippet).toBe('z'.repeat(500));
+  });
+
+  it('respects a custom fallback length', () => {
+    const stderr = 'a'.repeat(800);
+    expect(extractCliErrorSnippet(stderr, 100)).toBe('a'.repeat(100));
+  });
+
+  it('sanitizes workflow commands inside an ERROR line', () => {
+    const stderr = 'ERROR: ::warning::leaked secret here';
+    const snippet = extractCliErrorSnippet(stderr);
+    expect(snippet).not.toContain('::warning');
+    expect(snippet).toContain('[redacted-workflow-cmd]');
+  });
+
+  it('handles ERROR lines with surrounding whitespace', () => {
+    const stderr = 'noise\n   ERROR: trimmed payload   \nmore noise\n';
+    expect(extractCliErrorSnippet(stderr)).toBe('ERROR: trimmed payload');
+  });
+
+  it('truncates an ERROR line exceeding the default 16 384-char cap with an ellipsis', () => {
+    const longPayload = 'x'.repeat(20_000);
+    const stderr = `ERROR: ${longPayload}`;
+    const snippet = extractCliErrorSnippet(stderr);
+    expect(snippet.endsWith('…')).toBe(true);
+    expect(snippet.length).toBe(16_384 + 1); // cap chars + ellipsis
+  });
+
+  it('respects a custom maxErrorLineLen cap', () => {
+    const stderr = `ERROR: ${'y'.repeat(200)}`;
+    const snippet = extractCliErrorSnippet(stderr, 500, 100);
+    expect(snippet).toBe('ERROR: ' + 'y'.repeat(93) + '…');
   });
 });
 

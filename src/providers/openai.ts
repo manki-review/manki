@@ -7,7 +7,7 @@ import OpenAI from 'openai';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import * as core from '@actions/core';
 
-import { seedAuthFile } from './cli-utils';
+import { extractCliErrorSnippet, seedAuthFile } from './cli-utils';
 import { LLMClient, LLMResponse, OpenAIAuth, SendMessageOptions } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -76,7 +76,7 @@ export function resolveEffortTier(effort: 'low' | 'medium' | 'high' | 'max'): 'l
 /** Build diagnostic snippets for timeout/stale error messages. */
 function buildTimeoutDiagnostics(lastStdoutChunk: string, stderrText: string): string {
   const stdoutSnippet = sanitizeLogOutput(lastStdoutChunk.slice(-500));
-  const stderrSnippet = sanitizeLogOutput(stderrText.slice(0, 500));
+  const stderrSnippet = extractCliErrorSnippet(stderrText);
   const parts: string[] = [];
   if (stdoutSnippet) parts.push(`Last stdout: ${stdoutSnippet}`);
   if (stderrSnippet) parts.push(`stderr: ${stderrSnippet}`);
@@ -314,7 +314,7 @@ export class OpenAIClient implements LLMClient {
           return;
         }
         if (code !== 0) {
-          const sanitizedStderr = sanitizeLogOutput(stderr.slice(0, 500));
+          const sanitizedStderr = extractCliErrorSnippet(stderr);
           const msg = `exit ${code}${signal ? `, signal ${signal}` : ''}: ${sanitizedStderr}`;
           core.warning(`Codex CLI failed (${msg})`);
           reject(new Error(`Codex CLI invocation failed (${msg})`));

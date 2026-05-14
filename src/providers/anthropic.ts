@@ -5,7 +5,7 @@ import { promisify } from 'util';
 import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
-import { sanitizeLogOutput, STALE_TIMEOUT_MS, buildTimeoutDiagnostics } from './cli-utils';
+import { sanitizeLogOutput, STALE_TIMEOUT_MS, buildTimeoutDiagnostics, extractCliErrorSnippet } from './cli-utils';
 import { AnthropicAuth, LLMClient, LLMResponse, SendMessageOptions } from './types';
 
 // Re-export for backward compatibility with existing test imports.
@@ -261,7 +261,7 @@ export class AnthropicClient implements LLMClient {
           return;
         }
         if (code !== 0) {
-          const msg = `exit ${code}${signal ? `, signal ${signal}` : ''}: ${stderr.slice(0, 500)}`;
+          const msg = `exit ${code}${signal ? `, signal ${signal}` : ''}: ${extractCliErrorSnippet(stderr)}`;
           core.warning(`Claude CLI failed (${msg})`);
           reject(new Error(`Claude CLI invocation failed (${msg})`));
           return;
