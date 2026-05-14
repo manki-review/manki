@@ -4957,10 +4957,11 @@ describe('force review checkbox', () => {
     expect(mockPullsGet).toHaveBeenCalled();
   });
 
-  it('routes round-cap notice force review checkbox edit to handleCommentTrigger with both flags', async () => {
+  it('routes round-cap notice force review checkbox edit to handleCommentTrigger with skipCap only', async () => {
     // Simulate a round-cap notice that the author has just checked. handleCommentTrigger
-    // must run review with skipCap=true (and forceReview=true defensively) so the cap
-    // guard is bypassed.
+    // must run review with skipCap=true so the cap guard is bypassed, but forceReview=false
+    // so the in-progress guard still fires if a review is already running.
+    jest.mocked(ghUtils.isReviewInProgress).mockReset().mockResolvedValue(false);
     const capNoticeBody = `<!-- manki-bot -->\nManki has completed 5/5 review rounds on this PR. Automatic review is paused. Tick the box to force another round, or comment \`@manki review\`:\n\n- [x] Force review\n\n${FORCE_CAP_MARKER}`;
     setContext({
       eventName: 'issue_comment',
@@ -4977,9 +4978,29 @@ describe('force review checkbox', () => {
     expect(jest.mocked(ghUtils.reactToIssueComment)).toHaveBeenCalledWith(
       expect.anything(), 'test-owner', 'test-repo', 99, 'eyes',
     );
-    // both flags set, so the in-progress check is bypassed
-    expect(jest.mocked(ghUtils.isReviewInProgress)).not.toHaveBeenCalled();
+    // forceReview=false, so the in-progress guard runs (returns false by default — no concurrent review)
+    expect(jest.mocked(ghUtils.isReviewInProgress)).toHaveBeenCalled();
     expect(mockPullsGet).toHaveBeenCalled();
+  });
+
+  it('cap-notice tickbox does not bypass in-progress guard when a review is running', async () => {
+    jest.mocked(ghUtils.isReviewInProgress).mockResolvedValueOnce(true);
+    const capNoticeBody = `<!-- manki-bot -->\nManki has completed 5/5 review rounds on this PR. Automatic review is paused. Tick the box to force another round, or comment \`@manki review\`:\n\n- [x] Force review\n\n${FORCE_CAP_MARKER}`;
+    setContext({
+      eventName: 'issue_comment',
+      payload: {
+        action: 'edited',
+        sender: { login: 'user' },
+        issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } },
+        comment: { id: 99, body: capNoticeBody, user: { login: ghUtils.BOT_LOGIN }, author_association: 'COLLABORATOR' },
+      },
+    });
+
+    await run();
+
+    // forceReview=false so the in-progress guard fires — concurrent review is blocked
+    expect(jest.mocked(ghUtils.isReviewInProgress)).toHaveBeenCalled();
+    expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
   });
 
   it('ignores force review checkbox when unchecked', async () => {

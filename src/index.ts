@@ -195,10 +195,11 @@ async function run(): Promise<void> {
 
     case 'issue_comment': {
       const commentBody = github.context.payload.comment?.body ?? '';
-      const forceReviewTickbox = action === 'edited' && isBotComment && commentBody.includes(FORCE_REVIEW_MARKER) && commentBody.includes('- [x] Force review');
-      const forceCapTickbox = action === 'edited' && isBotComment && commentBody.includes(FORCE_CAP_MARKER) && commentBody.includes('- [x] Force review');
+      const isBotTickboxEdit = action === 'edited' && isBotComment && commentBody.includes('- [x] Force review');
+      const forceReviewTickbox = isBotTickboxEdit && commentBody.includes(FORCE_REVIEW_MARKER);
+      const forceCapTickbox = isBotTickboxEdit && commentBody.includes(FORCE_CAP_MARKER);
       if (forceCapTickbox && github.context.payload.issue?.pull_request) {
-        await handleCommentTrigger(true, true);
+        await handleCommentTrigger(false, true);
       } else if (forceReviewTickbox && github.context.payload.issue?.pull_request) {
         await handleCommentTrigger(true, false);
       } else if (isReviewRequest(commentBody) && github.context.payload.issue?.pull_request) {
