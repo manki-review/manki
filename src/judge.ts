@@ -180,12 +180,13 @@ export function computeProvenanceMap(
         if (block.file !== finding.fingerprint.file) continue;
         if (!normalizedBlocks[i].includes(normalizedFix)) continue;
 
+        if (!finding.title) continue;
         entries.push({
           file: block.file,
           lineStart: block.lineStart,
           lineEnd: block.lineEnd,
           originatingRound: round.meta.round,
-          originatingTitle: finding.title ?? '',
+          originatingTitle: finding.title,
         });
       }
     }
