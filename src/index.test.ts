@@ -5009,7 +5009,7 @@ describe('force review checkbox', () => {
         action: 'edited',
         sender: { login: 'user' },
         issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } },
-        comment: { id: 99, body: uncheckedCapBody },
+        comment: { id: 99, body: uncheckedCapBody, user: { login: ghUtils.BOT_LOGIN } },
       },
     });
 
