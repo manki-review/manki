@@ -17,7 +17,7 @@ import { LLMClient } from './providers';
 import { RepoMemory, Learning, Suppression } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
 import { Finding, IN_PR_SUPPRESSED_TAG, InPrSuppression, ProvenanceEntry, ReviewConfig, RoundContext, ParsedDiff, DiffFile, DiffHunk } from './types';
-import { LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, roundContextFromLegacy } from './test-utils';
+import { LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy } from './test-utils';
 
 const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
   auto_review: true,
@@ -3015,6 +3015,35 @@ describe('computeProvenanceMap', () => {
 
     const entries = computeProvenanceMap(rounds, diff);
     expect(entries).toHaveLength(0);
+  });
+
+  it('reads findings from round.findings.entries (native RoundContext path)', () => {
+    const round = makeRoundContext(1, {
+      findings: {
+        count: 1,
+        severityCounts: { blocker: 1 },
+        entries: [
+          makeFindingFingerprintEntry({
+            file: 'src/a.ts',
+            lineStart: 1,
+            lineEnd: 1,
+            suggestedFix: longFix,
+            title: 'Clamp future time',
+          }),
+        ],
+      },
+    });
+    const diff = buildDiff('src/a.ts', 42, [longFix]);
+
+    const entries = computeProvenanceMap([round], diff);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toEqual({
+      file: 'src/a.ts',
+      lineStart: 42,
+      lineEnd: 42,
+      originatingRound: 1,
+      originatingTitle: 'Clamp future time',
+    });
   });
 });
 
