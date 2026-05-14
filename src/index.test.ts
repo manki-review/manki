@@ -144,6 +144,7 @@ jest.mock('./github', () => ({
   postAppWarningIfNeeded: jest.fn().mockResolvedValue(undefined),
   cancelActiveReviewRun: jest.fn().mockResolvedValue(false),
   BOT_LOGIN: 'manki-review[bot]',
+  ACTIONS_BOT_LOGIN: 'github-actions[bot]',
   BOT_MARKER: '<!-- manki-bot -->',
   REVIEW_COMPLETE_MARKER: '<!-- manki-review-complete -->',
   FORCE_REVIEW_MARKER: '<!-- manki-force-review -->',
@@ -4236,6 +4237,26 @@ describe('runFullReview orchestration', () => {
 
       expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
     });
+
+    it('@manki review bypasses the round cap (skipCap=true)', async () => {
+      jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(5));
+      seedPriorRounds(42, 'test-repo', priorRounds(5));
+
+      jest.mocked(interaction.isReviewRequest).mockReturnValue(true);
+      setContext({
+        eventName: 'issue_comment',
+        payload: {
+          action: 'created',
+          sender: { login: 'owner' },
+          issue: { number: 42, pull_request: { url: 'https://api.github.com/repos/test-owner/test-repo/pulls/42' } },
+          comment: { id: 1, body: '@manki review', author_association: 'OWNER' },
+        },
+      });
+
+      await run();
+
+      expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
+    });
   });
 
   it('calls setFailed when parseModelSpec throws for an unknown model', async () => {
@@ -4922,7 +4943,7 @@ describe('force review checkbox', () => {
         action: 'edited',
         sender: { login: 'user' },
         issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } },
-        comment: { id: 42, body: forceBody, author_association: 'COLLABORATOR' },
+        comment: { id: 42, body: forceBody, user: { login: ghUtils.BOT_LOGIN }, author_association: 'COLLABORATOR' },
       },
     });
 
@@ -4947,7 +4968,7 @@ describe('force review checkbox', () => {
         action: 'edited',
         sender: { login: 'user' },
         issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } },
-        comment: { id: 99, body: capNoticeBody, author_association: 'COLLABORATOR' },
+        comment: { id: 99, body: capNoticeBody, user: { login: ghUtils.BOT_LOGIN }, author_association: 'COLLABORATOR' },
       },
     });
 
@@ -5008,7 +5029,7 @@ describe('force review checkbox', () => {
         action: 'edited',
         sender: { login: 'user' },
         issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } },
-        comment: { id: 42, body: forceBody, author_association: 'COLLABORATOR' },
+        comment: { id: 42, body: forceBody, user: { login: ghUtils.BOT_LOGIN }, author_association: 'COLLABORATOR' },
       },
     });
 
@@ -5020,5 +5041,110 @@ describe('force review checkbox', () => {
     // by verifying the pulls.get call (entry into runFullReview) since runFullReview
     // is the real implementation here, not a mock.
     expect(mockPullsGet).toHaveBeenCalled();
+  });
+
+  it('in-progress tickbox still blocked by cap when rounds at limit (skipCap=false)', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'anthropic_api_key' ? 'test-api-key' : '',
+    );
+    const reviewableFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+    };
+    jest.mocked(authModule.getMemoryToken).mockReturnValue('mem-token');
+    jest.mocked(memoryModule.loadMemory).mockResolvedValue({ learnings: [], suppressions: [], patterns: [] });
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [reviewableFile], totalAdditions: 5, totalDeletions: 5 });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([reviewableFile]);
+    jest.mocked(configModule.loadConfig).mockReturnValue({
+      auto_review: true, auto_approve: false, max_diff_lines: 5000,
+      exclude_paths: [], nit_handling: 'issues',
+      reviewers: [], instructions: '', review_level: 'auto',
+      review_thresholds: { small: 200, medium: 800 },
+      memory: { enabled: true, repo: 'owner/memory' },
+      convergence: { max_auto_rounds: 5, test_path_patterns: ['**/*.test.*'], suppress_resolved_threads: true },
+    });
+    const rounds = Array.from({ length: 5 }, (_, i) => ({
+      round: i + 1, commitSha: `sha${i + 1}`, timestamp: '2025-01-01T00:00:00Z', findings: [],
+    }));
+    seedPriorRounds(1, 'test-repo', rounds);
+
+    const forceBody = `<!-- manki-bot -->\n**Review skipped** — a review is currently in progress. Retry when it completes, or force now:\n\n- [x] Force review\n\n${FORCE_REVIEW_MARKER}`;
+    setContext({
+      eventName: 'issue_comment',
+      payload: {
+        action: 'edited',
+        sender: { login: 'user' },
+        issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/test-owner/test-repo/pulls/1' } },
+        comment: { id: 42, body: forceBody, user: { login: ghUtils.BOT_LOGIN }, author_association: 'COLLABORATOR' },
+      },
+    });
+
+    await run();
+
+    // cap fires because skipCap=false — forceReview only bypasses in-progress check, not cap
+    expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+    expect(mockOctokitInstance.rest.issues.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({ body: expect.stringContaining('Automatic review is paused') }),
+    );
+  });
+
+  it('cap-notice tickbox bypasses cap end-to-end when rounds at limit (skipCap=true)', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'anthropic_api_key' ? 'test-api-key' : '',
+    );
+    const reviewableFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+    };
+    jest.mocked(authModule.getMemoryToken).mockReturnValue('mem-token');
+    jest.mocked(memoryModule.loadMemory).mockResolvedValue({ learnings: [], suppressions: [], patterns: [] });
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [reviewableFile], totalAdditions: 5, totalDeletions: 5 });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([reviewableFile]);
+    jest.mocked(configModule.loadConfig).mockReturnValue({
+      auto_review: true, auto_approve: false, max_diff_lines: 5000,
+      exclude_paths: [], nit_handling: 'issues',
+      reviewers: [], instructions: '', review_level: 'auto',
+      review_thresholds: { small: 200, medium: 800 },
+      memory: { enabled: true, repo: 'owner/memory' },
+      convergence: { max_auto_rounds: 5, test_path_patterns: ['**/*.test.*'], suppress_resolved_threads: true },
+    });
+    const rounds = Array.from({ length: 5 }, (_, i) => ({
+      round: i + 1, commitSha: `sha${i + 1}`, timestamp: '2025-01-01T00:00:00Z', findings: [],
+    }));
+    seedPriorRounds(1, 'test-repo', rounds);
+
+    const capNoticeBody = `<!-- manki-bot -->\nManki has completed 5/5 review rounds on this PR. Automatic review is paused. Tick the box to force another round, or comment \`@manki review\`:\n\n- [x] Force review\n\n${FORCE_CAP_MARKER}`;
+    setContext({
+      eventName: 'issue_comment',
+      payload: {
+        action: 'edited',
+        sender: { login: 'user' },
+        issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/test-owner/test-repo/pulls/1' } },
+        comment: { id: 99, body: capNoticeBody, user: { login: ghUtils.BOT_LOGIN }, author_association: 'COLLABORATOR' },
+      },
+    });
+
+    await run();
+
+    // skipCap=true bypasses the cap guard — review runs despite rounds at limit
+    expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
+  });
+
+  it('ignores force review tickbox when comment is not from the bot', async () => {
+    const forceBody = `<!-- manki-bot -->\n**Review skipped** — a review is currently in progress. Retry when it completes, or force now:\n\n- [x] Force review\n\n${FORCE_REVIEW_MARKER}`;
+    setContext({
+      eventName: 'issue_comment',
+      payload: {
+        action: 'edited',
+        sender: { login: 'attacker' },
+        issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } },
+        comment: { id: 77, body: forceBody, user: { login: 'attacker' } },
+      },
+    });
+
+    await run();
+
+    expect(mockPullsGet).not.toHaveBeenCalled();
+    expect(jest.mocked(ghUtils.reactToIssueComment)).not.toHaveBeenCalled();
   });
 });
