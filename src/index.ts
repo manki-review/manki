@@ -29,7 +29,6 @@ import {
   reactToIssueComment,
   fetchLinkedIssues,
   BOT_LOGIN,
-  ACTIONS_BOT_LOGIN,
   BOT_MARKER as PROGRESS_MARKER,
   FORCE_REVIEW_MARKER,
   FORCE_CAP_MARKER,
@@ -121,7 +120,7 @@ async function run(): Promise<void> {
   }
 
   const commentAuthorLogin = github.context.payload.comment?.user?.login as string | undefined;
-  const isBotComment = commentAuthorLogin === BOT_LOGIN || commentAuthorLogin === ACTIONS_BOT_LOGIN;
+  const isBotComment = commentAuthorLogin === BOT_LOGIN;
 
   // Event filtering — exit immediately for irrelevant events.
   // Tested via integration (live PR reviews) since it depends on GitHub Actions context.
