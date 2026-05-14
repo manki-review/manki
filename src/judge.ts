@@ -15,7 +15,7 @@ import { dynamicFence, LinkedIssue, titleToSlug } from './github';
 import { safeTruncate } from './utils';
 import { sanitize, titlesOverlap } from './recap';
 import { validateSeverity } from './review';
-import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DiffFile, Finding, FindingReachability, FindingSeverity, HandoverFinding, HandoverRound, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ParsedDiff, PrContext, ThreadEvaluation } from './types';
+import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DiffFile, Finding, FindingFingerprintEntry, FindingReachability, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, ParsedDiff, PrContext, ThreadEvaluation } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -155,7 +155,7 @@ function extractAddedLineBlocks(rawDiff: string): AddedLineBlock[] {
  * nits rather than re-flagged as new required/suggestion findings.
  */
 export function computeProvenanceMap(
-  priorRounds: HandoverRound[] | undefined,
+  priorRounds: RoundContext[] | undefined,
   rawDiff: string,
 ): ProvenanceEntry[] {
   if (!priorRounds || priorRounds.length === 0) return [];
@@ -169,7 +169,7 @@ export function computeProvenanceMap(
   const entries: ProvenanceEntry[] = [];
 
   for (const round of priorRounds) {
-    for (const finding of round.findings) {
+    for (const finding of round.findings.entries) {
       if (!finding.suggestedFix) continue;
       const normalizedFix = normalizeForMatch(finding.suggestedFix);
       if (normalizedFix.length < OWN_PROPOSAL_MIN_MATCH_LENGTH) continue;
@@ -184,8 +184,8 @@ export function computeProvenanceMap(
           file: block.file,
           lineStart: block.lineStart,
           lineEnd: block.lineEnd,
-          originatingRound: round.round,
-          originatingTitle: finding.title,
+          originatingRound: round.meta.round,
+          originatingTitle: finding.title ?? '',
         });
       }
     }
@@ -231,7 +231,7 @@ export interface JudgeInput {
   agentCount: number;
   isFollowUp?: boolean;
   openThreads?: OpenThread[];
-  priorRounds?: HandoverRound[];
+  priorRounds?: RoundContext[];
   inPrSuppressions?: InPrSuppression[];
   effort?: 'low' | 'medium' | 'high';
   provenanceMap?: ProvenanceEntry[];
@@ -491,7 +491,7 @@ export function buildJudgeUserMessage(
   linkedIssues?: LinkedIssue[],
   changedFiles?: DiffFile[],
   openThreads?: OpenThread[],
-  priorRounds?: HandoverRound[],
+  priorRounds?: RoundContext[],
   interRoundDiff?: string,
 ): string {
   const parts: string[] = [];
@@ -558,15 +558,15 @@ export function buildJudgeUserMessage(
     const recent = priorRounds.slice(-PRIOR_ROUNDS_WINDOW);
     const payload = recent
       .map(r => ({
-        round: r.round,
-        commitSha: r.commitSha,
-        findings: r.findings
+        round: r.meta.round,
+        commitSha: r.meta.commitSha,
+        findings: r.findings.entries
           .filter(f => f.severity !== 'ignore')
           .map(f => ({
             fingerprint: f.fingerprint,
             severity: f.severity,
-            title: f.title.slice(0, 200),
-            authorReply: f.authorReply,
+            title: (f.title ?? '').slice(0, 200),
+            authorReply: f.authorReplyClass ?? 'none',
           })),
       }))
       .filter(r => r.findings.length > 0);
@@ -1111,7 +1111,7 @@ export interface CrossRoundSuppressionOptions {
  */
 export function applyCrossRoundSuppression(
   findings: Finding[],
-  priorRounds: HandoverRound[] | undefined,
+  priorRounds: RoundContext[] | undefined,
   options: CrossRoundSuppressionOptions = {},
 ): { findings: Finding[]; suppressedCount: number; demotedCount: number } {
   if (!priorRounds || priorRounds.length === 0) {
@@ -1123,17 +1123,17 @@ export function applyCrossRoundSuppression(
 
   type Prior = {
     round: number;
-    finding: HandoverFinding;
+    finding: FindingFingerprintEntry;
     /** 'agree' priors keep the existing contradiction-citation behaviour; 'resolved' priors only ratchet. */
     source: 'agree' | 'resolved';
   };
   const acceptedPriors: Prior[] = [];
   for (const round of priorRounds) {
-    for (const f of round.findings) {
-      if (f.authorReply === 'agree') {
-        acceptedPriors.push({ round: round.round, finding: f, source: 'agree' });
+    for (const f of round.findings.entries) {
+      if (f.authorReplyClass === 'agree') {
+        acceptedPriors.push({ round: round.meta.round, finding: f, source: 'agree' });
       } else if (useResolved && f.threadId && resolvedThreadIds!.has(f.threadId)) {
-        acceptedPriors.push({ round: round.round, finding: f, source: 'resolved' });
+        acceptedPriors.push({ round: round.meta.round, finding: f, source: 'resolved' });
       }
     }
   }
