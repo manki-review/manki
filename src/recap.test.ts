@@ -1434,6 +1434,30 @@ describe('fetchRecapState', () => {
       expect(state.priorRounds).toHaveLength(1);
       expect(state.priorRounds[0].judge.summary).toBe('Verdict --> pass');
     });
+
+    it('warns when listReviews returns exactly 100 reviews', async () => {
+      const reviews = Array.from({ length: 100 }, (_, i) => ({
+        id: i + 1,
+        body: detailsBlock(makeRoundContext(i + 1)),
+        user: { login: BOT_LOGIN },
+      }));
+      const octokit = mockOctokit([], reviews);
+      await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(core.warning).toHaveBeenCalledWith(
+        expect.stringContaining('pagination not implemented'),
+      );
+    });
+
+    it('parses two context blocks from a single review body', async () => {
+      const c1 = makeRoundContext(1);
+      const c2 = makeRoundContext(2);
+      const body = `${detailsBlock(c1)}\n${detailsBlock(c2)}`;
+      const octokit = mockOctokit([], [
+        { id: 100, body, user: { login: BOT_LOGIN } },
+      ]);
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.priorRounds.map(r => r.meta.round)).toEqual([1, 2]);
+    });
   });
 });
 

@@ -735,6 +735,13 @@ describe('formatContextBlock', () => {
     expect(result).toContain('\\u0060\\u0060\\u0060');
   });
 
+  it('escapes a single backtick in a string value to \\u0060', () => {
+    const ctx = makeContext({ judge: { summary: 'call `foo()` here' } });
+    const result = formatContextBlock(ctx);
+    expect(result).toContain('\\u0060foo()\\u0060');
+    expect(result).not.toContain('`foo()`');
+  });
+
 });
 
 describe('roundContextToFlatAliases', () => {
