@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 import { LLMClient } from './providers';
 import { ACTIONS_BOT_LOGIN, BOT_LOGIN, titleToSlug } from './github';
 import { matchesSuppression, Suppression } from './memory';
-import { AuthorReplyClass, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, migrateLegacySeverity, SEVERITY_TOKEN_PATTERN } from './types';
+import { AuthorReplyClass, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, migrateLegacySeverity, RoundContext, SEVERITY_TOKEN_PATTERN } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -170,6 +170,99 @@ function inPrSuppressionReasonFor(
 interface RecapState {
   previousFindings: PreviousFinding[];
   recapContext: string;
+  priorRounds: RoundContext[];
+}
+
+const CONTEXT_BLOCK_DETAILS_RE = /<details>\s*<summary>Manki context<\/summary>\s*```json\s*([\s\S]*?)```\s*<\/details>/g;
+const CONTEXT_BLOCK_HTML_COMMENT_RE = /<!-- manki-context: (.+?) -->/g;
+const REQUIRED_ROUND_CONTEXT_KEYS = ['meta', 'config', 'diff', 'models', 'planner', 'reviewers', 'judge', 'dedup', 'memory', 'findings', 'usage', 'verdict'] as const;
+
+/**
+ * Parse Manki context blocks from PR-level review bodies. Supports both the
+ * `<details>` wrapper (visible aggregate review) and the `<!-- manki-context: ... -->`
+ * wrapper (hidden per-round review). Unknown future fields on `RoundContext`
+ * are preserved opaquely. Duplicates on `meta.round` are deduped by keeping
+ * the entry with the highest review id (latest-posted). Result is sorted
+ * ascending by `meta.round`.
+ */
+function parseContextBlocks(
+  reviews: Array<{ body: string; id: number }>,
+  owner: string,
+  repo: string,
+  prNumber: number,
+): RoundContext[] {
+  const byRound = new Map<number, { ctx: RoundContext; reviewId: number }>();
+  const duplicateRounds = new Set<number>();
+
+  for (const review of reviews) {
+    const reviewUrl = `https://github.com/${owner}/${repo}/pull/${prNumber}#pullrequestreview-${review.id}`;
+    const candidates: string[] = [];
+
+    for (const m of review.body.matchAll(CONTEXT_BLOCK_DETAILS_RE)) {
+      candidates.push(m[1]);
+    }
+    if (candidates.length === 0) {
+      for (const m of review.body.matchAll(CONTEXT_BLOCK_HTML_COMMENT_RE)) {
+        candidates.push(m[1]);
+      }
+    }
+
+    for (const raw of candidates) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        core.warning(`Skipping malformed Manki context block at ${reviewUrl}: ${msg}`);
+        continue;
+      }
+
+      if (!parsed || typeof parsed !== 'object') {
+        core.warning(`Skipping Manki context block at ${reviewUrl}: not an object`);
+        continue;
+      }
+      const meta = (parsed as { meta?: unknown }).meta;
+      if (!meta || typeof meta !== 'object') {
+        core.warning(`Skipping Manki context block at ${reviewUrl}: missing meta`);
+        continue;
+      }
+      const round = (meta as { round?: unknown }).round;
+      const mankiVersion = (meta as { mankiVersion?: unknown }).mankiVersion;
+      if (typeof round !== 'number') {
+        core.warning(`Skipping Manki context block at ${reviewUrl}: missing or non-numeric meta.round`);
+        continue;
+      }
+      if (typeof mankiVersion !== 'string') {
+        core.warning(`Skipping Manki context block at ${reviewUrl}: missing meta.mankiVersion`);
+        continue;
+      }
+      const missingKey = REQUIRED_ROUND_CONTEXT_KEYS.find(k => !(k in (parsed as object)));
+      if (missingKey) {
+        core.warning(`Skipping Manki context block at ${reviewUrl}: missing required field '${missingKey}'`);
+        continue;
+      }
+
+      const ctx = parsed as RoundContext;
+      const existing = byRound.get(round);
+      if (existing) {
+        duplicateRounds.add(round);
+        if (review.id > existing.reviewId) {
+          byRound.set(round, { ctx, reviewId: review.id });
+        }
+      } else {
+        byRound.set(round, { ctx, reviewId: review.id });
+      }
+    }
+  }
+
+  for (const round of duplicateRounds) {
+    const winner = byRound.get(round);
+    core.warning(`Duplicate Manki context blocks for round ${round}, keeping review id ${winner?.reviewId}`);
+  }
+
+  return Array.from(byRound.values())
+    .map(v => v.ctx)
+    .sort((a, b) => a.meta.round - b.meta.round);
 }
 
 /**
@@ -182,7 +275,10 @@ async function fetchRecapState(
   prNumber: number,
   prAuthorLogin?: string,
 ): Promise<RecapState> {
-  const threads = await fetchReviewThreads(octokit, owner, repo, prNumber);
+  const [threads, priorRounds] = await Promise.all([
+    fetchReviewThreads(octokit, owner, repo, prNumber),
+    fetchPriorRoundContexts(octokit, owner, repo, prNumber),
+  ]);
 
   const previousFindings = threads
     .filter(t => t.isBotThread)
@@ -244,7 +340,38 @@ async function fetchRecapState(
 
   core.info(`Recap: ${resolved.length} resolved, ${open.length} open, ${previousFindings.length} total previous findings`);
 
-  return { previousFindings, recapContext };
+  return { previousFindings, recapContext, priorRounds };
+}
+
+async function fetchPriorRoundContexts(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  prNumber: number,
+): Promise<RoundContext[]> {
+  try {
+    const { data: reviews } = await octokit.rest.pulls.listReviews({
+      owner,
+      repo,
+      pull_number: prNumber,
+      per_page: 100,
+    });
+    if (reviews.length === 100) {
+      core.warning(`fetchPriorRoundContexts: received exactly 100 reviews for PR #${prNumber}; earlier rounds may be missing (pagination not implemented).`);
+    }
+    const candidates = reviews
+      .filter((r): r is typeof r & { body: string; id: number } => {
+        const body = r.body;
+        if (!body) return false;
+        if (r.user?.login !== BOT_LOGIN) return false;
+        return body.includes('<summary>Manki context</summary>') || body.includes('<!-- manki-context:');
+      })
+      .map(r => ({ body: r.body, id: r.id }));
+    return parseContextBlocks(candidates, owner, repo, prNumber);
+  } catch (error) {
+    core.warning(`Failed to fetch prior round contexts: ${error}`);
+    return [];
+  }
 }
 
 interface ReviewThread extends FindingMetadata {
