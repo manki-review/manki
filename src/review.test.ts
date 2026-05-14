@@ -25,7 +25,8 @@ import {
 } from './review';
 import * as core from '@actions/core';
 import { LinkedIssue, titleToSlug } from './github';
-import { Finding, HandoverFinding, HandoverRound, OpenThread, ReviewerAgent, ReviewConfig, ParsedDiff, DiffFile, AgentPick, ProvenanceEntry, MAX_AGENT_RETRIES } from './types';
+import { Finding, RoundContext, OpenThread, ReviewerAgent, ReviewConfig, ParsedDiff, DiffFile, AgentPick, ProvenanceEntry, MAX_AGENT_RETRIES } from './types';
+import { fingerprintEntriesFromLegacy, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, roundContextFromLegacy } from './test-utils';
 import { runJudgeAgent, computeProvenanceMap } from './judge';
 import { applySuppressions } from './memory';
 
@@ -288,13 +289,13 @@ describe('determineVerdict', () => {
     const findings: Finding[] = [
       { severity: 'warning', title: 'Missing null check', file: 'src/handler.ts', line: 10, description: 'desc', reviewers: ['reviewer-1'] },
     ];
-    const priors: HandoverFinding[] = [{
+    const priors: LegacyHandoverFindingFixture[] = [{
       fingerprint: { file: 'src/handler.ts', lineStart: 10, lineEnd: 10, slug: 'Missing-null-check' },
       severity: 'warning',
       title: 'Missing null check',
       authorReply: 'agree',
     }];
-    const result = determineVerdict(findings, priors);
+    const result = determineVerdict(findings, fingerprintEntriesFromLegacy(priors));
     expect(result.verdict).toBe('APPROVE');
     expect(result.verdictReason).toBe('only_nit_or_suggestion');
   });
@@ -304,13 +305,13 @@ describe('determineVerdict', () => {
       makeFinding({ severity: 'nitpick' }),
       { severity: 'warning', title: 'Missing null check', file: 'src/handler.ts', line: 10, description: 'desc', reviewers: ['reviewer-1'] },
     ];
-    const priors: HandoverFinding[] = [{
+    const priors: LegacyHandoverFindingFixture[] = [{
       fingerprint: { file: 'src/handler.ts', lineStart: 10, lineEnd: 10, slug: 'Missing-null-check' },
       severity: 'warning',
       title: 'Missing null check',
       authorReply: 'agree',
     }];
-    const result = determineVerdict(findings, priors);
+    const result = determineVerdict(findings, fingerprintEntriesFromLegacy(priors));
     expect(result.verdict).toBe('APPROVE');
     expect(result.verdictReason).toBe('only_nit_or_suggestion');
   });
@@ -319,13 +320,13 @@ describe('determineVerdict', () => {
     const findings: Finding[] = [
       { severity: 'warning', title: 'Extract helper', file: 'src/handler.ts', line: 10, description: 'desc', reviewers: ['reviewer-1'] },
     ];
-    const priors: HandoverFinding[] = [{
+    const priors: LegacyHandoverFindingFixture[] = [{
       fingerprint: { file: 'src/handler.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Extract helper') },
       severity: 'warning',
       title: 'Extract helper',
       authorReply: 'agree',
     }];
-    const result = determineVerdict(findings, priors);
+    const result = determineVerdict(findings, fingerprintEntriesFromLegacy(priors));
     expect(result.verdict).toBe('APPROVE');
     expect(result.verdictReason).toBe('only_nit_or_suggestion');
   });
@@ -334,13 +335,13 @@ describe('determineVerdict', () => {
     const findings: Finding[] = [
       { severity: 'warning', title: 'Extract helper', file: 'src/handler.ts', line: 10, description: 'desc', reviewers: ['reviewer-1'] },
     ];
-    const priors: HandoverFinding[] = [{
+    const priors: LegacyHandoverFindingFixture[] = [{
       fingerprint: { file: 'src/handler.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Extract helper') },
       severity: 'warning',
       title: 'Extract helper',
       authorReply: 'disagree',
     }];
-    const result = determineVerdict(findings, priors);
+    const result = determineVerdict(findings, fingerprintEntriesFromLegacy(priors));
     expect(result.verdict).toBe('REQUEST_CHANGES');
     expect(result.verdictReason).toBe('novel_suggestion');
   });
@@ -362,13 +363,13 @@ describe('determineVerdict', () => {
       { severity: 'nitpick', title: 'Minor naming', file: 'src/handler.ts', line: 5, description: 'desc', reviewers: ['reviewer-1'] },
       { severity: 'suggestion', title: 'Extract helper', file: 'src/handler.ts', line: 10, description: 'desc', reviewers: ['reviewer-1'] },
     ];
-    const priors: HandoverFinding[] = [{
+    const priors: LegacyHandoverFindingFixture[] = [{
       fingerprint: { file: 'src/handler.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Extract helper') },
       severity: 'suggestion',
       title: 'Extract helper',
       authorReply: 'agree',
     }];
-    const result = determineVerdict(findings, priors);
+    const result = determineVerdict(findings, fingerprintEntriesFromLegacy(priors));
     expect(result.verdict).toBe('APPROVE');
     expect(result.verdictReason).toBe('only_nit_or_suggestion');
   });
@@ -378,13 +379,13 @@ describe('determineVerdict', () => {
       { severity: 'warning', title: 'Missing null check', file: 'src/handler.ts', line: 10, description: 'desc', reviewers: ['reviewer-1'] },
       { severity: 'warning', title: 'Unused import', file: 'src/handler.ts', line: 20, description: 'desc', reviewers: ['reviewer-1'] },
     ];
-    const priors: HandoverFinding[] = [{
+    const priors: LegacyHandoverFindingFixture[] = [{
       fingerprint: { file: 'src/handler.ts', lineStart: 10, lineEnd: 10, slug: 'Missing-null-check' },
       severity: 'warning',
       title: 'Missing null check',
       authorReply: 'agree',
     }];
-    const result = determineVerdict(findings, priors);
+    const result = determineVerdict(findings, fingerprintEntriesFromLegacy(priors));
     expect(result.verdict).toBe('REQUEST_CHANGES');
     expect(result.verdictReason).toBe('novel_suggestion');
   });
@@ -402,13 +403,13 @@ describe('determineVerdict', () => {
     const findings: Finding[] = [
       { severity: 'warning', title, file: 'f.ts', line: 5, description: 'd', reviewers: ['r'] },
     ];
-    const priors: HandoverFinding[] = [{
+    const priors: LegacyHandoverFindingFixture[] = [{
       fingerprint: { file: 'f.ts', lineStart: 5, lineEnd: 5, slug: titleToSlug(title) },
       severity: 'warning',
       title,
       authorReply: 'disagree',
     }];
-    expect(determineVerdict(findings, priors).verdict).toBe('REQUEST_CHANGES');
+    expect(determineVerdict(findings, fingerprintEntriesFromLegacy(priors)).verdict).toBe('REQUEST_CHANGES');
   });
 
   it.each(['partial', 'none'] as const)('does not dismiss when authorReply is "%s"', (reply) => {
@@ -416,44 +417,44 @@ describe('determineVerdict', () => {
     const findings: Finding[] = [
       { severity: 'warning', title, file: 'f.ts', line: 5, description: 'd', reviewers: ['r'] },
     ];
-    const priors: HandoverFinding[] = [{
+    const priors: LegacyHandoverFindingFixture[] = [{
       fingerprint: { file: 'f.ts', lineStart: 5, lineEnd: 5, slug: titleToSlug(title) },
       severity: 'warning',
       title,
       authorReply: reply,
     }];
-    expect(determineVerdict(findings, priors).verdict).toBe('REQUEST_CHANGES');
-    expect(determineVerdict(findings, priors).verdictReason).toBe('novel_suggestion');
+    expect(determineVerdict(findings, fingerprintEntriesFromLegacy(priors)).verdict).toBe('REQUEST_CHANGES');
+    expect(determineVerdict(findings, fingerprintEntriesFromLegacy(priors)).verdictReason).toBe('novel_suggestion');
   });
 
   it('tolerates ±5 line drift when matching a prior dismissal', () => {
     const findings: Finding[] = [
       { severity: 'warning', title: 'Drifted', file: 'f.ts', line: 15, description: 'd', reviewers: ['r'] },
     ];
-    const priors: HandoverFinding[] = [{
+    const priors: LegacyHandoverFindingFixture[] = [{
       fingerprint: { file: 'f.ts', lineStart: 10, lineEnd: 10, slug: 'Drifted' },
       severity: 'warning',
       title: 'Drifted',
       authorReply: 'agree',
     }];
-    expect(determineVerdict(findings, priors).verdict).toBe('APPROVE');
+    expect(determineVerdict(findings, fingerprintEntriesFromLegacy(priors)).verdict).toBe('APPROVE');
   });
 
   it('rejects matches outside the ±5 line tolerance', () => {
     const findings: Finding[] = [
       { severity: 'warning', title: 'FarAway', file: 'f.ts', line: 100, description: 'd', reviewers: ['r'] },
     ];
-    const priors: HandoverFinding[] = [{
+    const priors: LegacyHandoverFindingFixture[] = [{
       fingerprint: { file: 'f.ts', lineStart: 10, lineEnd: 10, slug: 'FarAway' },
       severity: 'warning',
       title: 'FarAway',
       authorReply: 'agree',
     }];
-    expect(determineVerdict(findings, priors).verdict).toBe('REQUEST_CHANGES');
+    expect(determineVerdict(findings, fingerprintEntriesFromLegacy(priors)).verdict).toBe('REQUEST_CHANGES');
   });
 
   it('matches when finding.line equals lineStart + 5 (exact tolerance boundary)', () => {
-    const prior: HandoverFinding = {
+    const prior: LegacyHandoverFindingFixture = {
       fingerprint: { file: 'f.ts', lineStart: 10, lineEnd: 10, slug: 'Boundary' },
       severity: 'warning',
       title: 'Boundary',
@@ -462,13 +463,13 @@ describe('determineVerdict', () => {
     const atBoundary: Finding[] = [
       { severity: 'warning', title: 'Boundary', file: 'f.ts', line: 15, description: 'd', reviewers: ['r'] },
     ];
-    const { verdict: v1, verdictReason: vr1 } = determineVerdict(atBoundary, [prior]);
+    const { verdict: v1, verdictReason: vr1 } = determineVerdict(atBoundary, fingerprintEntriesFromLegacy([prior]));
     expect(v1).toBe('APPROVE');
     expect(vr1).toBe('only_nit_or_suggestion');
   });
 
   it('does not match when finding.line equals lineStart + 6 (one outside tolerance)', () => {
-    const prior: HandoverFinding = {
+    const prior: LegacyHandoverFindingFixture = {
       fingerprint: { file: 'f.ts', lineStart: 10, lineEnd: 10, slug: 'Boundary' },
       severity: 'warning',
       title: 'Boundary',
@@ -477,13 +478,13 @@ describe('determineVerdict', () => {
     const outsideBoundary: Finding[] = [
       { severity: 'warning', title: 'Boundary', file: 'f.ts', line: 16, description: 'd', reviewers: ['r'] },
     ];
-    const { verdict: v4, verdictReason: vr4 } = determineVerdict(outsideBoundary, [prior]);
+    const { verdict: v4, verdictReason: vr4 } = determineVerdict(outsideBoundary, fingerprintEntriesFromLegacy([prior]));
     expect(v4).toBe('REQUEST_CHANGES');
     expect(vr4).toBe('novel_suggestion');
   });
 
   it('matches when finding.line equals lineEnd + 5 (exact tolerance on lineEnd endpoint)', () => {
-    const prior: HandoverFinding = {
+    const prior: LegacyHandoverFindingFixture = {
       fingerprint: { file: 'f.ts', lineStart: 10, lineEnd: 20, slug: 'Boundary2' },
       severity: 'warning',
       title: 'Boundary2',
@@ -492,13 +493,13 @@ describe('determineVerdict', () => {
     const atEndBoundary: Finding[] = [
       { severity: 'warning', title: 'Boundary2', file: 'f.ts', line: 25, description: 'd', reviewers: ['r'] },
     ];
-    const { verdict: v2, verdictReason: vr2 } = determineVerdict(atEndBoundary, [prior]);
+    const { verdict: v2, verdictReason: vr2 } = determineVerdict(atEndBoundary, fingerprintEntriesFromLegacy([prior]));
     expect(v2).toBe('APPROVE');
     expect(vr2).toBe('only_nit_or_suggestion');
   });
 
   it('does not match when finding.line equals lineEnd + 6 (one outside lineEnd tolerance)', () => {
-    const prior: HandoverFinding = {
+    const prior: LegacyHandoverFindingFixture = {
       fingerprint: { file: 'f.ts', lineStart: 10, lineEnd: 20, slug: 'Boundary2' },
       severity: 'warning',
       title: 'Boundary2',
@@ -507,13 +508,13 @@ describe('determineVerdict', () => {
     const outsideEndBoundary: Finding[] = [
       { severity: 'warning', title: 'Boundary2', file: 'f.ts', line: 26, description: 'd', reviewers: ['r'] },
     ];
-    const { verdict: v5, verdictReason: vr5 } = determineVerdict(outsideEndBoundary, [prior]);
+    const { verdict: v5, verdictReason: vr5 } = determineVerdict(outsideEndBoundary, fingerprintEntriesFromLegacy([prior]));
     expect(v5).toBe('REQUEST_CHANGES');
     expect(vr5).toBe('novel_suggestion');
   });
 
   it('matches when finding.line equals lineStart - 5 (exact tolerance below lineStart)', () => {
-    const prior: HandoverFinding = {
+    const prior: LegacyHandoverFindingFixture = {
       fingerprint: { file: 'f.ts', lineStart: 10, lineEnd: 10, slug: 'Boundary' },
       severity: 'warning',
       title: 'Boundary',
@@ -522,13 +523,13 @@ describe('determineVerdict', () => {
     const atLowerBoundary: Finding[] = [
       { severity: 'warning', title: 'Boundary', file: 'f.ts', line: 5, description: 'd', reviewers: ['r'] },
     ];
-    const { verdict: v3, verdictReason: vr3 } = determineVerdict(atLowerBoundary, [prior]);
+    const { verdict: v3, verdictReason: vr3 } = determineVerdict(atLowerBoundary, fingerprintEntriesFromLegacy([prior]));
     expect(v3).toBe('APPROVE');
     expect(vr3).toBe('only_nit_or_suggestion');
   });
 
   it('does not match when finding.line equals lineStart - 6 (one outside tolerance below lineStart)', () => {
-    const prior: HandoverFinding = {
+    const prior: LegacyHandoverFindingFixture = {
       fingerprint: { file: 'f.ts', lineStart: 10, lineEnd: 10, slug: 'Boundary' },
       severity: 'warning',
       title: 'Boundary',
@@ -537,7 +538,7 @@ describe('determineVerdict', () => {
     const outsideLowerBoundary: Finding[] = [
       { severity: 'warning', title: 'Boundary', file: 'f.ts', line: 4, description: 'd', reviewers: ['r'] },
     ];
-    const { verdict: v6, verdictReason: vr6 } = determineVerdict(outsideLowerBoundary, [prior]);
+    const { verdict: v6, verdictReason: vr6 } = determineVerdict(outsideLowerBoundary, fingerprintEntriesFromLegacy([prior]));
     expect(v6).toBe('REQUEST_CHANGES');
     expect(vr6).toBe('novel_suggestion');
   });
@@ -549,13 +550,13 @@ describe('determineVerdict', () => {
       { severity: 'warning', title: 'F3', file: 'src/c.ts', line: 30, description: 'd', reviewers: ['r'] },
       { severity: 'warning', title: 'F4', file: 'src/d.ts', line: 40, description: 'd', reviewers: ['r'] },
     ];
-    const priors: HandoverFinding[] = findings.map(f => ({
+    const priors: LegacyHandoverFindingFixture[] = findings.map(f => ({
       fingerprint: { file: f.file, lineStart: f.line, lineEnd: f.line, slug: titleToSlug(f.title) },
       severity: 'warning' as const,
       title: f.title,
       authorReply: 'agree' as const,
     }));
-    const result = determineVerdict(findings, priors);
+    const result = determineVerdict(findings, fingerprintEntriesFromLegacy(priors));
     expect(result.verdict).toBe('APPROVE');
     expect(result.verdictReason).toBe('only_nit_or_suggestion');
   });
@@ -565,18 +566,18 @@ describe('determineVerdict', () => {
     const findings: Finding[] = [
       { severity: 'warning', title, file: 'f.ts', line: 0, description: 'd', reviewers: ['r'] },
     ];
-    const priors: HandoverFinding[] = [{
+    const priors: LegacyHandoverFindingFixture[] = [{
       fingerprint: { file: 'f.ts', lineStart: 3, lineEnd: 3, slug: titleToSlug(title) },
       severity: 'warning',
       title,
       authorReply: 'agree',
     }];
-    expect(determineVerdict(findings, priors).verdict).toBe('REQUEST_CHANGES');
-    expect(determineVerdict(findings, priors).verdictReason).toBe('novel_suggestion');
+    expect(determineVerdict(findings, fingerprintEntriesFromLegacy(priors)).verdict).toBe('REQUEST_CHANGES');
+    expect(determineVerdict(findings, fingerprintEntriesFromLegacy(priors)).verdictReason).toBe('novel_suggestion');
   });
 
   describe('unresolved prior findings', () => {
-    const makePriorWarning = (overrides: Partial<HandoverFinding> = {}): HandoverFinding => ({
+    const makePriorWarning = (overrides: Partial<LegacyHandoverFindingFixture> = {}): LegacyHandoverFindingFixture => ({
       fingerprint: { file: 'src/x.ts', lineStart: 10, lineEnd: 10, slug: 'old-issue' },
       severity: 'warning',
       title: 'Old issue',
@@ -599,7 +600,7 @@ describe('determineVerdict', () => {
     it('blocks APPROVE on a nit-only round when a prior warning is still open', () => {
       const priors = [makePriorWarning()];
       const open = [makeOpenThread()];
-      const result = determineVerdict([nitpick], priors, open);
+      const result = determineVerdict([nitpick], fingerprintEntriesFromLegacy(priors), open);
       expect(result.verdict).toBe('REQUEST_CHANGES');
       expect(result.verdictReason).toBe('prior_unaddressed');
     });
@@ -607,7 +608,7 @@ describe('determineVerdict', () => {
     it('approves when the prior warning was author-agreed', () => {
       const priors = [makePriorWarning({ authorReply: 'agree' })];
       const open = [makeOpenThread()];
-      const result = determineVerdict([nitpick], priors, open);
+      const result = determineVerdict([nitpick], fingerprintEntriesFromLegacy(priors), open);
       expect(result.verdict).toBe('APPROVE');
       expect(result.verdictReason).toBe('only_nit_or_suggestion');
     });
@@ -622,14 +623,14 @@ describe('determineVerdict', () => {
       // with an unresolved prior warning. The unknown sentinel forces a
       // conservative block until the caller passes an explicit list.
       const priors = [makePriorWarning()];
-      const result = determineVerdict([nitpick], priors, sentinel);
+      const result = determineVerdict([nitpick], fingerprintEntriesFromLegacy(priors), sentinel);
       expect(result.verdict).toBe('REQUEST_CHANGES');
       expect(result.verdictReason).toBe('prior_unaddressed');
     });
 
     it('approves when the prior thread is no longer in openThreads (fetched, none open)', () => {
       const priors = [makePriorWarning()];
-      const result = determineVerdict([nitpick], priors, []);
+      const result = determineVerdict([nitpick], fingerprintEntriesFromLegacy(priors), []);
       expect(result.verdict).toBe('APPROVE');
       expect(result.verdictReason).toBe('only_nit_or_suggestion');
     });
@@ -637,7 +638,7 @@ describe('determineVerdict', () => {
     it('blocks APPROVE on an unresolved prior blocker', () => {
       const priors = [makePriorWarning({ severity: 'blocker' })];
       const open = [makeOpenThread({ severity: 'blocker' })];
-      const result = determineVerdict([nitpick], priors, open);
+      const result = determineVerdict([nitpick], fingerprintEntriesFromLegacy(priors), open);
       expect(result.verdict).toBe('REQUEST_CHANGES');
       expect(result.verdictReason).toBe('prior_unaddressed');
     });
@@ -651,7 +652,7 @@ describe('determineVerdict', () => {
     it('treats a prior warning without threadId as unresolved (conservative default)', () => {
       const priors = [makePriorWarning({ threadId: undefined })];
       const open = [makeOpenThread({ threadId: 'OTHER' })];
-      const result = determineVerdict([nitpick], priors, open);
+      const result = determineVerdict([nitpick], fingerprintEntriesFromLegacy(priors), open);
       expect(result.verdict).toBe('REQUEST_CHANGES');
       expect(result.verdictReason).toBe('prior_unaddressed');
     });
@@ -662,7 +663,7 @@ describe('determineVerdict', () => {
       };
       const priors = [makePriorWarning()];
       const open = [makeOpenThread()];
-      const result = determineVerdict([novelWarning], priors, open);
+      const result = determineVerdict([novelWarning], fingerprintEntriesFromLegacy(priors), open);
       expect(result.verdict).toBe('REQUEST_CHANGES');
       expect(result.verdictReason).toBe('novel_suggestion');
     });
@@ -670,7 +671,7 @@ describe('determineVerdict', () => {
     it('ignores prior findings that are not warning or blocker (e.g. suggestion)', () => {
       const priorSuggestion = makePriorWarning({ severity: 'suggestion' });
       const open = [makeOpenThread()];
-      const result = determineVerdict([nitpick], [priorSuggestion], open);
+      const result = determineVerdict([nitpick], fingerprintEntriesFromLegacy([priorSuggestion]), open);
       expect(result.verdict).toBe('APPROVE');
       expect(result.verdictReason).toBe('only_nit_or_suggestion');
     });
@@ -678,7 +679,7 @@ describe('determineVerdict', () => {
     it('treats prior findings with severity "unknown" as non-blocking (falls through to APPROVE)', () => {
       const priorUnknown = makePriorWarning({ severity: 'unknown' });
       const open = [makeOpenThread()];
-      const result = determineVerdict([nitpick], [priorUnknown], open);
+      const result = determineVerdict([nitpick], fingerprintEntriesFromLegacy([priorUnknown]), open);
       expect(result.verdict).toBe('APPROVE');
       expect(result.verdictReason).toBe('only_nit_or_suggestion');
     });
@@ -689,7 +690,7 @@ describe('determineVerdict', () => {
       };
       const priors = [makePriorWarning()];
       const open = [makeOpenThread()];
-      const result = determineVerdict([blocker], priors, open);
+      const result = determineVerdict([blocker], fingerprintEntriesFromLegacy(priors), open);
       expect(result.verdict).toBe('REQUEST_CHANGES');
       expect(result.verdictReason).toBe('required_present');
     });
@@ -697,7 +698,7 @@ describe('determineVerdict', () => {
     it.each(['disagree', 'partial'] as const)('blocks APPROVE when authorReply is %s', (reply) => {
       const priors = [makePriorWarning({ authorReply: reply })];
       const open = [makeOpenThread()];
-      const result = determineVerdict([nitpick], priors, open);
+      const result = determineVerdict([nitpick], fingerprintEntriesFromLegacy(priors), open);
       expect(result.verdict).toBe('REQUEST_CHANGES');
       expect(result.verdictReason).toBe('prior_unaddressed');
     });
@@ -706,7 +707,7 @@ describe('determineVerdict', () => {
       const resolved = makePriorWarning({ threadId: 'T_RESOLVED', authorReply: 'agree' });
       const unresolved = makePriorWarning({ threadId: 'T_OPEN' });
       const open = [makeOpenThread({ threadId: 'T_OPEN' })];
-      const result = determineVerdict([nitpick], [resolved, unresolved], open);
+      const result = determineVerdict([nitpick], fingerprintEntriesFromLegacy([resolved, unresolved]), open);
       expect(result.verdict).toBe('REQUEST_CHANGES');
       expect(result.verdictReason).toBe('prior_unaddressed');
     });
@@ -719,51 +720,51 @@ describe('determineVerdict', () => {
       // even when the judge claims it is `addressed`.
       const priors = [makePriorWarning()];
       const open = [makeOpenThread()];
-      const result = determineVerdict([nitpick], priors, open);
+      const result = determineVerdict([nitpick], fingerprintEntriesFromLegacy(priors), open);
       expect(result.verdict).toBe('REQUEST_CHANGES');
       expect(result.verdictReason).toBe('prior_unaddressed');
     });
 
     it('collapses multi-round priors by threadId, keeping the most recent round (round 2 agree wins over round 1 none)', () => {
-      const round1: HandoverFinding = {
+      const round1: LegacyHandoverFindingFixture = {
         fingerprint: { file: 'src/x.ts', lineStart: 10, lineEnd: 10, slug: 'old-issue' },
         severity: 'warning',
         title: 'Old issue',
         authorReply: 'none',
         threadId: 'T1',
       };
-      const round2: HandoverFinding = { ...round1, authorReply: 'agree' };
+      const round2: LegacyHandoverFindingFixture = { ...round1, authorReply: 'agree' };
       const open = [makeOpenThread()];
       // Flat priors come in chronological order (round 1 first, round 2 last).
-      const result = determineVerdict([nitpick], [round1, round2], open);
+      const result = determineVerdict([nitpick], fingerprintEntriesFromLegacy([round1, round2]), open);
       expect(result.verdict).toBe('APPROVE');
       expect(result.verdictReason).toBe('only_nit_or_suggestion');
     });
 
     it('collapses multi-round priors by fingerprint when threadId is absent (latest round wins)', () => {
-      const round1: HandoverFinding = {
+      const round1: LegacyHandoverFindingFixture = {
         fingerprint: { file: 'src/x.ts', lineStart: 10, lineEnd: 10, slug: 'old-issue' },
         severity: 'warning',
         title: 'Old issue',
         authorReply: 'none',
       };
-      const round2: HandoverFinding = { ...round1, authorReply: 'agree' };
-      const result = determineVerdict([nitpick], [round1, round2], []);
+      const round2: LegacyHandoverFindingFixture = { ...round1, authorReply: 'agree' };
+      const result = determineVerdict([nitpick], fingerprintEntriesFromLegacy([round1, round2]), []);
       expect(result.verdict).toBe('APPROVE');
       expect(result.verdictReason).toBe('only_nit_or_suggestion');
     });
 
     it('keeps the round 2 unresolved state when round 1 had agree and round 2 reopened with none', () => {
-      const round1: HandoverFinding = {
+      const round1: LegacyHandoverFindingFixture = {
         fingerprint: { file: 'src/x.ts', lineStart: 10, lineEnd: 10, slug: 'old-issue' },
         severity: 'warning',
         title: 'Old issue',
         authorReply: 'agree',
         threadId: 'T1',
       };
-      const round2: HandoverFinding = { ...round1, authorReply: 'none' };
+      const round2: LegacyHandoverFindingFixture = { ...round1, authorReply: 'none' };
       const open = [makeOpenThread()];
-      const result = determineVerdict([nitpick], [round1, round2], open);
+      const result = determineVerdict([nitpick], fingerprintEntriesFromLegacy([round1, round2]), open);
       expect(result.verdict).toBe('REQUEST_CHANGES');
       expect(result.verdictReason).toBe('prior_unaddressed');
     });
@@ -776,15 +777,15 @@ describe('determineVerdict', () => {
       // (e.g. when keyed by `threadId` vs fingerprint separately), the stale
       // round 1 'none' entry would survive and falsely block APPROVE because
       // its missing `threadId` is treated as unresolved.
-      const round1: HandoverFinding = {
+      const round1: LegacyHandoverFindingFixture = {
         fingerprint: { file: 'src/x.ts', lineStart: 10, lineEnd: 10, slug: 'old-issue' },
         severity: 'warning',
         title: 'Old issue',
         authorReply: 'none',
       };
-      const round2: HandoverFinding = { ...round1, authorReply: 'agree', threadId: 'T1' };
+      const round2: LegacyHandoverFindingFixture = { ...round1, authorReply: 'agree', threadId: 'T1' };
       const open = [makeOpenThread()];
-      const result = determineVerdict([nitpick], [round1, round2], open);
+      const result = determineVerdict([nitpick], fingerprintEntriesFromLegacy([round1, round2]), open);
       expect(result.verdict).toBe('APPROVE');
       expect(result.verdictReason).toBe('only_nit_or_suggestion');
     });
@@ -798,14 +799,14 @@ describe('determineVerdict', () => {
       // `none` entry overwrites round 1, so the current-round warning is
       // correctly reported as novel.
       const title = 'Old issue';
-      const round1: HandoverFinding = {
+      const round1: LegacyHandoverFindingFixture = {
         fingerprint: { file: 'src/x.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug(title) },
         severity: 'warning',
         title,
         authorReply: 'agree',
         threadId: 'T1',
       };
-      const round2: HandoverFinding = { ...round1, authorReply: 'none' };
+      const round2: LegacyHandoverFindingFixture = { ...round1, authorReply: 'none' };
       const currentWarning: Finding = {
         severity: 'warning',
         title,
@@ -815,7 +816,7 @@ describe('determineVerdict', () => {
         reviewers: ['r'],
       };
       const open = [makeOpenThread()];
-      const result = determineVerdict([currentWarning], [round1, round2], open);
+      const result = determineVerdict([currentWarning], fingerprintEntriesFromLegacy([round1, round2]), open);
       expect(result.verdict).toBe('REQUEST_CHANGES');
       expect(result.verdictReason).toBe('novel_suggestion');
     });
@@ -1660,16 +1661,16 @@ describe('runReview', () => {
     };
   }
 
-  function buildPriorRound(round: number, findings: HandoverFinding[]): HandoverRound {
-    return {
+  function buildPriorRound(round: number, findings: LegacyHandoverFindingFixture[]): RoundContext {
+    return roundContextFromLegacy({
       round,
       commitSha: `sha${round}`,
       timestamp: `2025-01-0${round}T00:00:00Z`,
       findings,
-    };
+    });
   }
 
-  function makePriorWarningFinding(overrides: Partial<HandoverFinding> = {}): HandoverFinding {
+  function makePriorWarningFinding(overrides: Partial<LegacyHandoverFindingFixture> = {}): LegacyHandoverFindingFixture {
     return {
       fingerprint: { file: 'src/x.ts', lineStart: 10, lineEnd: 10, slug: 'old-issue' },
       severity: 'warning',
@@ -2361,7 +2362,7 @@ describe('runReview', () => {
       summary: 'One prior-dismissed suggestion surviving judge.',
     });
 
-    const priorRounds: HandoverRound[] = [{
+    const priorRounds: LegacyHandoverRoundFixture[] = [{
       round: 1,
       commitSha: 'sha1',
       timestamp: '2025-01-01T00:00:00Z',
@@ -2376,7 +2377,7 @@ describe('runReview', () => {
     const result = await runReview(
       clients, config, diff, 'raw diff', 'repo context',
       undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      priorRounds,
+      priorRounds.map(roundContextFromLegacy),
     );
 
     expect(result.verdict).toBe('APPROVE');
@@ -2396,7 +2397,7 @@ describe('runReview', () => {
       threadEvaluations: [],
     });
 
-    const priorRounds: HandoverRound[] = [buildPriorRound(1, [makePriorWarningFinding()])];
+    const priorRounds: RoundContext[] = [buildPriorRound(1, [makePriorWarningFinding()])];
     const openThreads: OpenThread[] = [makePriorOpenThread()];
 
     const result = await runReview(
@@ -2431,7 +2432,7 @@ describe('runReview', () => {
       threadEvaluations: [{ threadId: 'T1', status: 'addressed', reason: 'fixed in diff' }],
     });
 
-    const priorRounds: HandoverRound[] = [buildPriorRound(1, [makePriorWarningFinding()])];
+    const priorRounds: RoundContext[] = [buildPriorRound(1, [makePriorWarningFinding()])];
     const openThreads: OpenThread[] = [];
 
     const result = await runReview(
@@ -2468,7 +2469,7 @@ describe('runReview', () => {
       threadEvaluations: [],
     });
 
-    const priorRounds: HandoverRound[] = [
+    const priorRounds: RoundContext[] = [
       buildPriorRound(1, [makePriorWarningFinding({ authorReply: 'agree' })]),
     ];
     const openThreads: OpenThread[] = [makePriorOpenThread()];
@@ -2505,7 +2506,7 @@ describe('runReview', () => {
       threadEvaluations: [{ threadId: 'T1', status: 'addressed', reason: 'fixed in diff' }],
     });
 
-    const priorRounds: HandoverRound[] = [buildPriorRound(1, [makePriorWarningFinding()])];
+    const priorRounds: RoundContext[] = [buildPriorRound(1, [makePriorWarningFinding()])];
     const openThreads: OpenThread[] = [makePriorOpenThread()];
 
     const result = await runReview(
@@ -2545,7 +2546,7 @@ describe('runReview', () => {
     const round1 = buildPriorRound(1, [makePriorWarningFinding({ authorReply: 'agree' })]);
     const round2 = buildPriorRound(2, [makePriorWarningFinding({ authorReply: 'none' })]);
     // Pass rounds out of chronological order on purpose.
-    const priorRounds: HandoverRound[] = [round2, round1];
+    const priorRounds: RoundContext[] = [round2, round1];
     const openThreads: OpenThread[] = [makePriorOpenThread()];
 
     const result = await runReview(
@@ -2836,7 +2837,7 @@ describe('runReview', () => {
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
     mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
 
-    const priorRounds: HandoverRound[] = [
+    const priorRounds: LegacyHandoverRoundFixture[] = [
       {
         round: 1,
         commitSha: 'sha1',
@@ -2857,7 +2858,7 @@ describe('runReview', () => {
       const result = await runReview(
         clients, config, diff, 'raw diff', 'repo context',
         undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-        priorRounds,
+        priorRounds.map(roundContextFromLegacy),
       );
       expect(result.plannerResult?.agents).toBeDefined();
       const secPick = result.plannerResult!.agents!.find(a => a.name === 'Security & Safety');
@@ -2903,7 +2904,7 @@ describe('runReview', () => {
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
     mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
 
-    const priorRounds: HandoverRound[] = [
+    const priorRounds: LegacyHandoverRoundFixture[] = [
       {
         round: 1,
         commitSha: 'sha1',
@@ -2917,7 +2918,7 @@ describe('runReview', () => {
     const result = await runReview(
       clients, config, diff, 'raw diff', 'repo context',
       undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      priorRounds,
+      priorRounds.map(roundContextFromLegacy),
     );
     const secPick = result.plannerResult!.agents!.find(a => a.name === 'Security & Safety');
     expect(secPick?.effort).toBe('high');
@@ -2945,7 +2946,7 @@ describe('runReview', () => {
     mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
 
     // Round 1: 100% dismiss rate (would trigger downgrade). Round 2 (most recent): 50% keep rate (guard must NOT fire).
-    const priorRounds: HandoverRound[] = [
+    const priorRounds: LegacyHandoverRoundFixture[] = [
       {
         round: 1,
         commitSha: 'sha1',
@@ -2972,7 +2973,7 @@ describe('runReview', () => {
     const result = await runReview(
       clients, config, diff, 'raw diff', 'repo context',
       undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      priorRounds,
+      priorRounds.map(roundContextFromLegacy),
     );
     const secPick = result.plannerResult!.agents!.find(a => a.name === 'Security & Safety');
     // Most recent round has kept findings — guard must not fire even though round 1 had 100% dismissals.
@@ -3001,7 +3002,7 @@ describe('runReview', () => {
     mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
 
     // Round 1: non-zero keeps (guard would not fire). Round 2 (most recent): 100% dismissals (guard SHOULD fire).
-    const priorRounds: HandoverRound[] = [
+    const priorRounds: LegacyHandoverRoundFixture[] = [
       {
         round: 1,
         commitSha: 'sha1',
@@ -3029,7 +3030,7 @@ describe('runReview', () => {
       const result = await runReview(
         clients, config, diff, 'raw diff', 'repo context',
         undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-        priorRounds,
+        priorRounds.map(roundContextFromLegacy),
       );
       const secPick = result.plannerResult!.agents!.find(a => a.name === 'Security & Safety');
       // Most recent round dismissed all findings — guard fires based on last hint.
@@ -3065,7 +3066,7 @@ describe('runReview', () => {
     mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
 
     // Single round with three specialists: two should downgrade, one should not.
-    const priorRounds: HandoverRound[] = [
+    const priorRounds: LegacyHandoverRoundFixture[] = [
       {
         round: 1,
         commitSha: 'sha1',
@@ -3090,7 +3091,7 @@ describe('runReview', () => {
       const result = await runReview(
         clients, config, diff, 'raw diff', 'repo context',
         undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-        priorRounds,
+        priorRounds.map(roundContextFromLegacy),
       );
       const secPick = result.plannerResult!.agents!.find(a => a.name === 'Security & Safety');
       const corPick = result.plannerResult!.agents!.find(a => a.name === 'Correctness & Logic');
@@ -3133,7 +3134,7 @@ describe('runReview', () => {
     const { clients, config, diff } = makeEffortDowngradeFixture();
 
     // Exactly 2 dismissed, 0 kept → 100% dismiss rate at EFFORT_DOWNGRADE_MIN_SAMPLE boundary.
-    const priorRounds: HandoverRound[] = [{
+    const priorRounds: LegacyHandoverRoundFixture[] = [{
       round: 1,
       commitSha: 'abc',
       timestamp: 't',
@@ -3148,7 +3149,7 @@ describe('runReview', () => {
       const result = await runReview(
         clients, config, diff, 'raw diff', 'repo context',
         undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-        priorRounds,
+        priorRounds.map(roundContextFromLegacy),
       );
       const secPick = result.plannerResult!.agents!.find(a => a.name === 'Security & Safety');
       expect(secPick?.effort).toBe('low');
@@ -3161,7 +3162,7 @@ describe('runReview', () => {
     const { clients, config, diff } = makeEffortDowngradeFixture();
 
     // Only 1 dismissed — below the minimum sample threshold, guard must not fire.
-    const priorRounds: HandoverRound[] = [{
+    const priorRounds: LegacyHandoverRoundFixture[] = [{
       round: 1,
       commitSha: 'abc',
       timestamp: 't',
@@ -3173,7 +3174,7 @@ describe('runReview', () => {
     const result = await runReview(
       clients, config, diff, 'raw diff', 'repo context',
       undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      priorRounds,
+      priorRounds.map(roundContextFromLegacy),
     );
     const secPick = result.plannerResult!.agents!.find(a => a.name === 'Security & Safety');
     expect(secPick?.effort).toBe('high');
@@ -3188,7 +3189,7 @@ describe('runReview', () => {
     // priorRounds in non-chronological order: round 3 first in the array, round 1 last.
     // buildPlannerHints preserves array order, so hints[hints.length - 1] = round 1 (100%
     // dismiss, sample >= 2). Round 3 has non-zero keeps but is at index 0 so the guard ignores it.
-    const priorRoundsOutOfOrder: HandoverRound[] = [
+    const priorRoundsOutOfOrder: LegacyHandoverRoundFixture[] = [
       {
         round: 3,
         commitSha: 'abc3',
@@ -3216,7 +3217,7 @@ describe('runReview', () => {
       const result = await runReview(
         clients, config, diff, 'raw diff', 'repo context',
         undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-        priorRoundsOutOfOrder,
+        priorRoundsOutOfOrder.map(roundContextFromLegacy),
       );
       const secPick = result.plannerResult!.agents!.find(a => a.name === 'Security & Safety');
       // Guard fires on the last array element (round 1, 100% dismiss) even though
@@ -3248,7 +3249,7 @@ describe('runReview', () => {
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
     mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
 
-    const priorRounds: HandoverRound[] = [
+    const priorRounds: LegacyHandoverRoundFixture[] = [
       {
         round: 1,
         commitSha: 'sha1',
@@ -3266,7 +3267,7 @@ describe('runReview', () => {
     await runReview(
       clients, config, diff, 'raw diff', 'repo context',
       undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      priorRounds,
+      priorRounds.map(roundContextFromLegacy),
     );
 
     const systemPrompt = plannerSpy.mock.calls[0][0] as string;
@@ -3834,7 +3835,7 @@ describe('runReview', () => {
   });
 
   it('passes prior-round agents through to selectTeam when priorRounds carries agents', async () => {
-    const priorRounds: HandoverRound[] = [
+    const priorRounds: LegacyHandoverRoundFixture[] = [
       {
         round: 1,
         commitSha: 'sha1',
@@ -3857,7 +3858,7 @@ describe('runReview', () => {
     const result = await runReview(
       clients, config, diff, 'raw diff', 'repo context',
       undefined, undefined, undefined, undefined, undefined,
-      false, [], [], priorRounds,
+      false, [], [], priorRounds.map(roundContextFromLegacy),
     );
 
     // Prior-round non-core agents must be preserved in the resolved team.
@@ -3884,13 +3885,13 @@ describe('runReview test-file nit suppression', () => {
     };
   }
 
-  function buildPriorRound(round: number): HandoverRound {
-    return {
+  function buildPriorRound(round: number): RoundContext {
+    return roundContextFromLegacy({
       round,
       commitSha: `sha${round}`,
       timestamp: `2025-01-0${round}T00:00:00Z`,
       findings: [],
-    };
+    });
   }
 
   beforeEach(() => {
@@ -4729,11 +4730,11 @@ describe('collectPriorRoundAgents', () => {
   });
 
   it('deduplicates overlapping agents across rounds preserving first-seen order', () => {
-    const rounds: HandoverRound[] = [
+    const rounds: LegacyHandoverRoundFixture[] = [
       { round: 1, commitSha: 'a', timestamp: '2025-01-01T00:00:00Z', findings: [], agents: ['Security & Safety', 'Architecture & Design'] },
       { round: 2, commitSha: 'b', timestamp: '2025-01-02T00:00:00Z', findings: [], agents: ['Security & Safety', 'Correctness & Logic'] },
     ];
-    expect(collectPriorRoundAgents(rounds)).toEqual([
+    expect(collectPriorRoundAgents(rounds.map(roundContextFromLegacy))).toEqual([
       'Security & Safety',
       'Architecture & Design',
       'Correctness & Logic',
@@ -4741,29 +4742,30 @@ describe('collectPriorRoundAgents', () => {
   });
 
   it('handles rounds with no agents field', () => {
-    const rounds: HandoverRound[] = [
+    const rounds: LegacyHandoverRoundFixture[] = [
       { round: 1, commitSha: 'a', timestamp: '2025-01-01T00:00:00Z', findings: [] },
       { round: 2, commitSha: 'b', timestamp: '2025-01-02T00:00:00Z', findings: [], agents: ['Security & Safety'] },
     ];
-    expect(collectPriorRoundAgents(rounds)).toEqual(['Security & Safety']);
+    expect(collectPriorRoundAgents(rounds.map(roundContextFromLegacy))).toEqual(['Security & Safety']);
   });
 
   it('returns empty array when all rounds lack the agents field (legacy handovers)', () => {
-    const rounds: HandoverRound[] = [
+    const rounds: LegacyHandoverRoundFixture[] = [
       { round: 1, commitSha: 'a', timestamp: '2025-01-01T00:00:00Z', findings: [] },
       { round: 2, commitSha: 'b', timestamp: '2025-01-02T00:00:00Z', findings: [] },
     ];
-    expect(collectPriorRoundAgents(rounds)).toEqual([]);
+    expect(collectPriorRoundAgents(rounds.map(roundContextFromLegacy))).toEqual([]);
   });
 });
 
 describe('buildPlannerHints', () => {
-  const makeRound = (round: number, findings: HandoverRound['findings']): HandoverRound => ({
-    round,
-    commitSha: `sha${round}`,
-    timestamp: '2025-01-01T00:00:00Z',
-    findings,
-  });
+  const makeRound = (round: number, findings: LegacyHandoverFindingFixture[]): RoundContext =>
+    roundContextFromLegacy({
+      round,
+      commitSha: `sha${round}`,
+      timestamp: '2025-01-01T00:00:00Z',
+      findings,
+    });
 
   it('returns [] for undefined or empty rounds', () => {
     expect(buildPlannerHints(undefined)).toEqual([]);
@@ -4801,8 +4803,8 @@ describe('buildPlannerHints', () => {
   });
 
   it('consumes only the last two rounds when more are present', () => {
-    const make = (n: number, spec: string): HandoverRound => makeRound(n, [
-      { fingerprint: { file: 'a.ts', lineStart: n, lineEnd: n, slug: `s${n}` }, severity: 'blocker', title: `t${n}`, authorReply: 'none', specialist: spec },
+    const make = (n: number, spec: string): RoundContext => makeRound(n, [
+      { fingerprint: { file: 'a.ts', lineStart: n, lineEnd: n, slug: `s${n}` }, severity: 'blocker', title: `t${n}`, authorReply: 'none' as const, specialist: spec },
     ]);
     const rounds = [make(1, 'Security & Safety'), make(2, 'Architecture & Design'), make(3, 'Testing & Coverage')];
     const hints = buildPlannerHints(rounds);

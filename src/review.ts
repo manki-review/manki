@@ -6,7 +6,7 @@ import { runJudgeAgent, JudgeInput, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
 import { collectInPrSuppressions, deduplicateFindings, llmDeduplicateFindings, PreviousFinding } from './recap';
-import { ReviewConfig, ReviewerAgent, Finding, HandoverFinding, HandoverRound, OpenThread, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, PlannerRoundHint, SpecialistOutcome, EffortLevel, AgentPick, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES } from './types';
+import { ReviewConfig, ReviewerAgent, Finding, FindingFingerprintEntry, OpenThread, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, PlannerRoundHint, RoundContext, SpecialistOutcome, EffortLevel, AgentPick, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES } from './types';
 import { extractJSON } from './json';
 
 const DISMISSED_LINE_TOLERANCE = 5;
@@ -388,7 +388,7 @@ const PLANNER_HINTS_ROUND_WINDOW = 2;
  * skipping entries that predate the `specialist` field. Returns an empty
  * array when no round carries specialist attribution.
  */
-export function buildPlannerHints(rounds: HandoverRound[] | undefined): PlannerRoundHint[] {
+export function buildPlannerHints(rounds: RoundContext[] | undefined): PlannerRoundHint[] {
   if (!rounds || rounds.length === 0) return [];
 
   const recent = rounds.slice(-PLANNER_HINTS_ROUND_WINDOW);
@@ -396,19 +396,19 @@ export function buildPlannerHints(rounds: HandoverRound[] | undefined): PlannerR
 
   for (const round of recent) {
     const bySpecialist = new Map<string, SpecialistOutcome>();
-    for (const f of round.findings) {
+    for (const f of round.findings.entries) {
       if (!f.specialist) continue;
       let entry = bySpecialist.get(f.specialist);
       if (!entry) {
         entry = { specialist: f.specialist, findingsKept: 0, findingsDismissed: 0 };
         bySpecialist.set(f.specialist, entry);
       }
-      if (f.authorReply === 'agree') entry.findingsDismissed++;
+      if (f.authorReplyClass === 'agree') entry.findingsDismissed++;
       else entry.findingsKept++;
     }
 
     if (bySpecialist.size === 0) continue;
-    hints.push({ round: round.round, specialistOutcomes: Array.from(bySpecialist.values()) });
+    hints.push({ round: round.meta.round, specialistOutcomes: Array.from(bySpecialist.values()) });
   }
 
   return hints;
@@ -608,12 +608,12 @@ function heuristicFallback(
 // Collects the union of agent names that participated in any prior round of
 // this PR. Used to pin the team across rounds so the roster grows
 // monotonically: an agent that flagged something earlier reviews later rounds.
-export function collectPriorRoundAgents(priorRounds?: HandoverRound[]): string[] {
+export function collectPriorRoundAgents(priorRounds?: RoundContext[]): string[] {
   if (!priorRounds || priorRounds.length === 0) return [];
   const seen = new Set<string>();
   const out: string[] = [];
   for (const round of priorRounds) {
-    for (const name of round.agents ?? []) {
+    for (const name of round.reviewers.agents ?? []) {
       if (!seen.has(name)) {
         seen.add(name);
         out.push(name);
@@ -665,7 +665,7 @@ export async function runReview(
   isFollowUp?: boolean,
   openThreads?: OpenThread[],
   previousFindings?: PreviousFinding[],
-  priorRounds?: HandoverRound[],
+  priorRounds?: RoundContext[],
   prAuthorLogin?: string,
   interRoundDiff?: string,
 ): Promise<ReviewResult> {
@@ -1174,9 +1174,9 @@ export async function runReview(
       testNitSuppressedCount = before - finalFindings.length;
     }
   }
-  const priorFindingsFlat: HandoverFinding[] = [...(priorRounds ?? [])]
-    .sort((a, b) => a.round - b.round)
-    .flatMap(r => r.findings);
+  const priorFindingsFlat: FindingFingerprintEntry[] = [...(priorRounds ?? [])]
+    .sort((a, b) => a.meta.round - b.meta.round)
+    .flatMap(r => r.findings.entries);
   const { verdict, verdictReason } = determineVerdict(finalFindings, priorFindingsFlat, openThreads);
 
   const summary = judgeSummary;
@@ -1479,12 +1479,12 @@ export function validateSeverity(severity: unknown): Finding['severity'] {
 }
 
 /**
- * Check whether a current finding matches a prior-round `HandoverFinding`.
+ * Check whether a current finding matches a prior-round fingerprint entry.
  * Uses file + title-slug with a line-window tolerance so small drift between
  * rounds does not break the match. Thread-resolved status is not consulted
- * (not in the handover today).
+ * here, only the cached author-reply class.
  */
-function matchesDismissedPrior(finding: Finding, prior: HandoverFinding): boolean {
+function matchesDismissedPrior(finding: Finding, prior: FindingFingerprintEntry): boolean {
   if (finding.line === 0) return false;
   if (finding.file !== prior.fingerprint.file) return false;
   if (titleToSlug(finding.title) !== prior.fingerprint.slug) return false;
@@ -1494,8 +1494,8 @@ function matchesDismissedPrior(finding: Finding, prior: HandoverFinding): boolea
   return line >= lo && line <= hi;
 }
 
-function wasDismissedInPriorRound(finding: Finding, priorRounds: HandoverFinding[]): boolean {
-  return priorRounds.some(p => p.authorReply === 'agree' && matchesDismissedPrior(finding, p));
+function wasDismissedInPriorRound(finding: Finding, priorRounds: FindingFingerprintEntry[]): boolean {
+  return priorRounds.some(p => p.authorReplyClass === 'agree' && matchesDismissedPrior(finding, p));
 }
 
 /**
@@ -1511,8 +1511,8 @@ function wasDismissedInPriorRound(finding: Finding, priorRounds: HandoverFinding
  * collapses to the round 2 entry, so the agreement is honored rather than the
  * stale round 1 state.
  */
-function dedupePriorFindings(priorRounds: HandoverFinding[]): HandoverFinding[] {
-  const byKey = new Map<string, HandoverFinding>();
+function dedupePriorFindings(priorRounds: FindingFingerprintEntry[]): FindingFingerprintEntry[] {
+  const byKey = new Map<string, FindingFingerprintEntry>();
   for (const p of priorRounds) {
     const key = `f:${p.fingerprint.file}:${p.fingerprint.lineStart}:${p.fingerprint.lineEnd}:${p.fingerprint.slug}`;
     byKey.set(key, p);
@@ -1565,7 +1565,7 @@ function dedupePriorFindings(priorRounds: HandoverFinding[]): HandoverFinding[] 
  */
 export function determineVerdict(
   findings: Finding[],
-  priorRounds?: HandoverFinding[],
+  priorRounds?: FindingFingerprintEntry[],
   openThreads?: OpenThread[] | null,
 ): { verdict: ReviewVerdict; verdictReason: VerdictReason } {
   if (findings.some(f => f.severity === 'blocker')) {
@@ -1584,7 +1584,7 @@ export function determineVerdict(
   const openThreadIds = new Set((openThreads ?? []).map(t => t.threadId));
   const hasUnresolvedPrior = prior.some(p => {
     if (p.severity !== 'warning' && p.severity !== 'blocker') return false;
-    if (p.authorReply === 'agree') return false;
+    if (p.authorReplyClass === 'agree') return false;
     if (!p.threadId) return true;
     if (openThreadsUnknown) return true;
     return openThreadIds.has(p.threadId);
