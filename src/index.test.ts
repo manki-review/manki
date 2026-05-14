@@ -2576,6 +2576,63 @@ describe('runFullReview orchestration', () => {
     expect(entry.title).toBe('Misleading variable');
   });
 
+  it('truncates suggestedFix longer than 300 chars in findingEntries', async () => {
+    const testFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+    };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+      files: [testFile], totalAdditions: 10, totalDeletions: 5,
+    });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'COMMENT', summary: 'Issues',
+      findings: [{
+        severity: 'warning' as const,
+        title: 'T',
+        file: 'src/app.ts',
+        line: 5,
+        description: 'desc',
+        reviewers: ['Agent'],
+        suggestedFix: 'x'.repeat(301),
+      }],
+      highlights: [], reviewComplete: true, agentNames: ['Agent'],
+    });
+
+    await callRunFullReview();
+
+    const [,,,,,,,rc] = jest.mocked(ghUtils.postReview).mock.calls[0];
+    expect(rc!.findings.entries[0].suggestedFix).toHaveLength(300);
+  });
+
+  it('truncates title longer than 200 chars in findingEntries', async () => {
+    const testFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+    };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+      files: [testFile], totalAdditions: 10, totalDeletions: 5,
+    });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'COMMENT', summary: '',
+      findings: [{
+        severity: 'warning' as const,
+        title: 'A'.repeat(201),
+        file: 'src/app.ts',
+        line: 5,
+        description: 'd',
+        reviewers: ['Agent'],
+      }],
+      highlights: [], reviewComplete: true, agentNames: ['Agent'],
+    });
+
+    await callRunFullReview();
+
+    const [,,,,,,,rc] = jest.mocked(ghUtils.postReview).mock.calls[0];
+    expect(rc!.findings.entries[0].title).toHaveLength(200);
+  });
+
   it('does not load or write handover when memory is disabled', async () => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
