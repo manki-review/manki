@@ -4,7 +4,7 @@ module.exports = {
   testEnvironment: 'node',
   roots: ['<rootDir>/src', '<rootDir>/scripts'],
   testMatch: ['**/*.test.ts'],
-  collectCoverageFrom: ['src/**/*.ts', '!src/**/*.test.ts'],
+  collectCoverageFrom: ['src/**/*.ts', '!src/**/*.test.ts', '!src/test-utils.ts'],
   moduleNameMapper: {
     '^@octokit/auth-app$': '<rootDir>/src/__mocks__/@octokit/auth-app.ts',
   },
