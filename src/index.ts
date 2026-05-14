@@ -865,7 +865,7 @@ async function runFullReview(
       fileTypes[ext] = (fileTypes[ext] ?? 0) + 1;
     }
 
-    const round = recap.priorRounds.length + 1;
+    const round = priorRoundCount + 1;
     const findingEntries = result.findings.map(f => ({
       fingerprint: fingerprintFinding(f.title, f.file ?? '', f.line || 0),
       severity: f.severity,

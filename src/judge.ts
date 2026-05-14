@@ -564,7 +564,11 @@ export function buildJudgeUserMessage(
         findings: (r.findings.entries ?? [])
           .filter(f => f.severity !== 'ignore')
           .map(f => ({
-            fingerprint: f.fingerprint,
+            fingerprint: {
+              ...f.fingerprint,
+              file: f.fingerprint.file.replace(/`/g, ''),
+              slug: f.fingerprint.slug.replace(/`/g, ''),
+            },
             severity: f.severity,
             title: (f.title ?? '').slice(0, 200),
             authorReply: f.authorReplyClass ?? 'none',
