@@ -570,7 +570,7 @@ export function buildJudgeUserMessage(
               slug: f.fingerprint.slug.replace(/`/g, ''),
             },
             severity: f.severity,
-            title: (f.title ?? '').slice(0, 200),
+            title: (f.title ?? '').replace(/[\r\n]/g, ' ').replace(/`/g, '').slice(0, 200),
             authorReply: f.authorReplyClass ?? 'none',
           })),
       }))
