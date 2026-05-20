@@ -358,6 +358,10 @@ export interface ReviewProgress {
   plannerResult?: PlannerResult;
   plannerDurationMs?: number;
   retryCount?: number;
+  /** Names of agents resolved for this review. Emitted with a `planning` event on the heuristic-fallback path so the dashboard can seed per-agent entries even though no `plannerResult` is available. */
+  teamAgentNames?: string[];
+  /** True when team selection fell back to the heuristic because the planner failed or timed out. */
+  heuristicFallback?: boolean;
 }
 
 function buildPlannerSummary(diff: ParsedDiff, prContext?: PrContext): string {
@@ -721,6 +725,15 @@ export async function runReview(
       }
     } else {
       team = heuristicFallback(diff, config, priorRoundAgents);
+      if (onProgress) {
+        onProgress({
+          phase: 'planning',
+          rawFindingCount: 0,
+          plannerDurationMs,
+          teamAgentNames: team.agents.map(a => a.name),
+          heuristicFallback: true,
+        });
+      }
     }
   } else {
     team = heuristicFallback(diff, config, priorRoundAgents);

@@ -2163,6 +2163,53 @@ describe('buildDashboard', () => {
     expect(md).not.toContain('**Planner** (');
   });
 
+  it('renders per-team counts and durations from agentProgress when planner metadata is empty (heuristic-fallback path)', () => {
+    const data: DashboardData = {
+      phase: 'complete', lineCount: 600, agentCount: 5,
+      rawFindingCount: 18, keptCount: 12, droppedCount: 6,
+      heuristicFallback: true,
+      plannerDurationMs: 60000,
+      agentProgress: [
+        { name: 'Security & Safety', status: 'done', findingCount: 4, durationMs: 41000 },
+        { name: 'Architecture & Design', status: 'done', findingCount: 3, durationMs: 38000 },
+        { name: 'Correctness & Logic', status: 'done', findingCount: 5, durationMs: 45000 },
+        { name: 'Testing & Coverage', status: 'done', findingCount: 4, durationMs: 36000 },
+        { name: 'Performance & Efficiency', status: 'done', findingCount: 2, durationMs: 39000 },
+      ],
+    };
+    const md = buildDashboard(data);
+    expect(md).toContain('**Review** — 18 findings');
+    expect(md).toContain(`${INDENT}✅ Security & Safety — 4 (41s)`);
+    expect(md).toContain(`${INDENT}✅ Architecture & Design — 3 (38s)`);
+    expect(md).toContain(`${INDENT}✅ Correctness & Logic — 5 (45s)`);
+    expect(md).toContain(`${INDENT}✅ Testing & Coverage — 4 (36s)`);
+    expect(md).toContain(`${INDENT}✅ Performance & Efficiency — 2 (39s)`);
+    expect(md).not.toContain('0 (0ms)');
+    const perTeamSum = 4 + 3 + 5 + 4 + 2;
+    expect(perTeamSum).toBe(data.rawFindingCount);
+  });
+
+  it('renders heuristic-fallback marker under the planner header when set', () => {
+    const data: DashboardData = {
+      phase: 'complete', lineCount: 200, agentCount: 5,
+      rawFindingCount: 0, keptCount: 0, droppedCount: 0,
+      heuristicFallback: true,
+      plannerDurationMs: 60000,
+    };
+    const md = buildDashboard(data);
+    expect(md).toContain(`${INDENT}_(planner heuristic fallback used)_`);
+  });
+
+  it('omits heuristic-fallback marker when not set', () => {
+    const data: DashboardData = {
+      phase: 'complete', lineCount: 200, agentCount: 5,
+      rawFindingCount: 0, keptCount: 0, droppedCount: 0,
+      plannerDurationMs: 850,
+    };
+    const md = buildDashboard(data);
+    expect(md).not.toContain('planner heuristic fallback used');
+  });
+
   it('renders judge duration in complete phase', () => {
     const data: DashboardData = {
       phase: 'complete', lineCount: 500, agentCount: 7,

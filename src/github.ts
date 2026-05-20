@@ -307,6 +307,9 @@ export function buildDashboard(data: DashboardData): string {
     plannerLines.push(`**Planner**${plannerDur}`);
     plannerLines.push(`${INDENT}${data.lineCount} lines · ${data.agentCount} agents`);
   }
+  if (data.heuristicFallback) {
+    plannerLines.push(`${INDENT}_(planner heuristic fallback used)_`);
+  }
   sections.push(plannerLines.join('\n'));
 
   const reviewLines: string[] = [];
