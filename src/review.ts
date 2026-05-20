@@ -6,7 +6,7 @@ import { runJudgeAgent, JudgeInput, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
 import { collectInPrSuppressions, deduplicateFindings, llmDeduplicateFindings, PreviousFinding } from './recap';
-import { ReviewConfig, ReviewerAgent, Finding, FindingFingerprintEntry, OpenThread, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, PlannerRoundHint, RoundContext, SpecialistOutcome, EffortLevel, AgentPick, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { ReviewConfig, ReviewerAgent, Finding, FindingFingerprintEntry, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, PlannerRoundHint, RoundContext, SpecialistOutcome, EffortLevel, AgentPick, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { extractJSON } from './json';
 
 const DISMISSED_LINE_TOLERANCE = 5;
@@ -1256,7 +1256,7 @@ async function runReviewerAgent(
   options: RunReviewerAgentOptions = {},
 ): Promise<AgentResult> {
   const { effort, language, context, provenanceMap } = options;
-  const systemPrompt = buildReviewerSystemPrompt(reviewer, config, language, context);
+  const systemPrompt = buildReviewerSystemPrompt(reviewer, config, language, context, config.noise_level);
   const userMessage = buildReviewerUserMessage(rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, provenanceMap);
 
   const sendOptions = effort ? { effort } : undefined;
@@ -1270,6 +1270,7 @@ export function buildReviewerSystemPrompt(
   config: ReviewConfig,
   language?: string,
   context?: string,
+  _noiseLevel: NoiseLevel = 'low',
 ): string {
   let prompt = `You are a code reviewer specializing in: ${reviewer.focus}
 

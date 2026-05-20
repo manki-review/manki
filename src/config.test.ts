@@ -29,6 +29,7 @@ describe('config', () => {
       expect(typeof DEFAULT_CONFIG.memory.enabled).toBe('boolean');
       expect(typeof DEFAULT_CONFIG.memory.repo).toBe('string');
       expect(DEFAULT_CONFIG.nit_handling).toBe('issues');
+      expect(DEFAULT_CONFIG.noise_level).toBe('low');
       expect(DEFAULT_CONFIG.review_level).toBe('auto');
       expect(DEFAULT_CONFIG.review_thresholds).toEqual({ small: 200, medium: 1000 });
       expect(DEFAULT_CONFIG.review_passes).toBe(1);
@@ -378,6 +379,23 @@ models:
       const yaml = 'nit_handling: email';
       expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
       expect(core.error).toHaveBeenCalledWith('`nit_handling` must be "issues" or "comments"');
+    });
+
+    it('accepts valid noise_level values', () => {
+      expect(loadConfigFromContent('noise_level: low').noise_level).toBe('low');
+      expect(loadConfigFromContent('noise_level: medium').noise_level).toBe('medium');
+      expect(loadConfigFromContent('noise_level: high').noise_level).toBe('high');
+    });
+
+    it('throws on invalid noise_level value', () => {
+      const yaml = 'noise_level: extreme';
+      expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
+      expect(core.error).toHaveBeenCalledWith('`noise_level` must be one of: low, medium, high');
+    });
+
+    it('defaults noise_level to "low" when absent', () => {
+      expect(loadConfigFromContent('').noise_level).toBe('low');
+      expect(loadConfigFromContent('nit_handling: issues').noise_level).toBe('low');
     });
 
     it('deep-merges models object with defaults', () => {

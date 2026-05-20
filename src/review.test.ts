@@ -887,6 +887,13 @@ describe('buildReviewerSystemPrompt', () => {
     expect(prompt).toContain('caveats');
     expect(prompt).toContain('description');
   });
+
+  it('accepts a noiseLevel parameter without changing the prompt body', () => {
+    const base = buildReviewerSystemPrompt(reviewer, makeConfig());
+    expect(buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, undefined, 'low')).toBe(base);
+    expect(buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, undefined, 'medium')).toBe(base);
+    expect(buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, undefined, 'high')).toBe(base);
+  });
 });
 
 describe('buildReviewerUserMessage', () => {
@@ -1729,6 +1736,46 @@ describe('runReview', () => {
     expect(result.verdict).toBe('REQUEST_CHANGES');
     expect(result.findings).toHaveLength(1);
     expect(mockedRunJudgeAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it('forwards config.noise_level to buildReviewerSystemPrompt for each agent', async () => {
+    const clients = makeClients();
+    const config = makeConfig({ noise_level: 'medium' });
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+
+    await runReview(clients, config, diff, 'raw diff', 'repo context');
+
+    const reviewerMock = clients.reviewer.sendMessage as jest.Mock;
+    expect(reviewerMock).toHaveBeenCalled();
+
+    for (const call of reviewerMock.mock.calls) {
+      const systemPrompt = call[0] as string;
+      const roleMatch = systemPrompt.match(/^Your role: (.+)$/m);
+      expect(roleMatch).not.toBeNull();
+      const agent = AGENT_POOL.find(a => a.name === roleMatch![1]);
+      expect(agent).toBeDefined();
+      expect(systemPrompt).toBe(buildReviewerSystemPrompt(agent!, config, undefined, undefined, 'medium'));
+    }
+  });
+
+  it('defaults reviewer noise_level to "low" when config omits it', async () => {
+    const clients = makeClients();
+    const config = makeConfig();
+    delete (config as Partial<ReviewConfig>).noise_level;
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+
+    await runReview(clients, config, diff, 'raw diff', 'repo context');
+
+    const reviewerMock = clients.reviewer.sendMessage as jest.Mock;
+    expect(reviewerMock).toHaveBeenCalled();
+
+    const [firstCall] = reviewerMock.mock.calls;
+    const systemPrompt = firstCall[0] as string;
+    const roleMatch = systemPrompt.match(/^Your role: (.+)$/m);
+    expect(roleMatch).not.toBeNull();
+    const agent = AGENT_POOL.find(a => a.name === roleMatch![1]);
+    expect(agent).toBeDefined();
+    expect(systemPrompt).toBe(buildReviewerSystemPrompt(agent!, config, undefined, undefined, 'low'));
   });
 
   it('returns COMMENT verdict when all agents fail', async () => {

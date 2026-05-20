@@ -6,5 +6,13 @@ export default tseslint.config(
   ...tseslint.configs.recommended,
   {
     ignores: ['dist/', 'node_modules/', 'jest.config.js', '*.mjs'],
-  }
+  },
+  {
+    rules: {
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' },
+      ],
+    },
+  },
 );

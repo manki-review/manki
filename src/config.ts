@@ -29,6 +29,7 @@ export const DEFAULT_CONFIG: ReviewConfig = {
     repo: '',
   },
   nit_handling: 'issues',
+  noise_level: 'low',
   review_passes: 1,
   convergence: {
     max_auto_rounds: 5,
@@ -53,6 +54,7 @@ const KNOWN_KEYS = new Set([
   'models',
   'planner',
   'nit_handling',
+  'noise_level',
   'review_passes',
   'convergence',
   'stats',
@@ -216,6 +218,13 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
   if ('nit_handling' in config) {
     if (config.nit_handling !== 'issues' && config.nit_handling !== 'comments') {
       errors.push('`nit_handling` must be "issues" or "comments"');
+    }
+  }
+
+  if ('noise_level' in config) {
+    const valid = new Set(['low', 'medium', 'high']);
+    if (typeof config.noise_level !== 'string' || !valid.has(config.noise_level)) {
+      errors.push('`noise_level` must be one of: low, medium, high');
     }
   }
 
