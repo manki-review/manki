@@ -751,6 +751,7 @@ describe('handlePullRequest', () => {
     await handlePullRequest();
 
     expect(mockOctokitInstance.rest.issues.updateComment).not.toHaveBeenCalled();
+    expect(mockOctokitInstance.rest.issues.createComment).toHaveBeenCalledTimes(2);
     const skipCalls = mockOctokitInstance.rest.issues.createComment.mock.calls.filter(
       (c: [{ body: string }]) => c[0].body.includes('Review skipped'),
     );
@@ -861,6 +862,7 @@ describe('handleCommentTrigger', () => {
     await handleCommentTrigger();
 
     expect(mockOctokitInstance.rest.issues.updateComment).not.toHaveBeenCalled();
+    expect(mockOctokitInstance.rest.issues.createComment).toHaveBeenCalledTimes(2);
     const skipCalls = mockOctokitInstance.rest.issues.createComment.mock.calls.filter(
       (c: [{ body: string }]) => c[0].body.includes('Review skipped'),
     );
@@ -890,6 +892,7 @@ describe('handleCommentTrigger', () => {
     expect(jest.mocked(core.warning)).toHaveBeenCalledWith(
       expect.stringContaining('Failed to post review-skipped comment'),
     );
+    expect(mockOctokitInstance.rest.issues.createComment).toHaveBeenCalledTimes(1);
     expect(mockOctokitInstance.rest.issues.updateComment).not.toHaveBeenCalled();
     expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
     expect(mockOctokitInstance.rest.pulls.get).not.toHaveBeenCalled();
