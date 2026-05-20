@@ -1017,11 +1017,8 @@ describe('buildReviewerSystemPrompt', () => {
     });
 
     it('reproduces the pre-noise_level prompt body verbatim at "medium"', () => {
-      const prompt = buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, undefined, 'medium');
-      expect(prompt).not.toContain('## Noise Level');
-      expect(prompt).not.toContain('senior engineer');
-      expect(prompt).not.toContain('Categories that are NEVER findings');
-      expect(prompt).not.toContain('Surface marginal suggestions');
+      const medium = buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, undefined, 'medium');
+      expect(medium).toMatchSnapshot();
     });
 
     it('invites marginal suggestions at "high"', () => {
@@ -1050,16 +1047,19 @@ describe('buildReviewerSystemPrompt', () => {
       expect(high.length).toBeGreaterThan(medium.length);
     });
 
-    it('places the noise-level section before custom instructions', () => {
-      const config = makeConfig({ instructions: 'Focus on TypeScript best practices.' });
-      const prompt = buildReviewerSystemPrompt(reviewer, config, undefined, undefined, 'low');
-      const noiseIdx = prompt.indexOf('## Noise Level: low');
-      const instructionsIdx = prompt.indexOf('## Additional Instructions');
-      expect(noiseIdx).toBeGreaterThan(-1);
-      expect(instructionsIdx).toBeGreaterThan(noiseIdx);
-    });
+    it.each(['low', 'high'] as const)(
+      'places the noise-level section before custom instructions at "%s"',
+      (level) => {
+        const config = makeConfig({ instructions: 'Focus on TypeScript best practices.' });
+        const prompt = buildReviewerSystemPrompt(reviewer, config, undefined, undefined, level);
+        const noiseIdx = prompt.indexOf(`## Noise Level: ${level}`);
+        const instructionsIdx = prompt.indexOf('## Additional Instructions');
+        expect(noiseIdx).toBeGreaterThan(-1);
+        expect(instructionsIdx).toBeGreaterThan(noiseIdx);
+      },
+    );
 
-    it('excludes style-nit categories that appear in a synthetic diff at "low"', () => {
+    it('prompt at "low" contains all exclusion-list categories', () => {
       const prompt = buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, undefined, 'low');
       const styleNitCategories = [
         'Whitespace',
