@@ -28,7 +28,6 @@ export const DEFAULT_CONFIG: ReviewConfig = {
     enabled: false,
     repo: '',
   },
-  nit_handling: 'issues',
   noise_level: 'low',
   review_passes: 1,
   convergence: {
@@ -215,10 +214,8 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
     }
   }
 
-  if ('nit_handling' in config) {
-    if (config.nit_handling !== 'issues' && config.nit_handling !== 'comments') {
-      errors.push('`nit_handling` must be "issues" or "comments"');
-    }
+  if ('nit_handling' in config && (config.nit_handling === 'issues' || config.nit_handling === 'comments')) {
+    warnings.push("`nit_handling: '" + config.nit_handling + "'` is deprecated and ignored, surviving nit findings now post inline. See https://github.com/manki-review/manki/issues/738 for context.");
   }
 
   if ('noise_level' in config) {

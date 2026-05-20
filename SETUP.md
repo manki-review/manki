@@ -77,7 +77,7 @@ The app requires these permissions:
 |------------|--------|---------|
 | Contents | Read | Read repository files and diffs |
 | Pull requests | Read and write | Post review comments and approvals |
-| Issues | Read and write | Create nit issues and triage |
+| Issues | Read and write | Read linked issues for review context |
 
 ## Step 2: Authentication Secrets
 
@@ -222,7 +222,7 @@ on:
 permissions:
   contents: read          # read repo files and diffs
   pull-requests: write    # post review comments and approvals
-  issues: write           # create nit issues when configured
+  issues: read            # read linked issues for review context
   id-token: write         # OIDC token for GitHub App identity
   actions: read           # verify workflow run is legitimate
 
@@ -348,11 +348,11 @@ You can also forward `severity_counts` or `findings_json` to a metrics sink (Sla
 |-------|---------|
 | `pull_request: [opened, synchronize]` | Auto-review on PR open and new pushes |
 | `pull_request: [ready_for_review]` | Auto-review when a draft PR is marked ready (head SHA unchanged, so the planner sees the same diff a `synchronize` would have produced) |
-| `issue_comment: [created, edited]` | `/manki` commands on PRs and issues (review, explain, triage, etc.) |
+| `issue_comment: [created, edited]` | `/manki` commands on PRs (review, explain, dismiss, etc.) |
 | `pull_request_review_comment: [created]` | Replies to review comment threads |
 | `pull_request_review: [submitted, dismissed]` | Auto-approve check when reviews change state |
 
-The `if` condition allows `issue_comment` events without the `pull_request` filter so that `/manki triage` works on nit issues (which are regular issues, not PRs). The self-trigger guard (`github.actor != 'manki-review[bot]'`) prevents the bot from reviewing its own comments.
+The self-trigger guard (`github.actor != 'manki-review[bot]'`) prevents the bot from reviewing its own comments.
 
 ### Concurrency
 
@@ -396,9 +396,6 @@ models:
 # PR type. teamSize=1 routes trivial changes to a Trivial Change Verifier.
 planner:
   enabled: true
-
-# Where to post nit findings: 'issues' (separate GitHub issue) or 'comments' (inline PR comments)
-nit_handling: issues
 
 # Multi-pass verification (integer 1-5, default: 1). Runs each reviewer N
 # times with shuffled file ordering; only consistent findings are kept.
@@ -444,7 +441,7 @@ The judge assigns one of four severity levels to each finding:
 |----------|---------|--------|
 | `required` | Must fix before merge | Blocks approval (REQUEST_CHANGES) |
 | `suggestion` | Should fix, but not blocking | Posted as inline comment, PR can still be approved |
-| `nit` | Minor style or preference issue | Collected into a nit issue (or inline comments, depending on `nit_handling`) |
+| `nit` | Minor style or preference issue | Posted as inline comment, PR can still be approved |
 | `ignore` | False positive or irrelevant | Dropped silently |
 
 Use the `models` config section to choose different Claude models for the reviewer and judge stages (e.g., a faster model for reviewers and a more precise model for the judge).
@@ -502,28 +499,9 @@ Make sure the `REVIEW_MEMORY_TOKEN` secret is set (see Step 2).
 ### How memory works
 
 - **Learnings** -- Stored when you use `/manki remember` or when substantive review comment discussions are detected. Injected as context into future reviewer prompts.
-- **Suppressions** -- Created by `/manki dismiss` or by leaving nit issue checkboxes unchecked during triage. Non-blocking findings matching a suppression pattern are filtered out (blocking findings are never suppressed).
+- **Suppressions** -- Created by `/manki dismiss`. Non-blocking findings matching a suppression pattern are filtered out (blocking findings are never suppressed).
 - **Patterns** -- Automatically tracked from recurring findings. After 5 occurrences a pattern is escalated for visibility.
 - **Global conventions** -- A `_global/conventions.md` file applied to all repos using the memory system.
-
-## Step 6: Nit Issue Triage Workflow
-
-When Manki approves a PR with non-blocking suggestions, she creates a GitHub issue with:
-
-- A checkbox per finding (with code snippets and AI fix prompts)
-- The `needs-human` label
-
-To triage:
-
-1. Open the nit issue
-2. Check the boxes for findings worth fixing, leave the rest unchecked
-3. Comment `/manki triage`
-
-Manki will:
-
-- Create a new GitHub issue for each checked finding
-- Store unchecked findings as suppressions in memory
-- Remove the `needs-human` label and close the nit issue
 
 ## Verification
 
@@ -557,7 +535,6 @@ Manki handles untrusted PR content and cross-repo tokens. The security model res
 | Memory not loading | Verify `REVIEW_MEMORY_TOKEN` secret is set and the PAT has Contents read/write on the memory repo |
 | Review doesn't trigger on `/manki review` | The workflow file must exist on the default branch (main) |
 | "Diff too large" | Increase `max_diff_lines` in config or split the PR |
-| `/manki triage` does nothing | Make sure the `if` condition allows plain `issue_comment` events (not just PR comments) |
 | Auto-approve not working | Check that `auto_approve: true` is set in `.manki.yml` and the `pull_request_review` event trigger is in the workflow |
 | Inline comments land on wrong lines | The judge agent validated line numbers but the diff may have shifted. Findings that can't be placed inline are moved to the review body |
 

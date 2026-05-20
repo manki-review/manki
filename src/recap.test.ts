@@ -1129,7 +1129,7 @@ describe('fetchRecapState', () => {
           timestamp: '2026-01-01T00:00:00.000Z',
           mankiVersion: '4.7.0',
         },
-        config: { reviewLevel: 'medium', nitHandling: 'issues', memoryEnabled: false },
+        config: { reviewLevel: 'medium', memoryEnabled: false },
         diff: { lines: 100, additions: 60, deletions: 40, filesReviewed: 3, fileTypes: { '.ts': 3 } },
         models: { reviewer: 'r', judge: 'j' },
         planner: { used: false },

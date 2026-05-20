@@ -66,7 +66,6 @@ function fullyPopulatedContext(): RoundContext {
     },
     config: {
       reviewLevel: 'medium',
-      nitHandling: 'issues',
       memoryEnabled: true,
       reviewPasses: 1,
     },
@@ -211,7 +210,7 @@ describe('roundContextToFlatAliases', () => {
   it('handles minimal context with no optional fields', () => {
     const ctx: RoundContext = {
       meta: { prNumber: 1, commitSha: 'sha', round: 1, timestamp: 'ts', mankiVersion: '5.0.0' },
-      config: { reviewLevel: 'small', nitHandling: 'comments', memoryEnabled: false },
+      config: { reviewLevel: 'small', memoryEnabled: false },
       diff: { lines: 10, additions: 10, deletions: 0, filesReviewed: 1, fileTypes: {} },
       models: { reviewer: 'model-a', judge: 'model-b' },
       planner: { used: false },

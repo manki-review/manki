@@ -25,7 +25,6 @@ import {
   updateProgressDashboard,
   dismissPreviousReviews,
   postReview,
-  createNitIssue,
   reactToIssueComment,
   fetchLinkedIssues,
   BOT_LOGIN,
@@ -838,15 +837,6 @@ async function runFullReview(
       }
     }
 
-    // Route findings based on nit_handling config:
-    // - blocker + warning + suggestion: always go to inline PR comments
-    // - nitpick: inline comments if nit_handling === 'comments', nit issue if 'issues'
-    const nitHandling = config.nit_handling ?? 'issues';
-    const nitFindings = result.findings.filter(f => f.severity === 'nitpick');
-    const inlineFindings = nitHandling === 'comments'
-      ? result.findings
-      : result.findings.filter(f => f.severity !== 'nitpick');
-
     const reviewTimeMs = Date.now() - startTime;
     const severityMap: Record<string, number> = { blocker: 0, warning: 0, suggestion: 0, nitpick: 0 };
     for (const f of result.findings) {
@@ -909,7 +899,6 @@ async function runFullReview(
       },
       config: {
         reviewLevel: team.level === 'trivial' ? 'small' : team.level,
-        nitHandling,
         memoryEnabled: config.memory?.enabled ?? false,
         ...(config.review_passes != null && { reviewPasses: config.review_passes }),
       },
@@ -1005,16 +994,7 @@ async function runFullReview(
       }
     }
 
-    const reviewResult = { ...result, findings: inlineFindings };
-    const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, reviewResult, diff, context, reviewTimeMs, config);
-
-    if (nitHandling === 'issues' && nitFindings.length > 0) {
-      try {
-        await createNitIssue(octokit, owner, repo, prNumber, nitFindings, commitSha);
-      } catch (error) {
-        core.warning(`Failed to create nit issue: ${error}`);
-      }
-    }
+    const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, context, reviewTimeMs, config);
 
     if (memory && config.memory?.enabled) {
       const memoryToken = getMemoryToken(octokitCache.resolvedToken);
@@ -1111,7 +1091,6 @@ async function runFullReview(
         teamAgents: result.agentNames,
         memoryEnabled: config.memory?.enabled ?? false,
         memoryRepo: config.memory?.repo ?? '',
-        nitHandling,
       },
       judgeDecisions,
       timing,

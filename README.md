@@ -24,7 +24,7 @@ Manki assembles a dynamic review team sized to your PR's content and complexity.
 - **Smart verdicts** — blocks PRs on real issues, approves over style nitpicks; auto-approves when all blocking threads resolve
 - **Multi-provider** — Anthropic, OpenAI, and Gemini, mix-and-match per agent via `.manki.yml`
 - **Self-learning memory** — `/manki remember` teaches conventions, `/manki dismiss` suppresses false positives, patterns stick across PRs
-- **Conversational** — reply to any review comment to discuss, or use `@manki explain`/`triage`/`forget` inline
+- **Conversational** — reply to any review comment to discuss, or use `@manki explain`/`forget` inline
 - **Self-hosted GitHub Action** — your API key, your compute, no SaaS intermediary
 
 ## Quick start
@@ -33,7 +33,7 @@ Manki assembles a dynamic review team sized to your PR's content and complexity.
 2. **Add a provider secret** — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY` (OAuth subscription paths are also supported, see [SETUP.md](SETUP.md#choosing-a-provider))
 3. **Add the workflow** — copy the YAML from the [Setup Guide](SETUP.md#step-3-add-the-workflow)
 
-Full setup guide with memory, triage, and troubleshooting: **[SETUP.md](SETUP.md)**
+Full setup guide with memory and troubleshooting: **[SETUP.md](SETUP.md)**
 
 ## How it works
 
@@ -55,7 +55,6 @@ See [SETUP.md](SETUP.md#review-pipeline) for the full walkthrough.
 | `/manki remember <instruction>` | Teach it something for future reviews |
 | `/manki remember global: <instruction>` | Teach globally (applies to all repos) |
 | `/manki check` | Check thread resolution and auto-approve if clear |
-| `/manki triage` | Process nit issue checkboxes into work issues + suppressions |
 | `/manki forget <text>` | Remove a learning matching the text |
 | `/manki forget suppression <pattern>` | Remove a suppression matching the pattern |
 | `/manki help` | Show all commands |
