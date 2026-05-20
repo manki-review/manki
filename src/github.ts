@@ -348,6 +348,9 @@ export function buildDashboard(data: DashboardData): string {
       const breakdown = renderSeverityBreakdown(data.droppedSeverities);
       if (breakdown) judgeLines.push(`${INDENT}dropped: ${breakdown}`);
     }
+    if (data.testNitSuppressedCount != null && data.testNitSuppressedCount > 0) {
+      judgeLines.push(`${INDENT}suppressed: ${data.testNitSuppressedCount} test-only nit${data.testNitSuppressedCount === 1 ? '' : 's'} (round ≥2 throttle)`);
+    }
   }
   sections.push(judgeLines.join('\n'));
 
