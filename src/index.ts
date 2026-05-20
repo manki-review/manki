@@ -1066,12 +1066,15 @@ async function runFullReview(
     for (const f of result.findings) {
       keptSeverities[f.severity] = (keptSeverities[f.severity] ?? 0) + 1;
     }
-    for (const f of allJudgedForDashboard) {
+    // judgeDecisions is built in lock-step with allJudgedForDashboard, so the
+    // index aligns and d.originalSeverity carries the pre-judge severity even
+    // when the judge merged or renamed the finding before dropping it.
+    allJudgedForDashboard.forEach((f, i) => {
       if (!keptSet.has(f)) {
-        const sev = rawForLookup.find(r => r.title === f.title && r.file === f.file && r.line === f.line)?.severity ?? f.severity;
+        const sev = judgeDecisions[i].originalSeverity;
         droppedSeverities[sev] = (droppedSeverities[sev] ?? 0) + 1;
       }
-    }
+    });
 
     const judgeDroppedCount = allJudgedForDashboard.length - keptSet.size;
     const completeDashboard: DashboardData = {
