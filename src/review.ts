@@ -5,7 +5,7 @@ import { LLMClient } from './providers';
 import { runJudgeAgent, JudgeInput, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
-import { collectInPrSuppressions, deduplicateFindings, llmDeduplicateFindings, PreviousFinding } from './recap';
+import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, llmDeduplicateFindings, PreviousFinding } from './recap';
 import { ReviewConfig, ReviewerAgent, Finding, FindingFingerprintEntry, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, PlannerRoundHint, RoundContext, SpecialistOutcome, EffortLevel, AgentPick, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { extractJSON } from './json';
 
@@ -1541,19 +1541,6 @@ function dedupePriorFindings(priorRounds: FindingFingerprintEntry[]): FindingFin
     byKey.set(key, p);
   }
   return Array.from(byKey.values());
-}
-
-/**
- * Build the `resolvedThreadIds` set for `determineVerdict` from the recap's
- * `previousFindings`. Only `status === 'resolved'` entries with a `threadId`
- * are included, mirroring GitHub's `isResolved: true` view of the thread.
- */
-export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): Set<string> {
-  return new Set(
-    (previousFindings ?? [])
-      .filter(f => f.status === 'resolved' && f.threadId)
-      .map(f => f.threadId!),
-  );
 }
 
 /**

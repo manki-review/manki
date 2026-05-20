@@ -101,6 +101,7 @@ jest.mock('./recap', () => ({
   llmDeduplicateFindings: jest.fn().mockResolvedValue({ unique: [], duplicates: [] }),
   classifyAuthorReply: jest.fn().mockReturnValue('none'),
   fingerprintFinding: jest.fn((title: string, file: string, line: number) => ({ file, lineStart: line, lineEnd: line, slug: title })),
+  collectResolvedThreadIds: jest.requireActual('./recap').collectResolvedThreadIds,
   sanitize: jest.requireActual('./recap').sanitize,
 }));
 
@@ -120,7 +121,6 @@ jest.mock('./review', () => {
     buildPlannerHints: actual.buildPlannerHints,
     buildAgentPool: actual.buildAgentPool,
     collectPriorRoundAgents: actual.collectPriorRoundAgents,
-    collectResolvedThreadIds: actual.collectResolvedThreadIds,
     TRIVIAL_VERIFIER_AGENT: actual.TRIVIAL_VERIFIER_AGENT,
   };
 });

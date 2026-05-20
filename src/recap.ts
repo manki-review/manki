@@ -746,4 +746,17 @@ async function llmDeduplicateFindings(
   }
 }
 
+/**
+ * Build the `resolvedThreadIds` set for `determineVerdict` from the recap's
+ * `previousFindings`. Only `status === 'resolved'` entries with a `threadId`
+ * are included, mirroring GitHub's `isResolved: true` view of the thread.
+ */
+export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): Set<string> {
+  return new Set(
+    (previousFindings ?? [])
+      .filter(f => f.status === 'resolved' && f.threadId)
+      .map(f => f.threadId!),
+  );
+}
+
 export { DuplicateMatch, PreviousFinding, RecapState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchRecapState, deduplicateFindings, titlesOverlap, llmDeduplicateFindings, parseFindingFromComment };

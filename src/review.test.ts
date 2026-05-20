@@ -7,7 +7,6 @@ import {
   buildPlannerSystemPrompt,
   buildPlannerHints,
   collectPriorRoundAgents,
-  collectResolvedThreadIds,
   selectTeam,
   titlesMatch,
   truncateDiff,
@@ -927,34 +926,6 @@ describe('determineVerdict', () => {
         expect(result.verdictReason).toBe('prior_unaddressed');
       });
     });
-  });
-});
-
-describe('collectResolvedThreadIds', () => {
-  it('returns an empty set for an undefined input', () => {
-    expect(collectResolvedThreadIds(undefined).size).toBe(0);
-  });
-
-  it('returns an empty set for an empty array', () => {
-    expect(collectResolvedThreadIds([]).size).toBe(0);
-  });
-
-  it('includes only `resolved` entries with a `threadId`', () => {
-    const result = collectResolvedThreadIds([
-      { title: 'a', file: 'f', line: 1, severity: 'warning', status: 'resolved', threadId: 'T1' },
-      { title: 'b', file: 'f', line: 2, severity: 'warning', status: 'open', threadId: 'T2' },
-      { title: 'c', file: 'f', line: 3, severity: 'warning', status: 'replied', threadId: 'T3' },
-      { title: 'd', file: 'f', line: 4, severity: 'warning', status: 'resolved', threadId: 'T4' },
-    ]);
-    expect(result).toEqual(new Set(['T1', 'T4']));
-  });
-
-  it('skips `resolved` entries that lack a `threadId`', () => {
-    const result = collectResolvedThreadIds([
-      { title: 'a', file: 'f', line: 1, severity: 'warning', status: 'resolved' },
-      { title: 'b', file: 'f', line: 2, severity: 'warning', status: 'resolved', threadId: 'T2' },
-    ]);
-    expect(result).toEqual(new Set(['T2']));
   });
 });
 

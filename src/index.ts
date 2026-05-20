@@ -10,8 +10,8 @@ import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
-import { fetchRecapState, fingerprintFinding } from './recap';
-import { buildAgentPool, collectPriorRoundAgents, runReview, determineVerdict, collectResolvedThreadIds, selectTeam } from './review';
+import { collectResolvedThreadIds, fetchRecapState, fingerprintFinding } from './recap';
+import { buildAgentPool, collectPriorRoundAgents, runReview, determineVerdict, selectTeam } from './review';
 import { DEFENSIVE_HARDENING_TAG, DashboardData, PrContext, ReviewMetadata, RoundContext, roundContextToFlatAliases } from './types';
 import {
   fetchPRDiff,
