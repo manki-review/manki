@@ -2937,53 +2937,56 @@ describe('runFullReview orchestration', () => {
 
   it('seeds dashboard from heuristic-fallback planning progress event', async () => {
     jest.useFakeTimers();
-    const testFile = {
-      path: 'src/app.ts', changeType: 'modified' as const,
-      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
-    };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
-    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
-      files: [testFile], totalAdditions: 10, totalDeletions: 5,
-    });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    try {
+      const testFile = {
+        path: 'src/app.ts', changeType: 'modified' as const,
+        hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+      };
+      jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
+      jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+        files: [testFile], totalAdditions: 10, totalDeletions: 5,
+      });
+      jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
 
-    const fallbackAgents = ['Security & Safety', 'Correctness & Logic', 'general'];
+      const fallbackAgents = ['Security & Safety', 'Correctness & Logic', 'general'];
 
-    jest.mocked(reviewModule.runReview).mockImplementation(
-      async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
-        if (onProgress) {
-          onProgress({
-            phase: 'planning',
-            rawFindingCount: 0,
-            heuristicFallback: true,
-            teamAgentNames: fallbackAgents,
-            plannerDurationMs: 250,
-          });
-        }
-        jest.advanceTimersByTime(600);
-        await Promise.resolve();
-        return {
-          verdict: 'APPROVE', summary: 'ok', findings: [],
-          highlights: [], reviewComplete: true,
-          agentNames: fallbackAgents,
-        };
-      },
-    );
+      jest.mocked(reviewModule.runReview).mockImplementation(
+        async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
+          if (onProgress) {
+            onProgress({
+              phase: 'planning',
+              rawFindingCount: 0,
+              heuristicFallback: true,
+              teamAgentNames: fallbackAgents,
+              plannerDurationMs: 250,
+            });
+          }
+          jest.advanceTimersByTime(600);
+          await Promise.resolve();
+          return {
+            verdict: 'APPROVE', summary: 'ok', findings: [],
+            highlights: [], reviewComplete: true,
+            agentNames: fallbackAgents,
+          };
+        },
+      );
 
-    await callRunFullReview();
-    jest.useRealTimers();
+      await callRunFullReview();
 
-    const dashboardCalls = jest.mocked(ghUtils.updateProgressDashboard).mock.calls;
-    expect(dashboardCalls.length).toBeGreaterThanOrEqual(1);
+      const dashboardCalls = jest.mocked(ghUtils.updateProgressDashboard).mock.calls;
+      expect(dashboardCalls.length).toBeGreaterThanOrEqual(1);
 
-    const firstDashboard = dashboardCalls[0][4];
-    expect(firstDashboard.agentCount).toBe(3);
-    expect(firstDashboard.agentProgress).toEqual(
-      fallbackAgents.map(name => ({ name, status: 'reviewing' })),
-    );
-    expect(firstDashboard.plannerDurationMs).toBe(250);
-    expect(firstDashboard.heuristicFallback).toBe(true);
-    expect(firstDashboard.phase).toBe('started');
+      const firstDashboard = dashboardCalls[0][4];
+      expect(firstDashboard.agentCount).toBe(3);
+      expect(firstDashboard.agentProgress).toEqual(
+        fallbackAgents.map(name => ({ name, status: 'reviewing' })),
+      );
+      expect(firstDashboard.plannerDurationMs).toBe(250);
+      expect(firstDashboard.heuristicFallback).toBe(true);
+      expect(firstDashboard.phase).toBe('started');
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('sets heuristicFallback and phase on dashboard when judging follows heuristic-fallback planning', async () => {
