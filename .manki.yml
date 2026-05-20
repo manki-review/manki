@@ -12,3 +12,7 @@ instructions: |
 memory:
   enabled: true
   repo: "manki-review/review-memory"
+
+# Smoke test: route judge to OpenAI (Codex CLI OAuth path) for v5.0.0 verification.
+models:
+  judge: o4-mini
