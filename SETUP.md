@@ -77,7 +77,7 @@ The app requires these permissions:
 |------------|--------|---------|
 | Contents | Read | Read repository files and diffs |
 | Pull requests | Read and write | Post review comments and approvals |
-| Issues | Read and write | Read linked issues for review context |
+| Issues | Read and write | Post progress comments and app warnings; read linked issues for review context |
 
 ## Step 2: Authentication Secrets
 
