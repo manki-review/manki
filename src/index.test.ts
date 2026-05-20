@@ -2985,6 +2985,168 @@ describe('runFullReview orchestration', () => {
     );
   });
 
+  it('seeds dashboard from heuristic-fallback planning progress event', async () => {
+    jest.useFakeTimers();
+    try {
+      const testFile = {
+        path: 'src/app.ts', changeType: 'modified' as const,
+        hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+      };
+      jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
+      jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+        files: [testFile], totalAdditions: 10, totalDeletions: 5,
+      });
+      jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+
+      const fallbackAgents = ['Security & Safety', 'Correctness & Logic', 'general'];
+
+      jest.mocked(reviewModule.runReview).mockImplementation(
+        async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
+          if (onProgress) {
+            onProgress({
+              phase: 'planning',
+              rawFindingCount: 0,
+              heuristicFallback: true,
+              teamAgentNames: fallbackAgents,
+              plannerDurationMs: 250,
+            });
+          }
+          jest.advanceTimersByTime(600);
+          await Promise.resolve();
+          return {
+            verdict: 'APPROVE', summary: 'ok', findings: [],
+            highlights: [], reviewComplete: true,
+            agentNames: fallbackAgents,
+          };
+        },
+      );
+
+      await callRunFullReview();
+
+      const dashboardCalls = jest.mocked(ghUtils.updateProgressDashboard).mock.calls;
+      expect(dashboardCalls.length).toBeGreaterThanOrEqual(1);
+
+      const firstDashboard = dashboardCalls[0][4];
+      expect(firstDashboard.agentCount).toBe(3);
+      expect(firstDashboard.agentProgress).toEqual(
+        fallbackAgents.map(name => ({ name, status: 'reviewing' })),
+      );
+      expect(firstDashboard.plannerDurationMs).toBe(250);
+      expect(firstDashboard.heuristicFallback).toBe(true);
+      expect(firstDashboard.phase).toBe('started');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('sets heuristicFallback and phase on dashboard when judging follows heuristic-fallback planning', async () => {
+    const testFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+    };
+    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+      files: [testFile], totalAdditions: 10, totalDeletions: 5,
+    });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+
+    const fallbackAgents = ['Security & Safety', 'Correctness & Logic', 'general'];
+    const snapshots: import('./types').DashboardData[] = [];
+    jest.mocked(ghUtils.updateProgressDashboard).mockImplementation(
+      async (_octokit, _owner, _repo, _id, dashboard) => {
+        snapshots.push({ ...dashboard });
+      },
+    );
+
+    jest.mocked(reviewModule.runReview).mockImplementation(
+      async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
+        if (onProgress) {
+          onProgress({
+            phase: 'planning',
+            rawFindingCount: 0,
+            heuristicFallback: true,
+            teamAgentNames: fallbackAgents,
+            plannerDurationMs: 150,
+          });
+          onProgress({ phase: 'judging', rawFindingCount: 0, judgeInputCount: 0 });
+        }
+        return {
+          verdict: 'APPROVE', summary: 'ok', findings: [],
+          highlights: [], reviewComplete: true,
+          agentNames: fallbackAgents,
+        };
+      },
+    );
+
+    await callRunFullReview();
+
+    const judgingSnapshot = snapshots.find(s => s.phase === 'reviewed');
+    expect(judgingSnapshot).toBeDefined();
+    expect(judgingSnapshot!.heuristicFallback).toBe(true);
+    expect(judgingSnapshot!.agentCount).toBe(3);
+    expect(judgingSnapshot!.plannerDurationMs).toBe(150);
+  });
+
+  it('seeds dashboard from planner result (non-fallback planning progress event)', async () => {
+    jest.useFakeTimers();
+    const testFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+    };
+    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+      files: [testFile], totalAdditions: 10, totalDeletions: 5,
+    });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+
+    jest.mocked(reviewModule.selectTeam).mockReturnValue({
+      level: 'small',
+      agents: [{ name: 'general', focus: '' }, { name: 'Security & Safety', focus: '' }],
+      lineCount: 0,
+    });
+
+    jest.mocked(reviewModule.runReview).mockImplementation(
+      async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
+        if (onProgress) {
+          onProgress({
+            phase: 'planning',
+            rawFindingCount: 0,
+            plannerResult: { teamSize: 2, reviewerEffort: 'medium', judgeEffort: 'low', prType: 'feat' },
+            plannerDurationMs: 400,
+          });
+        }
+        jest.advanceTimersByTime(600);
+        await Promise.resolve();
+        return {
+          verdict: 'APPROVE', summary: 'ok', findings: [],
+          highlights: [], reviewComplete: true,
+          agentNames: ['general', 'Security & Safety'],
+        };
+      },
+    );
+
+    await callRunFullReview();
+    jest.useRealTimers();
+
+    const dashboardCalls = jest.mocked(ghUtils.updateProgressDashboard).mock.calls;
+    expect(dashboardCalls.length).toBeGreaterThanOrEqual(1);
+
+    const firstDashboard = dashboardCalls[0][4];
+    expect(firstDashboard.agentCount).toBe(2);
+    expect(firstDashboard.agentProgress).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'general', status: 'reviewing' }),
+        expect.objectContaining({ name: 'Security & Safety', status: 'reviewing' }),
+      ]),
+    );
+    expect(firstDashboard.plannerDurationMs).toBe(400);
+    expect(firstDashboard.heuristicFallback).toBeFalsy();
+    expect(firstDashboard.phase).toBe('started');
+    expect(firstDashboard.plannerInfo).toEqual(
+      expect.objectContaining({ teamSize: 2, reviewerEffort: 'medium' }),
+    );
+  });
+
   it('flushes dashboard immediately on judging progress', async () => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,

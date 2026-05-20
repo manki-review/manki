@@ -407,6 +407,8 @@ export interface DashboardData {
   testNitSuppressedCount?: number;
   plannerDurationMs?: number;
   judgeDurationMs?: number;
+  /** True when team selection fell back to the heuristic because the planner failed or timed out. Surfaces a one-line marker in the rendered summary so the broader team set is self-explanatory. */
+  heuristicFallback?: boolean;
 }
 
 export interface JudgeDecision {

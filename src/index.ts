@@ -737,6 +737,13 @@ async function runFullReview(
             dashboard.plannerDurationMs = progress.plannerDurationMs;
             dashboard.phase = 'started';
             scheduleDashboardFlush();
+          } else if (progress.heuristicFallback && progress.teamAgentNames) {
+            dashboard.agentCount = progress.teamAgentNames.length;
+            dashboard.agentProgress = progress.teamAgentNames.map(name => ({ name, status: 'reviewing' as const }));
+            dashboard.plannerDurationMs = progress.plannerDurationMs;
+            dashboard.heuristicFallback = true;
+            dashboard.phase = 'started';
+            scheduleDashboardFlush();
           }
         } else if (progress.phase === 'agent-complete') {
           if (dashboard.agentProgress && progress.agentName) {

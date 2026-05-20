@@ -3596,17 +3596,57 @@ describe('runReview', () => {
         sendMessage: jest.fn(),
       } as unknown as import('./providers').LLMClient,
       planner: {
-        sendMessage: jest.fn().mockRejectedValue(new Error('Planner API error')),
+        sendMessage: jest.fn().mockImplementation(() => new Promise((_, reject) => setTimeout(() => reject(new Error('Planner API error')), 1))),
       } as unknown as import('./providers').LLMClient,
     };
 
     const config = makeConfig({ review_level: 'auto' });
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const onProgress = jest.fn();
 
-    const result = await runReview(clients, config, diff, 'raw diff', 'repo context');
+    const result = await runReview(clients, config, diff, 'raw diff', 'repo context', undefined, undefined, undefined, undefined, onProgress);
     expect(result.reviewComplete).toBe(true);
     // Should gracefully fall back to heuristic
     expect(result.agentNames).toHaveLength(3);
+
+    // Heuristic-fallback path emits a `planning` event carrying the resolved
+    // team names so the dashboard can seed per-agent entries and later
+    // populate them with real findingCount/durationMs from agent-complete.
+    const planningCalls = onProgress.mock.calls
+      .map((c: [import('./review').ReviewProgress]) => c[0])
+      .filter(p => p.phase === 'planning');
+    const fallback = planningCalls.find(p => p.heuristicFallback);
+    expect(fallback).toBeDefined();
+    expect(fallback!.plannerResult).toBeUndefined();
+    expect(fallback!.teamAgentNames).toEqual(result.agentNames);
+    expect(fallback!.plannerDurationMs).toBeGreaterThan(0);
+  });
+
+  it('emits heuristic-fallback planning event when planner is disabled', async () => {
+    const clients: ReviewClients = {
+      reviewer: {
+        sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
+      } as unknown as import('./providers').LLMClient,
+      judge: {
+        sendMessage: jest.fn(),
+      } as unknown as import('./providers').LLMClient,
+    };
+
+    const config = makeConfig({ review_level: 'medium' });
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const onProgress = jest.fn();
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
+
+    const result = await runReview(clients, config, diff, 'raw diff', 'repo context', undefined, undefined, undefined, undefined, onProgress);
+    expect(result.reviewComplete).toBe(true);
+
+    const planningCalls = onProgress.mock.calls
+      .map((c: [import('./review').ReviewProgress]) => c[0])
+      .filter(p => p.phase === 'planning');
+    const fallback = planningCalls.find(p => p.heuristicFallback);
+    expect(fallback).toBeDefined();
+    expect(fallback!.plannerResult).toBeUndefined();
+    expect(fallback!.teamAgentNames).toEqual(result.agentNames);
   });
 
   it('warns when agent returns 0 findings with short duration', async () => {

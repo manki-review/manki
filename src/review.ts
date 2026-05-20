@@ -351,13 +351,17 @@ export interface ReviewProgress {
   agentFindingCount?: number;
   agentDurationMs?: number;
   agentStatus?: 'success' | 'failure' | 'retrying';
-  rawFindingCount: number;
+  rawFindingCount?: number;
   judgeInputCount?: number;
   completedAgents?: number;
   totalAgents?: number;
   plannerResult?: PlannerResult;
   plannerDurationMs?: number;
   retryCount?: number;
+  /** Names of agents resolved for this review. Emitted with a `planning` event on the heuristic-fallback path so the dashboard can seed per-agent entries even though no `plannerResult` is available. */
+  teamAgentNames?: string[];
+  /** True when team selection fell back to the heuristic because the planner failed or timed out. */
+  heuristicFallback?: boolean;
 }
 
 function buildPlannerSummary(diff: ParsedDiff, prContext?: PrContext): string {
@@ -675,6 +679,19 @@ function applyEffortDowngrade(picks: AgentPick[], hints: PlannerRoundHint[]): vo
   }
 }
 
+function emitHeuristicFallbackPlanning(
+  onProgress: (progress: ReviewProgress) => void,
+  team: TeamRoster,
+  plannerDurationMs?: number,
+): void {
+  onProgress({
+    phase: 'planning',
+    teamAgentNames: team.agents.map(a => a.name),
+    heuristicFallback: true,
+    ...(plannerDurationMs !== undefined ? { plannerDurationMs } : {}),
+  });
+}
+
 export async function runReview(
   clients: ReviewClients,
   config: ReviewConfig,
@@ -721,9 +738,15 @@ export async function runReview(
       }
     } else {
       team = heuristicFallback(diff, config, priorRoundAgents);
+      if (onProgress) {
+        emitHeuristicFallbackPlanning(onProgress, team, plannerDurationMs);
+      }
     }
   } else {
     team = heuristicFallback(diff, config, priorRoundAgents);
+    if (onProgress) {
+      emitHeuristicFallbackPlanning(onProgress, team);
+    }
   }
 
   const memoryContext = memory ? buildMemoryContext(memory) : '';
