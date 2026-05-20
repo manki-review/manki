@@ -2720,6 +2720,49 @@ describe('runReview', () => {
     expect(result.reviewComplete).toBe(true);
   });
 
+  it('forwards `resolvedThreadIds` (from `collectResolvedThreadIds(previousFindings)`) into the judge input and final `determineVerdict`', async () => {
+    // Covers the in-`runReview` call site that derives `resolvedThreadIds`
+    // from `previousFindings` and passes it both to the judge and to the
+    // post-judge `determineVerdict`. Regressions in the plumbing would let an
+    // author-resolved-via-fix thread re-block APPROVE.
+    const clients = makeClients('[]');
+    const config = makeConfig();
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+
+    mockedRunJudgeAgent.mockResolvedValue({
+      findings: [],
+      summary: 'No new findings.',
+      threadEvaluations: [],
+    });
+
+    const priorRounds: RoundContext[] = [buildPriorRound(1, [makePriorWarningFinding()])];
+    const openThreads: OpenThread[] = [];
+    const previousFindings = [
+      { title: 'Old issue', file: 'src/x.ts', line: 10, severity: 'warning' as const, status: 'resolved' as const, threadId: 'T1' },
+      { title: 'Other', file: 'src/y.ts', line: 20, severity: 'warning' as const, status: 'open' as const, threadId: 'T2' },
+    ];
+
+    const result = await runReview(
+      clients, config, diff, 'raw diff', 'repo context',
+      /* memory */         undefined,
+      /* fileContents */   undefined,
+      /* prContext */      undefined,
+      /* linkedIssues */   undefined,
+      /* onProgress */     undefined,
+      /* isFollowUp */     undefined,
+      openThreads,
+      previousFindings,
+      priorRounds,
+    );
+
+    const judgeInput = mockedRunJudgeAgent.mock.calls[0][2];
+    expect(judgeInput.resolvedThreadIds).toBeInstanceOf(Set);
+    expect(judgeInput.resolvedThreadIds?.has('T1')).toBe(true);
+    expect(judgeInput.resolvedThreadIds?.has('T2')).toBe(false);
+    expect(result.verdict).toBe('APPROVE');
+    expect(result.verdictReason).toBe('only_nit_or_suggestion');
+  });
+
   it('uses planner result to set team size and effort when planner client is provided', async () => {
     const plannerResponse = JSON.stringify({
       teamSize: 5,
