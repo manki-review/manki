@@ -13,6 +13,13 @@ const DISMISSED_LINE_TOLERANCE = 5;
 
 export const PLANNER_TIMEOUT_MS = 30_000;
 
+class PlannerTimeoutError extends Error {
+  constructor() {
+    super('Planner timed out');
+    this.name = 'PlannerTimeoutError';
+  }
+}
+
 const SUSPICIOUS_FAST_THRESHOLD_MS = 15_000;
 
 // Standard reviewer pool used for teamSize >= 3. TRIVIAL_VERIFIER_AGENT is
@@ -533,7 +540,7 @@ export async function runPlanner(
 ): Promise<PlannerResult | null> {
   let timeoutId: ReturnType<typeof setTimeout>;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => reject(new Error('Planner timed out')), PLANNER_TIMEOUT_MS);
+    timeoutId = setTimeout(() => reject(new PlannerTimeoutError()), PLANNER_TIMEOUT_MS);
   });
 
   try {
@@ -590,8 +597,7 @@ export async function runPlanner(
     return { teamSize, reviewerEffort, judgeEffort, prType, agents: agents ?? undefined, language, context };
   } catch (error) {
     clearTimeout(timeoutId!);
-    const message = error instanceof Error ? error.message : String(error);
-    if (/Planner timed out/.test(message)) {
+    if (error instanceof PlannerTimeoutError) {
       core.warning(
         'Planner timed out, falling back to heuristic team selection. If your workflow does not pre-install the Claude Code CLI, see the "spawn claude ENOENT" row in SETUP.md.',
       );
