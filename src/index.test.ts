@@ -3058,7 +3058,7 @@ describe('runFullReview orchestration', () => {
           onProgress({
             phase: 'planning',
             rawFindingCount: 0,
-            plannerResult: { teamSize: 2, reviewerEffort: 'medium', judgeEffort: 'low', prType: 'feature' },
+            plannerResult: { teamSize: 2, reviewerEffort: 'medium', judgeEffort: 'low', prType: 'feat' },
             plannerDurationMs: 400,
           });
         }
