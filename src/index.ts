@@ -1062,10 +1062,11 @@ async function runFullReview(
 
     const keptSeverities: Record<string, number> = {};
     const droppedSeverities: Record<string, number> = {};
+    for (const f of result.findings) {
+      keptSeverities[f.severity] = (keptSeverities[f.severity] ?? 0) + 1;
+    }
     for (const d of judgeDecisions) {
-      if (d.kept) {
-        keptSeverities[d.severity] = (keptSeverities[d.severity] ?? 0) + 1;
-      } else {
+      if (!d.kept) {
         droppedSeverities[d.originalSeverity] = (droppedSeverities[d.originalSeverity] ?? 0) + 1;
       }
     }
@@ -1078,6 +1079,7 @@ async function runFullReview(
       droppedCount: judgeDroppedCount,
       keptSeverities,
       droppedSeverities,
+      ...(result.testNitSuppressedCount != null && result.testNitSuppressedCount > 0 && { testNitSuppressedCount: result.testNitSuppressedCount }),
       judgeDurationMs: judgeEndTime - reviewEndTime,
     };
 
