@@ -6,7 +6,7 @@ import { runJudgeAgent, JudgeInput, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
 import { collectInPrSuppressions, deduplicateFindings, llmDeduplicateFindings, PreviousFinding } from './recap';
-import { ReviewConfig, ReviewerAgent, Finding, FindingFingerprintEntry, OpenThread, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, PlannerRoundHint, RoundContext, SpecialistOutcome, EffortLevel, AgentPick, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, VALID_PR_TYPES } from './types';
+import { ReviewConfig, ReviewerAgent, Finding, FindingFingerprintEntry, OpenThread, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, PlannerRoundHint, RoundContext, SpecialistOutcome, EffortLevel, AgentPick, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { extractJSON } from './json';
 
 const DISMISSED_LINE_TOLERANCE = 5;
@@ -581,7 +581,7 @@ export async function runPlanner(
       : 'medium';
 
     const prTypeRaw = typeof parsed.prType === 'string' ? parsed.prType : 'unknown';
-    const prType = VALID_PR_TYPES.has(prTypeRaw) ? prTypeRaw : 'unknown';
+    const prType: ValidPrType | 'unknown' = VALID_PR_TYPES.has(prTypeRaw) ? (prTypeRaw as ValidPrType) : 'unknown';
 
     // Parse agent picks
     const agents = parseAgentPicks(parsed.agents, availableNames);

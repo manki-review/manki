@@ -154,7 +154,7 @@ export interface AgentPick {
  * `PlannerResult.prType`. Values outside this set collapse to `'unknown'` at
  * parse time and the renderer omits the chip entirely.
  */
-export const VALID_PR_TYPES = new Set([
+export const VALID_PR_TYPE_VALUES = [
   'build',
   'chore',
   'ci',
@@ -166,13 +166,17 @@ export const VALID_PR_TYPES = new Set([
   'revert',
   'style',
   'test',
-]);
+] as const;
+
+export type ValidPrType = typeof VALID_PR_TYPE_VALUES[number];
+
+export const VALID_PR_TYPES = new Set<string>(VALID_PR_TYPE_VALUES);
 
 export interface PlannerResult {
   teamSize: 1 | 2 | 3 | 4 | 5 | 6 | 7;
   reviewerEffort: EffortLevel;
   judgeEffort: EffortLevel;
-  prType: string;
+  prType: ValidPrType | 'unknown';
   agents?: AgentPick[];
   language?: string;
   context?: string;
@@ -384,7 +388,17 @@ export interface DashboardData {
   keptCount?: number;
   droppedCount?: number;
   agentProgress?: AgentProgressEntry[];
-  plannerInfo?: Pick<PlannerResult, 'teamSize' | 'reviewerEffort' | 'judgeEffort' | 'prType'>;
+  plannerInfo?: {
+    teamSize: PlannerResult['teamSize'];
+    reviewerEffort: EffortLevel;
+    judgeEffort: EffortLevel;
+    /**
+     * Raw prType as received from a `PlannerResult` or replayed from a persisted
+     * `RoundPlanner.prType`. The dashboard sanitizes through `validPrTypeOrNull`
+     * before rendering, so off-vocab values are tolerated here.
+     */
+    prType: string;
+  };
   keptSeverities?: Record<string, number>;
   droppedSeverities?: Record<string, number>;
   plannerDurationMs?: number;
