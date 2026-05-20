@@ -679,6 +679,20 @@ function applyEffortDowngrade(picks: AgentPick[], hints: PlannerRoundHint[]): vo
   }
 }
 
+function emitHeuristicFallbackPlanning(
+  onProgress: (progress: ReviewProgress) => void,
+  team: TeamRoster,
+  plannerDurationMs?: number,
+): void {
+  onProgress({
+    phase: 'planning',
+    rawFindingCount: 0,
+    teamAgentNames: team.agents.map(a => a.name),
+    heuristicFallback: true,
+    ...(plannerDurationMs !== undefined ? { plannerDurationMs } : {}),
+  });
+}
+
 export async function runReview(
   clients: ReviewClients,
   config: ReviewConfig,
@@ -726,24 +740,13 @@ export async function runReview(
     } else {
       team = heuristicFallback(diff, config, priorRoundAgents);
       if (onProgress) {
-        onProgress({
-          phase: 'planning',
-          rawFindingCount: 0,
-          plannerDurationMs,
-          teamAgentNames: team.agents.map(a => a.name),
-          heuristicFallback: true,
-        });
+        emitHeuristicFallbackPlanning(onProgress, team, plannerDurationMs);
       }
     }
   } else {
     team = heuristicFallback(diff, config, priorRoundAgents);
     if (onProgress) {
-      onProgress({
-        phase: 'planning',
-        rawFindingCount: 0,
-        teamAgentNames: team.agents.map(a => a.name),
-        heuristicFallback: true,
-      });
+      emitHeuristicFallbackPlanning(onProgress, team);
     }
   }
 
