@@ -1281,7 +1281,7 @@ export function buildReviewerSystemPrompt(
   config: ReviewConfig,
   language?: string,
   context?: string,
-  _noiseLevel: NoiseLevel = 'low',
+  noiseLevel: NoiseLevel = 'low',
 ): string {
   let prompt = `You are a code reviewer specializing in: ${reviewer.focus}
 
@@ -1351,6 +1351,36 @@ When you include a \`suggestedFix\`, list any known caveats of the proposed shap
 - When full file contents are provided, use them to understand context (variable definitions, imports, surrounding logic) but only flag issues in the changed code.
 - When review memory is provided, respect its learnings and suppressions. Do not flag patterns that are listed as intentionally suppressed.
 - If you notice changes in the diff that appear unrelated to the PR's stated purpose (title and description), flag them as a "suggestion" severity finding titled "Unrelated change: [brief description]". Recommend splitting into a separate PR. Only flag changes that are clearly out of scope — don't flag shared config, imports, or test files that naturally accompany the main changes.`;
+
+  if (noiseLevel === 'low') {
+    prompt += `
+
+## Noise Level: low
+
+Frame every potential finding through this lens: would a senior engineer mention this in a review where their time is the bottleneck? If the answer is no, do not include it.
+
+### Categories that are NEVER findings at this noise level
+
+Do not flag any of the following, regardless of severity:
+
+- Whitespace, indentation, blank-line placement, line length
+- Import ordering, grouping, or sort order
+- Trailing commas, semicolons, quote style, brace placement
+- Comment formatting, doc-comment presence or absence on individual symbols
+- Naming conventions already covered by the project's style guide (casing, prefixes, suffixes)
+- Anything a formatter (Prettier, gofmt, rustfmt, black, etc.) or default-config linter (ESLint recommended, clippy default, etc.) would catch automatically
+- Restating type information that a reader can see from the signature
+
+If a potential finding falls into any of these categories, omit it from your response entirely. Do not downgrade it to \`nitpick\` or \`ignore\`. Just drop it.`;
+  }
+  // 'medium' intentionally adds no extra section so the prompt matches the pre-noise_level body verbatim.
+  if (noiseLevel === 'high') {
+    prompt += `
+
+## Noise Level: high
+
+Surface marginal suggestions: in addition to substantive findings, actively include borderline observations that you would normally consider too minor to mention. Wording polish, micro-refactors, stylistic alternatives, and speculative improvements are all welcome at this level. Use \`suggestion\` or \`nitpick\` severity for these. The goal is breadth: prefer including a marginal observation over omitting it.`;
+  }
 
   if (config.instructions) {
     prompt += `\n\n## Additional Instructions\n\n${config.instructions}`;

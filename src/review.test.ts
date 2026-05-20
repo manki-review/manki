@@ -994,11 +994,100 @@ describe('buildReviewerSystemPrompt', () => {
     expect(prompt).toContain('description');
   });
 
-  it('accepts a noiseLevel parameter without changing the prompt body', () => {
-    const base = buildReviewerSystemPrompt(reviewer, makeConfig());
-    expect(buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, undefined, 'low')).toBe(base);
-    expect(buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, undefined, 'medium')).toBe(base);
-    expect(buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, undefined, 'high')).toBe(base);
+  describe('noise_level', () => {
+    it('defaults to "low" guidance when noiseLevel is omitted', () => {
+      const prompt = buildReviewerSystemPrompt(reviewer, makeConfig());
+      expect(prompt).toContain('## Noise Level: low');
+      expect(prompt).toContain('senior engineer');
+      expect(prompt).toContain('Categories that are NEVER findings');
+    });
+
+    it('emits the senior-engineer framing and exclusion list at "low"', () => {
+      const prompt = buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, undefined, 'low');
+      expect(prompt).toContain('## Noise Level: low');
+      expect(prompt).toContain('would a senior engineer mention this in a review where their time is the bottleneck');
+      expect(prompt).toContain('Whitespace, indentation');
+      expect(prompt).toContain('Import ordering');
+      expect(prompt).toContain('Trailing commas, semicolons');
+      expect(prompt).toContain('Comment formatting');
+      expect(prompt).toContain('Naming conventions already covered by the project');
+      expect(prompt).toContain('formatter');
+      expect(prompt).toContain('default-config linter');
+      expect(prompt).toContain('omit it from your response entirely');
+    });
+
+    it('reproduces the pre-noise_level prompt body verbatim at "medium"', () => {
+      const medium = buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, undefined, 'medium');
+      expect(medium).toMatchSnapshot();
+    });
+
+    it('invites marginal suggestions at "high"', () => {
+      const prompt = buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, undefined, 'high');
+      expect(prompt).toContain('## Noise Level: high');
+      expect(prompt).toContain('Surface marginal suggestions');
+      expect(prompt).toContain('marginal');
+      expect(prompt).not.toContain('Categories that are NEVER findings');
+    });
+
+    it('preserves severity guidelines at every noise level', () => {
+      for (const level of ['low', 'medium', 'high'] as const) {
+        const prompt = buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, undefined, level);
+        expect(prompt).toContain('**blocker**');
+        expect(prompt).toContain('**warning**');
+        expect(prompt).toContain('**suggestion**');
+        expect(prompt).toContain('**nitpick**');
+        expect(prompt).toContain('**ignore**');
+      }
+    });
+
+    it('keeps `medium` and `high` differing only by the high-only suffix (no custom instructions)', () => {
+      const medium = buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, undefined, 'medium');
+      const high = buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, undefined, 'high');
+      expect(high.startsWith(medium)).toBe(true);
+      expect(high.length).toBeGreaterThan(medium.length);
+    });
+
+    it('includes the high-only suffix before custom instructions when instructions are set', () => {
+      const config = makeConfig({ instructions: 'Focus on security.' });
+      const medium = buildReviewerSystemPrompt(reviewer, config, undefined, undefined, 'medium');
+      const high = buildReviewerSystemPrompt(reviewer, config, undefined, undefined, 'high');
+      expect(high).toContain('Surface marginal suggestions');
+      expect(high).toContain('## Additional Instructions');
+      expect(high.indexOf('Surface marginal suggestions')).toBeLessThan(high.indexOf('## Additional Instructions'));
+      expect(medium).not.toContain('Surface marginal suggestions');
+    });
+
+    it.each(['low', 'high'] as const)(
+      'places the noise-level section before custom instructions at "%s"',
+      (level) => {
+        const config = makeConfig({ instructions: 'Focus on TypeScript best practices.' });
+        const prompt = buildReviewerSystemPrompt(reviewer, config, undefined, undefined, level);
+        const noiseIdx = prompt.indexOf(`## Noise Level: ${level}`);
+        const instructionsIdx = prompt.indexOf('## Additional Instructions');
+        expect(noiseIdx).toBeGreaterThan(-1);
+        expect(instructionsIdx).toBeGreaterThan(noiseIdx);
+      },
+    );
+
+    it('prompt at "low" contains all exclusion-list categories', () => {
+      const prompt = buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, undefined, 'low');
+      const styleNitCategories = [
+        'Whitespace',
+        'Import ordering',
+        'Trailing commas',
+        'semicolons',
+        'quote style',
+        'Comment formatting',
+        'Naming conventions',
+        'formatter',
+        'default-config linter',
+      ];
+      for (const category of styleNitCategories) {
+        expect(prompt).toContain(category);
+      }
+      expect(prompt).toContain('omit it from your response entirely');
+      expect(prompt).toContain('Do not downgrade it to `nitpick` or `ignore`');
+    });
   });
 });
 
