@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 
 import { createAuthenticatedOctokit, getMemoryToken } from './auth';
 import { loadConfig, resolveModel } from './config';
-import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec } from './providers';
+import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
 import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
@@ -513,6 +513,33 @@ async function runFullReview(
       await updateProgressComment(octokit, owner, repo, progressCommentId, dashboard);
       return;
     }
+
+    // Eagerly install any provider CLI before the planner timer starts. The
+    // fallback `npm install -g` inside `ensureCLI` takes around 30s on a
+    // cold runner and would otherwise race the planner's own 30s timeout.
+    // Warming up once here pays the cost before any per-call deadline runs.
+    // Deduplicate by client instance so roles that share a client don't
+    // serialize redundant install retries on failure. Placed after the
+    // diff-size and empty-files guards so cold installs are skipped on paths
+    // that never invoke an LLM.
+    const warmupTargets = new Set<LLMClient>(
+      [plannerClient, reviewerClient, judgeClient, dedupClient, ...perAgentClients.values()].filter(
+        (c): c is LLMClient => !!c,
+      ),
+    );
+    await Promise.allSettled(
+      [...warmupTargets].map((c) =>
+        c.warmupCLI
+          ? c.warmupCLI().catch((error) =>
+              core.warning(
+                sanitizeLogOutput(
+                  `Provider CLI warmup failed (${c.constructor.name}): ${error instanceof Error ? error.message : error}`,
+                ),
+              ),
+            )
+          : Promise.resolve(),
+      ),
+    );
 
     let repoContext = await fetchRepoContext(octokit, owner, repo, baseRef);
 

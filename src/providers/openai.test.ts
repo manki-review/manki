@@ -90,6 +90,11 @@ describe('OpenAIClient', () => {
     const client = new OpenAIClient({ auth: { kind: 'apiKey', key: 'sk-key' }, model: 'gpt-4o' });
     expect(client).toBeDefined();
   });
+
+  it('does not expose warmupCLI (planner does not run on this provider)', () => {
+    const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-4o' });
+    expect((client as { warmupCLI?: unknown }).warmupCLI).toBeUndefined();
+  });
 });
 
 describe('sendMessage (API path)', () => {

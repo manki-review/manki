@@ -4326,6 +4326,47 @@ describe('runPlanner', () => {
       jest.useRealTimers();
     }
   });
+
+  it('warns about SETUP.md ENOENT row on timeout', async () => {
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    jest.useFakeTimers();
+    try {
+      const client = {
+        sendMessage: jest.fn().mockImplementation(() => new Promise(() => {})),
+      } as unknown as import('./providers').LLMClient;
+
+      const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+      const resultPromise = runPlanner(client, diff);
+
+      jest.advanceTimersByTime(PLANNER_TIMEOUT_MS);
+      await resultPromise;
+
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Planner timed out'));
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('spawn claude ENOENT'));
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('SETUP.md'));
+    } finally {
+      jest.useRealTimers();
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('preserves existing warning text for non-timeout planner failures', async () => {
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    try {
+      const client = {
+        sendMessage: jest.fn().mockResolvedValue({ content: 'not valid json at all' }),
+      } as unknown as import('./providers').LLMClient;
+
+      const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+      const result = await runPlanner(client, diff);
+
+      expect(result).toBeNull();
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/^Planner failed: /));
+      expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('spawn claude ENOENT'));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
 });
 
 describe('selectTeam with teamSizeOverride', () => {

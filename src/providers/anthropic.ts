@@ -69,6 +69,11 @@ export class AnthropicClient implements LLMClient {
     return this.sendViaAPI(systemPrompt, userMessage, options);
   }
 
+  async warmupCLI(): Promise<void> {
+    if (this.auth.kind !== 'oauth') return;
+    await this.ensureCLI();
+  }
+
   private async ensureCLI(): Promise<string> {
     if (this.cachedCLIPath) {
       return this.cachedCLIPath;
