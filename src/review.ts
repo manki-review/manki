@@ -1600,10 +1600,12 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
  * `resolvedThreadIds` is an explicit allowlist of thread ids that GitHub
  * reports as `isResolved: true` (derived from `previousFindings[i].status ===
  * 'resolved'`). A prior finding whose `threadId` is in this set is honored as
- * resolved regardless of `authorReplyClass` or `openThreads`. This covers the
- * common "author pushed a fix and clicked Resolve conversation" case, where
- * the thread is no longer open on GitHub but the prior's `authorReplyClass`
- * stays `none`.
+ * resolved, but only when the thread is NOT also present in `openThreads`.
+ * Live `openThreads` state always wins: a thread that was resolved in a prior
+ * round but has since been re-opened on GitHub blocks APPROVE. This covers
+ * the common "author pushed a fix and clicked Resolve conversation" case,
+ * where the thread is no longer open on GitHub but the prior's
+ * `authorReplyClass` stays `none`.
  *
  * Nitpicks and suggestions are non-blocking, and prior-round dismissed warnings
  * have already been acknowledged by the author. All these cases approve the PR.
@@ -1630,11 +1632,15 @@ export function determineVerdict(
   const openThreadIds = new Set((openThreads ?? []).map(t => t.threadId));
   const hasUnresolvedPrior = prior.some(p => {
     if (p.severity !== 'warning' && p.severity !== 'blocker') return false;
-    if (p.threadId && resolvedThreadIds?.has(p.threadId)) return false;
     if (p.authorReplyClass === 'agree') return false;
     if (!p.threadId) return true;
+    // Live `openThreads` state wins over recap-derived `resolvedThreadIds`.
+    // If a thread was resolved in a prior round but has since been re-opened
+    // on GitHub, the re-opened state must block APPROVE.
+    if (openThreadIds.has(p.threadId)) return true;
+    if (resolvedThreadIds?.has(p.threadId)) return false;
     if (openThreadsUnknown) return true;
-    return openThreadIds.has(p.threadId);
+    return false;
   });
   if (hasUnresolvedPrior) {
     return { verdict: 'REQUEST_CHANGES', verdictReason: 'prior_unaddressed' };

@@ -7,6 +7,7 @@ import {
   buildPlannerSystemPrompt,
   buildPlannerHints,
   collectPriorRoundAgents,
+  collectResolvedThreadIds,
   selectTeam,
   titlesMatch,
   truncateDiff,
@@ -824,11 +825,12 @@ describe('determineVerdict', () => {
     describe('`resolvedThreadIds` honors GitHub `isResolved` state', () => {
       it('approves when every prior warning/blocker thread is in `resolvedThreadIds` (resolve via fix without author agree-reply)', () => {
         const priors = [makePriorWarning()];
-        const open = [makeOpenThread()];
+        // GitHub reports the thread as resolved, so it is absent from
+        // `openThreads`.
         const result = determineVerdict(
           [],
           fingerprintEntriesFromLegacy(priors),
-          open,
+          [],
           new Set(['T1']),
         );
         expect(result.verdict).toBe('APPROVE');
@@ -883,7 +885,73 @@ describe('determineVerdict', () => {
         expect(result.verdict).toBe('APPROVE');
         expect(result.verdictReason).toBe('only_nit_or_suggestion');
       });
+
+      it('blocks when a thread is in both `resolvedThreadIds` (stale) and `openThreads` (re-opened)', () => {
+        // Regression: live `openThreads` state must win over recap-derived
+        // `resolvedThreadIds`. A thread resolved in a prior round but
+        // re-opened on GitHub since must block APPROVE.
+        const priors = [makePriorWarning()];
+        const open = [makeOpenThread()];
+        const result = determineVerdict(
+          [],
+          fingerprintEntriesFromLegacy(priors),
+          open,
+          new Set(['T1']),
+        );
+        expect(result.verdict).toBe('REQUEST_CHANGES');
+        expect(result.verdictReason).toBe('prior_unaddressed');
+      });
+
+      it('blocks when one prior is resolved and another is still open (mixed)', () => {
+        const priors = [
+          makePriorWarning({
+            fingerprint: { file: 'src/a.ts', lineStart: 1, lineEnd: 1, slug: 'resolved-issue' },
+            threadId: 'T-RESOLVED',
+          }),
+          makePriorWarning({
+            fingerprint: { file: 'src/b.ts', lineStart: 2, lineEnd: 2, slug: 'open-issue' },
+            threadId: 'T-OPEN',
+          }),
+        ];
+        const open = [makeOpenThread({ threadId: 'T-OPEN', file: 'src/b.ts', line: 2 })];
+        const result = determineVerdict(
+          [],
+          fingerprintEntriesFromLegacy(priors),
+          open,
+          new Set(['T-RESOLVED']),
+        );
+        expect(result.verdict).toBe('REQUEST_CHANGES');
+        expect(result.verdictReason).toBe('prior_unaddressed');
+      });
     });
+  });
+});
+
+describe('collectResolvedThreadIds', () => {
+  it('returns an empty set for an undefined input', () => {
+    expect(collectResolvedThreadIds(undefined).size).toBe(0);
+  });
+
+  it('returns an empty set for an empty array', () => {
+    expect(collectResolvedThreadIds([]).size).toBe(0);
+  });
+
+  it('includes only `resolved` entries with a `threadId`', () => {
+    const result = collectResolvedThreadIds([
+      { title: 'a', file: 'f', line: 1, severity: 'warning', status: 'resolved', threadId: 'T1' },
+      { title: 'b', file: 'f', line: 2, severity: 'warning', status: 'open', threadId: 'T2' },
+      { title: 'c', file: 'f', line: 3, severity: 'warning', status: 'replied', threadId: 'T3' },
+      { title: 'd', file: 'f', line: 4, severity: 'warning', status: 'resolved', threadId: 'T4' },
+    ]);
+    expect(result).toEqual(new Set(['T1', 'T4']));
+  });
+
+  it('skips `resolved` entries that lack a `threadId`', () => {
+    const result = collectResolvedThreadIds([
+      { title: 'a', file: 'f', line: 1, severity: 'warning', status: 'resolved' },
+      { title: 'b', file: 'f', line: 2, severity: 'warning', status: 'resolved', threadId: 'T2' },
+    ]);
+    expect(result).toEqual(new Set(['T2']));
   });
 });
 
