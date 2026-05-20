@@ -211,7 +211,7 @@ name: Manki
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, ready_for_review]
   pull_request_review:
     types: [submitted, dismissed]
   issue_comment:
@@ -347,6 +347,7 @@ You can also forward `severity_counts` or `findings_json` to a metrics sink (Sla
 | Event | Purpose |
 |-------|---------|
 | `pull_request: [opened, synchronize]` | Auto-review on PR open and new pushes |
+| `pull_request: [ready_for_review]` | Auto-review when a draft PR is marked ready (head SHA unchanged, so the planner sees the same diff a `synchronize` would have produced) |
 | `issue_comment: [created, edited]` | `/manki` commands on PRs and issues (review, explain, triage, etc.) |
 | `pull_request_review_comment: [created]` | Replies to review comment threads |
 | `pull_request_review: [submitted, dismissed]` | Auto-approve check when reviews change state |
