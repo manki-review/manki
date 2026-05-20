@@ -727,40 +727,39 @@ describe('handlePullRequest', () => {
     expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
   });
 
-  it('updates existing skip comment instead of creating a duplicate', async () => {
-    jest.mocked(ghUtils.isReviewInProgress).mockResolvedValueOnce(true);
-    mockListComments.mockResolvedValueOnce({
-      data: [
-        {
-          id: 77,
-          body: '<!-- manki-bot -->\n**Review skipped** — a review is currently in progress.',
-          user: { login: 'manki-review[bot]', type: 'Bot' },
-        },
-      ],
-    });
+  it('always posts a fresh skip comment, never edits an existing one', async () => {
+    jest.mocked(ghUtils.isReviewInProgress)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true);
 
-    setContext({
-      eventName: 'pull_request',
-      payload: {
-        action: 'opened',
-        sender: { login: 'user' },
-        pull_request: {
-          number: 1,
-          head: { sha: 'abc' },
-          base: { ref: 'main' },
-          title: 'Test PR',
-          body: '',
-          draft: false,
-        },
+    const prPayload = {
+      action: 'opened',
+      sender: { login: 'user' },
+      pull_request: {
+        number: 1,
+        head: { sha: 'abc' },
+        base: { ref: 'main' },
+        title: 'Test PR',
+        body: '',
+        draft: false,
       },
-    });
+    };
 
+    setContext({ eventName: 'pull_request', payload: prPayload });
+    await handlePullRequest();
+    setContext({ eventName: 'pull_request', payload: prPayload });
     await handlePullRequest();
 
-    expect(mockOctokitInstance.rest.issues.updateComment).toHaveBeenCalledWith(
-      expect.objectContaining({ comment_id: 77, body: expect.stringContaining('Review skipped') }),
+    expect(mockOctokitInstance.rest.issues.updateComment).not.toHaveBeenCalled();
+    expect(mockOctokitInstance.rest.issues.createComment).toHaveBeenCalledTimes(2);
+    const skipCalls = mockOctokitInstance.rest.issues.createComment.mock.calls.filter(
+      (c: [{ body: string }]) => c[0].body.includes('Review skipped'),
     );
-    expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalled();
+    expect(skipCalls).toHaveLength(2);
+    for (const call of skipCalls) {
+      expect(call[0].body).toContain(FORCE_REVIEW_MARKER);
+      expect(call[0].body).toContain('- [ ] Force review');
+    }
     expect(mockOctokitInstance.rest.pulls.get).not.toHaveBeenCalled();
     expect(jest.mocked(ghUtils.isApprovedOnCommit)).not.toHaveBeenCalled();
   });
@@ -816,7 +815,6 @@ describe('handleCommentTrigger', () => {
 
   it('posts skip comment and returns early when review is already in progress', async () => {
     jest.mocked(ghUtils.isReviewInProgress).mockResolvedValueOnce(true);
-    mockListComments.mockResolvedValueOnce({ data: [] });
 
     setContext({
       eventName: 'issue_comment',
@@ -847,41 +845,38 @@ describe('handleCommentTrigger', () => {
     expect(mockOctokitInstance.rest.pulls.get).not.toHaveBeenCalled();
   });
 
-  it('updates existing skip comment instead of creating a duplicate', async () => {
-    jest.mocked(ghUtils.isReviewInProgress).mockResolvedValueOnce(true);
-    mockListComments.mockResolvedValueOnce({
-      data: [
-        {
-          id: 99,
-          body: `${ghUtils.BOT_MARKER}\n**Review skipped** — a review is currently in progress.`,
-          user: { login: ghUtils.BOT_LOGIN, type: 'Bot' },
-        },
-      ],
-    });
+  it('always posts a fresh skip comment, never edits an existing one', async () => {
+    jest.mocked(ghUtils.isReviewInProgress)
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true);
 
-    setContext({
-      eventName: 'issue_comment',
-      payload: {
-        action: 'created',
-        issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } },
-        comment: { id: 42, body: '@manki review', author_association: 'COLLABORATOR' },
-      },
-    });
+    const payload = {
+      action: 'created',
+      issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } },
+      comment: { id: 42, body: '@manki review', author_association: 'COLLABORATOR' },
+    };
 
+    setContext({ eventName: 'issue_comment', payload });
+    await handleCommentTrigger();
+    setContext({ eventName: 'issue_comment', payload });
     await handleCommentTrigger();
 
-    expect(mockOctokitInstance.rest.issues.updateComment).toHaveBeenCalledWith(
-      expect.objectContaining({ comment_id: 99, body: expect.stringContaining('Review skipped') }),
+    expect(mockOctokitInstance.rest.issues.updateComment).not.toHaveBeenCalled();
+    expect(mockOctokitInstance.rest.issues.createComment).toHaveBeenCalledTimes(2);
+    const skipCalls = mockOctokitInstance.rest.issues.createComment.mock.calls.filter(
+      (c: [{ body: string }]) => c[0].body.includes('Review skipped'),
     );
-    expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalledWith(
-      expect.objectContaining({ body: expect.stringContaining('Review skipped') }),
-    );
+    expect(skipCalls).toHaveLength(2);
+    for (const call of skipCalls) {
+      expect(call[0].body).toContain(FORCE_REVIEW_MARKER);
+      expect(call[0].body).toContain('- [ ] Force review');
+    }
     expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
   });
 
   it('swallows errors from skip-comment helpers and emits a warning', async () => {
     jest.mocked(ghUtils.isReviewInProgress).mockResolvedValueOnce(true);
-    mockListComments.mockRejectedValueOnce(new Error('boom'));
+    mockOctokitInstance.rest.issues.createComment.mockRejectedValueOnce(new Error('boom'));
 
     setContext({
       eventName: 'issue_comment',
@@ -897,7 +892,7 @@ describe('handleCommentTrigger', () => {
     expect(jest.mocked(core.warning)).toHaveBeenCalledWith(
       expect.stringContaining('Failed to post review-skipped comment'),
     );
-    expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalled();
+    expect(mockOctokitInstance.rest.issues.createComment).toHaveBeenCalledTimes(1);
     expect(mockOctokitInstance.rest.issues.updateComment).not.toHaveBeenCalled();
     expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
     expect(mockOctokitInstance.rest.pulls.get).not.toHaveBeenCalled();
