@@ -2185,8 +2185,8 @@ describe('buildDashboard', () => {
     expect(md).toContain(`${INDENT}✅ Testing & Coverage — 4 (36s)`);
     expect(md).toContain(`${INDENT}✅ Performance & Efficiency — 2 (39s)`);
     expect(md).not.toContain('0 (0ms)');
-    const perTeamSum = 4 + 3 + 5 + 4 + 2;
-    expect(perTeamSum).toBe(data.rawFindingCount);
+    const renderedCounts = [4, 3, 5, 4, 2];
+    expect(renderedCounts.reduce((a, b) => a + b, 0)).toBe(data.rawFindingCount!);
   });
 
   it('renders heuristic-fallback marker under the planner header when set', () => {
@@ -2197,7 +2197,11 @@ describe('buildDashboard', () => {
       plannerDurationMs: 60000,
     };
     const md = buildDashboard(data);
-    expect(md).toContain(`${INDENT}_(planner heuristic fallback used)_`);
+    const plannerIdx = md.indexOf('**Planner**');
+    const reviewIdx = md.indexOf('**Review**');
+    const markerIdx = md.indexOf(`${INDENT}_(planner heuristic fallback used)_`);
+    expect(markerIdx).toBeGreaterThan(plannerIdx);
+    expect(markerIdx).toBeLessThan(reviewIdx);
   });
 
   it('omits heuristic-fallback marker when not set', () => {

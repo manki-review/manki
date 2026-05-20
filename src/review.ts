@@ -351,7 +351,7 @@ export interface ReviewProgress {
   agentFindingCount?: number;
   agentDurationMs?: number;
   agentStatus?: 'success' | 'failure' | 'retrying';
-  rawFindingCount: number;
+  rawFindingCount?: number;
   judgeInputCount?: number;
   completedAgents?: number;
   totalAgents?: number;
@@ -686,7 +686,6 @@ function emitHeuristicFallbackPlanning(
 ): void {
   onProgress({
     phase: 'planning',
-    rawFindingCount: 0,
     teamAgentNames: team.agents.map(a => a.name),
     heuristicFallback: true,
     ...(plannerDurationMs !== undefined ? { plannerDurationMs } : {}),
