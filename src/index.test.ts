@@ -2986,6 +2986,54 @@ describe('runFullReview orchestration', () => {
     expect(firstDashboard.phase).toBe('started');
   });
 
+  it('sets heuristicFallback and phase on dashboard when judging follows heuristic-fallback planning', async () => {
+    const testFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+    };
+    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+      files: [testFile], totalAdditions: 10, totalDeletions: 5,
+    });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+
+    const fallbackAgents = ['Security & Safety', 'Correctness & Logic', 'general'];
+    const snapshots: import('./types').DashboardData[] = [];
+    jest.mocked(ghUtils.updateProgressDashboard).mockImplementation(
+      async (_octokit, _owner, _repo, _id, dashboard) => {
+        snapshots.push({ ...dashboard });
+      },
+    );
+
+    jest.mocked(reviewModule.runReview).mockImplementation(
+      async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
+        if (onProgress) {
+          onProgress({
+            phase: 'planning',
+            rawFindingCount: 0,
+            heuristicFallback: true,
+            teamAgentNames: fallbackAgents,
+            plannerDurationMs: 150,
+          });
+          onProgress({ phase: 'judging', rawFindingCount: 0, judgeInputCount: 0 });
+        }
+        return {
+          verdict: 'APPROVE', summary: 'ok', findings: [],
+          highlights: [], reviewComplete: true,
+          agentNames: fallbackAgents,
+        };
+      },
+    );
+
+    await callRunFullReview();
+
+    const judgingSnapshot = snapshots.find(s => s.phase === 'reviewed');
+    expect(judgingSnapshot).toBeDefined();
+    expect(judgingSnapshot!.heuristicFallback).toBe(true);
+    expect(judgingSnapshot!.agentCount).toBe(3);
+    expect(judgingSnapshot!.plannerDurationMs).toBe(150);
+  });
+
   it('seeds dashboard from planner result (non-fallback planning progress event)', async () => {
     jest.useFakeTimers();
     const testFile = {
