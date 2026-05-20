@@ -2141,8 +2141,7 @@ describe('buildDashboard', () => {
       testNitSuppressedCount: 7,
     };
     const md = buildDashboard(data);
-    expect(md).toMatch(/suppressed/i);
-    expect(md).toContain('7');
+    expect(md).toContain('suppressed: 7 test-only nits (round ≥2 throttle)');
   });
 
   it('omits test-nit suppression line when testNitSuppressedCount is not set', () => {

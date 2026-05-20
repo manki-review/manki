@@ -2120,6 +2120,8 @@ describe('runFullReview orchestration', () => {
     const keptSeverities = dashboardArg?.keptSeverities ?? {};
     const keptSeveritiesSum = Object.values(keptSeverities).reduce((a, n) => a + n, 0);
     expect(dashboardArg?.keptCount).toBe(keptSeveritiesSum);
+    expect(dashboardArg?.keptCount).toBe(1);
+    expect(keptSeverities['blocker']).toBe(1);
 
     // test-nit suppression count must be surfaced in the dashboard
     expect(dashboardArg?.testNitSuppressedCount).toBe(1);
