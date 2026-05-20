@@ -3,7 +3,7 @@ import { createRequire } from 'module';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { AgentProgressEntry, DEFENSIVE_HARDENING_TAG, DashboardData, Finding, FindingFingerprintEntry, FindingSeverity, OWN_PROPOSAL_TAG, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, ReviewVerdict } from './types';
+import { AgentProgressEntry, DEFENSIVE_HARDENING_TAG, DashboardData, Finding, FindingFingerprintEntry, FindingSeverity, OWN_PROPOSAL_TAG, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, ReviewVerdict, VALID_PR_TYPES } from './types';
 import { isLineInDiff, findClosestDiffLine } from './diff';
 import { MAX_AGENT_RETRIES } from './types';
 import { safeTruncate } from './utils';
@@ -259,10 +259,8 @@ function formatDuration(ms: number): string {
   return ms < 1000 ? `${ms}ms` : `${Math.round(ms / 1000)}s`;
 }
 
-const VALID_PR_TYPES = new Set(['feature', 'bugfix', 'refactor', 'docs', 'test', 'chore', 'rename']);
-
-function sanitizePrType(prType: string): string {
-  return VALID_PR_TYPES.has(prType) ? prType : 'unknown';
+function validPrTypeOrNull(prType: string): string | null {
+  return VALID_PR_TYPES.has(prType) ? prType : null;
 }
 
 const VALID_EFFORTS = new Set(['low', 'medium', 'high']);
@@ -294,10 +292,15 @@ export function buildDashboard(data: DashboardData): string {
     plannerLines.push(`**Planner**`);
     plannerLines.push(`${INDENT}analyzing...`);
   } else if (data.plannerInfo) {
-    const prType = sanitizePrType(data.plannerInfo.prType);
+    const prType = validPrTypeOrNull(data.plannerInfo.prType);
     const plannerDur = data.plannerDurationMs != null ? ` (${formatDuration(data.plannerDurationMs)})` : '';
     plannerLines.push(`**Planner**${plannerDur}`);
-    plannerLines.push(`${INDENT}${prType} · ${data.lineCount} lines · ${data.plannerInfo.teamSize} agents`);
+    const summaryParts = [
+      ...(prType ? [prType] : []),
+      `${data.lineCount} lines`,
+      `${data.plannerInfo.teamSize} agents`,
+    ];
+    plannerLines.push(`${INDENT}${summaryParts.join(' · ')}`);
     plannerLines.push(`${INDENT}review effort: ${sanitizeEffort(data.plannerInfo.reviewerEffort)} · judge effort: ${sanitizeEffort(data.plannerInfo.judgeEffort)}`);
   } else {
     const plannerDur = data.plannerDurationMs != null ? ` (${formatDuration(data.plannerDurationMs)})` : '';

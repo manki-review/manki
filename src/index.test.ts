@@ -2318,7 +2318,7 @@ describe('runFullReview orchestration', () => {
             teamSize: 3,
             reviewerEffort: 'medium',
             judgeEffort: 'medium',
-            prType: 'feature',
+            prType: 'feat',
             agents: [
               { name: 'Security & Safety', effort: 'high' },
               { name: 'Architecture & Design', effort: 'medium' },
@@ -2376,7 +2376,7 @@ describe('runFullReview orchestration', () => {
             teamSize: 3,
             reviewerEffort: 'medium',
             judgeEffort: 'medium',
-            prType: 'feature',
+            prType: 'feat',
             agents: [
               { name: 'Security & Safety', effort: 'high' },
               { name: 'Architecture & Design', effort: 'medium' },
@@ -2403,7 +2403,7 @@ describe('runFullReview orchestration', () => {
             teamSize: 3,
             reviewerEffort: 'medium',
             judgeEffort: 'medium',
-            prType: 'feature',
+            prType: 'feat',
             agents: [],
           },
         };

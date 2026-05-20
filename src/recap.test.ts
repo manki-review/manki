@@ -1185,6 +1185,33 @@ describe('fetchRecapState', () => {
       expect(state.priorRounds[0].meta.round).toBe(2);
     });
 
+    it.each([
+      ['feature', 'feat'],
+      ['bugfix', 'fix'],
+      ['rename', 'refactor'],
+    ])('migrates legacy planner.prType `%s` to canonical `%s` on read', async (legacy, canonical) => {
+      const ctx = makeRoundContext(1, {
+        planner: { used: true, teamSize: 3, reviewerEffort: 'medium', judgeEffort: 'medium', prType: legacy },
+      });
+      const octokit = mockOctokit([], [
+        { id: 100, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
+      ]);
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.priorRounds).toHaveLength(1);
+      expect(state.priorRounds[0].planner.prType).toBe(canonical);
+    });
+
+    it('passes a canonical Conventional Commits prType through unchanged', async () => {
+      const ctx = makeRoundContext(1, {
+        planner: { used: true, teamSize: 2, reviewerEffort: 'low', judgeEffort: 'low', prType: 'docs' },
+      });
+      const octokit = mockOctokit([], [
+        { id: 100, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
+      ]);
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.priorRounds[0].planner.prType).toBe('docs');
+    });
+
     it('ignores HTML-comment block when a details block is present in the same review', async () => {
       const ctxDetails = makeRoundContext(1, { judge: { summary: 'from details' } });
       const ctxHtml = makeRoundContext(2, { judge: { summary: 'from html comment' } });

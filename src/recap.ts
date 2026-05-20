@@ -178,6 +178,21 @@ const CONTEXT_BLOCK_HTML_COMMENT_RE = /<!-- manki-context: (.+?) -->/g;
 const REQUIRED_ROUND_CONTEXT_KEYS = ['meta', 'config', 'diff', 'models', 'planner', 'reviewers', 'judge', 'dedup', 'memory', 'findings', 'usage', 'verdict'] as const;
 
 /**
+ * Pre-Conventional-Commits planner vocab. Historical review bodies persisted
+ * these values into `planner.prType`. Read-only remap so old rounds render
+ * with the current canonical vocab.
+ */
+const LEGACY_PR_TYPE_MAP: Record<string, string> = {
+  feature: 'feat',
+  bugfix: 'fix',
+  rename: 'refactor',
+};
+
+export function migrateLegacyPrType(value: string): string {
+  return LEGACY_PR_TYPE_MAP[value] ?? value;
+}
+
+/**
  * Parse Manki context blocks from PR-level review bodies. Supports both the
  * `<details>` wrapper (visible aggregate review) and the `<!-- manki-context: ... -->`
  * wrapper (hidden per-round review). Unknown future fields on `RoundContext`
@@ -243,6 +258,9 @@ function parseContextBlocks(
       }
 
       const ctx = parsed as RoundContext;
+      if (ctx.planner && typeof ctx.planner.prType === 'string') {
+        ctx.planner.prType = migrateLegacyPrType(ctx.planner.prType);
+      }
       const existing = byRound.get(round);
       if (existing) {
         duplicateRounds.add(round);

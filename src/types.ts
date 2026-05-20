@@ -134,6 +134,25 @@ export interface AgentPick {
   effort: EffortLevel;
 }
 
+/**
+ * Conventional Commits canonical types the planner is allowed to emit for
+ * `PlannerResult.prType`. Values outside this set collapse to `'unknown'` at
+ * parse time and the renderer omits the chip entirely.
+ */
+export const VALID_PR_TYPES = new Set([
+  'build',
+  'chore',
+  'ci',
+  'docs',
+  'feat',
+  'fix',
+  'perf',
+  'refactor',
+  'revert',
+  'style',
+  'test',
+]);
+
 export interface PlannerResult {
   teamSize: 1 | 2 | 3 | 4 | 5 | 6 | 7;
   reviewerEffort: EffortLevel;

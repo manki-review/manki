@@ -6,7 +6,7 @@ import { runJudgeAgent, JudgeInput, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
 import { collectInPrSuppressions, deduplicateFindings, llmDeduplicateFindings, PreviousFinding } from './recap';
-import { ReviewConfig, ReviewerAgent, Finding, FindingFingerprintEntry, OpenThread, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, PlannerRoundHint, RoundContext, SpecialistOutcome, EffortLevel, AgentPick, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES } from './types';
+import { ReviewConfig, ReviewerAgent, Finding, FindingFingerprintEntry, OpenThread, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, PlannerRoundHint, RoundContext, SpecialistOutcome, EffortLevel, AgentPick, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, VALID_PR_TYPES } from './types';
 import { extractJSON } from './json';
 
 const DISMISSED_LINE_TOLERANCE = 5;
@@ -459,7 +459,19 @@ ${agentList}
    - low: few expected findings, straightforward changes
    - medium: moderate findings expected
    - high: many findings expected, nuanced severity decisions
-4. prType: one of "feature", "bugfix", "refactor", "docs", "test", "chore", "rename"
+4. prType: one Conventional Commits type that best fits the PR. Pick from:
+   - "build": build system, packaging, or dependency changes
+   - "chore": maintenance with no user-visible behavior change
+   - "ci": CI/CD configuration changes
+   - "docs": documentation-only changes
+   - "feat": new user-visible functionality or capability
+   - "fix": bug fix correcting broken behavior
+   - "perf": performance improvement with no other observable change
+   - "refactor": restructuring code with no behavior change (renames go here)
+   - "revert": reverting a prior commit
+   - "style": formatting or whitespace with no structural change
+   - "test": adding or updating tests only
+   Pick the dominant intent. Prefer "feat" over "chore" when the change adds capability, "fix" over "refactor" when it corrects broken behavior, "build" over "ci" when it touches packaging or deps rather than workflow YAML, "refactor" over "style" when structure changes, not just formatting.
 5. language: the primary programming language of the changed code (e.g., "typescript", "rust", "python"). Omit if unclear.
 6. context: a short phrase describing the project domain (e.g., "blockchain consensus library", "REST API server"). Omit if unclear.
 
@@ -467,7 +479,7 @@ Respond with ONLY a JSON object (no markdown fences):
 {
   "teamSize": 3,
   "judgeEffort": "medium",
-  "prType": "feature",
+  "prType": "feat",
   "language": "typescript",
   "context": "GitHub Actions bot",
   "agents": [
@@ -480,7 +492,6 @@ Respond with ONLY a JSON object (no markdown fences):
 
 const VALID_TEAM_SIZES = new Set([1, 2, 3, 4, 5, 6, 7]);
 const VALID_EFFORTS = new Set(['low', 'medium', 'high']);
-const VALID_PR_TYPES = new Set(['feature', 'bugfix', 'refactor', 'docs', 'test', 'chore', 'rename']);
 
 /**
  * Sanitize a free-text field from the planner LLM to prevent prompt injection.
