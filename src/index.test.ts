@@ -1690,6 +1690,10 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [], totalAdditions: 3000, totalDeletions: 3000,
     });
+    const warmupCLI = jest.fn().mockResolvedValue(undefined);
+    jest.mocked(createLLMClient).mockImplementation(() => ({
+      sendMessage: jest.fn(), warmupCLI,
+    }));
 
     await callRunFullReview();
 
@@ -1704,6 +1708,8 @@ describe('runFullReview orchestration', () => {
     );
     // Should NOT have called runReview (Claude)
     expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+    // Warmup must be skipped on paths that never invoke an LLM.
+    expect(warmupCLI).not.toHaveBeenCalled();
   });
 
   it('dismisses previous reviews before posting diff-too-large warning', async () => {
@@ -1740,6 +1746,10 @@ describe('runFullReview orchestration', () => {
       totalAdditions: 10, totalDeletions: 5,
     });
     jest.mocked(diffModule.filterFiles).mockReturnValue([]);
+    const warmupCLI = jest.fn().mockResolvedValue(undefined);
+    jest.mocked(createLLMClient).mockImplementation(() => ({
+      sendMessage: jest.fn(), warmupCLI,
+    }));
 
     await callRunFullReview();
 
@@ -1752,6 +1762,8 @@ describe('runFullReview orchestration', () => {
       expect.anything(),
     );
     expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+    // Warmup must be skipped on paths that never invoke an LLM.
+    expect(warmupCLI).not.toHaveBeenCalled();
   });
 
   it('skips auto_review disabled PR events and deletes progress comment', async () => {
