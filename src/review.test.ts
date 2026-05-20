@@ -820,6 +820,112 @@ describe('determineVerdict', () => {
       expect(result.verdict).toBe('REQUEST_CHANGES');
       expect(result.verdictReason).toBe('novel_suggestion');
     });
+
+    describe('`resolvedThreadIds` honors GitHub `isResolved` state', () => {
+      it('approves when every prior warning/blocker thread is in `resolvedThreadIds` (resolve via fix without author agree-reply)', () => {
+        const priors = [makePriorWarning()];
+        // GitHub reports the thread as resolved, so it is absent from
+        // `openThreads`.
+        const result = determineVerdict(
+          [],
+          fingerprintEntriesFromLegacy(priors),
+          [],
+          new Set(['T1']),
+        );
+        expect(result.verdict).toBe('APPROVE');
+        expect(result.verdictReason).toBe('only_nit_or_suggestion');
+      });
+
+      it('blocks when a prior thread is not in `resolvedThreadIds` and is still in `openThreads`', () => {
+        const priors = [makePriorWarning()];
+        const open = [makeOpenThread()];
+        const result = determineVerdict(
+          [],
+          fingerprintEntriesFromLegacy(priors),
+          open,
+          new Set(),
+        );
+        expect(result.verdict).toBe('REQUEST_CHANGES');
+        expect(result.verdictReason).toBe('prior_unaddressed');
+      });
+
+      it('approves on the legacy `authorReplyClass === "agree"` path even without `resolvedThreadIds`', () => {
+        const priors = [makePriorWarning({ authorReply: 'agree' })];
+        const open = [makeOpenThread()];
+        const result = determineVerdict(
+          [],
+          fingerprintEntriesFromLegacy(priors),
+          open,
+        );
+        expect(result.verdict).toBe('APPROVE');
+        expect(result.verdictReason).toBe('only_nit_or_suggestion');
+      });
+
+      it('blocks a PR-level prior finding without `threadId` even when `resolvedThreadIds` is provided', () => {
+        const priors = [makePriorWarning({ threadId: undefined })];
+        const result = determineVerdict(
+          [],
+          fingerprintEntriesFromLegacy(priors),
+          [],
+          new Set(['T1']),
+        );
+        expect(result.verdict).toBe('REQUEST_CHANGES');
+        expect(result.verdictReason).toBe('prior_unaddressed');
+      });
+
+      it('blocks conservatively when `openThreads` is unknown (`null`) even if the thread is in `resolvedThreadIds`', () => {
+        // Live `openThreads` state is unknown, so cached `resolvedThreadIds`
+        // is not honored: both signals come from the same recap scan and
+        // could be stale together. Conservative block wins.
+        const priors = [makePriorWarning()];
+        const result = determineVerdict(
+          [],
+          fingerprintEntriesFromLegacy(priors),
+          null,
+          new Set(['T1']),
+        );
+        expect(result.verdict).toBe('REQUEST_CHANGES');
+        expect(result.verdictReason).toBe('prior_unaddressed');
+      });
+
+      it('blocks when a thread is in both `resolvedThreadIds` (stale) and `openThreads` (re-opened)', () => {
+        // Regression: live `openThreads` state must win over recap-derived
+        // `resolvedThreadIds`. A thread resolved in a prior round but
+        // re-opened on GitHub since must block APPROVE.
+        const priors = [makePriorWarning()];
+        const open = [makeOpenThread()];
+        const result = determineVerdict(
+          [],
+          fingerprintEntriesFromLegacy(priors),
+          open,
+          new Set(['T1']),
+        );
+        expect(result.verdict).toBe('REQUEST_CHANGES');
+        expect(result.verdictReason).toBe('prior_unaddressed');
+      });
+
+      it('blocks when one prior is resolved and another is still open (mixed)', () => {
+        const priors = [
+          makePriorWarning({
+            fingerprint: { file: 'src/a.ts', lineStart: 1, lineEnd: 1, slug: 'resolved-issue' },
+            threadId: 'T-RESOLVED',
+          }),
+          makePriorWarning({
+            fingerprint: { file: 'src/b.ts', lineStart: 2, lineEnd: 2, slug: 'open-issue' },
+            threadId: 'T-OPEN',
+          }),
+        ];
+        const open = [makeOpenThread({ threadId: 'T-OPEN', file: 'src/b.ts', line: 2 })];
+        const result = determineVerdict(
+          [],
+          fingerprintEntriesFromLegacy(priors),
+          open,
+          new Set(['T-RESOLVED']),
+        );
+        expect(result.verdict).toBe('REQUEST_CHANGES');
+        expect(result.verdictReason).toBe('prior_unaddressed');
+      });
+    });
   });
 });
 
@@ -2612,6 +2718,49 @@ describe('runReview', () => {
     expect(result.verdict).toBe('REQUEST_CHANGES');
     expect(result.verdictReason).toBe('prior_unaddressed');
     expect(result.reviewComplete).toBe(true);
+  });
+
+  it('forwards `resolvedThreadIds` (from `collectResolvedThreadIds(previousFindings)`) into the judge input and final `determineVerdict`', async () => {
+    // Covers the in-`runReview` call site that derives `resolvedThreadIds`
+    // from `previousFindings` and passes it both to the judge and to the
+    // post-judge `determineVerdict`. Regressions in the plumbing would let an
+    // author-resolved-via-fix thread re-block APPROVE.
+    const clients = makeClients('[]');
+    const config = makeConfig();
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+
+    mockedRunJudgeAgent.mockResolvedValue({
+      findings: [],
+      summary: 'No new findings.',
+      threadEvaluations: [],
+    });
+
+    const priorRounds: RoundContext[] = [buildPriorRound(1, [makePriorWarningFinding()])];
+    const openThreads: OpenThread[] = [];
+    const previousFindings = [
+      { title: 'Old issue', file: 'src/x.ts', line: 10, severity: 'warning' as const, status: 'resolved' as const, threadId: 'T1' },
+      { title: 'Other', file: 'src/y.ts', line: 20, severity: 'warning' as const, status: 'open' as const, threadId: 'T2' },
+    ];
+
+    const result = await runReview(
+      clients, config, diff, 'raw diff', 'repo context',
+      /* memory */         undefined,
+      /* fileContents */   undefined,
+      /* prContext */      undefined,
+      /* linkedIssues */   undefined,
+      /* onProgress */     undefined,
+      /* isFollowUp */     undefined,
+      openThreads,
+      previousFindings,
+      priorRounds,
+    );
+
+    const judgeInput = mockedRunJudgeAgent.mock.calls[0][2];
+    expect(judgeInput.resolvedThreadIds).toBeInstanceOf(Set);
+    expect(judgeInput.resolvedThreadIds?.has('T1')).toBe(true);
+    expect(judgeInput.resolvedThreadIds?.has('T2')).toBe(false);
+    expect(result.verdict).toBe('APPROVE');
+    expect(result.verdictReason).toBe('only_nit_or_suggestion');
   });
 
   it('uses planner result to set team size and effort when planner client is provided', async () => {

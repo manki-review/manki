@@ -101,6 +101,7 @@ jest.mock('./recap', () => ({
   llmDeduplicateFindings: jest.fn().mockResolvedValue({ unique: [], duplicates: [] }),
   classifyAuthorReply: jest.fn().mockReturnValue('none'),
   fingerprintFinding: jest.fn((title: string, file: string, line: number) => ({ file, lineStart: line, lineEnd: line, slug: title })),
+  collectResolvedThreadIds: jest.requireActual('./recap').collectResolvedThreadIds,
   sanitize: jest.requireActual('./recap').sanitize,
 }));
 
@@ -3168,6 +3169,49 @@ describe('runFullReview orchestration', () => {
     const reviewResultArg = jest.mocked(ghUtils.postReview).mock.calls[0][5];
     expect(reviewResultArg?.verdict).toBe('REQUEST_CHANGES');
     expect(reviewResultArg?.verdictReason).toBe('prior_unaddressed');
+  });
+
+  it('passes `resolvedThreadIds` (from `collectResolvedThreadIds`) to the post-escalation `determineVerdict`', async () => {
+    // The recompute site must forward the resolved-thread allowlist derived
+    // from `recap.previousFindings` so threads the author resolved via fix
+    // (without an agree-reply) approve the PR.
+    const testFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+    };
+    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+      files: [testFile], totalAdditions: 10, totalDeletions: 5,
+    });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+
+    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
+      previousFindings: [
+        { title: 'Resolved warning', file: 'src/app.ts', line: 5, severity: 'warning' as const, status: 'resolved' as const, threadId: 'PRRT_RESOLVED' },
+        { title: 'Still open', file: 'src/app.ts', line: 6, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_OPEN' },
+      ],
+      recapContext: '',
+      priorRounds: [],
+    });
+
+    const finding = { severity: 'nitpick' as const, title: 'Tiny', file: 'src/app.ts', line: 9, description: 'd', reviewers: ['general'] };
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'APPROVE', summary: 'Nits',
+      findings: [finding], highlights: [], reviewComplete: true,
+      agentNames: ['general'],
+    });
+    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion' });
+
+    await callRunFullReview();
+
+    const determineVerdictCalls = jest.mocked(reviewModule.determineVerdict).mock.calls;
+    expect(determineVerdictCalls.length).toBeGreaterThan(0);
+    const lastCall = determineVerdictCalls[determineVerdictCalls.length - 1];
+    const resolvedArg = lastCall[3] as Set<string> | undefined;
+    expect(resolvedArg).toBeInstanceOf(Set);
+    expect(resolvedArg?.has('PRRT_RESOLVED')).toBe(true);
+    expect(resolvedArg?.has('PRRT_OPEN')).toBe(false);
   });
 
   it('forwards `description` and `suggestedFix` from `previousFindings` into `baseOpenThreads`', async () => {

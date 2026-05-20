@@ -746,4 +746,13 @@ async function llmDeduplicateFindings(
   }
 }
 
+export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): Set<string> {
+  return new Set(
+    (previousFindings ?? [])
+      .filter((f): f is PreviousFinding & { threadId: string } =>
+        f.status === 'resolved' && f.threadId != null)
+      .map(f => f.threadId),
+  );
+}
+
 export { DuplicateMatch, PreviousFinding, RecapState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchRecapState, deduplicateFindings, titlesOverlap, llmDeduplicateFindings, parseFindingFromComment };

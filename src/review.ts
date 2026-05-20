@@ -5,7 +5,7 @@ import { LLMClient } from './providers';
 import { runJudgeAgent, JudgeInput, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
-import { collectInPrSuppressions, deduplicateFindings, llmDeduplicateFindings, PreviousFinding } from './recap';
+import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, llmDeduplicateFindings, PreviousFinding } from './recap';
 import { ReviewConfig, ReviewerAgent, Finding, FindingFingerprintEntry, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, PlannerRoundHint, RoundContext, SpecialistOutcome, EffortLevel, AgentPick, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { extractJSON } from './json';
 
@@ -1123,9 +1123,7 @@ export async function runReview(
   // Derive the set of currently-resolved thread IDs from the recap state. Used
   // by `applyCrossRoundSuppression` (mechanism C) to ratchet down findings
   // matching prior-round threads that have since been resolved.
-  const resolvedThreadIds = previousFindings
-    ? new Set(previousFindings.filter(f => f.status === 'resolved' && f.threadId).map(f => f.threadId!))
-    : new Set<string>();
+  const resolvedThreadIds = collectResolvedThreadIds(previousFindings);
   const suppressResolvedThreads = config.convergence?.suppress_resolved_threads !== false;
 
   let finalFindings: Finding[];
@@ -1201,7 +1199,7 @@ export async function runReview(
   const priorFindingsFlat: FindingFingerprintEntry[] = [...(priorRounds ?? [])]
     .sort((a, b) => a.meta.round - b.meta.round)
     .flatMap(r => r.findings.entries);
-  const { verdict, verdictReason } = determineVerdict(finalFindings, priorFindingsFlat, openThreads);
+  const { verdict, verdictReason } = determineVerdict(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds);
 
   const summary = judgeSummary;
 
@@ -1536,6 +1534,24 @@ function wasDismissedInPriorRound(finding: Finding, priorRounds: FindingFingerpr
  * collapses to the round 2 entry, so the agreement is honored rather than the
  * stale round 1 state.
  */
+function isPriorLikelyUnresolved(
+  p: FindingFingerprintEntry,
+  openThreadIds: Set<string>,
+  openThreadsUnknown: boolean,
+  resolvedThreadIds: Set<string> | undefined,
+): boolean {
+  if (p.severity !== 'warning' && p.severity !== 'blocker') return false;
+  if (p.authorReplyClass === 'agree') return false;
+  // Order matters. `openThreadsUnknown` must short-circuit before
+  // `resolvedThreadIds` because both signals come from the same recap scan,
+  // so a failed live fetch cannot fall back to cached "resolved" state.
+  if (p.threadId && openThreadIds.has(p.threadId)) return true;
+  if (openThreadsUnknown) return true;
+  if (p.threadId && resolvedThreadIds?.has(p.threadId)) return false;
+  if (!p.threadId) return true;
+  return false;
+}
+
 function dedupePriorFindings(priorRounds: FindingFingerprintEntry[]): FindingFingerprintEntry[] {
   const byKey = new Map<string, FindingFingerprintEntry>();
   for (const p of priorRounds) {
@@ -1575,15 +1591,28 @@ function dedupePriorFindings(priorRounds: FindingFingerprintEntry[]): FindingFin
  * Contract for `openThreads`: three states with distinct meaning.
  *   - `null` / omitted → "unknown": caller did not (or could not) fetch open
  *     threads. Treated conservatively: any prior `warning`/`blocker` with a
- *     non-`agree` `authorReply` and a `threadId` is assumed still open and
- *     blocks APPROVE with `prior_unaddressed`. Use this when the GitHub fetch
- *     failed, or at call sites that intentionally bypass the open-thread
- *     check, so unresolved priors can never be silently approved.
+ *     non-`agree` `authorReply` blocks APPROVE with `prior_unaddressed`,
+ *     unconditionally. `resolvedThreadIds` is NOT honored in this branch,
+ *     since both signals come from the same recap scan and could be stale
+ *     together. Use the unknown state when the GitHub fetch failed, or at
+ *     call sites that intentionally bypass the open-thread check, so
+ *     unresolved priors can never be silently approved.
  *   - `[]` → "fetched, none open": GitHub confirmed no review threads are
  *     open on the PR. Prior findings with a `threadId` that does not appear
  *     here are treated as resolved.
  *   - `OpenThread[]` (non-empty) → "fetched, here they are": only priors
  *     whose `threadId` appears in the set are treated as still open.
+ *
+ * `resolvedThreadIds` is an explicit allowlist of thread ids that GitHub
+ * reports as `isResolved: true` (derived from `previousFindings[i].status ===
+ * 'resolved'`). It is consulted only when `openThreads` is a fetched array
+ * (empty or non-empty) and the thread is not present in it. The precedence
+ * is: live `openThreads` > unknown-fallback (conservative block) >
+ * `resolvedThreadIds` (cached "resolved via fix") > implicit resolution
+ * (absent from both, with a `threadId`). This covers the common "author
+ * pushed a fix and clicked Resolve conversation" case, where the thread is
+ * no longer open on GitHub but the prior's `authorReplyClass` stays `none`,
+ * while still blocking when the live state cannot be trusted.
  *
  * Nitpicks and suggestions are non-blocking, and prior-round dismissed warnings
  * have already been acknowledged by the author. All these cases approve the PR.
@@ -1592,6 +1621,7 @@ export function determineVerdict(
   findings: Finding[],
   priorRounds?: FindingFingerprintEntry[],
   openThreads?: OpenThread[] | null,
+  resolvedThreadIds?: Set<string>,
 ): { verdict: ReviewVerdict; verdictReason: VerdictReason } {
   if (findings.some(f => f.severity === 'blocker')) {
     return { verdict: 'REQUEST_CHANGES', verdictReason: 'required_present' };
@@ -1607,13 +1637,9 @@ export function determineVerdict(
 
   const openThreadsUnknown = openThreads == null;
   const openThreadIds = new Set((openThreads ?? []).map(t => t.threadId));
-  const hasUnresolvedPrior = prior.some(p => {
-    if (p.severity !== 'warning' && p.severity !== 'blocker') return false;
-    if (p.authorReplyClass === 'agree') return false;
-    if (!p.threadId) return true;
-    if (openThreadsUnknown) return true;
-    return openThreadIds.has(p.threadId);
-  });
+  const hasUnresolvedPrior = prior.some(p =>
+    isPriorLikelyUnresolved(p, openThreadIds, openThreadsUnknown, resolvedThreadIds),
+  );
   if (hasUnresolvedPrior) {
     return { verdict: 'REQUEST_CHANGES', verdictReason: 'prior_unaddressed' };
   }

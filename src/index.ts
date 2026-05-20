@@ -10,7 +10,7 @@ import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
-import { fetchRecapState, fingerprintFinding } from './recap';
+import { collectResolvedThreadIds, fetchRecapState, fingerprintFinding } from './recap';
 import { buildAgentPool, collectPriorRoundAgents, runReview, determineVerdict, selectTeam } from './review';
 import { DEFENSIVE_HARDENING_TAG, DashboardData, PrContext, ReviewMetadata, RoundContext, roundContextToFlatAliases } from './types';
 import {
@@ -807,7 +807,8 @@ async function runFullReview(
       result.findings = applyEscalations(result.findings, memory.patterns);
       escalationsApplied = result.findings.filter((f, i) => f.severity !== beforeSeverities[i]).length;
     }
-    const { verdict: recomputedVerdict, verdictReason } = determineVerdict(result.findings, priorFindingsFlat, openThreads);
+    const resolvedThreadIds = collectResolvedThreadIds(recap.previousFindings);
+    const { verdict: recomputedVerdict, verdictReason } = determineVerdict(result.findings, priorFindingsFlat, openThreads, resolvedThreadIds);
     result.verdict = recomputedVerdict;
     result.verdictReason = verdictReason;
 

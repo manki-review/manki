@@ -1,6 +1,6 @@
 import { Finding, RoundContext } from './types';
 import { Suppression } from './memory';
-import { classifyAuthorReply, collectInPrSuppressions, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, titlesOverlap, llmDeduplicateFindings, parseFindingFromComment } from './recap';
+import { classifyAuthorReply, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, titlesOverlap, llmDeduplicateFindings, parseFindingFromComment } from './recap';
 import { BOT_LOGIN, titleToSlug } from './github';
 
 jest.mock('@actions/core', () => ({
@@ -1955,5 +1955,33 @@ describe('parseFindingFromComment', () => {
     const result = parseFindingFromComment(body);
     expect(result.suggestedFix).toHaveLength(303);
     expect(result.suggestedFix).toMatch(/\.\.\.$/);
+  });
+});
+
+describe('collectResolvedThreadIds', () => {
+  it('returns an empty set for an undefined input', () => {
+    expect(collectResolvedThreadIds(undefined).size).toBe(0);
+  });
+
+  it('returns an empty set for an empty array', () => {
+    expect(collectResolvedThreadIds([]).size).toBe(0);
+  });
+
+  it('includes only `resolved` entries with a `threadId`', () => {
+    const result = collectResolvedThreadIds([
+      { title: 'a', file: 'f', line: 1, severity: 'warning', status: 'resolved', threadId: 'T1' },
+      { title: 'b', file: 'f', line: 2, severity: 'warning', status: 'open', threadId: 'T2' },
+      { title: 'c', file: 'f', line: 3, severity: 'warning', status: 'replied', threadId: 'T3' },
+      { title: 'd', file: 'f', line: 4, severity: 'warning', status: 'resolved', threadId: 'T4' },
+    ]);
+    expect(result).toEqual(new Set(['T1', 'T4']));
+  });
+
+  it('skips `resolved` entries that lack a `threadId`', () => {
+    const result = collectResolvedThreadIds([
+      { title: 'a', file: 'f', line: 1, severity: 'warning', status: 'resolved' },
+      { title: 'b', file: 'f', line: 2, severity: 'warning', status: 'resolved', threadId: 'T2' },
+    ]);
+    expect(result).toEqual(new Set(['T2']));
   });
 });
