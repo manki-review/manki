@@ -1256,7 +1256,7 @@ async function runReviewerAgent(
   options: RunReviewerAgentOptions = {},
 ): Promise<AgentResult> {
   const { effort, language, context, provenanceMap } = options;
-  const systemPrompt = buildReviewerSystemPrompt(reviewer, config, language, context, config.noise_level ?? 'low');
+  const systemPrompt = buildReviewerSystemPrompt(reviewer, config, language, context, config.noise_level);
   const userMessage = buildReviewerUserMessage(rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, provenanceMap);
 
   const sendOptions = effort ? { effort } : undefined;

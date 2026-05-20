@@ -852,7 +852,7 @@ export async function runJudgeAgent(
 
   const changedFiles = diff.files;
 
-  const systemPrompt = buildJudgeSystemPrompt(config, agentCount, isFollowUp, hasOpenThreads, config.noise_level ?? 'low');
+  const systemPrompt = buildJudgeSystemPrompt(config, agentCount, isFollowUp, hasOpenThreads, config.noise_level);
   const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads, priorRounds, interRoundDiff);
 
   const response = await client.sendMessage(systemPrompt, userMessage, { effort: input.effort ?? 'high' });
