@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 import { LLMClient } from './providers';
 import { ACTIONS_BOT_LOGIN, BOT_LOGIN, titleToSlug } from './github';
 import { matchesSuppression, Suppression } from './memory';
-import { AuthorReplyClass, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, migrateLegacySeverity, RoundContext, SEVERITY_TOKEN_PATTERN } from './types';
+import { AuthorReplyClass, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, migrateLegacyPrType, migrateLegacySeverity, RoundContext, SEVERITY_TOKEN_PATTERN } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -176,21 +176,6 @@ interface RecapState {
 const CONTEXT_BLOCK_DETAILS_RE = /<details>\s*<summary>Manki context<\/summary>\s*```json\s*([\s\S]*?)```\s*<\/details>/g;
 const CONTEXT_BLOCK_HTML_COMMENT_RE = /<!-- manki-context: (.+?) -->/g;
 const REQUIRED_ROUND_CONTEXT_KEYS = ['meta', 'config', 'diff', 'models', 'planner', 'reviewers', 'judge', 'dedup', 'memory', 'findings', 'usage', 'verdict'] as const;
-
-/**
- * Pre-Conventional-Commits planner vocab. Historical review bodies persisted
- * these values into `planner.prType`. Read-only remap so old rounds render
- * with the current canonical vocab.
- */
-const LEGACY_PR_TYPE_MAP: Record<string, string> = {
-  feature: 'feat',
-  bugfix: 'fix',
-  rename: 'refactor',
-};
-
-export function migrateLegacyPrType(value: string): string {
-  return LEGACY_PR_TYPE_MAP[value] ?? value;
-}
 
 /**
  * Parse Manki context blocks from PR-level review bodies. Supports both the

@@ -18,6 +18,21 @@ export function migrateLegacySeverity(severity: string): FindingSeverity | strin
 /** Regex source matching all current and legacy severity tokens. */
 export const SEVERITY_TOKEN_PATTERN = 'blocker|warning|suggestion|nitpick|ignore|required|nit';
 
+/**
+ * Pre-Conventional-Commits planner vocab. Historical review bodies persisted
+ * these values into `planner.prType`. Read-only remap so old rounds render
+ * with the current canonical vocab.
+ */
+const LEGACY_PR_TYPE_MAP: Record<string, string> = {
+  feature: 'feat',
+  bugfix: 'fix',
+  rename: 'refactor',
+};
+
+export function migrateLegacyPrType(value: string): string {
+  return LEGACY_PR_TYPE_MAP[value] ?? value;
+}
+
 export type FindingReachability = 'reachable' | 'hypothetical' | 'unknown';
 
 export const DEFENSIVE_HARDENING_TAG = 'defensive-hardening' as const;
