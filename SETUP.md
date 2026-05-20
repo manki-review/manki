@@ -348,7 +348,7 @@ You can also forward `severity_counts` or `findings_json` to a metrics sink (Sla
 |-------|---------|
 | `pull_request: [opened, synchronize]` | Auto-review on PR open and new pushes |
 | `pull_request: [ready_for_review]` | Auto-review when a draft PR is marked ready (head SHA unchanged, so the planner sees the same diff a `synchronize` would have produced) |
-| `issue_comment: [created, edited]` | `/manki` commands on PRs (review, explain, dismiss, etc.) |
+| `issue_comment: [created, edited]` | `/manki` commands on PRs and issues. PR-only commands: `review`, `check`, `explain`. Available on both: `help`, `dismiss`, `remember`, `forget`, and free-form questions. |
 | `pull_request_review_comment: [created]` | Replies to review comment threads |
 | `pull_request_review: [submitted, dismissed]` | Auto-approve check when reviews change state |
 
