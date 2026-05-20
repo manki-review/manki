@@ -222,7 +222,8 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
   }
 
   if ('noise_level' in config) {
-    if (config.noise_level !== 'low' && config.noise_level !== 'medium' && config.noise_level !== 'high') {
+    const valid = new Set(['low', 'medium', 'high']);
+    if (typeof config.noise_level !== 'string' || !valid.has(config.noise_level)) {
       errors.push('`noise_level` must be one of: low, medium, high');
     }
   }

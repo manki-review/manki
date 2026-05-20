@@ -1270,8 +1270,7 @@ export function buildReviewerSystemPrompt(
   config: ReviewConfig,
   language?: string,
   context?: string,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  noiseLevel: NoiseLevel = 'low',
+  _noiseLevel: NoiseLevel = 'low',
 ): string {
   let prompt = `You are a code reviewer specializing in: ${reviewer.focus}
 

@@ -271,8 +271,7 @@ export function buildJudgeSystemPrompt(
   agentCount: number,
   isFollowUp?: boolean,
   hasOpenThreads?: boolean,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  noiseLevel: NoiseLevel = 'low',
+  _noiseLevel: NoiseLevel = 'low',
 ): string {
   const majorityThreshold = Math.max(1, Math.ceil(agentCount / 2));
 

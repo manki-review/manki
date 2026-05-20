@@ -236,11 +236,19 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('"reachable" | "hypothetical" | "unknown"');
   });
 
-  it('accepts a noiseLevel parameter without changing the prompt body', () => {
-    const base = buildJudgeSystemPrompt(makeConfig(), 5);
-    expect(buildJudgeSystemPrompt(makeConfig(), 5, undefined, undefined, 'low')).toBe(base);
-    expect(buildJudgeSystemPrompt(makeConfig(), 5, undefined, undefined, 'medium')).toBe(base);
-    expect(buildJudgeSystemPrompt(makeConfig(), 5, undefined, undefined, 'high')).toBe(base);
+  it('accepts a noiseLevel parameter without changing the prompt body across isFollowUp/hasOpenThreads combinations', () => {
+    const flagCombos: Array<[boolean, boolean]> = [
+      [false, false],
+      [false, true],
+      [true, false],
+      [true, true],
+    ];
+    for (const [isFollowUp, hasOpenThreads] of flagCombos) {
+      const base = buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, hasOpenThreads);
+      expect(buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, hasOpenThreads, 'low')).toBe(base);
+      expect(buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, hasOpenThreads, 'medium')).toBe(base);
+      expect(buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, hasOpenThreads, 'high')).toBe(base);
+    }
   });
 
 });
@@ -2181,6 +2189,43 @@ describe('runJudgeAgent', () => {
     expect(result.findings[0].severity).toBe('ignore');
     expect(result.findings[0].tags).toContain(IN_PR_SUPPRESSED_TAG);
     expect(result.inPrSuppressedCount).toBe(1);
+  });
+
+  it('forwards config.noise_level to buildJudgeSystemPrompt', async () => {
+    mockSendMessage.mockResolvedValue({ content: '{"summary":"x","findings":[]}' });
+
+    const config = makeConfig({ noise_level: 'medium' });
+    const input: JudgeInput = {
+      findings: [],
+      diff: makeDiff(),
+      rawDiff: '',
+      repoContext: '',
+      agentCount: 5,
+    };
+
+    await runJudgeAgent(mockClient, config, input);
+
+    const [systemPrompt] = mockSendMessage.mock.calls[0];
+    expect(systemPrompt).toBe(buildJudgeSystemPrompt(config, 5, undefined, false, 'medium'));
+  });
+
+  it('defaults to noise_level "low" when config omits it', async () => {
+    mockSendMessage.mockResolvedValue({ content: '{"summary":"x","findings":[]}' });
+
+    const config = makeConfig();
+    delete (config as Partial<ReviewConfig>).noise_level;
+    const input: JudgeInput = {
+      findings: [],
+      diff: makeDiff(),
+      rawDiff: '',
+      repoContext: '',
+      agentCount: 5,
+    };
+
+    await runJudgeAgent(mockClient, config, input);
+
+    const [systemPrompt] = mockSendMessage.mock.calls[0];
+    expect(systemPrompt).toBe(buildJudgeSystemPrompt(config, 5, undefined, false, 'low'));
   });
 });
 
