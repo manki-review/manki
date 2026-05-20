@@ -218,7 +218,7 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
     if (config.nit_handling === 'issues' || config.nit_handling === 'comments') {
       warnings.push("`nit_handling: '" + config.nit_handling + "'` is deprecated and ignored, surviving nit findings now post inline. See https://github.com/manki-review/manki/issues/738 for context.");
     } else {
-      warnings.push(`\`nit_handling: '${String(config.nit_handling)}'\` is deprecated and no longer accepted. Remove it from your config.`);
+      warnings.push(`\`nit_handling: '${String(config.nit_handling)}'\` is not a recognized value. Remove it from your config.`);
     }
   }
 

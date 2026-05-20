@@ -376,7 +376,7 @@ models:
 
       jest.mocked(core.warning).mockClear();
       expect(() => loadConfigFromContent('nit_handling: email')).not.toThrow();
-      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("`nit_handling: 'email'` is deprecated and no longer accepted"));
+      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("`nit_handling: 'email'` is not a recognized value"));
     });
 
     it('accepts valid noise_level values', () => {
