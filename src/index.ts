@@ -470,17 +470,17 @@ async function runFullReview(
         (c): c is LLMClient => !!c,
       ),
     );
-    for (const c of warmupTargets) {
-      if (c.warmupCLI) {
-        try {
-          await c.warmupCLI();
-        } catch (error) {
-          core.warning(
-            sanitizeLogOutput(`Provider CLI warmup failed: ${error instanceof Error ? error.message : error}`),
-          );
-        }
-      }
-    }
+    await Promise.allSettled(
+      [...warmupTargets].map((c) =>
+        c.warmupCLI
+          ? c.warmupCLI().catch((error) =>
+              core.warning(
+                sanitizeLogOutput(`Provider CLI warmup failed: ${error instanceof Error ? error.message : error}`),
+              ),
+            )
+          : Promise.resolve(),
+      ),
+    );
 
     const rawDiff = await fetchPRDiff(octokit, owner, repo, prNumber);
     const diff = parsePRDiff(rawDiff);
