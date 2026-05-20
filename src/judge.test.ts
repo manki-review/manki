@@ -236,7 +236,30 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('"reachable" | "hypothetical" | "unknown"');
   });
 
-  it('accepts a noiseLevel parameter without changing the prompt body across isFollowUp/hasOpenThreads combinations', () => {
+  it('inverts the calibration note at noise_level "low" — borderline demotes and nitpicks drop', () => {
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, false, false, 'low');
+    expect(prompt).toContain('At `noise_level: low`');
+    expect(prompt).toContain('choose the **lower** one');
+    expect(prompt).toContain('Drop `nitpick`-severity findings entirely');
+    expect(prompt).toContain('block a senior reviewer from approving the PR');
+    expect(prompt).not.toContain('choose the higher one');
+    expect(prompt).not.toContain('is `blocker`, not `warning`');
+  });
+
+  it.each(['medium', 'high'] as const)(
+    'keeps today\'s calibration note verbatim at noise_level "%s"',
+    (level) => {
+      const prompt = buildJudgeSystemPrompt(makeConfig(), 5, false, false, level);
+      expect(prompt).toContain('LLMs tend toward leniency when judging code review findings');
+      expect(prompt).toContain('When a finding is borderline between two severities, choose the higher one');
+      expect(prompt).toContain('"could cause problems" under realistic conditions is `blocker`, not `warning`');
+      expect(prompt).toContain('Only downgrade a finding if you can articulate a specific reason the issue won\'t manifest');
+      expect(prompt).not.toContain('choose the **lower** one');
+      expect(prompt).not.toContain('Drop `nitpick`-severity findings entirely');
+    },
+  );
+
+  it('defaults to noise_level "low" when the argument is omitted', () => {
     const flagCombos: Array<[boolean, boolean]> = [
       [false, false],
       [false, true],
@@ -244,13 +267,41 @@ describe('buildJudgeSystemPrompt', () => {
       [true, true],
     ];
     for (const [isFollowUp, hasOpenThreads] of flagCombos) {
-      const base = buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, hasOpenThreads);
-      expect(buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, hasOpenThreads, 'low')).toBe(base);
-      expect(buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, hasOpenThreads, 'medium')).toBe(base);
-      expect(buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, hasOpenThreads, 'high')).toBe(base);
+      const defaultPrompt = buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, hasOpenThreads);
+      const lowPrompt = buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, hasOpenThreads, 'low');
+      expect(defaultPrompt).toBe(lowPrompt);
     }
   });
 
+  it('produces identical prompts for noise_level "medium" and "high" (asymmetry lives in the reviewer prompts)', () => {
+    const flagCombos: Array<[boolean, boolean]> = [
+      [false, false],
+      [false, true],
+      [true, false],
+      [true, true],
+    ];
+    for (const [isFollowUp, hasOpenThreads] of flagCombos) {
+      const mediumPrompt = buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, hasOpenThreads, 'medium');
+      const highPrompt = buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, hasOpenThreads, 'high');
+      expect(highPrompt).toBe(mediumPrompt);
+    }
+  });
+
+  it('leaves Impact x Likelihood and reachability sections unchanged across noise levels', () => {
+    const promptLow = buildJudgeSystemPrompt(makeConfig(), 5, false, false, 'low');
+    const promptMedium = buildJudgeSystemPrompt(makeConfig(), 5, false, false, 'medium');
+    const promptHigh = buildJudgeSystemPrompt(makeConfig(), 5, false, false, 'high');
+    for (const prompt of [promptLow, promptMedium, promptHigh]) {
+      expect(prompt).toContain('## Severity Assessment');
+      expect(prompt).toContain('**Impact** — How bad is it if this issue manifests?');
+      expect(prompt).toContain('**Likelihood** — How likely is this issue to actually occur?');
+      expect(prompt).toContain('**Severity mapping:**');
+      expect(prompt).toContain('## Practical Reachability');
+      expect(prompt).toContain('**reachable**');
+      expect(prompt).toContain('**hypothetical**');
+      expect(prompt).toContain('**unknown**');
+    }
+  });
 });
 
 describe('buildJudgeUserMessage', () => {
@@ -2189,6 +2240,40 @@ describe('runJudgeAgent', () => {
     expect(result.findings[0].severity).toBe('ignore');
     expect(result.findings[0].tags).toContain(IN_PR_SUPPRESSED_TAG);
     expect(result.inPrSuppressedCount).toBe(1);
+  });
+
+  it('instructs the judge to demote borderline findings at noise_level "low"', async () => {
+    const judgedResponse = JSON.stringify({
+      summary: 'One borderline finding demoted.',
+      findings: [
+        { title: 'Borderline naming', severity: 'ignore', reasoning: 'Borderline between nitpick and suggestion. Demoted per noise_level: low calibration.', confidence: 'high' },
+      ],
+    });
+    mockSendMessage.mockResolvedValue({ content: judgedResponse });
+
+    const config = makeConfig({ noise_level: 'low' });
+    const borderlineFinding = makeFinding({
+      severity: 'nitpick',
+      title: 'Borderline naming',
+      description: 'Variable name could be slightly clearer. Borderline between nitpick and suggestion.',
+    });
+    const input: JudgeInput = {
+      findings: [borderlineFinding],
+      diff: makeDiff(),
+      rawDiff: '',
+      repoContext: '',
+      agentCount: 5,
+    };
+
+    const result = await runJudgeAgent(mockClient, config, input);
+
+    const [systemPrompt] = mockSendMessage.mock.calls[0];
+    expect(systemPrompt).toContain('choose the **lower** one');
+    expect(systemPrompt).toContain('Drop `nitpick`-severity findings entirely');
+    expect(systemPrompt).not.toContain('choose the higher one');
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0].severity).toBe('ignore');
   });
 
   it('forwards config.noise_level to buildJudgeSystemPrompt', async () => {

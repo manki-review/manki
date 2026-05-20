@@ -271,9 +271,18 @@ export function buildJudgeSystemPrompt(
   agentCount: number,
   isFollowUp?: boolean,
   hasOpenThreads?: boolean,
-  _noiseLevel: NoiseLevel = 'low',
+  noiseLevel: NoiseLevel = 'low',
 ): string {
   const majorityThreshold = Math.max(1, Math.ceil(agentCount / 2));
+  const calibrationNote = noiseLevel === 'low'
+    ? `**Calibration note**: At \`noise_level: low\` the project wants to surface only findings that materially affect the PR. Counteract the LLM tendency to over-flag:
+- When a finding is borderline between two severities, choose the **lower** one
+- Drop \`nitpick\`-severity findings entirely (mark them \`ignore\`) unless they would block a senior reviewer from approving the PR
+- A finding that "could cause problems" only under unrealistic conditions is \`suggestion\` or lower, not \`warning\``
+    : `**Calibration note**: LLMs tend toward leniency when judging code review findings. Counteract this bias:
+- When a finding is borderline between two severities, choose the higher one
+- A finding that "could cause problems" under realistic conditions is \`blocker\`, not \`warning\`
+- Only downgrade a finding if you can articulate a specific reason the issue won't manifest`;
 
   const summaryInstruction = isFollowUp
     ? `Write a brief, opinionated progress update in 1-2 sentences. Focus on whether previous concerns were addressed and what's new. Be direct — don't re-describe the PR. Never start with "The author" or "Since last review —". Good examples:
@@ -341,10 +350,7 @@ Evaluate each finding on two dimensions:
 - **nitpick**: minor cosmetic — wording, formatting, tiny naming tweaks. Purely optional.
 - **ignore**: False positives, intentional patterns, style preferences, reviewer misunderstandings.
 
-**Calibration note**: LLMs tend toward leniency when judging code review findings. Counteract this bias:
-- When a finding is borderline between two severities, choose the higher one
-- A finding that "could cause problems" under realistic conditions is \`blocker\`, not \`warning\`
-- Only downgrade a finding if you can articulate a specific reason the issue won't manifest
+${calibrationNote}
 
 Include your impact and likelihood assessment in the reasoning field (e.g., "Impact: High (silent data loss), Likelihood: Probable (happens on every error path) → blocker").
 
