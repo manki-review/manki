@@ -874,7 +874,10 @@ describe('determineVerdict', () => {
         expect(result.verdictReason).toBe('prior_unaddressed');
       });
 
-      it('honors `resolvedThreadIds` even when `openThreads` is unknown (`null`)', () => {
+      it('blocks conservatively when `openThreads` is unknown (`null`) even if the thread is in `resolvedThreadIds`', () => {
+        // Live `openThreads` state is unknown, so cached `resolvedThreadIds`
+        // is not honored: both signals come from the same recap scan and
+        // could be stale together. Conservative block wins.
         const priors = [makePriorWarning()];
         const result = determineVerdict(
           [],
@@ -882,8 +885,8 @@ describe('determineVerdict', () => {
           null,
           new Set(['T1']),
         );
-        expect(result.verdict).toBe('APPROVE');
-        expect(result.verdictReason).toBe('only_nit_or_suggestion');
+        expect(result.verdict).toBe('REQUEST_CHANGES');
+        expect(result.verdictReason).toBe('prior_unaddressed');
       });
 
       it('blocks when a thread is in both `resolvedThreadIds` (stale) and `openThreads` (re-opened)', () => {

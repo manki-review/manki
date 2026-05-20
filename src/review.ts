@@ -1586,11 +1586,12 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
  * Contract for `openThreads`: three states with distinct meaning.
  *   - `null` / omitted → "unknown": caller did not (or could not) fetch open
  *     threads. Treated conservatively: any prior `warning`/`blocker` with a
- *     non-`agree` `authorReply` and a `threadId` is assumed still open and
- *     blocks APPROVE with `prior_unaddressed`, unless the threadId is in
- *     `resolvedThreadIds`. Use this when the GitHub fetch failed, or at call
- *     sites that intentionally bypass the open-thread check, so unresolved
- *     priors can never be silently approved.
+ *     non-`agree` `authorReply` blocks APPROVE with `prior_unaddressed`,
+ *     unconditionally. `resolvedThreadIds` is NOT honored in this branch,
+ *     since both signals come from the same recap scan and could be stale
+ *     together. Use the unknown state when the GitHub fetch failed, or at
+ *     call sites that intentionally bypass the open-thread check, so
+ *     unresolved priors can never be silently approved.
  *   - `[]` → "fetched, none open": GitHub confirmed no review threads are
  *     open on the PR. Prior findings with a `threadId` that does not appear
  *     here are treated as resolved.
@@ -1599,13 +1600,14 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
  *
  * `resolvedThreadIds` is an explicit allowlist of thread ids that GitHub
  * reports as `isResolved: true` (derived from `previousFindings[i].status ===
- * 'resolved'`). A prior finding whose `threadId` is in this set is honored as
- * resolved, but only when the thread is NOT also present in `openThreads`.
- * Live `openThreads` state always wins: a thread that was resolved in a prior
- * round but has since been re-opened on GitHub blocks APPROVE. This covers
- * the common "author pushed a fix and clicked Resolve conversation" case,
- * where the thread is no longer open on GitHub but the prior's
- * `authorReplyClass` stays `none`.
+ * 'resolved'`). It is consulted only when `openThreads` is a fetched array
+ * (empty or non-empty) and the thread is not present in it. The precedence
+ * is: live `openThreads` > unknown-fallback (conservative block) >
+ * `resolvedThreadIds` (cached "resolved via fix") > implicit resolution
+ * (absent from both, with a `threadId`). This covers the common "author
+ * pushed a fix and clicked Resolve conversation" case, where the thread is
+ * no longer open on GitHub but the prior's `authorReplyClass` stays `none`,
+ * while still blocking when the live state cannot be trusted.
  *
  * Nitpicks and suggestions are non-blocking, and prior-round dismissed warnings
  * have already been acknowledged by the author. All these cases approve the PR.
@@ -1633,13 +1635,13 @@ export function determineVerdict(
   const hasUnresolvedPrior = prior.some(p => {
     if (p.severity !== 'warning' && p.severity !== 'blocker') return false;
     if (p.authorReplyClass === 'agree') return false;
-    if (!p.threadId) return true;
-    // Live `openThreads` state wins over recap-derived `resolvedThreadIds`.
-    // If a thread was resolved in a prior round but has since been re-opened
-    // on GitHub, the re-opened state must block APPROVE.
-    if (openThreadIds.has(p.threadId)) return true;
-    if (resolvedThreadIds?.has(p.threadId)) return false;
+    // Order matters. `openThreadsUnknown` must short-circuit before
+    // `resolvedThreadIds` because both signals come from the same recap scan,
+    // so a failed live fetch cannot fall back to cached "resolved" state.
+    if (p.threadId && openThreadIds.has(p.threadId)) return true;
     if (openThreadsUnknown) return true;
+    if (p.threadId && resolvedThreadIds?.has(p.threadId)) return false;
+    if (!p.threadId) return true;
     return false;
   });
   if (hasUnresolvedPrior) {
