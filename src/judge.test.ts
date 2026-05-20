@@ -246,24 +246,31 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).not.toContain('is `blocker`, not `warning`');
   });
 
-  it('keeps today\'s calibration note verbatim at noise_level "medium"', () => {
-    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, false, false, 'medium');
-    expect(prompt).toContain('LLMs tend toward leniency when judging code review findings');
-    expect(prompt).toContain('When a finding is borderline between two severities, choose the higher one');
-    expect(prompt).toContain('"could cause problems" under realistic conditions is `blocker`, not `warning`');
-    expect(prompt).toContain('Only downgrade a finding if you can articulate a specific reason the issue won\'t manifest');
-    expect(prompt).not.toContain('choose the **lower** one');
-    expect(prompt).not.toContain('Drop `nitpick`-severity findings entirely');
-  });
+  it.each(['medium', 'high'] as const)(
+    'keeps today\'s calibration note verbatim at noise_level "%s"',
+    (level) => {
+      const prompt = buildJudgeSystemPrompt(makeConfig(), 5, false, false, level);
+      expect(prompt).toContain('LLMs tend toward leniency when judging code review findings');
+      expect(prompt).toContain('When a finding is borderline between two severities, choose the higher one');
+      expect(prompt).toContain('"could cause problems" under realistic conditions is `blocker`, not `warning`');
+      expect(prompt).toContain('Only downgrade a finding if you can articulate a specific reason the issue won\'t manifest');
+      expect(prompt).not.toContain('choose the **lower** one');
+      expect(prompt).not.toContain('Drop `nitpick`-severity findings entirely');
+    },
+  );
 
-  it('keeps today\'s calibration note verbatim at noise_level "high"', () => {
-    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, false, false, 'high');
-    expect(prompt).toContain('LLMs tend toward leniency when judging code review findings');
-    expect(prompt).toContain('When a finding is borderline between two severities, choose the higher one');
-    expect(prompt).toContain('"could cause problems" under realistic conditions is `blocker`, not `warning`');
-    expect(prompt).toContain('Only downgrade a finding if you can articulate a specific reason the issue won\'t manifest');
-    expect(prompt).not.toContain('choose the **lower** one');
-    expect(prompt).not.toContain('Drop `nitpick`-severity findings entirely');
+  it('defaults to noise_level "low" when the argument is omitted', () => {
+    const flagCombos: Array<[boolean, boolean]> = [
+      [false, false],
+      [false, true],
+      [true, false],
+      [true, true],
+    ];
+    for (const [isFollowUp, hasOpenThreads] of flagCombos) {
+      const defaultPrompt = buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, hasOpenThreads);
+      const lowPrompt = buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, hasOpenThreads, 'low');
+      expect(defaultPrompt).toBe(lowPrompt);
+    }
   });
 
   it('produces identical prompts for noise_level "medium" and "high" (asymmetry lives in the reviewer prompts)', () => {
@@ -283,7 +290,8 @@ describe('buildJudgeSystemPrompt', () => {
   it('leaves Impact x Likelihood and reachability sections unchanged across noise levels', () => {
     const promptLow = buildJudgeSystemPrompt(makeConfig(), 5, false, false, 'low');
     const promptMedium = buildJudgeSystemPrompt(makeConfig(), 5, false, false, 'medium');
-    for (const prompt of [promptLow, promptMedium]) {
+    const promptHigh = buildJudgeSystemPrompt(makeConfig(), 5, false, false, 'high');
+    for (const prompt of [promptLow, promptMedium, promptHigh]) {
       expect(prompt).toContain('## Severity Assessment');
       expect(prompt).toContain('**Impact** — How bad is it if this issue manifests?');
       expect(prompt).toContain('**Likelihood** — How likely is this issue to actually occur?');
