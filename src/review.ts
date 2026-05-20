@@ -1534,6 +1534,24 @@ function wasDismissedInPriorRound(finding: Finding, priorRounds: FindingFingerpr
  * collapses to the round 2 entry, so the agreement is honored rather than the
  * stale round 1 state.
  */
+function isPriorLikelyUnresolved(
+  p: FindingFingerprintEntry,
+  openThreadIds: Set<string>,
+  openThreadsUnknown: boolean,
+  resolvedThreadIds: Set<string> | undefined,
+): boolean {
+  if (p.severity !== 'warning' && p.severity !== 'blocker') return false;
+  if (p.authorReplyClass === 'agree') return false;
+  // Order matters. `openThreadsUnknown` must short-circuit before
+  // `resolvedThreadIds` because both signals come from the same recap scan,
+  // so a failed live fetch cannot fall back to cached "resolved" state.
+  if (p.threadId && openThreadIds.has(p.threadId)) return true;
+  if (openThreadsUnknown) return true;
+  if (p.threadId && resolvedThreadIds?.has(p.threadId)) return false;
+  if (!p.threadId) return true;
+  return false;
+}
+
 function dedupePriorFindings(priorRounds: FindingFingerprintEntry[]): FindingFingerprintEntry[] {
   const byKey = new Map<string, FindingFingerprintEntry>();
   for (const p of priorRounds) {
@@ -1619,18 +1637,9 @@ export function determineVerdict(
 
   const openThreadsUnknown = openThreads == null;
   const openThreadIds = new Set((openThreads ?? []).map(t => t.threadId));
-  const hasUnresolvedPrior = prior.some(p => {
-    if (p.severity !== 'warning' && p.severity !== 'blocker') return false;
-    if (p.authorReplyClass === 'agree') return false;
-    // Order matters. `openThreadsUnknown` must short-circuit before
-    // `resolvedThreadIds` because both signals come from the same recap scan,
-    // so a failed live fetch cannot fall back to cached "resolved" state.
-    if (p.threadId && openThreadIds.has(p.threadId)) return true;
-    if (openThreadsUnknown) return true;
-    if (p.threadId && resolvedThreadIds?.has(p.threadId)) return false;
-    if (!p.threadId) return true;
-    return false;
-  });
+  const hasUnresolvedPrior = prior.some(p =>
+    isPriorLikelyUnresolved(p, openThreadIds, openThreadsUnknown, resolvedThreadIds),
+  );
   if (hasUnresolvedPrior) {
     return { verdict: 'REQUEST_CHANGES', verdictReason: 'prior_unaddressed' };
   }
