@@ -55,6 +55,7 @@ jest.mock('./auth', () => ({
 jest.mock('./providers', () => ({
   buildAuthForProvider: jest.requireActual('./providers').buildAuthForProvider,
   hasAnyProviderCredentials: jest.requireActual('./providers').hasAnyProviderCredentials,
+  sanitizeLogOutput: jest.requireActual('./providers').sanitizeLogOutput,
   createLLMClient: jest.fn().mockImplementation(() => ({ sendMessage: jest.fn() })),
   parseModelSpec: jest.fn().mockImplementation((m: string) => ({ provider: 'anthropic', model: m })),
 }));
@@ -1627,18 +1628,35 @@ describe('runFullReview orchestration', () => {
     });
 
     it('warms up the provider CLI before runReview to avoid the planner-install race', async () => {
-      const warmupCLI = jest.fn().mockResolvedValue(undefined);
-      jest.mocked(createLLMClient).mockImplementation(() => ({
-        sendMessage: jest.fn(),
-        warmupCLI,
-      }));
+      // Return a distinct client per call so the Set-based dedup in
+      // `runFullReview` keeps every role's warmup target, letting us assert
+      // that planner, reviewer, judge, and dedup were each warmed up.
+      const warmups: jest.Mock[] = [];
+      jest.mocked(createLLMClient).mockImplementation(() => {
+        const warmupCLI = jest.fn().mockResolvedValue(undefined);
+        warmups.push(warmupCLI);
+        return { sendMessage: jest.fn(), warmupCLI };
+      });
 
       await callRunFullReview();
 
-      expect(warmupCLI).toHaveBeenCalled();
-      const firstWarmupOrder = warmupCLI.mock.invocationCallOrder[0];
+      // Default config builds 4 distinct clients: reviewer, judge, planner, dedup.
+      expect(warmups).toHaveLength(4);
+      for (const w of warmups) expect(w).toHaveBeenCalledTimes(1);
+      const firstWarmupOrder = warmups[0].mock.invocationCallOrder[0];
       const runReviewOrder = jest.mocked(reviewModule.runReview).mock.invocationCallOrder[0];
       expect(firstWarmupOrder).toBeLessThan(runReviewOrder);
+    });
+
+    it('deduplicates warmup calls when role clients share an instance', async () => {
+      const warmupCLI = jest.fn().mockResolvedValue(undefined);
+      const sharedClient = { sendMessage: jest.fn(), warmupCLI };
+      jest.mocked(createLLMClient).mockImplementation(() => sharedClient);
+
+      await callRunFullReview();
+
+      // All four roles return the same instance, so warmup runs once total.
+      expect(warmupCLI).toHaveBeenCalledTimes(1);
     });
 
     it('tolerates providers that do not implement warmupCLI', async () => {

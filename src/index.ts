@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 
 import { createAuthenticatedOctokit, getMemoryToken } from './auth';
 import { loadConfig, resolveModel } from './config';
-import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec } from './providers';
+import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
 import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
@@ -463,13 +463,21 @@ async function runFullReview(
     // fallback `npm install -g` inside `ensureCLI` takes around 30s on a
     // cold runner and would otherwise race the planner's own 30s timeout.
     // Warming up once here pays the cost before any per-call deadline runs.
-    const warmupTargets = [plannerClient, reviewerClient, judgeClient, dedupClient, ...perAgentClients.values()];
+    // Deduplicate by client instance so roles that share a client don't
+    // serialize redundant install retries on failure.
+    const warmupTargets = new Set<LLMClient>(
+      [plannerClient, reviewerClient, judgeClient, dedupClient, ...perAgentClients.values()].filter(
+        (c): c is LLMClient => !!c,
+      ),
+    );
     for (const c of warmupTargets) {
-      if (c?.warmupCLI) {
+      if (c.warmupCLI) {
         try {
           await c.warmupCLI();
         } catch (error) {
-          core.warning(`Provider CLI warmup failed: ${error instanceof Error ? error.message : error}`);
+          core.warning(
+            sanitizeLogOutput(`Provider CLI warmup failed: ${error instanceof Error ? error.message : error}`),
+          );
         }
       }
     }
