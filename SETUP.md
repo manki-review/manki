@@ -222,7 +222,7 @@ on:
 permissions:
   contents: read          # read repo files and diffs
   pull-requests: write    # post review comments and approvals
-  issues: read            # read linked issues for review context
+  issues: write           # post progress comments and app warnings on PRs
   id-token: write         # OIDC token for GitHub App identity
   actions: read           # verify workflow run is legitimate
 
