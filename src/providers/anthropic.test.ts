@@ -814,6 +814,16 @@ describe('warmupCLI', () => {
 
     expect(mockExecFileAsync).not.toHaveBeenCalled();
   });
+
+  it('propagates ensureCLI errors when install fails', async () => {
+    mockExecFileAsync
+      .mockRejectedValueOnce(new Error('not found'))
+      .mockResolvedValueOnce({ stdout: '' })
+      .mockRejectedValueOnce(new Error('still not found'));
+    const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
+
+    await expect(client.warmupCLI()).rejects.toThrow('Failed to install Claude CLI');
+  });
 });
 
 describe('sendViaOAuth — stale process detection', () => {
