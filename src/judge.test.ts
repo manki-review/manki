@@ -2206,7 +2206,14 @@ describe('runJudgeAgent', () => {
     await runJudgeAgent(mockClient, config, input);
 
     const [systemPrompt] = mockSendMessage.mock.calls[0];
-    expect(systemPrompt).toBe(buildJudgeSystemPrompt(config, 5, undefined, false, 'medium'));
+    const expectedPrompt = buildJudgeSystemPrompt(
+      config,
+      input.agentCount,
+      input.isFollowUp,
+      (input.openThreads?.length ?? 0) > 0,
+      'medium',
+    );
+    expect(systemPrompt).toBe(expectedPrompt);
   });
 
   it('defaults to noise_level "low" when config omits it', async () => {
@@ -2225,7 +2232,14 @@ describe('runJudgeAgent', () => {
     await runJudgeAgent(mockClient, config, input);
 
     const [systemPrompt] = mockSendMessage.mock.calls[0];
-    expect(systemPrompt).toBe(buildJudgeSystemPrompt(config, 5, undefined, false, 'low'));
+    const expectedPrompt = buildJudgeSystemPrompt(
+      config,
+      input.agentCount,
+      input.isFollowUp,
+      (input.openThreads?.length ?? 0) > 0,
+      'low',
+    );
+    expect(systemPrompt).toBe(expectedPrompt);
   });
 });
 
