@@ -236,6 +236,13 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('"reachable" | "hypothetical" | "unknown"');
   });
 
+  it('accepts a noiseLevel parameter without changing the prompt body', () => {
+    const base = buildJudgeSystemPrompt(makeConfig(), 5);
+    expect(buildJudgeSystemPrompt(makeConfig(), 5, undefined, undefined, 'low')).toBe(base);
+    expect(buildJudgeSystemPrompt(makeConfig(), 5, undefined, undefined, 'medium')).toBe(base);
+    expect(buildJudgeSystemPrompt(makeConfig(), 5, undefined, undefined, 'high')).toBe(base);
+  });
+
 });
 
 describe('buildJudgeUserMessage', () => {

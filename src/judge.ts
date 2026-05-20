@@ -15,7 +15,7 @@ import { dynamicFence, LinkedIssue, titleToSlug } from './github';
 import { safeTruncate } from './utils';
 import { sanitize, titlesOverlap } from './recap';
 import { validateSeverity } from './review';
-import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DiffFile, Finding, FindingFingerprintEntry, FindingReachability, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, ParsedDiff, PrContext, ThreadEvaluation } from './types';
+import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DiffFile, Finding, FindingFingerprintEntry, FindingReachability, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, NoiseLevel, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, ParsedDiff, PrContext, ThreadEvaluation } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -266,7 +266,14 @@ export interface JudgeResult {
 
 const CONTEXT_LINES = 10;
 
-export function buildJudgeSystemPrompt(config: ReviewConfig, agentCount: number, isFollowUp?: boolean, hasOpenThreads?: boolean): string {
+export function buildJudgeSystemPrompt(
+  config: ReviewConfig,
+  agentCount: number,
+  isFollowUp?: boolean,
+  hasOpenThreads?: boolean,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  noiseLevel: NoiseLevel = 'low',
+): string {
   const majorityThreshold = Math.max(1, Math.ceil(agentCount / 2));
 
   const summaryInstruction = isFollowUp
@@ -846,7 +853,7 @@ export async function runJudgeAgent(
 
   const changedFiles = diff.files;
 
-  const systemPrompt = buildJudgeSystemPrompt(config, agentCount, isFollowUp, hasOpenThreads);
+  const systemPrompt = buildJudgeSystemPrompt(config, agentCount, isFollowUp, hasOpenThreads, config.noise_level ?? 'low');
   const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads, priorRounds, interRoundDiff);
 
   const response = await client.sendMessage(systemPrompt, userMessage, { effort: input.effort ?? 'high' });

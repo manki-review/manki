@@ -887,6 +887,13 @@ describe('buildReviewerSystemPrompt', () => {
     expect(prompt).toContain('caveats');
     expect(prompt).toContain('description');
   });
+
+  it('accepts a noiseLevel parameter without changing the prompt body', () => {
+    const base = buildReviewerSystemPrompt(reviewer, makeConfig());
+    expect(buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, undefined, 'low')).toBe(base);
+    expect(buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, undefined, 'medium')).toBe(base);
+    expect(buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, undefined, 'high')).toBe(base);
+  });
 });
 
 describe('buildReviewerUserMessage', () => {

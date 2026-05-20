@@ -199,6 +199,8 @@ export interface PlannerRoundHint {
 
 export type ReviewLevel = 'auto' | 'small' | 'medium' | 'large';
 
+export type NoiseLevel = 'low' | 'medium' | 'high';
+
 export interface ReviewThresholds {
   small: number;
   medium: number;
@@ -239,6 +241,7 @@ export interface ReviewConfig {
     enabled?: boolean;
   };
   nit_handling?: 'issues' | 'comments';
+  noise_level?: NoiseLevel;
   review_passes?: number;
   convergence?: {
     /**
