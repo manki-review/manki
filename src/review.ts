@@ -737,6 +737,14 @@ export async function runReview(
     }
   } else {
     team = heuristicFallback(diff, config, priorRoundAgents);
+    if (onProgress) {
+      onProgress({
+        phase: 'planning',
+        rawFindingCount: 0,
+        teamAgentNames: team.agents.map(a => a.name),
+        heuristicFallback: true,
+      });
+    }
   }
 
   const memoryContext = memory ? buildMemoryContext(memory) : '';
