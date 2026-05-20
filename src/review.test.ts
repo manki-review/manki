@@ -1040,11 +1040,21 @@ describe('buildReviewerSystemPrompt', () => {
       }
     });
 
-    it('keeps `medium` and `high` differing only by the high-only suffix', () => {
+    it('keeps `medium` and `high` differing only by the high-only suffix (no custom instructions)', () => {
       const medium = buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, undefined, 'medium');
       const high = buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, undefined, 'high');
       expect(high.startsWith(medium)).toBe(true);
       expect(high.length).toBeGreaterThan(medium.length);
+    });
+
+    it('includes the high-only suffix before custom instructions when instructions are set', () => {
+      const config = makeConfig({ instructions: 'Focus on security.' });
+      const medium = buildReviewerSystemPrompt(reviewer, config, undefined, undefined, 'medium');
+      const high = buildReviewerSystemPrompt(reviewer, config, undefined, undefined, 'high');
+      expect(high).toContain('Surface marginal suggestions');
+      expect(high).toContain('## Additional Instructions');
+      expect(high.indexOf('Surface marginal suggestions')).toBeLessThan(high.indexOf('## Additional Instructions'));
+      expect(medium).not.toContain('Surface marginal suggestions');
     });
 
     it.each(['low', 'high'] as const)(
