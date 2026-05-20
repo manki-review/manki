@@ -214,8 +214,12 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
     }
   }
 
-  if ('nit_handling' in config && (config.nit_handling === 'issues' || config.nit_handling === 'comments')) {
-    warnings.push("`nit_handling: '" + config.nit_handling + "'` is deprecated and ignored, surviving nit findings now post inline. See https://github.com/manki-review/manki/issues/738 for context.");
+  if ('nit_handling' in config) {
+    if (config.nit_handling === 'issues' || config.nit_handling === 'comments') {
+      warnings.push("`nit_handling: '" + config.nit_handling + "'` is deprecated and ignored, surviving nit findings now post inline. See https://github.com/manki-review/manki/issues/738 for context.");
+    } else {
+      warnings.push('`nit_handling` is deprecated and no longer accepted. Remove it from your config.');
+    }
   }
 
   if ('noise_level' in config) {
