@@ -1670,14 +1670,17 @@ describe('runFullReview orchestration', () => {
 
     it('logs a warning but proceeds when warmupCLI rejects', async () => {
       const warmupCLI = jest.fn().mockRejectedValue(new Error('npm offline'));
-      jest.mocked(createLLMClient).mockImplementation(() => ({
-        sendMessage: jest.fn(),
-        warmupCLI,
-      }));
+      class FakeProviderClient {
+        sendMessage = jest.fn();
+        warmupCLI = warmupCLI;
+      }
+      jest.mocked(createLLMClient).mockImplementation(() => new FakeProviderClient());
 
       await callRunFullReview();
 
-      expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('Provider CLI warmup failed'));
+      expect(jest.mocked(core.warning)).toHaveBeenCalledWith(
+        expect.stringContaining('Provider CLI warmup failed (FakeProviderClient): npm offline'),
+      );
       expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
     });
   });

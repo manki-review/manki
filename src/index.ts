@@ -475,7 +475,9 @@ async function runFullReview(
         c.warmupCLI
           ? c.warmupCLI().catch((error) =>
               core.warning(
-                sanitizeLogOutput(`Provider CLI warmup failed: ${error instanceof Error ? error.message : error}`),
+                sanitizeLogOutput(
+                  `Provider CLI warmup failed (${c.constructor.name}): ${error instanceof Error ? error.message : error}`,
+                ),
               ),
             )
           : Promise.resolve(),
