@@ -234,20 +234,11 @@ async function postReviewSkippedComment(
       '',
       FORCE_REVIEW_MARKER,
     ].join('\n');
-    // Update an existing skip comment instead of creating a duplicate
-    const { data: comments } = await octokit.rest.issues.listComments({
-      owner, repo, issue_number: prNumber, per_page: 100, direction: 'desc',
-    });
-    const existing = comments.find(c =>
-      c.user?.login === BOT_LOGIN &&
-      c.user?.type === 'Bot' &&
-      c.body?.includes(PROGRESS_MARKER) && c.body?.includes('Review skipped'),
-    );
-    if (existing) {
-      await octokit.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
-    } else {
-      await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
-    }
+    // Always create a fresh comment. Editing an older skip-ack in place is
+    // silent on GitHub (no notification, original timeline position), so the
+    // user perceives no response. Each fresh comment carries its own Force
+    // review checkbox.
+    await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
   } catch (error) {
     core.warning(`Failed to post review-skipped comment: ${error instanceof Error ? error.message : error}`);
   }
