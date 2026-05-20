@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 import { LLMClient } from './providers';
 import { ACTIONS_BOT_LOGIN, BOT_LOGIN, titleToSlug } from './github';
 import { matchesSuppression, Suppression } from './memory';
-import { AuthorReplyClass, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, migrateLegacySeverity, RoundContext, SEVERITY_TOKEN_PATTERN } from './types';
+import { AuthorReplyClass, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, migrateLegacyPrType, migrateLegacySeverity, RoundContext, SEVERITY_TOKEN_PATTERN } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -243,6 +243,9 @@ function parseContextBlocks(
       }
 
       const ctx = parsed as RoundContext;
+      if (ctx.planner && typeof ctx.planner.prType === 'string') {
+        ctx.planner.prType = migrateLegacyPrType(ctx.planner.prType);
+      }
       const existing = byRound.get(round);
       if (existing) {
         duplicateRounds.add(round);

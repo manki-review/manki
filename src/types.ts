@@ -18,6 +18,21 @@ export function migrateLegacySeverity(severity: string): FindingSeverity | strin
 /** Regex source matching all current and legacy severity tokens. */
 export const SEVERITY_TOKEN_PATTERN = 'blocker|warning|suggestion|nitpick|ignore|required|nit';
 
+/**
+ * Pre-Conventional-Commits planner vocab. Historical review bodies persisted
+ * these values into `planner.prType`. Read-only remap so old rounds render
+ * with the current canonical vocab.
+ */
+const LEGACY_PR_TYPE_MAP: Record<string, string> = {
+  feature: 'feat',
+  bugfix: 'fix',
+  rename: 'refactor',
+};
+
+export function migrateLegacyPrType(value: string): string {
+  return LEGACY_PR_TYPE_MAP[value] ?? value;
+}
+
 export type FindingReachability = 'reachable' | 'hypothetical' | 'unknown';
 
 export const DEFENSIVE_HARDENING_TAG = 'defensive-hardening' as const;
@@ -134,11 +149,34 @@ export interface AgentPick {
   effort: EffortLevel;
 }
 
+/**
+ * Conventional Commits canonical types the planner is allowed to emit for
+ * `PlannerResult.prType`. Values outside this set collapse to `'unknown'` at
+ * parse time and the renderer omits the chip entirely.
+ */
+export const VALID_PR_TYPE_VALUES = [
+  'build',
+  'chore',
+  'ci',
+  'docs',
+  'feat',
+  'fix',
+  'perf',
+  'refactor',
+  'revert',
+  'style',
+  'test',
+] as const;
+
+export type ValidPrType = typeof VALID_PR_TYPE_VALUES[number];
+
+export const VALID_PR_TYPES = new Set<string>(VALID_PR_TYPE_VALUES);
+
 export interface PlannerResult {
   teamSize: 1 | 2 | 3 | 4 | 5 | 6 | 7;
   reviewerEffort: EffortLevel;
   judgeEffort: EffortLevel;
-  prType: string;
+  prType: ValidPrType | 'unknown';
   agents?: AgentPick[];
   language?: string;
   context?: string;
@@ -350,7 +388,17 @@ export interface DashboardData {
   keptCount?: number;
   droppedCount?: number;
   agentProgress?: AgentProgressEntry[];
-  plannerInfo?: Pick<PlannerResult, 'teamSize' | 'reviewerEffort' | 'judgeEffort' | 'prType'>;
+  plannerInfo?: {
+    teamSize: PlannerResult['teamSize'];
+    reviewerEffort: EffortLevel;
+    judgeEffort: EffortLevel;
+    /**
+     * Raw prType as received from a `PlannerResult` or replayed from a persisted
+     * `RoundPlanner.prType`. The dashboard sanitizes through `validPrTypeOrNull`
+     * before rendering, so off-vocab values are tolerated here.
+     */
+    prType: string;
+  };
   keptSeverities?: Record<string, number>;
   droppedSeverities?: Record<string, number>;
   plannerDurationMs?: number;
