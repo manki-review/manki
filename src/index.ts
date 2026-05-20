@@ -1062,16 +1062,18 @@ async function runFullReview(
 
     const keptSeverities: Record<string, number> = {};
     const droppedSeverities: Record<string, number> = {};
+    const keptSet = new Set(result.findings);
     for (const f of result.findings) {
       keptSeverities[f.severity] = (keptSeverities[f.severity] ?? 0) + 1;
     }
-    for (const d of judgeDecisions) {
-      if (!d.kept) {
-        droppedSeverities[d.originalSeverity] = (droppedSeverities[d.originalSeverity] ?? 0) + 1;
+    for (const f of allJudgedForDashboard) {
+      if (!keptSet.has(f)) {
+        const sev = rawForLookup.find(r => r.title === f.title && r.file === f.file && r.line === f.line)?.severity ?? f.severity;
+        droppedSeverities[sev] = (droppedSeverities[sev] ?? 0) + 1;
       }
     }
 
-    const judgeDroppedCount = judgeDecisions.filter(d => !d.kept).length;
+    const judgeDroppedCount = allJudgedForDashboard.length - keptSet.size;
     const completeDashboard: DashboardData = {
       ...dashboard,
       phase: 'complete',
