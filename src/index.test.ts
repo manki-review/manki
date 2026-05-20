@@ -3050,7 +3050,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
 
     jest.mocked(reviewModule.selectTeam).mockReturnValue({
-      level: 'standard' as 'small',
+      level: 'small',
       agents: [{ name: 'general', focus: '' }, { name: 'Security & Safety', focus: '' }],
       lineCount: 0,
     });
