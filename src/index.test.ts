@@ -2126,6 +2126,28 @@ describe('runFullReview orchestration', () => {
     expect(dashboardArg?.testNitSuppressedCount).toBe(1);
   });
 
+  it('passes nitpick findings through to postReview so they post inline', async () => {
+    const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+
+    const nitFinding = { severity: 'nitpick' as const, title: 'Style nit', file: 'src/app.ts', line: 3, description: 'nit desc', reviewers: ['general'] };
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'COMMENT', summary: 'Minor nits',
+      findings: [nitFinding], highlights: [], reviewComplete: true,
+      agentNames: ['general'],
+    });
+    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [nitFinding], duplicates: [] });
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'COMMENT', verdictReason: 'only_nit_or_suggestion' });
+
+    await callRunFullReview();
+
+    const resultArg = jest.mocked(ghUtils.postReview).mock.calls[0][5];
+    expect(resultArg).toEqual(expect.objectContaining({
+      findings: expect.arrayContaining([expect.objectContaining({ severity: 'nitpick' })]),
+    }));
+  });
+
   it('posts COMMENT and skips post-review processing for incomplete review', async () => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
