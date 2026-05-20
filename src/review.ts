@@ -1372,6 +1372,7 @@ Do not flag any of the following, regardless of severity:
 - Restating type information that a reader can see from the signature
 
 If a potential finding falls into any of these categories, omit it from your response entirely. Do not downgrade it to \`nitpick\` or \`ignore\`. Just drop it.`;
+  // 'medium' intentionally adds no extra section so the prompt matches the pre-noise_level body verbatim.
   } else if (noiseLevel === 'high') {
     prompt += `
 
