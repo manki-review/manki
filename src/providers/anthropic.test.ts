@@ -776,6 +776,46 @@ describe('ensureCLI — install path', () => {
   });
 });
 
+describe('warmupCLI', () => {
+  beforeEach(() => {
+    mockSpawn.mockReset();
+    mockExecFileAsync.mockReset();
+    resetCLIInstallPromise();
+  });
+
+  it('invokes ensureCLI once for OAuth auth', async () => {
+    mockExecFileAsync.mockResolvedValue({ stdout: '/usr/bin/claude\n' });
+    const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
+
+    await client.warmupCLI();
+    await client.warmupCLI();
+
+    // First call hits `which`; second call hits the cached path.
+    expect(mockExecFileAsync).toHaveBeenCalledTimes(1);
+    expect(mockExecFileAsync).toHaveBeenCalledWith('which', ['claude']);
+  });
+
+  it('triggers npm install when CLI is missing', async () => {
+    mockExecFileAsync
+      .mockRejectedValueOnce(new Error('not found'))
+      .mockResolvedValueOnce({ stdout: '' })
+      .mockResolvedValueOnce({ stdout: '/usr/local/bin/claude\n' });
+    const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
+
+    await client.warmupCLI();
+
+    expect(mockExecFileAsync).toHaveBeenNthCalledWith(2, 'npm', ['install', '-g', '@anthropic-ai/claude-code'], expect.any(Object));
+  });
+
+  it('is a no-op for API-key auth', async () => {
+    const client = new AnthropicClient({ auth: { kind: 'apiKey', key: 'sk-test' }, model: 'claude-opus-4-6' });
+
+    await client.warmupCLI();
+
+    expect(mockExecFileAsync).not.toHaveBeenCalled();
+  });
+});
+
 describe('sendViaOAuth — stale process detection', () => {
   beforeEach(() => {
     jest.resetAllMocks();

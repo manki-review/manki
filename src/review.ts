@@ -590,7 +590,14 @@ export async function runPlanner(
     return { teamSize, reviewerEffort, judgeEffort, prType, agents: agents ?? undefined, language, context };
   } catch (error) {
     clearTimeout(timeoutId!);
-    core.warning(`Planner failed: ${error} — falling back to heuristic team selection`);
+    const message = error instanceof Error ? error.message : String(error);
+    if (/Planner timed out/.test(message)) {
+      core.warning(
+        'Planner timed out, falling back to heuristic team selection. If your workflow does not pre-install the Claude Code CLI, see the "spawn claude ENOENT" row in SETUP.md.',
+      );
+    } else {
+      core.warning(`Planner failed: ${error} — falling back to heuristic team selection`);
+    }
     return null;
   }
 }

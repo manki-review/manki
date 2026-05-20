@@ -44,6 +44,11 @@ describe('GeminiClient', () => {
     const client = new GeminiClient({ auth: { kind: 'apiKey', key: 'key' }, model: 'gemini-3.1-flash-lite' });
     expect(client).toBeDefined();
   });
+
+  it('does not expose warmupCLI (planner does not run on this provider)', () => {
+    const client = new GeminiClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gemini-3.1-flash-lite' });
+    expect((client as { warmupCLI?: unknown }).warmupCLI).toBeUndefined();
+  });
 });
 
 describe('geminiThinkingBudget', () => {

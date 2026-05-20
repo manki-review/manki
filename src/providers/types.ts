@@ -10,6 +10,13 @@ export interface SendMessageOptions {
 
 export interface LLMClient {
   sendMessage(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse>;
+  /**
+   * Eagerly prepare any out-of-process resources (e.g. installing the Claude
+   * CLI on PATH) so the first `sendMessage` call doesn't race a 30s install
+   * against an upstream timeout. Optional; providers that don't shell out
+   * leave it undefined.
+   */
+  warmupCLI?(): Promise<void>;
 }
 
 export type AnthropicAuth =

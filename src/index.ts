@@ -459,6 +459,21 @@ async function runFullReview(
       return;
     }
 
+    // Eagerly install any provider CLI before the planner timer starts. The
+    // fallback `npm install -g` inside `ensureCLI` takes around 30s on a
+    // cold runner and would otherwise race the planner's own 30s timeout.
+    // Warming up once here pays the cost before any per-call deadline runs.
+    const warmupTargets = [plannerClient, reviewerClient, judgeClient, dedupClient, ...perAgentClients.values()];
+    for (const c of warmupTargets) {
+      if (c?.warmupCLI) {
+        try {
+          await c.warmupCLI();
+        } catch (error) {
+          core.warning(`Provider CLI warmup failed: ${error instanceof Error ? error.message : error}`);
+        }
+      }
+    }
+
     const rawDiff = await fetchPRDiff(octokit, owner, repo, prNumber);
     const diff = parsePRDiff(rawDiff);
     const parseEndTime = Date.now();

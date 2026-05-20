@@ -1617,6 +1617,53 @@ describe('runFullReview orchestration', () => {
     );
   }
 
+  describe('provider CLI warmup', () => {
+    const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [] };
+    beforeEach(() => {
+      jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+        files: [testFile], totalAdditions: 10, totalDeletions: 5,
+      });
+      jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    });
+
+    it('warms up the provider CLI before runReview to avoid the planner-install race', async () => {
+      const warmupCLI = jest.fn().mockResolvedValue(undefined);
+      jest.mocked(createLLMClient).mockImplementation(() => ({
+        sendMessage: jest.fn(),
+        warmupCLI,
+      }));
+
+      await callRunFullReview();
+
+      expect(warmupCLI).toHaveBeenCalled();
+      const firstWarmupOrder = warmupCLI.mock.invocationCallOrder[0];
+      const runReviewOrder = jest.mocked(reviewModule.runReview).mock.invocationCallOrder[0];
+      expect(firstWarmupOrder).toBeLessThan(runReviewOrder);
+    });
+
+    it('tolerates providers that do not implement warmupCLI', async () => {
+      jest.mocked(createLLMClient).mockImplementation(() => ({
+        sendMessage: jest.fn(),
+      }));
+
+      await expect(callRunFullReview()).resolves.toBeUndefined();
+      expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
+    });
+
+    it('logs a warning but proceeds when warmupCLI rejects', async () => {
+      const warmupCLI = jest.fn().mockRejectedValue(new Error('npm offline'));
+      jest.mocked(createLLMClient).mockImplementation(() => ({
+        sendMessage: jest.fn(),
+        warmupCLI,
+      }));
+
+      await callRunFullReview();
+
+      expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('Provider CLI warmup failed'));
+      expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
+    });
+  });
+
   it('handles diff too large by posting warning review without running Claude', async () => {
     jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(true);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
