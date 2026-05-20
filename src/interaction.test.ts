@@ -1,4 +1,4 @@
-import { parseCommand, buildReplyContext, parseTriageBody, extractFindingContent, triageTitlePrefix, extractPrNumber, ParsedCommand, isBotComment, hasBotMention, isReviewRequest, isBotMentionNonReview, handlePRComment, handleReviewCommentReply, handleReviewCommentCommand, scopeDiffToFile, isRepoUser, isLLMAccessAllowed } from './interaction';
+import { parseCommand, buildReplyContext, ParsedCommand, isBotComment, hasBotMention, isReviewRequest, isBotMentionNonReview, handlePRComment, handleReviewCommentReply, handleReviewCommentCommand, scopeDiffToFile, isRepoUser, isLLMAccessAllowed } from './interaction';
 import { ReviewConfig } from './types';
 import * as github from '@actions/github';
 import * as core from '@actions/core';
@@ -28,7 +28,6 @@ jest.mock('./memory', () => ({
   writeLearning: jest.fn().mockResolvedValue(undefined),
   removeLearning: jest.fn().mockResolvedValue({ removed: null, remaining: 0 }),
   removeSuppression: jest.fn().mockResolvedValue({ removed: null, remaining: 0 }),
-  batchUpdatePatternDecisions: jest.fn().mockResolvedValue(undefined),
   sanitizeMemoryField: jest.fn((v: string) => v),
 }));
 
@@ -163,178 +162,6 @@ describe('parseCommand', () => {
   it('parses @manki check with args', () => {
     const result = parseCommand('@manki check memory');
     expect(result).toEqual<ParsedCommand>({ type: 'check', args: 'memory' });
-  });
-
-  it('parses @manki triage', () => {
-    const result = parseCommand('@manki triage');
-    expect(result).toEqual<ParsedCommand>({ type: 'triage', args: '' });
-  });
-
-  it('parses @manki triage case-insensitively', () => {
-    const result = parseCommand('@Manki TRIAGE');
-    expect(result).toEqual<ParsedCommand>({ type: 'triage', args: '' });
-  });
-
-});
-
-describe('parseTriageBody', () => {
-  it('parses old backtick format with suggestion and question emojis', () => {
-    const body = [
-      '- [x] 💡 **Null check missing** — `src/index.ts:42`',
-      '- [ ] ❓ **Unused import** — `src/utils.ts:10`',
-    ].join('\n');
-    const result = parseTriageBody(body);
-    expect(result.accepted).toHaveLength(1);
-    expect(result.accepted[0].title).toBe('Null check missing');
-    expect(result.accepted[0].ref).toBe('src/index.ts:42');
-    expect(result.accepted[0].section).toContain('Null check missing');
-    expect(result.rejected).toHaveLength(1);
-    expect(result.rejected[0].title).toBe('Unused import');
-    expect(result.rejected[0].ref).toBe('src/utils.ts:10');
-  });
-
-  it('parses new details/summary format with code tags', () => {
-    const body = [
-      '- [x] <details><summary>📝 **Style nit** — <code>src/app.ts:7</code></summary>',
-      '',
-      'Consider using const instead of let.',
-      '</details>',
-      '- [ ] <details><summary>📝 **Rename variable** — <code>src/app.ts:15</code></summary>',
-      '',
-      'Use a more descriptive name.',
-      '</details>',
-    ].join('\n');
-    const result = parseTriageBody(body);
-    expect(result.accepted).toHaveLength(1);
-    expect(result.accepted[0].title).toBe('Style nit');
-    expect(result.accepted[0].ref).toBe('src/app.ts:7');
-    expect(result.accepted[0].section).toContain('Consider using const');
-    expect(result.rejected).toHaveLength(1);
-    expect(result.rejected[0].title).toBe('Rename variable');
-    expect(result.rejected[0].ref).toBe('src/app.ts:15');
-  });
-
-  it('parses blocker emoji in new format', () => {
-    const body = '- [x] <details><summary>🚫 **Security flaw** — <code>src/auth.ts:99</code></summary>\n</details>';
-    const result = parseTriageBody(body);
-    expect(result.accepted).toHaveLength(1);
-    expect(result.accepted[0].title).toBe('Security flaw');
-    expect(result.accepted[0].ref).toBe('src/auth.ts:99');
-  });
-
-  it('handles mix of old and new formats', () => {
-    const body = [
-      '- [x] 💡 **Old finding** — `src/old.ts:1`',
-      '- [x] <details><summary>📝 **New finding** — <code>src/new.ts:2</code></summary>',
-      '</details>',
-      '- [ ] ❓ **Old rejected** — `src/old.ts:5`',
-      '- [ ] <details><summary>🚫 **New rejected** — <code>src/new.ts:8</code></summary>',
-      '</details>',
-    ].join('\n');
-    const result = parseTriageBody(body);
-    expect(result.accepted).toHaveLength(2);
-    expect(result.rejected).toHaveLength(2);
-    expect(result.accepted[0].title).toBe('Old finding');
-    expect(result.accepted[1].title).toBe('New finding');
-    expect(result.rejected[0].title).toBe('Old rejected');
-    expect(result.rejected[1].title).toBe('New rejected');
-  });
-
-  it('returns empty arrays when no findings match', () => {
-    const result = parseTriageBody('No findings here.');
-    expect(result.accepted).toEqual([]);
-    expect(result.rejected).toEqual([]);
-  });
-
-  it('still parses legacy 💡 suggestion emoji from pre-rename triage comments', () => {
-    const body = [
-      '- [x] 💡 **Legacy accepted** — `src/legacy.ts:1`',
-      '- [ ] 💡 **Legacy rejected** — `src/legacy.ts:2`',
-    ].join('\n');
-    const result = parseTriageBody(body);
-    expect(result.accepted).toHaveLength(1);
-    expect(result.accepted[0].title).toBe('Legacy accepted');
-    expect(result.accepted[0].ref).toBe('src/legacy.ts:1');
-    expect(result.rejected).toHaveLength(1);
-    expect(result.rejected[0].title).toBe('Legacy rejected');
-    expect(result.rejected[0].ref).toBe('src/legacy.ts:2');
-  });
-});
-
-describe('extractFindingContent', () => {
-  it('extracts description from a details/summary section', () => {
-    const section = [
-      '- [x] <details><summary>📝 **Style nit** — <code>src/app.ts:7</code></summary>',
-      '',
-      'Consider using const instead of let.',
-      '</details>',
-    ].join('\n');
-    const result = extractFindingContent(section);
-    expect(result.description).toBe('Consider using const instead of let.');
-    expect(result.permalink).toBeNull();
-    expect(result.suggestedFix).toBeNull();
-  });
-
-  it('extracts permalink from section', () => {
-    const section = [
-      '- [x] <details><summary>📝 **Bug** — <code>src/a.ts:1</code></summary>',
-      '',
-      'Description here.',
-      'https://github.com/owner/repo/blob/abc123/src/a.ts#L1',
-      '</details>',
-    ].join('\n');
-    const result = extractFindingContent(section);
-    expect(result.description).toBe('Description here.');
-    expect(result.permalink).toBe('https://github.com/owner/repo/blob/abc123/src/a.ts#L1');
-  });
-
-  it('extracts suggested fix from section', () => {
-    const section = [
-      '- [x] <details><summary>📝 **Fix me** — <code>src/b.ts:5</code></summary>',
-      '',
-      'This needs fixing.',
-      '**Suggested fix:**',
-      '```',
-      'const x = 1;',
-      '```',
-      '</details>',
-    ].join('\n');
-    const result = extractFindingContent(section);
-    expect(result.description).toBe('This needs fixing.');
-    expect(result.suggestedFix).toBe('const x = 1;');
-  });
-
-  it('returns empty description for minimal sections', () => {
-    const section = '- [x] 💡 **Simple** — `src/a.ts:1`';
-    const result = extractFindingContent(section);
-    expect(result.description).toBe('');
-    expect(result.permalink).toBeNull();
-    expect(result.suggestedFix).toBeNull();
-  });
-});
-
-describe('triageTitlePrefix', () => {
-  it('returns test for missing test titles', () => {
-    expect(triageTitlePrefix('Missing test for edge case')).toBe('test');
-  });
-
-  it('returns test for no test titles', () => {
-    expect(triageTitlePrefix('No test coverage for parser')).toBe('test');
-  });
-
-  it('returns fix for other titles', () => {
-    expect(triageTitlePrefix('Null check missing')).toBe('fix');
-    expect(triageTitlePrefix('Unused import')).toBe('fix');
-  });
-});
-
-describe('extractPrNumber', () => {
-  it('extracts PR number from triage issue title', () => {
-    expect(extractPrNumber('triage: findings from PR #42')).toBe(42);
-  });
-
-  it('returns null for non-matching titles', () => {
-    expect(extractPrNumber('some other issue')).toBeNull();
   });
 });
 
@@ -665,18 +492,6 @@ describe('handlePRComment', () => {
     await handlePRComment(octokit, null, 'test-owner', 'test-repo', 1, undefined, undefined, config);
     expect(ghUtils.reactToIssueComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 42, 'eyes');
     expect(state.checkAndAutoApprove).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 1);
-  });
-
-  it('dispatches triage command', async () => {
-    setContext({ comment: { id: 42, body: '@manki triage', user: { type: 'User' }, author_association: 'COLLABORATOR' } });
-    const octokit = createMockOctokit();
-    octokit.rest.issues.get.mockResolvedValue({ data: { body: '- [x] ✨ **Fix bug** — `src/a.ts:1`\n- [ ] 📝 **Nitpick** — `src/b.ts:2`' } });
-    await handlePRComment(octokit, null, 'test-owner', 'test-repo', 1);
-    expect(ghUtils.reactToIssueComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 42, 'eyes');
-    expect(octokit.rest.issues.create).toHaveBeenCalled();
-    expect(octokit.rest.issues.update).toHaveBeenCalledWith(
-      expect.objectContaining({ state: 'closed' }),
-    );
   });
 
   it('dispatches generic question when no known command', async () => {
@@ -1256,111 +1071,6 @@ describe('handleCheck (via handlePRComment)', () => {
     const octokit = createMockOctokit();
     await handlePRComment(octokit, null, 'test-owner', 'test-repo', 1, undefined, undefined, { auto_approve: true } as Partial<ReviewConfig> as ReviewConfig);
     expect(octokit.rest.issues.createComment).not.toHaveBeenCalled();
-  });
-});
-
-describe('handleTriage (via handlePRComment)', () => {
-  it('rejects non-collaborators', async () => {
-    setContext({ comment: { id: 42, body: '@manki triage', user: { type: 'User' }, author_association: 'CONTRIBUTOR' } });
-    const octokit = createMockOctokit();
-    await handlePRComment(octokit, null, 'test-owner', 'test-repo', 1);
-    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
-      expect.objectContaining({ body: expect.stringContaining('Only repo collaborators can triage') }),
-    );
-  });
-
-  it('reports when no findings can be parsed', async () => {
-    setContext({ comment: { id: 42, body: '@manki triage', user: { type: 'User' }, author_association: 'OWNER' } });
-    const octokit = createMockOctokit();
-    octokit.rest.issues.get.mockResolvedValue({ data: { body: 'No checkboxes here' } });
-    await handlePRComment(octokit, null, 'test-owner', 'test-repo', 1);
-    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
-      expect.objectContaining({ body: expect.stringContaining("Couldn't parse any findings") }),
-    );
-  });
-
-  it('creates issues for accepted findings and closes the triage issue', async () => {
-    setContext({ comment: { id: 42, body: '@manki triage', user: { type: 'User' }, author_association: 'OWNER' } });
-    const octokit = createMockOctokit();
-    octokit.rest.issues.get.mockResolvedValue({
-      data: {
-        title: 'triage: findings from PR #10',
-        body: '- [x] 💡 **Fix null check** — `src/a.ts:1`\n- [ ] 📝 **Rename var** — `src/b.ts:2`',
-      },
-    });
-    octokit.rest.issues.create.mockResolvedValue({ data: { number: 200 } });
-    await handlePRComment(octokit, null, 'test-owner', 'test-repo', 5);
-
-    expect(octokit.rest.issues.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        title: 'fix: Fix null check',
-        body: expect.stringContaining('## Context'),
-      }),
-    );
-    // Body should reference triage issue and PR
-    expect(octokit.rest.issues.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        body: expect.stringContaining('PR #10'),
-      }),
-    );
-    // Body should have structured sections
-    expect(octokit.rest.issues.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        body: expect.stringContaining('## File'),
-      }),
-    );
-    expect(octokit.rest.issues.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        body: expect.stringContaining('`src/a.ts:1`'),
-      }),
-    );
-    expect(octokit.rest.issues.update).toHaveBeenCalledWith(
-      expect.objectContaining({ state: 'closed', issue_number: 5 }),
-    );
-    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
-      expect.objectContaining({ body: expect.stringContaining('Triage complete') }),
-    );
-  });
-
-  it('stores learnings and suppressions with memory enabled', async () => {
-    setContext({ comment: { id: 42, body: '@manki triage', user: { type: 'User' }, author_association: 'OWNER' } });
-    const octokit = createMockOctokit();
-    octokit.rest.issues.get.mockResolvedValue({
-      data: {
-        body: '- [x] 💡 **Accepted finding** — `src/a.ts:1`\n- [ ] 📝 **Rejected finding** — `src/b.ts:2`',
-      },
-    });
-    octokit.rest.issues.create.mockResolvedValue({ data: { number: 200 } });
-    const memoryConfig = { enabled: true, repo: 'test-owner/memory' };
-    await handlePRComment(octokit, null, 'test-owner', 'test-repo', 1, memoryConfig, 'mem-token');
-    expect(memory.writeLearning).toHaveBeenCalled();
-    expect(memory.writeSuppression).toHaveBeenCalled();
-    expect(memory.batchUpdatePatternDecisions).toHaveBeenCalled();
-  });
-
-  it('handles label removal failure gracefully', async () => {
-    setContext({ comment: { id: 42, body: '@manki triage', user: { type: 'User' }, author_association: 'OWNER' } });
-    const octokit = createMockOctokit();
-    octokit.rest.issues.get.mockResolvedValue({
-      data: { body: '- [x] 💡 **A finding** — `src/a.ts:1`' },
-    });
-    octokit.rest.issues.create.mockResolvedValue({ data: { number: 200 } });
-    octokit.rest.issues.removeLabel.mockRejectedValue(new Error('Label not found'));
-    await handlePRComment(octokit, null, 'test-owner', 'test-repo', 1);
-    // Should not throw, should still close the issue
-    expect(octokit.rest.issues.update).toHaveBeenCalledWith(
-      expect.objectContaining({ state: 'closed' }),
-    );
-  });
-
-  it('handles null issue body as empty findings', async () => {
-    setContext({ comment: { id: 42, body: '@manki triage', user: { type: 'User' }, author_association: 'OWNER' } });
-    const octokit = createMockOctokit();
-    octokit.rest.issues.get.mockResolvedValue({ data: { body: null } });
-    await handlePRComment(octokit, null, 'test-owner', 'test-repo', 1);
-    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
-      expect.objectContaining({ body: expect.stringContaining("Couldn't parse any findings") }),
-    );
   });
 });
 

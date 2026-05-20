@@ -13,8 +13,6 @@ import {
   writeSuppression,
   writeLearning,
   updatePattern,
-  updatePatternDecision,
-  batchUpdatePatternDecisions,
   Suppression,
   Pattern,
   Learning,
@@ -729,101 +727,6 @@ describe('updatePattern', () => {
 
     expect(pattern!.repos).toContain('test-repo');
     expect(pattern!.repos).toContain('other-repo');
-  });
-});
-
-describe('updatePatternDecision', () => {
-  it('increments accepted_count for accepted decision', async () => {
-    const existing: Pattern[] = [
-      makePattern({ finding_title: 'unused import', accepted_count: 2, rejected_count: 0, escalated: false }),
-    ];
-    const octokit = mockMemoryOctokit({ 'test-repo/patterns.yml': existing });
-
-    await updatePatternDecision(octokit, 'owner/memory', 'test-repo', 'Unused import', true);
-
-    const createCall = (octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls[0][0];
-    const { parse } = await import('yaml');
-    const data = parse(Buffer.from(createCall.content, 'base64').toString('utf-8')) as Pattern[];
-    expect(data[0].accepted_count).toBe(3);
-  });
-
-  it('increments rejected_count for rejected decision', async () => {
-    const existing: Pattern[] = [
-      makePattern({ finding_title: 'unused import', accepted_count: 1, rejected_count: 1, escalated: false }),
-    ];
-    const octokit = mockMemoryOctokit({ 'test-repo/patterns.yml': existing });
-
-    await updatePatternDecision(octokit, 'owner/memory', 'test-repo', 'Unused import', false);
-
-    const createCall = (octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls[0][0];
-    const { parse } = await import('yaml');
-    const data = parse(Buffer.from(createCall.content, 'base64').toString('utf-8')) as Pattern[];
-    expect(data[0].rejected_count).toBe(2);
-  });
-
-  it('creates new pattern when none matches', async () => {
-    const octokit = mockMemoryOctokit({ 'test-repo/patterns.yml': [] });
-
-    await updatePatternDecision(octokit, 'owner/memory', 'test-repo', 'New finding', true);
-
-    const createCall = (octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls[0][0];
-    const { parse } = await import('yaml');
-    const data = parse(Buffer.from(createCall.content, 'base64').toString('utf-8')) as Pattern[];
-    expect(data).toHaveLength(1);
-    expect(data[0].finding_title).toBe('new finding');
-    expect(data[0].accepted_count).toBe(1);
-  });
-
-  it('auto-escalates when accepted 3+ times and accepted > 2x rejected', async () => {
-    const existing: Pattern[] = [
-      makePattern({ finding_title: 'unused import', accepted_count: 2, rejected_count: 0, escalated: false }),
-    ];
-    const octokit = mockMemoryOctokit({ 'test-repo/patterns.yml': existing });
-
-    await updatePatternDecision(octokit, 'owner/memory', 'test-repo', 'Unused import', true);
-
-    const createCall = (octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls[0][0];
-    const { parse } = await import('yaml');
-    const data = parse(Buffer.from(createCall.content, 'base64').toString('utf-8')) as Pattern[];
-    expect(data[0].escalated).toBe(true);
-  });
-});
-
-describe('batchUpdatePatternDecisions', () => {
-  it('updates multiple patterns in a single write', async () => {
-    const existing: Pattern[] = [
-      makePattern({ finding_title: 'unused import', accepted_count: 0, rejected_count: 0, escalated: false }),
-      makePattern({ id: 'pat-2', finding_title: 'missing error handling', accepted_count: 0, rejected_count: 0, escalated: false }),
-    ];
-    const octokit = mockMemoryOctokit({ 'test-repo/patterns.yml': existing });
-
-    await batchUpdatePatternDecisions(octokit, 'owner/memory', 'test-repo', [
-      { title: 'Unused import', accepted: true },
-      { title: 'Missing error handling', accepted: false },
-    ]);
-
-    const createCall = (octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls[0][0];
-    const { parse } = await import('yaml');
-    const data = parse(Buffer.from(createCall.content, 'base64').toString('utf-8')) as Pattern[];
-    const importPattern = data.find(p => p.finding_title === 'unused import')!;
-    const errorPattern = data.find(p => p.finding_title === 'missing error handling')!;
-    expect(importPattern.accepted_count).toBe(1);
-    expect(errorPattern.rejected_count).toBe(1);
-  });
-
-  it('creates new patterns for unrecognized titles', async () => {
-    const octokit = mockMemoryOctokit({ 'test-repo/patterns.yml': [] });
-
-    await batchUpdatePatternDecisions(octokit, 'owner/memory', 'test-repo', [
-      { title: 'Brand new finding', accepted: true },
-    ]);
-
-    const createCall = (octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls[0][0];
-    const { parse } = await import('yaml');
-    const data = parse(Buffer.from(createCall.content, 'base64').toString('utf-8')) as Pattern[];
-    expect(data).toHaveLength(1);
-    expect(data[0].finding_title).toBe('brand new finding');
-    expect(data[0].accepted_count).toBe(1);
   });
 });
 

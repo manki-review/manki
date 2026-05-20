@@ -240,6 +240,11 @@ export interface ReviewConfig {
   planner?: {
     enabled?: boolean;
   };
+  /**
+   * @deprecated Removed in v5.1.0. All surviving findings post inline as PR
+   * review comments. The field is still parsed so old configs don't fail,
+   * but the value is ignored and a one-line warning is emitted at run start.
+   */
   nit_handling?: 'issues' | 'comments';
   noise_level?: NoiseLevel;
   review_passes?: number;
@@ -429,7 +434,6 @@ export interface ReviewMetadata {
     teamAgents: string[];
     memoryEnabled: boolean;
     memoryRepo: string;
-    nitHandling: string;
   };
   judgeDecisions: JudgeDecision[];
   timing: {
@@ -494,7 +498,6 @@ export interface PromptVersions {
 /** Effective config snapshot for the round: AI pipeline behavior fields (model behavior, pass configuration, memory). Convergence/post-processing rules are not included. */
 export interface RoundConfig {
   reviewLevel: ReviewLevel;
-  nitHandling: 'issues' | 'comments';
   memoryEnabled: boolean;
   reviewPasses?: number;
 }

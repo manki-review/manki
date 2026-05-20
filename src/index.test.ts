@@ -65,7 +65,7 @@ jest.mock('./config', () => ({
     auto_review: true,
     max_diff_lines: 5000,
     exclude_paths: [],
-    nit_handling: 'issues',
+   
     reviewers: [],
   }),
   resolveModel: jest.fn().mockReturnValue('claude-sonnet-4-20250514'),
@@ -137,7 +137,6 @@ jest.mock('./github', () => ({
   updateProgressDashboard: jest.fn().mockResolvedValue(undefined),
   dismissPreviousReviews: jest.fn().mockResolvedValue(undefined),
   postReview: jest.fn().mockResolvedValue(123),
-  createNitIssue: jest.fn().mockResolvedValue(undefined),
   reactToIssueComment: jest.fn().mockResolvedValue(undefined),
   fetchLinkedIssues: jest.fn().mockResolvedValue([]),
   isReviewInProgress: jest.fn().mockResolvedValue(false),
@@ -1560,7 +1559,7 @@ describe('runFullReview orchestration', () => {
     // Reset to default config for each test
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
-      exclude_paths: [], nit_handling: 'issues',
+      exclude_paths: [],
       reviewers: [],
       instructions: '', review_level: 'auto',
       review_thresholds: { small: 200, medium: 800 },
@@ -1770,7 +1769,7 @@ describe('runFullReview orchestration', () => {
       auto_approve: false,
       max_diff_lines: 5000,
       exclude_paths: [],
-      nit_handling: 'issues',
+     
       reviewers: [],
       instructions: '',
       review_level: 'auto',
@@ -2127,92 +2126,26 @@ describe('runFullReview orchestration', () => {
     expect(dashboardArg?.testNitSuppressedCount).toBe(1);
   });
 
-  it('creates nit issues when nit_handling is "issues"', async () => {
-    const testFile = {
-      path: 'src/app.ts', changeType: 'modified' as const,
-      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'line1\nline2' }],
-    };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
-    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
-      files: [testFile], totalAdditions: 10, totalDeletions: 5,
-    });
+  it('passes nitpick findings through to postReview so they post inline', async () => {
+    const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
     jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
-    jest.mocked(configModule.loadConfig).mockReturnValue({
-      auto_review: true, auto_approve: false, max_diff_lines: 5000,
-      exclude_paths: [], nit_handling: 'issues',
-      reviewers: [],
-      instructions: '', review_level: 'auto',
-      review_thresholds: { small: 200, medium: 800 },
-      memory: { enabled: false, repo: '' },
-    });
 
-    const nitFinding = {
-      severity: 'nitpick' as const, title: 'Style nit', file: 'src/app.ts',
-      line: 3, description: 'nit desc', reviewers: ['general'],
-    };
+    const nitFinding = { severity: 'nitpick' as const, title: 'Style nit', file: 'src/app.ts', line: 3, description: 'nit desc', reviewers: ['general'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'COMMENT', summary: 'Minor nits',
       findings: [nitFinding], highlights: [], reviewComplete: true,
       agentNames: ['general'],
     });
-    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({
-      unique: [nitFinding], duplicates: [],
-    });
+    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [nitFinding], duplicates: [] });
     jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'COMMENT', verdictReason: 'only_nit_or_suggestion' });
 
     await callRunFullReview();
 
-    expect(jest.mocked(ghUtils.createNitIssue)).toHaveBeenCalledWith(
-      expect.anything(), 'test-owner', 'test-repo', 42,
-      [expect.objectContaining({ severity: 'nitpick' })], 'abc123',
-    );
-  });
-
-  it('does not create nit issues when nit_handling is "comments"', async () => {
-    const testFile = {
-      path: 'src/app.ts', changeType: 'modified' as const,
-      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'line1\nline2' }],
-    };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
-    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
-      files: [testFile], totalAdditions: 10, totalDeletions: 5,
-    });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
-    jest.mocked(configModule.loadConfig).mockReturnValue({
-      auto_review: true, auto_approve: false, max_diff_lines: 5000,
-      exclude_paths: [], nit_handling: 'comments',
-      reviewers: [],
-      instructions: '', review_level: 'auto',
-      review_thresholds: { small: 200, medium: 800 },
-      memory: { enabled: false, repo: '' },
-    });
-
-    const nitFinding = {
-      severity: 'nitpick' as const, title: 'Style nit', file: 'src/app.ts',
-      line: 3, description: 'nit desc', reviewers: ['general'],
-    };
-    jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'COMMENT', summary: 'Minor nits',
-      findings: [nitFinding], highlights: [], reviewComplete: true,
-      agentNames: ['general'],
-    });
-    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({
-      unique: [nitFinding], duplicates: [],
-    });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'COMMENT', verdictReason: 'only_nit_or_suggestion' });
-
-    await callRunFullReview();
-
-    // Nits go inline, no nit issue created
-    expect(jest.mocked(ghUtils.createNitIssue)).not.toHaveBeenCalled();
-    // All findings (including nits) should be in the posted review
-    expect(jest.mocked(ghUtils.postReview)).toHaveBeenCalledWith(
-      expect.anything(), 'test-owner', 'test-repo', 42, 'abc123',
-      expect.objectContaining({
-        findings: [expect.objectContaining({ severity: 'nitpick' })],
-      }),
-      expect.anything(), expect.anything(), expect.anything(), expect.anything(),
-    );
+    const resultArg = jest.mocked(ghUtils.postReview).mock.calls[0][5];
+    expect(resultArg).toEqual(expect.objectContaining({
+      findings: expect.arrayContaining([expect.objectContaining({ severity: 'nitpick' })]),
+    }));
   });
 
   it('posts COMMENT and skips post-review processing for incomplete review', async () => {
@@ -2755,7 +2688,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
-      exclude_paths: [], nit_handling: 'issues',
+      exclude_paths: [],
       reviewers: [],
       instructions: '', review_level: 'auto',
       review_thresholds: { small: 200, medium: 800 },
@@ -2858,7 +2791,6 @@ describe('runFullReview orchestration', () => {
     // so codeContext should have been set on the finding object.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const postedFindings = (jest.mocked(ghUtils.postReview).mock.calls[0][5] as any).findings;
-    // Since nit_handling defaults to 'issues' and this is a suggestion, it stays inline
     expect(postedFindings.length).toBeGreaterThan(0);
   });
 
@@ -3245,7 +3177,7 @@ describe('runFullReview orchestration', () => {
 
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
-      exclude_paths: [], nit_handling: 'issues',
+      exclude_paths: [],
       reviewers: [],
       instructions: '', review_level: 'auto',
       review_thresholds: { small: 200, medium: 800 },
@@ -4381,7 +4313,7 @@ describe('runFullReview orchestration', () => {
     function memoryEnabledConfig(maxAutoRounds = 5): ReturnType<typeof configModule.loadConfig> {
       return {
         auto_review: true, auto_approve: false, max_diff_lines: 5000,
-        exclude_paths: [], nit_handling: 'issues',
+        exclude_paths: [],
         reviewers: [], instructions: '', review_level: 'auto',
         review_thresholds: { small: 200, medium: 800 },
         memory: { enabled: true, repo: 'owner/memory' },
@@ -4607,7 +4539,7 @@ describe('runFullReview orchestration', () => {
     function configWithAgents(agents: Record<string, string>): ReviewConfig {
       return {
         auto_review: true, auto_approve: false, max_diff_lines: 5000,
-        exclude_paths: [], nit_handling: 'issues',
+        exclude_paths: [],
         reviewers: [], instructions: '', review_level: 'auto',
         review_thresholds: { small: 200, medium: 800 },
         memory: { enabled: false, repo: '' },
@@ -4730,7 +4662,7 @@ describe('handleInteraction', () => {
     _resetOctokitCache();
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
-      exclude_paths: [], nit_handling: 'issues',
+      exclude_paths: [],
       reviewers: [],
       instructions: '', review_level: 'auto',
       review_thresholds: { small: 200, medium: 800 },
@@ -4974,7 +4906,7 @@ describe('handleIssueInteraction', () => {
     _resetOctokitCache();
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
-      exclude_paths: [], nit_handling: 'issues',
+      exclude_paths: [],
       reviewers: [],
       instructions: '', review_level: 'auto',
       review_thresholds: { small: 200, medium: 800 },
@@ -5042,7 +4974,7 @@ describe('handleIssueInteraction', () => {
       eventName: 'issue_comment',
       payload: {
         action: 'created',
-        comment: { body: '@manki triage this', user: { type: 'User' } },
+        comment: { body: '@manki help', user: { type: 'User' } },
         issue: { number: 15 },
       },
     });
@@ -5074,7 +5006,7 @@ describe('handleReviewStateCheck', () => {
     });
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
-      exclude_paths: [], nit_handling: 'issues',
+      exclude_paths: [],
       reviewers: [],
       instructions: '', review_level: 'auto',
       review_thresholds: { small: 200, medium: 800 },
@@ -5099,7 +5031,7 @@ describe('handleReviewStateCheck', () => {
     });
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: true, max_diff_lines: 5000,
-      exclude_paths: [], nit_handling: 'issues',
+      exclude_paths: [],
       reviewers: [],
       instructions: '', review_level: 'auto',
       review_thresholds: { small: 200, medium: 800 },
@@ -5131,7 +5063,7 @@ describe('handleReviewCommentInteraction auto-approve', () => {
     jest.mocked(interaction.hasBotMention).mockReturnValue(true);
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: true, max_diff_lines: 5000,
-      exclude_paths: [], nit_handling: 'issues',
+      exclude_paths: [],
       reviewers: [],
       instructions: '', review_level: 'auto',
       review_thresholds: { small: 200, medium: 800 },
@@ -5409,7 +5341,7 @@ describe('force review checkbox', () => {
     jest.mocked(diffModule.filterFiles).mockReturnValue([reviewableFile]);
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
-      exclude_paths: [], nit_handling: 'issues',
+      exclude_paths: [],
       reviewers: [], instructions: '', review_level: 'auto',
       review_thresholds: { small: 200, medium: 800 },
       memory: { enabled: true, repo: 'owner/memory' },
@@ -5454,7 +5386,7 @@ describe('force review checkbox', () => {
     jest.mocked(diffModule.filterFiles).mockReturnValue([reviewableFile]);
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
-      exclude_paths: [], nit_handling: 'issues',
+      exclude_paths: [],
       reviewers: [], instructions: '', review_level: 'auto',
       review_thresholds: { small: 200, medium: 800 },
       memory: { enabled: true, repo: 'owner/memory' },

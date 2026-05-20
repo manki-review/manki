@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { LLMClient } from './providers';
-import { writeSuppression, writeLearning, removeLearning, removeSuppression, batchUpdatePatternDecisions, sanitizeMemoryField } from './memory';
+import { writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
 import { reactToIssueComment, reactToReviewComment, fetchPRDiff } from './github';
 import { truncateDiff } from './review';
 import { checkAndAutoApprove, fetchBotReviewThreads } from './state';
@@ -234,10 +234,6 @@ export async function handlePRComment(
       await reactToIssueComment(octokit, owner, repo, commentId, 'eyes');
       await handleCheck(octokit, owner, repo, issueNumber, config);
       break;
-    case 'triage':
-      await reactToIssueComment(octokit, owner, repo, commentId, 'eyes');
-      await handleTriage(octokit, owner, repo, issueNumber, memoryConfig, memoryToken);
-      break;
     case 'help':
       await reactToIssueComment(octokit, owner, repo, commentId, '+1');
       await handleHelp(octokit, owner, repo, issueNumber);
@@ -262,12 +258,12 @@ export async function handlePRComment(
 }
 
 interface ParsedCommand {
-  type: 'explain' | 'dismiss' | 'help' | 'remember' | 'forget' | 'check' | 'triage' | 'generic';
+  type: 'explain' | 'dismiss' | 'help' | 'remember' | 'forget' | 'check' | 'generic';
   args: string;
 }
 
 const BOT_MENTION_PATTERN = /(?:@manki-review|@manki|\/manki)\b/;
-const BOT_PREFIX_PATTERN = /(?:@manki-review|@manki|\/manki)\s+(explain|dismiss|help|remember|forget|check|triage)(?:\s+(.*))?/;
+const BOT_PREFIX_PATTERN = /(?:@manki-review|@manki|\/manki)\s+(explain|dismiss|help|remember|forget|check)(?:\s+(.*))?/;
 
 function parseCommand(body: string): ParsedCommand {
   const lower = body.toLowerCase();
@@ -375,7 +371,7 @@ async function handleHelp(
     owner,
     repo,
     issue_number: prNumber,
-    body: `${BOT_MARKER}\n**Manki** — Here's what I can do:\n\n| Command | |\n|---|---|\n| \`/manki review\` | Run a full review |\n| \`/manki explain [topic]\` | Explain something about this PR |\n| \`/manki check\` | Check required issues & auto-approve |\n| \`/manki dismiss [finding]\` | Dismiss a finding |\n| \`/manki triage\` | Process nit issue checkboxes |\n| \`/manki remember <instruction>\` | Teach me something for future reviews |\n| \`/manki forget <text>\` | Remove a learning or suppression |\n| \`/manki help\` | Show this message |\n\nYou can also use \`@manki\` or \`@manki-review\` as the command prefix, or reply to any of my review comments.`,
+    body: `${BOT_MARKER}\n**Manki** — Here's what I can do:\n\n| Command | |\n|---|---|\n| \`/manki review\` | Run a full review |\n| \`/manki explain [topic]\` | Explain something about this PR |\n| \`/manki check\` | Check required issues & auto-approve |\n| \`/manki dismiss [finding]\` | Dismiss a finding |\n| \`/manki remember <instruction>\` | Teach me something for future reviews |\n| \`/manki forget <text>\` | Remove a learning or suppression |\n| \`/manki help\` | Show this message |\n\nYou can also use \`@manki\` or \`@manki-review\` as the command prefix, or reply to any of my review comments.`,
   });
 }
 
@@ -607,156 +603,6 @@ async function handleCheck(
   }
 }
 
-async function handleTriage(
-  octokit: Octokit,
-  owner: string,
-  repo: string,
-  issueNumber: number,
-  memoryConfig?: MemoryConfig,
-  memoryToken?: string,
-): Promise<void> {
-  const authorAssociation = github.context.payload.comment?.author_association;
-  const isTrusted = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(authorAssociation ?? '');
-  if (!isTrusted) {
-    await octokit.rest.issues.createComment({
-      owner, repo,
-      issue_number: issueNumber,
-      body: `${BOT_MARKER}\n**Manki** — Only repo collaborators can triage findings.`,
-    });
-    return;
-  }
-
-  const { data: issue } = await octokit.rest.issues.get({ owner, repo, issue_number: issueNumber });
-  const body = issue.body ?? '';
-  const issueTitle = issue.title ?? '';
-
-  const { accepted, rejected } = parseTriageBody(body);
-
-  if (accepted.length === 0 && rejected.length === 0) {
-    await octokit.rest.issues.createComment({
-      owner, repo,
-      issue_number: issueNumber,
-      body: `${BOT_MARKER}\n**Manki** — Couldn't parse any findings from the issue body. Make sure the checkboxes follow the expected format.`,
-    });
-    return;
-  }
-
-  const prNumber = extractPrNumber(issueTitle);
-
-  const createdIssues: number[] = [];
-  for (const item of accepted) {
-    const cleanTitle = `${triageTitlePrefix(item.title)}: ${item.title}`;
-    const { description, permalink, suggestedFix } = extractFindingContent(item.section);
-
-    const bodyParts: string[] = [
-      `## Context`,
-      ``,
-      `From review triage (#${issueNumber}${prNumber ? `, PR #${prNumber}` : ''}).`,
-      ``,
-      `## Description`,
-      ``,
-      description || item.title,
-      ``,
-      `## File`,
-      ``,
-      `\`${item.ref}\``,
-    ];
-
-    if (permalink) {
-      bodyParts.push('', permalink);
-    }
-
-    if (suggestedFix) {
-      const lang = inferLanguageFromPath(item.ref);
-      bodyParts.push('', '## Suggested Fix', '', `\`\`\`${lang}`, suggestedFix, '```');
-    }
-
-    const issueBody = bodyParts.join('\n');
-
-    try {
-      const { data: newIssue } = await octokit.rest.issues.create({
-        owner, repo,
-        title: cleanTitle,
-        body: issueBody,
-      });
-      createdIssues.push(newIssue.number);
-      core.info(`Created issue #${newIssue.number} for "${item.title}"`);
-    } catch (error) {
-      core.warning(`Failed to create issue for "${item.title}": ${error}`);
-    }
-  }
-
-  if (memoryConfig?.enabled && memoryToken) {
-    const memoryOctokit = github.getOctokit(memoryToken);
-    const memoryRepo = memoryConfig.repo || `${owner}/review-memory`;
-
-    for (const item of accepted) {
-      try {
-        await writeLearning(memoryOctokit, memoryRepo, repo, {
-          id: `accept-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          content: `Finding pattern "${item.title}" was accepted for fix — team considers this valuable`,
-          scope: 'repo',
-          source: `${owner}/${repo}#${issueNumber}`,
-          created_at: new Date().toISOString().split('T')[0],
-        });
-      } catch (error) {
-        core.debug(`Failed to store acceptance for "${item.title}": ${error}`);
-      }
-    }
-
-    for (const item of rejected) {
-      try {
-        await writeSuppression(memoryOctokit, memoryRepo, repo, {
-          id: `supp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-          pattern: item.title,
-          reason: `Dismissed during triage of #${issueNumber}`,
-          created_by: github.context.actor,
-          created_at: new Date().toISOString().split('T')[0],
-          pr_ref: `${owner}/${repo}#${issueNumber}`,
-        });
-      } catch (error) {
-        core.debug(`Failed to store suppression for "${item.title}": ${error}`);
-      }
-    }
-
-    const decisions = [
-      ...accepted.map(item => ({ title: item.title, accepted: true })),
-      ...rejected.map(item => ({ title: item.title, accepted: false })),
-    ];
-    if (decisions.length > 0) {
-      try {
-        await batchUpdatePatternDecisions(memoryOctokit, memoryRepo, repo, decisions);
-      } catch (error) {
-        core.debug(`Failed to batch-update pattern decisions: ${error}`);
-      }
-    }
-  }
-
-  try {
-    await octokit.rest.issues.removeLabel({
-      owner, repo,
-      issue_number: issueNumber,
-      name: 'needs-human',
-    });
-  } catch {
-    // Label might not exist
-  }
-
-  const issueLinks = createdIssues.map(n => `#${n}`).join(', ');
-  await octokit.rest.issues.createComment({
-    owner, repo,
-    issue_number: issueNumber,
-    body: `${BOT_MARKER}\n**Manki** — Triage complete!\n- ✅ ${accepted.length} finding(s) accepted → created ${issueLinks || 'none'}\n- ⛔ ${rejected.length} finding(s) dismissed → stored as suppressions\n\nClosing this issue.`,
-  });
-
-  await octokit.rest.issues.update({
-    owner, repo,
-    issue_number: issueNumber,
-    state: 'closed',
-  });
-
-  core.info(`Triage complete: ${accepted.length} accepted, ${rejected.length} rejected`);
-}
 
 async function handleGenericQuestion(
   octokit: Octokit,
@@ -815,122 +661,12 @@ export function scopeDiffToFile(fullDiff: string, filePath: string): string {
   return result.length > 0 ? result.join('\n') : '';
 }
 
-const LANG_BY_EXT: Record<string, string> = {
-  '.ts': 'typescript', '.tsx': 'typescript', '.js': 'javascript', '.jsx': 'javascript',
-  '.py': 'python', '.rs': 'rust', '.go': 'go', '.java': 'java', '.rb': 'ruby',
-  '.sh': 'bash', '.yml': 'yaml', '.yaml': 'yaml', '.json': 'json', '.md': 'markdown',
-  '.css': 'css', '.html': 'html', '.sql': 'sql', '.c': 'c', '.cpp': 'cpp', '.h': 'c',
-};
-
-function inferLanguageFromPath(filePath: string): string {
-  const dotIdx = filePath.lastIndexOf('.');
-  if (dotIdx === -1) return '';
-  return LANG_BY_EXT[filePath.slice(dotIdx)] ?? '';
-}
-
 function isBotComment(body: string): boolean {
   return body.includes('<!-- manki');
 }
 
 function hasBotMention(body: string): boolean {
   return BOT_MENTION_PATTERN.test(body.toLowerCase());
-}
-
-interface TriageFinding {
-  title: string;
-  ref: string;
-  section: string;
-}
-
-interface TriageResult {
-  accepted: TriageFinding[];
-  rejected: TriageFinding[];
-}
-
-interface FindingContent {
-  description: string;
-  permalink: string | null;
-  suggestedFix: string | null;
-}
-
-function parseTriageBody(body: string): TriageResult {
-  const headerRegex = /^- \[([ x])\] (?:<details><summary>)?(?:📝|💡|✨|⚠️|❓|🚫|⚪) \*\*(.+?)\*\* — (?:`|<code>)(.+?)(?:`|<\/code>)/gmiu;
-
-  const accepted: TriageFinding[] = [];
-  const rejected: TriageFinding[] = [];
-
-  // Collect all match positions first
-  const matches: { checked: boolean; title: string; ref: string; start: number }[] = [];
-  let match;
-  while ((match = headerRegex.exec(body)) !== null) {
-    matches.push({
-      checked: match[1] === 'x',
-      title: match[2],
-      ref: match[3],
-      start: match.index,
-    });
-  }
-
-  // Extract full sections using positions of subsequent findings
-  for (let i = 0; i < matches.length; i++) {
-    const end = i + 1 < matches.length ? matches[i + 1].start : body.length;
-    const section = body.slice(matches[i].start, end).trim();
-    const finding: TriageFinding = {
-      title: matches[i].title,
-      ref: matches[i].ref,
-      section,
-    };
-    if (matches[i].checked) {
-      accepted.push(finding);
-    } else {
-      rejected.push(finding);
-    }
-  }
-
-  return { accepted, rejected };
-}
-
-function extractFindingContent(section: string): FindingContent {
-  // Strip HTML tags (details/summary/code)
-  const stripped = section
-    .replace(/<\/?details>/g, '')
-    .replace(/<\/?summary>/g, '')
-    .replace(/<\/?code>/g, '`');
-
-  // Extract permalink (GitHub URL)
-  const permalinkMatch = stripped.match(/(https:\/\/github\.com\/[^\s)]+)/);
-  const permalink = permalinkMatch ? permalinkMatch[1] : null;
-
-  // Extract suggested fix (content after "**Suggested fix:**")
-  const suggestedFixMatch = stripped.match(/\*\*Suggested fix:\*\*\s*\n```[\s\S]*?\n([\s\S]*?)\n```/);
-  const suggestedFix = suggestedFixMatch ? suggestedFixMatch[1].trim() : null;
-
-  // Extract description: content between the header line and the permalink or suggested fix
-  const lines = stripped.split('\n');
-  // Skip the first line (checkbox + title line)
-  const descriptionLines: string[] = [];
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line) continue;
-    if (line.startsWith('https://github.com/')) break;
-    if (line.startsWith('**Suggested fix:**')) break;
-    if (line === '```') break;
-    descriptionLines.push(line);
-  }
-  const description = descriptionLines.join('\n').trim();
-
-  return { description, permalink, suggestedFix };
-}
-
-function triageTitlePrefix(title: string): string {
-  const lower = title.toLowerCase();
-  if (lower.startsWith('missing test') || lower.includes('no test')) return 'test';
-  return 'fix';
-}
-
-function extractPrNumber(issueTitle: string): number | null {
-  const match = issueTitle.match(/findings from PR #(\d+)/);
-  return match ? parseInt(match[1], 10) : null;
 }
 
 function isReviewRequest(body: string): boolean {
@@ -989,10 +725,6 @@ export async function handleReviewCommentCommand(
       await reactToReviewComment(octokit, owner, repo, commentId, 'eyes');
       await handleForget(octokit, owner, repo, prNumber, command.args, memoryConfig, memoryToken);
       break;
-    case 'triage':
-      await reactToReviewComment(octokit, owner, repo, commentId, 'eyes');
-      await handleTriage(octokit, owner, repo, prNumber, memoryConfig, memoryToken);
-      break;
     case 'help':
       await reactToReviewComment(octokit, owner, repo, commentId, '+1');
       await handleHelp(octokit, owner, repo, prNumber);
@@ -1000,4 +732,4 @@ export async function handleReviewCommentCommand(
   }
 }
 
-export { parseCommand, buildReplyContext, parseTriageBody, extractFindingContent, triageTitlePrefix, extractPrNumber, ParsedCommand, TriageFinding, TriageResult, FindingContent, BOT_MARKER, BOT_MENTION_PATTERN, isBotComment, hasBotMention, isReviewRequest, isBotMentionNonReview };
+export { parseCommand, buildReplyContext, ParsedCommand, BOT_MARKER, BOT_MENTION_PATTERN, isBotComment, hasBotMention, isReviewRequest, isBotMentionNonReview };

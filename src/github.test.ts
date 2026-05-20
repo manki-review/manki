@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 
-import { buildDashboard, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, buildNitIssueBody, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, truncateContextToFitBody, dynamicFence, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, createNitIssue, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded } from './github';
+import { buildDashboard, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, truncateContextToFitBody, dynamicFence, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded } from './github';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { DEFAULT_CONFIG } from './config';
 
@@ -309,123 +309,6 @@ describe('BOT_MARKER', () => {
   });
 });
 
-describe('buildNitIssueBody', () => {
-  const nit: Finding = {
-    severity: 'nitpick',
-    title: 'Use const instead of let',
-    file: 'src/utils.ts',
-    line: 10,
-    description: 'Variable is never reassigned.',
-    reviewers: ['Style'],
-  };
-
-  const suggestion: Finding = {
-    severity: 'suggestion',
-    title: 'Is this timeout intentional?',
-    file: 'src/client.ts',
-    line: 55,
-    description: 'The timeout of 60s seems high for this endpoint.',
-    reviewers: ['Performance'],
-  };
-
-  const required: Finding = {
-    severity: 'blocker',
-    title: 'Null dereference',
-    file: 'src/main.ts',
-    line: 1,
-    description: 'Will crash at runtime.',
-    reviewers: ['Security'],
-  };
-
-  const warning: Finding = {
-    severity: 'warning',
-    title: 'Race condition in cache',
-    file: 'src/cache.ts',
-    line: 5,
-    description: 'Concurrent reads may observe stale state.',
-    reviewers: ['Concurrency'],
-  };
-
-  it('filters to only nit findings', () => {
-    const body = buildNitIssueBody(42, [required, warning, nit, suggestion], 'testowner', 'testrepo', 'abc123');
-    expect(body).toContain('Use const instead of let');
-    expect(body).not.toContain('Null dereference');
-    expect(body).not.toContain('Race condition in cache');
-    expect(body).not.toContain('Is this timeout intentional?');
-  });
-
-  it('formats checklist items with file and line in details summary', () => {
-    const body = buildNitIssueBody(42, [nit], 'testowner', 'testrepo', 'abc123');
-    expect(body).toContain('- [ ] <details><summary>');
-    expect(body).toContain('<code>src/utils.ts:10</code>');
-    expect(body).toContain('Variable is never reassigned.');
-  });
-
-  it('includes suggested fix when present', () => {
-    const withFix: Finding = { ...nit, suggestedFix: 'const x = 1;' };
-    const body = buildNitIssueBody(42, [withFix], 'testowner', 'testrepo', 'abc123');
-    expect(body).toContain('**Suggested fix:**');
-    expect(body).toContain('const x = 1;');
-  });
-
-  it('omits suggested fix when not present', () => {
-    const body = buildNitIssueBody(42, [nit], 'testowner', 'testrepo', 'abc123');
-    expect(body).not.toContain('**Suggested fix:**');
-  });
-
-  it('uses nit emoji for nit findings', () => {
-    const body = buildNitIssueBody(42, [nit], 'testowner', 'testrepo', 'abc123');
-    expect(body).toContain('\u{1F4DD} **Use const instead of let**');
-  });
-
-  it('includes GitHub permalink for code context', () => {
-    const body = buildNitIssueBody(42, [nit], 'testowner', 'testrepo', 'abc123');
-    expect(body).toContain('https://github.com/testowner/testrepo/blob/abc123/src/utils.ts#L5-L20');
-  });
-
-  it('clamps permalink start line to 1 for low line numbers', () => {
-    const lowLine: Finding = { ...nit, line: 2 };
-    const body = buildNitIssueBody(42, [lowLine], 'testowner', 'testrepo', 'abc123');
-    expect(body).toContain('#L1-L12');
-  });
-
-  it('wraps each finding in a details block', () => {
-    const body = buildNitIssueBody(42, [nit], 'testowner', 'testrepo', 'abc123');
-    expect(body).toContain('<details><summary>');
-    expect(body).toContain('</summary>');
-    expect(body).toContain('</details>');
-  });
-
-  it('includes triage instructions mentioning learning preferences', () => {
-    const body = buildNitIssueBody(42, [nit], 'testowner', 'testrepo', 'abc123');
-    expect(body).toContain('`/manki triage`');
-    expect(body).toContain('**Check the box** for findings worth fixing');
-    expect(body).toContain('**Leave unchecked** for findings to dismiss');
-    expect(body).toContain('learn your preferences');
-  });
-
-  it('does not include the old heading format', () => {
-    const body = buildNitIssueBody(42, [nit], 'testowner', 'testrepo', 'abc123');
-    expect(body).not.toContain('## Review Nits from PR');
-  });
-
-  it('renders multiple findings each in their own details block', () => {
-    const nit2: Finding = { ...nit, title: 'Rename variable', file: 'src/other.ts', line: 20 };
-    const body = buildNitIssueBody(42, [nit, nit2], 'testowner', 'testrepo', 'abc123');
-    const detailsCount = (body.match(/<details><summary>/g) || []).length;
-    expect(detailsCount).toBe(2);
-    const closingCount = (body.match(/<\/details>/g) || []).length;
-    expect(closingCount).toBe(2);
-  });
-
-  it('wraps suggested fix in a code fence', () => {
-    const withFix: Finding = { ...nit, suggestedFix: 'use `const` instead' };
-    const body = buildNitIssueBody(42, [withFix], 'testowner', 'testrepo', 'abc123');
-    expect(body).toContain('```');
-    expect(body).toContain('use `const` instead');
-  });
-});
-
 describe('postReview generalFindings', () => {
   const mockCreateReview = jest.fn().mockResolvedValue({ data: { id: 1 } });
   const mockOctokit = {
@@ -647,7 +530,7 @@ function makeContext(overrides: Partial<RoundContext> = {}): RoundContext {
       timestamp: '2026-01-01T00:00:00.000Z',
       mankiVersion: '4.7.0',
     },
-    config: { reviewLevel: 'medium', nitHandling: 'issues', memoryEnabled: false },
+    config: { reviewLevel: 'medium', memoryEnabled: false },
     diff: { lines: 120, additions: 80, deletions: 40, filesReviewed: 5, fileTypes: { '.ts': 5 } },
     models: { reviewer: 'claude-sonnet-4-20250514', judge: 'claude-opus-4-20250514' },
     planner: { used: false },
@@ -2368,7 +2251,6 @@ describe('updateProgressComment', () => {
       teamAgents: ['Security & Safety', 'Correctness & Logic', 'Architecture & Design'],
       memoryEnabled: true,
       memoryRepo: 'owner/review-memory',
-      nitHandling: 'issues',
     },
     judgeDecisions: [
       { title: 'Null dereference', severity: 'blocker', reasoning: 'Valid bug', confidence: 'high', kept: true },
@@ -2406,7 +2288,6 @@ describe('updateProgressComment', () => {
     expect(body).toContain('Review level: medium (auto, 200 lines)');
     expect(body).toContain('Security & Safety, Correctness & Logic, Architecture & Design');
     expect(body).toContain('enabled (owner/review-memory)');
-    expect(body).toContain('Nit handling: issues');
   });
 
   it('renders judge decisions with kept/dropped icons', async () => {
@@ -2792,86 +2673,6 @@ describe('reactToReviewComment', () => {
     } as unknown as Parameters<typeof reactToReviewComment>[0];
 
     await reactToReviewComment(mockOctokit, 'owner', 'repo', 456, 'eyes');
-  });
-});
-
-describe('createNitIssue', () => {
-  it('returns null when no nit findings exist', async () => {
-    const mockOctokit = {} as unknown as Parameters<typeof createNitIssue>[0];
-    const findings: Finding[] = [
-      { severity: 'blocker', title: 'Bug', file: 'a.ts', line: 1, description: 'Desc', reviewers: [] },
-    ];
-
-    const result = await createNitIssue(mockOctokit, 'owner', 'repo', 1, findings, 'sha');
-    expect(result).toBeNull();
-  });
-
-  it('returns existing issue number if nit issue already exists', async () => {
-    const mockOctokit = {
-      rest: {
-        search: {
-          issuesAndPullRequests: jest.fn().mockResolvedValue({
-            data: { total_count: 1, items: [{ number: 99 }] },
-          }),
-        },
-      },
-    } as unknown as Parameters<typeof createNitIssue>[0];
-
-    const findings: Finding[] = [
-      { severity: 'nitpick', title: 'Style', file: 'a.ts', line: 1, description: 'Desc', reviewers: [] },
-    ];
-
-    const result = await createNitIssue(mockOctokit, 'owner', 'repo', 1, findings, 'sha');
-    expect(result).toBe(99);
-  });
-
-  it('creates a new nit issue with label', async () => {
-    const createIssueMock = jest.fn().mockResolvedValue({ data: { number: 200 } });
-    const mockOctokit = {
-      rest: {
-        search: {
-          issuesAndPullRequests: jest.fn().mockResolvedValue({ data: { total_count: 0, items: [] } }),
-        },
-        issues: {
-          getLabel: jest.fn().mockResolvedValue({}),
-          create: createIssueMock,
-        },
-      },
-    } as unknown as Parameters<typeof createNitIssue>[0];
-
-    const findings: Finding[] = [
-      { severity: 'nitpick', title: 'Style issue', file: 'a.ts', line: 5, description: 'Minor style.', reviewers: [] },
-    ];
-
-    const result = await createNitIssue(mockOctokit, 'owner', 'repo', 42, findings, 'abc123');
-    expect(result).toBe(200);
-    expect(createIssueMock).toHaveBeenCalledWith(expect.objectContaining({
-      title: 'triage: findings from PR #42',
-      labels: ['needs-human'],
-    }));
-  });
-
-  it('creates the needs-human label if it does not exist', async () => {
-    const createLabelMock = jest.fn().mockResolvedValue({});
-    const mockOctokit = {
-      rest: {
-        search: {
-          issuesAndPullRequests: jest.fn().mockResolvedValue({ data: { total_count: 0, items: [] } }),
-        },
-        issues: {
-          getLabel: jest.fn().mockRejectedValue(new Error('Not found')),
-          createLabel: createLabelMock,
-          create: jest.fn().mockResolvedValue({ data: { number: 201 } }),
-        },
-      },
-    } as unknown as Parameters<typeof createNitIssue>[0];
-
-    const findings: Finding[] = [
-      { severity: 'nitpick', title: 'Nit', file: 'a.ts', line: 1, description: 'Desc', reviewers: [] },
-    ];
-
-    await createNitIssue(mockOctokit, 'owner', 'repo', 1, findings, 'sha');
-    expect(createLabelMock).toHaveBeenCalledWith(expect.objectContaining({ name: 'needs-human' }));
   });
 });
 

@@ -19,7 +19,7 @@ export function makeRoundContext(round: number, overrides: Partial<RoundContext>
       timestamp: `2025-01-0${round}T00:00:00Z`,
       mankiVersion: '5.0.0-test',
     },
-    config: { reviewLevel: 'medium', nitHandling: 'issues', memoryEnabled: false },
+    config: { reviewLevel: 'medium', memoryEnabled: false },
     diff: { lines: 0, additions: 0, deletions: 0, filesReviewed: 0, fileTypes: {} },
     models: { reviewer: 'r', judge: 'j' },
     planner: { used: false },

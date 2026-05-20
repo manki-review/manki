@@ -28,7 +28,6 @@ describe('config', () => {
       expect(typeof DEFAULT_CONFIG.memory).toBe('object');
       expect(typeof DEFAULT_CONFIG.memory.enabled).toBe('boolean');
       expect(typeof DEFAULT_CONFIG.memory.repo).toBe('string');
-      expect(DEFAULT_CONFIG.nit_handling).toBe('issues');
       expect(DEFAULT_CONFIG.noise_level).toBe('low');
       expect(DEFAULT_CONFIG.review_level).toBe('auto');
       expect(DEFAULT_CONFIG.review_thresholds).toEqual({ small: 200, medium: 1000 });
@@ -367,18 +366,17 @@ models:
       expect(core.error).toHaveBeenCalledWith('`models.dedup` must be a string');
     });
 
-    it('accepts valid nit_handling values', () => {
-      const yamlIssues = 'nit_handling: issues';
-      expect(loadConfigFromContent(yamlIssues).nit_handling).toBe('issues');
+    it('warns and ignores deprecated nit_handling values', () => {
+      expect(() => loadConfigFromContent('nit_handling: issues')).not.toThrow();
+      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("`nit_handling: 'issues'` is deprecated"));
 
-      const yamlComments = 'nit_handling: comments';
-      expect(loadConfigFromContent(yamlComments).nit_handling).toBe('comments');
-    });
+      jest.mocked(core.warning).mockClear();
+      expect(() => loadConfigFromContent('nit_handling: comments')).not.toThrow();
+      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("`nit_handling: 'comments'` is deprecated"));
 
-    it('throws on invalid nit_handling value', () => {
-      const yaml = 'nit_handling: email';
-      expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
-      expect(core.error).toHaveBeenCalledWith('`nit_handling` must be "issues" or "comments"');
+      jest.mocked(core.warning).mockClear();
+      expect(() => loadConfigFromContent('nit_handling: email')).not.toThrow();
+      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("`nit_handling: 'email'` is not a recognized value"));
     });
 
     it('accepts valid noise_level values', () => {
