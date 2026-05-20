@@ -120,6 +120,7 @@ jest.mock('./review', () => {
     buildPlannerHints: actual.buildPlannerHints,
     buildAgentPool: actual.buildAgentPool,
     collectPriorRoundAgents: actual.collectPriorRoundAgents,
+    collectResolvedThreadIds: actual.collectResolvedThreadIds,
     TRIVIAL_VERIFIER_AGENT: actual.TRIVIAL_VERIFIER_AGENT,
   };
 });

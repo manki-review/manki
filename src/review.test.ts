@@ -820,6 +820,70 @@ describe('determineVerdict', () => {
       expect(result.verdict).toBe('REQUEST_CHANGES');
       expect(result.verdictReason).toBe('novel_suggestion');
     });
+
+    describe('`resolvedThreadIds` honors GitHub `isResolved` state', () => {
+      it('approves when every prior warning/blocker thread is in `resolvedThreadIds` (resolve via fix without author agree-reply)', () => {
+        const priors = [makePriorWarning()];
+        const open = [makeOpenThread()];
+        const result = determineVerdict(
+          [],
+          fingerprintEntriesFromLegacy(priors),
+          open,
+          new Set(['T1']),
+        );
+        expect(result.verdict).toBe('APPROVE');
+        expect(result.verdictReason).toBe('only_nit_or_suggestion');
+      });
+
+      it('blocks when a prior thread is not in `resolvedThreadIds` and is still in `openThreads`', () => {
+        const priors = [makePriorWarning()];
+        const open = [makeOpenThread()];
+        const result = determineVerdict(
+          [],
+          fingerprintEntriesFromLegacy(priors),
+          open,
+          new Set(),
+        );
+        expect(result.verdict).toBe('REQUEST_CHANGES');
+        expect(result.verdictReason).toBe('prior_unaddressed');
+      });
+
+      it('approves on the legacy `authorReplyClass === "agree"` path even without `resolvedThreadIds`', () => {
+        const priors = [makePriorWarning({ authorReply: 'agree' })];
+        const open = [makeOpenThread()];
+        const result = determineVerdict(
+          [],
+          fingerprintEntriesFromLegacy(priors),
+          open,
+        );
+        expect(result.verdict).toBe('APPROVE');
+        expect(result.verdictReason).toBe('only_nit_or_suggestion');
+      });
+
+      it('blocks a PR-level prior finding without `threadId` even when `resolvedThreadIds` is provided', () => {
+        const priors = [makePriorWarning({ threadId: undefined })];
+        const result = determineVerdict(
+          [],
+          fingerprintEntriesFromLegacy(priors),
+          [],
+          new Set(['T1']),
+        );
+        expect(result.verdict).toBe('REQUEST_CHANGES');
+        expect(result.verdictReason).toBe('prior_unaddressed');
+      });
+
+      it('honors `resolvedThreadIds` even when `openThreads` is unknown (`null`)', () => {
+        const priors = [makePriorWarning()];
+        const result = determineVerdict(
+          [],
+          fingerprintEntriesFromLegacy(priors),
+          null,
+          new Set(['T1']),
+        );
+        expect(result.verdict).toBe('APPROVE');
+        expect(result.verdictReason).toBe('only_nit_or_suggestion');
+      });
+    });
   });
 });
 

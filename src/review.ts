@@ -1123,9 +1123,7 @@ export async function runReview(
   // Derive the set of currently-resolved thread IDs from the recap state. Used
   // by `applyCrossRoundSuppression` (mechanism C) to ratchet down findings
   // matching prior-round threads that have since been resolved.
-  const resolvedThreadIds = previousFindings
-    ? new Set(previousFindings.filter(f => f.status === 'resolved' && f.threadId).map(f => f.threadId!))
-    : new Set<string>();
+  const resolvedThreadIds = collectResolvedThreadIds(previousFindings);
   const suppressResolvedThreads = config.convergence?.suppress_resolved_threads !== false;
 
   let finalFindings: Finding[];
@@ -1201,7 +1199,7 @@ export async function runReview(
   const priorFindingsFlat: FindingFingerprintEntry[] = [...(priorRounds ?? [])]
     .sort((a, b) => a.meta.round - b.meta.round)
     .flatMap(r => r.findings.entries);
-  const { verdict, verdictReason } = determineVerdict(finalFindings, priorFindingsFlat, openThreads);
+  const { verdict, verdictReason } = determineVerdict(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds);
 
   const summary = judgeSummary;
 
@@ -1546,6 +1544,19 @@ function dedupePriorFindings(priorRounds: FindingFingerprintEntry[]): FindingFin
 }
 
 /**
+ * Build the `resolvedThreadIds` set for `determineVerdict` from the recap's
+ * `previousFindings`. Only `status === 'resolved'` entries with a `threadId`
+ * are included, mirroring GitHub's `isResolved: true` view of the thread.
+ */
+export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): Set<string> {
+  return new Set(
+    (previousFindings ?? [])
+      .filter(f => f.status === 'resolved' && f.threadId)
+      .map(f => f.threadId!),
+  );
+}
+
+/**
  * Pick a verdict plus a machine-readable reason.
  *
  * Decision order:
@@ -1576,14 +1587,23 @@ function dedupePriorFindings(priorRounds: FindingFingerprintEntry[]): FindingFin
  *   - `null` / omitted → "unknown": caller did not (or could not) fetch open
  *     threads. Treated conservatively: any prior `warning`/`blocker` with a
  *     non-`agree` `authorReply` and a `threadId` is assumed still open and
- *     blocks APPROVE with `prior_unaddressed`. Use this when the GitHub fetch
- *     failed, or at call sites that intentionally bypass the open-thread
- *     check, so unresolved priors can never be silently approved.
+ *     blocks APPROVE with `prior_unaddressed`, unless the threadId is in
+ *     `resolvedThreadIds`. Use this when the GitHub fetch failed, or at call
+ *     sites that intentionally bypass the open-thread check, so unresolved
+ *     priors can never be silently approved.
  *   - `[]` → "fetched, none open": GitHub confirmed no review threads are
  *     open on the PR. Prior findings with a `threadId` that does not appear
  *     here are treated as resolved.
  *   - `OpenThread[]` (non-empty) → "fetched, here they are": only priors
  *     whose `threadId` appears in the set are treated as still open.
+ *
+ * `resolvedThreadIds` is an explicit allowlist of thread ids that GitHub
+ * reports as `isResolved: true` (derived from `previousFindings[i].status ===
+ * 'resolved'`). A prior finding whose `threadId` is in this set is honored as
+ * resolved regardless of `authorReplyClass` or `openThreads`. This covers the
+ * common "author pushed a fix and clicked Resolve conversation" case, where
+ * the thread is no longer open on GitHub but the prior's `authorReplyClass`
+ * stays `none`.
  *
  * Nitpicks and suggestions are non-blocking, and prior-round dismissed warnings
  * have already been acknowledged by the author. All these cases approve the PR.
@@ -1592,6 +1612,7 @@ export function determineVerdict(
   findings: Finding[],
   priorRounds?: FindingFingerprintEntry[],
   openThreads?: OpenThread[] | null,
+  resolvedThreadIds?: Set<string>,
 ): { verdict: ReviewVerdict; verdictReason: VerdictReason } {
   if (findings.some(f => f.severity === 'blocker')) {
     return { verdict: 'REQUEST_CHANGES', verdictReason: 'required_present' };
@@ -1609,6 +1630,7 @@ export function determineVerdict(
   const openThreadIds = new Set((openThreads ?? []).map(t => t.threadId));
   const hasUnresolvedPrior = prior.some(p => {
     if (p.severity !== 'warning' && p.severity !== 'blocker') return false;
+    if (p.threadId && resolvedThreadIds?.has(p.threadId)) return false;
     if (p.authorReplyClass === 'agree') return false;
     if (!p.threadId) return true;
     if (openThreadsUnknown) return true;
