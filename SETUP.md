@@ -230,7 +230,7 @@ jobs:
   review:
     if: github.actor != 'manki-review[bot]'
     concurrency:
-      group: manki-${{ github.event.comment.id || format('pr-{0}', github.event.pull_request.number || github.event.issue.number) || github.run_id }}
+      group: manki-${{ (github.event_name == 'issue_comment' && github.event.comment.id) || format('pr-{0}', github.event.pull_request.number || github.event.issue.number) || github.run_id }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
@@ -356,7 +356,7 @@ The `if` condition allows `issue_comment` events without the `pull_request` filt
 
 ### Concurrency
 
-The `concurrency` block keeps at most one Manki run active per PR across every PR-scoped event (`pull_request`, `pull_request_review`, `pull_request_review_comment`), so concurrent triggers cannot race and submit conflicting reviews on the same commit. When a new PR-scoped event arrives while a run is in flight, GitHub queues it (at most one queued event per group, newer queued events replace older ones), the in-flight run completes, then the most recent queued event runs. `cancel-in-progress` is `false`, so no run is cancelled and the PR check list does not collect red crosses from superseded runs. The `comment.id` branch keeps distinct `@manki review` invocations in separate groups so they do not serialize against each other.
+The `concurrency` block keeps at most one Manki run active per PR across every PR-scoped event (`pull_request`, `pull_request_review`, `pull_request_review_comment`), so concurrent triggers cannot race and submit conflicting reviews on the same commit. When a new PR-scoped event arrives while a run is in flight, GitHub queues it (at most one queued event per group, newer queued events replace older ones), the in-flight run completes, then the most recent queued event runs. `cancel-in-progress` is `false`, so no run is cancelled and the PR check list does not collect red crosses from superseded runs. The `issue_comment`-gated `comment.id` branch keeps distinct `/manki` invocations in separate groups so they do not serialize against each other, while `pull_request_review_comment` events fall through to the shared `pr-{N}` group alongside the other PR-scoped events.
 
 ## Step 4: Configure Reviews (Optional)
 
