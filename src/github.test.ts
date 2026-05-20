@@ -2134,6 +2134,25 @@ describe('buildDashboard', () => {
     expect(md).not.toContain(`${INDENT}dropped:`);
   });
 
+  it('renders test-nit suppression count in judge section when provided', () => {
+    const data: DashboardData = {
+      phase: 'complete', lineCount: 400, agentCount: 3,
+      rawFindingCount: 10, keptCount: 0, droppedCount: 3,
+      testNitSuppressedCount: 7,
+    };
+    const md = buildDashboard(data);
+    expect(md).toContain('suppressed: 7 test-only nits (round ≥2 throttle)');
+  });
+
+  it('omits test-nit suppression line when testNitSuppressedCount is not set', () => {
+    const data: DashboardData = {
+      phase: 'complete', lineCount: 400, agentCount: 3,
+      rawFindingCount: 10, keptCount: 3, droppedCount: 7,
+    };
+    const md = buildDashboard(data);
+    expect(md).not.toMatch(/suppressed/i);
+  });
+
   it('renders planner duration when plannerInfo and plannerDurationMs are provided', () => {
     const data: DashboardData = {
       phase: 'started', lineCount: 200, agentCount: 5,

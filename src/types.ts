@@ -404,6 +404,7 @@ export interface DashboardData {
   };
   keptSeverities?: Record<string, number>;
   droppedSeverities?: Record<string, number>;
+  testNitSuppressedCount?: number;
   plannerDurationMs?: number;
   judgeDurationMs?: number;
 }

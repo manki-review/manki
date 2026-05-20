@@ -2077,6 +2077,56 @@ describe('runFullReview orchestration', () => {
     expect(statsArg!.judge.crossRoundDemoted).toBe(1);
   });
 
+  it('aligns keptCount with keptSeverities sum when test-nit suppression fires', async () => {
+    const testFiles = [
+      { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] },
+    ];
+    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+      files: testFiles, totalAdditions: 20, totalDeletions: 5,
+    });
+    jest.mocked(diffModule.filterFiles).mockReturnValue(testFiles);
+
+    // Simulate: judge kept 2 findings, but review.ts test-nit suppression already
+    // dropped 1 before returning, so result.findings has only 1.
+    const survivingFinding = {
+      severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5,
+      description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const,
+    };
+    const allJudged = [
+      survivingFinding,
+      { severity: 'suggestion' as const, title: 'Test nit (suppressed)', file: 'src/app.ts', line: 8,
+        description: 'desc', reviewers: ['general'], judgeConfidence: 'medium' as const },
+    ];
+
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'REQUEST_CHANGES', summary: 'Issues found',
+      findings: [survivingFinding],
+      highlights: [], reviewComplete: true,
+      rawFindingCount: 3,
+      agentNames: ['security', 'general'],
+      allJudgedFindings: allJudged,
+      rawFindings: [...allJudged],
+      testNitSuppressedCount: 1,
+    });
+    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [survivingFinding], duplicates: [] });
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion' });
+
+    await callRunFullReview();
+
+    const dashboardArg = jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[4];
+
+    // keptCount must equal the sum of keptSeverities values
+    const keptSeverities = dashboardArg?.keptSeverities ?? {};
+    const keptSeveritiesSum = Object.values(keptSeverities).reduce((a, n) => a + n, 0);
+    expect(dashboardArg?.keptCount).toBe(keptSeveritiesSum);
+    expect(dashboardArg?.keptCount).toBe(1);
+    expect(keptSeverities['blocker']).toBe(1);
+
+    // test-nit suppression count must be surfaced in the dashboard
+    expect(dashboardArg?.testNitSuppressedCount).toBe(1);
+  });
+
   it('creates nit issues when nit_handling is "issues"', async () => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,

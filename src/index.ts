@@ -1062,15 +1062,21 @@ async function runFullReview(
 
     const keptSeverities: Record<string, number> = {};
     const droppedSeverities: Record<string, number> = {};
-    for (const d of judgeDecisions) {
-      if (d.kept) {
-        keptSeverities[d.severity] = (keptSeverities[d.severity] ?? 0) + 1;
-      } else {
-        droppedSeverities[d.originalSeverity] = (droppedSeverities[d.originalSeverity] ?? 0) + 1;
-      }
+    const keptSet = new Set(result.findings);
+    for (const f of result.findings) {
+      keptSeverities[f.severity] = (keptSeverities[f.severity] ?? 0) + 1;
     }
+    // judgeDecisions is built in lock-step with allJudgedForDashboard, so the
+    // index aligns and d.originalSeverity carries the pre-judge severity even
+    // when the judge merged or renamed the finding before dropping it.
+    allJudgedForDashboard.forEach((f, i) => {
+      if (!keptSet.has(f)) {
+        const sev = judgeDecisions[i].originalSeverity;
+        droppedSeverities[sev] = (droppedSeverities[sev] ?? 0) + 1;
+      }
+    });
 
-    const judgeDroppedCount = judgeDecisions.filter(d => !d.kept).length;
+    const judgeDroppedCount = allJudgedForDashboard.length - keptSet.size;
     const completeDashboard: DashboardData = {
       ...dashboard,
       phase: 'complete',
@@ -1078,6 +1084,7 @@ async function runFullReview(
       droppedCount: judgeDroppedCount,
       keptSeverities,
       droppedSeverities,
+      ...(result.testNitSuppressedCount != null && result.testNitSuppressedCount > 0 && { testNitSuppressedCount: result.testNitSuppressedCount }),
       judgeDurationMs: judgeEndTime - reviewEndTime,
     };
 
