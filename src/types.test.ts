@@ -1,4 +1,4 @@
-import { migrateLegacySeverity, RoundContext, roundContextToFlatAliases } from './types';
+import { migrateLegacyPrType, migrateLegacySeverity, RoundContext, roundContextToFlatAliases } from './types';
 
 describe('migrateLegacySeverity', () => {
   it('maps `required` to `blocker`', () => {
@@ -22,6 +22,35 @@ describe('migrateLegacySeverity', () => {
 
   it('passes through the empty string unchanged', () => {
     expect(migrateLegacySeverity('')).toBe('');
+  });
+});
+
+describe('migrateLegacyPrType', () => {
+  it('maps `feature` to `feat`', () => {
+    expect(migrateLegacyPrType('feature')).toBe('feat');
+  });
+
+  it('maps `bugfix` to `fix`', () => {
+    expect(migrateLegacyPrType('bugfix')).toBe('fix');
+  });
+
+  it('maps `rename` to `refactor`', () => {
+    expect(migrateLegacyPrType('rename')).toBe('refactor');
+  });
+
+  it.each(['feat', 'fix', 'refactor', 'docs', 'chore', 'test', 'ci', 'build'])(
+    'passes through canonical Conventional Commits type `%s` unchanged',
+    type => {
+      expect(migrateLegacyPrType(type)).toBe(type);
+    },
+  );
+
+  it('passes through unknown values unchanged', () => {
+    expect(migrateLegacyPrType('unknown-type')).toBe('unknown-type');
+  });
+
+  it('passes through the empty string unchanged', () => {
+    expect(migrateLegacyPrType('')).toBe('');
   });
 });
 
