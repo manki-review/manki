@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { createAuthenticatedOctokit, getMemoryToken } from './auth';
-import { loadConfig, resolveModel } from './config';
+import { loadConfig, resolveModel, MAX_LOCK_TTL_SECONDS } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
@@ -224,13 +224,12 @@ async function run(): Promise<void> {
 }
 
 const DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS = 600;
-const MAX_CONCURRENCY_LOCK_TTL_SECONDS = 3600;
 
 function readConcurrencyLockTtlSeconds(config?: ReviewConfig): number {
   const raw = core.getInput('concurrency_lock_ttl_seconds');
   if (raw) {
     const n = Number(raw);
-    if (!Number.isFinite(n) || n < 0 || n > MAX_CONCURRENCY_LOCK_TTL_SECONDS) {
+    if (!Number.isFinite(n) || n < 0 || n > MAX_LOCK_TTL_SECONDS) {
       core.warning(`Invalid concurrency_lock_ttl_seconds=${raw}, using default ${DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS}`);
       return DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS;
     }
