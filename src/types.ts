@@ -563,7 +563,9 @@ export interface RoundJudge {
    * Per-open-thread judgment from the judge stage. Surfaced in the embedded
    * round-context block so the resolution signal is observable post-hoc when
    * debugging stuck reviews. Producers omit this field on rounds with no open
-   * threads. The downstream verdict logic treats this as advisory only.
+   * threads. `status: 'addressed'` retires warning priors via `determineVerdict`
+   * and ratchets suggestion/nitpick priors via `applyCrossRoundSuppression`;
+   * blockers require GitHub thread resolution or explicit `authorReply: 'agree'`.
    */
   threadEvaluations?: ThreadEvaluation[];
 }
