@@ -56,7 +56,11 @@ export const AGENT_POOL: readonly ReviewerAgent[] = Object.freeze([
   },
 ]);
 
-const CORE_AGENTS: readonly number[] = Object.freeze([0, 1, 2]);
+// Fixed fallback roster used when the planner LLM is unavailable. Indexes into
+// `AGENT_POOL`: Security & Safety, Architecture & Design, Correctness & Logic.
+// The planner is trusted to pick agents on the success path; these three are
+// only a conservative default when no planner judgment is available.
+const FALLBACK_AGENTS: readonly number[] = Object.freeze([0, 1, 2]);
 
 export const TRIVIAL_VERIFIER_AGENT: ReviewerAgent = Object.freeze({
   name: 'Trivial Change Verifier',
@@ -69,29 +73,6 @@ export function buildAgentPool(customReviewers?: ReviewerAgent[]): ReviewerAgent
     if (!pool.some(p => p.name === custom.name)) pool.push(custom);
   }
   return pool;
-}
-
-// Ensures all CORE_AGENTS are present in the resolved team. Returns the agents
-// reordered so that core agents come first in CORE_AGENTS order (injecting any
-// that the planner omitted), followed by non-core planner picks in their
-// original planner order. Core inviolability supersedes teamSizeOverride.
-// The final roster may exceed the planner-requested size.
-function injectMissingCoreAgents(
-  resolved: ReviewerAgent[],
-  pool: ReviewerAgent[],
-): ReviewerAgent[] {
-  const coreSet = new Set(CORE_AGENTS.map(i => pool[i].name));
-  const orderedCore: ReviewerAgent[] = CORE_AGENTS.map(i => {
-    const coreAgent = pool[i];
-    const plannerPicked = resolved.find(r => r.name === coreAgent.name);
-    if (plannerPicked) {
-      return plannerPicked;
-    }
-    core.info(`planner omitted core agent "${coreAgent.name}"; injecting`);
-    return coreAgent;
-  });
-  const nonCore = resolved.filter(r => !coreSet.has(r.name));
-  return [...orderedCore, ...nonCore];
 }
 
 // Resolves prior-round agent names against the current pool. Names that no
@@ -178,18 +159,17 @@ export function selectTeam(
     if (resolved.length > 0) {
       // Pin prior-round agents first (preserving their order), then append
       // any new planner picks. Deduplication keeps the prior order stable.
-      const unioned: ReviewerAgent[] = [...priorAgents];
+      // The planner's selection stands as-is: no post-hoc injection of
+      // additional agents. The planner sees the full PR context and is
+      // trusted to pick the right specialists.
+      const final: ReviewerAgent[] = [...priorAgents];
       for (const agent of resolved) {
-        if (!unioned.some(u => u.name === agent.name)) unioned.push(agent);
+        if (!final.some(u => u.name === agent.name)) final.push(agent);
       }
-      // Core inviolability: CORE_AGENTS are always present regardless of
-      // teamSizeOverride, so the final roster may exceed that value.
-      const final = injectMissingCoreAgents(unioned, pool);
       logPinAudit(final, priorNames, silent);
 
       let level: 'trivial' | 'small' | 'medium' | 'large';
-      if (final.length === 1) level = 'small';
-      else if (final.length <= 3) level = 'small';
+      if (final.length <= 3) level = 'small';
       else if (final.length <= 5) level = 'medium';
       else level = 'large';
       return { level, agents: final, lineCount };
@@ -218,60 +198,33 @@ export function selectTeam(
     teamSize = level === 'small' ? 3 : level === 'medium' ? 5 : 7;
   }
 
-  // Core agents always included, then prior-round agents (so prior order matches
-  // the planner path: prior-first, new additions last), then custom reviewers.
-  const selected: ReviewerAgent[] = CORE_AGENTS.map(i => pool[i]);
+  // Heuristic / fallback roster: start from the fixed fallback specialists,
+  // then pin prior-round agents, then add explicitly configured custom
+  // reviewers. Any remaining slots up to `teamSize` are filled from the pool
+  // in declared order. No path-keyword scoring lives here: the planner is the
+  // only place where PR context drives agent selection. When the planner is
+  // unavailable, the fallback stays conservative and predictable.
+  const selected: ReviewerAgent[] = FALLBACK_AGENTS.map(i => pool[i]);
 
-  // Pin prior-round agents next so the heuristic path preserves the same
-  // "prior first, new last" insertion order as the planner path.
   for (const agent of priorAgents) {
     if (!selected.some(s => s.name === agent.name)) {
       selected.push(agent);
     }
   }
 
-  // Custom reviewers always included (they were explicitly configured)
   for (const custom of (customReviewers || [])) {
     if (!selected.some(s => s.name === custom.name)) {
       selected.push(custom);
     }
   }
 
-  // Custom reviewers may push count above teamSize (intentional — they were explicitly configured).
-  // Only fill remaining slots if we haven't already reached teamSize.
   if (selected.length < teamSize) {
-    const paths = diff.files.map(f => f.path.toLowerCase());
-    const selectedNames = new Set(selected.map(s => s.name));
-
-    const candidates = pool.filter(a => !selectedNames.has(a.name)).map(agent => {
-      let score = 0;
-      const focus = agent.focus.toLowerCase();
-
-      if (focus.includes('test') && paths.some(p => p.includes('test'))) score += 3;
-
-      if ((focus.includes('performance') || focus.includes('efficiency')) &&
-        paths.some(p =>
-          p === 'index.ts' || p === 'index.js' || p === 'main.ts' || p === 'main.rs' ||
-          p.endsWith('/index.ts') || p.endsWith('/index.js') ||
-          p.endsWith('/main.ts') || p.endsWith('/main.rs') ||
-          p.includes('/server')
-        )) score += 2;
-
-      if (focus.includes('maintainab') && diff.files.length > 5) score += 2;
-
-      if ((focus.includes('dependencies') || focus.includes('dependency')) && paths.some(p =>
-        p.includes('package.json') || p.includes('cargo.toml') || p.includes('requirements')
-      )) score += 3;
-
-      const isCustom = !AGENT_POOL.some(p => p.name === agent.name);
-      if (isCustom) score += 1;
-
-      return { agent, score };
-    });
-
-    candidates.sort((a, b) => b.score - a.score);
-    const additional = candidates.slice(0, teamSize - selected.length).map(c => c.agent);
-    selected.push(...additional);
+    for (const agent of pool) {
+      if (selected.length >= teamSize) break;
+      if (!selected.some(s => s.name === agent.name)) {
+        selected.push(agent);
+      }
+    }
   }
 
   logPinAudit(selected, priorNames, silent);
@@ -462,6 +415,7 @@ ${hintsBlock}Decide:
    - 6-7: security/crypto-critical, architectural overhauls
 2. agents: pick exactly teamSize agents from the pool below, each with an effort level ("low", "medium", or "high"):
 ${agentList}
+   Your picks stand as-is, no agent is auto-added on top. Include "Security & Safety" whenever the change could plausibly affect a security surface (authentication, authorization, parsers, deserialization, network handlers, file or process operations, permission checks, token or secret handling, cryptography). Judge the change, not the filename: a small auth tweak warrants Security even when the diff is tiny.
    Effort controls thinking depth and cost. low = fast pass, no extended reasoning. medium = moderate reasoning (~5K thinking tokens). high = deep analysis (~10K thinking tokens). Higher effort catches subtle bugs but costs more. Match effort to the risk level of each agent's assignment — security on auth code needs high, maintainability on a rename needs low.
    - low: the agent's specialty is not very relevant to this PR
    - medium: standard relevance
@@ -627,8 +581,17 @@ function heuristicFallback(
   diff: ParsedDiff,
   config: ReviewConfig,
   priorRoundAgents?: string[],
+  /**
+   * When `true`, ignore `review_level` and force the conservative fixed roster
+   * of {Security, Architecture, Correctness}. Used when the planner is
+   * unavailable so failures stay predictable. When `false`, honor the
+   * configured `review_level` (the user explicitly opted out of the planner).
+   */
+  forceFixedRoster?: boolean,
 ): TeamRoster {
-  const team = selectTeam(diff, config, config.reviewers, undefined, undefined, priorRoundAgents);
+  const team = forceFixedRoster
+    ? selectTeam(diff, config, config.reviewers, 3, undefined, priorRoundAgents)
+    : selectTeam(diff, config, config.reviewers, undefined, undefined, priorRoundAgents);
   core.info(`Review team (${team.level}): ${team.agents.map(a => a.name).join(', ')}`);
   return team;
 }
@@ -737,13 +700,16 @@ export async function runReview(
         onProgress({ phase: 'planning', rawFindingCount: 0, plannerResult, plannerDurationMs });
       }
     } else {
-      team = heuristicFallback(diff, config, priorRoundAgents);
+      // Planner was attempted and failed. Force the fixed three-core roster.
+      team = heuristicFallback(diff, config, priorRoundAgents, true);
       if (onProgress) {
         emitHeuristicFallbackPlanning(onProgress, team, plannerDurationMs);
       }
     }
   } else {
-    team = heuristicFallback(diff, config, priorRoundAgents);
+    // Planner is disabled (either no client or user pinned `review_level`).
+    // Honor the configured `review_level` so explicit user choice is preserved.
+    team = heuristicFallback(diff, config, priorRoundAgents, false);
     if (onProgress) {
       emitHeuristicFallbackPlanning(onProgress, team);
     }
