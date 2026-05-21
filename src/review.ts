@@ -1606,7 +1606,7 @@ function isPriorLikelyUnresolved(
   // attempts that flip the judge verdict, since a still-open thread on
   // GitHub blocks APPROVE regardless of what the judge concluded.
   if (p.threadId && openThreadIds.has(p.threadId)) {
-    if (judgeAddressedByThreadId.has(p.threadId)) return false;
+    if (p.severity !== 'blocker' && judgeAddressedByThreadId.has(p.threadId)) return false;
     return true;
   }
   if (openThreadsUnknown) return true;
