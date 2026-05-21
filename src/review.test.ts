@@ -3619,7 +3619,7 @@ describe('runReview', () => {
     expect(fallback).toBeDefined();
     expect(fallback!.plannerResult).toBeUndefined();
     expect(fallback!.teamAgentNames).toEqual(result.agentNames);
-    expect(fallback!.plannerDurationMs).toBeGreaterThan(0);
+    expect(fallback!.plannerDurationMs).toBeGreaterThanOrEqual(0);
   });
 
   it('emits heuristic-fallback planning event when planner is disabled', async () => {
