@@ -1226,8 +1226,11 @@ export function applyCrossRoundSuppression(
       // Resolved-thread and judge-addressed priors fall back to fuzzy line
       // proximity when the slug differs, since refactors can shift line
       // numbers and the same underlying concern may surface with a reworded
-      // title. Restricted to suggestion/nitpick to prevent proximity alone
-      // from silently suppressing higher-severity findings.
+      // title. 'resolved' priors can suppress up to and including blocker
+      // (GitHub resolution is a strong trust signal), but 'judge-addressed'
+      // is restricted to suggestion/nitpick because that signal is LLM-derived
+      // and must not retire higher-severity findings without explicit GitHub
+      // resolution.
       if (source !== 'resolved' && source !== 'judge-addressed') return false;
       if (current.severity === 'warning') return false;
       if (source === 'judge-addressed' && current.severity === 'blocker') return false;
