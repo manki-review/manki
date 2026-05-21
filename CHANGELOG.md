@@ -7,9 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.1.0] - 2026-05-21
+
+### Added
+
+- `noise_level` config knob (`low` / `medium` / `high`, default `medium`) suppresses nit-volume noise at the source. At `low`, reviewer agents are instructed to surface only blockers and warnings; at `high`, all findings including nitpicks are encouraged. Replaces the deprecated `nit_handling: 'issues'` routing (#739, #740, #741).
+- Judge calibration honors `noise_level` — the judge's acceptance threshold for nitpick findings scales with the configured level so the gate stays consistent with the reviewer signal (#761).
+- Reviewer-agent prompts honor `noise_level` — the effort-level and finding-count guidance in each reviewer's system prompt adapts to the configured level (#760).
+
+### Changed
+
+- `nit_handling: 'issues'` is deprecated and has no effect. The `nit_handling` config key is now ignored. Migrate to `noise_level` instead (#742, #771).
+- `/manki triage` command removed. The triage flow relied on `nit_handling: 'issues'` routing, which is gone. No replacement command is needed: `noise_level` controls nit volume at the source (#771).
+
 ### Fixed
 
-- Concurrent `manki.yml` runs triggered by different event types (e.g. `pull_request` + `pull_request_review`) on the same commit no longer race and submit conflicting reviews. The `concurrency.group` key in `.github/workflows/manki.yml` now drops `github.event_name`, so all PR-scoped events for a given PR share one queue, and `cancel-in-progress` is `false`, so newer events queue (replacing the older pending one) instead of cancelling the in-flight run (#776).
+- `ready_for_review` webhook event now correctly triggers a review when a draft PR is converted to ready (#717, #744).
+- Planner timeout race eliminated by eagerly warming up the Claude CLI during action startup, before the planner call (#735, #749).
+- Review-summary timings on planner fallback now sourced from agent completion timestamps rather than a missing planner field (#736, #748).
+- Planner PR-type vocabulary aligned to Conventional Commits (`feat`, `fix`, `refactor`, etc.) so planner decisions are consistent with the project's commit taxonomy (#737, #750).
+- Skip-ack comment now posts a fresh comment instead of editing the prior one, preventing stale edit-based ack from showing for the wrong commit (#664, #759).
+- `determineVerdict` now grounds its addressed/not-addressed decision in the GitHub `isResolved` state, preventing zero-diff force-pushes from auto-resolving open warnings incorrectly (#758).
+- `Judge` kept counts and test-nit suppression surface accurately in the stats block (#773).
+- CI test flake in `plannerDurationMs` assertion resolved by relaxing the assertion to `>= 0` (#781).
 
 ### Action required for downstream installs
 
@@ -443,6 +463,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic review posting with inline comments
 - Configuration via `.manki.yml`
 
+[Unreleased]: https://github.com/manki-review/manki/compare/v5.1.0...HEAD
+[5.1.0]: https://github.com/manki-review/manki/compare/v5.0.1...v5.1.0
+[5.0.1]: https://github.com/manki-review/manki/compare/v5.0.0...v5.0.1
 [5.0.0]: https://github.com/manki-review/manki/compare/v4.7.0...v5.0.0
 [4.7.0]: https://github.com/manki-review/manki/compare/v4.6.1...v4.7.0
 [4.6.1]: https://github.com/manki-review/manki/compare/v4.6.0...v4.6.1
