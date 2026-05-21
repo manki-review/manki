@@ -3989,6 +3989,43 @@ describe('applyCrossRoundSuppression', () => {
       expect(result.findings[0].severity).toBe('suggestion');
     });
   });
+
+  describe('judge-addressed cross-round suppression', () => {
+    it('suppresses a suggestion prior when the judge marks its thread addressed', () => {
+      const findings = [makeFinding({ title: 'Old issue', file: 'src/a.ts', line: 10, severity: 'suggestion' })];
+      const prior = [makePriorRound([{
+        fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Old issue') },
+        severity: 'suggestion',
+        title: 'Old issue',
+        authorReply: 'none',
+        threadId: 'TH1',
+      }])];
+
+      const result = applyCrossRoundSuppression(findings, prior, {
+        threadEvaluations: [{ threadId: 'TH1', status: 'addressed', reason: 'Fix landed.' }],
+      });
+      expect(result.suppressedCount).toBe(1);
+      expect(result.findings[0].severity).toBe('ignore');
+      expect(result.findings[0].tags).toContain('suppressed-by-ratchet');
+    });
+
+    it('does not suppress a warning prior via judge-addressed (requires agree or resolved thread)', () => {
+      const findings = [makeFinding({ title: 'Old issue', file: 'src/a.ts', line: 10, severity: 'warning' })];
+      const prior = [makePriorRound([{
+        fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Old issue') },
+        severity: 'warning',
+        title: 'Old issue',
+        authorReply: 'none',
+        threadId: 'TH1',
+      }])];
+
+      const result = applyCrossRoundSuppression(findings, prior, {
+        threadEvaluations: [{ threadId: 'TH1', status: 'addressed', reason: 'Fix landed.' }],
+      });
+      expect(result.suppressedCount).toBe(0);
+      expect(result.findings[0].severity).toBe('warning');
+    });
+  });
 });
 
 describe('runJudgeAgent cross-round suppression', () => {
