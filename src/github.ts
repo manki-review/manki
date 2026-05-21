@@ -1187,9 +1187,10 @@ async function findProgressComment(
   octokit: Octokit, owner: string, repo: string, prNumber: number,
 ): Promise<ProgressComment | null> {
   const { data: comments } = await octokit.rest.issues.listComments({
-    owner, repo, issue_number: prNumber, per_page: 100, direction: 'desc',
+    owner, repo, issue_number: prNumber, per_page: 100,
   });
-  const match = comments.find(c =>
+  const sorted = [...comments].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  const match = sorted.find(c =>
     c.user?.login === BOT_LOGIN &&
     c.user?.type === 'Bot' &&
     c.body?.includes(BOT_MARKER) &&
@@ -1281,9 +1282,10 @@ async function findInProgressLock(
   octokit: Octokit, owner: string, repo: string, prNumber: number, currentRunId: number,
 ): Promise<InProgressLock | null> {
   const { data: comments } = await octokit.rest.issues.listComments({
-    owner, repo, issue_number: prNumber, per_page: 100, direction: 'desc',
+    owner, repo, issue_number: prNumber, per_page: 100,
   });
-  for (const c of comments) {
+  const sorted = [...comments].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  for (const c of sorted) {
     if (c.user?.login !== BOT_LOGIN || c.user?.type !== 'Bot') continue;
     if (!c.body?.includes(BOT_MARKER)) continue;
     if (c.body.includes(REVIEW_COMPLETE_MARKER)) continue;
@@ -1318,7 +1320,7 @@ async function markOwnProgressCommentCancelled(
 ): Promise<boolean> {
   try {
     const { data: comments } = await octokit.rest.issues.listComments({
-      owner, repo, issue_number: prNumber, per_page: 100, direction: 'desc',
+      owner, repo, issue_number: prNumber, per_page: 100,
     });
     const target = comments.find(c =>
       c.user?.login === BOT_LOGIN &&
