@@ -4213,7 +4213,7 @@ describe('judge thread-evaluation fixture corpus', () => {
   // OAuth path with an empty token so the locally-logged-in `claude` CLI
   // authenticates via its own keychain credentials.
   const runLive = process.env.RUN_JUDGE_LIVE_FIXTURES === '1';
-  const liveModel = process.env.JUDGE_LIVE_MODEL ?? 'claude-opus-4-5';
+  const liveModel = process.env.JUDGE_LIVE_MODEL ?? 'claude-opus-4-7';
   (runLive ? it : it.skip).each(fixtures)('live judge returns expected status for $name', async (fixture) => {
     const client = new AnthropicClient({ auth: { kind: 'oauth', token: '' }, model: liveModel });
 
