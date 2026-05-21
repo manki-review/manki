@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 
-import { buildDashboard, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, truncateContextToFitBody, dynamicFence, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded } from './github';
+import { buildDashboard, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, truncateContextToFitBody, dynamicFence, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded } from './github';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { DEFAULT_CONFIG } from './config';
 
@@ -3595,5 +3595,116 @@ describe('cancelActiveReviewRun', () => {
     expect(result).toBe(true);
     expect(cancelWorkflowRun).toHaveBeenCalled();
     expect(updateComment).toHaveBeenCalled();
+  });
+});
+
+describe('findInProgressLock', () => {
+  type Octokit = ReturnType<typeof import('@actions/github').getOctokit>;
+
+  function makeInProgressBody(runId: number): string {
+    return `${BOT_MARKER}\n<!-- manki-run-id:${runId} -->\n**Manki** — Review in progress`;
+  }
+
+  interface MockComment {
+    id?: number;
+    body: string;
+    user: { login?: string; type: string };
+    updated_at?: string;
+  }
+
+  function makeOctokit(comments: MockComment[]) {
+    const listComments = jest.fn().mockResolvedValue({
+      data: comments.map((c, i) => ({
+        id: c.id ?? i + 1,
+        body: c.body,
+        updated_at: c.updated_at ?? '2026-01-01T00:00:00Z',
+        user: { login: c.user.login ?? (c.user.type === 'Bot' ? BOT_LOGIN : 'someone'), type: c.user.type },
+      })),
+    });
+    const octokit = { rest: { issues: { listComments } } } as unknown as Octokit;
+    return { octokit, listComments };
+  }
+
+  it('returns null when no in-progress bot comment exists (lock acquisition)', async () => {
+    const { octokit } = makeOctokit([{ body: 'Some user comment', user: { type: 'User' } }]);
+
+    const result = await findInProgressLock(octokit, 'o', 'r', 1, 42);
+
+    expect(result).toBeNull();
+  });
+
+  it('returns the lock when a different run posted an in-progress marker (contention)', async () => {
+    const { octokit } = makeOctokit([
+      { id: 7, body: makeInProgressBody(999), user: { type: 'Bot' }, updated_at: '2026-05-22T12:00:00Z' },
+    ]);
+
+    const result = await findInProgressLock(octokit, 'o', 'r', 1, 42);
+
+    expect(result).toEqual({ runId: 999, updatedAt: '2026-05-22T12:00:00Z', commentId: 7 });
+  });
+
+  it('ignores the current run\'s own in-progress marker (self re-entry)', async () => {
+    const { octokit } = makeOctokit([
+      { id: 7, body: makeInProgressBody(42), user: { type: 'Bot' } },
+    ]);
+
+    const result = await findInProgressLock(octokit, 'o', 'r', 1, 42);
+
+    expect(result).toBeNull();
+  });
+
+  it('skips comments bearing terminal markers (complete, cancelled, force-review, force-cap)', async () => {
+    const { octokit } = makeOctokit([
+      { body: `${makeInProgressBody(101)}\n${REVIEW_COMPLETE_MARKER}`, user: { type: 'Bot' } },
+      { body: `${makeInProgressBody(102)}\n${CANCELLED_MARKER}`, user: { type: 'Bot' } },
+      { body: `${makeInProgressBody(103)}\n${FORCE_REVIEW_MARKER}`, user: { type: 'Bot' } },
+      { body: `${makeInProgressBody(104)}\n${FORCE_CAP_MARKER}`, user: { type: 'Bot' } },
+    ]);
+
+    const result = await findInProgressLock(octokit, 'o', 'r', 1, 42);
+
+    expect(result).toBeNull();
+  });
+
+  it('skips comments without a parseable run-id marker (legacy)', async () => {
+    const { octokit } = makeOctokit([
+      { body: `${BOT_MARKER}\n**Manki** — Review in progress`, user: { type: 'Bot' } },
+    ]);
+
+    const result = await findInProgressLock(octokit, 'o', 'r', 1, 42);
+
+    expect(result).toBeNull();
+  });
+
+  it('skips comments that are not from the bot login', async () => {
+    const { octokit } = makeOctokit([
+      { body: makeInProgressBody(999), user: { login: 'github-actions[bot]', type: 'Bot' } },
+      { body: makeInProgressBody(888), user: { login: 'human', type: 'User' } },
+    ]);
+
+    const result = await findInProgressLock(octokit, 'o', 'r', 1, 42);
+
+    expect(result).toBeNull();
+  });
+});
+
+describe('isLockExpired', () => {
+  const now = new Date('2026-05-22T12:00:00Z');
+
+  it('returns false when the comment was updated within the TTL window', () => {
+    expect(isLockExpired('2026-05-22T11:55:00Z', 600, now)).toBe(false);
+  });
+
+  it('returns true when the comment was updated more than TTL seconds ago (TTL expiry)', () => {
+    expect(isLockExpired('2026-05-22T11:40:00Z', 600, now)).toBe(true);
+  });
+
+  it('treats an unparseable timestamp as expired', () => {
+    expect(isLockExpired('not-a-date', 600, now)).toBe(true);
+  });
+
+  it('returns false for a fresh comment when TTL is zero only when ages match exactly', () => {
+    expect(isLockExpired('2026-05-22T12:00:00Z', 0, now)).toBe(false);
+    expect(isLockExpired('2026-05-22T11:59:59Z', 0, now)).toBe(true);
   });
 });

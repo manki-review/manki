@@ -41,6 +41,10 @@ inputs:
     description: 'Token service URL for GitHub App identity (default: https://manki-api.dustinface.me/token)'
     required: false
     default: 'https://manki-api.dustinface.me/token'
+  concurrency_lock_ttl_seconds:
+    description: 'TTL (in seconds) for the in-app concurrent-submission lock. If another `manki-review[bot]` run has posted an "in progress" marker comment within this window, the current run bails before any LLM call. Acts as defense in depth on top of the workflow-level concurrency group. Default: 600 (10 minutes).'
+    required: false
+    default: '600'
 
 outputs:
   review_id:

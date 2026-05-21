@@ -38,6 +38,7 @@ export const DEFAULT_CONFIG: ReviewConfig = {
   stats: {
     hidden: false,
   },
+  concurrency_lock_ttl_seconds: 600,
 };
 
 const KNOWN_KEYS = new Set([
@@ -57,6 +58,7 @@ const KNOWN_KEYS = new Set([
   'review_passes',
   'convergence',
   'stats',
+  'concurrency_lock_ttl_seconds',
 ]);
 
 const REPO_FORMAT = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
@@ -274,6 +276,12 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
       if ('hidden' in stats && typeof stats.hidden !== 'boolean') {
         errors.push('`stats.hidden` must be a boolean');
       }
+    }
+  }
+
+  if ('concurrency_lock_ttl_seconds' in config) {
+    if (typeof config.concurrency_lock_ttl_seconds !== 'number' || !Number.isFinite(config.concurrency_lock_ttl_seconds) || config.concurrency_lock_ttl_seconds < 0) {
+      errors.push('`concurrency_lock_ttl_seconds` must be a non-negative number');
     }
   }
 

@@ -36,6 +36,8 @@ import {
   isApprovedOnCommit,
   markOwnProgressCommentCancelled,
   postAppWarningIfNeeded,
+  findInProgressLock,
+  isLockExpired,
 } from './github';
 import { checkAndAutoApprove, resolveStaleThreads } from './state';
 
@@ -221,6 +223,52 @@ async function run(): Promise<void> {
   }
 }
 
+const DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS = 600;
+
+function readConcurrencyLockTtlSeconds(): number {
+  const raw = core.getInput('concurrency_lock_ttl_seconds');
+  if (!raw) return DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) {
+    core.warning(`Invalid concurrency_lock_ttl_seconds=${raw}, using default ${DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS}`);
+    return DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS;
+  }
+  return n;
+}
+
+/**
+ * Defense-in-depth check before any LLM call. When another `manki-review[bot]`
+ * run has posted an in-progress marker comment whose `manki-run-id` differs
+ * from ours and whose `updated_at` is within the configured TTL, bail to avoid
+ * a double review. The workflow-level `concurrency` group is best-effort and
+ * can let two runs reach `in_progress` within the same scheduling window.
+ *
+ * Returns `true` when the caller should bail.
+ */
+async function checkConcurrentSubmissionLock(
+  octokit: Octokit, owner: string, repo: string, prNumber: number,
+): Promise<boolean> {
+  const currentRunId = github.context.runId;
+  let lock;
+  try {
+    lock = await findInProgressLock(octokit, owner, repo, prNumber, currentRunId);
+  } catch (error) {
+    core.warning(`Concurrency lock scan failed: ${error instanceof Error ? error.message : error}`);
+    return false;
+  }
+  if (!lock) return false;
+
+  const ttlSeconds = readConcurrencyLockTtlSeconds();
+  const now = new Date();
+  if (isLockExpired(lock.updatedAt, ttlSeconds, now)) {
+    core.info(`Ignoring stale in-progress marker from run ${lock.runId} (updated_at=${lock.updatedAt}, TTL=${ttlSeconds}s)`);
+    return false;
+  }
+  const ageSeconds = Math.round((now.getTime() - Date.parse(lock.updatedAt)) / 1000);
+  core.warning(`Bailing: another Manki run (id=${lock.runId}) posted an in-progress marker ${ageSeconds}s ago (TTL=${ttlSeconds}s). Defense-in-depth lock engaged before LLM call.`);
+  return true;
+}
+
 async function postReviewSkippedComment(
   octokit: Octokit, owner: string, repo: string, prNumber: number,
 ): Promise<void> {
@@ -386,6 +434,10 @@ async function runFullReview(
     } catch (error) {
       core.warning(`Failed to post app warning: ${error}`);
     }
+  }
+
+  if (await checkConcurrentSubmissionLock(octokit, owner, repo, prNumber)) {
+    return;
   }
 
   const progressCommentId = await postProgressComment(octokit, owner, repo, prNumber);

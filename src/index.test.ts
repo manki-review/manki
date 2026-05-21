@@ -144,6 +144,8 @@ jest.mock('./github', () => ({
   markOwnProgressCommentCancelled: jest.fn().mockResolvedValue(false),
   postAppWarningIfNeeded: jest.fn().mockResolvedValue(undefined),
   cancelActiveReviewRun: jest.fn().mockResolvedValue(false),
+  findInProgressLock: jest.fn().mockResolvedValue(null),
+  isLockExpired: jest.fn().mockReturnValue(false),
   BOT_LOGIN: 'manki-review[bot]',
   ACTIONS_BOT_LOGIN: 'github-actions[bot]',
   BOT_MARKER: '<!-- manki-bot -->',
@@ -5430,5 +5432,119 @@ describe('force review checkbox', () => {
 
     expect(mockPullsGet).not.toHaveBeenCalled();
     expect(jest.mocked(ghUtils.reactToIssueComment)).not.toHaveBeenCalled();
+  });
+});
+
+describe('runFullReview concurrent-submission lock', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    _resetOctokitCache();
+    setContext({ eventName: 'pull_request', payload: { action: 'opened' } });
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'anthropic_api_key' ? 'test-api-key' : '',
+    );
+    jest.mocked(configModule.loadConfig).mockReturnValue({
+      auto_review: true, auto_approve: false, max_diff_lines: 5000,
+      exclude_paths: [], reviewers: [], instructions: '', review_level: 'auto',
+      review_thresholds: { small: 200, medium: 800 },
+      memory: { enabled: false, repo: '' },
+    });
+    const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [] };
+    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(authModule.getMemoryToken).mockReturnValue(null);
+    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], recapContext: '', priorRounds: [] });
+    jest.mocked(stateModule.resolveStaleThreads).mockResolvedValue(0);
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'APPROVE', summary: '', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
+    });
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion' });
+    jest.mocked(reviewModule.selectTeam).mockReturnValue({ level: 'standard' as 'small', agents: [{ name: 'general', focus: '' }], lineCount: 0 });
+    jest.mocked(ghUtils.postProgressComment).mockResolvedValue(1);
+    jest.mocked(ghUtils.findInProgressLock).mockResolvedValue(null);
+    jest.mocked(ghUtils.isLockExpired).mockReturnValue(false);
+  });
+
+  function callRunFullReview(): Promise<void> {
+    return runFullReview(
+      'test-owner', 'test-repo', 42, 'abc123', 'main',
+      { title: 'Test PR', body: '', baseBranch: 'main' },
+    );
+  }
+
+  it('proceeds when no in-progress lock exists (lock acquisition)', async () => {
+    jest.mocked(ghUtils.findInProgressLock).mockResolvedValue(null);
+
+    await callRunFullReview();
+
+    expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
+    expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
+  });
+
+  it('bails before any LLM call when a different run holds a fresh lock (contention)', async () => {
+    jest.mocked(ghUtils.findInProgressLock).mockResolvedValue({
+      runId: 999, updatedAt: '2026-05-22T11:59:00Z', commentId: 7,
+    });
+    jest.mocked(ghUtils.isLockExpired).mockReturnValue(false);
+
+    await callRunFullReview();
+
+    expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
+    expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+    const warnings = jest.mocked(core.warning).mock.calls.map(c => String(c[0]));
+    expect(warnings.some(m => m.includes('999') && m.includes('Defense-in-depth'))).toBe(true);
+  });
+
+  it('proceeds when the other run\'s marker is older than the TTL (TTL expiry)', async () => {
+    jest.mocked(ghUtils.findInProgressLock).mockResolvedValue({
+      runId: 999, updatedAt: '2026-05-22T10:00:00Z', commentId: 7,
+    });
+    jest.mocked(ghUtils.isLockExpired).mockReturnValue(true);
+
+    await callRunFullReview();
+
+    expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
+    expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
+  });
+
+  it('proceeds when the lock scan throws (fail-open)', async () => {
+    jest.mocked(ghUtils.findInProgressLock).mockRejectedValue(new Error('boom'));
+
+    await callRunFullReview();
+
+    expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
+  });
+
+  it('reads the TTL from the `concurrency_lock_ttl_seconds` action input', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) => {
+      if (name === 'anthropic_api_key') return 'test-api-key';
+      if (name === 'concurrency_lock_ttl_seconds') return '120';
+      return '';
+    });
+    jest.mocked(ghUtils.findInProgressLock).mockResolvedValue({
+      runId: 999, updatedAt: '2026-05-22T11:00:00Z', commentId: 7,
+    });
+    jest.mocked(ghUtils.isLockExpired).mockReturnValue(true);
+
+    await callRunFullReview();
+
+    expect(jest.mocked(ghUtils.isLockExpired)).toHaveBeenCalledWith(
+      '2026-05-22T11:00:00Z', 120, expect.any(Date),
+    );
+  });
+
+  it('transitions the in-progress marker to a terminal complete state on success (cleanup)', async () => {
+    jest.mocked(ghUtils.findInProgressLock).mockResolvedValue(null);
+
+    await callRunFullReview();
+
+    // The successful run posts the progress marker, then `updateProgressComment`
+    // freezes that same comment to the terminal "Review complete" state — the
+    // existing cleanup path. Both must run on the lock-holder's happy path.
+    expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
+    expect(jest.mocked(ghUtils.updateProgressComment)).toHaveBeenCalled();
+    const [, , , commentIdArg] = jest.mocked(ghUtils.updateProgressComment).mock.calls[0];
+    expect(commentIdArg).toBe(1);
   });
 });
