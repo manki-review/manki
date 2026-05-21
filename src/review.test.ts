@@ -5788,9 +5788,7 @@ describe('selectTeam planner-driven path', () => {
   });
 
   it('does not silently inflate the roster when the planner picks fewer than the requested size', () => {
-    // Regression for #784: the planner requested 3 agents but only picked 2.
-    // The roster must reflect what the planner actually picked, not get
-    // padded back up to teamSize.
+    // The roster must reflect what the planner actually picked, not get padded back up to teamSize.
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
     const config = makeConfig();
     const picks: AgentPick[] = [

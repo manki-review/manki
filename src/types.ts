@@ -399,9 +399,7 @@ export interface DashboardData {
   plannerInfo?: {
     /**
      * Size of the final resolved roster (after prior-round pinning and any
-     * other adjustments), not the raw `teamSize` the planner asked for. The
-     * dashboard `Planner` line renders this so users see the actual number of
-     * agents that ran.
+     * other adjustments), not the raw `teamSize` the planner asked for.
      */
     agentCount: number;
     reviewerEffort: EffortLevel;

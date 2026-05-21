@@ -614,7 +614,7 @@ function heuristicFallback(
   config: ReviewConfig,
   /**
    * Agents from prior rounds to carry forward for continuity. Intentionally
-   * ignored when `forceFixedRoster=true` — the fixed failure roster must be
+   * ignored when `forceFixedRoster=true`: the fixed failure roster must be
    * exact, so prior-round pinning is suppressed on the planner-failure path.
    */
   priorRoundAgents?: string[],

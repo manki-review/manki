@@ -1925,9 +1925,8 @@ describe('buildDashboard', () => {
   });
 
   it('renders the resolved roster size on the Planner line, not the planner-requested teamSize', () => {
-    // Regression for #784: the dashboard used to print `plannerResult.teamSize`,
-    // which could disagree with the per-category breakdown when prior-round
-    // pinning grew the actual roster beyond the planner's request.
+    // The dashboard must show the actual resolved roster count, not the planner-requested
+    // teamSize, which can diverge when prior-round pinning grows the roster.
     const data: DashboardData = {
       phase: 'started', lineCount: 120, agentCount: 5,
       plannerInfo: { agentCount: 5, reviewerEffort: 'medium', judgeEffort: 'high', prType: 'fix' },
