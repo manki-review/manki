@@ -298,7 +298,7 @@ export function buildDashboard(data: DashboardData): string {
     const summaryParts = [
       ...(prType ? [prType] : []),
       `${data.lineCount} lines`,
-      `${data.plannerInfo.teamSize} agents`,
+      `${data.plannerInfo.agentCount} agents`,
     ];
     plannerLines.push(`${INDENT}${summaryParts.join(' · ')}`);
     plannerLines.push(`${INDENT}review effort: ${sanitizeEffort(data.plannerInfo.reviewerEffort)} · judge effort: ${sanitizeEffort(data.plannerInfo.judgeEffort)}`);

@@ -397,7 +397,11 @@ export interface DashboardData {
   droppedCount?: number;
   agentProgress?: AgentProgressEntry[];
   plannerInfo?: {
-    teamSize: PlannerResult['teamSize'];
+    /**
+     * Size of the final resolved roster (after prior-round pinning and any
+     * other adjustments), not the raw `teamSize` the planner asked for.
+     */
+    agentCount: number;
     reviewerEffort: EffortLevel;
     judgeEffort: EffortLevel;
     /**

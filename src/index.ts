@@ -724,13 +724,13 @@ async function runFullReview(
         if (progress.phase === 'planning') {
           core.info('Planner analyzing PR content...');
           if (progress.plannerResult) {
+            const plannerTeam = selectTeam(diff, config, config.reviewers, progress.plannerResult.teamSize, progress.plannerResult.agents, priorRoundAgents, true);
             dashboard.plannerInfo = {
-              teamSize: progress.plannerResult.teamSize,
+              agentCount: plannerTeam.agents.length,
               reviewerEffort: progress.plannerResult.reviewerEffort,
               judgeEffort: progress.plannerResult.judgeEffort,
               prType: progress.plannerResult.prType,
             };
-            const plannerTeam = selectTeam(diff, config, config.reviewers, progress.plannerResult.teamSize, progress.plannerResult.agents, priorRoundAgents, true);
             dashboard.agentCount = plannerTeam.agents.length;
             dashboard.agentProgress = plannerTeam.agents.map(a => ({ name: a.name, status: 'reviewing' as const }));
             dashboard.plannerDurationMs = progress.plannerDurationMs;
@@ -1015,20 +1015,21 @@ async function runFullReview(
       }
     }
 
-    if (result.plannerResult) {
-      dashboard.plannerInfo = {
-        teamSize: result.plannerResult.teamSize,
-        reviewerEffort: result.plannerResult.reviewerEffort,
-        judgeEffort: result.plannerResult.judgeEffort,
-        prType: result.plannerResult.prType,
-      };
-    }
     // Reconcile the dashboard with the actual resolved team. On round 2+ the
     // initial dashboard was built without priorRoundAgents (not yet loaded),
     // so the agent list would otherwise show a stale, too-small count. On
     // round 1 without a planner, agents may fail and drop out, so reconcile
     // unconditionally to keep agentCount and agentProgress accurate.
     reconcileDashboardAgents(dashboard, result.agentNames);
+
+    if (result.plannerResult) {
+      dashboard.plannerInfo = {
+        agentCount: result.agentNames.length,
+        reviewerEffort: result.plannerResult.reviewerEffort,
+        judgeEffort: result.plannerResult.judgeEffort,
+        prType: result.plannerResult.prType,
+      };
+    }
 
     const allJudgedForDashboard = result.allJudgedFindings || result.findings;
     const rawForLookup = result.rawFindings ?? allJudgedForDashboard;
