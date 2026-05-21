@@ -1193,7 +1193,7 @@ async function fetchPRComments(
   const { data } = await octokit.rest.issues.listComments({
     owner, repo, issue_number: prNumber, per_page: 100,
   });
-  return [...data].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+  return [...data].sort((a, b) => (a.updated_at < b.updated_at ? 1 : a.updated_at > b.updated_at ? -1 : 0));
 }
 
 /**
