@@ -8,6 +8,7 @@ import { LinkedIssue, titleToSlug } from './github';
 import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, llmDeduplicateFindings, PreviousFinding } from './recap';
 import { ReviewConfig, ReviewerAgent, Finding, FindingFingerprintEntry, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, PlannerRoundHint, RoundContext, SpecialistOutcome, EffortLevel, AgentPick, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { extractJSON } from './json';
+import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 
 const DISMISSED_LINE_TOLERANCE = 5;
 
@@ -1592,7 +1593,7 @@ function isPriorLikelyUnresolved(
   openThreadIds: Set<string>,
   openThreadsUnknown: boolean,
   resolvedThreadIds: Set<string> | undefined,
-  judgeAddressedByThreadId: Set<string>,
+  threadEvaluationsByThreadId: Map<string, ThreadEvaluation>,
 ): boolean {
   if (p.severity !== 'warning' && p.severity !== 'blocker') return false;
   if (p.authorReplyClass === 'agree') return false;
@@ -1608,12 +1609,11 @@ function isPriorLikelyUnresolved(
   // to injected text. Blocker priors are never retired by LLM signal alone;
   // they require GitHub thread resolution or explicit author agreement.
   if (p.threadId && openThreadIds.has(p.threadId)) {
-    if (p.severity !== 'blocker' && judgeAddressedByThreadId.has(p.threadId)) return false;
+    if (p.severity !== 'blocker' && isPriorAddressedByJudge(p, threadEvaluationsByThreadId)) return false;
     return true;
   }
   if (openThreadsUnknown) return true;
   if (p.threadId && resolvedThreadIds?.has(p.threadId)) return false;
-  if (p.threadId && judgeAddressedByThreadId.has(p.threadId)) return false;
   if (!p.threadId) return true;
   return false;
 }
@@ -1710,13 +1710,9 @@ export function determineVerdict(
 
   const openThreadsUnknown = openThreads == null;
   const openThreadIds = new Set((openThreads ?? []).map(t => t.threadId));
-  const judgeAddressedByThreadId = new Set(
-    (threadEvaluations ?? [])
-      .filter(e => e.status === 'addressed')
-      .map(e => e.threadId),
-  );
+  const threadEvaluationsByThreadId = indexThreadEvaluations(threadEvaluations);
   const hasUnresolvedPrior = prior.some(p =>
-    isPriorLikelyUnresolved(p, openThreadIds, openThreadsUnknown, resolvedThreadIds, judgeAddressedByThreadId),
+    isPriorLikelyUnresolved(p, openThreadIds, openThreadsUnknown, resolvedThreadIds, threadEvaluationsByThreadId),
   );
   if (hasUnresolvedPrior) {
     return { verdict: 'REQUEST_CHANGES', verdictReason: 'prior_unaddressed' };
