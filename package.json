@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "test": "jest --passWithNoTests",
     "smoke": "tsx scripts/smoke.ts",
+    "check-changelog-version": "node scripts/check-changelog-version.js",
     "all": "npm run lint && npm run typecheck && npm run test && npm run build"
   },
   "repository": {
