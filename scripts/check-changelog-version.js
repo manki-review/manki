@@ -24,13 +24,13 @@ const changelog = fs.readFileSync(changelogPath, 'utf8');
 
 // Accept `## [X.Y.Z]`, `## [X.Y.Z] - YYYY-MM-DD`, or defensively `## X.Y.Z`.
 // Skip the `Unreleased` placeholder so the check tracks the latest real release.
-const headingRe = /^##\s+\[?([^\]\s]+)\]?(?:\s*-\s*\S+)?\s*$/gm;
+const headingRe = /^##\s+\[?([^\]\s]+)\]?(?:\s*-\s*\S.*)?\s*$/gm;
 let changelogVersion = null;
 let match;
 while ((match = headingRe.exec(changelog)) !== null) {
   const candidate = match[1];
   if (candidate.toLowerCase() === 'unreleased') continue;
-  if (!/^\d+\.\d+\.\d+/.test(candidate)) continue;
+  if (!/^\d+\.\d+\.\d+$/.test(candidate)) continue;
   changelogVersion = candidate;
   break;
 }
