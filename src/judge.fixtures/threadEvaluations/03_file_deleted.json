@@ -1,0 +1,16 @@
+{
+  "name": "file-deleted",
+  "expectedStatus": "addressed",
+  "expectedReasonHint": "file removed",
+  "openThread": {
+    "threadId": "PRRT_file_deleted",
+    "title": "Unused legacy helper",
+    "file": "src/legacy/helper.ts",
+    "line": 12,
+    "severity": "suggestion",
+    "description": "`legacyTransform` is no longer called by any active code path. Either remove it or document why it must stay.",
+    "suggestedFix": "Delete `src/legacy/helper.ts` if nothing imports it.",
+    "currentCode": "(file removed)"
+  },
+  "interRoundDiff": "diff --git a/src/legacy/helper.ts b/src/legacy/helper.ts\ndeleted file mode 100644\nindex 1111111..0000000\n--- a/src/legacy/helper.ts\n+++ /dev/null\n@@ -1,16 +0,0 @@\n-export function legacyTransform(input: string): string {\n-  return input.trim().toLowerCase();\n-}\n-\n-export function legacyValidate(input: string): boolean {\n-  return input.length > 0;\n-}\n"
+}

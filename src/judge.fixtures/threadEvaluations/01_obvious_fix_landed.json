@@ -1,0 +1,16 @@
+{
+  "name": "obvious-fix-landed",
+  "expectedStatus": "addressed",
+  "expectedReasonHint": "disable_search",
+  "openThread": {
+    "threadId": "PRRT_fix_landed",
+    "title": "Missing 'disable_search: true' on Codecov upload",
+    "file": ".github/workflows/ios.yml",
+    "line": 137,
+    "severity": "warning",
+    "description": "The Codecov upload step omits `disable_search: true`, which causes the action to re-scan the entire workspace and ignore the explicit `files:` list.",
+    "suggestedFix": "Add `disable_search: true` to the `with:` block of the Codecov upload step.",
+    "currentCode": "  131:   uses: codecov/codecov-action@v4\n  132:   with:\n  133:     token: ${{ secrets.CODECOV_TOKEN }}\n  134:     files: ./coverage.xml\n  135:     flags: ios\n  136:     fail_ci_if_error: true\n>>>137:     disable_search: true\n  138:     verbose: true\n  139:     working-directory: ${{ github.workspace }}\n"
+  },
+  "interRoundDiff": "diff --git a/.github/workflows/ios.yml b/.github/workflows/ios.yml\nindex 1111111..2222222 100644\n--- a/.github/workflows/ios.yml\n+++ b/.github/workflows/ios.yml\n@@ -133,6 +133,7 @@\n     token: ${{ secrets.CODECOV_TOKEN }}\n     files: ./coverage.xml\n     flags: ios\n     fail_ci_if_error: true\n+    disable_search: true\n     verbose: true\n     working-directory: ${{ github.workspace }}\n"
+}

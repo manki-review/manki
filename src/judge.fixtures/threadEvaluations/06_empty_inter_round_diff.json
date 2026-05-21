@@ -1,0 +1,16 @@
+{
+  "name": "empty-inter-round-diff",
+  "expectedStatus": "uncertain",
+  "expectedReasonHint": "no changes",
+  "openThread": {
+    "threadId": "PRRT_empty_diff",
+    "title": "Magic number in retry loop",
+    "file": "src/retry.ts",
+    "line": 8,
+    "severity": "nitpick",
+    "description": "Magic number `3` for max retries. Extract to a named constant.",
+    "suggestedFix": "Replace `3` with a `MAX_RETRIES` constant defined at module top.",
+    "currentCode": "   5: export async function withRetry<T>(fn: () => Promise<T>): Promise<T> {\n   6:   let lastError: Error | undefined;\n   7:   for (let i = 0; i < 3; i++) {\n>>>8:     try { return await fn(); } catch (e) { lastError = e as Error; }\n   9:   }\n  10:   throw lastError!;\n  11: }\n"
+  },
+  "interRoundDiff": ""
+}

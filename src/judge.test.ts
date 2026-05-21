@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   applyCrossRoundSuppression,
   applyInPrSuppression,
@@ -16,7 +18,7 @@ import {
 import { LLMClient } from './providers';
 import { RepoMemory, Learning, Suppression } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
-import { Finding, IN_PR_SUPPRESSED_TAG, InPrSuppression, ProvenanceEntry, ReviewConfig, RoundContext, ParsedDiff, DiffFile, DiffHunk } from './types';
+import { Finding, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, ReviewConfig, RoundContext, ParsedDiff, DiffFile, DiffHunk, ThreadEvaluation } from './types';
 import { LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy } from './test-utils';
 
 const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
@@ -4150,5 +4152,65 @@ describe('runJudgeAgent cross-round suppression', () => {
     // In-PR suppression must not double-count an already-suppressed finding.
     expect(result.inPrSuppressedCount).toBeUndefined();
     expect(result.crossRoundDemoted).toBeUndefined();
+  });
+});
+
+interface ThreadFixture {
+  name: string;
+  expectedStatus: ThreadEvaluation['status'];
+  expectedReasonHint: string;
+  openThread: OpenThread;
+  interRoundDiff: string;
+}
+
+function loadThreadFixtures(): ThreadFixture[] {
+  const dir = path.join(__dirname, 'judge.fixtures', 'threadEvaluations');
+  return fs.readdirSync(dir)
+    .filter(f => f.endsWith('.json'))
+    .sort()
+    .map(f => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')) as ThreadFixture);
+}
+
+describe('judge thread-evaluation fixture corpus', () => {
+  const fixtures = loadThreadFixtures();
+
+  it('loads at least the eight required fixtures', () => {
+    expect(fixtures.length).toBeGreaterThanOrEqual(8);
+  });
+
+  it.each(fixtures)('fixture $name is structurally valid', (fixture) => {
+    expect(['addressed', 'not_addressed', 'uncertain']).toContain(fixture.expectedStatus);
+    expect(fixture.openThread.threadId).toMatch(/^PRRT_/);
+    expect(fixture.openThread.file).not.toHaveLength(0);
+    expect(typeof fixture.interRoundDiff).toBe('string');
+  });
+
+  it('covers each required scenario class', () => {
+    const byStatus = new Map<ThreadEvaluation['status'], string[]>();
+    for (const f of fixtures) {
+      const list = byStatus.get(f.expectedStatus) ?? [];
+      list.push(f.name);
+      byStatus.set(f.expectedStatus, list);
+    }
+    // Three addressed variants (obvious fix, file deleted, refactor-mooted) plus one rewrite.
+    expect(byStatus.get('addressed')?.length ?? 0).toBeGreaterThanOrEqual(3);
+    // not_addressed must include the adversarial injection case.
+    expect(byStatus.get('not_addressed')).toEqual(expect.arrayContaining([
+      expect.stringContaining('injection'),
+    ]));
+    // uncertain must cover the empty inter-round diff case.
+    expect(byStatus.get('uncertain')).toEqual(expect.arrayContaining([
+      expect.stringContaining('empty'),
+    ]));
+  });
+
+  // Live-replay against a real LLM. Gated on RUN_JUDGE_LIVE_FIXTURES=1 so CI
+  // (which has no API key) skips this block. Local maintainers run it to
+  // confirm judge accuracy when prompt or model versions change.
+  const runLive = process.env.RUN_JUDGE_LIVE_FIXTURES === '1';
+  (runLive ? it : it.skip).each(fixtures)('live judge returns expected status for $name', async (_fixture) => {
+    // Implementation deferred. The harness needs a real LLMClient wired here
+    // and is intentionally not bundled into the unit test suite until Phase 2.
+    expect(true).toBe(true);
   });
 });

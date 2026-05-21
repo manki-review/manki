@@ -1,0 +1,16 @@
+{
+  "name": "obvious-fix-not-landed",
+  "expectedStatus": "not_addressed",
+  "expectedReasonHint": "still flags",
+  "openThread": {
+    "threadId": "PRRT_not_landed",
+    "title": "Null check missing before dereference",
+    "file": "src/auth.ts",
+    "line": 42,
+    "severity": "blocker",
+    "description": "`session.user` may be `null` when the session has expired. Dereferencing `session.user.id` without a guard throws `Cannot read properties of null`.",
+    "suggestedFix": "Guard the access: `if (!session.user) { throw new UnauthorizedError(); }` before reading `session.user.id`.",
+    "currentCode": "  38: function getUserId(session: Session): string {\n  39:   if (!session) {\n  40:     throw new UnauthorizedError();\n  41:   }\n>>>42:   return session.user.id;\n  43: }\n  44:\n  45: function getUserEmail(session: Session): string {\n"
+  },
+  "interRoundDiff": "diff --git a/src/auth.ts b/src/auth.ts\nindex 1111111..2222222 100644\n--- a/src/auth.ts\n+++ b/src/auth.ts\n@@ -36,7 +36,7 @@ function getUserId(session: Session): string {\n   if (!session) {\n     throw new UnauthorizedError();\n   }\n-  return session.user.id\n+  return session.user.id;\n }\n"
+}
