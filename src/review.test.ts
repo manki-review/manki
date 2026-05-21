@@ -5804,6 +5804,37 @@ describe('selectTeam planner-driven path', () => {
       'Testing & Coverage',
     ]);
   });
+
+  it('keeps all planner picks when the LLM returns more agents than teamSize', () => {
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const config = makeConfig();
+    const picks: AgentPick[] = [
+      { name: 'Security & Safety', effort: 'high' },
+      { name: 'Architecture & Design', effort: 'medium' },
+      { name: 'Correctness & Logic', effort: 'low' },
+      { name: 'Testing & Coverage', effort: 'low' },
+      { name: 'Performance & Efficiency', effort: 'low' },
+    ];
+    const roster = selectTeam(diff, config, undefined, 3, picks);
+    expect(roster.agents).toHaveLength(5);
+    expect(roster.agents.map(a => a.name)).toEqual([
+      'Security & Safety',
+      'Architecture & Design',
+      'Correctness & Logic',
+      'Testing & Coverage',
+      'Performance & Efficiency',
+    ]);
+  });
+});
+
+describe('selectTeam heuristic path (planner disabled)', () => {
+  it('honors review_level when planner is disabled, not failed', () => {
+    const diff = makeDiff({ totalAdditions: 600, totalDeletions: 600 });
+    const config = makeConfig({ review_level: 'large' });
+    const roster = selectTeam(diff, config, undefined, undefined, undefined);
+    expect(roster.agents).toHaveLength(7);
+    expect(roster.level).toBe('large');
+  });
 });
 
 describe('buildReviewerSystemPrompt sanitized context', () => {
