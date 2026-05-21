@@ -16,6 +16,7 @@ import {
   JudgedFinding,
 } from './judge';
 import { LLMClient } from './providers';
+import { AnthropicClient } from './providers/anthropic';
 import { RepoMemory, Learning, Suppression } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
 import { Finding, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, ReviewConfig, RoundContext, ParsedDiff, DiffFile, DiffHunk, ThreadEvaluation } from './types';
@@ -4209,10 +4210,53 @@ describe('judge thread-evaluation fixture corpus', () => {
 
   // Live-replay against a real LLM. Gated on RUN_JUDGE_LIVE_FIXTURES=1 so CI
   // (which has no API key) skips this block. Local maintainers run it to
-  // confirm judge accuracy when prompt or model versions change.
+  // confirm judge accuracy when prompt or model versions change. Uses the
+  // OAuth path with an empty token so the locally-logged-in `claude` CLI
+  // authenticates via its own keychain credentials.
   const runLive = process.env.RUN_JUDGE_LIVE_FIXTURES === '1';
-  (runLive ? it : it.skip).each(fixtures)('live judge returns expected status for $name', async (_fixture) => {
-    // Implementation deferred to Phase 2. Remove this throw when wiring runJudgeAgent.
-    throw new Error('Phase 2 not yet implemented: wire runJudgeAgent and remove this throw');
-  });
+  const liveModel = process.env.JUDGE_LIVE_MODEL ?? 'claude-opus-4-5';
+  (runLive ? it : it.skip).each(fixtures)('live judge returns expected status for $name', async (fixture) => {
+    const client = new AnthropicClient({ auth: { kind: 'oauth', token: '' }, model: liveModel });
+
+    const priorRound = roundContextFromLegacy({
+      round: 1,
+      commitSha: 'priorsha',
+      timestamp: '2025-01-01T00:00:00Z',
+      findings: [{
+        fingerprint: {
+          file: fixture.openThread.file,
+          lineStart: fixture.openThread.line,
+          lineEnd: fixture.openThread.line,
+          slug: titleToSlug(fixture.openThread.title),
+        },
+        severity: fixture.openThread.severity === 'unknown' ? 'warning' : fixture.openThread.severity,
+        title: fixture.openThread.title,
+        authorReply: 'none',
+        threadId: fixture.openThread.threadId,
+      }],
+    });
+
+    const systemPrompt = buildJudgeSystemPrompt(makeConfig(), 3, true, true);
+    const userMessage = buildJudgeUserMessage(
+      [],
+      new Map(),
+      '',
+      undefined,
+      undefined,
+      undefined,
+      [fixture.openThread],
+      [priorRound],
+      fixture.interRoundDiff,
+    );
+
+    const response = await client.sendMessage(systemPrompt, userMessage, { effort: 'high' });
+    const parsed = parseJudgeResponse(response.content);
+    const evaluation = parsed.threadEvaluations?.find(e => e.threadId === fixture.openThread.threadId);
+
+    const actualStatus = evaluation?.status ?? 'uncertain';
+    console.log(`[live-judge] ${fixture.name}: expected=${fixture.expectedStatus} actual=${actualStatus} reason=${JSON.stringify(evaluation?.reason ?? '')}`);
+
+    expect(evaluation).toBeDefined();
+    expect(actualStatus).toBe(fixture.expectedStatus);
+  }, 600_000);
 });
