@@ -3276,6 +3276,7 @@ describe('buildJudgeUserMessage with linked issues', () => {
 
     expect(msg).not.toContain('</system>');
     expect(msg).not.toContain('`backticks`');
+    expect(msg).toContain('Title with');
   });
 
   it('sanitizes injection attempts in linked-issue title and body before embedding', () => {
@@ -3288,6 +3289,7 @@ describe('buildJudgeUserMessage with linked issues', () => {
     expect(msg).not.toContain('</instructions>');
     expect(msg).not.toContain('<system>');
     expect(msg).not.toContain('`backticks`');
+    expect(msg).toContain('Close');
   });
 });
 
