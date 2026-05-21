@@ -1219,7 +1219,10 @@ export function applyCrossRoundSuppression(
 
     const ratchetMatch = acceptedPriors.find(({ finding: prior, source }) => {
       if (prior.fingerprint.file !== current.file) return false;
-      if (prior.fingerprint.slug === slug) return true;
+      if (prior.fingerprint.slug === slug) {
+        if (source === 'judge-addressed' && (current.severity === 'blocker' || current.severity === 'warning')) return false;
+        return true;
+      }
       // Resolved-thread and judge-addressed priors fall back to fuzzy line
       // proximity when the slug differs, since refactors can shift line
       // numbers and the same underlying concern may surface with a reworded

@@ -4025,6 +4025,57 @@ describe('applyCrossRoundSuppression', () => {
       expect(result.suppressedCount).toBe(0);
       expect(result.findings[0].severity).toBe('warning');
     });
+
+    it('does not suppress a current warning when a suggestion prior with matching slug is judge-addressed', () => {
+      const findings = [makeFinding({ title: 'Same slug issue', file: 'src/a.ts', line: 10, severity: 'warning' })];
+      const prior = [makePriorRound([{
+        fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Same slug issue') },
+        severity: 'suggestion',
+        title: 'Same slug issue',
+        authorReply: 'none',
+        threadId: 'TH2',
+      }])];
+
+      const result = applyCrossRoundSuppression(findings, prior, {
+        threadEvaluations: [{ threadId: 'TH2', status: 'addressed', reason: 'Fix landed.' }],
+      });
+      expect(result.suppressedCount).toBe(0);
+      expect(result.findings[0].severity).toBe('warning');
+    });
+
+    it('does not suppress a current blocker when a suggestion prior with matching slug is judge-addressed', () => {
+      const findings = [makeFinding({ title: 'Same slug issue', file: 'src/a.ts', line: 10, severity: 'blocker' })];
+      const prior = [makePriorRound([{
+        fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Same slug issue') },
+        severity: 'suggestion',
+        title: 'Same slug issue',
+        authorReply: 'none',
+        threadId: 'TH3',
+      }])];
+
+      const result = applyCrossRoundSuppression(findings, prior, {
+        threadEvaluations: [{ threadId: 'TH3', status: 'addressed', reason: 'Fix landed.' }],
+      });
+      expect(result.suppressedCount).toBe(0);
+      expect(result.findings[0].severity).toBe('blocker');
+    });
+
+    it('still suppresses a current suggestion when a suggestion prior with matching slug is judge-addressed', () => {
+      const findings = [makeFinding({ title: 'Same slug issue', file: 'src/a.ts', line: 10, severity: 'suggestion' })];
+      const prior = [makePriorRound([{
+        fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Same slug issue') },
+        severity: 'suggestion',
+        title: 'Same slug issue',
+        authorReply: 'none',
+        threadId: 'TH4',
+      }])];
+
+      const result = applyCrossRoundSuppression(findings, prior, {
+        threadEvaluations: [{ threadId: 'TH4', status: 'addressed', reason: 'Fix landed.' }],
+      });
+      expect(result.suppressedCount).toBe(1);
+      expect(result.findings[0].severity).toBe('ignore');
+    });
   });
 });
 
