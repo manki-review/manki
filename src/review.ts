@@ -706,7 +706,7 @@ export async function runReview(
       }
     } else {
       // Planner was attempted and failed. Force the fixed three-core roster.
-      team = heuristicFallback(diff, config, priorRoundAgents, true);
+      team = heuristicFallback(diff, config, undefined, true);
       if (onProgress) {
         emitHeuristicFallbackPlanning(onProgress, team, plannerDurationMs);
       }
