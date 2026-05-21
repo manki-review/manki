@@ -6,7 +6,7 @@
     "threadId": "PRRT_concern_moot",
     "title": "Possible division by zero",
     "file": "src/stats.ts",
-    "line": 18,
+    "line": 17,
     "severity": "warning",
     "description": "`computeAverage` divides by `samples.length` without checking that the array is non-empty. An empty input yields `NaN`.",
     "suggestedFix": "Add `if (samples.length === 0) return 0;` before the division.",
