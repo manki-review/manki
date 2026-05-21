@@ -62,24 +62,26 @@ export const AGENT_POOL: readonly ReviewerAgent[] = Object.freeze([
 // only a conservative default when no planner judgment is available.
 const FALLBACK_AGENTS: readonly number[] = Object.freeze([0, 1, 2]);
 
-// Path substrings that indicate security-sensitive files. Used as a code-level
+// Path segment prefixes that indicate security-sensitive files. Used as a code-level
 // backstop: if the planner omits Security & Safety but the diff touches one of
 // these paths, the agent is force-added regardless of planner output. This
 // guard is narrow by design: it only targets the Security agent and only fires
 // when a sensitive path is detected, so it cannot be silenced by prompt
 // injection in the PR content.
-const SECURITY_SENSITIVE_SUBSTRINGS: readonly string[] = Object.freeze([
+const SECURITY_SENSITIVE_PREFIXES: readonly string[] = Object.freeze([
   'auth', 'oauth', 'token', 'secret', 'credential', 'password', 'passwd',
-  'crypto', 'cipher', 'encrypt', 'decrypt', 'hash', 'hmac', 'sign', 'verify',
+  'crypto', 'cipher', 'encrypt', 'decrypt', 'hmac', 'sign',
   'jwt', 'session', 'cookie', 'permission', 'acl', 'rbac', 'privilege',
   'key', 'cert', 'tls', 'ssl', 'https',
 ]);
 
 function hasSensitivePaths(diff: ParsedDiff): boolean {
-  return diff.files.some(f => {
-    const lower = f.path.toLowerCase();
-    return SECURITY_SENSITIVE_SUBSTRINGS.some(sub => lower.includes(sub));
-  });
+  return diff.files.some(f =>
+    f.path.toLowerCase().split('/').some(segment => {
+      const base = segment.replace(/\.[^.]+$/, '');
+      return SECURITY_SENSITIVE_PREFIXES.some(prefix => base.startsWith(prefix));
+    }),
+  );
 }
 
 export const TRIVIAL_VERIFIER_AGENT: ReviewerAgent = Object.freeze({
