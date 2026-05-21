@@ -4198,12 +4198,11 @@ describe('judge thread-evaluation fixture corpus', () => {
     }
     // Three addressed variants (obvious fix, file deleted, refactor-mooted) plus one rewrite.
     expect(byStatus.get('addressed')?.length ?? 0).toBeGreaterThanOrEqual(3);
-    // not_addressed must include the adversarial injection case.
+    // not_addressed must include the adversarial injection case and the
+    // empty-inter-round-diff case (judge returns `not_addressed` directly
+    // for an empty diff, matching the `runJudgeAgent` override).
     expect(byStatus.get('not_addressed')).toEqual(expect.arrayContaining([
       expect.stringContaining('injection'),
-    ]));
-    // uncertain must cover the empty inter-round diff case.
-    expect(byStatus.get('uncertain')).toEqual(expect.arrayContaining([
       expect.stringContaining('empty'),
     ]));
   });

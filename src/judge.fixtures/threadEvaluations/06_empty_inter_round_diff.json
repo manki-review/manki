@@ -1,6 +1,6 @@
 {
   "name": "empty-inter-round-diff",
-  "expectedStatus": "uncertain",
+  "expectedStatus": "not_addressed",
   "expectedReasonHint": "no changes",
   "openThread": {
     "threadId": "PRRT_empty_diff",
