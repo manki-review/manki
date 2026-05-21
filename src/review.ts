@@ -11,7 +11,7 @@ import { extractJSON } from './json';
 
 const DISMISSED_LINE_TOLERANCE = 5;
 
-export const PLANNER_TIMEOUT_MS = 30_000;
+export const PLANNER_TIMEOUT_MS = 60_000;
 
 class PlannerTimeoutError extends Error {
   constructor() {
