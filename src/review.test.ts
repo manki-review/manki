@@ -748,6 +748,15 @@ describe('determineVerdict', () => {
       expect(result.verdictReason).toBe('prior_unaddressed');
     });
 
+    it('keeps `prior_unaddressed` for a blocker prior even when the judge marks it `addressed` (LLM verdict cannot retire blockers)', () => {
+      const priors = [makePriorWarning({ severity: 'blocker', title: 'Null deref', threadId: 'T_BLOCKER' })];
+      const open = [makeOpenThread({ threadId: 'T_BLOCKER', severity: 'blocker', title: 'Null deref' })];
+      const evaluations: ThreadEvaluation[] = [{ threadId: 'T_BLOCKER', status: 'addressed', reason: 'fix landed' }];
+      const result = determineVerdict([nitpick], fingerprintEntriesFromLegacy(priors), open, undefined, evaluations);
+      expect(result.verdict).toBe('REQUEST_CHANGES');
+      expect(result.verdictReason).toBe('prior_unaddressed');
+    });
+
     it('collapses multi-round priors by threadId, keeping the most recent round (round 2 agree wins over round 1 none)', () => {
       const round1: LegacyHandoverFindingFixture = {
         fingerprint: { file: 'src/x.ts', lineStart: 10, lineEnd: 10, slug: 'old-issue' },
