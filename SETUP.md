@@ -230,7 +230,7 @@ jobs:
   review:
     if: github.actor != 'manki-review[bot]'
     concurrency:
-      group: manki-${{ (github.event_name == 'issue_comment' && github.event.comment.id) || format('pr-{0}', github.event.pull_request.number || github.event.issue.number) || github.run_id }}
+      group: manki-${{ (github.event_name == 'issue_comment' && github.event.comment.id) || format('pr-{0}', github.event.pull_request.number || github.event.issue.number) }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
