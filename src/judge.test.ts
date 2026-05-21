@@ -4209,8 +4209,7 @@ describe('judge thread-evaluation fixture corpus', () => {
   // confirm judge accuracy when prompt or model versions change.
   const runLive = process.env.RUN_JUDGE_LIVE_FIXTURES === '1';
   (runLive ? it : it.skip).each(fixtures)('live judge returns expected status for $name', async (_fixture) => {
-    // Implementation deferred. The harness needs a real LLMClient wired here
-    // and is intentionally not bundled into the unit test suite until Phase 2.
-    expect(true).toBe(true);
+    // Implementation deferred to Phase 2. Remove this throw when wiring runJudgeAgent.
+    throw new Error('Phase 2 not yet implemented: wire runJudgeAgent and remove this throw');
   });
 });
