@@ -1599,12 +1599,14 @@ function isPriorLikelyUnresolved(
   // Order matters. `openThreadsUnknown` must short-circuit before
   // `resolvedThreadIds` because both signals come from the same recap scan,
   // so a failed live fetch cannot fall back to cached "resolved" state.
-  // Judge-addressed is checked last (and only when openThreads is known):
-  // an `addressed` evaluation is LLM-derived and must defer to the explicit
-  // `openThreads has(threadId)` signal when the live GitHub state still says
-  // the thread is open. That ordering protects against prompt-injection
-  // attempts that flip the judge verdict, since a still-open thread on
-  // GitHub blocks APPROVE regardless of what the judge concluded.
+  // Judge-addressed acts as an override for warning priors when the GitHub
+  // thread is still open: the author landed the fix in the inter-round diff
+  // without explicitly resolving the thread. The judge's `addressed` verdict
+  // is accepted because `buildJudgeUserMessage` sanitizes untrusted PR/issue
+  // prose before it reaches the judge, and the adversarial fixture corpus
+  // (05_injection_attempt_unfixed) gates regressions in the judge's resistance
+  // to injected text. Blocker priors are never retired by LLM signal alone;
+  // they require GitHub thread resolution or explicit author agreement.
   if (p.threadId && openThreadIds.has(p.threadId)) {
     if (p.severity !== 'blocker' && judgeAddressedByThreadId.has(p.threadId)) return false;
     return true;
