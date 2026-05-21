@@ -4182,6 +4182,7 @@ describe('judge thread-evaluation fixture corpus', () => {
 
   it.each(fixtures)('fixture $name is structurally valid', (fixture) => {
     expect(['addressed', 'not_addressed', 'uncertain']).toContain(fixture.expectedStatus);
+    // Fixture thread IDs use the PRRT_ sentinel prefix to distinguish them from real GitHub IDs.
     expect(fixture.openThread.threadId).toMatch(/^PRRT_/);
     expect(fixture.openThread.file).not.toHaveLength(0);
     expect(typeof fixture.interRoundDiff).toBe('string');
