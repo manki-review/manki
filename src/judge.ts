@@ -1219,10 +1219,10 @@ export function applyCrossRoundSuppression(
 
     const ratchetMatch = acceptedPriors.find(({ finding: prior, source }) => {
       if (prior.fingerprint.file !== current.file) return false;
-      if (prior.fingerprint.slug === slug) {
-        if (source === 'judge-addressed' && (current.severity === 'blocker' || current.severity === 'warning')) return false;
-        return true;
-      }
+      // LLM-derived signals must never suppress blocker or warning findings:
+      // only GitHub thread resolution carries enough trust for that.
+      if (source === 'judge-addressed' && (current.severity === 'blocker' || current.severity === 'warning')) return false;
+      if (prior.fingerprint.slug === slug) return true;
       // Resolved-thread and judge-addressed priors fall back to fuzzy line
       // proximity when the slug differs, since refactors can shift line
       // numbers and the same underlying concern may surface with a reworded
@@ -1233,7 +1233,6 @@ export function applyCrossRoundSuppression(
       // resolution.
       if (source !== 'resolved' && source !== 'judge-addressed') return false;
       if (current.severity === 'warning') return false;
-      if (source === 'judge-addressed' && current.severity === 'blocker') return false;
       return (
         current.line >= prior.fingerprint.lineStart - LINE_WINDOW
         && current.line <= prior.fingerprint.lineEnd + LINE_WINDOW
