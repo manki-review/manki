@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `determineVerdict` now grounds its addressed/not-addressed decision in the GitHub `isResolved` state, preventing zero-diff force-pushes from auto-resolving open warnings incorrectly (#758).
 - `Judge` kept counts and test-nit suppression surface accurately in the stats block (#773).
 - CI test flake in `plannerDurationMs` assertion resolved by relaxing the assertion to `>= 0` (#781).
+- The planner's team selection is now trusted. `selectTeam` no longer post-injects `{Security, Architecture, Correctness}` on top of the planner's picks, so a 3-agent plan stays a 3-agent review. The dashboard `Planner` line reports the actual resolved roster size instead of the planner-requested `teamSize`, matching the per-category breakdown. When the planner is unavailable, manki falls back to a conservative fixed `{Security, Architecture, Correctness}` roster. Closes [#784](https://github.com/manki-review/manki/issues/784).
 
 ### Action required for downstream installs
 
