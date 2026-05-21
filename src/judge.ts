@@ -1230,6 +1230,7 @@ export function applyCrossRoundSuppression(
       // from silently suppressing higher-severity findings.
       if (source !== 'resolved' && source !== 'judge-addressed') return false;
       if (current.severity === 'warning') return false;
+      if (source === 'judge-addressed' && current.severity === 'blocker') return false;
       return (
         current.line >= prior.fingerprint.lineStart - LINE_WINDOW
         && current.line <= prior.fingerprint.lineEnd + LINE_WINDOW

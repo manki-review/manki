@@ -4060,6 +4060,23 @@ describe('applyCrossRoundSuppression', () => {
       expect(result.findings[0].severity).toBe('blocker');
     });
 
+    it('does not suppress a current blocker via fuzzy proximity when a suggestion prior with different slug is judge-addressed', () => {
+      const findings = [makeFinding({ title: 'Null dereference crash', file: 'src/a.ts', line: 12, severity: 'blocker' })];
+      const prior = [makePriorRound([{
+        fingerprint: { file: 'src/a.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Missing null check') },
+        severity: 'suggestion',
+        title: 'Missing null check',
+        authorReply: 'none',
+        threadId: 'TH5',
+      }])];
+
+      const result = applyCrossRoundSuppression(findings, prior, {
+        threadEvaluations: [{ threadId: 'TH5', status: 'addressed', reason: 'Fix landed.' }],
+      });
+      expect(result.suppressedCount).toBe(0);
+      expect(result.findings[0].severity).toBe('blocker');
+    });
+
     it('still suppresses a current suggestion when a suggestion prior with matching slug is judge-addressed', () => {
       const findings = [makeFinding({ title: 'Same slug issue', file: 'src/a.ts', line: 10, severity: 'suggestion' })];
       const prior = [makePriorRound([{
