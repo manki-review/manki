@@ -62,6 +62,26 @@ export const AGENT_POOL: readonly ReviewerAgent[] = Object.freeze([
 // only a conservative default when no planner judgment is available.
 const FALLBACK_AGENTS: readonly number[] = Object.freeze([0, 1, 2]);
 
+// Path substrings that indicate security-sensitive files. Used as a code-level
+// backstop: if the planner omits Security & Safety but the diff touches one of
+// these paths, the agent is force-added regardless of planner output. This
+// guard is narrow by design: it only targets the Security agent and only fires
+// when a sensitive path is detected, so it cannot be silenced by prompt
+// injection in the PR content.
+const SECURITY_SENSITIVE_SUBSTRINGS: readonly string[] = Object.freeze([
+  'auth', 'oauth', 'token', 'secret', 'credential', 'password', 'passwd',
+  'crypto', 'cipher', 'encrypt', 'decrypt', 'hash', 'hmac', 'sign', 'verify',
+  'jwt', 'session', 'cookie', 'permission', 'acl', 'rbac', 'privilege',
+  'key', 'cert', 'tls', 'ssl', 'https',
+]);
+
+function hasSensitivePaths(diff: ParsedDiff): boolean {
+  return diff.files.some(f => {
+    const lower = f.path.toLowerCase();
+    return SECURITY_SENSITIVE_SUBSTRINGS.some(sub => lower.includes(sub));
+  });
+}
+
 export const TRIVIAL_VERIFIER_AGENT: ReviewerAgent = Object.freeze({
   name: 'Trivial Change Verifier',
   focus: 'Review this trivial change on two fronts: (1) check the actual content for issues appropriate to the change type — typos, stale references, broken markdown/links, incomplete renames; (2) verify the change is actually trivial as classified and flag any hidden behavior change, security implication, broken invariant, or missing test that would contradict that assessment.',
@@ -159,13 +179,23 @@ export function selectTeam(
     if (resolved.length > 0) {
       // Pin prior-round agents first (preserving their order), then append
       // any new planner picks. Deduplication keeps the prior order stable.
-      // The planner's selection stands as-is: no post-hoc injection of
-      // additional agents. The planner sees the full PR context and is
-      // trusted to pick the right specialists.
       const final: ReviewerAgent[] = [...priorAgents];
       for (const agent of resolved) {
         if (!final.some(u => u.name === agent.name)) final.push(agent);
       }
+
+      // Code-level security backstop: if the planner omitted Security & Safety
+      // but the diff touches security-sensitive paths, force-add it. The planner
+      // receives untrusted PR content and prompt injection in diff comments or
+      // string literals could suppress the security specialist on a sensitive
+      // change. This guard is path-based, not prompt-based, so it cannot be
+      // bypassed by injected instructions.
+      const securityAgent = pool.find(a => a.name === 'Security & Safety');
+      if (securityAgent && !final.some(a => a.name === 'Security & Safety') && hasSensitivePaths(diff)) {
+        if (!silent) core.info('Security & Safety force-added: planner omitted it but diff touches security-sensitive paths');
+        final.push(securityAgent);
+      }
+
       logPinAudit(final, priorNames, silent);
 
       let level: 'trivial' | 'small' | 'medium' | 'large';

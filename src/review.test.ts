@@ -5825,6 +5825,52 @@ describe('selectTeam planner-driven path', () => {
       'Performance & Efficiency',
     ]);
   });
+
+  it('force-adds Security & Safety when planner omits it and diff touches security-sensitive paths', () => {
+    const diff = makeDiff({
+      totalAdditions: 10,
+      totalDeletions: 5,
+      files: [{ path: 'src/auth/login.ts', changeType: 'modified', hunks: [] }],
+    });
+    const config = makeConfig();
+    const picks: AgentPick[] = [
+      { name: 'Correctness & Logic', effort: 'medium' },
+      { name: 'Architecture & Design', effort: 'low' },
+    ];
+    const roster = selectTeam(diff, config, undefined, 2, picks);
+    expect(roster.agents.map(a => a.name)).toContain('Security & Safety');
+  });
+
+  it('does not force-add Security & Safety when diff has no security-sensitive paths', () => {
+    const diff = makeDiff({
+      totalAdditions: 10,
+      totalDeletions: 5,
+      files: [{ path: 'src/formatting/pretty-print.ts', changeType: 'modified', hunks: [] }],
+    });
+    const config = makeConfig();
+    const picks: AgentPick[] = [
+      { name: 'Correctness & Logic', effort: 'medium' },
+      { name: 'Architecture & Design', effort: 'low' },
+    ];
+    const roster = selectTeam(diff, config, undefined, 2, picks);
+    expect(roster.agents.map(a => a.name)).not.toContain('Security & Safety');
+  });
+
+  it('does not duplicate Security & Safety when it is already in the planner picks', () => {
+    const diff = makeDiff({
+      totalAdditions: 10,
+      totalDeletions: 5,
+      files: [{ path: 'src/auth/session.ts', changeType: 'modified', hunks: [] }],
+    });
+    const config = makeConfig();
+    const picks: AgentPick[] = [
+      { name: 'Security & Safety', effort: 'high' },
+      { name: 'Correctness & Logic', effort: 'medium' },
+    ];
+    const roster = selectTeam(diff, config, undefined, 2, picks);
+    const secCount = roster.agents.filter(a => a.name === 'Security & Safety').length;
+    expect(secCount).toBe(1);
+  });
 });
 
 describe('selectTeam heuristic path (planner disabled)', () => {
