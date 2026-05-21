@@ -15,6 +15,7 @@ import { dynamicFence, LinkedIssue, titleToSlug } from './github';
 import { safeTruncate } from './utils';
 import { sanitize, titlesOverlap } from './recap';
 import { validateSeverity } from './review';
+import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DiffFile, Finding, FindingFingerprintEntry, FindingReachability, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, NoiseLevel, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, ParsedDiff, PrContext, ThreadEvaluation } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
@@ -832,7 +833,6 @@ export async function runJudgeAgent(
   inPrSuppressedCount?: number;
 }> {
   const { findings, diff, rawDiff, memory, prContext, linkedIssues, agentCount, isFollowUp, openThreads, priorRounds, inPrSuppressions, interRoundDiff, resolvedThreadIds, suppressResolvedThreads } = input;
-  const crossRoundOptions: CrossRoundSuppressionOptions = { resolvedThreadIds, suppressResolvedThreads };
   const provenanceMap = input.provenanceMap ?? (rawDiff ? computeProvenanceMap(priorRounds, rawDiff) : []);
 
   const hasOpenThreads = (openThreads?.length ?? 0) > 0;
@@ -875,6 +875,8 @@ export async function runJudgeAgent(
       reason: 'No code changes since prior review',
     }))
     : judgeResult.threadEvaluations;
+
+  const crossRoundOptions: CrossRoundSuppressionOptions = { resolvedThreadIds, suppressResolvedThreads, threadEvaluations };
 
   if (judgeResult.findings.length === 0) {
     if (findings.length > 0) {
@@ -1109,6 +1111,15 @@ export interface CrossRoundSuppressionOptions {
   resolvedThreadIds?: Set<string>;
   /** When true, treat resolved prior-round threads as accepted priors. */
   suppressResolvedThreads?: boolean;
+  /**
+   * Latest judge `threadEvaluations` keyed by prior `threadId`. When a prior
+   * `suggestion`/`nitpick` thread has `status: 'addressed'` here, it joins the
+   * accepted-priors set for ratchet (but never for contradiction). `blocker`
+   * and `warning` priors are intentionally excluded: an `addressed` signal
+   * alone is LLM-derived and must not silently retire higher-severity priors
+   * without GitHub thread resolution or explicit author agreement.
+   */
+  threadEvaluations?: ThreadEvaluation[];
 }
 
 /**
@@ -1137,14 +1148,18 @@ export function applyCrossRoundSuppression(
     return { findings, suppressedCount: 0, demotedCount: 0 };
   }
 
-  const { resolvedThreadIds, suppressResolvedThreads } = options;
+  const { resolvedThreadIds, suppressResolvedThreads, threadEvaluations } = options;
   const useResolved = suppressResolvedThreads === true && resolvedThreadIds !== undefined && resolvedThreadIds.size > 0;
+  const judgeIndex = indexThreadEvaluations(threadEvaluations);
 
   type Prior = {
     round: number;
     finding: FindingFingerprintEntry;
-    /** 'agree' priors keep the existing contradiction-citation behaviour; 'resolved' priors only ratchet. */
-    source: 'agree' | 'resolved';
+    /**
+     * 'agree' priors keep the existing contradiction-citation behaviour.
+     * 'resolved' and 'judge-addressed' priors only ratchet.
+     */
+    source: 'agree' | 'resolved' | 'judge-addressed';
   };
   const acceptedPriors: Prior[] = [];
   for (const round of priorRounds) {
@@ -1153,6 +1168,8 @@ export function applyCrossRoundSuppression(
         acceptedPriors.push({ round: round.meta.round, finding: f, source: 'agree' });
       } else if (useResolved && f.threadId && resolvedThreadIds!.has(f.threadId)) {
         acceptedPriors.push({ round: round.meta.round, finding: f, source: 'resolved' });
+      } else if ((f.severity === 'suggestion' || f.severity === 'nitpick') && isPriorAddressedByJudge(f, judgeIndex)) {
+        acceptedPriors.push({ round: round.meta.round, finding: f, source: 'judge-addressed' });
       }
     }
   }
@@ -1203,11 +1220,12 @@ export function applyCrossRoundSuppression(
     const ratchetMatch = acceptedPriors.find(({ finding: prior, source }) => {
       if (prior.fingerprint.file !== current.file) return false;
       if (prior.fingerprint.slug === slug) return true;
-      // Resolved-thread priors fall back to fuzzy line proximity when the slug
-      // differs, since refactors can shift line numbers and the same underlying
-      // concern may surface with a reworded title. Restricted to suggestion/nitpick
-      // to prevent proximity alone from silently suppressing higher-severity findings.
-      if (source !== 'resolved') return false;
+      // Resolved-thread and judge-addressed priors fall back to fuzzy line
+      // proximity when the slug differs, since refactors can shift line
+      // numbers and the same underlying concern may surface with a reworded
+      // title. Restricted to suggestion/nitpick to prevent proximity alone
+      // from silently suppressing higher-severity findings.
+      if (source !== 'resolved' && source !== 'judge-addressed') return false;
       if (current.severity === 'warning') return false;
       return (
         current.line >= prior.fingerprint.lineStart - LINE_WINDOW
