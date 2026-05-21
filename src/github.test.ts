@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 
-import { buildDashboard, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, truncateContextToFitBody, dynamicFence, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded } from './github';
+import { buildDashboard, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, truncateContextToFitBody, dynamicFence, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded } from './github';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { DEFAULT_CONFIG } from './config';
 
@@ -3685,5 +3685,87 @@ describe('isLockExpired', () => {
   it('returns false for a fresh comment when TTL is zero only when ages match exactly', () => {
     expect(isLockExpired('2026-05-22T12:00:00Z', 0, now)).toBe(false);
     expect(isLockExpired('2026-05-22T11:59:59Z', 0, now)).toBe(true);
+  });
+});
+
+describe('fetchPRComments', () => {
+  type Octokit = ReturnType<typeof import('@actions/github').getOctokit>;
+
+  function makeMockOctokit(comments: Array<{ id: number; body: string; updated_at: string }>) {
+    const octokit = {
+      rest: {
+        issues: {
+          listComments: jest.fn().mockResolvedValue({ data: comments }),
+        },
+      },
+    } as unknown as Octokit;
+    return octokit;
+  }
+
+  it('returns an empty array when there are no comments', async () => {
+    const octokit = makeMockOctokit([]);
+
+    const result = await fetchPRComments(octokit, 'owner', 'repo', 1);
+
+    expect(result).toEqual([]);
+  });
+
+  it('returns a single-element array unchanged', async () => {
+    const comment = { id: 1, body: 'hello', updated_at: '2026-05-22T12:00:00.000Z' };
+    const octokit = makeMockOctokit([comment]);
+
+    const result = await fetchPRComments(octokit, 'owner', 'repo', 1);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe(1);
+  });
+
+  it('sorts multiple comments by updated_at descending (newest first)', async () => {
+    const comments = [
+      { id: 1, body: 'oldest', updated_at: '2026-05-22T10:00:00.000Z' },
+      { id: 3, body: 'newest', updated_at: '2026-05-22T12:00:00.000Z' },
+      { id: 2, body: 'middle', updated_at: '2026-05-22T11:00:00.000Z' },
+    ];
+    const octokit = makeMockOctokit(comments);
+
+    const result = await fetchPRComments(octokit, 'owner', 'repo', 1);
+
+    expect(result.map(c => c.id)).toEqual([3, 2, 1]);
+  });
+
+  it('orders correctly when timestamps differ only in milliseconds', async () => {
+    const comments = [
+      { id: 1, body: 'earlier', updated_at: '2026-05-22T12:00:00.000Z' },
+      { id: 2, body: 'later',   updated_at: '2026-05-22T12:00:00.001Z' },
+    ];
+    const octokit = makeMockOctokit(comments);
+
+    const result = await fetchPRComments(octokit, 'owner', 'repo', 1);
+
+    expect(result.map(c => c.id)).toEqual([2, 1]);
+  });
+
+  it('propagates API rejection to the caller', async () => {
+    const octokit = {
+      rest: {
+        issues: {
+          listComments: jest.fn().mockRejectedValue(new Error('API error')),
+        },
+      },
+    } as unknown as Octokit;
+
+    await expect(fetchPRComments(octokit, 'owner', 'repo', 1)).rejects.toThrow('API error');
+  });
+
+  it('passes owner, repo, and prNumber to listComments', async () => {
+    const octokit = makeMockOctokit([]);
+
+    await fetchPRComments(octokit, 'my-owner', 'my-repo', 42);
+
+    expect(octokit.rest.issues.listComments).toHaveBeenCalledWith(expect.objectContaining({
+      owner: 'my-owner',
+      repo: 'my-repo',
+      issue_number: 42,
+    }));
   });
 });
