@@ -590,7 +590,7 @@ function heuristicFallback(
   forceFixedRoster?: boolean,
 ): TeamRoster {
   const team = forceFixedRoster
-    ? selectTeam(diff, config, undefined, 3, undefined, undefined)
+    ? selectTeam(diff, config, undefined, FALLBACK_AGENTS.length as 1 | 2 | 3 | 4 | 5 | 6 | 7, undefined, undefined)
     : selectTeam(diff, config, config.reviewers, undefined, undefined, priorRoundAgents);
   core.info(`Review team (${team.level}): ${team.agents.map(a => a.name).join(', ')}`);
   return team;
