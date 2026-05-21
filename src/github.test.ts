@@ -626,6 +626,25 @@ describe('formatContextBlock', () => {
     expect(result).not.toContain('`foo()`');
   });
 
+  it('surfaces threadEvaluations from the judge block in the hidden metadata payload', () => {
+    const ctx = makeContext({
+      judge: {
+        summary: 'Done.',
+        threadEvaluations: [
+          { threadId: 'PRRT_abc', status: 'addressed', reason: 'Fix landed in diff.' },
+          { threadId: 'PRRT_def', status: 'not_addressed', reason: 'Code still flags.' },
+        ],
+      },
+    });
+    const result = formatContextBlock(ctx, true);
+    const inner = result.slice('<!-- manki-context: '.length, -' -->'.length);
+    const parsed = JSON.parse(inner) as RoundContext;
+    expect(parsed.judge.threadEvaluations).toEqual([
+      { threadId: 'PRRT_abc', status: 'addressed', reason: 'Fix landed in diff.' },
+      { threadId: 'PRRT_def', status: 'not_addressed', reason: 'Code still flags.' },
+    ]);
+  });
+
 });
 
 describe('roundContextToFlatAliases', () => {

@@ -559,6 +559,13 @@ export interface RoundJudge {
   inPrSuppressedCount?: number;
   crossRoundSuppressed?: number;
   crossRoundDemoted?: number;
+  /**
+   * Per-open-thread judgment from the judge stage. Surfaced in the embedded
+   * round-context block so the resolution signal is observable post-hoc when
+   * debugging stuck reviews. Producers omit this field on rounds with no open
+   * threads. The downstream verdict logic treats this as advisory only.
+   */
+  threadEvaluations?: ThreadEvaluation[];
 }
 
 export interface RoundDedup {
