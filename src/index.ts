@@ -12,7 +12,7 @@ import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
 import { collectResolvedThreadIds, fetchRecapState, fingerprintFinding } from './recap';
 import { buildAgentPool, collectPriorRoundAgents, runReview, determineVerdict, selectTeam } from './review';
-import { DEFENSIVE_HARDENING_TAG, DashboardData, PrContext, ReviewMetadata, RoundContext, roundContextToFlatAliases } from './types';
+import { DEFENSIVE_HARDENING_TAG, DashboardData, PrContext, ReviewConfig, ReviewMetadata, RoundContext, roundContextToFlatAliases } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -224,16 +224,19 @@ async function run(): Promise<void> {
 }
 
 const DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS = 600;
+const MAX_CONCURRENCY_LOCK_TTL_SECONDS = 3600;
 
-function readConcurrencyLockTtlSeconds(): number {
+function readConcurrencyLockTtlSeconds(config?: ReviewConfig): number {
   const raw = core.getInput('concurrency_lock_ttl_seconds');
-  if (!raw) return DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS;
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n < 0) {
-    core.warning(`Invalid concurrency_lock_ttl_seconds=${raw}, using default ${DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS}`);
-    return DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS;
+  if (raw) {
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0 || n > MAX_CONCURRENCY_LOCK_TTL_SECONDS) {
+      core.warning(`Invalid concurrency_lock_ttl_seconds=${raw}, using default ${DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS}`);
+      return DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS;
+    }
+    return n;
   }
-  return n;
+  return config?.concurrency_lock_ttl_seconds ?? DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS;
 }
 
 /**
@@ -246,7 +249,7 @@ function readConcurrencyLockTtlSeconds(): number {
  * Returns `true` when the caller should bail.
  */
 async function checkConcurrentSubmissionLock(
-  octokit: Octokit, owner: string, repo: string, prNumber: number,
+  octokit: Octokit, owner: string, repo: string, prNumber: number, config?: ReviewConfig,
 ): Promise<boolean> {
   const currentRunId = github.context.runId;
   let lock;
@@ -258,7 +261,7 @@ async function checkConcurrentSubmissionLock(
   }
   if (!lock) return false;
 
-  const ttlSeconds = readConcurrencyLockTtlSeconds();
+  const ttlSeconds = readConcurrencyLockTtlSeconds(config);
   const now = new Date();
   if (isLockExpired(lock.updatedAt, ttlSeconds, now)) {
     core.info(`Ignoring stale in-progress marker from run ${lock.runId} (updated_at=${lock.updatedAt}, TTL=${ttlSeconds}s)`);
@@ -436,10 +439,6 @@ async function runFullReview(
     }
   }
 
-  if (await checkConcurrentSubmissionLock(octokit, owner, repo, prNumber)) {
-    return;
-  }
-
   const progressCommentId = await postProgressComment(octokit, owner, repo, prNumber);
 
   let dashboardFlushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -461,6 +460,11 @@ async function runFullReview(
       configContent = await fetchConfigFile(octokit, owner, repo, baseRef, '.manki.yml');
     }
     const config = loadConfig(configContent ?? undefined);
+
+    if (await checkConcurrentSubmissionLock(octokit, owner, repo, prNumber, config)) {
+      await octokit.rest.issues.deleteComment({ owner, repo, comment_id: progressCommentId });
+      return;
+    }
 
     if (github.context.eventName === 'pull_request' && !config.auto_review) {
       core.info('auto_review is disabled — skipping');

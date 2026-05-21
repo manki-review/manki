@@ -5490,10 +5490,16 @@ describe('runFullReview concurrent-submission lock', () => {
 
     await callRunFullReview();
 
-    expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
+    expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
+    expect(mockOctokitInstance.rest.issues.deleteComment).toHaveBeenCalled();
     expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
     const warnings = jest.mocked(core.warning).mock.calls.map(c => String(c[0]));
     expect(warnings.some(m => m.includes('999') && m.includes('Defense-in-depth'))).toBe(true);
+    expect(jest.mocked(ghUtils.isLockExpired)).toHaveBeenCalledWith(
+      '2026-05-22T11:59:00Z',
+      600,
+      expect.any(Date),
+    );
   });
 
   it('proceeds when the other run\'s marker is older than the TTL (TTL expiry)', async () => {
@@ -5546,5 +5552,45 @@ describe('runFullReview concurrent-submission lock', () => {
     expect(jest.mocked(ghUtils.updateProgressComment)).toHaveBeenCalled();
     const [, , , commentIdArg] = jest.mocked(ghUtils.updateProgressComment).mock.calls[0];
     expect(commentIdArg).toBe(1);
+  });
+
+  it('falls back to default TTL and emits a warning for a non-numeric action input', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) => {
+      if (name === 'anthropic_api_key') return 'test-api-key';
+      if (name === 'concurrency_lock_ttl_seconds') return 'not-a-number';
+      return '';
+    });
+    jest.mocked(ghUtils.findInProgressLock).mockResolvedValue({
+      runId: 999, updatedAt: '2026-05-22T11:59:00Z', commentId: 7,
+    });
+    jest.mocked(ghUtils.isLockExpired).mockReturnValue(false);
+
+    await callRunFullReview();
+
+    expect(jest.mocked(ghUtils.isLockExpired)).toHaveBeenCalledWith(
+      '2026-05-22T11:59:00Z', 600, expect.any(Date),
+    );
+    const warnings = jest.mocked(core.warning).mock.calls.map(c => String(c[0]));
+    expect(warnings.some(w => w.includes('Invalid concurrency_lock_ttl_seconds'))).toBe(true);
+  });
+
+  it('reads TTL from config when action input is absent', async () => {
+    jest.mocked(configModule.loadConfig).mockReturnValue({
+      auto_review: true, auto_approve: false, max_diff_lines: 5000,
+      exclude_paths: [], reviewers: [], instructions: '', review_level: 'auto',
+      review_thresholds: { small: 200, medium: 800 },
+      memory: { enabled: false, repo: '' },
+      concurrency_lock_ttl_seconds: 300,
+    });
+    jest.mocked(ghUtils.findInProgressLock).mockResolvedValue({
+      runId: 999, updatedAt: '2026-05-22T11:59:00Z', commentId: 7,
+    });
+    jest.mocked(ghUtils.isLockExpired).mockReturnValue(false);
+
+    await callRunFullReview();
+
+    expect(jest.mocked(ghUtils.isLockExpired)).toHaveBeenCalledWith(
+      '2026-05-22T11:59:00Z', 300, expect.any(Date),
+    );
   });
 });
