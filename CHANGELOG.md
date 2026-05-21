@@ -5,6 +5,16 @@ All notable changes to Manki will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Concurrent `manki.yml` runs triggered by different event types (e.g. `pull_request` + `pull_request_review`) on the same commit no longer race and submit conflicting reviews. The `concurrency.group` key in `.github/workflows/manki.yml` now drops `github.event_name`, so all PR-scoped events for a given PR share one queue, and `cancel-in-progress` is `false`, so newer events queue (replacing the older pending one) instead of cancelling the in-flight run (#776).
+
+### Action required for downstream installs
+
+- Update the `concurrency:` block in your `.github/workflows/manki.yml` to drop `github.event_name` from the `group` key and set `cancel-in-progress: false`. See [SETUP.md](SETUP.md#step-3-add-the-workflow) for the new snippet. Without this change, concurrent runs triggered by different event types (e.g. `pull_request` + `pull_request_review`) can race and submit conflicting reviews on the same commit. Closes [#776](https://github.com/manki-review/manki/issues/776).
+
 ## [5.0.1] - 2026-05-20
 
 ### Fixed
