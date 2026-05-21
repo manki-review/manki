@@ -462,7 +462,12 @@ async function runFullReview(
     const config = loadConfig(configContent ?? undefined);
 
     if (await checkConcurrentSubmissionLock(octokit, owner, repo, prNumber, config)) {
-      await octokit.rest.issues.deleteComment({ owner, repo, comment_id: progressCommentId });
+      try {
+        await octokit.rest.issues.deleteComment({ owner, repo, comment_id: progressCommentId });
+      } catch (e) {
+        core.warning(`Could not clean up progress comment on concurrent-submission bail: ${e instanceof Error ? e.message : e}`);
+      }
+      core.warning('Defense-in-depth lock engaged — this run will not post a review. If no review appears on the PR, re-trigger with `/manki review`.');
       return;
     }
 

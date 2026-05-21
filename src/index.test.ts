@@ -5593,4 +5593,18 @@ describe('runFullReview concurrent-submission lock', () => {
       '2026-05-22T11:59:00Z', 300, expect.any(Date),
     );
   });
+
+  it('warns and bails cleanly when deleteComment throws on the concurrent-submission bail path', async () => {
+    jest.mocked(ghUtils.findInProgressLock).mockResolvedValue({
+      runId: 999, updatedAt: '2026-05-22T11:59:00Z', commentId: 7,
+    });
+    jest.mocked(ghUtils.isLockExpired).mockReturnValue(false);
+    mockOctokitInstance.rest.issues.deleteComment.mockRejectedValueOnce(new Error('rate limited'));
+
+    await expect(callRunFullReview()).resolves.toBeUndefined();
+
+    const warnings = jest.mocked(core.warning).mock.calls.map(c => String(c[0]));
+    expect(warnings.some(w => w.includes('Could not clean up progress comment'))).toBe(true);
+    expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+  });
 });
