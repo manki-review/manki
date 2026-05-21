@@ -3686,6 +3686,17 @@ describe('findInProgressLock', () => {
 
     expect(result).toBeNull();
   });
+
+  it('returns the first (most recent) lock when multiple in-progress markers exist', async () => {
+    const { octokit } = makeOctokit([
+      { id: 20, body: makeInProgressBody(200), user: { type: 'Bot' }, updated_at: '2026-05-22T12:05:00Z' },
+      { id: 10, body: makeInProgressBody(100), user: { type: 'Bot' }, updated_at: '2026-05-22T11:55:00Z' },
+    ]);
+
+    const result = await findInProgressLock(octokit, 'o', 'r', 1, 42);
+
+    expect(result).toEqual({ runId: 200, updatedAt: '2026-05-22T12:05:00Z', commentId: 20 });
+  });
 });
 
 describe('isLockExpired', () => {

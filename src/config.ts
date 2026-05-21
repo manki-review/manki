@@ -280,8 +280,14 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
   }
 
   if ('concurrency_lock_ttl_seconds' in config) {
-    if (typeof config.concurrency_lock_ttl_seconds !== 'number' || !Number.isFinite(config.concurrency_lock_ttl_seconds) || config.concurrency_lock_ttl_seconds < 0) {
-      errors.push('`concurrency_lock_ttl_seconds` must be a non-negative number');
+    const MAX_LOCK_TTL_SECONDS = 3600;
+    if (
+      typeof config.concurrency_lock_ttl_seconds !== 'number' ||
+      !Number.isFinite(config.concurrency_lock_ttl_seconds) ||
+      config.concurrency_lock_ttl_seconds < 0 ||
+      config.concurrency_lock_ttl_seconds > MAX_LOCK_TTL_SECONDS
+    ) {
+      errors.push(`\`concurrency_lock_ttl_seconds\` must be a non-negative number ≤ ${MAX_LOCK_TTL_SECONDS}`);
     }
   }
 
