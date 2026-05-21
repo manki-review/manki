@@ -5491,8 +5491,7 @@ describe('runFullReview concurrent-submission lock', () => {
 
     await callRunFullReview();
 
-    expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
-    expect(mockOctokitInstance.rest.issues.deleteComment).toHaveBeenCalled();
+    expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
     expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
     const warnings = jest.mocked(core.warning).mock.calls.map(c => String(c[0]));
     expect(warnings.some(m => m.includes('999') && m.includes('Defense-in-depth'))).toBe(true);
@@ -5595,17 +5594,17 @@ describe('runFullReview concurrent-submission lock', () => {
     );
   });
 
-  it('warns and bails cleanly when deleteComment throws on the concurrent-submission bail path', async () => {
-    jest.mocked(ghUtils.findInProgressLock).mockReturnValue({
-      runId: 999, updatedAt: '2026-05-22T11:59:00Z', commentId: 7,
-    });
-    jest.mocked(ghUtils.isLockExpired).mockReturnValue(false);
-    mockOctokitInstance.rest.issues.deleteComment.mockRejectedValueOnce(new Error('rate limited'));
+  it('residual race window: both runs proceed when both pass the pre-post scan before either posts', async () => {
+    // Both scans see an empty comment list (neither has posted yet). The lock check
+    // returns null for both runs, so both proceed past the guard and post their
+    // own progress comments. This pins the residual semantics: when the race window
+    // is entered, both runs continue to completion rather than one bailing silently.
+    jest.mocked(ghUtils.findInProgressLock).mockReturnValue(null);
 
-    await expect(callRunFullReview()).resolves.toBeUndefined();
+    await callRunFullReview();
+    await callRunFullReview();
 
-    const warnings = jest.mocked(core.warning).mock.calls.map(c => String(c[0]));
-    expect(warnings.some(w => w.includes('Could not clean up progress comment'))).toBe(true);
-    expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+    expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalledTimes(2);
+    expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalledTimes(2);
   });
 });

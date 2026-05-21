@@ -440,6 +440,22 @@ async function runFullReview(
     }
   }
 
+  let configContent: string | null = null;
+  if (configPathInput) {
+    configContent = await fetchConfigFile(octokit, owner, repo, baseRef, configPathInput);
+  } else {
+    configContent = await fetchConfigFile(octokit, owner, repo, baseRef, '.manki.yml');
+  }
+  const config = loadConfig(configContent ?? undefined);
+
+  // Scan for a competing in-progress marker before posting our own to shorten
+  // the race window. A residual window remains when two runs both pass this scan
+  // before either posts; tracking issue for the strict atomic fix: https://github.com/manki-review/manki/issues/798
+  if (await checkConcurrentSubmissionLock(octokit, owner, repo, prNumber, config)) {
+    core.warning('Defense-in-depth lock engaged — this run will not post a review. If no review appears on the PR, re-trigger with `/manki review`.');
+    return;
+  }
+
   const progressCommentId = await postProgressComment(octokit, owner, repo, prNumber);
 
   let dashboardFlushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -452,24 +468,6 @@ async function runFullReview(
     const staleCount = await resolveStaleThreads(octokit, owner, repo, prNumber, commitSha);
     if (staleCount > 0) {
       core.info(`Resolved ${staleCount} stale review threads from previous commits`);
-    }
-
-    let configContent: string | null = null;
-    if (configPathInput) {
-      configContent = await fetchConfigFile(octokit, owner, repo, baseRef, configPathInput);
-    } else {
-      configContent = await fetchConfigFile(octokit, owner, repo, baseRef, '.manki.yml');
-    }
-    const config = loadConfig(configContent ?? undefined);
-
-    if (await checkConcurrentSubmissionLock(octokit, owner, repo, prNumber, config)) {
-      try {
-        await octokit.rest.issues.deleteComment({ owner, repo, comment_id: progressCommentId });
-      } catch (e) {
-        core.warning(`Could not clean up progress comment on concurrent-submission bail: ${e instanceof Error ? e.message : e}`);
-      }
-      core.warning('Defense-in-depth lock engaged — this run will not post a review. If no review appears on the PR, re-trigger with `/manki review`.');
-      return;
     }
 
     if (github.context.eventName === 'pull_request' && !config.auto_review) {
