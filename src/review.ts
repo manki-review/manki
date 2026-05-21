@@ -580,6 +580,11 @@ export async function runPlanner(
 function heuristicFallback(
   diff: ParsedDiff,
   config: ReviewConfig,
+  /**
+   * Agents from prior rounds to carry forward for continuity. Intentionally
+   * ignored when `forceFixedRoster=true` — the fixed failure roster must be
+   * exact, so prior-round pinning is suppressed on the planner-failure path.
+   */
   priorRoundAgents?: string[],
   /**
    * When `true`, ignore `review_level` and force the conservative fixed roster
