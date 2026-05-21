@@ -36,6 +36,7 @@ import {
   isApprovedOnCommit,
   markOwnProgressCommentCancelled,
   postAppWarningIfNeeded,
+  fetchPRComments,
   findInProgressLock,
   isLockExpired,
 } from './github';
@@ -253,7 +254,8 @@ async function checkConcurrentSubmissionLock(
   const currentRunId = github.context.runId;
   let lock;
   try {
-    lock = await findInProgressLock(octokit, owner, repo, prNumber, currentRunId);
+    const comments = await fetchPRComments(octokit, owner, repo, prNumber);
+    lock = findInProgressLock(comments, currentRunId);
   } catch (error) {
     core.warning(`Concurrency lock scan failed: ${error instanceof Error ? error.message : error}`);
     return false;

@@ -3599,103 +3599,71 @@ describe('cancelActiveReviewRun', () => {
 });
 
 describe('findInProgressLock', () => {
-  type Octokit = ReturnType<typeof import('@actions/github').getOctokit>;
-
   function makeInProgressBody(runId: number): string {
     return `${BOT_MARKER}\n<!-- manki-run-id:${runId} -->\n**Manki** — Review in progress`;
   }
 
-  interface MockComment {
-    id?: number;
-    body: string;
-    user: { login?: string; type: string };
-    updated_at?: string;
+  function makeComment(
+    id: number, body: string, login: string, type: string, updated_at: string,
+  ) {
+    return { id, body, user: { login, type }, updated_at };
   }
 
-  function makeOctokit(comments: MockComment[]) {
-    const listComments = jest.fn().mockResolvedValue({
-      data: comments.map((c, i) => ({
-        id: c.id ?? i + 1,
-        body: c.body,
-        updated_at: c.updated_at ?? '2026-01-01T00:00:00Z',
-        user: { login: c.user.login ?? (c.user.type === 'Bot' ? BOT_LOGIN : 'someone'), type: c.user.type },
-      })),
-    });
-    const octokit = { rest: { issues: { listComments } } } as unknown as Octokit;
-    return { octokit, listComments };
+  function botComment(id: number, body: string, updated_at = '2026-01-01T00:00:00Z') {
+    return makeComment(id, body, BOT_LOGIN, 'Bot', updated_at);
   }
 
-  it('returns null when no in-progress bot comment exists (lock acquisition)', async () => {
-    const { octokit } = makeOctokit([{ body: 'Some user comment', user: { type: 'User' } }]);
+  it('returns null when no in-progress bot comment exists (lock acquisition)', () => {
+    const comments = [makeComment(1, 'Some user comment', 'someone', 'User', '2026-01-01T00:00:00Z')];
 
-    const result = await findInProgressLock(octokit, 'o', 'r', 1, 42);
-
-    expect(result).toBeNull();
+    expect(findInProgressLock(comments, 42)).toBeNull();
   });
 
-  it('returns the lock when a different run posted an in-progress marker (contention)', async () => {
-    const { octokit } = makeOctokit([
-      { id: 7, body: makeInProgressBody(999), user: { type: 'Bot' }, updated_at: '2026-05-22T12:00:00Z' },
-    ]);
+  it('returns the lock when a different run posted an in-progress marker (contention)', () => {
+    const comments = [botComment(7, makeInProgressBody(999), '2026-05-22T12:00:00Z')];
 
-    const result = await findInProgressLock(octokit, 'o', 'r', 1, 42);
-
-    expect(result).toEqual({ runId: 999, updatedAt: '2026-05-22T12:00:00Z', commentId: 7 });
+    expect(findInProgressLock(comments, 42)).toEqual({ runId: 999, updatedAt: '2026-05-22T12:00:00Z', commentId: 7 });
   });
 
-  it('ignores the current run\'s own in-progress marker (self re-entry)', async () => {
-    const { octokit } = makeOctokit([
-      { id: 7, body: makeInProgressBody(42), user: { type: 'Bot' } },
-    ]);
+  it('ignores the current run\'s own in-progress marker (self re-entry)', () => {
+    const comments = [botComment(7, makeInProgressBody(42))];
 
-    const result = await findInProgressLock(octokit, 'o', 'r', 1, 42);
-
-    expect(result).toBeNull();
+    expect(findInProgressLock(comments, 42)).toBeNull();
   });
 
-  it('skips comments bearing terminal markers (complete, cancelled, force-review, force-cap)', async () => {
-    const { octokit } = makeOctokit([
-      { body: `${makeInProgressBody(101)}\n${REVIEW_COMPLETE_MARKER}`, user: { type: 'Bot' } },
-      { body: `${makeInProgressBody(102)}\n${CANCELLED_MARKER}`, user: { type: 'Bot' } },
-      { body: `${makeInProgressBody(103)}\n${FORCE_REVIEW_MARKER}`, user: { type: 'Bot' } },
-      { body: `${makeInProgressBody(104)}\n${FORCE_CAP_MARKER}`, user: { type: 'Bot' } },
-    ]);
+  it('skips comments bearing terminal markers (complete, cancelled, force-review, force-cap)', () => {
+    const comments = [
+      botComment(1, `${makeInProgressBody(101)}\n${REVIEW_COMPLETE_MARKER}`),
+      botComment(2, `${makeInProgressBody(102)}\n${CANCELLED_MARKER}`),
+      botComment(3, `${makeInProgressBody(103)}\n${FORCE_REVIEW_MARKER}`),
+      botComment(4, `${makeInProgressBody(104)}\n${FORCE_CAP_MARKER}`),
+    ];
 
-    const result = await findInProgressLock(octokit, 'o', 'r', 1, 42);
-
-    expect(result).toBeNull();
+    expect(findInProgressLock(comments, 42)).toBeNull();
   });
 
-  it('skips comments without a parseable run-id marker (legacy)', async () => {
-    const { octokit } = makeOctokit([
-      { body: `${BOT_MARKER}\n**Manki** — Review in progress`, user: { type: 'Bot' } },
-    ]);
+  it('skips comments without a parseable run-id marker (legacy)', () => {
+    const comments = [botComment(1, `${BOT_MARKER}\n**Manki** — Review in progress`)];
 
-    const result = await findInProgressLock(octokit, 'o', 'r', 1, 42);
-
-    expect(result).toBeNull();
+    expect(findInProgressLock(comments, 42)).toBeNull();
   });
 
-  it('skips comments that are not from the bot login', async () => {
-    const { octokit } = makeOctokit([
-      { body: makeInProgressBody(999), user: { login: 'github-actions[bot]', type: 'Bot' } },
-      { body: makeInProgressBody(888), user: { login: 'human', type: 'User' } },
-    ]);
+  it('skips comments that are not from the bot login', () => {
+    const comments = [
+      makeComment(1, makeInProgressBody(999), 'github-actions[bot]', 'Bot', '2026-01-01T00:00:00Z'),
+      makeComment(2, makeInProgressBody(888), 'human', 'User', '2026-01-01T00:00:00Z'),
+    ];
 
-    const result = await findInProgressLock(octokit, 'o', 'r', 1, 42);
-
-    expect(result).toBeNull();
+    expect(findInProgressLock(comments, 42)).toBeNull();
   });
 
-  it('returns the first (most recent) lock when multiple in-progress markers exist', async () => {
-    const { octokit } = makeOctokit([
-      { id: 20, body: makeInProgressBody(200), user: { type: 'Bot' }, updated_at: '2026-05-22T12:05:00Z' },
-      { id: 10, body: makeInProgressBody(100), user: { type: 'Bot' }, updated_at: '2026-05-22T11:55:00Z' },
-    ]);
+  it('returns the first (most recent) lock when multiple in-progress markers exist', () => {
+    const comments = [
+      botComment(20, makeInProgressBody(200), '2026-05-22T12:05:00Z'),
+      botComment(10, makeInProgressBody(100), '2026-05-22T11:55:00Z'),
+    ];
 
-    const result = await findInProgressLock(octokit, 'o', 'r', 1, 42);
-
-    expect(result).toEqual({ runId: 200, updatedAt: '2026-05-22T12:05:00Z', commentId: 20 });
+    expect(findInProgressLock(comments, 42)).toEqual({ runId: 200, updatedAt: '2026-05-22T12:05:00Z', commentId: 20 });
   });
 });
 

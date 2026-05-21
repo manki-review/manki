@@ -10,6 +10,13 @@ import { safeTruncate } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
+interface IssueComment {
+  id: number;
+  body?: string | null;
+  user?: { login?: string | null; type?: string } | null;
+  updated_at: string;
+}
+
 const BOT_LOGIN = 'manki-review[bot]';
 const ACTIONS_BOT_LOGIN = 'github-actions[bot]';
 const BOT_MARKER = '<!-- manki-bot -->';
@@ -1180,17 +1187,20 @@ interface ProgressComment {
   runId: number | null;
 }
 
+async function fetchPRComments(
+  octokit: Octokit, owner: string, repo: string, prNumber: number,
+): Promise<IssueComment[]> {
+  const { data } = await octokit.rest.issues.listComments({
+    owner, repo, issue_number: prNumber, per_page: 100,
+  });
+  return [...data].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+}
+
 /**
  * Find the most recent non-complete, non-cancelled progress comment posted by the bot.
  */
-async function findProgressComment(
-  octokit: Octokit, owner: string, repo: string, prNumber: number,
-): Promise<ProgressComment | null> {
-  const { data: comments } = await octokit.rest.issues.listComments({
-    owner, repo, issue_number: prNumber, per_page: 100,
-  });
-  const sorted = [...comments].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
-  const match = sorted.find(c =>
+function findProgressComment(comments: IssueComment[]): ProgressComment | null {
+  const match = comments.find(c =>
     c.user?.login === BOT_LOGIN &&
     c.user?.type === 'Bot' &&
     c.body?.includes(BOT_MARKER) &&
@@ -1216,7 +1226,8 @@ const ACTIVE_RUN_STATUSES = new Set([
 async function isReviewInProgress(octokit: Octokit, owner: string, repo: string, prNumber: number): Promise<boolean> {
   let progress: ProgressComment | null;
   try {
-    progress = await findProgressComment(octokit, owner, repo, prNumber);
+    const comments = await fetchPRComments(octokit, owner, repo, prNumber);
+    progress = findProgressComment(comments);
   } catch {
     return false;
   }
@@ -1278,14 +1289,8 @@ interface InProgressLock {
  * workflow-level `concurrency` group, which is best-effort and can let two
  * runs reach `in_progress` within the same scheduling window.
  */
-async function findInProgressLock(
-  octokit: Octokit, owner: string, repo: string, prNumber: number, currentRunId: number,
-): Promise<InProgressLock | null> {
-  const { data: comments } = await octokit.rest.issues.listComments({
-    owner, repo, issue_number: prNumber, per_page: 100,
-  });
-  const sorted = [...comments].sort((a, b) => b.updated_at.localeCompare(a.updated_at));
-  for (const c of sorted) {
+function findInProgressLock(comments: IssueComment[], currentRunId: number): InProgressLock | null {
+  for (const c of comments) {
     if (c.user?.login !== BOT_LOGIN || c.user?.type !== 'Bot') continue;
     if (!c.body?.includes(BOT_MARKER)) continue;
     if (c.body.includes(REVIEW_COMPLETE_MARKER)) continue;
@@ -1402,7 +1407,8 @@ async function cancelActiveReviewRun(
 ): Promise<boolean> {
   let progress: ProgressComment | null;
   try {
-    progress = await findProgressComment(octokit, owner, repo, prNumber);
+    const comments = await fetchPRComments(octokit, owner, repo, prNumber);
+    progress = findProgressComment(comments);
   } catch {
     return false;
   }
@@ -1441,5 +1447,5 @@ async function cancelActiveReviewRun(
   }
 }
 
-export { dynamicFence, formatContextBlock, formatFindingComment, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, findInProgressLock, isLockExpired, APP_WARNING_MARKER, postAppWarningIfNeeded };
+export { dynamicFence, formatContextBlock, formatFindingComment, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, APP_WARNING_MARKER, postAppWarningIfNeeded };
 export type { InProgressLock };

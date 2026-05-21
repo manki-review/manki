@@ -144,7 +144,8 @@ jest.mock('./github', () => ({
   markOwnProgressCommentCancelled: jest.fn().mockResolvedValue(false),
   postAppWarningIfNeeded: jest.fn().mockResolvedValue(undefined),
   cancelActiveReviewRun: jest.fn().mockResolvedValue(false),
-  findInProgressLock: jest.fn().mockResolvedValue(null),
+  fetchPRComments: jest.fn().mockResolvedValue([]),
+  findInProgressLock: jest.fn().mockReturnValue(null),
   isLockExpired: jest.fn().mockReturnValue(false),
   BOT_LOGIN: 'manki-review[bot]',
   ACTIONS_BOT_LOGIN: 'github-actions[bot]',
@@ -5462,7 +5463,7 @@ describe('runFullReview concurrent-submission lock', () => {
     jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion' });
     jest.mocked(reviewModule.selectTeam).mockReturnValue({ level: 'standard' as 'small', agents: [{ name: 'general', focus: '' }], lineCount: 0 });
     jest.mocked(ghUtils.postProgressComment).mockResolvedValue(1);
-    jest.mocked(ghUtils.findInProgressLock).mockResolvedValue(null);
+    jest.mocked(ghUtils.findInProgressLock).mockReturnValue(null);
     jest.mocked(ghUtils.isLockExpired).mockReturnValue(false);
   });
 
@@ -5474,7 +5475,7 @@ describe('runFullReview concurrent-submission lock', () => {
   }
 
   it('proceeds when no in-progress lock exists (lock acquisition)', async () => {
-    jest.mocked(ghUtils.findInProgressLock).mockResolvedValue(null);
+    jest.mocked(ghUtils.findInProgressLock).mockReturnValue(null);
 
     await callRunFullReview();
 
@@ -5483,7 +5484,7 @@ describe('runFullReview concurrent-submission lock', () => {
   });
 
   it('bails before any LLM call when a different run holds a fresh lock (contention)', async () => {
-    jest.mocked(ghUtils.findInProgressLock).mockResolvedValue({
+    jest.mocked(ghUtils.findInProgressLock).mockReturnValue({
       runId: 999, updatedAt: '2026-05-22T11:59:00Z', commentId: 7,
     });
     jest.mocked(ghUtils.isLockExpired).mockReturnValue(false);
@@ -5503,7 +5504,7 @@ describe('runFullReview concurrent-submission lock', () => {
   });
 
   it('proceeds when the other run\'s marker is older than the TTL (TTL expiry)', async () => {
-    jest.mocked(ghUtils.findInProgressLock).mockResolvedValue({
+    jest.mocked(ghUtils.findInProgressLock).mockReturnValue({
       runId: 999, updatedAt: '2026-05-22T10:00:00Z', commentId: 7,
     });
     jest.mocked(ghUtils.isLockExpired).mockReturnValue(true);
@@ -5515,7 +5516,7 @@ describe('runFullReview concurrent-submission lock', () => {
   });
 
   it('proceeds when the lock scan throws (fail-open)', async () => {
-    jest.mocked(ghUtils.findInProgressLock).mockRejectedValue(new Error('boom'));
+    jest.mocked(ghUtils.fetchPRComments).mockRejectedValueOnce(new Error('boom'));
 
     await callRunFullReview();
 
@@ -5528,7 +5529,7 @@ describe('runFullReview concurrent-submission lock', () => {
       if (name === 'concurrency_lock_ttl_seconds') return '120';
       return '';
     });
-    jest.mocked(ghUtils.findInProgressLock).mockResolvedValue({
+    jest.mocked(ghUtils.findInProgressLock).mockReturnValue({
       runId: 999, updatedAt: '2026-05-22T11:00:00Z', commentId: 7,
     });
     jest.mocked(ghUtils.isLockExpired).mockReturnValue(true);
@@ -5541,7 +5542,7 @@ describe('runFullReview concurrent-submission lock', () => {
   });
 
   it('transitions the in-progress marker to a terminal complete state on success (cleanup)', async () => {
-    jest.mocked(ghUtils.findInProgressLock).mockResolvedValue(null);
+    jest.mocked(ghUtils.findInProgressLock).mockReturnValue(null);
 
     await callRunFullReview();
 
@@ -5560,7 +5561,7 @@ describe('runFullReview concurrent-submission lock', () => {
       if (name === 'concurrency_lock_ttl_seconds') return 'not-a-number';
       return '';
     });
-    jest.mocked(ghUtils.findInProgressLock).mockResolvedValue({
+    jest.mocked(ghUtils.findInProgressLock).mockReturnValue({
       runId: 999, updatedAt: '2026-05-22T11:59:00Z', commentId: 7,
     });
     jest.mocked(ghUtils.isLockExpired).mockReturnValue(false);
@@ -5582,7 +5583,7 @@ describe('runFullReview concurrent-submission lock', () => {
       memory: { enabled: false, repo: '' },
       concurrency_lock_ttl_seconds: 300,
     });
-    jest.mocked(ghUtils.findInProgressLock).mockResolvedValue({
+    jest.mocked(ghUtils.findInProgressLock).mockReturnValue({
       runId: 999, updatedAt: '2026-05-22T11:59:00Z', commentId: 7,
     });
     jest.mocked(ghUtils.isLockExpired).mockReturnValue(false);
@@ -5595,7 +5596,7 @@ describe('runFullReview concurrent-submission lock', () => {
   });
 
   it('warns and bails cleanly when deleteComment throws on the concurrent-submission bail path', async () => {
-    jest.mocked(ghUtils.findInProgressLock).mockResolvedValue({
+    jest.mocked(ghUtils.findInProgressLock).mockReturnValue({
       runId: 999, updatedAt: '2026-05-22T11:59:00Z', commentId: 7,
     });
     jest.mocked(ghUtils.isLockExpired).mockReturnValue(false);
