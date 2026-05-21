@@ -3075,7 +3075,7 @@ describe('runFullReview orchestration', () => {
     expect(firstDashboard.heuristicFallback).toBeFalsy();
     expect(firstDashboard.phase).toBe('started');
     expect(firstDashboard.plannerInfo).toEqual(
-      expect.objectContaining({ teamSize: 2, reviewerEffort: 'medium' }),
+      expect.objectContaining({ agentCount: 2, reviewerEffort: 'medium' }),
     );
   });
 
@@ -3525,7 +3525,7 @@ describe('runFullReview orchestration', () => {
     const dashboardWithPlanner = dashboardCalls.find(call => call[4]?.plannerInfo !== undefined);
     expect(dashboardWithPlanner).toBeDefined();
     expect(dashboardWithPlanner![4].plannerInfo).toEqual({
-      teamSize: 3, reviewerEffort: 'low', judgeEffort: 'low', prType: 'chore',
+      agentCount: 3, reviewerEffort: 'low', judgeEffort: 'low', prType: 'chore',
     });
   });
 
