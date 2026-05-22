@@ -12,7 +12,7 @@ import { isEmptyInterRoundDiff, MAX_INTER_ROUND_DIFF_CHARS } from './judge';
 import { loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
 import { collectResolvedThreadIds, fetchRecapState, fingerprintFinding } from './recap';
 import { buildAgentPool, buildPriorRoundLookup, collectPriorRoundAgents, runReview, determineVerdict, selectTeam } from './review';
-import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DashboardData, OWN_PROPOSAL_TAG, PrContext, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewMetadata, RoundCap, RoundContext, RoundTrigger, ThreadResolutionOverrides, roundContextToFlatAliases } from './types';
+import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DashboardData, FullReviewOptions, OWN_PROPOSAL_TAG, PrContext, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewMetadata, RoundCap, RoundContext, RoundTrigger, ThreadResolutionOverrides, roundContextToFlatAliases } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -50,9 +50,7 @@ const ALLOWED_FINGERPRINT_TAGS = new Set<string>([
   RESOLVED_THREAD_SUPPRESSED_TAG,
 ]);
 
-type BypassHint = 'force_review' | 'skip_cap' | 'manual_review_command';
-
-function detectTickedMarker(body: string): 'FORCE_REVIEW_MARKER' | 'FORCE_CAP_MARKER' | null {
+export function detectTickedMarker(body: string): 'FORCE_REVIEW_MARKER' | 'FORCE_CAP_MARKER' | null {
   if (!body.includes('- [x] Force review')) return null;
   if (body.includes(FORCE_REVIEW_MARKER)) return 'FORCE_REVIEW_MARKER';
   if (body.includes(FORCE_CAP_MARKER)) return 'FORCE_CAP_MARKER';
@@ -318,10 +316,13 @@ async function handlePullRequest(): Promise<void> {
     baseBranch: pr.base.ref,
   };
 
-  await runFullReview(owner, repo, prNumber, commitSha, pr.base.ref, prContext, pr.user?.login);
+  await runFullReview(owner, repo, prNumber, commitSha, pr.base.ref, prContext, {
+    prAuthorLogin: pr.user?.login,
+    trigger: buildRoundTrigger(),
+  });
 }
 
-async function handleCommentTrigger(forceReview?: boolean, skipCap?: boolean, bypassHint?: BypassHint): Promise<void> {
+async function handleCommentTrigger(forceReview?: boolean, skipCap?: boolean, bypassHint?: FullReviewOptions['bypassHint']): Promise<void> {
   const payload = github.context.payload;
 
   if (!payload.issue?.pull_request) {
@@ -379,7 +380,13 @@ async function handleCommentTrigger(forceReview?: boolean, skipCap?: boolean, by
     baseBranch: pr.base.ref,
   };
 
-  await runFullReview(owner, repo, prNumber, pr.head.sha, pr.base.ref, prContext, pr.user?.login, forceReview, skipCap, bypassHint);
+  await runFullReview(owner, repo, prNumber, pr.head.sha, pr.base.ref, prContext, {
+    prAuthorLogin: pr.user?.login,
+    forceReview,
+    skipCap,
+    bypassHint,
+    trigger: buildRoundTrigger(),
+  });
 }
 
 function reconcileDashboardAgents(dashboard: DashboardData, names: string[]): void {
@@ -404,13 +411,10 @@ async function runFullReview(
   commitSha: string,
   baseRef: string,
   prContext?: PrContext,
-  prAuthorLogin?: string,
-  forceReview?: boolean,
-  skipCap?: boolean,
-  bypassHint?: BypassHint,
+  options: FullReviewOptions = {},
 ): Promise<void> {
+  const { prAuthorLogin, forceReview, skipCap, bypassHint, trigger = buildRoundTrigger() } = options;
   core.info(`Starting review for ${owner}/${repo}#${prNumber}`);
-  const trigger = buildRoundTrigger();
 
   const providerInputs = readProviderInputs();
 

@@ -593,6 +593,15 @@ export interface RoundCap {
   bypassReason?: 'within_cap' | 'force_review' | 'skip_cap' | 'manual_review_command';
 }
 
+/** Options forwarded from the dispatch site into `runFullReview`. */
+export interface FullReviewOptions {
+  prAuthorLogin?: string;
+  forceReview?: boolean;
+  skipCap?: boolean;
+  bypassHint?: 'force_review' | 'skip_cap' | 'manual_review_command';
+  trigger?: RoundTrigger;
+}
+
 /** Provenance of the event that triggered a round. */
 export interface RoundTrigger {
   /**

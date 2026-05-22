@@ -45551,6 +45551,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.detectTickedMarker = detectTickedMarker;
 exports.run = run;
 exports.handlePullRequest = handlePullRequest;
 exports.handleCommentTrigger = handleCommentTrigger;
@@ -45833,7 +45834,10 @@ async function handlePullRequest() {
         body: pr.body || '',
         baseBranch: pr.base.ref,
     };
-    await runFullReview(owner, repo, prNumber, commitSha, pr.base.ref, prContext, pr.user?.login);
+    await runFullReview(owner, repo, prNumber, commitSha, pr.base.ref, prContext, {
+        prAuthorLogin: pr.user?.login,
+        trigger: buildRoundTrigger(),
+    });
 }
 async function handleCommentTrigger(forceReview, skipCap, bypassHint) {
     const payload = github.context.payload;
@@ -45883,7 +45887,13 @@ async function handleCommentTrigger(forceReview, skipCap, bypassHint) {
         body: pr.body || '',
         baseBranch: pr.base.ref,
     };
-    await runFullReview(owner, repo, prNumber, pr.head.sha, pr.base.ref, prContext, pr.user?.login, forceReview, skipCap, bypassHint);
+    await runFullReview(owner, repo, prNumber, pr.head.sha, pr.base.ref, prContext, {
+        prAuthorLogin: pr.user?.login,
+        forceReview,
+        skipCap,
+        bypassHint,
+        trigger: buildRoundTrigger(),
+    });
 }
 function reconcileDashboardAgents(dashboard, names) {
     const existingByName = new Map(dashboard.agentProgress?.map(a => [a.name, a]) ?? []);
@@ -45899,9 +45909,9 @@ function reconcileDashboardAgents(dashboard, names) {
     dashboard.agentCount = reconciled.length;
     dashboard.agentProgress = reconciled;
 }
-async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContext, prAuthorLogin, forceReview, skipCap, bypassHint) {
+async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContext, options = {}) {
+    const { prAuthorLogin, forceReview, skipCap, bypassHint, trigger = buildRoundTrigger() } = options;
     core.info(`Starting review for ${owner}/${repo}#${prNumber}`);
-    const trigger = buildRoundTrigger();
     const providerInputs = readProviderInputs();
     if (!(0, providers_1.hasAnyProviderCredentials)(providerInputs)) {
         core.setFailed('No API key configured — set claude_code_oauth_token, anthropic_api_key, openai_oauth_token, openai_api_key, gemini_oauth_token, or gemini_api_key');
