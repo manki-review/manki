@@ -445,3 +445,12 @@ export function loadConfig(yamlContent: string | undefined): ReviewConfig {
 
   return loadConfigFromContent(yamlContent);
 }
+
+export function sanitizeForkConfig(config: ReviewConfig): ReviewConfig {
+  return {
+    ...config,
+    instructions: DEFAULT_CONFIG.instructions,
+    reviewers: [...DEFAULT_CONFIG.reviewers],
+    memory: { ...config.memory, repo: DEFAULT_CONFIG.memory.repo },
+  };
+}

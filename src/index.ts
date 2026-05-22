@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 import * as path from 'path';
 
 import { createAuthenticatedOctokit, getMemoryToken } from './auth';
-import { DEFAULT_CONFIG, loadConfig, loadConfigFromFile, resolveModel } from './config';
+import { loadConfig, loadConfigFromFile, sanitizeForkConfig, resolveModel } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
@@ -471,19 +471,15 @@ async function runFullReview(
     const configAbsPath = path.isAbsolute(configRelPath)
       ? configRelPath
       : path.join(cwd, configRelPath);
-    if (!path.isAbsolute(configRelPath)) {
-      const resolved = path.resolve(configAbsPath);
-      if (resolved !== cwd && !resolved.startsWith(cwd + path.sep)) {
-        core.warning(`\`config_path\` resolved outside workspace — ignoring`);
-        return;
-      }
+    const resolvedConfigPath = path.resolve(configAbsPath);
+    if (resolvedConfigPath !== cwd && !resolvedConfigPath.startsWith(cwd + path.sep)) {
+      core.warning(`\`config_path\` resolved outside workspace — using defaults`);
     }
-    const rawConfig = loadConfigFromFile(configAbsPath);
-    // Strip `instructions` — the config is read from the PR head (potentially
-    // from a fork), so the `instructions` field cannot be trusted as a
-    // repo-owner directive. Other fields such as `exclude_paths` affect scope
-    // only and are safe to accept from the PR head.
-    const config = { ...rawConfig, instructions: DEFAULT_CONFIG.instructions };
+    const effectiveConfigPath = (resolvedConfigPath === cwd || resolvedConfigPath.startsWith(cwd + path.sep))
+      ? configAbsPath
+      : path.join(cwd, '.manki.yml');
+    const rawConfig = loadConfigFromFile(effectiveConfigPath);
+    const config = sanitizeForkConfig(rawConfig);
 
     // Scan for a competing in-progress marker before posting our own to shorten
     // the race window. A residual window remains when two runs both pass this scan
