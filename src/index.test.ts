@@ -2437,6 +2437,42 @@ describe('runFullReview orchestration', () => {
     expect(ctx!.judge.retryCount).toBe(0);
   });
 
+  it('builds `perStage` with only present stages when planner and dedup are absent', async () => {
+    const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+
+    const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['security'] };
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'REQUEST_CHANGES', summary: 'Issues found',
+      findings: [finding], highlights: [], reviewComplete: true,
+      rawFindingCount: 1,
+      agentNames: ['security'],
+      allJudgedFindings: [finding], rawFindings: [finding],
+      agentUsage: new Map([
+        ['security', { inputTokens: 50, outputTokens: 10, cachedTokens: 0, reasoningTokens: 0 }],
+      ]),
+      judgeUsage: { inputTokens: 100, outputTokens: 25, cachedTokens: 0, reasoningTokens: 0 },
+      judgeDurationMs: 400,
+      judgeRetryCount: 0,
+    });
+    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
+
+    await callRunFullReview();
+
+    const ctx = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+    expect(ctx!.usage.perStage).toEqual({
+      reviewer: { inputTokens: 50, outputTokens: 10, totalTokens: 60 },
+      judge: { inputTokens: 100, outputTokens: 25, totalTokens: 125 },
+    });
+    expect(ctx!.usage.inputTokens).toBe(150);
+    expect(ctx!.usage.outputTokens).toBe(35);
+    expect(ctx!.usage.totalTokens).toBe(185);
+    expect(ctx!.usage.perStage).not.toHaveProperty('planner');
+    expect(ctx!.usage.perStage).not.toHaveProperty('dedup');
+  });
+
   it('passes nitpick findings through to postReview so they post inline', async () => {
     const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
