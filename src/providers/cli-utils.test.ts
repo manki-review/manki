@@ -131,11 +131,14 @@ describe('buildExitDiagnostics', () => {
   });
 
   it('caps the stdout tail at 500 chars and sanitizes workflow commands in it', () => {
-    const tail = '::warning::leaked\n' + 'z'.repeat(600);
-    const result = buildExitDiagnostics({ ...base, lastStdoutChunk: tail });
+    // The ::warning token sits inside the last 500 chars so sanitizeLogOutput — not the slice — removes it.
+    // longTail is 698 chars: 200 x's prefix (gets truncated) + 498 chars containing the warning token.
+    const tail = 'z'.repeat(200) + '\n::warning::leaked' + 'z'.repeat(280);
+    const longTail = 'x'.repeat(200) + tail;
+    const result = buildExitDiagnostics({ ...base, lastStdoutChunk: longTail });
     expect(result).not.toContain('::warning');
-    expect(result).not.toContain('z'.repeat(501));
-    expect(result).toContain('z'.repeat(500));
+    expect(result).toContain('[redacted-workflow-cmd]');
+    expect(result).not.toContain('x'.repeat(10));
   });
 
   it('omits the result.* field entirely when resultEvent is not passed', () => {
