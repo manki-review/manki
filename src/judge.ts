@@ -813,6 +813,36 @@ function validateThreadStatus(value: unknown): ThreadEvaluation['status'] {
   return 'not_addressed';
 }
 
+function missingThreadIds(
+  openThreads: OpenThread[],
+  threadEvaluations: ThreadEvaluation[] | undefined,
+): string[] {
+  const covered = new Set((threadEvaluations ?? []).map(t => t.threadId));
+  return openThreads.filter(t => !covered.has(t.threadId)).map(t => t.threadId);
+}
+
+function buildThreadEvaluationsReminder(openThreads: OpenThread[], missing: string[]): string {
+  return [
+    '## Retry: missing `threadEvaluations` entries',
+    '',
+    `Your previous response did not include a \`threadEvaluations\` entry for every open review thread. The contract requires exactly ${openThreads.length} entries, one per open thread. Missing thread IDs: ${missing.join(', ')}.`,
+    '',
+    'Return the same JSON response again, this time including one entry per missing thread. Use `uncertain` only when there is genuinely insufficient evidence to decide.',
+  ].join('\n');
+}
+
+function synthesizeMissingThreadEvaluations(
+  existing: ThreadEvaluation[] | undefined,
+  missing: string[],
+): ThreadEvaluation[] {
+  const synthesized: ThreadEvaluation[] = missing.map(threadId => ({
+    threadId,
+    status: 'uncertain' as const,
+    reason: 'judge omitted evaluation after retry',
+  }));
+  return [...(existing ?? []), ...synthesized];
+}
+
 function validateReachability(value: unknown): FindingReachability | undefined {
   if (value === 'reachable' || value === 'hypothetical' || value === 'unknown') {
     return value;
@@ -864,12 +894,36 @@ export async function runJudgeAgent(
   const systemPrompt = buildJudgeSystemPrompt(config, agentCount, isFollowUp, hasOpenThreads, config.noise_level);
   const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads, priorRounds, interRoundDiff);
 
-  const response = await client.sendMessage(systemPrompt, userMessage, { effort: input.effort ?? 'high' });
-  const judgeResult = parseJudgeResponse(response.content);
+  const effort = input.effort ?? 'high';
+  const response = await client.sendMessage(systemPrompt, userMessage, { effort });
+  let judgeResult = parseJudgeResponse(response.content);
 
   // Defense-in-depth: when the inter-round diff is empty, force every open
-  // thread to `not_addressed` regardless of what the LLM returned.
+  // thread to `not_addressed` regardless of what the LLM returned. The
+  // post-parse thread-coverage retry is skipped in that case since the
+  // synthetic override discards the LLM evaluations anyway.
   const overrideApplied = interRoundDiffEmpty && hasOpenThreads;
+
+  if (hasOpenThreads && !overrideApplied) {
+    const missing = missingThreadIds(openThreads!, judgeResult.threadEvaluations);
+    if (missing.length > 0) {
+      const reminder = buildThreadEvaluationsReminder(openThreads!, missing);
+      const retryUserMessage = `${userMessage}\n\n${reminder}`;
+      const retryResponse = await client.sendMessage(systemPrompt, retryUserMessage, { effort });
+      judgeResult = parseJudgeResponse(retryResponse.content);
+      const stillMissing = missingThreadIds(openThreads!, judgeResult.threadEvaluations);
+      if (stillMissing.length > 0) {
+        core.warning(
+          `Judge omitted threadEvaluations for ${stillMissing.length} of ${openThreads!.length} open threads after retry: ${stillMissing.join(', ')}. Synthesizing 'uncertain' entries.`,
+        );
+        judgeResult = {
+          ...judgeResult,
+          threadEvaluations: synthesizeMissingThreadEvaluations(judgeResult.threadEvaluations, stillMissing),
+        };
+      }
+    }
+  }
+
   const threadEvaluations = overrideApplied
     ? openThreads!.map(t => ({
       threadId: t.threadId,
