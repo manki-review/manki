@@ -1227,10 +1227,7 @@ export async function runReview(
   }
   const sortedPriorRounds = [...(priorRounds ?? [])].sort((a, b) => a.meta.round - b.meta.round);
   const priorFindingsFlat: FindingFingerprintEntry[] = sortedPriorRounds.flatMap(r => r.findings.entries);
-  const priorRoundLookup = new Map<FindingFingerprintEntry, number>();
-  for (const r of sortedPriorRounds) {
-    for (const e of r.findings.entries) priorRoundLookup.set(e, r.meta.round);
-  }
+  const priorRoundLookup = buildPriorRoundLookup(sortedPriorRounds);
   const { verdict, verdictReason, verdictTrace } = determineVerdict(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, judgeThreadEvaluations, priorRoundLookup);
 
   const summary = judgeSummary;
@@ -1637,6 +1634,17 @@ function dedupePriorFindings(priorRounds: FindingFingerprintEntry[]): FindingFin
   return Array.from(byKey.values());
 }
 
+/** Build a fingerprint-string → round-number lookup from a sorted array of prior rounds. */
+export function buildPriorRoundLookup(sortedPriorRounds: RoundContext[]): Map<string, number> {
+  const lookup = new Map<string, number>();
+  for (const r of sortedPriorRounds) {
+    for (const e of (r.findings.entries ?? [])) {
+      lookup.set(stringifyFindingFingerprint(e.fingerprint), r.meta.round);
+    }
+  }
+  return lookup;
+}
+
 /**
  * Pick a verdict plus a machine-readable reason.
  *
@@ -1705,7 +1713,7 @@ export function determineVerdict(
   openThreads?: OpenThread[] | null,
   resolvedThreadIds?: Set<string>,
   threadEvaluations?: ThreadEvaluation[],
-  priorRoundLookup?: Map<FindingFingerprintEntry, number>,
+  priorRoundLookup?: Map<string, number>,
 ): { verdict: ReviewVerdict; verdictReason: VerdictReason; verdictTrace: VerdictTrace } {
   const emptyTrace = (): VerdictTrace => ({
     survivingBlockers: [],
@@ -1760,9 +1768,9 @@ function findingToTraceEntry(f: Finding): VerdictTraceEntry {
 
 function priorToTraceEntry(
   p: FindingFingerprintEntry,
-  priorRoundLookup: Map<FindingFingerprintEntry, number> | undefined,
+  priorRoundLookup: Map<string, number> | undefined,
 ): VerdictTraceEntry {
-  const round = priorRoundLookup?.get(p);
+  const round = priorRoundLookup?.get(stringifyFindingFingerprint(p.fingerprint));
   return {
     file: p.fingerprint.file,
     title: p.title ?? '',

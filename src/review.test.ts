@@ -2,6 +2,7 @@ import {
   parseFindings,
   validateSeverity,
   determineVerdict,
+  stringifyFindingFingerprint,
   buildReviewerSystemPrompt,
   buildReviewerUserMessage,
   buildPlannerSystemPrompt,
@@ -25,7 +26,7 @@ import {
 } from './review';
 import * as core from '@actions/core';
 import { LinkedIssue, titleToSlug } from './github';
-import { Finding, FindingFingerprintEntry, RoundContext, OpenThread, ReviewerAgent, ReviewConfig, ParsedDiff, DiffFile, AgentPick, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES } from './types';
+import { Finding, RoundContext, OpenThread, ReviewerAgent, ReviewConfig, ParsedDiff, DiffFile, AgentPick, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES } from './types';
 import { fingerprintEntriesFromLegacy, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, roundContextFromLegacy } from './test-utils';
 import { runJudgeAgent, computeProvenanceMap } from './judge';
 import { applySuppressions } from './memory';
@@ -1008,7 +1009,7 @@ describe('determineVerdict', () => {
 
     it('populates `unresolvedPriors` (with `threadId` and `round`) on the `prior_unaddressed` branch', () => {
       const priors = fingerprintEntriesFromLegacy([priorWarning()]);
-      const lookup = new Map<FindingFingerprintEntry, number>([[priors[0], 4]]);
+      const lookup = new Map<string, number>([[stringifyFindingFingerprint(priors[0].fingerprint), 4]]);
       const { verdictTrace, verdictReason } = determineVerdict(
         [{ severity: 'nitpick', title: 'tiny', file: 'src/y.ts', line: 1, description: 'd', reviewers: ['r'] }],
         priors,

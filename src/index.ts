@@ -11,8 +11,8 @@ import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, 
 import { isEmptyInterRoundDiff, MAX_INTER_ROUND_DIFF_CHARS } from './judge';
 import { loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
 import { collectResolvedThreadIds, fetchRecapState, fingerprintFinding } from './recap';
-import { buildAgentPool, collectPriorRoundAgents, runReview, determineVerdict, selectTeam } from './review';
-import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DashboardData, FindingFingerprintEntry, OWN_PROPOSAL_TAG, PrContext, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewMetadata, RoundContext, ThreadResolutionOverrides, roundContextToFlatAliases } from './types';
+import { buildAgentPool, buildPriorRoundLookup, collectPriorRoundAgents, runReview, determineVerdict, selectTeam } from './review';
+import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DashboardData, OWN_PROPOSAL_TAG, PrContext, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewMetadata, RoundContext, ThreadResolutionOverrides, roundContextToFlatAliases } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -827,10 +827,7 @@ async function runFullReview(
 
     const sortedPriorRounds = [...recap.priorRounds].sort((a, b) => a.meta.round - b.meta.round);
     const priorFindingsFlat = sortedPriorRounds.flatMap(r => r.findings.entries ?? []);
-    const priorRoundLookup = new Map<FindingFingerprintEntry, number>();
-    for (const r of sortedPriorRounds) {
-      for (const e of (r.findings.entries ?? [])) priorRoundLookup.set(e, r.meta.round);
-    }
+    const priorRoundLookup = buildPriorRoundLookup(sortedPriorRounds);
     let escalationsApplied = 0;
     if (memory && memory.patterns.length > 0) {
       const beforeSeverities = result.findings.map(f => f.severity);
