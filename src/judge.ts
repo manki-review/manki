@@ -831,6 +831,7 @@ export async function runJudgeAgent(
   crossRoundSuppressed?: number;
   crossRoundDemoted?: number;
   inPrSuppressedCount?: number;
+  interRoundDiffEmptyOverride?: { applied: boolean; affectedThreadCount: number };
 }> {
   const { findings, diff, rawDiff, memory, prContext, linkedIssues, agentCount, isFollowUp, openThreads, priorRounds, inPrSuppressions, interRoundDiff, resolvedThreadIds, suppressResolvedThreads } = input;
   const provenanceMap = input.provenanceMap ?? (rawDiff ? computeProvenanceMap(priorRounds, rawDiff) : []);
@@ -868,13 +869,17 @@ export async function runJudgeAgent(
 
   // Defense-in-depth: when the inter-round diff is empty, force every open
   // thread to `not_addressed` regardless of what the LLM returned.
-  const threadEvaluations = interRoundDiffEmpty && hasOpenThreads
+  const overrideApplied = interRoundDiffEmpty && hasOpenThreads;
+  const threadEvaluations = overrideApplied
     ? openThreads!.map(t => ({
       threadId: t.threadId,
       status: 'not_addressed' as const,
       reason: 'No code changes since prior review',
     }))
     : judgeResult.threadEvaluations;
+  const interRoundDiffEmptyOverride = overrideApplied
+    ? { applied: true, affectedThreadCount: openThreads!.length }
+    : undefined;
 
   const crossRoundOptions: CrossRoundSuppressionOptions = { resolvedThreadIds, suppressResolvedThreads, threadEvaluations };
 
@@ -894,6 +899,7 @@ export async function runJudgeAgent(
       ...(earlySuppress.suppressedCount > 0 && { crossRoundSuppressed: earlySuppress.suppressedCount }),
       ...(earlySuppress.demotedCount > 0 && { crossRoundDemoted: earlySuppress.demotedCount }),
       ...(earlyInPrCount > 0 && { inPrSuppressedCount: earlyInPrCount }),
+      ...(interRoundDiffEmptyOverride && { interRoundDiffEmptyOverride }),
     };
   }
 
@@ -908,6 +914,7 @@ export async function runJudgeAgent(
     ...(suppression.suppressedCount > 0 && { crossRoundSuppressed: suppression.suppressedCount }),
     ...(suppression.demotedCount > 0 && { crossRoundDemoted: suppression.demotedCount }),
     ...(inPrCount > 0 && { inPrSuppressedCount: inPrCount }),
+    ...(interRoundDiffEmptyOverride && { interRoundDiffEmptyOverride }),
   };
 }
 

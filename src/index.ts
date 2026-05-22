@@ -12,7 +12,7 @@ import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
 import { collectResolvedThreadIds, fetchRecapState, fingerprintFinding } from './recap';
 import { buildAgentPool, collectPriorRoundAgents, runReview, determineVerdict, selectTeam } from './review';
-import { DEFENSIVE_HARDENING_TAG, DashboardData, PrContext, ReviewMetadata, RoundContext, roundContextToFlatAliases } from './types';
+import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DashboardData, OWN_PROPOSAL_TAG, PrContext, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewMetadata, RoundContext, roundContextToFlatAliases } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -880,8 +880,13 @@ async function runFullReview(
         - allJudged.length
       : 0;
     const defensiveHardeningCount = allJudged.filter(f => f.tags?.includes(DEFENSIVE_HARDENING_TAG)).length;
+    const ownProposalDemotedCount = allJudged.filter(f => f.tags?.includes(OWN_PROPOSAL_TAG)).length;
+    const contradictionDemotedCount = allJudged.filter(f => f.tags?.includes(CONTRADICTION_TAG)).length;
+    const ratchetSuppressedCount = allJudged.filter(f => f.tags?.includes(RATCHET_SUPPRESSED_TAG)).length;
+    const resolvedThreadSuppressedCount = allJudged.filter(f => f.tags?.includes(RESOLVED_THREAD_SUPPRESSED_TAG)).length;
     const crossRoundSuppressed = result.crossRoundSuppressed;
     const crossRoundDemoted = result.crossRoundDemoted;
+    const interRoundDiffEmptyOverride = result.interRoundDiffEmptyOverride;
     const inPrSuppressedCount = result.inPrSuppressedCount ?? 0;
     // File analysis metrics
     const fileTypes: Record<string, number> = {};
@@ -898,6 +903,12 @@ async function runFullReview(
       ...(f.reviewers[0] && { specialist: f.reviewers[0] }),
       ...(f.suggestedFix && { suggestedFix: f.suggestedFix.slice(0, 300) }),
       ...(f.title && { title: f.title.slice(0, 200) }),
+      ...(f.judgeNotes && { judgeNotes: f.judgeNotes.slice(0, 500) }),
+      ...(f.judgeConfidence && { judgeConfidence: f.judgeConfidence }),
+      ...(f.reachability && { reachability: f.reachability }),
+      ...(f.reachabilityReasoning && { reachabilityReasoning: f.reachabilityReasoning.slice(0, 500) }),
+      ...(f.tags && f.tags.length > 0 && { tags: [...f.tags] }),
+      ...(f.originalSeverity && { originalSeverity: f.originalSeverity }),
     }));
     const context: RoundContext = {
       meta: {
@@ -947,9 +958,14 @@ async function runFullReview(
         durationMs: judgeEndTime - reviewEndTime,
         ...(verdictReason && { verdictReason }),
         ...(defensiveHardeningCount > 0 && { defensiveHardeningCount }),
+        ...(ownProposalDemotedCount > 0 && { ownProposalDemotedCount }),
+        ...(contradictionDemotedCount > 0 && { contradictionDemotedCount }),
+        ...(ratchetSuppressedCount > 0 && { ratchetSuppressedCount }),
+        ...(resolvedThreadSuppressedCount > 0 && { resolvedThreadSuppressedCount }),
         ...(inPrSuppressedCount > 0 && { inPrSuppressedCount }),
         ...(crossRoundSuppressed != null && crossRoundSuppressed > 0 && { crossRoundSuppressed }),
         ...(crossRoundDemoted != null && crossRoundDemoted > 0 && { crossRoundDemoted }),
+        ...(interRoundDiffEmptyOverride && { interRoundDiffEmptyOverride }),
         ...(result.threadEvaluations && result.threadEvaluations.length > 0 && { threadEvaluations: result.threadEvaluations }),
       },
       dedup: {

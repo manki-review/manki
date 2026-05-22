@@ -1159,6 +1159,7 @@ export async function runReview(
   let judgeThreadEvaluations: ThreadEvaluation[] | undefined;
   let judgeCrossRoundSuppressed: number | undefined;
   let judgeCrossRoundDemoted: number | undefined;
+  let judgeInterRoundDiffEmptyOverride: { applied: boolean; affectedThreadCount: number } | undefined;
   let inPrSuppressedCount = 0;
   try {
     core.info(`Running judge on ${findingsForJudge.length} findings...`);
@@ -1187,6 +1188,7 @@ export async function runReview(
     judgeThreadEvaluations = judgeResult.threadEvaluations;
     judgeCrossRoundSuppressed = judgeResult.crossRoundSuppressed;
     judgeCrossRoundDemoted = judgeResult.crossRoundDemoted;
+    judgeInterRoundDiffEmptyOverride = judgeResult.interRoundDiffEmptyOverride;
     inPrSuppressedCount = judgeResult.inPrSuppressedCount ?? 0;
     finalFindings = judgeResult.findings.filter(f => f.severity !== 'ignore');
     core.info(`Judge complete: ${finalFindings.length} findings survived (${judgeResult.findings.length - finalFindings.length} ignored)`);
@@ -1265,6 +1267,7 @@ export async function runReview(
     agentResponseLengths,
     crossRoundSuppressed: judgeCrossRoundSuppressed,
     crossRoundDemoted: judgeCrossRoundDemoted,
+    ...(judgeInterRoundDiffEmptyOverride && { interRoundDiffEmptyOverride: judgeInterRoundDiffEmptyOverride }),
     ...(testNitSuppressedCount > 0 && { testNitSuppressedCount }),
   };
 }
