@@ -144,6 +144,9 @@ jest.mock('./github', () => ({
   markOwnProgressCommentCancelled: jest.fn().mockResolvedValue(false),
   postAppWarningIfNeeded: jest.fn().mockResolvedValue(undefined),
   cancelActiveReviewRun: jest.fn().mockResolvedValue(false),
+  fetchPRComments: jest.fn().mockResolvedValue([]),
+  findInProgressLock: jest.fn().mockReturnValue(null),
+  isLockExpired: jest.fn().mockReturnValue(false),
   BOT_LOGIN: 'manki-review[bot]',
   ACTIONS_BOT_LOGIN: 'github-actions[bot]',
   BOT_MARKER: '<!-- manki-bot -->',
@@ -1392,9 +1395,8 @@ describe('main', () => {
 
     await main();
 
-    expect(jest.mocked(core.warning)).toHaveBeenCalledWith(
-      'Manki encountered an error: Error: Something broke',
-    );
+    const warnings = jest.mocked(core.warning).mock.calls.map(c => String(c[0]));
+    expect(warnings.some(w => w.includes('Something broke'))).toBe(true);
   });
 
   it('does not call process.exit so exit code propagates to post step', async () => {
@@ -5430,5 +5432,189 @@ describe('force review checkbox', () => {
 
     expect(mockPullsGet).not.toHaveBeenCalled();
     expect(jest.mocked(ghUtils.reactToIssueComment)).not.toHaveBeenCalled();
+  });
+});
+
+describe('runFullReview concurrent-submission lock', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    _resetOctokitCache();
+    setContext({ eventName: 'pull_request', payload: { action: 'opened' } });
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'anthropic_api_key' ? 'test-api-key' : '',
+    );
+    jest.mocked(configModule.loadConfig).mockReturnValue({
+      auto_review: true, auto_approve: false, max_diff_lines: 5000,
+      exclude_paths: [], reviewers: [], instructions: '', review_level: 'auto',
+      review_thresholds: { small: 200, medium: 800 },
+      memory: { enabled: false, repo: '' },
+    });
+    const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [] };
+    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(authModule.getMemoryToken).mockReturnValue(null);
+    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], recapContext: '', priorRounds: [] });
+    jest.mocked(stateModule.resolveStaleThreads).mockResolvedValue(0);
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'APPROVE', summary: '', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
+    });
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion' });
+    jest.mocked(reviewModule.selectTeam).mockReturnValue({ level: 'standard' as 'small', agents: [{ name: 'general', focus: '' }], lineCount: 0 });
+    jest.mocked(ghUtils.postProgressComment).mockResolvedValue(1);
+    jest.mocked(ghUtils.findInProgressLock).mockReturnValue(null);
+    jest.mocked(ghUtils.isLockExpired).mockReturnValue(false);
+  });
+
+  function callRunFullReview(): Promise<void> {
+    return runFullReview(
+      'test-owner', 'test-repo', 42, 'abc123', 'main',
+      { title: 'Test PR', body: '', baseBranch: 'main' },
+    );
+  }
+
+  it('proceeds when no in-progress lock exists (lock acquisition)', async () => {
+    jest.mocked(ghUtils.findInProgressLock).mockReturnValue(null);
+
+    await callRunFullReview();
+
+    expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
+    expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
+  });
+
+  it('bails before any LLM call when a different run holds a fresh lock (contention)', async () => {
+    jest.mocked(ghUtils.findInProgressLock).mockReturnValue({
+      runId: 999, updatedAt: '2026-05-22T11:59:00Z', commentId: 7,
+    });
+    jest.mocked(ghUtils.isLockExpired).mockReturnValue(false);
+
+    await callRunFullReview();
+
+    expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
+    expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+    const warnings = jest.mocked(core.warning).mock.calls.map(c => String(c[0]));
+    expect(warnings.some(m => m.includes('999') && m.includes('Defense-in-depth'))).toBe(true);
+    expect(jest.mocked(ghUtils.isLockExpired)).toHaveBeenCalledWith(
+      '2026-05-22T11:59:00Z',
+      600,
+      expect.any(Date),
+    );
+  });
+
+  it('proceeds when the other run\'s marker is older than the TTL (TTL expiry)', async () => {
+    jest.mocked(ghUtils.findInProgressLock).mockReturnValue({
+      runId: 999, updatedAt: '2026-05-22T10:00:00Z', commentId: 7,
+    });
+    jest.mocked(ghUtils.isLockExpired).mockReturnValue(true);
+
+    await callRunFullReview();
+
+    expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
+    expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
+  });
+
+  it('proceeds when the lock scan throws (fail-open)', async () => {
+    jest.mocked(ghUtils.fetchPRComments).mockRejectedValueOnce(new Error('boom'));
+
+    await callRunFullReview();
+
+    expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
+  });
+
+  it('reads the TTL from the `concurrency_lock_ttl_seconds` action input', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) => {
+      if (name === 'anthropic_api_key') return 'test-api-key';
+      if (name === 'concurrency_lock_ttl_seconds') return '120';
+      return '';
+    });
+    jest.mocked(ghUtils.findInProgressLock).mockReturnValue({
+      runId: 999, updatedAt: '2026-05-22T11:00:00Z', commentId: 7,
+    });
+    jest.mocked(ghUtils.isLockExpired).mockReturnValue(true);
+
+    await callRunFullReview();
+
+    expect(jest.mocked(ghUtils.isLockExpired)).toHaveBeenCalledWith(
+      '2026-05-22T11:00:00Z', 120, expect.any(Date),
+    );
+  });
+
+  it('transitions the in-progress marker to a terminal complete state on success (cleanup)', async () => {
+    jest.mocked(ghUtils.findInProgressLock).mockReturnValue(null);
+
+    await callRunFullReview();
+
+    // The successful run posts the progress marker, then `updateProgressComment`
+    // freezes that same comment to the terminal "Review complete" state — the
+    // existing cleanup path. Both must run on the lock-holder's happy path.
+    expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
+    expect(jest.mocked(ghUtils.updateProgressComment)).toHaveBeenCalled();
+    const [, , , commentIdArg] = jest.mocked(ghUtils.updateProgressComment).mock.calls[0];
+    expect(commentIdArg).toBe(1);
+  });
+
+  it('falls back to default TTL and emits a warning for a non-numeric action input', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) => {
+      if (name === 'anthropic_api_key') return 'test-api-key';
+      if (name === 'concurrency_lock_ttl_seconds') return 'not-a-number';
+      return '';
+    });
+    jest.mocked(ghUtils.findInProgressLock).mockReturnValue({
+      runId: 999, updatedAt: '2026-05-22T11:59:00Z', commentId: 7,
+    });
+    jest.mocked(ghUtils.isLockExpired).mockReturnValue(false);
+
+    await callRunFullReview();
+
+    expect(jest.mocked(ghUtils.isLockExpired)).toHaveBeenCalledWith(
+      '2026-05-22T11:59:00Z', 600, expect.any(Date),
+    );
+    const warnings = jest.mocked(core.warning).mock.calls.map(c => String(c[0]));
+    expect(warnings.some(w => w.includes('Invalid concurrency_lock_ttl_seconds'))).toBe(true);
+  });
+
+  it('reads TTL from config when action input is absent', async () => {
+    jest.mocked(configModule.loadConfig).mockReturnValue({
+      auto_review: true, auto_approve: false, max_diff_lines: 5000,
+      exclude_paths: [], reviewers: [], instructions: '', review_level: 'auto',
+      review_thresholds: { small: 200, medium: 800 },
+      memory: { enabled: false, repo: '' },
+      concurrency_lock_ttl_seconds: 300,
+    });
+    jest.mocked(ghUtils.findInProgressLock).mockReturnValue({
+      runId: 999, updatedAt: '2026-05-22T11:59:00Z', commentId: 7,
+    });
+    jest.mocked(ghUtils.isLockExpired).mockReturnValue(false);
+
+    await callRunFullReview();
+
+    expect(jest.mocked(ghUtils.isLockExpired)).toHaveBeenCalledWith(
+      '2026-05-22T11:59:00Z', 300, expect.any(Date),
+    );
+  });
+
+  it('residual race window: both runs proceed when both pass the pre-post scan before either posts', async () => {
+    // Both scans see an empty comment list (neither has posted yet). The lock check
+    // returns null for both runs, so both proceed past the guard and post their
+    // own progress comments. This pins the residual semantics: when the race window
+    // is entered, both runs continue to completion rather than one bailing silently.
+    jest.mocked(ghUtils.findInProgressLock).mockReturnValue(null);
+
+    await callRunFullReview();
+    await callRunFullReview();
+
+    expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalledTimes(2);
+    expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not propagate uncaught when fetchConfigFile throws — catch path runs instead', async () => {
+    jest.mocked(ghUtils.fetchConfigFile).mockRejectedValueOnce(new Error('GitHub API rate limit'));
+
+    await expect(callRunFullReview()).resolves.toBeUndefined();
+
+    const warnings = jest.mocked(core.warning).mock.calls.map(c => String(c[0]));
+    expect(warnings.some(w => w.includes('Review failed'))).toBe(true);
+    expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
+    expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
   });
 });

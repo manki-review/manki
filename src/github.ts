@@ -10,6 +10,13 @@ import { safeTruncate } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
+interface IssueComment {
+  id: number;
+  body?: string | null;
+  user?: { login?: string | null; type?: string } | null;
+  updated_at: string;
+}
+
 const BOT_LOGIN = 'manki-review[bot]';
 const ACTIONS_BOT_LOGIN = 'github-actions[bot]';
 const BOT_MARKER = '<!-- manki-bot -->';
@@ -1183,15 +1190,19 @@ interface ProgressComment {
   runId: number | null;
 }
 
+async function fetchPRComments(
+  octokit: Octokit, owner: string, repo: string, prNumber: number,
+): Promise<IssueComment[]> {
+  const { data } = await octokit.rest.issues.listComments({
+    owner, repo, issue_number: prNumber, per_page: 100,
+  });
+  return [...data].sort((a, b) => (a.updated_at < b.updated_at ? 1 : a.updated_at > b.updated_at ? -1 : 0));
+}
+
 /**
  * Find the most recent non-complete, non-cancelled progress comment posted by the bot.
  */
-async function findProgressComment(
-  octokit: Octokit, owner: string, repo: string, prNumber: number,
-): Promise<ProgressComment | null> {
-  const { data: comments } = await octokit.rest.issues.listComments({
-    owner, repo, issue_number: prNumber, per_page: 100, direction: 'desc',
-  });
+function findProgressComment(comments: IssueComment[]): ProgressComment | null {
   const match = comments.find(c =>
     c.user?.login === BOT_LOGIN &&
     c.user?.type === 'Bot' &&
@@ -1218,7 +1229,8 @@ const ACTIVE_RUN_STATUSES = new Set([
 async function isReviewInProgress(octokit: Octokit, owner: string, repo: string, prNumber: number): Promise<boolean> {
   let progress: ProgressComment | null;
   try {
-    progress = await findProgressComment(octokit, owner, repo, prNumber);
+    const comments = await fetchPRComments(octokit, owner, repo, prNumber);
+    progress = findProgressComment(comments);
   } catch {
     return false;
   }
@@ -1260,6 +1272,54 @@ async function isReviewInProgress(octokit: Octokit, owner: string, repo: string,
 }
 
 /**
+ * Lock info for an in-progress marker comment posted by a different run.
+ */
+interface InProgressLock {
+  runId: number;
+  updatedAt: string;
+  commentId: number;
+}
+
+/**
+ * Scan the PR's bot comments for an in-progress marker carrying a `manki-run-id`
+ * that differs from `currentRunId`. Returns the most recent such comment, or
+ * null when none is found. Skips terminal-state comments (complete, cancelled,
+ * force-review / force-cap stubs) and comments whose run id cannot be parsed.
+ *
+ * Used as a defense-in-depth check at the review entry point: if a sibling run
+ * has already announced "Review in progress" within the configured TTL, the
+ * current run bails before any LLM cost is incurred. This complements the
+ * workflow-level `concurrency` group, which is best-effort and can let two
+ * runs reach `in_progress` within the same scheduling window.
+ */
+function findInProgressLock(comments: IssueComment[], currentRunId: number): InProgressLock | null {
+  for (const c of comments) {
+    if (c.user?.login !== BOT_LOGIN || c.user?.type !== 'Bot') continue;
+    if (!c.body?.includes(BOT_MARKER)) continue;
+    if (c.body.includes(REVIEW_COMPLETE_MARKER)) continue;
+    if (c.body.includes(CANCELLED_MARKER)) continue;
+    if (c.body.includes(FORCE_REVIEW_MARKER)) continue;
+    if (c.body.includes(FORCE_CAP_MARKER)) continue;
+    const runId = extractRunIdFromBody(c.body);
+    if (runId === null) continue;
+    if (runId === currentRunId) continue;
+    return { runId, updatedAt: c.updated_at, commentId: c.id };
+  }
+  return null;
+}
+
+/**
+ * True when `updatedAt` is older than `ttlSeconds` relative to `now`. Used to
+ * ignore in-progress markers from runs that crashed without clearing their
+ * lock, so a single stale comment cannot wedge the PR indefinitely.
+ */
+function isLockExpired(updatedAt: string, ttlSeconds: number, now: Date): boolean {
+  const updated = Date.parse(updatedAt);
+  if (!Number.isFinite(updated)) return true;
+  return (now.getTime() - updated) / 1000 > ttlSeconds;
+}
+
+/**
  * Post-step cleanup: find our run's progress comment and mark it as cancelled.
  * Invoked when GitHub Actions cancels the main step.
  */
@@ -1268,7 +1328,7 @@ async function markOwnProgressCommentCancelled(
 ): Promise<boolean> {
   try {
     const { data: comments } = await octokit.rest.issues.listComments({
-      owner, repo, issue_number: prNumber, per_page: 100, direction: 'desc',
+      owner, repo, issue_number: prNumber, per_page: 100,
     });
     const target = comments.find(c =>
       c.user?.login === BOT_LOGIN &&
@@ -1350,7 +1410,8 @@ async function cancelActiveReviewRun(
 ): Promise<boolean> {
   let progress: ProgressComment | null;
   try {
-    progress = await findProgressComment(octokit, owner, repo, prNumber);
+    const comments = await fetchPRComments(octokit, owner, repo, prNumber);
+    progress = findProgressComment(comments);
   } catch {
     return false;
   }
@@ -1389,4 +1450,5 @@ async function cancelActiveReviewRun(
   }
 }
 
-export { dynamicFence, formatContextBlock, formatFindingComment, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, APP_WARNING_MARKER, postAppWarningIfNeeded };
+export { dynamicFence, formatContextBlock, formatFindingComment, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, APP_WARNING_MARKER, postAppWarningIfNeeded };
+export type { InProgressLock };

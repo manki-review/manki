@@ -6,6 +6,8 @@ import { ReviewerAgent, ReviewConfig } from './types';
 // TODO: layering, temporary import from review.ts, cleanup tracked at https://github.com/manki-review/manki/issues/676
 import { buildAgentPool } from './review';
 
+export const MAX_LOCK_TTL_SECONDS = 3600;
+
 export const DEFAULT_CONFIG: ReviewConfig = {
   auto_review: true,
   auto_approve: true,
@@ -38,6 +40,7 @@ export const DEFAULT_CONFIG: ReviewConfig = {
   stats: {
     hidden: false,
   },
+  concurrency_lock_ttl_seconds: 600,
 };
 
 const KNOWN_KEYS = new Set([
@@ -57,6 +60,7 @@ const KNOWN_KEYS = new Set([
   'review_passes',
   'convergence',
   'stats',
+  'concurrency_lock_ttl_seconds',
 ]);
 
 const REPO_FORMAT = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
@@ -274,6 +278,17 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
       if ('hidden' in stats && typeof stats.hidden !== 'boolean') {
         errors.push('`stats.hidden` must be a boolean');
       }
+    }
+  }
+
+  if ('concurrency_lock_ttl_seconds' in config) {
+    if (
+      typeof config.concurrency_lock_ttl_seconds !== 'number' ||
+      !Number.isFinite(config.concurrency_lock_ttl_seconds) ||
+      config.concurrency_lock_ttl_seconds < 0 ||
+      config.concurrency_lock_ttl_seconds > MAX_LOCK_TTL_SECONDS
+    ) {
+      errors.push(`\`concurrency_lock_ttl_seconds\` must be a non-negative number ≤ ${MAX_LOCK_TTL_SECONDS}`);
     }
   }
 

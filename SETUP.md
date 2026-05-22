@@ -312,7 +312,7 @@ models:
 
 ### Action inputs
 
-The workflow above uses the only inputs most setups need: a provider credential (e.g. `anthropic_api_key`, `openai_api_key`, `gemini_api_key`, or one of the OAuth equivalents), `github_token` (only if you skipped the GitHub App), and optionally `memory_repo_token`. To point at a config file outside the repo root, set `config_path` (default: `.manki.yml`). For GitHub App identity, set `github_app_id`, `github_app_private_key`, and `manki_token_url`. See [`action.yml`](action.yml) for the full input reference.
+The workflow above uses the only inputs most setups need: a provider credential (e.g. `anthropic_api_key`, `openai_api_key`, `gemini_api_key`, or one of the OAuth equivalents), `github_token` (only if you skipped the GitHub App), and optionally `memory_repo_token`. To point at a config file outside the repo root, set `config_path` (default: `.manki.yml`). For GitHub App identity, set `github_app_id`, `github_app_private_key`, and `manki_token_url`. To tune the in-app concurrent-submission lock TTL (defense in depth against simultaneous-start races on top of the workflow `concurrency` group), set `concurrency_lock_ttl_seconds` (default: 600). See [`action.yml`](action.yml) for the full input reference.
 
 ### Action outputs
 
@@ -358,7 +358,7 @@ The self-trigger guard (`github.actor != 'manki-review[bot]'`) prevents the bot 
 
 The `concurrency` block keeps at most one Manki run active per PR across every PR-scoped event (`pull_request`, `pull_request_review`, `pull_request_review_comment`), serializing the vast majority of concurrent triggers so they do not race and submit conflicting reviews on the same commit. When a new PR-scoped event arrives while a run is in flight, GitHub queues it (at most one queued event per group, newer queued events replace older ones), the in-flight run completes, then the most recent queued event runs. `cancel-in-progress` is `false`, so no run is cancelled and the PR check list does not collect red crosses from superseded runs. The `issue_comment`-gated `comment.id` branch keeps distinct `/manki` invocations in separate groups so they do not serialize against each other, while `pull_request_review_comment` events fall through to the shared `pr-{N}` group alongside the other PR-scoped events.
 
-GitHub Actions concurrency is best-effort, not atomic. Two events dispatched within the same scheduling window can transition to in-progress before either reaches the queue check, in which case both runs proceed concurrently. An in-app defense-in-depth lock that closes this residual simultaneous-start race deterministically is tracked in [#779](https://github.com/manki-review/manki/issues/779).
+GitHub Actions concurrency is best-effort, not atomic. Two events dispatched within the same scheduling window can transition to in-progress before either reaches the queue check, in which case both runs proceed concurrently. As defense in depth, the action runs an in-app lock at the review pipeline entry point: it scans existing `manki-review[bot]` comments for an "in progress" marker carrying a different `manki-run-id`, and bails (with a `core.warning`) before any LLM call when one is found within the configurable TTL. Tune the TTL with the `concurrency_lock_ttl_seconds` action input (default 600 seconds). Lowering it makes the lock recover faster from crashed runs that left a stale marker behind. Raising it tolerates longer-running reviews.
 
 ## Step 4: Configure Reviews (Optional)
 

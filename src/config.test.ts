@@ -433,6 +433,38 @@ models:
     it('throws on non-number review_passes', () => {
       expect(() => loadConfigFromContent('review_passes: "three"')).toThrow('Invalid config');
     });
+
+    it('throws on non-number concurrency_lock_ttl_seconds', () => {
+      expect(() => loadConfigFromContent('concurrency_lock_ttl_seconds: "fast"'))
+        .toThrow(/concurrency_lock_ttl_seconds/);
+      expect(() => loadConfigFromContent('concurrency_lock_ttl_seconds: "fast"'))
+        .toThrow(/3600/);
+    });
+
+    it('throws on non-finite concurrency_lock_ttl_seconds (Infinity)', () => {
+      expect(() => loadConfigFromContent('concurrency_lock_ttl_seconds: .inf'))
+        .toThrow(/concurrency_lock_ttl_seconds/);
+    });
+
+    it('throws on non-finite concurrency_lock_ttl_seconds (NaN)', () => {
+      expect(() => loadConfigFromContent('concurrency_lock_ttl_seconds: .nan'))
+        .toThrow(/concurrency_lock_ttl_seconds/);
+    });
+
+    it('throws on negative concurrency_lock_ttl_seconds', () => {
+      expect(() => loadConfigFromContent('concurrency_lock_ttl_seconds: -1'))
+        .toThrow(/concurrency_lock_ttl_seconds/);
+    });
+
+    it('throws on concurrency_lock_ttl_seconds exceeding 3600', () => {
+      expect(() => loadConfigFromContent('concurrency_lock_ttl_seconds: 3601'))
+        .toThrow(/concurrency_lock_ttl_seconds/);
+    });
+
+    it('accepts valid concurrency_lock_ttl_seconds', () => {
+      const config = loadConfigFromContent('concurrency_lock_ttl_seconds: 300');
+      expect(config.concurrency_lock_ttl_seconds).toBe(300);
+    });
   });
 
   describe('resolveModel', () => {

@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { createAuthenticatedOctokit, getMemoryToken } from './auth';
-import { loadConfig, resolveModel } from './config';
+import { loadConfig, resolveModel, MAX_LOCK_TTL_SECONDS } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
@@ -12,7 +12,7 @@ import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
 import { collectResolvedThreadIds, fetchRecapState, fingerprintFinding } from './recap';
 import { buildAgentPool, collectPriorRoundAgents, runReview, determineVerdict, selectTeam } from './review';
-import { DEFENSIVE_HARDENING_TAG, DashboardData, PrContext, ReviewMetadata, RoundContext, roundContextToFlatAliases } from './types';
+import { DEFENSIVE_HARDENING_TAG, DashboardData, PrContext, ReviewConfig, ReviewMetadata, RoundContext, roundContextToFlatAliases } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -36,6 +36,9 @@ import {
   isApprovedOnCommit,
   markOwnProgressCommentCancelled,
   postAppWarningIfNeeded,
+  fetchPRComments,
+  findInProgressLock,
+  isLockExpired,
 } from './github';
 import { checkAndAutoApprove, resolveStaleThreads } from './state';
 
@@ -221,6 +224,55 @@ async function run(): Promise<void> {
   }
 }
 
+const DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS = 600;
+
+function readConcurrencyLockTtlSeconds(config?: ReviewConfig): number {
+  const raw = core.getInput('concurrency_lock_ttl_seconds');
+  if (raw) {
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0 || n > MAX_LOCK_TTL_SECONDS) {
+      core.warning(`Invalid concurrency_lock_ttl_seconds=${raw}, using default ${DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS}`);
+      return DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS;
+    }
+    return n;
+  }
+  return config?.concurrency_lock_ttl_seconds ?? DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS;
+}
+
+/**
+ * Defense-in-depth check before any LLM call. When another `manki-review[bot]`
+ * run has posted an in-progress marker comment whose `manki-run-id` differs
+ * from ours and whose `updated_at` is within the configured TTL, bail to avoid
+ * a double review. The workflow-level `concurrency` group is best-effort and
+ * can let two runs reach `in_progress` within the same scheduling window.
+ *
+ * Returns `true` when the caller should bail.
+ */
+async function checkConcurrentSubmissionLock(
+  octokit: Octokit, owner: string, repo: string, prNumber: number, config?: ReviewConfig,
+): Promise<boolean> {
+  const currentRunId = github.context.runId;
+  let lock;
+  try {
+    const comments = await fetchPRComments(octokit, owner, repo, prNumber);
+    lock = findInProgressLock(comments, currentRunId);
+  } catch (error) {
+    core.warning(`Concurrency lock scan failed: ${error instanceof Error ? error.message : error}`);
+    return false;
+  }
+  if (!lock) return false;
+
+  const ttlSeconds = readConcurrencyLockTtlSeconds(config);
+  const now = new Date();
+  if (isLockExpired(lock.updatedAt, ttlSeconds, now)) {
+    core.info(`Ignoring stale in-progress marker from run ${lock.runId} (updated_at=${lock.updatedAt}, TTL=${ttlSeconds}s)`);
+    return false;
+  }
+  const ageSeconds = Math.round((now.getTime() - Date.parse(lock.updatedAt)) / 1000);
+  core.warning(`Bailing: another Manki run (id=${lock.runId}) posted an in-progress marker ${ageSeconds}s ago (TTL=${ttlSeconds}s). Defense-in-depth lock engaged before LLM call.`);
+  return true;
+}
+
 async function postReviewSkippedComment(
   octokit: Octokit, owner: string, repo: string, prNumber: number,
 ): Promise<void> {
@@ -388,11 +440,28 @@ async function runFullReview(
     }
   }
 
-  const progressCommentId = await postProgressComment(octokit, owner, repo, prNumber);
-
+  let progressCommentId: number | undefined;
   let dashboardFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
   try {
+    let configContent: string | null = null;
+    if (configPathInput) {
+      configContent = await fetchConfigFile(octokit, owner, repo, baseRef, configPathInput);
+    } else {
+      configContent = await fetchConfigFile(octokit, owner, repo, baseRef, '.manki.yml');
+    }
+    const config = loadConfig(configContent ?? undefined);
+
+    // Scan for a competing in-progress marker before posting our own to shorten
+    // the race window. A residual window remains when two runs both pass this scan
+    // before either posts; tracking issue for the strict atomic fix: https://github.com/manki-review/manki/issues/798
+    if (await checkConcurrentSubmissionLock(octokit, owner, repo, prNumber, config)) {
+      core.warning('Defense-in-depth lock engaged — this run will not post a review. If no review appears on the PR, re-trigger with `/manki review`.');
+      return;
+    }
+
+    progressCommentId = await postProgressComment(octokit, owner, repo, prNumber);
+
     // Capture recap state before resolving stale threads so dedup sees
     // the original open/resolved status of each previous finding.
     const recap = await fetchRecapState(octokit, owner, repo, prNumber, prAuthorLogin);
@@ -401,14 +470,6 @@ async function runFullReview(
     if (staleCount > 0) {
       core.info(`Resolved ${staleCount} stale review threads from previous commits`);
     }
-
-    let configContent: string | null = null;
-    if (configPathInput) {
-      configContent = await fetchConfigFile(octokit, owner, repo, baseRef, configPathInput);
-    } else {
-      configContent = await fetchConfigFile(octokit, owner, repo, baseRef, '.manki.yml');
-    }
-    const config = loadConfig(configContent ?? undefined);
 
     if (github.context.eventName === 'pull_request' && !config.auto_review) {
       core.info('auto_review is disabled — skipping');
@@ -705,7 +766,7 @@ async function runFullReview(
       if (dashboardFlushTimer) clearTimeout(dashboardFlushTimer);
       dashboardFlushTimer = setTimeout(() => {
         dashboardFlushTimer = null;
-        updateProgressDashboard(octokit, owner, repo, progressCommentId, dashboard)
+        updateProgressDashboard(octokit, owner, repo, progressCommentId!, dashboard)
           .catch(err => core.warning(`Failed to update dashboard: ${err}`));
       }, 500);
     }
@@ -770,7 +831,7 @@ async function runFullReview(
           reviewEndTime = Date.now();
           dashboard.phase = 'reviewed';
           dashboard.rawFindingCount = progress.rawFindingCount;
-          updateProgressDashboard(octokit, owner, repo, progressCommentId, dashboard)
+          updateProgressDashboard(octokit, owner, repo, progressCommentId!, dashboard)
             .catch(err => core.warning(`Failed to update dashboard: ${err}`));
         } else if (progress.phase === 'judging') {
           if (dashboardFlushTimer) {
@@ -780,7 +841,7 @@ async function runFullReview(
           dashboard.phase = 'reviewed';
           dashboard.rawFindingCount = progress.rawFindingCount;
           dashboard.judgeInputCount = progress.judgeInputCount;
-          updateProgressDashboard(octokit, owner, repo, progressCommentId, dashboard)
+          updateProgressDashboard(octokit, owner, repo, progressCommentId!, dashboard)
             .catch(err => core.warning(`Failed to update dashboard: ${err}`));
         }
       },
@@ -1121,11 +1182,13 @@ async function runFullReview(
     const msg = error instanceof Error ? error.message : String(error);
     core.warning(`Review failed: ${msg}`);
 
-    await updateProgressComment(octokit, owner, repo, progressCommentId, {
-      phase: 'complete',
-      lineCount: 0,
-      agentCount: 0,
-    });
+    if (progressCommentId !== undefined) {
+      await updateProgressComment(octokit, owner, repo, progressCommentId, {
+        phase: 'complete',
+        lineCount: 0,
+        agentCount: 0,
+      });
+    }
   }
 }
 
