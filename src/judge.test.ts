@@ -1,17 +1,21 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as core from '@actions/core';
 import {
   applyCrossRoundSuppression,
   applyInPrSuppression,
   buildJudgeSystemPrompt,
   buildJudgeUserMessage,
+  buildThreadEvaluationsReminder,
   computeProvenanceMap,
   extractCodeContext,
+  missingThreadIds,
   parseJudgeResponse,
   filterMemoryForFindings,
   mapJudgedToFindings,
   deduplicateFindings,
   runJudgeAgent,
+  synthesizeMissingThreadEvaluations,
   JudgeInput,
   JudgedFinding,
 } from './judge';
@@ -208,18 +212,27 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).not.toContain('Follow-Up Review');
   });
 
-  it('includes threadEvaluations in output format when hasOpenThreads is true', () => {
-    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, true, true);
+  it('includes threadEvaluations in output format when openThreadsCount > 0', () => {
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, true, 3);
     expect(prompt).toContain('threadEvaluations');
     expect(prompt).toContain('threadId');
     expect(prompt).toContain('"addressed"');
     expect(prompt).toContain('"not_addressed"');
     expect(prompt).toContain('"uncertain"');
     expect(prompt).toContain('Open Thread Evaluation');
+    expect(prompt).toContain('You MUST return exactly 3 `threadEvaluations` entries');
   });
 
-  it('omits threadEvaluations from output format when hasOpenThreads is false', () => {
-    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, false, false);
+  it.each([1, 3, 7])(
+    'interpolates openThreadsCount=%i into the "exactly N entries" constraint',
+    (n) => {
+      const prompt = buildJudgeSystemPrompt(makeConfig(), 5, false, n);
+      expect(prompt).toContain(`You MUST return exactly ${n} \`threadEvaluations\` entries`);
+    },
+  );
+
+  it('omits threadEvaluations from output format when openThreadsCount is 0', () => {
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, false, 0);
     expect(prompt).not.toContain('threadEvaluations');
     expect(prompt).not.toContain('Open Thread Evaluation');
   });
@@ -240,7 +253,7 @@ describe('buildJudgeSystemPrompt', () => {
   });
 
   it('inverts the calibration note at noise_level "low" — borderline demotes and nitpicks drop', () => {
-    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, false, false, 'low');
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, false, 0, 'low');
     expect(prompt).toContain('At `noise_level: low`');
     expect(prompt).toContain('choose the **lower** one');
     expect(prompt).toContain('Drop `nitpick`-severity findings entirely');
@@ -252,7 +265,7 @@ describe('buildJudgeSystemPrompt', () => {
   it.each(['medium', 'high'] as const)(
     'keeps today\'s calibration note verbatim at noise_level "%s"',
     (level) => {
-      const prompt = buildJudgeSystemPrompt(makeConfig(), 5, false, false, level);
+      const prompt = buildJudgeSystemPrompt(makeConfig(), 5, false, 0, level);
       expect(prompt).toContain('LLMs tend toward leniency when judging code review findings');
       expect(prompt).toContain('When a finding is borderline between two severities, choose the higher one');
       expect(prompt).toContain('"could cause problems" under realistic conditions is `blocker`, not `warning`');
@@ -263,37 +276,37 @@ describe('buildJudgeSystemPrompt', () => {
   );
 
   it('defaults to noise_level "low" when the argument is omitted', () => {
-    const flagCombos: Array<[boolean, boolean]> = [
-      [false, false],
-      [false, true],
-      [true, false],
-      [true, true],
+    const flagCombos: Array<[boolean, number]> = [
+      [false, 0],
+      [false, 2],
+      [true, 0],
+      [true, 2],
     ];
-    for (const [isFollowUp, hasOpenThreads] of flagCombos) {
-      const defaultPrompt = buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, hasOpenThreads);
-      const lowPrompt = buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, hasOpenThreads, 'low');
+    for (const [isFollowUp, openThreadsCount] of flagCombos) {
+      const defaultPrompt = buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, openThreadsCount);
+      const lowPrompt = buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, openThreadsCount, 'low');
       expect(defaultPrompt).toBe(lowPrompt);
     }
   });
 
   it('produces identical prompts for noise_level "medium" and "high" (asymmetry lives in the reviewer prompts)', () => {
-    const flagCombos: Array<[boolean, boolean]> = [
-      [false, false],
-      [false, true],
-      [true, false],
-      [true, true],
+    const flagCombos: Array<[boolean, number]> = [
+      [false, 0],
+      [false, 2],
+      [true, 0],
+      [true, 2],
     ];
-    for (const [isFollowUp, hasOpenThreads] of flagCombos) {
-      const mediumPrompt = buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, hasOpenThreads, 'medium');
-      const highPrompt = buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, hasOpenThreads, 'high');
+    for (const [isFollowUp, openThreadsCount] of flagCombos) {
+      const mediumPrompt = buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, openThreadsCount, 'medium');
+      const highPrompt = buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, openThreadsCount, 'high');
       expect(highPrompt).toBe(mediumPrompt);
     }
   });
 
   it('leaves Impact x Likelihood and reachability sections unchanged across noise levels', () => {
-    const promptLow = buildJudgeSystemPrompt(makeConfig(), 5, false, false, 'low');
-    const promptMedium = buildJudgeSystemPrompt(makeConfig(), 5, false, false, 'medium');
-    const promptHigh = buildJudgeSystemPrompt(makeConfig(), 5, false, false, 'high');
+    const promptLow = buildJudgeSystemPrompt(makeConfig(), 5, false, 0, 'low');
+    const promptMedium = buildJudgeSystemPrompt(makeConfig(), 5, false, 0, 'medium');
+    const promptHigh = buildJudgeSystemPrompt(makeConfig(), 5, false, 0, 'high');
     for (const prompt of [promptLow, promptMedium, promptHigh]) {
       expect(prompt).toContain('## Severity Assessment');
       expect(prompt).toContain('**Impact** — How bad is it if this issue manifests?');
@@ -2300,7 +2313,7 @@ describe('runJudgeAgent', () => {
       config,
       input.agentCount,
       input.isFollowUp,
-      (input.openThreads?.length ?? 0) > 0,
+      input.openThreads?.length ?? 0,
       'medium',
     );
     expect(systemPrompt).toBe(expectedPrompt);
@@ -2326,10 +2339,401 @@ describe('runJudgeAgent', () => {
       config,
       input.agentCount,
       input.isFollowUp,
-      (input.openThreads?.length ?? 0) > 0,
+      input.openThreads?.length ?? 0,
       'low',
     );
     expect(systemPrompt).toBe(expectedPrompt);
+  });
+
+  describe('threadEvaluations coverage enforcement', () => {
+    const openThreads: OpenThread[] = [
+      { threadId: 'PRRT_a', title: 'Thread A', file: 'src/a.ts', line: 1, severity: 'warning' },
+      { threadId: 'PRRT_b', title: 'Thread B', file: 'src/b.ts', line: 2, severity: 'warning' },
+    ];
+
+    it('retries once when threadEvaluations field is omitted entirely', async () => {
+      mockSendMessage
+        .mockResolvedValueOnce({ content: JSON.stringify({ summary: 's', findings: [] }) })
+        .mockResolvedValueOnce({
+          content: JSON.stringify({
+            summary: 's',
+            findings: [],
+            threadEvaluations: [
+              { threadId: 'PRRT_a', status: 'addressed', reason: 'Fixed' },
+              { threadId: 'PRRT_b', status: 'not_addressed', reason: 'Still applies' },
+            ],
+          }),
+        });
+
+      const result = await runJudgeAgent(mockClient, makeConfig(), {
+        findings: [],
+        diff: makeDiff(),
+        rawDiff: '',
+        repoContext: '',
+        agentCount: 3,
+        openThreads,
+      });
+
+      expect(mockSendMessage).toHaveBeenCalledTimes(2);
+      const [, retryUserMessage] = mockSendMessage.mock.calls[1];
+      expect(retryUserMessage).toContain('Retry: missing `threadEvaluations` entries');
+      expect(retryUserMessage).toContain('PRRT_a');
+      expect(retryUserMessage).toContain('PRRT_b');
+      expect(result.threadEvaluations).toEqual([
+        { threadId: 'PRRT_a', status: 'addressed', reason: 'Fixed' },
+        { threadId: 'PRRT_b', status: 'not_addressed', reason: 'Still applies' },
+      ]);
+    });
+
+    it('retries once when threadEvaluations covers only a subset of open threads', async () => {
+      mockSendMessage
+        .mockResolvedValueOnce({
+          content: JSON.stringify({
+            summary: 's',
+            findings: [],
+            threadEvaluations: [
+              { threadId: 'PRRT_a', status: 'addressed', reason: 'Fixed' },
+            ],
+          }),
+        })
+        .mockResolvedValueOnce({
+          content: JSON.stringify({
+            summary: 's',
+            findings: [],
+            threadEvaluations: [
+              { threadId: 'PRRT_a', status: 'addressed', reason: 'Fixed' },
+              { threadId: 'PRRT_b', status: 'not_addressed', reason: 'Still applies' },
+            ],
+          }),
+        });
+
+      const result = await runJudgeAgent(mockClient, makeConfig(), {
+        findings: [],
+        diff: makeDiff(),
+        rawDiff: '',
+        repoContext: '',
+        agentCount: 3,
+        openThreads,
+      });
+
+      expect(mockSendMessage).toHaveBeenCalledTimes(2);
+      const [, retryUserMessage] = mockSendMessage.mock.calls[1];
+      expect(retryUserMessage).toContain('Missing thread IDs: PRRT_b');
+      expect(retryUserMessage).not.toContain('Missing thread IDs: PRRT_a');
+      expect(result.threadEvaluations).toHaveLength(2);
+    });
+
+    it('merges retry evaluations per-thread-id when retry returns a partial array', async () => {
+      const fourThreads: OpenThread[] = [
+        { threadId: 'PRRT_a', title: 'Thread A', file: 'src/a.ts', line: 1, severity: 'warning' },
+        { threadId: 'PRRT_b', title: 'Thread B', file: 'src/b.ts', line: 2, severity: 'warning' },
+        { threadId: 'PRRT_c', title: 'Thread C', file: 'src/c.ts', line: 3, severity: 'warning' },
+        { threadId: 'PRRT_d', title: 'Thread D', file: 'src/d.ts', line: 4, severity: 'warning' },
+      ];
+      mockSendMessage
+        .mockResolvedValueOnce({
+          content: JSON.stringify({
+            summary: 's',
+            findings: [],
+            threadEvaluations: [
+              { threadId: 'PRRT_a', status: 'addressed', reason: 'Fixed A' },
+              { threadId: 'PRRT_b', status: 'addressed', reason: 'Fixed B' },
+              { threadId: 'PRRT_c', status: 'addressed', reason: 'Fixed C' },
+            ],
+          }),
+        })
+        .mockResolvedValueOnce({
+          content: JSON.stringify({
+            summary: 's',
+            findings: [],
+            threadEvaluations: [
+              { threadId: 'PRRT_b', status: 'not_addressed', reason: 'Retry says B not fixed' },
+              { threadId: 'PRRT_d', status: 'not_addressed', reason: 'D not addressed' },
+            ],
+          }),
+        });
+
+      const result = await runJudgeAgent(mockClient, makeConfig(), {
+        findings: [],
+        diff: makeDiff(),
+        rawDiff: '',
+        repoContext: '',
+        agentCount: 3,
+        openThreads: fourThreads,
+      });
+
+      expect(mockSendMessage).toHaveBeenCalledTimes(2);
+      expect(result.threadEvaluations).toHaveLength(4);
+      const byId = new Map(result.threadEvaluations!.map(e => [e.threadId, e]));
+      expect(byId.get('PRRT_a')?.status).toBe('addressed');
+      expect(byId.get('PRRT_b')?.status).toBe('not_addressed');
+      expect(byId.get('PRRT_c')?.status).toBe('addressed');
+      expect(byId.get('PRRT_d')?.status).toBe('not_addressed');
+    });
+
+    it('synthesizes `uncertain` entries for threads still missing after retry', async () => {
+      const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+      mockSendMessage
+        .mockResolvedValueOnce({ content: JSON.stringify({ summary: 's', findings: [] }) })
+        .mockResolvedValueOnce({
+          content: JSON.stringify({
+            summary: 's',
+            findings: [],
+            threadEvaluations: [
+              { threadId: 'PRRT_a', status: 'addressed', reason: 'Fixed' },
+            ],
+          }),
+        });
+
+      const result = await runJudgeAgent(mockClient, makeConfig(), {
+        findings: [],
+        diff: makeDiff(),
+        rawDiff: '',
+        repoContext: '',
+        agentCount: 3,
+        openThreads,
+      });
+
+      expect(result.threadEvaluations).toEqual([
+        { threadId: 'PRRT_a', status: 'addressed', reason: 'Fixed' },
+        { threadId: 'PRRT_b', status: 'uncertain', reason: 'judge omitted evaluation after retry' },
+      ]);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('PRRT_b'));
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('after retry'));
+      warnSpy.mockRestore();
+    });
+
+    it('preserves original findings when retry response fails to parse valid JSON', async () => {
+      const originalFindings = [makeFinding({ title: 'Original finding', severity: 'warning' })];
+      mockSendMessage
+        .mockResolvedValueOnce({
+          content: JSON.stringify({
+            summary: 'original summary',
+            findings: [{ title: 'Original finding', severity: 'warning', reasoning: 'r', confidence: 'high', reachability: 'reachable' }],
+          }),
+        })
+        .mockResolvedValueOnce({ content: 'not valid json at all' });
+
+      const result = await runJudgeAgent(mockClient, makeConfig(), {
+        findings: originalFindings,
+        diff: makeDiff(),
+        rawDiff: '',
+        repoContext: '',
+        agentCount: 3,
+        openThreads,
+      });
+
+      expect(mockSendMessage).toHaveBeenCalledTimes(2);
+      expect(result.summary).toBe('original summary');
+      const nonIgnored = result.findings.filter(f => f.severity !== 'ignore');
+      expect(nonIgnored.length).toBeGreaterThan(0);
+    });
+
+    it('skips retry when threadEvaluations covers every open thread on the first response', async () => {
+      mockSendMessage.mockResolvedValue({
+        content: JSON.stringify({
+          summary: 's',
+          findings: [],
+          threadEvaluations: [
+            { threadId: 'PRRT_a', status: 'addressed', reason: 'Fixed' },
+            { threadId: 'PRRT_b', status: 'not_addressed', reason: 'Still applies' },
+          ],
+        }),
+      });
+
+      const result = await runJudgeAgent(mockClient, makeConfig(), {
+        findings: [],
+        diff: makeDiff(),
+        rawDiff: '',
+        repoContext: '',
+        agentCount: 3,
+        openThreads,
+      });
+
+      expect(mockSendMessage).toHaveBeenCalledTimes(1);
+      expect(result.threadEvaluations).toHaveLength(2);
+    });
+
+    it('skips retry when the inter-round diff is empty (override branch handles missing entries)', async () => {
+      mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 's', findings: [] }) });
+
+      const priorRounds: LegacyHandoverRoundFixture[] = [{
+        round: 1, commitSha: 'abc', timestamp: 't', findings: [],
+      }];
+
+      const result = await runJudgeAgent(mockClient, makeConfig(), {
+        findings: [],
+        diff: makeDiff(),
+        rawDiff: '',
+        repoContext: '',
+        agentCount: 3,
+        openThreads,
+        priorRounds: priorRounds.map(roundContextFromLegacy),
+        interRoundDiff: '',
+      });
+
+      expect(mockSendMessage).toHaveBeenCalledTimes(1);
+      expect(result.threadEvaluations).toEqual([
+        { threadId: 'PRRT_a', status: 'not_addressed', reason: 'No code changes since prior review' },
+        { threadId: 'PRRT_b', status: 'not_addressed', reason: 'No code changes since prior review' },
+      ]);
+    });
+
+    it('synthesizes `uncertain` for missing threads when retry sendMessage throws', async () => {
+      const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+      mockSendMessage
+        .mockResolvedValueOnce({
+          content: JSON.stringify({
+            summary: 'original summary',
+            findings: [],
+            threadEvaluations: [
+              { threadId: 'PRRT_a', status: 'addressed', reason: 'Fixed' },
+            ],
+          }),
+        })
+        .mockRejectedValueOnce(new Error('rate limit exceeded'));
+
+      const result = await runJudgeAgent(mockClient, makeConfig(), {
+        findings: [],
+        diff: makeDiff(),
+        rawDiff: '',
+        repoContext: '',
+        agentCount: 3,
+        openThreads,
+      });
+
+      expect(mockSendMessage).toHaveBeenCalledTimes(2);
+      expect(result.threadEvaluations).toEqual([
+        { threadId: 'PRRT_a', status: 'addressed', reason: 'Fixed' },
+        { threadId: 'PRRT_b', status: 'uncertain', reason: 'judge omitted evaluation after retry' },
+      ]);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('retry call failed'));
+      warnSpy.mockRestore();
+    });
+
+    it('places the reminder before untrusted PR content in the retry message', async () => {
+      mockSendMessage
+        .mockResolvedValueOnce({ content: JSON.stringify({ summary: 's', findings: [] }) })
+        .mockResolvedValueOnce({
+          content: JSON.stringify({
+            summary: 's',
+            findings: [],
+            threadEvaluations: [
+              { threadId: 'PRRT_a', status: 'addressed', reason: 'Fixed' },
+              { threadId: 'PRRT_b', status: 'not_addressed', reason: 'Still applies' },
+            ],
+          }),
+        });
+
+      await runJudgeAgent(mockClient, makeConfig(), {
+        findings: [],
+        diff: makeDiff(),
+        rawDiff: '',
+        repoContext: '',
+        agentCount: 3,
+        openThreads,
+      });
+
+      expect(mockSendMessage).toHaveBeenCalledTimes(2);
+      const [, retryUserMessage] = mockSendMessage.mock.calls[1];
+      const reminderIdx = retryUserMessage.indexOf('Retry: missing `threadEvaluations` entries');
+      const originalMsgIdx = retryUserMessage.indexOf('Original message:');
+      expect(reminderIdx).toBeGreaterThanOrEqual(0);
+      expect(originalMsgIdx).toBeGreaterThan(reminderIdx);
+    });
+  });
+});
+
+describe('missingThreadIds', () => {
+  const threads: OpenThread[] = [
+    { threadId: 'PRRT_a', title: 'A', file: 'src/a.ts', line: 1, severity: 'warning' },
+    { threadId: 'PRRT_b', title: 'B', file: 'src/b.ts', line: 2, severity: 'nitpick' },
+    { threadId: 'PRRT_c', title: 'C', file: 'src/c.ts', line: 3, severity: 'suggestion' },
+  ];
+
+  it('returns all thread IDs when evaluations is undefined', () => {
+    expect(missingThreadIds(threads, undefined)).toEqual(['PRRT_a', 'PRRT_b', 'PRRT_c']);
+  });
+
+  it('returns all thread IDs when evaluations is empty', () => {
+    expect(missingThreadIds(threads, [])).toEqual(['PRRT_a', 'PRRT_b', 'PRRT_c']);
+  });
+
+  it('returns only uncovered thread IDs', () => {
+    const evals: ThreadEvaluation[] = [{ threadId: 'PRRT_a', status: 'addressed', reason: '' }];
+    expect(missingThreadIds(threads, evals)).toEqual(['PRRT_b', 'PRRT_c']);
+  });
+
+  it('returns empty array when all threads are covered', () => {
+    const evals: ThreadEvaluation[] = [
+      { threadId: 'PRRT_a', status: 'addressed', reason: '' },
+      { threadId: 'PRRT_b', status: 'not_addressed', reason: '' },
+      { threadId: 'PRRT_c', status: 'uncertain', reason: '' },
+    ];
+    expect(missingThreadIds(threads, evals)).toEqual([]);
+  });
+
+  it('returns empty array when openThreads is empty', () => {
+    expect(missingThreadIds([], [{ threadId: 'PRRT_x', status: 'addressed', reason: '' }])).toEqual([]);
+  });
+});
+
+describe('buildThreadEvaluationsReminder', () => {
+  const threads: OpenThread[] = [
+    { threadId: 'PRRT_a', title: 'A', file: 'src/a.ts', line: 1, severity: 'warning' },
+    { threadId: 'PRRT_b', title: 'B', file: 'src/b.ts', line: 2, severity: 'nitpick' },
+  ];
+
+  it('includes the count of required entries', () => {
+    const reminder = buildThreadEvaluationsReminder(threads, ['PRRT_b']);
+    expect(reminder).toContain('exactly 2 entries');
+  });
+
+  it('lists all missing thread IDs', () => {
+    const reminder = buildThreadEvaluationsReminder(threads, ['PRRT_a', 'PRRT_b']);
+    expect(reminder).toContain('PRRT_a');
+    expect(reminder).toContain('PRRT_b');
+  });
+
+  it('mentions only the missing thread IDs, not already-covered ones', () => {
+    const reminder = buildThreadEvaluationsReminder(threads, ['PRRT_b']);
+    expect(reminder).not.toContain('Missing thread IDs: PRRT_a');
+    expect(reminder).toContain('PRRT_b');
+  });
+
+  it('includes the retry header', () => {
+    const reminder = buildThreadEvaluationsReminder(threads, ['PRRT_a']);
+    expect(reminder).toContain('Retry: missing `threadEvaluations` entries');
+  });
+});
+
+describe('synthesizeMissingThreadEvaluations', () => {
+  it('appends uncertain entries for each missing ID', () => {
+    const result = synthesizeMissingThreadEvaluations(undefined, ['PRRT_x', 'PRRT_y']);
+    expect(result).toEqual([
+      { threadId: 'PRRT_x', status: 'uncertain', reason: 'judge omitted evaluation after retry' },
+      { threadId: 'PRRT_y', status: 'uncertain', reason: 'judge omitted evaluation after retry' },
+    ]);
+  });
+
+  it('preserves existing evaluations and appends synthesized ones', () => {
+    const existing: ThreadEvaluation[] = [{ threadId: 'PRRT_a', status: 'addressed', reason: 'ok' }];
+    const result = synthesizeMissingThreadEvaluations(existing, ['PRRT_b']);
+    expect(result).toEqual([
+      { threadId: 'PRRT_a', status: 'addressed', reason: 'ok' },
+      { threadId: 'PRRT_b', status: 'uncertain', reason: 'judge omitted evaluation after retry' },
+    ]);
+  });
+
+  it('returns only synthesized entries when existing is empty', () => {
+    const result = synthesizeMissingThreadEvaluations([], ['PRRT_z']);
+    expect(result).toEqual([
+      { threadId: 'PRRT_z', status: 'uncertain', reason: 'judge omitted evaluation after retry' },
+    ]);
+  });
+
+  it('returns empty array when both inputs are empty', () => {
+    expect(synthesizeMissingThreadEvaluations([], [])).toEqual([]);
   });
 });
 
@@ -4342,7 +4746,7 @@ describe('judge thread-evaluation fixture corpus', () => {
       }],
     });
 
-    const systemPrompt = buildJudgeSystemPrompt(makeConfig(), 3, true, true);
+    const systemPrompt = buildJudgeSystemPrompt(makeConfig(), 3, true, 1);
     const userMessage = buildJudgeUserMessage(
       [],
       new Map(),

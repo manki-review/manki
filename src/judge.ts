@@ -271,9 +271,10 @@ export function buildJudgeSystemPrompt(
   config: ReviewConfig,
   agentCount: number,
   isFollowUp?: boolean,
-  hasOpenThreads?: boolean,
+  openThreadsCount: number = 0,
   noiseLevel: NoiseLevel = 'low',
 ): string {
+  const hasOpenThreads = openThreadsCount > 0;
   const majorityThreshold = Math.max(1, Math.ceil(agentCount / 2));
   const calibrationNote = noiseLevel === 'low'
     ? `**Calibration note**: At \`noise_level: low\` the project wants to surface only findings that materially affect the PR. Counteract the LLM tendency to over-flag:
@@ -480,7 +481,7 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
 ${hasOpenThreads ? `
 ## Open Thread Evaluation
 
-Return one \`threadEvaluations\` entry for every open review thread listed in the user message. Status values:
+You MUST return exactly ${openThreadsCount} \`threadEvaluations\` entries — one for every open review thread listed in the user message. Omitting any thread is a contract violation that forces a retry. Status values:
 
 - **addressed**: the current code at the flagged region clearly no longer exhibits the original concern, OR the inter-round diff contains an explicit fix for it. Either signal alone is sufficient — you may pick \`addressed\` even when the inter-round diff does not touch the thread's file, as long as the current code window plainly resolves the concern. (Note: when the inter-round diff is known-empty the resolver may override this verdict as a safety measure.)
 - **not_addressed**: the current code still exhibits the concern (and the inter-round diff did not fix it). When the code window is unavailable and the inter-round diff does not touch the file, default to \`not_addressed\` rather than \`uncertain\`.
@@ -813,6 +814,36 @@ function validateThreadStatus(value: unknown): ThreadEvaluation['status'] {
   return 'not_addressed';
 }
 
+export function missingThreadIds(
+  openThreads: OpenThread[],
+  threadEvaluations: ThreadEvaluation[] | undefined,
+): string[] {
+  const covered = new Set((threadEvaluations ?? []).map(t => t.threadId));
+  return openThreads.filter(t => !covered.has(t.threadId)).map(t => t.threadId);
+}
+
+export function buildThreadEvaluationsReminder(openThreads: OpenThread[], missing: string[]): string {
+  return [
+    '## Retry: missing `threadEvaluations` entries',
+    '',
+    `Your previous response did not include a \`threadEvaluations\` entry for every open review thread. The contract requires exactly ${openThreads.length} entries, one per open thread. Missing thread IDs: ${missing.join(', ')}.`,
+    '',
+    'Return the same JSON response again, this time including one entry per missing thread. Use `uncertain` only when there is genuinely insufficient evidence to decide.',
+  ].join('\n');
+}
+
+export function synthesizeMissingThreadEvaluations(
+  existing: ThreadEvaluation[] | undefined,
+  missing: string[],
+): ThreadEvaluation[] {
+  const synthesized: ThreadEvaluation[] = missing.map(threadId => ({
+    threadId,
+    status: 'uncertain' as const,
+    reason: 'judge omitted evaluation after retry',
+  }));
+  return [...(existing ?? []), ...synthesized];
+}
+
 function validateReachability(value: unknown): FindingReachability | undefined {
   if (value === 'reachable' || value === 'hypothetical' || value === 'unknown') {
     return value;
@@ -861,15 +892,54 @@ export async function runJudgeAgent(
 
   const changedFiles = diff.files;
 
-  const systemPrompt = buildJudgeSystemPrompt(config, agentCount, isFollowUp, hasOpenThreads, config.noise_level);
+  const systemPrompt = buildJudgeSystemPrompt(config, agentCount, isFollowUp, openThreads?.length ?? 0, config.noise_level);
   const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads, priorRounds, interRoundDiff);
 
-  const response = await client.sendMessage(systemPrompt, userMessage, { effort: input.effort ?? 'high' });
-  const judgeResult = parseJudgeResponse(response.content);
+  const effort = input.effort ?? 'high';
+  const response = await client.sendMessage(systemPrompt, userMessage, { effort });
+  let judgeResult = parseJudgeResponse(response.content);
 
   // Defense-in-depth: when the inter-round diff is empty, force every open
-  // thread to `not_addressed` regardless of what the LLM returned.
+  // thread to `not_addressed` regardless of what the LLM returned. The
+  // post-parse thread-coverage retry is skipped in that case since the
+  // synthetic override discards the LLM evaluations anyway.
   const overrideApplied = interRoundDiffEmpty && hasOpenThreads;
+
+  if (hasOpenThreads && !overrideApplied) {
+    const missing = missingThreadIds(openThreads!, judgeResult.threadEvaluations);
+    if (missing.length > 0) {
+      const reminder = buildThreadEvaluationsReminder(openThreads!, missing);
+      const retryUserMessage = `${reminder}\n\nOriginal message:\n${userMessage}`;
+      let retryResult: JudgeResult | undefined;
+      try {
+        const retryResponse = await client.sendMessage(systemPrompt, retryUserMessage, { effort });
+        retryResult = parseJudgeResponse(retryResponse.content);
+      } catch (err) {
+        core.warning(`Judge retry call failed (${err}); synthesizing 'uncertain' for ${missing.length} missing thread(s).`);
+        judgeResult = {
+          ...judgeResult,
+          threadEvaluations: synthesizeMissingThreadEvaluations(judgeResult.threadEvaluations, missing),
+        };
+      }
+      const retryEvals = retryResult?.threadEvaluations ?? [];
+      const byId = new Map(
+        (judgeResult.threadEvaluations ?? []).map(e => [e.threadId, e]),
+      );
+      for (const e of retryEvals) byId.set(e.threadId, e);
+      judgeResult = { ...judgeResult, threadEvaluations: [...byId.values()] };
+      const stillMissing = missingThreadIds(openThreads!, judgeResult.threadEvaluations);
+      if (stillMissing.length > 0) {
+        core.warning(
+          `Judge omitted threadEvaluations for ${stillMissing.length} of ${openThreads!.length} open threads after retry: ${stillMissing.join(', ')}. Synthesizing 'uncertain' entries.`,
+        );
+        judgeResult = {
+          ...judgeResult,
+          threadEvaluations: synthesizeMissingThreadEvaluations(judgeResult.threadEvaluations, stillMissing),
+        };
+      }
+    }
+  }
+
   const threadEvaluations = overrideApplied
     ? openThreads!.map(t => ({
       threadId: t.threadId,
