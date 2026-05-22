@@ -22,30 +22,20 @@ jobs:
       - run: npm ci
       - run: npm run build
 
-      # Commit dist/ to a release branch and update the major version tag
-      - name: Update release branch
+      - name: Update floating major tag
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
           MAJOR=$(echo "$TAG" | grep -oE '^v[0-9]+')
 
-          # Configure git
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Add dist/ (it's in .gitignore so we need --force)
-          git add -f dist/
-
-          # Commit if there are changes
-          git diff --staged --quiet || git commit -m "build: compile dist/ for ${TAG}"
-
-          # Force-update major version tag
           git tag -fa "$MAJOR" -m "Update $MAJOR tag to $TAG"
           git push origin "$MAJOR" --force
 
       - name: Create GitHub Release
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
-          # Create or update the release
           if gh release view "$TAG" &>/dev/null; then
             echo "Release $TAG already exists — updating"
             gh release edit "$TAG" --title "$TAG" --latest
