@@ -7,7 +7,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import * as core from '@actions/core';
 
 import { buildExitDiagnostics, buildTimeoutDiagnostics, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS } from './cli-utils';
-import { GeminiAuth, LLMClient, LLMResponse, SendMessageOptions } from './types';
+import { GeminiAuth, LLMClient, LLMResponse, LLMUsage, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
 
@@ -291,7 +291,11 @@ export class GeminiClient implements LLMClient {
         }
         const content = output.trim();
         core.debug(sanitizeLogOutput(content.slice(0, 200)));
-        resolve({ content });
+        resolve({
+          content,
+          usage: { ...ZERO_USAGE },
+          latencyMs: Date.now() - startTime,
+        });
       });
 
       child.on('error', (error) => {
@@ -351,6 +355,7 @@ export class GeminiClient implements LLMClient {
       systemInstruction: systemPrompt,
     });
 
+    const startTime = Date.now();
     const response = await model.generateContent({
       contents: [{ role: 'user', parts: [{ text: userMessage }] }],
       generationConfig,
@@ -364,6 +369,25 @@ export class GeminiClient implements LLMClient {
     }
     core.debug(sanitizeLogOutput(content.slice(0, 200)));
 
-    return { content };
+    const usageMetadata = (response.response as unknown as {
+      usageMetadata?: {
+        promptTokenCount?: number;
+        candidatesTokenCount?: number;
+        cachedContentTokenCount?: number;
+        thoughtsTokenCount?: number;
+      };
+    }).usageMetadata;
+    const readInt = (n: unknown): number =>
+      typeof n === 'number' && Number.isFinite(n) && n >= 0 ? Math.trunc(n) : 0;
+    const usage: LLMUsage = usageMetadata
+      ? {
+          inputTokens: readInt(usageMetadata.promptTokenCount),
+          outputTokens: readInt(usageMetadata.candidatesTokenCount),
+          cachedTokens: readInt(usageMetadata.cachedContentTokenCount),
+          reasoningTokens: readInt(usageMetadata.thoughtsTokenCount),
+        }
+      : { ...ZERO_USAGE };
+
+    return { content, usage, latencyMs: Date.now() - startTime };
   }
 }
