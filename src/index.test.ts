@@ -203,7 +203,7 @@ jest.mock('./state', () => ({
   resolveStaleThreads: jest.fn().mockResolvedValue(0),
 }));
 
-import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, main, _resetOctokitCache } from './index';
+import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, main, _resetOctokitCache, detectTickedMarker } from './index';
 import { FORCE_REVIEW_MARKER, FORCE_CAP_MARKER } from './github';
 import type { ReviewConfig } from './types';
 import { createLLMClient, parseModelSpec } from './providers';
@@ -2526,7 +2526,7 @@ describe('runFullReview orchestration', () => {
       return runFullReview(
         baseArgs.owner, baseArgs.repo, baseArgs.prNumber,
         baseArgs.commitSha, baseArgs.baseRef, baseArgs.prContext,
-        undefined, forceReview, skipCap, bypassHint,
+        { forceReview, skipCap, bypassHint },
       );
     }
 
@@ -2540,6 +2540,7 @@ describe('runFullReview orchestration', () => {
 
       const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7];
       expect(rc!.meta.trigger).toEqual({ event: 'pull_request:synchronize', sender: 'alice' });
+      expect(rc!.meta.cap?.bypassReason).toBe('within_cap');
     });
 
     it('falls back to sender `unknown` when payload omits it', async () => {
@@ -4836,7 +4837,7 @@ describe('runFullReview orchestration', () => {
       await runFullReview(
         baseArgs.owner, baseArgs.repo, baseArgs.prNumber,
         baseArgs.commitSha, baseArgs.baseRef, baseArgs.prContext,
-        undefined, false, true,
+        { skipCap: true },
       );
 
       expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
@@ -4849,7 +4850,7 @@ describe('runFullReview orchestration', () => {
       await runFullReview(
         baseArgs.owner, baseArgs.repo, baseArgs.prNumber,
         baseArgs.commitSha, baseArgs.baseRef, baseArgs.prContext,
-        undefined, true, false,
+        { forceReview: true },
       );
 
       expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
@@ -6060,5 +6061,25 @@ describe('runFullReview concurrent-submission lock', () => {
     expect(warnings.some(w => w.includes('Review failed'))).toBe(true);
     expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
     expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+  });
+});
+
+describe('detectTickedMarker', () => {
+  it('returns null when body contains no checkbox text', () => {
+    expect(detectTickedMarker('')).toBeNull();
+    expect(detectTickedMarker('no checkbox here')).toBeNull();
+    expect(detectTickedMarker(`${FORCE_REVIEW_MARKER}`)).toBeNull();
+  });
+
+  it('returns FORCE_REVIEW_MARKER when the force-review checkbox is ticked', () => {
+    expect(detectTickedMarker(`- [x] Force review\n\n${FORCE_REVIEW_MARKER}`)).toBe('FORCE_REVIEW_MARKER');
+  });
+
+  it('returns FORCE_CAP_MARKER when the skip-cap checkbox is ticked', () => {
+    expect(detectTickedMarker(`- [x] Force review\n\n${FORCE_CAP_MARKER}`)).toBe('FORCE_CAP_MARKER');
+  });
+
+  it('returns FORCE_REVIEW_MARKER when both markers are present (FORCE_REVIEW_MARKER wins)', () => {
+    expect(detectTickedMarker(`- [x] Force review\n\n${FORCE_REVIEW_MARKER}\n${FORCE_CAP_MARKER}`)).toBe('FORCE_REVIEW_MARKER');
   });
 });
