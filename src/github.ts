@@ -1468,13 +1468,13 @@ async function fetchBotReviews(
   octokit: Octokit, owner: string, repo: string, prNumber: number,
 ): Promise<BotReviewSummary[]> {
   try {
-    const { data: reviews } = await octokit.rest.pulls.listReviews({
+    const reviews = await octokit.paginate(octokit.rest.pulls.listReviews, {
       owner,
       repo,
       pull_number: prNumber,
       per_page: 100,
     });
-    return reviews
+    return reviews.slice(0, 500)
       .filter((r: { state?: string; user?: { login?: string; type?: string } | null }) =>
         r.user?.login === BOT_LOGIN && r.user?.type === 'Bot' && r.state !== 'DISMISSED',
       )
