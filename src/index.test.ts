@@ -127,6 +127,8 @@ jest.mock('./review', () => {
 
 jest.mock('./github', () => {
   const coreMod = jest.requireMock('@actions/core') as typeof import('@actions/core');
+  const { MAX_LOCK_TTL_SECONDS } = jest.requireActual('./config') as typeof import('./config');
+  const { context } = jest.requireActual('@actions/github') as typeof import('@actions/github');
   const findInProgressLockMock = jest.fn().mockReturnValue(null);
   const isLockExpiredMock = jest.fn().mockReturnValue(false);
   const fetchPRCommentsMock = jest.fn().mockResolvedValue([]);
@@ -159,7 +161,7 @@ jest.mock('./github', () => {
     let lock;
     try {
       const comments = await fetchPRCommentsMock();
-      lock = findInProgressLockMock(comments, 0);
+      lock = findInProgressLockMock(comments, context.runId);
     } catch (error) {
       coreMod.warning(`Concurrency lock scan failed: ${error instanceof Error ? error.message : error}`);
       return false;
@@ -169,7 +171,7 @@ jest.mock('./github', () => {
     let ttlSeconds = 600;
     if (raw) {
       const n = Number(raw);
-      if (!Number.isFinite(n) || n < 0 || n > 3600) {
+      if (!Number.isFinite(n) || n <= 0 || n > MAX_LOCK_TTL_SECONDS) {
         coreMod.warning(`Invalid concurrency_lock_ttl_seconds=${raw}, using default 600`);
       } else {
         ttlSeconds = n;
