@@ -19,6 +19,7 @@ import {
   runPlanner,
   parseAgentPicks,
   sanitizePlannerField,
+  wrapClientForUsage,
   ReviewClients,
   AGENT_POOL,
   TRIVIAL_VERIFIER_AGENT,
@@ -30,6 +31,7 @@ import { Finding, RoundContext, OpenThread, ReviewerAgent, ReviewConfig, ParsedD
 import { fingerprintEntriesFromLegacy, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, roundContextFromLegacy } from './test-utils';
 import { runJudgeAgent, computeProvenanceMap } from './judge';
 import { applySuppressions } from './memory';
+import { LLMClient, LLMResponse } from './providers';
 
 const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
   auto_review: true,
@@ -6323,5 +6325,66 @@ describe('runPlanner teamSize correction', () => {
     expect(result).not.toBeNull();
     expect(result!.language!.length).toBeLessThanOrEqual(100);
     expect(result!.context!.length).toBeLessThanOrEqual(200);
+  });
+});
+
+describe('wrapClientForUsage', () => {
+  const makeUsageClient = (response: LLMResponse) => ({
+    sendMessage: jest.fn().mockResolvedValue(response),
+  } as unknown as LLMClient);
+
+  it('records usage and latency on a single call', async () => {
+    const inner = makeUsageClient({ content: 'ok', usage: { inputTokens: 10, outputTokens: 5, cachedTokens: 2, reasoningTokens: 0 }, latencyMs: 100 });
+    const { client, totals } = wrapClientForUsage(inner);
+
+    const result = await client.sendMessage('sys', 'user');
+
+    expect(result.content).toBe('ok');
+    expect(totals.usage).toEqual({ inputTokens: 10, outputTokens: 5, cachedTokens: 2, reasoningTokens: 0 });
+    expect(totals.latencyMs).toBe(100);
+    expect(totals.calls).toBe(1);
+  });
+
+  it('accumulates usage and latency across multiple calls', async () => {
+    const inner = makeUsageClient({ content: 'ok', usage: { inputTokens: 10, outputTokens: 5, cachedTokens: 0, reasoningTokens: 0 }, latencyMs: 50 });
+    const { client, totals } = wrapClientForUsage(inner);
+
+    await client.sendMessage('sys', 'user1');
+    await client.sendMessage('sys', 'user2');
+
+    expect(totals.usage).toEqual({ inputTokens: 20, outputTokens: 10, cachedTokens: 0, reasoningTokens: 0 });
+    expect(totals.latencyMs).toBe(100);
+    expect(totals.calls).toBe(2);
+  });
+
+  it('falls back to zero when usage or latencyMs are absent', async () => {
+    const inner = makeUsageClient({ content: 'ok' } as LLMResponse);
+    const { client, totals } = wrapClientForUsage(inner);
+
+    await client.sendMessage('sys', 'user');
+
+    expect(totals.usage).toEqual({ inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 });
+    expect(totals.latencyMs).toBe(0);
+    expect(totals.calls).toBe(1);
+  });
+
+  it('forwards warmupCLI when the inner client has it', async () => {
+    const warmup = jest.fn().mockResolvedValue(undefined);
+    const inner = {
+      sendMessage: jest.fn().mockResolvedValue({ content: 'ok' }),
+      warmupCLI: warmup,
+    } as unknown as LLMClient;
+    const { client } = wrapClientForUsage(inner);
+
+    expect(client.warmupCLI).toBeDefined();
+    await client.warmupCLI!();
+    expect(warmup).toHaveBeenCalledTimes(1);
+  });
+
+  it('omits warmupCLI when the inner client does not have it', () => {
+    const inner = makeUsageClient({ content: 'ok' } as LLMResponse);
+    const { client } = wrapClientForUsage(inner);
+
+    expect(client.warmupCLI).toBeUndefined();
   });
 });

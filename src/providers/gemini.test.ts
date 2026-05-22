@@ -331,6 +331,8 @@ describe('GeminiClient OAuth path', () => {
 
     const result = await client.sendMessage('system', 'user');
     expect(result.content).toBe('hello there');
+    expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 });
+    expect(result.latencyMs).toBeGreaterThanOrEqual(0);
   });
 
   it('strips known provider secrets from forwarded env and does not pass the OAuth secret as an env var', async () => {

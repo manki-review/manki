@@ -535,6 +535,8 @@ describe('sendViaOAuth (Codex CLI path)', () => {
 
     const result = await client.sendMessage('sys', 'user');
     expect(result.content).toBe('hello world');
+    expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 });
+    expect(result.latencyMs).toBeGreaterThanOrEqual(0);
   });
 
   it('rejects on non-zero exit code with rich diagnostics', async () => {
