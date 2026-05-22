@@ -491,7 +491,7 @@ describe('handlePRComment', () => {
     (state.checkAndAutoApprove as jest.Mock).mockResolvedValueOnce(true);
     await handlePRComment(octokit, null, 'test-owner', 'test-repo', 1, undefined, undefined, config);
     expect(ghUtils.reactToIssueComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 42, 'eyes');
-    expect(state.checkAndAutoApprove).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 1);
+    expect(state.checkAndAutoApprove).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 1, config);
   });
 
   it('dispatches generic question when no known command', async () => {

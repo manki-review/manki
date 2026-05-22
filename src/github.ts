@@ -6,6 +6,7 @@ import * as github from '@actions/github';
 import { AgentProgressEntry, DEFENSIVE_HARDENING_TAG, DashboardData, Finding, FindingFingerprintEntry, FindingSeverity, OWN_PROPOSAL_TAG, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, ReviewVerdict, VALID_PR_TYPES } from './types';
 import { isLineInDiff, findClosestDiffLine } from './diff';
 import { MAX_AGENT_RETRIES } from './types';
+import { MAX_LOCK_TTL_SECONDS } from './config';
 import { safeTruncate } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -1319,6 +1320,61 @@ function isLockExpired(updatedAt: string, ttlSeconds: number, now: Date): boolea
   return (now.getTime() - updated) / 1000 > ttlSeconds;
 }
 
+const DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS = 600;
+
+function readConcurrencyLockTtlSeconds(config?: ReviewConfig): number {
+  const raw = core.getInput('concurrency_lock_ttl_seconds');
+  if (raw) {
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0 || n > MAX_LOCK_TTL_SECONDS) {
+      core.warning(`Invalid concurrency_lock_ttl_seconds=${raw}, using default ${DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS}`);
+      return DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS;
+    }
+    return n;
+  }
+  const fromConfig = config?.concurrency_lock_ttl_seconds;
+  if (fromConfig === undefined) return DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS;
+  if (!Number.isFinite(fromConfig) || fromConfig <= 0 || fromConfig > MAX_LOCK_TTL_SECONDS) {
+    core.warning(`Invalid \`concurrency_lock_ttl_seconds\` in config (${fromConfig}), using default ${DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS}`);
+    return DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS;
+  }
+  return fromConfig;
+}
+
+/**
+ * Defense-in-depth check before any LLM call. When another `manki-review[bot]`
+ * run has posted an in-progress marker comment whose `manki-run-id` differs
+ * from ours and whose `updated_at` is within the configured TTL, bail to avoid
+ * a double review. The workflow-level `concurrency` group is best-effort and
+ * can let two runs reach `in_progress` within the same scheduling window.
+ *
+ * Returns `true` when the caller should bail.
+ */
+async function checkConcurrentSubmissionLock(
+  octokit: Octokit, owner: string, repo: string, prNumber: number, config?: ReviewConfig,
+): Promise<boolean> {
+  const currentRunId = github.context.runId;
+  let lock;
+  try {
+    const comments = await fetchPRComments(octokit, owner, repo, prNumber);
+    lock = findInProgressLock(comments, currentRunId);
+  } catch (error) {
+    core.warning(`Concurrency lock scan failed: ${error instanceof Error ? error.message : error}`);
+    return false;
+  }
+  if (!lock) return false;
+
+  const ttlSeconds = readConcurrencyLockTtlSeconds(config);
+  const now = new Date();
+  if (isLockExpired(lock.updatedAt, ttlSeconds, now)) {
+    core.info(`Ignoring stale in-progress marker from run ${lock.runId} (updated_at=${lock.updatedAt}, TTL=${ttlSeconds}s)`);
+    return false;
+  }
+  const ageSeconds = Math.round((now.getTime() - Date.parse(lock.updatedAt)) / 1000);
+  core.warning(`Bailing: another Manki run (id=${lock.runId}) posted an in-progress marker ${ageSeconds}s ago (TTL=${ttlSeconds}s). Defense-in-depth lock engaged before LLM call.`);
+  return true;
+}
+
 /**
  * Post-step cleanup: find our run's progress comment and mark it as cancelled.
  * Invoked when GitHub Actions cancels the main step.
@@ -1450,5 +1506,5 @@ async function cancelActiveReviewRun(
   }
 }
 
-export { dynamicFence, formatContextBlock, formatFindingComment, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, APP_WARNING_MARKER, postAppWarningIfNeeded };
+export { dynamicFence, formatContextBlock, formatFindingComment, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, APP_WARNING_MARKER, postAppWarningIfNeeded };
 export type { InProgressLock };

@@ -1,8 +1,8 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { dismissPreviousReviews, isReviewInProgress } from './github';
-import { migrateLegacySeverity, SEVERITY_TOKEN_PATTERN } from './types';
+import { checkConcurrentSubmissionLock, dismissPreviousReviews, isReviewInProgress } from './github';
+import { migrateLegacySeverity, ReviewConfig, SEVERITY_TOKEN_PATTERN } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -104,13 +104,27 @@ function areAllFindingsResolved(threads: ReviewThread[]): boolean {
 
 /**
  * Post an approval review if all findings are resolved.
+ *
+ * Two concurrency guards run before any review is posted. First the TTL-based
+ * `checkConcurrentSubmissionLock` scans for a fresh in-progress marker from a
+ * different run, which protects against the Actions-API failure mode in
+ * `isReviewInProgress` (the bot identity often lacks `actions:read`, so its
+ * catch path fails open and would otherwise let an APPROVED race land on top
+ * of a parallel CHANGES_REQUESTED). The original `isReviewInProgress` check
+ * runs afterward as belt-and-suspenders.
  */
 async function checkAndAutoApprove(
   octokit: Octokit,
   owner: string,
   repo: string,
   prNumber: number,
+  config?: ReviewConfig,
 ): Promise<boolean> {
+  if (await checkConcurrentSubmissionLock(octokit, owner, repo, prNumber, config)) {
+    core.info('Skipping auto-approve — another run holds the in-progress lock');
+    return false;
+  }
+
   if (await isReviewInProgress(octokit, owner, repo, prNumber)) {
     core.info('Skipping auto-approve — review in progress');
     return false;

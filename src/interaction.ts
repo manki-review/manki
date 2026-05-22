@@ -580,7 +580,7 @@ async function handleCheck(
     return;
   }
 
-  const approved = await checkAndAutoApprove(octokit, owner, repo, prNumber);
+  const approved = await checkAndAutoApprove(octokit, owner, repo, prNumber, config);
 
   if (!approved) {
     const threads = await fetchBotReviewThreads(octokit, owner, repo, prNumber);
