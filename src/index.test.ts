@@ -125,7 +125,12 @@ jest.mock('./review', () => {
   };
 });
 
-jest.mock('./github', () => ({
+jest.mock('./github', () => {
+  const coreMod = jest.requireMock('@actions/core') as typeof import('@actions/core');
+  const findInProgressLockMock = jest.fn().mockReturnValue(null);
+  const isLockExpiredMock = jest.fn().mockReturnValue(false);
+  const fetchPRCommentsMock = jest.fn().mockResolvedValue([]);
+  return {
   fetchPRDiff: jest.fn().mockResolvedValue(''),
   fetchConfigFile: jest.fn().mockResolvedValue(null),
   fetchRepoContext: jest.fn().mockResolvedValue(''),
@@ -144,9 +149,41 @@ jest.mock('./github', () => ({
   markOwnProgressCommentCancelled: jest.fn().mockResolvedValue(false),
   postAppWarningIfNeeded: jest.fn().mockResolvedValue(undefined),
   cancelActiveReviewRun: jest.fn().mockResolvedValue(false),
-  fetchPRComments: jest.fn().mockResolvedValue([]),
-  findInProgressLock: jest.fn().mockReturnValue(null),
-  isLockExpired: jest.fn().mockReturnValue(false),
+  fetchPRComments: fetchPRCommentsMock,
+  findInProgressLock: findInProgressLockMock,
+  isLockExpired: isLockExpiredMock,
+  checkConcurrentSubmissionLock: jest.fn(async (
+    _octokit: unknown, _owner: string, _repo: string, _prNumber: number,
+    config?: { concurrency_lock_ttl_seconds?: number },
+  ) => {
+    let lock;
+    try {
+      const comments = await fetchPRCommentsMock();
+      lock = findInProgressLockMock(comments, 0);
+    } catch (error) {
+      coreMod.warning(`Concurrency lock scan failed: ${error instanceof Error ? error.message : error}`);
+      return false;
+    }
+    if (!lock) return false;
+    const raw = coreMod.getInput('concurrency_lock_ttl_seconds');
+    let ttlSeconds = 600;
+    if (raw) {
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n < 0 || n > 3600) {
+        coreMod.warning(`Invalid concurrency_lock_ttl_seconds=${raw}, using default 600`);
+      } else {
+        ttlSeconds = n;
+      }
+    } else if (config?.concurrency_lock_ttl_seconds !== undefined) {
+      ttlSeconds = config.concurrency_lock_ttl_seconds;
+    }
+    const now = new Date();
+    if (isLockExpiredMock(lock.updatedAt, ttlSeconds, now)) {
+      return false;
+    }
+    coreMod.warning(`Bailing: another Manki run (id=${lock.runId}) posted an in-progress marker. Defense-in-depth lock engaged before LLM call.`);
+    return true;
+  }),
   BOT_LOGIN: 'manki-review[bot]',
   ACTIONS_BOT_LOGIN: 'github-actions[bot]',
   BOT_MARKER: '<!-- manki-bot -->',
@@ -154,7 +191,8 @@ jest.mock('./github', () => ({
   FORCE_REVIEW_MARKER: '<!-- manki-force-review -->',
   FORCE_CAP_MARKER: '<!-- manki-force-cap -->',
   APP_WARNING_MARKER: '<!-- manki-app-warning -->',
-}));
+  };
+});
 
 jest.mock('./state', () => ({
   checkAndAutoApprove: jest.fn().mockResolvedValue(false),
@@ -5044,7 +5082,7 @@ describe('handleReviewStateCheck', () => {
     await handleReviewStateCheck();
 
     expect(jest.mocked(stateModule.checkAndAutoApprove)).toHaveBeenCalledWith(
-      expect.anything(), 'test-owner', 'test-repo', 5,
+      expect.anything(), 'test-owner', 'test-repo', 5, expect.objectContaining({ auto_approve: true }),
     );
     expect(jest.mocked(core.info)).toHaveBeenCalledWith(
       'PR #5 auto-approved after all findings resolved',
@@ -5094,7 +5132,7 @@ describe('handleReviewCommentInteraction auto-approve', () => {
     );
     expect(jest.mocked(interaction.handleReviewCommentReply)).toHaveBeenCalled();
     expect(jest.mocked(stateModule.checkAndAutoApprove)).toHaveBeenCalledWith(
-      expect.anything(), 'test-owner', 'test-repo', 8,
+      expect.anything(), 'test-owner', 'test-repo', 8, expect.objectContaining({ auto_approve: true }),
     );
   });
 

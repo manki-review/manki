@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { createAuthenticatedOctokit, getMemoryToken } from './auth';
-import { loadConfig, resolveModel, MAX_LOCK_TTL_SECONDS } from './config';
+import { loadConfig, resolveModel } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
@@ -12,7 +12,7 @@ import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
 import { collectResolvedThreadIds, fetchRecapState, fingerprintFinding } from './recap';
 import { buildAgentPool, collectPriorRoundAgents, runReview, determineVerdict, selectTeam } from './review';
-import { DEFENSIVE_HARDENING_TAG, DashboardData, PrContext, ReviewConfig, ReviewMetadata, RoundContext, roundContextToFlatAliases } from './types';
+import { DEFENSIVE_HARDENING_TAG, DashboardData, PrContext, ReviewMetadata, RoundContext, roundContextToFlatAliases } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -36,9 +36,7 @@ import {
   isApprovedOnCommit,
   markOwnProgressCommentCancelled,
   postAppWarningIfNeeded,
-  fetchPRComments,
-  findInProgressLock,
-  isLockExpired,
+  checkConcurrentSubmissionLock,
 } from './github';
 import { checkAndAutoApprove, resolveStaleThreads } from './state';
 
@@ -222,55 +220,6 @@ async function run(): Promise<void> {
       await handleReviewStateCheck();
       break;
   }
-}
-
-const DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS = 600;
-
-function readConcurrencyLockTtlSeconds(config?: ReviewConfig): number {
-  const raw = core.getInput('concurrency_lock_ttl_seconds');
-  if (raw) {
-    const n = Number(raw);
-    if (!Number.isFinite(n) || n < 0 || n > MAX_LOCK_TTL_SECONDS) {
-      core.warning(`Invalid concurrency_lock_ttl_seconds=${raw}, using default ${DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS}`);
-      return DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS;
-    }
-    return n;
-  }
-  return config?.concurrency_lock_ttl_seconds ?? DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS;
-}
-
-/**
- * Defense-in-depth check before any LLM call. When another `manki-review[bot]`
- * run has posted an in-progress marker comment whose `manki-run-id` differs
- * from ours and whose `updated_at` is within the configured TTL, bail to avoid
- * a double review. The workflow-level `concurrency` group is best-effort and
- * can let two runs reach `in_progress` within the same scheduling window.
- *
- * Returns `true` when the caller should bail.
- */
-async function checkConcurrentSubmissionLock(
-  octokit: Octokit, owner: string, repo: string, prNumber: number, config?: ReviewConfig,
-): Promise<boolean> {
-  const currentRunId = github.context.runId;
-  let lock;
-  try {
-    const comments = await fetchPRComments(octokit, owner, repo, prNumber);
-    lock = findInProgressLock(comments, currentRunId);
-  } catch (error) {
-    core.warning(`Concurrency lock scan failed: ${error instanceof Error ? error.message : error}`);
-    return false;
-  }
-  if (!lock) return false;
-
-  const ttlSeconds = readConcurrencyLockTtlSeconds(config);
-  const now = new Date();
-  if (isLockExpired(lock.updatedAt, ttlSeconds, now)) {
-    core.info(`Ignoring stale in-progress marker from run ${lock.runId} (updated_at=${lock.updatedAt}, TTL=${ttlSeconds}s)`);
-    return false;
-  }
-  const ageSeconds = Math.round((now.getTime() - Date.parse(lock.updatedAt)) / 1000);
-  core.warning(`Bailing: another Manki run (id=${lock.runId}) posted an in-progress marker ${ageSeconds}s ago (TTL=${ttlSeconds}s). Defense-in-depth lock engaged before LLM call.`);
-  return true;
 }
 
 async function postReviewSkippedComment(
@@ -1225,7 +1174,7 @@ async function handleReviewStateCheck(): Promise<void> {
     return;
   }
 
-  const approved = await checkAndAutoApprove(octokit, owner, repo, prNumber);
+  const approved = await checkAndAutoApprove(octokit, owner, repo, prNumber, config);
   if (approved) {
     core.info(`PR #${prNumber} auto-approved after all findings resolved`);
   }
@@ -1367,7 +1316,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
   // Check if all review threads are now resolved (e.g. the reply resolved the last conversation)
   const prNum = payload.pull_request?.number;
   if (prNum && config.auto_approve) {
-    const approved = await checkAndAutoApprove(octokit, owner, repo, prNum);
+    const approved = await checkAndAutoApprove(octokit, owner, repo, prNum, config);
     if (approved) {
       core.info(`PR #${prNum} auto-approved after all findings resolved`);
     }
