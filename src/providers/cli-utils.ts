@@ -53,6 +53,76 @@ export function buildTimeoutDiagnostics(lastStdoutChunk: string, stderrText: str
   return parts.join('. ');
 }
 
+export interface ExitDiagnosticsInput {
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  stderr: string;
+  lastStdoutChunk: string;
+  model: string;
+  effort?: string;
+  promptChars: number;
+  elapsedMs: number;
+  /**
+   * The full parsed terminal `result` event from a stream-json CLI (currently
+   * only Claude). When provided, the diagnostic appends a compact summary of
+   * `is_error`, `subtype`, and the first 300 chars of the result/message text.
+   * Pass `null` (the default if omitted) to render `<no result event>`, which
+   * is informative on its own: it tells us the CLI exited before flushing a
+   * terminal event.
+   */
+  resultEvent?: unknown;
+}
+
+/**
+ * Build a single descriptive string for the non-zero-exit branch of a CLI
+ * invocation. Captures runtime context (model, effort, prompt size, elapsed
+ * time, byte counts) and a 500-char stdout tail so empty-stderr failures are
+ * still actionable. The caller interpolates this inside its own
+ * `"<provider> CLI failed (...)"` framing.
+ */
+export function buildExitDiagnostics(input: ExitDiagnosticsInput): string {
+  const { exitCode, signal, stderr, lastStdoutChunk, model, effort, promptChars, elapsedMs, resultEvent } = input;
+  const signalPart = signal ? `, signal ${signal}` : '';
+  const stderrSnippet = extractCliErrorSnippet(stderr);
+  const stdoutTail = sanitizeLogOutput(lastStdoutChunk.slice(-500));
+  const head = `exit ${exitCode}${signalPart}: ${stderrSnippet || '<empty stderr>'}`;
+  const ctx: string[] = [`model=${model}`];
+  if (effort) ctx.push(`effort=${effort}`);
+  ctx.push(`promptChars=${promptChars}`);
+  ctx.push(`elapsedMs=${elapsedMs}`);
+  ctx.push(`stderrChars=${stderr.length}`);
+  if ('resultEvent' in input) ctx.push(summarizeResultEvent(resultEvent));
+  ctx.push(`lastStdout=${stdoutTail || '<none>'}`);
+  return `${head} [${ctx.join(', ')}]`;
+}
+
+function summarizeResultEvent(resultEvent: unknown): string {
+  if (resultEvent === null || resultEvent === undefined) return '<no result event>';
+  if (typeof resultEvent !== 'object') {
+    return `result=${sanitizeLogOutput(String(resultEvent)).slice(0, 300)}`;
+  }
+  const event = resultEvent as Record<string, unknown>;
+  const parts: string[] = [];
+  if ('is_error' in event) parts.push(`is_error=${Boolean(event.is_error)}`);
+  if (typeof event.subtype === 'string') parts.push(`subtype=${event.subtype}`);
+  const rawText = pickResultText(event);
+  if (rawText) {
+    const snippet = sanitizeLogOutput(rawText).slice(0, 300);
+    parts.push(`result=${JSON.stringify(snippet)}`);
+  }
+  return parts.length > 0 ? `result.${parts.join(' ')}` : 'result.<empty>';
+}
+
+function pickResultText(event: Record<string, unknown>): string {
+  if (typeof event.result === 'string' && event.result.length > 0) return event.result;
+  if (typeof event.message === 'string' && event.message.length > 0) return event.message;
+  if (event.error && typeof event.error === 'object') {
+    const err = event.error as Record<string, unknown>;
+    if (typeof err.message === 'string' && err.message.length > 0) return err.message;
+  }
+  return '';
+}
+
 export interface SeedAuthFileOptions {
   /** Base64-encoded JSON blob from a GitHub secret. */
   secret: string;

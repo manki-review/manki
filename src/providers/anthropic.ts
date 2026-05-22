@@ -5,7 +5,7 @@ import { promisify } from 'util';
 import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
-import { sanitizeLogOutput, STALE_TIMEOUT_MS, buildTimeoutDiagnostics, extractCliErrorSnippet } from './cli-utils';
+import { sanitizeLogOutput, STALE_TIMEOUT_MS, buildTimeoutDiagnostics, buildExitDiagnostics } from './cli-utils';
 import { AnthropicAuth, LLMClient, LLMResponse, SendMessageOptions } from './types';
 
 // Re-export for backward compatibility with existing test imports.
@@ -19,20 +19,26 @@ export function buildAnthropicAuth(oauthToken: string, apiKey: string): Anthropi
   throw new Error('Either claude_code_oauth_token or anthropic_api_key must be provided');
 }
 
-/** Parse a single JSON-stream line emitted by Claude CLI and return a text delta or final result. */
-function processJsonLine(line: string): { text: string; replace: boolean } {
+/**
+ * Parse a single JSON-stream line emitted by Claude CLI. Returns the text
+ * delta (if any) plus the full parsed event when it is a terminal `result`
+ * event, so callers can both stream text and capture the exit reason
+ * (`is_error`, `subtype`, error text) for diagnostics on failure.
+ */
+function processJsonLine(line: string): { text: string; replace: boolean; resultEvent: unknown } {
   try {
     const event = JSON.parse(line);
     if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta' && event.delta.text) {
-      return { text: event.delta.text, replace: false };
+      return { text: event.delta.text, replace: false, resultEvent: null };
     }
-    if (event.type === 'result' && typeof event.result === 'string') {
-      return { text: event.result, replace: true };
+    if (event.type === 'result') {
+      const text = typeof event.result === 'string' ? event.result : '';
+      return { text, replace: text.length > 0, resultEvent: event };
     }
   } catch {
     // Non-JSON line (e.g. verbose debug output) — skip silently
   }
-  return { text: '', replace: false };
+  return { text: '', replace: false, resultEvent: null };
 }
 
 
@@ -112,6 +118,8 @@ export class AnthropicClient implements LLMClient {
     const fullPrompt = `${systemPrompt}\n\n---\n\n${userMessage}`;
     const cliPath = await this.ensureCLI();
     const oauthToken = this.auth.kind === 'oauth' ? this.auth.token : undefined;
+    const startTime = Date.now();
+    const model = this.model;
 
     return new Promise((resolve, reject) => {
       // -p enables pipe mode — reads prompt from stdin when no argument follows
@@ -150,6 +158,7 @@ export class AnthropicClient implements LLMClient {
       // Only set in the catch block below; clearTimeout(undefined) is a no-op on the normal path
       let stdinKillTimer: NodeJS.Timeout | undefined;
       let lastStdoutChunk = '';
+      let lastResultEvent: unknown = null;
       let rawBytes = 0;
 
       const clearAllTimers = (): void => {
@@ -216,6 +225,7 @@ export class AnthropicClient implements LLMClient {
         for (const line of lines) {
           if (!line.trim()) continue;
           const delta = processJsonLine(line);
+          if (delta.resultEvent !== null) lastResultEvent = delta.resultEvent;
           if (delta.replace) {
             output = delta.text;
           } else {
@@ -239,6 +249,7 @@ export class AnthropicClient implements LLMClient {
           jsonBuffer += remaining;
           if (jsonBuffer.trim()) {
             const delta = processJsonLine(jsonBuffer);
+            if (delta.resultEvent !== null) lastResultEvent = delta.resultEvent;
             if (delta.replace) {
               output = delta.text;
             } else {
@@ -266,7 +277,17 @@ export class AnthropicClient implements LLMClient {
           return;
         }
         if (code !== 0) {
-          const msg = `exit ${code}${signal ? `, signal ${signal}` : ''}: ${extractCliErrorSnippet(stderr)}`;
+          const msg = buildExitDiagnostics({
+            exitCode: code,
+            signal,
+            stderr,
+            lastStdoutChunk,
+            model,
+            effort: options?.effort,
+            promptChars: fullPrompt.length,
+            elapsedMs: Date.now() - startTime,
+            resultEvent: lastResultEvent,
+          });
           core.warning(`Claude CLI failed (${msg})`);
           reject(new Error(`Claude CLI invocation failed (${msg})`));
           return;

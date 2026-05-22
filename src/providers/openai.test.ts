@@ -509,11 +509,27 @@ describe('sendViaOAuth (Codex CLI path)', () => {
     expect(result.content).toBe('hello world');
   });
 
-  it('rejects on non-zero exit code', async () => {
+  it('rejects on non-zero exit code with rich diagnostics', async () => {
     setupSpawnMock('', { exitCode: 1, stderr: 'something broke' });
+    const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'o3' });
+
+    await expect(client.sendMessage('sys', 'user', { effort: 'high' })).rejects.toThrow(
+      /Codex CLI invocation failed.*model=o3.*effort=high.*promptChars=\d+.*elapsedMs=\d+.*stderrChars=\d+/s,
+    );
+  });
+
+  it('surfaces stdout tail and <empty stderr> marker when exit-1 has no stderr', async () => {
+    setupSpawnMock('partial codex output before crash', { exitCode: 1, stderr: '' });
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-4o' });
 
-    await expect(client.sendMessage('sys', 'user')).rejects.toThrow('Codex CLI invocation failed');
+    await expect(client.sendMessage('sys', 'user')).rejects.toThrow(/Codex CLI invocation failed/);
+    const allWarnings = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(allWarnings).toContain('Codex CLI failed');
+    expect(allWarnings).toContain('<empty stderr>');
+    expect(allWarnings).toContain('lastStdout=partial codex output before crash');
+    expect(allWarnings).toContain('stderrChars=0');
+    warnSpy.mockRestore();
   });
 
   it('rejects on spawn error', async () => {

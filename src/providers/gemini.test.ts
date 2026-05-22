@@ -456,11 +456,27 @@ describe('GeminiClient OAuth path', () => {
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const client = new GeminiClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gemini-3.1-flash-lite' });
 
-    await expect(client.sendMessage('sys', 'user')).rejects.toThrow(/Gemini CLI invocation failed/);
+    await expect(client.sendMessage('sys', 'user')).rejects.toThrow(
+      /Gemini CLI invocation failed.*model=gemini-3\.1-flash-lite.*promptChars=\d+.*elapsedMs=\d+.*stderrChars=\d+/s,
+    );
 
     const allWarnings = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(allWarnings).toContain('[redacted-workflow-cmd]');
     expect(allWarnings).not.toContain('::error::leaked');
+    warnSpy.mockRestore();
+  });
+
+  it('surfaces stdout tail and <empty stderr> marker when exit-1 has no stderr', async () => {
+    setupOAuthSpawnMock({ stdout: 'gemini partial output before crash', stderr: '', exitCode: 1 });
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const client = new GeminiClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gemini-3.1-flash-lite' });
+
+    await expect(client.sendMessage('sys', 'user')).rejects.toThrow(/Gemini CLI invocation failed/);
+    const allWarnings = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(allWarnings).toContain('Gemini CLI failed');
+    expect(allWarnings).toContain('<empty stderr>');
+    expect(allWarnings).toContain('lastStdout=gemini partial output before crash');
+    expect(allWarnings).toContain('stderrChars=0');
     warnSpy.mockRestore();
   });
 
