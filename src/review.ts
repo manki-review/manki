@@ -734,7 +734,7 @@ export async function runReview(
     const plannerStart = Date.now();
     const plannerWrap = wrapClientForUsage(clients.planner);
     plannerResult = await runPlanner(plannerWrap.client, diff, prContext, config.reviewers, priorRoundHints);
-    plannerUsage = plannerWrap.totals.usage;
+    plannerUsage = plannerWrap.getTotals().usage;
     plannerDurationMs = Date.now() - plannerStart;
     if (plannerResult) {
       if (plannerResult.agents && priorRoundHints.length > 0) {
@@ -1168,7 +1168,7 @@ export async function runReview(
       }
       findingsForJudge = llmResult.unique;
       llmDedupCount = llmResult.duplicates.length;
-      dedupUsage = dedupWrap.totals.usage;
+      dedupUsage = dedupWrap.getTotals().usage;
       dedupDurationMs = Date.now() - dedupStart;
     }
   }
@@ -1232,8 +1232,9 @@ export async function runReview(
     const judgeWrap = wrapClientForUsage(clients.judge);
     const judgeResult = await runJudgeAgent(judgeWrap.client, config, judgeInput);
     judgeDurationMs = Date.now() - judgeStart;
-    judgeUsage = judgeWrap.totals.usage;
-    judgeRetryCount = Math.max(0, judgeWrap.totals.calls - 1);
+    const judgeTotals = judgeWrap.getTotals();
+    judgeUsage = judgeTotals.usage;
+    judgeRetryCount = Math.max(0, judgeTotals.calls - 1);
     judgeSummary = judgeResult.summary;
     allJudgedFindings = judgeResult.findings;
     judgeThreadEvaluations = judgeResult.threadEvaluations;
