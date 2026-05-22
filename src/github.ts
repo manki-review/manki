@@ -1326,7 +1326,7 @@ function readConcurrencyLockTtlSeconds(config?: ReviewConfig): number {
   const raw = core.getInput('concurrency_lock_ttl_seconds');
   if (raw) {
     const n = Number(raw);
-    if (!Number.isFinite(n) || n < 0 || n > MAX_LOCK_TTL_SECONDS) {
+    if (!Number.isFinite(n) || n <= 0 || n > MAX_LOCK_TTL_SECONDS) {
       core.warning(`Invalid concurrency_lock_ttl_seconds=${raw}, using default ${DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS}`);
       return DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS;
     }

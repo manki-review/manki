@@ -1,3 +1,4 @@
+import * as core from '@actions/core';
 import { areAllFindingsResolved, resolveStaleThreads, fetchBotReviewThreads, checkAndAutoApprove, BOT_MARKER, ReviewThread } from './state';
 
 jest.mock('./github', () => ({
@@ -619,33 +620,7 @@ describe('checkAndAutoApprove — concurrent run guard', () => {
     expect(mockIsReviewInProgress).not.toHaveBeenCalled();
   });
 
-  it('proceeds when the in-progress marker is older than the TTL', async () => {
-    mockCheckConcurrentSubmissionLock.mockResolvedValueOnce(false);
-    const octokit = makeMockOctokit();
-    const createReviewMock = (octokit as unknown as { rest: { pulls: { createReview: jest.Mock } } }).rest.pulls.createReview;
-
-    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
-
-    expect(result).toBe(true);
-    expect(createReviewMock).toHaveBeenCalledWith(
-      expect.objectContaining({ event: 'APPROVE' }),
-    );
-  });
-
-  it('proceeds when no in-progress marker exists', async () => {
-    mockCheckConcurrentSubmissionLock.mockResolvedValueOnce(false);
-    const octokit = makeMockOctokit();
-    const createReviewMock = (octokit as unknown as { rest: { pulls: { createReview: jest.Mock } } }).rest.pulls.createReview;
-
-    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
-
-    expect(result).toBe(true);
-    expect(createReviewMock).toHaveBeenCalledWith(
-      expect.objectContaining({ event: 'APPROVE' }),
-    );
-  });
-
-  it('proceeds when the only in-progress marker belongs to the current run', async () => {
+  it('proceeds when lock guard returns false', async () => {
     mockCheckConcurrentSubmissionLock.mockResolvedValueOnce(false);
     const octokit = makeMockOctokit();
     const createReviewMock = (octokit as unknown as { rest: { pulls: { createReview: jest.Mock } } }).rest.pulls.createReview;
@@ -764,6 +739,71 @@ describe('checkAndAutoApprove — concurrent run guard', () => {
       expect(createReviewMock).toHaveBeenCalledWith(
         expect.objectContaining({ event: 'APPROVE' }),
       );
+    });
+
+    describe('readConcurrencyLockTtlSeconds validation', () => {
+      let warningSpy: jest.SpyInstance;
+
+      beforeEach(() => {
+        warningSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+      });
+
+      afterEach(() => {
+        delete process.env['INPUT_CONCURRENCY_LOCK_TTL_SECONDS'];
+        warningSpy.mockRestore();
+      });
+
+      it('falls back to default and warns when TTL input is non-finite', async () => {
+        process.env['INPUT_CONCURRENCY_LOCK_TTL_SECONDS'] = 'not-a-number';
+        const octokit = makeOctokit([
+          botComment(7, inProgressBody(999), '2026-05-22T11:59:00Z'),
+        ]);
+
+        await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+
+        expect(warningSpy).toHaveBeenCalledWith(
+          expect.stringContaining('Invalid concurrency_lock_ttl_seconds=not-a-number'),
+        );
+      });
+
+      it('falls back to default and warns when TTL input is zero', async () => {
+        process.env['INPUT_CONCURRENCY_LOCK_TTL_SECONDS'] = '0';
+        const octokit = makeOctokit([
+          botComment(7, inProgressBody(999), '2026-05-22T11:59:00Z'),
+        ]);
+
+        await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+
+        expect(warningSpy).toHaveBeenCalledWith(
+          expect.stringContaining('Invalid concurrency_lock_ttl_seconds=0'),
+        );
+      });
+
+      it('falls back to default and warns when TTL input is negative', async () => {
+        process.env['INPUT_CONCURRENCY_LOCK_TTL_SECONDS'] = '-1';
+        const octokit = makeOctokit([
+          botComment(7, inProgressBody(999), '2026-05-22T11:59:00Z'),
+        ]);
+
+        await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+
+        expect(warningSpy).toHaveBeenCalledWith(
+          expect.stringContaining('Invalid concurrency_lock_ttl_seconds=-1'),
+        );
+      });
+
+      it('falls back to default and warns when TTL input exceeds the maximum', async () => {
+        process.env['INPUT_CONCURRENCY_LOCK_TTL_SECONDS'] = '9999';
+        const octokit = makeOctokit([
+          botComment(7, inProgressBody(999), '2026-05-22T11:59:00Z'),
+        ]);
+
+        await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+
+        expect(warningSpy).toHaveBeenCalledWith(
+          expect.stringContaining('Invalid concurrency_lock_ttl_seconds=9999'),
+        );
+      });
     });
   });
 });
