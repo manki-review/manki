@@ -79,6 +79,12 @@ export interface VerdictTraceEntry {
   threadId?: string;
   /** Set only on `unresolvedPriors` entries: the originating round number. */
   round?: number;
+  /** Set only on `unresolvedPriors` entries: the line number of the blocking thread. */
+  line?: number;
+  /** Set only on `unresolvedPriors` entries: the original severity of the prior finding. */
+  severity?: FindingSeverity | 'unknown';
+  /** Set only on `unresolvedPriors` entries: a direct GitHub link to the thread, when known. */
+  threadUrl?: string;
 }
 
 /**

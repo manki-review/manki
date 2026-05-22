@@ -1746,7 +1746,8 @@ export function determineVerdict(
   );
   if (unresolvedPriors.length > 0) {
     const trace = emptyTrace();
-    trace.unresolvedPriors = unresolvedPriors.map(p => priorToTraceEntry(p, priorRoundLookup));
+    const openThreadIndex = new Map((openThreads ?? []).map(t => [t.threadId, t]));
+    trace.unresolvedPriors = unresolvedPriors.map(p => priorToTraceEntry(p, priorRoundLookup, openThreadIndex));
     return { verdict: 'REQUEST_CHANGES', verdictReason: 'prior_unaddressed', verdictTrace: trace };
   }
 
@@ -1769,14 +1770,22 @@ function findingToTraceEntry(f: Finding): VerdictTraceEntry {
 function priorToTraceEntry(
   p: FindingFingerprintEntry,
   priorRoundLookup: Map<string, number> | undefined,
+  openThreadIndex?: Map<string, OpenThread>,
 ): VerdictTraceEntry {
   const round = priorRoundLookup?.get(stringifyFindingFingerprint(p.fingerprint));
+  const openThread = p.threadId ? openThreadIndex?.get(p.threadId) : undefined;
+  const line = openThread?.line ?? p.fingerprint.lineStart;
+  const severity = p.originalSeverity ?? p.severity;
+  const threadUrl = openThread?.threadUrl;
   return {
     file: p.fingerprint.file,
     title: p.title ?? '',
     fingerprint: stringifyFindingFingerprint(p.fingerprint),
     ...(p.threadId && { threadId: p.threadId }),
     ...(round != null && { round }),
+    ...(line != null && { line }),
+    ...(severity && { severity }),
+    ...(threadUrl && { threadUrl }),
   };
 }
 

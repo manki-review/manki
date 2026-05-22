@@ -680,6 +680,10 @@ export async function postReview(
     if (result.partialNote) {
       b += `\n\n> **Note:** ${sanitizeMarkdown(result.partialNote)}`;
     }
+    const blockingThreads = formatBlockingPriorThreads(result);
+    if (blockingThreads) {
+      b += `\n\n${blockingThreads}`;
+    }
     if (ctx) {
       b += `\n\n${formatStatsOneLiner(ctx, reviewTimeMs ?? 0)}`;
       b += `\n\n${formatContextBlock(ctx, statsHidden)}`;
@@ -845,6 +849,31 @@ const confidenceDots: Record<'high' | 'medium' | 'low', string> = {
 
 function getSeverityLabel(severity: FindingSeverity): string {
   return severityLabels[severity];
+}
+
+/**
+ * Render a `Blocking unresolved threads` section for the PR comment body
+ * when the verdict is `REQUEST_CHANGES` with reason `prior_unaddressed`.
+ * The section names every entry in `verdictTrace.unresolvedPriors` with
+ * file, line, original severity, and a link to the GitHub thread when
+ * available, so the author sees exactly which prior thread is blocking
+ * without having to read the AI-context JSON.
+ */
+export function formatBlockingPriorThreads(result: ReviewResult): string | null {
+  if (result.verdictReason !== 'prior_unaddressed') return null;
+  const priors = result.verdictTrace?.unresolvedPriors ?? [];
+  if (priors.length === 0) return null;
+
+  const lines = priors.map(p => {
+    const file = sanitizeFilePath(p.file);
+    const location = p.line != null ? `\`${file}:${p.line}\`` : `\`${file}\``;
+    const severity = p.severity && p.severity !== 'unknown' ? `[${getSeverityLabel(p.severity)}] ` : '';
+    const title = sanitizeMarkdown(p.title || '(untitled)');
+    const link = p.threadUrl ? ` ([view thread](${p.threadUrl}))` : '';
+    return `- ${severity}${title} — ${location}${link}`;
+  });
+
+  return `**Blocking unresolved review threads:**\n${lines.join('\n')}`;
 }
 
 function getSeverityEmoji(severity: FindingSeverity): string {

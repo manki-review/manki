@@ -1007,13 +1007,13 @@ describe('determineVerdict', () => {
       expect(verdictTrace.unresolvedPriors).toEqual([]);
     });
 
-    it('populates `unresolvedPriors` (with `threadId` and `round`) on the `prior_unaddressed` branch', () => {
+    it('populates `unresolvedPriors` (with `threadId`, `round`, `line`, `severity`) on the `prior_unaddressed` branch', () => {
       const priors = fingerprintEntriesFromLegacy([priorWarning()]);
       const lookup = new Map<string, number>([[stringifyFindingFingerprint(priors[0].fingerprint), 4]]);
       const { verdictTrace, verdictReason } = determineVerdict(
         [{ severity: 'nitpick', title: 'tiny', file: 'src/y.ts', line: 1, description: 'd', reviewers: ['r'] }],
         priors,
-        [openThreadFor('T1')],
+        [{ ...openThreadFor('T1'), threadUrl: 'https://github.com/o/r/pull/1#discussion_r1' }],
         undefined,
         undefined,
         lookup,
@@ -1026,6 +1026,9 @@ describe('determineVerdict', () => {
           fingerprint: 'src/x.ts:10:10:old-issue',
           threadId: 'T1',
           round: 4,
+          line: 10,
+          severity: 'warning',
+          threadUrl: 'https://github.com/o/r/pull/1#discussion_r1',
         },
       ]);
       expect(verdictTrace.survivingBlockers).toEqual([]);
