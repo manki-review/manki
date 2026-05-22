@@ -104,7 +104,7 @@ function summarizeResultEvent(resultEvent: unknown): string {
   const event = resultEvent as Record<string, unknown>;
   const parts: string[] = [];
   if ('is_error' in event) parts.push(`is_error=${Boolean(event.is_error)}`);
-  if (typeof event.subtype === 'string') parts.push(`subtype=${event.subtype}`);
+  if (typeof event.subtype === 'string') parts.push(`subtype=${sanitizeLogOutput(event.subtype)}`);
   const rawText = pickResultText(event);
   if (rawText) {
     const snippet = sanitizeLogOutput(rawText).slice(0, 300);
