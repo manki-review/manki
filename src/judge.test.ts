@@ -223,6 +223,14 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('You MUST return exactly 3 `threadEvaluations` entries');
   });
 
+  it.each([1, 3, 7])(
+    'interpolates openThreadsCount=%i into the "exactly N entries" constraint',
+    (n) => {
+      const prompt = buildJudgeSystemPrompt(makeConfig(), 5, false, n);
+      expect(prompt).toContain(`You MUST return exactly ${n} \`threadEvaluations\` entries`);
+    },
+  );
+
   it('omits threadEvaluations from output format when openThreadsCount is 0', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5, false, 0);
     expect(prompt).not.toContain('threadEvaluations');

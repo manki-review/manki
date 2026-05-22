@@ -1060,6 +1060,34 @@ describe('determineVerdict', () => {
       expect(verdictTrace.unresolvedPriors).toHaveLength(1);
       expect(verdictTrace.unresolvedPriors[0].threadId).toBeUndefined();
     });
+
+    it('enriches the trace entry with `line` and `threadUrl` when threadId is found in openThreadIndex', () => {
+      const priors = fingerprintEntriesFromLegacy([priorWarning()]);
+      const openThread: OpenThread = {
+        ...openThreadFor('T1'),
+        line: 42,
+        threadUrl: 'https://github.com/o/r/pull/1#discussion_r99',
+      };
+      const { verdictTrace } = determineVerdict([], priors, [openThread]);
+      expect(verdictTrace.unresolvedPriors).toHaveLength(1);
+      const entry = verdictTrace.unresolvedPriors[0];
+      expect(entry.threadId).toBe('T1');
+      expect(entry.line).toBe(42);
+      expect(entry.threadUrl).toBe('https://github.com/o/r/pull/1#discussion_r99');
+    });
+
+    it('falls back to fingerprint.lineStart and omits threadUrl when threadId is not in openThreadIndex', () => {
+      const priors = fingerprintEntriesFromLegacy([priorWarning()]);
+      // Pass undefined openThreads so the prior (T1) is unresolved, but the
+      // openThreadIndex built inside determineVerdict is empty — exercising the
+      // priorToTraceEntry fallback that uses fingerprint.lineStart as the line.
+      const { verdictTrace } = determineVerdict([], priors, undefined);
+      expect(verdictTrace.unresolvedPriors).toHaveLength(1);
+      const entry = verdictTrace.unresolvedPriors[0];
+      expect(entry.threadId).toBe('T1');
+      expect(entry.line).toBe(10);
+      expect(entry.threadUrl).toBeUndefined();
+    });
   });
 });
 
