@@ -12,7 +12,7 @@ import { isEmptyInterRoundDiff, MAX_INTER_ROUND_DIFF_CHARS } from './judge';
 import { loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
 import { collectResolvedThreadIds, fetchRecapState, fingerprintFinding } from './recap';
 import { buildAgentPool, buildPriorRoundLookup, collectPriorRoundAgents, runReview, determineVerdict, selectTeam } from './review';
-import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DashboardData, OWN_PROPOSAL_TAG, PrContext, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewMetadata, RoundContext, ThreadResolutionOverrides, roundContextToFlatAliases } from './types';
+import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DashboardData, OWN_PROPOSAL_TAG, PrContext, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewMetadata, RoundCap, RoundContext, RoundTrigger, ThreadResolutionOverrides, roundContextToFlatAliases } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -49,6 +49,36 @@ const ALLOWED_FINGERPRINT_TAGS = new Set<string>([
   RATCHET_SUPPRESSED_TAG,
   RESOLVED_THREAD_SUPPRESSED_TAG,
 ]);
+
+type BypassHint = 'force_review' | 'skip_cap' | 'manual_review_command';
+
+/**
+ * Build `RoundMeta.trigger` from the current GitHub Actions event. The event
+ * string folds in the action and (for the marker-comment tickbox edits) the
+ * specific marker, so a `5/5 -> 6/5` jump in the round-cap counter is
+ * attributable to the exact UI affordance that fired.
+ */
+function buildRoundTrigger(): RoundTrigger {
+  const eventName = github.context.eventName;
+  const payload = github.context.payload;
+  const action = payload.action;
+  const sender = payload.sender?.login ?? 'unknown';
+
+  let event = action ? `${eventName}:${action}` : eventName;
+  if (eventName === 'issue_comment') {
+    const body = payload.comment?.body ?? '';
+    if (action === 'edited' && body.includes('- [x] Force review')) {
+      if (body.includes(FORCE_REVIEW_MARKER)) {
+        event = `${event}:tick:FORCE_REVIEW_MARKER`;
+      } else if (body.includes(FORCE_CAP_MARKER)) {
+        event = `${event}:tick:FORCE_CAP_MARKER`;
+      }
+    } else if (action === 'created' && isReviewRequest(body)) {
+      event = `${event}:@manki review`;
+    }
+  }
+  return { event, sender };
+}
 
 function readProviderInputs(): ProviderInputs {
   return {
@@ -206,11 +236,11 @@ async function run(): Promise<void> {
       const forceReviewTickbox = isBotTickboxEdit && commentBody.includes(FORCE_REVIEW_MARKER);
       const forceCapTickbox = isBotTickboxEdit && commentBody.includes(FORCE_CAP_MARKER);
       if (forceCapTickbox && github.context.payload.issue?.pull_request) {
-        await handleCommentTrigger(false, true);
+        await handleCommentTrigger(false, true, 'skip_cap');
       } else if (forceReviewTickbox && github.context.payload.issue?.pull_request) {
-        await handleCommentTrigger(true, false);
+        await handleCommentTrigger(true, false, 'force_review');
       } else if (isReviewRequest(commentBody) && github.context.payload.issue?.pull_request) {
-        await handleCommentTrigger(true, true);
+        await handleCommentTrigger(true, true, 'manual_review_command');
       } else if (isBotMentionNonReview(commentBody) && github.context.payload.issue?.pull_request) {
         await handleInteraction();
       } else if (isBotMentionNonReview(commentBody) && !github.context.payload.issue?.pull_request) {
@@ -289,7 +319,7 @@ async function handlePullRequest(): Promise<void> {
   await runFullReview(owner, repo, prNumber, commitSha, pr.base.ref, prContext, pr.user?.login);
 }
 
-async function handleCommentTrigger(forceReview?: boolean, skipCap?: boolean): Promise<void> {
+async function handleCommentTrigger(forceReview?: boolean, skipCap?: boolean, bypassHint?: BypassHint): Promise<void> {
   const payload = github.context.payload;
 
   if (!payload.issue?.pull_request) {
@@ -347,7 +377,7 @@ async function handleCommentTrigger(forceReview?: boolean, skipCap?: boolean): P
     baseBranch: pr.base.ref,
   };
 
-  await runFullReview(owner, repo, prNumber, pr.head.sha, pr.base.ref, prContext, pr.user?.login, forceReview, skipCap);
+  await runFullReview(owner, repo, prNumber, pr.head.sha, pr.base.ref, prContext, pr.user?.login, forceReview, skipCap, bypassHint);
 }
 
 function reconcileDashboardAgents(dashboard: DashboardData, names: string[]): void {
@@ -375,8 +405,10 @@ async function runFullReview(
   prAuthorLogin?: string,
   forceReview?: boolean,
   skipCap?: boolean,
+  bypassHint?: BypassHint,
 ): Promise<void> {
   core.info(`Starting review for ${owner}/${repo}#${prNumber}`);
+  const trigger = buildRoundTrigger();
 
   const providerInputs = readProviderInputs();
 
@@ -934,6 +966,16 @@ async function runFullReview(
     }
 
     const round = priorRoundCount + 1;
+    const cap: RoundCap = {
+      priorRoundCount,
+      maxAutoRounds,
+      skipCap: !!skipCap,
+      forceReview: !!forceReview,
+      bypassReason:
+        maxAutoRounds === 0 || priorRoundCount < maxAutoRounds
+          ? 'within_cap'
+          : (bypassHint ?? 'within_cap'),
+    };
     const findingEntries = result.findings.map(f => ({
       fingerprint: fingerprintFinding(f.title, f.file ?? '', f.line || 0),
       severity: f.severity,
@@ -954,6 +996,8 @@ async function runFullReview(
         round,
         timestamp: new Date().toISOString(),
         mankiVersion: MANKI_VERSION,
+        cap,
+        trigger,
       },
       config: {
         reviewLevel: team.level === 'trivial' ? 'small' : team.level,
