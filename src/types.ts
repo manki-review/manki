@@ -566,6 +566,44 @@ export interface RoundMeta {
   /** `version` from `package.json` of the manki release that produced this round. */
   mankiVersion: string;
   promptVersions?: PromptVersions;
+  /**
+   * Round-cap accounting captured at the moment this round was admitted.
+   * `priorRoundCount` is the count *before* this round was appended, so the
+   * public `5/5` display reads as `priorRoundCount: 5, maxAutoRounds: 5`.
+   * Optional so replay tooling reading older context blocks keeps working.
+   */
+  cap?: RoundCap;
+  /**
+   * Provenance of the event that triggered this round. Optional so replay
+   * tooling reading older context blocks keeps working.
+   */
+  trigger?: RoundTrigger;
+}
+
+/** Round-cap accounting captured at the moment a round was admitted. */
+export interface RoundCap {
+  priorRoundCount: number;
+  maxAutoRounds: number;
+  skipCap: boolean;
+  forceReview: boolean;
+  /**
+   * Which path admitted this round. `within_cap` means the cap was not
+   * reached. The remaining values name the bypass branch that fired.
+   */
+  bypassReason?: 'within_cap' | 'force_review' | 'skip_cap' | 'manual_review_command';
+}
+
+/** Provenance of the event that triggered a round. */
+export interface RoundTrigger {
+  /**
+   * `github.context.eventName` plus the action and (when applicable) the
+   * marker comment that fired. Examples: `pull_request:synchronize`,
+   * `issue_comment:created:@manki review`,
+   * `issue_comment:edited:tick:FORCE_REVIEW_MARKER`.
+   */
+  event: string;
+  /** `github.context.payload.sender.login`, or `'unknown'` when absent. */
+  sender: string;
 }
 
 /** Version identifiers for the prompt templates used by each pipeline stage. */
