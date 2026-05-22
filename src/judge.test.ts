@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as core from '@actions/core';
 import {
   applyCrossRoundSuppression,
   applyInPrSuppression,
@@ -2331,6 +2332,167 @@ describe('runJudgeAgent', () => {
       'low',
     );
     expect(systemPrompt).toBe(expectedPrompt);
+  });
+
+  describe('threadEvaluations coverage enforcement', () => {
+    const openThreads: OpenThread[] = [
+      { threadId: 'PRRT_a', title: 'Thread A', file: 'src/a.ts', line: 1, severity: 'warning' },
+      { threadId: 'PRRT_b', title: 'Thread B', file: 'src/b.ts', line: 2, severity: 'warning' },
+    ];
+
+    it('retries once when threadEvaluations field is omitted entirely', async () => {
+      mockSendMessage
+        .mockResolvedValueOnce({ content: JSON.stringify({ summary: 's', findings: [] }) })
+        .mockResolvedValueOnce({
+          content: JSON.stringify({
+            summary: 's',
+            findings: [],
+            threadEvaluations: [
+              { threadId: 'PRRT_a', status: 'addressed', reason: 'Fixed' },
+              { threadId: 'PRRT_b', status: 'not_addressed', reason: 'Still applies' },
+            ],
+          }),
+        });
+
+      const result = await runJudgeAgent(mockClient, makeConfig(), {
+        findings: [],
+        diff: makeDiff(),
+        rawDiff: '',
+        repoContext: '',
+        agentCount: 3,
+        openThreads,
+      });
+
+      expect(mockSendMessage).toHaveBeenCalledTimes(2);
+      const [, retryUserMessage] = mockSendMessage.mock.calls[1];
+      expect(retryUserMessage).toContain('Retry: missing `threadEvaluations` entries');
+      expect(retryUserMessage).toContain('PRRT_a');
+      expect(retryUserMessage).toContain('PRRT_b');
+      expect(result.threadEvaluations).toEqual([
+        { threadId: 'PRRT_a', status: 'addressed', reason: 'Fixed' },
+        { threadId: 'PRRT_b', status: 'not_addressed', reason: 'Still applies' },
+      ]);
+    });
+
+    it('retries once when threadEvaluations covers only a subset of open threads', async () => {
+      mockSendMessage
+        .mockResolvedValueOnce({
+          content: JSON.stringify({
+            summary: 's',
+            findings: [],
+            threadEvaluations: [
+              { threadId: 'PRRT_a', status: 'addressed', reason: 'Fixed' },
+            ],
+          }),
+        })
+        .mockResolvedValueOnce({
+          content: JSON.stringify({
+            summary: 's',
+            findings: [],
+            threadEvaluations: [
+              { threadId: 'PRRT_a', status: 'addressed', reason: 'Fixed' },
+              { threadId: 'PRRT_b', status: 'not_addressed', reason: 'Still applies' },
+            ],
+          }),
+        });
+
+      const result = await runJudgeAgent(mockClient, makeConfig(), {
+        findings: [],
+        diff: makeDiff(),
+        rawDiff: '',
+        repoContext: '',
+        agentCount: 3,
+        openThreads,
+      });
+
+      expect(mockSendMessage).toHaveBeenCalledTimes(2);
+      const [, retryUserMessage] = mockSendMessage.mock.calls[1];
+      expect(retryUserMessage).toContain('Missing thread IDs: PRRT_b');
+      expect(retryUserMessage).not.toContain('Missing thread IDs: PRRT_a');
+      expect(result.threadEvaluations).toHaveLength(2);
+    });
+
+    it('synthesizes `uncertain` entries for threads still missing after retry', async () => {
+      const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+      mockSendMessage
+        .mockResolvedValueOnce({ content: JSON.stringify({ summary: 's', findings: [] }) })
+        .mockResolvedValueOnce({
+          content: JSON.stringify({
+            summary: 's',
+            findings: [],
+            threadEvaluations: [
+              { threadId: 'PRRT_a', status: 'addressed', reason: 'Fixed' },
+            ],
+          }),
+        });
+
+      const result = await runJudgeAgent(mockClient, makeConfig(), {
+        findings: [],
+        diff: makeDiff(),
+        rawDiff: '',
+        repoContext: '',
+        agentCount: 3,
+        openThreads,
+      });
+
+      expect(result.threadEvaluations).toEqual([
+        { threadId: 'PRRT_a', status: 'addressed', reason: 'Fixed' },
+        { threadId: 'PRRT_b', status: 'uncertain', reason: 'judge omitted evaluation after retry' },
+      ]);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('PRRT_b'));
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('after retry'));
+      warnSpy.mockRestore();
+    });
+
+    it('skips retry when threadEvaluations covers every open thread on the first response', async () => {
+      mockSendMessage.mockResolvedValue({
+        content: JSON.stringify({
+          summary: 's',
+          findings: [],
+          threadEvaluations: [
+            { threadId: 'PRRT_a', status: 'addressed', reason: 'Fixed' },
+            { threadId: 'PRRT_b', status: 'not_addressed', reason: 'Still applies' },
+          ],
+        }),
+      });
+
+      const result = await runJudgeAgent(mockClient, makeConfig(), {
+        findings: [],
+        diff: makeDiff(),
+        rawDiff: '',
+        repoContext: '',
+        agentCount: 3,
+        openThreads,
+      });
+
+      expect(mockSendMessage).toHaveBeenCalledTimes(1);
+      expect(result.threadEvaluations).toHaveLength(2);
+    });
+
+    it('skips retry when the inter-round diff is empty (override branch handles missing entries)', async () => {
+      mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 's', findings: [] }) });
+
+      const priorRounds: LegacyHandoverRoundFixture[] = [{
+        round: 1, commitSha: 'abc', timestamp: 't', findings: [],
+      }];
+
+      const result = await runJudgeAgent(mockClient, makeConfig(), {
+        findings: [],
+        diff: makeDiff(),
+        rawDiff: '',
+        repoContext: '',
+        agentCount: 3,
+        openThreads,
+        priorRounds: priorRounds.map(roundContextFromLegacy),
+        interRoundDiff: '',
+      });
+
+      expect(mockSendMessage).toHaveBeenCalledTimes(1);
+      expect(result.threadEvaluations).toEqual([
+        { threadId: 'PRRT_a', status: 'not_addressed', reason: 'No code changes since prior review' },
+        { threadId: 'PRRT_b', status: 'not_addressed', reason: 'No code changes since prior review' },
+      ]);
+    });
   });
 });
 

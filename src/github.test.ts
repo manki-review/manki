@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 
-import { buildDashboard, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, truncateContextToFitBody, dynamicFence, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded } from './github';
+import { buildDashboard, formatBlockingPriorThreads, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, truncateContextToFitBody, dynamicFence, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded } from './github';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { DEFAULT_CONFIG } from './config';
 
@@ -686,6 +686,128 @@ function makeContext(overrides: Partial<RoundContext> = {}): RoundContext {
   };
   return { ...base, ...overrides };
 }
+
+describe('formatBlockingPriorThreads', () => {
+  const makeResult = (overrides: Partial<ReviewResult> = {}): ReviewResult => ({
+    verdict: 'REQUEST_CHANGES',
+    verdictReason: 'prior_unaddressed',
+    summary: 'Prior concerns still open.',
+    findings: [],
+    highlights: [],
+    reviewComplete: true,
+    agentNames: [],
+    ...overrides,
+  });
+
+  it('returns null when verdict reason is not `prior_unaddressed`', () => {
+    const result = makeResult({
+      verdictReason: 'novel_suggestion',
+      verdictTrace: {
+        survivingBlockers: [],
+        novelWarnings: [],
+        unresolvedPriors: [{ file: 'a.ts', title: 'x', fingerprint: 'a.ts:1:1:x' }],
+      },
+    });
+    expect(formatBlockingPriorThreads(result)).toBeNull();
+  });
+
+  it('returns null when there are no unresolved priors on the trace', () => {
+    const result = makeResult({
+      verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] },
+    });
+    expect(formatBlockingPriorThreads(result)).toBeNull();
+  });
+
+  it('renders file, line, severity, title and a thread link when present', () => {
+    const result = makeResult({
+      verdictTrace: {
+        survivingBlockers: [],
+        novelWarnings: [],
+        unresolvedPriors: [
+          {
+            file: 'src/handler.ts',
+            title: 'Stdout-tail sanitization test passes trivially',
+            fingerprint: 'src/handler.ts:42:42:stdout-tail',
+            threadId: 'PRRT_xyz',
+            severity: 'warning',
+            line: 42,
+            threadUrl: 'https://github.com/o/r/pull/805#discussion_r1',
+          },
+        ],
+      },
+    });
+    const rendered = formatBlockingPriorThreads(result);
+    expect(rendered).toContain('Blocking unresolved review threads');
+    expect(rendered).toContain('Stdout-tail sanitization test passes trivially');
+    expect(rendered).toContain('`src/handler.ts:42`');
+    expect(rendered).toContain('[Warning]');
+    expect(rendered).toContain('(https://github.com/o/r/pull/805#discussion_r1)');
+  });
+
+  it('renders multiple blocking threads', () => {
+    const result = makeResult({
+      verdictTrace: {
+        survivingBlockers: [],
+        novelWarnings: [],
+        unresolvedPriors: [
+          { file: 'a.ts', title: 'A', fingerprint: 'a.ts:1:1:a', severity: 'blocker', line: 1 },
+          { file: 'b.ts', title: 'B', fingerprint: 'b.ts:2:2:b', severity: 'warning', line: 2 },
+        ],
+      },
+    });
+    const rendered = formatBlockingPriorThreads(result);
+    expect(rendered).toContain('[Blocker] A');
+    expect(rendered).toContain('[Warning] B');
+    expect(rendered).toContain('`a.ts:1`');
+    expect(rendered).toContain('`b.ts:2`');
+  });
+
+  it('omits the link when no `threadUrl` is provided', () => {
+    const result = makeResult({
+      verdictTrace: {
+        survivingBlockers: [],
+        novelWarnings: [],
+        unresolvedPriors: [
+          { file: 'a.ts', title: 'A', fingerprint: 'a.ts:1:1:a', severity: 'warning', line: 1 },
+        ],
+      },
+    });
+    const rendered = formatBlockingPriorThreads(result);
+    expect(rendered).not.toContain('[view thread](');
+  });
+
+  it('is included in the `postReview` body when verdict reason is `prior_unaddressed`', async () => {
+    const mockCreateReview = jest.fn().mockResolvedValue({ data: { id: 1 } });
+    const mockOctokit = {
+      rest: { pulls: { createReview: mockCreateReview } },
+    } as unknown as Parameters<typeof postReview>[0];
+
+    const result = makeResult({
+      summary: 'Nothing blocking and prior concerns appear addressed.',
+      verdictTrace: {
+        survivingBlockers: [],
+        novelWarnings: [],
+        unresolvedPriors: [
+          {
+            file: 'src/handler.ts',
+            title: 'Stdout-tail sanitization test passes trivially',
+            fingerprint: 'src/handler.ts:42:42:stdout-tail',
+            threadId: 'PRRT_xyz',
+            severity: 'warning',
+            line: 42,
+            threadUrl: 'https://github.com/o/r/pull/805#discussion_r1',
+          },
+        ],
+      },
+    });
+
+    await postReview(mockOctokit, 'o', 'r', 805, 'sha', result);
+    const body = mockCreateReview.mock.calls[0][0].body as string;
+    expect(body).toContain('Blocking unresolved review threads');
+    expect(body).toContain('Stdout-tail sanitization test passes trivially');
+    expect(body).toContain('https://github.com/o/r/pull/805#discussion_r1');
+  });
+});
 
 describe('formatStatsOneLiner', () => {
   it('formats a one-liner with severity breakdown', () => {
