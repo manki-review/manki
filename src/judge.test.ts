@@ -2578,6 +2578,69 @@ describe('runJudgeAgent', () => {
         { threadId: 'PRRT_b', status: 'not_addressed', reason: 'No code changes since prior review' },
       ]);
     });
+
+    it('synthesizes `uncertain` for missing threads when retry sendMessage throws', async () => {
+      const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+      mockSendMessage
+        .mockResolvedValueOnce({
+          content: JSON.stringify({
+            summary: 'original summary',
+            findings: [],
+            threadEvaluations: [
+              { threadId: 'PRRT_a', status: 'addressed', reason: 'Fixed' },
+            ],
+          }),
+        })
+        .mockRejectedValueOnce(new Error('rate limit exceeded'));
+
+      const result = await runJudgeAgent(mockClient, makeConfig(), {
+        findings: [],
+        diff: makeDiff(),
+        rawDiff: '',
+        repoContext: '',
+        agentCount: 3,
+        openThreads,
+      });
+
+      expect(mockSendMessage).toHaveBeenCalledTimes(2);
+      expect(result.threadEvaluations).toEqual([
+        { threadId: 'PRRT_a', status: 'addressed', reason: 'Fixed' },
+        { threadId: 'PRRT_b', status: 'uncertain', reason: 'judge omitted evaluation after retry' },
+      ]);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('retry call failed'));
+      warnSpy.mockRestore();
+    });
+
+    it('places the reminder before untrusted PR content in the retry message', async () => {
+      mockSendMessage
+        .mockResolvedValueOnce({ content: JSON.stringify({ summary: 's', findings: [] }) })
+        .mockResolvedValueOnce({
+          content: JSON.stringify({
+            summary: 's',
+            findings: [],
+            threadEvaluations: [
+              { threadId: 'PRRT_a', status: 'addressed', reason: 'Fixed' },
+              { threadId: 'PRRT_b', status: 'not_addressed', reason: 'Still applies' },
+            ],
+          }),
+        });
+
+      await runJudgeAgent(mockClient, makeConfig(), {
+        findings: [],
+        diff: makeDiff(),
+        rawDiff: '',
+        repoContext: '',
+        agentCount: 3,
+        openThreads,
+      });
+
+      expect(mockSendMessage).toHaveBeenCalledTimes(2);
+      const [, retryUserMessage] = mockSendMessage.mock.calls[1];
+      const reminderIdx = retryUserMessage.indexOf('Retry: missing `threadEvaluations` entries');
+      const originalMsgIdx = retryUserMessage.indexOf('Original message:');
+      expect(reminderIdx).toBeGreaterThanOrEqual(0);
+      expect(originalMsgIdx).toBeGreaterThan(reminderIdx);
+    });
   });
 });
 
