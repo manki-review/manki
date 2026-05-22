@@ -3732,6 +3732,18 @@ describe('hasBotReviewOnCommit', () => {
 
     expect(await hasBotReviewOnCommit(octokit, 'owner', 'repo', 1, 'sha-123')).toBe(true);
   });
+
+  it('returns true when the matching review is the 501st (beyond the 500-cap), not among the first 500', async () => {
+    const old = Array.from({ length: 500 }, (_, i) => ({
+      state: 'COMMENTED',
+      commit_id: `sha-old-${i}`,
+      user: { login: BOT_LOGIN, type: 'Bot' },
+    }));
+    const newest = { state: 'COMMENTED', commit_id: 'sha-new', user: { login: BOT_LOGIN, type: 'Bot' } };
+    const octokit = makeMockOctokit([...old, newest]);
+
+    expect(await hasBotReviewOnCommit(octokit, 'owner', 'repo', 1, 'sha-new')).toBe(true);
+  });
 });
 
 describe('findBotReviewOnCommit', () => {

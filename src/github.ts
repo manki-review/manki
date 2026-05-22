@@ -1474,7 +1474,7 @@ async function fetchBotReviews(
       pull_number: prNumber,
       per_page: 100,
     });
-    return reviews.slice(0, 500)
+    return reviews.slice(-500)
       .filter((r: { state?: string; user?: { login?: string; type?: string } | null }) =>
         r.user?.login === BOT_LOGIN && r.user?.type === 'Bot' && r.state !== 'DISMISSED',
       )

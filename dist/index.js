@@ -45466,7 +45466,7 @@ async function fetchBotReviews(octokit, owner, repo, prNumber) {
             pull_number: prNumber,
             per_page: 100,
         });
-        return reviews.slice(0, 500)
+        return reviews.slice(-500)
             .filter((r) => r.user?.login === BOT_LOGIN && r.user?.type === 'Bot' && r.state !== 'DISMISSED')
             .map((r) => {
             const raw = r;
