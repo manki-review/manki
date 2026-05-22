@@ -91,26 +91,26 @@ export function buildExitDiagnostics(input: ExitDiagnosticsInput): string {
   ctx.push(`promptChars=${promptChars}`);
   ctx.push(`elapsedMs=${elapsedMs}`);
   ctx.push(`stderrChars=${stderr.length}`);
-  if ('resultEvent' in input) ctx.push(summarizeResultEvent(resultEvent));
+  if ('resultEvent' in input) ctx.push(...summarizeResultEvent(resultEvent));
   ctx.push(`lastStdout=${stdoutTail || '<none>'}`);
   return `${head} [${ctx.join(', ')}]`;
 }
 
-function summarizeResultEvent(resultEvent: unknown): string {
-  if (resultEvent === null || resultEvent === undefined) return '<no result event>';
+function summarizeResultEvent(resultEvent: unknown): string[] {
+  if (resultEvent === null || resultEvent === undefined) return ['<no result event>'];
   if (typeof resultEvent !== 'object') {
-    return `result=${sanitizeLogOutput(String(resultEvent)).slice(0, 300)}`;
+    return [`result=${sanitizeLogOutput(String(resultEvent)).slice(0, 300)}`];
   }
   const event = resultEvent as Record<string, unknown>;
   const parts: string[] = [];
-  if ('is_error' in event) parts.push(`is_error=${Boolean(event.is_error)}`);
-  if (typeof event.subtype === 'string') parts.push(`subtype=${sanitizeLogOutput(event.subtype)}`);
+  if ('is_error' in event) parts.push(`result.is_error=${Boolean(event.is_error)}`);
+  if (typeof event.subtype === 'string') parts.push(`result.subtype=${sanitizeLogOutput(event.subtype)}`);
   const rawText = pickResultText(event);
   if (rawText) {
     const snippet = sanitizeLogOutput(rawText).slice(0, 300);
-    parts.push(`result=${JSON.stringify(snippet)}`);
+    parts.push(`result.text=${JSON.stringify(snippet)}`);
   }
-  return parts.length > 0 ? `result.${parts.join(' ')}` : 'result.<empty>';
+  return parts.length > 0 ? parts : ['result.<empty>'];
 }
 
 function pickResultText(event: Record<string, unknown>): string {

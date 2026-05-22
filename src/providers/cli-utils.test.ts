@@ -159,8 +159,8 @@ describe('buildExitDiagnostics', () => {
         result: 'Maximum tokens exceeded',
       },
     });
-    expect(result).toContain('is_error=true');
-    expect(result).toContain('subtype=error_during_execution');
+    expect(result).toContain('result.is_error=true');
+    expect(result).toContain('result.subtype=error_during_execution');
     expect(result).toContain('Maximum tokens exceeded');
   });
 
@@ -169,8 +169,8 @@ describe('buildExitDiagnostics', () => {
       ...base,
       resultEvent: { type: 'result', subtype: 'success', is_error: false, result: 'all good' },
     });
-    expect(result).toContain('is_error=false');
-    expect(result).toContain('subtype=success');
+    expect(result).toContain('result.is_error=false');
+    expect(result).toContain('result.subtype=success');
   });
 
   it('falls back to error.message when result and message are absent', () => {
