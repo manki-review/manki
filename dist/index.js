@@ -43952,6 +43952,7 @@ exports.parsePRDiff = parsePRDiff;
 exports.filterFiles = filterFiles;
 exports.isLineInDiff = isLineInDiff;
 exports.findClosestDiffLine = findClosestDiffLine;
+exports.countDiffLines = countDiffLines;
 exports.isDiffTooLarge = isDiffTooLarge;
 const parse_diff_1 = __importDefault(__nccwpck_require__(2673));
 const minimatch_1 = __nccwpck_require__(6507);
@@ -43988,6 +43989,8 @@ function parsePRDiff(rawDiff) {
             ...(changeType === 'renamed' || changeType === 'deleted' ? { oldPath } : {}),
             changeType,
             hunks,
+            additions: file.additions,
+            deletions: file.deletions,
         });
     }
     return { files, totalAdditions, totalDeletions };
@@ -44040,10 +44043,25 @@ function findClosestDiffLine(file, line) {
     return closest;
 }
 /**
- * Check if the total diff size exceeds the maximum line count.
+ * Sum additions and deletions across the given files. Files lacking
+ * per-file counts contribute zero, matching the behavior of test fixtures
+ * that omit them.
  */
-function isDiffTooLarge(diff, maxLines) {
-    return diff.totalAdditions + diff.totalDeletions > maxLines;
+function countDiffLines(files) {
+    let total = 0;
+    for (const file of files) {
+        total += (file.additions ?? 0) + (file.deletions ?? 0);
+    }
+    return total;
+}
+/**
+ * Check if the reviewable diff size exceeds the maximum line count.
+ * Files matching `excludePaths` are dropped before the count so generated
+ * artifacts the user has opted out of (e.g., `dist/**`) cannot trip the gate.
+ */
+function isDiffTooLarge(diff, maxLines, excludePaths = []) {
+    const reviewable = filterFiles(diff.files, excludePaths);
+    return countDiffLines(reviewable) > maxLines;
 }
 function isBinaryFile(file) {
     // Binary files typically have no chunks and the diff header indicates binary
@@ -45938,11 +45956,12 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
                 agentProgress: team.agents.map(a => ({ name: a.name, status: 'reviewing' })),
             };
         await (0, github_1.updateProgressDashboard)(octokit, owner, repo, progressCommentId, dashboard);
-        if ((0, diff_1.isDiffTooLarge)(diff, config.max_diff_lines)) {
-            core.warning(`Diff too large (${diff.totalAdditions + diff.totalDeletions} lines > ${config.max_diff_lines} max)`);
+        if ((0, diff_1.isDiffTooLarge)(diff, config.max_diff_lines, config.exclude_paths)) {
+            const reviewableLines = (0, diff_1.countDiffLines)((0, diff_1.filterFiles)(diff.files, config.exclude_paths));
+            core.warning(`Diff too large (${reviewableLines} reviewable lines > ${config.max_diff_lines} max)`);
             const result = {
                 verdict: 'COMMENT',
-                summary: `**Manki** — This PR is too large for automated review (${diff.totalAdditions + diff.totalDeletions} lines). Consider splitting it up or request a manual review.`,
+                summary: `**Manki** — This PR is too large for automated review (${reviewableLines} lines). Consider splitting it up or request a manual review.`,
                 findings: [],
                 highlights: [],
                 reviewComplete: true,
