@@ -42,6 +42,8 @@ export function parsePRDiff(rawDiff: string): ParsedDiff {
       ...(changeType === 'renamed' || changeType === 'deleted' ? { oldPath } : {}),
       changeType,
       hunks,
+      additions: file.additions,
+      deletions: file.deletions,
     });
   }
 
@@ -112,10 +114,30 @@ export function findClosestDiffLine(file: DiffFile, line: number): number | null
 }
 
 /**
- * Check if the total diff size exceeds the maximum line count.
+ * Sum additions and deletions across the given files. Files lacking
+ * per-file counts contribute zero, matching the behavior of test fixtures
+ * that omit them.
  */
-export function isDiffTooLarge(diff: ParsedDiff, maxLines: number): boolean {
-  return diff.totalAdditions + diff.totalDeletions > maxLines;
+export function countDiffLines(files: DiffFile[]): number {
+  let total = 0;
+  for (const file of files) {
+    total += (file.additions ?? 0) + (file.deletions ?? 0);
+  }
+  return total;
+}
+
+/**
+ * Check if the reviewable diff size exceeds the maximum line count.
+ * Files matching `excludePaths` are dropped before the count so generated
+ * artifacts the user has opted out of (e.g., `dist/**`) cannot trip the gate.
+ */
+export function isDiffTooLarge(
+  diff: ParsedDiff,
+  maxLines: number,
+  excludePaths: string[] = [],
+): boolean {
+  const reviewable = filterFiles(diff.files, excludePaths);
+  return countDiffLines(reviewable) > maxLines;
 }
 
 function isBinaryFile(file: parseDiff.File): boolean {
