@@ -1,4 +1,5 @@
 import * as core from '@actions/core';
+import * as fs from 'fs';
 import * as github from '@actions/github';
 import * as path from 'path';
 
@@ -333,6 +334,7 @@ async function handlePullRequest(): Promise<void> {
 
   await runFullReview(owner, repo, prNumber, commitSha, pr.base.ref, prContext, {
     prAuthorLogin: pr.user?.login,
+    headRepoFullName: pr.head.repo?.full_name,
     trigger: buildRoundTrigger(),
   });
 }
@@ -405,6 +407,7 @@ async function handleCommentTrigger(forceReview?: boolean, skipCap?: boolean, by
 
   await runFullReview(owner, repo, prNumber, pr.head.sha, pr.base.ref, prContext, {
     prAuthorLogin: pr.user?.login,
+    headRepoFullName: pr.head.repo?.full_name,
     forceReview,
     skipCap,
     bypassHint,
@@ -436,7 +439,7 @@ async function runFullReview(
   prContext?: PrContext,
   options: FullReviewOptions = {},
 ): Promise<void> {
-  const { prAuthorLogin, forceReview, skipCap, bypassHint, trigger = buildRoundTrigger() } = options;
+  const { prAuthorLogin, forceReview, skipCap, bypassHint, trigger = buildRoundTrigger(), headRepoFullName } = options;
   core.info(`Starting review for ${owner}/${repo}#${prNumber}`);
 
   const providerInputs = readProviderInputs();
@@ -471,15 +474,21 @@ async function runFullReview(
     const configAbsPath = path.isAbsolute(configRelPath)
       ? configRelPath
       : path.join(cwd, configRelPath);
-    const resolvedConfigPath = path.resolve(configAbsPath);
+    let resolvedConfigPath: string;
+    try {
+      resolvedConfigPath = fs.realpathSync(configAbsPath);
+    } catch {
+      resolvedConfigPath = configAbsPath;
+    }
     if (resolvedConfigPath !== cwd && !resolvedConfigPath.startsWith(cwd + path.sep)) {
       core.warning(`\`config_path\` resolved outside workspace — using defaults`);
     }
     const effectiveConfigPath = (resolvedConfigPath === cwd || resolvedConfigPath.startsWith(cwd + path.sep))
-      ? configAbsPath
+      ? resolvedConfigPath
       : path.join(cwd, '.manki.yml');
     const rawConfig = loadConfigFromFile(effectiveConfigPath);
-    const config = sanitizeForkConfig(rawConfig);
+    const isFork = headRepoFullName !== undefined && headRepoFullName !== `${owner}/${repo}`;
+    const config = isFork ? sanitizeForkConfig(rawConfig) : rawConfig;
 
     // Scan for a competing in-progress marker before posting our own to shorten
     // the race window. A residual window remains when two runs both pass this scan

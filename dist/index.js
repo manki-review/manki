@@ -45667,6 +45667,7 @@ exports.runFullReview = runFullReview;
 exports.main = main;
 exports._resetOctokitCache = _resetOctokitCache;
 const core = __importStar(__nccwpck_require__(7484));
+const fs = __importStar(__nccwpck_require__(9896));
 const github = __importStar(__nccwpck_require__(3228));
 const path = __importStar(__nccwpck_require__(6928));
 const auth_1 = __nccwpck_require__(9081);
@@ -45950,6 +45951,7 @@ async function handlePullRequest() {
     };
     await runFullReview(owner, repo, prNumber, commitSha, pr.base.ref, prContext, {
         prAuthorLogin: pr.user?.login,
+        headRepoFullName: pr.head.repo?.full_name,
         trigger: buildRoundTrigger(),
     });
 }
@@ -46010,6 +46012,7 @@ async function handleCommentTrigger(forceReview, skipCap, bypassHint) {
     };
     await runFullReview(owner, repo, prNumber, pr.head.sha, pr.base.ref, prContext, {
         prAuthorLogin: pr.user?.login,
+        headRepoFullName: pr.head.repo?.full_name,
         forceReview,
         skipCap,
         bypassHint,
@@ -46031,7 +46034,7 @@ function reconcileDashboardAgents(dashboard, names) {
     dashboard.agentProgress = reconciled;
 }
 async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContext, options = {}) {
-    const { prAuthorLogin, forceReview, skipCap, bypassHint, trigger = buildRoundTrigger() } = options;
+    const { prAuthorLogin, forceReview, skipCap, bypassHint, trigger = buildRoundTrigger(), headRepoFullName } = options;
     core.info(`Starting review for ${owner}/${repo}#${prNumber}`);
     const providerInputs = readProviderInputs();
     if (!(0, providers_1.hasAnyProviderCredentials)(providerInputs)) {
@@ -46061,15 +46064,22 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
         const configAbsPath = path.isAbsolute(configRelPath)
             ? configRelPath
             : path.join(cwd, configRelPath);
-        const resolvedConfigPath = path.resolve(configAbsPath);
+        let resolvedConfigPath;
+        try {
+            resolvedConfigPath = fs.realpathSync(configAbsPath);
+        }
+        catch {
+            resolvedConfigPath = configAbsPath;
+        }
         if (resolvedConfigPath !== cwd && !resolvedConfigPath.startsWith(cwd + path.sep)) {
             core.warning(`\`config_path\` resolved outside workspace — using defaults`);
         }
         const effectiveConfigPath = (resolvedConfigPath === cwd || resolvedConfigPath.startsWith(cwd + path.sep))
-            ? configAbsPath
+            ? resolvedConfigPath
             : path.join(cwd, '.manki.yml');
         const rawConfig = (0, config_1.loadConfigFromFile)(effectiveConfigPath);
-        const config = (0, config_1.sanitizeForkConfig)(rawConfig);
+        const isFork = headRepoFullName !== undefined && headRepoFullName !== `${owner}/${repo}`;
+        const config = isFork ? (0, config_1.sanitizeForkConfig)(rawConfig) : rawConfig;
         // Scan for a competing in-progress marker before posting our own to shorten
         // the race window. A residual window remains when two runs both pass this scan
         // before either posts; tracking issue for the strict atomic fix: https://github.com/manki-review/manki/issues/798

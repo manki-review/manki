@@ -6285,7 +6285,7 @@ describe('runFullReview concurrent-submission lock', () => {
     expect(jest.mocked(ghUtils.fetchConfigFile)).not.toHaveBeenCalled();
   });
 
-  it('strips `instructions` from PR-head config before use', async () => {
+  it('strips `instructions` from fork PR-head config before use', async () => {
     jest.mocked(configModule.loadConfigFromFile).mockReturnValueOnce({
       auto_review: true,
       max_diff_lines: 5000,
@@ -6295,13 +6295,17 @@ describe('runFullReview concurrent-submission lock', () => {
       memory: { enabled: false, repo: '' },
     } as unknown as ReturnType<typeof configModule.loadConfigFromFile>);
 
-    await callRunFullReview();
+    await runFullReview(
+      'test-owner', 'test-repo', 42, 'abc123', 'main',
+      { title: 'Test PR', body: '', baseBranch: 'main' },
+      { headRepoFullName: 'fork-user/test-repo' },
+    );
 
     const configArg = jest.mocked(reviewModule.runReview).mock.calls[0]?.[1] as { instructions?: string } | undefined;
     expect(configArg?.instructions).toBe('');
   });
 
-  it('strips `reviewers` from PR-head config before use', async () => {
+  it('strips `reviewers` from fork PR-head config before use', async () => {
     jest.mocked(configModule.loadConfigFromFile).mockReturnValueOnce({
       auto_review: true,
       max_diff_lines: 5000,
@@ -6311,10 +6315,35 @@ describe('runFullReview concurrent-submission lock', () => {
       memory: { enabled: false, repo: '' },
     } as unknown as ReturnType<typeof configModule.loadConfigFromFile>);
 
-    await callRunFullReview();
+    await runFullReview(
+      'test-owner', 'test-repo', 42, 'abc123', 'main',
+      { title: 'Test PR', body: '', baseBranch: 'main' },
+      { headRepoFullName: 'fork-user/test-repo' },
+    );
 
     const configArg = jest.mocked(reviewModule.runReview).mock.calls[0]?.[1] as { reviewers?: unknown[] } | undefined;
     expect(configArg?.reviewers).toEqual([]);
+  });
+
+  it('honors `instructions` and `reviewers` from same-repo PR config without stripping', async () => {
+    jest.mocked(configModule.loadConfigFromFile).mockReturnValueOnce({
+      auto_review: true,
+      max_diff_lines: 5000,
+      exclude_paths: [],
+      reviewers: [{ name: 'security', focus: 'look for vulnerabilities' }],
+      instructions: 'focus on security',
+      memory: { enabled: false, repo: '' },
+    } as unknown as ReturnType<typeof configModule.loadConfigFromFile>);
+
+    await runFullReview(
+      'test-owner', 'test-repo', 42, 'abc123', 'main',
+      { title: 'Test PR', body: '', baseBranch: 'main' },
+      { headRepoFullName: 'test-owner/test-repo' },
+    );
+
+    const configArg = jest.mocked(reviewModule.runReview).mock.calls[0]?.[1] as { instructions?: string; reviewers?: unknown[] } | undefined;
+    expect(configArg?.instructions).toBe('focus on security');
+    expect(configArg?.reviewers).toEqual([{ name: 'security', focus: 'look for vulnerabilities' }]);
   });
 
   it('warns and falls back to default config path when `config_path` resolves outside the workspace', async () => {
