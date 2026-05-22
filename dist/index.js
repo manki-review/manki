@@ -44794,6 +44794,7 @@ async function postReview(octokit, owner, repo, prNumber, commitSha, result, dif
             validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: commentBody });
         }
     }
+    const reviewedCommitFooter = buildReviewedCommitFooter(owner, repo, commitSha);
     const renderBody = (ctx) => {
         let b = `${BOT_MARKERS}\n${sanitizeMarkdown(result.summary)}`;
         if (result.partialNote) {
@@ -44831,7 +44832,7 @@ async function postReview(octokit, owner, repo, prNumber, commitSha, result, dif
             pull_number: prNumber,
             commit_id: commitSha,
             event,
-            body: truncateBody(body),
+            body: appendReviewedCommitFooter(truncateBody(body), reviewedCommitFooter),
             comments: validComments,
         });
         core.info(`Posted review #${review.id} with verdict ${result.verdict}`);
@@ -44845,7 +44846,7 @@ async function postReview(octokit, owner, repo, prNumber, commitSha, result, dif
         if (isLineError && validComments.length > 0) {
             core.warning('Inline comments rejected by GitHub (invalid lines). Posting review without inline comments.');
             const allAsBody = validComments.map(c => `- ${c.body.split('\n')[0]}`).join('\n');
-            const lineErrFallbackBody = truncateBody(`${body}\n\n**Inline comments could not be posted:**\n${allAsBody}`);
+            const lineErrFallbackBody = appendReviewedCommitFooter(truncateBody(`${body}\n\n**Inline comments could not be posted:**\n${allAsBody}`), reviewedCommitFooter);
             const { data: review } = await octokit.rest.pulls.createReview({
                 owner,
                 repo,
@@ -44869,7 +44870,7 @@ async function postReview(octokit, owner, repo, prNumber, commitSha, result, dif
             const firstLine = c.body.split('\n')[0];
             return `- ${firstLine} (\`${c.path}:${c.line}\`)`;
         }).join('\n');
-        const fallbackBody = truncateBody(`${body}\n\n**Findings (could not post inline):**\n${findingSummary}`);
+        const fallbackBody = appendReviewedCommitFooter(truncateBody(`${body}\n\n**Findings (could not post inline):**\n${findingSummary}`), reviewedCommitFooter);
         const { data: review } = await octokit.rest.pulls.createReview({
             owner,
             repo,
@@ -44886,6 +44887,13 @@ async function postReview(octokit, owner, repo, prNumber, commitSha, result, dif
 function dynamicFence(content) {
     const maxBt = (content.match(/`+/g) || []).reduce((max, s) => Math.max(max, s.length), 0);
     return '`'.repeat(Math.max(3, maxBt + 1));
+}
+function buildReviewedCommitFooter(owner, repo, commitSha) {
+    const shortSha = commitSha.slice(0, 7);
+    return `Reviewed commit [\`${shortSha}\`](https://github.com/${owner}/${repo}/commit/${commitSha})`;
+}
+function appendReviewedCommitFooter(body, footer) {
+    return `${body}\n\n${footer}`;
 }
 function truncateBody(text, maxLength = 60000) {
     if (text.length <= maxLength)

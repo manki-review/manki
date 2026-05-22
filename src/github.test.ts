@@ -492,7 +492,7 @@ describe('postReview generalFindings', () => {
 
     await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
     const body = mockCreateReview.mock.calls[0][0].body as string;
-    expect(body.length).toBeLessThanOrEqual(60000 + 50); // cap + truncation message
+    expect(body.length).toBeLessThanOrEqual(60000 + 200); // cap + truncation notice + footer appended after truncation
     expect(body).toContain('*(Review body truncated)*');
   });
 
@@ -518,6 +518,130 @@ describe('postReview generalFindings', () => {
     await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
     const body = mockCreateReview.mock.calls[0][0].body as string;
     expect(body).toContain('`src/utils.ts`');
+  });
+});
+
+describe('postReview reviewed-commit footer', () => {
+  const mockCreateReview = jest.fn().mockResolvedValue({ data: { id: 1 } });
+  const mockOctokit = {
+    rest: {
+      pulls: {
+        createReview: mockCreateReview,
+      },
+    },
+  } as unknown as Parameters<typeof postReview>[0];
+
+  const fullSha = 'ede627f1234567890abcdef0123456789abcdef0';
+  const shortSha = fullSha.slice(0, 7);
+  const expectedFooter = `Reviewed commit [\`${shortSha}\`](https://github.com/acme/widgets/commit/${fullSha})`;
+
+  beforeEach(() => {
+    mockCreateReview.mockClear();
+  });
+
+  function buildResult(verdict: ReviewResult['verdict']): ReviewResult {
+    return {
+      verdict,
+      summary: 'Summary text.',
+      findings: [],
+      highlights: [],
+      reviewComplete: true,
+      agentNames: [],
+    };
+  }
+
+  it.each(['APPROVE', 'COMMENT', 'REQUEST_CHANGES'] as const)(
+    'ends the review body with the reviewed-commit footer for verdict %s',
+    async verdict => {
+      await postReview(mockOctokit, 'acme', 'widgets', 1, fullSha, buildResult(verdict));
+      const body = mockCreateReview.mock.calls[0][0].body as string;
+      expect(body.endsWith(expectedFooter)).toBe(true);
+    },
+  );
+
+  it('renders the footer as a markdown link to the commit URL with a 7-char short SHA', async () => {
+    await postReview(mockOctokit, 'acme', 'widgets', 1, fullSha, buildResult('APPROVE'));
+    const body = mockCreateReview.mock.calls[0][0].body as string;
+    expect(body).toContain(expectedFooter);
+    expect(shortSha).toBe(fullSha.slice(0, 7));
+    expect(body).toMatch(/Reviewed commit \[`[0-9a-f]{7}`\]\(https:\/\/github\.com\/acme\/widgets\/commit\/[0-9a-f]+\)$/);
+  });
+
+  it('keeps the footer at the bottom even when the line-error fallback appends extra sections', async () => {
+    const createReviewMock = jest.fn()
+      .mockRejectedValueOnce(new Error('pull_request_review_thread.line must be part of the diff'))
+      .mockResolvedValueOnce({ data: { id: 9 } });
+    const octokit = {
+      rest: { pulls: { createReview: createReviewMock } },
+    } as unknown as Parameters<typeof postReview>[0];
+
+    const result: ReviewResult = {
+      verdict: 'COMMENT',
+      summary: 'Summary.',
+      findings: [{
+        severity: 'suggestion',
+        title: 'Issue',
+        file: 'src/a.ts',
+        line: 10,
+        description: 'Desc.',
+        reviewers: [],
+      }],
+      highlights: [],
+      reviewComplete: true,
+      agentNames: [],
+    };
+
+    await postReview(octokit, 'acme', 'widgets', 1, fullSha, result);
+    const fallbackBody = createReviewMock.mock.calls[1][0].body as string;
+    expect(fallbackBody.endsWith(expectedFooter)).toBe(true);
+    expect(fallbackBody).toContain('**Inline comments could not be posted:**');
+  });
+
+  it('keeps the footer at the bottom when APPROVE falls back to COMMENT due to permissions', async () => {
+    const createReviewMock = jest.fn()
+      .mockRejectedValueOnce(new Error('Resource not accessible by integration'))
+      .mockResolvedValueOnce({ data: { id: 10 } });
+    const octokit = {
+      rest: { pulls: { createReview: createReviewMock } },
+    } as unknown as Parameters<typeof postReview>[0];
+
+    const result: ReviewResult = {
+      verdict: 'APPROVE',
+      summary: 'All good.',
+      findings: [{
+        severity: 'suggestion',
+        title: 'Minor',
+        file: 'src/a.ts',
+        line: 10,
+        description: 'Desc.',
+        reviewers: [],
+      }],
+      highlights: [],
+      reviewComplete: true,
+      agentNames: [],
+    };
+
+    await postReview(octokit, 'acme', 'widgets', 1, fullSha, result);
+    const fallbackBody = createReviewMock.mock.calls[1][0].body as string;
+    expect(fallbackBody.endsWith(expectedFooter)).toBe(true);
+    expect(fallbackBody).toContain('**Findings (could not post inline):**');
+  });
+
+  it('preserves the footer even when the review body exceeds the truncation limit', async () => {
+    const hugeSummary = 'x'.repeat(65000);
+    const result: ReviewResult = {
+      verdict: 'COMMENT',
+      summary: hugeSummary,
+      findings: [],
+      highlights: [],
+      reviewComplete: true,
+      agentNames: [],
+    };
+
+    await postReview(mockOctokit, 'acme', 'widgets', 1, fullSha, result);
+    const body = mockCreateReview.mock.calls[0][0].body as string;
+    expect(body.endsWith(expectedFooter)).toBe(true);
+    expect(body.length).toBeLessThanOrEqual(60000 + expectedFooter.length + 4);
   });
 });
 

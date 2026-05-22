@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Every Manki review body now ends with a `Reviewed commit [`<short-sha>`](…)` footer linking to the exact commit reviewed, removing ambiguity about which SHA a verdict applies to and giving a stable human-visible anchor for every review across `APPROVED` / `COMMENTED` / `CHANGES_REQUESTED` ([#807](https://github.com/manki-review/manki/issues/807)).
+
 ### Fixed
 
 - The PR-size gate (`max_diff_lines`) now applies `exclude_paths` before counting, so generated artifacts the user has opted out of (`dist/**`, `*.lock`, `*.generated.*` by default) no longer trip the "PR too large for automated review" abort. Previously the raw diff was counted, which caused PRs that commit a build bundle (e.g., `dist/index.js` on `main`) to short-circuit review even when the reviewable source delta was small.
