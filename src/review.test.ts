@@ -6354,22 +6354,25 @@ describe('wrapClientForUsage', () => {
 
   it('records usage and latency on a single call', async () => {
     const inner = makeUsageClient({ content: 'ok', usage: { inputTokens: 10, outputTokens: 5, cachedTokens: 2, reasoningTokens: 0 }, latencyMs: 100 });
-    const { client, totals } = wrapClientForUsage(inner);
+    const { client, getTotals } = wrapClientForUsage(inner);
 
     const result = await client.sendMessage('sys', 'user');
+    const totals = getTotals();
 
     expect(result.content).toBe('ok');
     expect(totals.usage).toEqual({ inputTokens: 10, outputTokens: 5, cachedTokens: 2, reasoningTokens: 0 });
     expect(totals.latencyMs).toBe(100);
     expect(totals.calls).toBe(1);
+    expect(totals.failures).toBe(0);
   });
 
   it('accumulates usage and latency across multiple calls', async () => {
     const inner = makeUsageClient({ content: 'ok', usage: { inputTokens: 10, outputTokens: 5, cachedTokens: 0, reasoningTokens: 0 }, latencyMs: 50 });
-    const { client, totals } = wrapClientForUsage(inner);
+    const { client, getTotals } = wrapClientForUsage(inner);
 
     await client.sendMessage('sys', 'user1');
     await client.sendMessage('sys', 'user2');
+    const totals = getTotals();
 
     expect(totals.usage).toEqual({ inputTokens: 20, outputTokens: 10, cachedTokens: 0, reasoningTokens: 0 });
     expect(totals.latencyMs).toBe(100);
@@ -6378,13 +6381,62 @@ describe('wrapClientForUsage', () => {
 
   it('falls back to zero when usage or latencyMs are absent', async () => {
     const inner = makeUsageClient({ content: 'ok' } as LLMResponse);
-    const { client, totals } = wrapClientForUsage(inner);
+    const { client, getTotals } = wrapClientForUsage(inner);
 
     await client.sendMessage('sys', 'user');
+    const totals = getTotals();
 
     expect(totals.usage).toEqual({ inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 });
     expect(totals.latencyMs).toBe(0);
     expect(totals.calls).toBe(1);
+  });
+
+  it('increments failures and rethrows when sendMessage throws', async () => {
+    const error = new Error('network failure');
+    const inner = {
+      sendMessage: jest.fn().mockRejectedValue(error),
+    } as unknown as LLMClient;
+    const { client, getTotals } = wrapClientForUsage(inner);
+
+    await expect(client.sendMessage('sys', 'user')).rejects.toThrow('network failure');
+    const totals = getTotals();
+    expect(totals.failures).toBe(1);
+    expect(totals.calls).toBe(0);
+    expect(totals.usage).toEqual({ inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 });
+  });
+
+  it('counts failures independently from successful calls', async () => {
+    let callCount = 0;
+    const inner = {
+      sendMessage: jest.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) return Promise.reject(new Error('fail'));
+        return Promise.resolve({ content: 'ok', usage: { inputTokens: 5, outputTokens: 3, cachedTokens: 0, reasoningTokens: 0 }, latencyMs: 10 });
+      }),
+    } as unknown as LLMClient;
+    const { client, getTotals } = wrapClientForUsage(inner);
+
+    await expect(client.sendMessage('sys', 'user')).rejects.toThrow('fail');
+    await client.sendMessage('sys', 'retry');
+    const totals = getTotals();
+
+    expect(totals.failures).toBe(1);
+    expect(totals.calls).toBe(1);
+    expect(totals.usage).toEqual({ inputTokens: 5, outputTokens: 3, cachedTokens: 0, reasoningTokens: 0 });
+  });
+
+  it('getTotals returns a snapshot frozen against external mutation', async () => {
+    const inner = makeUsageClient({ content: 'ok', usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0, reasoningTokens: 0 }, latencyMs: 5 });
+    const { client, getTotals } = wrapClientForUsage(inner);
+
+    await client.sendMessage('sys', 'user');
+    const snap1 = getTotals();
+
+    await client.sendMessage('sys', 'user2');
+    const snap2 = getTotals();
+
+    expect(snap1.calls).toBe(1);
+    expect(snap2.calls).toBe(2);
   });
 
   it('forwards warmupCLI when the inner client has it', async () => {
@@ -6409,12 +6461,12 @@ describe('wrapClientForUsage', () => {
 
   it('derives judgeRetryCount as 0 for one call and 1 for two calls', async () => {
     const inner = makeUsageClient({ content: 'ok', usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0, reasoningTokens: 0 }, latencyMs: 10 });
-    const { client, totals } = wrapClientForUsage(inner);
+    const { client, getTotals } = wrapClientForUsage(inner);
 
     await client.sendMessage('sys', 'user');
-    expect(Math.max(0, totals.calls - 1)).toBe(0);
+    expect(Math.max(0, getTotals().calls - 1)).toBe(0);
 
     await client.sendMessage('sys', 'retry');
-    expect(Math.max(0, totals.calls - 1)).toBe(1);
+    expect(Math.max(0, getTotals().calls - 1)).toBe(1);
   });
 });
