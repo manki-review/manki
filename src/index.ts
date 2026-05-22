@@ -971,10 +971,7 @@ async function runFullReview(
       maxAutoRounds,
       skipCap: !!skipCap,
       forceReview: !!forceReview,
-      bypassReason:
-        maxAutoRounds === 0 || priorRoundCount < maxAutoRounds
-          ? 'within_cap'
-          : (bypassHint ?? 'within_cap'),
+      bypassReason: bypassHint ?? 'within_cap',
     };
     const findingEntries = result.findings.map(f => ({
       fingerprint: fingerprintFinding(f.title, f.file ?? '', f.line || 0),

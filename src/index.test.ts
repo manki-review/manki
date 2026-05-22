@@ -2509,6 +2509,188 @@ describe('runFullReview orchestration', () => {
     });
   });
 
+  describe('RoundMeta cap and trigger provenance', () => {
+    const provFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+    };
+
+    beforeEach(() => {
+      jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+        files: [provFile], totalAdditions: 10, totalDeletions: 5,
+      });
+      jest.mocked(diffModule.filterFiles).mockReturnValue([provFile]);
+    });
+
+    function callRunFullReviewWith(forceReview?: boolean, skipCap?: boolean, bypassHint?: 'force_review' | 'skip_cap' | 'manual_review_command'): Promise<void> {
+      return runFullReview(
+        baseArgs.owner, baseArgs.repo, baseArgs.prNumber,
+        baseArgs.commitSha, baseArgs.baseRef, baseArgs.prContext,
+        undefined, forceReview, skipCap, bypassHint,
+      );
+    }
+
+    it('builds `trigger` from `pull_request:synchronize` with sender login', async () => {
+      setContext({
+        eventName: 'pull_request',
+        payload: { action: 'synchronize', sender: { login: 'alice' } },
+      });
+
+      await callRunFullReview();
+
+      const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+      expect(rc!.meta.trigger).toEqual({ event: 'pull_request:synchronize', sender: 'alice' });
+    });
+
+    it('falls back to sender `unknown` when payload omits it', async () => {
+      setContext({
+        eventName: 'pull_request',
+        payload: { action: 'opened' },
+      });
+
+      await callRunFullReview();
+
+      const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+      expect(rc!.meta.trigger?.sender).toBe('unknown');
+      expect(rc!.meta.trigger?.event).toBe('pull_request:opened');
+    });
+
+    it('builds `trigger` from a `@manki review` comment', async () => {
+      setContext({
+        eventName: 'issue_comment',
+        payload: {
+          action: 'created',
+          sender: { login: 'bob' },
+          comment: { body: '@manki review please' },
+        },
+      });
+      jest.mocked(interaction.isReviewRequest).mockReturnValue(true);
+
+      await callRunFullReviewWith(true, true, 'manual_review_command');
+
+      const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+      expect(rc!.meta.trigger?.event).toBe('issue_comment:created:@manki review');
+      expect(rc!.meta.trigger?.sender).toBe('bob');
+    });
+
+    it('builds `trigger` from a force-review tickbox edit', async () => {
+      setContext({
+        eventName: 'issue_comment',
+        payload: {
+          action: 'edited',
+          sender: { login: 'carol' },
+          comment: { body: `- [x] Force review\n\n${FORCE_REVIEW_MARKER}` },
+        },
+      });
+
+      await callRunFullReviewWith(true, false, 'force_review');
+
+      const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+      expect(rc!.meta.trigger?.event).toBe('issue_comment:edited:tick:FORCE_REVIEW_MARKER');
+    });
+
+    it('builds `trigger` from a force-cap tickbox edit', async () => {
+      setContext({
+        eventName: 'issue_comment',
+        payload: {
+          action: 'edited',
+          sender: { login: 'dave' },
+          comment: { body: `- [x] Force review\n\n${FORCE_CAP_MARKER}` },
+        },
+      });
+
+      await callRunFullReviewWith(false, true, 'skip_cap');
+
+      const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+      expect(rc!.meta.trigger?.event).toBe('issue_comment:edited:tick:FORCE_CAP_MARKER');
+    });
+
+    it('records `cap.bypassReason: within_cap` when the cap is not configured', async () => {
+      jest.mocked(configModule.loadConfig).mockReturnValue({
+        auto_review: true, auto_approve: false, max_diff_lines: 5000, exclude_paths: [],
+        reviewers: [], instructions: '', review_level: 'auto',
+        review_thresholds: { small: 200, medium: 800 },
+        memory: { enabled: false, repo: '' },
+      });
+
+      await callRunFullReview();
+
+      const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+      expect(rc!.meta.cap).toEqual({
+        priorRoundCount: 0,
+        maxAutoRounds: 0,
+        skipCap: false,
+        forceReview: false,
+        bypassReason: 'within_cap',
+      });
+    });
+
+    it('records `cap.priorRoundCount` as the count BEFORE the current round (public `5/5` reads as 5)', async () => {
+      jest.mocked(configModule.loadConfig).mockReturnValue({
+        auto_review: true, auto_approve: false, max_diff_lines: 5000, exclude_paths: [],
+        reviewers: [], instructions: '', review_level: 'auto',
+        review_thresholds: { small: 200, medium: 800 },
+        memory: { enabled: false, repo: '' },
+        convergence: { max_auto_rounds: 5 },
+      });
+      seedPriorRounds([
+        { round: 1, commitSha: 's1', timestamp: '2025-01-01T00:00:00Z', findings: [] },
+        { round: 2, commitSha: 's2', timestamp: '2025-01-02T00:00:00Z', findings: [] },
+        { round: 3, commitSha: 's3', timestamp: '2025-01-03T00:00:00Z', findings: [] },
+        { round: 4, commitSha: 's4', timestamp: '2025-01-04T00:00:00Z', findings: [] },
+        { round: 5, commitSha: 's5', timestamp: '2025-01-05T00:00:00Z', findings: [] },
+      ]);
+
+      await callRunFullReviewWith(false, true, 'skip_cap');
+
+      const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+      expect(rc!.meta.round).toBe(6);
+      expect(rc!.meta.cap?.priorRoundCount).toBe(5);
+      expect(rc!.meta.cap?.maxAutoRounds).toBe(5);
+      expect(rc!.meta.cap?.bypassReason).toBe('skip_cap');
+      expect(rc!.meta.cap?.skipCap).toBe(true);
+      expect(rc!.meta.cap?.forceReview).toBe(false);
+    });
+
+    it('records `cap.bypassReason: force_review` when the force-review tickbox admitted the round', async () => {
+      jest.mocked(configModule.loadConfig).mockReturnValue({
+        auto_review: true, auto_approve: false, max_diff_lines: 5000, exclude_paths: [],
+        reviewers: [], instructions: '', review_level: 'auto',
+        review_thresholds: { small: 200, medium: 800 },
+        memory: { enabled: false, repo: '' },
+        convergence: { max_auto_rounds: 5 },
+      });
+
+      await callRunFullReviewWith(true, false, 'force_review');
+
+      const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+      expect(rc!.meta.cap?.bypassReason).toBe('force_review');
+      expect(rc!.meta.cap?.forceReview).toBe(true);
+      expect(rc!.meta.cap?.skipCap).toBe(false);
+      expect(rc!.meta.cap?.maxAutoRounds).toBe(5);
+    });
+
+    it('records `cap.bypassReason: manual_review_command` when `@manki review` admits the round past the cap', async () => {
+      jest.mocked(configModule.loadConfig).mockReturnValue({
+        auto_review: true, auto_approve: false, max_diff_lines: 5000, exclude_paths: [],
+        reviewers: [], instructions: '', review_level: 'auto',
+        review_thresholds: { small: 200, medium: 800 },
+        memory: { enabled: false, repo: '' },
+        convergence: { max_auto_rounds: 1 },
+      });
+      seedPriorRounds([
+        { round: 1, commitSha: 's1', timestamp: '2025-01-01T00:00:00Z', findings: [] },
+      ]);
+
+      await callRunFullReviewWith(true, true, 'manual_review_command');
+
+      const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+      expect(rc!.meta.cap?.bypassReason).toBe('manual_review_command');
+      expect(rc!.meta.cap?.forceReview).toBe(true);
+      expect(rc!.meta.cap?.skipCap).toBe(true);
+    });
+  });
+
   describe('prior-round agent pinning', () => {
     const pinTestFile = {
       path: 'src/app.ts', changeType: 'modified' as const,

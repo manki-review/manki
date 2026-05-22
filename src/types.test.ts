@@ -252,6 +252,37 @@ describe('RoundContext', () => {
     expect(ctx.judge.threadResolutionOverrides).toEqual({ addressedDropped: 1, notAddressedOverridden: 0, uncertainCount: 2 });
   });
 
+  it('carries `cap` and `trigger` provenance on `RoundMeta`', () => {
+    const ctx: RoundContext = {
+      ...fullyPopulatedContext(),
+      meta: {
+        ...fullyPopulatedContext().meta,
+        cap: {
+          priorRoundCount: 5,
+          maxAutoRounds: 5,
+          skipCap: true,
+          forceReview: false,
+          bypassReason: 'skip_cap',
+        },
+        trigger: { event: 'issue_comment:edited:tick:FORCE_CAP_MARKER', sender: 'alice' },
+      },
+    };
+    expect(ctx.meta.cap?.priorRoundCount).toBe(5);
+    expect(ctx.meta.cap?.maxAutoRounds).toBe(5);
+    expect(ctx.meta.cap?.bypassReason).toBe('skip_cap');
+    expect(ctx.meta.trigger?.event).toBe('issue_comment:edited:tick:FORCE_CAP_MARKER');
+    expect(ctx.meta.trigger?.sender).toBe('alice');
+  });
+
+  it('leaves `cap` and `trigger` undefined on a minimal meta', () => {
+    const ctx: RoundContext = {
+      ...fullyPopulatedContext(),
+      meta: { prNumber: 1, commitSha: 'sha', round: 1, timestamp: 'ts', mankiVersion: '5.0.0' },
+    };
+    expect(ctx.meta.cap).toBeUndefined();
+    expect(ctx.meta.trigger).toBeUndefined();
+  });
+
   it('omits all new `RoundJudge` trace and state fields gracefully on minimal judge', () => {
     const ctx: RoundContext = {
       ...fullyPopulatedContext(),
