@@ -9,8 +9,8 @@ export interface LLMUsage {
 
 export interface LLMResponse {
   content: string;
-  usage: LLMUsage;
-  latencyMs: number;
+  usage?: LLMUsage;
+  latencyMs?: number;
 }
 
 /**
