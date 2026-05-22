@@ -318,6 +318,17 @@ The workflow above uses the only inputs most setups need: a provider credential 
 
 The action exposes outputs you can chain into later workflow steps: `review_id`, `verdict`, `findings_count`, `findings_json`, `severity_counts`, and `judge_model`. See [`action.yml`](action.yml) for the source of truth on each output's shape and semantics.
 
+### Pinning the action version
+
+Both the floating major tag and the immutable exact-version tag are supported:
+
+- `manki-review/manki@v5` — floating major. Picks up minor and patch releases automatically. Recommended for most setups.
+- `manki-review/manki@v5.1.0` — immutable exact-version. Stays on the published release until you bump it. Recommended when you want lockstep upgrades.
+
+Both forms point at a tree that already contains the built `dist/`, so the runner can execute the action without any extra setup on the consumer side.
+
+Releases prior to this fix (`v5.0.0`, `v5.0.1`) only work via the floating `@v5` tag. From the release that introduced committed `dist/` onwards, exact-version pins work as well.
+
 ### Using outputs in downstream workflow steps
 
 ```yaml
