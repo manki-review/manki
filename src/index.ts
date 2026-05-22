@@ -52,8 +52,8 @@ const ALLOWED_FINGERPRINT_TAGS = new Set<string>([
 
 export function detectTickedMarker(body: string): 'FORCE_REVIEW_MARKER' | 'FORCE_CAP_MARKER' | null {
   if (!body.includes('- [x] Force review')) return null;
-  if (body.includes(FORCE_REVIEW_MARKER)) return 'FORCE_REVIEW_MARKER';
   if (body.includes(FORCE_CAP_MARKER)) return 'FORCE_CAP_MARKER';
+  if (body.includes(FORCE_REVIEW_MARKER)) return 'FORCE_REVIEW_MARKER';
   return null;
 }
 
@@ -977,7 +977,7 @@ async function runFullReview(
       maxAutoRounds,
       skipCap: !!skipCap,
       forceReview: !!forceReview,
-      bypassReason: bypassHint ?? 'within_cap',
+      bypassReason: bypassHint ?? (forceReview ? 'force_review' : skipCap ? 'skip_cap' : 'within_cap'),
     };
     const findingEntries = result.findings.map(f => ({
       fingerprint: fingerprintFinding(f.title, f.file ?? '', f.line || 0),

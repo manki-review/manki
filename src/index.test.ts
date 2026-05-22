@@ -6079,7 +6079,7 @@ describe('detectTickedMarker', () => {
     expect(detectTickedMarker(`- [x] Force review\n\n${FORCE_CAP_MARKER}`)).toBe('FORCE_CAP_MARKER');
   });
 
-  it('returns FORCE_REVIEW_MARKER when both markers are present (FORCE_REVIEW_MARKER wins)', () => {
-    expect(detectTickedMarker(`- [x] Force review\n\n${FORCE_REVIEW_MARKER}\n${FORCE_CAP_MARKER}`)).toBe('FORCE_REVIEW_MARKER');
+  it('returns FORCE_CAP_MARKER when both markers are present (FORCE_CAP_MARKER wins)', () => {
+    expect(detectTickedMarker(`- [x] Force review\n\n${FORCE_REVIEW_MARKER}\n${FORCE_CAP_MARKER}`)).toBe('FORCE_CAP_MARKER');
   });
 });
