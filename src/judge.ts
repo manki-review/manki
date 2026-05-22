@@ -271,9 +271,10 @@ export function buildJudgeSystemPrompt(
   config: ReviewConfig,
   agentCount: number,
   isFollowUp?: boolean,
-  hasOpenThreads?: boolean,
+  openThreadsCount: number = 0,
   noiseLevel: NoiseLevel = 'low',
 ): string {
+  const hasOpenThreads = openThreadsCount > 0;
   const majorityThreshold = Math.max(1, Math.ceil(agentCount / 2));
   const calibrationNote = noiseLevel === 'low'
     ? `**Calibration note**: At \`noise_level: low\` the project wants to surface only findings that materially affect the PR. Counteract the LLM tendency to over-flag:
@@ -480,7 +481,7 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
 ${hasOpenThreads ? `
 ## Open Thread Evaluation
 
-Return one \`threadEvaluations\` entry for every open review thread listed in the user message. Status values:
+You MUST return exactly ${openThreadsCount} \`threadEvaluations\` entries — one for every open review thread listed in the user message. Omitting any thread is a contract violation that forces a retry. Status values:
 
 - **addressed**: the current code at the flagged region clearly no longer exhibits the original concern, OR the inter-round diff contains an explicit fix for it. Either signal alone is sufficient — you may pick \`addressed\` even when the inter-round diff does not touch the thread's file, as long as the current code window plainly resolves the concern. (Note: when the inter-round diff is known-empty the resolver may override this verdict as a safety measure.)
 - **not_addressed**: the current code still exhibits the concern (and the inter-round diff did not fix it). When the code window is unavailable and the inter-round diff does not touch the file, default to \`not_addressed\` rather than \`uncertain\`.
@@ -891,7 +892,7 @@ export async function runJudgeAgent(
 
   const changedFiles = diff.files;
 
-  const systemPrompt = buildJudgeSystemPrompt(config, agentCount, isFollowUp, hasOpenThreads, config.noise_level);
+  const systemPrompt = buildJudgeSystemPrompt(config, agentCount, isFollowUp, openThreads?.length ?? 0, config.noise_level);
   const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads, priorRounds, interRoundDiff);
 
   const effort = input.effort ?? 'high';

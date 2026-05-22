@@ -208,18 +208,19 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).not.toContain('Follow-Up Review');
   });
 
-  it('includes threadEvaluations in output format when hasOpenThreads is true', () => {
-    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, true, true);
+  it('includes threadEvaluations in output format when openThreadsCount > 0', () => {
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, true, 3);
     expect(prompt).toContain('threadEvaluations');
     expect(prompt).toContain('threadId');
     expect(prompt).toContain('"addressed"');
     expect(prompt).toContain('"not_addressed"');
     expect(prompt).toContain('"uncertain"');
     expect(prompt).toContain('Open Thread Evaluation');
+    expect(prompt).toContain('You MUST return exactly 3 `threadEvaluations` entries');
   });
 
-  it('omits threadEvaluations from output format when hasOpenThreads is false', () => {
-    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, false, false);
+  it('omits threadEvaluations from output format when openThreadsCount is 0', () => {
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, false, 0);
     expect(prompt).not.toContain('threadEvaluations');
     expect(prompt).not.toContain('Open Thread Evaluation');
   });
@@ -240,7 +241,7 @@ describe('buildJudgeSystemPrompt', () => {
   });
 
   it('inverts the calibration note at noise_level "low" — borderline demotes and nitpicks drop', () => {
-    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, false, false, 'low');
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, false, 0, 'low');
     expect(prompt).toContain('At `noise_level: low`');
     expect(prompt).toContain('choose the **lower** one');
     expect(prompt).toContain('Drop `nitpick`-severity findings entirely');
@@ -252,7 +253,7 @@ describe('buildJudgeSystemPrompt', () => {
   it.each(['medium', 'high'] as const)(
     'keeps today\'s calibration note verbatim at noise_level "%s"',
     (level) => {
-      const prompt = buildJudgeSystemPrompt(makeConfig(), 5, false, false, level);
+      const prompt = buildJudgeSystemPrompt(makeConfig(), 5, false, 0, level);
       expect(prompt).toContain('LLMs tend toward leniency when judging code review findings');
       expect(prompt).toContain('When a finding is borderline between two severities, choose the higher one');
       expect(prompt).toContain('"could cause problems" under realistic conditions is `blocker`, not `warning`');
@@ -263,37 +264,37 @@ describe('buildJudgeSystemPrompt', () => {
   );
 
   it('defaults to noise_level "low" when the argument is omitted', () => {
-    const flagCombos: Array<[boolean, boolean]> = [
-      [false, false],
-      [false, true],
-      [true, false],
-      [true, true],
+    const flagCombos: Array<[boolean, number]> = [
+      [false, 0],
+      [false, 2],
+      [true, 0],
+      [true, 2],
     ];
-    for (const [isFollowUp, hasOpenThreads] of flagCombos) {
-      const defaultPrompt = buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, hasOpenThreads);
-      const lowPrompt = buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, hasOpenThreads, 'low');
+    for (const [isFollowUp, openThreadsCount] of flagCombos) {
+      const defaultPrompt = buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, openThreadsCount);
+      const lowPrompt = buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, openThreadsCount, 'low');
       expect(defaultPrompt).toBe(lowPrompt);
     }
   });
 
   it('produces identical prompts for noise_level "medium" and "high" (asymmetry lives in the reviewer prompts)', () => {
-    const flagCombos: Array<[boolean, boolean]> = [
-      [false, false],
-      [false, true],
-      [true, false],
-      [true, true],
+    const flagCombos: Array<[boolean, number]> = [
+      [false, 0],
+      [false, 2],
+      [true, 0],
+      [true, 2],
     ];
-    for (const [isFollowUp, hasOpenThreads] of flagCombos) {
-      const mediumPrompt = buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, hasOpenThreads, 'medium');
-      const highPrompt = buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, hasOpenThreads, 'high');
+    for (const [isFollowUp, openThreadsCount] of flagCombos) {
+      const mediumPrompt = buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, openThreadsCount, 'medium');
+      const highPrompt = buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, openThreadsCount, 'high');
       expect(highPrompt).toBe(mediumPrompt);
     }
   });
 
   it('leaves Impact x Likelihood and reachability sections unchanged across noise levels', () => {
-    const promptLow = buildJudgeSystemPrompt(makeConfig(), 5, false, false, 'low');
-    const promptMedium = buildJudgeSystemPrompt(makeConfig(), 5, false, false, 'medium');
-    const promptHigh = buildJudgeSystemPrompt(makeConfig(), 5, false, false, 'high');
+    const promptLow = buildJudgeSystemPrompt(makeConfig(), 5, false, 0, 'low');
+    const promptMedium = buildJudgeSystemPrompt(makeConfig(), 5, false, 0, 'medium');
+    const promptHigh = buildJudgeSystemPrompt(makeConfig(), 5, false, 0, 'high');
     for (const prompt of [promptLow, promptMedium, promptHigh]) {
       expect(prompt).toContain('## Severity Assessment');
       expect(prompt).toContain('**Impact** — How bad is it if this issue manifests?');
@@ -2300,7 +2301,7 @@ describe('runJudgeAgent', () => {
       config,
       input.agentCount,
       input.isFollowUp,
-      (input.openThreads?.length ?? 0) > 0,
+      input.openThreads?.length ?? 0,
       'medium',
     );
     expect(systemPrompt).toBe(expectedPrompt);
@@ -2326,7 +2327,7 @@ describe('runJudgeAgent', () => {
       config,
       input.agentCount,
       input.isFollowUp,
-      (input.openThreads?.length ?? 0) > 0,
+      input.openThreads?.length ?? 0,
       'low',
     );
     expect(systemPrompt).toBe(expectedPrompt);
@@ -4342,7 +4343,7 @@ describe('judge thread-evaluation fixture corpus', () => {
       }],
     });
 
-    const systemPrompt = buildJudgeSystemPrompt(makeConfig(), 3, true, true);
+    const systemPrompt = buildJudgeSystemPrompt(makeConfig(), 3, true, 1);
     const userMessage = buildJudgeUserMessage(
       [],
       new Map(),
