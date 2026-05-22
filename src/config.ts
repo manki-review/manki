@@ -116,6 +116,12 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
   if ('exclude_paths' in config) {
     if (!Array.isArray(config.exclude_paths)) {
       errors.push('`exclude_paths` must be an array of strings');
+    } else {
+      for (let i = 0; i < config.exclude_paths.length; i++) {
+        if (typeof config.exclude_paths[i] !== 'string') {
+          errors.push(`\`exclude_paths[${i}]\` must be a string, got ${typeof config.exclude_paths[i]}`);
+        }
+      }
     }
   }
 
@@ -401,7 +407,15 @@ export function loadConfigFromFile(filePath: string): ReviewConfig {
     return { ...DEFAULT_CONFIG, reviewers: [...DEFAULT_CONFIG.reviewers], memory: { ...DEFAULT_CONFIG.memory } };
   }
 
-  const content = fs.readFileSync(filePath, 'utf-8');
+  let content: string;
+  try {
+    content = fs.readFileSync(filePath, 'utf-8');
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    core.warning(`Failed to read config file at ${filePath}: ${msg}. Using defaults.`);
+    return { ...DEFAULT_CONFIG, reviewers: [...DEFAULT_CONFIG.reviewers], memory: { ...DEFAULT_CONFIG.memory } };
+  }
+
   return loadConfigFromContent(content);
 }
 

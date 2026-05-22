@@ -1,4 +1,4 @@
-import { DEFAULT_CONFIG, loadConfig, loadConfigFromContent, resolveAgentModel, resolveModel } from './config';
+import { DEFAULT_CONFIG, loadConfig, loadConfigFromContent, loadConfigFromFile, resolveAgentModel, resolveModel } from './config';
 import { ReviewConfig } from './types';
 
 // Suppress @actions/core output during tests
@@ -8,7 +8,10 @@ jest.mock('@actions/core', () => ({
   error: jest.fn(),
 }));
 
+jest.mock('fs');
+
 import * as core from '@actions/core';
+import * as fs from 'fs';
 
 describe('config', () => {
   beforeEach(() => {
@@ -709,6 +712,63 @@ models:
 
     it('rejects invalid planner.enabled type', () => {
       expect(() => loadConfig('planner:\n  enabled: "yes"\n')).toThrow();
+    });
+  });
+
+  describe('exclude_paths element type validation', () => {
+    it('throws when exclude_paths contains a non-string element', () => {
+      expect(() => loadConfigFromContent('exclude_paths:\n  - "*.lock"\n  - 42\n'))
+        .toThrow(/exclude_paths\[1\]/);
+    });
+
+    it('throws when exclude_paths contains a boolean element', () => {
+      expect(() => loadConfigFromContent('exclude_paths:\n  - true\n'))
+        .toThrow(/exclude_paths\[0\]/);
+    });
+
+    it('keeps default exclude_paths when user supplies an empty array', () => {
+      const config = loadConfigFromContent('exclude_paths: []');
+      expect(config.exclude_paths).toEqual(DEFAULT_CONFIG.exclude_paths);
+    });
+  });
+
+  describe('loadConfigFromFile', () => {
+    beforeEach(() => jest.resetAllMocks());
+
+    it('returns defaults when file does not exist', () => {
+      jest.spyOn(fs, 'existsSync').mockReturnValue(false);
+      const config = loadConfigFromFile('/repo/.manki.yml');
+      expect(config).toEqual(DEFAULT_CONFIG);
+      expect(core.info).toHaveBeenCalledWith(expect.stringContaining('Config file not found'));
+    });
+
+    it('parses and returns config when file exists', () => {
+      jest.spyOn(fs, 'existsSync').mockReturnValue(true);
+      jest.spyOn(fs, 'readFileSync').mockReturnValue('max_diff_lines: 9999\n');
+      const config = loadConfigFromFile('/repo/.manki.yml');
+      expect(config.max_diff_lines).toBe(9999);
+    });
+
+    it('falls back to defaults and warns on I/O error', () => {
+      jest.spyOn(fs, 'existsSync').mockReturnValue(true);
+      jest.spyOn(fs, 'readFileSync').mockImplementation(() => {
+        const err = new Error('Permission denied') as NodeJS.ErrnoException;
+        err.code = 'EACCES';
+        throw err;
+      });
+      const config = loadConfigFromFile('/repo/.manki.yml');
+      expect(config).toEqual(DEFAULT_CONFIG);
+      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Failed to read config file'));
+    });
+
+    it('falls back to defaults and warns on disk error', () => {
+      jest.spyOn(fs, 'existsSync').mockReturnValue(true);
+      jest.spyOn(fs, 'readFileSync').mockImplementation(() => {
+        throw new Error('EIO: input/output error');
+      });
+      const config = loadConfigFromFile('/repo/.manki.yml');
+      expect(config).toEqual(DEFAULT_CONFIG);
+      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Failed to read config file'));
     });
   });
 });

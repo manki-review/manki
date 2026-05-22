@@ -43651,6 +43651,13 @@ function validateConfig(config) {
         if (!Array.isArray(config.exclude_paths)) {
             errors.push('`exclude_paths` must be an array of strings');
         }
+        else {
+            for (let i = 0; i < config.exclude_paths.length; i++) {
+                if (typeof config.exclude_paths[i] !== 'string') {
+                    errors.push(`\`exclude_paths[${i}]\` must be a string, got ${typeof config.exclude_paths[i]}`);
+                }
+            }
+        }
     }
     if ('review_level' in config) {
         const valid = ['auto', 'small', 'medium', 'large'];
@@ -43918,7 +43925,15 @@ function loadConfigFromFile(filePath) {
         core.info(`Config file not found at ${filePath}, using defaults`);
         return { ...exports.DEFAULT_CONFIG, reviewers: [...exports.DEFAULT_CONFIG.reviewers], memory: { ...exports.DEFAULT_CONFIG.memory } };
     }
-    const content = fs.readFileSync(filePath, 'utf-8');
+    let content;
+    try {
+        content = fs.readFileSync(filePath, 'utf-8');
+    }
+    catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        core.warning(`Failed to read config file at ${filePath}: ${msg}. Using defaults.`);
+        return { ...exports.DEFAULT_CONFIG, reviewers: [...exports.DEFAULT_CONFIG.reviewers], memory: { ...exports.DEFAULT_CONFIG.memory } };
+    }
     return loadConfigFromContent(content);
 }
 function resolveModel(config, stage) {
