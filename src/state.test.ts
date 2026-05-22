@@ -804,6 +804,22 @@ describe('checkAndAutoApprove — concurrent run guard', () => {
           expect.stringContaining('Invalid concurrency_lock_ttl_seconds=9999'),
         );
       });
+
+      it('falls back to default and warns when .manki.yml-sourced TTL is 0', async () => {
+        const octokit = makeOctokit([
+          botComment(7, inProgressBody(999), '2026-05-22T11:59:00Z'),
+        ]);
+        const createReviewMock = (octokit as unknown as { rest: { pulls: { createReview: jest.Mock } } }).rest.pulls.createReview;
+        const config = { concurrency_lock_ttl_seconds: 0 } as Parameters<typeof checkAndAutoApprove>[4];
+
+        const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1, config);
+
+        expect(warningSpy).toHaveBeenCalledWith(
+          expect.stringContaining('Invalid `concurrency_lock_ttl_seconds` in config (0)'),
+        );
+        expect(result).toBe(false);
+        expect(createReviewMock).not.toHaveBeenCalled();
+      });
     });
   });
 });

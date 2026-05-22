@@ -1332,7 +1332,13 @@ function readConcurrencyLockTtlSeconds(config?: ReviewConfig): number {
     }
     return n;
   }
-  return config?.concurrency_lock_ttl_seconds ?? DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS;
+  const fromConfig = config?.concurrency_lock_ttl_seconds;
+  if (fromConfig === undefined) return DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS;
+  if (!Number.isFinite(fromConfig) || fromConfig <= 0 || fromConfig > MAX_LOCK_TTL_SECONDS) {
+    core.warning(`Invalid \`concurrency_lock_ttl_seconds\` in config (${fromConfig}), using default ${DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS}`);
+    return DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS;
+  }
+  return fromConfig;
 }
 
 /**
