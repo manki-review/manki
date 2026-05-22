@@ -1395,9 +1395,8 @@ describe('main', () => {
 
     await main();
 
-    expect(jest.mocked(core.warning)).toHaveBeenCalledWith(
-      'Manki encountered an error: Error: Something broke',
-    );
+    const warnings = jest.mocked(core.warning).mock.calls.map(c => String(c[0]));
+    expect(warnings.some(w => w.includes('Something broke'))).toBe(true);
   });
 
   it('does not call process.exit so exit code propagates to post step', async () => {
@@ -5606,5 +5605,16 @@ describe('runFullReview concurrent-submission lock', () => {
 
     expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalledTimes(2);
     expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not propagate uncaught when fetchConfigFile throws — catch path runs instead', async () => {
+    jest.mocked(ghUtils.fetchConfigFile).mockRejectedValueOnce(new Error('GitHub API rate limit'));
+
+    await expect(callRunFullReview()).resolves.toBeUndefined();
+
+    const warnings = jest.mocked(core.warning).mock.calls.map(c => String(c[0]));
+    expect(warnings.some(w => w.includes('Review failed'))).toBe(true);
+    expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
+    expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
   });
 });

@@ -440,27 +440,28 @@ async function runFullReview(
     }
   }
 
-  let configContent: string | null = null;
-  if (configPathInput) {
-    configContent = await fetchConfigFile(octokit, owner, repo, baseRef, configPathInput);
-  } else {
-    configContent = await fetchConfigFile(octokit, owner, repo, baseRef, '.manki.yml');
-  }
-  const config = loadConfig(configContent ?? undefined);
-
-  // Scan for a competing in-progress marker before posting our own to shorten
-  // the race window. A residual window remains when two runs both pass this scan
-  // before either posts; tracking issue for the strict atomic fix: https://github.com/manki-review/manki/issues/798
-  if (await checkConcurrentSubmissionLock(octokit, owner, repo, prNumber, config)) {
-    core.warning('Defense-in-depth lock engaged — this run will not post a review. If no review appears on the PR, re-trigger with `/manki review`.');
-    return;
-  }
-
-  const progressCommentId = await postProgressComment(octokit, owner, repo, prNumber);
-
+  let progressCommentId: number | undefined;
   let dashboardFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
   try {
+    let configContent: string | null = null;
+    if (configPathInput) {
+      configContent = await fetchConfigFile(octokit, owner, repo, baseRef, configPathInput);
+    } else {
+      configContent = await fetchConfigFile(octokit, owner, repo, baseRef, '.manki.yml');
+    }
+    const config = loadConfig(configContent ?? undefined);
+
+    // Scan for a competing in-progress marker before posting our own to shorten
+    // the race window. A residual window remains when two runs both pass this scan
+    // before either posts; tracking issue for the strict atomic fix: https://github.com/manki-review/manki/issues/798
+    if (await checkConcurrentSubmissionLock(octokit, owner, repo, prNumber, config)) {
+      core.warning('Defense-in-depth lock engaged — this run will not post a review. If no review appears on the PR, re-trigger with `/manki review`.');
+      return;
+    }
+
+    progressCommentId = await postProgressComment(octokit, owner, repo, prNumber);
+
     // Capture recap state before resolving stale threads so dedup sees
     // the original open/resolved status of each previous finding.
     const recap = await fetchRecapState(octokit, owner, repo, prNumber, prAuthorLogin);
@@ -765,7 +766,7 @@ async function runFullReview(
       if (dashboardFlushTimer) clearTimeout(dashboardFlushTimer);
       dashboardFlushTimer = setTimeout(() => {
         dashboardFlushTimer = null;
-        updateProgressDashboard(octokit, owner, repo, progressCommentId, dashboard)
+        updateProgressDashboard(octokit, owner, repo, progressCommentId!, dashboard)
           .catch(err => core.warning(`Failed to update dashboard: ${err}`));
       }, 500);
     }
@@ -830,7 +831,7 @@ async function runFullReview(
           reviewEndTime = Date.now();
           dashboard.phase = 'reviewed';
           dashboard.rawFindingCount = progress.rawFindingCount;
-          updateProgressDashboard(octokit, owner, repo, progressCommentId, dashboard)
+          updateProgressDashboard(octokit, owner, repo, progressCommentId!, dashboard)
             .catch(err => core.warning(`Failed to update dashboard: ${err}`));
         } else if (progress.phase === 'judging') {
           if (dashboardFlushTimer) {
@@ -840,7 +841,7 @@ async function runFullReview(
           dashboard.phase = 'reviewed';
           dashboard.rawFindingCount = progress.rawFindingCount;
           dashboard.judgeInputCount = progress.judgeInputCount;
-          updateProgressDashboard(octokit, owner, repo, progressCommentId, dashboard)
+          updateProgressDashboard(octokit, owner, repo, progressCommentId!, dashboard)
             .catch(err => core.warning(`Failed to update dashboard: ${err}`));
         }
       },
@@ -1179,11 +1180,13 @@ async function runFullReview(
     const msg = error instanceof Error ? error.message : String(error);
     core.warning(`Review failed: ${msg}`);
 
-    await updateProgressComment(octokit, owner, repo, progressCommentId, {
-      phase: 'complete',
-      lineCount: 0,
-      agentCount: 0,
-    });
+    if (progressCommentId !== undefined) {
+      await updateProgressComment(octokit, owner, repo, progressCommentId, {
+        phase: 'complete',
+        lineCount: 0,
+        agentCount: 0,
+      });
+    }
   }
 }
 
