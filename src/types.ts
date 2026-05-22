@@ -678,6 +678,9 @@ export interface RoundAgentMetric {
   warnings?: string[];
   inputTokens?: number;
   outputTokens?: number;
+  /** Number of CLI/SDK retries this agent triggered. Zero on the success-on-first-try path. */
+  retryCount?: number;
+  /** Last-failure reason recorded by the reviewer loop. Present only when retries exhausted. */
   failureReason?: string;
 }
 
@@ -688,6 +691,8 @@ export interface RoundJudge {
   severityChanges?: number;
   mergedDuplicates?: number;
   durationMs?: number;
+  /** Number of judge LLM retries (zero when the first call satisfied the validation contract). */
+  retryCount?: number;
   verdictReason?: VerdictReason;
   defensiveHardeningCount?: number;
   inPrSuppressedCount?: number;
