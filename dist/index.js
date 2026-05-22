@@ -48420,10 +48420,20 @@ async function runJudgeAgent(client, config, input) {
         const missing = missingThreadIds(openThreads, judgeResult.threadEvaluations);
         if (missing.length > 0) {
             const reminder = buildThreadEvaluationsReminder(openThreads, missing);
-            const retryUserMessage = `${userMessage}\n\n${reminder}`;
-            const retryResponse = await client.sendMessage(systemPrompt, retryUserMessage, { effort });
-            const retryResult = parseJudgeResponse(retryResponse.content);
-            const retryEvals = retryResult.threadEvaluations ?? [];
+            const retryUserMessage = `${reminder}\n\nOriginal message:\n${userMessage}`;
+            let retryResult;
+            try {
+                const retryResponse = await client.sendMessage(systemPrompt, retryUserMessage, { effort });
+                retryResult = parseJudgeResponse(retryResponse.content);
+            }
+            catch (err) {
+                core.warning(`Judge retry call failed (${err}); synthesizing 'uncertain' for ${missing.length} missing thread(s).`);
+                judgeResult = {
+                    ...judgeResult,
+                    threadEvaluations: synthesizeMissingThreadEvaluations(judgeResult.threadEvaluations, missing),
+                };
+            }
+            const retryEvals = retryResult?.threadEvaluations ?? [];
             const byId = new Map((judgeResult.threadEvaluations ?? []).map(e => [e.threadId, e]));
             for (const e of retryEvals)
                 byId.set(e.threadId, e);
