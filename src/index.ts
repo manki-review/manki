@@ -1,10 +1,9 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
-import * as fs from 'fs';
 import * as path from 'path';
 
 import { createAuthenticatedOctokit, getMemoryToken } from './auth';
-import { loadConfig, resolveModel } from './config';
+import { DEFAULT_CONFIG, loadConfig, loadConfigFromFile, resolveModel } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
@@ -468,16 +467,23 @@ async function runFullReview(
     // `process.cwd()` is the PR tree because the action runs as a local
     // composite via `./` in the consumer workflow.
     const configRelPath = configPathInput || '.manki.yml';
+    const cwd = path.resolve(process.cwd());
     const configAbsPath = path.isAbsolute(configRelPath)
       ? configRelPath
-      : path.join(process.cwd(), configRelPath);
-    let configContent: string | undefined;
-    if (fs.existsSync(configAbsPath)) {
-      configContent = fs.readFileSync(configAbsPath, 'utf-8');
-    } else {
-      core.info(`No \`${configRelPath}\` in PR checkout — using defaults`);
+      : path.join(cwd, configRelPath);
+    if (!path.isAbsolute(configRelPath)) {
+      const resolved = path.resolve(configAbsPath);
+      if (resolved !== cwd && !resolved.startsWith(cwd + path.sep)) {
+        core.warning(`\`config_path\` resolved outside workspace — ignoring`);
+        return;
+      }
     }
-    const config = loadConfig(configContent);
+    const rawConfig = loadConfigFromFile(configAbsPath);
+    // Strip `instructions` — the config is read from the PR head (potentially
+    // from a fork), so the `instructions` field cannot be trusted as a
+    // repo-owner directive. Other fields such as `exclude_paths` affect scope
+    // only and are safe to accept from the PR head.
+    const config = { ...rawConfig, instructions: DEFAULT_CONFIG.instructions };
 
     // Scan for a competing in-progress marker before posting our own to shorten
     // the race window. A residual window remains when two runs both pass this scan

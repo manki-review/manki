@@ -45659,7 +45659,6 @@ exports.main = main;
 exports._resetOctokitCache = _resetOctokitCache;
 const core = __importStar(__nccwpck_require__(7484));
 const github = __importStar(__nccwpck_require__(3228));
-const fs = __importStar(__nccwpck_require__(9896));
 const path = __importStar(__nccwpck_require__(6928));
 const auth_1 = __nccwpck_require__(9081);
 const config_1 = __nccwpck_require__(2973);
@@ -46049,17 +46048,23 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
         // `process.cwd()` is the PR tree because the action runs as a local
         // composite via `./` in the consumer workflow.
         const configRelPath = configPathInput || '.manki.yml';
+        const cwd = path.resolve(process.cwd());
         const configAbsPath = path.isAbsolute(configRelPath)
             ? configRelPath
-            : path.join(process.cwd(), configRelPath);
-        let configContent;
-        if (fs.existsSync(configAbsPath)) {
-            configContent = fs.readFileSync(configAbsPath, 'utf-8');
+            : path.join(cwd, configRelPath);
+        if (!path.isAbsolute(configRelPath)) {
+            const resolved = path.resolve(configAbsPath);
+            if (resolved !== cwd && !resolved.startsWith(cwd + path.sep)) {
+                core.warning(`\`config_path\` resolved outside workspace — ignoring`);
+                return;
+            }
         }
-        else {
-            core.info(`No \`${configRelPath}\` in PR checkout — using defaults`);
-        }
-        const config = (0, config_1.loadConfig)(configContent);
+        const rawConfig = (0, config_1.loadConfigFromFile)(configAbsPath);
+        // Strip `instructions` — the config is read from the PR head (potentially
+        // from a fork), so the `instructions` field cannot be trusted as a
+        // repo-owner directive. Other fields such as `exclude_paths` affect scope
+        // only and are safe to accept from the PR head.
+        const config = { ...rawConfig, instructions: config_1.DEFAULT_CONFIG.instructions };
         // Scan for a competing in-progress marker before posting our own to shorten
         // the race window. A residual window remains when two runs both pass this scan
         // before either posts; tracking issue for the strict atomic fix: https://github.com/manki-review/manki/issues/798
