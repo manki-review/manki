@@ -201,6 +201,7 @@ export interface ReviewResult {
   /** Set when the judge stage forced every open thread to `not_addressed` because the inter-round diff was known-empty. */
   interRoundDiffEmptyOverride?: InterRoundDiffEmptyOverride;
   testNitSuppressedCount?: number;
+  verdictTrace?: VerdictTrace;
 }
 
 export interface ReviewerAgent {

@@ -6,7 +6,7 @@ import { runJudgeAgent, JudgeInput, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
 import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, llmDeduplicateFindings, PreviousFinding } from './recap';
-import { ReviewConfig, ReviewerAgent, Finding, FindingFingerprintEntry, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, PlannerRoundHint, RoundContext, SpecialistOutcome, EffortLevel, AgentPick, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, PlannerRoundHint, RoundContext, SpecialistOutcome, EffortLevel, AgentPick, ProvenanceEntry, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 
@@ -1225,10 +1225,13 @@ export async function runReview(
       testNitSuppressedCount = before - finalFindings.length;
     }
   }
-  const priorFindingsFlat: FindingFingerprintEntry[] = [...(priorRounds ?? [])]
-    .sort((a, b) => a.meta.round - b.meta.round)
-    .flatMap(r => r.findings.entries);
-  const { verdict, verdictReason } = determineVerdict(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, judgeThreadEvaluations);
+  const sortedPriorRounds = [...(priorRounds ?? [])].sort((a, b) => a.meta.round - b.meta.round);
+  const priorFindingsFlat: FindingFingerprintEntry[] = sortedPriorRounds.flatMap(r => r.findings.entries);
+  const priorRoundLookup = new Map<FindingFingerprintEntry, number>();
+  for (const r of sortedPriorRounds) {
+    for (const e of r.findings.entries) priorRoundLookup.set(e, r.meta.round);
+  }
+  const { verdict, verdictReason, verdictTrace } = determineVerdict(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, judgeThreadEvaluations, priorRoundLookup);
 
   const summary = judgeSummary;
 
@@ -1247,6 +1250,7 @@ export async function runReview(
   return {
     verdict,
     verdictReason,
+    verdictTrace,
     summary,
     findings: finalFindings,
     highlights: [],
@@ -1701,30 +1705,76 @@ export function determineVerdict(
   openThreads?: OpenThread[] | null,
   resolvedThreadIds?: Set<string>,
   threadEvaluations?: ThreadEvaluation[],
-): { verdict: ReviewVerdict; verdictReason: VerdictReason } {
-  if (findings.some(f => f.severity === 'blocker')) {
-    return { verdict: 'REQUEST_CHANGES', verdictReason: 'required_present' };
+  priorRoundLookup?: Map<FindingFingerprintEntry, number>,
+): { verdict: ReviewVerdict; verdictReason: VerdictReason; verdictTrace: VerdictTrace } {
+  const emptyTrace = (): VerdictTrace => ({
+    survivingBlockers: [],
+    novelWarnings: [],
+    unresolvedPriors: [],
+  });
+
+  const blockers = findings.filter(f => f.severity === 'blocker');
+  if (blockers.length > 0) {
+    const trace = emptyTrace();
+    trace.survivingBlockers = blockers.map(findingToTraceEntry);
+    return { verdict: 'REQUEST_CHANGES', verdictReason: 'required_present', verdictTrace: trace };
   }
 
   const prior = dedupePriorFindings(priorRounds ?? []);
-  const hasNovelWarning = findings.some(
+  const novelWarnings = findings.filter(
     f => f.severity === 'warning' && !wasDismissedInPriorRound(f, prior),
   );
-  if (hasNovelWarning) {
-    return { verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion' };
+  if (novelWarnings.length > 0) {
+    const trace = emptyTrace();
+    trace.novelWarnings = novelWarnings.map(findingToTraceEntry);
+    return { verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion', verdictTrace: trace };
   }
 
   const openThreadsUnknown = openThreads == null;
   const openThreadIds = new Set((openThreads ?? []).map(t => t.threadId));
   const threadEvaluationsByThreadId = indexThreadEvaluations(threadEvaluations);
-  const hasUnresolvedPrior = prior.some(p =>
+  const unresolvedPriors = prior.filter(p =>
     isPriorLikelyUnresolved(p, openThreadIds, openThreadsUnknown, resolvedThreadIds, threadEvaluationsByThreadId),
   );
-  if (hasUnresolvedPrior) {
-    return { verdict: 'REQUEST_CHANGES', verdictReason: 'prior_unaddressed' };
+  if (unresolvedPriors.length > 0) {
+    const trace = emptyTrace();
+    trace.unresolvedPriors = unresolvedPriors.map(p => priorToTraceEntry(p, priorRoundLookup));
+    return { verdict: 'REQUEST_CHANGES', verdictReason: 'prior_unaddressed', verdictTrace: trace };
   }
 
-  return { verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion' };
+  return { verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion', verdictTrace: emptyTrace() };
+}
+
+function findingToTraceEntry(f: Finding): VerdictTraceEntry {
+  return {
+    file: f.file,
+    title: f.title,
+    fingerprint: stringifyFindingFingerprint({
+      file: f.file,
+      lineStart: f.line,
+      lineEnd: f.line,
+      slug: titleToSlug(f.title),
+    }),
+  };
+}
+
+function priorToTraceEntry(
+  p: FindingFingerprintEntry,
+  priorRoundLookup: Map<FindingFingerprintEntry, number> | undefined,
+): VerdictTraceEntry {
+  const round = priorRoundLookup?.get(p);
+  return {
+    file: p.fingerprint.file,
+    title: p.title ?? '',
+    fingerprint: stringifyFindingFingerprint(p.fingerprint),
+    ...(p.threadId && { threadId: p.threadId }),
+    ...(round != null && { round }),
+  };
+}
+
+/** Stable composite-string identity matching the `dedupePriorFindings` key format. */
+export function stringifyFindingFingerprint(fp: FindingFingerprint): string {
+  return `${fp.file}:${fp.lineStart}:${fp.lineEnd}:${fp.slug}`;
 }
 
 export function truncateDiff(rawDiff: string, maxLength: number = 50000): string {

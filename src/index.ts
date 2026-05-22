@@ -8,11 +8,11 @@ import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
 import { parsePRDiff, filterFiles, isDiffTooLarge, countDiffLines } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
-import { isEmptyInterRoundDiff } from './judge';
+import { isEmptyInterRoundDiff, MAX_INTER_ROUND_DIFF_CHARS } from './judge';
 import { loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
 import { collectResolvedThreadIds, fetchRecapState, fingerprintFinding } from './recap';
 import { buildAgentPool, collectPriorRoundAgents, runReview, determineVerdict, selectTeam } from './review';
-import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DashboardData, OWN_PROPOSAL_TAG, PrContext, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewMetadata, RoundContext, roundContextToFlatAliases } from './types';
+import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DashboardData, FindingFingerprintEntry, OWN_PROPOSAL_TAG, PrContext, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewMetadata, RoundContext, ThreadResolutionOverrides, roundContextToFlatAliases } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -825,7 +825,12 @@ async function runFullReview(
       return;
     }
 
-    const priorFindingsFlat = recap.priorRounds.flatMap(r => r.findings.entries ?? []);
+    const sortedPriorRounds = [...recap.priorRounds].sort((a, b) => a.meta.round - b.meta.round);
+    const priorFindingsFlat = sortedPriorRounds.flatMap(r => r.findings.entries ?? []);
+    const priorRoundLookup = new Map<FindingFingerprintEntry, number>();
+    for (const r of sortedPriorRounds) {
+      for (const e of (r.findings.entries ?? [])) priorRoundLookup.set(e, r.meta.round);
+    }
     let escalationsApplied = 0;
     if (memory && memory.patterns.length > 0) {
       const beforeSeverities = result.findings.map(f => f.severity);
@@ -833,9 +838,10 @@ async function runFullReview(
       escalationsApplied = result.findings.filter((f, i) => f.severity !== beforeSeverities[i]).length;
     }
     const resolvedThreadIds = collectResolvedThreadIds(recap.previousFindings);
-    const { verdict: recomputedVerdict, verdictReason } = determineVerdict(result.findings, priorFindingsFlat, openThreads, resolvedThreadIds);
+    const { verdict: recomputedVerdict, verdictReason, verdictTrace } = determineVerdict(result.findings, priorFindingsFlat, openThreads, resolvedThreadIds, undefined, priorRoundLookup);
     result.verdict = recomputedVerdict;
     result.verdictReason = verdictReason;
+    result.verdictTrace = verdictTrace;
 
     // Enrich findings with code context from the diff for nit issues
     for (const finding of result.findings) {
@@ -897,6 +903,31 @@ async function runFullReview(
     const crossRoundDemoted = result.crossRoundDemoted;
     const interRoundDiffEmptyOverride = result.interRoundDiffEmptyOverride;
     const inPrSuppressedCount = result.inPrSuppressedCount ?? 0;
+    const openThreadCount = openThreads.length;
+    const resolvedThreadIdCount = resolvedThreadIds.size;
+    const hasPriorRoundsForJudge = recap.priorRounds.length > 0;
+    const interRoundDiffState: 'unknown' | 'empty' | 'changed' = !hasPriorRoundsForJudge || interRoundDiff === undefined
+      ? 'unknown'
+      : interRoundDiff.trim().length === 0
+        ? 'empty'
+        : 'changed';
+    const interRoundDiffBytes = interRoundDiff !== undefined ? interRoundDiff.length : undefined;
+    const interRoundDiffTruncated = interRoundDiff !== undefined && interRoundDiff.length > MAX_INTER_ROUND_DIFF_CHARS;
+    const interRoundDiffKnownEmptyForCounts = hasPriorRoundsForJudge && isEmptyInterRoundDiff(interRoundDiff);
+    const knownThreadIdSet = new Set(openThreads.map(t => t.threadId));
+    let addressedDropped = 0;
+    let uncertainCount = 0;
+    for (const ev of result.threadEvaluations ?? []) {
+      if (ev.status === 'uncertain') uncertainCount++;
+      if (ev.status === 'addressed' && (!knownThreadIdSet.has(ev.threadId) || interRoundDiffKnownEmptyForCounts)) {
+        addressedDropped++;
+      }
+    }
+    const notAddressedOverridden = interRoundDiffEmptyOverride?.applied ? interRoundDiffEmptyOverride.affectedThreadCount : 0;
+    const threadResolutionOverrides: ThreadResolutionOverrides | undefined =
+      (addressedDropped > 0 || notAddressedOverridden > 0 || uncertainCount > 0)
+        ? { addressedDropped, notAddressedOverridden, uncertainCount }
+        : undefined;
     // File analysis metrics
     const fileTypes: Record<string, number> = {};
     for (const file of filteredFiles) {
@@ -976,6 +1007,14 @@ async function runFullReview(
         ...(crossRoundDemoted != null && crossRoundDemoted > 0 && { crossRoundDemoted }),
         ...(interRoundDiffEmptyOverride && { interRoundDiffEmptyOverride }),
         ...(result.threadEvaluations && result.threadEvaluations.length > 0 && { threadEvaluations: result.threadEvaluations }),
+        ...(verdictTrace && { verdictTrace }),
+        openThreadsState: recap.openThreadsState,
+        openThreadCount,
+        resolvedThreadIdCount,
+        interRoundDiffState,
+        ...(interRoundDiffBytes != null && { interRoundDiffBytes }),
+        interRoundDiffTruncated,
+        ...(threadResolutionOverrides && { threadResolutionOverrides }),
       },
       dedup: {
         ...(result.staticDedupCount != null && { staticDropped: result.staticDedupCount }),
