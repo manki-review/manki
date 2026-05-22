@@ -912,10 +912,12 @@ export async function runJudgeAgent(
       const retryUserMessage = `${userMessage}\n\n${reminder}`;
       const retryResponse = await client.sendMessage(systemPrompt, retryUserMessage, { effort });
       const retryResult = parseJudgeResponse(retryResponse.content);
-      judgeResult = {
-        ...judgeResult,
-        threadEvaluations: retryResult.threadEvaluations ?? judgeResult.threadEvaluations,
-      };
+      const retryEvals = retryResult.threadEvaluations ?? [];
+      const byId = new Map(
+        (judgeResult.threadEvaluations ?? []).map(e => [e.threadId, e]),
+      );
+      for (const e of retryEvals) byId.set(e.threadId, e);
+      judgeResult = { ...judgeResult, threadEvaluations: [...byId.values()] };
       const stillMissing = missingThreadIds(openThreads!, judgeResult.threadEvaluations);
       if (stillMissing.length > 0) {
         core.warning(

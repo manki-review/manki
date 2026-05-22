@@ -2415,6 +2415,54 @@ describe('runJudgeAgent', () => {
       expect(result.threadEvaluations).toHaveLength(2);
     });
 
+    it('merges retry evaluations per-thread-id when retry returns a partial array', async () => {
+      const fourThreads: OpenThread[] = [
+        { threadId: 'PRRT_a', title: 'Thread A', file: 'src/a.ts', line: 1, severity: 'warning' },
+        { threadId: 'PRRT_b', title: 'Thread B', file: 'src/b.ts', line: 2, severity: 'warning' },
+        { threadId: 'PRRT_c', title: 'Thread C', file: 'src/c.ts', line: 3, severity: 'warning' },
+        { threadId: 'PRRT_d', title: 'Thread D', file: 'src/d.ts', line: 4, severity: 'warning' },
+      ];
+      mockSendMessage
+        .mockResolvedValueOnce({
+          content: JSON.stringify({
+            summary: 's',
+            findings: [],
+            threadEvaluations: [
+              { threadId: 'PRRT_a', status: 'addressed', reason: 'Fixed A' },
+              { threadId: 'PRRT_b', status: 'addressed', reason: 'Fixed B' },
+              { threadId: 'PRRT_c', status: 'addressed', reason: 'Fixed C' },
+            ],
+          }),
+        })
+        .mockResolvedValueOnce({
+          content: JSON.stringify({
+            summary: 's',
+            findings: [],
+            threadEvaluations: [
+              { threadId: 'PRRT_b', status: 'not_addressed', reason: 'Retry says B not fixed' },
+              { threadId: 'PRRT_d', status: 'not_addressed', reason: 'D not addressed' },
+            ],
+          }),
+        });
+
+      const result = await runJudgeAgent(mockClient, makeConfig(), {
+        findings: [],
+        diff: makeDiff(),
+        rawDiff: '',
+        repoContext: '',
+        agentCount: 3,
+        openThreads: fourThreads,
+      });
+
+      expect(mockSendMessage).toHaveBeenCalledTimes(2);
+      expect(result.threadEvaluations).toHaveLength(4);
+      const byId = new Map(result.threadEvaluations!.map(e => [e.threadId, e]));
+      expect(byId.get('PRRT_a')?.status).toBe('addressed');
+      expect(byId.get('PRRT_b')?.status).toBe('not_addressed');
+      expect(byId.get('PRRT_c')?.status).toBe('addressed');
+      expect(byId.get('PRRT_d')?.status).toBe('not_addressed');
+    });
+
     it('synthesizes `uncertain` entries for threads still missing after retry', async () => {
       const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
       mockSendMessage
