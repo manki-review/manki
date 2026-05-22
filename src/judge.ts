@@ -210,7 +210,7 @@ export function computeProvenanceMap(
 const IN_PR_SUPPRESSION_LINE_TOLERANCE = 5;
 
 /** Cap on inter-round diff size embedded in the judge user message, to keep prompts bounded on large rebases. */
-const MAX_INTER_ROUND_DIFF_CHARS = 20000;
+export const MAX_INTER_ROUND_DIFF_CHARS = 20000;
 
 /**
  * Whether the inter-round diff is known to be empty, meaning prior rounds exist

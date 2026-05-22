@@ -560,6 +560,14 @@ describe('fetchRecapState', () => {
     expect(state.recapContext).toContain('Previous Review State');
     expect(state.recapContext).toContain('Resolved (1 findings');
     expect(state.recapContext).toContain('Still Open (1 findings');
+    expect(state.openThreadsState).toBe('fetched');
+  });
+
+  it('reports `openThreadsState: "empty"` when GraphQL returned zero threads', async () => {
+    const octokit = mockOctokit([]);
+    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    expect(state.previousFindings).toHaveLength(0);
+    expect(state.openThreadsState).toBe('empty');
   });
 
   it('returns empty state when no bot threads exist', async () => {
@@ -618,6 +626,7 @@ describe('fetchRecapState', () => {
     const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
     expect(state.previousFindings).toHaveLength(0);
     expect(state.recapContext).toBe('');
+    expect(state.openThreadsState).toBe('fetch_failed');
   });
 
   it('extracts severity from bot marker', async () => {

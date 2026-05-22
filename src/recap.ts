@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 import { LLMClient } from './providers';
 import { ACTIONS_BOT_LOGIN, BOT_LOGIN, titleToSlug } from './github';
 import { matchesSuppression, Suppression } from './memory';
-import { AuthorReplyClass, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, migrateLegacyPrType, migrateLegacySeverity, RoundContext, SEVERITY_TOKEN_PATTERN } from './types';
+import { AuthorReplyClass, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, migrateLegacyPrType, migrateLegacySeverity, OpenThreadsState, RoundContext, SEVERITY_TOKEN_PATTERN } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -171,6 +171,8 @@ interface RecapState {
   previousFindings: PreviousFinding[];
   recapContext: string;
   priorRounds: RoundContext[];
+  /** Three-way state of the open-thread fetch. Optional so legacy callers and test mocks omitting the field still typecheck; treated as `'fetched'` downstream. */
+  openThreadsState?: OpenThreadsState;
 }
 
 const CONTEXT_BLOCK_DETAILS_RE = /<details>\s*<summary>Manki context<\/summary>\s*```json\s*([\s\S]*?)```\s*<\/details>/g;
@@ -278,10 +280,11 @@ async function fetchRecapState(
   prNumber: number,
   prAuthorLogin?: string,
 ): Promise<RecapState> {
-  const [threads, priorRounds] = await Promise.all([
+  const [threadsResult, priorRounds] = await Promise.all([
     fetchReviewThreads(octokit, owner, repo, prNumber),
     fetchPriorRoundContexts(octokit, owner, repo, prNumber),
   ]);
+  const { threads, state: openThreadsState } = threadsResult;
 
   const previousFindings = threads
     .filter(t => t.isBotThread)
@@ -345,7 +348,7 @@ async function fetchRecapState(
 
   const enrichedPriorRounds = refreshAuthorReplyClass(priorRounds, previousFindings);
 
-  return { previousFindings, recapContext, priorRounds: enrichedPriorRounds };
+  return { previousFindings, recapContext, priorRounds: enrichedPriorRounds, openThreadsState };
 }
 
 /**
@@ -481,12 +484,17 @@ function parseFindingFromComment(body: string): FindingMetadata {
   return { description, suggestedFix };
 }
 
+interface FetchReviewThreadsResult {
+  threads: ReviewThread[];
+  state: OpenThreadsState;
+}
+
 async function fetchReviewThreads(
   octokit: Octokit,
   owner: string,
   repo: string,
   prNumber: number,
-): Promise<ReviewThread[]> {
+): Promise<FetchReviewThreadsResult> {
   // Note: `comments(first: 10)` caps at 10 comments per thread — sufficient for
   // fingerprinting and reply extraction, but longer discussions are truncated.
   const query = `
@@ -540,7 +548,7 @@ async function fetchReviewThreads(
       };
     } = await octokit.graphql(query, { owner, repo, prNumber });
 
-    return result.repository.pullRequest.reviewThreads.nodes.map(thread => {
+    const threads = result.repository.pullRequest.reviewThreads.nodes.map(thread => {
       const firstComment = thread.comments.nodes[0];
       const isBotThread = firstComment?.body?.includes(BOT_MARKER) ?? false;
 
@@ -589,9 +597,10 @@ async function fetchReviewThreads(
         authorReplyLogin,
       };
     });
+    return { threads, state: threads.length === 0 ? 'empty' : 'fetched' };
   } catch (error) {
     core.warning(`Failed to fetch review threads: ${error}`);
-    return [];
+    return { threads: [], state: 'fetch_failed' };
   }
 }
 
@@ -755,4 +764,4 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
   );
 }
 
-export { DuplicateMatch, PreviousFinding, RecapState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchRecapState, deduplicateFindings, titlesOverlap, llmDeduplicateFindings, parseFindingFromComment };
+export { DuplicateMatch, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchRecapState, deduplicateFindings, titlesOverlap, llmDeduplicateFindings, parseFindingFromComment };
