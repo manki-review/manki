@@ -8,7 +8,7 @@ import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/ch
 import * as core from '@actions/core';
 
 import { buildExitDiagnostics, extractCliErrorSnippet, seedAuthFile } from './cli-utils';
-import { LLMClient, LLMResponse, OpenAIAuth, SendMessageOptions } from './types';
+import { LLMClient, LLMResponse, LLMUsage, OpenAIAuth, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
 
@@ -332,7 +332,11 @@ export class OpenAIClient implements LLMClient {
         }
         const content = output.trim();
         core.debug(sanitizeLogOutput(content.slice(0, 200)));
-        resolve({ content });
+        resolve({
+          content,
+          usage: { ...ZERO_USAGE },
+          latencyMs: Date.now() - startTime,
+        });
       });
 
       child.on('error', (error) => {
@@ -398,10 +402,28 @@ export class OpenAIClient implements LLMClient {
       params.reasoning_effort = resolveEffortTier(options.effort);
     }
 
+    const startTime = Date.now();
     const response = await this.openai.chat.completions.create(params);
     const content = response.choices?.[0]?.message?.content ?? '';
     core.debug(sanitizeLogOutput(content.slice(0, 200)));
 
-    return { content };
+    const sdkUsage = response.usage as undefined | {
+      prompt_tokens?: number;
+      completion_tokens?: number;
+      prompt_tokens_details?: { cached_tokens?: number };
+      completion_tokens_details?: { reasoning_tokens?: number };
+    };
+    const readInt = (n: unknown): number =>
+      typeof n === 'number' && Number.isFinite(n) && n >= 0 ? Math.trunc(n) : 0;
+    const usage: LLMUsage = sdkUsage
+      ? {
+          inputTokens: readInt(sdkUsage.prompt_tokens),
+          outputTokens: readInt(sdkUsage.completion_tokens),
+          cachedTokens: readInt(sdkUsage.prompt_tokens_details?.cached_tokens),
+          reasoningTokens: readInt(sdkUsage.completion_tokens_details?.reasoning_tokens),
+        }
+      : { ...ZERO_USAGE };
+
+    return { content, usage, latencyMs: Date.now() - startTime };
   }
 }
