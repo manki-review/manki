@@ -1,8 +1,24 @@
 export type ProviderName = 'anthropic' | 'openai' | 'gemini';
 
+export interface LLMUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  reasoningTokens: number;
+}
+
 export interface LLMResponse {
   content: string;
+  usage: LLMUsage;
+  latencyMs: number;
 }
+
+export const ZERO_USAGE: LLMUsage = Object.freeze({
+  inputTokens: 0,
+  outputTokens: 0,
+  cachedTokens: 0,
+  reasoningTokens: 0,
+});
 
 export interface SendMessageOptions {
   effort?: 'low' | 'medium' | 'high' | 'max';
