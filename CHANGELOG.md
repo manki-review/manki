@@ -7,21 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [5.1.0] - 2026-05-21
+## [5.1.0] - 2026-05-22
 
 ### Added
 
+- In-app concurrent-submission lock: `manki-review[bot]` bails out at the review pipeline entry point when another run already holds a fresh in-progress marker with a different `manki-run-id` within the configurable TTL. New action input `concurrency_lock_ttl_seconds` (default 600, max 3600) (#779, [PR #796](https://github.com/manki-review/manki/pull/796)).
 - `noise_level` config knob (`low` / `medium` / `high`, default `medium`) suppresses nit-volume noise at the source. At `low`, reviewer agents are instructed to surface only blockers and warnings; at `high`, all findings including nitpicks are encouraged. Replaces the deprecated `nit_handling: 'issues'` routing (#739, #740, #741).
 - Judge calibration honors `noise_level` — the judge's acceptance threshold for nitpick findings scales with the configured level so the gate stays consistent with the reviewer signal (#761).
 - Reviewer-agent prompts honor `noise_level` — the effort-level and finding-count guidance in each reviewer's system prompt adapts to the configured level (#760).
 
 ### Changed
 
+- New CI check fails when `package.json` version does not match the most recent non-Unreleased CHANGELOG heading, preventing version drift. Adds top-level `RELEASE.md` (#783, [PR #795](https://github.com/manki-review/manki/pull/795)).
 - `nit_handling: 'issues'` is deprecated and has no effect. The `nit_handling` config key is now ignored. Migrate to `noise_level` instead (#742, #771).
 - `/manki triage` command removed. The triage flow relied on `nit_handling: 'issues'` routing, which is gone. No replacement command is needed: `noise_level` controls nit volume at the source (#771).
 
 ### Fixed
 
+- Judge `threadEvaluations.status === 'addressed'` is now wired through `determineVerdict` and `applyCrossRoundSuppression`, so a thread the judge knows the author silently fixed no longer blocks APPROVE (#787, [PR #797](https://github.com/manki-review/manki/pull/797)).
+- `PLANNER_TIMEOUT_MS` bumped from 30s to 60s to absorb normal API tail latency without masking genuine hangs ([PR #786](https://github.com/manki-review/manki/pull/786)).
 - `ready_for_review` webhook event now correctly triggers a review when a draft PR is converted to ready (#717, #744).
 - Planner timeout race eliminated by eagerly warming up the Claude CLI during action startup, before the planner call (#735, #749).
 - Review-summary timings on planner fallback now sourced from agent completion timestamps rather than a missing planner field (#736, #748).
