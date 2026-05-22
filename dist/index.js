@@ -44794,7 +44794,7 @@ async function postReview(octokit, owner, repo, prNumber, commitSha, result, dif
             validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: commentBody });
         }
     }
-    const reviewedCommitFooter = buildReviewedCommitFooter(owner, repo, commitSha);
+    const reviewedCommitFooter = buildReviewedCommitFooter(owner, repo, commitSha, github.context.serverUrl);
     const renderBody = (ctx) => {
         let b = `${BOT_MARKERS}\n${sanitizeMarkdown(result.summary)}`;
         if (result.partialNote) {
@@ -44888,9 +44888,10 @@ function dynamicFence(content) {
     const maxBt = (content.match(/`+/g) || []).reduce((max, s) => Math.max(max, s.length), 0);
     return '`'.repeat(Math.max(3, maxBt + 1));
 }
-function buildReviewedCommitFooter(owner, repo, commitSha) {
+function buildReviewedCommitFooter(owner, repo, commitSha, serverUrl) {
     const shortSha = commitSha.slice(0, 7);
-    return `Reviewed commit [\`${shortSha}\`](https://github.com/${owner}/${repo}/commit/${commitSha})`;
+    const base = serverUrl.replace(/\/+$/, '');
+    return `Reviewed commit [\`${shortSha}\`](${base}/${owner}/${repo}/commit/${commitSha})`;
 }
 function appendReviewedCommitFooter(body, footer) {
     return `${body}\n\n${footer}`;

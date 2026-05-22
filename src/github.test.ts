@@ -567,6 +567,24 @@ describe('postReview reviewed-commit footer', () => {
     expect(body).toMatch(/Reviewed commit \[`[0-9a-f]{7}`\]\(https:\/\/github\.com\/acme\/widgets\/commit\/[0-9a-f]+\)$/);
   });
 
+  it('uses a custom serverUrl for GHE and strips trailing slashes', async () => {
+    const gheServerUrl = 'https://github.example.com/';
+    const gheShortSha = fullSha.slice(0, 7);
+    const expectedGheFooter = `Reviewed commit [\`${gheShortSha}\`](https://github.example.com/acme/widgets/commit/${fullSha})`;
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const ghCtx = require('@actions/github').context;
+    const originalServerUrl = ghCtx.serverUrl;
+    Object.defineProperty(ghCtx, 'serverUrl', { value: gheServerUrl, configurable: true, writable: true });
+    try {
+      await postReview(mockOctokit, 'acme', 'widgets', 1, fullSha, buildResult('APPROVE'));
+      const body = mockCreateReview.mock.calls[0][0].body as string;
+      expect(body).toContain(expectedGheFooter);
+      expect(body).not.toContain('//acme');
+    } finally {
+      Object.defineProperty(ghCtx, 'serverUrl', { value: originalServerUrl, configurable: true, writable: true });
+    }
+  });
+
   it('keeps the footer at the bottom even when the line-error fallback appends extra sections', async () => {
     const createReviewMock = jest.fn()
       .mockRejectedValueOnce(new Error('pull_request_review_thread.line must be part of the diff'))

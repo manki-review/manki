@@ -673,7 +673,7 @@ export async function postReview(
     }
   }
 
-  const reviewedCommitFooter = buildReviewedCommitFooter(owner, repo, commitSha);
+  const reviewedCommitFooter = buildReviewedCommitFooter(owner, repo, commitSha, github.context.serverUrl);
 
   const renderBody = (ctx: RoundContext | undefined): string => {
     let b = `${BOT_MARKERS}\n${sanitizeMarkdown(result.summary)}`;
@@ -791,9 +791,10 @@ function dynamicFence(content: string): string {
   return '`'.repeat(Math.max(3, maxBt + 1));
 }
 
-function buildReviewedCommitFooter(owner: string, repo: string, commitSha: string): string {
+function buildReviewedCommitFooter(owner: string, repo: string, commitSha: string, serverUrl: string): string {
   const shortSha = commitSha.slice(0, 7);
-  return `Reviewed commit [\`${shortSha}\`](https://github.com/${owner}/${repo}/commit/${commitSha})`;
+  const base = serverUrl.replace(/\/+$/, '');
+  return `Reviewed commit [\`${shortSha}\`](${base}/${owner}/${repo}/commit/${commitSha})`;
 }
 
 function appendReviewedCommitFooter(body: string, footer: string): string {
