@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Every Manki review body now ends with a `Reviewed commit [`<short-sha>`](…)` footer linking to the exact commit reviewed, removing ambiguity about which SHA a verdict applies to and giving a stable human-visible anchor for every review across `APPROVED` / `COMMENTED` / `CHANGES_REQUESTED` ([#807](https://github.com/manki-review/manki/issues/807)).
-- `RoundMeta` now carries `cap` (`priorRoundCount`, `maxAutoRounds`, `skipCap`, `forceReview`, `bypassReason`) and `trigger` (`event`, `sender`) provenance, so a round-cap progression like `5/5 -> 6/5` is attributable to the exact tickbox or comment that admitted each round ([#791](https://github.com/manki-review/manki/issues/791), [PR #813](https://github.com/manki-review/manki/pull/813)).
+- `RoundMeta` now carries `cap` (`priorRoundCount`, `maxAutoRounds`, `skipCap`, `forceReview`, `bypassReason`) and `trigger` (`event`, `sender`) provenance, so a round-cap progression like `5/5 -> 6/5` is attributable to the exact tickbox or comment that admitted each round ([#791](https://github.com/manki-review/manki/issues/791), [PR #815](https://github.com/manki-review/manki/pull/815)).
 ### Fixed
 
 - The PR-size gate (`max_diff_lines`) now applies `exclude_paths` before counting, so generated artifacts the user has opted out of (`dist/**`, `*.lock`, `*.generated.*` by default) no longer trip the "PR too large for automated review" abort. Previously the raw diff was counted, which caused PRs that commit a build bundle (e.g., `dist/index.js` on `main`) to short-circuit review even when the reviewable source delta was small.
