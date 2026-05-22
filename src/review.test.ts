@@ -19,7 +19,6 @@ import {
   runPlanner,
   parseAgentPicks,
   sanitizePlannerField,
-  wrapClientForUsage,
   ReviewClients,
   AGENT_POOL,
   TRIVIAL_VERIFIER_AGENT,
@@ -31,7 +30,7 @@ import { Finding, RoundContext, OpenThread, ReviewerAgent, ReviewConfig, ParsedD
 import { fingerprintEntriesFromLegacy, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, roundContextFromLegacy } from './test-utils';
 import { runJudgeAgent, computeProvenanceMap } from './judge';
 import { applySuppressions } from './memory';
-import { LLMClient, LLMResponse } from './providers';
+import { LLMClient, LLMResponse, wrapClientForUsage } from './providers';
 
 const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
   auto_review: true,
