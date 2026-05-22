@@ -52,6 +52,13 @@ const ALLOWED_FINGERPRINT_TAGS = new Set<string>([
 
 type BypassHint = 'force_review' | 'skip_cap' | 'manual_review_command';
 
+function detectTickedMarker(body: string): 'FORCE_REVIEW_MARKER' | 'FORCE_CAP_MARKER' | null {
+  if (!body.includes('- [x] Force review')) return null;
+  if (body.includes(FORCE_REVIEW_MARKER)) return 'FORCE_REVIEW_MARKER';
+  if (body.includes(FORCE_CAP_MARKER)) return 'FORCE_CAP_MARKER';
+  return null;
+}
+
 /**
  * Build `RoundMeta.trigger` from the current GitHub Actions event. The event
  * string folds in the action and (for the marker-comment tickbox edits) the
@@ -67,11 +74,10 @@ function buildRoundTrigger(): RoundTrigger {
   let event = action ? `${eventName}:${action}` : eventName;
   if (eventName === 'issue_comment') {
     const body = payload.comment?.body ?? '';
-    if (action === 'edited' && body.includes('- [x] Force review')) {
-      if (body.includes(FORCE_REVIEW_MARKER)) {
-        event = `${event}:tick:FORCE_REVIEW_MARKER`;
-      } else if (body.includes(FORCE_CAP_MARKER)) {
-        event = `${event}:tick:FORCE_CAP_MARKER`;
+    if (action === 'edited') {
+      const ticked = detectTickedMarker(body);
+      if (ticked) {
+        event = `${event}:tick:${ticked}`;
       }
     } else if (action === 'created' && isReviewRequest(body)) {
       event = `${event}:@manki review`;
@@ -173,9 +179,7 @@ async function run(): Promise<void> {
       return;
     }
     const body = github.context.payload.comment?.body ?? '';
-    const isForceReviewChecked = action === 'edited' && isBotComment &&
-      (body.includes(FORCE_REVIEW_MARKER) || body.includes(FORCE_CAP_MARKER)) &&
-      body.includes('- [x] Force review');
+    const isForceReviewChecked = action === 'edited' && isBotComment && detectTickedMarker(body) !== null;
     if (!isForceReviewChecked && !hasBotMention(body) && !isReviewRequest(body)) {
       core.info('Comment does not mention Manki — ignoring');
       return;
@@ -232,12 +236,10 @@ async function run(): Promise<void> {
 
     case 'issue_comment': {
       const commentBody = github.context.payload.comment?.body ?? '';
-      const isBotTickboxEdit = action === 'edited' && isBotComment && commentBody.includes('- [x] Force review');
-      const forceReviewTickbox = isBotTickboxEdit && commentBody.includes(FORCE_REVIEW_MARKER);
-      const forceCapTickbox = isBotTickboxEdit && commentBody.includes(FORCE_CAP_MARKER);
-      if (forceCapTickbox && github.context.payload.issue?.pull_request) {
+      const tickedMarker = action === 'edited' && isBotComment ? detectTickedMarker(commentBody) : null;
+      if (tickedMarker === 'FORCE_CAP_MARKER' && github.context.payload.issue?.pull_request) {
         await handleCommentTrigger(false, true, 'skip_cap');
-      } else if (forceReviewTickbox && github.context.payload.issue?.pull_request) {
+      } else if (tickedMarker === 'FORCE_REVIEW_MARKER' && github.context.payload.issue?.pull_request) {
         await handleCommentTrigger(true, false, 'force_review');
       } else if (isReviewRequest(commentBody) && github.context.payload.issue?.pull_request) {
         await handleCommentTrigger(true, true, 'manual_review_command');
