@@ -43554,6 +43554,7 @@ exports.loadConfigFromFile = loadConfigFromFile;
 exports.resolveModel = resolveModel;
 exports.resolveAgentModel = resolveAgentModel;
 exports.loadConfig = loadConfig;
+exports.sanitizeForkConfig = sanitizeForkConfig;
 const core = __importStar(__nccwpck_require__(7484));
 const fs = __importStar(__nccwpck_require__(9896));
 const yaml_1 = __nccwpck_require__(8815);
@@ -43955,6 +43956,14 @@ function loadConfig(yamlContent) {
         return { ...exports.DEFAULT_CONFIG, reviewers: [...exports.DEFAULT_CONFIG.reviewers], memory: { ...exports.DEFAULT_CONFIG.memory } };
     }
     return loadConfigFromContent(yamlContent);
+}
+function sanitizeForkConfig(config) {
+    return {
+        ...config,
+        instructions: exports.DEFAULT_CONFIG.instructions,
+        reviewers: [...exports.DEFAULT_CONFIG.reviewers],
+        memory: { ...config.memory, repo: exports.DEFAULT_CONFIG.memory.repo },
+    };
 }
 
 
@@ -46052,19 +46061,15 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
         const configAbsPath = path.isAbsolute(configRelPath)
             ? configRelPath
             : path.join(cwd, configRelPath);
-        if (!path.isAbsolute(configRelPath)) {
-            const resolved = path.resolve(configAbsPath);
-            if (resolved !== cwd && !resolved.startsWith(cwd + path.sep)) {
-                core.warning(`\`config_path\` resolved outside workspace — ignoring`);
-                return;
-            }
+        const resolvedConfigPath = path.resolve(configAbsPath);
+        if (resolvedConfigPath !== cwd && !resolvedConfigPath.startsWith(cwd + path.sep)) {
+            core.warning(`\`config_path\` resolved outside workspace — using defaults`);
         }
-        const rawConfig = (0, config_1.loadConfigFromFile)(configAbsPath);
-        // Strip `instructions` — the config is read from the PR head (potentially
-        // from a fork), so the `instructions` field cannot be trusted as a
-        // repo-owner directive. Other fields such as `exclude_paths` affect scope
-        // only and are safe to accept from the PR head.
-        const config = { ...rawConfig, instructions: config_1.DEFAULT_CONFIG.instructions };
+        const effectiveConfigPath = (resolvedConfigPath === cwd || resolvedConfigPath.startsWith(cwd + path.sep))
+            ? configAbsPath
+            : path.join(cwd, '.manki.yml');
+        const rawConfig = (0, config_1.loadConfigFromFile)(effectiveConfigPath);
+        const config = (0, config_1.sanitizeForkConfig)(rawConfig);
         // Scan for a competing in-progress marker before posting our own to shorten
         // the race window. A residual window remains when two runs both pass this scan
         // before either posts; tracking issue for the strict atomic fix: https://github.com/manki-review/manki/issues/798
