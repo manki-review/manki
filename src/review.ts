@@ -880,9 +880,7 @@ export async function runReview(
         }
       } else {
         failedAgents.push(agent.name);
-        if (lastPassError) {
-          agentFailureReasons[agent.name] = sanitizeLogOutput(String((lastPassError as Error)?.message ?? lastPassError)).slice(0, 500);
-        }
+        agentFailureReasons[agent.name] = sanitizeLogOutput(String(((lastPassError as Error)?.message ?? lastPassError) || 'unknown failure')).slice(0, 500);
         core.warning(`${agent.name}: all passes failed`);
 
         if (onProgress) {
@@ -972,9 +970,7 @@ export async function runReview(
           }
         } else {
           stillFailed.push(agent.name);
-          if (retryLastError) {
-            agentFailureReasons[agent.name] = sanitizeLogOutput(String((retryLastError as Error)?.message ?? retryLastError)).slice(0, 500);
-          }
+          agentFailureReasons[agent.name] = sanitizeLogOutput(String(((retryLastError as Error)?.message ?? retryLastError) || 'unknown failure')).slice(0, 500);
           core.warning(`${agent.name}: retry ${retryCountMap[agent.name]} failed (all passes)`);
           if (onProgress) {
             onProgress({
@@ -1119,9 +1115,7 @@ export async function runReview(
           }
         } else {
           stillFailed.push(agent.name);
-          if (error) {
-            agentFailureReasons[agent.name] = sanitizeLogOutput(String((error as Error)?.message ?? error)).slice(0, 500);
-          }
+          agentFailureReasons[agent.name] = sanitizeLogOutput(String(((error as Error)?.message ?? error) || 'unknown failure')).slice(0, 500);
           core.warning(`${agent.name}: retry ${retryCount[agent.name]} failed`);
           if (onProgress) {
             onProgress({
