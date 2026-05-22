@@ -2697,6 +2697,95 @@ describe('runFullReview orchestration', () => {
     expect(rc!.findings.entries[0].title).toHaveLength(200);
   });
 
+  it('carries judge per-finding state into RoundContext findingEntries', async () => {
+    const testFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+    };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+      files: [testFile], totalAdditions: 10, totalDeletions: 5,
+    });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'COMMENT', summary: 'Issues',
+      findings: [{
+        severity: 'nitpick' as const,
+        title: 'Hypothetical race',
+        file: 'src/app.ts',
+        line: 5,
+        description: 'Race condition that needs a strict ordering.',
+        reviewers: ['Concurrency'],
+        judgeNotes: 'Reachable only under shutdown',
+        judgeConfidence: 'medium' as const,
+        reachability: 'hypothetical' as const,
+        reachabilityReasoning: 'Caller serializes via mutex',
+        tags: ['defensive-hardening', 'own-proposal-followup'],
+        originalSeverity: 'warning' as const,
+      }],
+      highlights: [], reviewComplete: true, agentNames: ['Concurrency'],
+    });
+
+    await callRunFullReview();
+
+    const [,,,,,,,rc] = jest.mocked(ghUtils.postReview).mock.calls[0];
+    const entry = rc!.findings.entries[0];
+    expect(entry.judgeNotes).toBe('Reachable only under shutdown');
+    expect(entry.judgeConfidence).toBe('medium');
+    expect(entry.reachability).toBe('hypothetical');
+    expect(entry.reachabilityReasoning).toBe('Caller serializes via mutex');
+    expect(entry.tags).toEqual(['defensive-hardening', 'own-proposal-followup']);
+    expect(entry.originalSeverity).toBe('warning');
+  });
+
+  it('splits judge suppression counters by tag in RoundContext.judge', async () => {
+    const testFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+    };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+      files: [testFile], totalAdditions: 10, totalDeletions: 5,
+    });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    const tagged = (
+      title: string,
+      tag: string,
+      severity: 'ignore' | 'nitpick' = 'ignore',
+    ) => ({
+      severity,
+      title,
+      file: 'src/app.ts',
+      line: 5,
+      description: 'd',
+      reviewers: ['A'],
+      tags: [tag],
+    });
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'COMMENT', summary: '',
+      findings: [],
+      allJudgedFindings: [
+        tagged('A', 'suppressed-by-ratchet'),
+        tagged('B', 'suppressed-by-ratchet'),
+        tagged('C', 'suppressed-by-resolved-thread'),
+        tagged('D', 'contradicts-prior-round', 'nitpick'),
+        tagged('E', 'own-proposal-followup', 'nitpick'),
+        tagged('F', 'own-proposal-followup', 'nitpick'),
+        tagged('G', 'defensive-hardening', 'nitpick'),
+      ],
+      highlights: [], reviewComplete: true, agentNames: ['A'],
+      interRoundDiffEmptyOverride: { applied: true, affectedThreadCount: 3 },
+    });
+
+    await callRunFullReview();
+
+    const [,,,,,,,rc] = jest.mocked(ghUtils.postReview).mock.calls[0];
+    expect(rc!.judge.ratchetSuppressedCount).toBe(2);
+    expect(rc!.judge.resolvedThreadSuppressedCount).toBe(1);
+    expect(rc!.judge.contradictionDemotedCount).toBe(1);
+    expect(rc!.judge.ownProposalDemotedCount).toBe(2);
+    expect(rc!.judge.defensiveHardeningCount).toBe(1);
+    expect(rc!.judge.interRoundDiffEmptyOverride).toEqual({ applied: true, affectedThreadCount: 3 });
+  });
+
   it('does not touch memory repo when memory is disabled', async () => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,

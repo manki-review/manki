@@ -165,6 +165,59 @@ describe('RoundContext', () => {
     expect(ctx.judge.summary).toMatch(/Three issues/);
     expect(ctx.reviewers.agents).toEqual(['typescript', 'security', 'tests']);
   });
+
+  it('carries split judge counters and inter-round override on `RoundJudge`', () => {
+    const ctx: RoundContext = {
+      ...fullyPopulatedContext(),
+      judge: {
+        summary: 'split counters',
+        ownProposalDemotedCount: 2,
+        contradictionDemotedCount: 1,
+        ratchetSuppressedCount: 3,
+        resolvedThreadSuppressedCount: 1,
+        interRoundDiffEmptyOverride: { applied: true, affectedThreadCount: 4 },
+        threadEvaluations: [
+          { threadId: 'PRRT_a', status: 'not_addressed', reason: 'No code changes since prior review' },
+        ],
+      },
+    };
+    expect(ctx.judge.ownProposalDemotedCount).toBe(2);
+    expect(ctx.judge.contradictionDemotedCount).toBe(1);
+    expect(ctx.judge.ratchetSuppressedCount).toBe(3);
+    expect(ctx.judge.resolvedThreadSuppressedCount).toBe(1);
+    expect(ctx.judge.interRoundDiffEmptyOverride).toEqual({ applied: true, affectedThreadCount: 4 });
+    expect(ctx.judge.threadEvaluations).toHaveLength(1);
+  });
+
+  it('carries judge per-finding state on `FindingFingerprintEntry`', () => {
+    const entry: RoundContext['findings']['entries'][number] = {
+      fingerprint: { file: 'src/a.ts', lineStart: 1, lineEnd: 1, slug: 'race-condition' },
+      severity: 'nitpick',
+      judgeNotes: 'Reachable only under shutdown',
+      judgeConfidence: 'medium',
+      reachability: 'hypothetical',
+      reachabilityReasoning: 'Caller serializes access via mutex',
+      tags: ['defensive-hardening'],
+      originalSeverity: 'warning',
+    };
+    expect(entry.judgeNotes).toMatch(/shutdown/);
+    expect(entry.judgeConfidence).toBe('medium');
+    expect(entry.reachability).toBe('hypothetical');
+    expect(entry.tags).toEqual(['defensive-hardening']);
+    expect(entry.originalSeverity).toBe('warning');
+  });
+
+  it('omits all new optional fields gracefully on minimal entry', () => {
+    const entry: RoundContext['findings']['entries'][number] = {
+      fingerprint: { file: 'x', lineStart: 1, lineEnd: 1, slug: 's' },
+      severity: 'suggestion',
+    };
+    expect(entry.judgeNotes).toBeUndefined();
+    expect(entry.judgeConfidence).toBeUndefined();
+    expect(entry.reachability).toBeUndefined();
+    expect(entry.tags).toBeUndefined();
+    expect(entry.originalSeverity).toBeUndefined();
+  });
 });
 
 describe('roundContextToFlatAliases', () => {

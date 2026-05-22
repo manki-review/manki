@@ -1396,6 +1396,7 @@ describe('runJudgeAgent', () => {
       { threadId: 'PRRT_a', status: 'not_addressed', reason: 'No code changes since prior review' },
       { threadId: 'PRRT_b', status: 'not_addressed', reason: 'No code changes since prior review' },
     ]);
+    expect(result.interRoundDiffEmptyOverride).toEqual({ applied: true, affectedThreadCount: 2 });
   });
 
   it('does not override threadEvaluations when interRoundDiff is empty but no prior rounds exist', async () => {
@@ -1428,6 +1429,7 @@ describe('runJudgeAgent', () => {
     expect(result.threadEvaluations).toEqual([
       { threadId: 'PRRT_a', status: 'addressed', reason: 'Fixed' },
     ]);
+    expect(result.interRoundDiffEmptyOverride).toBeUndefined();
   });
 
   it('renders empty inter-round diff sentinel in user message', async () => {
