@@ -150,6 +150,7 @@ jest.mock('./github', () => {
   fetchLinkedIssues: jest.fn().mockResolvedValue([]),
   isReviewInProgress: jest.fn().mockResolvedValue(false),
   isApprovedOnCommit: jest.fn().mockResolvedValue(false),
+  hasBotReviewOnCommit: jest.fn().mockResolvedValue(false),
   markOwnProgressCommentCancelled: jest.fn().mockResolvedValue(false),
   postAppWarningIfNeeded: jest.fn().mockResolvedValue(undefined),
   cancelActiveReviewRun: jest.fn().mockResolvedValue(false),
@@ -888,7 +889,6 @@ describe('handleCommentTrigger', () => {
     expect(jest.mocked(core.info)).toHaveBeenCalledWith('Review already in progress — skipping');
     expect(jest.mocked(ghUtils.isApprovedOnCommit)).not.toHaveBeenCalled();
     expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
-    expect(mockOctokitInstance.rest.pulls.get).not.toHaveBeenCalled();
   });
 
   it('always posts a fresh skip comment, never edits an existing one', async () => {
@@ -941,7 +941,6 @@ describe('handleCommentTrigger', () => {
     expect(mockOctokitInstance.rest.issues.createComment).toHaveBeenCalledTimes(1);
     expect(mockOctokitInstance.rest.issues.updateComment).not.toHaveBeenCalled();
     expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
-    expect(mockOctokitInstance.rest.pulls.get).not.toHaveBeenCalled();
   });
 
   it('bypasses in-progress check when forceReview is true', async () => {
