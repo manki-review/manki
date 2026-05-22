@@ -43,6 +43,11 @@ export const RESOLVED_THREAD_SUPPRESSED_TAG = 'suppressed-by-resolved-thread' as
 export const OWN_PROPOSAL_TAG = 'own-proposal-followup' as const;
 export const IN_PR_SUPPRESSED_TAG = 'suppressed-in-pr' as const;
 
+export interface InterRoundDiffEmptyOverride {
+  applied: boolean;
+  affectedThreadCount: number;
+}
+
 /** Shared shape for the prose extracted from a review-thread comment body. */
 export interface FindingMetadata {
   description?: string;
@@ -134,6 +139,8 @@ export interface ReviewResult {
   agentResponseLengths?: Map<string, number>;
   crossRoundSuppressed?: number;
   crossRoundDemoted?: number;
+  /** Set when the judge stage forced every open thread to `not_addressed` because the inter-round diff was known-empty. */
+  interRoundDiffEmptyOverride?: InterRoundDiffEmptyOverride;
   testNitSuppressedCount?: number;
 }
 
@@ -571,6 +578,30 @@ export interface RoundJudge {
   crossRoundSuppressed?: number;
   crossRoundDemoted?: number;
   /**
+   * Count of findings demoted to `nitpick` because they implement a prior-round
+   * `suggestedFix` (tagged `OWN_PROPOSAL_TAG`). Distinct from
+   * `defensiveHardeningCount` which covers hypothetical-reachability demotions.
+   */
+  ownProposalDemotedCount?: number;
+  /**
+   * Subset of `crossRoundDemoted` tagged `CONTRADICTION_TAG`. Together with
+   * `ownProposalDemotedCount`, accounts for the full `crossRoundDemoted`
+   * aggregate; split so future demotion categories don't collapse into a
+   * single opaque counter.
+   */
+  contradictionDemotedCount?: number;
+  /** Subset of `crossRoundSuppressed` tagged `RATCHET_SUPPRESSED_TAG`. */
+  ratchetSuppressedCount?: number;
+  /** Subset of `crossRoundSuppressed` tagged `RESOLVED_THREAD_SUPPRESSED_TAG`. */
+  resolvedThreadSuppressedCount?: number;
+  /**
+   * Records the defense-in-depth path where the judge stage forced every open
+   * thread to `not_addressed` because the inter-round diff was known-empty
+   * (force-pushed rebase to identical tree). `applied: true` means the
+   * synthetic evaluations replaced whatever the LLM returned.
+   */
+  interRoundDiffEmptyOverride?: InterRoundDiffEmptyOverride;
+  /**
    * Per-open-thread judgment from the judge stage. Surfaced in the embedded
    * round-context block so the resolution signal is observable post-hoc when
    * debugging stuck reviews. Producers omit this field on rounds with no open
@@ -620,6 +651,18 @@ export interface FindingFingerprintEntry {
   suggestedFix?: string;
   /** Human-readable finding title. */
   title?: string;
+  /** Judge reasoning for the verdict on this finding. Mirrors `Finding.judgeNotes`. */
+  judgeNotes?: string;
+  /** Judge confidence in the verdict. Mirrors `Finding.judgeConfidence`. */
+  judgeConfidence?: 'high' | 'medium' | 'low';
+  /** Reachability classification of the underlying issue. Mirrors `Finding.reachability`. */
+  reachability?: FindingReachability;
+  /** Free-form explanation of the reachability classification. Mirrors `Finding.reachabilityReasoning`. */
+  reachabilityReasoning?: string;
+  /** Tags applied by the judge (e.g. `DEFENSIVE_HARDENING_TAG`, `OWN_PROPOSAL_TAG`). Preserves the exact string constants from `Finding.tags`. */
+  tags?: string[];
+  /** Pre-demotion severity, when the judge demoted the finding. Mirrors `Finding.originalSeverity`. */
+  originalSeverity?: FindingSeverity;
 }
 
 export interface RoundUsage {

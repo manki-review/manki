@@ -16,7 +16,7 @@ import { safeTruncate } from './utils';
 import { sanitize, titlesOverlap } from './recap';
 import { validateSeverity } from './review';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
-import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DiffFile, Finding, FindingFingerprintEntry, FindingReachability, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, NoiseLevel, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, ParsedDiff, PrContext, ThreadEvaluation } from './types';
+import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DiffFile, Finding, FindingFingerprintEntry, FindingReachability, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, InterRoundDiffEmptyOverride, NoiseLevel, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, ParsedDiff, PrContext, ThreadEvaluation } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -831,6 +831,7 @@ export async function runJudgeAgent(
   crossRoundSuppressed?: number;
   crossRoundDemoted?: number;
   inPrSuppressedCount?: number;
+  interRoundDiffEmptyOverride?: InterRoundDiffEmptyOverride;
 }> {
   const { findings, diff, rawDiff, memory, prContext, linkedIssues, agentCount, isFollowUp, openThreads, priorRounds, inPrSuppressions, interRoundDiff, resolvedThreadIds, suppressResolvedThreads } = input;
   const provenanceMap = input.provenanceMap ?? (rawDiff ? computeProvenanceMap(priorRounds, rawDiff) : []);
@@ -868,13 +869,17 @@ export async function runJudgeAgent(
 
   // Defense-in-depth: when the inter-round diff is empty, force every open
   // thread to `not_addressed` regardless of what the LLM returned.
-  const threadEvaluations = interRoundDiffEmpty && hasOpenThreads
+  const overrideApplied = interRoundDiffEmpty && hasOpenThreads;
+  const threadEvaluations = overrideApplied
     ? openThreads!.map(t => ({
       threadId: t.threadId,
       status: 'not_addressed' as const,
       reason: 'No code changes since prior review',
     }))
     : judgeResult.threadEvaluations;
+  const interRoundDiffEmptyOverride = overrideApplied
+    ? { applied: true, affectedThreadCount: openThreads!.length }
+    : undefined;
 
   const crossRoundOptions: CrossRoundSuppressionOptions = { resolvedThreadIds, suppressResolvedThreads, threadEvaluations };
 
@@ -894,6 +899,7 @@ export async function runJudgeAgent(
       ...(earlySuppress.suppressedCount > 0 && { crossRoundSuppressed: earlySuppress.suppressedCount }),
       ...(earlySuppress.demotedCount > 0 && { crossRoundDemoted: earlySuppress.demotedCount }),
       ...(earlyInPrCount > 0 && { inPrSuppressedCount: earlyInPrCount }),
+      ...(interRoundDiffEmptyOverride && { interRoundDiffEmptyOverride }),
     };
   }
 
@@ -908,6 +914,7 @@ export async function runJudgeAgent(
     ...(suppression.suppressedCount > 0 && { crossRoundSuppressed: suppression.suppressedCount }),
     ...(suppression.demotedCount > 0 && { crossRoundDemoted: suppression.demotedCount }),
     ...(inPrCount > 0 && { inPrSuppressedCount: inPrCount }),
+    ...(interRoundDiffEmptyOverride && { interRoundDiffEmptyOverride }),
   };
 }
 
