@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.1.1] - 2026-05-22
+
+### Fixed
+
+- `checkAndAutoApprove` now consults the same TTL-based in-progress-marker scan as the full-review path, so it cannot auto-approve while a parallel `runFullReview` is still mid-flight. Closes the silent verdict-flip seen on [patchly-gold/patchly#69](https://github.com/patchly-gold/patchly/pull/69) where an APPROVED landed during an in-flight review that later posted CHANGES_REQUESTED. `checkConcurrentSubmissionLock`, `readConcurrencyLockTtlSeconds`, and `DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS` moved from `index.ts` to `github.ts` so both entry points share the scan. `config` threaded through the three `checkAndAutoApprove` call sites so the guard honors `concurrency_lock_ttl_seconds` from `.manki.yml` (#801, [PR #802](https://github.com/manki-review/manki/pull/802)).
+- CLI exit-non-zero diagnostics now capture the last 500 chars of stdout, elapsed runtime, model, effort, prompt size, stderr length, and signal across all three providers (`anthropic.ts`, `openai.ts`, `gemini.ts`) via a new `buildExitDiagnostics` helper in `cli-utils.ts`. For the Claude path, the terminal stream-json `result` event (`is_error`, `subtype`, message text) is parsed and rendered as comma-joined `result.*` ctx entries, so failures like `Claude CLI failed (exit 1: )` with empty stderr now surface the actual reason (e.g., `error_during_execution`, `error_max_turns`) instead of an opaque blank (#803, [PR #805](https://github.com/manki-review/manki/pull/805)).
+
 ## [5.1.0] - 2026-05-22
 
 ### Added
