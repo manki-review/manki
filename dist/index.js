@@ -45567,6 +45567,13 @@ const review_1 = __nccwpck_require__(7491);
 const types_1 = __nccwpck_require__(6141);
 const github_1 = __nccwpck_require__(9248);
 const state_1 = __nccwpck_require__(2462);
+const ALLOWED_FINGERPRINT_TAGS = new Set([
+    types_1.DEFENSIVE_HARDENING_TAG,
+    types_1.OWN_PROPOSAL_TAG,
+    types_1.CONTRADICTION_TAG,
+    types_1.RATCHET_SUPPRESSED_TAG,
+    types_1.RESOLVED_THREAD_SUPPRESSED_TAG,
+]);
 function readProviderInputs() {
     return {
         anthropicOauthToken: core.getInput('claude_code_oauth_token'),
@@ -46315,8 +46322,13 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
                 - allJudged.length
             : 0;
         const defensiveHardeningCount = allJudged.filter(f => f.tags?.includes(types_1.DEFENSIVE_HARDENING_TAG)).length;
+        const ownProposalDemotedCount = allJudged.filter(f => f.tags?.includes(types_1.OWN_PROPOSAL_TAG)).length;
+        const contradictionDemotedCount = allJudged.filter(f => f.tags?.includes(types_1.CONTRADICTION_TAG)).length;
+        const ratchetSuppressedCount = allJudged.filter(f => f.tags?.includes(types_1.RATCHET_SUPPRESSED_TAG)).length;
+        const resolvedThreadSuppressedCount = allJudged.filter(f => f.tags?.includes(types_1.RESOLVED_THREAD_SUPPRESSED_TAG)).length;
         const crossRoundSuppressed = result.crossRoundSuppressed;
         const crossRoundDemoted = result.crossRoundDemoted;
+        const interRoundDiffEmptyOverride = result.interRoundDiffEmptyOverride;
         const inPrSuppressedCount = result.inPrSuppressedCount ?? 0;
         // File analysis metrics
         const fileTypes = {};
@@ -46332,6 +46344,12 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
             ...(f.reviewers[0] && { specialist: f.reviewers[0] }),
             ...(f.suggestedFix && { suggestedFix: f.suggestedFix.slice(0, 300) }),
             ...(f.title && { title: f.title.slice(0, 200) }),
+            ...(f.judgeNotes && { judgeNotes: f.judgeNotes.slice(0, 500) }),
+            ...(f.judgeConfidence && { judgeConfidence: f.judgeConfidence }),
+            ...(f.reachability && { reachability: f.reachability }),
+            ...(f.reachabilityReasoning && { reachabilityReasoning: f.reachabilityReasoning.slice(0, 500) }),
+            ...(f.tags && f.tags.length > 0 && { tags: f.tags.filter(t => ALLOWED_FINGERPRINT_TAGS.has(t)) }),
+            ...(f.originalSeverity && { originalSeverity: f.originalSeverity }),
         }));
         const context = {
             meta: {
@@ -46381,9 +46399,14 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
                 durationMs: judgeEndTime - reviewEndTime,
                 ...(verdictReason && { verdictReason }),
                 ...(defensiveHardeningCount > 0 && { defensiveHardeningCount }),
+                ...(ownProposalDemotedCount > 0 && { ownProposalDemotedCount }),
+                ...(contradictionDemotedCount > 0 && { contradictionDemotedCount }),
+                ...(ratchetSuppressedCount > 0 && { ratchetSuppressedCount }),
+                ...(resolvedThreadSuppressedCount > 0 && { resolvedThreadSuppressedCount }),
                 ...(inPrSuppressedCount > 0 && { inPrSuppressedCount }),
                 ...(crossRoundSuppressed != null && crossRoundSuppressed > 0 && { crossRoundSuppressed }),
                 ...(crossRoundDemoted != null && crossRoundDemoted > 0 && { crossRoundDemoted }),
+                ...(interRoundDiffEmptyOverride && { interRoundDiffEmptyOverride }),
                 ...(result.threadEvaluations && result.threadEvaluations.length > 0 && { threadEvaluations: result.threadEvaluations }),
             },
             dedup: {
@@ -48237,13 +48260,17 @@ async function runJudgeAgent(client, config, input) {
     const judgeResult = parseJudgeResponse(response.content);
     // Defense-in-depth: when the inter-round diff is empty, force every open
     // thread to `not_addressed` regardless of what the LLM returned.
-    const threadEvaluations = interRoundDiffEmpty && hasOpenThreads
+    const overrideApplied = interRoundDiffEmpty && hasOpenThreads;
+    const threadEvaluations = overrideApplied
         ? openThreads.map(t => ({
             threadId: t.threadId,
             status: 'not_addressed',
             reason: 'No code changes since prior review',
         }))
         : judgeResult.threadEvaluations;
+    const interRoundDiffEmptyOverride = overrideApplied
+        ? { applied: true, affectedThreadCount: openThreads.length }
+        : undefined;
     const crossRoundOptions = { resolvedThreadIds, suppressResolvedThreads, threadEvaluations };
     if (judgeResult.findings.length === 0) {
         if (findings.length > 0) {
@@ -48261,6 +48288,7 @@ async function runJudgeAgent(client, config, input) {
             ...(earlySuppress.suppressedCount > 0 && { crossRoundSuppressed: earlySuppress.suppressedCount }),
             ...(earlySuppress.demotedCount > 0 && { crossRoundDemoted: earlySuppress.demotedCount }),
             ...(earlyInPrCount > 0 && { inPrSuppressedCount: earlyInPrCount }),
+            ...(interRoundDiffEmptyOverride && { interRoundDiffEmptyOverride }),
         };
     }
     const mapped = deduplicateFindings(mapJudgedToFindings(findings, judgeResult.findings, provenanceMap));
@@ -48273,6 +48301,7 @@ async function runJudgeAgent(client, config, input) {
         ...(suppression.suppressedCount > 0 && { crossRoundSuppressed: suppression.suppressedCount }),
         ...(suppression.demotedCount > 0 && { crossRoundDemoted: suppression.demotedCount }),
         ...(inPrCount > 0 && { inPrSuppressedCount: inPrCount }),
+        ...(interRoundDiffEmptyOverride && { interRoundDiffEmptyOverride }),
     };
 }
 /**
@@ -52221,6 +52250,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
     let judgeThreadEvaluations;
     let judgeCrossRoundSuppressed;
     let judgeCrossRoundDemoted;
+    let judgeInterRoundDiffEmptyOverride;
     let inPrSuppressedCount = 0;
     try {
         core.info(`Running judge on ${findingsForJudge.length} findings...`);
@@ -52249,6 +52279,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
         judgeThreadEvaluations = judgeResult.threadEvaluations;
         judgeCrossRoundSuppressed = judgeResult.crossRoundSuppressed;
         judgeCrossRoundDemoted = judgeResult.crossRoundDemoted;
+        judgeInterRoundDiffEmptyOverride = judgeResult.interRoundDiffEmptyOverride;
         inPrSuppressedCount = judgeResult.inPrSuppressedCount ?? 0;
         finalFindings = judgeResult.findings.filter(f => f.severity !== 'ignore');
         core.info(`Judge complete: ${finalFindings.length} findings survived (${judgeResult.findings.length - finalFindings.length} ignored)`);
@@ -52325,6 +52356,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
         agentResponseLengths,
         crossRoundSuppressed: judgeCrossRoundSuppressed,
         crossRoundDemoted: judgeCrossRoundDemoted,
+        ...(judgeInterRoundDiffEmptyOverride && { interRoundDiffEmptyOverride: judgeInterRoundDiffEmptyOverride }),
         ...(testNitSuppressedCount > 0 && { testNitSuppressedCount }),
     };
 }
