@@ -6,7 +6,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
 import { sanitizeLogOutput, STALE_TIMEOUT_MS, buildTimeoutDiagnostics, buildExitDiagnostics } from './cli-utils';
-import { AnthropicAuth, LLMClient, LLMResponse, SendMessageOptions } from './types';
+import { AnthropicAuth, LLMClient, LLMResponse, LLMUsage, SendMessageOptions, ZERO_USAGE } from './types';
 
 // Re-export for backward compatibility with existing test imports.
 export { sanitizeLogOutput, STALE_TIMEOUT_MS };
@@ -41,6 +41,38 @@ function processJsonLine(line: string): { text: string; replace: boolean; result
   return { text: '', replace: false, resultEvent: null };
 }
 
+
+/**
+ * Coerce a candidate JSON value to a non-negative integer. The Claude CLI
+ * occasionally serialises token counts as strings on edge code paths, so accept
+ * both shapes and clamp anything non-numeric to zero.
+ */
+function readCount(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return Math.trunc(value);
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0) return Math.trunc(parsed);
+  }
+  return 0;
+}
+
+/**
+ * Lift the `usage` block from a Claude CLI `result` event into the canonical
+ * `LLMUsage` shape. Returns `ZERO_USAGE` when the event is missing or
+ * malformed so callers can always rely on numeric counters.
+ */
+export function extractAnthropicCLIUsage(resultEvent: unknown): LLMUsage {
+  if (!resultEvent || typeof resultEvent !== 'object') return { ...ZERO_USAGE };
+  const usage = (resultEvent as { usage?: unknown }).usage;
+  if (!usage || typeof usage !== 'object') return { ...ZERO_USAGE };
+  const u = usage as Record<string, unknown>;
+  return {
+    inputTokens: readCount(u.input_tokens),
+    outputTokens: readCount(u.output_tokens),
+    cachedTokens: readCount(u.cache_read_input_tokens),
+    reasoningTokens: 0,
+  };
+}
 
 let cliInstallPromise: Promise<string> | null = null;
 
@@ -294,7 +326,11 @@ export class AnthropicClient implements LLMClient {
         }
         const content = output.trim();
         core.debug(sanitizeLogOutput(content.slice(0, 200)));
-        resolve({ content });
+        resolve({
+          content,
+          usage: extractAnthropicCLIUsage(lastResultEvent),
+          latencyMs: Date.now() - startTime,
+        });
       });
 
       child.on('error', (error) => {
@@ -358,12 +394,23 @@ export class AnthropicClient implements LLMClient {
       params.thinking = { type: 'enabled', budget_tokens: budgetMap[options!.effort!] };
     }
 
+    const startTime = Date.now();
     const response = await this.anthropic.messages.create(params);
 
     const textBlocks = response.content.filter((b) => b.type === 'text');
     const content = textBlocks.map((b) => 'text' in b ? b.text : '').join('\n');
     core.debug(sanitizeLogOutput(content.slice(0, 200)));
 
-    return { content };
+    const sdkUsage = (response as unknown as { usage?: Record<string, unknown> }).usage;
+    const usage: LLMUsage = sdkUsage
+      ? {
+          inputTokens: readCount(sdkUsage.input_tokens),
+          outputTokens: readCount(sdkUsage.output_tokens),
+          cachedTokens: readCount(sdkUsage.cache_read_input_tokens),
+          reasoningTokens: 0,
+        }
+      : { ...ZERO_USAGE };
+
+    return { content, usage, latencyMs: Date.now() - startTime };
   }
 }
