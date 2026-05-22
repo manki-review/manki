@@ -13,12 +13,35 @@ export interface LLMResponse {
   latencyMs: number;
 }
 
+/**
+ * Coerce a candidate JSON value to a non-negative integer. Accepts both
+ * number and string shapes — some CLI providers serialise token counts as
+ * strings on edge code paths. Clamps anything non-numeric to zero.
+ */
+export function readCount(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return Math.trunc(value);
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed >= 0) return Math.trunc(parsed);
+  }
+  return 0;
+}
+
 export const ZERO_USAGE: LLMUsage = Object.freeze({
   inputTokens: 0,
   outputTokens: 0,
   cachedTokens: 0,
   reasoningTokens: 0,
 });
+
+export function addUsage(a: LLMUsage, b: LLMUsage): LLMUsage {
+  return {
+    inputTokens: a.inputTokens + b.inputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    cachedTokens: a.cachedTokens + b.cachedTokens,
+    reasoningTokens: a.reasoningTokens + b.reasoningTokens,
+  };
+}
 
 export interface SendMessageOptions {
   effort?: 'low' | 'medium' | 'high' | 'max';

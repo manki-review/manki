@@ -6,7 +6,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
 import { sanitizeLogOutput, STALE_TIMEOUT_MS, buildTimeoutDiagnostics, buildExitDiagnostics } from './cli-utils';
-import { AnthropicAuth, LLMClient, LLMResponse, LLMUsage, SendMessageOptions, ZERO_USAGE } from './types';
+import { AnthropicAuth, LLMClient, LLMResponse, LLMUsage, readCount, SendMessageOptions, ZERO_USAGE } from './types';
 
 // Re-export for backward compatibility with existing test imports.
 export { sanitizeLogOutput, STALE_TIMEOUT_MS };
@@ -42,19 +42,6 @@ function processJsonLine(line: string): { text: string; replace: boolean; result
 }
 
 
-/**
- * Coerce a candidate JSON value to a non-negative integer. The Claude CLI
- * occasionally serialises token counts as strings on edge code paths, so accept
- * both shapes and clamp anything non-numeric to zero.
- */
-function readCount(value: unknown): number {
-  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return Math.trunc(value);
-  if (typeof value === 'string') {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed) && parsed >= 0) return Math.trunc(parsed);
-  }
-  return 0;
-}
 
 /**
  * Lift the `usage` block from a Claude CLI `result` event into the canonical

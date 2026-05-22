@@ -7,7 +7,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import * as core from '@actions/core';
 
 import { buildExitDiagnostics, buildTimeoutDiagnostics, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS } from './cli-utils';
-import { GeminiAuth, LLMClient, LLMResponse, LLMUsage, SendMessageOptions, ZERO_USAGE } from './types';
+import { GeminiAuth, LLMClient, LLMResponse, LLMUsage, readCount, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
 
@@ -377,14 +377,12 @@ export class GeminiClient implements LLMClient {
         thoughtsTokenCount?: number;
       };
     }).usageMetadata;
-    const readInt = (n: unknown): number =>
-      typeof n === 'number' && Number.isFinite(n) && n >= 0 ? Math.trunc(n) : 0;
     const usage: LLMUsage = usageMetadata
       ? {
-          inputTokens: readInt(usageMetadata.promptTokenCount),
-          outputTokens: readInt(usageMetadata.candidatesTokenCount),
-          cachedTokens: readInt(usageMetadata.cachedContentTokenCount),
-          reasoningTokens: readInt(usageMetadata.thoughtsTokenCount),
+          inputTokens: readCount(usageMetadata.promptTokenCount),
+          outputTokens: readCount(usageMetadata.candidatesTokenCount),
+          cachedTokens: readCount(usageMetadata.cachedContentTokenCount),
+          reasoningTokens: readCount(usageMetadata.thoughtsTokenCount),
         }
       : { ...ZERO_USAGE };
 
