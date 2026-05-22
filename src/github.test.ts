@@ -492,7 +492,7 @@ describe('postReview generalFindings', () => {
 
     await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
     const body = mockCreateReview.mock.calls[0][0].body as string;
-    expect(body.length).toBeLessThanOrEqual(60000 + 50); // cap + truncation message
+    expect(body.length).toBeLessThanOrEqual(60000 + 200); // cap + truncation notice + footer appended after truncation
     expect(body).toContain('*(Review body truncated)*');
   });
 
@@ -625,6 +625,23 @@ describe('postReview reviewed-commit footer', () => {
     const fallbackBody = createReviewMock.mock.calls[1][0].body as string;
     expect(fallbackBody.endsWith(expectedFooter)).toBe(true);
     expect(fallbackBody).toContain('**Findings (could not post inline):**');
+  });
+
+  it('preserves the footer even when the review body exceeds the truncation limit', async () => {
+    const hugeSummary = 'x'.repeat(65000);
+    const result: ReviewResult = {
+      verdict: 'COMMENT',
+      summary: hugeSummary,
+      findings: [],
+      highlights: [],
+      reviewComplete: true,
+      agentNames: [],
+    };
+
+    await postReview(mockOctokit, 'acme', 'widgets', 1, fullSha, result);
+    const body = mockCreateReview.mock.calls[0][0].body as string;
+    expect(body.endsWith(expectedFooter)).toBe(true);
+    expect(body.length).toBeLessThanOrEqual(60000 + expectedFooter.length + 4);
   });
 });
 

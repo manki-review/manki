@@ -44832,7 +44832,7 @@ async function postReview(octokit, owner, repo, prNumber, commitSha, result, dif
             pull_number: prNumber,
             commit_id: commitSha,
             event,
-            body: truncateBody(appendReviewedCommitFooter(body, reviewedCommitFooter)),
+            body: appendReviewedCommitFooter(truncateBody(body), reviewedCommitFooter),
             comments: validComments,
         });
         core.info(`Posted review #${review.id} with verdict ${result.verdict}`);
@@ -44846,7 +44846,7 @@ async function postReview(octokit, owner, repo, prNumber, commitSha, result, dif
         if (isLineError && validComments.length > 0) {
             core.warning('Inline comments rejected by GitHub (invalid lines). Posting review without inline comments.');
             const allAsBody = validComments.map(c => `- ${c.body.split('\n')[0]}`).join('\n');
-            const lineErrFallbackBody = truncateBody(appendReviewedCommitFooter(`${body}\n\n**Inline comments could not be posted:**\n${allAsBody}`, reviewedCommitFooter));
+            const lineErrFallbackBody = appendReviewedCommitFooter(truncateBody(`${body}\n\n**Inline comments could not be posted:**\n${allAsBody}`), reviewedCommitFooter);
             const { data: review } = await octokit.rest.pulls.createReview({
                 owner,
                 repo,
@@ -44870,7 +44870,7 @@ async function postReview(octokit, owner, repo, prNumber, commitSha, result, dif
             const firstLine = c.body.split('\n')[0];
             return `- ${firstLine} (\`${c.path}:${c.line}\`)`;
         }).join('\n');
-        const fallbackBody = truncateBody(appendReviewedCommitFooter(`${body}\n\n**Findings (could not post inline):**\n${findingSummary}`, reviewedCommitFooter));
+        const fallbackBody = appendReviewedCommitFooter(truncateBody(`${body}\n\n**Findings (could not post inline):**\n${findingSummary}`), reviewedCommitFooter);
         const { data: review } = await octokit.rest.pulls.createReview({
             owner,
             repo,
