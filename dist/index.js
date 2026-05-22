@@ -45587,10 +45587,10 @@ const ALLOWED_FINGERPRINT_TAGS = new Set([
 function detectTickedMarker(body) {
     if (!body.includes('- [x] Force review'))
         return null;
-    if (body.includes(github_1.FORCE_REVIEW_MARKER))
-        return 'FORCE_REVIEW_MARKER';
     if (body.includes(github_1.FORCE_CAP_MARKER))
         return 'FORCE_CAP_MARKER';
+    if (body.includes(github_1.FORCE_REVIEW_MARKER))
+        return 'FORCE_REVIEW_MARKER';
     return null;
 }
 /**
@@ -46422,7 +46422,7 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
             maxAutoRounds,
             skipCap: !!skipCap,
             forceReview: !!forceReview,
-            bypassReason: bypassHint ?? 'within_cap',
+            bypassReason: bypassHint ?? (forceReview ? 'force_review' : skipCap ? 'skip_cap' : 'within_cap'),
         };
         const findingEntries = result.findings.map(f => ({
             fingerprint: (0, recap_1.fingerprintFinding)(f.title, f.file ?? '', f.line || 0),
