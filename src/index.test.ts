@@ -150,6 +150,7 @@ jest.mock('./github', () => {
   fetchLinkedIssues: jest.fn().mockResolvedValue([]),
   isReviewInProgress: jest.fn().mockResolvedValue(false),
   isApprovedOnCommit: jest.fn().mockResolvedValue(false),
+  hasBotReviewOnCommit: jest.fn().mockResolvedValue(false),
   markOwnProgressCommentCancelled: jest.fn().mockResolvedValue(false),
   postAppWarningIfNeeded: jest.fn().mockResolvedValue(undefined),
   cancelActiveReviewRun: jest.fn().mockResolvedValue(false),
@@ -888,7 +889,6 @@ describe('handleCommentTrigger', () => {
     expect(jest.mocked(core.info)).toHaveBeenCalledWith('Review already in progress — skipping');
     expect(jest.mocked(ghUtils.isApprovedOnCommit)).not.toHaveBeenCalled();
     expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
-    expect(mockOctokitInstance.rest.pulls.get).not.toHaveBeenCalled();
   });
 
   it('always posts a fresh skip comment, never edits an existing one', async () => {
@@ -941,7 +941,6 @@ describe('handleCommentTrigger', () => {
     expect(mockOctokitInstance.rest.issues.createComment).toHaveBeenCalledTimes(1);
     expect(mockOctokitInstance.rest.issues.updateComment).not.toHaveBeenCalled();
     expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
-    expect(mockOctokitInstance.rest.pulls.get).not.toHaveBeenCalled();
   });
 
   it('bypasses in-progress check when forceReview is true', async () => {
@@ -1152,6 +1151,167 @@ describe('isApprovedOnCommit guard', () => {
 
     expect(jest.mocked(core.info)).not.toHaveBeenCalledWith('Already approved on this commit — skipping review');
     expect(jest.mocked(ghUtils.isApprovedOnCommit)).not.toHaveBeenCalled();
+  });
+});
+
+describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    _resetOctokitCache();
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'anthropic_api_key' ? 'test-api-key' : '',
+    );
+  });
+
+  const prPayload = {
+    action: 'opened',
+    sender: { login: 'user' },
+    pull_request: {
+      number: 1,
+      head: { sha: 'abc1234567890' },
+      base: { ref: 'main' },
+      title: 'Test PR',
+      body: '',
+      draft: false,
+    },
+  };
+
+  const commentPayload = {
+    action: 'created',
+    issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } },
+    comment: { id: 42, body: '@manki review', author_association: 'COLLABORATOR' },
+  };
+
+  it('handlePullRequest bails and posts already_reviewed skip when bot already reviewed head SHA', async () => {
+    jest.mocked(ghUtils.hasBotReviewOnCommit).mockResolvedValueOnce(true);
+
+    setContext({ eventName: 'pull_request', payload: prPayload });
+    await handlePullRequest();
+
+    expect(jest.mocked(ghUtils.hasBotReviewOnCommit)).toHaveBeenCalledWith(
+      expect.anything(), 'test-owner', 'test-repo', 1, 'abc1234567890',
+    );
+    const skipCall = mockOctokitInstance.rest.issues.createComment.mock.calls.find(
+      (c: [{ body: string }]) => c[0].body.includes('already been posted for this commit'),
+    );
+    expect(skipCall).toBeDefined();
+    expect(skipCall[0].body).toContain('`abc1234`');
+    expect(skipCall[0].body).toContain('- [ ] Force review');
+    expect(skipCall[0].body).toContain(FORCE_REVIEW_MARKER);
+    expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
+  });
+
+  it('handleCommentTrigger bails when bot already reviewed head SHA', async () => {
+    jest.mocked(ghUtils.hasBotReviewOnCommit).mockResolvedValueOnce(true);
+    mockOctokitInstance.rest.pulls.get.mockResolvedValueOnce({
+      data: { head: { sha: 'def4567890123' }, base: { ref: 'main' }, title: 't', body: '', user: { login: 'a' } },
+    });
+
+    setContext({ eventName: 'issue_comment', payload: commentPayload });
+    await handleCommentTrigger();
+
+    const skipCall = mockOctokitInstance.rest.issues.createComment.mock.calls.find(
+      (c: [{ body: string }]) => c[0].body.includes('already been posted for this commit'),
+    );
+    expect(skipCall).toBeDefined();
+    expect(skipCall[0].body).toContain('`def4567`');
+    expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
+  });
+
+  it('handleCommentTrigger with forceReview bypasses the dedupe gate', async () => {
+    setContext({ eventName: 'issue_comment', payload: commentPayload });
+    await handleCommentTrigger(true);
+
+    expect(jest.mocked(ghUtils.hasBotReviewOnCommit)).not.toHaveBeenCalled();
+  });
+
+  it('handleReviewCommentInteraction bails and skips LLM when bot already reviewed head SHA', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'claude_code_oauth_token' ? 'oauth-tok' : '',
+    );
+    jest.mocked(interaction.hasBotMention).mockReturnValue(true);
+    jest.mocked(ghUtils.hasBotReviewOnCommit).mockResolvedValueOnce(true);
+
+    setContext({
+      eventName: 'pull_request_review_comment',
+      payload: {
+        action: 'created',
+        comment: { id: 99, body: '@manki help', user: { type: 'User' } },
+        pull_request: { base: { ref: 'main' }, number: 7, head: { sha: 'cafe123456789' } },
+      },
+    });
+
+    await handleReviewCommentInteraction();
+
+    expect(jest.mocked(ghUtils.hasBotReviewOnCommit)).toHaveBeenCalledWith(
+      expect.anything(), 'test-owner', 'test-repo', 7, 'cafe123456789',
+    );
+    expect(jest.mocked(interaction.handleReviewCommentReply)).not.toHaveBeenCalled();
+    expect(jest.mocked(interaction.handleReviewCommentCommand)).not.toHaveBeenCalled();
+    const skipCall = mockOctokitInstance.rest.issues.createComment.mock.calls.find(
+      (c: [{ body: string }]) => c[0].body.includes('already been posted for this commit'),
+    );
+    expect(skipCall).toBeDefined();
+    expect(skipCall[0].body).toContain('`cafe123`');
+  });
+
+  it('handleReviewCommentInteraction bypasses the dedupe gate when the comment is a review request', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'claude_code_oauth_token' ? 'oauth-tok' : '',
+    );
+    jest.mocked(interaction.hasBotMention).mockReturnValue(true);
+    jest.mocked(interaction.isReviewRequest).mockReturnValue(true);
+
+    setContext({
+      eventName: 'pull_request_review_comment',
+      payload: {
+        action: 'created',
+        comment: { id: 99, body: '@manki review', user: { type: 'User' } },
+        pull_request: { base: { ref: 'main' }, number: 7, head: { sha: 'cafe123456789' } },
+      },
+    });
+
+    await handleReviewCommentInteraction();
+
+    expect(jest.mocked(ghUtils.hasBotReviewOnCommit)).not.toHaveBeenCalled();
+  });
+
+  it('proceeds when there is no prior bot review on the head SHA (default mock returns false)', async () => {
+    setContext({ eventName: 'pull_request', payload: prPayload });
+    await handlePullRequest();
+
+    expect(jest.mocked(ghUtils.hasBotReviewOnCommit)).toHaveBeenCalled();
+    const skipCalls = mockOctokitInstance.rest.issues.createComment.mock.calls.filter(
+      (c: [{ body: string }]) => c[0].body.includes('already been posted for this commit'),
+    );
+    expect(skipCalls).toHaveLength(0);
+  });
+
+  it('in_progress skip comment includes short SHA', async () => {
+    jest.mocked(ghUtils.isReviewInProgress).mockResolvedValueOnce(true);
+
+    setContext({ eventName: 'pull_request', payload: prPayload });
+    await handlePullRequest();
+
+    const skipBody = mockOctokitInstance.rest.issues.createComment.mock.calls
+      .map((c: [{ body: string }]) => c[0].body)
+      .find((body: string) => body.includes('currently in progress'));
+    expect(skipBody).toBeDefined();
+    expect(skipBody).toContain('`abc1234`');
+  });
+
+  it('already_reviewed skip comment includes short SHA and correct wording', async () => {
+    jest.mocked(ghUtils.hasBotReviewOnCommit).mockResolvedValueOnce(true);
+
+    setContext({ eventName: 'pull_request', payload: prPayload });
+    await handlePullRequest();
+
+    const skipBody = mockOctokitInstance.rest.issues.createComment.mock.calls
+      .map((c: [{ body: string }]) => c[0].body)
+      .find((body: string) => body.includes('Review skipped'));
+    expect(skipBody).toContain('already been posted for this commit');
+    expect(skipBody).toContain('`abc1234`');
+    expect(skipBody).not.toContain('currently in progress');
   });
 });
 
@@ -6061,6 +6221,37 @@ describe('runFullReview concurrent-submission lock', () => {
     expect(warnings.some(w => w.includes('Review failed'))).toBe(true);
     expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
     expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+  });
+
+  it('bails after lock check when bot already reviewed the head SHA (defense in depth)', async () => {
+    jest.mocked(ghUtils.findInProgressLock).mockReturnValue(null);
+    jest.mocked(ghUtils.hasBotReviewOnCommit).mockResolvedValueOnce(true);
+
+    await callRunFullReview();
+
+    expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
+    expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+    const warnings = jest.mocked(core.warning).mock.calls.map(c => String(c[0]));
+    expect(warnings.some(w => w.includes('already posted a non-DISMISSED review'))).toBe(true);
+    const skipCall = mockOctokitInstance.rest.issues.createComment.mock.calls.find(
+      (c: [{ body: string }]) => c[0].body.includes('already been posted for this commit'),
+    );
+    expect(skipCall).toBeDefined();
+    expect(skipCall[0].body).toContain('`abc123`');
+  });
+
+  it('forceReview bypasses the runFullReview head-SHA dedupe gate', async () => {
+    jest.mocked(ghUtils.findInProgressLock).mockReturnValue(null);
+
+    await runFullReview(
+      'test-owner', 'test-repo', 42, 'abc123', 'main',
+      { title: 'Test PR', body: '', baseBranch: 'main' },
+      { forceReview: true },
+    );
+
+    expect(jest.mocked(ghUtils.hasBotReviewOnCommit)).not.toHaveBeenCalled();
+    expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
+    expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
   });
 });
 

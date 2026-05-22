@@ -44205,6 +44205,8 @@ exports.truncateBody = truncateBody;
 exports.truncateContextToFitBody = truncateContextToFitBody;
 exports.isReviewInProgress = isReviewInProgress;
 exports.isApprovedOnCommit = isApprovedOnCommit;
+exports.hasBotReviewOnCommit = hasBotReviewOnCommit;
+exports.findBotReviewOnCommit = findBotReviewOnCommit;
 exports.markOwnProgressCommentCancelled = markOwnProgressCommentCancelled;
 exports.cancelActiveReviewRun = cancelActiveReviewRun;
 exports.extractRunIdFromBody = extractRunIdFromBody;
@@ -45452,26 +45454,68 @@ async function markOwnProgressCommentCancelled(octokit, owner, repo, prNumber, r
     }
 }
 /**
- * Check whether the bot already has an active (non-dismissed) APPROVED review
- * on the given commit SHA.
+ * Shared scanner: returns all non-DISMISSED `manki-review[bot]` reviews on the
+ * PR in API order (oldest first). Callers filter to the commit SHA they care
+ * about.
+ *
+ * Fail-open contract: any API error returns `[]` rather than throwing, so
+ * callers such as `hasBotReviewOnCommit` and `isApprovedOnCommit` return
+ * `false` and allow the run to proceed. Callers must not wrap this function in
+ * a try/catch to handle errors — the catch is already here.
  */
-async function isApprovedOnCommit(octokit, owner, repo, prNumber, commitSha) {
+async function fetchBotReviews(octokit, owner, repo, prNumber) {
     try {
-        const { data: reviews } = await octokit.rest.pulls.listReviews({
+        const reviews = await octokit.paginate(octokit.rest.pulls.listReviews, {
             owner,
             repo,
             pull_number: prNumber,
             per_page: 100,
         });
-        const botReviews = reviews.filter((r) => r.user?.login === BOT_LOGIN && r.user?.type === 'Bot' && r.state !== 'DISMISSED');
-        const latest = botReviews[botReviews.length - 1];
-        if (!latest || latest.state !== 'APPROVED')
-            return false;
-        return latest.commit_id === commitSha;
+        return reviews.slice(-500)
+            .filter((r) => r.user?.login === BOT_LOGIN && r.user?.type === 'Bot' && r.state !== 'DISMISSED')
+            .map((r) => {
+            const raw = r;
+            return {
+                id: raw.id,
+                state: raw.state,
+                commitId: raw.commit_id,
+                htmlUrl: raw.html_url ?? '',
+                body: raw.body ?? '',
+            };
+        });
     }
     catch {
-        return false;
+        return [];
     }
+}
+/**
+ * State-based head-SHA dedupe gate. Returns the most-recent non-DISMISSED
+ * `manki-review[bot]` review whose `commit_id` matches `commitSha`, otherwise
+ * `undefined`. Run entry points consult this before any LLM call so serialized
+ * sibling events (e.g., the `pull_request_review` + `pull_request_review_comment`
+ * fan-out from a single human review) cannot post duplicate reviews on the
+ * same commit. Complements the temporally-overlapping `checkConcurrentSubmissionLock`.
+ */
+async function findBotReviewOnCommit(octokit, owner, repo, prNumber, commitSha) {
+    const reviews = await fetchBotReviews(octokit, owner, repo, prNumber);
+    const onCommit = reviews.filter(r => r.commitId === commitSha);
+    return onCommit[onCommit.length - 1];
+}
+async function hasBotReviewOnCommit(octokit, owner, repo, prNumber, commitSha) {
+    return (await findBotReviewOnCommit(octokit, owner, repo, prNumber, commitSha)) !== undefined;
+}
+/**
+ * Auto-approve gate. Returns true only when the latest non-DISMISSED bot review
+ * (across all commits on the PR) is APPROVED and lands on `commitSha`. The
+ * "latest across all commits" semantic is preserved so a fresh CHANGES_REQUESTED
+ * on a newer commit overrides an older APPROVED.
+ */
+async function isApprovedOnCommit(octokit, owner, repo, prNumber, commitSha) {
+    const reviews = await fetchBotReviews(octokit, owner, repo, prNumber);
+    const latest = reviews[reviews.length - 1];
+    if (!latest || latest.state !== 'APPROVED')
+        return false;
+    return latest.commitId === commitSha;
 }
 const APP_WARNING_MARKER = '<!-- manki-app-warning -->';
 exports.APP_WARNING_MARKER = APP_WARNING_MARKER;
@@ -45816,11 +45860,15 @@ async function run() {
             break;
     }
 }
-async function postReviewSkippedComment(octokit, owner, repo, prNumber) {
+async function postReviewSkippedComment(octokit, owner, repo, prNumber, commitSha, reason) {
     try {
+        const shortSha = commitSha.slice(0, 7);
+        const line = reason === 'in_progress'
+            ? `**Review skipped** for \`${shortSha}\` — a review is currently in progress. Retry when it completes, or force now:`
+            : `**Review skipped** for \`${shortSha}\` — a review has already been posted for this commit. Force a re-review:`;
         const body = [
             github_1.BOT_MARKER,
-            `**Review skipped** — a review is currently in progress. Retry when it completes, or force now:`,
+            line,
             '',
             '- [ ] Force review',
             '',
@@ -45852,11 +45900,16 @@ async function handlePullRequest() {
     }
     const octokit = await getOctokit();
     if (await (0, github_1.isReviewInProgress)(octokit, owner, repo, prNumber)) {
-        await postReviewSkippedComment(octokit, owner, repo, prNumber);
+        await postReviewSkippedComment(octokit, owner, repo, prNumber, commitSha, 'in_progress');
         return;
     }
     if (await (0, github_1.isApprovedOnCommit)(octokit, owner, repo, prNumber, commitSha)) {
         core.info('Already approved on this commit — skipping review');
+        return;
+    }
+    if (await (0, github_1.hasBotReviewOnCommit)(octokit, owner, repo, prNumber, commitSha)) {
+        core.info(`Bot already reviewed commit ${commitSha.slice(0, 7)} — skipping serialized sibling run`);
+        await postReviewSkippedComment(octokit, owner, repo, prNumber, commitSha, 'already_reviewed');
         return;
     }
     const prContext = {
@@ -45894,21 +45947,28 @@ async function handleCommentTrigger(forceReview, skipCap, bypassHint) {
         });
         return;
     }
-    if (!forceReview) {
-        if (await (0, github_1.isReviewInProgress)(octokit, owner, repo, prNumber)) {
-            await postReviewSkippedComment(octokit, owner, repo, prNumber);
-            core.info('Review already in progress — skipping');
-            return;
-        }
-    }
     const { data: pr } = await octokit.rest.pulls.get({
         owner,
         repo,
         pull_number: prNumber,
     });
     if (!forceReview) {
+        if (await (0, github_1.isReviewInProgress)(octokit, owner, repo, prNumber)) {
+            await postReviewSkippedComment(octokit, owner, repo, prNumber, pr.head.sha, 'in_progress');
+            core.info('Review already in progress — skipping');
+            return;
+        }
+    }
+    if (!forceReview) {
         if (await (0, github_1.isApprovedOnCommit)(octokit, owner, repo, prNumber, pr.head.sha)) {
             core.info('Already approved on this commit — skipping review');
+            return;
+        }
+    }
+    if (!forceReview) {
+        if (await (0, github_1.hasBotReviewOnCommit)(octokit, owner, repo, prNumber, pr.head.sha)) {
+            core.info(`Bot already reviewed commit ${pr.head.sha.slice(0, 7)} — skipping serialized sibling run`);
+            await postReviewSkippedComment(octokit, owner, repo, prNumber, pr.head.sha, 'already_reviewed');
             return;
         }
     }
@@ -45974,6 +46034,16 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
         // before either posts; tracking issue for the strict atomic fix: https://github.com/manki-review/manki/issues/798
         if (await (0, github_1.checkConcurrentSubmissionLock)(octokit, owner, repo, prNumber, config)) {
             core.warning('Defense-in-depth lock engaged — this run will not post a review. If no review appears on the PR, re-trigger with `/manki review`.');
+            return;
+        }
+        // Sibling head-SHA dedupe: serialized siblings (e.g., `pull_request_review`
+        // and `pull_request_review_comment` fan-out from one human review) can both
+        // pass the in-progress scan when the prior run's marker has already been
+        // cleared. The state-based check on the bot's posted reviews catches that.
+        // Honors `forceReview` so explicit re-review on the same SHA still proceeds.
+        if (!forceReview && await (0, github_1.hasBotReviewOnCommit)(octokit, owner, repo, prNumber, commitSha)) {
+            core.warning(`Bot already posted a non-DISMISSED review on commit ${commitSha.slice(0, 7)} — bailing serialized sibling run.`);
+            await postReviewSkippedComment(octokit, owner, repo, prNumber, commitSha, 'already_reviewed');
             return;
         }
         progressCommentId = await (0, github_1.postProgressComment)(octokit, owner, repo, prNumber);
@@ -46841,6 +46911,14 @@ async function handleReviewCommentInteraction() {
     const memoryConfig = config.memory?.enabled ? config.memory : undefined;
     const memoryToken = config.memory?.enabled ? (0, auth_1.getMemoryToken)(octokitCache.resolvedToken) ?? undefined : undefined;
     const command = (0, interaction_1.parseCommand)(body);
+    const forceReview = (0, interaction_1.isReviewRequest)(body);
+    const headSha = payload.pull_request?.head?.sha;
+    const prNumberForGuard = payload.pull_request?.number;
+    if (!forceReview && headSha && prNumberForGuard && await (0, github_1.hasBotReviewOnCommit)(octokit, owner, repo, prNumberForGuard, headSha)) {
+        core.info(`Bot already reviewed commit ${headSha.slice(0, 7)} — skipping serialized sibling run`);
+        await postReviewSkippedComment(octokit, owner, repo, prNumberForGuard, headSha, 'already_reviewed');
+        return;
+    }
     if (command.type !== 'generic') {
         const prNumber = payload.pull_request?.number;
         if (prNumber) {

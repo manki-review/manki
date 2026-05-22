@@ -1451,28 +1451,86 @@ async function markOwnProgressCommentCancelled(
   }
 }
 
+type BotReviewSummary = {
+  id: number;
+  state: string;
+  commitId: string;
+  htmlUrl: string;
+  body: string;
+};
+
 /**
- * Check whether the bot already has an active (non-dismissed) APPROVED review
- * on the given commit SHA.
+ * Shared scanner: returns all non-DISMISSED `manki-review[bot]` reviews on the
+ * PR in API order (oldest first). Callers filter to the commit SHA they care
+ * about.
+ *
+ * Fail-open contract: any API error returns `[]` rather than throwing, so
+ * callers such as `hasBotReviewOnCommit` and `isApprovedOnCommit` return
+ * `false` and allow the run to proceed. Callers must not wrap this function in
+ * a try/catch to handle errors — the catch is already here.
  */
-async function isApprovedOnCommit(octokit: Octokit, owner: string, repo: string, prNumber: number, commitSha: string): Promise<boolean> {
+async function fetchBotReviews(
+  octokit: Octokit, owner: string, repo: string, prNumber: number,
+): Promise<BotReviewSummary[]> {
   try {
-    const { data: reviews } = await octokit.rest.pulls.listReviews({
+    const reviews = await octokit.paginate(octokit.rest.pulls.listReviews, {
       owner,
       repo,
       pull_number: prNumber,
       per_page: 100,
     });
-    const botReviews = reviews.filter(
-      (r: { body?: string | null; state?: string; user?: { login?: string; type?: string } | null }) =>
+    return reviews.slice(-500)
+      .filter((r: { state?: string; user?: { login?: string; type?: string } | null }) =>
         r.user?.login === BOT_LOGIN && r.user?.type === 'Bot' && r.state !== 'DISMISSED',
-    );
-    const latest = botReviews[botReviews.length - 1];
-    if (!latest || latest.state !== 'APPROVED') return false;
-    return (latest as unknown as { commit_id?: string }).commit_id === commitSha;
+      )
+      .map((r: unknown) => {
+        const raw = r as { id: number; state: string; commit_id: string; html_url?: string; body?: string | null };
+        return {
+          id: raw.id,
+          state: raw.state,
+          commitId: raw.commit_id,
+          htmlUrl: raw.html_url ?? '',
+          body: raw.body ?? '',
+        };
+      });
   } catch {
-    return false;
+    return [];
   }
+}
+
+/**
+ * State-based head-SHA dedupe gate. Returns the most-recent non-DISMISSED
+ * `manki-review[bot]` review whose `commit_id` matches `commitSha`, otherwise
+ * `undefined`. Run entry points consult this before any LLM call so serialized
+ * sibling events (e.g., the `pull_request_review` + `pull_request_review_comment`
+ * fan-out from a single human review) cannot post duplicate reviews on the
+ * same commit. Complements the temporally-overlapping `checkConcurrentSubmissionLock`.
+ */
+async function findBotReviewOnCommit(
+  octokit: Octokit, owner: string, repo: string, prNumber: number, commitSha: string,
+): Promise<BotReviewSummary | undefined> {
+  const reviews = await fetchBotReviews(octokit, owner, repo, prNumber);
+  const onCommit = reviews.filter(r => r.commitId === commitSha);
+  return onCommit[onCommit.length - 1];
+}
+
+async function hasBotReviewOnCommit(
+  octokit: Octokit, owner: string, repo: string, prNumber: number, commitSha: string,
+): Promise<boolean> {
+  return (await findBotReviewOnCommit(octokit, owner, repo, prNumber, commitSha)) !== undefined;
+}
+
+/**
+ * Auto-approve gate. Returns true only when the latest non-DISMISSED bot review
+ * (across all commits on the PR) is APPROVED and lands on `commitSha`. The
+ * "latest across all commits" semantic is preserved so a fresh CHANGES_REQUESTED
+ * on a newer commit overrides an older APPROVED.
+ */
+async function isApprovedOnCommit(octokit: Octokit, owner: string, repo: string, prNumber: number, commitSha: string): Promise<boolean> {
+  const reviews = await fetchBotReviews(octokit, owner, repo, prNumber);
+  const latest = reviews[reviews.length - 1];
+  if (!latest || latest.state !== 'APPROVED') return false;
+  return latest.commitId === commitSha;
 }
 
 const APP_WARNING_MARKER = '<!-- manki-app-warning -->';
@@ -1554,5 +1612,5 @@ async function cancelActiveReviewRun(
   }
 }
 
-export { dynamicFence, formatContextBlock, formatFindingComment, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, APP_WARNING_MARKER, postAppWarningIfNeeded };
+export { dynamicFence, formatContextBlock, formatFindingComment, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, APP_WARNING_MARKER, postAppWarningIfNeeded };
 export type { InProgressLock };

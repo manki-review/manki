@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 
-import { buildDashboard, formatBlockingPriorThreads, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, truncateContextToFitBody, dynamicFence, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded } from './github';
+import { buildDashboard, formatBlockingPriorThreads, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, truncateContextToFitBody, dynamicFence, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded } from './github';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { DEFAULT_CONFIG } from './config';
 
@@ -3584,9 +3584,10 @@ describe('isApprovedOnCommit', () => {
 
   function makeMockOctokit(reviews: Array<{ body?: string | null; state: string; commit_id?: string; user?: { login?: string; type: string } }>) {
     return {
+      paginate: jest.fn().mockResolvedValue(reviews),
       rest: {
         pulls: {
-          listReviews: jest.fn().mockResolvedValue({ data: reviews }),
+          listReviews: {},
         },
       },
     } as unknown as Octokit;
@@ -3624,11 +3625,8 @@ describe('isApprovedOnCommit', () => {
 
   it('returns false when the API call fails', async () => {
     const octokit = {
-      rest: {
-        pulls: {
-          listReviews: jest.fn().mockRejectedValue(new Error('API error')),
-        },
-      },
+      paginate: jest.fn().mockRejectedValue(new Error('API error')),
+      rest: { pulls: { listReviews: {} } },
     } as unknown as Octokit;
 
     expect(await isApprovedOnCommit(octokit, 'owner', 'repo', 1, 'sha-123')).toBe(false);
@@ -3658,6 +3656,125 @@ describe('isApprovedOnCommit', () => {
     ]);
 
     expect(await isApprovedOnCommit(octokit, 'owner', 'repo', 1, 'sha-123')).toBe(false);
+  });
+});
+
+describe('hasBotReviewOnCommit', () => {
+  type Octokit = ReturnType<typeof import('@actions/github').getOctokit>;
+
+  function makeMockOctokit(reviews: Array<{ body?: string | null; state: string; commit_id?: string; user?: { login?: string; type: string } }>) {
+    return {
+      paginate: jest.fn().mockResolvedValue(reviews),
+      rest: {
+        pulls: {
+          listReviews: {},
+        },
+      },
+    } as unknown as Octokit;
+  }
+
+  it.each([
+    ['APPROVED'],
+    ['COMMENTED'],
+    ['CHANGES_REQUESTED'],
+  ])('returns true when a non-DISMISSED bot review (%s) exists on the head SHA', async (state) => {
+    const octokit = makeMockOctokit([
+      { body: `${BOT_MARKER}\nReview`, state, commit_id: 'sha-123', user: { login: BOT_LOGIN, type: 'Bot' } },
+    ]);
+
+    expect(await hasBotReviewOnCommit(octokit, 'owner', 'repo', 1, 'sha-123')).toBe(true);
+  });
+
+  it('returns false when the only bot review on the SHA is DISMISSED', async () => {
+    const octokit = makeMockOctokit([
+      { body: `${BOT_MARKER}\nReview`, state: 'DISMISSED', commit_id: 'sha-123', user: { login: BOT_LOGIN, type: 'Bot' } },
+    ]);
+
+    expect(await hasBotReviewOnCommit(octokit, 'owner', 'repo', 1, 'sha-123')).toBe(false);
+  });
+
+  it('returns false when the only bot review is on a different commit', async () => {
+    const octokit = makeMockOctokit([
+      { body: `${BOT_MARKER}\nReview`, state: 'COMMENTED', commit_id: 'sha-old', user: { login: BOT_LOGIN, type: 'Bot' } },
+    ]);
+
+    expect(await hasBotReviewOnCommit(octokit, 'owner', 'repo', 1, 'sha-new')).toBe(false);
+  });
+
+  it('returns false when there are no bot reviews', async () => {
+    const octokit = makeMockOctokit([]);
+
+    expect(await hasBotReviewOnCommit(octokit, 'owner', 'repo', 1, 'sha-123')).toBe(false);
+  });
+
+  it('returns false on API error (fail-open)', async () => {
+    const octokit = {
+      paginate: jest.fn().mockRejectedValue(new Error('API error')),
+      rest: { pulls: { listReviews: {} } },
+    } as unknown as Octokit;
+
+    expect(await hasBotReviewOnCommit(octokit, 'owner', 'repo', 1, 'sha-123')).toBe(false);
+  });
+
+  it('ignores non-bot reviewers', async () => {
+    const octokit = makeMockOctokit([
+      { state: 'APPROVED', commit_id: 'sha-123', user: { login: 'human', type: 'User' } },
+    ]);
+
+    expect(await hasBotReviewOnCommit(octokit, 'owner', 'repo', 1, 'sha-123')).toBe(false);
+  });
+
+  it('returns true when a prior bot review is on the SHA and a later DISMISSED one is too', async () => {
+    const octokit = makeMockOctokit([
+      { state: 'COMMENTED', commit_id: 'sha-123', user: { login: BOT_LOGIN, type: 'Bot' } },
+      { state: 'DISMISSED', commit_id: 'sha-123', user: { login: BOT_LOGIN, type: 'Bot' } },
+    ]);
+
+    expect(await hasBotReviewOnCommit(octokit, 'owner', 'repo', 1, 'sha-123')).toBe(true);
+  });
+
+  it('returns true when the matching review is the 501st (beyond the 500-cap), not among the first 500', async () => {
+    const old = Array.from({ length: 500 }, (_, i) => ({
+      state: 'COMMENTED',
+      commit_id: `sha-old-${i}`,
+      user: { login: BOT_LOGIN, type: 'Bot' },
+    }));
+    const newest = { state: 'COMMENTED', commit_id: 'sha-new', user: { login: BOT_LOGIN, type: 'Bot' } };
+    const octokit = makeMockOctokit([...old, newest]);
+
+    expect(await hasBotReviewOnCommit(octokit, 'owner', 'repo', 1, 'sha-new')).toBe(true);
+  });
+});
+
+describe('findBotReviewOnCommit', () => {
+  type Octokit = ReturnType<typeof import('@actions/github').getOctokit>;
+
+  function makeMockOctokit(reviews: Array<{ id?: number; body?: string | null; state: string; commit_id?: string; user?: { login?: string; type: string } }>) {
+    return {
+      paginate: jest.fn().mockResolvedValue(reviews),
+      rest: {
+        pulls: {
+          listReviews: {},
+        },
+      },
+    } as unknown as Octokit;
+  }
+
+  it('returns the last review for the target commit when reviews for multiple commits are interleaved', async () => {
+    const reviewA1 = { id: 1, state: 'COMMENTED', commit_id: 'sha-a', user: { login: BOT_LOGIN, type: 'Bot' } };
+    const reviewB = { id: 2, state: 'COMMENTED', commit_id: 'sha-b', user: { login: BOT_LOGIN, type: 'Bot' } };
+    const reviewA2 = { id: 3, state: 'CHANGES_REQUESTED', commit_id: 'sha-a', user: { login: BOT_LOGIN, type: 'Bot' } };
+    const octokit = makeMockOctokit([reviewA1, reviewB, reviewA2]);
+
+    const result = await findBotReviewOnCommit(octokit, 'owner', 'repo', 1, 'sha-a');
+    expect(result?.id).toBe(3);
+  });
+
+  it('returns undefined when only reviews for other commits exist', async () => {
+    const reviewB = { id: 2, state: 'APPROVED', commit_id: 'sha-b', user: { login: BOT_LOGIN, type: 'Bot' } };
+    const octokit = makeMockOctokit([reviewB]);
+
+    expect(await findBotReviewOnCommit(octokit, 'owner', 'repo', 1, 'sha-a')).toBeUndefined();
   });
 });
 
