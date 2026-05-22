@@ -46504,13 +46504,26 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
         const agentNames = result.agentNames;
         const allJudged = result.allJudgedFindings ?? [];
         const rawFindings = result.rawFindings ?? allJudged;
+        const failedAgentSet = new Set(result.failedAgents ?? []);
         const agentMetrics = agentNames.length > 0
-            ? agentNames.map(name => ({
-                name,
-                findingsRaw: rawFindings.filter(f => f.reviewers.includes(name)).length,
-                findingsKept: result.findings.filter(f => f.reviewers.includes(name)).length,
-                responseLength: result.agentResponseLengths?.get(name),
-            }))
+            ? agentNames.map(name => {
+                const usage = result.agentUsage?.get(name);
+                const durationMs = result.agentDurationMs?.get(name);
+                const retryCount = result.agentRetryCount?.get(name);
+                const failureReason = result.agentFailureReasons?.[name];
+                return {
+                    name,
+                    findingsRaw: rawFindings.filter(f => f.reviewers.includes(name)).length,
+                    findingsKept: result.findings.filter(f => f.reviewers.includes(name)).length,
+                    ...(durationMs != null && { durationMs }),
+                    status: failedAgentSet.has(name) ? 'failed' : 'success',
+                    responseLength: result.agentResponseLengths?.get(name),
+                    inputTokens: usage?.inputTokens ?? 0,
+                    outputTokens: usage?.outputTokens ?? 0,
+                    retryCount: retryCount ?? 0,
+                    ...(failureReason && { failureReason }),
+                };
+            })
             : undefined;
         // Judge calibration metrics
         const confidenceDistribution = { high: 0, medium: 0, low: 0 };
@@ -46575,6 +46588,42 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
             forceReview: !!forceReview,
             bypassReason: bypassHint ?? (forceReview ? 'force_review' : skipCap ? 'skip_cap' : 'within_cap'),
         };
+        const buildStage = (usage) => {
+            const inputTokens = usage?.inputTokens ?? 0;
+            const outputTokens = usage?.outputTokens ?? 0;
+            return { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens };
+        };
+        const reviewerUsage = result.agentUsage && result.agentUsage.size > 0
+            ? Array.from(result.agentUsage.values()).reduce((acc, u) => ({
+                inputTokens: acc.inputTokens + u.inputTokens,
+                outputTokens: acc.outputTokens + u.outputTokens,
+                cachedTokens: acc.cachedTokens + u.cachedTokens,
+                reasoningTokens: acc.reasoningTokens + u.reasoningTokens,
+            }), { inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 })
+            : undefined;
+        const stageUsages = [
+            ['planner', result.plannerUsage],
+            ['reviewer', reviewerUsage],
+            ['judge', result.judgeUsage],
+            ['dedup', result.dedupUsage],
+        ];
+        const perStage = {};
+        let totalInput = 0;
+        let totalOutput = 0;
+        for (const [name, u] of stageUsages) {
+            if (!u)
+                continue;
+            const stage = buildStage(u);
+            perStage[name] = stage;
+            totalInput += stage.inputTokens ?? 0;
+            totalOutput += stage.outputTokens ?? 0;
+        }
+        const usage = {
+            inputTokens: totalInput,
+            outputTokens: totalOutput,
+            totalTokens: totalInput + totalOutput,
+            ...(Object.keys(perStage).length > 0 && { perStage }),
+        };
         const findingEntries = result.findings.map(f => ({
             fingerprint: (0, recap_1.fingerprintFinding)(f.title, f.file ?? '', f.line || 0),
             severity: f.severity,
@@ -46636,6 +46685,7 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
                 severityChanges,
                 mergedDuplicates,
                 durationMs: judgeEndTime - reviewEndTime,
+                retryCount: result.judgeRetryCount ?? 0,
                 ...(verdictReason && { verdictReason }),
                 ...(defensiveHardeningCount > 0 && { defensiveHardeningCount }),
                 ...(ownProposalDemotedCount > 0 && { ownProposalDemotedCount }),
@@ -46659,6 +46709,7 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
             dedup: {
                 ...(result.staticDedupCount != null && { staticDropped: result.staticDedupCount }),
                 ...(result.llmDedupCount != null && { llmDropped: result.llmDedupCount }),
+                ...(result.dedupDurationMs != null && { durationMs: result.dedupDurationMs }),
             },
             memory: {
                 ...(memory && memory.patterns.length > 0 && { patternsApplied: memory.patterns.length }),
@@ -46670,7 +46721,7 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
                 severityCounts: severityMap,
                 entries: findingEntries,
             },
-            usage: {},
+            usage,
             verdict: result.verdict,
         };
         const flatAliases = (0, types_1.roundContextToFlatAliases)(context);
@@ -49326,6 +49377,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.AnthropicClient = exports.STALE_TIMEOUT_MS = exports.sanitizeLogOutput = void 0;
 exports.buildAnthropicAuth = buildAnthropicAuth;
+exports.extractAnthropicCLIUsage = extractAnthropicCLIUsage;
 exports.resetCLIInstallPromise = resetCLIInstallPromise;
 const child_process_1 = __nccwpck_require__(5317);
 const string_decoder_1 = __nccwpck_require__(3193);
@@ -49335,6 +49387,7 @@ const core = __importStar(__nccwpck_require__(7484));
 const cli_utils_1 = __nccwpck_require__(6988);
 Object.defineProperty(exports, "sanitizeLogOutput", ({ enumerable: true, get: function () { return cli_utils_1.sanitizeLogOutput; } }));
 Object.defineProperty(exports, "STALE_TIMEOUT_MS", ({ enumerable: true, get: function () { return cli_utils_1.STALE_TIMEOUT_MS; } }));
+const types_1 = __nccwpck_require__(2695);
 const execFileAsync = (0, util_1.promisify)(child_process_1.execFile);
 function buildAnthropicAuth(oauthToken, apiKey) {
     if (oauthToken)
@@ -49364,6 +49417,40 @@ function processJsonLine(line) {
         // Non-JSON line (e.g. verbose debug output) — skip silently
     }
     return { text: '', replace: false, resultEvent: null };
+}
+/**
+ * Coerce a candidate JSON value to a non-negative integer. The Claude CLI
+ * occasionally serialises token counts as strings on edge code paths, so accept
+ * both shapes and clamp anything non-numeric to zero.
+ */
+function readCount(value) {
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0)
+        return Math.trunc(value);
+    if (typeof value === 'string') {
+        const parsed = Number(value);
+        if (Number.isFinite(parsed) && parsed >= 0)
+            return Math.trunc(parsed);
+    }
+    return 0;
+}
+/**
+ * Lift the `usage` block from a Claude CLI `result` event into the canonical
+ * `LLMUsage` shape. Returns `ZERO_USAGE` when the event is missing or
+ * malformed so callers can always rely on numeric counters.
+ */
+function extractAnthropicCLIUsage(resultEvent) {
+    if (!resultEvent || typeof resultEvent !== 'object')
+        return { ...types_1.ZERO_USAGE };
+    const usage = resultEvent.usage;
+    if (!usage || typeof usage !== 'object')
+        return { ...types_1.ZERO_USAGE };
+    const u = usage;
+    return {
+        inputTokens: readCount(u.input_tokens),
+        outputTokens: readCount(u.output_tokens),
+        cachedTokens: readCount(u.cache_read_input_tokens),
+        reasoningTokens: 0,
+    };
 }
 let cliInstallPromise = null;
 function resetCLIInstallPromise() {
@@ -49623,7 +49710,11 @@ class AnthropicClient {
                 }
                 const content = output.trim();
                 core.debug((0, cli_utils_1.sanitizeLogOutput)(content.slice(0, 200)));
-                resolve({ content });
+                resolve({
+                    content,
+                    usage: extractAnthropicCLIUsage(lastResultEvent),
+                    latencyMs: Date.now() - startTime,
+                });
             });
             child.on('error', (error) => {
                 clearAllTimers();
@@ -49695,11 +49786,21 @@ class AnthropicClient {
         if (useThinking) {
             params.thinking = { type: 'enabled', budget_tokens: budgetMap[options.effort] };
         }
+        const startTime = Date.now();
         const response = await this.anthropic.messages.create(params);
         const textBlocks = response.content.filter((b) => b.type === 'text');
         const content = textBlocks.map((b) => 'text' in b ? b.text : '').join('\n');
         core.debug((0, cli_utils_1.sanitizeLogOutput)(content.slice(0, 200)));
-        return { content };
+        const sdkUsage = response.usage;
+        const usage = sdkUsage
+            ? {
+                inputTokens: readCount(sdkUsage.input_tokens),
+                outputTokens: readCount(sdkUsage.output_tokens),
+                cachedTokens: readCount(sdkUsage.cache_read_input_tokens),
+                reasoningTokens: 0,
+            }
+            : { ...types_1.ZERO_USAGE };
+        return { content, usage, latencyMs: Date.now() - startTime };
     }
 }
 exports.AnthropicClient = AnthropicClient;
@@ -49996,6 +50097,7 @@ const util_1 = __nccwpck_require__(9023);
 const generative_ai_1 = __nccwpck_require__(7656);
 const core = __importStar(__nccwpck_require__(7484));
 const cli_utils_1 = __nccwpck_require__(6988);
+const types_1 = __nccwpck_require__(2695);
 const execFileAsync = (0, util_1.promisify)(child_process_1.execFile);
 function resolveGeminiCredsDir() {
     const home = process.env.HOME;
@@ -50272,7 +50374,11 @@ class GeminiClient {
                 }
                 const content = output.trim();
                 core.debug((0, cli_utils_1.sanitizeLogOutput)(content.slice(0, 200)));
-                resolve({ content });
+                resolve({
+                    content,
+                    usage: { ...types_1.ZERO_USAGE },
+                    latencyMs: Date.now() - startTime,
+                });
             });
             child.on('error', (error) => {
                 clearAllTimers();
@@ -50340,6 +50446,7 @@ class GeminiClient {
             model: this.model,
             systemInstruction: systemPrompt,
         });
+        const startTime = Date.now();
         const response = await model.generateContent({
             contents: [{ role: 'user', parts: [{ text: userMessage }] }],
             generationConfig,
@@ -50352,7 +50459,17 @@ class GeminiClient {
             throw new Error(`Gemini API returned no usable content: ${err.message}`);
         }
         core.debug((0, cli_utils_1.sanitizeLogOutput)(content.slice(0, 200)));
-        return { content };
+        const usageMetadata = response.response.usageMetadata;
+        const readInt = (n) => typeof n === 'number' && Number.isFinite(n) && n >= 0 ? Math.trunc(n) : 0;
+        const usage = usageMetadata
+            ? {
+                inputTokens: readInt(usageMetadata.promptTokenCount),
+                outputTokens: readInt(usageMetadata.candidatesTokenCount),
+                cachedTokens: readInt(usageMetadata.cachedContentTokenCount),
+                reasoningTokens: readInt(usageMetadata.thoughtsTokenCount),
+            }
+            : { ...types_1.ZERO_USAGE };
+        return { content, usage, latencyMs: Date.now() - startTime };
     }
 }
 exports.GeminiClient = GeminiClient;
@@ -50366,7 +50483,7 @@ exports.GeminiClient = GeminiClient;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.parseModelSpec = exports.createLLMClient = exports.sanitizeLogOutput = exports.hasAnyProviderCredentials = exports.buildAuthForProvider = void 0;
+exports.ZERO_USAGE = exports.parseModelSpec = exports.createLLMClient = exports.sanitizeLogOutput = exports.hasAnyProviderCredentials = exports.buildAuthForProvider = void 0;
 var auth_1 = __nccwpck_require__(5714);
 Object.defineProperty(exports, "buildAuthForProvider", ({ enumerable: true, get: function () { return auth_1.buildAuthForProvider; } }));
 Object.defineProperty(exports, "hasAnyProviderCredentials", ({ enumerable: true, get: function () { return auth_1.hasAnyProviderCredentials; } }));
@@ -50376,6 +50493,8 @@ var factory_1 = __nccwpck_require__(8016);
 Object.defineProperty(exports, "createLLMClient", ({ enumerable: true, get: function () { return factory_1.createLLMClient; } }));
 var model_registry_1 = __nccwpck_require__(2395);
 Object.defineProperty(exports, "parseModelSpec", ({ enumerable: true, get: function () { return model_registry_1.parseModelSpec; } }));
+var types_1 = __nccwpck_require__(2695);
+Object.defineProperty(exports, "ZERO_USAGE", ({ enumerable: true, get: function () { return types_1.ZERO_USAGE; } }));
 
 
 /***/ }),
@@ -50478,6 +50597,7 @@ const util_1 = __nccwpck_require__(9023);
 const openai_1 = __importDefault(__nccwpck_require__(2583));
 const core = __importStar(__nccwpck_require__(7484));
 const cli_utils_1 = __nccwpck_require__(6988);
+const types_1 = __nccwpck_require__(2695);
 const execFileAsync = (0, util_1.promisify)(child_process_1.execFile);
 exports.STALE_TIMEOUT_MS = 90_000;
 function resolveCodexHome() {
@@ -50787,7 +50907,11 @@ class OpenAIClient {
                 }
                 const content = output.trim();
                 core.debug(sanitizeLogOutput(content.slice(0, 200)));
-                resolve({ content });
+                resolve({
+                    content,
+                    usage: { ...types_1.ZERO_USAGE },
+                    latencyMs: Date.now() - startTime,
+                });
             });
             child.on('error', (error) => {
                 clearAllTimers();
@@ -50854,13 +50978,41 @@ class OpenAIClient {
         if (reasoning && options?.effort) {
             params.reasoning_effort = resolveEffortTier(options.effort);
         }
+        const startTime = Date.now();
         const response = await this.openai.chat.completions.create(params);
         const content = response.choices?.[0]?.message?.content ?? '';
         core.debug(sanitizeLogOutput(content.slice(0, 200)));
-        return { content };
+        const sdkUsage = response.usage;
+        const readInt = (n) => typeof n === 'number' && Number.isFinite(n) && n >= 0 ? Math.trunc(n) : 0;
+        const usage = sdkUsage
+            ? {
+                inputTokens: readInt(sdkUsage.prompt_tokens),
+                outputTokens: readInt(sdkUsage.completion_tokens),
+                cachedTokens: readInt(sdkUsage.prompt_tokens_details?.cached_tokens),
+                reasoningTokens: readInt(sdkUsage.completion_tokens_details?.reasoning_tokens),
+            }
+            : { ...types_1.ZERO_USAGE };
+        return { content, usage, latencyMs: Date.now() - startTime };
     }
 }
 exports.OpenAIClient = OpenAIClient;
+
+
+/***/ }),
+
+/***/ 2695:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.ZERO_USAGE = void 0;
+exports.ZERO_USAGE = Object.freeze({
+    inputTokens: 0,
+    outputTokens: 0,
+    cachedTokens: 0,
+    reasoningTokens: 0,
+});
 
 
 /***/ }),
@@ -51571,6 +51723,7 @@ exports.truncateDiff = truncateDiff;
 exports.titlesMatch = titlesMatch;
 const core = __importStar(__nccwpck_require__(7484));
 const minimatch_1 = __nccwpck_require__(6507);
+const providers_1 = __nccwpck_require__(7486);
 const judge_1 = __nccwpck_require__(6436);
 const memory_1 = __nccwpck_require__(8820);
 const github_1 = __nccwpck_require__(9248);
@@ -51587,6 +51740,21 @@ class PlannerTimeoutError extends Error {
     }
 }
 const SUSPICIOUS_FAST_THRESHOLD_MS = 15_000;
+/** Sum two `LLMUsage` values component-wise. Used to fold per-pass/per-retry usage into per-agent and per-stage totals. */
+function addUsage(a, b) {
+    return {
+        inputTokens: a.inputTokens + b.inputTokens,
+        outputTokens: a.outputTokens + b.outputTokens,
+        cachedTokens: a.cachedTokens + b.cachedTokens,
+        reasoningTokens: a.reasoningTokens + b.reasoningTokens,
+    };
+}
+function accumulateAgentUsage(map, name, usage) {
+    map.set(name, addUsage(map.get(name) ?? { ...providers_1.ZERO_USAGE }, usage));
+}
+function accumulateAgentDuration(map, name, durationMs) {
+    map.set(name, (map.get(name) ?? 0) + durationMs);
+}
 // Standard reviewer pool used for teamSize >= 3. TRIVIAL_VERIFIER_AGENT is
 // intentionally excluded — it is only active for the teamSize=1 path and does
 // not participate in scoring, focusAreas validation, or planner prompts.
@@ -52085,6 +52253,26 @@ async function runPlanner(client, diff, prContext, customReviewers, priorRoundHi
         return null;
     }
 }
+/**
+ * Wraps an `LLMClient` so the caller can read the total usage and latest
+ * latency of every `sendMessage` call routed through the proxy. Used to
+ * capture per-stage telemetry (planner/judge/dedup) without changing each
+ * stage's return type, which would force every test mock to update.
+ */
+function wrapClientForUsage(client) {
+    const totals = { usage: { ...providers_1.ZERO_USAGE }, latencyMs: 0, calls: 0 };
+    const wrapped = {
+        sendMessage: async (sys, user, opts) => {
+            const response = await client.sendMessage(sys, user, opts);
+            totals.usage = addUsage(totals.usage, response.usage ?? providers_1.ZERO_USAGE);
+            totals.latencyMs += response.latencyMs ?? 0;
+            totals.calls += 1;
+            return response;
+        },
+        ...(client.warmupCLI ? { warmupCLI: client.warmupCLI.bind(client) } : {}),
+    };
+    return { client: wrapped, totals };
+}
 function heuristicFallback(diff, config, 
 /**
  * Agents from prior rounds to carry forward for continuity. Intentionally
@@ -52164,13 +52352,17 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
     const priorRoundAgents = collectPriorRoundAgents(priorRounds);
     let team;
     let plannerResult = null;
+    let plannerUsage;
+    let plannerDurationMs;
     if (clients.planner && config.review_level === 'auto') {
         if (onProgress) {
             onProgress({ phase: 'planning', rawFindingCount: 0 });
         }
         const plannerStart = Date.now();
-        plannerResult = await runPlanner(clients.planner, diff, prContext, config.reviewers, priorRoundHints);
-        const plannerDurationMs = Date.now() - plannerStart;
+        const plannerWrap = wrapClientForUsage(clients.planner);
+        plannerResult = await runPlanner(plannerWrap.client, diff, prContext, config.reviewers, priorRoundHints);
+        plannerUsage = plannerWrap.totals.usage;
+        plannerDurationMs = Date.now() - plannerStart;
         if (plannerResult) {
             if (plannerResult.agents && priorRoundHints.length > 0) {
                 applyEffortDowngrade(plannerResult.agents, priorRoundHints);
@@ -52215,6 +52407,10 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
     const allFindings = [];
     const failedAgents = [];
     const agentResponseLengths = new Map();
+    const agentUsage = new Map();
+    const agentDurationMs = new Map();
+    const agentRetryCount = new Map();
+    const agentFailureReasons = {};
     let completedCount = 0;
     let progressFindingCount = 0;
     if (multiPass) {
@@ -52229,12 +52425,16 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
             }));
             const passFindings = [];
             let totalResponseLength = 0;
+            let lastPassError;
             for (const result of passResults) {
                 if (result.status === 'fulfilled') {
                     passFindings.push(result.value.findings);
                     totalResponseLength += result.value.responseLength;
+                    accumulateAgentUsage(agentUsage, agent.name, result.value.usage);
+                    accumulateAgentDuration(agentDurationMs, agent.name, result.value.latencyMs);
                 }
                 else {
+                    lastPassError = result.reason;
                     core.warning(`${agent.name} pass failed: ${result.reason}`);
                 }
             }
@@ -52265,6 +52465,9 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
             }
             else {
                 failedAgents.push(agent.name);
+                if (lastPassError) {
+                    agentFailureReasons[agent.name] = String(lastPassError?.message ?? lastPassError);
+                }
                 core.warning(`${agent.name}: all passes failed`);
                 if (onProgress) {
                     onProgress({
@@ -52288,6 +52491,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
             const stillFailed = [];
             for (const agent of agentsToRetry) {
                 retryCountMap[agent.name] = (retryCountMap[agent.name] ?? 0) + 1;
+                agentRetryCount.set(agent.name, retryCountMap[agent.name]);
                 if (onProgress) {
                     onProgress({
                         phase: 'agent-complete',
@@ -52309,12 +52513,16 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
                 }));
                 const retryPassFindings = [];
                 let retryTotalResponseLength = 0;
+                let retryLastError;
                 for (const result of retryPassResults) {
                     if (result.status === 'fulfilled') {
                         retryPassFindings.push(result.value.findings);
                         retryTotalResponseLength += result.value.responseLength;
+                        accumulateAgentUsage(agentUsage, agent.name, result.value.usage);
+                        accumulateAgentDuration(agentDurationMs, agent.name, result.value.latencyMs);
                     }
                     else {
+                        retryLastError = result.reason;
                         core.warning(`${agent.name} retry pass failed: ${result.reason}`);
                     }
                 }
@@ -52324,6 +52532,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
                     core.info(`Multi-pass retry: ${agent.name} — ${retryPassFindings.length} passes, ${consistent.length} consistent findings`);
                     allFindings.push(...consistent);
                     agentResponseLengths.set(agent.name, retryTotalResponseLength);
+                    delete agentFailureReasons[agent.name];
                     completedCount++;
                     if (onProgress) {
                         onProgress({
@@ -52340,6 +52549,9 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
                 }
                 else {
                     stillFailed.push(agent.name);
+                    if (retryLastError) {
+                        agentFailureReasons[agent.name] = String(retryLastError?.message ?? retryLastError);
+                    }
                     core.warning(`${agent.name}: retry ${retryCountMap[agent.name]} failed (all passes)`);
                     if (onProgress) {
                         onProgress({
@@ -52369,6 +52581,8 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
                 .then(agentResult => {
                 completedCount++;
                 agentResponseLengths.set(agent.name, agentResult.responseLength);
+                accumulateAgentUsage(agentUsage, agent.name, agentResult.usage);
+                accumulateAgentDuration(agentDurationMs, agent.name, agentResult.latencyMs);
                 progressFindingCount += agentResult.findings.length;
                 const durationMs = Date.now() - startTime;
                 if (agentResult.findings.length === 0 && durationMs < SUSPICIOUS_FAST_THRESHOLD_MS) {
@@ -52414,6 +52628,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
             }
             else {
                 failedAgents.push(team.agents[i].name);
+                agentFailureReasons[team.agents[i].name] = String(result.reason?.message ?? result.reason);
                 core.warning(`${team.agents[i].name} failed: ${result.reason}`);
             }
         }
@@ -52424,6 +52639,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
             core.info(`Retry ${retry}/${types_1.MAX_AGENT_RETRIES}: retrying ${agentsToRetry.map(a => a.name).join(', ')}...`);
             for (const agent of agentsToRetry) {
                 retryCount[agent.name] = (retryCount[agent.name] ?? 0) + 1;
+                agentRetryCount.set(agent.name, retryCount[agent.name]);
                 if (onProgress) {
                     onProgress({
                         phase: 'agent-complete',
@@ -52441,17 +52657,20 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
                 const startTime = Date.now();
                 const retryEffort = agentEffortMap.get(agent.name) ?? defaultReviewerEffort;
                 return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: retryEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap })
-                    .then(agentResult => ({ agent, agentResult, durationMs: Date.now() - startTime }))
-                    .catch(() => ({ agent, agentResult: null, durationMs: Date.now() - startTime }));
+                    .then(agentResult => ({ agent, agentResult, durationMs: Date.now() - startTime, error: null }))
+                    .catch(error => ({ agent, agentResult: null, durationMs: Date.now() - startTime, error: error }));
             });
             const retryResults = await Promise.allSettled(retryPromises);
             const stillFailed = [];
             for (const settled of retryResults) {
-                const { agent, agentResult, durationMs } = settled.value;
+                const { agent, agentResult, durationMs, error } = settled.value;
                 if (agentResult !== null) {
                     // Remove from failed list, add findings
                     allFindings.push(...agentResult.findings);
                     agentResponseLengths.set(agent.name, agentResult.responseLength);
+                    accumulateAgentUsage(agentUsage, agent.name, agentResult.usage);
+                    accumulateAgentDuration(agentDurationMs, agent.name, agentResult.latencyMs);
+                    delete agentFailureReasons[agent.name];
                     progressFindingCount += agentResult.findings.length;
                     completedCount++;
                     core.info(`${agent.name}: retry ${retryCount[agent.name]} succeeded — ${agentResult.findings.length} findings`);
@@ -52470,6 +52689,9 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
                 }
                 else {
                     stillFailed.push(agent.name);
+                    if (error) {
+                        agentFailureReasons[agent.name] = String(error?.message ?? error);
+                    }
                     core.warning(`${agent.name}: retry ${retryCount[agent.name]} failed`);
                     if (onProgress) {
                         onProgress({
@@ -52507,6 +52729,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
                 reviewComplete: false,
                 agentNames: team.agents.map(a => a.name),
                 failedAgents,
+                ...(Object.keys(agentFailureReasons).length > 0 && { agentFailureReasons }),
             };
         }
         partialReview = true;
@@ -52528,7 +52751,10 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
     }
     let staticDedupCount = 0;
     let llmDedupCount = 0;
+    let dedupUsage;
+    let dedupDurationMs;
     if (previousFindings && previousFindings.length > 0 && findingsForJudge.length > 0) {
+        const dedupStart = Date.now();
         const { unique, duplicates } = (0, recap_1.deduplicateFindings)(findingsForJudge, previousFindings, memory?.suppressions);
         if (duplicates.length > 0) {
             core.info(`Static dedup removed ${duplicates.length} findings matching dismissed ones before judge`);
@@ -52536,13 +52762,16 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
         findingsForJudge = unique;
         staticDedupCount = duplicates.length;
         if (clients.dedup && findingsForJudge.length > 0) {
-            const llmResult = await (0, recap_1.llmDeduplicateFindings)(findingsForJudge, previousFindings, clients.dedup);
+            const dedupWrap = wrapClientForUsage(clients.dedup);
+            const llmResult = await (0, recap_1.llmDeduplicateFindings)(findingsForJudge, previousFindings, dedupWrap.client);
             if (llmResult.duplicates.length > 0) {
                 core.info(`LLM dedup removed ${llmResult.duplicates.length} findings matching dismissed ones before judge`);
             }
             findingsForJudge = llmResult.unique;
             llmDedupCount = llmResult.duplicates.length;
+            dedupUsage = dedupWrap.totals.usage;
         }
+        dedupDurationMs = Date.now() - dedupStart;
     }
     if (onProgress) {
         onProgress({
@@ -52572,6 +52801,9 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
     let judgeCrossRoundDemoted;
     let judgeInterRoundDiffEmptyOverride;
     let inPrSuppressedCount = 0;
+    let judgeUsage;
+    let judgeDurationMs;
+    let judgeRetryCount = 0;
     try {
         core.info(`Running judge on ${findingsForJudge.length} findings...`);
         const judgeInput = {
@@ -52593,7 +52825,12 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
             resolvedThreadIds,
             suppressResolvedThreads,
         };
-        const judgeResult = await (0, judge_1.runJudgeAgent)(clients.judge, config, judgeInput);
+        const judgeStart = Date.now();
+        const judgeWrap = wrapClientForUsage(clients.judge);
+        const judgeResult = await (0, judge_1.runJudgeAgent)(judgeWrap.client, config, judgeInput);
+        judgeDurationMs = Date.now() - judgeStart;
+        judgeUsage = judgeWrap.totals.usage;
+        judgeRetryCount = Math.max(0, judgeWrap.totals.calls - 1);
         judgeSummary = judgeResult.summary;
         allJudgedFindings = judgeResult.findings;
         judgeThreadEvaluations = judgeResult.threadEvaluations;
@@ -52675,6 +52912,17 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
         suppressionCount,
         ...(inPrSuppressedCount > 0 && { inPrSuppressedCount }),
         agentResponseLengths,
+        agentUsage,
+        agentDurationMs,
+        agentRetryCount,
+        ...(Object.keys(agentFailureReasons).length > 0 && { agentFailureReasons }),
+        ...(plannerUsage && { plannerUsage }),
+        ...(plannerDurationMs != null && { plannerDurationMs }),
+        ...(judgeUsage && { judgeUsage }),
+        ...(judgeDurationMs != null && { judgeDurationMs }),
+        judgeRetryCount,
+        ...(dedupUsage && { dedupUsage }),
+        ...(dedupDurationMs != null && { dedupDurationMs }),
         crossRoundSuppressed: judgeCrossRoundSuppressed,
         crossRoundDemoted: judgeCrossRoundDemoted,
         ...(judgeInterRoundDiffEmptyOverride && { interRoundDiffEmptyOverride: judgeInterRoundDiffEmptyOverride }),
@@ -52688,7 +52936,12 @@ async function runReviewerAgent(client, config, reviewer, rawDiff, repoContext, 
     const sendOptions = effort ? { effort } : undefined;
     const response = await client.sendMessage(systemPrompt, userMessage, sendOptions);
     const findings = parseFindings(response.content, reviewer.name);
-    return { findings, responseLength: response.content.length };
+    return {
+        findings,
+        responseLength: response.content.length,
+        usage: response.usage ?? { ...providers_1.ZERO_USAGE },
+        latencyMs: response.latencyMs ?? 0,
+    };
 }
 function buildReviewerSystemPrompt(reviewer, config, language, context, noiseLevel = 'low') {
     let prompt = `You are a code reviewer specializing in: ${reviewer.focus}
