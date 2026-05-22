@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 import { LLMClient } from './providers';
 import { ACTIONS_BOT_LOGIN, BOT_LOGIN, titleToSlug } from './github';
 import { matchesSuppression, Suppression } from './memory';
-import { AuthorReplyClass, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, migrateLegacyPrType, migrateLegacySeverity, RoundContext, SEVERITY_TOKEN_PATTERN } from './types';
+import { AuthorReplyClass, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, migrateLegacyPrType, migrateLegacySeverity, OpenThreadsState, RoundContext, SEVERITY_TOKEN_PATTERN } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -166,14 +166,6 @@ function inPrSuppressionReasonFor(
   ) return 'agree-reply';
   return undefined;
 }
-
-/**
- * Three-way state of the GitHub review-thread fetch. `fetched` covers both
- * "threads returned" and "fetched, none open" — the empty case is distinct
- * from `fetch_failed` so downstream code (and replay tooling) can tell a
- * silent GraphQL failure from a genuinely clean PR.
- */
-type OpenThreadsState = 'fetched' | 'empty' | 'fetch_failed';
 
 interface RecapState {
   previousFindings: PreviousFinding[];
