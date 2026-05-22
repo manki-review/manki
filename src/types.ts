@@ -48,6 +48,65 @@ export interface InterRoundDiffEmptyOverride {
   affectedThreadCount: number;
 }
 
+/**
+ * Three-way state of the GitHub review-thread fetch consumed by
+ * `determineVerdict`. `fetched` and `empty` distinguish "threads returned"
+ * from "fetched, none open"; `fetch_failed` means the GraphQL call errored
+ * and downstream code is operating on the conservative unknown-state
+ * fallback.
+ */
+export type OpenThreadsState = 'fetched' | 'empty' | 'fetch_failed';
+
+/**
+ * Three-way state of the inter-round diff consumed by the judge stage.
+ * `unknown` corresponds to a compare-API failure or the absence of any
+ * prior round; `empty` is a known-no-changes diff (force-pushed rebase to
+ * an identical tree); `changed` is a non-empty diff.
+ */
+export type InterRoundDiffState = 'unknown' | 'empty' | 'changed';
+
+/** One verdict-trace entry recording the identity of a finding or prior that triggered the verdict gate. */
+export interface VerdictTraceEntry {
+  file: string;
+  title: string;
+  /**
+   * Stable composite string identity (`file:lineStart:lineEnd:slug`). Mirrors
+   * the dedupe key used by `dedupePriorFindings` so the same logical issue
+   * has the same trace identity across rounds.
+   */
+  fingerprint: string;
+  /** Set only on `unresolvedPriors` entries: the GitHub review-thread id, when known. */
+  threadId?: string;
+  /** Set only on `unresolvedPriors` entries: the originating round number. */
+  round?: number;
+}
+
+/**
+ * Per-branch breakdown of which findings or priors triggered `determineVerdict`.
+ * Only the branch that fired needs to be non-empty; the other arrays stay empty.
+ * Recorded on `RoundJudge.verdictTrace` so replay tooling can answer "which N
+ * priors gated APPROVE on round 15?" without re-deriving from `findings.entries`.
+ */
+export interface VerdictTrace {
+  survivingBlockers: VerdictTraceEntry[];
+  novelWarnings: VerdictTraceEntry[];
+  unresolvedPriors: VerdictTraceEntry[];
+}
+
+/**
+ * Outcome counts for the post-judge thread-resolution loop in `runFullReview`.
+ * Records overrides applied at the loop site (after `runJudgeAgent` already
+ * synthesised `interRoundDiffEmptyOverride`): how many `addressed` evaluations
+ * the loop dropped, how many `not_addressed` evaluations were synthesised by
+ * the empty-diff override, and how many `uncertain` evaluations the judge
+ * emitted in the round.
+ */
+export interface ThreadResolutionOverrides {
+  addressedDropped: number;
+  notAddressedOverridden: number;
+  uncertainCount: number;
+}
+
 /** Shared shape for the prose extracted from a review-thread comment body. */
 export interface FindingMetadata {
   description?: string;
@@ -612,6 +671,28 @@ export interface RoundJudge {
    * blockers require GitHub thread resolution or explicit `authorReply: 'agree'`.
    */
   threadEvaluations?: ThreadEvaluation[];
+  /**
+   * Identity of every finding or prior that triggered the verdict gate
+   * (`determineVerdict`). Only the branch that fired is non-empty; the others
+   * stay as empty arrays. Without this, a round returning `prior_unaddressed`
+   * loses which N priors gated APPROVE — the `summary` text was the only
+   * signal distinguishing a 1-prior round from a 12-prior one.
+   */
+  verdictTrace?: VerdictTrace;
+  /** Three-way state of the open-thread fetch (`fetched` / `empty` / `fetch_failed`). Defaults to `fetched` when not recorded. */
+  openThreadsState?: OpenThreadsState;
+  /** Number of open review threads consumed by the verdict gate. */
+  openThreadCount?: number;
+  /** Number of thread ids in the resolved-threads set consumed by the verdict gate (`isResolved` previously-recorded threads). */
+  resolvedThreadIdCount?: number;
+  /** Three-way state of the inter-round diff (`unknown` / `empty` / `changed`). Defaults to `unknown` when not recorded. */
+  interRoundDiffState?: InterRoundDiffState;
+  /** Byte length of the inter-round diff before truncation. Absent when the diff was `undefined` (compare-API failure or no prior round). */
+  interRoundDiffBytes?: number;
+  /** True when the inter-round diff exceeded `MAX_INTER_ROUND_DIFF_CHARS` and was truncated before being passed to the judge prompt. */
+  interRoundDiffTruncated?: boolean;
+  /** Counts from the post-judge thread-resolution loop: `addressed` evaluations dropped, `not_addressed` evaluations synthesised by the empty-diff override, and `uncertain` evaluations emitted. */
+  threadResolutionOverrides?: ThreadResolutionOverrides;
 }
 
 export interface RoundDedup {
