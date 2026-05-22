@@ -218,6 +218,54 @@ describe('RoundContext', () => {
     expect(entry.tags).toBeUndefined();
     expect(entry.originalSeverity).toBeUndefined();
   });
+
+  it('carries verdict trace, thread-state, and inter-round diff fields on `RoundJudge`', () => {
+    const ctx: RoundContext = {
+      ...fullyPopulatedContext(),
+      judge: {
+        summary: 'prior unaddressed',
+        verdictReason: 'prior_unaddressed',
+        verdictTrace: {
+          survivingBlockers: [],
+          novelWarnings: [],
+          unresolvedPriors: [
+            { file: 'src/a.ts', title: 'Race condition', fingerprint: 'src/a.ts:10:10:race-condition', threadId: 'PRRT_a', round: 3 },
+          ],
+        },
+        openThreadsState: 'fetched',
+        openThreadCount: 1,
+        resolvedThreadIdCount: 0,
+        interRoundDiffState: 'changed',
+        interRoundDiffBytes: 24_000,
+        interRoundDiffTruncated: true,
+        threadResolutionOverrides: { addressedDropped: 1, notAddressedOverridden: 0, uncertainCount: 2 },
+      },
+    };
+    expect(ctx.judge.verdictTrace?.unresolvedPriors).toHaveLength(1);
+    expect(ctx.judge.verdictTrace?.unresolvedPriors[0].round).toBe(3);
+    expect(ctx.judge.openThreadsState).toBe('fetched');
+    expect(ctx.judge.openThreadCount).toBe(1);
+    expect(ctx.judge.resolvedThreadIdCount).toBe(0);
+    expect(ctx.judge.interRoundDiffState).toBe('changed');
+    expect(ctx.judge.interRoundDiffBytes).toBe(24_000);
+    expect(ctx.judge.interRoundDiffTruncated).toBe(true);
+    expect(ctx.judge.threadResolutionOverrides).toEqual({ addressedDropped: 1, notAddressedOverridden: 0, uncertainCount: 2 });
+  });
+
+  it('omits all new `RoundJudge` trace and state fields gracefully on minimal judge', () => {
+    const ctx: RoundContext = {
+      ...fullyPopulatedContext(),
+      judge: { summary: 'minimal' },
+    };
+    expect(ctx.judge.verdictTrace).toBeUndefined();
+    expect(ctx.judge.openThreadsState).toBeUndefined();
+    expect(ctx.judge.openThreadCount).toBeUndefined();
+    expect(ctx.judge.resolvedThreadIdCount).toBeUndefined();
+    expect(ctx.judge.interRoundDiffState).toBeUndefined();
+    expect(ctx.judge.interRoundDiffBytes).toBeUndefined();
+    expect(ctx.judge.interRoundDiffTruncated).toBeUndefined();
+    expect(ctx.judge.threadResolutionOverrides).toBeUndefined();
+  });
 });
 
 describe('roundContextToFlatAliases', () => {

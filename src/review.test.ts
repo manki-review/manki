@@ -25,7 +25,7 @@ import {
 } from './review';
 import * as core from '@actions/core';
 import { LinkedIssue, titleToSlug } from './github';
-import { Finding, RoundContext, OpenThread, ReviewerAgent, ReviewConfig, ParsedDiff, DiffFile, AgentPick, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES } from './types';
+import { Finding, FindingFingerprintEntry, RoundContext, OpenThread, ReviewerAgent, ReviewConfig, ParsedDiff, DiffFile, AgentPick, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES } from './types';
 import { fingerprintEntriesFromLegacy, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, roundContextFromLegacy } from './test-utils';
 import { runJudgeAgent, computeProvenanceMap } from './judge';
 import { applySuppressions } from './memory';
@@ -957,6 +957,104 @@ describe('determineVerdict', () => {
         expect(result.verdict).toBe('REQUEST_CHANGES');
         expect(result.verdictReason).toBe('prior_unaddressed');
       });
+    });
+  });
+
+  describe('verdictTrace', () => {
+    const priorWarning = (overrides: Partial<LegacyHandoverFindingFixture> = {}): LegacyHandoverFindingFixture => ({
+      fingerprint: { file: 'src/x.ts', lineStart: 10, lineEnd: 10, slug: 'old-issue' },
+      severity: 'warning',
+      title: 'Old issue',
+      authorReply: 'none',
+      threadId: 'T1',
+      ...overrides,
+    });
+    const openThreadFor = (id = 'T1'): OpenThread => ({
+      threadId: id,
+      title: 'Old issue',
+      file: 'src/x.ts',
+      line: 10,
+      severity: 'warning',
+    });
+
+    it('populates `survivingBlockers` on the `required_present` branch', () => {
+      const blocker: Finding = { severity: 'blocker', title: 'Stack overflow', file: 'src/a.ts', line: 7, description: 'd', reviewers: ['r'] };
+      const noise: Finding = { severity: 'warning', title: 'Other', file: 'src/b.ts', line: 1, description: 'd', reviewers: ['r'] };
+      const { verdictTrace } = determineVerdict([blocker, noise]);
+      expect(verdictTrace.survivingBlockers).toEqual([
+        {
+          file: 'src/a.ts',
+          title: 'Stack overflow',
+          fingerprint: `src/a.ts:7:7:${titleToSlug('Stack overflow')}`,
+        },
+      ]);
+      expect(verdictTrace.novelWarnings).toEqual([]);
+      expect(verdictTrace.unresolvedPriors).toEqual([]);
+    });
+
+    it('populates `novelWarnings` on the `novel_suggestion` branch', () => {
+      const novel: Finding = { severity: 'warning', title: 'Missing null check', file: 'src/handler.ts', line: 3, description: 'd', reviewers: ['r'] };
+      const { verdictTrace } = determineVerdict([novel], []);
+      expect(verdictTrace.novelWarnings).toEqual([
+        {
+          file: 'src/handler.ts',
+          title: 'Missing null check',
+          fingerprint: `src/handler.ts:3:3:${titleToSlug('Missing null check')}`,
+        },
+      ]);
+      expect(verdictTrace.survivingBlockers).toEqual([]);
+      expect(verdictTrace.unresolvedPriors).toEqual([]);
+    });
+
+    it('populates `unresolvedPriors` (with `threadId` and `round`) on the `prior_unaddressed` branch', () => {
+      const priors = fingerprintEntriesFromLegacy([priorWarning()]);
+      const lookup = new Map<FindingFingerprintEntry, number>([[priors[0], 4]]);
+      const { verdictTrace, verdictReason } = determineVerdict(
+        [{ severity: 'nitpick', title: 'tiny', file: 'src/y.ts', line: 1, description: 'd', reviewers: ['r'] }],
+        priors,
+        [openThreadFor('T1')],
+        undefined,
+        undefined,
+        lookup,
+      );
+      expect(verdictReason).toBe('prior_unaddressed');
+      expect(verdictTrace.unresolvedPriors).toEqual([
+        {
+          file: 'src/x.ts',
+          title: 'Old issue',
+          fingerprint: 'src/x.ts:10:10:old-issue',
+          threadId: 'T1',
+          round: 4,
+        },
+      ]);
+      expect(verdictTrace.survivingBlockers).toEqual([]);
+      expect(verdictTrace.novelWarnings).toEqual([]);
+    });
+
+    it('returns all-empty arrays on `only_nit_or_suggestion`', () => {
+      const { verdictTrace } = determineVerdict([
+        { severity: 'nitpick', title: 'Tiny thing', file: 'src/y.ts', line: 1, description: 'd', reviewers: ['r'] },
+      ]);
+      expect(verdictTrace).toEqual({ survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] });
+    });
+
+    it('omits `round` from the trace when no `priorRoundLookup` is provided', () => {
+      const priors = fingerprintEntriesFromLegacy([priorWarning()]);
+      const { verdictTrace } = determineVerdict(
+        [],
+        priors,
+        [openThreadFor('T1')],
+      );
+      expect(verdictTrace.unresolvedPriors).toHaveLength(1);
+      expect(verdictTrace.unresolvedPriors[0].round).toBeUndefined();
+      expect(verdictTrace.unresolvedPriors[0].threadId).toBe('T1');
+    });
+
+    it('omits `threadId` from the trace when the prior has none', () => {
+      const priors = fingerprintEntriesFromLegacy([priorWarning({ threadId: undefined })]);
+      const { verdictTrace } = determineVerdict([], priors, []);
+      expect(verdictTrace.unresolvedPriors).toHaveLength(1);
+      expect(verdictTrace.unresolvedPriors[0].threadId).toBeUndefined();
     });
   });
 });

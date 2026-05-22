@@ -179,7 +179,8 @@ interface RecapState {
   previousFindings: PreviousFinding[];
   recapContext: string;
   priorRounds: RoundContext[];
-  openThreadsState: OpenThreadsState;
+  /** Three-way state of the open-thread fetch. Optional so legacy callers and test mocks omitting the field still typecheck; treated as `'fetched'` downstream. */
+  openThreadsState?: OpenThreadsState;
 }
 
 const CONTEXT_BLOCK_DETAILS_RE = /<details>\s*<summary>Manki context<\/summary>\s*```json\s*([\s\S]*?)```\s*<\/details>/g;
