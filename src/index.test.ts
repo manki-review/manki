@@ -1255,6 +1255,27 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
     expect(skipCall[0].body).toContain('`cafe123`');
   });
 
+  it('handleReviewCommentInteraction bypasses the dedupe gate when the comment is a review request', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'claude_code_oauth_token' ? 'oauth-tok' : '',
+    );
+    jest.mocked(interaction.hasBotMention).mockReturnValue(true);
+    jest.mocked(interaction.isReviewRequest).mockReturnValue(true);
+
+    setContext({
+      eventName: 'pull_request_review_comment',
+      payload: {
+        action: 'created',
+        comment: { id: 99, body: '@manki review', user: { type: 'User' } },
+        pull_request: { base: { ref: 'main' }, number: 7, head: { sha: 'cafe123456789' } },
+      },
+    });
+
+    await handleReviewCommentInteraction();
+
+    expect(jest.mocked(ghUtils.hasBotReviewOnCommit)).not.toHaveBeenCalled();
+  });
+
   it('proceeds when there is no prior bot review on the head SHA (default mock returns false)', async () => {
     setContext({ eventName: 'pull_request', payload: prPayload });
     await handlePullRequest();
@@ -1279,7 +1300,7 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
     expect(skipBody).toContain('`abc1234`');
   });
 
-  it('already_reviewed skip comment wording differs from in_progress', async () => {
+  it('already_reviewed skip comment includes short SHA and correct wording', async () => {
     jest.mocked(ghUtils.hasBotReviewOnCommit).mockResolvedValueOnce(true);
 
     setContext({ eventName: 'pull_request', payload: prPayload });
@@ -1289,6 +1310,7 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
       .map((c: [{ body: string }]) => c[0].body)
       .find((body: string) => body.includes('Review skipped'));
     expect(skipBody).toContain('already been posted for this commit');
+    expect(skipBody).toContain('`abc1234`');
     expect(skipBody).not.toContain('currently in progress');
   });
 });
