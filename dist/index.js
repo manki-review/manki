@@ -45455,8 +45455,13 @@ async function markOwnProgressCommentCancelled(octokit, owner, repo, prNumber, r
 }
 /**
  * Shared scanner: returns all non-DISMISSED `manki-review[bot]` reviews on the
- * PR in API order (oldest first). Returns `[]` on any API failure so guards
- * fail open. Callers filter to the commit SHA they care about.
+ * PR in API order (oldest first). Callers filter to the commit SHA they care
+ * about.
+ *
+ * Fail-open contract: any API error returns `[]` rather than throwing, so
+ * callers such as `hasBotReviewOnCommit` and `isApprovedOnCommit` return
+ * `false` and allow the run to proceed. Callers must not wrap this function in
+ * a try/catch to handle errors — the catch is already here.
  */
 async function fetchBotReviews(octokit, owner, repo, prNumber) {
     try {
