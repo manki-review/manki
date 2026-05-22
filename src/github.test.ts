@@ -626,6 +626,41 @@ describe('formatContextBlock', () => {
     expect(result).not.toContain('`foo()`');
   });
 
+  it('surfaces threadEvaluations from the judge block in the hidden metadata payload', () => {
+    const ctx = makeContext({
+      judge: {
+        summary: 'Done.',
+        threadEvaluations: [
+          { threadId: 'PRRT_abc', status: 'addressed', reason: 'Fix landed in diff.' },
+          { threadId: 'PRRT_def', status: 'not_addressed', reason: 'Code still flags.' },
+        ],
+      },
+    });
+    const result = formatContextBlock(ctx, true);
+    const inner = result.slice('<!-- manki-context: '.length, -' -->'.length);
+    const parsed = JSON.parse(inner) as RoundContext;
+    expect(parsed.judge.threadEvaluations).toEqual([
+      { threadId: 'PRRT_abc', status: 'addressed', reason: 'Fix landed in diff.' },
+      { threadId: 'PRRT_def', status: 'not_addressed', reason: 'Code still flags.' },
+    ]);
+  });
+
+  it('omits threadEvaluations from the hidden metadata payload when the array is absent', () => {
+    const ctx = makeContext({ judge: { summary: 'Done.' } });
+    const result = formatContextBlock(ctx, true);
+    const inner = result.slice('<!-- manki-context: '.length, -' -->'.length);
+    const parsed = JSON.parse(inner) as RoundContext;
+    expect(parsed.judge.threadEvaluations).toBeUndefined();
+  });
+
+  it('omits threadEvaluations from the hidden metadata payload when the array is empty', () => {
+    const ctx = makeContext({ judge: { summary: 'Done.', threadEvaluations: [] } });
+    const result = formatContextBlock(ctx, true);
+    const inner = result.slice('<!-- manki-context: '.length, -' -->'.length);
+    const parsed = JSON.parse(inner) as RoundContext;
+    expect(parsed.judge.threadEvaluations).toBeUndefined();
+  });
+
 });
 
 describe('roundContextToFlatAliases', () => {

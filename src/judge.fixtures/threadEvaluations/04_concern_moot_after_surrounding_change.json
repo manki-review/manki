@@ -1,0 +1,16 @@
+{
+  "name": "concern-moot-after-surrounding-change",
+  "expectedStatus": "addressed",
+  "expectedReasonHint": "guard upstream",
+  "openThread": {
+    "threadId": "PRRT_concern_moot",
+    "title": "Possible division by zero",
+    "file": "src/stats.ts",
+    "line": 17,
+    "severity": "warning",
+    "description": "`computeAverage` divides by `samples.length` without checking that the array is non-empty. An empty input yields `NaN`.",
+    "suggestedFix": "Add `if (samples.length === 0) return 0;` before the division.",
+    "currentCode": "  14: export function computeAverage(samples: number[]): number {\n  15:   let sum = 0;\n  16:   for (const s of samples) sum += s;\n>>>17:   return sum / samples.length;\n  18: }\n"
+  },
+  "interRoundDiff": "diff --git a/src/stats.ts b/src/stats.ts\nindex 1111111..2222222 100644\n--- a/src/stats.ts\n+++ b/src/stats.ts\n@@ -1,5 +1,9 @@\n+export function computeAverageOrZero(samples: number[]): number {\n+  if (samples.length === 0) return 0;\n+  return computeAverage(samples);\n+}\n+\n export function computeAverage(samples: number[]): number {\ndiff --git a/src/report.ts b/src/report.ts\nindex 3333333..4444444 100644\n--- a/src/report.ts\n+++ b/src/report.ts\n@@ -10,7 +10,7 @@ export function renderReport(samples: number[]): string {\n-  const avg = computeAverage(samples);\n+  const avg = computeAverageOrZero(samples);\n   return `avg=${avg}`;\n }\n"
+}

@@ -1,0 +1,16 @@
+{
+  "name": "partial-fix-other-callsite",
+  "expectedStatus": "not_addressed",
+  "expectedReasonHint": "different callsite",
+  "openThread": {
+    "threadId": "PRRT_partial",
+    "title": "Unhandled promise rejection",
+    "file": "src/jobs/sync.ts",
+    "line": 30,
+    "severity": "warning",
+    "description": "The call to `runSync()` returns a promise that is not awaited and has no `.catch`. A rejection here is silently lost.",
+    "suggestedFix": "Either `await runSync()` or attach `.catch(err => logger.error(err))`.",
+    "currentCode": "  26: export function scheduleSync(): void {\n  27:   setInterval(() => {\n  28:     logger.debug('starting sync');\n  29:     metrics.increment('sync.start');\n>>>30:     runSync();\n  31:   }, INTERVAL_MS);\n  32: }\n"
+  },
+  "interRoundDiff": "diff --git a/src/jobs/backup.ts b/src/jobs/backup.ts\nindex 1111111..2222222 100644\n--- a/src/jobs/backup.ts\n+++ b/src/jobs/backup.ts\n@@ -10,7 +10,7 @@ export function scheduleBackup(): void {\n   setInterval(() => {\n     logger.debug('starting backup');\n-    runBackup();\n+    runBackup().catch(err => logger.error(err));\n   }, INTERVAL_MS);\n }\n"
+}

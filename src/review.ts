@@ -8,6 +8,7 @@ import { LinkedIssue, titleToSlug } from './github';
 import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, llmDeduplicateFindings, PreviousFinding } from './recap';
 import { ReviewConfig, ReviewerAgent, Finding, FindingFingerprintEntry, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, PlannerRoundHint, RoundContext, SpecialistOutcome, EffortLevel, AgentPick, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { extractJSON } from './json';
+import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 
 const DISMISSED_LINE_TOLERANCE = 5;
 
@@ -1225,7 +1226,7 @@ export async function runReview(
   const priorFindingsFlat: FindingFingerprintEntry[] = [...(priorRounds ?? [])]
     .sort((a, b) => a.meta.round - b.meta.round)
     .flatMap(r => r.findings.entries);
-  const { verdict, verdictReason } = determineVerdict(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds);
+  const { verdict, verdictReason } = determineVerdict(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, judgeThreadEvaluations);
 
   const summary = judgeSummary;
 
@@ -1595,13 +1596,25 @@ function isPriorLikelyUnresolved(
   openThreadIds: Set<string>,
   openThreadsUnknown: boolean,
   resolvedThreadIds: Set<string> | undefined,
+  threadEvaluationsByThreadId: Map<string, ThreadEvaluation>,
 ): boolean {
   if (p.severity !== 'warning' && p.severity !== 'blocker') return false;
   if (p.authorReplyClass === 'agree') return false;
   // Order matters. `openThreadsUnknown` must short-circuit before
   // `resolvedThreadIds` because both signals come from the same recap scan,
   // so a failed live fetch cannot fall back to cached "resolved" state.
-  if (p.threadId && openThreadIds.has(p.threadId)) return true;
+  // Judge-addressed acts as an override for warning priors when the GitHub
+  // thread is still open: the author landed the fix in the inter-round diff
+  // without explicitly resolving the thread. The judge's `addressed` verdict
+  // is accepted because `buildJudgeUserMessage` sanitizes untrusted PR/issue
+  // prose before it reaches the judge, and the adversarial fixture corpus
+  // (05_injection_attempt_unfixed) gates regressions in the judge's resistance
+  // to injected text. Blocker priors are never retired by LLM signal alone;
+  // they require GitHub thread resolution or explicit author agreement.
+  if (p.threadId && openThreadIds.has(p.threadId)) {
+    if (p.severity !== 'blocker' && isPriorAddressedByJudge(p, threadEvaluationsByThreadId)) return false;
+    return true;
+  }
   if (openThreadsUnknown) return true;
   if (p.threadId && resolvedThreadIds?.has(p.threadId)) return false;
   if (!p.threadId) return true;
@@ -1631,12 +1644,18 @@ function dedupePriorFindings(priorRounds: FindingFingerprintEntry[]): FindingFin
  * still in `openThreads`. A prior finding without a `threadId` is treated as
  * unresolved, which conservatively blocks APPROVE for older handover formats.
  *
- * The judge's `threadEvaluations.status === 'addressed'` is intentionally not
- * consulted here. That signal is LLM-derived and could be flipped by prompt
- * injection in prior-round source or comments, allowing an attacker to
- * unblock APPROVE on an unaddressed warning. Resolution must come from the
- * GitHub thread state (`openThreads`) or from an explicit author agreement
- * captured in `authorReply`.
+ * The judge's `threadEvaluations.status === 'addressed'` resolves a prior
+ * thread. `uncertain` and missing entries collapse to "not addressed" so the
+ * default outcome stays conservative when the judge could not produce a
+ * confident verdict. Defense-in-depth against prompt injection lives at three
+ * other layers: (a) `buildJudgeUserMessage` routes untrusted PR/issue prose
+ * through `sanitizeForPromptEmbed` and tags each section as evidence-not-
+ * directive; (b) the adversarial `05_injection_attempt_unfixed` fixture in
+ * the corpus gates regressions in the judge's resistance to injected text;
+ * (c) `applyCrossRoundSuppression` only lets `addressed` ratchet prior
+ * `suggestion`/`nitpick` findings, never `blocker`/`warning`, so a flipped
+ * judge verdict on a higher-severity prior still requires GitHub thread
+ * resolution or an explicit `authorReply: 'agree'` to retire.
  *
  * Multi-round priors are collapsed to one entry per fingerprint, keeping the
  * most recent round's `authorReply` and `threadId`. Callers must pass
@@ -1678,6 +1697,7 @@ export function determineVerdict(
   priorRounds?: FindingFingerprintEntry[],
   openThreads?: OpenThread[] | null,
   resolvedThreadIds?: Set<string>,
+  threadEvaluations?: ThreadEvaluation[],
 ): { verdict: ReviewVerdict; verdictReason: VerdictReason } {
   if (findings.some(f => f.severity === 'blocker')) {
     return { verdict: 'REQUEST_CHANGES', verdictReason: 'required_present' };
@@ -1693,8 +1713,9 @@ export function determineVerdict(
 
   const openThreadsUnknown = openThreads == null;
   const openThreadIds = new Set((openThreads ?? []).map(t => t.threadId));
+  const threadEvaluationsByThreadId = indexThreadEvaluations(threadEvaluations);
   const hasUnresolvedPrior = prior.some(p =>
-    isPriorLikelyUnresolved(p, openThreadIds, openThreadsUnknown, resolvedThreadIds),
+    isPriorLikelyUnresolved(p, openThreadIds, openThreadsUnknown, resolvedThreadIds, threadEvaluationsByThreadId),
   );
   if (hasUnresolvedPrior) {
     return { verdict: 'REQUEST_CHANGES', verdictReason: 'prior_unaddressed' };

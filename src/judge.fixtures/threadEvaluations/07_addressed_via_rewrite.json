@@ -1,0 +1,16 @@
+{
+  "name": "addressed-via-rewrite",
+  "expectedStatus": "addressed",
+  "expectedReasonHint": "alternate fix",
+  "openThread": {
+    "threadId": "PRRT_rewrite",
+    "title": "Hardcoded workspace path",
+    "file": "scripts/codecov-upload.sh",
+    "line": 6,
+    "severity": "suggestion",
+    "description": "The workspace root is hardcoded to `/Users/runner/work/project`. Use `git rev-parse --show-toplevel` instead.",
+    "suggestedFix": "Replace the hardcoded path with `WORKSPACE=$(git rev-parse --show-toplevel)`.",
+    "currentCode": "   3: set -euo pipefail\n   4:\n   5: # Determine workspace root\n>>>6: WORKSPACE=\"$GITHUB_WORKSPACE\"\n   7: cd \"$WORKSPACE\"\n   8: ./bin/codecov upload\n"
+  },
+  "interRoundDiff": "diff --git a/scripts/codecov-upload.sh b/scripts/codecov-upload.sh\nindex 1111111..2222222 100644\n--- a/scripts/codecov-upload.sh\n+++ b/scripts/codecov-upload.sh\n@@ -3,6 +3,6 @@\n set -euo pipefail\n\n # Determine workspace root\n-WORKSPACE=\"/Users/runner/work/project\"\n+WORKSPACE=\"$GITHUB_WORKSPACE\"\n cd \"$WORKSPACE\"\n ./bin/codecov upload\n"
+}

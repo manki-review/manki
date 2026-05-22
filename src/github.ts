@@ -522,11 +522,14 @@ function sanitizeHtmlCommentJson(json: string): string {
 }
 
 function formatContextBlock(context: RoundContext, hidden = false): string {
+  const ctx = context.judge.threadEvaluations?.length === 0
+    ? { ...context, judge: { ...context.judge, threadEvaluations: undefined } }
+    : context;
   if (hidden) {
-    const json = sanitizeHtmlCommentJson(JSON.stringify(context));
+    const json = sanitizeHtmlCommentJson(JSON.stringify(ctx));
     return `<!-- manki-context: ${json} -->`;
   }
-  const json = JSON.stringify(context, null, 2)
+  const json = JSON.stringify(ctx, null, 2)
     .replace(/`/g, '\\u0060');
   return `<details>\n<summary>Manki context</summary>\n\n\`\`\`json\n${json}\n\`\`\`\n</details>`;
 }

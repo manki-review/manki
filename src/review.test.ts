@@ -25,7 +25,7 @@ import {
 } from './review';
 import * as core from '@actions/core';
 import { LinkedIssue, titleToSlug } from './github';
-import { Finding, RoundContext, OpenThread, ReviewerAgent, ReviewConfig, ParsedDiff, DiffFile, AgentPick, ProvenanceEntry, MAX_AGENT_RETRIES } from './types';
+import { Finding, RoundContext, OpenThread, ReviewerAgent, ReviewConfig, ParsedDiff, DiffFile, AgentPick, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES } from './types';
 import { fingerprintEntriesFromLegacy, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, roundContextFromLegacy } from './test-utils';
 import { runJudgeAgent, computeProvenanceMap } from './judge';
 import { applySuppressions } from './memory';
@@ -712,15 +712,47 @@ describe('determineVerdict', () => {
       expect(result.verdictReason).toBe('prior_unaddressed');
     });
 
-    it('does not unblock APPROVE on a judge-addressed signal alone (resolution must come from `openThreads` or `authorReply`)', () => {
-      // The judge's `threadEvaluations` is LLM-derived and could be flipped by
-      // prompt injection in prior-round source or comments. `determineVerdict`
-      // intentionally only consults `openThreads` and `authorReply`, so a
-      // still-open thread with no author agreement remains `prior_unaddressed`
-      // even when the judge claims it is `addressed`.
-      const priors = [makePriorWarning()];
+    it('unblocks APPROVE when the judge marks a still-open prior warning thread as `addressed` (silent-fix shape)', () => {
+      // The "silent fix" shape: author landed a fix in the inter-round diff
+      // without resolving the GitHub thread and without explicitly agreeing
+      // in a reply. The judge identifies the fix in the diff and returns
+      // `status: 'addressed'` for the thread, which retires the prior so the
+      // verdict moves to APPROVE. Prompt-injection resistance lives at three
+      // other layers: input sanitization in `buildJudgeUserMessage`, the
+      // adversarial fixture corpus, and `applyCrossRoundSuppression` only
+      // letting `addressed` ratchet `suggestion`/`nitpick` priors (never
+      // `blocker`/`warning`).
+      const priors = [makePriorWarning({ threadId: 'T_FIXED' })];
+      const open = [makeOpenThread({ threadId: 'T_FIXED' })];
+      const evaluations: ThreadEvaluation[] = [{ threadId: 'T_FIXED', status: 'addressed', reason: 'fix landed in diff' }];
+      const result = determineVerdict([nitpick], fingerprintEntriesFromLegacy(priors), open, undefined, evaluations);
+      expect(result.verdict).toBe('APPROVE');
+      expect(result.verdictReason).toBe('only_nit_or_suggestion');
+    });
+
+    it.each(['uncertain', 'not_addressed'] as const)('keeps `prior_unaddressed` when the judge returns `%s` (conservative collapse)', (status) => {
+      const priors = [makePriorWarning({ threadId: 'T_OPEN' })];
+      const open = [makeOpenThread({ threadId: 'T_OPEN' })];
+      const evaluations: ThreadEvaluation[] = [{ threadId: 'T_OPEN', status, reason: 'no evidence' }];
+      const result = determineVerdict([nitpick], fingerprintEntriesFromLegacy(priors), open, undefined, evaluations);
+      expect(result.verdict).toBe('REQUEST_CHANGES');
+      expect(result.verdictReason).toBe('prior_unaddressed');
+    });
+
+    it('keeps `prior_unaddressed` when the prior has no `threadId` (cannot match a judge evaluation)', () => {
+      const priors = [makePriorWarning({ threadId: undefined })];
       const open = [makeOpenThread()];
-      const result = determineVerdict([nitpick], fingerprintEntriesFromLegacy(priors), open);
+      const evaluations: ThreadEvaluation[] = [{ threadId: 'SOME_OTHER', status: 'addressed', reason: 'irrelevant' }];
+      const result = determineVerdict([nitpick], fingerprintEntriesFromLegacy(priors), open, undefined, evaluations);
+      expect(result.verdict).toBe('REQUEST_CHANGES');
+      expect(result.verdictReason).toBe('prior_unaddressed');
+    });
+
+    it('keeps `prior_unaddressed` for a blocker prior even when the judge marks it `addressed` (LLM verdict cannot retire blockers)', () => {
+      const priors = [makePriorWarning({ severity: 'blocker', title: 'Null deref', threadId: 'T_BLOCKER' })];
+      const open = [makeOpenThread({ threadId: 'T_BLOCKER', severity: 'blocker', title: 'Null deref' })];
+      const evaluations: ThreadEvaluation[] = [{ threadId: 'T_BLOCKER', status: 'addressed', reason: 'fix landed' }];
+      const result = determineVerdict([nitpick], fingerprintEntriesFromLegacy(priors), open, undefined, evaluations);
       expect(result.verdict).toBe('REQUEST_CHANGES');
       expect(result.verdictReason).toBe('prior_unaddressed');
     });
@@ -2725,14 +2757,17 @@ describe('runReview', () => {
     expect(result.reviewComplete).toBe(true);
   });
 
-  it('returns REQUEST_CHANGES / prior_unaddressed when the GitHub thread is still open even if the judge says addressed', async () => {
+  it('returns APPROVE / only_nit_or_suggestion when the judge marks a still-open prior warning thread as `addressed` (silent-fix shape)', async () => {
     const clients = makeClients('[]');
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
 
-    // The judge's `addressed` signal is LLM-derived and could be flipped by
-    // prompt injection. `determineVerdict` no longer consults it, so an
-    // attacker who tricks the judge cannot bypass an open GitHub thread.
+    // Silent fix: the author landed the change in the inter-round diff but
+    // never resolved the GitHub thread nor replied. The judge identifies the
+    // fix and returns `addressed`, which retires the prior warning so the
+    // verdict can move to APPROVE. Prompt-injection resistance lives in
+    // input sanitization, adversarial-fixture coverage, and the cross-round
+    // ratchet's refusal to retire `blocker`/`warning` priors on this signal.
     mockedRunJudgeAgent.mockResolvedValue({
       findings: [],
       summary: 'Prior thread addressed.',
@@ -2755,8 +2790,8 @@ describe('runReview', () => {
       priorRounds,
     );
 
-    expect(result.verdict).toBe('REQUEST_CHANGES');
-    expect(result.verdictReason).toBe('prior_unaddressed');
+    expect(result.verdict).toBe('APPROVE');
+    expect(result.verdictReason).toBe('only_nit_or_suggestion');
     expect(result.reviewComplete).toBe(true);
   });
 

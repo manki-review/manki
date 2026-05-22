@@ -940,6 +940,7 @@ async function runFullReview(
         ...(inPrSuppressedCount > 0 && { inPrSuppressedCount }),
         ...(crossRoundSuppressed != null && crossRoundSuppressed > 0 && { crossRoundSuppressed }),
         ...(crossRoundDemoted != null && crossRoundDemoted > 0 && { crossRoundDemoted }),
+        ...(result.threadEvaluations && result.threadEvaluations.length > 0 && { threadEvaluations: result.threadEvaluations }),
       },
       dedup: {
         ...(result.staticDedupCount != null && { staticDropped: result.staticDedupCount }),
