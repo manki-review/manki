@@ -46504,7 +46504,6 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
         const agentNames = result.agentNames;
         const allJudged = result.allJudgedFindings ?? [];
         const rawFindings = result.rawFindings ?? allJudged;
-        const failedAgentSet = new Set(result.failedAgents ?? []);
         const agentMetrics = agentNames.length > 0
             ? agentNames.map(name => {
                 const usage = result.agentUsage?.get(name);
@@ -46516,7 +46515,7 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
                     findingsRaw: rawFindings.filter(f => f.reviewers.includes(name)).length,
                     findingsKept: result.findings.filter(f => f.reviewers.includes(name)).length,
                     ...(durationMs != null && { durationMs }),
-                    status: failedAgentSet.has(name) ? 'failed' : 'success',
+                    status: failureReason ? 'failed' : 'success',
                     responseLength: result.agentResponseLengths?.get(name),
                     inputTokens: usage?.inputTokens ?? 0,
                     outputTokens: usage?.outputTokens ?? 0,
@@ -51710,6 +51709,7 @@ exports.buildPlannerSystemPrompt = buildPlannerSystemPrompt;
 exports.sanitizePlannerField = sanitizePlannerField;
 exports.parseAgentPicks = parseAgentPicks;
 exports.runPlanner = runPlanner;
+exports.wrapClientForUsage = wrapClientForUsage;
 exports.collectPriorRoundAgents = collectPriorRoundAgents;
 exports.runReview = runReview;
 exports.buildReviewerSystemPrompt = buildReviewerSystemPrompt;
@@ -52466,7 +52466,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
             else {
                 failedAgents.push(agent.name);
                 if (lastPassError) {
-                    agentFailureReasons[agent.name] = String(lastPassError?.message ?? lastPassError);
+                    agentFailureReasons[agent.name] = (0, providers_1.sanitizeLogOutput)(String(lastPassError?.message ?? lastPassError)).slice(0, 500);
                 }
                 core.warning(`${agent.name}: all passes failed`);
                 if (onProgress) {
@@ -52550,7 +52550,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
                 else {
                     stillFailed.push(agent.name);
                     if (retryLastError) {
-                        agentFailureReasons[agent.name] = String(retryLastError?.message ?? retryLastError);
+                        agentFailureReasons[agent.name] = (0, providers_1.sanitizeLogOutput)(String(retryLastError?.message ?? retryLastError)).slice(0, 500);
                     }
                     core.warning(`${agent.name}: retry ${retryCountMap[agent.name]} failed (all passes)`);
                     if (onProgress) {
@@ -52628,7 +52628,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
             }
             else {
                 failedAgents.push(team.agents[i].name);
-                agentFailureReasons[team.agents[i].name] = String(result.reason?.message ?? result.reason);
+                agentFailureReasons[team.agents[i].name] = (0, providers_1.sanitizeLogOutput)(String(result.reason?.message ?? result.reason)).slice(0, 500);
                 core.warning(`${team.agents[i].name} failed: ${result.reason}`);
             }
         }
@@ -52690,7 +52690,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
                 else {
                     stillFailed.push(agent.name);
                     if (error) {
-                        agentFailureReasons[agent.name] = String(error?.message ?? error);
+                        agentFailureReasons[agent.name] = (0, providers_1.sanitizeLogOutput)(String(error?.message ?? error)).slice(0, 500);
                     }
                     core.warning(`${agent.name}: retry ${retryCount[agent.name]} failed`);
                     if (onProgress) {
