@@ -3,6 +3,7 @@ auto_approve: true
 
 exclude_paths:
   - "*.lock"
+  - "dist/**"
 
 instructions: |
   This is a TypeScript GitHub Action project.

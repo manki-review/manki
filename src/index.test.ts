@@ -75,6 +75,7 @@ jest.mock('./diff', () => ({
   parsePRDiff: jest.fn().mockReturnValue({ files: [], totalAdditions: 0, totalDeletions: 0 }),
   filterFiles: jest.fn().mockReturnValue([]),
   isDiffTooLarge: jest.fn().mockReturnValue(false),
+  countDiffLines: jest.fn().mockReturnValue(0),
 }));
 
 jest.mock('./interaction', () => ({

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The PR-size gate (`max_diff_lines`) now applies `exclude_paths` before counting, so generated artifacts the user has opted out of (`dist/**`, `*.lock`, `*.generated.*` by default) no longer trip the "PR too large for automated review" abort. Previously the raw diff was counted, which caused PRs that commit a build bundle (e.g., `dist/index.js` on `main`) to short-circuit review even when the reviewable source delta was small.
+
+### Changed
+
+- Switched to the canonical TypeScript-Action release model: the compiled `dist/` is committed to `main` so both floating (`manki-review/manki@v5`) and immutable exact-version (`manki-review/manki@v5.x.y`) pins resolve to a runnable action. Previously, `release.yml` committed `dist/` onto a one-off SHA and force-updated only the major tag, leaving exact-version tags pointing at source-only commits that failed with `File not found: dist/index.js` on the runner. A new [`check-dist.yml`](.github/workflows/check-dist.yml) workflow runs on every PR and `push` to `main`, rebuilds `dist/`, and fails if the committed copy drifts from a fresh build. `release.yml` is simplified to just force-update the floating major tag and publish the GitHub Release. `dist/**` is added to `.gitattributes` (`linguist-generated=true`, plus `-diff` on the minified entry) so the GitHub PR Files view collapses the bundle diff, and to `.manki.yml` / `codecov.yml` so manki self-reviews and coverage reports skip it. [`CONTRIBUTING.md`](CONTRIBUTING.md) documents the local `npm run build` step contributors must run before opening a PR. Historical `v5.0.0` and `v5.0.1` tags remain source-only and continue to require pinning to `@v5` ([#800](https://github.com/manki-review/manki/issues/800)).
+
 ## [5.1.1] - 2026-05-22
 
 ### Fixed

@@ -6,7 +6,7 @@ import { loadConfig, resolveModel } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
-import { parsePRDiff, filterFiles, isDiffTooLarge } from './diff';
+import { parsePRDiff, filterFiles, isDiffTooLarge, countDiffLines } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
@@ -491,11 +491,12 @@ async function runFullReview(
         };
     await updateProgressDashboard(octokit, owner, repo, progressCommentId, dashboard);
 
-    if (isDiffTooLarge(diff, config.max_diff_lines)) {
-      core.warning(`Diff too large (${diff.totalAdditions + diff.totalDeletions} lines > ${config.max_diff_lines} max)`);
+    if (isDiffTooLarge(diff, config.max_diff_lines, config.exclude_paths)) {
+      const reviewableLines = countDiffLines(filterFiles(diff.files, config.exclude_paths));
+      core.warning(`Diff too large (${reviewableLines} reviewable lines > ${config.max_diff_lines} max)`);
       const result = {
         verdict: 'COMMENT' as const,
-        summary: `**Manki** — This PR is too large for automated review (${diff.totalAdditions + diff.totalDeletions} lines). Consider splitting it up or request a manual review.`,
+        summary: `**Manki** — This PR is too large for automated review (${reviewableLines} lines). Consider splitting it up or request a manual review.`,
         findings: [],
         highlights: [],
         reviewComplete: true,

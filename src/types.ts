@@ -290,6 +290,8 @@ export interface DiffFile {
   oldPath?: string;
   changeType: 'added' | 'modified' | 'deleted' | 'renamed';
   hunks: DiffHunk[];
+  additions?: number;
+  deletions?: number;
 }
 
 export interface DiffHunk {

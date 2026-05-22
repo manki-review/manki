@@ -334,23 +334,83 @@ describe('findClosestDiffLine', () => {
 });
 
 describe('isDiffTooLarge', () => {
+  const makeFile = (path: string, additions: number, deletions: number): DiffFile => ({
+    path,
+    changeType: 'modified',
+    hunks: [],
+    additions,
+    deletions,
+  });
+
   it('returns false when diff is within limit', () => {
-    const diff = { files: [], totalAdditions: 100, totalDeletions: 50 };
+    const diff = {
+      files: [makeFile('src/main.ts', 100, 50)],
+      totalAdditions: 100,
+      totalDeletions: 50,
+    };
     expect(isDiffTooLarge(diff, 200)).toBe(false);
   });
 
   it('returns true when diff exceeds limit', () => {
-    const diff = { files: [], totalAdditions: 500, totalDeletions: 600 };
+    const diff = {
+      files: [makeFile('src/main.ts', 500, 600)],
+      totalAdditions: 500,
+      totalDeletions: 600,
+    };
     expect(isDiffTooLarge(diff, 1000)).toBe(true);
   });
 
   it('returns false when diff exactly equals limit', () => {
-    const diff = { files: [], totalAdditions: 50, totalDeletions: 50 };
+    const diff = {
+      files: [makeFile('src/main.ts', 50, 50)],
+      totalAdditions: 50,
+      totalDeletions: 50,
+    };
     expect(isDiffTooLarge(diff, 100)).toBe(false);
   });
 
   it('returns true for empty max', () => {
-    const diff = { files: [], totalAdditions: 1, totalDeletions: 0 };
+    const diff = {
+      files: [makeFile('src/main.ts', 1, 0)],
+      totalAdditions: 1,
+      totalDeletions: 0,
+    };
     expect(isDiffTooLarge(diff, 0)).toBe(true);
+  });
+
+  it('excludes files matching exclude_paths before counting', () => {
+    const diff = {
+      files: [
+        makeFile('dist/index.js', 80000, 0),
+        makeFile('src/main.ts', 50, 0),
+      ],
+      totalAdditions: 80050,
+      totalDeletions: 0,
+    };
+    expect(isDiffTooLarge(diff, 5000, ['dist/**'])).toBe(false);
+  });
+
+  it('triggers when included files alone exceed the limit', () => {
+    const diff = {
+      files: [
+        makeFile('dist/index.js', 80000, 0),
+        makeFile('src/main.ts', 6000, 0),
+      ],
+      totalAdditions: 86000,
+      totalDeletions: 0,
+    };
+    expect(isDiffTooLarge(diff, 5000, ['dist/**'])).toBe(true);
+  });
+
+  it('counts every file when no exclude pattern matches', () => {
+    const diff = {
+      files: [
+        makeFile('build/output.js', 80000, 0),
+        makeFile('src/main.ts', 50, 0),
+      ],
+      totalAdditions: 80050,
+      totalDeletions: 0,
+    };
+    expect(isDiffTooLarge(diff, 5000, ['dist/**'])).toBe(true);
   });
 });
