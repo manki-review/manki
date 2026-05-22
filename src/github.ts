@@ -673,6 +673,8 @@ export async function postReview(
     }
   }
 
+  const reviewedCommitFooter = buildReviewedCommitFooter(owner, repo, commitSha);
+
   const renderBody = (ctx: RoundContext | undefined): string => {
     let b = `${BOT_MARKERS}\n${sanitizeMarkdown(result.summary)}`;
     if (result.partialNote) {
@@ -717,7 +719,7 @@ export async function postReview(
       pull_number: prNumber,
       commit_id: commitSha,
       event,
-      body: truncateBody(body),
+      body: truncateBody(appendReviewedCommitFooter(body, reviewedCommitFooter)),
       comments: validComments,
     });
 
@@ -732,7 +734,10 @@ export async function postReview(
     if (isLineError && validComments.length > 0) {
       core.warning('Inline comments rejected by GitHub (invalid lines). Posting review without inline comments.');
       const allAsBody = validComments.map(c => `- ${c.body.split('\n')[0]}`).join('\n');
-      const lineErrFallbackBody = truncateBody(`${body}\n\n**Inline comments could not be posted:**\n${allAsBody}`);
+      const lineErrFallbackBody = truncateBody(appendReviewedCommitFooter(
+        `${body}\n\n**Inline comments could not be posted:**\n${allAsBody}`,
+        reviewedCommitFooter,
+      ));
 
       const { data: review } = await octokit.rest.pulls.createReview({
         owner,
@@ -761,7 +766,10 @@ export async function postReview(
       const firstLine = c.body.split('\n')[0];
       return `- ${firstLine} (\`${c.path}:${c.line}\`)`;
     }).join('\n');
-    const fallbackBody = truncateBody(`${body}\n\n**Findings (could not post inline):**\n${findingSummary}`);
+    const fallbackBody = truncateBody(appendReviewedCommitFooter(
+      `${body}\n\n**Findings (could not post inline):**\n${findingSummary}`,
+      reviewedCommitFooter,
+    ));
 
     const { data: review } = await octokit.rest.pulls.createReview({
       owner,
@@ -781,6 +789,15 @@ export async function postReview(
 function dynamicFence(content: string): string {
   const maxBt = (content.match(/`+/g) || []).reduce((max: number, s: string) => Math.max(max, s.length), 0);
   return '`'.repeat(Math.max(3, maxBt + 1));
+}
+
+function buildReviewedCommitFooter(owner: string, repo: string, commitSha: string): string {
+  const shortSha = commitSha.slice(0, 7);
+  return `Reviewed commit [\`${shortSha}\`](https://github.com/${owner}/${repo}/commit/${commitSha})`;
+}
+
+function appendReviewedCommitFooter(body: string, footer: string): string {
+  return `${body}\n\n${footer}`;
 }
 
 function truncateBody(text: string, maxLength: number = 60000): string {
