@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import { minimatch } from 'minimatch';
 
-import { LLMClient, LLMUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
+import { addUsage, LLMClient, LLMUsage, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
 import { runJudgeAgent, JudgeInput, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
@@ -22,16 +22,6 @@ class PlannerTimeoutError extends Error {
 }
 
 const SUSPICIOUS_FAST_THRESHOLD_MS = 15_000;
-
-/** Sum two `LLMUsage` values component-wise. Used to fold per-pass/per-retry usage into per-agent and per-stage totals. */
-function addUsage(a: LLMUsage, b: LLMUsage): LLMUsage {
-  return {
-    inputTokens: a.inputTokens + b.inputTokens,
-    outputTokens: a.outputTokens + b.outputTokens,
-    cachedTokens: a.cachedTokens + b.cachedTokens,
-    reasoningTokens: a.reasoningTokens + b.reasoningTokens,
-  };
-}
 
 function accumulateAgentUsage(map: Map<string, LLMUsage>, name: string, usage: LLMUsage): void {
   map.set(name, addUsage(map.get(name) ?? { ...ZERO_USAGE }, usage));
@@ -628,30 +618,6 @@ export async function runPlanner(
   }
 }
 
-/**
- * Wraps an `LLMClient` so the caller can read the total usage and latest
- * latency of every `sendMessage` call routed through the proxy. Used to
- * capture per-stage telemetry (planner/judge/dedup) without changing each
- * stage's return type, which would force every test mock to update.
- */
-export function wrapClientForUsage(client: LLMClient): {
-  client: LLMClient;
-  totals: { usage: LLMUsage; latencyMs: number; calls: number };
-} {
-  const totals = { usage: { ...ZERO_USAGE }, latencyMs: 0, calls: 0 };
-  const wrapped: LLMClient = {
-    sendMessage: async (sys, user, opts) => {
-      const response = await client.sendMessage(sys, user, opts);
-      totals.usage = addUsage(totals.usage, response.usage ?? ZERO_USAGE);
-      totals.latencyMs += response.latencyMs ?? 0;
-      totals.calls += 1;
-      return response;
-    },
-    ...(client.warmupCLI ? { warmupCLI: client.warmupCLI.bind(client) } : {}),
-  };
-  return { client: wrapped, totals };
-}
-
 function heuristicFallback(
   diff: ParsedDiff,
   config: ReviewConfig,
@@ -818,7 +784,7 @@ export async function runReview(
   const agentUsage = new Map<string, LLMUsage>();
   const agentDurationMs = new Map<string, number>();
   const agentRetryCount = new Map<string, number>();
-  const agentFailureReasons: Record<string, string> = {};
+  const agentFailureReasons = new Map<string, string>();
 
   let completedCount = 0;
   let progressFindingCount = 0;
@@ -880,7 +846,7 @@ export async function runReview(
         }
       } else {
         failedAgents.push(agent.name);
-        agentFailureReasons[agent.name] = sanitizeLogOutput(String(((lastPassError as Error)?.message ?? lastPassError) || 'unknown failure')).slice(0, 500);
+        agentFailureReasons.set(agent.name, sanitizeLogOutput(String(((lastPassError as Error)?.message ?? lastPassError) || 'unknown failure')).slice(0, 500));
         core.warning(`${agent.name}: all passes failed`);
 
         if (onProgress) {
@@ -953,7 +919,7 @@ export async function runReview(
           core.info(`Multi-pass retry: ${agent.name} — ${retryPassFindings.length} passes, ${consistent.length} consistent findings`);
           allFindings.push(...consistent);
           agentResponseLengths.set(agent.name, retryTotalResponseLength);
-          delete agentFailureReasons[agent.name];
+          agentFailureReasons.delete(agent.name);
           completedCount++;
 
           if (onProgress) {
@@ -970,7 +936,7 @@ export async function runReview(
           }
         } else {
           stillFailed.push(agent.name);
-          agentFailureReasons[agent.name] = sanitizeLogOutput(String(((retryLastError as Error)?.message ?? retryLastError) || 'unknown failure')).slice(0, 500);
+          agentFailureReasons.set(agent.name, sanitizeLogOutput(String(((retryLastError as Error)?.message ?? retryLastError) || 'unknown failure')).slice(0, 500));
           core.warning(`${agent.name}: retry ${retryCountMap[agent.name]} failed (all passes)`);
           if (onProgress) {
             onProgress({
@@ -1050,7 +1016,7 @@ export async function runReview(
         core.info(`${team.agents[i].name}: ${result.value.length} findings`);
       } else {
         failedAgents.push(team.agents[i].name);
-        agentFailureReasons[team.agents[i].name] = sanitizeLogOutput(String((result.reason as Error)?.message ?? result.reason)).slice(0, 500);
+        agentFailureReasons.set(team.agents[i].name, sanitizeLogOutput(String(((result.reason as Error)?.message ?? result.reason) || 'unknown failure')).slice(0, 500));
         core.warning(`${team.agents[i].name} failed: ${result.reason}`);
       }
     }
@@ -1097,7 +1063,7 @@ export async function runReview(
           agentResponseLengths.set(agent.name, agentResult.responseLength);
           accumulateAgentUsage(agentUsage, agent.name, agentResult.usage);
           accumulateAgentDuration(agentDurationMs, agent.name, agentResult.latencyMs);
-          delete agentFailureReasons[agent.name];
+          agentFailureReasons.delete(agent.name);
           progressFindingCount += agentResult.findings.length;
           completedCount++;
           core.info(`${agent.name}: retry ${retryCount[agent.name]} succeeded — ${agentResult.findings.length} findings`);
@@ -1115,7 +1081,7 @@ export async function runReview(
           }
         } else {
           stillFailed.push(agent.name);
-          agentFailureReasons[agent.name] = sanitizeLogOutput(String(((error as Error)?.message ?? error) || 'unknown failure')).slice(0, 500);
+          agentFailureReasons.set(agent.name, sanitizeLogOutput(String(((error as Error)?.message ?? error) || 'unknown failure')).slice(0, 500));
           core.warning(`${agent.name}: retry ${retryCount[agent.name]} failed`);
           if (onProgress) {
             onProgress({
@@ -1157,7 +1123,7 @@ export async function runReview(
         reviewComplete: false,
         agentNames: team.agents.map(a => a.name),
         failedAgents,
-        ...(Object.keys(agentFailureReasons).length > 0 && { agentFailureReasons }),
+        ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
       };
     }
 
@@ -1186,7 +1152,6 @@ export async function runReview(
   let dedupUsage: LLMUsage | undefined;
   let dedupDurationMs: number | undefined;
   if (previousFindings && previousFindings.length > 0 && findingsForJudge.length > 0) {
-    const dedupStart = Date.now();
     const { unique, duplicates } = deduplicateFindings(findingsForJudge, previousFindings, memory?.suppressions);
     if (duplicates.length > 0) {
       core.info(`Static dedup removed ${duplicates.length} findings matching dismissed ones before judge`);
@@ -1195,6 +1160,7 @@ export async function runReview(
     staticDedupCount = duplicates.length;
 
     if (clients.dedup && findingsForJudge.length > 0) {
+      const dedupStart = Date.now();
       const dedupWrap = wrapClientForUsage(clients.dedup);
       const llmResult = await llmDeduplicateFindings(findingsForJudge, previousFindings, dedupWrap.client);
       if (llmResult.duplicates.length > 0) {
@@ -1203,8 +1169,8 @@ export async function runReview(
       findingsForJudge = llmResult.unique;
       llmDedupCount = llmResult.duplicates.length;
       dedupUsage = dedupWrap.totals.usage;
+      dedupDurationMs = Date.now() - dedupStart;
     }
-    dedupDurationMs = Date.now() - dedupStart;
   }
 
   if (onProgress) {
@@ -1354,7 +1320,7 @@ export async function runReview(
     agentUsage,
     agentDurationMs,
     agentRetryCount,
-    ...(Object.keys(agentFailureReasons).length > 0 && { agentFailureReasons }),
+    ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
     ...(plannerUsage && { plannerUsage }),
     ...(plannerDurationMs != null && { plannerDurationMs }),
     ...(judgeUsage && { judgeUsage }),
