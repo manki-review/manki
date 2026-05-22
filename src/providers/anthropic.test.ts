@@ -1,5 +1,6 @@
 import { spawn } from 'child_process';
 import Anthropic from '@anthropic-ai/sdk';
+import * as core from '@actions/core';
 
 import { AnthropicClient, buildAnthropicAuth, resetCLIInstallPromise, sanitizeLogOutput, STALE_TIMEOUT_MS } from './anthropic';
 
@@ -253,11 +254,60 @@ describe('sendViaOAuth — error paths', () => {
     mockSpawn.mockReturnValue(proc as unknown as ReturnType<typeof spawn>);
   }
 
-  it('rejects on non-zero exit code', async () => {
+  it('rejects on non-zero exit code with rich diagnostics', async () => {
     setupSpawnMock({ exitCode: 1, stderr: 'something went wrong' });
     const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
 
-    await expect(client.sendMessage('sys', 'user')).rejects.toThrow('Claude CLI invocation failed');
+    await expect(client.sendMessage('sys', 'user', { effort: 'high' })).rejects.toThrow(
+      /Claude CLI invocation failed.*model=claude-opus-4-6.*effort=high.*promptChars=\d+.*elapsedMs=\d+.*stderrChars=\d+/s,
+    );
+  });
+
+  it('surfaces stdout tail, <empty stderr>, and parsed result event when exit-1 has no stderr', async () => {
+    const streamWithResultError = [
+      JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'partial thinking emitted right before exit' } }),
+      JSON.stringify({ type: 'result', subtype: 'error_during_execution', is_error: true, result: 'Maximum tokens exceeded' }),
+      '',
+    ].join('\n');
+    setupSpawnMock({
+      exitCode: 1,
+      stderr: '',
+      stdout: streamWithResultError,
+      rawStdout: true,
+    });
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
+
+    await expect(client.sendMessage('sys', 'user')).rejects.toThrow(/Claude CLI invocation failed/);
+    const allWarnings = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(allWarnings).toContain('Claude CLI failed');
+    expect(allWarnings).toContain('<empty stderr>');
+    expect(allWarnings).toContain('stderrChars=0');
+    expect(allWarnings).toContain('is_error=true');
+    expect(allWarnings).toContain('subtype=error_during_execution');
+    expect(allWarnings).toContain('Maximum tokens exceeded');
+    warnSpy.mockRestore();
+  });
+
+  it('records <no result event> when exit-1 stream emits only text deltas with no terminal result', async () => {
+    const streamWithoutResult = [
+      JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'streamed text but no terminal event' } }),
+      '',
+    ].join('\n');
+    setupSpawnMock({
+      exitCode: 1,
+      stderr: '',
+      stdout: streamWithoutResult,
+      rawStdout: true,
+    });
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
+
+    await expect(client.sendMessage('sys', 'user')).rejects.toThrow(/Claude CLI invocation failed/);
+    const allWarnings = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(allWarnings).toContain('<no result event>');
+    expect(allWarnings).not.toContain('is_error=');
+    warnSpy.mockRestore();
   });
 
   it('rejects on spawn error', async () => {

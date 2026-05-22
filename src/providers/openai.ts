@@ -7,7 +7,7 @@ import OpenAI from 'openai';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import * as core from '@actions/core';
 
-import { extractCliErrorSnippet, seedAuthFile } from './cli-utils';
+import { buildExitDiagnostics, extractCliErrorSnippet, seedAuthFile } from './cli-utils';
 import { LLMClient, LLMResponse, OpenAIAuth, SendMessageOptions } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -166,6 +166,8 @@ export class OpenAIClient implements LLMClient {
     const fullPrompt = `${systemPrompt}\n\n---\n\n${userMessage}`;
     const codexHome = resolveCodexHome();
     const oauthToken = this.auth.kind === 'oauth' ? this.auth.token : undefined;
+    const startTime = Date.now();
+    const model = this.model;
     if (oauthToken) {
       seedAuthFile({
         secret: oauthToken,
@@ -314,8 +316,16 @@ export class OpenAIClient implements LLMClient {
           return;
         }
         if (code !== 0) {
-          const sanitizedStderr = extractCliErrorSnippet(stderr);
-          const msg = `exit ${code}${signal ? `, signal ${signal}` : ''}: ${sanitizedStderr}`;
+          const msg = buildExitDiagnostics({
+            exitCode: code,
+            signal,
+            stderr,
+            lastStdoutChunk,
+            model,
+            effort: options?.effort,
+            promptChars: fullPrompt.length,
+            elapsedMs: Date.now() - startTime,
+          });
           core.warning(`Codex CLI failed (${msg})`);
           reject(new Error(`Codex CLI invocation failed (${msg})`));
           return;

@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { buildTimeoutDiagnostics, extractCliErrorSnippet, sanitizeLogOutput, seedAuthFile } from './cli-utils';
+import { buildExitDiagnostics, buildTimeoutDiagnostics, extractCliErrorSnippet, sanitizeLogOutput, seedAuthFile } from './cli-utils';
 
 function encode(json: unknown): string {
   return Buffer.from(JSON.stringify(json), 'utf8').toString('base64');
@@ -83,6 +83,116 @@ describe('buildTimeoutDiagnostics', () => {
     expect(result).not.toContain('::error');
     expect(result).not.toContain('::warning');
     expect(result).toContain('[redacted-workflow-cmd]');
+  });
+});
+
+describe('buildExitDiagnostics', () => {
+  const base = {
+    exitCode: 1,
+    signal: null,
+    stderr: 'boom',
+    lastStdoutChunk: 'last bits',
+    model: 'claude-opus-4-6',
+    promptChars: 12345,
+    elapsedMs: 4567,
+  } as const;
+
+  it('includes exit code, model, promptChars, elapsedMs, and stderrChars', () => {
+    const result = buildExitDiagnostics({ ...base });
+    expect(result).toContain('exit 1');
+    expect(result).toContain('model=claude-opus-4-6');
+    expect(result).toContain('promptChars=12345');
+    expect(result).toContain('elapsedMs=4567');
+    expect(result).toContain('stderrChars=4');
+    expect(result).toContain('lastStdout=last bits');
+  });
+
+  it('includes effort when set and omits when unset', () => {
+    expect(buildExitDiagnostics({ ...base, effort: 'high' })).toContain('effort=high');
+    expect(buildExitDiagnostics({ ...base })).not.toContain('effort=');
+  });
+
+  it('surfaces empty stderr explicitly so silent failures are not blank', () => {
+    const result = buildExitDiagnostics({ ...base, stderr: '', lastStdoutChunk: 'tail-of-stdout' });
+    expect(result).toContain('<empty stderr>');
+    expect(result).toContain('stderrChars=0');
+    expect(result).toContain('lastStdout=tail-of-stdout');
+  });
+
+  it('marks lastStdout as <none> when no stdout was captured', () => {
+    const result = buildExitDiagnostics({ ...base, lastStdoutChunk: '' });
+    expect(result).toContain('lastStdout=<none>');
+  });
+
+  it('includes the signal when the process was killed', () => {
+    const result = buildExitDiagnostics({ ...base, exitCode: null, signal: 'SIGTERM' });
+    expect(result).toContain('exit null');
+    expect(result).toContain('signal SIGTERM');
+  });
+
+  it('caps the stdout tail at 500 chars and sanitizes workflow commands in it', () => {
+    // The ::warning token sits inside the last 500 chars so sanitizeLogOutput — not the slice — removes it.
+    // longTail is 698 chars: 200 x's prefix (gets truncated) + 498 chars containing the warning token.
+    const tail = 'z'.repeat(200) + '\n::warning::leaked' + 'z'.repeat(280);
+    const longTail = 'x'.repeat(200) + tail;
+    const result = buildExitDiagnostics({ ...base, lastStdoutChunk: longTail });
+    expect(result).not.toContain('::warning');
+    expect(result).toContain('[redacted-workflow-cmd]');
+    expect(result).not.toContain('x'.repeat(10));
+  });
+
+  it('omits the result.* field entirely when resultEvent is not passed', () => {
+    const result = buildExitDiagnostics({ ...base });
+    expect(result).not.toContain('result.');
+    expect(result).not.toContain('<no result event>');
+  });
+
+  it('renders <no result event> when resultEvent is explicitly null', () => {
+    const result = buildExitDiagnostics({ ...base, resultEvent: null });
+    expect(result).toContain('<no result event>');
+  });
+
+  it('summarizes a structured result event with is_error, subtype, and result text', () => {
+    const result = buildExitDiagnostics({
+      ...base,
+      resultEvent: {
+        type: 'result',
+        subtype: 'error_during_execution',
+        is_error: true,
+        result: 'Maximum tokens exceeded',
+      },
+    });
+    expect(result).toContain('result.is_error=true');
+    expect(result).toContain('result.subtype=error_during_execution');
+    expect(result).toContain('Maximum tokens exceeded');
+  });
+
+  it('renders success result events as is_error=false subtype=success', () => {
+    const result = buildExitDiagnostics({
+      ...base,
+      resultEvent: { type: 'result', subtype: 'success', is_error: false, result: 'all good' },
+    });
+    expect(result).toContain('result.is_error=false');
+    expect(result).toContain('result.subtype=success');
+  });
+
+  it('falls back to error.message when result and message are absent', () => {
+    const result = buildExitDiagnostics({
+      ...base,
+      resultEvent: { type: 'result', is_error: true, error: { message: 'rate limited' } },
+    });
+    expect(result).toContain('rate limited');
+  });
+
+  it('caps the result text at 300 chars and sanitizes workflow commands inside it', () => {
+    const long = '::warning::leaked\n' + 'q'.repeat(400);
+    const result = buildExitDiagnostics({
+      ...base,
+      resultEvent: { type: 'result', is_error: true, result: long },
+    });
+    expect(result).not.toContain('::warning');
+    expect(result).not.toContain('q'.repeat(301));
+    expect(result).toContain('q'.repeat(200));
   });
 });
 
