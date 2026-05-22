@@ -16,4 +16,4 @@ export type {
   ProviderName,
   SendMessageOptions,
 } from './types';
-export { addUsage, readCount, ZERO_USAGE } from './types';
+export { addUsage, ZERO_USAGE } from './types';
