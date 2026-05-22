@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - The PR-size gate (`max_diff_lines`) now applies `exclude_paths` before counting, so generated artifacts the user has opted out of (`dist/**`, `*.lock`, `*.generated.*` by default) no longer trip the "PR too large for automated review" abort. Previously the raw diff was counted, which caused PRs that commit a build bundle (e.g., `dist/index.js` on `main`) to short-circuit review even when the reviewable source delta was small.
+- The judge now enforces one `threadEvaluations` entry per open review thread. Missing entries trigger a single retry with a stricter reminder, any still-missing entries after retry are synthesized as `uncertain` with a `core.warning`, and the system prompt pins an explicit `You MUST return exactly N entries` constraint. When the verdict gate fires on `prior_unaddressed`, the PR comment body now lists each blocking thread inline with file, line, original severity, and a direct GitHub link instead of silently blocking. Closes [#808](https://github.com/manki-review/manki/issues/808).
 
 ### Changed
 
