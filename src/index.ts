@@ -1,5 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
+import * as fs from 'fs';
+import * as path from 'path';
 
 import { createAuthenticatedOctokit, getMemoryToken } from './auth';
 import { loadConfig, resolveModel } from './config';
@@ -461,13 +463,21 @@ async function runFullReview(
   let dashboardFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
   try {
-    let configContent: string | null = null;
-    if (configPathInput) {
-      configContent = await fetchConfigFile(octokit, owner, repo, baseRef, configPathInput);
+    // Read `.manki.yml` from the local checkout so a PR that modifies its own
+    // config (e.g., extending `exclude_paths`) takes effect on the same PR.
+    // `process.cwd()` is the PR tree because the action runs as a local
+    // composite via `./` in the consumer workflow.
+    const configRelPath = configPathInput || '.manki.yml';
+    const configAbsPath = path.isAbsolute(configRelPath)
+      ? configRelPath
+      : path.join(process.cwd(), configRelPath);
+    let configContent: string | undefined;
+    if (fs.existsSync(configAbsPath)) {
+      configContent = fs.readFileSync(configAbsPath, 'utf-8');
     } else {
-      configContent = await fetchConfigFile(octokit, owner, repo, baseRef, '.manki.yml');
+      core.info(`No \`${configRelPath}\` in PR checkout — using defaults`);
     }
-    const config = loadConfig(configContent ?? undefined);
+    const config = loadConfig(configContent);
 
     // Scan for a competing in-progress marker before posting our own to shorten
     // the race window. A residual window remains when two runs both pass this scan

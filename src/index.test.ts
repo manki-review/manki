@@ -6212,15 +6212,24 @@ describe('runFullReview concurrent-submission lock', () => {
     expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalledTimes(2);
   });
 
-  it('does not propagate uncaught when fetchConfigFile throws — catch path runs instead', async () => {
-    jest.mocked(ghUtils.fetchConfigFile).mockRejectedValueOnce(new Error('GitHub API rate limit'));
+  it('does not propagate uncaught when local config read throws — catch path runs instead', async () => {
+    const fs = jest.requireActual('fs') as typeof import('fs');
+    const readSpy = jest.spyOn(fs, 'readFileSync').mockImplementationOnce(() => {
+      throw new Error('disk read failed');
+    });
+    const existsSpy = jest.spyOn(fs, 'existsSync').mockReturnValueOnce(true);
 
-    await expect(callRunFullReview()).resolves.toBeUndefined();
+    try {
+      await expect(callRunFullReview()).resolves.toBeUndefined();
 
-    const warnings = jest.mocked(core.warning).mock.calls.map(c => String(c[0]));
-    expect(warnings.some(w => w.includes('Review failed'))).toBe(true);
-    expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
-    expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+      const warnings = jest.mocked(core.warning).mock.calls.map(c => String(c[0]));
+      expect(warnings.some(w => w.includes('Review failed'))).toBe(true);
+      expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
+      expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+    } finally {
+      readSpy.mockRestore();
+      existsSpy.mockRestore();
+    }
   });
 
   it('bails after lock check when bot already reviewed the head SHA (defense in depth)', async () => {
@@ -6252,6 +6261,40 @@ describe('runFullReview concurrent-submission lock', () => {
     expect(jest.mocked(ghUtils.hasBotReviewOnCommit)).not.toHaveBeenCalled();
     expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
     expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
+  });
+
+  it('reads `.manki.yml` from the local PR checkout, not from the base ref', async () => {
+    const fs = jest.requireActual('fs') as typeof import('fs');
+    const headYaml = 'exclude_paths:\n  - "dist/**"\n';
+    const existsSpy = jest.spyOn(fs, 'existsSync').mockReturnValue(true);
+    const readSpy = jest.spyOn(fs, 'readFileSync').mockReturnValue(headYaml);
+
+    try {
+      await callRunFullReview();
+
+      expect(jest.mocked(configModule.loadConfig)).toHaveBeenCalledWith(headYaml);
+      expect(jest.mocked(ghUtils.fetchConfigFile)).not.toHaveBeenCalled();
+    } finally {
+      existsSpy.mockRestore();
+      readSpy.mockRestore();
+    }
+  });
+
+  it('falls back to defaults when the local PR checkout has no `.manki.yml`', async () => {
+    const fs = jest.requireActual('fs') as typeof import('fs');
+    const existsSpy = jest.spyOn(fs, 'existsSync').mockReturnValue(false);
+    const readSpy = jest.spyOn(fs, 'readFileSync');
+
+    try {
+      await callRunFullReview();
+
+      expect(jest.mocked(configModule.loadConfig)).toHaveBeenCalledWith(undefined);
+      expect(readSpy).not.toHaveBeenCalled();
+      expect(jest.mocked(ghUtils.fetchConfigFile)).not.toHaveBeenCalled();
+    } finally {
+      existsSpy.mockRestore();
+      readSpy.mockRestore();
+    }
   });
 });
 
