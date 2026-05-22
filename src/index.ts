@@ -962,7 +962,6 @@ async function runFullReview(
     const agentNames = result.agentNames;
     const allJudged = result.allJudgedFindings ?? [];
     const rawFindings = result.rawFindings ?? allJudged;
-    const failedAgentSet = new Set(result.failedAgents ?? []);
     const agentMetrics = agentNames.length > 0
       ? agentNames.map(name => {
           const usage = result.agentUsage?.get(name);
@@ -974,7 +973,7 @@ async function runFullReview(
             findingsRaw: rawFindings.filter(f => f.reviewers.includes(name)).length,
             findingsKept: result.findings.filter(f => f.reviewers.includes(name)).length,
             ...(durationMs != null && { durationMs }),
-            status: failedAgentSet.has(name) ? 'failed' as const : 'success' as const,
+            status: failureReason ? 'failed' as const : 'success' as const,
             responseLength: result.agentResponseLengths?.get(name),
             inputTokens: usage?.inputTokens ?? 0,
             outputTokens: usage?.outputTokens ?? 0,

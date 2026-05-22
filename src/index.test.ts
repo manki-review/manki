@@ -2406,7 +2406,7 @@ describe('runFullReview orchestration', () => {
         inputTokens: 80,
         outputTokens: 10,
         retryCount: 1,
-        status: 'success',
+        status: 'failed',
         failureReason: 'CLI timed out',
       }),
     ]);

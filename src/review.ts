@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import { minimatch } from 'minimatch';
 
-import { LLMClient, LLMUsage, ZERO_USAGE } from './providers';
+import { LLMClient, LLMUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
 import { runJudgeAgent, JudgeInput, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
@@ -634,7 +634,7 @@ export async function runPlanner(
  * capture per-stage telemetry (planner/judge/dedup) without changing each
  * stage's return type, which would force every test mock to update.
  */
-function wrapClientForUsage(client: LLMClient): {
+export function wrapClientForUsage(client: LLMClient): {
   client: LLMClient;
   totals: { usage: LLMUsage; latencyMs: number; calls: number };
 } {
@@ -881,7 +881,7 @@ export async function runReview(
       } else {
         failedAgents.push(agent.name);
         if (lastPassError) {
-          agentFailureReasons[agent.name] = String((lastPassError as Error)?.message ?? lastPassError);
+          agentFailureReasons[agent.name] = sanitizeLogOutput(String((lastPassError as Error)?.message ?? lastPassError)).slice(0, 500);
         }
         core.warning(`${agent.name}: all passes failed`);
 
@@ -973,7 +973,7 @@ export async function runReview(
         } else {
           stillFailed.push(agent.name);
           if (retryLastError) {
-            agentFailureReasons[agent.name] = String((retryLastError as Error)?.message ?? retryLastError);
+            agentFailureReasons[agent.name] = sanitizeLogOutput(String((retryLastError as Error)?.message ?? retryLastError)).slice(0, 500);
           }
           core.warning(`${agent.name}: retry ${retryCountMap[agent.name]} failed (all passes)`);
           if (onProgress) {
@@ -1054,7 +1054,7 @@ export async function runReview(
         core.info(`${team.agents[i].name}: ${result.value.length} findings`);
       } else {
         failedAgents.push(team.agents[i].name);
-        agentFailureReasons[team.agents[i].name] = String((result.reason as Error)?.message ?? result.reason);
+        agentFailureReasons[team.agents[i].name] = sanitizeLogOutput(String((result.reason as Error)?.message ?? result.reason)).slice(0, 500);
         core.warning(`${team.agents[i].name} failed: ${result.reason}`);
       }
     }
@@ -1120,7 +1120,7 @@ export async function runReview(
         } else {
           stillFailed.push(agent.name);
           if (error) {
-            agentFailureReasons[agent.name] = String((error as Error)?.message ?? error);
+            agentFailureReasons[agent.name] = sanitizeLogOutput(String((error as Error)?.message ?? error)).slice(0, 500);
           }
           core.warning(`${agent.name}: retry ${retryCount[agent.name]} failed`);
           if (onProgress) {
