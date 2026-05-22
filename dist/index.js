@@ -45551,6 +45551,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.detectTickedMarker = detectTickedMarker;
 exports.run = run;
 exports.handlePullRequest = handlePullRequest;
 exports.handleCommentTrigger = handleCommentTrigger;
@@ -45583,6 +45584,41 @@ const ALLOWED_FINGERPRINT_TAGS = new Set([
     types_1.RATCHET_SUPPRESSED_TAG,
     types_1.RESOLVED_THREAD_SUPPRESSED_TAG,
 ]);
+function detectTickedMarker(body) {
+    if (!body.includes('- [x] Force review'))
+        return null;
+    if (body.includes(github_1.FORCE_CAP_MARKER))
+        return 'FORCE_CAP_MARKER';
+    if (body.includes(github_1.FORCE_REVIEW_MARKER))
+        return 'FORCE_REVIEW_MARKER';
+    return null;
+}
+/**
+ * Build `RoundMeta.trigger` from the current GitHub Actions event. The event
+ * string folds in the action and (for the marker-comment tickbox edits) the
+ * specific marker, so a `5/5 -> 6/5` jump in the round-cap counter is
+ * attributable to the exact UI affordance that fired.
+ */
+function buildRoundTrigger() {
+    const eventName = github.context.eventName;
+    const payload = github.context.payload;
+    const action = payload.action;
+    const sender = payload.sender?.login ?? 'unknown';
+    let event = action ? `${eventName}:${action}` : eventName;
+    if (eventName === 'issue_comment') {
+        const body = payload.comment?.body ?? '';
+        if (action === 'edited') {
+            const ticked = detectTickedMarker(body);
+            if (ticked) {
+                event = `${event}:tick:${ticked}`;
+            }
+        }
+        else if (action === 'created' && (0, interaction_1.isReviewRequest)(body)) {
+            event = `${event}:@manki review`;
+        }
+    }
+    return { event, sender };
+}
 function readProviderInputs() {
     return {
         anthropicOauthToken: core.getInput('claude_code_oauth_token'),
@@ -45666,9 +45702,7 @@ async function run() {
             return;
         }
         const body = github.context.payload.comment?.body ?? '';
-        const isForceReviewChecked = action === 'edited' && isBotComment &&
-            (body.includes(github_1.FORCE_REVIEW_MARKER) || body.includes(github_1.FORCE_CAP_MARKER)) &&
-            body.includes('- [x] Force review');
+        const isForceReviewChecked = action === 'edited' && isBotComment && detectTickedMarker(body) !== null;
         if (!isForceReviewChecked && !(0, interaction_1.hasBotMention)(body) && !(0, interaction_1.isReviewRequest)(body)) {
             core.info('Comment does not mention Manki — ignoring');
             return;
@@ -45725,17 +45759,15 @@ async function run() {
             break;
         case 'issue_comment': {
             const commentBody = github.context.payload.comment?.body ?? '';
-            const isBotTickboxEdit = action === 'edited' && isBotComment && commentBody.includes('- [x] Force review');
-            const forceReviewTickbox = isBotTickboxEdit && commentBody.includes(github_1.FORCE_REVIEW_MARKER);
-            const forceCapTickbox = isBotTickboxEdit && commentBody.includes(github_1.FORCE_CAP_MARKER);
-            if (forceCapTickbox && github.context.payload.issue?.pull_request) {
-                await handleCommentTrigger(false, true);
+            const tickedMarker = action === 'edited' && isBotComment ? detectTickedMarker(commentBody) : null;
+            if (tickedMarker === 'FORCE_CAP_MARKER' && github.context.payload.issue?.pull_request) {
+                await handleCommentTrigger(false, true, 'skip_cap');
             }
-            else if (forceReviewTickbox && github.context.payload.issue?.pull_request) {
-                await handleCommentTrigger(true, false);
+            else if (tickedMarker === 'FORCE_REVIEW_MARKER' && github.context.payload.issue?.pull_request) {
+                await handleCommentTrigger(true, false, 'force_review');
             }
             else if ((0, interaction_1.isReviewRequest)(commentBody) && github.context.payload.issue?.pull_request) {
-                await handleCommentTrigger(true, true);
+                await handleCommentTrigger(true, true, 'manual_review_command');
             }
             else if ((0, interaction_1.isBotMentionNonReview)(commentBody) && github.context.payload.issue?.pull_request) {
                 await handleInteraction();
@@ -45802,9 +45834,12 @@ async function handlePullRequest() {
         body: pr.body || '',
         baseBranch: pr.base.ref,
     };
-    await runFullReview(owner, repo, prNumber, commitSha, pr.base.ref, prContext, pr.user?.login);
+    await runFullReview(owner, repo, prNumber, commitSha, pr.base.ref, prContext, {
+        prAuthorLogin: pr.user?.login,
+        trigger: buildRoundTrigger(),
+    });
 }
-async function handleCommentTrigger(forceReview, skipCap) {
+async function handleCommentTrigger(forceReview, skipCap, bypassHint) {
     const payload = github.context.payload;
     if (!payload.issue?.pull_request) {
         core.info('Comment is on an issue, not a PR — skipping');
@@ -45852,7 +45887,13 @@ async function handleCommentTrigger(forceReview, skipCap) {
         body: pr.body || '',
         baseBranch: pr.base.ref,
     };
-    await runFullReview(owner, repo, prNumber, pr.head.sha, pr.base.ref, prContext, pr.user?.login, forceReview, skipCap);
+    await runFullReview(owner, repo, prNumber, pr.head.sha, pr.base.ref, prContext, {
+        prAuthorLogin: pr.user?.login,
+        forceReview,
+        skipCap,
+        bypassHint,
+        trigger: buildRoundTrigger(),
+    });
 }
 function reconcileDashboardAgents(dashboard, names) {
     const existingByName = new Map(dashboard.agentProgress?.map(a => [a.name, a]) ?? []);
@@ -45868,7 +45909,8 @@ function reconcileDashboardAgents(dashboard, names) {
     dashboard.agentCount = reconciled.length;
     dashboard.agentProgress = reconciled;
 }
-async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContext, prAuthorLogin, forceReview, skipCap) {
+async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContext, options = {}) {
+    const { prAuthorLogin, forceReview, skipCap, bypassHint, trigger = buildRoundTrigger() } = options;
     core.info(`Starting review for ${owner}/${repo}#${prNumber}`);
     const providerInputs = readProviderInputs();
     if (!(0, providers_1.hasAnyProviderCredentials)(providerInputs)) {
@@ -46375,6 +46417,13 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
             fileTypes[ext] = (fileTypes[ext] ?? 0) + 1;
         }
         const round = priorRoundCount + 1;
+        const cap = {
+            priorRoundCount,
+            maxAutoRounds,
+            skipCap: !!skipCap,
+            forceReview: !!forceReview,
+            bypassReason: bypassHint ?? (forceReview ? 'force_review' : skipCap ? 'skip_cap' : 'within_cap'),
+        };
         const findingEntries = result.findings.map(f => ({
             fingerprint: (0, recap_1.fingerprintFinding)(f.title, f.file ?? '', f.line || 0),
             severity: f.severity,
@@ -46395,6 +46444,8 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
                 round,
                 timestamp: new Date().toISOString(),
                 mankiVersion: github_1.MANKI_VERSION,
+                cap,
+                trigger,
             },
             config: {
                 reviewLevel: team.level === 'trivial' ? 'small' : team.level,
