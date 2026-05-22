@@ -8,7 +8,7 @@ import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/ch
 import * as core from '@actions/core';
 
 import { buildExitDiagnostics, extractCliErrorSnippet, seedAuthFile } from './cli-utils';
-import { LLMClient, LLMResponse, LLMUsage, OpenAIAuth, SendMessageOptions, ZERO_USAGE } from './types';
+import { LLMClient, LLMResponse, LLMUsage, OpenAIAuth, readCount, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
 
@@ -166,7 +166,6 @@ export class OpenAIClient implements LLMClient {
     const fullPrompt = `${systemPrompt}\n\n---\n\n${userMessage}`;
     const codexHome = resolveCodexHome();
     const oauthToken = this.auth.kind === 'oauth' ? this.auth.token : undefined;
-    const startTime = Date.now();
     const model = this.model;
     if (oauthToken) {
       seedAuthFile({
@@ -178,6 +177,7 @@ export class OpenAIClient implements LLMClient {
       });
     }
     const cliPath = await this.ensureCLI();
+    const startTime = Date.now();
 
     return new Promise((resolve, reject) => {
       // `codex exec` runs a non-interactive completion, reading the prompt from stdin
@@ -413,14 +413,12 @@ export class OpenAIClient implements LLMClient {
       prompt_tokens_details?: { cached_tokens?: number };
       completion_tokens_details?: { reasoning_tokens?: number };
     };
-    const readInt = (n: unknown): number =>
-      typeof n === 'number' && Number.isFinite(n) && n >= 0 ? Math.trunc(n) : 0;
     const usage: LLMUsage = sdkUsage
       ? {
-          inputTokens: readInt(sdkUsage.prompt_tokens),
-          outputTokens: readInt(sdkUsage.completion_tokens),
-          cachedTokens: readInt(sdkUsage.prompt_tokens_details?.cached_tokens),
-          reasoningTokens: readInt(sdkUsage.completion_tokens_details?.reasoning_tokens),
+          inputTokens: readCount(sdkUsage.prompt_tokens),
+          outputTokens: readCount(sdkUsage.completion_tokens),
+          cachedTokens: readCount(sdkUsage.prompt_tokens_details?.cached_tokens),
+          reasoningTokens: readCount(sdkUsage.completion_tokens_details?.reasoning_tokens),
         }
       : { ...ZERO_USAGE };
 
