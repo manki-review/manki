@@ -43554,6 +43554,7 @@ exports.loadConfigFromFile = loadConfigFromFile;
 exports.resolveModel = resolveModel;
 exports.resolveAgentModel = resolveAgentModel;
 exports.loadConfig = loadConfig;
+exports.sanitizeForkConfig = sanitizeForkConfig;
 const core = __importStar(__nccwpck_require__(7484));
 const fs = __importStar(__nccwpck_require__(9896));
 const yaml_1 = __nccwpck_require__(8815);
@@ -43650,6 +43651,13 @@ function validateConfig(config) {
     if ('exclude_paths' in config) {
         if (!Array.isArray(config.exclude_paths)) {
             errors.push('`exclude_paths` must be an array of strings');
+        }
+        else {
+            for (let i = 0; i < config.exclude_paths.length; i++) {
+                if (typeof config.exclude_paths[i] !== 'string') {
+                    errors.push(`\`exclude_paths[${i}]\` must be a string, got ${typeof config.exclude_paths[i]}`);
+                }
+            }
         }
     }
     if ('review_level' in config) {
@@ -43867,6 +43875,12 @@ function deepMerge(defaults, overrides) {
         else if (key === 'stats' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
             result.stats = { ...defaults.stats, ...value };
         }
+        else if (key === 'exclude_paths' && Array.isArray(value)) {
+            // Union with defaults so users adding a single pattern don't lose
+            // built-in skips (`*.lock`, `dist/**`, `*.generated.*`).
+            const userPatterns = value.filter((p) => typeof p === 'string');
+            result.exclude_paths = Array.from(new Set([...defaults.exclude_paths, ...userPatterns]));
+        }
         else {
             result[key] = value;
         }
@@ -43912,7 +43926,15 @@ function loadConfigFromFile(filePath) {
         core.info(`Config file not found at ${filePath}, using defaults`);
         return { ...exports.DEFAULT_CONFIG, reviewers: [...exports.DEFAULT_CONFIG.reviewers], memory: { ...exports.DEFAULT_CONFIG.memory } };
     }
-    const content = fs.readFileSync(filePath, 'utf-8');
+    let content;
+    try {
+        content = fs.readFileSync(filePath, 'utf-8');
+    }
+    catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        core.warning(`Failed to read config file at ${filePath}: ${msg}. Using defaults.`);
+        return { ...exports.DEFAULT_CONFIG, reviewers: [...exports.DEFAULT_CONFIG.reviewers], memory: { ...exports.DEFAULT_CONFIG.memory } };
+    }
     return loadConfigFromContent(content);
 }
 function resolveModel(config, stage) {
@@ -43934,6 +43956,14 @@ function loadConfig(yamlContent) {
         return { ...exports.DEFAULT_CONFIG, reviewers: [...exports.DEFAULT_CONFIG.reviewers], memory: { ...exports.DEFAULT_CONFIG.memory } };
     }
     return loadConfigFromContent(yamlContent);
+}
+function sanitizeForkConfig(config) {
+    return {
+        ...config,
+        instructions: exports.DEFAULT_CONFIG.instructions,
+        reviewers: [...exports.DEFAULT_CONFIG.reviewers],
+        memory: { ...config.memory, repo: exports.DEFAULT_CONFIG.memory.repo },
+    };
 }
 
 
@@ -45637,7 +45667,9 @@ exports.runFullReview = runFullReview;
 exports.main = main;
 exports._resetOctokitCache = _resetOctokitCache;
 const core = __importStar(__nccwpck_require__(7484));
+const fs = __importStar(__nccwpck_require__(9896));
 const github = __importStar(__nccwpck_require__(3228));
+const path = __importStar(__nccwpck_require__(6928));
 const auth_1 = __nccwpck_require__(9081);
 const config_1 = __nccwpck_require__(2973);
 const providers_1 = __nccwpck_require__(7486);
@@ -45919,6 +45951,7 @@ async function handlePullRequest() {
     };
     await runFullReview(owner, repo, prNumber, commitSha, pr.base.ref, prContext, {
         prAuthorLogin: pr.user?.login,
+        headRepoFullName: pr.head.repo?.full_name,
         trigger: buildRoundTrigger(),
     });
 }
@@ -45979,6 +46012,7 @@ async function handleCommentTrigger(forceReview, skipCap, bypassHint) {
     };
     await runFullReview(owner, repo, prNumber, pr.head.sha, pr.base.ref, prContext, {
         prAuthorLogin: pr.user?.login,
+        headRepoFullName: pr.head.repo?.full_name,
         forceReview,
         skipCap,
         bypassHint,
@@ -46000,7 +46034,7 @@ function reconcileDashboardAgents(dashboard, names) {
     dashboard.agentProgress = reconciled;
 }
 async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContext, options = {}) {
-    const { prAuthorLogin, forceReview, skipCap, bypassHint, trigger = buildRoundTrigger() } = options;
+    const { prAuthorLogin, forceReview, skipCap, bypassHint, trigger = buildRoundTrigger(), headRepoFullName } = options;
     core.info(`Starting review for ${owner}/${repo}#${prNumber}`);
     const providerInputs = readProviderInputs();
     if (!(0, providers_1.hasAnyProviderCredentials)(providerInputs)) {
@@ -46021,14 +46055,31 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
     let progressCommentId;
     let dashboardFlushTimer = null;
     try {
-        let configContent = null;
-        if (configPathInput) {
-            configContent = await (0, github_1.fetchConfigFile)(octokit, owner, repo, baseRef, configPathInput);
+        // Read `.manki.yml` from the local checkout so a PR that modifies its own
+        // config (e.g., extending `exclude_paths`) takes effect on the same PR.
+        // `process.cwd()` is the PR tree because the action runs as a local
+        // composite via `./` in the consumer workflow.
+        const configRelPath = configPathInput || '.manki.yml';
+        const cwd = path.resolve(process.cwd());
+        const configAbsPath = path.isAbsolute(configRelPath)
+            ? configRelPath
+            : path.join(cwd, configRelPath);
+        let resolvedConfigPath;
+        try {
+            resolvedConfigPath = fs.realpathSync(configAbsPath);
         }
-        else {
-            configContent = await (0, github_1.fetchConfigFile)(octokit, owner, repo, baseRef, '.manki.yml');
+        catch {
+            resolvedConfigPath = configAbsPath;
         }
-        const config = (0, config_1.loadConfig)(configContent ?? undefined);
+        if (resolvedConfigPath !== cwd && !resolvedConfigPath.startsWith(cwd + path.sep)) {
+            core.warning(`\`config_path\` resolved outside workspace — using defaults`);
+        }
+        const effectiveConfigPath = (resolvedConfigPath === cwd || resolvedConfigPath.startsWith(cwd + path.sep))
+            ? resolvedConfigPath
+            : path.join(cwd, '.manki.yml');
+        const rawConfig = (0, config_1.loadConfigFromFile)(effectiveConfigPath);
+        const isFork = headRepoFullName !== undefined && headRepoFullName !== `${owner}/${repo}`;
+        const config = isFork ? (0, config_1.sanitizeForkConfig)(rawConfig) : rawConfig;
         // Scan for a competing in-progress marker before posting our own to shorten
         // the race window. A residual window remains when two runs both pass this scan
         // before either posts; tracking issue for the strict atomic fix: https://github.com/manki-review/manki/issues/798

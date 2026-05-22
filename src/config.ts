@@ -116,6 +116,12 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
   if ('exclude_paths' in config) {
     if (!Array.isArray(config.exclude_paths)) {
       errors.push('`exclude_paths` must be an array of strings');
+    } else {
+      for (let i = 0; i < config.exclude_paths.length; i++) {
+        if (typeof config.exclude_paths[i] !== 'string') {
+          errors.push(`\`exclude_paths[${i}]\` must be a string, got ${typeof config.exclude_paths[i]}`);
+        }
+      }
     }
   }
 
@@ -340,6 +346,11 @@ function deepMerge(defaults: ReviewConfig, overrides: Record<string, unknown>): 
       result.convergence = { ...defaults.convergence, ...(value as Record<string, unknown>) } as ReviewConfig['convergence'];
     } else if (key === 'stats' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
       result.stats = { ...defaults.stats, ...(value as Record<string, unknown>) } as ReviewConfig['stats'];
+    } else if (key === 'exclude_paths' && Array.isArray(value)) {
+      // Union with defaults so users adding a single pattern don't lose
+      // built-in skips (`*.lock`, `dist/**`, `*.generated.*`).
+      const userPatterns = value.filter((p): p is string => typeof p === 'string');
+      result.exclude_paths = Array.from(new Set([...defaults.exclude_paths, ...userPatterns]));
     } else {
       (result as Record<string, unknown>)[key] = value;
     }
@@ -396,7 +407,15 @@ export function loadConfigFromFile(filePath: string): ReviewConfig {
     return { ...DEFAULT_CONFIG, reviewers: [...DEFAULT_CONFIG.reviewers], memory: { ...DEFAULT_CONFIG.memory } };
   }
 
-  const content = fs.readFileSync(filePath, 'utf-8');
+  let content: string;
+  try {
+    content = fs.readFileSync(filePath, 'utf-8');
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    core.warning(`Failed to read config file at ${filePath}: ${msg}. Using defaults.`);
+    return { ...DEFAULT_CONFIG, reviewers: [...DEFAULT_CONFIG.reviewers], memory: { ...DEFAULT_CONFIG.memory } };
+  }
+
   return loadConfigFromContent(content);
 }
 
@@ -425,4 +444,13 @@ export function loadConfig(yamlContent: string | undefined): ReviewConfig {
   }
 
   return loadConfigFromContent(yamlContent);
+}
+
+export function sanitizeForkConfig(config: ReviewConfig): ReviewConfig {
+  return {
+    ...config,
+    instructions: DEFAULT_CONFIG.instructions,
+    reviewers: [...DEFAULT_CONFIG.reviewers],
+    memory: { ...config.memory, repo: DEFAULT_CONFIG.memory.repo },
+  };
 }

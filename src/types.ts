@@ -606,6 +606,7 @@ export interface FullReviewOptions {
   skipCap?: boolean;
   bypassHint?: 'force_review' | 'skip_cap' | 'manual_review_command';
   trigger?: RoundTrigger;
+  headRepoFullName?: string;
 }
 
 /** Provenance of the event that triggered a round. */
