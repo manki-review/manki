@@ -9,8 +9,10 @@ export type {
   GeminiAuth,
   LLMClient,
   LLMResponse,
+  LLMUsage,
   OpenAIAuth,
   ProviderAuth,
   ProviderName,
   SendMessageOptions,
 } from './types';
+export { ZERO_USAGE } from './types';

@@ -2099,8 +2099,8 @@ describe('runFullReview orchestration', () => {
 
     // agentMetrics: third finding has both reviewers, so security gets 3 raw / 2 kept
     expect(statsArg!.reviewers.agentMetrics).toEqual([
-      { name: 'security', findingsRaw: 3, findingsKept: 2 },
-      { name: 'general', findingsRaw: 2, findingsKept: 2 },
+      expect.objectContaining({ name: 'security', findingsRaw: 3, findingsKept: 2 }),
+      expect.objectContaining({ name: 'general', findingsRaw: 2, findingsKept: 2 }),
     ]);
 
     expect(statsArg!.judge).toEqual(expect.objectContaining({
@@ -2173,8 +2173,8 @@ describe('runFullReview orchestration', () => {
 
     // findingsRaw comes from rawFindings (pre-dedup per-agent counts)
     expect(statsArg!.reviewers.agentMetrics).toEqual([
-      { name: 'security', findingsRaw: 2, findingsKept: 1 },
-      { name: 'general', findingsRaw: 3, findingsKept: 0 },
+      expect.objectContaining({ name: 'security', findingsRaw: 2, findingsKept: 1 }),
+      expect.objectContaining({ name: 'general', findingsRaw: 3, findingsKept: 0 }),
     ]);
   });
 

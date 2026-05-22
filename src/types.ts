@@ -1,3 +1,5 @@
+import type { LLMUsage } from './providers/types';
+
 export const MAX_AGENT_RETRIES = 1;
 
 export type FindingSeverity = 'blocker' | 'warning' | 'suggestion' | 'nitpick' | 'ignore';
@@ -202,6 +204,22 @@ export interface ReviewResult {
   suppressionCount?: number;
   inPrSuppressedCount?: number;
   agentResponseLengths?: Map<string, number>;
+  /** Aggregated reviewer usage per agent across all passes/retries. */
+  agentUsage?: Map<string, LLMUsage>;
+  /** Aggregated wall-clock duration per agent across all passes/retries. */
+  agentDurationMs?: Map<string, number>;
+  /** Number of CLI/SDK retries per agent. Zero (omitted) when the first try succeeded. */
+  agentRetryCount?: Map<string, number>;
+  /** Aggregated planner LLM usage and wall-clock duration. */
+  plannerUsage?: LLMUsage;
+  plannerDurationMs?: number;
+  /** Aggregated judge LLM usage, wall-clock duration, and retry count. */
+  judgeUsage?: LLMUsage;
+  judgeDurationMs?: number;
+  judgeRetryCount?: number;
+  /** Aggregated dedup LLM usage and wall-clock duration (LLM dedup step only). */
+  dedupUsage?: LLMUsage;
+  dedupDurationMs?: number;
   crossRoundSuppressed?: number;
   crossRoundDemoted?: number;
   /** Set when the judge stage forced every open thread to `not_addressed` because the inter-round diff was known-empty. */
