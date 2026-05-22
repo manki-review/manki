@@ -3,7 +3,7 @@ import { createRequire } from 'module';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { AgentProgressEntry, DEFENSIVE_HARDENING_TAG, DashboardData, Finding, FindingFingerprintEntry, FindingSeverity, OWN_PROPOSAL_TAG, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, ReviewVerdict, VALID_PR_TYPES } from './types';
+import { AgentProgressEntry, DEFENSIVE_HARDENING_TAG, DashboardData, Finding, FindingFingerprintEntry, FindingSeverity, OWN_PROPOSAL_TAG, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, ReviewVerdict, VALID_PR_TYPES, VerdictReason, VerdictTrace } from './types';
 import { isLineInDiff, findClosestDiffLine } from './diff';
 import { MAX_AGENT_RETRIES } from './types';
 import { MAX_LOCK_TTL_SECONDS } from './config';
@@ -859,7 +859,7 @@ function getSeverityLabel(severity: FindingSeverity): string {
  * available, so the author sees exactly which prior thread is blocking
  * without having to read the AI-context JSON.
  */
-export function formatBlockingPriorThreads(result: ReviewResult): string | null {
+export function formatBlockingPriorThreads(result: { verdictReason?: VerdictReason; verdictTrace?: VerdictTrace }): string | null {
   if (result.verdictReason !== 'prior_unaddressed') return null;
   const priors = result.verdictTrace?.unresolvedPriors ?? [];
   if (priors.length === 0) return null;
@@ -869,7 +869,8 @@ export function formatBlockingPriorThreads(result: ReviewResult): string | null 
     const location = p.line != null ? `\`${file}:${p.line}\`` : `\`${file}\``;
     const severity = p.severity && p.severity !== 'unknown' ? `[${getSeverityLabel(p.severity)}] ` : '';
     const title = sanitizeMarkdown(p.title || '(untitled)');
-    const link = p.threadUrl ? ` ([view thread](${p.threadUrl}))` : '';
+    const safeUrl = p.threadUrl && /^https?:\/\/[^\s)]+$/.test(p.threadUrl) ? p.threadUrl : null;
+    const link = safeUrl ? ` ([view thread](${safeUrl}))` : '';
     return `- ${severity}${title} — ${location}${link}`;
   });
 

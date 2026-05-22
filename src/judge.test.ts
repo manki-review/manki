@@ -6,13 +6,16 @@ import {
   applyInPrSuppression,
   buildJudgeSystemPrompt,
   buildJudgeUserMessage,
+  buildThreadEvaluationsReminder,
   computeProvenanceMap,
   extractCodeContext,
+  missingThreadIds,
   parseJudgeResponse,
   filterMemoryForFindings,
   mapJudgedToFindings,
   deduplicateFindings,
   runJudgeAgent,
+  synthesizeMissingThreadEvaluations,
   JudgeInput,
   JudgedFinding,
 } from './judge';
@@ -2444,6 +2447,32 @@ describe('runJudgeAgent', () => {
       warnSpy.mockRestore();
     });
 
+    it('preserves original findings when retry response fails to parse valid JSON', async () => {
+      const originalFindings = [makeFinding({ title: 'Original finding', severity: 'warning' })];
+      mockSendMessage
+        .mockResolvedValueOnce({
+          content: JSON.stringify({
+            summary: 'original summary',
+            findings: [{ title: 'Original finding', severity: 'warning', reasoning: 'r', confidence: 'high', reachability: 'reachable' }],
+          }),
+        })
+        .mockResolvedValueOnce({ content: 'not valid json at all' });
+
+      const result = await runJudgeAgent(mockClient, makeConfig(), {
+        findings: originalFindings,
+        diff: makeDiff(),
+        rawDiff: '',
+        repoContext: '',
+        agentCount: 3,
+        openThreads,
+      });
+
+      expect(mockSendMessage).toHaveBeenCalledTimes(2);
+      expect(result.summary).toBe('original summary');
+      const nonIgnored = result.findings.filter(f => f.severity !== 'ignore');
+      expect(nonIgnored.length).toBeGreaterThan(0);
+    });
+
     it('skips retry when threadEvaluations covers every open thread on the first response', async () => {
       mockSendMessage.mockResolvedValue({
         content: JSON.stringify({
@@ -2493,6 +2522,99 @@ describe('runJudgeAgent', () => {
         { threadId: 'PRRT_b', status: 'not_addressed', reason: 'No code changes since prior review' },
       ]);
     });
+  });
+});
+
+describe('missingThreadIds', () => {
+  const threads: OpenThread[] = [
+    { threadId: 'PRRT_a', title: 'A', file: 'src/a.ts', line: 1, severity: 'warning' },
+    { threadId: 'PRRT_b', title: 'B', file: 'src/b.ts', line: 2, severity: 'nitpick' },
+    { threadId: 'PRRT_c', title: 'C', file: 'src/c.ts', line: 3, severity: 'suggestion' },
+  ];
+
+  it('returns all thread IDs when evaluations is undefined', () => {
+    expect(missingThreadIds(threads, undefined)).toEqual(['PRRT_a', 'PRRT_b', 'PRRT_c']);
+  });
+
+  it('returns all thread IDs when evaluations is empty', () => {
+    expect(missingThreadIds(threads, [])).toEqual(['PRRT_a', 'PRRT_b', 'PRRT_c']);
+  });
+
+  it('returns only uncovered thread IDs', () => {
+    const evals: ThreadEvaluation[] = [{ threadId: 'PRRT_a', status: 'addressed', reason: '' }];
+    expect(missingThreadIds(threads, evals)).toEqual(['PRRT_b', 'PRRT_c']);
+  });
+
+  it('returns empty array when all threads are covered', () => {
+    const evals: ThreadEvaluation[] = [
+      { threadId: 'PRRT_a', status: 'addressed', reason: '' },
+      { threadId: 'PRRT_b', status: 'not_addressed', reason: '' },
+      { threadId: 'PRRT_c', status: 'uncertain', reason: '' },
+    ];
+    expect(missingThreadIds(threads, evals)).toEqual([]);
+  });
+
+  it('returns empty array when openThreads is empty', () => {
+    expect(missingThreadIds([], [{ threadId: 'PRRT_x', status: 'addressed', reason: '' }])).toEqual([]);
+  });
+});
+
+describe('buildThreadEvaluationsReminder', () => {
+  const threads: OpenThread[] = [
+    { threadId: 'PRRT_a', title: 'A', file: 'src/a.ts', line: 1, severity: 'warning' },
+    { threadId: 'PRRT_b', title: 'B', file: 'src/b.ts', line: 2, severity: 'nitpick' },
+  ];
+
+  it('includes the count of required entries', () => {
+    const reminder = buildThreadEvaluationsReminder(threads, ['PRRT_b']);
+    expect(reminder).toContain('exactly 2 entries');
+  });
+
+  it('lists all missing thread IDs', () => {
+    const reminder = buildThreadEvaluationsReminder(threads, ['PRRT_a', 'PRRT_b']);
+    expect(reminder).toContain('PRRT_a');
+    expect(reminder).toContain('PRRT_b');
+  });
+
+  it('mentions only the missing thread IDs, not already-covered ones', () => {
+    const reminder = buildThreadEvaluationsReminder(threads, ['PRRT_b']);
+    expect(reminder).not.toContain('Missing thread IDs: PRRT_a');
+    expect(reminder).toContain('PRRT_b');
+  });
+
+  it('includes the retry header', () => {
+    const reminder = buildThreadEvaluationsReminder(threads, ['PRRT_a']);
+    expect(reminder).toContain('Retry: missing `threadEvaluations` entries');
+  });
+});
+
+describe('synthesizeMissingThreadEvaluations', () => {
+  it('appends uncertain entries for each missing ID', () => {
+    const result = synthesizeMissingThreadEvaluations(undefined, ['PRRT_x', 'PRRT_y']);
+    expect(result).toEqual([
+      { threadId: 'PRRT_x', status: 'uncertain', reason: 'judge omitted evaluation after retry' },
+      { threadId: 'PRRT_y', status: 'uncertain', reason: 'judge omitted evaluation after retry' },
+    ]);
+  });
+
+  it('preserves existing evaluations and appends synthesized ones', () => {
+    const existing: ThreadEvaluation[] = [{ threadId: 'PRRT_a', status: 'addressed', reason: 'ok' }];
+    const result = synthesizeMissingThreadEvaluations(existing, ['PRRT_b']);
+    expect(result).toEqual([
+      { threadId: 'PRRT_a', status: 'addressed', reason: 'ok' },
+      { threadId: 'PRRT_b', status: 'uncertain', reason: 'judge omitted evaluation after retry' },
+    ]);
+  });
+
+  it('returns only synthesized entries when existing is empty', () => {
+    const result = synthesizeMissingThreadEvaluations([], ['PRRT_z']);
+    expect(result).toEqual([
+      { threadId: 'PRRT_z', status: 'uncertain', reason: 'judge omitted evaluation after retry' },
+    ]);
+  });
+
+  it('returns empty array when both inputs are empty', () => {
+    expect(synthesizeMissingThreadEvaluations([], [])).toEqual([]);
   });
 });
 

@@ -814,7 +814,7 @@ function validateThreadStatus(value: unknown): ThreadEvaluation['status'] {
   return 'not_addressed';
 }
 
-function missingThreadIds(
+export function missingThreadIds(
   openThreads: OpenThread[],
   threadEvaluations: ThreadEvaluation[] | undefined,
 ): string[] {
@@ -822,7 +822,7 @@ function missingThreadIds(
   return openThreads.filter(t => !covered.has(t.threadId)).map(t => t.threadId);
 }
 
-function buildThreadEvaluationsReminder(openThreads: OpenThread[], missing: string[]): string {
+export function buildThreadEvaluationsReminder(openThreads: OpenThread[], missing: string[]): string {
   return [
     '## Retry: missing `threadEvaluations` entries',
     '',
@@ -832,7 +832,7 @@ function buildThreadEvaluationsReminder(openThreads: OpenThread[], missing: stri
   ].join('\n');
 }
 
-function synthesizeMissingThreadEvaluations(
+export function synthesizeMissingThreadEvaluations(
   existing: ThreadEvaluation[] | undefined,
   missing: string[],
 ): ThreadEvaluation[] {
@@ -911,7 +911,11 @@ export async function runJudgeAgent(
       const reminder = buildThreadEvaluationsReminder(openThreads!, missing);
       const retryUserMessage = `${userMessage}\n\n${reminder}`;
       const retryResponse = await client.sendMessage(systemPrompt, retryUserMessage, { effort });
-      judgeResult = parseJudgeResponse(retryResponse.content);
+      const retryResult = parseJudgeResponse(retryResponse.content);
+      judgeResult = {
+        ...judgeResult,
+        threadEvaluations: retryResult.threadEvaluations ?? judgeResult.threadEvaluations,
+      };
       const stillMissing = missingThreadIds(openThreads!, judgeResult.threadEvaluations);
       if (stillMissing.length > 0) {
         core.warning(

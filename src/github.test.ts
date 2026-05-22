@@ -776,6 +776,34 @@ describe('formatBlockingPriorThreads', () => {
     expect(rendered).not.toContain('[view thread](');
   });
 
+  it('omits the link when `threadUrl` contains a `)` that would break the markdown link', () => {
+    const result = makeResult({
+      verdictTrace: {
+        survivingBlockers: [],
+        novelWarnings: [],
+        unresolvedPriors: [
+          { file: 'a.ts', title: 'A', fingerprint: 'a.ts:1:1:a', severity: 'warning', line: 1, threadUrl: 'https://example.com/path)injected' },
+        ],
+      },
+    });
+    const rendered = formatBlockingPriorThreads(result);
+    expect(rendered).not.toContain('[view thread](');
+  });
+
+  it('omits the link when `threadUrl` uses a non-http scheme', () => {
+    const result = makeResult({
+      verdictTrace: {
+        survivingBlockers: [],
+        novelWarnings: [],
+        unresolvedPriors: [
+          { file: 'a.ts', title: 'A', fingerprint: 'a.ts:1:1:a', severity: 'warning', line: 1, threadUrl: 'javascript:alert(1)' },
+        ],
+      },
+    });
+    const rendered = formatBlockingPriorThreads(result);
+    expect(rendered).not.toContain('[view thread](');
+  });
+
   it('is included in the `postReview` body when verdict reason is `prior_unaddressed`', async () => {
     const mockCreateReview = jest.fn().mockResolvedValue({ data: { id: 1 } });
     const mockOctokit = {
