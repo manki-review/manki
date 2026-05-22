@@ -3922,6 +3922,26 @@ describe('runReview', () => {
     }
   });
 
+  it('records `unknown failure` sentinel in `agentFailureReasons` when rejection reason is falsy', async () => {
+    const failingSend = jest.fn().mockRejectedValue(undefined);
+    const clients: ReviewClients = {
+      reviewer: { sendMessage: failingSend } as unknown as import('./providers').LLMClient,
+      judge: {
+        sendMessage: jest.fn().mockResolvedValue({ content: '{"summary":"ok","findings":[]}' }),
+      } as unknown as import('./providers').LLMClient,
+    };
+    const config = makeConfig();
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
+
+    const result = await runReview(clients, config, diff, 'raw diff', 'repo context');
+    expect(result.failedAgents).toBeDefined();
+    expect(result.agentFailureReasons).toBeDefined();
+    for (const name of result.agentNames) {
+      expect(result.agentFailureReasons![name]).toBe('unknown failure');
+    }
+  });
+
   it('includes agentResponseLengths in result', async () => {
     const response = JSON.stringify([
       { severity: 'suggestion', title: 'Test', file: 'a.ts', line: 1, description: 'Desc' },
@@ -6386,5 +6406,16 @@ describe('wrapClientForUsage', () => {
     const { client } = wrapClientForUsage(inner);
 
     expect(client.warmupCLI).toBeUndefined();
+  });
+
+  it('derives judgeRetryCount as 0 for one call and 1 for two calls', async () => {
+    const inner = makeUsageClient({ content: 'ok', usage: { inputTokens: 1, outputTokens: 1, cachedTokens: 0, reasoningTokens: 0 }, latencyMs: 10 });
+    const { client, totals } = wrapClientForUsage(inner);
+
+    await client.sendMessage('sys', 'user');
+    expect(Math.max(0, totals.calls - 1)).toBe(0);
+
+    await client.sendMessage('sys', 'retry');
+    expect(Math.max(0, totals.calls - 1)).toBe(1);
   });
 });
