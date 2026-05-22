@@ -66,9 +66,13 @@ export interface ExitDiagnosticsInput {
    * The full parsed terminal `result` event from a stream-json CLI (currently
    * only Claude). When provided, the diagnostic appends a compact summary of
    * `is_error`, `subtype`, and the first 300 chars of the result/message text.
-   * Pass `null` (the default if omitted) to render `<no result event>`, which
-   * is informative on its own: it tells us the CLI exited before flushing a
-   * terminal event.
+   *
+   * - Omit this field entirely to suppress the result section from the output
+   *   (appropriate for providers whose CLIs do not emit a terminal result event).
+   * - Pass `null` explicitly to show `<no result event>`, signalling that the
+   *   CLI exited before flushing a terminal event (used by the Claude path when
+   *   `lastResultEvent` was never set during streaming).
+   * - Pass the parsed event object to render `is_error`, `subtype`, etc.
    */
   resultEvent?: unknown;
 }
