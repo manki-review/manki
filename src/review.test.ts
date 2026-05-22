@@ -3864,6 +3864,62 @@ describe('runReview', () => {
     }
   });
 
+  it('aggregates per-agent usage, duration, and judge usage on ReviewResult', async () => {
+    const response = JSON.stringify([
+      { severity: 'suggestion', title: 'Test', file: 'a.ts', line: 1, description: 'Desc' },
+    ]);
+    const reviewerSend = jest.fn().mockResolvedValue({
+      content: response,
+      usage: { inputTokens: 100, outputTokens: 20, cachedTokens: 5, reasoningTokens: 0 },
+      latencyMs: 1500,
+    });
+    const judgeSend = jest.fn().mockResolvedValue({
+      content: '{"summary":"ok","findings":[]}',
+      usage: { inputTokens: 300, outputTokens: 60, cachedTokens: 0, reasoningTokens: 25 },
+      latencyMs: 800,
+    });
+    const clients: ReviewClients = {
+      reviewer: { sendMessage: reviewerSend } as unknown as import('./providers').LLMClient,
+      judge: { sendMessage: judgeSend } as unknown as import('./providers').LLMClient,
+    };
+    const config = makeConfig();
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
+    const result = await runReview(clients, config, diff, 'raw diff', 'repo context');
+
+    expect(result.agentUsage).toBeDefined();
+    expect(result.agentUsage!.size).toBe(3);
+    for (const [, usage] of result.agentUsage!) {
+      expect(usage).toEqual({ inputTokens: 100, outputTokens: 20, cachedTokens: 5, reasoningTokens: 0 });
+    }
+    expect(result.agentDurationMs).toBeDefined();
+    for (const [, ms] of result.agentDurationMs!) {
+      expect(ms).toBe(1500);
+    }
+    expect(result.judgeRetryCount).toBe(0);
+  });
+
+  it('records `agentFailureReasons` when an agent fails after all retries', async () => {
+    const failingSend = jest.fn().mockRejectedValue(new Error('Provider down'));
+    const clients: ReviewClients = {
+      reviewer: { sendMessage: failingSend } as unknown as import('./providers').LLMClient,
+      judge: {
+        sendMessage: jest.fn().mockResolvedValue({ content: '{"summary":"ok","findings":[]}' }),
+      } as unknown as import('./providers').LLMClient,
+    };
+    const config = makeConfig();
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
+
+    const result = await runReview(clients, config, diff, 'raw diff', 'repo context');
+    expect(result.failedAgents).toBeDefined();
+    expect(result.agentFailureReasons).toBeDefined();
+    for (const name of result.agentNames) {
+      expect(result.agentFailureReasons![name]).toContain('Provider down');
+    }
+  });
+
   it('includes agentResponseLengths in result', async () => {
     const response = JSON.stringify([
       { severity: 'suggestion', title: 'Test', file: 'a.ts', line: 1, description: 'Desc' },

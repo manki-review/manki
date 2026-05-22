@@ -2,7 +2,7 @@ import { spawn } from 'child_process';
 import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
-import { AnthropicClient, buildAnthropicAuth, resetCLIInstallPromise, sanitizeLogOutput, STALE_TIMEOUT_MS } from './anthropic';
+import { AnthropicClient, buildAnthropicAuth, extractAnthropicCLIUsage, resetCLIInstallPromise, sanitizeLogOutput, STALE_TIMEOUT_MS } from './anthropic';
 
 jest.mock('child_process', () => ({
   execFile: jest.fn(),
@@ -1321,5 +1321,64 @@ describe('buildAnthropicAuth', () => {
 
   it('oauth wins when both tokens are present', () => {
     expect(buildAnthropicAuth('oauth-tok', 'sk-key')).toEqual({ kind: 'oauth', token: 'oauth-tok' });
+  });
+});
+
+describe('extractAnthropicCLIUsage', () => {
+  it('lifts standard usage fields from a result event', () => {
+    expect(
+      extractAnthropicCLIUsage({
+        type: 'result',
+        usage: {
+          input_tokens: 1234,
+          output_tokens: 56,
+          cache_read_input_tokens: 999,
+        },
+      }),
+    ).toEqual({ inputTokens: 1234, outputTokens: 56, cachedTokens: 999, reasoningTokens: 0 });
+  });
+
+  it('coerces string-valued counters to integers', () => {
+    expect(
+      extractAnthropicCLIUsage({ usage: { input_tokens: '7', output_tokens: '13' } }),
+    ).toEqual({ inputTokens: 7, outputTokens: 13, cachedTokens: 0, reasoningTokens: 0 });
+  });
+
+  it('returns ZERO_USAGE when the event is missing or malformed', () => {
+    const zero = { inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 };
+    expect(extractAnthropicCLIUsage(null)).toEqual(zero);
+    expect(extractAnthropicCLIUsage({})).toEqual(zero);
+    expect(extractAnthropicCLIUsage({ usage: null })).toEqual(zero);
+    expect(extractAnthropicCLIUsage({ usage: { input_tokens: -5 } })).toEqual(zero);
+  });
+});
+
+describe('AnthropicClient API-path usage', () => {
+  let mockCreate: jest.Mock;
+
+  beforeEach(() => {
+    mockCreate = jest.fn();
+    (Anthropic as unknown as jest.Mock).mockImplementation(() => ({
+      messages: { create: mockCreate },
+    }));
+  });
+
+  it('lifts usage and measures latency on the SDK path', async () => {
+    mockCreate.mockResolvedValue({
+      content: [{ type: 'text', text: 'response' }],
+      usage: { input_tokens: 100, output_tokens: 25, cache_read_input_tokens: 10 },
+    });
+    const client = new AnthropicClient({ auth: { kind: 'apiKey', key: 'sk-key' }, model: 'claude-opus-4-6' });
+    const result = await client.sendMessage('sys', 'user');
+    expect(result.usage).toEqual({ inputTokens: 100, outputTokens: 25, cachedTokens: 10, reasoningTokens: 0 });
+    expect(typeof result.latencyMs).toBe('number');
+    expect(result.latencyMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('returns zero usage when the SDK omits the usage block', async () => {
+    mockCreate.mockResolvedValue({ content: [{ type: 'text', text: 'response' }] });
+    const client = new AnthropicClient({ auth: { kind: 'apiKey', key: 'sk-key' }, model: 'claude-opus-4-6' });
+    const result = await client.sendMessage('sys', 'user');
+    expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 });
   });
 });

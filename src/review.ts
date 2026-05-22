@@ -1163,6 +1163,7 @@ export async function runReview(
         reviewComplete: false,
         agentNames: team.agents.map(a => a.name),
         failedAgents,
+        ...(Object.keys(agentFailureReasons).length > 0 && { agentFailureReasons }),
       };
     }
 

@@ -1053,15 +1053,17 @@ async function runFullReview(
       const outputTokens = usage?.outputTokens ?? 0;
       return { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens };
     };
-    const reviewerUsage: LLMUsage = (result.agentUsage ? Array.from(result.agentUsage.values()) : []).reduce(
-      (acc, u) => ({
-        inputTokens: acc.inputTokens + u.inputTokens,
-        outputTokens: acc.outputTokens + u.outputTokens,
-        cachedTokens: acc.cachedTokens + u.cachedTokens,
-        reasoningTokens: acc.reasoningTokens + u.reasoningTokens,
-      }),
-      { inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 },
-    );
+    const reviewerUsage: LLMUsage | undefined = result.agentUsage && result.agentUsage.size > 0
+      ? Array.from(result.agentUsage.values()).reduce(
+          (acc, u) => ({
+            inputTokens: acc.inputTokens + u.inputTokens,
+            outputTokens: acc.outputTokens + u.outputTokens,
+            cachedTokens: acc.cachedTokens + u.cachedTokens,
+            reasoningTokens: acc.reasoningTokens + u.reasoningTokens,
+          }),
+          { inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 },
+        )
+      : undefined;
     const stageUsages: Array<['planner' | 'reviewer' | 'judge' | 'dedup', LLMUsage | undefined]> = [
       ['planner', result.plannerUsage],
       ['reviewer', reviewerUsage],
