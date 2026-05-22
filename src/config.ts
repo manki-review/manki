@@ -340,6 +340,11 @@ function deepMerge(defaults: ReviewConfig, overrides: Record<string, unknown>): 
       result.convergence = { ...defaults.convergence, ...(value as Record<string, unknown>) } as ReviewConfig['convergence'];
     } else if (key === 'stats' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
       result.stats = { ...defaults.stats, ...(value as Record<string, unknown>) } as ReviewConfig['stats'];
+    } else if (key === 'exclude_paths' && Array.isArray(value)) {
+      // Union with defaults so users adding a single pattern don't lose
+      // built-in skips (`*.lock`, `dist/**`, `*.generated.*`).
+      const userPatterns = value.filter((p): p is string => typeof p === 'string');
+      result.exclude_paths = Array.from(new Set([...defaults.exclude_paths, ...userPatterns]));
     } else {
       (result as Record<string, unknown>)[key] = value;
     }

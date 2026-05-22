@@ -156,13 +156,19 @@ reviewers:
       expect(config.reviewers[0].focus).toBe('custom focus area');
     });
 
-    it('replaces exclude_paths array entirely', () => {
+    it('merges user exclude_paths with defaults and dedupes', () => {
       const yaml = `
 exclude_paths:
   - "vendor/**"
+  - "dist/**"
 `;
       const config = loadConfigFromContent(yaml);
-      expect(config.exclude_paths).toEqual(['vendor/**']);
+      for (const pattern of DEFAULT_CONFIG.exclude_paths) {
+        expect(config.exclude_paths).toContain(pattern);
+      }
+      expect(config.exclude_paths).toContain('vendor/**');
+      const distOccurrences = config.exclude_paths.filter(p => p === 'dist/**').length;
+      expect(distOccurrences).toBe(1);
     });
 
     it('deep-merges memory object', () => {
