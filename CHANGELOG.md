@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- State-based head-SHA dedupe gate: `manki-review[bot]` now bails before any LLM call when a non-`DISMISSED` bot review already exists on the current head SHA. Closes the serialized-sibling race observed on [PR #805](https://github.com/manki-review/manki/pull/805) where one human review fanned out into a `pull_request_review` and `pull_request_review_comment` event pair, the workflow `concurrency` group serialized them, and the in-progress marker from #796 had already been cleared by the time run #2 scanned. The new `hasBotReviewOnCommit` helper in `src/github.ts` is consulted by `handlePullRequest`, `handleCommentTrigger`, `handleReviewCommentInteraction`, and `runFullReview` (defense in depth, right after `checkConcurrentSubmissionLock`). When the gate fires the run posts a `**Review skipped** for `<short-sha>` — a review has already been posted for this commit` comment so the user sees nothing was silently dropped. `@manki review` (force-review) still bypasses the gate so explicit re-review on the same SHA proceeds. `postReviewSkippedComment` takes a `SkipReason` (`'in_progress'` | `'already_reviewed'`) and always includes the short head SHA on both paths ([#806](https://github.com/manki-review/manki/issues/806)).
+
 ### Added
 
 - Every Manki review body now ends with a `Reviewed commit [`<short-sha>`](…)` footer linking to the exact commit reviewed, removing ambiguity about which SHA a verdict applies to and giving a stable human-visible anchor for every review across `APPROVED` / `COMMENTED` / `CHANGES_REQUESTED` ([#807](https://github.com/manki-review/manki/issues/807)).
