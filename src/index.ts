@@ -42,6 +42,14 @@ import { checkAndAutoApprove, resolveStaleThreads } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
+const ALLOWED_FINGERPRINT_TAGS = new Set<string>([
+  DEFENSIVE_HARDENING_TAG,
+  OWN_PROPOSAL_TAG,
+  CONTRADICTION_TAG,
+  RATCHET_SUPPRESSED_TAG,
+  RESOLVED_THREAD_SUPPRESSED_TAG,
+]);
+
 function readProviderInputs(): ProviderInputs {
   return {
     anthropicOauthToken: core.getInput('claude_code_oauth_token'),
@@ -907,7 +915,7 @@ async function runFullReview(
       ...(f.judgeConfidence && { judgeConfidence: f.judgeConfidence }),
       ...(f.reachability && { reachability: f.reachability }),
       ...(f.reachabilityReasoning && { reachabilityReasoning: f.reachabilityReasoning.slice(0, 500) }),
-      ...(f.tags && f.tags.length > 0 && { tags: [...f.tags] }),
+      ...(f.tags && f.tags.length > 0 && { tags: f.tags.filter(t => ALLOWED_FINGERPRINT_TAGS.has(t)) }),
       ...(f.originalSeverity && { originalSeverity: f.originalSeverity }),
     }));
     const context: RoundContext = {

@@ -43,6 +43,11 @@ export const RESOLVED_THREAD_SUPPRESSED_TAG = 'suppressed-by-resolved-thread' as
 export const OWN_PROPOSAL_TAG = 'own-proposal-followup' as const;
 export const IN_PR_SUPPRESSED_TAG = 'suppressed-in-pr' as const;
 
+export interface InterRoundDiffEmptyOverride {
+  applied: boolean;
+  affectedThreadCount: number;
+}
+
 /** Shared shape for the prose extracted from a review-thread comment body. */
 export interface FindingMetadata {
   description?: string;
@@ -135,7 +140,7 @@ export interface ReviewResult {
   crossRoundSuppressed?: number;
   crossRoundDemoted?: number;
   /** Set when the judge stage forced every open thread to `not_addressed` because the inter-round diff was known-empty. */
-  interRoundDiffEmptyOverride?: { applied: boolean; affectedThreadCount: number };
+  interRoundDiffEmptyOverride?: InterRoundDiffEmptyOverride;
   testNitSuppressedCount?: number;
 }
 
@@ -579,9 +584,10 @@ export interface RoundJudge {
    */
   ownProposalDemotedCount?: number;
   /**
-   * Subset of `crossRoundDemoted` tagged `CONTRADICTION_TAG`. Currently this
-   * equals `crossRoundDemoted`, but the field is split so future demotion
-   * categories don't collapse into a single opaque counter.
+   * Subset of `crossRoundDemoted` tagged `CONTRADICTION_TAG`. Together with
+   * `ownProposalDemotedCount`, accounts for the full `crossRoundDemoted`
+   * aggregate; split so future demotion categories don't collapse into a
+   * single opaque counter.
    */
   contradictionDemotedCount?: number;
   /** Subset of `crossRoundSuppressed` tagged `RATCHET_SUPPRESSED_TAG`. */
@@ -594,7 +600,7 @@ export interface RoundJudge {
    * (force-pushed rebase to identical tree). `applied: true` means the
    * synthetic evaluations replaced whatever the LLM returned.
    */
-  interRoundDiffEmptyOverride?: { applied: boolean; affectedThreadCount: number };
+  interRoundDiffEmptyOverride?: InterRoundDiffEmptyOverride;
   /**
    * Per-open-thread judgment from the judge stage. Surfaced in the embedded
    * round-context block so the resolution signal is observable post-hoc when

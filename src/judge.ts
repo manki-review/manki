@@ -16,7 +16,7 @@ import { safeTruncate } from './utils';
 import { sanitize, titlesOverlap } from './recap';
 import { validateSeverity } from './review';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
-import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DiffFile, Finding, FindingFingerprintEntry, FindingReachability, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, NoiseLevel, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, ParsedDiff, PrContext, ThreadEvaluation } from './types';
+import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DiffFile, Finding, FindingFingerprintEntry, FindingReachability, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, InterRoundDiffEmptyOverride, NoiseLevel, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, ParsedDiff, PrContext, ThreadEvaluation } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -831,7 +831,7 @@ export async function runJudgeAgent(
   crossRoundSuppressed?: number;
   crossRoundDemoted?: number;
   inPrSuppressedCount?: number;
-  interRoundDiffEmptyOverride?: { applied: boolean; affectedThreadCount: number };
+  interRoundDiffEmptyOverride?: InterRoundDiffEmptyOverride;
 }> {
   const { findings, diff, rawDiff, memory, prContext, linkedIssues, agentCount, isFollowUp, openThreads, priorRounds, inPrSuppressions, interRoundDiff, resolvedThreadIds, suppressResolvedThreads } = input;
   const provenanceMap = input.provenanceMap ?? (rawDiff ? computeProvenanceMap(priorRounds, rawDiff) : []);
