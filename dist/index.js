@@ -52465,9 +52465,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
             }
             else {
                 failedAgents.push(agent.name);
-                if (lastPassError) {
-                    agentFailureReasons[agent.name] = (0, providers_1.sanitizeLogOutput)(String(lastPassError?.message ?? lastPassError)).slice(0, 500);
-                }
+                agentFailureReasons[agent.name] = (0, providers_1.sanitizeLogOutput)(String((lastPassError?.message ?? lastPassError) || 'unknown failure')).slice(0, 500);
                 core.warning(`${agent.name}: all passes failed`);
                 if (onProgress) {
                     onProgress({
@@ -52549,9 +52547,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
                 }
                 else {
                     stillFailed.push(agent.name);
-                    if (retryLastError) {
-                        agentFailureReasons[agent.name] = (0, providers_1.sanitizeLogOutput)(String(retryLastError?.message ?? retryLastError)).slice(0, 500);
-                    }
+                    agentFailureReasons[agent.name] = (0, providers_1.sanitizeLogOutput)(String((retryLastError?.message ?? retryLastError) || 'unknown failure')).slice(0, 500);
                     core.warning(`${agent.name}: retry ${retryCountMap[agent.name]} failed (all passes)`);
                     if (onProgress) {
                         onProgress({
@@ -52689,9 +52685,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
                 }
                 else {
                     stillFailed.push(agent.name);
-                    if (error) {
-                        agentFailureReasons[agent.name] = (0, providers_1.sanitizeLogOutput)(String(error?.message ?? error)).slice(0, 500);
-                    }
+                    agentFailureReasons[agent.name] = (0, providers_1.sanitizeLogOutput)(String((error?.message ?? error) || 'unknown failure')).slice(0, 500);
                     core.warning(`${agent.name}: retry ${retryCount[agent.name]} failed`);
                     if (onProgress) {
                         onProgress({
