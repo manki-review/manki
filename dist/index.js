@@ -45460,13 +45460,13 @@ async function markOwnProgressCommentCancelled(octokit, owner, repo, prNumber, r
  */
 async function fetchBotReviews(octokit, owner, repo, prNumber) {
     try {
-        const { data: reviews } = await octokit.rest.pulls.listReviews({
+        const reviews = await octokit.paginate(octokit.rest.pulls.listReviews, {
             owner,
             repo,
             pull_number: prNumber,
             per_page: 100,
         });
-        return reviews
+        return reviews.slice(0, 500)
             .filter((r) => r.user?.login === BOT_LOGIN && r.user?.type === 'Bot' && r.state !== 'DISMISSED')
             .map((r) => {
             const raw = r;
@@ -46905,14 +46905,15 @@ async function handleReviewCommentInteraction() {
     const { client } = built;
     const memoryConfig = config.memory?.enabled ? config.memory : undefined;
     const memoryToken = config.memory?.enabled ? (0, auth_1.getMemoryToken)(octokitCache.resolvedToken) ?? undefined : undefined;
+    const command = (0, interaction_1.parseCommand)(body);
+    const forceReview = (0, interaction_1.isReviewRequest)(body);
     const headSha = payload.pull_request?.head?.sha;
     const prNumberForGuard = payload.pull_request?.number;
-    if (headSha && prNumberForGuard && await (0, github_1.hasBotReviewOnCommit)(octokit, owner, repo, prNumberForGuard, headSha)) {
+    if (!forceReview && headSha && prNumberForGuard && await (0, github_1.hasBotReviewOnCommit)(octokit, owner, repo, prNumberForGuard, headSha)) {
         core.info(`Bot already reviewed commit ${headSha.slice(0, 7)} — skipping serialized sibling run`);
         await postReviewSkippedComment(octokit, owner, repo, prNumberForGuard, headSha, 'already_reviewed');
         return;
     }
-    const command = (0, interaction_1.parseCommand)(body);
     if (command.type !== 'generic') {
         const prNumber = payload.pull_request?.number;
         if (prNumber) {
