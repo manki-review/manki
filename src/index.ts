@@ -1437,15 +1437,16 @@ async function handleReviewCommentInteraction(): Promise<void> {
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;
   const memoryToken = config.memory?.enabled ? getMemoryToken(octokitCache.resolvedToken) ?? undefined : undefined;
 
+  const command = parseCommand(body);
+  const forceReview = isReviewRequest(body);
+
   const headSha = payload.pull_request?.head?.sha;
   const prNumberForGuard = payload.pull_request?.number;
-  if (headSha && prNumberForGuard && await hasBotReviewOnCommit(octokit, owner, repo, prNumberForGuard, headSha)) {
+  if (!forceReview && headSha && prNumberForGuard && await hasBotReviewOnCommit(octokit, owner, repo, prNumberForGuard, headSha)) {
     core.info(`Bot already reviewed commit ${headSha.slice(0, 7)} — skipping serialized sibling run`);
     await postReviewSkippedComment(octokit, owner, repo, prNumberForGuard, headSha, 'already_reviewed');
     return;
   }
-
-  const command = parseCommand(body);
   if (command.type !== 'generic') {
     const prNumber = payload.pull_request?.number;
     if (prNumber) {
