@@ -2399,6 +2399,66 @@ describe('runFullReview orchestration', () => {
       expect(roundContext!.judge.verdictTrace?.novelWarnings).toEqual([]);
       expect(roundContext!.judge.verdictTrace?.unresolvedPriors).toEqual([]);
     });
+
+    it('sets `interRoundDiffState` to `empty` when prior rounds exist and diff is blank', async () => {
+      seedPriorRounds([{ round: 1, commitSha: 'prior-sha', timestamp: '2025-01-01T00:00:00Z', findings: [] }]);
+      jest.mocked(ghUtils.fetchInterRoundDiff).mockResolvedValue('');
+
+      await callRunFullReview();
+
+      const roundContext = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+      expect(roundContext!.judge.interRoundDiffState).toBe('empty');
+    });
+
+    it('sets `interRoundDiffState` to `changed` when prior rounds exist and diff is non-empty', async () => {
+      seedPriorRounds([{ round: 1, commitSha: 'prior-sha', timestamp: '2025-01-01T00:00:00Z', findings: [] }]);
+      jest.mocked(ghUtils.fetchInterRoundDiff).mockResolvedValue('diff content');
+
+      await callRunFullReview();
+
+      const roundContext = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+      expect(roundContext!.judge.interRoundDiffState).toBe('changed');
+    });
+
+    it('populates `threadResolutionOverrides` when uncertain evaluations are present', async () => {
+      jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
+        previousFindings: [
+          { title: 'Old issue', file: 'src/app.ts', line: 1, severity: 'warning' as const, status: 'open' as const, threadId: 'T_open' },
+        ],
+        recapContext: '',
+        priorRounds: [],
+        openThreadsState: 'fetched',
+      });
+      jest.mocked(reviewModule.runReview).mockResolvedValue({
+        verdict: 'APPROVE', summary: '', findings: [], highlights: [], reviewComplete: true,
+        agentNames: ['general'],
+        threadEvaluations: [
+          { threadId: 'T_unknown', status: 'uncertain', reason: 'not sure' },
+        ],
+      });
+
+      await callRunFullReview();
+
+      const roundContext = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+      expect(roundContext!.judge.threadResolutionOverrides).toEqual({
+        addressedDropped: 0,
+        notAddressedOverridden: 0,
+        uncertainCount: 1,
+      });
+    });
+
+    it('omits `threadResolutionOverrides` when all counts are zero', async () => {
+      jest.mocked(reviewModule.runReview).mockResolvedValue({
+        verdict: 'APPROVE', summary: '', findings: [], highlights: [], reviewComplete: true,
+        agentNames: ['general'],
+        threadEvaluations: [],
+      });
+
+      await callRunFullReview();
+
+      const roundContext = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+      expect(roundContext!.judge.threadResolutionOverrides).toBeUndefined();
+    });
   });
 
   describe('meta.round derivation', () => {
