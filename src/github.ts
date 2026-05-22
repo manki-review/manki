@@ -793,7 +793,8 @@ function dynamicFence(content: string): string {
 
 function buildReviewedCommitFooter(owner: string, repo: string, commitSha: string, serverUrl: string): string {
   const shortSha = commitSha.slice(0, 7);
-  return `Reviewed commit [\`${shortSha}\`](${serverUrl}/${owner}/${repo}/commit/${commitSha})`;
+  const base = serverUrl.replace(/\/+$/, '');
+  return `Reviewed commit [\`${shortSha}\`](${base}/${owner}/${repo}/commit/${commitSha})`;
 }
 
 function appendReviewedCommitFooter(body: string, footer: string): string {
