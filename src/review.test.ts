@@ -19,8 +19,10 @@ import {
   runPlanner,
   parseAgentPicks,
   sanitizePlannerField,
+  buildProvenanceFields,
   ReviewClients,
   PLANNER_TIMEOUT_MS,
+  PlannerOutcomeSink,
 } from './review';
 import { AGENT_POOL, TRIVIAL_VERIFIER_AGENT } from './agents';
 import * as core from '@actions/core';
@@ -4877,6 +4879,67 @@ describe('runPlanner', () => {
       warnSpy.mockRestore();
     }
   });
+
+  it.each<[string, string, string]>([
+    ['invalid teamSize', JSON.stringify({ teamSize: 99, reviewerEffort: 'medium', judgeEffort: 'medium', prType: 'feat' }), 'invalid_teamSize'],
+    ['invalid judgeEffort', JSON.stringify({ teamSize: 3, reviewerEffort: 'medium', judgeEffort: 'max', prType: 'feat' }), 'invalid_judgeEffort'],
+    ['exception', 'not valid json', 'exception'],
+  ])('sets outcome.fallbackReason on failure: %s', async (_label, response, expectedReason) => {
+    const client = makeClient(response);
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const outcome: PlannerOutcomeSink = {};
+    const result = await runPlanner(client, diff, undefined, undefined, undefined, outcome);
+    expect(result).toBeNull();
+    expect(outcome.fallbackReason).toBe(expectedReason);
+  });
+
+  it('sets outcome.fallbackReason=timeout on planner timeout', async () => {
+    jest.useFakeTimers();
+    try {
+      const client = {
+        sendMessage: jest.fn().mockImplementation(() => new Promise(() => {})),
+      } as unknown as import('./providers').LLMClient;
+      const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+      const outcome: PlannerOutcomeSink = {};
+      const resultPromise = runPlanner(client, diff, undefined, undefined, undefined, outcome);
+      jest.advanceTimersByTime(PLANNER_TIMEOUT_MS);
+      const result = await resultPromise;
+      expect(result).toBeNull();
+      expect(outcome.fallbackReason).toBe('timeout');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('sets outcome.fallbackReason=agents_teamSize_mismatch when agent count does not match teamSize', async () => {
+    const response = JSON.stringify({
+      teamSize: 3,
+      judgeEffort: 'medium',
+      prType: 'feat',
+      agents: [
+        { name: 'Security & Safety', effort: 'high' },
+        { name: 'Correctness & Logic', effort: 'medium' },
+        { name: 'Architecture & Design', effort: 'low' },
+        { name: 'Testing & Coverage', effort: 'medium' },
+      ],
+    });
+    const client = makeClient(response);
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const outcome: PlannerOutcomeSink = {};
+    const result = await runPlanner(client, diff, undefined, undefined, undefined, outcome);
+    expect(result).toBeNull();
+    expect(outcome.fallbackReason).toBe('agents_teamSize_mismatch');
+  });
+
+  it('does not set outcome.fallbackReason on success', async () => {
+    const response = JSON.stringify({ teamSize: 3, reviewerEffort: 'medium', judgeEffort: 'medium', prType: 'feat' });
+    const client = makeClient(response);
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const outcome: PlannerOutcomeSink = {};
+    const result = await runPlanner(client, diff, undefined, undefined, undefined, outcome);
+    expect(result).not.toBeNull();
+    expect(outcome.fallbackReason).toBeUndefined();
+  });
 });
 
 describe('selectTeam with teamSizeOverride', () => {
@@ -5315,6 +5378,37 @@ describe('selectTeam with teamSizeOverride', () => {
     expect(roster.agents).toHaveLength(1);
     expect(roster.agents[0]).toBe(TRIVIAL_VERIFIER_AGENT);
     expect(roster.level).toBe('trivial');
+  });
+
+  it('populates `coreAgentInjections` when the planner omits Security & Safety on a sensitive diff', () => {
+    const diff = makeDiff({
+      totalAdditions: 10,
+      totalDeletions: 5,
+      files: [{ path: 'src/auth.ts', changeType: 'modified', hunks: [] }],
+    });
+    const config = makeConfig();
+    const picks: AgentPick[] = [
+      { name: 'Architecture & Design', effort: 'medium' },
+      { name: 'Correctness & Logic', effort: 'medium' },
+    ];
+    const roster = selectTeam(diff, config, undefined, 2, picks);
+    expect(roster.coreAgentInjections).toEqual(['Security & Safety']);
+    expect(roster.agents.map(a => a.name)).toContain('Security & Safety');
+  });
+
+  it('leaves `coreAgentInjections` empty when Security & Safety is already in the planner picks', () => {
+    const diff = makeDiff({
+      totalAdditions: 10,
+      totalDeletions: 5,
+      files: [{ path: 'src/auth.ts', changeType: 'modified', hunks: [] }],
+    });
+    const config = makeConfig();
+    const picks: AgentPick[] = [
+      { name: 'Security & Safety', effort: 'high' },
+      { name: 'Correctness & Logic', effort: 'medium' },
+    ];
+    const roster = selectTeam(diff, config, undefined, 2, picks);
+    expect(roster.coreAgentInjections).toEqual([]);
   });
 });
 
@@ -6478,5 +6572,281 @@ describe('wrapClientForUsage', () => {
 
     await client.sendMessage('sys', 'retry');
     expect(Math.max(0, getTotals().calls - 1)).toBe(1);
+  });
+});
+
+describe('planner provenance in ReviewResult', () => {
+  const mockedRunJudgeAgent = jest.mocked(runJudgeAgent);
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
+  });
+
+  function makeClients(plannerResponse?: string): ReviewClients {
+    const clients: ReviewClients = {
+      reviewer: {
+        sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
+      } as unknown as import('./providers').LLMClient,
+      judge: {
+        sendMessage: jest.fn(),
+      } as unknown as import('./providers').LLMClient,
+    };
+    if (plannerResponse !== undefined) {
+      clients.planner = {
+        sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
+      } as unknown as import('./providers').LLMClient;
+    }
+    return clients;
+  }
+
+  it('records `source: "planner"` on the success path', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 3,
+      reviewerEffort: 'medium',
+      judgeEffort: 'medium',
+      prType: 'feat',
+      language: 'typescript',
+      context: 'GitHub Actions bot',
+      agents: [
+        { name: 'Security & Safety', effort: 'medium' },
+        { name: 'Architecture & Design', effort: 'low' },
+        { name: 'Correctness & Logic', effort: 'high' },
+      ],
+    });
+    const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'auto' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
+    expect(result.plannerSource).toBe('planner');
+    expect(result.plannerFallbackReason).toBeUndefined();
+  });
+
+  it('records `source: "heuristic_fallback"` and a `fallbackReason` on planner failure', async () => {
+    const plannerResponse = JSON.stringify({ teamSize: 99, reviewerEffort: 'medium', judgeEffort: 'medium', prType: 'feat' });
+    const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'auto' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
+    expect(result.plannerSource).toBe('heuristic_fallback');
+    expect(result.plannerFallbackReason).toBe('invalid_teamSize');
+  });
+
+  it('records `source: "heuristic"` when the user pinned `review_level`', async () => {
+    const plannerResponse = JSON.stringify({ teamSize: 3, reviewerEffort: 'medium', judgeEffort: 'medium', prType: 'feat' });
+    const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'small' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
+    expect(result.plannerSource).toBe('heuristic');
+    // Planner is configured but `review_level !== 'auto'`, so it must not run.
+    expect((makeClients(plannerResponse).planner!.sendMessage as jest.Mock)).not.toHaveBeenCalled();
+  });
+
+  it('records `source: "disabled"` when no planner client is configured', async () => {
+    const result = await runReview(makeClients(), makeConfig({ review_level: 'auto' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
+    expect(result.plannerSource).toBe('disabled');
+  });
+
+  it('captures `fallbackReason: "timeout"` when the planner times out', async () => {
+    jest.useFakeTimers();
+    try {
+      const clients: ReviewClients = {
+        reviewer: { sendMessage: jest.fn().mockResolvedValue({ content: '[]' }) } as unknown as import('./providers').LLMClient,
+        judge: { sendMessage: jest.fn() } as unknown as import('./providers').LLMClient,
+        planner: { sendMessage: jest.fn().mockImplementation(() => new Promise(() => {})) } as unknown as import('./providers').LLMClient,
+      };
+      const config = makeConfig({ review_level: 'auto' });
+      const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+      const reviewPromise = runReview(clients, config, diff, 'raw diff', 'repo');
+      jest.advanceTimersByTime(PLANNER_TIMEOUT_MS);
+      jest.useRealTimers();
+      const result = await reviewPromise;
+      expect(result.plannerSource).toBe('heuristic_fallback');
+      expect(result.plannerFallbackReason).toBe('timeout');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('surfaces `coreAgentInjections` when the team-builder force-adds Security & Safety', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 2,
+      reviewerEffort: 'medium',
+      judgeEffort: 'medium',
+      prType: 'feat',
+      agents: [
+        { name: 'Architecture & Design', effort: 'medium' },
+        { name: 'Correctness & Logic', effort: 'medium' },
+      ],
+    });
+    const diff = makeDiff({
+      totalAdditions: 10,
+      totalDeletions: 5,
+      files: [{ path: 'src/auth.ts', changeType: 'modified', hunks: [] }],
+    });
+    const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'auto' }), diff, 'raw diff', 'repo');
+    expect(result.coreAgentInjections).toEqual(['Security & Safety']);
+    expect(result.agentNames).toContain('Security & Safety');
+  });
+
+  it('emits `coreAgentInjections` as empty array when no reinjection fires', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 3,
+      reviewerEffort: 'medium',
+      judgeEffort: 'medium',
+      prType: 'feat',
+      agents: [
+        { name: 'Security & Safety', effort: 'medium' },
+        { name: 'Architecture & Design', effort: 'medium' },
+        { name: 'Correctness & Logic', effort: 'medium' },
+      ],
+    });
+    const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'auto' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
+    expect(result.coreAgentInjections).toEqual([]);
+  });
+
+  it('emits `priorRoundEffortDowngrades` as empty array when no prior rounds exist', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 3,
+      reviewerEffort: 'medium',
+      judgeEffort: 'medium',
+      prType: 'feat',
+      agents: [
+        { name: 'Security & Safety', effort: 'high' },
+        { name: 'Architecture & Design', effort: 'medium' },
+        { name: 'Correctness & Logic', effort: 'medium' },
+      ],
+    });
+    const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'auto' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
+    expect(result.priorRoundEffortDowngrades).toEqual([]);
+  });
+
+  it('records `priorRoundEffortDowngrades` when the safety net clamps a pick', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 3,
+      reviewerEffort: 'medium',
+      judgeEffort: 'medium',
+      prType: 'feat',
+      agents: [
+        { name: 'Security & Safety', effort: 'high' },
+        { name: 'Architecture & Design', effort: 'medium' },
+        { name: 'Correctness & Logic', effort: 'medium' },
+      ],
+    });
+    const priorRounds: LegacyHandoverRoundFixture[] = [
+      {
+        round: 1,
+        commitSha: 'abc1',
+        timestamp: 't1',
+        findings: [
+          { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'suggestion', title: 't1', authorReply: 'agree', specialist: 'Security & Safety' },
+          { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'suggestion', title: 't2', authorReply: 'agree', specialist: 'Security & Safety' },
+        ],
+      },
+    ];
+    const result = await runReview(
+      makeClients(plannerResponse), makeConfig({ review_level: 'auto' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }),
+      'raw diff', 'repo',
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      priorRounds.map(roundContextFromLegacy),
+    );
+    expect(result.priorRoundEffortDowngrades).toEqual([{ agent: 'Security & Safety', from: 'high', to: 'low' }]);
+  });
+
+  it('populates `agentEffortMap` with per-agent run-time effort from planner picks', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 3,
+      reviewerEffort: 'medium',
+      judgeEffort: 'medium',
+      prType: 'feat',
+      agents: [
+        { name: 'Security & Safety', effort: 'high' },
+        { name: 'Architecture & Design', effort: 'low' },
+        { name: 'Correctness & Logic', effort: 'medium' },
+      ],
+    });
+    const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'auto' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
+    expect(result.agentEffortMap?.get('Security & Safety')).toBe('high');
+    expect(result.agentEffortMap?.get('Architecture & Design')).toBe('low');
+    expect(result.agentEffortMap?.get('Correctness & Logic')).toBe('medium');
+  });
+
+  it('populates `agentEffortMap` with `medium` default on heuristic-fallback rounds', async () => {
+    const plannerResponse = JSON.stringify({ teamSize: 99, reviewerEffort: 'medium', judgeEffort: 'medium', prType: 'feat' });
+    const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'auto' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
+    for (const name of result.agentNames) {
+      expect(result.agentEffortMap?.get(name)).toBe('medium');
+    }
+  });
+
+  it('populates `agentEffortMap` using planner `reviewerEffort` when no per-agent picks are provided', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 3,
+      reviewerEffort: 'high',
+      judgeEffort: 'medium',
+      prType: 'feat',
+    });
+    const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'auto' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
+    for (const name of result.agentNames) {
+      expect(result.agentEffortMap?.get(name)).toBe('high');
+    }
+  });
+
+  it('records `multiPassConsistency` per agent on multi-pass rounds', async () => {
+    const findings = [
+      { severity: 'warning' as const, title: 'Bug A', file: 'src/a.ts', line: 5, description: 'd', reviewers: ['Security & Safety'] },
+      { severity: 'warning' as const, title: 'Bug B', file: 'src/a.ts', line: 10, description: 'd', reviewers: ['Security & Safety'] },
+    ];
+    // Two passes per agent; both return the same two findings, so all consistent.
+    const reviewerSendMessage = jest.fn().mockResolvedValue({ content: JSON.stringify(findings) });
+    const clients: ReviewClients = {
+      reviewer: { sendMessage: reviewerSendMessage } as unknown as import('./providers').LLMClient,
+      judge: { sendMessage: jest.fn() } as unknown as import('./providers').LLMClient,
+    };
+    const config = makeConfig({ review_passes: 2 });
+    const diff = makeDiff({
+      totalAdditions: 10,
+      totalDeletions: 5,
+      files: [{ path: 'src/a.ts', changeType: 'modified', hunks: [] }],
+    });
+    const result = await runReview(clients, config, diff, 'raw diff', 'repo');
+    // Without a planner, the heuristic fallback team is {Security, Architecture, Correctness}
+    expect(result.agentMultiPassConsistency).toBeDefined();
+    const sec = result.agentMultiPassConsistency!.get('Security & Safety');
+    expect(sec).toEqual({ consistent: 2, totalRaw: 4 });
+  });
+
+  it('omits `agentMultiPassConsistency` on single-pass rounds', async () => {
+    const result = await runReview(makeClients(), makeConfig(), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
+    expect(result.agentMultiPassConsistency).toBeUndefined();
+  });
+});
+
+describe('buildProvenanceFields', () => {
+  const baseTeam = { level: 'medium' as const, agents: [], lineCount: 0 };
+
+  it('always includes `coreAgentInjections` and `priorRoundEffortDowngrades` even when empty', () => {
+    const result = buildProvenanceFields('planner', undefined, baseTeam, [], new Map(), new Map());
+    expect(result.coreAgentInjections).toEqual([]);
+    expect(result.priorRoundEffortDowngrades).toEqual([]);
+    expect(result.plannerSource).toBe('planner');
+    expect(result).not.toHaveProperty('plannerFallbackReason');
+    expect(result).not.toHaveProperty('agentMultiPassConsistency');
+  });
+
+  it('includes non-empty `coreAgentInjections`', () => {
+    const team = { ...baseTeam, coreAgentInjections: ['Security & Safety'] };
+    const result = buildProvenanceFields('planner', undefined, team, [], new Map(), new Map());
+    expect(result.coreAgentInjections).toEqual(['Security & Safety']);
+  });
+
+  it('includes non-empty `priorRoundEffortDowngrades`', () => {
+    const downgrades = [{ agent: 'Security & Safety', from: 'high' as const, to: 'low' as const }];
+    const result = buildProvenanceFields('heuristic_fallback', 'timeout', baseTeam, downgrades, new Map(), new Map());
+    expect(result.priorRoundEffortDowngrades).toEqual(downgrades);
+    expect(result.plannerFallbackReason).toBe('timeout');
+  });
+
+  it('includes `agentMultiPassConsistency` when non-empty', () => {
+    const consistency = new Map([['Security & Safety', { consistent: 2, totalRaw: 4 }]]);
+    const result = buildProvenanceFields('planner', undefined, baseTeam, [], consistency, new Map());
+    expect(result.agentMultiPassConsistency?.get('Security & Safety')).toEqual({ consistent: 2, totalRaw: 4 });
+  });
+
+  it('omits `agentMultiPassConsistency` when the map is empty', () => {
+    const result = buildProvenanceFields('planner', undefined, baseTeam, [], new Map(), new Map());
+    expect(result).not.toHaveProperty('agentMultiPassConsistency');
   });
 });

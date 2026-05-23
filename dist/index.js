@@ -46644,6 +46644,9 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
                 const durationMs = result.agentDurationMs?.get(name);
                 const retryCount = result.agentRetryCount?.get(name);
                 const failureReason = result.agentFailureReasons?.[name];
+                const model = (0, config_1.resolveAgentModel)(config, name, 'reviewer');
+                const effort = result.agentEffortMap?.get(name);
+                const multiPassConsistency = result.agentMultiPassConsistency?.get(name);
                 return {
                     name,
                     findingsRaw: rawFindings.filter(f => f.reviewers.includes(name)).length,
@@ -46655,6 +46658,9 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
                     outputTokens: usage?.outputTokens ?? 0,
                     retryCount: retryCount ?? 0,
                     ...(failureReason && { failureReason }),
+                    model,
+                    ...(effort && { effort }),
+                    ...(multiPassConsistency && { multiPassConsistency }),
                 };
             })
             : undefined;
@@ -46798,16 +46804,30 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
                 judge: judgeModel,
                 dedup: dedupModel,
             },
-            planner: result.plannerResult
-                ? {
-                    used: true,
+            planner: (() => {
+                const source = result.plannerSource ?? (result.plannerResult ? 'planner' : 'disabled');
+                const used = source === 'planner';
+                const base = {
+                    source,
+                    used,
+                    coreAgentInjections: result.coreAgentInjections ?? [],
+                    priorRoundEffortDowngrades: result.priorRoundEffortDowngrades ?? [],
+                    ...(result.plannerFallbackReason && { fallbackReason: result.plannerFallbackReason }),
+                };
+                if (!result.plannerResult)
+                    return base;
+                return {
+                    ...base,
                     teamSize: result.plannerResult.teamSize,
                     reviewerEffort: result.plannerResult.reviewerEffort,
                     judgeEffort: result.plannerResult.judgeEffort,
                     prType: result.plannerResult.prType,
                     ...(dashboard.plannerDurationMs != null && { durationMs: dashboard.plannerDurationMs }),
-                }
-                : { used: false },
+                    ...(result.plannerResult.language && { language: result.plannerResult.language }),
+                    ...(result.plannerResult.context && { context: result.plannerResult.context }),
+                    ...(result.plannerResult.agents && { agents: result.plannerResult.agents }),
+                };
+            })(),
             reviewers: {
                 agents: result.agentNames,
                 ...(agentMetrics && { agentMetrics }),
@@ -51428,6 +51448,35 @@ function parseContextBlocks(reviews, owner, repo, prNumber) {
             if (ctx.planner && typeof ctx.planner.prType === 'string') {
                 ctx.planner.prType = (0, types_1.migrateLegacyPrType)(ctx.planner.prType);
             }
+            if (ctx.planner) {
+                // Back-compat: pre-5.2.0 context blocks predate the structured planner
+                // provenance fields. Project the old `used: boolean` onto the new
+                // `source` enum so consumers reading `ctx.planner.source` get a defined
+                // value, and seed empty arrays for the new list fields.
+                if (typeof ctx.planner.source !== 'string') {
+                    // `fallbackReason` was not persisted before 5.2.0, so the
+                    // `heuristic_fallback` branch below is unreachable for old context
+                    // blocks. Pre-5.2.0 rounds where the planner was attempted but
+                    // failed will map to `heuristic`. The attempted-but-failed
+                    // distinction is unrecoverable because the data was never recorded.
+                    if (ctx.planner.used) {
+                        ctx.planner.source = 'planner';
+                    }
+                    else if (ctx.planner.fallbackReason) {
+                        ctx.planner.source = 'heuristic_fallback';
+                    }
+                    else {
+                        ctx.planner.source = 'heuristic';
+                    }
+                    ctx.planner.used = ctx.planner.source === 'planner';
+                }
+                if (!Array.isArray(ctx.planner.coreAgentInjections)) {
+                    ctx.planner.coreAgentInjections = [];
+                }
+                if (!Array.isArray(ctx.planner.priorRoundEffortDowngrades)) {
+                    ctx.planner.priorRoundEffortDowngrades = [];
+                }
+            }
             const existing = byRound.get(round);
             if (existing) {
                 duplicateRounds.add(round);
@@ -51875,6 +51924,7 @@ exports.sanitizePlannerField = sanitizePlannerField;
 exports.parseAgentPicks = parseAgentPicks;
 exports.runPlanner = runPlanner;
 exports.collectPriorRoundAgents = collectPriorRoundAgents;
+exports.buildProvenanceFields = buildProvenanceFields;
 exports.runReview = runReview;
 exports.buildReviewerSystemPrompt = buildReviewerSystemPrompt;
 exports.buildReviewerUserMessage = buildReviewerUserMessage;
@@ -52014,11 +52064,13 @@ function selectTeam(diff, config, customReviewers, teamSizeOverride, agentPicks,
             // string literals could suppress the security specialist on a sensitive
             // change. This guard is path-based, not prompt-based, so it cannot be
             // bypassed by injected instructions.
+            const coreAgentInjections = [];
             const securityAgent = pool.find(a => a.name === 'Security & Safety');
             if (securityAgent && !final.some(a => a.name === 'Security & Safety') && hasSensitivePaths(diff)) {
                 if (!silent)
                     core.info('Security & Safety force-added: planner omitted it but diff touches security-sensitive paths');
                 final.push(securityAgent);
+                coreAgentInjections.push(securityAgent.name);
             }
             logPinAudit(final, priorNames, silent);
             let level;
@@ -52028,7 +52080,7 @@ function selectTeam(diff, config, customReviewers, teamSizeOverride, agentPicks,
                 level = 'medium';
             else
                 level = 'large';
-            return { level, agents: final, lineCount };
+            return { level, agents: final, lineCount, coreAgentInjections };
         }
         // If resolution failed entirely, fall through to heuristic
     }
@@ -52304,7 +52356,7 @@ function parseAgentPicks(raw, availableNames) {
         return null;
     return picks;
 }
-async function runPlanner(client, diff, prContext, customReviewers, priorRoundHints) {
+async function runPlanner(client, diff, prContext, customReviewers, priorRoundHints, outcome) {
     let timeoutId;
     const timeoutPromise = new Promise((_, reject) => {
         timeoutId = setTimeout(() => reject(new PlannerTimeoutError()), exports.PLANNER_TIMEOUT_MS);
@@ -52324,11 +52376,15 @@ async function runPlanner(client, diff, prContext, customReviewers, priorRoundHi
         const teamSize = parsed.teamSize;
         if (!VALID_TEAM_SIZES.has(teamSize)) {
             core.warning(`Planner returned invalid teamSize ${teamSize} — falling back to heuristic`);
+            if (outcome)
+                outcome.fallbackReason = 'invalid_teamSize';
             return null;
         }
         const judgeEffort = parsed.judgeEffort;
         if (!VALID_EFFORTS.has(judgeEffort)) {
             core.warning('Planner returned invalid judgeEffort — falling back to heuristic');
+            if (outcome)
+                outcome.fallbackReason = 'invalid_judgeEffort';
             return null;
         }
         // Parse reviewerEffort as fallback (backward compat)
@@ -52343,6 +52399,8 @@ async function runPlanner(client, diff, prContext, customReviewers, priorRoundHi
         if (agents) {
             if (agents.length !== teamSize) {
                 core.warning(`Planner agents.length (${agents.length}) differs from teamSize (${teamSize}) — falling back to heuristic`);
+                if (outcome)
+                    outcome.fallbackReason = 'agents_teamSize_mismatch';
                 return null;
             }
         }
@@ -52357,10 +52415,13 @@ async function runPlanner(client, diff, prContext, customReviewers, priorRoundHi
         clearTimeout(timeoutId);
         if (error instanceof PlannerTimeoutError) {
             core.warning('Planner timed out, falling back to heuristic team selection. If your workflow does not pre-install the Claude Code CLI, see the "spawn claude ENOENT" row in SETUP.md.');
+            if (outcome)
+                outcome.fallbackReason = 'timeout';
+            return null;
         }
-        else {
-            core.warning(`Planner failed: ${error} — falling back to heuristic team selection`);
-        }
+        core.warning(`Planner failed: ${error} — falling back to heuristic team selection`);
+        if (outcome)
+            outcome.fallbackReason = 'exception';
         return null;
     }
 }
@@ -52412,9 +52473,10 @@ const EFFORT_DOWNGRADE_MIN_SAMPLE = 2;
  */
 function applyEffortDowngrade(picks, hints) {
     if (hints.length === 0)
-        return;
+        return [];
     const lastHint = hints[hints.length - 1];
     const byName = new Map(lastHint.specialistOutcomes.map(o => [o.specialist, o]));
+    const downgrades = [];
     for (const pick of picks) {
         if (pick.effort !== 'high')
             continue;
@@ -52426,8 +52488,10 @@ function applyEffortDowngrade(picks, hints) {
         if (outcome.findingsKept !== 0)
             continue;
         core.info(`Downgrading "${pick.name}" effort from high to low — round ${lastHint.round} dismissed all ${outcome.findingsDismissed} findings from this specialist`);
+        downgrades.push({ agent: pick.name, from: pick.effort, to: 'low' });
         pick.effort = 'low';
     }
+    return downgrades;
 }
 function emitHeuristicFallbackPlanning(onProgress, team, plannerDurationMs) {
     onProgress({
@@ -52437,6 +52501,16 @@ function emitHeuristicFallbackPlanning(onProgress, team, plannerDurationMs) {
         ...(plannerDurationMs !== undefined ? { plannerDurationMs } : {}),
     });
 }
+function buildProvenanceFields(plannerSource, plannerFallbackReason, team, priorRoundEffortDowngrades, agentMultiPassConsistency, agentRunEffort) {
+    return {
+        plannerSource,
+        ...(plannerFallbackReason && { plannerFallbackReason }),
+        coreAgentInjections: team.coreAgentInjections ?? [],
+        priorRoundEffortDowngrades,
+        ...(agentMultiPassConsistency.size > 0 && { agentMultiPassConsistency }),
+        agentEffortMap: agentRunEffort,
+    };
+}
 async function runReview(clients, config, diff, rawDiff, repoContext, memory, fileContents, prContext, linkedIssues, onProgress, isFollowUp, openThreads, previousFindings, priorRounds, prAuthorLogin, interRoundDiff) {
     const priorRoundHints = buildPlannerHints(priorRounds);
     const provenanceMap = (0, judge_1.computeProvenanceMap)(priorRounds, rawDiff);
@@ -52445,20 +52519,25 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
     let plannerResult = null;
     let plannerUsage;
     let plannerDurationMs;
+    let plannerSource;
+    let plannerFallbackReason;
+    let priorRoundEffortDowngrades = [];
     if (clients.planner && config.review_level === 'auto') {
         if (onProgress) {
             onProgress({ phase: 'planning' });
         }
         const plannerStart = Date.now();
         const plannerWrap = (0, providers_1.wrapClientForUsage)(clients.planner);
-        plannerResult = await runPlanner(plannerWrap.client, diff, prContext, config.reviewers, priorRoundHints);
+        const outcome = {};
+        plannerResult = await runPlanner(plannerWrap.client, diff, prContext, config.reviewers, priorRoundHints, outcome);
         plannerUsage = plannerWrap.getTotals().usage;
         plannerDurationMs = Date.now() - plannerStart;
         if (plannerResult) {
             if (plannerResult.agents && priorRoundHints.length > 0) {
-                applyEffortDowngrade(plannerResult.agents, priorRoundHints);
+                priorRoundEffortDowngrades = applyEffortDowngrade(plannerResult.agents, priorRoundHints);
             }
             team = selectTeam(diff, config, config.reviewers, plannerResult.teamSize, plannerResult.agents, priorRoundAgents);
+            plannerSource = 'planner';
             core.info(`Planner: ${plannerResult.teamSize} agents, reviewer: ${plannerResult.reviewerEffort}, judge: ${plannerResult.judgeEffort} (${plannerResult.prType})`);
             if (plannerResult.teamSize === 1) {
                 const totalLines = diff.totalAdditions + diff.totalDeletions;
@@ -52471,6 +52550,8 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
         else {
             // Planner was attempted and failed. Force the fixed three-core roster.
             team = heuristicFallback(diff, config, undefined, true);
+            plannerSource = 'heuristic_fallback';
+            plannerFallbackReason = outcome.fallbackReason;
             if (onProgress) {
                 emitHeuristicFallbackPlanning(onProgress, team, plannerDurationMs);
             }
@@ -52480,6 +52561,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
         // Planner is disabled (either no client or user pinned `review_level`).
         // Honor the configured `review_level` so explicit user choice is preserved.
         team = heuristicFallback(diff, config, priorRoundAgents, false);
+        plannerSource = clients.planner ? 'heuristic' : 'disabled';
         if (onProgress) {
             emitHeuristicFallbackPlanning(onProgress, team);
         }
@@ -52493,6 +52575,14 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
     }
     const defaultReviewerEffort = plannerResult?.reviewerEffort;
     const judgeEffort = plannerResult?.judgeEffort ?? 'high';
+    // Record the effort each agent actually runs with: the planner pick (post
+    // downgrade) when present, otherwise the planner's reviewerEffort default,
+    // otherwise `'medium'` (matching `runReviewerAgent`'s implicit default when
+    // `effort` is `undefined` in the reviewer prompt).
+    const agentRunEffort = new Map();
+    for (const agent of team.agents) {
+        agentRunEffort.set(agent.name, agentEffortMap.get(agent.name) ?? defaultReviewerEffort ?? 'medium');
+    }
     const passes = config.review_passes ?? 1;
     const multiPass = passes > 1;
     const allFindings = [];
@@ -52502,6 +52592,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
     const agentDurationMs = new Map();
     const agentRetryCount = new Map();
     const agentFailureReasons = new Map();
+    const agentMultiPassConsistency = new Map();
     let completedCount = 0;
     let progressFindingCount = 0;
     if (multiPass) {
@@ -52536,6 +52627,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
                 const consistent = intersectFindings(passFindings, threshold);
                 const totalRaw = passFindings.reduce((sum, p) => sum + p.length, 0);
                 core.info(`Multi-pass: ${agent.name} — ${passFindings.length} passes, ${consistent.length} consistent findings (from ${totalRaw} raw)`);
+                agentMultiPassConsistency.set(agent.name, { consistent: consistent.length, totalRaw });
                 allFindings.push(...consistent);
                 const durationMs = Date.now() - startTime;
                 if (consistent.length === 0 && durationMs < SUSPICIOUS_FAST_THRESHOLD_MS) {
@@ -52618,7 +52710,9 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
                 if (retryPassFindings.length > 0) {
                     const threshold = Math.ceil(passes / 2);
                     const consistent = intersectFindings(retryPassFindings, threshold);
+                    const retryTotalRaw = retryPassFindings.reduce((sum, p) => sum + p.length, 0);
                     core.info(`Multi-pass retry: ${agent.name} — ${retryPassFindings.length} passes, ${consistent.length} consistent findings`);
+                    agentMultiPassConsistency.set(agent.name, { consistent: consistent.length, totalRaw: retryTotalRaw });
                     allFindings.push(...consistent);
                     agentResponseLengths.set(agent.name, retryTotalResponseLength);
                     agentFailureReasons.delete(agent.name);
@@ -52815,6 +52909,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
                 agentNames: team.agents.map(a => a.name),
                 failedAgents,
                 ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
+                ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, priorRoundEffortDowngrades, agentMultiPassConsistency, agentRunEffort),
             };
         }
         partialReview = true;
@@ -52936,6 +53031,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
             highlights: [],
             reviewComplete: false,
             agentNames: team.agents.map(a => a.name),
+            ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, priorRoundEffortDowngrades, agentMultiPassConsistency, agentRunEffort),
         };
     }
     // Mechanism B: drop low-severity findings on test files starting at round 2.
@@ -53013,6 +53109,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
         crossRoundDemoted: judgeCrossRoundDemoted,
         ...(judgeInterRoundDiffEmptyOverride && { interRoundDiffEmptyOverride: judgeInterRoundDiffEmptyOverride }),
         ...(testNitSuppressedCount > 0 && { testNitSuppressedCount }),
+        ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, priorRoundEffortDowngrades, agentMultiPassConsistency, agentRunEffort),
     };
 }
 async function runReviewerAgent(client, config, reviewer, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, options = {}) {

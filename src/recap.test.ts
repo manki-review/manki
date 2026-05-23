@@ -1141,7 +1141,7 @@ describe('fetchRecapState', () => {
         config: { reviewLevel: 'medium', memoryEnabled: false },
         diff: { lines: 100, additions: 60, deletions: 40, filesReviewed: 3, fileTypes: { '.ts': 3 } },
         models: { reviewer: 'r', judge: 'j' },
-        planner: { used: false },
+        planner: { source: 'disabled', used: false, coreAgentInjections: [], priorRoundEffortDowngrades: [] },
         reviewers: { agents: ['Correctness'] },
         judge: { summary: 'ok' },
         dedup: {},
@@ -1200,7 +1200,7 @@ describe('fetchRecapState', () => {
       ['rename', 'refactor'],
     ])('migrates legacy planner.prType `%s` to canonical `%s` on read', async (legacy, canonical) => {
       const ctx = makeRoundContext(1, {
-        planner: { used: true, teamSize: 3, reviewerEffort: 'medium', judgeEffort: 'medium', prType: legacy },
+        planner: { source: 'planner', used: true, teamSize: 3, reviewerEffort: 'medium', judgeEffort: 'medium', prType: legacy, coreAgentInjections: [], priorRoundEffortDowngrades: [] },
       });
       const octokit = mockOctokit([], [
         { id: 100, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
@@ -1212,13 +1212,51 @@ describe('fetchRecapState', () => {
 
     it('passes a canonical Conventional Commits prType through unchanged', async () => {
       const ctx = makeRoundContext(1, {
-        planner: { used: true, teamSize: 2, reviewerEffort: 'low', judgeEffort: 'low', prType: 'docs' },
+        planner: { source: 'planner', used: true, teamSize: 2, reviewerEffort: 'low', judgeEffort: 'low', prType: 'docs', coreAgentInjections: [], priorRoundEffortDowngrades: [] },
       });
       const octokit = mockOctokit([], [
         { id: 100, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
       ]);
       const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
       expect(state.priorRounds[0].planner.prType).toBe('docs');
+    });
+
+    it.each<[string, 'planner' | 'heuristic' | 'heuristic_fallback', string | undefined]>([
+      ['planner ran', 'planner', undefined],
+      ['no planner and no fallbackReason', 'heuristic', undefined],
+      ['no planner with fallbackReason', 'heuristic_fallback', 'timeout'],
+    ])('migrates pre-5.2.0 context without `source` correctly when %s', async (_label, expectedSource, fallbackReason) => {
+      const base = makeRoundContext(1);
+      const legacy = {
+        ...base,
+        planner: {
+          used: expectedSource === 'planner',
+          coreAgentInjections: [],
+          priorRoundEffortDowngrades: [],
+          ...(fallbackReason ? { fallbackReason } : {}),
+        },
+      } as unknown as RoundContext;
+      const octokit = mockOctokit([], [
+        { id: 100, body: detailsBlock(legacy), user: { login: BOT_LOGIN } },
+      ]);
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.priorRounds).toHaveLength(1);
+      expect(state.priorRounds[0].planner.source).toBe(expectedSource);
+    });
+
+    it('seeds `coreAgentInjections` and `priorRoundEffortDowngrades` to [] when absent in pre-5.2.0 context', async () => {
+      const base = makeRoundContext(1);
+      const legacy = {
+        ...base,
+        planner: { used: false },
+      } as unknown as RoundContext;
+      const octokit = mockOctokit([], [
+        { id: 100, body: detailsBlock(legacy), user: { login: BOT_LOGIN } },
+      ]);
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.priorRounds).toHaveLength(1);
+      expect(state.priorRounds[0].planner.coreAgentInjections).toEqual([]);
+      expect(state.priorRounds[0].planner.priorRoundEffortDowngrades).toEqual([]);
     });
 
     it('ignores HTML-comment block when a details block is present in the same review', async () => {

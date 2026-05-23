@@ -248,6 +248,33 @@ function parseContextBlocks(
       if (ctx.planner && typeof ctx.planner.prType === 'string') {
         ctx.planner.prType = migrateLegacyPrType(ctx.planner.prType);
       }
+      if (ctx.planner) {
+        // Back-compat: pre-5.2.0 context blocks predate the structured planner
+        // provenance fields. Project the old `used: boolean` onto the new
+        // `source` enum so consumers reading `ctx.planner.source` get a defined
+        // value, and seed empty arrays for the new list fields.
+        if (typeof ctx.planner.source !== 'string') {
+          // `fallbackReason` was not persisted before 5.2.0, so the
+          // `heuristic_fallback` branch below is unreachable for old context
+          // blocks. Pre-5.2.0 rounds where the planner was attempted but
+          // failed will map to `heuristic`. The attempted-but-failed
+          // distinction is unrecoverable because the data was never recorded.
+          if (ctx.planner.used) {
+            ctx.planner.source = 'planner';
+          } else if (ctx.planner.fallbackReason) {
+            ctx.planner.source = 'heuristic_fallback';
+          } else {
+            ctx.planner.source = 'heuristic';
+          }
+          (ctx.planner as { used: boolean }).used = ctx.planner.source === 'planner';
+        }
+        if (!Array.isArray(ctx.planner.coreAgentInjections)) {
+          ctx.planner.coreAgentInjections = [];
+        }
+        if (!Array.isArray(ctx.planner.priorRoundEffortDowngrades)) {
+          ctx.planner.priorRoundEffortDowngrades = [];
+        }
+      }
       const existing = byRound.get(round);
       if (existing) {
         duplicateRounds.add(round);

@@ -7,7 +7,7 @@ import { runJudgeAgent, JudgeInput, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
 import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, llmDeduplicateFindings, PreviousFinding } from './recap';
-import { ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, PlannerRoundHint, RoundContext, SpecialistOutcome, EffortLevel, AgentPick, ProvenanceEntry, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, PlannerRoundHint, PriorRoundEffortDowngrade, RoundContext, RoundPlannerSource, SpecialistOutcome, EffortLevel, AgentPick, ProvenanceEntry, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 
@@ -155,10 +155,12 @@ export function selectTeam(
       // string literals could suppress the security specialist on a sensitive
       // change. This guard is path-based, not prompt-based, so it cannot be
       // bypassed by injected instructions.
+      const coreAgentInjections: string[] = [];
       const securityAgent = pool.find(a => a.name === 'Security & Safety');
       if (securityAgent && !final.some(a => a.name === 'Security & Safety') && hasSensitivePaths(diff)) {
         if (!silent) core.info('Security & Safety force-added: planner omitted it but diff touches security-sensitive paths');
         final.push(securityAgent);
+        coreAgentInjections.push(securityAgent.name);
       }
 
       logPinAudit(final, priorNames, silent);
@@ -167,7 +169,7 @@ export function selectTeam(
       if (final.length <= 3) level = 'small';
       else if (final.length <= 5) level = 'medium';
       else level = 'large';
-      return { level, agents: final, lineCount };
+      return { level, agents: final, lineCount, coreAgentInjections };
     }
     // If resolution failed entirely, fall through to heuristic
   }
@@ -495,12 +497,24 @@ export function parseAgentPicks(
   return picks;
 }
 
+/**
+ * Optional sink that captures the short tag describing why the planner fell
+ * back, when it did. Mutated in place by `runPlanner` on the failure paths so
+ * callers can record it on `RoundPlanner.fallbackReason` without changing the
+ * public return type. Values: `'timeout'`, `'invalid_teamSize'`,
+ * `'invalid_judgeEffort'`, `'agents_teamSize_mismatch'`, `'exception'`.
+ */
+export interface PlannerOutcomeSink {
+  fallbackReason?: string;
+}
+
 export async function runPlanner(
   client: LLMClient,
   diff: ParsedDiff,
   prContext?: PrContext,
   customReviewers?: ReviewerAgent[],
   priorRoundHints?: PlannerRoundHint[],
+  outcome?: PlannerOutcomeSink,
 ): Promise<PlannerResult | null> {
   let timeoutId: ReturnType<typeof setTimeout>;
   const timeoutPromise = new Promise<never>((_, reject) => {
@@ -525,12 +539,14 @@ export async function runPlanner(
     const teamSize = parsed.teamSize;
     if (!VALID_TEAM_SIZES.has(teamSize)) {
       core.warning(`Planner returned invalid teamSize ${teamSize} — falling back to heuristic`);
+      if (outcome) outcome.fallbackReason = 'invalid_teamSize';
       return null;
     }
 
     const judgeEffort = parsed.judgeEffort;
     if (!VALID_EFFORTS.has(judgeEffort)) {
       core.warning('Planner returned invalid judgeEffort — falling back to heuristic');
+      if (outcome) outcome.fallbackReason = 'invalid_judgeEffort';
       return null;
     }
 
@@ -548,6 +564,7 @@ export async function runPlanner(
     if (agents) {
       if (agents.length !== teamSize) {
         core.warning(`Planner agents.length (${agents.length}) differs from teamSize (${teamSize}) — falling back to heuristic`);
+        if (outcome) outcome.fallbackReason = 'agents_teamSize_mismatch';
         return null;
       }
     }
@@ -565,9 +582,11 @@ export async function runPlanner(
       core.warning(
         'Planner timed out, falling back to heuristic team selection. If your workflow does not pre-install the Claude Code CLI, see the "spawn claude ENOENT" row in SETUP.md.',
       );
-    } else {
-      core.warning(`Planner failed: ${error} — falling back to heuristic team selection`);
+      if (outcome) outcome.fallbackReason = 'timeout';
+      return null;
     }
+    core.warning(`Planner failed: ${error} — falling back to heuristic team selection`);
+    if (outcome) outcome.fallbackReason = 'exception';
     return null;
   }
 }
@@ -623,11 +642,12 @@ const EFFORT_DOWNGRADE_MIN_SAMPLE = 2;
  * such picks to \`low\` and logs the change. Mutates picks in place for
  * simplicity. The planner result object is not shared across reviews.
  */
-function applyEffortDowngrade(picks: AgentPick[], hints: PlannerRoundHint[]): void {
-  if (hints.length === 0) return;
+function applyEffortDowngrade(picks: AgentPick[], hints: PlannerRoundHint[]): PriorRoundEffortDowngrade[] {
+  if (hints.length === 0) return [];
 
   const lastHint = hints[hints.length - 1];
   const byName = new Map(lastHint.specialistOutcomes.map(o => [o.specialist, o]));
+  const downgrades: PriorRoundEffortDowngrade[] = [];
 
   for (const pick of picks) {
     if (pick.effort !== 'high') continue;
@@ -638,8 +658,11 @@ function applyEffortDowngrade(picks: AgentPick[], hints: PlannerRoundHint[]): vo
     core.info(
       `Downgrading "${pick.name}" effort from high to low — round ${lastHint.round} dismissed all ${outcome.findingsDismissed} findings from this specialist`,
     );
+    downgrades.push({ agent: pick.name, from: pick.effort, to: 'low' });
     pick.effort = 'low';
   }
+
+  return downgrades;
 }
 
 function emitHeuristicFallbackPlanning(
@@ -653,6 +676,24 @@ function emitHeuristicFallbackPlanning(
     heuristicFallback: true,
     ...(plannerDurationMs !== undefined ? { plannerDurationMs } : {}),
   });
+}
+
+export function buildProvenanceFields(
+  plannerSource: RoundPlannerSource,
+  plannerFallbackReason: string | undefined,
+  team: TeamRoster,
+  priorRoundEffortDowngrades: PriorRoundEffortDowngrade[],
+  agentMultiPassConsistency: Map<string, { consistent: number; totalRaw: number }>,
+  agentRunEffort: Map<string, EffortLevel>,
+): Pick<ReviewResult, 'plannerSource' | 'plannerFallbackReason' | 'coreAgentInjections' | 'priorRoundEffortDowngrades' | 'agentMultiPassConsistency' | 'agentEffortMap'> {
+  return {
+    plannerSource,
+    ...(plannerFallbackReason && { plannerFallbackReason }),
+    coreAgentInjections: team.coreAgentInjections ?? [],
+    priorRoundEffortDowngrades,
+    ...(agentMultiPassConsistency.size > 0 && { agentMultiPassConsistency }),
+    agentEffortMap: agentRunEffort,
+  };
 }
 
 export async function runReview(
@@ -680,6 +721,9 @@ export async function runReview(
   let plannerResult: PlannerResult | null = null;
   let plannerUsage: LLMUsage | undefined;
   let plannerDurationMs: number | undefined;
+  let plannerSource: RoundPlannerSource;
+  let plannerFallbackReason: string | undefined;
+  let priorRoundEffortDowngrades: PriorRoundEffortDowngrade[] = [];
 
   if (clients.planner && config.review_level === 'auto') {
     if (onProgress) {
@@ -687,14 +731,16 @@ export async function runReview(
     }
     const plannerStart = Date.now();
     const plannerWrap = wrapClientForUsage(clients.planner);
-    plannerResult = await runPlanner(plannerWrap.client, diff, prContext, config.reviewers, priorRoundHints);
+    const outcome: PlannerOutcomeSink = {};
+    plannerResult = await runPlanner(plannerWrap.client, diff, prContext, config.reviewers, priorRoundHints, outcome);
     plannerUsage = plannerWrap.getTotals().usage;
     plannerDurationMs = Date.now() - plannerStart;
     if (plannerResult) {
       if (plannerResult.agents && priorRoundHints.length > 0) {
-        applyEffortDowngrade(plannerResult.agents, priorRoundHints);
+        priorRoundEffortDowngrades = applyEffortDowngrade(plannerResult.agents, priorRoundHints);
       }
       team = selectTeam(diff, config, config.reviewers, plannerResult.teamSize, plannerResult.agents, priorRoundAgents);
+      plannerSource = 'planner';
       core.info(`Planner: ${plannerResult.teamSize} agents, reviewer: ${plannerResult.reviewerEffort}, judge: ${plannerResult.judgeEffort} (${plannerResult.prType})`);
       if (plannerResult.teamSize === 1) {
         const totalLines = diff.totalAdditions + diff.totalDeletions;
@@ -706,6 +752,8 @@ export async function runReview(
     } else {
       // Planner was attempted and failed. Force the fixed three-core roster.
       team = heuristicFallback(diff, config, undefined, true);
+      plannerSource = 'heuristic_fallback';
+      plannerFallbackReason = outcome.fallbackReason;
       if (onProgress) {
         emitHeuristicFallbackPlanning(onProgress, team, plannerDurationMs);
       }
@@ -714,6 +762,7 @@ export async function runReview(
     // Planner is disabled (either no client or user pinned `review_level`).
     // Honor the configured `review_level` so explicit user choice is preserved.
     team = heuristicFallback(diff, config, priorRoundAgents, false);
+    plannerSource = clients.planner ? 'heuristic' : 'disabled';
     if (onProgress) {
       emitHeuristicFallbackPlanning(onProgress, team);
     }
@@ -729,6 +778,15 @@ export async function runReview(
   const defaultReviewerEffort = plannerResult?.reviewerEffort;
   const judgeEffort = plannerResult?.judgeEffort ?? 'high';
 
+  // Record the effort each agent actually runs with: the planner pick (post
+  // downgrade) when present, otherwise the planner's reviewerEffort default,
+  // otherwise `'medium'` (matching `runReviewerAgent`'s implicit default when
+  // `effort` is `undefined` in the reviewer prompt).
+  const agentRunEffort = new Map<string, EffortLevel>();
+  for (const agent of team.agents) {
+    agentRunEffort.set(agent.name, agentEffortMap.get(agent.name) ?? defaultReviewerEffort ?? 'medium');
+  }
+
   const passes = config.review_passes ?? 1;
   const multiPass = passes > 1;
 
@@ -739,6 +797,7 @@ export async function runReview(
   const agentDurationMs = new Map<string, number>();
   const agentRetryCount = new Map<string, number>();
   const agentFailureReasons = new Map<string, string>();
+  const agentMultiPassConsistency = new Map<string, { consistent: number; totalRaw: number }>();
 
   let completedCount = 0;
   let progressFindingCount = 0;
@@ -779,6 +838,7 @@ export async function runReview(
         const consistent = intersectFindings(passFindings, threshold);
         const totalRaw = passFindings.reduce((sum, p) => sum + p.length, 0);
         core.info(`Multi-pass: ${agent.name} — ${passFindings.length} passes, ${consistent.length} consistent findings (from ${totalRaw} raw)`);
+        agentMultiPassConsistency.set(agent.name, { consistent: consistent.length, totalRaw });
         allFindings.push(...consistent);
 
         const durationMs = Date.now() - startTime;
@@ -870,7 +930,9 @@ export async function runReview(
         if (retryPassFindings.length > 0) {
           const threshold = Math.ceil(passes / 2);
           const consistent = intersectFindings(retryPassFindings, threshold);
+          const retryTotalRaw = retryPassFindings.reduce((sum, p) => sum + p.length, 0);
           core.info(`Multi-pass retry: ${agent.name} — ${retryPassFindings.length} passes, ${consistent.length} consistent findings`);
+          agentMultiPassConsistency.set(agent.name, { consistent: consistent.length, totalRaw: retryTotalRaw });
           allFindings.push(...consistent);
           agentResponseLengths.set(agent.name, retryTotalResponseLength);
           agentFailureReasons.delete(agent.name);
@@ -1078,6 +1140,7 @@ export async function runReview(
         agentNames: team.agents.map(a => a.name),
         failedAgents,
         ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
+        ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, priorRoundEffortDowngrades, agentMultiPassConsistency, agentRunEffort),
       };
     }
 
@@ -1207,6 +1270,7 @@ export async function runReview(
       highlights: [],
       reviewComplete: false,
       agentNames: team.agents.map(a => a.name),
+      ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, priorRoundEffortDowngrades, agentMultiPassConsistency, agentRunEffort),
     };
   }
 
@@ -1287,6 +1351,7 @@ export async function runReview(
     crossRoundDemoted: judgeCrossRoundDemoted,
     ...(judgeInterRoundDiffEmptyOverride && { interRoundDiffEmptyOverride: judgeInterRoundDiffEmptyOverride }),
     ...(testNitSuppressedCount > 0 && { testNitSuppressedCount }),
+    ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, priorRoundEffortDowngrades, agentMultiPassConsistency, agentRunEffort),
   };
 }
 

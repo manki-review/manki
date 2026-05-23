@@ -22,7 +22,7 @@ export function makeRoundContext(round: number, overrides: Partial<RoundContext>
     config: { reviewLevel: 'medium', memoryEnabled: false },
     diff: { lines: 0, additions: 0, deletions: 0, filesReviewed: 0, fileTypes: {} },
     models: { reviewer: 'r', judge: 'j' },
-    planner: { used: false },
+    planner: { source: 'disabled', used: false, coreAgentInjections: [], priorRoundEffortDowngrades: [] },
     reviewers: { agents: [] },
     judge: { summary: '' },
     dedup: {},
