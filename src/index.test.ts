@@ -135,10 +135,8 @@ jest.mock('./review', () => {
     determineVerdict: jest.fn().mockReturnValue({ verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } }),
     selectTeam: jest.fn().mockReturnValue({ level: 'standard', agents: [{ name: 'general' }] }),
     buildPlannerHints: actual.buildPlannerHints,
-    buildAgentPool: actual.buildAgentPool,
     buildPriorRoundLookup: actual.buildPriorRoundLookup,
     collectPriorRoundAgents: actual.collectPriorRoundAgents,
-    TRIVIAL_VERIFIER_AGENT: actual.TRIVIAL_VERIFIER_AGENT,
   };
 });
 

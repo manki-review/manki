@@ -43304,6 +43304,63 @@ function wrappy (fn, cb) {
 
 /***/ }),
 
+/***/ 16957:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.TRIVIAL_VERIFIER_AGENT = exports.AGENT_POOL = void 0;
+exports.buildAgentPool = buildAgentPool;
+// Standard reviewer pool used for teamSize >= 3. TRIVIAL_VERIFIER_AGENT is
+// intentionally excluded — it is only active for the teamSize=1 path and does
+// not participate in scoring, focusAreas validation, or planner prompts.
+exports.AGENT_POOL = Object.freeze([
+    {
+        name: 'Security & Safety',
+        focus: 'Vulnerabilities, injection, auth, data leaks, memory safety, crypto correctness, key exposure, timing side-channels',
+    },
+    {
+        name: 'Architecture & Design',
+        focus: 'Design patterns, coupling, abstractions, API design, module boundaries, separation of concerns, SOLID principles',
+    },
+    {
+        name: 'Correctness & Logic',
+        focus: 'Edge cases, off-by-one errors, null/undefined handling, race conditions, data integrity, type safety, error propagation',
+    },
+    {
+        name: 'Testing & Coverage',
+        focus: 'Missing tests, test quality, edge case coverage, assertion strength, mock appropriateness, test maintainability',
+    },
+    {
+        name: 'Performance & Efficiency',
+        focus: 'Unnecessary allocations, N+1 queries, hot path optimization, caching opportunities, async/concurrency patterns, memory usage',
+    },
+    {
+        name: 'Maintainability & Readability',
+        focus: 'Naming clarity, code complexity, dead code, DRY violations, documentation gaps, cognitive load',
+    },
+    {
+        name: 'Dependencies & Integration',
+        focus: 'API contracts, breaking changes, dependency versions, compatibility, external service integration, error handling at boundaries',
+    },
+]);
+exports.TRIVIAL_VERIFIER_AGENT = Object.freeze({
+    name: 'Trivial Change Verifier',
+    focus: 'Review this trivial change on two fronts: (1) check the actual content for issues appropriate to the change type — typos, stale references, broken markdown/links, incomplete renames; (2) verify the change is actually trivial as classified and flag any hidden behavior change, security implication, broken invariant, or missing test that would contradict that assessment.',
+});
+function buildAgentPool(customReviewers) {
+    const pool = [...exports.AGENT_POOL];
+    for (const custom of (customReviewers ?? [])) {
+        if (!pool.some(p => p.name === custom.name))
+            pool.push(custom);
+    }
+    return pool;
+}
+
+
+/***/ }),
+
 /***/ 29081:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
@@ -43558,8 +43615,7 @@ exports.sanitizeForkConfig = sanitizeForkConfig;
 const core = __importStar(__nccwpck_require__(37484));
 const fs = __importStar(__nccwpck_require__(79896));
 const yaml_1 = __nccwpck_require__(38815);
-// TODO: layering, temporary import from review.ts, cleanup tracked at https://github.com/manki-review/manki/issues/676
-const review_1 = __nccwpck_require__(17491);
+const agents_1 = __nccwpck_require__(16957);
 exports.MAX_LOCK_TTL_SECONDS = 3600;
 exports.DEFAULT_CONFIG = {
     auto_review: true,
@@ -43623,7 +43679,7 @@ function validateConfig(config) {
             .filter(r => r && typeof r === 'object' && typeof r.name === 'string' && typeof r.focus === 'string')
             .map(r => ({ name: r.name, focus: r.focus }))
         : [];
-    const knownAgentNames = new Set((0, review_1.buildAgentPool)(customReviewers).map(a => a.name));
+    const knownAgentNames = new Set((0, agents_1.buildAgentPool)(customReviewers).map(a => a.name));
     const declaredReviewerNames = new Set(Array.isArray(config.reviewers)
         ? config.reviewers
             .filter(r => r && typeof r === 'object' && typeof r.name === 'string' && r.name.length > 0)
@@ -45738,6 +45794,7 @@ const interaction_1 = __nccwpck_require__(42411);
 const judge_1 = __nccwpck_require__(66436);
 const memory_1 = __nccwpck_require__(28820);
 const recap_1 = __nccwpck_require__(95620);
+const agents_1 = __nccwpck_require__(16957);
 const review_1 = __nccwpck_require__(17491);
 const types_1 = __nccwpck_require__(16141);
 const github_1 = __nccwpck_require__(69248);
@@ -46436,7 +46493,7 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
         // before prior-round agents were known. Pre-populate any pinned agents now
         // so that agent-complete callbacks can record their metrics.
         if (!plannerEnabled && priorRoundAgents.length > 0 && dashboard.agentProgress) {
-            const poolNames = new Set((0, review_1.buildAgentPool)(config.reviewers).map(a => a.name));
+            const poolNames = new Set((0, agents_1.buildAgentPool)(config.reviewers).map(a => a.name));
             const inDashboard = new Set(dashboard.agentProgress.map(a => a.name));
             for (const name of priorRoundAgents) {
                 if (!inDashboard.has(name) && poolNames.has(name)) {
@@ -51806,8 +51863,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.TRIVIAL_VERIFIER_AGENT = exports.AGENT_POOL = exports.PLANNER_TIMEOUT_MS = void 0;
-exports.buildAgentPool = buildAgentPool;
+exports.PLANNER_TIMEOUT_MS = void 0;
 exports.selectTeam = selectTeam;
 exports.shuffleDiffFiles = shuffleDiffFiles;
 exports.rebuildRawDiff = rebuildRawDiff;
@@ -51831,6 +51887,7 @@ exports.truncateDiff = truncateDiff;
 exports.titlesMatch = titlesMatch;
 const core = __importStar(__nccwpck_require__(37484));
 const minimatch_1 = __nccwpck_require__(46507);
+const agents_1 = __nccwpck_require__(16957);
 const providers_1 = __nccwpck_require__(87486);
 const judge_1 = __nccwpck_require__(66436);
 const memory_1 = __nccwpck_require__(28820);
@@ -51854,39 +51911,6 @@ function accumulateAgentUsage(map, name, usage) {
 function accumulateAgentDuration(map, name, durationMs) {
     map.set(name, (map.get(name) ?? 0) + durationMs);
 }
-// Standard reviewer pool used for teamSize >= 3. TRIVIAL_VERIFIER_AGENT is
-// intentionally excluded — it is only active for the teamSize=1 path and does
-// not participate in scoring, focusAreas validation, or planner prompts.
-exports.AGENT_POOL = Object.freeze([
-    {
-        name: 'Security & Safety',
-        focus: 'Vulnerabilities, injection, auth, data leaks, memory safety, crypto correctness, key exposure, timing side-channels',
-    },
-    {
-        name: 'Architecture & Design',
-        focus: 'Design patterns, coupling, abstractions, API design, module boundaries, separation of concerns, SOLID principles',
-    },
-    {
-        name: 'Correctness & Logic',
-        focus: 'Edge cases, off-by-one errors, null/undefined handling, race conditions, data integrity, type safety, error propagation',
-    },
-    {
-        name: 'Testing & Coverage',
-        focus: 'Missing tests, test quality, edge case coverage, assertion strength, mock appropriateness, test maintainability',
-    },
-    {
-        name: 'Performance & Efficiency',
-        focus: 'Unnecessary allocations, N+1 queries, hot path optimization, caching opportunities, async/concurrency patterns, memory usage',
-    },
-    {
-        name: 'Maintainability & Readability',
-        focus: 'Naming clarity, code complexity, dead code, DRY violations, documentation gaps, cognitive load',
-    },
-    {
-        name: 'Dependencies & Integration',
-        focus: 'API contracts, breaking changes, dependency versions, compatibility, external service integration, error handling at boundaries',
-    },
-]);
 // Fixed fallback roster used when the planner LLM is unavailable. Indexes into
 // `AGENT_POOL`: Security & Safety, Architecture & Design, Correctness & Logic.
 // The planner is trusted to pick agents on the success path; these three are
@@ -51909,18 +51933,6 @@ function hasSensitivePaths(diff) {
         const base = segment.replace(/\.[^.]+$/, '');
         return SECURITY_SENSITIVE_PREFIXES.some(prefix => base.startsWith(prefix));
     }));
-}
-exports.TRIVIAL_VERIFIER_AGENT = Object.freeze({
-    name: 'Trivial Change Verifier',
-    focus: 'Review this trivial change on two fronts: (1) check the actual content for issues appropriate to the change type — typos, stale references, broken markdown/links, incomplete renames; (2) verify the change is actually trivial as classified and flag any hidden behavior change, security implication, broken invariant, or missing test that would contradict that assessment.',
-});
-function buildAgentPool(customReviewers) {
-    const pool = [...exports.AGENT_POOL];
-    for (const custom of (customReviewers ?? [])) {
-        if (!pool.some(p => p.name === custom.name))
-            pool.push(custom);
-    }
-    return pool;
 }
 // Resolves prior-round agent names against the current pool. Names that no
 // longer exist in the pool (e.g., a custom reviewer removed from config) are
@@ -51971,9 +51983,9 @@ function selectTeam(diff, config, customReviewers, teamSizeOverride, agentPicks,
         // Trivial verifier path runs alone. Cross-round pinning does not apply:
         // a PR does not flip from non-trivial to trivial in practice, and the
         // verifier is intentionally a single-agent specialist.
-        return { level: 'trivial', agents: [exports.TRIVIAL_VERIFIER_AGENT], lineCount };
+        return { level: 'trivial', agents: [agents_1.TRIVIAL_VERIFIER_AGENT], lineCount };
     }
-    const pool = buildAgentPool(customReviewers);
+    const pool = (0, agents_1.buildAgentPool)(customReviewers);
     const priorAgents = priorRoundAgents && priorRoundAgents.length > 0
         ? resolvePriorRoundAgents(priorRoundAgents, pool, silent)
         : [];
@@ -52298,7 +52310,7 @@ async function runPlanner(client, diff, prContext, customReviewers, priorRoundHi
         timeoutId = setTimeout(() => reject(new PlannerTimeoutError()), exports.PLANNER_TIMEOUT_MS);
     });
     try {
-        const pool = buildAgentPool(customReviewers);
+        const pool = (0, agents_1.buildAgentPool)(customReviewers);
         const availableNames = new Set(pool.map(a => a.name));
         const systemPrompt = buildPlannerSystemPrompt(pool, priorRoundHints);
         const userMessage = buildPlannerSummary(diff, prContext);
