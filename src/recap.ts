@@ -254,6 +254,11 @@ function parseContextBlocks(
         // `source` enum so consumers reading `ctx.planner.source` get a defined
         // value, and seed empty arrays for the new list fields.
         if (typeof ctx.planner.source !== 'string') {
+          // `fallbackReason` was not persisted before 5.2.0, so the
+          // `heuristic_fallback` branch below is unreachable for old context
+          // blocks. Pre-5.2.0 rounds where the planner was attempted but
+          // failed will map to `heuristic`. The attempted-but-failed
+          // distinction is unrecoverable because the data was never recorded.
           if (ctx.planner.used) {
             ctx.planner.source = 'planner';
           } else if (ctx.planner.fallbackReason) {
