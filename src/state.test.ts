@@ -364,11 +364,13 @@ describe('checkAndAutoApprove', () => {
     threads?: ReturnType<typeof makeGraphqlFetchThreadNode>[];
     prHeadSha?: string;
     createReviewFn?: jest.Mock;
+    createCommentFn?: jest.Mock;
     existingReviews?: Array<{ body?: string; state?: string; user?: { login?: string; type?: string } }>;
   } = {}) {
     const threads = overrides.threads ?? [];
     const prHeadSha = overrides.prHeadSha ?? 'abc123';
     const createReviewFn = overrides.createReviewFn ?? jest.fn().mockResolvedValue({});
+    const createCommentFn = overrides.createCommentFn ?? jest.fn().mockResolvedValue({});
     const existingReviews = overrides.existingReviews ?? [];
 
     return {
@@ -378,6 +380,9 @@ describe('checkAndAutoApprove', () => {
           get: jest.fn().mockResolvedValue({ data: { head: { sha: prHeadSha } } }),
           createReview: createReviewFn,
           listReviews: jest.fn().mockResolvedValue({ data: existingReviews }),
+        },
+        issues: {
+          createComment: createCommentFn,
         },
       },
     } as unknown as Octokit;
@@ -477,10 +482,12 @@ describe('checkAndAutoApprove', () => {
     );
   });
 
-  it('falls back to COMMENT when APPROVE fails', async () => {
-    const createReviewMock = jest.fn()
-      .mockRejectedValueOnce(new Error('APPROVE not allowed'))
-      .mockResolvedValueOnce({});
+  it('posts an issue comment (not a COMMENT review) when APPROVE fails', async () => {
+    // A COMMENT-review fallback would register as a bot review on the head SHA
+    // and break the force-review tickbox loop ([#840]). The fallback must
+    // surface the missing permission via an issue comment instead.
+    const createReviewMock = jest.fn().mockRejectedValueOnce(new Error('APPROVE not allowed'));
+    const createCommentMock = jest.fn().mockResolvedValue({});
 
     const octokit = makeMockOctokit({
       threads: [
@@ -488,18 +495,43 @@ describe('checkAndAutoApprove', () => {
       ],
       prHeadSha: 'sha-789',
       createReviewFn: createReviewMock,
+      createCommentFn: createCommentMock,
     });
 
     const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
 
     expect(result).toBe(true);
-    expect(createReviewMock).toHaveBeenCalledTimes(2);
-    expect(createReviewMock).toHaveBeenNthCalledWith(1,
+    expect(createReviewMock).toHaveBeenCalledTimes(1);
+    expect(createReviewMock).toHaveBeenCalledWith(
       expect.objectContaining({ event: 'APPROVE' }),
     );
-    expect(createReviewMock).toHaveBeenNthCalledWith(2,
-      expect.objectContaining({ event: 'COMMENT' }),
-    );
+    expect(createCommentMock).toHaveBeenCalledWith(expect.objectContaining({
+      owner: 'owner',
+      repo: 'repo',
+      issue_number: 1,
+      body: expect.stringContaining('auto-approve is blocked'),
+    }));
+  });
+
+  it('approve review body is non-empty so it does not register as a placeholder', async () => {
+    // The API returns `body_length: 0` for review bodies containing only HTML
+    // comments, which trips the head-SHA dedupe gate on subsequent force-review
+    // ticks. Auto-approve must include visible content ([#840]).
+    const createReviewMock = jest.fn().mockResolvedValue({});
+    const octokit = makeMockOctokit({
+      threads: [
+        makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix --> fix', isResolved: true }),
+      ],
+      prHeadSha: 'sha-vis',
+      createReviewFn: createReviewMock,
+    });
+
+    await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+
+    const call = createReviewMock.mock.calls[0][0] as { body: string };
+    expect(call.body).toContain(BOT_MARKER);
+    // Visible content beyond the HTML comment so GitHub does not strip the body.
+    expect(call.body.replace(/<!--[^]*?-->/g, '').trim().length).toBeGreaterThan(0);
   });
 
   it('dismisses previous reviews before approving', async () => {
@@ -676,6 +708,7 @@ describe('checkAndAutoApprove — concurrent run guard', () => {
           },
           issues: {
             listComments: jest.fn().mockResolvedValue({ data: comments }),
+            createComment: jest.fn().mockResolvedValue({}),
           },
         },
       } as unknown as Octokit;
@@ -847,9 +880,11 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
 
   function makeMockOctokit(overrides: {
     createReviewFn?: jest.Mock;
+    createCommentFn?: jest.Mock;
     existingReviews?: Array<{ body?: string; state?: string; user?: { login?: string; type?: string } }>;
   } = {}) {
     const createReviewFn = overrides.createReviewFn ?? jest.fn().mockResolvedValue({});
+    const createCommentFn = overrides.createCommentFn ?? jest.fn().mockResolvedValue({});
     const existingReviews = overrides.existingReviews ?? [];
     return {
       graphql: jest.fn().mockResolvedValue(makeGraphqlFetchResponse([])),
@@ -858,6 +893,9 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
           get: jest.fn().mockResolvedValue({ data: { head: { sha: 'sha-x' } } }),
           createReview: createReviewFn,
           listReviews: jest.fn().mockResolvedValue({ data: existingReviews }),
+        },
+        issues: {
+          createComment: createCommentFn,
         },
       },
     } as unknown as Octokit;
@@ -944,28 +982,34 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
     expect(ghMock.markAutoApproveComplete).not.toHaveBeenCalled();
   });
 
-  it('transitions the marker to a failure state when both APPROVE and COMMENT fail', async () => {
-    const createReviewMock = jest.fn()
-      .mockRejectedValueOnce(new Error('APPROVE forbidden'))
-      .mockRejectedValueOnce(new Error('COMMENT also forbidden'));
-    const octokit = makeMockOctokit({ createReviewFn: createReviewMock });
+  it('transitions the marker to a failure state when APPROVE and the issue-comment fallback both fail', async () => {
+    const createReviewMock = jest.fn().mockRejectedValueOnce(new Error('APPROVE forbidden'));
+    const createCommentMock = jest.fn().mockRejectedValueOnce(new Error('comment also forbidden'));
+    const octokit = makeMockOctokit({ createReviewFn: createReviewMock, createCommentFn: createCommentMock });
 
-    await expect(checkAndAutoApprove(octokit, 'owner', 'repo', 1)).rejects.toThrow('COMMENT also forbidden');
+    await expect(checkAndAutoApprove(octokit, 'owner', 'repo', 1)).rejects.toThrow('comment also forbidden');
     expect(ghMock.markAutoApproveFailed).toHaveBeenCalledWith(
-      octokit, 'owner', 'repo', 7777, 'COMMENT also forbidden',
+      octokit, 'owner', 'repo', 7777, 'comment also forbidden',
     );
     expect(ghMock.markAutoApproveComplete).not.toHaveBeenCalled();
   });
 
-  it('still transitions to complete when APPROVE fails but COMMENT fallback succeeds', async () => {
-    const createReviewMock = jest.fn()
-      .mockRejectedValueOnce(new Error('APPROVE forbidden'))
-      .mockResolvedValueOnce({});
-    const octokit = makeMockOctokit({ createReviewFn: createReviewMock });
+  it('still transitions to complete when APPROVE fails but the issue-comment fallback succeeds', async () => {
+    const createReviewMock = jest.fn().mockRejectedValueOnce(new Error('APPROVE forbidden'));
+    const createCommentMock = jest.fn().mockResolvedValueOnce({});
+    const octokit = makeMockOctokit({ createReviewFn: createReviewMock, createCommentFn: createCommentMock });
 
     const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
 
     expect(result).toBe(true);
+    expect(createCommentMock).toHaveBeenCalledWith(expect.objectContaining({
+      issue_number: 1,
+      body: expect.stringContaining('auto-approve is blocked'),
+    }));
+    // Crucially, no `COMMENT` review was posted (which would trip the head-SHA
+    // dedupe gate on subsequent force-review ticks, see [#840]).
+    expect(createReviewMock).toHaveBeenCalledTimes(1);
+    expect(createReviewMock).toHaveBeenCalledWith(expect.objectContaining({ event: 'APPROVE' }));
     expect(ghMock.markAutoApproveComplete).toHaveBeenCalledWith(octokit, 'owner', 'repo', 7777);
     expect(ghMock.markAutoApproveFailed).not.toHaveBeenCalled();
   });
