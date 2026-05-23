@@ -995,7 +995,7 @@ describe('postAutoApproveProgressComment / markAutoApprove*', () => {
     await ghActual.postAutoApproveProgressComment(octokit, 'o', 'r', 1);
 
     const comments = [
-      { id: 1, body: postedBody, user: { login: 'manki-review[bot]', type: 'Bot' }, updated_at: '2026-05-22T00:00:00Z' },
+      { id: 1, body: postedBody, user: { login: 'manki-review[bot]', type: 'Bot' }, updated_at: '2026-05-22T11:59:00Z' },
     ];
     expect(ghActual.findInProgressLock(comments, /* different run */ 999)).not.toBeNull();
     expect(ghActual.findInProgressLock(comments, 12345)).toBeNull();
