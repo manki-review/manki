@@ -20,10 +20,9 @@ import {
   parseAgentPicks,
   sanitizePlannerField,
   ReviewClients,
-  AGENT_POOL,
-  TRIVIAL_VERIFIER_AGENT,
   PLANNER_TIMEOUT_MS,
 } from './review';
+import { AGENT_POOL, TRIVIAL_VERIFIER_AGENT } from './agents';
 import * as core from '@actions/core';
 import { LinkedIssue, titleToSlug } from './github';
 import { Finding, RoundContext, OpenThread, ReviewerAgent, ReviewConfig, ParsedDiff, DiffFile, AgentPick, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES } from './types';

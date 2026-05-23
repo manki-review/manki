@@ -2,9 +2,8 @@ import * as core from '@actions/core';
 import * as fs from 'fs';
 import { parse as parseYaml } from 'yaml';
 
+import { buildAgentPool } from './agents';
 import { ReviewerAgent, ReviewConfig } from './types';
-// TODO: layering, temporary import from review.ts, cleanup tracked at https://github.com/manki-review/manki/issues/676
-import { buildAgentPool } from './review';
 
 export const MAX_LOCK_TTL_SECONDS = 3600;
 
