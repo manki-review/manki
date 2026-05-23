@@ -624,6 +624,11 @@ describe('checkAndAutoApprove', () => {
     expect(result).toBe(false);
     expect(createReviewMock).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('manki has not reviewed HEAD'));
+    expect(createCommentMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining('unknown'),
+      }),
+    );
     warnSpy.mockRestore();
   });
 

@@ -53875,8 +53875,7 @@ async function checkAndAutoApprove(octokit, owner, repo, prNumber, config) {
     // review at all.
     const hasReviewedHead = botReviews.some((r) => r.commit_id === pr.head.sha);
     if (!hasReviewedHead) {
-        const allBotReviews = reviews.filter((r) => isBotReview(r));
-        const staleSha = allBotReviews[allBotReviews.length - 1]?.commit_id ?? 'unknown';
+        const staleSha = reviews.filter((r) => isBotReview(r) && r.commit_id !== pr.head.sha).slice(-1)[0]?.commit_id ?? 'unknown';
         core.warning(`Skipping auto-approve — manki has not reviewed HEAD (head=${pr.head.sha}, stale=${staleSha})`);
         await postStaleApproveSkippedComment(octokit, owner, repo, prNumber, pr.head.sha, staleSha);
         return false;
