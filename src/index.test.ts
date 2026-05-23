@@ -6535,6 +6535,19 @@ describe('runFullReview concurrent-submission lock', () => {
       expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
       expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
     });
+
+    it('warns and proceeds when the head SHA is undefined in the API response', async () => {
+      mockPullsGet.mockResolvedValueOnce({
+        data: { title: 'Test PR', body: 'body', head: {}, base: { ref: 'main' } },
+      });
+
+      await callRunFullReview();
+
+      const warnings = jest.mocked(core.warning).mock.calls.map(c => String(c[0]));
+      expect(warnings.some(w => w.includes('Head SHA lookup returned no sha'))).toBe(true);
+      expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
+      expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
+    });
   });
 });
 
