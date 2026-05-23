@@ -207,12 +207,7 @@ async function checkAndAutoApprove(
   // review on the current HEAD commit. This single check covers every variant —
   // stale prior review, absent commit_id, all reviews DISMISSED, or no bot
   // review at all.
-  const hasReviewedHead = reviews.some(
-    (r: ReviewEntry) =>
-      isBotReview(r) &&
-      r.state !== 'DISMISSED' &&
-      r.commit_id === pr.head.sha,
-  );
+  const hasReviewedHead = botReviews.some((r) => r.commit_id === pr.head.sha);
   if (!hasReviewedHead) {
     const allBotReviews = reviews.filter((r: ReviewEntry) => isBotReview(r));
     const staleSha =
