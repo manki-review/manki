@@ -1,12 +1,18 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { checkConcurrentSubmissionLock, dismissPreviousReviews, isReviewInProgress, markAutoApproveComplete, markAutoApproveFailed, postAutoApproveProgressComment } from './github';
+import { ACTIONS_BOT_LOGIN, BOT_LOGIN, checkConcurrentSubmissionLock, dismissPreviousReviews, isReviewInProgress, markAutoApproveComplete, markAutoApproveFailed, postAutoApproveProgressComment } from './github';
 import { migrateLegacySeverity, ReviewConfig, SEVERITY_TOKEN_PATTERN } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
+type ReviewEntry = { body?: string | null; state?: string; commit_id?: string | null; user?: { login?: string; type?: string } | null };
 
 const BOT_MARKER = '<!-- manki -->';
+const STALE_APPROVE_MARKER_PREFIX = '<!-- manki-stale-approve:';
+
+function staleApproveMarker(headSha: string): string {
+  return `${STALE_APPROVE_MARKER_PREFIX}${headSha} -->`;
+}
 
 interface ReviewThread {
   id: string;
@@ -103,6 +109,46 @@ function areAllFindingsResolved(threads: ReviewThread[]): boolean {
 }
 
 /**
+ * Post a one-time explanatory comment when auto-approve is withheld because
+ * manki has not actually reviewed the current HEAD. The comment is idempotent
+ * per HEAD SHA via a `manki-stale-approve:<sha>` marker so repeated invocations
+ * on the same HEAD do not spam the PR.
+ */
+async function postStaleApproveSkippedComment(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  headSha: string,
+  latestReviewSha: string,
+): Promise<void> {
+  const marker = staleApproveMarker(headSha);
+  try {
+    const existing = await octokit.paginate(octokit.rest.issues.listComments, {
+      owner, repo, issue_number: prNumber, per_page: 100,
+    });
+    if (existing.some(c =>
+      (c.user?.login === BOT_LOGIN || c.user?.login === ACTIONS_BOT_LOGIN) &&
+      c.body?.includes(marker)
+    )) {
+      core.info(`Stale-approve comment already present for ${headSha.slice(0, 7)} — skipping duplicate`);
+      return;
+    }
+    const shortHead = headSha.slice(0, 7);
+    const shortLatest = latestReviewSha.slice(0, 7);
+    const body = [
+      marker,
+      `**Auto-approve withheld** for \`${shortHead}\` — all review threads are resolved on the current HEAD, but manki has not reviewed this commit (latest manki review was on \`${shortLatest}\`).`,
+      '',
+      'To approve, request a fresh review by commenting `@manki review` or by ticking the **Force review** checkbox on the latest progress comment.',
+    ].join('\n');
+    await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+  } catch (error) {
+    core.warning(`Failed to post stale-approve-skipped comment: ${error instanceof Error ? error.message : error}`);
+  }
+}
+
+/**
  * Post an approval review if all findings are resolved.
  *
  * Two concurrency guards run before any review is posted. First the TTL-based
@@ -147,21 +193,35 @@ async function checkAndAutoApprove(
     repo,
     pull_number: prNumber,
   });
-  const botReviews = reviews.filter(
-    (r: { body?: string | null; state?: string; user?: { login?: string; type?: string } | null }) =>
-      r.body?.includes('<!-- manki') && r.user?.login?.includes('[bot]') && r.state !== 'DISMISSED',
-  );
+  const isBotReview = (r: ReviewEntry) => r.body?.includes('<!-- manki') && r.user?.login?.includes('[bot]');
+  const botReviews = reviews.filter((r: ReviewEntry) => isBotReview(r) && r.state !== 'DISMISSED');
   const latestBotReview = botReviews[botReviews.length - 1];
-  if (latestBotReview?.state === 'APPROVED') {
-    core.info('Already approved — skipping duplicate approval');
-    return true;
-  }
 
   const { data: pr } = await octokit.rest.pulls.get({
     owner,
     repo,
     pull_number: prNumber,
   });
+
+  // Stale-SHA gate: bail unless manki has actually submitted a non-DISMISSED
+  // review on the current HEAD commit. This single check covers every variant —
+  // stale prior review, absent commit_id, all reviews DISMISSED, or no bot
+  // review at all.
+  const hasReviewedHead = botReviews.some((r) => r.commit_id === pr.head.sha);
+  if (!hasReviewedHead) {
+    const staleSha =
+      reviews.filter((r: ReviewEntry) => isBotReview(r) && r.commit_id !== pr.head.sha).slice(-1)[0]?.commit_id ?? 'unknown';
+    core.warning(
+      `Skipping auto-approve — manki has not reviewed HEAD (head=${pr.head.sha}, stale=${staleSha})`,
+    );
+    await postStaleApproveSkippedComment(octokit, owner, repo, prNumber, pr.head.sha, staleSha);
+    return false;
+  }
+
+  if (latestBotReview?.state === 'APPROVED') {
+    core.info('Already approved — skipping duplicate approval');
+    return true;
+  }
 
   const progressCommentId = await postAutoApproveProgressComment(octokit, owner, repo, prNumber);
 
@@ -293,4 +353,4 @@ async function resolveStaleThreads(
   return resolvedCount;
 }
 
-export { ReviewThread, areAllFindingsResolved, checkAndAutoApprove, fetchBotReviewThreads, resolveStaleThreads, BOT_MARKER };
+export { ReviewThread, areAllFindingsResolved, checkAndAutoApprove, fetchBotReviewThreads, resolveStaleThreads, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };

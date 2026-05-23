@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `checkAndAutoApprove` no longer posts an empty placeholder review when the `APPROVE` event fails. The previous fallback emitted a `COMMENT` review whose body was a bare `<!-- manki -->` HTML comment (rendered by the API as `body_length: 0`), which then tripped the head-SHA dedupe gate (`hasBotReviewOnCommit`) and broke the round-cap force-review tickbox loop — every subsequent tick bailed with "Review skipped — a review has already been posted for this commit". The `APPROVE` body now carries visible content (`**Manki** — Auto-approved (all findings resolved).`) so it does not register as an empty review, and the no-permission fallback path posts a plain issue comment instructing the user to enable "Allow GitHub Actions to create and approve pull requests" instead of creating a placeholder review on the head SHA ([#840](https://github.com/manki-review/manki/issues/840)).
-
+- `checkAndAutoApprove` now bails when the latest non-`DISMISSED` `manki-review[bot]` review's `commit_id` does not match the current `pr.head.sha`, so a thread-reply `pull_request_review` event from a third party (which fires with `commit_id = head.sha` and slips past the event-level stale guard in `handleReviewStateCheck`) can no longer trigger an undeserved `APPROVED` review on a HEAD manki has never actually reviewed. The bail emits a structured `core.warning` carrying both SHAs and posts a single explanatory PR comment (idempotent per HEAD via a `manki-stale-approve:<sha>` marker) instructing the user to re-trigger with `@manki review` ([#838](https://github.com/manki-review/manki/issues/838)).
 ## [5.2.0]
 
 ### Added

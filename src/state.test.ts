@@ -365,16 +365,21 @@ describe('checkAndAutoApprove', () => {
     prHeadSha?: string;
     createReviewFn?: jest.Mock;
     createCommentFn?: jest.Mock;
-    existingReviews?: Array<{ body?: string; state?: string; user?: { login?: string; type?: string } }>;
+    existingReviews?: Array<{ body?: string; state?: string; commit_id?: string; user?: { login?: string; type?: string } }>;
+    existingComments?: Array<{ body?: string; user?: { login?: string } }>;
   } = {}) {
     const threads = overrides.threads ?? [];
     const prHeadSha = overrides.prHeadSha ?? 'abc123';
     const createReviewFn = overrides.createReviewFn ?? jest.fn().mockResolvedValue({});
     const createCommentFn = overrides.createCommentFn ?? jest.fn().mockResolvedValue({});
-    const existingReviews = overrides.existingReviews ?? [];
+    const existingReviews = overrides.existingReviews ?? [
+      { body: '<!-- manki -->', state: 'CHANGES_REQUESTED', commit_id: prHeadSha, user: { login: 'github-actions[bot]', type: 'Bot' } },
+    ];
+    const existingComments = overrides.existingComments ?? [];
 
     return {
       graphql: jest.fn().mockResolvedValue(makeGraphqlFetchResponse(threads)),
+      paginate: jest.fn().mockResolvedValue(existingComments),
       rest: {
         pulls: {
           get: jest.fn().mockResolvedValue({ data: { head: { sha: prHeadSha } } }),
@@ -382,6 +387,7 @@ describe('checkAndAutoApprove', () => {
           listReviews: jest.fn().mockResolvedValue({ data: existingReviews }),
         },
         issues: {
+          listComments: jest.fn(),
           createComment: createCommentFn,
         },
       },
@@ -561,13 +567,14 @@ describe('checkAndAutoApprove', () => {
     );
   });
 
-  it('skips duplicate approval when bot already has an active APPROVED review', async () => {
+  it('skips duplicate approval when bot already has an active APPROVED review on HEAD', async () => {
     const createReviewMock = jest.fn().mockResolvedValue({});
     const octokit = makeMockOctokit({
       threads: [],
+      prHeadSha: 'abc123',
       createReviewFn: createReviewMock,
       existingReviews: [
-        { body: '<!-- manki -->', state: 'APPROVED', user: { login: 'github-actions[bot]', type: 'Bot' } },
+        { body: '<!-- manki -->', state: 'APPROVED', commit_id: 'abc123', user: { login: 'github-actions[bot]', type: 'Bot' } },
       ],
     });
 
@@ -585,8 +592,8 @@ describe('checkAndAutoApprove', () => {
       prHeadSha: 'sha-new',
       createReviewFn: createReviewMock,
       existingReviews: [
-        { body: '<!-- manki -->', state: 'APPROVED', user: { login: 'github-actions[bot]', type: 'Bot' } },
-        { body: '<!-- manki -->', state: 'CHANGES_REQUESTED', user: { login: 'github-actions[bot]', type: 'Bot' } },
+        { body: '<!-- manki -->', state: 'APPROVED', commit_id: 'sha-new', user: { login: 'github-actions[bot]', type: 'Bot' } },
+        { body: '<!-- manki -->', state: 'CHANGES_REQUESTED', commit_id: 'sha-new', user: { login: 'github-actions[bot]', type: 'Bot' } },
       ],
     });
 
@@ -598,23 +605,199 @@ describe('checkAndAutoApprove', () => {
     );
   });
 
-  it('creates new approval when previous bot approval was DISMISSED', async () => {
+  it('skips approval when the only bot review on HEAD is DISMISSED', async () => {
     const createReviewMock = jest.fn().mockResolvedValue({});
+    const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 1 } });
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const octokit = makeMockOctokit({
       threads: [],
       prHeadSha: 'sha-new',
       createReviewFn: createReviewMock,
+      createCommentFn: createCommentMock,
       existingReviews: [
-        { body: '<!-- manki -->', state: 'DISMISSED', user: { login: 'github-actions[bot]', type: 'Bot' } },
+        { body: '<!-- manki -->', state: 'DISMISSED', commit_id: 'sha-new', user: { login: 'github-actions[bot]', type: 'Bot' } },
       ],
     });
 
     const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
 
-    expect(result).toBe(true);
-    expect(createReviewMock).toHaveBeenCalledWith(
-      expect.objectContaining({ event: 'APPROVE' }),
+    expect(result).toBe(false);
+    expect(createReviewMock).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('manki has not reviewed HEAD'));
+    expect(createCommentMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining('unknown'),
+      }),
     );
+    warnSpy.mockRestore();
+  });
+
+  describe('stale-SHA guard', () => {
+    let warningSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      warningSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      warningSpy.mockRestore();
+    });
+
+    it('skips approval, warns, and posts one comment when latest manki review is on a stale SHA', async () => {
+      const createReviewMock = jest.fn().mockResolvedValue({});
+      const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 1 } });
+      const octokit = makeMockOctokit({
+        threads: [
+          makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix --> fix', isResolved: true }),
+        ],
+        prHeadSha: 'head-sha-aaaa',
+        createReviewFn: createReviewMock,
+        createCommentFn: createCommentMock,
+        existingReviews: [
+          { body: '<!-- manki -->', state: 'COMMENTED', commit_id: 'old-sha-bbbb', user: { login: 'manki-review[bot]', type: 'Bot' } },
+        ],
+      });
+
+      const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+
+      expect(result).toBe(false);
+      expect(createReviewMock).not.toHaveBeenCalled();
+      expect(warningSpy).toHaveBeenCalledWith(
+        expect.stringContaining('manki has not reviewed HEAD'),
+      );
+      expect(warningSpy).toHaveBeenCalledWith(
+        expect.stringContaining('head=head-sha-aaaa'),
+      );
+      expect(createCommentMock).toHaveBeenCalledTimes(1);
+      expect(createCommentMock).toHaveBeenCalledWith(expect.objectContaining({
+        owner: 'owner',
+        repo: 'repo',
+        issue_number: 1,
+        body: expect.stringContaining('<!-- manki-stale-approve:head-sha-aaaa -->'),
+      }));
+      expect(createCommentMock).toHaveBeenCalledWith(expect.objectContaining({
+        body: expect.stringContaining('@manki review'),
+      }));
+    });
+
+    it('still approves when the latest manki review is on the current HEAD', async () => {
+      const createReviewMock = jest.fn().mockResolvedValue({});
+      const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 1 } });
+      const octokit = makeMockOctokit({
+        threads: [
+          makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix --> fix', isResolved: true }),
+        ],
+        prHeadSha: 'head-sha-aaaa',
+        createReviewFn: createReviewMock,
+        createCommentFn: createCommentMock,
+        existingReviews: [
+          { body: '<!-- manki -->', state: 'CHANGES_REQUESTED', commit_id: 'head-sha-aaaa', user: { login: 'manki-review[bot]', type: 'Bot' } },
+        ],
+      });
+
+      const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+
+      expect(result).toBe(true);
+      expect(createReviewMock).toHaveBeenCalledWith(
+        expect.objectContaining({ event: 'APPROVE', commit_id: 'head-sha-aaaa' }),
+      );
+      expect(createCommentMock).not.toHaveBeenCalled();
+      expect(warningSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not post a duplicate comment when stale-approve marker for the same HEAD already exists', async () => {
+      const createReviewMock = jest.fn().mockResolvedValue({});
+      const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 1 } });
+      const octokit = makeMockOctokit({
+        threads: [
+          makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix --> fix', isResolved: true }),
+        ],
+        prHeadSha: 'head-sha-aaaa',
+        createReviewFn: createReviewMock,
+        createCommentFn: createCommentMock,
+        existingReviews: [
+          { body: '<!-- manki -->', state: 'COMMENTED', commit_id: 'old-sha-bbbb', user: { login: 'manki-review[bot]', type: 'Bot' } },
+        ],
+        existingComments: [
+          { body: '<!-- manki-stale-approve:head-sha-aaaa -->\nAuto-approve withheld...', user: { login: 'manki-review[bot]' } },
+        ],
+      });
+
+      const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+
+      expect(result).toBe(false);
+      expect(createReviewMock).not.toHaveBeenCalled();
+      expect(createCommentMock).not.toHaveBeenCalled();
+      expect(warningSpy).toHaveBeenCalledWith(
+        expect.stringContaining('manki has not reviewed HEAD'),
+      );
+    });
+
+    it('skips approval when latest bot review is APPROVED but on a stale commit', async () => {
+      const createReviewMock = jest.fn().mockResolvedValue({});
+      const octokit = makeMockOctokit({
+        threads: [],
+        prHeadSha: 'new-sha',
+        createReviewFn: createReviewMock,
+        existingReviews: [
+          { body: '<!-- manki -->', state: 'APPROVED', commit_id: 'old-sha', user: { login: 'github-actions[bot]', type: 'Bot' } },
+        ],
+      });
+
+      const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+
+      expect(result).toBe(false);
+      expect(createReviewMock).not.toHaveBeenCalled();
+      expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('manki has not reviewed HEAD'));
+    });
+
+    it('skips approval when all bot reviews are DISMISSED and threads exist', async () => {
+      const createReviewMock = jest.fn().mockResolvedValue({});
+      const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 1 } });
+      const octokit = makeMockOctokit({
+        threads: [
+          makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix --> fix', isResolved: true }),
+        ],
+        prHeadSha: 'head-sha-new',
+        createReviewFn: createReviewMock,
+        createCommentFn: createCommentMock,
+        existingReviews: [
+          { body: '<!-- manki -->', state: 'DISMISSED', commit_id: 'old-sha', user: { login: 'github-actions[bot]', type: 'Bot' } },
+        ],
+      });
+
+      const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+
+      expect(result).toBe(false);
+      expect(createReviewMock).not.toHaveBeenCalled();
+      expect(warningSpy).toHaveBeenCalledWith(
+        expect.stringContaining('manki has not reviewed HEAD'),
+      );
+      expect(createCommentMock).toHaveBeenCalledTimes(1);
+      expect(createCommentMock).toHaveBeenCalledWith(expect.objectContaining({
+        body: expect.stringContaining('<!-- manki-stale-approve:head-sha-new -->'),
+      }));
+    });
+
+    it('skips approval when no bot reviews exist at all', async () => {
+      const createReviewMock = jest.fn().mockResolvedValue({});
+      const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 1 } });
+      const octokit = makeMockOctokit({
+        threads: [],
+        prHeadSha: 'sha-fresh',
+        createReviewFn: createReviewMock,
+        createCommentFn: createCommentMock,
+        existingReviews: [],
+      });
+
+      const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+
+      expect(result).toBe(false);
+      expect(createReviewMock).not.toHaveBeenCalled();
+      expect(warningSpy).toHaveBeenCalledWith(
+        expect.stringContaining('manki has not reviewed HEAD'),
+      );
+    });
   });
 });
 
@@ -633,12 +816,16 @@ describe('checkAndAutoApprove — concurrent run guard', () => {
   function makeMockOctokit(): Octokit {
     return {
       graphql: jest.fn().mockResolvedValue(makeGraphqlFetchResponse([])),
+      paginate: jest.fn().mockResolvedValue([]),
       rest: {
         pulls: {
           get: jest.fn().mockResolvedValue({ data: { head: { sha: 'sha-1' } } }),
           createReview: jest.fn().mockResolvedValue({}),
-          listReviews: jest.fn().mockResolvedValue({ data: [] }),
+          listReviews: jest.fn().mockResolvedValue({ data: [
+            { body: '<!-- manki -->', state: 'CHANGES_REQUESTED', commit_id: 'sha-1', user: { login: 'github-actions[bot]', type: 'Bot' } },
+          ] }),
         },
+        issues: { listComments: jest.fn(), createComment: jest.fn().mockResolvedValue({ data: { id: 1 } }) },
       },
     } as unknown as Octokit;
   }
@@ -700,11 +887,14 @@ describe('checkAndAutoApprove — concurrent run guard', () => {
     function makeOctokit(comments: ReturnType<typeof botComment>[]): Octokit {
       return {
         graphql: jest.fn().mockResolvedValue(makeGraphqlFetchResponse([])),
+        paginate: jest.fn().mockResolvedValue([]),
         rest: {
           pulls: {
             get: jest.fn().mockResolvedValue({ data: { head: { sha: 'sha-1' } } }),
             createReview: jest.fn().mockResolvedValue({}),
-            listReviews: jest.fn().mockResolvedValue({ data: [] }),
+            listReviews: jest.fn().mockResolvedValue({ data: [
+              { body: '<!-- manki -->', state: 'CHANGES_REQUESTED', commit_id: 'sha-1', user: { login: 'github-actions[bot]', type: 'Bot' } },
+            ] }),
           },
           issues: {
             listComments: jest.fn().mockResolvedValue({ data: comments }),
@@ -881,16 +1071,20 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
   function makeMockOctokit(overrides: {
     createReviewFn?: jest.Mock;
     createCommentFn?: jest.Mock;
-    existingReviews?: Array<{ body?: string; state?: string; user?: { login?: string; type?: string } }>;
+    prHeadSha?: string;
+    existingReviews?: Array<{ body?: string; state?: string; commit_id?: string; user?: { login?: string; type?: string } }>;
   } = {}) {
     const createReviewFn = overrides.createReviewFn ?? jest.fn().mockResolvedValue({});
     const createCommentFn = overrides.createCommentFn ?? jest.fn().mockResolvedValue({});
-    const existingReviews = overrides.existingReviews ?? [];
+    const prHeadSha = overrides.prHeadSha ?? 'sha-x';
+    const existingReviews = overrides.existingReviews ?? [
+      { body: '<!-- manki -->', state: 'CHANGES_REQUESTED', commit_id: prHeadSha, user: { login: 'github-actions[bot]', type: 'Bot' } },
+    ];
     return {
       graphql: jest.fn().mockResolvedValue(makeGraphqlFetchResponse([])),
       rest: {
         pulls: {
-          get: jest.fn().mockResolvedValue({ data: { head: { sha: 'sha-x' } } }),
+          get: jest.fn().mockResolvedValue({ data: { head: { sha: prHeadSha } } }),
           createReview: createReviewFn,
           listReviews: jest.fn().mockResolvedValue({ data: existingReviews }),
         },
@@ -970,8 +1164,9 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
 
   it('does not post a marker when a prior bot approval already exists for the same SHA', async () => {
     const octokit = makeMockOctokit({
+      prHeadSha: 'sha-x',
       existingReviews: [
-        { body: '<!-- manki -->', state: 'APPROVED', user: { login: 'github-actions[bot]', type: 'Bot' } },
+        { body: '<!-- manki -->', state: 'APPROVED', commit_id: 'sha-x', user: { login: 'github-actions[bot]', type: 'Bot' } },
       ],
     });
 
