@@ -45801,7 +45801,7 @@ exports.handleReviewStateCheck = handleReviewStateCheck;
 exports.runFullReview = runFullReview;
 exports.main = main;
 exports._resetOctokitCache = _resetOctokitCache;
-exports.buildRoundRecap = buildRoundRecap;
+exports._buildRoundRecap = _buildRoundRecap;
 const core = __importStar(__nccwpck_require__(37484));
 const fs = __importStar(__nccwpck_require__(79896));
 const github = __importStar(__nccwpck_require__(93228));
@@ -46157,11 +46157,11 @@ async function handleCommentTrigger(forceReview, skipCap, bypassHint) {
         trigger: buildRoundTrigger(),
     });
 }
-function buildRoundRecap(priorRoundCount, reclassifiedPriorCount, reclassifiedPriors) {
-    const count = reclassifiedPriorCount ?? 0;
-    const entries = reclassifiedPriors ?? [];
+function _buildRoundRecap(recap) {
+    const count = recap.reclassifiedPriorCount ?? 0;
+    const entries = recap.reclassifiedPriors ?? [];
     return {
-        priorRoundCount,
+        priorRoundCount: recap.priorRounds.length,
         reclassifiedPriorCount: count,
         ...(entries.length > 0 && { reclassifiedPriors: entries }),
     };
@@ -46932,7 +46932,7 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
             },
             usage,
             verdict: result.verdict,
-            recap: buildRoundRecap(recap.priorRounds.length, recap.reclassifiedPriorCount, recap.reclassifiedPriors),
+            recap: _buildRoundRecap(recap),
         };
         const flatAliases = (0, types_1.roundContextToFlatAliases)(context);
         // Resolve threads the judge marked `addressed`. Other statuses

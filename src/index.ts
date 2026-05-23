@@ -418,15 +418,15 @@ async function handleCommentTrigger(forceReview?: boolean, skipCap?: boolean, by
   });
 }
 
-function buildRoundRecap(
-  priorRoundCount: number,
-  reclassifiedPriorCount: number | undefined,
-  reclassifiedPriors: ReclassifiedPrior[] | undefined,
-): RoundRecap {
-  const count = reclassifiedPriorCount ?? 0;
-  const entries = reclassifiedPriors ?? [];
+function _buildRoundRecap(recap: {
+  priorRounds: unknown[];
+  reclassifiedPriorCount?: number;
+  reclassifiedPriors?: ReclassifiedPrior[];
+}): RoundRecap {
+  const count = recap.reclassifiedPriorCount ?? 0;
+  const entries = recap.reclassifiedPriors ?? [];
   return {
-    priorRoundCount,
+    priorRoundCount: recap.priorRounds.length,
     reclassifiedPriorCount: count,
     ...(entries.length > 0 && { reclassifiedPriors: entries }),
   };
@@ -1260,7 +1260,7 @@ async function runFullReview(
       },
       usage,
       verdict: result.verdict,
-      recap: buildRoundRecap(recap.priorRounds.length, recap.reclassifiedPriorCount, recap.reclassifiedPriors),
+      recap: _buildRoundRecap(recap),
     };
     const flatAliases = roundContextToFlatAliases(context);
 
@@ -1695,4 +1695,4 @@ function _resetOctokitCache(): void {
   octokitCache.identity = null;
 }
 
-export { run, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, runFullReview, main, _resetOctokitCache, buildRoundRecap };
+export { run, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, runFullReview, main, _resetOctokitCache, _buildRoundRecap };

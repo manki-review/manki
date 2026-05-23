@@ -220,7 +220,7 @@ jest.mock('./state', () => ({
   resolveStaleThreads: jest.fn().mockResolvedValue(0),
 }));
 
-import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, main, _resetOctokitCache, detectTickedMarker, buildRoundRecap } from './index';
+import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, main, _resetOctokitCache, detectTickedMarker, _buildRoundRecap } from './index';
 import { FORCE_REVIEW_MARKER, FORCE_CAP_MARKER } from './github';
 import type { ReviewConfig } from './types';
 import { createLLMClient, parseModelSpec } from './providers';
@@ -6976,28 +6976,28 @@ describe('detectTickedMarker', () => {
   });
 });
 
-describe('buildRoundRecap', () => {
+describe('_buildRoundRecap', () => {
   it('omits reclassifiedPriors when entries array is empty', () => {
-    const result = buildRoundRecap(3, 0, []);
+    const result = _buildRoundRecap({ priorRounds: [{}, {}, {}], reclassifiedPriorCount: 0, reclassifiedPriors: [] });
     expect(result.priorRoundCount).toBe(3);
     expect(result.reclassifiedPriorCount).toBe(0);
     expect('reclassifiedPriors' in result).toBe(false);
   });
 
   it('omits reclassifiedPriors when count is non-zero but entries are empty', () => {
-    const result = buildRoundRecap(2, 3, []);
+    const result = _buildRoundRecap({ priorRounds: [{}, {}], reclassifiedPriorCount: 3, reclassifiedPriors: [] });
     expect('reclassifiedPriors' in result).toBe(false);
   });
 
   it('includes reclassifiedPriors when entries are present', () => {
     const entries = [{ threadId: 't1', from: 'none', to: 'agree' }];
-    const result = buildRoundRecap(2, 1, entries);
+    const result = _buildRoundRecap({ priorRounds: [{}, {}], reclassifiedPriorCount: 1, reclassifiedPriors: entries });
     expect(result.reclassifiedPriors).toEqual(entries);
     expect(result.reclassifiedPriorCount).toBe(1);
   });
 
   it('defaults undefined count and entries to zero and empty', () => {
-    const result = buildRoundRecap(1, undefined, undefined);
+    const result = _buildRoundRecap({ priorRounds: [{}] });
     expect(result.reclassifiedPriorCount).toBe(0);
     expect('reclassifiedPriors' in result).toBe(false);
   });
