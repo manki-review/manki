@@ -46104,7 +46104,10 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
         try {
             const { data: prHead } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
             const headSha = prHead.head?.sha;
-            if (headSha && headSha !== commitSha) {
+            if (!headSha) {
+                core.warning('Head SHA lookup returned no sha, proceeding');
+            }
+            else if (headSha !== commitSha) {
                 core.info(`Event SHA ${commitSha.slice(0, 7)} != head SHA ${headSha.slice(0, 7)} — bailing out`);
                 return;
             }
