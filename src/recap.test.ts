@@ -1,4 +1,4 @@
-import { Finding, RoundContext } from './types';
+import { Finding, FindingFingerprintEntry, RoundContext } from './types';
 import { Suppression } from './memory';
 import { classifyAuthorReply, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment } from './recap';
 import { BOT_LOGIN, titleToSlug } from './github';
@@ -2173,7 +2173,7 @@ describe('titleOverlapType', () => {
 });
 
 describe('refreshAuthorReplyClass', () => {
-  function makeRound(entries: import('./types').FindingFingerprintEntry[]): import('./types').RoundContext {
+  function makeRound(entries: FindingFingerprintEntry[]): RoundContext {
     return {
       meta: { prNumber: 1, commitSha: 'abc', round: 1, timestamp: '2026-01-01T00:00:00.000Z', mankiVersion: '1.0.0' },
       config: { reviewLevel: 'medium', memoryEnabled: false },
@@ -2190,7 +2190,7 @@ describe('refreshAuthorReplyClass', () => {
     };
   }
 
-  function makeEntry(overrides: Partial<import('./types').FindingFingerprintEntry> = {}): import('./types').FindingFingerprintEntry {
+  function makeEntry(overrides: Partial<FindingFingerprintEntry> = {}): FindingFingerprintEntry {
     return {
       fingerprint: { file: 'src/foo.ts', slug: 'test-finding', lineStart: 10, lineEnd: 10 },
       severity: 'suggestion',
