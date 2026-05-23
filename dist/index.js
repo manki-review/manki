@@ -53887,7 +53887,6 @@ async function checkAndAutoApprove(octokit, owner, repo, prNumber, config) {
             return false;
         }
     }
-    // SHA is confirmed to match (or no prior bot review exists) — safe to short-circuit.
     if (latestBotReview?.state === 'APPROVED') {
         core.info('Already approved — skipping duplicate approval');
         return true;
