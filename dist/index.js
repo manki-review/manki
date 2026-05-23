@@ -50511,7 +50511,7 @@ function wrapClientForUsage(client) {
         },
         ...(client.warmupCLI ? { warmupCLI: client.warmupCLI.bind(client) } : {}),
     };
-    return { client: wrapped, getTotals: () => Object.freeze({ ...totals }) };
+    return { client: wrapped, getTotals: () => Object.freeze({ ...totals, usage: Object.freeze({ ...totals.usage }) }) };
 }
 
 

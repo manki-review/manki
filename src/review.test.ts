@@ -6439,6 +6439,17 @@ describe('wrapClientForUsage', () => {
     expect(snap2.calls).toBe(2);
   });
 
+  it('getTotals deep-freezes the nested usage object', async () => {
+    const inner = makeUsageClient({ content: 'ok', usage: { inputTokens: 3, outputTokens: 2, cachedTokens: 1, reasoningTokens: 0 }, latencyMs: 10 });
+    const { client, getTotals } = wrapClientForUsage(inner);
+
+    await client.sendMessage('sys', 'user');
+    const totals = getTotals();
+
+    expect(Object.isFrozen(totals)).toBe(true);
+    expect(Object.isFrozen(totals.usage)).toBe(true);
+  });
+
   it('forwards warmupCLI when the inner client has it', async () => {
     const warmup = jest.fn().mockResolvedValue(undefined);
     const inner = {
