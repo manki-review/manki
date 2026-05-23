@@ -2567,7 +2567,45 @@ describe('runFullReview orchestration', () => {
         name: 'Security & Safety',
         effort: 'high',
         multiPassConsistency: { consistent: 2, totalRaw: 5 },
-        model: expect.any(String),
+        model: 'claude-sonnet-4-20250514',
+      }),
+    ]);
+  });
+
+  it('uses `models.agents` override for `RoundAgentMetric.model` when configured', async () => {
+    const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(configModule.loadConfig).mockReturnValue({
+      auto_review: true, auto_approve: false, max_diff_lines: 5000,
+      exclude_paths: [],
+      reviewers: [],
+      instructions: '', review_level: 'auto',
+      review_thresholds: { small: 200, medium: 800 },
+      memory: { enabled: false, repo: '' },
+      models: {
+        reviewer: 'claude-sonnet-4-6',
+        agents: { 'Security & Safety': 'claude-opus-4-7' },
+      },
+    });
+
+    const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['Security & Safety'] };
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'REQUEST_CHANGES', summary: 'Issues found',
+      findings: [finding], highlights: [], reviewComplete: true,
+      agentNames: ['Security & Safety'],
+      allJudgedFindings: [finding], rawFindings: [finding],
+    });
+    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
+
+    await callRunFullReview();
+
+    const ctx = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+    expect(ctx!.reviewers.agentMetrics).toEqual([
+      expect.objectContaining({
+        name: 'Security & Safety',
+        model: 'claude-opus-4-7',
       }),
     ]);
   });

@@ -1221,6 +1221,29 @@ describe('fetchRecapState', () => {
       expect(state.priorRounds[0].planner.prType).toBe('docs');
     });
 
+    it.each<[string, 'planner' | 'heuristic' | 'heuristic_fallback', string | undefined]>([
+      ['planner ran', 'planner', undefined],
+      ['no planner and no fallbackReason', 'heuristic', undefined],
+      ['no planner with fallbackReason', 'heuristic_fallback', 'timeout'],
+    ])('migrates pre-5.2.0 context without `source` correctly when %s', async (_label, expectedSource, fallbackReason) => {
+      const base = makeRoundContext(1);
+      const legacy = {
+        ...base,
+        planner: {
+          used: expectedSource === 'planner',
+          coreAgentInjections: [],
+          priorRoundEffortDowngrades: [],
+          ...(fallbackReason ? { fallbackReason } : {}),
+        },
+      } as unknown as RoundContext;
+      const octokit = mockOctokit([], [
+        { id: 100, body: detailsBlock(legacy), user: { login: BOT_LOGIN } },
+      ]);
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.priorRounds).toHaveLength(1);
+      expect(state.priorRounds[0].planner.source).toBe(expectedSource);
+    });
+
     it('ignores HTML-comment block when a details block is present in the same review', async () => {
       const ctxDetails = makeRoundContext(1, { judge: { summary: 'from details' } });
       const ctxHtml = makeRoundContext(2, { judge: { summary: 'from html comment' } });
