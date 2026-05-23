@@ -510,6 +510,23 @@ async function runFullReview(
       return;
     }
 
+    // Fast-exit when the PR head has advanced past the event SHA between the
+    // event firing and this run reaching the LLM phase. Placed before any
+    // progress comment is posted so no marker cleanup is required on bail.
+    // Fail-open: a `pulls.get` failure does not disable the review.
+    try {
+      const { data: prHead } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
+      const headSha = prHead.head?.sha;
+      if (!headSha) {
+        core.warning('Head SHA lookup returned no sha, proceeding');
+      } else if (headSha !== commitSha) {
+        core.info(`Event SHA ${commitSha.slice(0, 7)} != head SHA ${headSha.slice(0, 7)} — bailing out`);
+        return;
+      }
+    } catch (error) {
+      core.warning(`Head SHA lookup failed, proceeding: ${error instanceof Error ? error.message : error}`);
+    }
+
     progressCommentId = await postProgressComment(octokit, owner, repo, prNumber);
 
     // Capture recap state before resolving stale threads so dedup sees

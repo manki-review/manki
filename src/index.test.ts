@@ -25,7 +25,7 @@ const mockPullsGet = jest.fn().mockResolvedValue({
   data: {
     title: 'Test PR',
     body: 'body',
-    head: { sha: 'abc' },
+    head: { sha: 'abc123' },
     base: { ref: 'main' },
   },
 });
@@ -1106,6 +1106,9 @@ describe('isApprovedOnCommit guard', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     _resetOctokitCache();
+    mockPullsGet.mockResolvedValue({
+      data: { title: 'Test PR', body: '', head: { sha: 'abc' }, base: { ref: 'main' } },
+    });
   });
 
   const prPayload = {
@@ -1585,6 +1588,9 @@ describe('main', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     _resetOctokitCache();
+    mockPullsGet.mockResolvedValue({
+      data: { title: 'Test', body: '', head: { sha: 'abc' }, base: { ref: 'main' } },
+    });
     jest.mocked(core.getInput).mockImplementation((name: string) =>
       name === 'anthropic_api_key' ? 'test-api-key' : '',
     );
@@ -1771,6 +1777,9 @@ describe('runFullReview orchestration', () => {
     jest.clearAllMocks();
     _resetOctokitCache();
     setContext({ eventName: 'pull_request', payload: { action: 'opened' } });
+    mockPullsGet.mockResolvedValue({
+      data: { title: 'Test PR', body: 'body', head: { sha: 'abc123' }, base: { ref: 'main' } },
+    });
     // Provide a valid API key so the early validation passes
     jest.mocked(core.getInput).mockImplementation((name: string) =>
       name === 'anthropic_api_key' ? 'test-api-key' : '',
@@ -6188,6 +6197,9 @@ describe('runFullReview concurrent-submission lock', () => {
     jest.clearAllMocks();
     _resetOctokitCache();
     setContext({ eventName: 'pull_request', payload: { action: 'opened' } });
+    mockPullsGet.mockResolvedValue({
+      data: { title: 'Test PR', body: 'body', head: { sha: 'abc123' }, base: { ref: 'main' } },
+    });
     jest.mocked(core.getInput).mockImplementation((name: string) =>
       name === 'anthropic_api_key' ? 'test-api-key' : '',
     );
@@ -6486,6 +6498,56 @@ describe('runFullReview concurrent-submission lock', () => {
     const warnings = jest.mocked(core.warning).mock.calls.map(c => String(c[0]));
     expect(warnings.some(w => w.includes('resolved outside workspace'))).toBe(true);
     expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
+  });
+
+  describe('stale event-SHA bail', () => {
+    it('proceeds when current head SHA matches the event SHA', async () => {
+      mockPullsGet.mockResolvedValueOnce({
+        data: { title: 'Test PR', body: 'body', head: { sha: 'abc123' }, base: { ref: 'main' } },
+      });
+
+      await callRunFullReview();
+
+      expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
+      expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
+    });
+
+    it('bails cleanly when head SHA has advanced past the event SHA', async () => {
+      mockPullsGet.mockResolvedValueOnce({
+        data: { title: 'Test PR', body: 'body', head: { sha: 'def456' }, base: { ref: 'main' } },
+      });
+
+      await callRunFullReview();
+
+      expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
+      expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+      const infos = jest.mocked(core.info).mock.calls.map(c => String(c[0]));
+      expect(infos.some(m => m.includes('abc123') && m.includes('def456') && m.includes('bailing'))).toBe(true);
+    });
+
+    it('proceeds (fail-open) when the head-SHA lookup throws', async () => {
+      mockPullsGet.mockRejectedValueOnce(new Error('API hiccup'));
+
+      await callRunFullReview();
+
+      const warnings = jest.mocked(core.warning).mock.calls.map(c => String(c[0]));
+      expect(warnings.some(w => w.includes('Head SHA lookup failed'))).toBe(true);
+      expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
+      expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
+    });
+
+    it('warns and proceeds when the head SHA is undefined in the API response', async () => {
+      mockPullsGet.mockResolvedValueOnce({
+        data: { title: 'Test PR', body: 'body', head: {}, base: { ref: 'main' } },
+      });
+
+      await callRunFullReview();
+
+      const warnings = jest.mocked(core.warning).mock.calls.map(c => String(c[0]));
+      expect(warnings.some(w => w.includes('Head SHA lookup returned no sha'))).toBe(true);
+      expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
+      expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
+    });
   });
 });
 
