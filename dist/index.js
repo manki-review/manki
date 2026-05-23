@@ -53011,6 +53011,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
             ...(plannerFallbackReason && { plannerFallbackReason }),
             ...(team.coreAgentInjections && team.coreAgentInjections.length > 0 && { coreAgentInjections: team.coreAgentInjections }),
             ...(priorRoundEffortDowngrades.length > 0 && { priorRoundEffortDowngrades }),
+            ...(agentMultiPassConsistency.size > 0 && { agentMultiPassConsistency }),
             agentEffortMap: agentRunEffort,
         };
     }
