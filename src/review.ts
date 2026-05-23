@@ -678,7 +678,7 @@ function emitHeuristicFallbackPlanning(
   });
 }
 
-function buildProvenanceFields(
+export function buildProvenanceFields(
   plannerSource: RoundPlannerSource,
   plannerFallbackReason: string | undefined,
   team: TeamRoster,
@@ -689,8 +689,8 @@ function buildProvenanceFields(
   return {
     plannerSource,
     ...(plannerFallbackReason && { plannerFallbackReason }),
-    ...(team.coreAgentInjections && team.coreAgentInjections.length > 0 && { coreAgentInjections: team.coreAgentInjections }),
-    ...(priorRoundEffortDowngrades.length > 0 && { priorRoundEffortDowngrades }),
+    coreAgentInjections: team.coreAgentInjections ?? [],
+    priorRoundEffortDowngrades,
     ...(agentMultiPassConsistency.size > 0 && { agentMultiPassConsistency }),
     agentEffortMap: agentRunEffort,
   };

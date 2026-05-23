@@ -4,7 +4,7 @@ import * as github from '@actions/github';
 import * as path from 'path';
 
 import { createAuthenticatedOctokit, getMemoryToken } from './auth';
-import { loadConfig, loadConfigFromFile, sanitizeForkConfig, resolveModel } from './config';
+import { loadConfig, loadConfigFromFile, sanitizeForkConfig, resolveAgentModel, resolveModel } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
@@ -987,7 +987,7 @@ async function runFullReview(
           const durationMs = result.agentDurationMs?.get(name);
           const retryCount = result.agentRetryCount?.get(name);
           const failureReason = result.agentFailureReasons?.[name];
-          const model = config.models?.agents?.[name] ?? reviewerModel;
+          const model = resolveAgentModel(config, name, 'reviewer');
           const effort = result.agentEffortMap?.get(name);
           const multiPassConsistency = result.agentMultiPassConsistency?.get(name);
           return {

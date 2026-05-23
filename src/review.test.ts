@@ -19,6 +19,7 @@ import {
   runPlanner,
   parseAgentPicks,
   sanitizePlannerField,
+  buildProvenanceFields,
   ReviewClients,
   PLANNER_TIMEOUT_MS,
   PlannerOutcomeSink,
@@ -6680,7 +6681,7 @@ describe('planner provenance in ReviewResult', () => {
     expect(result.agentNames).toContain('Security & Safety');
   });
 
-  it('leaves `coreAgentInjections` unset when no reinjection fires', async () => {
+  it('emits `coreAgentInjections` as empty array when no reinjection fires', async () => {
     const plannerResponse = JSON.stringify({
       teamSize: 3,
       reviewerEffort: 'medium',
@@ -6693,10 +6694,10 @@ describe('planner provenance in ReviewResult', () => {
       ],
     });
     const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'auto' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
-    expect(result.coreAgentInjections).toBeUndefined();
+    expect(result.coreAgentInjections).toEqual([]);
   });
 
-  it('leaves `priorRoundEffortDowngrades` unset when no prior rounds exist', async () => {
+  it('emits `priorRoundEffortDowngrades` as empty array when no prior rounds exist', async () => {
     const plannerResponse = JSON.stringify({
       teamSize: 3,
       reviewerEffort: 'medium',
@@ -6709,7 +6710,7 @@ describe('planner provenance in ReviewResult', () => {
       ],
     });
     const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'auto' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
-    expect(result.priorRoundEffortDowngrades).toBeUndefined();
+    expect(result.priorRoundEffortDowngrades).toEqual([]);
   });
 
   it('records `priorRoundEffortDowngrades` when the safety net clamps a pick', async () => {
@@ -6810,5 +6811,42 @@ describe('planner provenance in ReviewResult', () => {
   it('omits `agentMultiPassConsistency` on single-pass rounds', async () => {
     const result = await runReview(makeClients(), makeConfig(), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
     expect(result.agentMultiPassConsistency).toBeUndefined();
+  });
+});
+
+describe('buildProvenanceFields', () => {
+  const baseTeam = { level: 'medium' as const, agents: [], lineCount: 0 };
+
+  it('always includes `coreAgentInjections` and `priorRoundEffortDowngrades` even when empty', () => {
+    const result = buildProvenanceFields('planner', undefined, baseTeam, [], new Map(), new Map());
+    expect(result.coreAgentInjections).toEqual([]);
+    expect(result.priorRoundEffortDowngrades).toEqual([]);
+    expect(result.plannerSource).toBe('planner');
+    expect(result).not.toHaveProperty('plannerFallbackReason');
+    expect(result).not.toHaveProperty('agentMultiPassConsistency');
+  });
+
+  it('includes non-empty `coreAgentInjections`', () => {
+    const team = { ...baseTeam, coreAgentInjections: ['Security & Safety'] };
+    const result = buildProvenanceFields('planner', undefined, team, [], new Map(), new Map());
+    expect(result.coreAgentInjections).toEqual(['Security & Safety']);
+  });
+
+  it('includes non-empty `priorRoundEffortDowngrades`', () => {
+    const downgrades = [{ agent: 'Security & Safety', from: 'high' as const, to: 'low' as const }];
+    const result = buildProvenanceFields('heuristic_fallback', 'timeout', baseTeam, downgrades, new Map(), new Map());
+    expect(result.priorRoundEffortDowngrades).toEqual(downgrades);
+    expect(result.plannerFallbackReason).toBe('timeout');
+  });
+
+  it('includes `agentMultiPassConsistency` when non-empty', () => {
+    const consistency = new Map([['Security & Safety', { consistent: 2, totalRaw: 4 }]]);
+    const result = buildProvenanceFields('planner', undefined, baseTeam, [], consistency, new Map());
+    expect(result.agentMultiPassConsistency?.get('Security & Safety')).toEqual({ consistent: 2, totalRaw: 4 });
+  });
+
+  it('omits `agentMultiPassConsistency` when the map is empty', () => {
+    const result = buildProvenanceFields('planner', undefined, baseTeam, [], new Map(), new Map());
+    expect(result).not.toHaveProperty('agentMultiPassConsistency');
   });
 });
