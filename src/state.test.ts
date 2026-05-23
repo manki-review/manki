@@ -589,8 +589,8 @@ describe('checkAndAutoApprove', () => {
       prHeadSha: 'sha-new',
       createReviewFn: createReviewMock,
       existingReviews: [
-        { body: '<!-- manki -->', state: 'APPROVED', user: { login: 'github-actions[bot]', type: 'Bot' } },
-        { body: '<!-- manki -->', state: 'CHANGES_REQUESTED', user: { login: 'github-actions[bot]', type: 'Bot' } },
+        { body: '<!-- manki -->', state: 'APPROVED', commit_id: 'sha-new', user: { login: 'github-actions[bot]', type: 'Bot' } },
+        { body: '<!-- manki -->', state: 'CHANGES_REQUESTED', commit_id: 'sha-new', user: { login: 'github-actions[bot]', type: 'Bot' } },
       ],
     });
 
@@ -609,7 +609,7 @@ describe('checkAndAutoApprove', () => {
       prHeadSha: 'sha-new',
       createReviewFn: createReviewMock,
       existingReviews: [
-        { body: '<!-- manki -->', state: 'DISMISSED', user: { login: 'github-actions[bot]', type: 'Bot' } },
+        { body: '<!-- manki -->', state: 'DISMISSED', commit_id: 'sha-new', user: { login: 'github-actions[bot]', type: 'Bot' } },
       ],
     });
 
