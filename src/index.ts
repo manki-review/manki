@@ -638,8 +638,7 @@ async function runFullReview(
       return;
     }
 
-    const filteredFiles = filterFiles(diff.files, config.exclude_paths);
-    const { excluded: excludedFiles } = filterFilesWithAttribution(diff.files, config.exclude_paths);
+    const { included: filteredFiles, excluded: excludedFiles } = filterFilesWithAttribution(diff.files, config.exclude_paths);
     core.info(`Reviewing ${filteredFiles.length} files (${diff.files.length} total, ${diff.files.length - filteredFiles.length} filtered out)`);
 
     if (filteredFiles.length === 0) {
