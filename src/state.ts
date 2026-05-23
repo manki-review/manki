@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { checkConcurrentSubmissionLock, dismissPreviousReviews, isReviewInProgress, markAutoApproveComplete, markAutoApproveFailed, postAutoApproveProgressComment, sanitizeMarkdown } from './github';
+import { checkConcurrentSubmissionLock, dismissPreviousReviews, isReviewInProgress, markAutoApproveComplete, markAutoApproveFailed, postAutoApproveProgressComment } from './github';
 import { migrateLegacySeverity, ReviewConfig, SEVERITY_TOKEN_PATTERN } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -201,12 +201,7 @@ async function checkAndAutoApprove(
     }
   } catch (error) {
     const rawReason = error instanceof Error ? error.message : String(error);
-    const reason = sanitizeMarkdown(rawReason).slice(0, 300);
-    try {
-      await markAutoApproveFailed(octokit, owner, repo, progressCommentId, reason);
-    } catch (markError) {
-      core.warning(`Failed to transition progress comment to failure state: ${markError}`);
-    }
+    await markAutoApproveFailed(octokit, owner, repo, progressCommentId, rawReason);
     throw error;
   }
 

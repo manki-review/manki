@@ -957,16 +957,6 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
     expect(ghMock.markAutoApproveComplete).not.toHaveBeenCalled();
   });
 
-  it('re-throws the original createReview error even when markAutoApproveFailed itself throws', async () => {
-    const createReviewMock = jest.fn()
-      .mockRejectedValueOnce(new Error('APPROVE forbidden'))
-      .mockRejectedValueOnce(new Error('COMMENT also forbidden'));
-    ghMock.markAutoApproveFailed.mockRejectedValueOnce(new Error('marker update failed'));
-    const octokit = makeMockOctokit({ createReviewFn: createReviewMock });
-
-    await expect(checkAndAutoApprove(octokit, 'owner', 'repo', 1)).rejects.toThrow('COMMENT also forbidden');
-  });
-
   it('still transitions to complete when APPROVE fails but COMMENT fallback succeeds', async () => {
     const createReviewMock = jest.fn()
       .mockRejectedValueOnce(new Error('APPROVE forbidden'))

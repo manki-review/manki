@@ -457,7 +457,7 @@ export async function markAutoApproveFailed(
     BOT_MARKER,
     VERSION_MARKER,
     CANCELLED_MARKER,
-    `**Manki** — Auto-approve failed: ${reason}`,
+    `**Manki** — Auto-approve failed: ${sanitizeMarkdown(String(reason)).slice(0, 300)}`,
   ].join('\n');
   try {
     await octokit.rest.issues.updateComment({ owner, repo, comment_id: commentId, body });

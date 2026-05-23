@@ -44641,7 +44641,7 @@ async function markAutoApproveFailed(octokit, owner, repo, commentId, reason) {
         BOT_MARKER,
         VERSION_MARKER,
         CANCELLED_MARKER,
-        `**Manki** — Auto-approve failed: ${reason}`,
+        `**Manki** — Auto-approve failed: ${sanitizeMarkdown(String(reason)).slice(0, 300)}`,
     ].join('\n');
     try {
         await octokit.rest.issues.updateComment({ owner, repo, comment_id: commentId, body });
@@ -53666,13 +53666,7 @@ async function checkAndAutoApprove(octokit, owner, repo, prNumber, config) {
     }
     catch (error) {
         const rawReason = error instanceof Error ? error.message : String(error);
-        const reason = (0, github_1.sanitizeMarkdown)(rawReason).slice(0, 300);
-        try {
-            await (0, github_1.markAutoApproveFailed)(octokit, owner, repo, progressCommentId, reason);
-        }
-        catch (markError) {
-            core.warning(`Failed to transition progress comment to failure state: ${markError}`);
-        }
+        await (0, github_1.markAutoApproveFailed)(octokit, owner, repo, progressCommentId, rawReason);
         throw error;
     }
     await (0, github_1.markAutoApproveComplete)(octokit, owner, repo, progressCommentId);
