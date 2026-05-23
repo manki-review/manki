@@ -46644,7 +46644,7 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
                 const durationMs = result.agentDurationMs?.get(name);
                 const retryCount = result.agentRetryCount?.get(name);
                 const failureReason = result.agentFailureReasons?.[name];
-                const model = config.models?.agents?.[name] ?? reviewerModel;
+                const model = (0, config_1.resolveAgentModel)(config, name, 'reviewer');
                 const effort = result.agentEffortMap?.get(name);
                 const multiPassConsistency = result.agentMultiPassConsistency?.get(name);
                 return {
@@ -51919,6 +51919,7 @@ exports.sanitizePlannerField = sanitizePlannerField;
 exports.parseAgentPicks = parseAgentPicks;
 exports.runPlanner = runPlanner;
 exports.collectPriorRoundAgents = collectPriorRoundAgents;
+exports.buildProvenanceFields = buildProvenanceFields;
 exports.runReview = runReview;
 exports.buildReviewerSystemPrompt = buildReviewerSystemPrompt;
 exports.buildReviewerUserMessage = buildReviewerUserMessage;
@@ -52499,8 +52500,8 @@ function buildProvenanceFields(plannerSource, plannerFallbackReason, team, prior
     return {
         plannerSource,
         ...(plannerFallbackReason && { plannerFallbackReason }),
-        ...(team.coreAgentInjections && team.coreAgentInjections.length > 0 && { coreAgentInjections: team.coreAgentInjections }),
-        ...(priorRoundEffortDowngrades.length > 0 && { priorRoundEffortDowngrades }),
+        coreAgentInjections: team.coreAgentInjections ?? [],
+        priorRoundEffortDowngrades,
         ...(agentMultiPassConsistency.size > 0 && { agentMultiPassConsistency }),
         agentEffortMap: agentRunEffort,
     };
