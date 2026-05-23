@@ -53869,13 +53869,19 @@ async function checkAndAutoApprove(octokit, owner, repo, prNumber, config) {
         repo,
         pull_number: prNumber,
     });
-    // Stale-SHA gate: bail unless manki has actually submitted a review on the
-    // current HEAD commit. This single check covers every variant — stale prior
-    // review, absent commit_id, all reviews DISMISSED, or no bot review at all.
-    const hasReviewedHead = reviews.some((r) => isBotReview(r) && r.commit_id === pr.head.sha);
+    // Stale-SHA gate: bail unless manki has actually submitted a non-DISMISSED
+    // review on the current HEAD commit. This single check covers every variant —
+    // stale prior review, absent commit_id, all reviews DISMISSED, or no bot
+    // review at all.
+    const hasReviewedHead = reviews.some((r) => isBotReview(r) &&
+        r.state !== 'DISMISSED' &&
+        r.commit_id === pr.head.sha);
     if (!hasReviewedHead) {
         core.warning(`Skipping auto-approve — manki has not reviewed HEAD (head=${pr.head.sha})`);
-        await postStaleApproveSkippedComment(octokit, owner, repo, prNumber, pr.head.sha, 'none');
+        const allBotReviews = reviews.filter((r) => isBotReview(r));
+        const staleSha = allBotReviews[allBotReviews.length - 1]
+            ?.commit_id ?? 'unknown';
+        await postStaleApproveSkippedComment(octokit, owner, repo, prNumber, pr.head.sha, staleSha);
         return false;
     }
     if (latestBotReview?.state === 'APPROVED') {
