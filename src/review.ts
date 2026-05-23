@@ -1261,6 +1261,7 @@ export async function runReview(
       ...(plannerFallbackReason && { plannerFallbackReason }),
       ...(team.coreAgentInjections && team.coreAgentInjections.length > 0 && { coreAgentInjections: team.coreAgentInjections }),
       ...(priorRoundEffortDowngrades.length > 0 && { priorRoundEffortDowngrades }),
+      ...(agentMultiPassConsistency.size > 0 && { agentMultiPassConsistency }),
       agentEffortMap: agentRunEffort,
     };
   }
