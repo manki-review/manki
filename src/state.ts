@@ -1,12 +1,17 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { checkConcurrentSubmissionLock, dismissPreviousReviews, isReviewInProgress, markAutoApproveComplete, markAutoApproveFailed, postAutoApproveProgressComment } from './github';
+import { ACTIONS_BOT_LOGIN, BOT_LOGIN, checkConcurrentSubmissionLock, dismissPreviousReviews, isReviewInProgress, markAutoApproveComplete, markAutoApproveFailed, postAutoApproveProgressComment } from './github';
 import { migrateLegacySeverity, ReviewConfig, SEVERITY_TOKEN_PATTERN } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
 const BOT_MARKER = '<!-- manki -->';
+const STALE_APPROVE_MARKER_PREFIX = '<!-- manki-stale-approve:';
+
+function staleApproveMarker(headSha: string): string {
+  return `${STALE_APPROVE_MARKER_PREFIX}${headSha} -->`;
+}
 
 interface ReviewThread {
   id: string;
@@ -103,6 +108,46 @@ function areAllFindingsResolved(threads: ReviewThread[]): boolean {
 }
 
 /**
+ * Post a one-time explanatory comment when auto-approve is withheld because
+ * manki has not actually reviewed the current HEAD. The comment is idempotent
+ * per HEAD SHA via a `manki-stale-approve:<sha>` marker so repeated invocations
+ * on the same HEAD do not spam the PR.
+ */
+async function postStaleApproveSkippedComment(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  headSha: string,
+  latestReviewSha: string,
+): Promise<void> {
+  const marker = staleApproveMarker(headSha);
+  try {
+    const existing = await octokit.paginate(octokit.rest.issues.listComments, {
+      owner, repo, issue_number: prNumber, per_page: 100,
+    });
+    if (existing.some(c =>
+      (c.user?.login === BOT_LOGIN || c.user?.login === ACTIONS_BOT_LOGIN) &&
+      c.body?.includes(marker)
+    )) {
+      core.info(`Stale-approve comment already present for ${headSha.slice(0, 7)} — skipping duplicate`);
+      return;
+    }
+    const shortHead = headSha.slice(0, 7);
+    const shortLatest = latestReviewSha.slice(0, 7);
+    const body = [
+      marker,
+      `**Auto-approve withheld** for \`${shortHead}\` — all review threads are resolved on the current HEAD, but manki has not reviewed this commit (latest manki review was on \`${shortLatest}\`).`,
+      '',
+      'To approve, request a fresh review by commenting `@manki review` or by ticking the **Force review** checkbox on the latest progress comment.',
+    ].join('\n');
+    await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+  } catch (error) {
+    core.warning(`Failed to post stale-approve-skipped comment: ${error instanceof Error ? error.message : error}`);
+  }
+}
+
+/**
  * Post an approval review if all findings are resolved.
  *
  * Two concurrency guards run before any review is posted. First the TTL-based
@@ -162,6 +207,21 @@ async function checkAndAutoApprove(
     repo,
     pull_number: prNumber,
   });
+
+  // Stale-SHA guard: third-party thread replies fire `pull_request_review`
+  // events with `commit_id = head.sha`, which pass the event-level stale check
+  // in `handleReviewStateCheck`. Without this guard the function would issue an
+  // APPROVED review on HEAD even though manki has never actually reviewed HEAD.
+  // Bail when the latest non-DISMISSED bot review's `commit_id` differs from
+  // the current head SHA.
+  const latestBotReviewSha = (latestBotReview as { commit_id?: string } | undefined)?.commit_id;
+  if (latestBotReview && latestBotReviewSha && latestBotReviewSha !== pr.head.sha) {
+    core.warning(
+      `Skipping auto-approve — manki has not reviewed HEAD (head=${pr.head.sha}, latest_manki_review=${latestBotReviewSha})`,
+    );
+    await postStaleApproveSkippedComment(octokit, owner, repo, prNumber, pr.head.sha, latestBotReviewSha);
+    return false;
+  }
 
   const progressCommentId = await postAutoApproveProgressComment(octokit, owner, repo, prNumber);
 
@@ -293,4 +353,4 @@ async function resolveStaleThreads(
   return resolvedCount;
 }
 
-export { ReviewThread, areAllFindingsResolved, checkAndAutoApprove, fetchBotReviewThreads, resolveStaleThreads, BOT_MARKER };
+export { ReviewThread, areAllFindingsResolved, checkAndAutoApprove, fetchBotReviewThreads, resolveStaleThreads, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
