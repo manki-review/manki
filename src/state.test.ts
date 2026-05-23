@@ -976,12 +976,16 @@ describe('postAutoApproveProgressComment / markAutoApprove*', () => {
   const githubContext = jest.requireActual('@actions/github').context as { runId: number };
   let savedRunId: number;
 
+  const NOW = new Date('2026-05-22T12:00:00Z');
+
   beforeEach(() => {
     savedRunId = githubContext.runId;
     githubContext.runId = 12345;
+    jest.useFakeTimers().setSystemTime(NOW);
   });
   afterEach(() => {
     githubContext.runId = savedRunId;
+    jest.useRealTimers();
   });
 
   it('posts a body that `findInProgressLock` detects as a live lock', async () => {
@@ -1013,7 +1017,7 @@ describe('postAutoApproveProgressComment / markAutoApprove*', () => {
     await ghActual.markAutoApproveComplete(octokit, 'o', 'r', 1);
 
     const comments = [
-      { id: 1, body: updatedBody, user: { login: 'manki-review[bot]', type: 'Bot' }, updated_at: '2026-05-22T00:00:00Z' },
+      { id: 1, body: updatedBody, user: { login: 'manki-review[bot]', type: 'Bot' }, updated_at: '2026-05-22T11:59:30Z' },
     ];
     expect(ghActual.findInProgressLock(comments, 999)).toBeNull();
     expect(updatedBody).toContain('Auto-approved (all findings resolved)');
@@ -1030,7 +1034,7 @@ describe('postAutoApproveProgressComment / markAutoApprove*', () => {
     await ghActual.markAutoApproveFailed(octokit, 'o', 'r', 1, 'API rate limited');
 
     const comments = [
-      { id: 1, body: updatedBody, user: { login: 'manki-review[bot]', type: 'Bot' }, updated_at: '2026-05-22T00:00:00Z' },
+      { id: 1, body: updatedBody, user: { login: 'manki-review[bot]', type: 'Bot' }, updated_at: '2026-05-22T11:59:30Z' },
     ];
     expect(ghActual.findInProgressLock(comments, 999)).toBeNull();
     expect(updatedBody).toContain('API rate limited');
