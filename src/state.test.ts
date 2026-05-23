@@ -583,28 +583,6 @@ describe('checkAndAutoApprove', () => {
     expect(dismissPreviousReviews).not.toHaveBeenCalled();
   });
 
-  it('skips approval when latest bot review is APPROVED but on a stale commit', async () => {
-    const warningSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
-    const createReviewMock = jest.fn().mockResolvedValue({});
-    const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 1 } });
-    const octokit = makeMockOctokit({
-      threads: [],
-      prHeadSha: 'new-sha',
-      createReviewFn: createReviewMock,
-      createCommentFn: createCommentMock,
-      existingReviews: [
-        { body: '<!-- manki -->', state: 'APPROVED', commit_id: 'old-sha', user: { login: 'github-actions[bot]', type: 'Bot' } },
-      ],
-    });
-
-    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
-
-    expect(result).toBe(false);
-    expect(createReviewMock).not.toHaveBeenCalled();
-    expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('manki has not reviewed HEAD'));
-    warningSpy.mockRestore();
-  });
-
   it('creates new approval when latest bot review is CHANGES_REQUESTED', async () => {
     const createReviewMock = jest.fn().mockResolvedValue({});
     const octokit = makeMockOctokit({
@@ -746,6 +724,24 @@ describe('checkAndAutoApprove', () => {
       expect(warningSpy).toHaveBeenCalledWith(
         expect.stringContaining('manki has not reviewed HEAD'),
       );
+    });
+
+    it('skips approval when latest bot review is APPROVED but on a stale commit', async () => {
+      const createReviewMock = jest.fn().mockResolvedValue({});
+      const octokit = makeMockOctokit({
+        threads: [],
+        prHeadSha: 'new-sha',
+        createReviewFn: createReviewMock,
+        existingReviews: [
+          { body: '<!-- manki -->', state: 'APPROVED', commit_id: 'old-sha', user: { login: 'github-actions[bot]', type: 'Bot' } },
+        ],
+      });
+
+      const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+
+      expect(result).toBe(false);
+      expect(createReviewMock).not.toHaveBeenCalled();
+      expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('manki has not reviewed HEAD'));
     });
   });
 });
