@@ -46415,7 +46415,7 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
         const fullContext = [repoContext, recap.recapContext].filter(Boolean).join('\n\n');
         const isFollowUp = recap.previousFindings.length > 0;
         const baseOpenThreads = recap.previousFindings
-            .filter((f) => (f.status === 'open' || f.status === 'replied') && f.threadId != null)
+            .filter((f) => (f.status === 'open' || f.status === 'replied') && f.threadId != null && f.threadId !== '')
             .map(f => ({
             threadId: f.threadId,
             threadUrl: f.threadUrl,

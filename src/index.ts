@@ -739,7 +739,7 @@ async function runFullReview(
     const isFollowUp = recap.previousFindings.length > 0;
     const baseOpenThreads = recap.previousFindings
       .filter((f): f is PreviousFinding & { threadId: string } =>
-        (f.status === 'open' || f.status === 'replied') && f.threadId != null)
+        (f.status === 'open' || f.status === 'replied') && f.threadId != null && f.threadId !== '')
       .map(f => ({
         threadId: f.threadId,
         threadUrl: f.threadUrl,
