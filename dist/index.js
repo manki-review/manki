@@ -44036,6 +44036,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.parsePRDiff = parsePRDiff;
 exports.filterFiles = filterFiles;
+exports.filterFilesWithAttribution = filterFilesWithAttribution;
 exports.isLineInDiff = isLineInDiff;
 exports.findClosestDiffLine = findClosestDiffLine;
 exports.countDiffLines = countDiffLines;
@@ -44047,15 +44048,18 @@ const minimatch_1 = __nccwpck_require__(46507);
  */
 function parsePRDiff(rawDiff) {
     if (!rawDiff.trim()) {
-        return { files: [], totalAdditions: 0, totalDeletions: 0 };
+        return { files: [], totalAdditions: 0, totalDeletions: 0, binarySkipped: [] };
     }
     const parsed = (0, parse_diff_1.default)(rawDiff);
     let totalAdditions = 0;
     let totalDeletions = 0;
     const files = [];
+    const binarySkipped = [];
     for (const file of parsed) {
-        // Skip binary files (they have no meaningful chunks)
         if (isBinaryFile(file)) {
+            const binaryPath = file.to && file.to !== '/dev/null' ? file.to : file.from ?? '';
+            if (binaryPath)
+                binarySkipped.push(binaryPath);
             continue;
         }
         const path = file.to && file.to !== '/dev/null' ? file.to : file.from ?? '';
@@ -44079,18 +44083,34 @@ function parsePRDiff(rawDiff) {
             deletions: file.deletions,
         });
     }
-    return { files, totalAdditions, totalDeletions };
+    return { files, totalAdditions, totalDeletions, binarySkipped };
 }
 /**
  * Filter diff files based on exclude glob patterns.
  * A file is included unless it matches ANY exclude pattern.
  */
 function filterFiles(files, excludePaths) {
-    return files.filter((file) => {
-        const matchOpts = { matchBase: true, dot: true };
-        const excluded = excludePaths.some((pattern) => (0, minimatch_1.minimatch)(file.path, pattern, matchOpts));
-        return !excluded;
-    });
+    return filterFilesWithAttribution(files, excludePaths).included;
+}
+/**
+ * Same as `filterFiles` but also returns per-file exclusion attribution
+ * (path + first matched pattern) so callers can surface noise-debugging
+ * provenance in `RoundDiff.excludedFiles`.
+ */
+function filterFilesWithAttribution(files, excludePaths) {
+    const matchOpts = { matchBase: true, dot: true };
+    const included = [];
+    const excluded = [];
+    for (const file of files) {
+        const matchedPattern = excludePaths.find((pattern) => (0, minimatch_1.minimatch)(file.path, pattern, matchOpts));
+        if (matchedPattern) {
+            excluded.push({ path: file.path, matchedPattern });
+        }
+        else {
+            included.push(file);
+        }
+    }
+    return { included, excluded };
 }
 /**
  * Check if a line number is within the diff hunks for a file.
@@ -46135,6 +46155,15 @@ async function handleCommentTrigger(forceReview, skipCap, bypassHint) {
         trigger: buildRoundTrigger(),
     });
 }
+function buildRoundRecap(priorRoundCount, reclassifiedPriorCount, reclassifiedPriors) {
+    const count = reclassifiedPriorCount ?? 0;
+    const entries = reclassifiedPriors ?? [];
+    return {
+        priorRoundCount,
+        reclassifiedPriorCount: count,
+        ...(entries.length > 0 && { reclassifiedPriors: entries }),
+    };
+}
 function reconcileDashboardAgents(dashboard, names) {
     const existingByName = new Map(dashboard.agentProgress?.map(a => [a.name, a]) ?? []);
     const reconciled = names.map(name => existingByName.get(name) ?? { name, status: 'done' });
@@ -46322,6 +46351,7 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
             return;
         }
         const filteredFiles = (0, diff_1.filterFiles)(diff.files, config.exclude_paths);
+        const { excluded: excludedFiles } = (0, diff_1.filterFilesWithAttribution)(diff.files, config.exclude_paths);
         core.info(`Reviewing ${filteredFiles.length} files (${diff.files.length} total, ${diff.files.length - filteredFiles.length} filtered out)`);
         if (filteredFiles.length === 0) {
             core.info('No reviewable files in diff');
@@ -46362,10 +46392,16 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
             core.warning(`Failed to fetch subdirectory CLAUDE.md files: ${error}`);
         }
         let memory = null;
-        if (config.memory?.enabled) {
+        let memoryLoadStatus;
+        let memoryLoadError;
+        if (!config.memory?.enabled) {
+            memoryLoadStatus = 'disabled';
+        }
+        else {
             const memoryToken = (0, auth_1.getMemoryToken)(octokitCache.resolvedToken);
             if (!memoryToken) {
                 core.warning('No memory token available — skipping memory load. Set memory_repo_token or github_token.');
+                memoryLoadStatus = 'no_token';
             }
             else {
                 const memoryOctokit = github.getOctokit(memoryToken);
@@ -46373,9 +46409,13 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
                 try {
                     memory = await (0, memory_1.loadMemory)(memoryOctokit, memoryRepo, repo);
                     core.info(`Loaded memory: ${memory.learnings.length} learnings, ${memory.suppressions.length} suppressions`);
+                    memoryLoadStatus = 'loaded';
                 }
                 catch (error) {
-                    core.warning(`Failed to load review memory: ${error}`);
+                    const message = error instanceof Error ? error.message : String(error);
+                    core.warning(`Failed to load review memory: ${message}`);
+                    memoryLoadStatus = 'failed';
+                    memoryLoadError = message.length > 300 ? message.slice(0, 300) + '...' : message;
                 }
             }
         }
@@ -46797,6 +46837,15 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
                 deletions: diff.totalDeletions,
                 filesReviewed: filteredFiles.length,
                 fileTypes,
+                ...(excludedFiles.length > 0 && { excludedFiles: excludedFiles.slice(0, 100) }),
+                ...(diff.binarySkipped && diff.binarySkipped.length > 0 && { binarySkipped: diff.binarySkipped.slice(0, 100) }),
+                oversizedHandled: false,
+                perFile: filteredFiles.map((f) => ({
+                    path: f.path,
+                    additions: f.additions ?? 0,
+                    deletions: f.deletions ?? 0,
+                    changeType: f.changeType,
+                })),
             },
             models: {
                 ...(plannerClient && { planner: plannerModel }),
@@ -46862,12 +46911,17 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
             dedup: {
                 ...(result.staticDedupCount != null && { staticDropped: result.staticDedupCount }),
                 ...(result.llmDedupCount != null && { llmDropped: result.llmDedupCount }),
+                ...(mergedDuplicates > 0 && { sameRoundLlmDropped: mergedDuplicates }),
+                ...(result.duplicateMatches && result.duplicateMatches.length > 0 && { duplicateMatches: result.duplicateMatches.slice(0, 50) }),
+                ...(result.testNitSuppressedCount != null && result.testNitSuppressedCount > 0 && { testNitSuppressedCount: result.testNitSuppressedCount }),
                 ...(result.dedupDurationMs != null && { durationMs: result.dedupDurationMs }),
             },
             memory: {
                 ...(memory && memory.patterns.length > 0 && { patternsApplied: memory.patterns.length }),
                 ...(result.suppressionCount != null && result.suppressionCount > 0 && { suppressionsApplied: result.suppressionCount }),
                 ...(escalationsApplied > 0 && { escalationsApplied }),
+                loadStatus: memoryLoadStatus,
+                ...(memoryLoadError && { loadError: memoryLoadError }),
             },
             findings: {
                 count: result.findings.length,
@@ -46876,6 +46930,7 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
             },
             usage,
             verdict: result.verdict,
+            recap: buildRoundRecap(recap.priorRounds.length, recap.reclassifiedPriorCount, recap.reclassifiedPriors),
         };
         const flatAliases = (0, types_1.roundContextToFlatAliases)(context);
         // Resolve threads the judge marked `addressed`. Other statuses
@@ -51555,9 +51610,18 @@ async function fetchRecapState(octokit, owner, repo, prNumber, prAuthorLogin) {
         recapContext = parts.join('\n');
     }
     core.info(`Recap: ${resolved.length} resolved, ${open.length} open, ${previousFindings.length} total previous findings`);
-    const enrichedPriorRounds = refreshAuthorReplyClass(priorRounds, previousFindings);
-    return { previousFindings, recapContext, priorRounds: enrichedPriorRounds, openThreadsState };
+    const { rounds: enrichedPriorRounds, reclassifiedPriorCount, reclassifiedPriors } = refreshAuthorReplyClass(priorRounds, previousFindings);
+    return {
+        previousFindings,
+        recapContext,
+        priorRounds: enrichedPriorRounds,
+        openThreadsState,
+        reclassifiedPriorCount,
+        reclassifiedPriors,
+    };
 }
+/** Cap on `reclassifiedPriors[]` to bound context-block size. */
+const RECLASSIFIED_PRIORS_CAP = 50;
 /**
  * Re-derive `authorReplyClass` on each prior-round fingerprint from the live
  * `previousFindings` thread state. The value cached at emit time is always
@@ -51566,10 +51630,16 @@ async function fetchRecapState(octokit, owner, repo, prNumber, prAuthorLogin) {
  * hints, and the prior-unaddressed verdict gate. Matching is by `threadId`
  * when present, then falls back to fingerprint slug + file so older context
  * blocks written before threadId stabilisation still re-classify correctly.
+ *
+ * Also returns the count and (capped) attribution of every flip so the recap
+ * stage can surface re-classification provenance in `RoundContext.recap`.
+ * Slug-file fallback flips contribute to the count but cannot be attributed
+ * by `threadId`, so they are omitted from the entries list.
  */
 function refreshAuthorReplyClass(rounds, previousFindings) {
-    if (rounds.length === 0)
-        return rounds;
+    if (rounds.length === 0) {
+        return { rounds, reclassifiedPriorCount: 0, reclassifiedPriors: [] };
+    }
     const byThread = new Map();
     const bySlugFile = new Map();
     for (const pf of previousFindings) {
@@ -51580,7 +51650,9 @@ function refreshAuthorReplyClass(rounds, previousFindings) {
             bySlugFile.set(`${pf.file}:${(0, github_1.titleToSlug)(pf.title)}`, pf);
         }
     }
-    return rounds.map(r => ({
+    let reclassifiedPriorCount = 0;
+    const reclassifiedPriors = [];
+    const refreshed = rounds.map(r => ({
         ...r,
         findings: {
             ...r.findings,
@@ -51590,10 +51662,19 @@ function refreshAuthorReplyClass(rounds, previousFindings) {
                     : bySlugFile.get(`${entry.fingerprint.file}:${entry.fingerprint.slug}`);
                 if (!pf)
                     return entry;
-                return { ...entry, authorReplyClass: classifyAuthorReply(pf.authorReplyText) };
+                const next = classifyAuthorReply(pf.authorReplyText);
+                const prev = entry.authorReplyClass ?? 'none';
+                if (next !== prev) {
+                    reclassifiedPriorCount++;
+                    if (entry.threadId && reclassifiedPriors.length < RECLASSIFIED_PRIORS_CAP) {
+                        reclassifiedPriors.push({ threadId: entry.threadId, from: prev, to: next });
+                    }
+                }
+                return { ...entry, authorReplyClass: next };
             }),
         },
     }));
+    return { rounds: refreshed, reclassifiedPriorCount, reclassifiedPriors };
 }
 async function fetchPriorRoundContexts(octokit, owner, repo, prNumber) {
     try {
@@ -51770,9 +51851,16 @@ function deduplicateFindings(newFindings, previousFindings, suppressions) {
     const duplicates = [];
     const engaged = previousFindings.filter(f => f.status === 'resolved');
     for (const finding of newFindings) {
-        const matched = engaged.find(prev => matchesPrevious(finding, prev));
+        let matched;
+        for (const prev of engaged) {
+            const matchType = matchPreviousType(finding, prev);
+            if (matchType) {
+                matched = { prev, matchType };
+                break;
+            }
+        }
         if (matched) {
-            duplicates.push({ finding, matchedTitle: matched.title });
+            duplicates.push({ finding, matchedTitle: matched.prev.title, matchType: matched.matchType });
         }
         else {
             unique.push(finding);
@@ -51780,18 +51868,26 @@ function deduplicateFindings(newFindings, previousFindings, suppressions) {
     }
     return { unique, duplicates };
 }
-function titlesOverlap(a, b) {
+/**
+ * Title-overlap classifier. Returns the branch that fired or `null` when
+ * none did. `titlesOverlap` is the boolean wrapper kept for tests and
+ * external callers; new code prefers this typed variant.
+ */
+function titleOverlapType(a, b) {
     const aLower = a.toLowerCase();
     const bLower = b.toLowerCase();
     if (aLower === bLower)
-        return true;
-    // Substring match (keep for exact matches)
+        return 'exact';
     const shorter = aLower.length <= bLower.length ? aLower : bLower;
     const longer = aLower.length > bLower.length ? aLower : bLower;
     if (shorter.length >= 5 && longer.includes(shorter))
-        return true;
-    // Word overlap — 50% of words in the shorter title must appear in the longer
-    return wordOverlapRatio(a, b) >= 0.5;
+        return 'substring';
+    if (wordOverlapRatio(a, b) >= 0.5)
+        return 'word_overlap';
+    return null;
+}
+function titlesOverlap(a, b) {
+    return titleOverlapType(a, b) !== null;
 }
 function wordOverlapRatio(a, b) {
     const aWords = new Set(a.toLowerCase().split(/\s+/).map(w => w.replace(/^[^a-z0-9]+|[^a-z0-9]+$/gi, '')).filter(w => w.length >= 3));
@@ -51805,21 +51901,21 @@ function wordOverlapRatio(a, b) {
     }
     return overlap / Math.min(aWords.size, bWords.size);
 }
-function matchesPrevious(finding, previous) {
+function matchPreviousType(finding, previous) {
     if (!previous.title || previous.title.length < 3)
-        return false;
+        return null;
     if (!finding.title || finding.title.length < 3)
-        return false;
-    const titleMatch = titlesOverlap(finding.title, previous.title);
-    if (!titleMatch)
-        return false;
+        return null;
+    const matchType = titleOverlapType(finding.title, previous.title);
+    if (!matchType)
+        return null;
     if (finding.file !== previous.file)
-        return false;
+        return null;
     // Relax line proximity when word overlap is strong (>= 70%)
     const maxLineDelta = wordOverlapRatio(finding.title, previous.title) >= 0.7 ? 20 : 5;
     if (Math.abs(finding.line - previous.line) > maxLineDelta)
-        return false;
-    return true;
+        return null;
+    return matchType;
 }
 async function llmDeduplicateFindings(findings, previousFindings, client) {
     const dismissed = previousFindings.filter(f => f.status === 'resolved');
@@ -51848,7 +51944,7 @@ async function llmDeduplicateFindings(findings, previousFindings, client) {
                 const dismissedIdx = match ? match.matchedDismissed - 1 : -1;
                 const dismissedTitle = dismissedIdx >= 0 && dismissedIdx < dismissed.length ? dismissed[dismissedIdx].title : 'unknown';
                 core.info(`LLM dedup: "${findings[i].title}" matches dismissed "${dismissedTitle}"`);
-                duplicates.push({ finding: findings[i], matchedTitle: dismissedTitle });
+                duplicates.push({ finding: findings[i], matchedTitle: dismissedTitle, matchType: 'llm' });
             }
             else {
                 unique.push(findings[i]);
@@ -52933,6 +53029,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
     let llmDedupCount = 0;
     let dedupUsage;
     let dedupDurationMs;
+    const duplicateMatches = [];
     if (previousFindings && previousFindings.length > 0 && findingsForJudge.length > 0) {
         const { unique, duplicates } = (0, recap_1.deduplicateFindings)(findingsForJudge, previousFindings, memory?.suppressions);
         if (duplicates.length > 0) {
@@ -52940,6 +53037,9 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
         }
         findingsForJudge = unique;
         staticDedupCount = duplicates.length;
+        for (const d of duplicates) {
+            duplicateMatches.push({ droppedTitle: d.finding.title, matchedTitle: d.matchedTitle, matchType: d.matchType });
+        }
         if (clients.dedup && findingsForJudge.length > 0) {
             const dedupStart = Date.now();
             const dedupWrap = (0, providers_1.wrapClientForUsage)(clients.dedup);
@@ -52949,6 +53049,9 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
             }
             findingsForJudge = llmResult.unique;
             llmDedupCount = llmResult.duplicates.length;
+            for (const d of llmResult.duplicates) {
+                duplicateMatches.push({ droppedTitle: d.finding.title, matchedTitle: d.matchedTitle, matchType: d.matchType });
+            }
             dedupUsage = dedupWrap.getTotals().usage;
             dedupDurationMs = Date.now() - dedupStart;
         }
@@ -53091,6 +53194,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
         partialNote,
         staticDedupCount,
         llmDedupCount,
+        ...(duplicateMatches.length > 0 && { duplicateMatches }),
         suppressionCount,
         ...(inPrSuppressedCount > 0 && { inPrSuppressedCount }),
         agentResponseLengths,
