@@ -372,7 +372,9 @@ describe('checkAndAutoApprove', () => {
     const prHeadSha = overrides.prHeadSha ?? 'abc123';
     const createReviewFn = overrides.createReviewFn ?? jest.fn().mockResolvedValue({});
     const createCommentFn = overrides.createCommentFn ?? jest.fn().mockResolvedValue({});
-    const existingReviews = overrides.existingReviews ?? [];
+    const existingReviews = overrides.existingReviews ?? [
+      { body: '<!-- manki -->', state: 'CHANGES_REQUESTED', commit_id: prHeadSha, user: { login: 'github-actions[bot]', type: 'Bot' } },
+    ];
     const existingComments = overrides.existingComments ?? [];
 
     return {
@@ -658,9 +660,6 @@ describe('checkAndAutoApprove', () => {
       expect(warningSpy).toHaveBeenCalledWith(
         expect.stringContaining('head=head-sha-aaaa'),
       );
-      expect(warningSpy).toHaveBeenCalledWith(
-        expect.stringContaining('latest_manki_review=old-sha-bbbb'),
-      );
       expect(createCommentMock).toHaveBeenCalledTimes(1);
       expect(createCommentMock).toHaveBeenCalledWith(expect.objectContaining({
         owner: 'owner',
@@ -764,12 +763,32 @@ describe('checkAndAutoApprove', () => {
       expect(result).toBe(false);
       expect(createReviewMock).not.toHaveBeenCalled();
       expect(warningSpy).toHaveBeenCalledWith(
-        expect.stringContaining('no active manki review found on HEAD'),
+        expect.stringContaining('manki has not reviewed HEAD'),
       );
       expect(createCommentMock).toHaveBeenCalledTimes(1);
       expect(createCommentMock).toHaveBeenCalledWith(expect.objectContaining({
         body: expect.stringContaining('<!-- manki-stale-approve:head-sha-new -->'),
       }));
+    });
+
+    it('skips approval when no bot reviews exist at all', async () => {
+      const createReviewMock = jest.fn().mockResolvedValue({});
+      const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 1 } });
+      const octokit = makeMockOctokit({
+        threads: [],
+        prHeadSha: 'sha-fresh',
+        createReviewFn: createReviewMock,
+        createCommentFn: createCommentMock,
+        existingReviews: [],
+      });
+
+      const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+
+      expect(result).toBe(false);
+      expect(createReviewMock).not.toHaveBeenCalled();
+      expect(warningSpy).toHaveBeenCalledWith(
+        expect.stringContaining('manki has not reviewed HEAD'),
+      );
     });
   });
 });
@@ -789,12 +808,16 @@ describe('checkAndAutoApprove — concurrent run guard', () => {
   function makeMockOctokit(): Octokit {
     return {
       graphql: jest.fn().mockResolvedValue(makeGraphqlFetchResponse([])),
+      paginate: jest.fn().mockResolvedValue([]),
       rest: {
         pulls: {
           get: jest.fn().mockResolvedValue({ data: { head: { sha: 'sha-1' } } }),
           createReview: jest.fn().mockResolvedValue({}),
-          listReviews: jest.fn().mockResolvedValue({ data: [] }),
+          listReviews: jest.fn().mockResolvedValue({ data: [
+            { body: '<!-- manki -->', state: 'CHANGES_REQUESTED', commit_id: 'sha-1', user: { login: 'github-actions[bot]', type: 'Bot' } },
+          ] }),
         },
+        issues: { listComments: jest.fn(), createComment: jest.fn().mockResolvedValue({ data: { id: 1 } }) },
       },
     } as unknown as Octokit;
   }
@@ -856,11 +879,14 @@ describe('checkAndAutoApprove — concurrent run guard', () => {
     function makeOctokit(comments: ReturnType<typeof botComment>[]): Octokit {
       return {
         graphql: jest.fn().mockResolvedValue(makeGraphqlFetchResponse([])),
+        paginate: jest.fn().mockResolvedValue([]),
         rest: {
           pulls: {
             get: jest.fn().mockResolvedValue({ data: { head: { sha: 'sha-1' } } }),
             createReview: jest.fn().mockResolvedValue({}),
-            listReviews: jest.fn().mockResolvedValue({ data: [] }),
+            listReviews: jest.fn().mockResolvedValue({ data: [
+              { body: '<!-- manki -->', state: 'CHANGES_REQUESTED', commit_id: 'sha-1', user: { login: 'github-actions[bot]', type: 'Bot' } },
+            ] }),
           },
           issues: {
             listComments: jest.fn().mockResolvedValue({ data: comments }),
@@ -1043,7 +1069,9 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
     const createReviewFn = overrides.createReviewFn ?? jest.fn().mockResolvedValue({});
     const createCommentFn = overrides.createCommentFn ?? jest.fn().mockResolvedValue({});
     const prHeadSha = overrides.prHeadSha ?? 'sha-x';
-    const existingReviews = overrides.existingReviews ?? [];
+    const existingReviews = overrides.existingReviews ?? [
+      { body: '<!-- manki -->', state: 'CHANGES_REQUESTED', commit_id: prHeadSha, user: { login: 'github-actions[bot]', type: 'Bot' } },
+    ];
     return {
       graphql: jest.fn().mockResolvedValue(makeGraphqlFetchResponse([])),
       rest: {

@@ -53869,30 +53869,14 @@ async function checkAndAutoApprove(octokit, owner, repo, prNumber, config) {
         repo,
         pull_number: prNumber,
     });
-    // Stale-SHA guard: third-party thread replies fire `pull_request_review`
-    // events with `commit_id = head.sha`, which pass the event-level stale check
-    // in `handleReviewStateCheck`. Without this guard the function would issue an
-    // APPROVED review on HEAD even though manki has never actually reviewed HEAD.
-    // Bail when the latest non-DISMISSED bot review's `commit_id` is absent or
-    // differs from the current head SHA. This check must run before the APPROVED
-    // early-return so a stale approval cannot bypass the guard.
-    const hasDismissedBotReviews = reviews.some((r) => isBotReview(r) && r.state === 'DISMISSED');
-    if (!latestBotReview && hasDismissedBotReviews && threads.length > 0) {
-        core.warning(`Skipping auto-approve — no active manki review found on HEAD (head=${pr.head.sha}); all prior reviews may be DISMISSED`);
+    // Stale-SHA gate: bail unless manki has actually submitted a review on the
+    // current HEAD commit. This single check covers every variant — stale prior
+    // review, absent commit_id, all reviews DISMISSED, or no bot review at all.
+    const hasReviewedHead = reviews.some((r) => isBotReview(r) && r.commit_id === pr.head.sha);
+    if (!hasReviewedHead) {
+        core.warning(`Skipping auto-approve — manki has not reviewed HEAD (head=${pr.head.sha})`);
         await postStaleApproveSkippedComment(octokit, owner, repo, prNumber, pr.head.sha, 'none');
         return false;
-    }
-    const latestBotReviewSha = latestBotReview?.commit_id;
-    if (latestBotReview) {
-        if (!latestBotReviewSha) {
-            core.warning(`Skipping auto-approve — commit_id absent on latest manki review (head=${pr.head.sha}); cannot verify HEAD coverage`);
-            return false;
-        }
-        if (latestBotReviewSha !== pr.head.sha) {
-            core.warning(`Skipping auto-approve — manki has not reviewed HEAD (head=${pr.head.sha}, latest_manki_review=${latestBotReviewSha})`);
-            await postStaleApproveSkippedComment(octokit, owner, repo, prNumber, pr.head.sha, latestBotReviewSha);
-            return false;
-        }
     }
     if (latestBotReview?.state === 'APPROVED') {
         core.info('Already approved — skipping duplicate approval');
