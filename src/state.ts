@@ -5,7 +5,7 @@ import { ACTIONS_BOT_LOGIN, BOT_LOGIN, checkConcurrentSubmissionLock, dismissPre
 import { migrateLegacySeverity, ReviewConfig, SEVERITY_TOKEN_PATTERN } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
-type ReviewEntry = { body?: string | null; state?: string; user?: { login?: string; type?: string } | null };
+type ReviewEntry = { body?: string | null; state?: string; commit_id?: string; user?: { login?: string; type?: string } | null };
 
 const BOT_MARKER = '<!-- manki -->';
 const STALE_APPROVE_MARKER_PREFIX = '<!-- manki-stale-approve:';
@@ -211,13 +211,12 @@ async function checkAndAutoApprove(
     (r: ReviewEntry) =>
       isBotReview(r) &&
       r.state !== 'DISMISSED' &&
-      (r as { commit_id?: string }).commit_id === pr.head.sha,
+      r.commit_id === pr.head.sha,
   );
   if (!hasReviewedHead) {
     const allBotReviews = reviews.filter((r: ReviewEntry) => isBotReview(r));
     const staleSha =
-      (allBotReviews[allBotReviews.length - 1] as ReviewEntry & { commit_id?: string })
-        ?.commit_id ?? 'unknown';
+      allBotReviews[allBotReviews.length - 1]?.commit_id ?? 'unknown';
     core.warning(
       `Skipping auto-approve — manki has not reviewed HEAD (head=${pr.head.sha}, stale=${staleSha})`,
     );
