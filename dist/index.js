@@ -46350,8 +46350,7 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
             await (0, github_1.updateProgressComment)(octokit, owner, repo, progressCommentId, dashboard);
             return;
         }
-        const filteredFiles = (0, diff_1.filterFiles)(diff.files, config.exclude_paths);
-        const { excluded: excludedFiles } = (0, diff_1.filterFilesWithAttribution)(diff.files, config.exclude_paths);
+        const { included: filteredFiles, excluded: excludedFiles } = (0, diff_1.filterFilesWithAttribution)(diff.files, config.exclude_paths);
         core.info(`Reviewing ${filteredFiles.length} files (${diff.files.length} total, ${diff.files.length - filteredFiles.length} filtered out)`);
         if (filteredFiles.length === 0) {
             core.info('No reviewable files in diff');
@@ -46413,9 +46412,10 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
                 }
                 catch (error) {
                     const message = error instanceof Error ? error.message : String(error);
+                    const sanitized = message.replace(/\b(ghp|ghs|gho|github_pat)_[A-Za-z0-9_]+/g, '[REDACTED]');
                     core.warning(`Failed to load review memory: ${message}`);
                     memoryLoadStatus = 'failed';
-                    memoryLoadError = message.length > 300 ? message.slice(0, 300) + '...' : message;
+                    memoryLoadError = sanitized.length > 300 ? sanitized.slice(0, 300) + '...' : sanitized;
                 }
             }
         }
@@ -46840,7 +46840,7 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
                 ...(excludedFiles.length > 0 && { excludedFiles: excludedFiles.slice(0, 100) }),
                 ...(diff.binarySkipped && diff.binarySkipped.length > 0 && { binarySkipped: diff.binarySkipped.slice(0, 100) }),
                 oversizedHandled: false,
-                perFile: filteredFiles.map((f) => ({
+                perFile: filteredFiles.slice(0, 200).map((f) => ({
                     path: f.path,
                     additions: f.additions ?? 0,
                     deletions: f.deletions ?? 0,
@@ -51942,7 +51942,7 @@ async function llmDeduplicateFindings(findings, previousFindings, client) {
             if (matchedIndices.has(i)) {
                 const match = matches.find(m => m.index - 1 === i);
                 const dismissedIdx = match ? match.matchedDismissed - 1 : -1;
-                const dismissedTitle = dismissedIdx >= 0 && dismissedIdx < dismissed.length ? dismissed[dismissedIdx].title : 'unknown';
+                const dismissedTitle = dismissedIdx >= 0 && dismissedIdx < dismissed.length ? (dismissed[dismissedIdx].title ?? 'unknown') : 'unknown';
                 core.info(`LLM dedup: "${findings[i].title}" matches dismissed "${dismissedTitle}"`);
                 duplicates.push({ finding: findings[i], matchedTitle: dismissedTitle, matchType: 'llm' });
             }
