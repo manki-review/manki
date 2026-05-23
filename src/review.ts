@@ -1126,6 +1126,8 @@ export async function runReview(
         ...(plannerFallbackReason && { plannerFallbackReason }),
         ...(team.coreAgentInjections && team.coreAgentInjections.length > 0 && { coreAgentInjections: team.coreAgentInjections }),
         ...(priorRoundEffortDowngrades.length > 0 && { priorRoundEffortDowngrades }),
+        ...(agentMultiPassConsistency.size > 0 && { agentMultiPassConsistency }),
+        agentEffortMap: agentRunEffort,
       };
     }
 
@@ -1257,6 +1259,9 @@ export async function runReview(
       agentNames: team.agents.map(a => a.name),
       plannerSource,
       ...(plannerFallbackReason && { plannerFallbackReason }),
+      ...(team.coreAgentInjections && team.coreAgentInjections.length > 0 && { coreAgentInjections: team.coreAgentInjections }),
+      ...(priorRoundEffortDowngrades.length > 0 && { priorRoundEffortDowngrades }),
+      agentEffortMap: agentRunEffort,
     };
   }
 
