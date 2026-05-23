@@ -261,6 +261,7 @@ function parseContextBlocks(
           } else {
             ctx.planner.source = 'heuristic';
           }
+          (ctx.planner as { used: boolean }).used = ctx.planner.source === 'planner';
         }
         if (!Array.isArray(ctx.planner.coreAgentInjections)) {
           ctx.planner.coreAgentInjections = [];
