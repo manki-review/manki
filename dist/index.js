@@ -53844,7 +53844,10 @@ async function checkAndAutoApprove(octokit, owner, repo, prNumber, config) {
         core.warning(`Failed to dismiss previous reviews during auto-approve: ${error}`);
     }
     core.info('All findings resolved — auto-approving');
-    const body = BOT_MARKER;
+    // A visible body so the API does not render this review as `body_length: 0`.
+    // An empty review body trips the head-SHA dedupe gate (`hasBotReviewOnCommit`)
+    // for any subsequent force-review tick on the same commit ([#840]).
+    const body = `${BOT_MARKER}\n**Manki** — Auto-approved (all findings resolved).`;
     try {
         try {
             await octokit.rest.pulls.createReview({
@@ -53858,16 +53861,18 @@ async function checkAndAutoApprove(octokit, owner, repo, prNumber, config) {
             core.info('Auto-approved PR');
         }
         catch {
-            core.warning('Failed to auto-approve PR. Ensure "Allow GitHub Actions to create and approve pull requests" is enabled in repo settings. Falling back to COMMENT.');
-            await octokit.rest.pulls.createReview({
+            // Do not fall back to a `COMMENT` review here. A `COMMENT` placeholder
+            // with this body would still register as a bot review on the head SHA
+            // and break the force-review tickbox loop ([#840]). Surface the missing
+            // permission via an issue comment instead, which carries no review state.
+            core.warning('Failed to auto-approve PR. Ensure "Allow GitHub Actions to create and approve pull requests" is enabled in repo settings.');
+            await octokit.rest.issues.createComment({
                 owner,
                 repo,
-                pull_number: prNumber,
-                commit_id: pr.head.sha,
-                event: 'COMMENT',
-                body,
+                issue_number: prNumber,
+                body: `${BOT_MARKER}\n**Manki** — All findings are resolved but auto-approve is blocked by repository settings. Enable "Allow GitHub Actions to create and approve pull requests" in repo settings, or approve manually.`,
             });
-            core.info('Posted auto-approve as COMMENT (fallback)');
+            core.info('Posted auto-approve permission notice as issue comment');
         }
     }
     catch (error) {
