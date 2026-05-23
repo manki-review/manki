@@ -21,6 +21,7 @@ import {
   sanitizePlannerField,
   ReviewClients,
   PLANNER_TIMEOUT_MS,
+  PlannerOutcomeSink,
 } from './review';
 import { AGENT_POOL, TRIVIAL_VERIFIER_AGENT } from './agents';
 import * as core from '@actions/core';
@@ -4877,6 +4878,67 @@ describe('runPlanner', () => {
       warnSpy.mockRestore();
     }
   });
+
+  it.each<[string, string, string]>([
+    ['invalid teamSize', JSON.stringify({ teamSize: 99, reviewerEffort: 'medium', judgeEffort: 'medium', prType: 'feat' }), 'invalid_teamSize'],
+    ['invalid judgeEffort', JSON.stringify({ teamSize: 3, reviewerEffort: 'medium', judgeEffort: 'max', prType: 'feat' }), 'invalid_judgeEffort'],
+    ['exception', 'not valid json', 'exception'],
+  ])('sets outcome.fallbackReason on failure: %s', async (_label, response, expectedReason) => {
+    const client = makeClient(response);
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const outcome: PlannerOutcomeSink = {};
+    const result = await runPlanner(client, diff, undefined, undefined, undefined, outcome);
+    expect(result).toBeNull();
+    expect(outcome.fallbackReason).toBe(expectedReason);
+  });
+
+  it('sets outcome.fallbackReason=timeout on planner timeout', async () => {
+    jest.useFakeTimers();
+    try {
+      const client = {
+        sendMessage: jest.fn().mockImplementation(() => new Promise(() => {})),
+      } as unknown as import('./providers').LLMClient;
+      const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+      const outcome: PlannerOutcomeSink = {};
+      const resultPromise = runPlanner(client, diff, undefined, undefined, undefined, outcome);
+      jest.advanceTimersByTime(PLANNER_TIMEOUT_MS);
+      const result = await resultPromise;
+      expect(result).toBeNull();
+      expect(outcome.fallbackReason).toBe('timeout');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('sets outcome.fallbackReason=agents_teamSize_mismatch when agent count does not match teamSize', async () => {
+    const response = JSON.stringify({
+      teamSize: 3,
+      judgeEffort: 'medium',
+      prType: 'feat',
+      agents: [
+        { name: 'Security & Safety', effort: 'high' },
+        { name: 'Correctness & Logic', effort: 'medium' },
+        { name: 'Architecture & Design', effort: 'low' },
+        { name: 'Testing & Coverage', effort: 'medium' },
+      ],
+    });
+    const client = makeClient(response);
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const outcome: PlannerOutcomeSink = {};
+    const result = await runPlanner(client, diff, undefined, undefined, undefined, outcome);
+    expect(result).toBeNull();
+    expect(outcome.fallbackReason).toBe('agents_teamSize_mismatch');
+  });
+
+  it('does not set outcome.fallbackReason on success', async () => {
+    const response = JSON.stringify({ teamSize: 3, reviewerEffort: 'medium', judgeEffort: 'medium', prType: 'feat' });
+    const client = makeClient(response);
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const outcome: PlannerOutcomeSink = {};
+    const result = await runPlanner(client, diff, undefined, undefined, undefined, outcome);
+    expect(result).not.toBeNull();
+    expect(outcome.fallbackReason).toBeUndefined();
+  });
 });
 
 describe('selectTeam with teamSizeOverride', () => {
@@ -6601,6 +6663,22 @@ describe('planner provenance in ReviewResult', () => {
     });
     const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'auto' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
     expect(result.coreAgentInjections).toBeUndefined();
+  });
+
+  it('leaves `priorRoundEffortDowngrades` unset when no prior rounds exist', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 3,
+      reviewerEffort: 'medium',
+      judgeEffort: 'medium',
+      prType: 'feat',
+      agents: [
+        { name: 'Security & Safety', effort: 'high' },
+        { name: 'Architecture & Design', effort: 'medium' },
+        { name: 'Correctness & Logic', effort: 'medium' },
+      ],
+    });
+    const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'auto' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
+    expect(result.priorRoundEffortDowngrades).toBeUndefined();
   });
 
   it('records `priorRoundEffortDowngrades` when the safety net clamps a pick', async () => {

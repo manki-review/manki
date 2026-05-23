@@ -1244,6 +1244,21 @@ describe('fetchRecapState', () => {
       expect(state.priorRounds[0].planner.source).toBe(expectedSource);
     });
 
+    it('seeds `coreAgentInjections` and `priorRoundEffortDowngrades` to [] when absent in pre-5.2.0 context', async () => {
+      const base = makeRoundContext(1);
+      const legacy = {
+        ...base,
+        planner: { used: false },
+      } as unknown as RoundContext;
+      const octokit = mockOctokit([], [
+        { id: 100, body: detailsBlock(legacy), user: { login: BOT_LOGIN } },
+      ]);
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.priorRounds).toHaveLength(1);
+      expect(state.priorRounds[0].planner.coreAgentInjections).toEqual([]);
+      expect(state.priorRounds[0].planner.priorRoundEffortDowngrades).toEqual([]);
+    });
+
     it('ignores HTML-comment block when a details block is present in the same review', async () => {
       const ctxDetails = makeRoundContext(1, { judge: { summary: 'from details' } });
       const ctxHtml = makeRoundContext(2, { judge: { summary: 'from html comment' } });
