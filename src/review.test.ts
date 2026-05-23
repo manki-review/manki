@@ -6480,3 +6480,213 @@ describe('wrapClientForUsage', () => {
     expect(Math.max(0, getTotals().calls - 1)).toBe(1);
   });
 });
+
+describe('planner provenance in ReviewResult', () => {
+  const mockedRunJudgeAgent = jest.mocked(runJudgeAgent);
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
+  });
+
+  function makeClients(plannerResponse?: string): ReviewClients {
+    const clients: ReviewClients = {
+      reviewer: {
+        sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
+      } as unknown as import('./providers').LLMClient,
+      judge: {
+        sendMessage: jest.fn(),
+      } as unknown as import('./providers').LLMClient,
+    };
+    if (plannerResponse !== undefined) {
+      clients.planner = {
+        sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
+      } as unknown as import('./providers').LLMClient;
+    }
+    return clients;
+  }
+
+  it('records `source: "planner"` on the success path', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 3,
+      reviewerEffort: 'medium',
+      judgeEffort: 'medium',
+      prType: 'feat',
+      language: 'typescript',
+      context: 'GitHub Actions bot',
+      agents: [
+        { name: 'Security & Safety', effort: 'medium' },
+        { name: 'Architecture & Design', effort: 'low' },
+        { name: 'Correctness & Logic', effort: 'high' },
+      ],
+    });
+    const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'auto' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
+    expect(result.plannerSource).toBe('planner');
+    expect(result.plannerFallbackReason).toBeUndefined();
+  });
+
+  it('records `source: "heuristic_fallback"` and a `fallbackReason` on planner failure', async () => {
+    const plannerResponse = JSON.stringify({ teamSize: 99, reviewerEffort: 'medium', judgeEffort: 'medium', prType: 'feat' });
+    const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'auto' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
+    expect(result.plannerSource).toBe('heuristic_fallback');
+    expect(result.plannerFallbackReason).toBe('invalid_teamSize');
+  });
+
+  it('records `source: "heuristic"` when the user pinned `review_level`', async () => {
+    const plannerResponse = JSON.stringify({ teamSize: 3, reviewerEffort: 'medium', judgeEffort: 'medium', prType: 'feat' });
+    const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'small' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
+    expect(result.plannerSource).toBe('heuristic');
+    // Planner is configured but `review_level !== 'auto'`, so it must not run.
+    expect((makeClients(plannerResponse).planner!.sendMessage as jest.Mock)).not.toHaveBeenCalled();
+  });
+
+  it('records `source: "disabled"` when no planner client is configured', async () => {
+    const result = await runReview(makeClients(), makeConfig({ review_level: 'auto' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
+    expect(result.plannerSource).toBe('disabled');
+  });
+
+  it('captures `fallbackReason: "timeout"` when the planner times out', async () => {
+    jest.useFakeTimers();
+    try {
+      const clients: ReviewClients = {
+        reviewer: { sendMessage: jest.fn().mockResolvedValue({ content: '[]' }) } as unknown as import('./providers').LLMClient,
+        judge: { sendMessage: jest.fn() } as unknown as import('./providers').LLMClient,
+        planner: { sendMessage: jest.fn().mockImplementation(() => new Promise(() => {})) } as unknown as import('./providers').LLMClient,
+      };
+      const config = makeConfig({ review_level: 'auto' });
+      const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+      const reviewPromise = runReview(clients, config, diff, 'raw diff', 'repo');
+      jest.advanceTimersByTime(PLANNER_TIMEOUT_MS);
+      jest.useRealTimers();
+      const result = await reviewPromise;
+      expect(result.plannerSource).toBe('heuristic_fallback');
+      expect(result.plannerFallbackReason).toBe('timeout');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('surfaces `coreAgentInjections` when the team-builder force-adds Security & Safety', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 2,
+      reviewerEffort: 'medium',
+      judgeEffort: 'medium',
+      prType: 'feat',
+      agents: [
+        { name: 'Architecture & Design', effort: 'medium' },
+        { name: 'Correctness & Logic', effort: 'medium' },
+      ],
+    });
+    const diff = makeDiff({
+      totalAdditions: 10,
+      totalDeletions: 5,
+      files: [{ path: 'src/auth.ts', changeType: 'modified', hunks: [] }],
+    });
+    const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'auto' }), diff, 'raw diff', 'repo');
+    expect(result.coreAgentInjections).toEqual(['Security & Safety']);
+    expect(result.agentNames).toContain('Security & Safety');
+  });
+
+  it('leaves `coreAgentInjections` unset when no reinjection fires', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 3,
+      reviewerEffort: 'medium',
+      judgeEffort: 'medium',
+      prType: 'feat',
+      agents: [
+        { name: 'Security & Safety', effort: 'medium' },
+        { name: 'Architecture & Design', effort: 'medium' },
+        { name: 'Correctness & Logic', effort: 'medium' },
+      ],
+    });
+    const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'auto' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
+    expect(result.coreAgentInjections).toBeUndefined();
+  });
+
+  it('records `priorRoundEffortDowngrades` when the safety net clamps a pick', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 3,
+      reviewerEffort: 'medium',
+      judgeEffort: 'medium',
+      prType: 'feat',
+      agents: [
+        { name: 'Security & Safety', effort: 'high' },
+        { name: 'Architecture & Design', effort: 'medium' },
+        { name: 'Correctness & Logic', effort: 'medium' },
+      ],
+    });
+    const priorRounds: LegacyHandoverRoundFixture[] = [
+      {
+        round: 1,
+        commitSha: 'abc1',
+        timestamp: 't1',
+        findings: [
+          { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'suggestion', title: 't1', authorReply: 'agree', specialist: 'Security & Safety' },
+          { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'suggestion', title: 't2', authorReply: 'agree', specialist: 'Security & Safety' },
+        ],
+      },
+    ];
+    const result = await runReview(
+      makeClients(plannerResponse), makeConfig({ review_level: 'auto' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }),
+      'raw diff', 'repo',
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      priorRounds.map(roundContextFromLegacy),
+    );
+    expect(result.priorRoundEffortDowngrades).toEqual([{ agent: 'Security & Safety', from: 'high', to: 'low' }]);
+  });
+
+  it('populates `agentEffortMap` with per-agent run-time effort from planner picks', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 3,
+      reviewerEffort: 'medium',
+      judgeEffort: 'medium',
+      prType: 'feat',
+      agents: [
+        { name: 'Security & Safety', effort: 'high' },
+        { name: 'Architecture & Design', effort: 'low' },
+        { name: 'Correctness & Logic', effort: 'medium' },
+      ],
+    });
+    const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'auto' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
+    expect(result.agentEffortMap?.get('Security & Safety')).toBe('high');
+    expect(result.agentEffortMap?.get('Architecture & Design')).toBe('low');
+    expect(result.agentEffortMap?.get('Correctness & Logic')).toBe('medium');
+  });
+
+  it('populates `agentEffortMap` with `medium` default on heuristic-fallback rounds', async () => {
+    const plannerResponse = JSON.stringify({ teamSize: 99, reviewerEffort: 'medium', judgeEffort: 'medium', prType: 'feat' });
+    const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'auto' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
+    for (const name of result.agentNames) {
+      expect(result.agentEffortMap?.get(name)).toBe('medium');
+    }
+  });
+
+  it('records `multiPassConsistency` per agent on multi-pass rounds', async () => {
+    const findings = [
+      { severity: 'warning' as const, title: 'Bug A', file: 'src/a.ts', line: 5, description: 'd', reviewers: ['Security & Safety'] },
+      { severity: 'warning' as const, title: 'Bug B', file: 'src/a.ts', line: 10, description: 'd', reviewers: ['Security & Safety'] },
+    ];
+    // Two passes per agent; both return the same two findings, so all consistent.
+    const reviewerSendMessage = jest.fn().mockResolvedValue({ content: JSON.stringify(findings) });
+    const clients: ReviewClients = {
+      reviewer: { sendMessage: reviewerSendMessage } as unknown as import('./providers').LLMClient,
+      judge: { sendMessage: jest.fn() } as unknown as import('./providers').LLMClient,
+    };
+    const config = makeConfig({ review_passes: 2 });
+    const diff = makeDiff({
+      totalAdditions: 10,
+      totalDeletions: 5,
+      files: [{ path: 'src/a.ts', changeType: 'modified', hunks: [] }],
+    });
+    const result = await runReview(clients, config, diff, 'raw diff', 'repo');
+    // Without a planner, the heuristic fallback team is {Security, Architecture, Correctness}
+    expect(result.agentMultiPassConsistency).toBeDefined();
+    const sec = result.agentMultiPassConsistency!.get('Security & Safety');
+    expect(sec).toEqual({ consistent: 2, totalRaw: 4 });
+  });
+
+  it('omits `agentMultiPassConsistency` on single-pass rounds', async () => {
+    const result = await runReview(makeClients(), makeConfig(), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
+    expect(result.agentMultiPassConsistency).toBeUndefined();
+  });
+});

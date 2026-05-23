@@ -2444,6 +2444,134 @@ describe('runFullReview orchestration', () => {
     expect(ctx!.judge.retryCount).toBe(0);
   });
 
+  it('builds `RoundPlanner` provenance with `source`, `language`, `context`, `agents`, and reinjections', async () => {
+    const testFile = { path: 'src/auth.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+
+    const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/auth.ts', line: 5, description: 'd', reviewers: ['Security & Safety'] };
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'REQUEST_CHANGES', summary: 'Issues found',
+      findings: [finding], highlights: [], reviewComplete: true,
+      agentNames: ['Security & Safety'],
+      allJudgedFindings: [finding], rawFindings: [finding],
+      plannerResult: {
+        teamSize: 1,
+        reviewerEffort: 'medium',
+        judgeEffort: 'high',
+        prType: 'feat',
+        agents: [{ name: 'Architecture & Design', effort: 'low' }],
+        language: 'typescript',
+        context: 'GitHub Actions bot',
+      },
+      plannerSource: 'planner',
+      coreAgentInjections: ['Security & Safety'],
+      priorRoundEffortDowngrades: [{ agent: 'Security & Safety', from: 'high', to: 'low' }],
+      agentEffortMap: new Map([['Security & Safety', 'medium']]),
+    });
+    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
+
+    await callRunFullReview();
+
+    const ctx = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+    expect(ctx!.planner).toEqual(expect.objectContaining({
+      source: 'planner',
+      used: true,
+      teamSize: 1,
+      reviewerEffort: 'medium',
+      judgeEffort: 'high',
+      prType: 'feat',
+      language: 'typescript',
+      context: 'GitHub Actions bot',
+      agents: [{ name: 'Architecture & Design', effort: 'low' }],
+      coreAgentInjections: ['Security & Safety'],
+      priorRoundEffortDowngrades: [{ agent: 'Security & Safety', from: 'high', to: 'low' }],
+    }));
+  });
+
+  it('builds `RoundPlanner` with `source: "heuristic_fallback"` and `fallbackReason` when the planner failed', async () => {
+    const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+
+    const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['security'] };
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'REQUEST_CHANGES', summary: 'Issues found',
+      findings: [finding], highlights: [], reviewComplete: true,
+      agentNames: ['security'],
+      allJudgedFindings: [finding], rawFindings: [finding],
+      plannerSource: 'heuristic_fallback',
+      plannerFallbackReason: 'timeout',
+    });
+    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
+
+    await callRunFullReview();
+
+    const ctx = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+    expect(ctx!.planner).toEqual({
+      source: 'heuristic_fallback',
+      used: false,
+      coreAgentInjections: [],
+      priorRoundEffortDowngrades: [],
+      fallbackReason: 'timeout',
+    });
+  });
+
+  it('preserves `planner.used` as a derived alias for `source === "planner"`', async () => {
+    const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+
+    const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['security'] };
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'REQUEST_CHANGES', summary: 'Issues found',
+      findings: [finding], highlights: [], reviewComplete: true,
+      agentNames: ['security'],
+      allJudgedFindings: [finding], rawFindings: [finding],
+      plannerSource: 'disabled',
+    });
+    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
+
+    await callRunFullReview();
+
+    const ctx = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+    expect(ctx!.planner.source).toBe('disabled');
+    expect(ctx!.planner.used).toBe(false);
+  });
+
+  it('populates `RoundAgentMetric` with `model`, `effort`, and `multiPassConsistency`', async () => {
+    const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+
+    const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['Security & Safety'] };
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'REQUEST_CHANGES', summary: 'Issues found',
+      findings: [finding], highlights: [], reviewComplete: true,
+      agentNames: ['Security & Safety'],
+      allJudgedFindings: [finding], rawFindings: [finding],
+      agentEffortMap: new Map([['Security & Safety', 'high']]),
+      agentMultiPassConsistency: new Map([['Security & Safety', { consistent: 2, totalRaw: 5 }]]),
+    });
+    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
+
+    await callRunFullReview();
+
+    const ctx = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+    expect(ctx!.reviewers.agentMetrics).toEqual([
+      expect.objectContaining({
+        name: 'Security & Safety',
+        effort: 'high',
+        multiPassConsistency: { consistent: 2, totalRaw: 5 },
+        model: expect.any(String),
+      }),
+    ]);
+  });
+
   it('builds `perStage` with only present stages when planner and dedup are absent', async () => {
     const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });

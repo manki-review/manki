@@ -226,6 +226,18 @@ export interface ReviewResult {
   interRoundDiffEmptyOverride?: InterRoundDiffEmptyOverride;
   testNitSuppressedCount?: number;
   verdictTrace?: VerdictTrace;
+  /** Team-selection provenance: which path produced this round's roster. */
+  plannerSource?: RoundPlannerSource;
+  /** Short tag describing the planner fallback path, when one fired. */
+  plannerFallbackReason?: string;
+  /** Names of agents the team-builder reinjected after the planner omitted them. */
+  coreAgentInjections?: string[];
+  /** Effort downgrades applied by the prior-round safety net. */
+  priorRoundEffortDowngrades?: PriorRoundEffortDowngrade[];
+  /** Per-agent multi-pass intersection stats. Keyed by agent name. */
+  agentMultiPassConsistency?: Map<string, { consistent: number; totalRaw: number }>;
+  /** Per-agent effort level actually used at run time. Keyed by agent name. */
+  agentEffortMap?: Map<string, EffortLevel>;
 }
 
 export interface ReviewerAgent {
@@ -301,6 +313,13 @@ export interface TeamRoster {
   level: 'trivial' | 'small' | 'medium' | 'large';  // resolved, never 'auto'
   agents: ReviewerAgent[];
   lineCount: number;
+  /**
+   * Names of agents added by a code-level reinjection backstop after the
+   * planner omitted them (e.g., Security & Safety force-add on sensitive
+   * paths). Empty when no reinjection fired. Populated by `selectTeam` on the
+   * planner path; the heuristic-fallback path leaves it empty.
+   */
+  coreAgentInjections?: string[];
 }
 
 export interface ReviewConfig {
@@ -670,14 +689,74 @@ export interface RoundModels {
   dedup?: string;
 }
 
+/**
+ * Provenance of the team-selection path that produced this round's roster.
+ *
+ * - `planner`: the planner LLM returned a valid result and its picks were used.
+ * - `heuristic_fallback`: the planner was attempted but failed (timeout,
+ *   validation error, parse error) and team-builder substituted the fixed
+ *   three-core roster.
+ * - `heuristic`: the planner was not attempted because the user pinned
+ *   `review_level` to an explicit value (heuristic on by user choice).
+ * - `disabled`: the planner has no client (no `planner` provider configured)
+ *   and team selection ran via the heuristic path.
+ */
+export type RoundPlannerSource = 'planner' | 'heuristic' | 'heuristic_fallback' | 'disabled';
+
 export interface RoundPlanner {
-  /** False when the planner was disabled or fell back to the heuristic team selector. */
+  /**
+   * Provenance of the team selection path. Replaces the original `used: boolean`,
+   * which collapsed three distinct paths into a single bit. `used` is preserved
+   * as a derived getter alias (`source === 'planner'`) for back-compat.
+   */
+  source: RoundPlannerSource;
+  /**
+   * Back-compat alias for `source === 'planner'`. New code reads `source`.
+   * Always present so older consumers that destructure `planner.used`
+   * continue to work.
+   */
   used: boolean;
+  /**
+   * Set when team selection fell back from the planner (validation error,
+   * timeout, parse failure). Free-text, capped, sanitized for logs.
+   */
+  fallbackReason?: string;
   teamSize?: PlannerResult['teamSize'];
   reviewerEffort?: EffortLevel;
   judgeEffort?: EffortLevel;
   prType?: string;
   durationMs?: number;
+  /** Sanitized programming-language hint, when the planner identified one. */
+  language?: string;
+  /** Sanitized free-text PR context hint, when the planner identified one. */
+  context?: string;
+  /**
+   * Per-agent picks the planner emitted (or that the team-builder synthesized
+   * on the `planner` path before reinjections). Each entry carries the
+   * planner's intended effort for that agent; the actual run-time effort is
+   * recorded on `RoundAgentMetric.effort`.
+   */
+  agents?: AgentPick[];
+  /**
+   * Names of agents the planner omitted that the team-builder added back via a
+   * code-level backstop (e.g., the security path-prefix guard). Empty when no
+   * reinjection fired. Always present so audit tooling can distinguish
+   * "no reinjection" (`[]`) from "data not recorded" (`undefined`).
+   */
+  coreAgentInjections: string[];
+  /**
+   * Effort levels the safety-net downgrader stepped down because the most
+   * recent prior round dismissed all of that specialist's findings. One entry
+   * per downgraded pick. Empty when nothing was downgraded.
+   */
+  priorRoundEffortDowngrades: PriorRoundEffortDowngrade[];
+}
+
+/** One effort downgrade applied by the prior-round safety net. */
+export interface PriorRoundEffortDowngrade {
+  agent: string;
+  from: EffortLevel;
+  to: EffortLevel;
 }
 
 export interface RoundReviewers {
@@ -700,6 +779,23 @@ export interface RoundAgentMetric {
   retryCount?: number;
   /** Last-failure reason recorded by the reviewer loop. Present only when retries exhausted. */
   failureReason?: string;
+  /**
+   * Resolved per-agent model ID. Falls back to `RoundModels.reviewer` when no
+   * `models.agents` override applies. Present whenever the agent ran.
+   */
+  model?: string;
+  /**
+   * Effort level the agent actually ran with, after the planner pick (or the
+   * default `reviewerEffort`) and any prior-round downgrade.
+   */
+  effort?: EffortLevel;
+  /**
+   * Multi-pass intersection stats for this agent on `review_passes > 1` rounds.
+   * `consistent` is the count of findings retained by `intersectFindings`,
+   * `totalRaw` is the pre-intersection sum across passes. Absent on single-pass
+   * rounds and on agents that failed every pass.
+   */
+  multiPassConsistency?: { consistent: number; totalRaw: number };
 }
 
 export interface RoundJudge {

@@ -987,6 +987,9 @@ async function runFullReview(
           const durationMs = result.agentDurationMs?.get(name);
           const retryCount = result.agentRetryCount?.get(name);
           const failureReason = result.agentFailureReasons?.[name];
+          const model = config.models?.agents?.[name] ?? reviewerModel;
+          const effort = result.agentEffortMap?.get(name);
+          const multiPassConsistency = result.agentMultiPassConsistency?.get(name);
           return {
             name,
             findingsRaw: rawFindings.filter(f => f.reviewers.includes(name)).length,
@@ -998,6 +1001,9 @@ async function runFullReview(
             outputTokens: usage?.outputTokens ?? 0,
             retryCount: retryCount ?? 0,
             ...(failureReason && { failureReason }),
+            model,
+            ...(effort && { effort }),
+            ...(multiPassConsistency && { multiPassConsistency }),
           };
         })
       : undefined;
@@ -1145,16 +1151,29 @@ async function runFullReview(
         judge: judgeModel,
         dedup: dedupModel,
       },
-      planner: result.plannerResult
-        ? {
-            used: true,
-            teamSize: result.plannerResult.teamSize,
-            reviewerEffort: result.plannerResult.reviewerEffort,
-            judgeEffort: result.plannerResult.judgeEffort,
-            prType: result.plannerResult.prType,
-            ...(dashboard.plannerDurationMs != null && { durationMs: dashboard.plannerDurationMs }),
-          }
-        : { used: false },
+      planner: (() => {
+        const source = result.plannerSource ?? (result.plannerResult ? 'planner' : 'disabled');
+        const used = source === 'planner';
+        const base = {
+          source,
+          used,
+          coreAgentInjections: result.coreAgentInjections ?? [],
+          priorRoundEffortDowngrades: result.priorRoundEffortDowngrades ?? [],
+          ...(result.plannerFallbackReason && { fallbackReason: result.plannerFallbackReason }),
+        };
+        if (!result.plannerResult) return base;
+        return {
+          ...base,
+          teamSize: result.plannerResult.teamSize,
+          reviewerEffort: result.plannerResult.reviewerEffort,
+          judgeEffort: result.plannerResult.judgeEffort,
+          prType: result.plannerResult.prType,
+          ...(dashboard.plannerDurationMs != null && { durationMs: dashboard.plannerDurationMs }),
+          ...(result.plannerResult.language && { language: result.plannerResult.language }),
+          ...(result.plannerResult.context && { context: result.plannerResult.context }),
+          ...(result.plannerResult.agents && { agents: result.plannerResult.agents }),
+        };
+      })(),
       reviewers: {
         agents: result.agentNames,
         ...(agentMetrics && { agentMetrics }),

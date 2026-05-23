@@ -1141,7 +1141,7 @@ describe('fetchRecapState', () => {
         config: { reviewLevel: 'medium', memoryEnabled: false },
         diff: { lines: 100, additions: 60, deletions: 40, filesReviewed: 3, fileTypes: { '.ts': 3 } },
         models: { reviewer: 'r', judge: 'j' },
-        planner: { used: false },
+        planner: { source: 'disabled', used: false, coreAgentInjections: [], priorRoundEffortDowngrades: [] },
         reviewers: { agents: ['Correctness'] },
         judge: { summary: 'ok' },
         dedup: {},
@@ -1200,7 +1200,7 @@ describe('fetchRecapState', () => {
       ['rename', 'refactor'],
     ])('migrates legacy planner.prType `%s` to canonical `%s` on read', async (legacy, canonical) => {
       const ctx = makeRoundContext(1, {
-        planner: { used: true, teamSize: 3, reviewerEffort: 'medium', judgeEffort: 'medium', prType: legacy },
+        planner: { source: 'planner', used: true, teamSize: 3, reviewerEffort: 'medium', judgeEffort: 'medium', prType: legacy, coreAgentInjections: [], priorRoundEffortDowngrades: [] },
       });
       const octokit = mockOctokit([], [
         { id: 100, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
@@ -1212,7 +1212,7 @@ describe('fetchRecapState', () => {
 
     it('passes a canonical Conventional Commits prType through unchanged', async () => {
       const ctx = makeRoundContext(1, {
-        planner: { used: true, teamSize: 2, reviewerEffort: 'low', judgeEffort: 'low', prType: 'docs' },
+        planner: { source: 'planner', used: true, teamSize: 2, reviewerEffort: 'low', judgeEffort: 'low', prType: 'docs', coreAgentInjections: [], priorRoundEffortDowngrades: [] },
       });
       const octokit = mockOctokit([], [
         { id: 100, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },

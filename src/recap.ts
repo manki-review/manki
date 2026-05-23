@@ -248,6 +248,21 @@ function parseContextBlocks(
       if (ctx.planner && typeof ctx.planner.prType === 'string') {
         ctx.planner.prType = migrateLegacyPrType(ctx.planner.prType);
       }
+      if (ctx.planner) {
+        // Back-compat: pre-5.2.0 context blocks predate the structured planner
+        // provenance fields. Project the old `used: boolean` onto the new
+        // `source` enum so consumers reading `ctx.planner.source` get a defined
+        // value, and seed empty arrays for the new list fields.
+        if (typeof ctx.planner.source !== 'string') {
+          ctx.planner.source = ctx.planner.used ? 'planner' : 'disabled';
+        }
+        if (!Array.isArray(ctx.planner.coreAgentInjections)) {
+          ctx.planner.coreAgentInjections = [];
+        }
+        if (!Array.isArray(ctx.planner.priorRoundEffortDowngrades)) {
+          ctx.planner.priorRoundEffortDowngrades = [];
+        }
+      }
       const existing = byRound.get(round);
       if (existing) {
         duplicateRounds.add(round);
