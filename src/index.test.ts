@@ -61,6 +61,7 @@ jest.mock('./providers', () => ({
 }));
 
 jest.mock('./config', () => {
+  const actual = jest.requireActual<typeof import('./config')>('./config');
   const defaultConfig = {
     auto_review: true,
     max_diff_lines: 5000,
@@ -83,6 +84,7 @@ jest.mock('./config', () => {
     loadConfigFromFile,
     sanitizeForkConfig,
     resolveModel: jest.fn().mockReturnValue('claude-sonnet-4-20250514'),
+    resolveAgentModel: jest.fn().mockImplementation(actual.resolveAgentModel),
   };
 });
 
@@ -2567,7 +2569,7 @@ describe('runFullReview orchestration', () => {
         name: 'Security & Safety',
         effort: 'high',
         multiPassConsistency: { consistent: 2, totalRaw: 5 },
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-6',
       }),
     ]);
   });
@@ -2608,6 +2610,74 @@ describe('runFullReview orchestration', () => {
         model: 'claude-opus-4-7',
       }),
     ]);
+  });
+
+  it('falls back to `reviewerModel` for agents not listed in `models.agents`', async () => {
+    const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(configModule.loadConfig).mockReturnValue({
+      auto_review: true, auto_approve: false, max_diff_lines: 5000,
+      exclude_paths: [],
+      reviewers: [],
+      instructions: '', review_level: 'auto',
+      review_thresholds: { small: 200, medium: 800 },
+      memory: { enabled: false, repo: '' },
+      models: {
+        reviewer: 'claude-sonnet-4-6',
+        agents: { 'Security & Safety': 'claude-opus-4-7' },
+      },
+    });
+
+    const security = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['Security & Safety'] };
+    const correctness = { severity: 'suggestion' as const, title: 'Style', file: 'src/app.ts', line: 8, description: 'd', reviewers: ['Correctness & Logic'] };
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'REQUEST_CHANGES', summary: 'Issues found',
+      findings: [security, correctness], highlights: [], reviewComplete: true,
+      agentNames: ['Security & Safety', 'Correctness & Logic'],
+      allJudgedFindings: [security, correctness], rawFindings: [security, correctness],
+    });
+    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [security, correctness], duplicates: [] });
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
+
+    await callRunFullReview();
+
+    const ctx = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+    const securityMetric = ctx!.reviewers.agentMetrics?.find((m: { name: string }) => m.name === 'Security & Safety');
+    const correctnessMetric = ctx!.reviewers.agentMetrics?.find((m: { name: string }) => m.name === 'Correctness & Logic');
+    expect(securityMetric?.model).toBe('claude-opus-4-7');
+    expect(correctnessMetric?.model).toBe('claude-sonnet-4-6');
+  });
+
+  it('uses built-in default model for `RoundAgentMetric.model` when `config.models` is absent', async () => {
+    const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(configModule.loadConfig).mockReturnValue({
+      auto_review: true, auto_approve: false, max_diff_lines: 5000,
+      exclude_paths: [],
+      reviewers: [],
+      instructions: '', review_level: 'auto',
+      review_thresholds: { small: 200, medium: 800 },
+      memory: { enabled: false, repo: '' },
+      models: undefined,
+    });
+
+    const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['Security & Safety'] };
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'REQUEST_CHANGES', summary: 'Issues found',
+      findings: [finding], highlights: [], reviewComplete: true,
+      agentNames: ['Security & Safety'],
+      allJudgedFindings: [finding], rawFindings: [finding],
+    });
+    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
+
+    await callRunFullReview();
+
+    const ctx = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+    const metric = ctx!.reviewers.agentMetrics?.[0];
+    expect(metric?.model).toBe('claude-sonnet-4-6');
   });
 
   it('builds `perStage` with only present stages when planner and dedup are absent', async () => {
