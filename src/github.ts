@@ -1553,8 +1553,9 @@ async function fetchBotReviews(
       per_page: 100,
     });
     return reviews.slice(-500)
-      .filter((r: { state?: string; user?: { login?: string; type?: string } | null }) =>
-        r.user?.login === BOT_LOGIN && r.user?.type === 'Bot' && r.state !== 'DISMISSED',
+      .filter((r: { state?: string; user?: { login?: string; type?: string } | null; body?: string | null }) =>
+        r.user?.login === BOT_LOGIN && r.user?.type === 'Bot' && r.state !== 'DISMISSED' &&
+        !!r.body && r.body.includes(BOT_MARKER),
       )
       .map((r: unknown) => {
         const raw = r as { id: number; state: string; commit_id: string; html_url?: string; body?: string | null };

@@ -3724,8 +3724,8 @@ describe('hasBotReviewOnCommit', () => {
 
   it('returns true when a prior bot review is on the SHA and a later DISMISSED one is too', async () => {
     const octokit = makeMockOctokit([
-      { state: 'COMMENTED', commit_id: 'sha-123', user: { login: BOT_LOGIN, type: 'Bot' } },
-      { state: 'DISMISSED', commit_id: 'sha-123', user: { login: BOT_LOGIN, type: 'Bot' } },
+      { state: 'COMMENTED', commit_id: 'sha-123', body: `${BOT_MARKER}\nreview body`, user: { login: BOT_LOGIN, type: 'Bot' } },
+      { state: 'DISMISSED', commit_id: 'sha-123', body: `${BOT_MARKER}\nreview body`, user: { login: BOT_LOGIN, type: 'Bot' } },
     ]);
 
     expect(await hasBotReviewOnCommit(octokit, 'owner', 'repo', 1, 'sha-123')).toBe(true);
@@ -3735,9 +3735,10 @@ describe('hasBotReviewOnCommit', () => {
     const old = Array.from({ length: 500 }, (_, i) => ({
       state: 'COMMENTED',
       commit_id: `sha-old-${i}`,
+      body: `${BOT_MARKER}\nreview body`,
       user: { login: BOT_LOGIN, type: 'Bot' },
     }));
-    const newest = { state: 'COMMENTED', commit_id: 'sha-new', user: { login: BOT_LOGIN, type: 'Bot' } };
+    const newest = { state: 'COMMENTED', commit_id: 'sha-new', body: `${BOT_MARKER}\nreview body`, user: { login: BOT_LOGIN, type: 'Bot' } };
     const octokit = makeMockOctokit([...old, newest]);
 
     expect(await hasBotReviewOnCommit(octokit, 'owner', 'repo', 1, 'sha-new')).toBe(true);
@@ -3759,9 +3760,9 @@ describe('findBotReviewOnCommit', () => {
   }
 
   it('returns the last review for the target commit when reviews for multiple commits are interleaved', async () => {
-    const reviewA1 = { id: 1, state: 'COMMENTED', commit_id: 'sha-a', user: { login: BOT_LOGIN, type: 'Bot' } };
-    const reviewB = { id: 2, state: 'COMMENTED', commit_id: 'sha-b', user: { login: BOT_LOGIN, type: 'Bot' } };
-    const reviewA2 = { id: 3, state: 'CHANGES_REQUESTED', commit_id: 'sha-a', user: { login: BOT_LOGIN, type: 'Bot' } };
+    const reviewA1 = { id: 1, state: 'COMMENTED', commit_id: 'sha-a', body: `${BOT_MARKER}\nreview body`, user: { login: BOT_LOGIN, type: 'Bot' } };
+    const reviewB = { id: 2, state: 'COMMENTED', commit_id: 'sha-b', body: `${BOT_MARKER}\nreview body`, user: { login: BOT_LOGIN, type: 'Bot' } };
+    const reviewA2 = { id: 3, state: 'CHANGES_REQUESTED', commit_id: 'sha-a', body: `${BOT_MARKER}\nreview body`, user: { login: BOT_LOGIN, type: 'Bot' } };
     const octokit = makeMockOctokit([reviewA1, reviewB, reviewA2]);
 
     const result = await findBotReviewOnCommit(octokit, 'owner', 'repo', 1, 'sha-a');
