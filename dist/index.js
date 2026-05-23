@@ -53665,8 +53665,14 @@ async function checkAndAutoApprove(octokit, owner, repo, prNumber, config) {
         }
     }
     catch (error) {
-        const reason = error instanceof Error ? error.message : String(error);
-        await (0, github_1.markAutoApproveFailed)(octokit, owner, repo, progressCommentId, reason);
+        const rawReason = error instanceof Error ? error.message : String(error);
+        const reason = (0, github_1.sanitizeMarkdown)(rawReason).slice(0, 300);
+        try {
+            await (0, github_1.markAutoApproveFailed)(octokit, owner, repo, progressCommentId, reason);
+        }
+        catch (markError) {
+            core.warning(`Failed to transition progress comment to failure state: ${markError}`);
+        }
         throw error;
     }
     await (0, github_1.markAutoApproveComplete)(octokit, owner, repo, progressCommentId);

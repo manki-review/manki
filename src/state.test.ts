@@ -2,6 +2,7 @@ import * as core from '@actions/core';
 import { areAllFindingsResolved, resolveStaleThreads, fetchBotReviewThreads, checkAndAutoApprove, BOT_MARKER, ReviewThread } from './state';
 
 jest.mock('./github', () => ({
+  ...jest.requireActual('./github'),
   dismissPreviousReviews: jest.fn().mockResolvedValue(undefined),
   isReviewInProgress: jest.fn().mockResolvedValue(false),
   checkConcurrentSubmissionLock: jest.fn().mockResolvedValue(false),
@@ -907,6 +908,28 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
     expect(ghMock.postAutoApproveProgressComment).not.toHaveBeenCalled();
   });
 
+  it('does not post a marker when unresolved findings remain', async () => {
+    const octokit = {
+      graphql: jest.fn().mockResolvedValue(makeGraphqlFetchResponse([
+        makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix --> fix', isResolved: false }),
+      ])),
+      rest: {
+        pulls: {
+          get: jest.fn().mockResolvedValue({ data: { head: { sha: 'sha-x' } } }),
+          createReview: jest.fn().mockResolvedValue({}),
+          listReviews: jest.fn().mockResolvedValue({ data: [] }),
+        },
+      },
+    } as unknown as Octokit;
+
+    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+
+    expect(result).toBe(false);
+    expect(ghMock.postAutoApproveProgressComment).not.toHaveBeenCalled();
+    expect(ghMock.markAutoApproveComplete).not.toHaveBeenCalled();
+    expect(ghMock.markAutoApproveFailed).not.toHaveBeenCalled();
+  });
+
   it('does not post a marker when a prior bot approval already exists for the same SHA', async () => {
     const octokit = makeMockOctokit({
       existingReviews: [
@@ -932,6 +955,16 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
       octokit, 'owner', 'repo', 7777, 'COMMENT also forbidden',
     );
     expect(ghMock.markAutoApproveComplete).not.toHaveBeenCalled();
+  });
+
+  it('re-throws the original createReview error even when markAutoApproveFailed itself throws', async () => {
+    const createReviewMock = jest.fn()
+      .mockRejectedValueOnce(new Error('APPROVE forbidden'))
+      .mockRejectedValueOnce(new Error('COMMENT also forbidden'));
+    ghMock.markAutoApproveFailed.mockRejectedValueOnce(new Error('marker update failed'));
+    const octokit = makeMockOctokit({ createReviewFn: createReviewMock });
+
+    await expect(checkAndAutoApprove(octokit, 'owner', 'repo', 1)).rejects.toThrow('COMMENT also forbidden');
   });
 
   it('still transitions to complete when APPROVE fails but COMMENT fallback succeeds', async () => {
@@ -993,6 +1026,7 @@ describe('postAutoApproveProgressComment / markAutoApprove*', () => {
       { id: 1, body: updatedBody, user: { login: 'manki-review[bot]', type: 'Bot' }, updated_at: '2026-05-22T00:00:00Z' },
     ];
     expect(ghActual.findInProgressLock(comments, 999)).toBeNull();
+    expect(updatedBody).toContain('Auto-approved (all findings resolved)');
   });
 
   it('failure-transition body no longer registers as a live lock', async () => {
