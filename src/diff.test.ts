@@ -1,6 +1,7 @@
 import {
   parsePRDiff,
   filterFiles,
+  filterFilesWithAttribution,
   isLineInDiff,
   findClosestDiffLine,
   isDiffTooLarge,
@@ -163,6 +164,16 @@ describe('parsePRDiff', () => {
     expect(result.totalDeletions).toBe(0);
   });
 
+  it('records binary-skipped paths for attribution', () => {
+    const result = parsePRDiff(BINARY_FILE_DIFF);
+    expect(result.binarySkipped).toEqual(['assets/logo.png']);
+  });
+
+  it('returns an empty `binarySkipped` array when no binaries are present', () => {
+    const result = parsePRDiff(SIMPLE_DIFF);
+    expect(result.binarySkipped).toEqual([]);
+  });
+
   it('returns empty result for empty diff', () => {
     const result = parsePRDiff('');
 
@@ -256,6 +267,37 @@ describe('filterFiles', () => {
     expect(result.map((f) => f.path)).toContain('.manki.yml');
     expect(result.map((f) => f.path)).toContain('.github/workflows/ci.yml');
     expect(result.map((f) => f.path)).toContain('.gitignore');
+  });
+});
+
+describe('filterFilesWithAttribution', () => {
+  const files: DiffFile[] = [
+    { path: 'src/main.ts', changeType: 'modified', hunks: [] },
+    { path: 'dist/index.js', changeType: 'modified', hunks: [] },
+    { path: 'tests/main.test.ts', changeType: 'modified', hunks: [] },
+    { path: 'package.json', changeType: 'modified', hunks: [] },
+  ];
+
+  it('records the matched pattern for each excluded file', () => {
+    const result = filterFilesWithAttribution(files, ['dist/**', 'tests/**']);
+    expect(result.included.map(f => f.path)).toEqual(['src/main.ts', 'package.json']);
+    expect(result.excluded).toEqual([
+      { path: 'dist/index.js', matchedPattern: 'dist/**' },
+      { path: 'tests/main.test.ts', matchedPattern: 'tests/**' },
+    ]);
+  });
+
+  it('records the FIRST matching pattern when multiple patterns would match the same path', () => {
+    const result = filterFilesWithAttribution(files, ['*.js', 'dist/**']);
+    expect(result.excluded).toEqual([
+      { path: 'dist/index.js', matchedPattern: '*.js' },
+    ]);
+  });
+
+  it('returns empty `excluded` and the full `included` list when no patterns match', () => {
+    const result = filterFilesWithAttribution(files, ['nothing/**']);
+    expect(result.included).toHaveLength(files.length);
+    expect(result.excluded).toEqual([]);
   });
 });
 

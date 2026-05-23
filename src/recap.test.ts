@@ -1,6 +1,6 @@
-import { Finding, RoundContext } from './types';
+import { Finding, FindingFingerprintEntry, RoundContext } from './types';
 import { Suppression } from './memory';
-import { classifyAuthorReply, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, titlesOverlap, llmDeduplicateFindings, parseFindingFromComment } from './recap';
+import { classifyAuthorReply, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment } from './recap';
 import { BOT_LOGIN, titleToSlug } from './github';
 
 jest.mock('@actions/core', () => ({
@@ -49,6 +49,24 @@ describe('deduplicateFindings', () => {
     const result = deduplicateFindings(findings, previous);
     expect(result.unique).toHaveLength(0);
     expect(result.duplicates).toHaveLength(1);
+    expect(result.duplicates[0].matchType).toBe('exact');
+  });
+
+  it('attributes match types: exact, substring, word_overlap', () => {
+    const findings = [
+      makeFinding({ title: 'Missing null check', file: 'src/a.ts', line: 10 }),
+      makeFinding({ title: 'Missing null check in processBlock', file: 'src/b.ts', line: 10 }),
+      makeFinding({ title: 'FFI API regression: is_ours removed with no replacement', file: 'src/c.rs', line: 10 }),
+    ];
+    const previous = [
+      makePrevious({ title: 'Missing null check', file: 'src/a.ts', line: 10, status: 'resolved' }),
+      makePrevious({ title: 'Missing null check', file: 'src/b.ts', line: 10, status: 'resolved' }),
+      makePrevious({ title: 'FFI removes is_ours without adding replacement', file: 'src/c.rs', line: 10, status: 'resolved' }),
+    ];
+
+    const result = deduplicateFindings(findings, previous);
+    expect(result.duplicates).toHaveLength(3);
+    expect(result.duplicates.map(d => d.matchType)).toEqual(['exact', 'substring', 'word_overlap']);
   });
 
   it('detects fuzzy line match within +/-5 lines', () => {
@@ -1662,6 +1680,93 @@ describe('fetchRecapState', () => {
       const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
       expect(state.priorRounds[0].findings.entries[0].authorReplyClass).toBe('disagree');
     });
+
+    it('records reclassified-prior count and attribution when authorReplyClass flips', async () => {
+      const ctx = makeRoundContext(1, {
+        findings: {
+          count: 2,
+          severityCounts: { blocker: 1, warning: 1 },
+          entries: [
+            {
+              fingerprint: { file: 'src/foo.ts', lineStart: 10, lineEnd: 10, slug: 'Null-check' },
+              severity: 'blocker',
+              threadId: 'thread-agree',
+              authorReplyClass: 'none',
+              title: 'Null check',
+            },
+            {
+              fingerprint: { file: 'src/bar.ts', lineStart: 20, lineEnd: 20, slug: 'Other' },
+              severity: 'warning',
+              threadId: 'thread-no-change',
+              authorReplyClass: 'none',
+              title: 'Other',
+            },
+          ],
+        },
+      });
+      const threadAgree = makeThread({
+        id: 'thread-agree',
+        comments: {
+          nodes: [
+            { body: '<!-- manki:blocker:Null-check --> **Blocker**: Null check', author: { login: 'github-actions[bot]' } },
+            { body: 'Agreed, will fix', author: { login: 'author' } },
+          ],
+        },
+      });
+      const threadNoChange = makeThread({
+        id: 'thread-no-change',
+        comments: {
+          nodes: [
+            { body: '<!-- manki:warning:Other --> **Warning**: Other', author: { login: 'github-actions[bot]' } },
+          ],
+        },
+      });
+      const octokit = mockOctokit([threadAgree, threadNoChange], [
+        { id: 200, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
+      ]);
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.reclassifiedPriorCount).toBe(1);
+      expect(state.reclassifiedPriors).toEqual([{ threadId: 'thread-agree', from: 'none', to: 'agree' }]);
+    });
+
+    it('counts slug-file fallback flips but omits them from attribution (no threadId)', async () => {
+      const ctx = makeRoundContext(1, {
+        findings: {
+          count: 1,
+          severityCounts: { warning: 1 },
+          entries: [{
+            fingerprint: { file: 'src/foo.ts', lineStart: 10, lineEnd: 10, slug: 'Null-check' },
+            severity: 'warning',
+            authorReplyClass: 'none',
+            title: 'Null check',
+          }],
+        },
+      });
+      const thread = makeThread({
+        id: undefined,
+        path: 'src/foo.ts',
+        line: 10,
+        comments: {
+          nodes: [
+            { body: '<!-- manki:warning:Null-check --> **Warning**: Null check', author: { login: 'github-actions[bot]' } },
+            { body: 'Agreed, will fix', author: { login: 'author' } },
+          ],
+        },
+      });
+      const octokit = mockOctokit([thread], [
+        { id: 200, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
+      ]);
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.reclassifiedPriorCount).toBe(1);
+      expect(state.reclassifiedPriors).toEqual([]);
+    });
+
+    it('returns zero reclassified count when no priors exist', async () => {
+      const octokit = mockOctokit([], []);
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.reclassifiedPriorCount).toBe(0);
+      expect(state.reclassifiedPriors).toEqual([]);
+    });
   });
 });
 
@@ -1838,6 +1943,7 @@ describe('llmDeduplicateFindings', () => {
     expect(result.duplicates).toHaveLength(1);
     expect(result.duplicates[0].finding.title).toBe('Missing null check');
     expect(result.duplicates[0].matchedTitle).toBe('Null safety issue');
+    expect(result.duplicates[0].matchType).toBe('llm');
   });
 
   it('handles LLM returning no matches', async () => {
@@ -2030,5 +2136,109 @@ describe('collectResolvedThreadIds', () => {
       { title: 'b', file: 'f', line: 2, severity: 'warning', status: 'resolved', threadId: 'T2' },
     ]);
     expect(result).toEqual(new Set(['T2']));
+  });
+});
+
+describe('titleOverlapType', () => {
+  it("returns 'exact' for identical titles", () => {
+    expect(titleOverlapType('Missing null check', 'Missing null check')).toBe('exact');
+  });
+
+  it("returns 'exact' case-insensitively", () => {
+    expect(titleOverlapType('Missing Null Check', 'missing null check')).toBe('exact');
+  });
+
+  it("returns 'substring' when one title contains the other (>=5 chars)", () => {
+    expect(titleOverlapType('Missing null check in processBlock', 'Missing null check')).toBe('substring');
+  });
+
+  it("returns 'word_overlap' for short-title overlap below the substring length threshold", () => {
+    expect(titleOverlapType('Bug in parser', 'Bug')).toBe('word_overlap');
+  });
+
+  it('returns null when there is no substring and insufficient word overlap', () => {
+    expect(titleOverlapType('Memory leak in pool', 'Missing error handler')).toBeNull();
+  });
+
+  it("returns 'word_overlap' when >=50% words overlap but no substring", () => {
+    expect(titleOverlapType(
+      'FFI removes is_ours without adding replacement',
+      'FFI API regression: is_ours removed with no replacement',
+    )).toBe('word_overlap');
+  });
+
+  it('returns null when titles are unrelated', () => {
+    expect(titleOverlapType('Memory leak in connection pool', 'Missing error handling in parser')).toBeNull();
+  });
+});
+
+describe('refreshAuthorReplyClass', () => {
+  function makeRound(entries: FindingFingerprintEntry[]): RoundContext {
+    return {
+      meta: { prNumber: 1, commitSha: 'abc', round: 1, timestamp: '2026-01-01T00:00:00.000Z', mankiVersion: '1.0.0' },
+      config: { reviewLevel: 'medium', memoryEnabled: false },
+      diff: { lines: 0, additions: 0, deletions: 0, filesReviewed: 0, fileTypes: {} },
+      models: { reviewer: 'r', judge: 'j' },
+      planner: { source: 'disabled', used: false, coreAgentInjections: [], priorRoundEffortDowngrades: [] },
+      reviewers: { agents: [] },
+      judge: { summary: '' },
+      dedup: {},
+      memory: {},
+      findings: { count: entries.length, severityCounts: { blocker: 0, warning: 0, suggestion: 0, nitpick: 0 }, entries },
+      usage: {},
+      verdict: 'COMMENT',
+    };
+  }
+
+  function makeEntry(overrides: Partial<FindingFingerprintEntry> = {}): FindingFingerprintEntry {
+    return {
+      fingerprint: { file: 'src/foo.ts', slug: 'test-finding', lineStart: 10, lineEnd: 10 },
+      severity: 'suggestion',
+      authorReplyClass: 'none',
+      ...overrides,
+    };
+  }
+
+  it('returns empty result for empty rounds array', () => {
+    const result = refreshAuthorReplyClass([], []);
+    expect(result.rounds).toEqual([]);
+    expect(result.reclassifiedPriorCount).toBe(0);
+    expect(result.reclassifiedPriors).toEqual([]);
+  });
+
+  it('counts a threadId flip and records it in entries', () => {
+    const entry = makeEntry({ threadId: 'T1', authorReplyClass: 'none' });
+    const rounds = [makeRound([entry])];
+    const previousFindings: PreviousFinding[] = [
+      { title: 'Test finding', file: 'src/foo.ts', line: 10, severity: 'suggestion', status: 'resolved', threadId: 'T1', authorReplyText: 'LGTM fixed' },
+    ];
+
+    const result = refreshAuthorReplyClass(rounds, previousFindings);
+    expect(result.reclassifiedPriorCount).toBe(1);
+    expect(result.reclassifiedPriors).toHaveLength(1);
+    expect(result.reclassifiedPriors[0]).toMatchObject({ threadId: 'T1', from: 'none' });
+  });
+
+  it('increments count for slug-file fallback flips but omits them from entries', () => {
+    const entry = makeEntry({ threadId: undefined, fingerprint: { file: 'src/foo.ts', slug: 'Test-finding', lineStart: 10, lineEnd: 10 }, authorReplyClass: 'none' });
+    const rounds = [makeRound([entry])];
+    const previousFindings: PreviousFinding[] = [
+      { title: 'Test finding', file: 'src/foo.ts', line: 10, severity: 'suggestion', status: 'resolved', authorReplyText: 'fixed' },
+    ];
+
+    const result = refreshAuthorReplyClass(rounds, previousFindings);
+    expect(result.reclassifiedPriorCount).toBe(1);
+    expect(result.reclassifiedPriors).toHaveLength(0);
+  });
+
+  it('caps entries at 50 when flips exceed the limit', () => {
+    const entries = Array.from({ length: 55 }, (_, i) => makeEntry({ threadId: `T${i}`, authorReplyClass: 'none' }));
+    const previousFindings: PreviousFinding[] = entries.map((e, i) => ({
+      title: 'Test finding', file: 'src/foo.ts', line: 10, severity: 'suggestion' as const, status: 'resolved' as const, threadId: `T${i}`, authorReplyText: 'fixed',
+    }));
+
+    const result = refreshAuthorReplyClass([makeRound(entries)], previousFindings);
+    expect(result.reclassifiedPriorCount).toBe(55);
+    expect(result.reclassifiedPriors).toHaveLength(50);
   });
 });

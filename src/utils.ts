@@ -41,3 +41,11 @@ export function safeJsonParse(text: string): unknown | null {
     return null;
   }
 }
+
+/**
+ * Redact GitHub token literals from a string so they cannot leak into logs
+ * or user-visible output.
+ */
+export function sanitizeTokens(s: string): string {
+  return s.replace(/\b(ghp|ghs|gho|github_pat)_[A-Za-z0-9_]+/g, '[REDACTED]');
+}

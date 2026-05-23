@@ -7,7 +7,7 @@ import { runJudgeAgent, JudgeInput, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
 import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, llmDeduplicateFindings, PreviousFinding } from './recap';
-import { ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, PlannerRoundHint, PriorRoundEffortDowngrade, RoundContext, RoundPlannerSource, SpecialistOutcome, EffortLevel, AgentPick, ProvenanceEntry, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, PlannerRoundHint, PriorRoundEffortDowngrade, RoundContext, RoundDedupDuplicateMatch, RoundPlannerSource, SpecialistOutcome, EffortLevel, AgentPick, ProvenanceEntry, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 
@@ -1168,6 +1168,7 @@ export async function runReview(
   let llmDedupCount = 0;
   let dedupUsage: LLMUsage | undefined;
   let dedupDurationMs: number | undefined;
+  const duplicateMatches: RoundDedupDuplicateMatch[] = [];
   if (previousFindings && previousFindings.length > 0 && findingsForJudge.length > 0) {
     const { unique, duplicates } = deduplicateFindings(findingsForJudge, previousFindings, memory?.suppressions);
     if (duplicates.length > 0) {
@@ -1175,6 +1176,9 @@ export async function runReview(
     }
     findingsForJudge = unique;
     staticDedupCount = duplicates.length;
+    for (const d of duplicates) {
+      duplicateMatches.push({ droppedTitle: d.finding.title, matchedTitle: d.matchedTitle, matchType: d.matchType });
+    }
 
     if (clients.dedup && findingsForJudge.length > 0) {
       const dedupStart = Date.now();
@@ -1185,6 +1189,9 @@ export async function runReview(
       }
       findingsForJudge = llmResult.unique;
       llmDedupCount = llmResult.duplicates.length;
+      for (const d of llmResult.duplicates) {
+        duplicateMatches.push({ droppedTitle: d.finding.title, matchedTitle: d.matchedTitle, matchType: d.matchType });
+      }
       dedupUsage = dedupWrap.getTotals().usage;
       dedupDurationMs = Date.now() - dedupStart;
     }
@@ -1333,6 +1340,7 @@ export async function runReview(
     partialNote,
     staticDedupCount,
     llmDedupCount,
+    ...(duplicateMatches.length > 0 && { duplicateMatches }),
     suppressionCount,
     ...(inPrSuppressedCount > 0 && { inPrSuppressedCount }),
     agentResponseLengths,

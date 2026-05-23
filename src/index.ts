@@ -4,18 +4,19 @@ import * as github from '@actions/github';
 import * as path from 'path';
 
 import { createAuthenticatedOctokit, getMemoryToken } from './auth';
+import { sanitizeTokens } from './utils';
 import { loadConfig, loadConfigFromFile, sanitizeForkConfig, resolveAgentModel, resolveModel } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
-import { parsePRDiff, filterFiles, isDiffTooLarge, countDiffLines } from './diff';
+import { parsePRDiff, filterFiles, filterFilesWithAttribution, isDiffTooLarge, countDiffLines } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff, MAX_INTER_ROUND_DIFF_CHARS } from './judge';
 import { loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
 import { collectResolvedThreadIds, fetchRecapState, fingerprintFinding, PreviousFinding } from './recap';
 import { buildAgentPool } from './agents';
 import { buildPriorRoundLookup, collectPriorRoundAgents, runReview, determineVerdict, selectTeam } from './review';
-import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DashboardData, FullReviewOptions, OWN_PROPOSAL_TAG, PrContext, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewMetadata, RoundCap, RoundContext, RoundTrigger, RoundUsage, RoundUsageStage, ThreadResolutionOverrides, roundContextToFlatAliases } from './types';
+import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DashboardData, FullReviewOptions, MemoryLoadStatus, OWN_PROPOSAL_TAG, PrContext, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReclassifiedPrior, ReviewMetadata, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundRecap, RoundTrigger, RoundUsage, RoundUsageStage, ThreadResolutionOverrides, roundContextToFlatAliases } from './types';
 import type { LLMUsage } from './providers';
 import {
   fetchPRDiff,
@@ -417,6 +418,20 @@ async function handleCommentTrigger(forceReview?: boolean, skipCap?: boolean, by
   });
 }
 
+function _buildRoundRecap(recap: {
+  priorRounds: unknown[];
+  reclassifiedPriorCount?: number;
+  reclassifiedPriors?: ReclassifiedPrior[];
+}): RoundRecap {
+  const count = recap.reclassifiedPriorCount ?? 0;
+  const entries = recap.reclassifiedPriors ?? [];
+  return {
+    priorRoundCount: recap.priorRounds.length,
+    reclassifiedPriorCount: count,
+    ...(entries.length > 0 && { reclassifiedPriors: entries }),
+  };
+}
+
 function reconcileDashboardAgents(dashboard: DashboardData, names: string[]): void {
   const existingByName = new Map(dashboard.agentProgress?.map(a => [a.name, a]) ?? []);
   const reconciled = names.map(name => existingByName.get(name) ?? { name, status: 'done' as const });
@@ -624,7 +639,7 @@ async function runFullReview(
       return;
     }
 
-    const filteredFiles = filterFiles(diff.files, config.exclude_paths);
+    const { included: filteredFiles, excluded: excludedFiles } = filterFilesWithAttribution(diff.files, config.exclude_paths);
     core.info(`Reviewing ${filteredFiles.length} files (${diff.files.length} total, ${diff.files.length - filteredFiles.length} filtered out)`);
 
     if (filteredFiles.length === 0) {
@@ -683,19 +698,28 @@ async function runFullReview(
     }
 
     let memory: RepoMemory | null = null;
-    if (config.memory?.enabled) {
+    let memoryLoadStatus: MemoryLoadStatus;
+    let memoryLoadError: string | undefined;
+    if (!config.memory?.enabled) {
+      memoryLoadStatus = 'disabled';
+    } else {
       const memoryToken = getMemoryToken(octokitCache.resolvedToken);
       if (!memoryToken) {
         core.warning('No memory token available — skipping memory load. Set memory_repo_token or github_token.');
+        memoryLoadStatus = 'no_token';
       } else {
         const memoryOctokit = github.getOctokit(memoryToken);
         const memoryRepo = config.memory?.repo || `${owner}/review-memory`;
-
         try {
           memory = await loadMemory(memoryOctokit, memoryRepo, repo);
           core.info(`Loaded memory: ${memory.learnings.length} learnings, ${memory.suppressions.length} suppressions`);
+          memoryLoadStatus = 'loaded';
         } catch (error) {
-          core.warning(`Failed to load review memory: ${error}`);
+          const message = error instanceof Error ? error.message : String(error);
+          const sanitized = sanitizeTokens(message);
+          core.warning(`Failed to load review memory: ${sanitized}`);
+          memoryLoadStatus = 'failed';
+          memoryLoadError = sanitized.length > 300 ? sanitized.slice(0, 300) + '...' : sanitized;
         }
       }
     }
@@ -1144,6 +1168,15 @@ async function runFullReview(
         deletions: diff.totalDeletions,
         filesReviewed: filteredFiles.length,
         fileTypes,
+        ...(excludedFiles.length > 0 && { excludedFiles: excludedFiles.slice(0, 100) as RoundDiffExcludedFile[] }),
+        ...(diff.binarySkipped && diff.binarySkipped.length > 0 && { binarySkipped: diff.binarySkipped.slice(0, 100) }),
+        oversizedHandled: false,
+        perFile: filteredFiles.slice(0, 200).map((f): RoundDiffPerFile => ({
+          path: f.path,
+          additions: f.additions ?? 0,
+          deletions: f.deletions ?? 0,
+          changeType: f.changeType,
+        })),
       },
       models: {
         ...(plannerClient && { planner: plannerModel }),
@@ -1208,12 +1241,17 @@ async function runFullReview(
       dedup: {
         ...(result.staticDedupCount != null && { staticDropped: result.staticDedupCount }),
         ...(result.llmDedupCount != null && { llmDropped: result.llmDedupCount }),
+        ...(mergedDuplicates > 0 && { sameRoundLlmDropped: mergedDuplicates }),
+        ...(result.duplicateMatches && result.duplicateMatches.length > 0 && { duplicateMatches: result.duplicateMatches.slice(0, 50) }),
+        ...(result.testNitSuppressedCount != null && result.testNitSuppressedCount > 0 && { testNitSuppressedCount: result.testNitSuppressedCount }),
         ...(result.dedupDurationMs != null && { durationMs: result.dedupDurationMs }),
       },
       memory: {
         ...(memory && memory.patterns.length > 0 && { patternsApplied: memory.patterns.length }),
         ...(result.suppressionCount != null && result.suppressionCount > 0 && { suppressionsApplied: result.suppressionCount }),
         ...(escalationsApplied > 0 && { escalationsApplied }),
+        loadStatus: memoryLoadStatus,
+        ...(memoryLoadError && { loadError: memoryLoadError }),
       },
       findings: {
         count: result.findings.length,
@@ -1222,6 +1260,7 @@ async function runFullReview(
       },
       usage,
       verdict: result.verdict,
+      recap: _buildRoundRecap(recap),
     };
     const flatAliases = roundContextToFlatAliases(context);
 
@@ -1656,4 +1695,4 @@ function _resetOctokitCache(): void {
   octokitCache.identity = null;
 }
 
-export { run, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, runFullReview, main, _resetOctokitCache };
+export { run, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, runFullReview, main, _resetOctokitCache, _buildRoundRecap };

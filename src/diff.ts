@@ -1,24 +1,26 @@
 import parseDiff from 'parse-diff';
 import { minimatch } from 'minimatch';
 
-import { DiffFile, DiffHunk, ParsedDiff } from './types';
+import { DiffFile, DiffHunk, ParsedDiff, RoundDiffExcludedFile } from './types';
 
 /**
  * Parse a unified diff string into structured data.
  */
 export function parsePRDiff(rawDiff: string): ParsedDiff {
   if (!rawDiff.trim()) {
-    return { files: [], totalAdditions: 0, totalDeletions: 0 };
+    return { files: [], totalAdditions: 0, totalDeletions: 0, binarySkipped: [] };
   }
 
   const parsed = parseDiff(rawDiff);
   let totalAdditions = 0;
   let totalDeletions = 0;
   const files: DiffFile[] = [];
+  const binarySkipped: string[] = [];
 
   for (const file of parsed) {
-    // Skip binary files (they have no meaningful chunks)
     if (isBinaryFile(file)) {
+      const binaryPath = file.to && file.to !== '/dev/null' ? file.to : file.from ?? '';
+      if (binaryPath) binarySkipped.push(binaryPath);
       continue;
     }
 
@@ -47,7 +49,7 @@ export function parsePRDiff(rawDiff: string): ParsedDiff {
     });
   }
 
-  return { files, totalAdditions, totalDeletions };
+  return { files, totalAdditions, totalDeletions, binarySkipped };
 }
 
 /**
@@ -58,15 +60,32 @@ export function filterFiles(
   files: DiffFile[],
   excludePaths: string[],
 ): DiffFile[] {
-  return files.filter((file) => {
-    const matchOpts = { matchBase: true, dot: true };
+  return filterFilesWithAttribution(files, excludePaths).included;
+}
 
-    const excluded = excludePaths.some((pattern) =>
+/**
+ * Same as `filterFiles` but also returns per-file exclusion attribution
+ * (path + first matched pattern) so callers can surface noise-debugging
+ * provenance in `RoundDiff.excludedFiles`.
+ */
+export function filterFilesWithAttribution(
+  files: DiffFile[],
+  excludePaths: string[],
+): { included: DiffFile[]; excluded: RoundDiffExcludedFile[] } {
+  const matchOpts = { matchBase: true, dot: true };
+  const included: DiffFile[] = [];
+  const excluded: RoundDiffExcludedFile[] = [];
+  for (const file of files) {
+    const matchedPattern = excludePaths.find((pattern) =>
       minimatch(file.path, pattern, matchOpts),
     );
-
-    return !excluded;
-  });
+    if (matchedPattern) {
+      excluded.push({ path: file.path, matchedPattern });
+    } else {
+      included.push(file);
+    }
+  }
+  return { included, excluded };
 }
 
 /**

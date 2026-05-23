@@ -91,6 +91,7 @@ jest.mock('./config', () => {
 jest.mock('./diff', () => ({
   parsePRDiff: jest.fn().mockReturnValue({ files: [], totalAdditions: 0, totalDeletions: 0 }),
   filterFiles: jest.fn().mockReturnValue([]),
+  filterFilesWithAttribution: jest.fn().mockReturnValue({ included: [], excluded: [] }),
   isDiffTooLarge: jest.fn().mockReturnValue(false),
   countDiffLines: jest.fn().mockReturnValue(0),
 }));
@@ -219,7 +220,7 @@ jest.mock('./state', () => ({
   resolveStaleThreads: jest.fn().mockResolvedValue(0),
 }));
 
-import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, main, _resetOctokitCache, detectTickedMarker } from './index';
+import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, main, _resetOctokitCache, detectTickedMarker, _buildRoundRecap } from './index';
 import { FORCE_REVIEW_MARKER, FORCE_CAP_MARKER } from './github';
 import type { ReviewConfig } from './types';
 import { createLLMClient, parseModelSpec } from './providers';
@@ -1795,7 +1796,7 @@ describe('runFullReview orchestration', () => {
     });
     jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [], totalAdditions: 0, totalDeletions: 0 });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [], excluded: [] });
     jest.mocked(authModule.getMemoryToken).mockReturnValue(null);
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], recapContext: '', priorRounds: [] });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [], duplicates: [] });
@@ -1847,7 +1848,7 @@ describe('runFullReview orchestration', () => {
       jest.mocked(diffModule.parsePRDiff).mockReturnValue({
         files: [testFile], totalAdditions: 10, totalDeletions: 5,
       });
-      jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+      jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
     });
 
     it('warms up the provider CLI before runReview to avoid the planner-install race', async () => {
@@ -1968,7 +1969,7 @@ describe('runFullReview orchestration', () => {
       files: [{ path: 'package-lock.json', changeType: 'modified', hunks: [] }],
       totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [], excluded: [] });
     const warmupCLI = jest.fn().mockResolvedValue(undefined);
     jest.mocked(createLLMClient).mockImplementation(() => ({
       sendMessage: jest.fn(), warmupCLI,
@@ -2021,7 +2022,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     const findings = [
       { severity: 'blocker' as const, title: 'Bug found', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['general'] },
@@ -2072,7 +2073,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: testFiles, totalAdditions: 20, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue(testFiles);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: testFiles, excluded: [] });
 
     const findings = [
       { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const, judgeNotes: 'confirmed' },
@@ -2142,7 +2143,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: testFiles, totalAdditions: 20, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue(testFiles);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: testFiles, excluded: [] });
 
     const findings = [
       { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const },
@@ -2195,7 +2196,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: testFiles, totalAdditions: 20, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue(testFiles);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: testFiles, excluded: [] });
 
     const findings = [
       { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const },
@@ -2241,7 +2242,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: testFiles, totalAdditions: 20, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue(testFiles);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: testFiles, excluded: [] });
 
     const findings = [
       { severity: 'nitpick' as const, title: 'Guard', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const, tags: ['defensive-hardening'], originalSeverity: 'blocker' as const, reachability: 'hypothetical' as const },
@@ -2276,7 +2277,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: testFiles, totalAdditions: 20, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue(testFiles);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: testFiles, excluded: [] });
 
     const findings = [
       { severity: 'blocker' as const, title: 'Real', file: 'src/app.ts', line: 6, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const },
@@ -2312,7 +2313,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: testFiles, totalAdditions: 20, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue(testFiles);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: testFiles, excluded: [] });
 
     // Simulate: judge kept 2 findings, but review.ts test-nit suppression already
     // dropped 1 before returning, so result.findings has only 1.
@@ -2357,7 +2358,7 @@ describe('runFullReview orchestration', () => {
   it('builds `RoundUsage` with per-stage and total tokens from the review result', async () => {
     const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     const security = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['security'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
@@ -2424,7 +2425,7 @@ describe('runFullReview orchestration', () => {
   it('emits `usage` with zero rollups and no `perStage` when no stage reports tokens', async () => {
     const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['security'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
@@ -2449,7 +2450,7 @@ describe('runFullReview orchestration', () => {
   it('builds `RoundPlanner` provenance with `source`, `language`, `context`, `agents`, and reinjections', async () => {
     const testFile = { path: 'src/auth.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/auth.ts', line: 5, description: 'd', reviewers: ['Security & Safety'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
@@ -2495,7 +2496,7 @@ describe('runFullReview orchestration', () => {
   it('builds `RoundPlanner` with `source: "heuristic_fallback"` and `fallbackReason` when the planner failed', async () => {
     const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['security'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
@@ -2524,7 +2525,7 @@ describe('runFullReview orchestration', () => {
   it('preserves `planner.used` as a derived alias for `source === "planner"`', async () => {
     const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['security'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
@@ -2547,7 +2548,7 @@ describe('runFullReview orchestration', () => {
   it('populates `RoundAgentMetric` with `model`, `effort`, and `multiPassConsistency`', async () => {
     const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['Security & Safety'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
@@ -2577,7 +2578,7 @@ describe('runFullReview orchestration', () => {
   it('uses `models.agents` override for `RoundAgentMetric.model` when configured', async () => {
     const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
       exclude_paths: [],
@@ -2615,7 +2616,7 @@ describe('runFullReview orchestration', () => {
   it('falls back to `reviewerModel` for agents not listed in `models.agents`', async () => {
     const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
       exclude_paths: [],
@@ -2652,7 +2653,7 @@ describe('runFullReview orchestration', () => {
   it('uses built-in default model for `RoundAgentMetric.model` when `config.models` is absent', async () => {
     const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
       exclude_paths: [],
@@ -2683,7 +2684,7 @@ describe('runFullReview orchestration', () => {
   it('builds `perStage` with only present stages when planner and dedup are absent', async () => {
     const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['security'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
@@ -2719,7 +2720,7 @@ describe('runFullReview orchestration', () => {
   it('passes nitpick findings through to postReview so they post inline', async () => {
     const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     const nitFinding = { severity: 'nitpick' as const, title: 'Style nit', file: 'src/app.ts', line: 3, description: 'nit desc', reviewers: ['general'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
@@ -2747,7 +2748,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'APPROVE', summary: 'Review incomplete',
@@ -2795,7 +2796,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     const previousFindings = [
       { title: 'Bug', file: 'src/app.ts', line: 5, severity: 'blocker' as const, status: 'resolved' as const },
@@ -2830,7 +2831,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, exclude_paths: [], max_diff_lines: 10000,
@@ -2886,7 +2887,7 @@ describe('runFullReview orchestration', () => {
       jest.mocked(diffModule.parsePRDiff).mockReturnValue({
         files: [testFile], totalAdditions: 10, totalDeletions: 5,
       });
-      jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+      jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
     });
 
     it('propagates `judge.openThreadsState`, `openThreadCount`, `resolvedThreadIdCount`, and `interRoundDiffState` to the round context', async () => {
@@ -3017,7 +3018,7 @@ describe('runFullReview orchestration', () => {
       jest.mocked(diffModule.parsePRDiff).mockReturnValue({
         files: [roundTestFile], totalAdditions: 10, totalDeletions: 5,
       });
-      jest.mocked(diffModule.filterFiles).mockReturnValue([roundTestFile]);
+      jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [roundTestFile], excluded: [] });
 
       await callRunFullReview();
 
@@ -3029,7 +3030,7 @@ describe('runFullReview orchestration', () => {
       jest.mocked(diffModule.parsePRDiff).mockReturnValue({
         files: [roundTestFile], totalAdditions: 10, totalDeletions: 5,
       });
-      jest.mocked(diffModule.filterFiles).mockReturnValue([roundTestFile]);
+      jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [roundTestFile], excluded: [] });
       jest.mocked(configModule.loadConfig).mockReturnValue({
         auto_review: true, auto_approve: false, exclude_paths: [], max_diff_lines: 10000,
         reviewers: [], instructions: '', review_level: 'auto',
@@ -3065,7 +3066,7 @@ describe('runFullReview orchestration', () => {
       jest.mocked(diffModule.parsePRDiff).mockReturnValue({
         files: [provFile], totalAdditions: 10, totalDeletions: 5,
       });
-      jest.mocked(diffModule.filterFiles).mockReturnValue([provFile]);
+      jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [provFile], excluded: [] });
     });
 
     function callRunFullReviewWith(forceReview?: boolean, skipCap?: boolean, bypassHint?: 'force_review' | 'skip_cap' | 'manual_review_command'): Promise<void> {
@@ -3238,6 +3239,176 @@ describe('runFullReview orchestration', () => {
     });
   });
 
+  describe('RoundDedup, RoundDiff, RoundMemory, and RoundContext.recap attribution', () => {
+    const attrFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+      additions: 10,
+      deletions: 5,
+    };
+
+    beforeEach(() => {
+      jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+        files: [attrFile], totalAdditions: 10, totalDeletions: 5,
+        binarySkipped: ['assets/logo.png'],
+      });
+      jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({
+        included: [attrFile],
+        excluded: [{ path: 'dist/index.js', matchedPattern: 'dist/**' }],
+      });
+    });
+
+    it('populates `dedup.duplicateMatches`, `sameRoundLlmDropped`, and `testNitSuppressedCount`', async () => {
+      jest.mocked(reviewModule.runReview).mockResolvedValue({
+        verdict: 'COMMENT', summary: 'done',
+        findings: [], highlights: [], reviewComplete: true,
+        agentNames: ['general'],
+        staticDedupCount: 1,
+        llmDedupCount: 1,
+        duplicateMatches: [
+          { droppedTitle: 'Dup A', matchedTitle: 'Prior A', matchType: 'exact' },
+          { droppedTitle: 'Dup B', matchedTitle: 'Prior B', matchType: 'llm' },
+        ],
+        rawFindingCount: 5,
+        suppressionCount: 0,
+        testNitSuppressedCount: 2,
+        allJudgedFindings: [
+          { severity: 'nitpick', title: 'A', file: 'src/app.ts', line: 1, description: 'd', reviewers: ['general'] },
+        ],
+      });
+      jest.mocked(reviewModule.determineVerdict).mockReturnValue({
+        verdict: 'COMMENT', verdictReason: 'only_nit_or_suggestion',
+        verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] },
+      });
+
+      await callRunFullReview();
+      const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+
+      expect(rc!.dedup.staticDropped).toBe(1);
+      expect(rc!.dedup.llmDropped).toBe(1);
+      expect(rc!.dedup.duplicateMatches).toEqual([
+        { droppedTitle: 'Dup A', matchedTitle: 'Prior A', matchType: 'exact' },
+        { droppedTitle: 'Dup B', matchedTitle: 'Prior B', matchType: 'llm' },
+      ]);
+      // `mergedDuplicates = rawFindingCount - suppression - static - llm - judgedSurvivors = 5 - 0 - 1 - 1 - 1 = 2`
+      expect(rc!.dedup.sameRoundLlmDropped).toBe(2);
+      expect(rc!.judge.mergedDuplicates).toBe(2);
+      expect(rc!.dedup.testNitSuppressedCount).toBe(2);
+    });
+
+    it('omits `dedup.duplicateMatches` and `testNitSuppressedCount` when zero', async () => {
+      jest.mocked(reviewModule.runReview).mockResolvedValue({
+        verdict: 'APPROVE', summary: 'done',
+        findings: [], highlights: [], reviewComplete: true,
+        agentNames: ['general'],
+      });
+      jest.mocked(reviewModule.determineVerdict).mockReturnValue({
+        verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion',
+        verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] },
+      });
+
+      await callRunFullReview();
+      const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+
+      expect(rc!.dedup.duplicateMatches).toBeUndefined();
+      expect(rc!.dedup.testNitSuppressedCount).toBeUndefined();
+      expect(rc!.dedup.sameRoundLlmDropped).toBeUndefined();
+    });
+
+    it('populates `diff.excludedFiles`, `binarySkipped`, `perFile`, and `oversizedHandled: false`', async () => {
+      jest.mocked(reviewModule.runReview).mockResolvedValue({
+        verdict: 'APPROVE', summary: 'done',
+        findings: [], highlights: [], reviewComplete: true,
+        agentNames: ['general'],
+      });
+      jest.mocked(reviewModule.determineVerdict).mockReturnValue({
+        verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion',
+        verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] },
+      });
+
+      await callRunFullReview();
+      const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+
+      expect(rc!.diff.excludedFiles).toEqual([{ path: 'dist/index.js', matchedPattern: 'dist/**' }]);
+      expect(rc!.diff.binarySkipped).toEqual(['assets/logo.png']);
+      expect(rc!.diff.oversizedHandled).toBe(false);
+      expect(rc!.diff.perFile).toEqual([
+        { path: 'src/app.ts', additions: 10, deletions: 5, changeType: 'modified' },
+      ]);
+    });
+
+    it('populates `memory.loadStatus: "disabled"` when memory is off in config', async () => {
+      jest.mocked(reviewModule.runReview).mockResolvedValue({
+        verdict: 'APPROVE', summary: 'done',
+        findings: [], highlights: [], reviewComplete: true,
+        agentNames: ['general'],
+      });
+      jest.mocked(reviewModule.determineVerdict).mockReturnValue({
+        verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion',
+        verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] },
+      });
+
+      await callRunFullReview();
+      const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+      expect(rc!.memory.loadStatus).toBe('disabled');
+      expect(rc!.memory.loadError).toBeUndefined();
+    });
+
+    it('populates `recap` with `priorRoundCount`, `reclassifiedPriorCount`, and `reclassifiedPriors`', async () => {
+      jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
+        previousFindings: [],
+        recapContext: '',
+        priorRounds: [],
+        reclassifiedPriorCount: 2,
+        reclassifiedPriors: [
+          { threadId: 'thread-a', from: 'none', to: 'agree' },
+          { threadId: 'thread-b', from: 'none', to: 'disagree' },
+        ],
+      });
+      jest.mocked(reviewModule.runReview).mockResolvedValue({
+        verdict: 'APPROVE', summary: 'done',
+        findings: [], highlights: [], reviewComplete: true,
+        agentNames: ['general'],
+      });
+      jest.mocked(reviewModule.determineVerdict).mockReturnValue({
+        verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion',
+        verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] },
+      });
+
+      await callRunFullReview();
+      const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+
+      expect(rc!.recap).toEqual({
+        priorRoundCount: 0,
+        reclassifiedPriorCount: 2,
+        reclassifiedPriors: [
+          { threadId: 'thread-a', from: 'none', to: 'agree' },
+          { threadId: 'thread-b', from: 'none', to: 'disagree' },
+        ],
+      });
+    });
+
+    it('omits `recap.reclassifiedPriors` when none flipped but keeps the count', async () => {
+      jest.mocked(reviewModule.runReview).mockResolvedValue({
+        verdict: 'APPROVE', summary: 'done',
+        findings: [], highlights: [], reviewComplete: true,
+        agentNames: ['general'],
+      });
+      jest.mocked(reviewModule.determineVerdict).mockReturnValue({
+        verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion',
+        verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] },
+      });
+
+      await callRunFullReview();
+      const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+
+      expect(rc!.recap).toEqual({
+        priorRoundCount: 0,
+        reclassifiedPriorCount: 0,
+      });
+    });
+  });
+
   describe('prior-round agent pinning', () => {
     const pinTestFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
@@ -3249,7 +3420,7 @@ describe('runFullReview orchestration', () => {
       jest.mocked(diffModule.parsePRDiff).mockReturnValue({
         files: [pinTestFile], totalAdditions: 10, totalDeletions: 5,
       });
-      jest.mocked(diffModule.filterFiles).mockReturnValue([pinTestFile]);
+      jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [pinTestFile], excluded: [] });
       jest.mocked(authModule.getMemoryToken).mockReturnValue('token123');
       jest.mocked(memoryModule.loadMemory).mockResolvedValue({
         learnings: [], suppressions: [], patterns: [],
@@ -3473,7 +3644,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'COMMENT', summary: 'Issues',
       findings: [{
@@ -3510,7 +3681,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'COMMENT', summary: 'Issues',
       findings: [{
@@ -3539,7 +3710,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'COMMENT', summary: '',
       findings: [{
@@ -3567,7 +3738,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'COMMENT', summary: 'Issues',
       findings: [{
@@ -3607,7 +3778,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
     const tagged = (
       title: string,
       tag: string,
@@ -3656,7 +3827,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
     // Default config already has memory.enabled = false, so no override needed.
 
     await callRunFullReview();
@@ -3678,7 +3849,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
       exclude_paths: [],
@@ -3736,7 +3907,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'APPROVE', summary: 'Looks good',
       findings: [], highlights: [], reviewComplete: true,
@@ -3761,7 +3932,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     const finding = {
       severity: 'suggestion' as const, title: 'Improvement', file: 'src/app.ts',
@@ -3807,7 +3978,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     jest.mocked(reviewModule.runReview).mockImplementation(
       async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
@@ -3865,7 +4036,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     jest.mocked(reviewModule.runReview).mockImplementation(
       async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
@@ -3921,7 +4092,7 @@ describe('runFullReview orchestration', () => {
       jest.mocked(diffModule.parsePRDiff).mockReturnValue({
         files: [testFile], totalAdditions: 10, totalDeletions: 5,
       });
-      jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+      jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
       const fallbackAgents = ['Security & Safety', 'Correctness & Logic', 'general'];
 
@@ -3973,7 +4144,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     const fallbackAgents = ['Security & Safety', 'Correctness & Logic', 'general'];
     const snapshots: import('./types').DashboardData[] = [];
@@ -4022,7 +4193,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     jest.mocked(reviewModule.selectTeam).mockReturnValue({
       level: 'small',
@@ -4081,7 +4252,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     jest.mocked(reviewModule.runReview).mockImplementation(
       async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
@@ -4125,7 +4296,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     jest.mocked(reviewModule.runReview).mockImplementation(
       async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
@@ -4166,7 +4337,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
@@ -4229,7 +4400,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     const previousFindings = [
       { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'blocker' as const, status: 'resolved' as const },
@@ -4275,7 +4446,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings: [
@@ -4320,7 +4491,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings: [
@@ -4360,7 +4531,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings: [{
@@ -4397,7 +4568,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [changedFile], totalAdditions: 20, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([changedFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [changedFile], excluded: [] });
     jest.mocked(ghUtils.fetchFileContents).mockResolvedValue(new Map([[threadFile, fileText]]));
 
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
@@ -4427,7 +4598,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [changedFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([changedFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [changedFile], excluded: [] });
 
     // Two open threads: one in a changed file (must not duplicate) and one in
     // an unchanged file (must be added to the fetch list).
@@ -4461,7 +4632,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [deletedFile], totalAdditions: 0, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([deletedFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [deletedFile], excluded: [] });
 
     const previousFindings = [
       { title: 'Live thread', file: 'src/live.ts', line: 1, severity: 'suggestion' as const, status: 'open' as const, threadId: 'PRRT_live' },
@@ -4490,7 +4661,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     jest.mocked(reviewModule.runReview).mockImplementation(
       async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
@@ -4533,7 +4704,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings: [
@@ -4602,7 +4773,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings: [
@@ -4661,7 +4832,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings: [], recapContext: '', priorRounds: [],
     });
@@ -4819,7 +4990,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, exclude_paths: [], max_diff_lines: 10000,
@@ -4873,7 +5044,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, exclude_paths: [], max_diff_lines: 10000,
@@ -4929,7 +5100,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings: [
@@ -4986,7 +5157,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings: [
@@ -5030,7 +5201,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings: [
@@ -5062,7 +5233,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings: [
@@ -5340,7 +5511,7 @@ describe('runFullReview orchestration', () => {
       jest.mocked(diffModule.parsePRDiff).mockReturnValue({
         files: [reviewableFile], totalAdditions: 5, totalDeletions: 5,
       });
-      jest.mocked(diffModule.filterFiles).mockReturnValue([reviewableFile]);
+      jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [reviewableFile], excluded: [] });
     });
 
     it('runs review normally when prior rounds are below the cap', async () => {
@@ -5437,7 +5608,7 @@ describe('runFullReview orchestration', () => {
       jest.mocked(diffModule.parsePRDiff).mockReturnValue({
         files: [testFile], totalAdditions: 5, totalDeletions: 5,
       });
-      jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+      jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
       await callRunFullReview();
 
@@ -5593,7 +5764,7 @@ describe('runFullReview orchestration', () => {
       jest.mocked(diffModule.parsePRDiff).mockReturnValue({
         files: [testFile], totalAdditions: 10, totalDeletions: 5,
       });
-      jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+      jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
       await callRunFullReview();
 
@@ -5614,7 +5785,7 @@ describe('runFullReview orchestration', () => {
       jest.mocked(diffModule.parsePRDiff).mockReturnValue({
         files: [testFile], totalAdditions: 10, totalDeletions: 5,
       });
-      jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+      jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
       await callRunFullReview();
 
@@ -5634,7 +5805,7 @@ describe('runFullReview orchestration', () => {
       jest.mocked(diffModule.parsePRDiff).mockReturnValue({
         files: [testFile], totalAdditions: 10, totalDeletions: 5,
       });
-      jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+      jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
       await callRunFullReview();
 
@@ -6331,7 +6502,7 @@ describe('force review checkbox', () => {
     jest.mocked(authModule.getMemoryToken).mockReturnValue('mem-token');
     jest.mocked(memoryModule.loadMemory).mockResolvedValue({ learnings: [], suppressions: [], patterns: [] });
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [reviewableFile], totalAdditions: 5, totalDeletions: 5 });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([reviewableFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [reviewableFile], excluded: [] });
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
       exclude_paths: [],
@@ -6376,7 +6547,7 @@ describe('force review checkbox', () => {
     jest.mocked(authModule.getMemoryToken).mockReturnValue('mem-token');
     jest.mocked(memoryModule.loadMemory).mockResolvedValue({ learnings: [], suppressions: [], patterns: [] });
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [reviewableFile], totalAdditions: 5, totalDeletions: 5 });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([reviewableFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [reviewableFile], excluded: [] });
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
       exclude_paths: [],
@@ -6446,7 +6617,7 @@ describe('runFullReview concurrent-submission lock', () => {
     const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [] };
     jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
-    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
     jest.mocked(authModule.getMemoryToken).mockReturnValue(null);
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], recapContext: '', priorRounds: [] });
     jest.mocked(stateModule.resolveStaleThreads).mockResolvedValue(0);
@@ -6802,5 +6973,32 @@ describe('detectTickedMarker', () => {
 
   it('returns FORCE_CAP_MARKER when both markers are present (FORCE_CAP_MARKER wins)', () => {
     expect(detectTickedMarker(`- [x] Force review\n\n${FORCE_REVIEW_MARKER}\n${FORCE_CAP_MARKER}`)).toBe('FORCE_CAP_MARKER');
+  });
+});
+
+describe('_buildRoundRecap', () => {
+  it('omits reclassifiedPriors when entries array is empty', () => {
+    const result = _buildRoundRecap({ priorRounds: [{}, {}, {}], reclassifiedPriorCount: 0, reclassifiedPriors: [] });
+    expect(result.priorRoundCount).toBe(3);
+    expect(result.reclassifiedPriorCount).toBe(0);
+    expect('reclassifiedPriors' in result).toBe(false);
+  });
+
+  it('omits reclassifiedPriors when count is non-zero but entries are empty', () => {
+    const result = _buildRoundRecap({ priorRounds: [{}, {}], reclassifiedPriorCount: 3, reclassifiedPriors: [] });
+    expect('reclassifiedPriors' in result).toBe(false);
+  });
+
+  it('includes reclassifiedPriors when entries are present', () => {
+    const entries = [{ threadId: 't1', from: 'none', to: 'agree' }];
+    const result = _buildRoundRecap({ priorRounds: [{}, {}], reclassifiedPriorCount: 1, reclassifiedPriors: entries });
+    expect(result.reclassifiedPriors).toEqual(entries);
+    expect(result.reclassifiedPriorCount).toBe(1);
+  });
+
+  it('defaults undefined count and entries to zero and empty', () => {
+    const result = _buildRoundRecap({ priorRounds: [{}] });
+    expect(result.reclassifiedPriorCount).toBe(0);
+    expect('reclassifiedPriors' in result).toBe(false);
   });
 });

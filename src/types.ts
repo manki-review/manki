@@ -201,6 +201,8 @@ export interface ReviewResult {
   partialNote?: string;
   staticDedupCount?: number;
   llmDedupCount?: number;
+  /** Per-drop cross-round dedup attribution: both `deduplicateFindings` (static) and `llmDeduplicateFindings` (llm) entries, in the order they were dropped. */
+  duplicateMatches?: RoundDedupDuplicateMatch[];
   suppressionCount?: number;
   inPrSuppressedCount?: number;
   agentResponseLengths?: Map<string, number>;
@@ -409,6 +411,8 @@ export interface ParsedDiff {
   files: DiffFile[];
   totalAdditions: number;
   totalDeletions: number;
+  /** Paths of binary files dropped by `isBinaryFile` during `parsePRDiff`. */
+  binarySkipped?: string[];
 }
 
 export interface PrContext {
@@ -597,6 +601,12 @@ export interface RoundContext {
   findings: RoundFindings;
   usage: RoundUsage;
   verdict: ReviewVerdict;
+  /**
+   * Recap-stage attribution: which priors were loaded, how many flipped
+   * `authorReplyClass` during refresh, and the flips themselves. Optional
+   * so legacy context blocks parse cleanly.
+   */
+  recap?: RoundRecap;
 }
 
 /** Identity, provenance, and versioning for a single completed review round. */
@@ -673,12 +683,37 @@ export interface RoundConfig {
   reviewPasses?: number;
 }
 
+export interface RoundDiffExcludedFile {
+  path: string;
+  matchedPattern: string;
+}
+
+export interface RoundDiffPerFile {
+  path: string;
+  additions: number;
+  deletions: number;
+  changeType: 'added' | 'modified' | 'deleted' | 'renamed';
+}
+
 export interface RoundDiff {
   lines: number;
   additions: number;
   deletions: number;
   filesReviewed: number;
   fileTypes: Record<string, number>;
+  /** Files filtered out by `config.exclude_paths` and which pattern fired. */
+  excludedFiles?: RoundDiffExcludedFile[];
+  /** Paths skipped by `isBinaryFile` during `parsePRDiff`. */
+  binarySkipped?: string[];
+  /**
+   * True when `isDiffTooLarge` fired for this round. The early-exit path
+   * never emits a `RoundContext`, so on the success path this is always
+   * `false`. Recorded explicitly so the absence of context for an
+   * oversized PR is unambiguous in replay tooling.
+   */
+  oversizedHandled?: boolean;
+  /** Per-file aggregate (lossless replacement for the existing `fileTypes` rollup). */
+  perFile?: RoundDiffPerFile[];
 }
 
 /** Resolved model IDs per pipeline stage. */
@@ -869,16 +904,85 @@ export interface RoundJudge {
   threadResolutionOverrides?: ThreadResolutionOverrides;
 }
 
+export type DuplicateMatchType = 'exact' | 'substring' | 'word_overlap' | 'llm';
+
+export interface RoundDedupDuplicateMatch {
+  droppedTitle: string;
+  matchedTitle: string;
+  matchType: DuplicateMatchType;
+}
+
 export interface RoundDedup {
   staticDropped?: number;
   llmDropped?: number;
+  /**
+   * Same-round duplicates merged by the judge stage (distinct from
+   * cross-round `staticDropped` / `llmDropped`, which target dismissed
+   * priors). Previously rolled into `RoundJudge.mergedDuplicates` via
+   * subtraction in `index.ts`; surfaced here so dedup attribution lives
+   * in one place. Always equals `RoundJudge.mergedDuplicates`.
+   */
+  sameRoundLlmDropped?: number;
+  /**
+   * Per-drop attribution for cross-round dedup. Each entry records the
+   * dropped finding title, the prior-round title it matched, and which
+   * matcher fired. LLM-stage matches use `matchType: 'llm'`; static
+   * matches use the title-overlap branch that hit. Capped at 50 entries
+   * to bound the context-block size.
+   */
+  duplicateMatches?: RoundDedupDuplicateMatch[];
+  /**
+   * Count of suggestion/nitpick findings dropped by the round-2+
+   * test-file suppressor. Returned from `runReview` but previously
+   * never written into `RoundContext`.
+   */
+  testNitSuppressedCount?: number;
   durationMs?: number;
 }
+
+export type MemoryLoadStatus = 'loaded' | 'disabled' | 'no_token' | 'failed';
 
 export interface RoundMemory {
   patternsApplied?: number;
   suppressionsApplied?: number;
   escalationsApplied?: number;
+  /**
+   * Outcome of the memory-load step. `disabled` when `config.memory.enabled`
+   * is false, `no_token` when memory is enabled but no token was available,
+   * `failed` when the load attempt threw, `loaded` on success. Optional so
+   * legacy context blocks parse cleanly; absence is treated as `loaded` when
+   * `patternsApplied`/`suppressionsApplied` are present.
+   */
+  loadStatus?: MemoryLoadStatus;
+  /** Truncated error message recorded when `loadStatus === 'failed'`. */
+  loadError?: string;
+}
+
+/**
+ * Author-reply re-classification attribution recorded by `refreshAuthorReplyClass`.
+ * The cached `authorReplyClass` on each prior-round fingerprint is `'none'` at
+ * emit time. When live thread state shifts it to `agree`/`disagree`/`partial`,
+ * this records the flip so noise debugging can attribute prior-unaddressed
+ * decisions to the reply state at recap time.
+ */
+export interface ReclassifiedPrior {
+  threadId: string;
+  from: string;
+  to: string;
+}
+
+export interface RoundRecap {
+  /**
+   * Number of prior-round `RoundContext` payloads actually loaded from the
+   * PR review timeline. Distinguishes "no priors" (`0`) from "couldn't load
+   * priors" (a fetch failure also yields `0` today, but with this field a
+   * future fail-open path can flag the difference).
+   */
+  priorRoundCount: number;
+  /** Count of fingerprints whose `authorReplyClass` flipped during refresh. */
+  reclassifiedPriorCount: number;
+  /** Capped list of the actual flips (top N). Omitted when none flipped. */
+  reclassifiedPriors?: ReclassifiedPrior[];
 }
 
 /**
