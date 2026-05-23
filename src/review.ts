@@ -678,6 +678,24 @@ function emitHeuristicFallbackPlanning(
   });
 }
 
+function buildProvenanceFields(
+  plannerSource: RoundPlannerSource,
+  plannerFallbackReason: string | undefined,
+  team: TeamRoster,
+  priorRoundEffortDowngrades: PriorRoundEffortDowngrade[],
+  agentMultiPassConsistency: Map<string, { consistent: number; totalRaw: number }>,
+  agentRunEffort: Map<string, EffortLevel>,
+): Pick<ReviewResult, 'plannerSource' | 'plannerFallbackReason' | 'coreAgentInjections' | 'priorRoundEffortDowngrades' | 'agentMultiPassConsistency' | 'agentEffortMap'> {
+  return {
+    plannerSource,
+    ...(plannerFallbackReason && { plannerFallbackReason }),
+    ...(team.coreAgentInjections && team.coreAgentInjections.length > 0 && { coreAgentInjections: team.coreAgentInjections }),
+    ...(priorRoundEffortDowngrades.length > 0 && { priorRoundEffortDowngrades }),
+    ...(agentMultiPassConsistency.size > 0 && { agentMultiPassConsistency }),
+    agentEffortMap: agentRunEffort,
+  };
+}
+
 export async function runReview(
   clients: ReviewClients,
   config: ReviewConfig,
@@ -1122,12 +1140,7 @@ export async function runReview(
         agentNames: team.agents.map(a => a.name),
         failedAgents,
         ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
-        plannerSource,
-        ...(plannerFallbackReason && { plannerFallbackReason }),
-        ...(team.coreAgentInjections && team.coreAgentInjections.length > 0 && { coreAgentInjections: team.coreAgentInjections }),
-        ...(priorRoundEffortDowngrades.length > 0 && { priorRoundEffortDowngrades }),
-        ...(agentMultiPassConsistency.size > 0 && { agentMultiPassConsistency }),
-        agentEffortMap: agentRunEffort,
+        ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, priorRoundEffortDowngrades, agentMultiPassConsistency, agentRunEffort),
       };
     }
 
@@ -1257,12 +1270,7 @@ export async function runReview(
       highlights: [],
       reviewComplete: false,
       agentNames: team.agents.map(a => a.name),
-      plannerSource,
-      ...(plannerFallbackReason && { plannerFallbackReason }),
-      ...(team.coreAgentInjections && team.coreAgentInjections.length > 0 && { coreAgentInjections: team.coreAgentInjections }),
-      ...(priorRoundEffortDowngrades.length > 0 && { priorRoundEffortDowngrades }),
-      ...(agentMultiPassConsistency.size > 0 && { agentMultiPassConsistency }),
-      agentEffortMap: agentRunEffort,
+      ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, priorRoundEffortDowngrades, agentMultiPassConsistency, agentRunEffort),
     };
   }
 
@@ -1343,12 +1351,7 @@ export async function runReview(
     crossRoundDemoted: judgeCrossRoundDemoted,
     ...(judgeInterRoundDiffEmptyOverride && { interRoundDiffEmptyOverride: judgeInterRoundDiffEmptyOverride }),
     ...(testNitSuppressedCount > 0 && { testNitSuppressedCount }),
-    plannerSource,
-    ...(plannerFallbackReason && { plannerFallbackReason }),
-    ...(team.coreAgentInjections && team.coreAgentInjections.length > 0 && { coreAgentInjections: team.coreAgentInjections }),
-    ...(priorRoundEffortDowngrades.length > 0 && { priorRoundEffortDowngrades }),
-    ...(agentMultiPassConsistency.size > 0 && { agentMultiPassConsistency }),
-    agentEffortMap: agentRunEffort,
+    ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, priorRoundEffortDowngrades, agentMultiPassConsistency, agentRunEffort),
   };
 }
 
