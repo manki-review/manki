@@ -254,7 +254,13 @@ function parseContextBlocks(
         // `source` enum so consumers reading `ctx.planner.source` get a defined
         // value, and seed empty arrays for the new list fields.
         if (typeof ctx.planner.source !== 'string') {
-          ctx.planner.source = ctx.planner.used ? 'planner' : 'disabled';
+          if (ctx.planner.used) {
+            ctx.planner.source = 'planner';
+          } else if (ctx.planner.fallbackReason) {
+            ctx.planner.source = 'heuristic_fallback';
+          } else {
+            ctx.planner.source = 'heuristic';
+          }
         }
         if (!Array.isArray(ctx.planner.coreAgentInjections)) {
           ctx.planner.coreAgentInjections = [];

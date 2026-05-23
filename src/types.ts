@@ -715,7 +715,7 @@ export interface RoundPlanner {
    * Always present so older consumers that destructure `planner.used`
    * continue to work.
    */
-  used: boolean;
+  readonly used: boolean;
   /**
    * Set when team selection fell back from the planner (validation error,
    * timeout, parse failure). Free-text, capped, sanitized for logs.
