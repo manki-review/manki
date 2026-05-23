@@ -605,12 +605,15 @@ describe('checkAndAutoApprove', () => {
     );
   });
 
-  it('creates new approval when previous bot approval was DISMISSED', async () => {
+  it('skips approval when the only bot review on HEAD is DISMISSED', async () => {
     const createReviewMock = jest.fn().mockResolvedValue({});
+    const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 1 } });
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const octokit = makeMockOctokit({
       threads: [],
       prHeadSha: 'sha-new',
       createReviewFn: createReviewMock,
+      createCommentFn: createCommentMock,
       existingReviews: [
         { body: '<!-- manki -->', state: 'DISMISSED', commit_id: 'sha-new', user: { login: 'github-actions[bot]', type: 'Bot' } },
       ],
@@ -618,10 +621,10 @@ describe('checkAndAutoApprove', () => {
 
     const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
 
-    expect(result).toBe(true);
-    expect(createReviewMock).toHaveBeenCalledWith(
-      expect.objectContaining({ event: 'APPROVE' }),
-    );
+    expect(result).toBe(false);
+    expect(createReviewMock).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('manki has not reviewed HEAD'));
+    warnSpy.mockRestore();
   });
 
   describe('stale-SHA guard', () => {
