@@ -3577,7 +3577,7 @@ describe('runFullReview orchestration', () => {
       async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
         if (onProgress) {
           onProgress({
-            phase: 'planning', rawFindingCount: 0,
+            phase: 'planning',
             plannerResult: { teamSize: 1, reviewerEffort: 'low', judgeEffort: 'low', prType: 'chore' },
           });
           onProgress({
@@ -3635,7 +3635,7 @@ describe('runFullReview orchestration', () => {
       async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
         if (onProgress) {
           onProgress({
-            phase: 'planning', rawFindingCount: 0,
+            phase: 'planning',
             plannerResult: { teamSize: 1, reviewerEffort: 'low', judgeEffort: 'low', prType: 'chore' },
           });
           onProgress({
@@ -3851,7 +3851,7 @@ describe('runFullReview orchestration', () => {
       async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
         if (onProgress) {
           onProgress({
-            phase: 'planning', rawFindingCount: 0,
+            phase: 'planning',
             plannerResult: { teamSize: 1, reviewerEffort: 'low', judgeEffort: 'low', prType: 'chore' },
           });
           onProgress({
@@ -3895,7 +3895,7 @@ describe('runFullReview orchestration', () => {
       async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
         if (onProgress) {
           onProgress({
-            phase: 'planning', rawFindingCount: 0,
+            phase: 'planning',
             plannerResult: { teamSize: 1, reviewerEffort: 'low', judgeEffort: 'low', prType: 'chore' },
           });
           onProgress({
@@ -4259,8 +4259,8 @@ describe('runFullReview orchestration', () => {
     jest.mocked(reviewModule.runReview).mockImplementation(
       async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
         if (onProgress) {
-          onProgress({ phase: 'planning', rawFindingCount: 0 });
-          onProgress({ phase: 'planning', rawFindingCount: 0, plannerResult: { teamSize: 3 as const, reviewerEffort: 'low' as const, judgeEffort: 'low' as const, prType: 'chore' } });
+          onProgress({ phase: 'planning' });
+          onProgress({ phase: 'planning', plannerResult: { teamSize: 3 as const, reviewerEffort: 'low' as const, judgeEffort: 'low' as const, prType: 'chore' } });
         }
         jest.advanceTimersByTime(600);
         await Promise.resolve();

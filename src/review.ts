@@ -683,7 +683,7 @@ export async function runReview(
 
   if (clients.planner && config.review_level === 'auto') {
     if (onProgress) {
-      onProgress({ phase: 'planning', rawFindingCount: 0 });
+      onProgress({ phase: 'planning' });
     }
     const plannerStart = Date.now();
     const plannerWrap = wrapClientForUsage(clients.planner);
@@ -701,7 +701,7 @@ export async function runReview(
         core.info(`teamSize=1 decision: prType=${plannerResult.prType}, lines=${totalLines}, files=${diff.files.length}`);
       }
       if (onProgress) {
-        onProgress({ phase: 'planning', rawFindingCount: 0, plannerResult, plannerDurationMs });
+        onProgress({ phase: 'planning', plannerResult, plannerDurationMs });
       }
     } else {
       // Planner was attempted and failed. Force the fixed three-core roster.
