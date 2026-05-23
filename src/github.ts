@@ -394,6 +394,79 @@ export async function postProgressComment(
 }
 
 /**
+ * Post an auto-approve specific "in progress" marker comment. Distinct body
+ * text from `postProgressComment` so a human reading the PR sees which path
+ * is running, but reuses `BOT_MARKERS` + `manki-run-id` so `findInProgressLock`
+ * treats it as a live concurrency lock for sibling runs.
+ */
+export async function postAutoApproveProgressComment(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  prNumber: number,
+): Promise<number> {
+  const runIdMarker = buildRunIdMarker(github.context.runId);
+  const body = `${BOT_MARKERS}\n${runIdMarker}\n**Manki** — Auto-approving (no findings remain)`;
+  const { data } = await octokit.rest.issues.createComment({
+    owner,
+    repo,
+    issue_number: prNumber,
+    body,
+  });
+  return data.id;
+}
+
+/**
+ * Transition the auto-approve progress comment to its terminal "complete"
+ * state. Adds `REVIEW_COMPLETE_MARKER` so the comment is no longer treated as
+ * a live in-progress lock by `findInProgressLock`.
+ */
+export async function markAutoApproveComplete(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  commentId: number,
+): Promise<void> {
+  const body = [
+    BOT_MARKER,
+    VERSION_MARKER,
+    '**Manki** — Auto-approved (all findings resolved)',
+    REVIEW_COMPLETE_MARKER,
+  ].join('\n');
+  try {
+    await octokit.rest.issues.updateComment({ owner, repo, comment_id: commentId, body });
+  } catch (error) {
+    core.warning(`Failed to mark auto-approve comment as complete: ${error instanceof Error ? error.message : error}`);
+  }
+}
+
+/**
+ * Transition the auto-approve progress comment to a terminal failure state.
+ * Uses `CANCELLED_MARKER` so `findInProgressLock` no longer treats it as a
+ * live lock, while preserving an audit trail of which run attempted the
+ * approval and why it failed.
+ */
+export async function markAutoApproveFailed(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  commentId: number,
+  reason: string,
+): Promise<void> {
+  const body = [
+    BOT_MARKER,
+    VERSION_MARKER,
+    CANCELLED_MARKER,
+    `**Manki** — Auto-approve failed: ${sanitizeMarkdown(String(reason)).slice(0, 300)}`,
+  ].join('\n');
+  try {
+    await octokit.rest.issues.updateComment({ owner, repo, comment_id: commentId, body });
+  } catch (error) {
+    core.warning(`Failed to mark auto-approve comment as failed: ${error instanceof Error ? error.message : error}`);
+  }
+}
+
+/**
  * Freeze the progress comment as an audit log with the final dashboard
  * and optional review metadata (config, judge decisions, recap, timing).
  */

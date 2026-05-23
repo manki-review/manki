@@ -44210,6 +44210,9 @@ exports.fetchConfigFile = fetchConfigFile;
 exports.fetchRepoContext = fetchRepoContext;
 exports.buildDashboard = buildDashboard;
 exports.postProgressComment = postProgressComment;
+exports.postAutoApproveProgressComment = postAutoApproveProgressComment;
+exports.markAutoApproveComplete = markAutoApproveComplete;
+exports.markAutoApproveFailed = markAutoApproveFailed;
 exports.updateProgressComment = updateProgressComment;
 exports.updateProgressDashboard = updateProgressDashboard;
 exports.dismissPreviousReviews = dismissPreviousReviews;
@@ -44590,6 +44593,62 @@ async function postProgressComment(octokit, owner, repo, prNumber, dashboard) {
         body,
     });
     return data.id;
+}
+/**
+ * Post an auto-approve specific "in progress" marker comment. Distinct body
+ * text from `postProgressComment` so a human reading the PR sees which path
+ * is running, but reuses `BOT_MARKERS` + `manki-run-id` so `findInProgressLock`
+ * treats it as a live concurrency lock for sibling runs.
+ */
+async function postAutoApproveProgressComment(octokit, owner, repo, prNumber) {
+    const runIdMarker = buildRunIdMarker(github.context.runId);
+    const body = `${BOT_MARKERS}\n${runIdMarker}\n**Manki** — Auto-approving (no findings remain)`;
+    const { data } = await octokit.rest.issues.createComment({
+        owner,
+        repo,
+        issue_number: prNumber,
+        body,
+    });
+    return data.id;
+}
+/**
+ * Transition the auto-approve progress comment to its terminal "complete"
+ * state. Adds `REVIEW_COMPLETE_MARKER` so the comment is no longer treated as
+ * a live in-progress lock by `findInProgressLock`.
+ */
+async function markAutoApproveComplete(octokit, owner, repo, commentId) {
+    const body = [
+        BOT_MARKER,
+        VERSION_MARKER,
+        '**Manki** — Auto-approved (all findings resolved)',
+        REVIEW_COMPLETE_MARKER,
+    ].join('\n');
+    try {
+        await octokit.rest.issues.updateComment({ owner, repo, comment_id: commentId, body });
+    }
+    catch (error) {
+        core.warning(`Failed to mark auto-approve comment as complete: ${error instanceof Error ? error.message : error}`);
+    }
+}
+/**
+ * Transition the auto-approve progress comment to a terminal failure state.
+ * Uses `CANCELLED_MARKER` so `findInProgressLock` no longer treats it as a
+ * live lock, while preserving an audit trail of which run attempted the
+ * approval and why it failed.
+ */
+async function markAutoApproveFailed(octokit, owner, repo, commentId, reason) {
+    const body = [
+        BOT_MARKER,
+        VERSION_MARKER,
+        CANCELLED_MARKER,
+        `**Manki** — Auto-approve failed: ${sanitizeMarkdown(String(reason)).slice(0, 300)}`,
+    ].join('\n');
+    try {
+        await octokit.rest.issues.updateComment({ owner, repo, comment_id: commentId, body });
+    }
+    catch (error) {
+        core.warning(`Failed to mark auto-approve comment as failed: ${error instanceof Error ? error.message : error}`);
+    }
 }
 /**
  * Freeze the progress comment as an audit log with the final dashboard
@@ -53571,6 +53630,7 @@ async function checkAndAutoApprove(octokit, owner, repo, prNumber, config) {
         repo,
         pull_number: prNumber,
     });
+    const progressCommentId = await (0, github_1.postAutoApproveProgressComment)(octokit, owner, repo, prNumber);
     try {
         await (0, github_1.dismissPreviousReviews)(octokit, owner, repo, prNumber);
     }
@@ -53580,28 +53640,36 @@ async function checkAndAutoApprove(octokit, owner, repo, prNumber, config) {
     core.info('All findings resolved — auto-approving');
     const body = BOT_MARKER;
     try {
-        await octokit.rest.pulls.createReview({
-            owner,
-            repo,
-            pull_number: prNumber,
-            commit_id: pr.head.sha,
-            event: 'APPROVE',
-            body,
-        });
-        core.info('Auto-approved PR');
+        try {
+            await octokit.rest.pulls.createReview({
+                owner,
+                repo,
+                pull_number: prNumber,
+                commit_id: pr.head.sha,
+                event: 'APPROVE',
+                body,
+            });
+            core.info('Auto-approved PR');
+        }
+        catch {
+            core.warning('Failed to auto-approve PR. Ensure "Allow GitHub Actions to create and approve pull requests" is enabled in repo settings. Falling back to COMMENT.');
+            await octokit.rest.pulls.createReview({
+                owner,
+                repo,
+                pull_number: prNumber,
+                commit_id: pr.head.sha,
+                event: 'COMMENT',
+                body,
+            });
+            core.info('Posted auto-approve as COMMENT (fallback)');
+        }
     }
-    catch {
-        core.warning('Failed to auto-approve PR. Ensure "Allow GitHub Actions to create and approve pull requests" is enabled in repo settings. Falling back to COMMENT.');
-        await octokit.rest.pulls.createReview({
-            owner,
-            repo,
-            pull_number: prNumber,
-            commit_id: pr.head.sha,
-            event: 'COMMENT',
-            body,
-        });
-        core.info('Posted auto-approve as COMMENT (fallback)');
+    catch (error) {
+        const rawReason = error instanceof Error ? error.message : String(error);
+        await (0, github_1.markAutoApproveFailed)(octokit, owner, repo, progressCommentId, rawReason);
+        throw error;
     }
+    await (0, github_1.markAutoApproveComplete)(octokit, owner, repo, progressCommentId);
     return true;
 }
 /**

@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { checkConcurrentSubmissionLock, dismissPreviousReviews, isReviewInProgress } from './github';
+import { checkConcurrentSubmissionLock, dismissPreviousReviews, isReviewInProgress, markAutoApproveComplete, markAutoApproveFailed, postAutoApproveProgressComment } from './github';
 import { migrateLegacySeverity, ReviewConfig, SEVERITY_TOKEN_PATTERN } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -163,6 +163,8 @@ async function checkAndAutoApprove(
     pull_number: prNumber,
   });
 
+  const progressCommentId = await postAutoApproveProgressComment(octokit, owner, repo, prNumber);
+
   try {
     await dismissPreviousReviews(octokit, owner, repo, prNumber);
   } catch (error) {
@@ -173,30 +175,37 @@ async function checkAndAutoApprove(
   const body = BOT_MARKER;
 
   try {
-    await octokit.rest.pulls.createReview({
-      owner,
-      repo,
-      pull_number: prNumber,
-      commit_id: pr.head.sha,
-      event: 'APPROVE',
-      body,
-    });
-    core.info('Auto-approved PR');
-  } catch {
-    core.warning(
-      'Failed to auto-approve PR. Ensure "Allow GitHub Actions to create and approve pull requests" is enabled in repo settings. Falling back to COMMENT.',
-    );
-    await octokit.rest.pulls.createReview({
-      owner,
-      repo,
-      pull_number: prNumber,
-      commit_id: pr.head.sha,
-      event: 'COMMENT',
-      body,
-    });
-    core.info('Posted auto-approve as COMMENT (fallback)');
+    try {
+      await octokit.rest.pulls.createReview({
+        owner,
+        repo,
+        pull_number: prNumber,
+        commit_id: pr.head.sha,
+        event: 'APPROVE',
+        body,
+      });
+      core.info('Auto-approved PR');
+    } catch {
+      core.warning(
+        'Failed to auto-approve PR. Ensure "Allow GitHub Actions to create and approve pull requests" is enabled in repo settings. Falling back to COMMENT.',
+      );
+      await octokit.rest.pulls.createReview({
+        owner,
+        repo,
+        pull_number: prNumber,
+        commit_id: pr.head.sha,
+        event: 'COMMENT',
+        body,
+      });
+      core.info('Posted auto-approve as COMMENT (fallback)');
+    }
+  } catch (error) {
+    const rawReason = error instanceof Error ? error.message : String(error);
+    await markAutoApproveFailed(octokit, owner, repo, progressCommentId, rawReason);
+    throw error;
   }
 
+  await markAutoApproveComplete(octokit, owner, repo, progressCommentId);
   return true;
 }
 
