@@ -197,10 +197,6 @@ async function checkAndAutoApprove(
       r.body?.includes('<!-- manki') && r.user?.login?.includes('[bot]') && r.state !== 'DISMISSED',
   );
   const latestBotReview = botReviews[botReviews.length - 1];
-  if (latestBotReview?.state === 'APPROVED') {
-    core.info('Already approved — skipping duplicate approval');
-    return true;
-  }
 
   const { data: pr } = await octokit.rest.pulls.get({
     owner,
@@ -213,7 +209,8 @@ async function checkAndAutoApprove(
   // in `handleReviewStateCheck`. Without this guard the function would issue an
   // APPROVED review on HEAD even though manki has never actually reviewed HEAD.
   // Bail when the latest non-DISMISSED bot review's `commit_id` is absent or
-  // differs from the current head SHA.
+  // differs from the current head SHA. This check must run before the APPROVED
+  // early-return so a stale approval cannot bypass the guard.
   const latestBotReviewSha = (latestBotReview as { commit_id?: string } | undefined)?.commit_id;
   if (latestBotReview) {
     if (!latestBotReviewSha) {
@@ -229,6 +226,12 @@ async function checkAndAutoApprove(
       await postStaleApproveSkippedComment(octokit, owner, repo, prNumber, pr.head.sha, latestBotReviewSha);
       return false;
     }
+  }
+
+  // SHA is confirmed to match (or no prior bot review exists) — safe to short-circuit.
+  if (latestBotReview?.state === 'APPROVED') {
+    core.info('Already approved — skipping duplicate approval');
+    return true;
   }
 
   const progressCommentId = await postAutoApproveProgressComment(octokit, owner, repo, prNumber);

@@ -565,13 +565,14 @@ describe('checkAndAutoApprove', () => {
     );
   });
 
-  it('skips duplicate approval when bot already has an active APPROVED review', async () => {
+  it('skips duplicate approval when bot already has an active APPROVED review on HEAD', async () => {
     const createReviewMock = jest.fn().mockResolvedValue({});
     const octokit = makeMockOctokit({
       threads: [],
+      prHeadSha: 'abc123',
       createReviewFn: createReviewMock,
       existingReviews: [
-        { body: '<!-- manki -->', state: 'APPROVED', user: { login: 'github-actions[bot]', type: 'Bot' } },
+        { body: '<!-- manki -->', state: 'APPROVED', commit_id: 'abc123', user: { login: 'github-actions[bot]', type: 'Bot' } },
       ],
     });
 
@@ -580,6 +581,28 @@ describe('checkAndAutoApprove', () => {
     expect(result).toBe(true);
     expect(createReviewMock).not.toHaveBeenCalled();
     expect(dismissPreviousReviews).not.toHaveBeenCalled();
+  });
+
+  it('skips approval when latest bot review is APPROVED but on a stale commit', async () => {
+    const warningSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const createReviewMock = jest.fn().mockResolvedValue({});
+    const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 1 } });
+    const octokit = makeMockOctokit({
+      threads: [],
+      prHeadSha: 'new-sha',
+      createReviewFn: createReviewMock,
+      createCommentFn: createCommentMock,
+      existingReviews: [
+        { body: '<!-- manki -->', state: 'APPROVED', commit_id: 'old-sha', user: { login: 'github-actions[bot]', type: 'Bot' } },
+      ],
+    });
+
+    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+
+    expect(result).toBe(false);
+    expect(createReviewMock).not.toHaveBeenCalled();
+    expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('manki has not reviewed HEAD'));
+    warningSpy.mockRestore();
   });
 
   it('creates new approval when latest bot review is CHANGES_REQUESTED', async () => {
@@ -990,16 +1013,18 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
   function makeMockOctokit(overrides: {
     createReviewFn?: jest.Mock;
     createCommentFn?: jest.Mock;
-    existingReviews?: Array<{ body?: string; state?: string; user?: { login?: string; type?: string } }>;
+    prHeadSha?: string;
+    existingReviews?: Array<{ body?: string; state?: string; commit_id?: string; user?: { login?: string; type?: string } }>;
   } = {}) {
     const createReviewFn = overrides.createReviewFn ?? jest.fn().mockResolvedValue({});
     const createCommentFn = overrides.createCommentFn ?? jest.fn().mockResolvedValue({});
+    const prHeadSha = overrides.prHeadSha ?? 'sha-x';
     const existingReviews = overrides.existingReviews ?? [];
     return {
       graphql: jest.fn().mockResolvedValue(makeGraphqlFetchResponse([])),
       rest: {
         pulls: {
-          get: jest.fn().mockResolvedValue({ data: { head: { sha: 'sha-x' } } }),
+          get: jest.fn().mockResolvedValue({ data: { head: { sha: prHeadSha } } }),
           createReview: createReviewFn,
           listReviews: jest.fn().mockResolvedValue({ data: existingReviews }),
         },
@@ -1079,8 +1104,9 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
 
   it('does not post a marker when a prior bot approval already exists for the same SHA', async () => {
     const octokit = makeMockOctokit({
+      prHeadSha: 'sha-x',
       existingReviews: [
-        { body: '<!-- manki -->', state: 'APPROVED', user: { login: 'github-actions[bot]', type: 'Bot' } },
+        { body: '<!-- manki -->', state: 'APPROVED', commit_id: 'sha-x', user: { login: 'github-actions[bot]', type: 'Bot' } },
       ],
     });
 
