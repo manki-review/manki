@@ -743,6 +743,34 @@ describe('checkAndAutoApprove', () => {
       expect(createReviewMock).not.toHaveBeenCalled();
       expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('manki has not reviewed HEAD'));
     });
+
+    it('skips approval when all bot reviews are DISMISSED and threads exist', async () => {
+      const createReviewMock = jest.fn().mockResolvedValue({});
+      const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 1 } });
+      const octokit = makeMockOctokit({
+        threads: [
+          makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix --> fix', isResolved: true }),
+        ],
+        prHeadSha: 'head-sha-new',
+        createReviewFn: createReviewMock,
+        createCommentFn: createCommentMock,
+        existingReviews: [
+          { body: '<!-- manki -->', state: 'DISMISSED', commit_id: 'old-sha', user: { login: 'github-actions[bot]', type: 'Bot' } },
+        ],
+      });
+
+      const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+
+      expect(result).toBe(false);
+      expect(createReviewMock).not.toHaveBeenCalled();
+      expect(warningSpy).toHaveBeenCalledWith(
+        expect.stringContaining('no active manki review found on HEAD'),
+      );
+      expect(createCommentMock).toHaveBeenCalledTimes(1);
+      expect(createCommentMock).toHaveBeenCalledWith(expect.objectContaining({
+        body: expect.stringContaining('<!-- manki-stale-approve:head-sha-new -->'),
+      }));
+    });
   });
 });
 

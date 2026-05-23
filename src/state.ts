@@ -192,10 +192,9 @@ async function checkAndAutoApprove(
     repo,
     pull_number: prNumber,
   });
-  const botReviews = reviews.filter(
-    (r: { body?: string | null; state?: string; user?: { login?: string; type?: string } | null }) =>
-      r.body?.includes('<!-- manki') && r.user?.login?.includes('[bot]') && r.state !== 'DISMISSED',
-  );
+  type ReviewEntry = { body?: string | null; state?: string; user?: { login?: string; type?: string } | null };
+  const isBotReview = (r: ReviewEntry) => r.body?.includes('<!-- manki') && r.user?.login?.includes('[bot]');
+  const botReviews = reviews.filter((r: ReviewEntry) => isBotReview(r) && r.state !== 'DISMISSED');
   const latestBotReview = botReviews[botReviews.length - 1];
 
   const { data: pr } = await octokit.rest.pulls.get({
@@ -211,6 +210,15 @@ async function checkAndAutoApprove(
   // Bail when the latest non-DISMISSED bot review's `commit_id` is absent or
   // differs from the current head SHA. This check must run before the APPROVED
   // early-return so a stale approval cannot bypass the guard.
+  const hasDismissedBotReviews = reviews.some((r: ReviewEntry) => isBotReview(r) && r.state === 'DISMISSED');
+  if (!latestBotReview && hasDismissedBotReviews && threads.length > 0) {
+    core.warning(
+      `Skipping auto-approve — no active manki review found on HEAD (head=${pr.head.sha}); all prior reviews may be DISMISSED`,
+    );
+    await postStaleApproveSkippedComment(octokit, owner, repo, prNumber, pr.head.sha, 'none');
+    return false;
+  }
+
   const latestBotReviewSha = (latestBotReview as { commit_id?: string } | undefined)?.commit_id;
   if (latestBotReview) {
     if (!latestBotReviewSha) {
