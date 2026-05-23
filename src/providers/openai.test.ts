@@ -219,6 +219,34 @@ describe('sendMessage (API path)', () => {
     expect(result.content).toBe('');
   });
 
+  it('lifts usage and measures latency on the SDK path', async () => {
+    mockCreate.mockResolvedValueOnce({
+      choices: [{ message: { content: 'response text' } }],
+      usage: {
+        prompt_tokens: 200,
+        completion_tokens: 60,
+        prompt_tokens_details: { cached_tokens: 40 },
+        completion_tokens_details: { reasoning_tokens: 15 },
+      },
+    });
+    const client = new OpenAIClient({ auth: { kind: 'apiKey', key: 'sk' }, model: 'o3' });
+    const result = await client.sendMessage('sys', 'user', { effort: 'high' });
+    expect(result.usage).toEqual({
+      inputTokens: 200,
+      outputTokens: 60,
+      cachedTokens: 40,
+      reasoningTokens: 15,
+    });
+    expect(result.latencyMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('returns zero usage when the SDK omits the usage block', async () => {
+    mockCreate.mockResolvedValueOnce({ choices: [{ message: { content: 'response text' } }] });
+    const client = new OpenAIClient({ auth: { kind: 'apiKey', key: 'sk' }, model: 'gpt-4o' });
+    const result = await client.sendMessage('sys', 'user');
+    expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 });
+  });
+
   it('throws when client is not initialized (oauth path called via API method)', async () => {
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-4o' });
 
@@ -507,6 +535,8 @@ describe('sendViaOAuth (Codex CLI path)', () => {
 
     const result = await client.sendMessage('sys', 'user');
     expect(result.content).toBe('hello world');
+    expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 });
+    expect(result.latencyMs).toBeGreaterThanOrEqual(0);
   });
 
   it('rejects on non-zero exit code with rich diagnostics', async () => {

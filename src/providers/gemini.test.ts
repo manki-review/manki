@@ -175,6 +175,33 @@ describe('sendMessage effort option (API path)', () => {
     expect(result.content).toBe('hello there');
   });
 
+  it('lifts `usageMetadata` token counts on the SDK path', async () => {
+    mockGenerateContent.mockResolvedValueOnce({
+      response: {
+        text: () => 'response',
+        usageMetadata: {
+          promptTokenCount: 350,
+          candidatesTokenCount: 90,
+          cachedContentTokenCount: 25,
+          thoughtsTokenCount: 70,
+        },
+      },
+    });
+    const client = new GeminiClient({ auth: { kind: 'apiKey', key: 'k' }, model: 'gemini-3.1-pro-preview' });
+    const result = await client.sendMessage('system', 'user', { effort: 'high' });
+    expect(result.usage).toEqual({ inputTokens: 350, outputTokens: 90, cachedTokens: 25, reasoningTokens: 70 });
+    expect(result.latencyMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('returns zero usage when `usageMetadata` is absent', async () => {
+    mockGenerateContent.mockResolvedValueOnce({
+      response: { text: () => 'response' },
+    });
+    const client = new GeminiClient({ auth: { kind: 'apiKey', key: 'k' }, model: 'gemini-3.1-flash-lite' });
+    const result = await client.sendMessage('system', 'user');
+    expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 });
+  });
+
   it('wraps GoogleGenerativeAIResponseError from .text() with a descriptive message', async () => {
     mockGenerateContent.mockResolvedValue({
       response: { text: () => { throw new Error('SAFETY'); } },
@@ -304,6 +331,8 @@ describe('GeminiClient OAuth path', () => {
 
     const result = await client.sendMessage('system', 'user');
     expect(result.content).toBe('hello there');
+    expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 });
+    expect(result.latencyMs).toBeGreaterThanOrEqual(0);
   });
 
   it('strips known provider secrets from forwarded env and does not pass the OAuth secret as an env var', async () => {

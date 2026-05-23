@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import { minimatch } from 'minimatch';
 
-import { LLMClient } from './providers';
+import { addUsage, LLMClient, LLMUsage, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
 import { runJudgeAgent, JudgeInput, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
@@ -22,6 +22,14 @@ class PlannerTimeoutError extends Error {
 }
 
 const SUSPICIOUS_FAST_THRESHOLD_MS = 15_000;
+
+function accumulateAgentUsage(map: Map<string, LLMUsage>, name: string, usage: LLMUsage): void {
+  map.set(name, addUsage(map.get(name) ?? { ...ZERO_USAGE }, usage));
+}
+
+function accumulateAgentDuration(map: Map<string, number>, name: string, durationMs: number): void {
+  map.set(name, (map.get(name) ?? 0) + durationMs);
+}
 
 // Standard reviewer pool used for teamSize >= 3. TRIVIAL_VERIFIER_AGENT is
 // intentionally excluded — it is only active for the teamSize=1 path and does
@@ -716,14 +724,18 @@ export async function runReview(
   const priorRoundAgents = collectPriorRoundAgents(priorRounds);
   let team: TeamRoster;
   let plannerResult: PlannerResult | null = null;
+  let plannerUsage: LLMUsage | undefined;
+  let plannerDurationMs: number | undefined;
 
   if (clients.planner && config.review_level === 'auto') {
     if (onProgress) {
       onProgress({ phase: 'planning', rawFindingCount: 0 });
     }
     const plannerStart = Date.now();
-    plannerResult = await runPlanner(clients.planner, diff, prContext, config.reviewers, priorRoundHints);
-    const plannerDurationMs = Date.now() - plannerStart;
+    const plannerWrap = wrapClientForUsage(clients.planner);
+    plannerResult = await runPlanner(plannerWrap.client, diff, prContext, config.reviewers, priorRoundHints);
+    plannerUsage = plannerWrap.getTotals().usage;
+    plannerDurationMs = Date.now() - plannerStart;
     if (plannerResult) {
       if (plannerResult.agents && priorRoundHints.length > 0) {
         applyEffortDowngrade(plannerResult.agents, priorRoundHints);
@@ -769,6 +781,10 @@ export async function runReview(
   const allFindings: Finding[] = [];
   const failedAgents: string[] = [];
   const agentResponseLengths = new Map<string, number>();
+  const agentUsage = new Map<string, LLMUsage>();
+  const agentDurationMs = new Map<string, number>();
+  const agentRetryCount = new Map<string, number>();
+  const agentFailureReasons = new Map<string, string>();
 
   let completedCount = 0;
   let progressFindingCount = 0;
@@ -788,11 +804,15 @@ export async function runReview(
 
       const passFindings: Finding[][] = [];
       let totalResponseLength = 0;
+      let lastPassError: unknown;
       for (const result of passResults) {
         if (result.status === 'fulfilled') {
           passFindings.push(result.value.findings);
           totalResponseLength += result.value.responseLength;
+          accumulateAgentUsage(agentUsage, agent.name, result.value.usage);
+          accumulateAgentDuration(agentDurationMs, agent.name, result.value.latencyMs);
         } else {
+          lastPassError = result.reason;
           core.warning(`${agent.name} pass failed: ${result.reason}`);
         }
       }
@@ -826,6 +846,7 @@ export async function runReview(
         }
       } else {
         failedAgents.push(agent.name);
+        agentFailureReasons.set(agent.name, sanitizeLogOutput(String(((lastPassError as Error)?.message ?? lastPassError) || 'unknown failure')).slice(0, 500));
         core.warning(`${agent.name}: all passes failed`);
 
         if (onProgress) {
@@ -852,6 +873,7 @@ export async function runReview(
       const stillFailed: string[] = [];
       for (const agent of agentsToRetry) {
         retryCountMap[agent.name] = (retryCountMap[agent.name] ?? 0) + 1;
+        agentRetryCount.set(agent.name, retryCountMap[agent.name]);
 
         if (onProgress) {
           onProgress({
@@ -878,11 +900,15 @@ export async function runReview(
 
         const retryPassFindings: Finding[][] = [];
         let retryTotalResponseLength = 0;
+        let retryLastError: unknown;
         for (const result of retryPassResults) {
           if (result.status === 'fulfilled') {
             retryPassFindings.push(result.value.findings);
             retryTotalResponseLength += result.value.responseLength;
+            accumulateAgentUsage(agentUsage, agent.name, result.value.usage);
+            accumulateAgentDuration(agentDurationMs, agent.name, result.value.latencyMs);
           } else {
+            retryLastError = result.reason;
             core.warning(`${agent.name} retry pass failed: ${result.reason}`);
           }
         }
@@ -893,6 +919,7 @@ export async function runReview(
           core.info(`Multi-pass retry: ${agent.name} — ${retryPassFindings.length} passes, ${consistent.length} consistent findings`);
           allFindings.push(...consistent);
           agentResponseLengths.set(agent.name, retryTotalResponseLength);
+          agentFailureReasons.delete(agent.name);
           completedCount++;
 
           if (onProgress) {
@@ -909,6 +936,7 @@ export async function runReview(
           }
         } else {
           stillFailed.push(agent.name);
+          agentFailureReasons.set(agent.name, sanitizeLogOutput(String(((retryLastError as Error)?.message ?? retryLastError) || 'unknown failure')).slice(0, 500));
           core.warning(`${agent.name}: retry ${retryCountMap[agent.name]} failed (all passes)`);
           if (onProgress) {
             onProgress({
@@ -938,6 +966,8 @@ export async function runReview(
         .then(agentResult => {
           completedCount++;
           agentResponseLengths.set(agent.name, agentResult.responseLength);
+          accumulateAgentUsage(agentUsage, agent.name, agentResult.usage);
+          accumulateAgentDuration(agentDurationMs, agent.name, agentResult.latencyMs);
           progressFindingCount += agentResult.findings.length;
           const durationMs = Date.now() - startTime;
 
@@ -986,6 +1016,7 @@ export async function runReview(
         core.info(`${team.agents[i].name}: ${result.value.length} findings`);
       } else {
         failedAgents.push(team.agents[i].name);
+        agentFailureReasons.set(team.agents[i].name, sanitizeLogOutput(String(((result.reason as Error)?.message ?? result.reason) || 'unknown failure')).slice(0, 500));
         core.warning(`${team.agents[i].name} failed: ${result.reason}`);
       }
     }
@@ -998,6 +1029,7 @@ export async function runReview(
 
       for (const agent of agentsToRetry) {
         retryCount[agent.name] = (retryCount[agent.name] ?? 0) + 1;
+        agentRetryCount.set(agent.name, retryCount[agent.name]);
         if (onProgress) {
           onProgress({
             phase: 'agent-complete',
@@ -1016,19 +1048,22 @@ export async function runReview(
         const startTime = Date.now();
         const retryEffort = agentEffortMap.get(agent.name) ?? defaultReviewerEffort;
         return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: retryEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap })
-          .then(agentResult => ({ agent, agentResult, durationMs: Date.now() - startTime }))
-          .catch(() => ({ agent, agentResult: null as AgentResult | null, durationMs: Date.now() - startTime }));
+          .then(agentResult => ({ agent, agentResult, durationMs: Date.now() - startTime, error: null as unknown }))
+          .catch(error => ({ agent, agentResult: null as AgentResult | null, durationMs: Date.now() - startTime, error: error as unknown }));
       });
 
       const retryResults = await Promise.allSettled(retryPromises);
 
       const stillFailed: string[] = [];
       for (const settled of retryResults) {
-        const { agent, agentResult, durationMs } = (settled as PromiseFulfilledResult<{ agent: ReviewerAgent; agentResult: AgentResult | null; durationMs: number }>).value;
+        const { agent, agentResult, durationMs, error } = (settled as PromiseFulfilledResult<{ agent: ReviewerAgent; agentResult: AgentResult | null; durationMs: number; error: unknown }>).value;
         if (agentResult !== null) {
           // Remove from failed list, add findings
           allFindings.push(...agentResult.findings);
           agentResponseLengths.set(agent.name, agentResult.responseLength);
+          accumulateAgentUsage(agentUsage, agent.name, agentResult.usage);
+          accumulateAgentDuration(agentDurationMs, agent.name, agentResult.latencyMs);
+          agentFailureReasons.delete(agent.name);
           progressFindingCount += agentResult.findings.length;
           completedCount++;
           core.info(`${agent.name}: retry ${retryCount[agent.name]} succeeded — ${agentResult.findings.length} findings`);
@@ -1046,6 +1081,7 @@ export async function runReview(
           }
         } else {
           stillFailed.push(agent.name);
+          agentFailureReasons.set(agent.name, sanitizeLogOutput(String(((error as Error)?.message ?? error) || 'unknown failure')).slice(0, 500));
           core.warning(`${agent.name}: retry ${retryCount[agent.name]} failed`);
           if (onProgress) {
             onProgress({
@@ -1087,6 +1123,7 @@ export async function runReview(
         reviewComplete: false,
         agentNames: team.agents.map(a => a.name),
         failedAgents,
+        ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
       };
     }
 
@@ -1112,6 +1149,8 @@ export async function runReview(
 
   let staticDedupCount = 0;
   let llmDedupCount = 0;
+  let dedupUsage: LLMUsage | undefined;
+  let dedupDurationMs: number | undefined;
   if (previousFindings && previousFindings.length > 0 && findingsForJudge.length > 0) {
     const { unique, duplicates } = deduplicateFindings(findingsForJudge, previousFindings, memory?.suppressions);
     if (duplicates.length > 0) {
@@ -1121,12 +1160,16 @@ export async function runReview(
     staticDedupCount = duplicates.length;
 
     if (clients.dedup && findingsForJudge.length > 0) {
-      const llmResult = await llmDeduplicateFindings(findingsForJudge, previousFindings, clients.dedup);
+      const dedupStart = Date.now();
+      const dedupWrap = wrapClientForUsage(clients.dedup);
+      const llmResult = await llmDeduplicateFindings(findingsForJudge, previousFindings, dedupWrap.client);
       if (llmResult.duplicates.length > 0) {
         core.info(`LLM dedup removed ${llmResult.duplicates.length} findings matching dismissed ones before judge`);
       }
       findingsForJudge = llmResult.unique;
       llmDedupCount = llmResult.duplicates.length;
+      dedupUsage = dedupWrap.getTotals().usage;
+      dedupDurationMs = Date.now() - dedupStart;
     }
   }
 
@@ -1161,6 +1204,9 @@ export async function runReview(
   let judgeCrossRoundDemoted: number | undefined;
   let judgeInterRoundDiffEmptyOverride: { applied: boolean; affectedThreadCount: number } | undefined;
   let inPrSuppressedCount = 0;
+  let judgeUsage: LLMUsage | undefined;
+  let judgeDurationMs: number | undefined;
+  let judgeRetryCount = 0;
   try {
     core.info(`Running judge on ${findingsForJudge.length} findings...`);
     const judgeInput: JudgeInput = {
@@ -1182,7 +1228,13 @@ export async function runReview(
       resolvedThreadIds,
       suppressResolvedThreads,
     };
-    const judgeResult = await runJudgeAgent(clients.judge, config, judgeInput);
+    const judgeStart = Date.now();
+    const judgeWrap = wrapClientForUsage(clients.judge);
+    const judgeResult = await runJudgeAgent(judgeWrap.client, config, judgeInput);
+    judgeDurationMs = Date.now() - judgeStart;
+    const judgeTotals = judgeWrap.getTotals();
+    judgeUsage = judgeTotals.usage;
+    judgeRetryCount = Math.max(0, judgeTotals.calls - 1);
     judgeSummary = judgeResult.summary;
     allJudgedFindings = judgeResult.findings;
     judgeThreadEvaluations = judgeResult.threadEvaluations;
@@ -1266,6 +1318,17 @@ export async function runReview(
     suppressionCount,
     ...(inPrSuppressedCount > 0 && { inPrSuppressedCount }),
     agentResponseLengths,
+    agentUsage,
+    agentDurationMs,
+    agentRetryCount,
+    ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
+    ...(plannerUsage && { plannerUsage }),
+    ...(plannerDurationMs != null && { plannerDurationMs }),
+    ...(judgeUsage && { judgeUsage }),
+    ...(judgeDurationMs != null && { judgeDurationMs }),
+    judgeRetryCount,
+    ...(dedupUsage && { dedupUsage }),
+    ...(dedupDurationMs != null && { dedupDurationMs }),
     crossRoundSuppressed: judgeCrossRoundSuppressed,
     crossRoundDemoted: judgeCrossRoundDemoted,
     ...(judgeInterRoundDiffEmptyOverride && { interRoundDiffEmptyOverride: judgeInterRoundDiffEmptyOverride }),
@@ -1276,6 +1339,8 @@ export async function runReview(
 interface AgentResult {
   findings: Finding[];
   responseLength: number;
+  usage: LLMUsage;
+  latencyMs: number;
 }
 
 interface RunReviewerAgentOptions {
@@ -1304,7 +1369,12 @@ async function runReviewerAgent(
   const sendOptions = effort ? { effort } : undefined;
   const response = await client.sendMessage(systemPrompt, userMessage, sendOptions);
   const findings = parseFindings(response.content, reviewer.name);
-  return { findings, responseLength: response.content.length };
+  return {
+    findings,
+    responseLength: response.content.length,
+    usage: response.usage ?? { ...ZERO_USAGE },
+    latencyMs: response.latencyMs ?? 0,
+  };
 }
 
 export function buildReviewerSystemPrompt(

@@ -14,7 +14,8 @@ import { isEmptyInterRoundDiff, MAX_INTER_ROUND_DIFF_CHARS } from './judge';
 import { loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
 import { collectResolvedThreadIds, fetchRecapState, fingerprintFinding } from './recap';
 import { buildAgentPool, buildPriorRoundLookup, collectPriorRoundAgents, runReview, determineVerdict, selectTeam } from './review';
-import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DashboardData, FullReviewOptions, OWN_PROPOSAL_TAG, PrContext, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewMetadata, RoundCap, RoundContext, RoundTrigger, ThreadResolutionOverrides, roundContextToFlatAliases } from './types';
+import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DashboardData, FullReviewOptions, OWN_PROPOSAL_TAG, PrContext, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewMetadata, RoundCap, RoundContext, RoundTrigger, RoundUsage, RoundUsageStage, ThreadResolutionOverrides, roundContextToFlatAliases } from './types';
+import type { LLMUsage } from './providers';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -962,12 +963,24 @@ async function runFullReview(
     const allJudged = result.allJudgedFindings ?? [];
     const rawFindings = result.rawFindings ?? allJudged;
     const agentMetrics = agentNames.length > 0
-      ? agentNames.map(name => ({
-        name,
-        findingsRaw: rawFindings.filter(f => f.reviewers.includes(name)).length,
-        findingsKept: result.findings.filter(f => f.reviewers.includes(name)).length,
-        responseLength: result.agentResponseLengths?.get(name),
-      }))
+      ? agentNames.map(name => {
+          const usage = result.agentUsage?.get(name);
+          const durationMs = result.agentDurationMs?.get(name);
+          const retryCount = result.agentRetryCount?.get(name);
+          const failureReason = result.agentFailureReasons?.[name];
+          return {
+            name,
+            findingsRaw: rawFindings.filter(f => f.reviewers.includes(name)).length,
+            findingsKept: result.findings.filter(f => f.reviewers.includes(name)).length,
+            ...(durationMs != null && { durationMs }),
+            status: failureReason ? 'failed' as const : 'success' as const,
+            responseLength: result.agentResponseLengths?.get(name),
+            inputTokens: usage?.inputTokens ?? 0,
+            outputTokens: usage?.outputTokens ?? 0,
+            retryCount: retryCount ?? 0,
+            ...(failureReason && { failureReason }),
+          };
+        })
       : undefined;
 
     // Judge calibration metrics
@@ -1033,6 +1046,45 @@ async function runFullReview(
       forceReview: !!forceReview,
       bypassReason: bypassHint ?? (forceReview ? 'force_review' : skipCap ? 'skip_cap' : 'within_cap'),
     };
+
+    const buildStage = (usage: LLMUsage | undefined): RoundUsageStage => {
+      const inputTokens = usage?.inputTokens ?? 0;
+      const outputTokens = usage?.outputTokens ?? 0;
+      return { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens };
+    };
+    const reviewerUsage: LLMUsage | undefined = result.agentUsage && result.agentUsage.size > 0
+      ? Array.from(result.agentUsage.values()).reduce(
+          (acc, u) => ({
+            inputTokens: acc.inputTokens + u.inputTokens,
+            outputTokens: acc.outputTokens + u.outputTokens,
+            cachedTokens: acc.cachedTokens + u.cachedTokens,
+            reasoningTokens: acc.reasoningTokens + u.reasoningTokens,
+          }),
+          { inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 },
+        )
+      : undefined;
+    const stageUsages: Array<['planner' | 'reviewer' | 'judge' | 'dedup', LLMUsage | undefined]> = [
+      ['planner', result.plannerUsage],
+      ['reviewer', reviewerUsage],
+      ['judge', result.judgeUsage],
+      ['dedup', result.dedupUsage],
+    ];
+    const perStage: Partial<Record<'planner' | 'reviewer' | 'judge' | 'dedup', RoundUsageStage>> = {};
+    let totalInput = 0;
+    let totalOutput = 0;
+    for (const [name, u] of stageUsages) {
+      if (!u) continue;
+      const stage = buildStage(u);
+      perStage[name] = stage;
+      totalInput += stage.inputTokens ?? 0;
+      totalOutput += stage.outputTokens ?? 0;
+    }
+    const usage: RoundUsage = {
+      inputTokens: totalInput,
+      outputTokens: totalOutput,
+      totalTokens: totalInput + totalOutput,
+      ...(Object.keys(perStage).length > 0 && { perStage }),
+    };
     const findingEntries = result.findings.map(f => ({
       fingerprint: fingerprintFinding(f.title, f.file ?? '', f.line || 0),
       severity: f.severity,
@@ -1094,6 +1146,7 @@ async function runFullReview(
         severityChanges,
         mergedDuplicates,
         durationMs: judgeEndTime - reviewEndTime,
+        retryCount: result.judgeRetryCount ?? 0,
         ...(verdictReason && { verdictReason }),
         ...(defensiveHardeningCount > 0 && { defensiveHardeningCount }),
         ...(ownProposalDemotedCount > 0 && { ownProposalDemotedCount }),
@@ -1117,6 +1170,7 @@ async function runFullReview(
       dedup: {
         ...(result.staticDedupCount != null && { staticDropped: result.staticDedupCount }),
         ...(result.llmDedupCount != null && { llmDropped: result.llmDedupCount }),
+        ...(result.dedupDurationMs != null && { durationMs: result.dedupDurationMs }),
       },
       memory: {
         ...(memory && memory.patterns.length > 0 && { patternsApplied: memory.patterns.length }),
@@ -1128,7 +1182,7 @@ async function runFullReview(
         severityCounts: severityMap,
         entries: findingEntries,
       },
-      usage: {},
+      usage,
       verdict: result.verdict,
     };
     const flatAliases = roundContextToFlatAliases(context);

@@ -2099,8 +2099,8 @@ describe('runFullReview orchestration', () => {
 
     // agentMetrics: third finding has both reviewers, so security gets 3 raw / 2 kept
     expect(statsArg!.reviewers.agentMetrics).toEqual([
-      { name: 'security', findingsRaw: 3, findingsKept: 2 },
-      { name: 'general', findingsRaw: 2, findingsKept: 2 },
+      expect.objectContaining({ name: 'security', findingsRaw: 3, findingsKept: 2 }),
+      expect.objectContaining({ name: 'general', findingsRaw: 2, findingsKept: 2 }),
     ]);
 
     expect(statsArg!.judge).toEqual(expect.objectContaining({
@@ -2173,8 +2173,8 @@ describe('runFullReview orchestration', () => {
 
     // findingsRaw comes from rawFindings (pre-dedup per-agent counts)
     expect(statsArg!.reviewers.agentMetrics).toEqual([
-      { name: 'security', findingsRaw: 2, findingsKept: 1 },
-      { name: 'general', findingsRaw: 3, findingsKept: 0 },
+      expect.objectContaining({ name: 'security', findingsRaw: 2, findingsKept: 1 }),
+      expect.objectContaining({ name: 'general', findingsRaw: 3, findingsKept: 0 }),
     ]);
   });
 
@@ -2343,6 +2343,134 @@ describe('runFullReview orchestration', () => {
 
     // test-nit suppression count must be surfaced in the dashboard
     expect(dashboardArg?.testNitSuppressedCount).toBe(1);
+  });
+
+  it('builds `RoundUsage` with per-stage and total tokens from the review result', async () => {
+    const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+
+    const security = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['security'] };
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'REQUEST_CHANGES', summary: 'Issues found',
+      findings: [security], highlights: [], reviewComplete: true,
+      rawFindingCount: 1,
+      agentNames: ['security', 'general'],
+      allJudgedFindings: [security], rawFindings: [security],
+      agentUsage: new Map([
+        ['security', { inputTokens: 100, outputTokens: 20, cachedTokens: 5, reasoningTokens: 0 }],
+        ['general',  { inputTokens: 80,  outputTokens: 10, cachedTokens: 0, reasoningTokens: 0 }],
+      ]),
+      agentDurationMs: new Map([['security', 1500], ['general', 1200]]),
+      agentRetryCount: new Map([['security', 0], ['general', 1]]),
+      agentFailureReasons: { general: 'CLI timed out' },
+      plannerUsage: { inputTokens: 30, outputTokens: 5, cachedTokens: 0, reasoningTokens: 0 },
+      plannerDurationMs: 500,
+      judgeUsage: { inputTokens: 200, outputTokens: 50, cachedTokens: 10, reasoningTokens: 25 },
+      judgeDurationMs: 800,
+      judgeRetryCount: 2,
+      dedupUsage: { inputTokens: 40, outputTokens: 8, cachedTokens: 0, reasoningTokens: 0 },
+      dedupDurationMs: 200,
+    });
+    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [security], duplicates: [] });
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
+
+    await callRunFullReview();
+
+    const ctx = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+    expect(ctx!.usage.perStage).toEqual({
+      planner: { inputTokens: 30, outputTokens: 5, totalTokens: 35 },
+      reviewer: { inputTokens: 180, outputTokens: 30, totalTokens: 210 },
+      judge: { inputTokens: 200, outputTokens: 50, totalTokens: 250 },
+      dedup: { inputTokens: 40, outputTokens: 8, totalTokens: 48 },
+    });
+    expect(ctx!.usage.inputTokens).toBe(450);
+    expect(ctx!.usage.outputTokens).toBe(93);
+    expect(ctx!.usage.totalTokens).toBe(543);
+
+    expect(ctx!.judge.retryCount).toBe(2);
+    expect(ctx!.dedup.durationMs).toBe(200);
+
+    expect(ctx!.reviewers.agentMetrics).toEqual([
+      expect.objectContaining({
+        name: 'security',
+        durationMs: 1500,
+        inputTokens: 100,
+        outputTokens: 20,
+        retryCount: 0,
+        status: 'success',
+      }),
+      expect.objectContaining({
+        name: 'general',
+        durationMs: 1200,
+        inputTokens: 80,
+        outputTokens: 10,
+        retryCount: 1,
+        status: 'failed',
+        failureReason: 'CLI timed out',
+      }),
+    ]);
+  });
+
+  it('emits `usage` with zero rollups and no `perStage` when no stage reports tokens', async () => {
+    const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+
+    const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['security'] };
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'REQUEST_CHANGES', summary: 'Issues',
+      findings: [finding], highlights: [], reviewComplete: true,
+      agentNames: ['security'],
+      allJudgedFindings: [finding], rawFindings: [finding],
+    });
+    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
+
+    await callRunFullReview();
+
+    const ctx = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+    expect(ctx!.usage.inputTokens).toBe(0);
+    expect(ctx!.usage.outputTokens).toBe(0);
+    expect(ctx!.usage.totalTokens).toBe(0);
+    expect(ctx!.usage.perStage).toBeUndefined();
+    expect(ctx!.judge.retryCount).toBe(0);
+  });
+
+  it('builds `perStage` with only present stages when planner and dedup are absent', async () => {
+    const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
+    jest.mocked(diffModule.filterFiles).mockReturnValue([testFile]);
+
+    const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['security'] };
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'REQUEST_CHANGES', summary: 'Issues found',
+      findings: [finding], highlights: [], reviewComplete: true,
+      rawFindingCount: 1,
+      agentNames: ['security'],
+      allJudgedFindings: [finding], rawFindings: [finding],
+      agentUsage: new Map([
+        ['security', { inputTokens: 50, outputTokens: 10, cachedTokens: 0, reasoningTokens: 0 }],
+      ]),
+      judgeUsage: { inputTokens: 100, outputTokens: 25, cachedTokens: 0, reasoningTokens: 0 },
+      judgeDurationMs: 400,
+      judgeRetryCount: 0,
+    });
+    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
+    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
+
+    await callRunFullReview();
+
+    const ctx = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+    expect(ctx!.usage.perStage).toEqual({
+      reviewer: { inputTokens: 50, outputTokens: 10, totalTokens: 60 },
+      judge: { inputTokens: 100, outputTokens: 25, totalTokens: 125 },
+    });
+    expect(ctx!.usage.inputTokens).toBe(150);
+    expect(ctx!.usage.outputTokens).toBe(35);
+    expect(ctx!.usage.totalTokens).toBe(185);
+    expect(ctx!.usage.perStage).not.toHaveProperty('planner');
+    expect(ctx!.usage.perStage).not.toHaveProperty('dedup');
   });
 
   it('passes nitpick findings through to postReview so they post inline', async () => {

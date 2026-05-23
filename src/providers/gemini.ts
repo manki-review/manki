@@ -7,7 +7,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import * as core from '@actions/core';
 
 import { buildExitDiagnostics, buildTimeoutDiagnostics, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS } from './cli-utils';
-import { GeminiAuth, LLMClient, LLMResponse, SendMessageOptions } from './types';
+import { GeminiAuth, LLMClient, LLMResponse, LLMUsage, readCount, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
 
@@ -291,7 +291,11 @@ export class GeminiClient implements LLMClient {
         }
         const content = output.trim();
         core.debug(sanitizeLogOutput(content.slice(0, 200)));
-        resolve({ content });
+        resolve({
+          content,
+          usage: { ...ZERO_USAGE },
+          latencyMs: Date.now() - startTime,
+        });
       });
 
       child.on('error', (error) => {
@@ -351,6 +355,7 @@ export class GeminiClient implements LLMClient {
       systemInstruction: systemPrompt,
     });
 
+    const startTime = Date.now();
     const response = await model.generateContent({
       contents: [{ role: 'user', parts: [{ text: userMessage }] }],
       generationConfig,
@@ -364,6 +369,23 @@ export class GeminiClient implements LLMClient {
     }
     core.debug(sanitizeLogOutput(content.slice(0, 200)));
 
-    return { content };
+    const usageMetadata = (response.response as unknown as {
+      usageMetadata?: {
+        promptTokenCount?: number;
+        candidatesTokenCount?: number;
+        cachedContentTokenCount?: number;
+        thoughtsTokenCount?: number;
+      };
+    }).usageMetadata;
+    const usage: LLMUsage = usageMetadata
+      ? {
+          inputTokens: readCount(usageMetadata.promptTokenCount),
+          outputTokens: readCount(usageMetadata.candidatesTokenCount),
+          cachedTokens: readCount(usageMetadata.cachedContentTokenCount),
+          reasoningTokens: readCount(usageMetadata.thoughtsTokenCount),
+        }
+      : { ...ZERO_USAGE };
+
+    return { content, usage, latencyMs: Date.now() - startTime };
   }
 }
