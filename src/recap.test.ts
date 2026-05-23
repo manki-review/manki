@@ -49,6 +49,24 @@ describe('deduplicateFindings', () => {
     const result = deduplicateFindings(findings, previous);
     expect(result.unique).toHaveLength(0);
     expect(result.duplicates).toHaveLength(1);
+    expect(result.duplicates[0].matchType).toBe('exact');
+  });
+
+  it('attributes match types: exact, substring, word_overlap', () => {
+    const findings = [
+      makeFinding({ title: 'Missing null check', file: 'src/a.ts', line: 10 }),
+      makeFinding({ title: 'Missing null check in processBlock', file: 'src/b.ts', line: 10 }),
+      makeFinding({ title: 'FFI API regression: is_ours removed with no replacement', file: 'src/c.rs', line: 10 }),
+    ];
+    const previous = [
+      makePrevious({ title: 'Missing null check', file: 'src/a.ts', line: 10, status: 'resolved' }),
+      makePrevious({ title: 'Missing null check', file: 'src/b.ts', line: 10, status: 'resolved' }),
+      makePrevious({ title: 'FFI removes is_ours without adding replacement', file: 'src/c.rs', line: 10, status: 'resolved' }),
+    ];
+
+    const result = deduplicateFindings(findings, previous);
+    expect(result.duplicates).toHaveLength(3);
+    expect(result.duplicates.map(d => d.matchType)).toEqual(['exact', 'substring', 'word_overlap']);
   });
 
   it('detects fuzzy line match within +/-5 lines', () => {
@@ -1662,6 +1680,93 @@ describe('fetchRecapState', () => {
       const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
       expect(state.priorRounds[0].findings.entries[0].authorReplyClass).toBe('disagree');
     });
+
+    it('records reclassified-prior count and attribution when authorReplyClass flips', async () => {
+      const ctx = makeRoundContext(1, {
+        findings: {
+          count: 2,
+          severityCounts: { blocker: 1, warning: 1 },
+          entries: [
+            {
+              fingerprint: { file: 'src/foo.ts', lineStart: 10, lineEnd: 10, slug: 'Null-check' },
+              severity: 'blocker',
+              threadId: 'thread-agree',
+              authorReplyClass: 'none',
+              title: 'Null check',
+            },
+            {
+              fingerprint: { file: 'src/bar.ts', lineStart: 20, lineEnd: 20, slug: 'Other' },
+              severity: 'warning',
+              threadId: 'thread-no-change',
+              authorReplyClass: 'none',
+              title: 'Other',
+            },
+          ],
+        },
+      });
+      const threadAgree = makeThread({
+        id: 'thread-agree',
+        comments: {
+          nodes: [
+            { body: '<!-- manki:blocker:Null-check --> **Blocker**: Null check', author: { login: 'github-actions[bot]' } },
+            { body: 'Agreed, will fix', author: { login: 'author' } },
+          ],
+        },
+      });
+      const threadNoChange = makeThread({
+        id: 'thread-no-change',
+        comments: {
+          nodes: [
+            { body: '<!-- manki:warning:Other --> **Warning**: Other', author: { login: 'github-actions[bot]' } },
+          ],
+        },
+      });
+      const octokit = mockOctokit([threadAgree, threadNoChange], [
+        { id: 200, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
+      ]);
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.reclassifiedPriorCount).toBe(1);
+      expect(state.reclassifiedPriors).toEqual([{ threadId: 'thread-agree', from: 'none', to: 'agree' }]);
+    });
+
+    it('counts slug-file fallback flips but omits them from attribution (no threadId)', async () => {
+      const ctx = makeRoundContext(1, {
+        findings: {
+          count: 1,
+          severityCounts: { warning: 1 },
+          entries: [{
+            fingerprint: { file: 'src/foo.ts', lineStart: 10, lineEnd: 10, slug: 'Null-check' },
+            severity: 'warning',
+            authorReplyClass: 'none',
+            title: 'Null check',
+          }],
+        },
+      });
+      const thread = makeThread({
+        id: undefined,
+        path: 'src/foo.ts',
+        line: 10,
+        comments: {
+          nodes: [
+            { body: '<!-- manki:warning:Null-check --> **Warning**: Null check', author: { login: 'github-actions[bot]' } },
+            { body: 'Agreed, will fix', author: { login: 'author' } },
+          ],
+        },
+      });
+      const octokit = mockOctokit([thread], [
+        { id: 200, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
+      ]);
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.reclassifiedPriorCount).toBe(1);
+      expect(state.reclassifiedPriors).toEqual([]);
+    });
+
+    it('returns zero reclassified count when no priors exist', async () => {
+      const octokit = mockOctokit([], []);
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.reclassifiedPriorCount).toBe(0);
+      expect(state.reclassifiedPriors).toEqual([]);
+    });
   });
 });
 
@@ -1838,6 +1943,7 @@ describe('llmDeduplicateFindings', () => {
     expect(result.duplicates).toHaveLength(1);
     expect(result.duplicates[0].finding.title).toBe('Missing null check');
     expect(result.duplicates[0].matchedTitle).toBe('Null safety issue');
+    expect(result.duplicates[0].matchType).toBe('llm');
   });
 
   it('handles LLM returning no matches', async () => {

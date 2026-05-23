@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 import { LLMClient } from './providers';
 import { ACTIONS_BOT_LOGIN, BOT_LOGIN, titleToSlug } from './github';
 import { matchesSuppression, Suppression } from './memory';
-import { AuthorReplyClass, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, migrateLegacyPrType, migrateLegacySeverity, OpenThreadsState, RoundContext, SEVERITY_TOKEN_PATTERN } from './types';
+import { AuthorReplyClass, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacyPrType, migrateLegacySeverity, OpenThreadsState, RoundContext, SEVERITY_TOKEN_PATTERN } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -173,6 +173,10 @@ interface RecapState {
   priorRounds: RoundContext[];
   /** Three-way state of the open-thread fetch. Optional so legacy callers and test mocks omitting the field still typecheck; treated as `'fetched'` downstream. */
   openThreadsState?: OpenThreadsState;
+  /** Count of fingerprints whose `authorReplyClass` flipped during `refreshAuthorReplyClass`. Optional so test mocks omitting the field still typecheck; defaults to 0. */
+  reclassifiedPriorCount?: number;
+  /** Attribution for the flips. Only includes flips where the prior entry had a `threadId`. */
+  reclassifiedPriors?: ReclassifiedPrior[];
 }
 
 const CONTEXT_BLOCK_DETAILS_RE = /<details>\s*<summary>Manki context<\/summary>\s*```json\s*([\s\S]*?)```\s*<\/details>/g;
@@ -373,10 +377,21 @@ async function fetchRecapState(
 
   core.info(`Recap: ${resolved.length} resolved, ${open.length} open, ${previousFindings.length} total previous findings`);
 
-  const enrichedPriorRounds = refreshAuthorReplyClass(priorRounds, previousFindings);
+  const { rounds: enrichedPriorRounds, reclassifiedPriorCount, reclassifiedPriors } =
+    refreshAuthorReplyClass(priorRounds, previousFindings);
 
-  return { previousFindings, recapContext, priorRounds: enrichedPriorRounds, openThreadsState };
+  return {
+    previousFindings,
+    recapContext,
+    priorRounds: enrichedPriorRounds,
+    openThreadsState,
+    reclassifiedPriorCount,
+    reclassifiedPriors,
+  };
 }
+
+/** Cap on `reclassifiedPriors[]` to bound context-block size. */
+const RECLASSIFIED_PRIORS_CAP = 50;
 
 /**
  * Re-derive `authorReplyClass` on each prior-round fingerprint from the live
@@ -386,9 +401,19 @@ async function fetchRecapState(
  * hints, and the prior-unaddressed verdict gate. Matching is by `threadId`
  * when present, then falls back to fingerprint slug + file so older context
  * blocks written before threadId stabilisation still re-classify correctly.
+ *
+ * Also returns the count and (capped) attribution of every flip so the recap
+ * stage can surface re-classification provenance in `RoundContext.recap`.
+ * Slug-file fallback flips contribute to the count but cannot be attributed
+ * by `threadId`, so they are omitted from the entries list.
  */
-function refreshAuthorReplyClass(rounds: RoundContext[], previousFindings: PreviousFinding[]): RoundContext[] {
-  if (rounds.length === 0) return rounds;
+function refreshAuthorReplyClass(
+  rounds: RoundContext[],
+  previousFindings: PreviousFinding[],
+): { rounds: RoundContext[]; reclassifiedPriorCount: number; reclassifiedPriors: ReclassifiedPrior[] } {
+  if (rounds.length === 0) {
+    return { rounds, reclassifiedPriorCount: 0, reclassifiedPriors: [] };
+  }
   const byThread = new Map<string, PreviousFinding>();
   const bySlugFile = new Map<string, PreviousFinding>();
   for (const pf of previousFindings) {
@@ -398,7 +423,9 @@ function refreshAuthorReplyClass(rounds: RoundContext[], previousFindings: Previ
       bySlugFile.set(`${pf.file}:${titleToSlug(pf.title)}`, pf);
     }
   }
-  return rounds.map(r => ({
+  let reclassifiedPriorCount = 0;
+  const reclassifiedPriors: ReclassifiedPrior[] = [];
+  const refreshed = rounds.map(r => ({
     ...r,
     findings: {
       ...r.findings,
@@ -407,10 +434,19 @@ function refreshAuthorReplyClass(rounds: RoundContext[], previousFindings: Previ
           ? byThread.get(entry.threadId)
           : bySlugFile.get(`${entry.fingerprint.file}:${entry.fingerprint.slug}`);
         if (!pf) return entry;
-        return { ...entry, authorReplyClass: classifyAuthorReply(pf.authorReplyText) };
+        const next = classifyAuthorReply(pf.authorReplyText);
+        const prev = entry.authorReplyClass ?? 'none';
+        if (next !== prev) {
+          reclassifiedPriorCount++;
+          if (entry.threadId && reclassifiedPriors.length < RECLASSIFIED_PRIORS_CAP) {
+            reclassifiedPriors.push({ threadId: entry.threadId, from: prev, to: next });
+          }
+        }
+        return { ...entry, authorReplyClass: next };
       }),
     },
   }));
+  return { rounds: refreshed, reclassifiedPriorCount, reclassifiedPriors };
 }
 
 async function fetchPriorRoundContexts(
@@ -638,6 +674,8 @@ async function fetchReviewThreads(
 interface DuplicateMatch {
   finding: Finding;
   matchedTitle: string;
+  /** Which matcher branch fired. `'llm'` only used by `llmDeduplicateFindings`. */
+  matchType: DuplicateMatchType;
 }
 
 function deduplicateFindings(
@@ -658,12 +696,17 @@ function deduplicateFindings(
   const engaged = previousFindings.filter(f => f.status === 'resolved');
 
   for (const finding of newFindings) {
-    const matched = engaged.find(prev =>
-      matchesPrevious(finding, prev)
-    );
+    let matched: { prev: PreviousFinding; matchType: DuplicateMatchType } | undefined;
+    for (const prev of engaged) {
+      const matchType = matchPreviousType(finding, prev);
+      if (matchType) {
+        matched = { prev, matchType };
+        break;
+      }
+    }
 
     if (matched) {
-      duplicates.push({ finding, matchedTitle: matched.title });
+      duplicates.push({ finding, matchedTitle: matched.prev.title, matchType: matched.matchType });
     } else {
       unique.push(finding);
     }
@@ -672,19 +715,27 @@ function deduplicateFindings(
   return { unique, duplicates };
 }
 
-function titlesOverlap(a: string, b: string): boolean {
+/**
+ * Title-overlap classifier. Returns the branch that fired or `null` when
+ * none did. `titlesOverlap` is the boolean wrapper kept for tests and
+ * external callers; new code prefers this typed variant.
+ */
+function titleOverlapType(a: string, b: string): DuplicateMatchType | null {
   const aLower = a.toLowerCase();
   const bLower = b.toLowerCase();
 
-  if (aLower === bLower) return true;
+  if (aLower === bLower) return 'exact';
 
-  // Substring match (keep for exact matches)
   const shorter = aLower.length <= bLower.length ? aLower : bLower;
   const longer = aLower.length > bLower.length ? aLower : bLower;
-  if (shorter.length >= 5 && longer.includes(shorter)) return true;
+  if (shorter.length >= 5 && longer.includes(shorter)) return 'substring';
 
-  // Word overlap — 50% of words in the shorter title must appear in the longer
-  return wordOverlapRatio(a, b) >= 0.5;
+  if (wordOverlapRatio(a, b) >= 0.5) return 'word_overlap';
+  return null;
+}
+
+function titlesOverlap(a: string, b: string): boolean {
+  return titleOverlapType(a, b) !== null;
 }
 
 function wordOverlapRatio(a: string, b: string): number {
@@ -700,21 +751,20 @@ function wordOverlapRatio(a: string, b: string): number {
   return overlap / Math.min(aWords.size, bWords.size);
 }
 
-function matchesPrevious(finding: Finding, previous: PreviousFinding): boolean {
-  if (!previous.title || previous.title.length < 3) return false;
-  if (!finding.title || finding.title.length < 3) return false;
+function matchPreviousType(finding: Finding, previous: PreviousFinding): DuplicateMatchType | null {
+  if (!previous.title || previous.title.length < 3) return null;
+  if (!finding.title || finding.title.length < 3) return null;
 
-  const titleMatch = titlesOverlap(finding.title, previous.title);
+  const matchType = titleOverlapType(finding.title, previous.title);
+  if (!matchType) return null;
 
-  if (!titleMatch) return false;
-
-  if (finding.file !== previous.file) return false;
+  if (finding.file !== previous.file) return null;
 
   // Relax line proximity when word overlap is strong (>= 70%)
   const maxLineDelta = wordOverlapRatio(finding.title, previous.title) >= 0.7 ? 20 : 5;
-  if (Math.abs(finding.line - previous.line) > maxLineDelta) return false;
+  if (Math.abs(finding.line - previous.line) > maxLineDelta) return null;
 
-  return true;
+  return matchType;
 }
 
 async function llmDeduplicateFindings(
@@ -765,7 +815,7 @@ async function llmDeduplicateFindings(
         const dismissedIdx = match ? match.matchedDismissed - 1 : -1;
         const dismissedTitle = dismissedIdx >= 0 && dismissedIdx < dismissed.length ? dismissed[dismissedIdx].title : 'unknown';
         core.info(`LLM dedup: "${findings[i].title}" matches dismissed "${dismissedTitle}"`);
-        duplicates.push({ finding: findings[i], matchedTitle: dismissedTitle });
+        duplicates.push({ finding: findings[i], matchedTitle: dismissedTitle, matchType: 'llm' });
       } else {
         unique.push(findings[i]);
       }

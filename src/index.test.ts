@@ -91,6 +91,7 @@ jest.mock('./config', () => {
 jest.mock('./diff', () => ({
   parsePRDiff: jest.fn().mockReturnValue({ files: [], totalAdditions: 0, totalDeletions: 0 }),
   filterFiles: jest.fn().mockReturnValue([]),
+  filterFilesWithAttribution: jest.fn().mockReturnValue({ included: [], excluded: [] }),
   isDiffTooLarge: jest.fn().mockReturnValue(false),
   countDiffLines: jest.fn().mockReturnValue(0),
 }));
@@ -3235,6 +3236,177 @@ describe('runFullReview orchestration', () => {
       expect(rc!.meta.cap?.bypassReason).toBe('manual_review_command');
       expect(rc!.meta.cap?.forceReview).toBe(true);
       expect(rc!.meta.cap?.skipCap).toBe(true);
+    });
+  });
+
+  describe('RoundDedup, RoundDiff, RoundMemory, and RoundContext.recap attribution', () => {
+    const attrFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+      additions: 10,
+      deletions: 5,
+    };
+
+    beforeEach(() => {
+      jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+        files: [attrFile], totalAdditions: 10, totalDeletions: 5,
+        binarySkipped: ['assets/logo.png'],
+      });
+      jest.mocked(diffModule.filterFiles).mockReturnValue([attrFile]);
+      jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({
+        included: [attrFile],
+        excluded: [{ path: 'dist/index.js', matchedPattern: 'dist/**' }],
+      });
+    });
+
+    it('populates `dedup.duplicateMatches`, `sameRoundLlmDropped`, and `testNitSuppressedCount`', async () => {
+      jest.mocked(reviewModule.runReview).mockResolvedValue({
+        verdict: 'COMMENT', summary: 'done',
+        findings: [], highlights: [], reviewComplete: true,
+        agentNames: ['general'],
+        staticDedupCount: 1,
+        llmDedupCount: 1,
+        duplicateMatches: [
+          { droppedTitle: 'Dup A', matchedTitle: 'Prior A', matchType: 'exact' },
+          { droppedTitle: 'Dup B', matchedTitle: 'Prior B', matchType: 'llm' },
+        ],
+        rawFindingCount: 5,
+        suppressionCount: 0,
+        testNitSuppressedCount: 2,
+        allJudgedFindings: [
+          { severity: 'nitpick', title: 'A', file: 'src/app.ts', line: 1, description: 'd', reviewers: ['general'] },
+        ],
+      });
+      jest.mocked(reviewModule.determineVerdict).mockReturnValue({
+        verdict: 'COMMENT', verdictReason: 'only_nit_or_suggestion',
+        verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] },
+      });
+
+      await callRunFullReview();
+      const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+
+      expect(rc!.dedup.staticDropped).toBe(1);
+      expect(rc!.dedup.llmDropped).toBe(1);
+      expect(rc!.dedup.duplicateMatches).toEqual([
+        { droppedTitle: 'Dup A', matchedTitle: 'Prior A', matchType: 'exact' },
+        { droppedTitle: 'Dup B', matchedTitle: 'Prior B', matchType: 'llm' },
+      ]);
+      // `mergedDuplicates = rawFindingCount - suppression - static - llm - judgedSurvivors = 5 - 0 - 1 - 1 - 1 = 2`
+      expect(rc!.dedup.sameRoundLlmDropped).toBe(2);
+      expect(rc!.judge.mergedDuplicates).toBe(2);
+      expect(rc!.dedup.testNitSuppressedCount).toBe(2);
+    });
+
+    it('omits `dedup.duplicateMatches` and `testNitSuppressedCount` when zero', async () => {
+      jest.mocked(reviewModule.runReview).mockResolvedValue({
+        verdict: 'APPROVE', summary: 'done',
+        findings: [], highlights: [], reviewComplete: true,
+        agentNames: ['general'],
+      });
+      jest.mocked(reviewModule.determineVerdict).mockReturnValue({
+        verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion',
+        verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] },
+      });
+
+      await callRunFullReview();
+      const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+
+      expect(rc!.dedup.duplicateMatches).toBeUndefined();
+      expect(rc!.dedup.testNitSuppressedCount).toBeUndefined();
+      expect(rc!.dedup.sameRoundLlmDropped).toBeUndefined();
+    });
+
+    it('populates `diff.excludedFiles`, `binarySkipped`, `perFile`, and `oversizedHandled: false`', async () => {
+      jest.mocked(reviewModule.runReview).mockResolvedValue({
+        verdict: 'APPROVE', summary: 'done',
+        findings: [], highlights: [], reviewComplete: true,
+        agentNames: ['general'],
+      });
+      jest.mocked(reviewModule.determineVerdict).mockReturnValue({
+        verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion',
+        verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] },
+      });
+
+      await callRunFullReview();
+      const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+
+      expect(rc!.diff.excludedFiles).toEqual([{ path: 'dist/index.js', matchedPattern: 'dist/**' }]);
+      expect(rc!.diff.binarySkipped).toEqual(['assets/logo.png']);
+      expect(rc!.diff.oversizedHandled).toBe(false);
+      expect(rc!.diff.perFile).toEqual([
+        { path: 'src/app.ts', additions: 10, deletions: 5, changeType: 'modified' },
+      ]);
+    });
+
+    it('populates `memory.loadStatus: "disabled"` when memory is off in config', async () => {
+      jest.mocked(reviewModule.runReview).mockResolvedValue({
+        verdict: 'APPROVE', summary: 'done',
+        findings: [], highlights: [], reviewComplete: true,
+        agentNames: ['general'],
+      });
+      jest.mocked(reviewModule.determineVerdict).mockReturnValue({
+        verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion',
+        verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] },
+      });
+
+      await callRunFullReview();
+      const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+      expect(rc!.memory.loadStatus).toBe('disabled');
+      expect(rc!.memory.loadError).toBeUndefined();
+    });
+
+    it('populates `recap` with `priorRoundCount`, `reclassifiedPriorCount`, and `reclassifiedPriors`', async () => {
+      jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
+        previousFindings: [],
+        recapContext: '',
+        priorRounds: [],
+        reclassifiedPriorCount: 2,
+        reclassifiedPriors: [
+          { threadId: 'thread-a', from: 'none', to: 'agree' },
+          { threadId: 'thread-b', from: 'none', to: 'disagree' },
+        ],
+      });
+      jest.mocked(reviewModule.runReview).mockResolvedValue({
+        verdict: 'APPROVE', summary: 'done',
+        findings: [], highlights: [], reviewComplete: true,
+        agentNames: ['general'],
+      });
+      jest.mocked(reviewModule.determineVerdict).mockReturnValue({
+        verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion',
+        verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] },
+      });
+
+      await callRunFullReview();
+      const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+
+      expect(rc!.recap).toEqual({
+        priorRoundCount: 0,
+        reclassifiedPriorCount: 2,
+        reclassifiedPriors: [
+          { threadId: 'thread-a', from: 'none', to: 'agree' },
+          { threadId: 'thread-b', from: 'none', to: 'disagree' },
+        ],
+      });
+    });
+
+    it('omits `recap.reclassifiedPriors` when none flipped but keeps the count', async () => {
+      jest.mocked(reviewModule.runReview).mockResolvedValue({
+        verdict: 'APPROVE', summary: 'done',
+        findings: [], highlights: [], reviewComplete: true,
+        agentNames: ['general'],
+      });
+      jest.mocked(reviewModule.determineVerdict).mockReturnValue({
+        verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion',
+        verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] },
+      });
+
+      await callRunFullReview();
+      const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+
+      expect(rc!.recap).toEqual({
+        priorRoundCount: 0,
+        reclassifiedPriorCount: 0,
+      });
     });
   });
 
