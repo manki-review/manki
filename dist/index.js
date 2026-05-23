@@ -52447,7 +52447,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
     let plannerDurationMs;
     if (clients.planner && config.review_level === 'auto') {
         if (onProgress) {
-            onProgress({ phase: 'planning', rawFindingCount: 0 });
+            onProgress({ phase: 'planning' });
         }
         const plannerStart = Date.now();
         const plannerWrap = (0, providers_1.wrapClientForUsage)(clients.planner);
@@ -52465,7 +52465,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
                 core.info(`teamSize=1 decision: prType=${plannerResult.prType}, lines=${totalLines}, files=${diff.files.length}`);
             }
             if (onProgress) {
-                onProgress({ phase: 'planning', rawFindingCount: 0, plannerResult, plannerDurationMs });
+                onProgress({ phase: 'planning', plannerResult, plannerDurationMs });
             }
         }
         else {
