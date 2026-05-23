@@ -1,4 +1,4 @@
-import { truncate, formatDuration, safeJsonParse, safeTruncate } from './utils';
+import { truncate, formatDuration, safeJsonParse, safeTruncate, sanitizeTokens } from './utils';
 
 describe('utils', () => {
   describe('truncate', () => {
@@ -81,6 +81,37 @@ describe('utils', () => {
       expect(safeJsonParse('not json')).toBeNull();
       expect(safeJsonParse('{broken')).toBeNull();
       expect(safeJsonParse('')).toBeNull();
+    });
+  });
+
+  describe('sanitizeTokens', () => {
+    it('redacts ghp_ tokens', () => {
+      expect(sanitizeTokens('token: ghp_ABCDEF123')).toBe('token: [REDACTED]');
+    });
+
+    it('redacts ghs_ tokens', () => {
+      expect(sanitizeTokens('ghs_ABCDEF123')).toBe('[REDACTED]');
+    });
+
+    it('redacts gho_ tokens', () => {
+      expect(sanitizeTokens('gho_ABCDEF123')).toBe('[REDACTED]');
+    });
+
+    it('redacts github_pat_ tokens', () => {
+      expect(sanitizeTokens('github_pat_ABCDEF123')).toBe('[REDACTED]');
+    });
+
+    it('redacts tokens embedded in URLs', () => {
+      expect(sanitizeTokens('https://x:ghp_TOKEN@host')).toBe('https://x:[REDACTED]@host');
+    });
+
+    it('leaves strings with no token unchanged', () => {
+      expect(sanitizeTokens('no token here')).toBe('no token here');
+    });
+
+    it('redacts multiple tokens in one string', () => {
+      const result = sanitizeTokens('a=ghp_TOKEN1 b=ghs_TOKEN2');
+      expect(result).toBe('a=[REDACTED] b=[REDACTED]');
     });
   });
 });

@@ -220,7 +220,7 @@ jest.mock('./state', () => ({
   resolveStaleThreads: jest.fn().mockResolvedValue(0),
 }));
 
-import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, main, _resetOctokitCache, detectTickedMarker } from './index';
+import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, main, _resetOctokitCache, detectTickedMarker, buildRoundRecap } from './index';
 import { FORCE_REVIEW_MARKER, FORCE_CAP_MARKER } from './github';
 import type { ReviewConfig } from './types';
 import { createLLMClient, parseModelSpec } from './providers';
@@ -6973,5 +6973,32 @@ describe('detectTickedMarker', () => {
 
   it('returns FORCE_CAP_MARKER when both markers are present (FORCE_CAP_MARKER wins)', () => {
     expect(detectTickedMarker(`- [x] Force review\n\n${FORCE_REVIEW_MARKER}\n${FORCE_CAP_MARKER}`)).toBe('FORCE_CAP_MARKER');
+  });
+});
+
+describe('buildRoundRecap', () => {
+  it('omits reclassifiedPriors when entries array is empty', () => {
+    const result = buildRoundRecap(3, 0, []);
+    expect(result.priorRoundCount).toBe(3);
+    expect(result.reclassifiedPriorCount).toBe(0);
+    expect('reclassifiedPriors' in result).toBe(false);
+  });
+
+  it('omits reclassifiedPriors when count is non-zero but entries are empty', () => {
+    const result = buildRoundRecap(2, 3, []);
+    expect('reclassifiedPriors' in result).toBe(false);
+  });
+
+  it('includes reclassifiedPriors when entries are present', () => {
+    const entries = [{ threadId: 't1', from: 'none', to: 'agree' }];
+    const result = buildRoundRecap(2, 1, entries);
+    expect(result.reclassifiedPriors).toEqual(entries);
+    expect(result.reclassifiedPriorCount).toBe(1);
+  });
+
+  it('defaults undefined count and entries to zero and empty', () => {
+    const result = buildRoundRecap(1, undefined, undefined);
+    expect(result.reclassifiedPriorCount).toBe(0);
+    expect('reclassifiedPriors' in result).toBe(false);
   });
 });

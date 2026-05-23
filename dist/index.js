@@ -45801,11 +45801,13 @@ exports.handleReviewStateCheck = handleReviewStateCheck;
 exports.runFullReview = runFullReview;
 exports.main = main;
 exports._resetOctokitCache = _resetOctokitCache;
+exports.buildRoundRecap = buildRoundRecap;
 const core = __importStar(__nccwpck_require__(37484));
 const fs = __importStar(__nccwpck_require__(79896));
 const github = __importStar(__nccwpck_require__(93228));
 const path = __importStar(__nccwpck_require__(16928));
 const auth_1 = __nccwpck_require__(29081);
+const utils_1 = __nccwpck_require__(71798);
 const config_1 = __nccwpck_require__(22973);
 const providers_1 = __nccwpck_require__(87486);
 const code_window_1 = __nccwpck_require__(59347);
@@ -46412,8 +46414,8 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
                 }
                 catch (error) {
                     const message = error instanceof Error ? error.message : String(error);
-                    const sanitized = message.replace(/\b(ghp|ghs|gho|github_pat)_[A-Za-z0-9_]+/g, '[REDACTED]');
-                    core.warning(`Failed to load review memory: ${message}`);
+                    const sanitized = (0, utils_1.sanitizeTokens)(message);
+                    core.warning(`Failed to load review memory: ${sanitized}`);
                     memoryLoadStatus = 'failed';
                     memoryLoadError = sanitized.length > 300 ? sanitized.slice(0, 300) + '...' : sanitized;
                 }
@@ -51304,6 +51306,8 @@ exports.fingerprintFinding = fingerprintFinding;
 exports.fetchRecapState = fetchRecapState;
 exports.deduplicateFindings = deduplicateFindings;
 exports.titlesOverlap = titlesOverlap;
+exports.titleOverlapType = titleOverlapType;
+exports.refreshAuthorReplyClass = refreshAuthorReplyClass;
 exports.llmDeduplicateFindings = llmDeduplicateFindings;
 exports.parseFindingFromComment = parseFindingFromComment;
 const core = __importStar(__nccwpck_require__(37484));
@@ -54045,6 +54049,7 @@ exports.truncate = truncate;
 exports.safeTruncate = safeTruncate;
 exports.formatDuration = formatDuration;
 exports.safeJsonParse = safeJsonParse;
+exports.sanitizeTokens = sanitizeTokens;
 /**
  * Truncate a string to a maximum length, appending "..." if truncated.
  */
@@ -54089,6 +54094,13 @@ function safeJsonParse(text) {
     catch {
         return null;
     }
+}
+/**
+ * Redact GitHub token literals from a string so they cannot leak into logs
+ * or user-visible output.
+ */
+function sanitizeTokens(s) {
+    return s.replace(/\b(ghp|ghs|gho|github_pat)_[A-Za-z0-9_]+/g, '[REDACTED]');
 }
 
 

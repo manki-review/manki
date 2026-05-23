@@ -1,6 +1,6 @@
 import { Finding, RoundContext } from './types';
 import { Suppression } from './memory';
-import { classifyAuthorReply, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, titlesOverlap, llmDeduplicateFindings, parseFindingFromComment } from './recap';
+import { classifyAuthorReply, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment } from './recap';
 import { BOT_LOGIN, titleToSlug } from './github';
 
 jest.mock('@actions/core', () => ({
@@ -2136,5 +2136,109 @@ describe('collectResolvedThreadIds', () => {
       { title: 'b', file: 'f', line: 2, severity: 'warning', status: 'resolved', threadId: 'T2' },
     ]);
     expect(result).toEqual(new Set(['T2']));
+  });
+});
+
+describe('titleOverlapType', () => {
+  it("returns 'exact' for identical titles", () => {
+    expect(titleOverlapType('Missing null check', 'Missing null check')).toBe('exact');
+  });
+
+  it("returns 'exact' case-insensitively", () => {
+    expect(titleOverlapType('Missing Null Check', 'missing null check')).toBe('exact');
+  });
+
+  it("returns 'substring' when one title contains the other (>=5 chars)", () => {
+    expect(titleOverlapType('Missing null check in processBlock', 'Missing null check')).toBe('substring');
+  });
+
+  it("returns 'word_overlap' for short-title overlap below the substring length threshold", () => {
+    expect(titleOverlapType('Bug in parser', 'Bug')).toBe('word_overlap');
+  });
+
+  it('returns null when there is no substring and insufficient word overlap', () => {
+    expect(titleOverlapType('Memory leak in pool', 'Missing error handler')).toBeNull();
+  });
+
+  it("returns 'word_overlap' when >=50% words overlap but no substring", () => {
+    expect(titleOverlapType(
+      'FFI removes is_ours without adding replacement',
+      'FFI API regression: is_ours removed with no replacement',
+    )).toBe('word_overlap');
+  });
+
+  it('returns null when titles are unrelated', () => {
+    expect(titleOverlapType('Memory leak in connection pool', 'Missing error handling in parser')).toBeNull();
+  });
+});
+
+describe('refreshAuthorReplyClass', () => {
+  function makeRound(entries: import('./types').FindingFingerprintEntry[]): import('./types').RoundContext {
+    return {
+      meta: { prNumber: 1, commitSha: 'abc', round: 1, timestamp: '2026-01-01T00:00:00.000Z', mankiVersion: '1.0.0' },
+      config: { reviewLevel: 'medium', memoryEnabled: false },
+      diff: { lines: 0, additions: 0, deletions: 0, filesReviewed: 0, fileTypes: {} },
+      models: { reviewer: 'r', judge: 'j' },
+      planner: { source: 'disabled', used: false, coreAgentInjections: [], priorRoundEffortDowngrades: [] },
+      reviewers: { agents: [] },
+      judge: { summary: '' },
+      dedup: {},
+      memory: {},
+      findings: { count: entries.length, severityCounts: { blocker: 0, warning: 0, suggestion: 0, nitpick: 0 }, entries },
+      usage: {},
+      verdict: 'COMMENT',
+    };
+  }
+
+  function makeEntry(overrides: Partial<import('./types').FindingFingerprintEntry> = {}): import('./types').FindingFingerprintEntry {
+    return {
+      fingerprint: { file: 'src/foo.ts', slug: 'test-finding', lineStart: 10, lineEnd: 10 },
+      severity: 'suggestion',
+      authorReplyClass: 'none',
+      ...overrides,
+    };
+  }
+
+  it('returns empty result for empty rounds array', () => {
+    const result = refreshAuthorReplyClass([], []);
+    expect(result.rounds).toEqual([]);
+    expect(result.reclassifiedPriorCount).toBe(0);
+    expect(result.reclassifiedPriors).toEqual([]);
+  });
+
+  it('counts a threadId flip and records it in entries', () => {
+    const entry = makeEntry({ threadId: 'T1', authorReplyClass: 'none' });
+    const rounds = [makeRound([entry])];
+    const previousFindings: PreviousFinding[] = [
+      { title: 'Test finding', file: 'src/foo.ts', line: 10, severity: 'suggestion', status: 'resolved', threadId: 'T1', authorReplyText: 'LGTM fixed' },
+    ];
+
+    const result = refreshAuthorReplyClass(rounds, previousFindings);
+    expect(result.reclassifiedPriorCount).toBe(1);
+    expect(result.reclassifiedPriors).toHaveLength(1);
+    expect(result.reclassifiedPriors[0]).toMatchObject({ threadId: 'T1', from: 'none' });
+  });
+
+  it('increments count for slug-file fallback flips but omits them from entries', () => {
+    const entry = makeEntry({ threadId: undefined, fingerprint: { file: 'src/foo.ts', slug: 'Test-finding', lineStart: 10, lineEnd: 10 }, authorReplyClass: 'none' });
+    const rounds = [makeRound([entry])];
+    const previousFindings: PreviousFinding[] = [
+      { title: 'Test finding', file: 'src/foo.ts', line: 10, severity: 'suggestion', status: 'resolved', authorReplyText: 'fixed' },
+    ];
+
+    const result = refreshAuthorReplyClass(rounds, previousFindings);
+    expect(result.reclassifiedPriorCount).toBe(1);
+    expect(result.reclassifiedPriors).toHaveLength(0);
+  });
+
+  it('caps entries at 50 when flips exceed the limit', () => {
+    const entries = Array.from({ length: 55 }, (_, i) => makeEntry({ threadId: `T${i}`, authorReplyClass: 'none' }));
+    const previousFindings: PreviousFinding[] = entries.map((e, i) => ({
+      title: 'Test finding', file: 'src/foo.ts', line: 10, severity: 'suggestion' as const, status: 'resolved' as const, threadId: `T${i}`, authorReplyText: 'fixed',
+    }));
+
+    const result = refreshAuthorReplyClass([makeRound(entries)], previousFindings);
+    expect(result.reclassifiedPriorCount).toBe(55);
+    expect(result.reclassifiedPriors).toHaveLength(50);
   });
 });

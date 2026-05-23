@@ -4,6 +4,7 @@ import * as github from '@actions/github';
 import * as path from 'path';
 
 import { createAuthenticatedOctokit, getMemoryToken } from './auth';
+import { sanitizeTokens } from './utils';
 import { loadConfig, loadConfigFromFile, sanitizeForkConfig, resolveAgentModel, resolveModel } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
@@ -715,8 +716,8 @@ async function runFullReview(
           memoryLoadStatus = 'loaded';
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          const sanitized = message.replace(/\b(ghp|ghs|gho|github_pat)_[A-Za-z0-9_]+/g, '[REDACTED]');
-          core.warning(`Failed to load review memory: ${message}`);
+          const sanitized = sanitizeTokens(message);
+          core.warning(`Failed to load review memory: ${sanitized}`);
           memoryLoadStatus = 'failed';
           memoryLoadError = sanitized.length > 300 ? sanitized.slice(0, 300) + '...' : sanitized;
         }
@@ -1694,4 +1695,4 @@ function _resetOctokitCache(): void {
   octokitCache.identity = null;
 }
 
-export { run, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, runFullReview, main, _resetOctokitCache };
+export { run, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, runFullReview, main, _resetOctokitCache, buildRoundRecap };
