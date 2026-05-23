@@ -5,6 +5,7 @@ import { ACTIONS_BOT_LOGIN, BOT_LOGIN, checkConcurrentSubmissionLock, dismissPre
 import { migrateLegacySeverity, ReviewConfig, SEVERITY_TOKEN_PATTERN } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
+type ReviewEntry = { body?: string | null; state?: string; user?: { login?: string; type?: string } | null };
 
 const BOT_MARKER = '<!-- manki -->';
 const STALE_APPROVE_MARKER_PREFIX = '<!-- manki-stale-approve:';
@@ -192,7 +193,6 @@ async function checkAndAutoApprove(
     repo,
     pull_number: prNumber,
   });
-  type ReviewEntry = { body?: string | null; state?: string; user?: { login?: string; type?: string } | null };
   const isBotReview = (r: ReviewEntry) => r.body?.includes('<!-- manki') && r.user?.login?.includes('[bot]');
   const botReviews = reviews.filter((r: ReviewEntry) => isBotReview(r) && r.state !== 'DISMISSED');
   const latestBotReview = botReviews[botReviews.length - 1];
