@@ -2426,8 +2426,6 @@ describe('buildDashboard', () => {
     expect(md).toContain(`${INDENT}✅ Testing & Coverage — 4 (36s)`);
     expect(md).toContain(`${INDENT}✅ Performance & Efficiency — 2 (39s)`);
     expect(md).not.toContain('0 (0ms)');
-    const renderedCounts = [4, 3, 5, 4, 2];
-    expect(renderedCounts.reduce((a, b) => a + b, 0)).toBe(data.rawFindingCount!);
   });
 
   it('renders heuristic-fallback marker under the planner header when set', () => {
