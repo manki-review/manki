@@ -5,6 +5,9 @@ jest.mock('./github', () => ({
   dismissPreviousReviews: jest.fn().mockResolvedValue(undefined),
   isReviewInProgress: jest.fn().mockResolvedValue(false),
   checkConcurrentSubmissionLock: jest.fn().mockResolvedValue(false),
+  postAutoApproveProgressComment: jest.fn().mockResolvedValue(12345),
+  markAutoApproveComplete: jest.fn().mockResolvedValue(undefined),
+  markAutoApproveFailed: jest.fn().mockResolvedValue(undefined),
 }));
 
 const makeThread = (overrides: Partial<ReviewThread> = {}): ReviewThread => ({
@@ -821,5 +824,191 @@ describe('checkAndAutoApprove — concurrent run guard', () => {
         expect(createReviewMock).not.toHaveBeenCalled();
       });
     });
+  });
+});
+
+describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
+  const ghMock = jest.requireMock('./github') as {
+    dismissPreviousReviews: jest.Mock;
+    isReviewInProgress: jest.Mock;
+    checkConcurrentSubmissionLock: jest.Mock;
+    postAutoApproveProgressComment: jest.Mock;
+    markAutoApproveComplete: jest.Mock;
+    markAutoApproveFailed: jest.Mock;
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    ghMock.isReviewInProgress.mockResolvedValue(false);
+    ghMock.checkConcurrentSubmissionLock.mockResolvedValue(false);
+    ghMock.postAutoApproveProgressComment.mockResolvedValue(7777);
+  });
+
+  function makeMockOctokit(overrides: {
+    createReviewFn?: jest.Mock;
+    existingReviews?: Array<{ body?: string; state?: string; user?: { login?: string; type?: string } }>;
+  } = {}) {
+    const createReviewFn = overrides.createReviewFn ?? jest.fn().mockResolvedValue({});
+    const existingReviews = overrides.existingReviews ?? [];
+    return {
+      graphql: jest.fn().mockResolvedValue(makeGraphqlFetchResponse([])),
+      rest: {
+        pulls: {
+          get: jest.fn().mockResolvedValue({ data: { head: { sha: 'sha-x' } } }),
+          createReview: createReviewFn,
+          listReviews: jest.fn().mockResolvedValue({ data: existingReviews }),
+        },
+      },
+    } as unknown as Octokit;
+  }
+
+  it('posts the in-progress marker before calling createReview and transitions to complete on success', async () => {
+    const callOrder: string[] = [];
+    ghMock.postAutoApproveProgressComment.mockImplementationOnce(async () => {
+      callOrder.push('post');
+      return 7777;
+    });
+    const createReviewMock = jest.fn().mockImplementationOnce(async () => {
+      callOrder.push('createReview');
+      return {};
+    });
+    ghMock.markAutoApproveComplete.mockImplementationOnce(async () => {
+      callOrder.push('complete');
+    });
+
+    const octokit = makeMockOctokit({ createReviewFn: createReviewMock });
+    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+
+    expect(result).toBe(true);
+    expect(callOrder).toEqual(['post', 'createReview', 'complete']);
+    expect(ghMock.markAutoApproveComplete).toHaveBeenCalledWith(octokit, 'owner', 'repo', 7777);
+    expect(ghMock.markAutoApproveFailed).not.toHaveBeenCalled();
+  });
+
+  it('does not post a marker when the concurrency lock guard bails', async () => {
+    ghMock.checkConcurrentSubmissionLock.mockResolvedValueOnce(true);
+    const octokit = makeMockOctokit();
+
+    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+
+    expect(result).toBe(false);
+    expect(ghMock.postAutoApproveProgressComment).not.toHaveBeenCalled();
+    expect(ghMock.markAutoApproveComplete).not.toHaveBeenCalled();
+    expect(ghMock.markAutoApproveFailed).not.toHaveBeenCalled();
+  });
+
+  it('does not post a marker when `isReviewInProgress` returns true', async () => {
+    ghMock.isReviewInProgress.mockResolvedValueOnce(true);
+    const octokit = makeMockOctokit();
+
+    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+
+    expect(result).toBe(false);
+    expect(ghMock.postAutoApproveProgressComment).not.toHaveBeenCalled();
+  });
+
+  it('does not post a marker when a prior bot approval already exists for the same SHA', async () => {
+    const octokit = makeMockOctokit({
+      existingReviews: [
+        { body: '<!-- manki -->', state: 'APPROVED', user: { login: 'github-actions[bot]', type: 'Bot' } },
+      ],
+    });
+
+    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+
+    expect(result).toBe(true);
+    expect(ghMock.postAutoApproveProgressComment).not.toHaveBeenCalled();
+    expect(ghMock.markAutoApproveComplete).not.toHaveBeenCalled();
+  });
+
+  it('transitions the marker to a failure state when both APPROVE and COMMENT fail', async () => {
+    const createReviewMock = jest.fn()
+      .mockRejectedValueOnce(new Error('APPROVE forbidden'))
+      .mockRejectedValueOnce(new Error('COMMENT also forbidden'));
+    const octokit = makeMockOctokit({ createReviewFn: createReviewMock });
+
+    await expect(checkAndAutoApprove(octokit, 'owner', 'repo', 1)).rejects.toThrow('COMMENT also forbidden');
+    expect(ghMock.markAutoApproveFailed).toHaveBeenCalledWith(
+      octokit, 'owner', 'repo', 7777, 'COMMENT also forbidden',
+    );
+    expect(ghMock.markAutoApproveComplete).not.toHaveBeenCalled();
+  });
+
+  it('still transitions to complete when APPROVE fails but COMMENT fallback succeeds', async () => {
+    const createReviewMock = jest.fn()
+      .mockRejectedValueOnce(new Error('APPROVE forbidden'))
+      .mockResolvedValueOnce({});
+    const octokit = makeMockOctokit({ createReviewFn: createReviewMock });
+
+    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+
+    expect(result).toBe(true);
+    expect(ghMock.markAutoApproveComplete).toHaveBeenCalledWith(octokit, 'owner', 'repo', 7777);
+    expect(ghMock.markAutoApproveFailed).not.toHaveBeenCalled();
+  });
+});
+
+describe('postAutoApproveProgressComment / markAutoApprove*', () => {
+  const ghActual = jest.requireActual('./github') as typeof import('./github');
+  const githubContext = jest.requireActual('@actions/github').context as { runId: number };
+  let savedRunId: number;
+
+  beforeEach(() => {
+    savedRunId = githubContext.runId;
+    githubContext.runId = 12345;
+  });
+  afterEach(() => {
+    githubContext.runId = savedRunId;
+  });
+
+  it('posts a body that `findInProgressLock` detects as a live lock', async () => {
+    let postedBody = '';
+    const createComment = jest.fn().mockImplementation(async ({ body }: { body: string }) => {
+      postedBody = body;
+      return { data: { id: 1 } };
+    });
+    const octokit = { rest: { issues: { createComment } } } as unknown as Octokit;
+
+    await ghActual.postAutoApproveProgressComment(octokit, 'o', 'r', 1);
+
+    const comments = [
+      { id: 1, body: postedBody, user: { login: 'manki-review[bot]', type: 'Bot' }, updated_at: '2026-05-22T00:00:00Z' },
+    ];
+    expect(ghActual.findInProgressLock(comments, /* different run */ 999)).not.toBeNull();
+    expect(ghActual.findInProgressLock(comments, 12345)).toBeNull();
+    expect(postedBody).toContain('Auto-approving');
+  });
+
+  it('complete-transition body no longer registers as a live lock', async () => {
+    let updatedBody = '';
+    const updateComment = jest.fn().mockImplementation(async ({ body }: { body: string }) => {
+      updatedBody = body;
+      return { data: {} };
+    });
+    const octokit = { rest: { issues: { updateComment } } } as unknown as Octokit;
+
+    await ghActual.markAutoApproveComplete(octokit, 'o', 'r', 1);
+
+    const comments = [
+      { id: 1, body: updatedBody, user: { login: 'manki-review[bot]', type: 'Bot' }, updated_at: '2026-05-22T00:00:00Z' },
+    ];
+    expect(ghActual.findInProgressLock(comments, 999)).toBeNull();
+  });
+
+  it('failure-transition body no longer registers as a live lock', async () => {
+    let updatedBody = '';
+    const updateComment = jest.fn().mockImplementation(async ({ body }: { body: string }) => {
+      updatedBody = body;
+      return { data: {} };
+    });
+    const octokit = { rest: { issues: { updateComment } } } as unknown as Octokit;
+
+    await ghActual.markAutoApproveFailed(octokit, 'o', 'r', 1, 'API rate limited');
+
+    const comments = [
+      { id: 1, body: updatedBody, user: { login: 'manki-review[bot]', type: 'Bot' }, updated_at: '2026-05-22T00:00:00Z' },
+    ];
+    expect(ghActual.findInProgressLock(comments, 999)).toBeNull();
+    expect(updatedBody).toContain('API rate limited');
   });
 });
