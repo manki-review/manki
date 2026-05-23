@@ -708,6 +708,7 @@ describe('checkAndAutoApprove — concurrent run guard', () => {
           },
           issues: {
             listComments: jest.fn().mockResolvedValue({ data: comments }),
+            createComment: jest.fn().mockResolvedValue({}),
           },
         },
       } as unknown as Octokit;
