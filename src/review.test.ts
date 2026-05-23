@@ -5378,6 +5378,37 @@ describe('selectTeam with teamSizeOverride', () => {
     expect(roster.agents[0]).toBe(TRIVIAL_VERIFIER_AGENT);
     expect(roster.level).toBe('trivial');
   });
+
+  it('populates `coreAgentInjections` when the planner omits Security & Safety on a sensitive diff', () => {
+    const diff = makeDiff({
+      totalAdditions: 10,
+      totalDeletions: 5,
+      files: [{ path: 'src/auth.ts', changeType: 'modified', hunks: [] }],
+    });
+    const config = makeConfig();
+    const picks: AgentPick[] = [
+      { name: 'Architecture & Design', effort: 'medium' },
+      { name: 'Correctness & Logic', effort: 'medium' },
+    ];
+    const roster = selectTeam(diff, config, undefined, 2, picks);
+    expect(roster.coreAgentInjections).toEqual(['Security & Safety']);
+    expect(roster.agents.map(a => a.name)).toContain('Security & Safety');
+  });
+
+  it('leaves `coreAgentInjections` empty when Security & Safety is already in the planner picks', () => {
+    const diff = makeDiff({
+      totalAdditions: 10,
+      totalDeletions: 5,
+      files: [{ path: 'src/auth.ts', changeType: 'modified', hunks: [] }],
+    });
+    const config = makeConfig();
+    const picks: AgentPick[] = [
+      { name: 'Security & Safety', effort: 'high' },
+      { name: 'Correctness & Logic', effort: 'medium' },
+    ];
+    const roster = selectTeam(diff, config, undefined, 2, picks);
+    expect(roster.coreAgentInjections).toEqual([]);
+  });
 });
 
 describe('collectPriorRoundAgents', () => {
@@ -6736,6 +6767,19 @@ describe('planner provenance in ReviewResult', () => {
     const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'auto' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
     for (const name of result.agentNames) {
       expect(result.agentEffortMap?.get(name)).toBe('medium');
+    }
+  });
+
+  it('populates `agentEffortMap` using planner `reviewerEffort` when no per-agent picks are provided', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 3,
+      reviewerEffort: 'high',
+      judgeEffort: 'medium',
+      prType: 'feat',
+    });
+    const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'auto' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
+    for (const name of result.agentNames) {
+      expect(result.agentEffortMap?.get(name)).toBe('high');
     }
   });
 
