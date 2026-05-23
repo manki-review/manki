@@ -212,15 +212,23 @@ async function checkAndAutoApprove(
   // events with `commit_id = head.sha`, which pass the event-level stale check
   // in `handleReviewStateCheck`. Without this guard the function would issue an
   // APPROVED review on HEAD even though manki has never actually reviewed HEAD.
-  // Bail when the latest non-DISMISSED bot review's `commit_id` differs from
-  // the current head SHA.
+  // Bail when the latest non-DISMISSED bot review's `commit_id` is absent or
+  // differs from the current head SHA.
   const latestBotReviewSha = (latestBotReview as { commit_id?: string } | undefined)?.commit_id;
-  if (latestBotReview && latestBotReviewSha && latestBotReviewSha !== pr.head.sha) {
-    core.warning(
-      `Skipping auto-approve — manki has not reviewed HEAD (head=${pr.head.sha}, latest_manki_review=${latestBotReviewSha})`,
-    );
-    await postStaleApproveSkippedComment(octokit, owner, repo, prNumber, pr.head.sha, latestBotReviewSha);
-    return false;
+  if (latestBotReview) {
+    if (!latestBotReviewSha) {
+      core.warning(
+        `Skipping auto-approve — commit_id absent on latest manki review (head=${pr.head.sha}); cannot verify HEAD coverage`,
+      );
+      return false;
+    }
+    if (latestBotReviewSha !== pr.head.sha) {
+      core.warning(
+        `Skipping auto-approve — manki has not reviewed HEAD (head=${pr.head.sha}, latest_manki_review=${latestBotReviewSha})`,
+      );
+      await postStaleApproveSkippedComment(octokit, owner, repo, prNumber, pr.head.sha, latestBotReviewSha);
+      return false;
+    }
   }
 
   const progressCommentId = await postAutoApproveProgressComment(octokit, owner, repo, prNumber);
