@@ -715,9 +715,10 @@ async function runFullReview(
           memoryLoadStatus = 'loaded';
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
+          const sanitized = message.replace(/\b(ghp|ghs|gho|github_pat)_[A-Za-z0-9_]+/g, '[REDACTED]');
           core.warning(`Failed to load review memory: ${message}`);
           memoryLoadStatus = 'failed';
-          memoryLoadError = message.length > 300 ? message.slice(0, 300) + '...' : message;
+          memoryLoadError = sanitized.length > 300 ? sanitized.slice(0, 300) + '...' : sanitized;
         }
       }
     }
