@@ -7,7 +7,7 @@ import OpenAI from 'openai';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import * as core from '@actions/core';
 
-import { buildExitDiagnostics, extractCliErrorSnippet, seedAuthFile } from './cli-utils';
+import { buildExitDiagnostics, buildTimeoutDiagnostics, seedAuthFile } from './cli-utils';
 import { LLMClient, LLMResponse, LLMUsage, OpenAIAuth, readCount, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -71,16 +71,6 @@ export function isReasoningModel(model: string): boolean {
 export function resolveEffortTier(effort: 'low' | 'medium' | 'high' | 'max'): 'low' | 'medium' | 'high' {
   if (effort === 'max') return 'high';
   return effort;
-}
-
-/** Build diagnostic snippets for timeout/stale error messages. */
-function buildTimeoutDiagnostics(lastStdoutChunk: string, stderrText: string): string {
-  const stdoutSnippet = sanitizeLogOutput(lastStdoutChunk.slice(-500));
-  const stderrSnippet = extractCliErrorSnippet(stderrText);
-  const parts: string[] = [];
-  if (stdoutSnippet) parts.push(`Last stdout: ${stdoutSnippet}`);
-  if (stderrSnippet) parts.push(`stderr: ${stderrSnippet}`);
-  return parts.join('. ');
 }
 
 let cliInstallPromise: Promise<string> | null = null;

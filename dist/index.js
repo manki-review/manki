@@ -50747,17 +50747,6 @@ function resolveEffortTier(effort) {
         return 'high';
     return effort;
 }
-/** Build diagnostic snippets for timeout/stale error messages. */
-function buildTimeoutDiagnostics(lastStdoutChunk, stderrText) {
-    const stdoutSnippet = sanitizeLogOutput(lastStdoutChunk.slice(-500));
-    const stderrSnippet = (0, cli_utils_1.extractCliErrorSnippet)(stderrText);
-    const parts = [];
-    if (stdoutSnippet)
-        parts.push(`Last stdout: ${stdoutSnippet}`);
-    if (stderrSnippet)
-        parts.push(`stderr: ${stderrSnippet}`);
-    return parts.join('. ');
-}
 let cliInstallPromise = null;
 function resetCLIInstallPromise() {
     cliInstallPromise = null;
@@ -50968,14 +50957,14 @@ class OpenAIClient {
                     output += remaining;
                 stderr += stderrDecoder.end();
                 if (stale) {
-                    const details = buildTimeoutDiagnostics(lastStdoutChunk, stderr);
+                    const details = (0, cli_utils_1.buildTimeoutDiagnostics)(lastStdoutChunk, stderr);
                     const msg = `Codex CLI stale — no output for ${exports.STALE_TIMEOUT_MS / 1000}s${details ? `. ${details}` : ''}`;
                     core.warning(msg);
                     reject(new Error(msg));
                     return;
                 }
                 if (timedOut) {
-                    const details = buildTimeoutDiagnostics(lastStdoutChunk, stderr);
+                    const details = (0, cli_utils_1.buildTimeoutDiagnostics)(lastStdoutChunk, stderr);
                     const msg = `Codex CLI timed out after 1200s${details ? `. ${details}` : ''}`;
                     core.warning(msg);
                     reject(new Error(msg));
