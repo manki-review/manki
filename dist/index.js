@@ -52884,6 +52884,8 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
                 ...(plannerFallbackReason && { plannerFallbackReason }),
                 ...(team.coreAgentInjections && team.coreAgentInjections.length > 0 && { coreAgentInjections: team.coreAgentInjections }),
                 ...(priorRoundEffortDowngrades.length > 0 && { priorRoundEffortDowngrades }),
+                ...(agentMultiPassConsistency.size > 0 && { agentMultiPassConsistency }),
+                agentEffortMap: agentRunEffort,
             };
         }
         partialReview = true;
@@ -53007,6 +53009,9 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
             agentNames: team.agents.map(a => a.name),
             plannerSource,
             ...(plannerFallbackReason && { plannerFallbackReason }),
+            ...(team.coreAgentInjections && team.coreAgentInjections.length > 0 && { coreAgentInjections: team.coreAgentInjections }),
+            ...(priorRoundEffortDowngrades.length > 0 && { priorRoundEffortDowngrades }),
+            agentEffortMap: agentRunEffort,
         };
     }
     // Mechanism B: drop low-severity findings on test files starting at round 2.
