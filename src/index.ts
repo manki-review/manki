@@ -12,7 +12,7 @@ import { parsePRDiff, filterFiles, isDiffTooLarge, countDiffLines } from './diff
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff, MAX_INTER_ROUND_DIFF_CHARS } from './judge';
 import { loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
-import { collectResolvedThreadIds, fetchRecapState, fingerprintFinding } from './recap';
+import { collectResolvedThreadIds, fetchRecapState, fingerprintFinding, PreviousFinding } from './recap';
 import { buildAgentPool } from './agents';
 import { buildPriorRoundLookup, collectPriorRoundAgents, runReview, determineVerdict, selectTeam } from './review';
 import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DashboardData, FullReviewOptions, OWN_PROPOSAL_TAG, PrContext, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewMetadata, RoundCap, RoundContext, RoundTrigger, RoundUsage, RoundUsageStage, ThreadResolutionOverrides, roundContextToFlatAliases } from './types';
@@ -738,9 +738,10 @@ async function runFullReview(
 
     const isFollowUp = recap.previousFindings.length > 0;
     const baseOpenThreads = recap.previousFindings
-      .filter(f => (f.status === 'open' || f.status === 'replied') && f.threadId)
+      .filter((f): f is PreviousFinding & { threadId: string } =>
+        (f.status === 'open' || f.status === 'replied') && f.threadId != null && f.threadId !== '')
       .map(f => ({
-        threadId: f.threadId!,
+        threadId: f.threadId,
         threadUrl: f.threadUrl,
         title: f.title,
         file: f.file,
