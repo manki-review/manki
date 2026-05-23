@@ -813,7 +813,7 @@ async function llmDeduplicateFindings(
       if (matchedIndices.has(i)) {
         const match = matches.find(m => m.index - 1 === i);
         const dismissedIdx = match ? match.matchedDismissed - 1 : -1;
-        const dismissedTitle = dismissedIdx >= 0 && dismissedIdx < dismissed.length ? dismissed[dismissedIdx].title : 'unknown';
+        const dismissedTitle = dismissedIdx >= 0 && dismissedIdx < dismissed.length ? (dismissed[dismissedIdx].title ?? 'unknown') : 'unknown';
         core.info(`LLM dedup: "${findings[i].title}" matches dismissed "${dismissedTitle}"`);
         duplicates.push({ finding: findings[i], matchedTitle: dismissedTitle, matchType: 'llm' });
       } else {

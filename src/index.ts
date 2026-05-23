@@ -1169,7 +1169,7 @@ async function runFullReview(
         ...(excludedFiles.length > 0 && { excludedFiles: excludedFiles.slice(0, 100) as RoundDiffExcludedFile[] }),
         ...(diff.binarySkipped && diff.binarySkipped.length > 0 && { binarySkipped: diff.binarySkipped.slice(0, 100) }),
         oversizedHandled: false,
-        perFile: filteredFiles.map((f): RoundDiffPerFile => ({
+        perFile: filteredFiles.slice(0, 200).map((f): RoundDiffPerFile => ({
           path: f.path,
           additions: f.additions ?? 0,
           deletions: f.deletions ?? 0,
