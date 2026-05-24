@@ -751,6 +751,55 @@ describe('determineVerdict', () => {
       expect(result.verdictReason).toBe('prior_unaddressed');
     });
 
+    it('approves when a prior has no `threadId` and GitHub reports zero open threads (legacy handover, all resolved)', () => {
+      // Round 1 of a long-running PR ran on a manki version that did not
+      // persist `threadId` on findings, so the prior survives without an id.
+      // Once GitHub confirms zero open review threads, no prior can still be
+      // blocking, regardless of whether the id is present, so the missing-id
+      // case must retire alongside the id-bearing ones.
+      const priors = [makePriorWarning({ threadId: undefined })];
+      const result = determineVerdict([nitpick], fingerprintEntriesFromLegacy(priors), []);
+      expect(result.verdict).toBe('APPROVE');
+      expect(result.verdictReason).toBe('only_nit_or_suggestion');
+    });
+
+    it('keeps `prior_unaddressed` when a prior has no `threadId` and `openThreads` is unknown (conservative fallback preserved)', () => {
+      // The unknown sentinel must still force a conservative block even when
+      // the prior has no id to match against, so a failed fetch cannot
+      // silently approve a legacy-handover prior.
+      const priors = [makePriorWarning({ threadId: undefined })];
+      const result = determineVerdict([nitpick], fingerprintEntriesFromLegacy(priors), null);
+      expect(result.verdict).toBe('REQUEST_CHANGES');
+      expect(result.verdictReason).toBe('prior_unaddressed');
+    });
+
+    it('approves a prior whose `threadId` is in `resolvedThreadIds` (regression check on the cached-resolved path)', () => {
+      const priors = [makePriorWarning({ threadId: 'T_RESOLVED' })];
+      const resolved = new Set(['T_RESOLVED']);
+      const result = determineVerdict([nitpick], fingerprintEntriesFromLegacy(priors), [], resolved);
+      expect(result.verdict).toBe('APPROVE');
+      expect(result.verdictReason).toBe('only_nit_or_suggestion');
+    });
+
+    it('approves a PR-149-Round-5-shaped snapshot (11 threadless priors, 0 open threads, 24 resolved)', () => {
+      // Replay of the rust-dashcore#149 round 5 snapshot. Eleven priors
+      // originated in round 1 on a pre-`threadId` manki version, GitHub
+      // reports zero open review threads, and `resolvedThreadIds` carries
+      // every closed thread from prior rounds. The verdict must not surface
+      // any `unresolvedPriors` and must not fire `prior_unaddressed`.
+      const priors: LegacyHandoverFindingFixture[] = Array.from({ length: 11 }, (_, i) => ({
+        fingerprint: { file: `src/legacy${i}.ts`, lineStart: 10 + i, lineEnd: 10 + i, slug: `legacy-issue-${i}` },
+        severity: 'warning',
+        title: `Legacy warning ${i}`,
+        authorReply: 'none',
+      }));
+      const resolved = new Set(Array.from({ length: 24 }, (_, i) => `T${i}`));
+      const result = determineVerdict([nitpick], fingerprintEntriesFromLegacy(priors), [], resolved);
+      expect(result.verdict).toBe('APPROVE');
+      expect(result.verdictReason).toBe('only_nit_or_suggestion');
+      expect(result.verdictTrace.unresolvedPriors).toEqual([]);
+    });
+
     it('keeps `prior_unaddressed` for a blocker prior even when the judge marks it `addressed` (LLM verdict cannot retire blockers)', () => {
       const priors = [makePriorWarning({ severity: 'blocker', title: 'Null deref', threadId: 'T_BLOCKER' })];
       const open = [makeOpenThread({ threadId: 'T_BLOCKER', severity: 'blocker', title: 'Null deref' })];
@@ -896,12 +945,19 @@ describe('determineVerdict', () => {
         expect(result.verdictReason).toBe('only_nit_or_suggestion');
       });
 
-      it('blocks a PR-level prior finding without `threadId` even when `resolvedThreadIds` is provided', () => {
+      it('blocks a PR-level prior finding without `threadId` while open threads remain on the PR', () => {
+        // The prior carries no id (legacy handover format), and at least one
+        // review thread is still open on the PR, so the prior cannot be
+        // matched against `resolvedThreadIds` and the conservative block
+        // stands. When zero threads remain open the prior retires instead,
+        // covered by the dedicated test in the `unresolved prior findings`
+        // describe block.
         const priors = [makePriorWarning({ threadId: undefined })];
+        const stillOpen = [makeOpenThread({ threadId: 'OTHER' })];
         const result = determineVerdict(
           [],
           fingerprintEntriesFromLegacy(priors),
-          [],
+          stillOpen,
           new Set(['T1']),
         );
         expect(result.verdict).toBe('REQUEST_CHANGES');
@@ -1058,7 +1114,7 @@ describe('determineVerdict', () => {
 
     it('omits `threadId` from the trace when the prior has none', () => {
       const priors = fingerprintEntriesFromLegacy([priorWarning({ threadId: undefined })]);
-      const { verdictTrace } = determineVerdict([], priors, []);
+      const { verdictTrace } = determineVerdict([], priors, [openThreadFor('OTHER')]);
       expect(verdictTrace.unresolvedPriors).toHaveLength(1);
       expect(verdictTrace.unresolvedPriors[0].threadId).toBeUndefined();
     });

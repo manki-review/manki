@@ -53512,8 +53512,14 @@ function isPriorLikelyUnresolved(p, openThreadIds, openThreadsUnknown, resolvedT
         return true;
     if (p.threadId && resolvedThreadIds?.has(p.threadId))
         return false;
+    // A prior with no `threadId` originates from a pre-`threadId` handover
+    // format. When GitHub confirms zero open review threads on the PR, no prior
+    // can still be blocking regardless of how the fingerprint was stored, so the
+    // missing-id case is allowed to retire alongside the id-bearing ones. When
+    // open threads do exist, the absent id leaves no way to match this prior
+    // against them, so the conservative block stands.
     if (!p.threadId)
-        return true;
+        return openThreadIds.size > 0;
     return false;
 }
 function dedupePriorFindings(priorRounds) {
@@ -53545,8 +53551,10 @@ function buildPriorRoundLookup(sortedPriorRounds) {
  *
  * A prior `warning`/`blocker` is "unresolved" when the author has not agreed to
  * dismiss it (`authorReply !== 'agree'`) and the underlying GitHub thread is
- * still in `openThreads`. A prior finding without a `threadId` is treated as
- * unresolved, which conservatively blocks APPROVE for older handover formats.
+ * still in `openThreads`. A prior finding without a `threadId` (older handover
+ * format) is treated as unresolved while open threads remain on the PR, but
+ * retires once GitHub reports zero open threads, since no prior can still be
+ * blocking when nothing is open.
  *
  * The judge's `threadEvaluations.status === 'addressed'` resolves a prior
  * thread. `uncertain` and missing entries collapse to "not addressed" so the
