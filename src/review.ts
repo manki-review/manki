@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import { minimatch } from 'minimatch';
 
-import { TRIVIAL_VERIFIER_AGENT, buildAgentPool } from './agents';
+import { TRIVIAL_VERIFIER_AGENT, buildAgentPool, checkAgentLens } from './agents';
 import { addUsage, LLMClient, LLMUsage, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
 import { runJudgeAgent, JudgeInput, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
@@ -300,7 +300,9 @@ export interface ReviewProgress {
   agentName?: string;
   agentFindingCount?: number;
   agentDurationMs?: number;
-  agentStatus?: 'success' | 'failure' | 'retrying';
+  agentStatus?: 'success' | 'failure' | 'retrying' | 'skipped';
+  /** Why an agent was skipped. Only set when `agentStatus === 'skipped'`. */
+  agentSkipReason?: 'lens-no-match';
   rawFindingCount?: number;
   judgeInputCount?: number;
   completedAgents?: number;
@@ -685,7 +687,8 @@ export function buildProvenanceFields(
   priorRoundEffortDowngrades: PriorRoundEffortDowngrade[],
   agentMultiPassConsistency: Map<string, { consistent: number; totalRaw: number }>,
   agentRunEffort: Map<string, EffortLevel>,
-): Pick<ReviewResult, 'plannerSource' | 'plannerFallbackReason' | 'coreAgentInjections' | 'priorRoundEffortDowngrades' | 'agentMultiPassConsistency' | 'agentEffortMap'> {
+  agentSkipReasons?: Map<string, 'lens-no-match'>,
+): Pick<ReviewResult, 'plannerSource' | 'plannerFallbackReason' | 'coreAgentInjections' | 'priorRoundEffortDowngrades' | 'agentMultiPassConsistency' | 'agentEffortMap' | 'agentSkipReasons'> {
   return {
     plannerSource,
     ...(plannerFallbackReason && { plannerFallbackReason }),
@@ -693,6 +696,7 @@ export function buildProvenanceFields(
     priorRoundEffortDowngrades,
     ...(agentMultiPassConsistency.size > 0 && { agentMultiPassConsistency }),
     agentEffortMap: agentRunEffort,
+    ...(agentSkipReasons && agentSkipReasons.size > 0 && { agentSkipReasons }),
   };
 }
 
@@ -787,6 +791,18 @@ export async function runReview(
     agentRunEffort.set(agent.name, agentEffortMap.get(agent.name) ?? defaultReviewerEffort ?? 'medium');
   }
 
+  // Per-agent lens check. Agents whose lens has nothing relevant in the diff
+  // skip the model call entirely. Conservative on purpose: see `AGENT_POOL`
+  // for lens definitions and `checkAgentLens` for the matching rules.
+  const agentSkipReasons = new Map<string, 'lens-no-match'>();
+  for (const agent of team.agents) {
+    const skipReason = checkAgentLens(agent, diff.files);
+    if (skipReason !== null) {
+      agentSkipReasons.set(agent.name, skipReason);
+      core.info(`${agent.name}: skipped (lens-no-match) — no relevant files in diff`);
+    }
+  }
+
   const passes = config.review_passes ?? 1;
   const multiPass = passes > 1;
 
@@ -802,9 +818,29 @@ export async function runReview(
   let completedCount = 0;
   let progressFindingCount = 0;
 
+  const emitAgentSkippedProgress = (agentName: string): void => {
+    if (!onProgress) return;
+    onProgress({
+      phase: 'agent-complete',
+      agentName,
+      agentFindingCount: 0,
+      agentDurationMs: 0,
+      agentStatus: 'skipped',
+      agentSkipReason: 'lens-no-match',
+      rawFindingCount: allFindings.length,
+      completedAgents: completedCount,
+      totalAgents: team.agents.length,
+    });
+  };
+
   if (multiPass) {
     core.info(`Running ${team.agents.length} reviewer agents with ${passes} passes each (multi-pass mode)...`);
     for (const agent of team.agents) {
+      if (agentSkipReasons.has(agent.name)) {
+        completedCount++;
+        emitAgentSkippedProgress(agent.name);
+        continue;
+      }
       const startTime = Date.now();
       const agentEffort = agentEffortMap.get(agent.name) ?? defaultReviewerEffort;
       const passResults = await Promise.allSettled(
@@ -974,8 +1010,15 @@ export async function runReview(
       failedAgents.push(...stillFailed);
     }
   } else {
-    core.info(`Running ${team.agents.length} reviewer agents in parallel...`);
-    const agentPromises = team.agents.map(agent => {
+    const activeAgents = team.agents.filter(a => !agentSkipReasons.has(a.name));
+    for (const agent of team.agents) {
+      if (agentSkipReasons.has(agent.name)) {
+        completedCount++;
+        emitAgentSkippedProgress(agent.name);
+      }
+    }
+    core.info(`Running ${activeAgents.length} reviewer agents in parallel (${agentSkipReasons.size} skipped by lens)...`);
+    const agentPromises = activeAgents.map(agent => {
       const startTime = Date.now();
       const agentEffort = agentEffortMap.get(agent.name) ?? defaultReviewerEffort;
       return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: agentEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap })
@@ -1029,11 +1072,11 @@ export async function runReview(
       const result = agentResults[i];
       if (result.status === 'fulfilled') {
         allFindings.push(...result.value);
-        core.info(`${team.agents[i].name}: ${result.value.length} findings`);
+        core.info(`${activeAgents[i].name}: ${result.value.length} findings`);
       } else {
-        failedAgents.push(team.agents[i].name);
-        agentFailureReasons.set(team.agents[i].name, sanitizeLogOutput(String(((result.reason as Error)?.message ?? result.reason) || 'unknown failure')).slice(0, 500));
-        core.warning(`${team.agents[i].name} failed: ${result.reason}`);
+        failedAgents.push(activeAgents[i].name);
+        agentFailureReasons.set(activeAgents[i].name, sanitizeLogOutput(String(((result.reason as Error)?.message ?? result.reason) || 'unknown failure')).slice(0, 500));
+        core.warning(`${activeAgents[i].name} failed: ${result.reason}`);
       }
     }
 
@@ -1124,11 +1167,14 @@ export async function runReview(
   let partialNote: string | undefined;
 
   if (failedAgents.length > 0) {
-    const quorum = Math.ceil(team.agents.length / 2);
-    const succeededCount = team.agents.length - failedAgents.length;
+    // Skipped agents are intentionally absent (lens-no-match) and don't count
+    // against the quorum denominator. Use the active agent count instead.
+    const dispatchedCount = team.agents.length - agentSkipReasons.size;
+    const quorum = Math.ceil(dispatchedCount / 2);
+    const succeededCount = dispatchedCount - failedAgents.length;
 
     if (succeededCount < quorum) {
-      const summary = failedAgents.length === team.agents.length
+      const summary = failedAgents.length === dispatchedCount
         ? 'Review could not be completed — all reviewer agents failed.'
         : `Review incomplete — ${failedAgents.join(', ')} failed after retries. Retry with @manki review.`;
       return {
@@ -1140,12 +1186,12 @@ export async function runReview(
         agentNames: team.agents.map(a => a.name),
         failedAgents,
         ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
-        ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, priorRoundEffortDowngrades, agentMultiPassConsistency, agentRunEffort),
+        ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, priorRoundEffortDowngrades, agentMultiPassConsistency, agentRunEffort, agentSkipReasons),
       };
     }
 
     partialReview = true;
-    partialNote = `${succeededCount} of ${team.agents.length} agents completed (${failedAgents.join(', ')} failed after ${MAX_AGENT_RETRIES + 1} attempts)`;
+    partialNote = `${succeededCount} of ${dispatchedCount} agents completed (${failedAgents.join(', ')} failed after ${MAX_AGENT_RETRIES + 1} attempts)`;
     core.info(`Quorum met: ${partialNote}`);
   }
 
@@ -1277,7 +1323,7 @@ export async function runReview(
       highlights: [],
       reviewComplete: false,
       agentNames: team.agents.map(a => a.name),
-      ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, priorRoundEffortDowngrades, agentMultiPassConsistency, agentRunEffort),
+      ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, priorRoundEffortDowngrades, agentMultiPassConsistency, agentRunEffort, agentSkipReasons),
     };
   }
 
@@ -1359,7 +1405,7 @@ export async function runReview(
     crossRoundDemoted: judgeCrossRoundDemoted,
     ...(judgeInterRoundDiffEmptyOverride && { interRoundDiffEmptyOverride: judgeInterRoundDiffEmptyOverride }),
     ...(testNitSuppressedCount > 0 && { testNitSuppressedCount }),
-    ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, priorRoundEffortDowngrades, agentMultiPassConsistency, agentRunEffort),
+    ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, priorRoundEffortDowngrades, agentMultiPassConsistency, agentRunEffort, agentSkipReasons),
   };
 }
 

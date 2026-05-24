@@ -43305,16 +43305,39 @@ function wrappy (fn, cb) {
 /***/ }),
 
 /***/ 16957:
-/***/ ((__unused_webpack_module, exports) => {
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.TRIVIAL_VERIFIER_AGENT = exports.AGENT_POOL = void 0;
 exports.buildAgentPool = buildAgentPool;
+exports.checkAgentLens = checkAgentLens;
+const minimatch_1 = __nccwpck_require__(46507);
+/**
+ * Default test-path globs used by the per-agent lens. Kept in sync with
+ * `DEFAULT_CONFIG.convergence.test_path_patterns` (see `config.ts`). Defined
+ * here so the lens stays valid even when `config.convergence` is unset.
+ */
+const DEFAULT_TEST_PATH_PATTERNS = Object.freeze([
+    '**/*.test.*',
+    '**/*.spec.*',
+    '**/tests/**',
+    '**/__tests__/**',
+]);
 // Standard reviewer pool used for teamSize >= 3. TRIVIAL_VERIFIER_AGENT is
 // intentionally excluded — it is only active for the teamSize=1 path and does
 // not participate in scoring, focusAreas validation, or planner prompts.
+//
+// Per-agent `lens` is conservative on purpose: false-negatives (missed
+// findings) are far more costly than the cycles saved by skipping. Only two
+// agents declare a lens today:
+//
+//   - `Testing & Coverage` runs only when the diff touches a test file.
+//   - `Architecture & Design` runs unless every changed file is a test file
+//     (purely test-only diffs do not change public API or module structure).
+//
+// All other agents have no lens and always run.
 exports.AGENT_POOL = Object.freeze([
     {
         name: 'Security & Safety',
@@ -43323,6 +43346,10 @@ exports.AGENT_POOL = Object.freeze([
     {
         name: 'Architecture & Design',
         focus: 'Design patterns, coupling, abstractions, API design, module boundaries, separation of concerns, SOLID principles',
+        lens: {
+            mode: 'exclude-only',
+            filePatterns: [...DEFAULT_TEST_PATH_PATTERNS],
+        },
     },
     {
         name: 'Correctness & Logic',
@@ -43331,6 +43358,10 @@ exports.AGENT_POOL = Object.freeze([
     {
         name: 'Testing & Coverage',
         focus: 'Missing tests, test quality, edge case coverage, assertion strength, mock appropriateness, test maintainability',
+        lens: {
+            mode: 'include',
+            filePatterns: [...DEFAULT_TEST_PATH_PATTERNS],
+        },
     },
     {
         name: 'Performance & Efficiency',
@@ -43356,6 +43387,26 @@ function buildAgentPool(customReviewers) {
             pool.push(custom);
     }
     return pool;
+}
+/**
+ * Decide whether `agent` can be safely skipped for the given diff. Returns
+ * `null` when the agent should run, otherwise a short skip-reason tag.
+ *
+ * The check is conservative: agents without a lens always run, and an empty
+ * file list always runs (so the agent can confirm there is nothing to flag).
+ */
+function checkAgentLens(agent, files) {
+    const lens = agent.lens;
+    if (!lens || lens.filePatterns.length === 0)
+        return null;
+    if (files.length === 0)
+        return null;
+    const matchOpts = { matchBase: true, dot: true };
+    const matchesAny = (path) => lens.filePatterns.some(p => (0, minimatch_1.minimatch)(path, p, matchOpts));
+    if (lens.mode === 'include') {
+        return files.some(f => matchesAny(f.path)) ? null : 'lens-no-match';
+    }
+    return files.every(f => matchesAny(f.path)) ? 'lens-no-match' : null;
 }
 
 
@@ -46690,12 +46741,17 @@ async function runFullReview(owner, repo, prNumber, commitSha, baseRef, prContex
                 const model = (0, config_1.resolveAgentModel)(config, name, 'reviewer');
                 const effort = result.agentEffortMap?.get(name);
                 const multiPassConsistency = result.agentMultiPassConsistency?.get(name);
+                const skipReason = result.agentSkipReasons?.get(name);
+                const status = skipReason
+                    ? 'skipped'
+                    : (failureReason ? 'failed' : 'success');
                 return {
                     name,
                     findingsRaw: rawFindings.filter(f => f.reviewers.includes(name)).length,
                     findingsKept: result.findings.filter(f => f.reviewers.includes(name)).length,
                     ...(durationMs != null && { durationMs }),
-                    status: failureReason ? 'failed' : 'success',
+                    status,
+                    ...(skipReason && { skipReason }),
                     responseLength: result.agentResponseLengths?.get(name),
                     inputTokens: usage?.inputTokens ?? 0,
                     outputTokens: usage?.outputTokens ?? 0,
@@ -52602,7 +52658,7 @@ function emitHeuristicFallbackPlanning(onProgress, team, plannerDurationMs) {
         ...(plannerDurationMs !== undefined ? { plannerDurationMs } : {}),
     });
 }
-function buildProvenanceFields(plannerSource, plannerFallbackReason, team, priorRoundEffortDowngrades, agentMultiPassConsistency, agentRunEffort) {
+function buildProvenanceFields(plannerSource, plannerFallbackReason, team, priorRoundEffortDowngrades, agentMultiPassConsistency, agentRunEffort, agentSkipReasons) {
     return {
         plannerSource,
         ...(plannerFallbackReason && { plannerFallbackReason }),
@@ -52610,6 +52666,7 @@ function buildProvenanceFields(plannerSource, plannerFallbackReason, team, prior
         priorRoundEffortDowngrades,
         ...(agentMultiPassConsistency.size > 0 && { agentMultiPassConsistency }),
         agentEffortMap: agentRunEffort,
+        ...(agentSkipReasons && agentSkipReasons.size > 0 && { agentSkipReasons }),
     };
 }
 async function runReview(clients, config, diff, rawDiff, repoContext, memory, fileContents, prContext, linkedIssues, onProgress, isFollowUp, openThreads, previousFindings, priorRounds, prAuthorLogin, interRoundDiff) {
@@ -52684,6 +52741,17 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
     for (const agent of team.agents) {
         agentRunEffort.set(agent.name, agentEffortMap.get(agent.name) ?? defaultReviewerEffort ?? 'medium');
     }
+    // Per-agent lens check. Agents whose lens has nothing relevant in the diff
+    // skip the model call entirely. Conservative on purpose: see `AGENT_POOL`
+    // for lens definitions and `checkAgentLens` for the matching rules.
+    const agentSkipReasons = new Map();
+    for (const agent of team.agents) {
+        const skipReason = (0, agents_1.checkAgentLens)(agent, diff.files);
+        if (skipReason !== null) {
+            agentSkipReasons.set(agent.name, skipReason);
+            core.info(`${agent.name}: skipped (lens-no-match) — no relevant files in diff`);
+        }
+    }
     const passes = config.review_passes ?? 1;
     const multiPass = passes > 1;
     const allFindings = [];
@@ -52696,9 +52764,29 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
     const agentMultiPassConsistency = new Map();
     let completedCount = 0;
     let progressFindingCount = 0;
+    const emitAgentSkippedProgress = (agentName) => {
+        if (!onProgress)
+            return;
+        onProgress({
+            phase: 'agent-complete',
+            agentName,
+            agentFindingCount: 0,
+            agentDurationMs: 0,
+            agentStatus: 'skipped',
+            agentSkipReason: 'lens-no-match',
+            rawFindingCount: allFindings.length,
+            completedAgents: completedCount,
+            totalAgents: team.agents.length,
+        });
+    };
     if (multiPass) {
         core.info(`Running ${team.agents.length} reviewer agents with ${passes} passes each (multi-pass mode)...`);
         for (const agent of team.agents) {
+            if (agentSkipReasons.has(agent.name)) {
+                completedCount++;
+                emitAgentSkippedProgress(agent.name);
+                continue;
+            }
             const startTime = Date.now();
             const agentEffort = agentEffortMap.get(agent.name) ?? defaultReviewerEffort;
             const passResults = await Promise.allSettled(Array.from({ length: passes }, () => {
@@ -52855,8 +52943,15 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
         }
     }
     else {
-        core.info(`Running ${team.agents.length} reviewer agents in parallel...`);
-        const agentPromises = team.agents.map(agent => {
+        const activeAgents = team.agents.filter(a => !agentSkipReasons.has(a.name));
+        for (const agent of team.agents) {
+            if (agentSkipReasons.has(agent.name)) {
+                completedCount++;
+                emitAgentSkippedProgress(agent.name);
+            }
+        }
+        core.info(`Running ${activeAgents.length} reviewer agents in parallel (${agentSkipReasons.size} skipped by lens)...`);
+        const agentPromises = activeAgents.map(agent => {
             const startTime = Date.now();
             const agentEffort = agentEffortMap.get(agent.name) ?? defaultReviewerEffort;
             return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: agentEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap })
@@ -52906,12 +53001,12 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
             const result = agentResults[i];
             if (result.status === 'fulfilled') {
                 allFindings.push(...result.value);
-                core.info(`${team.agents[i].name}: ${result.value.length} findings`);
+                core.info(`${activeAgents[i].name}: ${result.value.length} findings`);
             }
             else {
-                failedAgents.push(team.agents[i].name);
-                agentFailureReasons.set(team.agents[i].name, (0, providers_1.sanitizeLogOutput)(String((result.reason?.message ?? result.reason) || 'unknown failure')).slice(0, 500));
-                core.warning(`${team.agents[i].name} failed: ${result.reason}`);
+                failedAgents.push(activeAgents[i].name);
+                agentFailureReasons.set(activeAgents[i].name, (0, providers_1.sanitizeLogOutput)(String((result.reason?.message ?? result.reason) || 'unknown failure')).slice(0, 500));
+                core.warning(`${activeAgents[i].name} failed: ${result.reason}`);
             }
         }
         // Retry failed agents up to MAX_AGENT_RETRIES times
@@ -52995,10 +53090,13 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
     let partialReview = false;
     let partialNote;
     if (failedAgents.length > 0) {
-        const quorum = Math.ceil(team.agents.length / 2);
-        const succeededCount = team.agents.length - failedAgents.length;
+        // Skipped agents are intentionally absent (lens-no-match) and don't count
+        // against the quorum denominator. Use the active agent count instead.
+        const dispatchedCount = team.agents.length - agentSkipReasons.size;
+        const quorum = Math.ceil(dispatchedCount / 2);
+        const succeededCount = dispatchedCount - failedAgents.length;
         if (succeededCount < quorum) {
-            const summary = failedAgents.length === team.agents.length
+            const summary = failedAgents.length === dispatchedCount
                 ? 'Review could not be completed — all reviewer agents failed.'
                 : `Review incomplete — ${failedAgents.join(', ')} failed after retries. Retry with @manki review.`;
             return {
@@ -53010,11 +53108,11 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
                 agentNames: team.agents.map(a => a.name),
                 failedAgents,
                 ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
-                ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, priorRoundEffortDowngrades, agentMultiPassConsistency, agentRunEffort),
+                ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, priorRoundEffortDowngrades, agentMultiPassConsistency, agentRunEffort, agentSkipReasons),
             };
         }
         partialReview = true;
-        partialNote = `${succeededCount} of ${team.agents.length} agents completed (${failedAgents.join(', ')} failed after ${types_1.MAX_AGENT_RETRIES + 1} attempts)`;
+        partialNote = `${succeededCount} of ${dispatchedCount} agents completed (${failedAgents.join(', ')} failed after ${types_1.MAX_AGENT_RETRIES + 1} attempts)`;
         core.info(`Quorum met: ${partialNote}`);
     }
     if (onProgress) {
@@ -53139,7 +53237,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
             highlights: [],
             reviewComplete: false,
             agentNames: team.agents.map(a => a.name),
-            ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, priorRoundEffortDowngrades, agentMultiPassConsistency, agentRunEffort),
+            ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, priorRoundEffortDowngrades, agentMultiPassConsistency, agentRunEffort, agentSkipReasons),
         };
     }
     // Mechanism B: drop low-severity findings on test files starting at round 2.
@@ -53218,7 +53316,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
         crossRoundDemoted: judgeCrossRoundDemoted,
         ...(judgeInterRoundDiffEmptyOverride && { interRoundDiffEmptyOverride: judgeInterRoundDiffEmptyOverride }),
         ...(testNitSuppressedCount > 0 && { testNitSuppressedCount }),
-        ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, priorRoundEffortDowngrades, agentMultiPassConsistency, agentRunEffort),
+        ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, priorRoundEffortDowngrades, agentMultiPassConsistency, agentRunEffort, agentSkipReasons),
     };
 }
 async function runReviewerAgent(client, config, reviewer, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, options = {}) {

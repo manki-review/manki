@@ -240,11 +240,42 @@ export interface ReviewResult {
   agentMultiPassConsistency?: Map<string, { consistent: number; totalRaw: number }>;
   /** Per-agent effort level actually used at run time. Keyed by agent name. */
   agentEffortMap?: Map<string, EffortLevel>;
+  /**
+   * Reason per agent that was skipped before the model call (lens check). Keyed
+   * by agent name. Absent when no agent was skipped.
+   */
+  agentSkipReasons?: Map<string, 'lens-no-match'>;
 }
 
 export interface ReviewerAgent {
   name: string;
   focus: string;
+  /**
+   * Optional file-pattern lens that decides whether the agent has anything new
+   * to review in the current diff. When set, the reviewer loop checks the diff
+   * against this lens and skips the model call when the lens evaluates to
+   * "no relevant changes". Agents without a lens always run. Lens evaluation
+   * is conservative: when in doubt, run the agent.
+   */
+  lens?: AgentLens;
+}
+
+/**
+ * Lens describing which files an agent cares about. The reviewer loop skips
+ * the agent's model call when none of the diff's files satisfy the lens.
+ *
+ * `mode` controls how `filePatterns` is interpreted:
+ *
+ * - `'include'`: run only when at least one changed file matches a pattern.
+ *   Used for narrowly-scoped agents (e.g. testing agents only care about test
+ *   files).
+ * - `'exclude-only'`: skip only when every changed file matches a pattern.
+ *   Used for broadly-scoped agents that should run unless the diff is *purely*
+ *   irrelevant (e.g. an architecture agent skipping a tests-only diff).
+ */
+export interface AgentLens {
+  mode: 'include' | 'exclude-only';
+  filePatterns: string[];
 }
 
 export type EffortLevel = 'low' | 'medium' | 'high';
@@ -805,7 +836,12 @@ export interface RoundAgentMetric {
   findingsRaw?: number;
   findingsKept?: number;
   durationMs?: number;
-  status?: 'success' | 'failed';
+  status?: 'success' | 'failed' | 'skipped';
+  /**
+   * Why the agent was skipped, when `status === 'skipped'`. Currently always
+   * `'lens-no-match'` (set by the per-agent lens check before model dispatch).
+   */
+  skipReason?: 'lens-no-match';
   responseLength?: number;
   warnings?: string[];
   inputTokens?: number;

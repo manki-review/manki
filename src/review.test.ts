@@ -24,7 +24,7 @@ import {
   PLANNER_TIMEOUT_MS,
   PlannerOutcomeSink,
 } from './review';
-import { AGENT_POOL, TRIVIAL_VERIFIER_AGENT } from './agents';
+import { AGENT_POOL, TRIVIAL_VERIFIER_AGENT, checkAgentLens } from './agents';
 import * as core from '@actions/core';
 import { LinkedIssue, titleToSlug } from './github';
 import { Finding, RoundContext, OpenThread, ReviewerAgent, ReviewConfig, ParsedDiff, DiffFile, AgentPick, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES } from './types';
@@ -1525,6 +1525,70 @@ describe('AGENT_POOL', () => {
 
   it('is frozen and cannot be mutated', () => {
     expect(Object.isFrozen(AGENT_POOL)).toBe(true);
+  });
+
+  it('declares lenses only on Testing & Coverage and Architecture & Design', () => {
+    const withLens = AGENT_POOL.filter(a => a.lens !== undefined).map(a => a.name).sort();
+    expect(withLens).toEqual(['Architecture & Design', 'Testing & Coverage']);
+  });
+});
+
+describe('checkAgentLens', () => {
+  const makeFile = (path: string): DiffFile => ({
+    path,
+    changeType: 'modified',
+    hunks: [],
+    additions: 1,
+    deletions: 0,
+  });
+  const agentNoLens: ReviewerAgent = { name: 'Plain', focus: 'all' };
+  const agentInclude: ReviewerAgent = {
+    name: 'Tests',
+    focus: 'test files',
+    lens: { mode: 'include', filePatterns: ['**/*.test.*', '**/__tests__/**'] },
+  };
+  const agentExcludeOnly: ReviewerAgent = {
+    name: 'Arch',
+    focus: 'source files',
+    lens: { mode: 'exclude-only', filePatterns: ['**/*.test.*', '**/__tests__/**'] },
+  };
+
+  it('returns null for an agent without a lens', () => {
+    expect(checkAgentLens(agentNoLens, [makeFile('src/a.ts')])).toBeNull();
+  });
+
+  it('returns null for an empty diff (no files), conservatively running the agent', () => {
+    expect(checkAgentLens(agentInclude, [])).toBeNull();
+    expect(checkAgentLens(agentExcludeOnly, [])).toBeNull();
+  });
+
+  it('include-mode skips when no file matches a pattern', () => {
+    expect(checkAgentLens(agentInclude, [makeFile('src/a.ts'), makeFile('src/b.ts')]))
+      .toBe('lens-no-match');
+  });
+
+  it('include-mode runs when at least one file matches', () => {
+    expect(checkAgentLens(agentInclude, [makeFile('src/a.ts'), makeFile('src/a.test.ts')]))
+      .toBeNull();
+  });
+
+  it('exclude-only mode skips only when every file matches the exclude pattern', () => {
+    expect(checkAgentLens(agentExcludeOnly, [makeFile('src/a.test.ts'), makeFile('src/__tests__/b.ts')]))
+      .toBe('lens-no-match');
+  });
+
+  it('exclude-only mode runs when at least one file is outside the exclude pattern', () => {
+    expect(checkAgentLens(agentExcludeOnly, [makeFile('src/a.test.ts'), makeFile('src/b.ts')]))
+      .toBeNull();
+  });
+
+  it('returns null when the lens has no patterns', () => {
+    const agentNoPatterns: ReviewerAgent = {
+      name: 'Empty',
+      focus: '',
+      lens: { mode: 'include', filePatterns: [] },
+    };
+    expect(checkAgentLens(agentNoPatterns, [makeFile('src/a.ts')])).toBeNull();
   });
 });
 
@@ -4165,6 +4229,118 @@ describe('runReview', () => {
     expect(result.summary).toContain('all reviewer agents failed');
     expect(result.failedAgents!.length).toBe(5);
     expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
+  });
+
+  describe('per-agent lens skip', () => {
+    const sourceFile: DiffFile = { path: 'src/index.ts', changeType: 'modified', hunks: [] };
+    const testFile: DiffFile = { path: 'src/index.test.ts', changeType: 'modified', hunks: [] };
+
+    it('skips Architecture & Design when the diff contains only test files', async () => {
+      const sendMessage = jest.fn().mockResolvedValue({ content: '[]' });
+      const clients: ReviewClients = {
+        reviewer: { sendMessage } as unknown as import('./providers').LLMClient,
+        judge: {
+          sendMessage: jest.fn().mockResolvedValue({ content: '{"summary":"ok","findings":[]}' }),
+        } as unknown as import('./providers').LLMClient,
+      };
+      const config = makeConfig({ review_level: 'large' });
+      const diff = makeDiff({ totalAdditions: 30, totalDeletions: 10, files: [testFile] });
+      const onProgress = jest.fn();
+
+      const result = await runReview(clients, config, diff, 'raw diff', 'repo context', undefined, undefined, undefined, undefined, onProgress);
+
+      expect(result.reviewComplete).toBe(true);
+      const dispatchedSystemPrompts = (sendMessage.mock.calls as Array<[string, string]>).map(c => c[0]);
+      expect(dispatchedSystemPrompts.some(p => p.includes('Architecture & Design'))).toBe(false);
+      expect(dispatchedSystemPrompts.some(p => p.includes('Testing & Coverage'))).toBe(true);
+      expect(result.agentSkipReasons?.get('Architecture & Design')).toBe('lens-no-match');
+
+      const skippedProgress = onProgress.mock.calls
+        .map((c: [import('./review').ReviewProgress]) => c[0])
+        .filter(p => p.agentStatus === 'skipped');
+      expect(skippedProgress.map(p => p.agentName)).toContain('Architecture & Design');
+      expect(skippedProgress.every(p => p.agentSkipReason === 'lens-no-match')).toBe(true);
+    });
+
+    it('skips Testing & Coverage when no test files are touched', async () => {
+      const sendMessage = jest.fn().mockResolvedValue({ content: '[]' });
+      const clients: ReviewClients = {
+        reviewer: { sendMessage } as unknown as import('./providers').LLMClient,
+        judge: {
+          sendMessage: jest.fn().mockResolvedValue({ content: '{"summary":"ok","findings":[]}' }),
+        } as unknown as import('./providers').LLMClient,
+      };
+      const config = makeConfig({ review_level: 'large' });
+      const diff = makeDiff({ totalAdditions: 30, totalDeletions: 10, files: [sourceFile] });
+
+      const result = await runReview(clients, config, diff, 'raw diff', 'repo context');
+
+      const dispatchedSystemPrompts = (sendMessage.mock.calls as Array<[string, string]>).map(c => c[0]);
+      expect(dispatchedSystemPrompts.some(p => p.includes('Testing & Coverage'))).toBe(false);
+      expect(dispatchedSystemPrompts.some(p => p.includes('Architecture & Design'))).toBe(true);
+      expect(result.agentSkipReasons?.get('Testing & Coverage')).toBe('lens-no-match');
+    });
+
+    it('runs every agent when the diff has both source and test files', async () => {
+      const sendMessage = jest.fn().mockResolvedValue({ content: '[]' });
+      const clients: ReviewClients = {
+        reviewer: { sendMessage } as unknown as import('./providers').LLMClient,
+        judge: {
+          sendMessage: jest.fn().mockResolvedValue({ content: '{"summary":"ok","findings":[]}' }),
+        } as unknown as import('./providers').LLMClient,
+      };
+      const config = makeConfig({ review_level: 'large' });
+      const diff = makeDiff({ totalAdditions: 30, totalDeletions: 10, files: [sourceFile, testFile] });
+
+      const result = await runReview(clients, config, diff, 'raw diff', 'repo context');
+
+      expect(result.agentSkipReasons).toBeUndefined();
+      const dispatchedSystemPrompts = (sendMessage.mock.calls as Array<[string, string]>).map(c => c[0]);
+      for (const name of AGENT_POOL.map(a => a.name)) {
+        expect(dispatchedSystemPrompts.some(p => p.includes(name))).toBe(true);
+      }
+    });
+
+    it('runs every agent when the diff is empty (no files), preserving recall', async () => {
+      const sendMessage = jest.fn().mockResolvedValue({ content: '[]' });
+      const clients: ReviewClients = {
+        reviewer: { sendMessage } as unknown as import('./providers').LLMClient,
+        judge: {
+          sendMessage: jest.fn().mockResolvedValue({ content: '{"summary":"ok","findings":[]}' }),
+        } as unknown as import('./providers').LLMClient,
+      };
+      const config = makeConfig({ review_level: 'large' });
+      const diff = makeDiff({ totalAdditions: 0, totalDeletions: 0, files: [] });
+
+      const result = await runReview(clients, config, diff, 'raw diff', 'repo context');
+
+      expect(result.agentSkipReasons).toBeUndefined();
+    });
+
+    it('counts skipped agents out of the quorum denominator', async () => {
+      // Tests-only diff: Architecture & Design is skipped by lens, leaving
+      // 6 dispatched agents. With 4 of them failing, succeeded=2 < quorum=3.
+      const failingAgents = ['Testing & Coverage', 'Performance & Efficiency', 'Maintainability & Readability', 'Dependencies & Integration'];
+      const clients: ReviewClients = {
+        reviewer: {
+          sendMessage: jest.fn().mockImplementation((sys: string) => {
+            if (failingAgents.some(name => sys.includes(name))) {
+              return Promise.reject(new Error('Permanent failure'));
+            }
+            return Promise.resolve({ content: '[]' });
+          }),
+        } as unknown as import('./providers').LLMClient,
+        judge: { sendMessage: jest.fn() } as unknown as import('./providers').LLMClient,
+      };
+      const config = makeConfig({ review_level: 'large' });
+      const diff = makeDiff({ totalAdditions: 30, totalDeletions: 10, files: [testFile] });
+
+      const result = await runReview(clients, config, diff, 'raw diff', 'repo context');
+
+      expect(result.reviewComplete).toBe(false);
+      expect(result.agentSkipReasons?.get('Architecture & Design')).toBe('lens-no-match');
+      expect(result.failedAgents).toEqual(expect.arrayContaining(failingAgents));
+    });
   });
 
   it('includes agent failure info in partialNote when quorum is met with failures', async () => {

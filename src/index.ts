@@ -1014,12 +1014,17 @@ async function runFullReview(
           const model = resolveAgentModel(config, name, 'reviewer');
           const effort = result.agentEffortMap?.get(name);
           const multiPassConsistency = result.agentMultiPassConsistency?.get(name);
+          const skipReason = result.agentSkipReasons?.get(name);
+          const status: 'success' | 'failed' | 'skipped' = skipReason
+            ? 'skipped'
+            : (failureReason ? 'failed' : 'success');
           return {
             name,
             findingsRaw: rawFindings.filter(f => f.reviewers.includes(name)).length,
             findingsKept: result.findings.filter(f => f.reviewers.includes(name)).length,
             ...(durationMs != null && { durationMs }),
-            status: failureReason ? 'failed' as const : 'success' as const,
+            status,
+            ...(skipReason && { skipReason }),
             responseLength: result.agentResponseLengths?.get(name),
             inputTokens: usage?.inputTokens ?? 0,
             outputTokens: usage?.outputTokens ?? 0,
