@@ -1724,7 +1724,7 @@ function isPriorLikelyUnresolved(
   // missing-id case is allowed to retire alongside the id-bearing ones. When
   // open threads do exist, the absent id leaves no way to match this prior
   // against them, so the conservative block stands.
-  if (!p.threadId) return openThreadIds.size > 0;
+  if (!p.threadId) return (openThreadIds?.size ?? 0) > 0;
   return false;
 }
 

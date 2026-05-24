@@ -800,6 +800,19 @@ describe('determineVerdict', () => {
       expect(result.verdictTrace.unresolvedPriors).toEqual([]);
     });
 
+    it('blocks on a threadless prior when open-thread state is unknown (conservative path)', () => {
+      const priors: LegacyHandoverFindingFixture[] = [{
+        fingerprint: { file: 'src/old.ts', lineStart: 1, lineEnd: 1, slug: 'legacy-warn' },
+        severity: 'warning',
+        title: 'Legacy warning',
+        authorReply: 'none',
+      }];
+      // null openThreads signals openThreadsUnknown — the conservative guard must block retirement
+      const result = determineVerdict([nitpick], fingerprintEntriesFromLegacy(priors), null);
+      expect(result.verdict).toBe('REQUEST_CHANGES');
+      expect(result.verdictReason).toBe('prior_unaddressed');
+    });
+
     it('keeps `prior_unaddressed` for a blocker prior even when the judge marks it `addressed` (LLM verdict cannot retire blockers)', () => {
       const priors = [makePriorWarning({ severity: 'blocker', title: 'Null deref', threadId: 'T_BLOCKER' })];
       const open = [makeOpenThread({ threadId: 'T_BLOCKER', severity: 'blocker', title: 'Null deref' })];
