@@ -16,6 +16,7 @@ import {
   findingsMatch,
   intersectFindings,
   runReview,
+  runReviewerAgent,
   runPlanner,
   parseAgentPicks,
   sanitizePlannerField,
@@ -4496,6 +4497,61 @@ describe('runReview', () => {
     expect(result.agentNames).toContain('Security & Safety');
     // No duplicates from the union of core and prior-round agents.
     expect(new Set(result.agentNames).size).toBe(result.agentNames.length);
+  });
+
+  // Plumbing-only coverage for `interRoundDiff`. Reviewers do not consume the
+  // parameter yet, so accepting it must not change what the reviewer client
+  // sees. The follow-up sub-issue wires it into the reviewer prompt.
+  it('accepts `interRoundDiff` without changing reviewer client input', async () => {
+    const config = makeConfig();
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+
+    const baselineClients = makeClients();
+    await runReview(
+      baselineClients, config, diff, 'raw diff', 'repo context',
+      undefined, undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, undefined, undefined,
+    );
+
+    const withDiffClients = makeClients();
+    await runReview(
+      withDiffClients, config, diff, 'raw diff', 'repo context',
+      undefined, undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, undefined, undefined,
+      '--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n',
+    );
+
+    const baselineMock = baselineClients.reviewer.sendMessage as jest.Mock;
+    const withDiffMock = withDiffClients.reviewer.sendMessage as jest.Mock;
+    expect(withDiffMock.mock.calls).toEqual(baselineMock.mock.calls);
+  });
+});
+
+describe('runReviewerAgent', () => {
+  it('produces a byte-identical sendMessage call regardless of `interRoundDiff`', async () => {
+    const config = makeConfig();
+    const reviewer = AGENT_POOL[0];
+
+    const baselineClient = {
+      sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
+    } as unknown as LLMClient;
+    await runReviewerAgent(
+      baselineClient, config, reviewer, 'raw diff', 'repo context',
+      undefined, undefined, '', undefined, {},
+    );
+
+    const withDiffClient = {
+      sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
+    } as unknown as LLMClient;
+    await runReviewerAgent(
+      withDiffClient, config, reviewer, 'raw diff', 'repo context',
+      undefined, undefined, '', undefined,
+      { interRoundDiff: '--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n' },
+    );
+
+    const baselineMock = baselineClient.sendMessage as jest.Mock;
+    const withDiffMock = withDiffClient.sendMessage as jest.Mock;
+    expect(withDiffMock.mock.calls).toEqual(baselineMock.mock.calls);
   });
 });
 
