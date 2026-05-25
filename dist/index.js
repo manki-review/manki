@@ -53225,7 +53225,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
 async function runReviewerAgent(client, config, reviewer, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, options = {}) {
     const { effort, language, context, provenanceMap, interRoundDiff } = options;
     const systemPrompt = buildReviewerSystemPrompt(reviewer, config, language, context, config.noise_level);
-    const userMessage = buildReviewerUserMessage(rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, provenanceMap, interRoundDiff);
+    const userMessage = buildReviewerUserMessage(rawDiff, repoContext, { fileContents, prContext, memoryContext, linkedIssues, provenanceMap, interRoundDiff });
     const sendOptions = effort ? { effort } : undefined;
     const response = await client.sendMessage(systemPrompt, userMessage, sendOptions);
     const findings = parseFindings(response.content, reviewer.name);
@@ -53368,7 +53368,8 @@ function annotateFileContentWithProvenance(content, path, provenanceMap) {
     }
     return lines.join('\n');
 }
-function buildReviewerUserMessage(rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, provenanceMap, interRoundDiff) {
+function buildReviewerUserMessage(rawDiff, repoContext, options = {}) {
+    const { fileContents, prContext, memoryContext, linkedIssues, provenanceMap, interRoundDiff } = options;
     let message = '';
     if (prContext) {
         message += `## Pull Request\n\n`;
@@ -53414,9 +53415,13 @@ function buildReviewerUserMessage(rawDiff, repoContext, fileContents, prContext,
         }
     }
     const useDelta = interRoundDiff !== undefined && interRoundDiff.trim().length > 0;
+    const hasFileContents = fileContents !== undefined && fileContents.size > 0;
     if (useDelta) {
         message += `## Pull Request Diff (delta since prior review round)\n\n`;
-        message += `Only the changes since the previous review round are shown below. The \`## Changed Files\` block above still contains the full content of every file touched by the whole PR, so you can ground your review in the surrounding code. Focus your findings on this delta — earlier changes were already reviewed in prior rounds.\n\n`;
+        const groundingNote = hasFileContents
+            ? `The \`## Changed Files\` block above still contains the full content of every file touched by the whole PR, so you can ground your review in the surrounding code. `
+            : '';
+        message += `Only the changes since the previous review round are shown below. ${groundingNote}Focus your findings on this delta — earlier changes were already reviewed in prior rounds.\n\n`;
         message += `\`\`\`diff\n${truncateDiff(interRoundDiff)}\n\`\`\``;
     }
     else {

@@ -1348,7 +1348,7 @@ describe('buildReviewerUserMessage', () => {
       ['src/foo.ts', 'const x = 1;\nexport default x;'],
       ['src/bar.ts', 'export function bar() { return 42; }'],
     ]);
-    const message = buildReviewerUserMessage('diff content', '', fileContents);
+    const message = buildReviewerUserMessage('diff content', '', { fileContents });
     expect(message).toContain('## Changed Files');
     expect(message).toContain('### File: src/foo.ts');
     expect(message).toContain('const x = 1;');
@@ -1361,23 +1361,23 @@ describe('buildReviewerUserMessage', () => {
     const fileContents = new Map([
       ['src/main.rs', 'fn main() {}'],
     ]);
-    const message = buildReviewerUserMessage('diff', '', fileContents);
+    const message = buildReviewerUserMessage('diff', '', { fileContents });
     expect(message).toContain('```rs\nfn main() {}');
   });
 
   it('omits file contents section when map is empty', () => {
-    const message = buildReviewerUserMessage('diff', '', new Map());
+    const message = buildReviewerUserMessage('diff', '', { fileContents: new Map() });
     expect(message).not.toContain('Changed Files');
   });
 
   it('omits file contents section when undefined', () => {
-    const message = buildReviewerUserMessage('diff', '', undefined);
+    const message = buildReviewerUserMessage('diff', '', {});
     expect(message).not.toContain('Changed Files');
   });
 
   it('places file contents before the diff', () => {
     const fileContents = new Map([['a.ts', 'content']]);
-    const message = buildReviewerUserMessage('diff', '', fileContents);
+    const message = buildReviewerUserMessage('diff', '', { fileContents });
     const filesIdx = message.indexOf('## Changed Files');
     const diffIdx = message.indexOf('## Pull Request Diff');
     expect(filesIdx).toBeLessThan(diffIdx);
@@ -1385,7 +1385,7 @@ describe('buildReviewerUserMessage', () => {
 
   it('includes PR context when provided', () => {
     const prContext = { title: 'Add login flow', body: 'Implements OAuth2 login.', baseBranch: 'main' };
-    const message = buildReviewerUserMessage('diff', '', undefined, prContext);
+    const message = buildReviewerUserMessage('diff', '', { prContext });
     expect(message).toContain('## Pull Request');
     expect(message).toContain('**Title**: Add login flow');
     expect(message).toContain('**Base branch**: main');
@@ -1399,7 +1399,7 @@ describe('buildReviewerUserMessage', () => {
 
   it('omits PR body when empty', () => {
     const prContext = { title: 'Fix bug', body: '', baseBranch: 'develop' };
-    const message = buildReviewerUserMessage('diff', '', undefined, prContext);
+    const message = buildReviewerUserMessage('diff', '', { prContext });
     expect(message).toContain('**Title**: Fix bug');
     expect(message).not.toContain('Implements');
   });
@@ -1407,14 +1407,14 @@ describe('buildReviewerUserMessage', () => {
   it('truncates long PR body at 2000 chars', () => {
     const longBody = 'x'.repeat(3000);
     const prContext = { title: 'Big PR', body: longBody, baseBranch: 'main' };
-    const message = buildReviewerUserMessage('diff', '', undefined, prContext);
+    const message = buildReviewerUserMessage('diff', '', { prContext });
     expect(message).toContain('... (truncated)');
     expect(message).not.toContain('x'.repeat(3000));
   });
 
   it('places PR context before repo context and diff', () => {
     const prContext = { title: 'Feature', body: 'Description', baseBranch: 'main' };
-    const message = buildReviewerUserMessage('diff', 'repo info', undefined, prContext);
+    const message = buildReviewerUserMessage('diff', 'repo info', { prContext });
     const prIdx = message.indexOf('## Pull Request');
     const repoIdx = message.indexOf('## Repository Context');
     const diffIdx = message.indexOf('## Pull Request Diff');
@@ -1424,13 +1424,13 @@ describe('buildReviewerUserMessage', () => {
 
   it('includes memory context when provided', () => {
     const memoryCtx = '<review-memory>\n## Review Memory — Learnings\nSome learning\n</review-memory>';
-    const message = buildReviewerUserMessage('diff', '', undefined, undefined, memoryCtx);
+    const message = buildReviewerUserMessage('diff', '', { memoryContext: memoryCtx });
     expect(message).toContain('## Review Memory');
     expect(message).toContain(memoryCtx);
   });
 
   it('omits memory context when empty', () => {
-    const message = buildReviewerUserMessage('diff', '', undefined, undefined, '');
+    const message = buildReviewerUserMessage('diff', '', { memoryContext: '' });
     expect(message).not.toContain('## Review Memory');
   });
 
@@ -1442,7 +1442,7 @@ describe('buildReviewerUserMessage', () => {
   it('places memory context after repo context and before file contents', () => {
     const fileContents = new Map([['a.ts', 'content']]);
     const memoryCtx = '<review-memory>learnings</review-memory>';
-    const message = buildReviewerUserMessage('diff', 'repo info', fileContents, undefined, memoryCtx);
+    const message = buildReviewerUserMessage('diff', 'repo info', { fileContents, memoryContext: memoryCtx });
     const repoIdx = message.indexOf('## Repository Context');
     const memIdx = message.indexOf('## Review Memory');
     const filesIdx = message.indexOf('## Changed Files');
@@ -1457,7 +1457,7 @@ describe('buildReviewerUserMessage', () => {
 describe('buildReviewerUserMessage inter-round delta', () => {
   it('uses the full PR diff when `interRoundDiff` is undefined (round 1)', () => {
     const message = buildReviewerUserMessage(
-      'full pr diff', '', undefined, undefined, undefined, undefined, undefined, undefined,
+      'full pr diff', '',
     );
     expect(message).toContain('## Pull Request Diff\n\n```diff\nfull pr diff\n```');
     expect(message).not.toContain('(delta since prior review round)');
@@ -1466,7 +1466,7 @@ describe('buildReviewerUserMessage inter-round delta', () => {
   it('substitutes the delta in place of the full diff when supplied', () => {
     const delta = '--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n';
     const message = buildReviewerUserMessage(
-      'full pr diff', '', undefined, undefined, undefined, undefined, undefined, delta,
+      'full pr diff', '', { interRoundDiff: delta },
     );
     expect(message).toContain('## Pull Request Diff (delta since prior review round)');
     expect(message).toContain(delta);
@@ -1480,7 +1480,7 @@ describe('buildReviewerUserMessage inter-round delta', () => {
     ]);
     const delta = '--- a/src/touched.ts\n+++ b/src/touched.ts\n@@ -1 +1 @@\n-export const a = 0;\n+export const a = 1;\n';
     const message = buildReviewerUserMessage(
-      'full pr diff', '', fileContents, undefined, undefined, undefined, undefined, delta,
+      'full pr diff', '', { fileContents, interRoundDiff: delta },
     );
     expect(message).toContain('### File: src/touched.ts');
     expect(message).toContain('### File: src/untouched-by-delta.ts');
@@ -1489,10 +1489,25 @@ describe('buildReviewerUserMessage inter-round delta', () => {
 
   it('falls through to the full PR diff when `interRoundDiff` is empty', () => {
     const message = buildReviewerUserMessage(
-      'full pr diff', '', undefined, undefined, undefined, undefined, undefined, '',
+      'full pr diff', '', { interRoundDiff: '' },
     );
     expect(message).toContain('## Pull Request Diff\n\n```diff\nfull pr diff\n```');
     expect(message).not.toContain('(delta since prior review round)');
+  });
+
+  it('omits the `## Changed Files` grounding note when fileContents are absent', () => {
+    const delta = '--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n';
+    const message = buildReviewerUserMessage('full pr diff', '', { interRoundDiff: delta });
+    expect(message).toContain('## Pull Request Diff (delta since prior review round)');
+    expect(message).not.toContain('`## Changed Files`');
+  });
+
+  it('includes the `## Changed Files` grounding note when fileContents are present', () => {
+    const fileContents = new Map([['src/x.ts', 'const x = 1;']]);
+    const delta = '--- a/src/x.ts\n+++ b/src/x.ts\n@@ -1 +1 @@\n-const x = 0;\n+const x = 1;\n';
+    const message = buildReviewerUserMessage('full pr diff', '', { fileContents, interRoundDiff: delta });
+    expect(message).toContain('## Pull Request Diff (delta since prior review round)');
+    expect(message).toContain('`## Changed Files`');
   });
 });
 
@@ -1757,7 +1772,7 @@ describe('buildReviewerUserMessage with linked issues', () => {
   ];
 
   it('includes linked issues section when provided', () => {
-    const message = buildReviewerUserMessage('diff', '', undefined, undefined, undefined, issues);
+    const message = buildReviewerUserMessage('diff', '', { linkedIssues: issues });
     expect(message).toContain('## Linked Issues');
     expect(message).toContain('### Issue #152: Pre-filter suppressed findings before judge evaluation');
     expect(message).toContain('The judge should not see suppressed findings.');
@@ -1765,7 +1780,7 @@ describe('buildReviewerUserMessage with linked issues', () => {
   });
 
   it('omits linked issues section when empty array', () => {
-    const message = buildReviewerUserMessage('diff', '', undefined, undefined, undefined, []);
+    const message = buildReviewerUserMessage('diff', '', { linkedIssues: [] });
     expect(message).not.toContain('## Linked Issues');
   });
 
@@ -1776,7 +1791,7 @@ describe('buildReviewerUserMessage with linked issues', () => {
 
   it('places linked issues after PR context and before repo context', () => {
     const prContext = { title: 'Feature', body: 'Description', baseBranch: 'main' };
-    const message = buildReviewerUserMessage('diff', 'repo info', undefined, prContext, undefined, issues);
+    const message = buildReviewerUserMessage('diff', 'repo info', { prContext, linkedIssues: issues });
     const prIdx = message.indexOf('## Pull Request');
     const issuesIdx = message.indexOf('## Linked Issues');
     const repoIdx = message.indexOf('## Repository Context');
@@ -1802,7 +1817,7 @@ describe('buildReviewerUserMessage with provenance map', () => {
       ['src/foo.ts', 'const a = 1;\nconst b = 2;\nconst c = 3;\nconst d = 4;'],
     ]);
     const provenance = [makeEntry({ lineStart: 2, lineEnd: 3, originatingRound: 2 })];
-    const message = buildReviewerUserMessage('diff', '', fileContents, undefined, undefined, undefined, provenance);
+    const message = buildReviewerUserMessage('diff', '', { fileContents, provenanceMap: provenance });
     expect(message).toContain('// [manki: added in round 2]');
     const annotationIdx = message.indexOf('// [manki: added in round 2]');
     const bIdx = message.indexOf('const b = 2;');
@@ -1819,7 +1834,7 @@ describe('buildReviewerUserMessage with provenance map', () => {
       originatingRound: 3,
       originatingTitle: 'Missing null check could crash the app',
     })];
-    const message = buildReviewerUserMessage('diff', '', fileContents, undefined, undefined, undefined, provenance);
+    const message = buildReviewerUserMessage('diff', '', { fileContents, provenanceMap: provenance });
     expect(message).toContain('// [manki: added in round 3]');
     expect(message).not.toContain('Missing null check');
     expect(message).not.toContain('required');
@@ -1830,14 +1845,14 @@ describe('buildReviewerUserMessage with provenance map', () => {
 
   it('skips annotation when provenance map is empty', () => {
     const fileContents = new Map([['src/foo.ts', 'const a = 1;\nconst b = 2;']]);
-    const message = buildReviewerUserMessage('diff', '', fileContents, undefined, undefined, undefined, []);
+    const message = buildReviewerUserMessage('diff', '', { fileContents, provenanceMap: [] });
     expect(message).not.toContain('// [manki:');
     expect(message).not.toContain('added by manki');
   });
 
   it('skips annotation when provenance map is undefined', () => {
     const fileContents = new Map([['src/foo.ts', 'const a = 1;\nconst b = 2;']]);
-    const message = buildReviewerUserMessage('diff', '', fileContents);
+    const message = buildReviewerUserMessage('diff', '', { fileContents });
     expect(message).not.toContain('// [manki:');
   });
 
@@ -1847,7 +1862,7 @@ describe('buildReviewerUserMessage with provenance map', () => {
       ['src/bar.ts', 'bar1\nbar2\nbar3'],
     ]);
     const provenance = [makeEntry({ file: 'src/foo.ts', lineStart: 2, lineEnd: 2, originatingRound: 1 })];
-    const message = buildReviewerUserMessage('diff', '', fileContents, undefined, undefined, undefined, provenance);
+    const message = buildReviewerUserMessage('diff', '', { fileContents, provenanceMap: provenance });
     const fooSection = message.slice(message.indexOf('### File: src/foo.ts'), message.indexOf('### File: src/bar.ts'));
     const barSection = message.slice(message.indexOf('### File: src/bar.ts'));
     expect(fooSection).toContain('// [manki: added in round 1]');
@@ -1862,7 +1877,7 @@ describe('buildReviewerUserMessage with provenance map', () => {
       makeEntry({ lineStart: 2, lineEnd: 2, originatingRound: 1 }),
       makeEntry({ lineStart: 5, lineEnd: 5, originatingRound: 2 }),
     ];
-    const message = buildReviewerUserMessage('diff', '', fileContents, undefined, undefined, undefined, provenance);
+    const message = buildReviewerUserMessage('diff', '', { fileContents, provenanceMap: provenance });
     const firstIdx = message.indexOf('// [manki: added in round 1]');
     const secondIdx = message.indexOf('// [manki: added in round 2]');
     const lineBIdx = message.indexOf('\nb\n');
@@ -1875,7 +1890,7 @@ describe('buildReviewerUserMessage with provenance map', () => {
   it('includes a short explanation of the annotation when provenance is present', () => {
     const fileContents = new Map([['src/foo.ts', 'a\nb']]);
     const provenance = [makeEntry({ lineStart: 2, lineEnd: 2, originatingRound: 1 })];
-    const message = buildReviewerUserMessage('diff', '', fileContents, undefined, undefined, undefined, provenance);
+    const message = buildReviewerUserMessage('diff', '', { fileContents, provenanceMap: provenance });
     // Annotation uses the numeric round
     expect(message).toContain('// [manki: added in round 1]');
     // Explanation text uses the literal `N` placeholder and the `factual note` phrase
@@ -1886,14 +1901,14 @@ describe('buildReviewerUserMessage with provenance map', () => {
   it('skips annotation when lineStart is out of bounds', () => {
     const fileContents = new Map([['src/foo.ts', 'line1\nline2']]);
     const provenance = [makeEntry({ lineStart: 10, lineEnd: 10, originatingRound: 1 })];
-    const message = buildReviewerUserMessage('diff', '', fileContents, undefined, undefined, undefined, provenance);
+    const message = buildReviewerUserMessage('diff', '', { fileContents, provenanceMap: provenance });
     expect(message).not.toContain('[manki: added in round 1]');
   });
 
   it('uses # comment prefix for Python files', () => {
     const fileContents = new Map([['src/script.py', 'x = 1\ny = 2\nz = 3']]);
     const provenance = [makeEntry({ file: 'src/script.py', lineStart: 2, lineEnd: 2, originatingRound: 1 })];
-    const message = buildReviewerUserMessage('diff', '', fileContents, undefined, undefined, undefined, provenance);
+    const message = buildReviewerUserMessage('diff', '', { fileContents, provenanceMap: provenance });
     expect(message).toContain('# [manki: added in round 1]');
     expect(message).not.toContain('// [manki: added in round 1]');
   });
@@ -1901,7 +1916,7 @@ describe('buildReviewerUserMessage with provenance map', () => {
   it('skips annotation and explanation for HTML files with no comment syntax', () => {
     const fileContents = new Map([['src/template.html', '<div>\n<span>hi</span>\n</div>']]);
     const provenance = [makeEntry({ file: 'src/template.html', lineStart: 2, lineEnd: 2, originatingRound: 1 })];
-    const message = buildReviewerUserMessage('diff', '', fileContents, undefined, undefined, undefined, provenance);
+    const message = buildReviewerUserMessage('diff', '', { fileContents, provenanceMap: provenance });
     expect(message).not.toContain('[manki:');
     expect(message).not.toContain('factual note');
     expect(message).toContain('<span>hi</span>');
