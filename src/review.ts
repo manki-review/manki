@@ -811,7 +811,7 @@ export async function runReview(
         Array.from({ length: passes }, () => {
           const shuffledDiff = shuffleDiffFiles(diff);
           const shuffledRawDiff = rebuildRawDiff(shuffledDiff);
-          return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: agentEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap });
+          return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: agentEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap, interRoundDiff });
         })
       );
 
@@ -908,7 +908,7 @@ export async function runReview(
             const shuffledDiff = shuffleDiffFiles(diff);
             const shuffledRawDiff = rebuildRawDiff(shuffledDiff);
             const retryEffort = agentEffortMap.get(agent.name) ?? defaultReviewerEffort;
-            return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: retryEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap });
+            return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: retryEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap, interRoundDiff });
           })
         );
 
@@ -978,7 +978,7 @@ export async function runReview(
     const agentPromises = team.agents.map(agent => {
       const startTime = Date.now();
       const agentEffort = agentEffortMap.get(agent.name) ?? defaultReviewerEffort;
-      return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: agentEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap })
+      return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: agentEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap, interRoundDiff })
         .then(agentResult => {
           completedCount++;
           agentResponseLengths.set(agent.name, agentResult.responseLength);
@@ -1063,7 +1063,7 @@ export async function runReview(
       const retryPromises = agentsToRetry.map(agent => {
         const startTime = Date.now();
         const retryEffort = agentEffortMap.get(agent.name) ?? defaultReviewerEffort;
-        return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: retryEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap })
+        return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: retryEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap, interRoundDiff })
           .then(agentResult => ({ agent, agentResult, durationMs: Date.now() - startTime, error: null as unknown }))
           .catch(error => ({ agent, agentResult: null as AgentResult | null, durationMs: Date.now() - startTime, error: error as unknown }));
       });
@@ -1370,14 +1370,17 @@ interface AgentResult {
   latencyMs: number;
 }
 
-interface RunReviewerAgentOptions {
+export interface RunReviewerAgentOptions {
   effort?: EffortLevel;
   language?: string;
   context?: string;
   provenanceMap?: ProvenanceEntry[];
+  // Plumbed from `runReview` for future per-round diff scoping. Reviewers do
+  // not consume it yet, the full PR diff still drives the reviewer prompt.
+  interRoundDiff?: string;
 }
 
-async function runReviewerAgent(
+export async function runReviewerAgent(
   client: LLMClient,
   config: ReviewConfig,
   reviewer: ReviewerAgent,

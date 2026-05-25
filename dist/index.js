@@ -52027,6 +52027,7 @@ exports.runPlanner = runPlanner;
 exports.collectPriorRoundAgents = collectPriorRoundAgents;
 exports.buildProvenanceFields = buildProvenanceFields;
 exports.runReview = runReview;
+exports.runReviewerAgent = runReviewerAgent;
 exports.buildReviewerSystemPrompt = buildReviewerSystemPrompt;
 exports.buildReviewerUserMessage = buildReviewerUserMessage;
 exports.parseFindings = parseFindings;
@@ -52704,7 +52705,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
             const passResults = await Promise.allSettled(Array.from({ length: passes }, () => {
                 const shuffledDiff = shuffleDiffFiles(diff);
                 const shuffledRawDiff = rebuildRawDiff(shuffledDiff);
-                return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: agentEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap });
+                return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: agentEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap, interRoundDiff });
             }));
             const passFindings = [];
             let totalResponseLength = 0;
@@ -52791,7 +52792,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
                     const shuffledDiff = shuffleDiffFiles(diff);
                     const shuffledRawDiff = rebuildRawDiff(shuffledDiff);
                     const retryEffort = agentEffortMap.get(agent.name) ?? defaultReviewerEffort;
-                    return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: retryEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap });
+                    return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: retryEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap, interRoundDiff });
                 }));
                 const retryPassFindings = [];
                 let retryTotalResponseLength = 0;
@@ -52859,7 +52860,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
         const agentPromises = team.agents.map(agent => {
             const startTime = Date.now();
             const agentEffort = agentEffortMap.get(agent.name) ?? defaultReviewerEffort;
-            return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: agentEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap })
+            return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: agentEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap, interRoundDiff })
                 .then(agentResult => {
                 completedCount++;
                 agentResponseLengths.set(agent.name, agentResult.responseLength);
@@ -52938,7 +52939,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
             const retryPromises = agentsToRetry.map(agent => {
                 const startTime = Date.now();
                 const retryEffort = agentEffortMap.get(agent.name) ?? defaultReviewerEffort;
-                return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: retryEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap })
+                return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: retryEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap, interRoundDiff })
                     .then(agentResult => ({ agent, agentResult, durationMs: Date.now() - startTime, error: null }))
                     .catch(error => ({ agent, agentResult: null, durationMs: Date.now() - startTime, error: error }));
             });
