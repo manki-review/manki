@@ -21,6 +21,7 @@ import {
   parseAgentPicks,
   sanitizePlannerField,
   buildProvenanceFields,
+  countChangedLines,
   ReviewClients,
   PLANNER_TIMEOUT_MS,
   PlannerOutcomeSink,
@@ -3772,7 +3773,7 @@ describe('runReview', () => {
         undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
         priorRounds.map(roundContextFromLegacy),
         undefined,
-        'delta line one\ndelta line two\ndelta line three',
+        '--- a/foo.ts\n+++ b/foo.ts\n@@ -1,3 +1,3 @@\n context\n-removed line one\n-removed line two\n+added line one',
       );
 
       // Follow-up context rendered into the system prompt the planner client saw.
@@ -7235,5 +7236,32 @@ describe('buildProvenanceFields', () => {
   it('omits `agentMultiPassConsistency` when the map is empty', () => {
     const result = buildProvenanceFields('planner', undefined, baseTeam, [], new Map(), new Map());
     expect(result).not.toHaveProperty('agentMultiPassConsistency');
+  });
+});
+
+describe('countChangedLines', () => {
+  it('counts only added and removed lines, excluding headers, hunk markers, and context', () => {
+    const diff = [
+      'diff --git a/foo.ts b/foo.ts',
+      '--- a/foo.ts',
+      '+++ b/foo.ts',
+      '@@ -1,5 +1,6 @@',
+      ' context line',
+      '-removed line',
+      '+added line one',
+      '+added line two',
+      ' another context line',
+      '-second removed',
+    ].join('\n');
+    expect(countChangedLines(diff)).toBe(4);
+  });
+
+  it('returns 0 for an empty string', () => {
+    expect(countChangedLines('')).toBe(0);
+  });
+
+  it('does not count --- or +++ file header lines', () => {
+    const diff = '--- a/foo.ts\n+++ b/foo.ts\n-removed\n+added';
+    expect(countChangedLines(diff)).toBe(2);
   });
 });

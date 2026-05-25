@@ -410,6 +410,14 @@ export interface PlannerFollowUpContext {
   pinnedTeam: string[];
 }
 
+export function countChangedLines(diff: string): number {
+  if (!diff) return 0;
+  return diff.split('\n').filter(line => {
+    if (line.startsWith('+++') || line.startsWith('---')) return false;
+    return line.startsWith('+') || line.startsWith('-');
+  }).length;
+}
+
 function renderFollowUpContext(ctx: PlannerFollowUpContext): string {
   const teamList = ctx.pinnedTeam.length > 0
     ? ctx.pinnedTeam.map(n => `"${n}"`).join(', ')
@@ -771,7 +779,7 @@ export async function runReview(
     const followUpContext: PlannerFollowUpContext | undefined = currentRound > 1
       ? {
           round: currentRound,
-          deltaLines: interRoundDiff ? interRoundDiff.split('\n').length : 0,
+          deltaLines: countChangedLines(interRoundDiff ?? ''),
           pinnedTeam: priorRoundAgents,
         }
       : undefined;

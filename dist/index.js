@@ -52020,6 +52020,7 @@ exports.rebuildRawDiff = rebuildRawDiff;
 exports.findingsMatch = findingsMatch;
 exports.intersectFindings = intersectFindings;
 exports.buildPlannerHints = buildPlannerHints;
+exports.countChangedLines = countChangedLines;
 exports.buildPlannerSystemPrompt = buildPlannerSystemPrompt;
 exports.sanitizePlannerField = sanitizePlannerField;
 exports.parseAgentPicks = parseAgentPicks;
@@ -52364,6 +52365,15 @@ Specialists whose recent findings were entirely dismissed warrant lower priority
 
 `;
 }
+function countChangedLines(diff) {
+    if (!diff)
+        return 0;
+    return diff.split('\n').filter(line => {
+        if (line.startsWith('+++') || line.startsWith('---'))
+            return false;
+        return line.startsWith('+') || line.startsWith('-');
+    }).length;
+}
 function renderFollowUpContext(ctx) {
     const teamList = ctx.pinnedTeam.length > 0
         ? ctx.pinnedTeam.map(n => `"${n}"`).join(', ')
@@ -52650,7 +52660,7 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
         const followUpContext = currentRound > 1
             ? {
                 round: currentRound,
-                deltaLines: interRoundDiff ? interRoundDiff.split('\n').length : 0,
+                deltaLines: countChangedLines(interRoundDiff ?? ''),
                 pinnedTeam: priorRoundAgents,
             }
             : undefined;
