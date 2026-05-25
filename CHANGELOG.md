@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.3.0] - 2026-05-25
+
+### Added
+
+- `RunReviewerAgentOptions` now accepts an optional `interRoundDiff` field, threaded through all four call sites in the review pipeline. On follow-up rounds with a non-empty `interRoundDiff`, the `## Pull Request Diff` block in the reviewer prompt becomes `## Pull Request Diff (delta since prior review round)` populated with the delta instead of the full PR diff, so reviewers focus exclusively on what changed since they last looked. The `## Changed Files` block continues to carry full-PR file contents for reference. Closes [#820](https://github.com/manki-review/manki/issues/820), [#821](https://github.com/manki-review/manki/issues/821) ([PR #853](https://github.com/manki-review/manki/pull/853), [PR #854](https://github.com/manki-review/manki/pull/854)).
+- On follow-up rounds (round > 1), the planner system prompt now includes a `## Follow-Up Round Context` block with the current round number, the inter-round delta line count (counting only `+`/`-` lines, not headers or context lines, via a new `countChangedLines` helper), and the pinned team that will be unioned with the planner's picks, along with guidance to default to the prior team when the delta is small. Closes [#822](https://github.com/manki-review/manki/issues/822) ([PR #855](https://github.com/manki-review/manki/pull/855)).
+
+### Fixed
+
+- `isPriorLikelyUnresolved` now retires threadless priors (handover entries without a `threadId`, produced before the `threadId` field was introduced) when no review threads are currently open on the PR. Previously, these legacy priors triggered a false `Blocking unresolved review threads:` header on long-running PRs whose round 1 ran on a pre-`threadId` handover format, even though all threads had since been resolved. Closes [#847](https://github.com/manki-review/manki/issues/847) ([PR #851](https://github.com/manki-review/manki/pull/851)).
+
 ## [5.2.0] - 2026-05-24
 
 ### Added
@@ -507,7 +518,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Basic review posting with inline comments
 - Configuration via `.manki.yml`
 
-[Unreleased]: https://github.com/manki-review/manki/compare/v5.2.0...HEAD
+[Unreleased]: https://github.com/manki-review/manki/compare/v5.3.0...HEAD
+[5.3.0]: https://github.com/manki-review/manki/compare/v5.2.0...v5.3.0
 [5.2.0]: https://github.com/manki-review/manki/compare/v5.1.1...v5.2.0
 [5.1.1]: https://github.com/manki-review/manki/compare/v5.1.0...v5.1.1
 [5.1.0]: https://github.com/manki-review/manki/compare/v5.0.1...v5.1.0
