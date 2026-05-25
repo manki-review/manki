@@ -52364,12 +52364,27 @@ Specialists whose recent findings were entirely dismissed warrant lower priority
 
 `;
 }
-function buildPlannerSystemPrompt(agents, hints) {
+function renderFollowUpContext(ctx) {
+    const teamList = ctx.pinnedTeam.length > 0
+        ? ctx.pinnedTeam.map(n => `"${n}"`).join(', ')
+        : '(none)';
+    return `## Follow-Up Round Context
+
+This is round ${ctx.round}. The inter-round delta is ${ctx.deltaLines} lines. The pinned team from prior rounds is: ${teamList}.
+
+Your picks will be unioned with the pinned team before the review runs. Picking a subset of the pinned team keeps the team the same size. Picking names outside the pinned team grows the team. Default to the pinned team unless the delta introduces a concern outside its coverage, in which case add the missing specialist.
+
+`;
+}
+function buildPlannerSystemPrompt(agents, hints, followUpContext) {
     const agentList = agents.map(a => `  - "${a.name}" — ${a.focus}`).join('\n');
     const hintsBlock = hints && hints.length > 0 ? renderPlannerHints(hints) : '';
+    const followUpBlock = followUpContext && followUpContext.round > 1
+        ? renderFollowUpContext(followUpContext)
+        : '';
     return `You are a code review planning assistant. Analyze this PR and decide how to review it.
 
-${hintsBlock}Decide:
+${hintsBlock}${followUpBlock}Decide:
 1. teamSize: 1-7 reviewer agents.
    Default to 3. Use 2 when the change is small but non-trivial. Scale to 4-5 for broader changes. 7 is rare — reserve it for changes where missing a specialist would be dangerous. Diff size alone doesn't determine team size — a 50-line auth change needs more eyes than a 500-line rename.
    - 1: changes where a bug is unrealistic (docs, comments, renames)
@@ -52458,7 +52473,7 @@ function parseAgentPicks(raw, availableNames) {
         return null;
     return picks;
 }
-async function runPlanner(client, diff, prContext, customReviewers, priorRoundHints, outcome) {
+async function runPlanner(client, diff, prContext, customReviewers, priorRoundHints, outcome, followUpContext) {
     let timeoutId;
     const timeoutPromise = new Promise((_, reject) => {
         timeoutId = setTimeout(() => reject(new PlannerTimeoutError()), exports.PLANNER_TIMEOUT_MS);
@@ -52466,7 +52481,7 @@ async function runPlanner(client, diff, prContext, customReviewers, priorRoundHi
     try {
         const pool = (0, agents_1.buildAgentPool)(customReviewers);
         const availableNames = new Set(pool.map(a => a.name));
-        const systemPrompt = buildPlannerSystemPrompt(pool, priorRoundHints);
+        const systemPrompt = buildPlannerSystemPrompt(pool, priorRoundHints, followUpContext);
         const userMessage = buildPlannerSummary(diff, prContext);
         const response = await Promise.race([
             client.sendMessage(systemPrompt, userMessage, { effort: 'high' }),
@@ -52631,7 +52646,15 @@ async function runReview(clients, config, diff, rawDiff, repoContext, memory, fi
         const plannerStart = Date.now();
         const plannerWrap = (0, providers_1.wrapClientForUsage)(clients.planner);
         const outcome = {};
-        plannerResult = await runPlanner(plannerWrap.client, diff, prContext, config.reviewers, priorRoundHints, outcome);
+        const currentRound = (priorRounds?.length ?? 0) + 1;
+        const followUpContext = currentRound > 1
+            ? {
+                round: currentRound,
+                deltaLines: interRoundDiff ? interRoundDiff.split('\n').length : 0,
+                pinnedTeam: priorRoundAgents,
+            }
+            : undefined;
+        plannerResult = await runPlanner(plannerWrap.client, diff, prContext, config.reviewers, priorRoundHints, outcome, followUpContext);
         plannerUsage = plannerWrap.getTotals().usage;
         plannerDurationMs = Date.now() - plannerStart;
         if (plannerResult) {
