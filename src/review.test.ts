@@ -21,6 +21,7 @@ import {
   parseAgentPicks,
   sanitizePlannerField,
   buildProvenanceFields,
+  countChangedLines,
   ReviewClients,
   PLANNER_TIMEOUT_MS,
   PlannerOutcomeSink,
@@ -3750,6 +3751,48 @@ describe('runReview', () => {
     expect(secPick?.effort).toBe('high');
   });
 
+  it('composes follow-up planner context with applyEffortDowngrade — both layers apply', async () => {
+    // The planner sees the new follow-up section (round, delta, pinned team)
+    // AND the downgrade still clamps a 100%-dismiss specialist from high to low.
+    const { clients, config, diff } = makeEffortDowngradeFixture();
+
+    const priorRounds: LegacyHandoverRoundFixture[] = [{
+      round: 1,
+      commitSha: 'abc',
+      timestamp: 't',
+      findings: [
+        { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'suggestion', title: 't1', authorReply: 'agree', specialist: 'Security & Safety' },
+        { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'suggestion', title: 't2', authorReply: 'agree', specialist: 'Security & Safety' },
+      ],
+    }];
+
+    const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
+    try {
+      const result = await runReview(
+        clients, config, diff, 'raw diff', 'repo context',
+        undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+        priorRounds.map(roundContextFromLegacy),
+        undefined,
+        '--- a/foo.ts\n+++ b/foo.ts\n@@ -1,3 +1,3 @@\n context\n-removed line one\n-removed line two\n+added line one',
+      );
+
+      // Follow-up context rendered into the system prompt the planner client saw.
+      const plannerSend = (clients.planner!.sendMessage as jest.Mock).mock.calls[0];
+      const systemPrompt = plannerSend[0] as string;
+      expect(systemPrompt).toContain('Follow-Up Round Context');
+      expect(systemPrompt).toContain('This is round 2');
+      expect(systemPrompt).toContain('3 lines');
+      expect(systemPrompt).toContain('"Security & Safety"');
+      expect(systemPrompt).toContain('Prior Round Outcomes');
+
+      // Downgrade still applies on top of the new prompt guidance.
+      const secPick = result.plannerResult!.agents!.find(a => a.name === 'Security & Safety');
+      expect(secPick?.effort).toBe('low');
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
   it('applyEffortDowngrade uses last hint by array position, not by round number', async () => {
     // When hints are out of order by round number, the guard reads hints[hints.length - 1]
     // (the last element by position). This test documents that coupling so future changes
@@ -5863,6 +5906,83 @@ describe('buildPlannerSystemPrompt', () => {
     expect(withEmptyHints).toBe(baseline);
     expect(withEmptyHints).not.toContain('Prior Round Outcomes');
   });
+
+  it('omits the follow-up section on round 1', () => {
+    const agents = [{ name: 'A', focus: 'test focus' }];
+    const baseline = buildPlannerSystemPrompt(agents);
+    const round1 = buildPlannerSystemPrompt(agents, undefined, {
+      round: 1,
+      deltaLines: 0,
+      pinnedTeam: [],
+    });
+    expect(round1).toBe(baseline);
+    expect(round1).not.toContain('Follow-Up Round Context');
+    expect(round1).not.toContain('pinned team');
+    expect(round1).not.toContain('unioned');
+  });
+
+  it('renders round number, delta line count, pinned team, and union semantics on follow-up rounds', () => {
+    const agents = [{ name: 'A', focus: 'test focus' }];
+    const prompt = buildPlannerSystemPrompt(agents, undefined, {
+      round: 3,
+      deltaLines: 42,
+      pinnedTeam: ['Correctness & Logic', 'Testing & Coverage'],
+    });
+
+    expect(prompt).toContain('Follow-Up Round Context');
+    expect(prompt).toContain('This is round 3');
+    expect(prompt).toContain('42 lines');
+    expect(prompt).toContain('"Correctness & Logic"');
+    expect(prompt).toContain('"Testing & Coverage"');
+    expect(prompt).toContain('unioned with the pinned team');
+    expect(prompt).toContain('Default to the pinned team');
+
+    // Follow-up section appears before the "Decide:" block so the planner reads it first.
+    const followUpIdx = prompt.indexOf('Follow-Up Round Context');
+    expect(followUpIdx).toBeLessThan(prompt.indexOf('Decide:'));
+  });
+
+  it('renders the follow-up section even when the delta is empty', () => {
+    const agents = [{ name: 'A', focus: 'test focus' }];
+    const prompt = buildPlannerSystemPrompt(agents, undefined, {
+      round: 2,
+      deltaLines: 0,
+      pinnedTeam: ['Correctness & Logic'],
+    });
+
+    expect(prompt).toContain('Follow-Up Round Context');
+    expect(prompt).toContain('This is round 2');
+    expect(prompt).toContain('0 lines');
+    expect(prompt).toContain('"Correctness & Logic"');
+    expect(prompt).toContain('Default to the pinned team');
+  });
+
+  it('composes follow-up context with prior-round hints, both blocks render before Decide', () => {
+    const agents = [{ name: 'A', focus: 'test focus' }];
+    const hints = [
+      {
+        round: 1,
+        specialistOutcomes: [
+          { specialist: 'Testing & Coverage', findingsKept: 0, findingsDismissed: 3 },
+        ],
+      },
+    ];
+    const prompt = buildPlannerSystemPrompt(agents, hints, {
+      round: 2,
+      deltaLines: 17,
+      pinnedTeam: ['Testing & Coverage'],
+    });
+
+    expect(prompt).toContain('Prior Round Outcomes');
+    expect(prompt).toContain('Follow-Up Round Context');
+    expect(prompt).toContain('17 lines');
+
+    const hintsIdx = prompt.indexOf('Prior Round Outcomes');
+    const followUpIdx = prompt.indexOf('Follow-Up Round Context');
+    const decideIdx = prompt.indexOf('Decide:');
+    expect(hintsIdx).toBeLessThan(followUpIdx);
+    expect(followUpIdx).toBeLessThan(decideIdx);
+  });
 });
 
 describe('runPlanner with agents and language', () => {
@@ -7116,5 +7236,32 @@ describe('buildProvenanceFields', () => {
   it('omits `agentMultiPassConsistency` when the map is empty', () => {
     const result = buildProvenanceFields('planner', undefined, baseTeam, [], new Map(), new Map());
     expect(result).not.toHaveProperty('agentMultiPassConsistency');
+  });
+});
+
+describe('countChangedLines', () => {
+  it('counts only added and removed lines, excluding headers, hunk markers, and context', () => {
+    const diff = [
+      'diff --git a/foo.ts b/foo.ts',
+      '--- a/foo.ts',
+      '+++ b/foo.ts',
+      '@@ -1,5 +1,6 @@',
+      ' context line',
+      '-removed line',
+      '+added line one',
+      '+added line two',
+      ' another context line',
+      '-second removed',
+    ].join('\n');
+    expect(countChangedLines(diff)).toBe(4);
+  });
+
+  it('returns 0 for an empty string', () => {
+    expect(countChangedLines('')).toBe(0);
+  });
+
+  it('does not count --- or +++ file header lines', () => {
+    const diff = '--- a/foo.ts\n+++ b/foo.ts\n-removed\n+added';
+    expect(countChangedLines(diff)).toBe(2);
   });
 });

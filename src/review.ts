@@ -393,16 +393,58 @@ Specialists whose recent findings were entirely dismissed warrant lower priority
 `;
 }
 
+/**
+ * Single-shot context for the current planner invocation. Distinct from
+ * `PlannerRoundHint` (which is per-prior-round). Only rendered when `round > 1`
+ * so round 1 prompts stay identical to the pre-follow-up baseline.
+ */
+export interface PlannerFollowUpContext {
+  /** 1-indexed round number for the current review. */
+  round: number;
+  /** Line count of the inter-round delta diff (0 when the delta is empty). */
+  deltaLines: number;
+  /**
+   * Agent names from prior rounds that will be unioned with the planner's
+   * picks before the team runs. Empty array is treated as no pinned team.
+   */
+  pinnedTeam: string[];
+}
+
+export function countChangedLines(diff: string): number {
+  if (!diff) return 0;
+  return diff.split('\n').filter(line => {
+    if (line.startsWith('+++') || line.startsWith('---')) return false;
+    return line.startsWith('+') || line.startsWith('-');
+  }).length;
+}
+
+function renderFollowUpContext(ctx: PlannerFollowUpContext): string {
+  const teamList = ctx.pinnedTeam.length > 0
+    ? ctx.pinnedTeam.map(n => `"${n}"`).join(', ')
+    : '(none)';
+  return `## Follow-Up Round Context
+
+This is round ${ctx.round}. The inter-round delta is ${ctx.deltaLines} lines. The pinned team from prior rounds is: ${teamList}.
+
+Your picks will be unioned with the pinned team before the review runs. Picking a subset of the pinned team keeps the team the same size. Picking names outside the pinned team grows the team. Default to the pinned team unless the delta introduces a concern outside its coverage, in which case add the missing specialist.
+
+`;
+}
+
 export function buildPlannerSystemPrompt(
   agents: Array<{ name: string; focus: string }>,
   hints?: PlannerRoundHint[],
+  followUpContext?: PlannerFollowUpContext,
 ): string {
   const agentList = agents.map(a => `  - "${a.name}" — ${a.focus}`).join('\n');
   const hintsBlock = hints && hints.length > 0 ? renderPlannerHints(hints) : '';
+  const followUpBlock = followUpContext && followUpContext.round > 1
+    ? renderFollowUpContext(followUpContext)
+    : '';
 
   return `You are a code review planning assistant. Analyze this PR and decide how to review it.
 
-${hintsBlock}Decide:
+${hintsBlock}${followUpBlock}Decide:
 1. teamSize: 1-7 reviewer agents.
    Default to 3. Use 2 when the change is small but non-trivial. Scale to 4-5 for broader changes. 7 is rare — reserve it for changes where missing a specialist would be dangerous. Diff size alone doesn't determine team size — a 50-line auth change needs more eyes than a 500-line rename.
    - 1: changes where a bug is unrealistic (docs, comments, renames)
@@ -515,6 +557,7 @@ export async function runPlanner(
   customReviewers?: ReviewerAgent[],
   priorRoundHints?: PlannerRoundHint[],
   outcome?: PlannerOutcomeSink,
+  followUpContext?: PlannerFollowUpContext,
 ): Promise<PlannerResult | null> {
   let timeoutId: ReturnType<typeof setTimeout>;
   const timeoutPromise = new Promise<never>((_, reject) => {
@@ -524,7 +567,7 @@ export async function runPlanner(
   try {
     const pool = buildAgentPool(customReviewers);
     const availableNames = new Set(pool.map(a => a.name));
-    const systemPrompt = buildPlannerSystemPrompt(pool, priorRoundHints);
+    const systemPrompt = buildPlannerSystemPrompt(pool, priorRoundHints, followUpContext);
 
     const userMessage = buildPlannerSummary(diff, prContext);
     const response = await Promise.race([
@@ -732,7 +775,15 @@ export async function runReview(
     const plannerStart = Date.now();
     const plannerWrap = wrapClientForUsage(clients.planner);
     const outcome: PlannerOutcomeSink = {};
-    plannerResult = await runPlanner(plannerWrap.client, diff, prContext, config.reviewers, priorRoundHints, outcome);
+    const currentRound = (priorRounds?.length ?? 0) + 1;
+    const followUpContext: PlannerFollowUpContext | undefined = currentRound > 1
+      ? {
+          round: currentRound,
+          deltaLines: countChangedLines(interRoundDiff ?? ''),
+          pinnedTeam: priorRoundAgents,
+        }
+      : undefined;
+    plannerResult = await runPlanner(plannerWrap.client, diff, prContext, config.reviewers, priorRoundHints, outcome, followUpContext);
     plannerUsage = plannerWrap.getTotals().usage;
     plannerDurationMs = Date.now() - plannerStart;
     if (plannerResult) {
