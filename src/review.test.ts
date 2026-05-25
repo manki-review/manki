@@ -1454,6 +1454,48 @@ describe('buildReviewerUserMessage', () => {
 
 });
 
+describe('buildReviewerUserMessage inter-round delta', () => {
+  it('uses the full PR diff when `interRoundDiff` is undefined (round 1)', () => {
+    const message = buildReviewerUserMessage(
+      'full pr diff', '', undefined, undefined, undefined, undefined, undefined, undefined,
+    );
+    expect(message).toContain('## Pull Request Diff\n\n```diff\nfull pr diff\n```');
+    expect(message).not.toContain('(delta since prior review round)');
+  });
+
+  it('substitutes the delta in place of the full diff when supplied', () => {
+    const delta = '--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n';
+    const message = buildReviewerUserMessage(
+      'full pr diff', '', undefined, undefined, undefined, undefined, undefined, delta,
+    );
+    expect(message).toContain('## Pull Request Diff (delta since prior review round)');
+    expect(message).toContain(delta);
+    expect(message).not.toContain('```diff\nfull pr diff\n```');
+  });
+
+  it('keeps the full-PR file contents block even when the delta drives the diff', () => {
+    const fileContents = new Map([
+      ['src/touched.ts', 'export const a = 1;'],
+      ['src/untouched-by-delta.ts', 'export const b = 2;'],
+    ]);
+    const delta = '--- a/src/touched.ts\n+++ b/src/touched.ts\n@@ -1 +1 @@\n-export const a = 0;\n+export const a = 1;\n';
+    const message = buildReviewerUserMessage(
+      'full pr diff', '', fileContents, undefined, undefined, undefined, undefined, delta,
+    );
+    expect(message).toContain('### File: src/touched.ts');
+    expect(message).toContain('### File: src/untouched-by-delta.ts');
+    expect(message).toContain('export const b = 2;');
+  });
+
+  it('falls through to the full PR diff when `interRoundDiff` is empty', () => {
+    const message = buildReviewerUserMessage(
+      'full pr diff', '', undefined, undefined, undefined, undefined, undefined, '',
+    );
+    expect(message).toContain('## Pull Request Diff\n\n```diff\nfull pr diff\n```');
+    expect(message).not.toContain('(delta since prior review round)');
+  });
+});
+
 describe('parseFindings with extractJSON', () => {
   it('extracts JSON array from text with preamble', () => {
     const input = 'Here are my findings:\n\n[{"severity":"blocking","title":"Bug","file":"a.ts","line":1,"description":"Crash"}]';
@@ -4499,12 +4541,14 @@ describe('runReview', () => {
     expect(new Set(result.agentNames).size).toBe(result.agentNames.length);
   });
 
-  // Plumbing-only coverage for `interRoundDiff`. Reviewers do not consume the
-  // parameter yet, so accepting it must not change what the reviewer client
-  // sees. The follow-up sub-issue wires it into the reviewer prompt.
-  it('accepts `interRoundDiff` without changing reviewer client input', async () => {
+  // On follow-up rounds with a non-empty delta, the reviewer prompt's diff
+  // block must use the delta instead of the full PR diff. Without a delta
+  // (first round, or empty delta on a force-pushed reset) the prompt falls
+  // through to the full PR diff so reviewers still have something to chew on.
+  it('substitutes the inter-round delta into the reviewer prompt when non-empty', async () => {
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const delta = '--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n';
 
     const baselineClients = makeClients();
     await runReview(
@@ -4518,17 +4562,49 @@ describe('runReview', () => {
       withDiffClients, config, diff, 'raw diff', 'repo context',
       undefined, undefined, undefined, undefined, undefined,
       undefined, undefined, undefined, undefined, undefined,
-      '--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n',
+      delta,
     );
 
     const baselineMock = baselineClients.reviewer.sendMessage as jest.Mock;
     const withDiffMock = withDiffClients.reviewer.sendMessage as jest.Mock;
-    expect(withDiffMock.mock.calls).toEqual(baselineMock.mock.calls);
+    const baselineUser = baselineMock.mock.calls[0][1] as string;
+    const withDiffUser = withDiffMock.mock.calls[0][1] as string;
+    expect(baselineUser).toContain('## Pull Request Diff\n\n```diff\nraw diff\n```');
+    expect(withDiffUser).toContain('## Pull Request Diff (delta since prior review round)');
+    expect(withDiffUser).toContain(delta);
+    expect(withDiffUser).not.toContain('```diff\nraw diff\n```');
+  });
+
+  // Empty or undefined delta must not change the diff block — the prompt is
+  // byte-identical to the no-delta call. This preserves first-round semantics
+  // and the "empty delta on identical resync" fallback.
+  it('leaves the reviewer prompt unchanged when `interRoundDiff` is empty', async () => {
+    const config = makeConfig();
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+
+    const baselineClients = makeClients();
+    await runReview(
+      baselineClients, config, diff, 'raw diff', 'repo context',
+      undefined, undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, undefined, undefined,
+    );
+
+    const emptyDiffClients = makeClients();
+    await runReview(
+      emptyDiffClients, config, diff, 'raw diff', 'repo context',
+      undefined, undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, undefined, undefined,
+      '',
+    );
+
+    const baselineMock = baselineClients.reviewer.sendMessage as jest.Mock;
+    const emptyDiffMock = emptyDiffClients.reviewer.sendMessage as jest.Mock;
+    expect(emptyDiffMock.mock.calls).toEqual(baselineMock.mock.calls);
   });
 });
 
 describe('runReviewerAgent', () => {
-  it('produces a byte-identical sendMessage call regardless of `interRoundDiff`', async () => {
+  it('uses the inter-round delta in the diff block when supplied', async () => {
     const config = makeConfig();
     const reviewer = AGENT_POOL[0];
 
@@ -4536,22 +4612,74 @@ describe('runReviewerAgent', () => {
       sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
     } as unknown as LLMClient;
     await runReviewerAgent(
-      baselineClient, config, reviewer, 'raw diff', 'repo context',
+      baselineClient, config, reviewer, 'full PR diff', 'repo context',
       undefined, undefined, '', undefined, {},
     );
 
+    const delta = '--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n';
     const withDiffClient = {
       sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
     } as unknown as LLMClient;
     await runReviewerAgent(
-      withDiffClient, config, reviewer, 'raw diff', 'repo context',
+      withDiffClient, config, reviewer, 'full PR diff', 'repo context',
       undefined, undefined, '', undefined,
-      { interRoundDiff: '--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n' },
+      { interRoundDiff: delta },
     );
 
-    const baselineMock = baselineClient.sendMessage as jest.Mock;
-    const withDiffMock = withDiffClient.sendMessage as jest.Mock;
-    expect(withDiffMock.mock.calls).toEqual(baselineMock.mock.calls);
+    const baselineUser = (baselineClient.sendMessage as jest.Mock).mock.calls[0][1] as string;
+    const withDiffUser = (withDiffClient.sendMessage as jest.Mock).mock.calls[0][1] as string;
+    expect(baselineUser).toContain('## Pull Request Diff\n\n```diff\nfull PR diff\n```');
+    expect(withDiffUser).toContain('## Pull Request Diff (delta since prior review round)');
+    expect(withDiffUser).toContain(delta);
+    expect(withDiffUser).not.toContain('```diff\nfull PR diff\n```');
+  });
+
+  it('ships full-PR file contents in `## Changed Files` even when the delta drives the diff block', async () => {
+    const config = makeConfig();
+    const reviewer = AGENT_POOL[0];
+    const fileContents = new Map([
+      ['src/foo.ts', 'export const foo = 1;'],
+      ['src/bar.ts', 'export const bar = 2;'],
+    ]);
+    const delta = '--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -1 +1 @@\n-export const foo = 0;\n+export const foo = 1;\n';
+
+    const client = {
+      sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
+    } as unknown as LLMClient;
+    await runReviewerAgent(
+      client, config, reviewer, 'full PR diff', 'repo context',
+      fileContents, undefined, '', undefined,
+      { interRoundDiff: delta },
+    );
+
+    const userMessage = (client.sendMessage as jest.Mock).mock.calls[0][1] as string;
+    expect(userMessage).toContain('## Changed Files');
+    expect(userMessage).toContain('### File: src/foo.ts');
+    expect(userMessage).toContain('export const foo = 1;');
+    // `bar.ts` is not in the delta but is part of the whole PR — it must still
+    // appear so the reviewer has the surrounding code as context.
+    expect(userMessage).toContain('### File: src/bar.ts');
+    expect(userMessage).toContain('export const bar = 2;');
+    expect(userMessage).toContain('## Pull Request Diff (delta since prior review round)');
+    expect(userMessage).toContain(delta);
+  });
+
+  it('falls through to the full PR diff when `interRoundDiff` is whitespace-only', async () => {
+    const config = makeConfig();
+    const reviewer = AGENT_POOL[0];
+
+    const client = {
+      sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
+    } as unknown as LLMClient;
+    await runReviewerAgent(
+      client, config, reviewer, 'full PR diff', 'repo context',
+      undefined, undefined, '', undefined,
+      { interRoundDiff: '   \n\n' },
+    );
+
+    const userMessage = (client.sendMessage as jest.Mock).mock.calls[0][1] as string;
+    expect(userMessage).toContain('## Pull Request Diff\n\n```diff\nfull PR diff\n```');
+    expect(userMessage).not.toContain('(delta since prior review round)');
   });
 });
 

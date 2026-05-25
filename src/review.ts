@@ -1375,8 +1375,11 @@ export interface RunReviewerAgentOptions {
   language?: string;
   context?: string;
   provenanceMap?: ProvenanceEntry[];
-  // Plumbed from `runReview` for future per-round diff scoping. Reviewers do
-  // not consume it yet, the full PR diff still drives the reviewer prompt.
+  // On follow-up rounds, when non-empty, this delta replaces the full PR diff
+  // in the `## Pull Request Diff` block so reviewers focus on what changed
+  // since the prior round. The `## Changed Files` block still ships full-PR
+  // files so the surrounding code is visible. Empty or undefined falls through
+  // to the full PR diff (first-round and "no new commits" semantics).
   interRoundDiff?: string;
 }
 
@@ -1392,9 +1395,9 @@ export async function runReviewerAgent(
   linkedIssues?: LinkedIssue[],
   options: RunReviewerAgentOptions = {},
 ): Promise<AgentResult> {
-  const { effort, language, context, provenanceMap } = options;
+  const { effort, language, context, provenanceMap, interRoundDiff } = options;
   const systemPrompt = buildReviewerSystemPrompt(reviewer, config, language, context, config.noise_level);
-  const userMessage = buildReviewerUserMessage(rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, provenanceMap);
+  const userMessage = buildReviewerUserMessage(rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, provenanceMap, interRoundDiff);
 
   const sendOptions = effort ? { effort } : undefined;
   const response = await client.sendMessage(systemPrompt, userMessage, sendOptions);
@@ -1559,6 +1562,7 @@ export function buildReviewerUserMessage(
   memoryContext?: string,
   linkedIssues?: LinkedIssue[],
   provenanceMap?: ProvenanceEntry[],
+  interRoundDiff?: string,
 ): string {
   let message = '';
 
@@ -1614,7 +1618,14 @@ export function buildReviewerUserMessage(
     }
   }
 
-  message += `## Pull Request Diff\n\n\`\`\`diff\n${truncateDiff(rawDiff)}\n\`\`\``;
+  const useDelta = interRoundDiff !== undefined && interRoundDiff.trim().length > 0;
+  if (useDelta) {
+    message += `## Pull Request Diff (delta since prior review round)\n\n`;
+    message += `Only the changes since the previous review round are shown below. The \`## Changed Files\` block above still contains the full content of every file touched by the whole PR, so you can ground your review in the surrounding code. Focus your findings on this delta — earlier changes were already reviewed in prior rounds.\n\n`;
+    message += `\`\`\`diff\n${truncateDiff(interRoundDiff)}\n\`\`\``;
+  } else {
+    message += `## Pull Request Diff\n\n\`\`\`diff\n${truncateDiff(rawDiff)}\n\`\`\``;
+  }
 
   return message;
 }
