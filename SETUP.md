@@ -472,6 +472,8 @@ The judge assigns one of five severity levels to each finding:
 | `nit` | Minor style or preference issue | Listed in a collapsed section of the review body, PR can still be approved |
 | `ignore` | False positive or irrelevant | Dropped silently |
 
+Rounds 1 and 2 block on `required` and `warning` findings. From round 3 only `required` findings block. A `warning` raised then is listed under "smaller fixes in this PR" in the review body instead of becoming a thread, so the round can approve. A blocker from the verdict reader blocks at every round.
+
 Use the `models` config section to choose different Claude models for the reviewer and judge stages (e.g., a faster model for reviewers and a more precise model for the judge).
 
 ## Step 5: Set Up Review Memory (Optional)
