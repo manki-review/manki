@@ -721,21 +721,25 @@ async function runFullReview(
 
     const priorRoundCount = recap.priorRounds.length;
     const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
-    if (
-      maxAutoRounds > 0 &&
-      priorRoundCount >= maxAutoRounds &&
-      !skipCap
-    ) {
-      core.info(`Round cap reached (${priorRoundCount} prior rounds >= max ${maxAutoRounds}) — skipping auto review`);
+    const capReached = maxAutoRounds > 0 && priorRoundCount >= maxAutoRounds;
+    const notConverging = recap.priorRounds.at(-1)?.meta.outcome === 'NOT_CONVERGING';
+    const paused = capReached || notConverging;
+    if (paused && !skipCap) {
+      core.info(capReached
+        ? `Round cap reached (${priorRoundCount} prior rounds >= max ${maxAutoRounds}) — skipping auto review`
+        : 'Last round did not converge — skipping auto review');
       try {
         await octokit.rest.issues.deleteComment({ owner, repo, comment_id: progressCommentId });
       } catch (error) {
         core.warning(`Failed to delete progress comment: ${error}`);
       }
       try {
+        const reason = capReached
+          ? `Manki has completed ${priorRoundCount}/${maxAutoRounds} review rounds on this PR.`
+          : 'The last Manki round found a blocker that came back after a fix.';
         const body = [
           PROGRESS_MARKER,
-          `Manki has completed ${priorRoundCount}/${maxAutoRounds} review rounds on this PR. Automatic review is paused. Tick the box to force another round, or comment \`@manki review\`:`,
+          `${reason} Automatic review is paused. Tick the box to run another round, or comment \`@manki review\`:`,
           '',
           '- [ ] Force review',
           '',
@@ -921,6 +925,11 @@ async function runFullReview(
       recap.priorRounds,
       prAuthorLogin,
       interRoundDiff,
+      {
+        headSha: commitSha,
+        blockersOnly: paused,
+        finalRound: !paused && maxAutoRounds > 0 && priorRoundCount + 1 === maxAutoRounds,
+      },
     );
     const judgeEndTime = Date.now();
 

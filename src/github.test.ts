@@ -1463,6 +1463,33 @@ describe('postReview ready report', () => {
     expect(refused.body).not.toContain('What to test');
   });
 
+  it('approves a BUDGET round with the ready report, and lists the blockers of a NOT_CONVERGING round under "Needs a human"', async () => {
+    const base: ReviewResult = { verdict: 'APPROVE', outcome: 'BUDGET', verdictReport, summary: 'All clear.', findings: [], highlights: [], reviewComplete: true, agentNames: [] };
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', base);
+    const budget = mockCreateReview.mock.calls[0][0] as { body: string; event: string };
+    expect(budget.event).toBe('APPROVE');
+    expect(budget.body).toContain('### What this does');
+    expect(budget.body).not.toContain('Needs a human');
+
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', {
+      ...base,
+      verdict: 'REQUEST_CHANGES',
+      outcome: 'NOT_CONVERGING',
+      needsHuman: {
+        cause: 'repeated',
+        blockers: [
+          { file: 'src/a.ts', line: 10, title: 'Cache never invalidated', fingerprint: 'k', severity: 'blocker', threadUrl: 'https://github.com/o/r/pull/1#t1' },
+          { file: '', title: 'No migration', fingerprint: 'k2' },
+        ],
+      },
+    });
+    const stuck = mockCreateReview.mock.calls[1][0] as { body: string; event: string };
+    expect(stuck.event).toBe('REQUEST_CHANGES');
+    expect(stuck.body).toContain('### Needs a human\n\nThese blockers came back after a fix was pushed, so a fix and the review disagree. Automatic review is paused until someone comments `@manki review`.');
+    expect(stuck.body).toContain('- [Blocker] Cache never invalidated — `src/a.ts:10` ([view thread](https://github.com/o/r/pull/1#t1))\n- No migration');
+    expect(stuck.body).not.toContain('What this does');
+  });
+
   it('lists follow-up warnings in the body instead of posting them as threads', async () => {
     const followUp = (title: string, line: number, suggestedFix?: string): Finding => ({
       severity: 'warning', title, file: 'src/a.ts', line, description: 'd', reviewers: ['r'], tags: ['follow-up'], ...(suggestedFix && { suggestedFix }),

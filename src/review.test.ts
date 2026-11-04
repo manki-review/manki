@@ -1906,6 +1906,7 @@ jest.mock('./judge', () => ({
   runJudgeAgent: jest.fn(),
   JudgeInput: {},
   computeProvenanceMap: jest.fn().mockReturnValue([]),
+  collectPriorBlockers: jest.requireActual('./judge').collectPriorBlockers,
 }));
 
 jest.mock('./memory', () => ({
@@ -2087,6 +2088,80 @@ describe('runReview', () => {
       expect.objectContaining({ title: 'Unbounded retry', tags: ['follow-up'] }),
       expect.objectContaining({ severity: 'blocker', title: 'Tokens leak into logs.' }),
     ]);
+  });
+
+  it('ends NOT_CONVERGING when a blocker raised before a fix push comes back', async () => {
+    const prior = buildPriorRound(1, [makePriorWarningFinding({ severity: 'blocker' })]);
+    const repeat: Finding = { severity: 'blocker', title: 'Same bug, new words', file: 'src/x.ts', line: 30, description: 'd', reviewers: ['r'], sameAs: 'src/x.ts:10:10:old-issue' };
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const openThread = makePriorOpenThread({ severity: 'blocker', threadUrl: 'https://github.com/o/r/pull/1#t1' });
+    const runOn = (clients: ReviewClients, headSha: string, openThreads = [openThread]) => runReview(
+      clients, makeConfig(), diff, 'raw diff', 'repo context',
+      undefined, undefined, undefined, undefined, undefined, true, openThreads, [], [prior],
+      undefined, undefined, { headSha },
+    );
+
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [repeat], summary: 'Still broken.' });
+    const pushed = await runOn(makeClients(), 'sha2');
+    expect(pushed.outcome).toBe('NOT_CONVERGING');
+    expect(pushed.verdict).toBe('REQUEST_CHANGES');
+    expect(pushed.needsHuman).toEqual({
+      cause: 'repeated',
+      blockers: [expect.objectContaining({ title: 'Old issue', file: 'src/x.ts', line: 10, round: 1, threadUrl: 'https://github.com/o/r/pull/1#t1' })],
+    });
+
+    const samePush = await runOn(makeClients(), 'sha1');
+    expect(samePush.outcome).toBe('ADDRESS_FIRST');
+    expect(samePush.needsHuman).toBeUndefined();
+
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [{ ...repeat, sameAs: undefined }], summary: 'New bug.' });
+    expect((await runOn(makeClients(), 'sha2')).outcome).toBe('ADDRESS_FIRST');
+
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'Clean.' });
+    const refusing = makeClients();
+    jest.mocked(refusing.judge.sendMessage).mockResolvedValue({
+      content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: ['src/x.ts:12: Old issue is still there.'], summary: 'One defect.', whatThisDoes: 'x', whatToTest: 'y' }),
+    });
+    const readerRepeat = await runOn(refusing, 'sha2', []);
+    expect(readerRepeat.outcome).toBe('NOT_CONVERGING');
+    expect(readerRepeat.needsHuman?.blockers.map(b => b.title)).toEqual(['Old issue']);
+  });
+
+  it('ends the last automatic round BUDGET when nothing blocks, otherwise NOT_CONVERGING', async () => {
+    const warning: Finding = { severity: 'warning', title: 'Unbounded retry', file: 'src/a.ts', line: 4, description: 'd', reviewers: ['r'] };
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const runFinal = (clients: ReviewClients) => runReview(
+      clients, makeConfig(), diff, 'raw diff', 'repo context',
+      undefined, undefined, undefined, undefined, undefined, false, [], [], [],
+      undefined, undefined, { headSha: 'sha1', finalRound: true },
+    );
+
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [warning], summary: 'One warning.' });
+    const budget = await runFinal(makeClients());
+    expect(budget.outcome).toBe('BUDGET');
+    expect(budget.verdict).toBe('APPROVE');
+    expect(budget.findings).toEqual([expect.objectContaining({ title: 'Unbounded retry', tags: ['follow-up'] })]);
+    expect(budget.verdictReport?.whatThisDoes).toBe('Adds a feature.');
+
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [{ ...warning, severity: 'blocker', title: 'Real bug' }], summary: 'One blocker.' });
+    const stuck = await runFinal(makeClients());
+    expect(stuck.outcome).toBe('NOT_CONVERGING');
+    expect(stuck.verdict).toBe('REQUEST_CHANGES');
+    expect(stuck.needsHuman).toEqual({ cause: 'budget', blockers: [expect.objectContaining({ title: 'Real bug', file: 'src/a.ts' })] });
+  });
+
+  it('blocks on blockers only at round 1 when asked to, as after a pause', async () => {
+    mockedRunJudgeAgent.mockResolvedValue({
+      findings: [{ severity: 'warning', title: 'Unbounded retry', file: 'src/a.ts', line: 4, description: 'd', reviewers: ['r'] }],
+      summary: 'One warning.',
+    });
+    const result = await runReview(
+      makeClients(), makeConfig(), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo context',
+      undefined, undefined, undefined, undefined, undefined, false, [], [], [],
+      undefined, undefined, { blockersOnly: true },
+    );
+    expect(result.outcome).toBe('READY');
+    expect(result.findings[0].tags).toEqual(['follow-up']);
   });
 
   it.each([

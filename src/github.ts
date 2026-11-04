@@ -3,7 +3,7 @@ import { createRequire } from 'module';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { AgentProgressEntry, DEFENSIVE_HARDENING_TAG, DashboardData, FOLLOW_UP_TAG, Finding, FindingFingerprintEntry, FindingSeverity, OWN_PROPOSAL_TAG, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, ReviewVerdict, VALID_PR_TYPES, VerdictReason, VerdictTrace, isBlockingSeverity } from './types';
+import { AgentProgressEntry, DEFENSIVE_HARDENING_TAG, DashboardData, FOLLOW_UP_TAG, Finding, FindingFingerprintEntry, FindingSeverity, OWN_PROPOSAL_TAG, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, ReviewVerdict, VALID_PR_TYPES, VerdictReason, VerdictTrace, VerdictTraceEntry, isBlockingSeverity } from './types';
 import { isLineInDiff } from './diff';
 import { findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
@@ -865,6 +865,10 @@ export async function postReview(
     if (result.partialNote) {
       b += `\n\n> **Note:** ${sanitizeMarkdown(result.partialNote)}`;
     }
+    const needsHuman = formatNeedsHuman(result);
+    if (needsHuman) {
+      b += `\n\n${needsHuman}`;
+    }
     const blockingThreads = formatBlockingPriorThreads(result);
     if (blockingThreads) {
       b += `\n\n${blockingThreads}`;
@@ -1100,21 +1104,30 @@ export function formatBlockingPriorThreads(result: { verdictReason?: VerdictReas
   const priors = result.verdictTrace?.unresolvedPriors ?? [];
   if (priors.length === 0) return null;
 
-  const lines = priors.map(p => {
-    const file = sanitizeFilePath(p.file);
-    const location = p.line != null ? `\`${file}:${p.line}\`` : `\`${file}\``;
-    const severity = p.severity && p.severity !== 'unknown' ? `[${getSeverityLabel(p.severity)}] ` : '';
-    const title = sanitizeMarkdown(p.title || '(untitled)');
-    const safeUrl = p.threadUrl && /^https?:\/\/[^\s)]+$/.test(p.threadUrl) ? p.threadUrl : null;
-    const link = safeUrl ? ` ([view thread](${safeUrl}))` : '';
-    return `- ${severity}${title} — ${location}${link}`;
-  });
+  return `**Blocking unresolved review threads:**\n${priors.map(formatTraceEntry).join('\n')}`;
+}
 
-  return `**Blocking unresolved review threads:**\n${lines.join('\n')}`;
+function formatTraceEntry(p: VerdictTraceEntry): string {
+  const file = sanitizeFilePath(p.file);
+  const location = !file ? '' : p.line != null ? ` — \`${file}:${p.line}\`` : ` — \`${file}\``;
+  const severity = p.severity && p.severity !== 'unknown' ? `[${getSeverityLabel(p.severity)}] ` : '';
+  const title = sanitizeMarkdown(p.title || '(untitled)');
+  const safeUrl = p.threadUrl && /^https?:\/\/[^\s)]+$/.test(p.threadUrl) ? p.threadUrl : null;
+  const link = safeUrl ? ` ([view thread](${safeUrl}))` : '';
+  return `- ${severity}${title}${location}${link}`;
+}
+
+function formatNeedsHuman(result: ReviewResult): string | null {
+  if (result.outcome !== 'NOT_CONVERGING' || !result.needsHuman) return null;
+  const { cause, blockers } = result.needsHuman;
+  const why = cause === 'repeated'
+    ? 'These blockers came back after a fix was pushed, so a fix and the review disagree.'
+    : 'This was the last automatic round and these blockers are still open.';
+  return `### Needs a human\n\n${why} Automatic review is paused until someone comments \`@manki review\`.\n\n${blockers.map(formatTraceEntry).join('\n')}`;
 }
 
 function formatReadyReport(result: ReviewResult): string | null {
-  if (result.outcome !== 'READY' || !result.verdictReport) return null;
+  if ((result.outcome !== 'READY' && result.outcome !== 'BUDGET') || !result.verdictReport) return null;
   const { whatThisDoes, whatToTest } = result.verdictReport;
   return `### What this does\n\n${sanitizeMarkdown(whatThisDoes.trim())}\n\n### What to test\n\n${sanitizeMarkdown(whatToTest.trim())}`;
 }
