@@ -220,7 +220,7 @@ jest.mock('./github', () => {
   FORCE_REVIEW_MARKER: '<!-- manki-force-review -->',
   FORCE_CAP_MARKER: '<!-- manki-force-cap -->',
   APP_WARNING_MARKER: '<!-- manki-app-warning -->',
-  dynamicFence: jest.requireActual('./github').dynamicFence,
+  postConfigErrorComment: jest.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -6768,10 +6768,9 @@ describe('runFullReview concurrent-submission lock', () => {
     await expect(callRunFullReview()).resolves.toBeUndefined();
 
     expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(expect.stringContaining('Invalid YAML in /repo/.manki.yml'));
-    expect(mockOctokitInstance.rest.issues.createComment).toHaveBeenCalledWith(expect.objectContaining({
-      issue_number: 42,
-      body: expect.stringMatching(/no review ran[\s\S]*```\nInvalid YAML in \/repo\/\.manki\.yml: Flow sequence/),
-    }));
+    expect(jest.mocked(ghUtils.postConfigErrorComment)).toHaveBeenCalledWith(
+      mockOctokitInstance, 'test-owner', 'test-repo', 42, expect.stringContaining('Invalid YAML in /repo/.manki.yml: Flow sequence'),
+    );
     expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
     expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
   });

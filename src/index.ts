@@ -44,7 +44,7 @@ import {
   markProgressCommentFailed,
   postAppWarningIfNeeded,
   checkConcurrentSubmissionLock,
-  dynamicFence,
+  postConfigErrorComment,
 } from './github';
 import { checkAndAutoApprove, resolveStaleThreads } from './state';
 
@@ -290,21 +290,6 @@ async function postReviewSkippedComment(
   }
 }
 
-/** Fails the run with the config error and posts it on the PR, since no review will follow. */
-async function reportConfigError(
-  octokit: Octokit, owner: string, repo: string, prNumber: number, error: unknown,
-): Promise<void> {
-  const msg = failureReason(error);
-  core.setFailed(msg);
-  const fence = dynamicFence(msg);
-  const body = `${PROGRESS_MARKER}\n**Manki** could not load its config, so no review ran. Fix the file and push again.\n\n${fence}\n${msg}\n${fence}`;
-  try {
-    await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
-  } catch (commentError) {
-    core.warning(`Failed to post config error comment: ${commentError instanceof Error ? commentError.message : commentError}`);
-  }
-}
-
 async function handlePullRequest(): Promise<void> {
   const pr = github.context.payload.pull_request;
   if (!pr) {
@@ -521,7 +506,9 @@ async function runFullReview(
     try {
       rawConfig = loadConfigFromFile(effectiveConfigPath);
     } catch (error) {
-      await reportConfigError(octokit, owner, repo, prNumber, error);
+      const reason = failureReason(error);
+      core.setFailed(reason);
+      await postConfigErrorComment(octokit, owner, repo, prNumber, reason);
       return;
     }
     const isFork = headRepoFullName !== undefined && headRepoFullName !== `${owner}/${repo}`;

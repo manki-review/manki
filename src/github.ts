@@ -1620,6 +1620,7 @@ async function isApprovedOnCommit(octokit: Octokit, owner: string, repo: string,
 }
 
 const APP_WARNING_MARKER = '<!-- manki-app-warning -->';
+const CONFIG_ERROR_MARKER = '<!-- manki-config-error -->';
 
 async function postAppWarningIfNeeded(
   octokit: Octokit,
@@ -1642,6 +1643,26 @@ async function postAppWarningIfNeeded(
     owner, repo, issue_number: prNumber,
     body: `${APP_WARNING_MARKER}\n**Manki** — The [Manki GitHub App](https://github.com/apps/manki-review) is not installed on this repository. Reviews are posting as \`github-actions[bot]\` instead of \`manki-review[bot]\`. Some features (memory repo access, bot identity for review dismissal) may not work correctly.\n\nInstall the app at: https://github.com/apps/manki-review`,
   });
+}
+
+/**
+ * Posts a config load error on the PR. Uses its own marker instead of `BOT_MARKER`,
+ * so the progress-comment scans never treat it as a run in progress or a stale one.
+ */
+async function postConfigErrorComment(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  message: string,
+): Promise<void> {
+  const fence = dynamicFence(message);
+  const body = `${CONFIG_ERROR_MARKER}\n**Manki** could not load its config, so no review ran. Fix the file and push again.\n\n${fence}\n${message}\n${fence}`;
+  try {
+    await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+  } catch (error) {
+    core.warning(`Failed to post config error comment: ${error instanceof Error ? error.message : error}`);
+  }
 }
 
 /**
@@ -1698,5 +1719,5 @@ async function cancelActiveReviewRun(
   }
 }
 
-export { dynamicFence, formatContextBlock, formatFindingComment, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, APP_WARNING_MARKER, postAppWarningIfNeeded };
+export { dynamicFence, formatContextBlock, formatFindingComment, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment };
 export type { InProgressLock };
