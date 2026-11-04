@@ -236,7 +236,7 @@ export class GeminiClient implements LLMClient {
     const finishReason = response.candidates?.[0]?.finishReason;
     const truncated = finishReason === FinishReason.MAX_TOKENS;
     const content = response.text ?? '';
-    if (!content && !truncated && finishReason !== FinishReason.STOP) {
+    if (!content && !truncated) {
       const reason = response.promptFeedback?.blockReason ?? finishReason ?? 'no candidates';
       throw new Error(`Gemini API returned no usable content: ${reason}`);
     }

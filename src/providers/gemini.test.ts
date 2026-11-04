@@ -198,6 +198,7 @@ describe('sendMessage effort option (API path)', () => {
     [{ candidates: [{ finishReason: 'SAFETY' }] }, 'SAFETY'],
     [{ promptFeedback: { blockReason: 'PROHIBITED_CONTENT' } }, 'PROHIBITED_CONTENT'],
     [{}, 'no candidates'],
+    [{ candidates: [{ finishReason: 'STOP' }] }, 'STOP'],
   ])('rejects a response without text (%j)', async (response, reason) => {
     mockGenerateContent.mockResolvedValue(response);
     const client = new GeminiClient({ auth: { kind: 'apiKey', key: 'k' }, model: 'gemini-3.1-flash-lite' });
