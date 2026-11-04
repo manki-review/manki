@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 
-import { buildDashboard, formatBlockingPriorThreads, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, truncateContextToFitBody, dynamicFence, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment } from './github';
+import { buildDashboard, titleToSlug, formatBlockingPriorThreads, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, truncateContextToFitBody, dynamicFence, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment } from './github';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { DEFAULT_CONFIG } from './config';
 
@@ -3315,21 +3315,28 @@ describe('postReview fallback paths', () => {
       expect(createReviewComment).not.toHaveBeenCalled();
     });
 
-    it('skips a file-level comment that an open thread with the same marker already carries', async () => {
+    it('skips a file-level comment only when an open thread was posted for the same finding', async () => {
       const createReviewComment = jest.fn().mockResolvedValue({ data: { id: 1 } });
       const { octokit } = makeOctokit(createReviewComment);
-      const thread = { title: 'Refused thread', file: 'src/a.ts', line: 0, severity: 'blocker' as const, markerSlug: 'Refused-thread', threadId: 'T1' };
-      const second: Finding = { ...offLineBlocker, title: 'Second issue' };
+      const thread = (title: string, line: number, status: 'open' | 'resolved' | 'replied') => ({
+        title, file: 'src/a.ts', line, severity: 'blocker' as const, markerSlug: titleToSlug(title), threadId: `T-${title}`, status,
+      });
+      const findings: Finding[] = ['File thread', 'Nearby line thread', 'Resolved thread', 'Far line thread', 'Other file']
+        .map(title => ({ ...offLineBlocker, title }));
+      findings[4] = { ...findings[4], file: 'src/renamed.ts', line: 0 };
 
-      await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([offLineBlocker, second]), diff, undefined, undefined, undefined, {
+      await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult(findings), diff, undefined, undefined, undefined, {
         existingThreads: [
-          { ...thread, status: 'open' },
-          { ...thread, title: 'Second issue', markerSlug: 'Second-issue', status: 'resolved' },
+          thread('File thread', 0, 'open'),
+          thread('Nearby line thread', 37, 'replied'),
+          thread('Resolved thread', 0, 'resolved'),
+          thread('Far line thread', 10, 'open'),
+          thread('Other file', 0, 'open'),
         ],
       });
 
-      expect(createReviewComment).toHaveBeenCalledTimes(1);
-      expect(createReviewComment.mock.calls[0][0].body).toContain('<!-- manki:blocker:Second-issue -->');
+      const posted = createReviewComment.mock.calls.map(c => (c[0].body as string).match(/<!-- manki:blocker:(.+?) -->/)?.[1]);
+      expect(posted).toEqual(['Resolved-thread', 'Far-line-thread', 'Other-file']);
     });
 
     it.each([
@@ -3350,6 +3357,28 @@ describe('postReview fallback paths', () => {
       expect(update.body.startsWith(review.body.slice(0, review.body.lastIndexOf('\n\nReviewed commit')))).toBe(true);
       expect(update.body).toContain('**Findings (could not post as threads):**\n- **[Blocker] Refused thread** (`src/a.ts:40`)');
       expect(update.body).toMatch(/Reviewed commit \[`sha`\]\([^)]+\)$/);
+    });
+
+    it('truncates the existing body, never the refused findings, when the review is near the size limit', async () => {
+      const createReviewComment = jest.fn().mockRejectedValue(Object.assign(new Error('refused'), { status: 422 }));
+      const { octokit, updateReview } = makeOctokit(createReviewComment);
+      const result = { ...buildResult([offLineBlocker]), summary: 'word '.repeat(11990) };
+
+      await postReview(octokit, 'owner', 'repo', 1, 'sha', result, diff);
+
+      const update = updateReview.mock.calls[0][0].body as string;
+      expect(update).toContain('*(Review body truncated)*');
+      expect(update).toContain('**Findings (could not post as threads):**\n- **[Blocker] Refused thread** (`src/a.ts:40`): Desc.\n\nReviewed commit');
+      expect(update.length).toBeLessThanOrEqual(60000 + 200);
+    });
+
+    it('fails the run naming the findings when they cannot fit in the review body', async () => {
+      const createReviewComment = jest.fn().mockRejectedValue(Object.assign(new Error('refused'), { status: 422 }));
+      const { octokit, updateReview } = makeOctokit(createReviewComment);
+      const huge: Finding = { ...offLineBlocker, title: 'Huge '.repeat(12000) };
+
+      await expect(postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([huge]), diff)).rejects.toThrow('(src/a.ts)');
+      expect(updateReview).not.toHaveBeenCalled();
     });
 
     it('fails the run naming the finding when the refused comment cannot be added to the review either', async () => {

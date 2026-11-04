@@ -5,6 +5,7 @@ import * as github from '@actions/github';
 
 import { AgentProgressEntry, DEFENSIVE_HARDENING_TAG, DashboardData, Finding, FindingFingerprintEntry, FindingSeverity, OWN_PROPOSAL_TAG, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, ReviewVerdict, VALID_PR_TYPES, VerdictReason, VerdictTrace, isBlockingSeverity } from './types';
 import { isLineInDiff } from './diff';
+import { findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
 import { MAX_AGENT_RETRIES } from './types';
 import { MAX_LOCK_TTL_SECONDS } from './config';
@@ -758,20 +759,18 @@ async function postFileLevelComments(
   return refused;
 }
 
-/** Whether an unresolved Manki thread on the finding's file already carries its marker. */
+/** Whether an unresolved Manki thread was already posted for this finding. */
 function hasOpenThread(finding: Finding, existingThreads: PreviousFinding[]): boolean {
-  const slug = titleToSlug(finding.title);
-  return existingThreads.some(t =>
-    t.status !== 'resolved' && t.file === finding.file && t.severity === finding.severity && t.markerSlug === slug,
-  );
+  const open = existingThreads.filter(t => t.status !== 'resolved' && t.threadId && t.markerSlug);
+  const fingerprint = { file: finding.file, lineStart: finding.line, lineEnd: finding.line, slug: titleToSlug(finding.title) };
+  return findPriorThreadId(fingerprint, open) !== undefined;
 }
 
 /**
  * Post the review. Blocking findings become threads, all other findings go in the body.
  *
  * A blocking finding on a changed line gets a line comment, one elsewhere in a diff file
- * gets a file-level comment, unless one of `existingThreads` is still open with the same
- * marker. When `interRoundDiff` is given, non-blocking findings on code it did not change
+ * gets a file-level comment, unless one of `existingThreads` still open was posted for it. When `interRoundDiff` is given, non-blocking findings on code it did not change
  * are only counted.
  *
  * When `context` is provided without `reviewTimeMs`, the stats one-liner
@@ -901,17 +900,22 @@ export async function postReview(
   const review = await submitReview(octokit, owner, repo, prNumber, commitSha, result.verdict, body, validComments, reviewedCommitFooter);
   const refused = await postFileLevelComments(octokit, owner, repo, prNumber, commitSha, fileComments);
   if (refused.length > 0) {
-    const list = refused.map(f => `- ${formatUnpostedFinding(f)}`).join('\n');
+    const titles = refused.map(f => `"${f.title}" (${f.file})`).join(', ');
+    const section = `\n\n**Findings (could not post as threads):**\n${refused.map(f => `- ${formatUnpostedFinding(f)}`).join('\n')}`;
+    // Truncate the existing body, never the blocking findings appended to it.
+    const room = REVIEW_BODY_BUDGET - section.length;
+    if (room <= 0) {
+      throw new Error(`Could not post blocking findings as threads or fit them in review #${review.id}: ${titles}`);
+    }
     try {
       await octokit.rest.pulls.updateReview({
         owner,
         repo,
         pull_number: prNumber,
         review_id: review.id,
-        body: appendReviewedCommitFooter(truncateBody(`${review.body}\n\n**Findings (could not post as threads):**\n${list}`), reviewedCommitFooter),
+        body: appendReviewedCommitFooter(`${truncateBody(review.body, room)}${section}`, reviewedCommitFooter),
       });
     } catch (error) {
-      const titles = refused.map(f => `"${f.title}" (${f.file})`).join(', ');
       throw new Error(`Could not post blocking findings as threads or in review #${review.id}: ${titles}. ${error instanceof Error ? error.message : error}`);
     }
   }
