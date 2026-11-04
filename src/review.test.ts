@@ -2732,6 +2732,16 @@ describe('runReview', () => {
     expect(result.reviewComplete).toBe(false);
     expect(result.verdict).toBe('COMMENT');
     expect(result.summary).toContain('judge failed');
+
+    const actualJudge = jest.requireActual<typeof import('./judge')>('./judge');
+    mockedRunJudgeAgent.mockImplementation(actualJudge.runJudgeAgent);
+    for (const judgeOutput of ['not json {broken', '{"summary":"ok","findings":[]}']) {
+      jest.mocked(clients.judge.sendMessage).mockResolvedValue({ content: judgeOutput });
+      const unjudged = await runReview(clients, config, diff, 'raw diff', 'repo context');
+      expect(unjudged.reviewComplete).toBe(false);
+      expect(unjudged.verdict).toBe('COMMENT');
+      expect(unjudged.findings).toEqual([]);
+    }
   });
 
   it('runs multi-pass review with review_passes > 1', async () => {

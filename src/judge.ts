@@ -748,56 +748,48 @@ function filterSuppressionsForFindings(suppressions: Suppression[], findings: Fi
 }
 
 export function parseJudgeResponse(responseText: string): JudgeResult {
-  const jsonText = extractJSON(responseText);
+  const parsed = JSON.parse(extractJSON(responseText));
 
-  try {
-    const parsed = JSON.parse(jsonText);
-
-    const parseFindings = (arr: unknown[]): JudgedFinding[] =>
-      arr.map((item: unknown) => item as Record<string, unknown>).map((f) => {
-        const reachability = validateReachability(f.reachability);
-        const reachabilityReasoning = reachability && typeof f.reachabilityReasoning === 'string' && f.reachabilityReasoning
-          ? f.reachabilityReasoning
-          : undefined;
-        return {
-          title: String(f.title || 'Untitled'),
-          severity: validateSeverity(f.severity),
-          reasoning: String(f.reasoning || ''),
-          confidence: validateConfidence(f.confidence),
-          ...(reachability && { reachability }),
-          ...(reachabilityReasoning && { reachabilityReasoning }),
-        };
-      });
-
-    // New object format with summary + findings + threadEvaluations
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      const findings = Array.isArray(parsed.findings) ? parseFindings(parsed.findings) : [];
-      const summary = typeof parsed.summary === 'string' && parsed.summary
-        ? parsed.summary
-        : 'Review complete.';
-      const threadEvaluations = Array.isArray(parsed.threadEvaluations)
-        ? (parsed.threadEvaluations as Array<Record<string, unknown>>)
-          .filter(t => typeof t.threadId === 'string' && t.threadId.length > 0)
-          .map(t => ({
-            threadId: String(t.threadId),
-            status: validateThreadStatus(t.status),
-            reason: typeof t.reason === 'string' ? t.reason : '',
-          }))
+  const parseFindings = (arr: unknown[]): JudgedFinding[] =>
+    arr.map((item: unknown) => item as Record<string, unknown>).map((f) => {
+      const reachability = validateReachability(f.reachability);
+      const reachabilityReasoning = reachability && typeof f.reachabilityReasoning === 'string' && f.reachabilityReasoning
+        ? f.reachabilityReasoning
         : undefined;
-      return { summary, findings, threadEvaluations };
-    }
+      return {
+        title: String(f.title || 'Untitled'),
+        severity: validateSeverity(f.severity),
+        reasoning: String(f.reasoning || ''),
+        confidence: validateConfidence(f.confidence),
+        ...(reachability && { reachability }),
+        ...(reachabilityReasoning && { reachabilityReasoning }),
+      };
+    });
 
-    // Backward compat: plain JSON array
-    if (Array.isArray(parsed)) {
-      return { summary: 'Review complete.', findings: parseFindings(parsed) };
-    }
-
-    core.warning(`Judge returned unexpected format: ${typeof parsed}`);
-    return { summary: 'Review complete.', findings: [] };
-  } catch (e) {
-    core.warning(`Failed to parse judge response: ${e}`);
-    return { summary: 'Review complete.', findings: [] };
+  // New object format with summary + findings + threadEvaluations
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    const findings = Array.isArray(parsed.findings) ? parseFindings(parsed.findings) : [];
+    const summary = typeof parsed.summary === 'string' && parsed.summary
+      ? parsed.summary
+      : 'Review complete.';
+    const threadEvaluations = Array.isArray(parsed.threadEvaluations)
+      ? (parsed.threadEvaluations as Array<Record<string, unknown>>)
+        .filter(t => typeof t.threadId === 'string' && t.threadId.length > 0)
+        .map(t => ({
+          threadId: String(t.threadId),
+          status: validateThreadStatus(t.status),
+          reason: typeof t.reason === 'string' ? t.reason : '',
+        }))
+      : undefined;
+    return { summary, findings, threadEvaluations };
   }
+
+  // Backward compat: plain JSON array
+  if (Array.isArray(parsed)) {
+    return { summary: 'Review complete.', findings: parseFindings(parsed) };
+  }
+
+  throw new Error(`Judge returned unexpected format: ${typeof parsed}`);
 }
 
 function validateConfidence(value: unknown): 'high' | 'medium' | 'low' {
@@ -898,6 +890,9 @@ export async function runJudgeAgent(
   const effort = input.effort ?? 'high';
   const response = await client.sendMessage(systemPrompt, userMessage, { effort });
   let judgeResult = parseJudgeResponse(response.content);
+  if (judgeResult.findings.length === 0 && findings.length > 0) {
+    throw new Error(`Judge returned no results for ${findings.length} findings`);
+  }
 
   // Defense-in-depth: when the inter-round diff is empty, force every open
   // thread to `not_addressed` regardless of what the LLM returned. The
@@ -915,7 +910,7 @@ export async function runJudgeAgent(
         const retryResponse = await client.sendMessage(systemPrompt, retryUserMessage, { effort });
         retryResult = parseJudgeResponse(retryResponse.content);
       } catch (err) {
-        core.warning(`Judge retry call failed (${err}); synthesizing 'uncertain' for ${missing.length} missing thread(s).`);
+        core.warning(`Judge retry failed (${err}); synthesizing 'uncertain' for ${missing.length} missing thread(s).`);
         judgeResult = {
           ...judgeResult,
           threadEvaluations: synthesizeMissingThreadEvaluations(judgeResult.threadEvaluations, missing),
@@ -952,26 +947,6 @@ export async function runJudgeAgent(
     : undefined;
 
   const crossRoundOptions: CrossRoundSuppressionOptions = { resolvedThreadIds, suppressResolvedThreads, threadEvaluations };
-
-  if (judgeResult.findings.length === 0) {
-    if (findings.length > 0) {
-      core.warning('Judge returned no findings — returning originals unchanged');
-    }
-    const earlyWithProvenance = provenanceMap.length > 0
-      ? findings.map(f => { const copy = { ...f }; applyOwnProposal(copy, provenanceMap); return copy; })
-      : findings;
-    const earlySuppress = applyCrossRoundSuppression(earlyWithProvenance, priorRounds, crossRoundOptions);
-    const { findings: earlySuppressedInPr, count: earlyInPrCount } = applyInPrSuppression(earlySuppress.findings, inPrSuppressions);
-    return {
-      findings: earlySuppressedInPr,
-      summary: judgeResult.summary,
-      threadEvaluations,
-      ...(earlySuppress.suppressedCount > 0 && { crossRoundSuppressed: earlySuppress.suppressedCount }),
-      ...(earlySuppress.demotedCount > 0 && { crossRoundDemoted: earlySuppress.demotedCount }),
-      ...(earlyInPrCount > 0 && { inPrSuppressedCount: earlyInPrCount }),
-      ...(interRoundDiffEmptyOverride && { interRoundDiffEmptyOverride }),
-    };
-  }
 
   const mapped = deduplicateFindings(mapJudgedToFindings(findings, judgeResult.findings, provenanceMap));
   const suppression = applyCrossRoundSuppression(mapped, priorRounds, crossRoundOptions);
