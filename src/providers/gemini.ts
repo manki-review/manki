@@ -2,7 +2,7 @@ import { execFile } from 'child_process';
 import { join } from 'path';
 import { promisify } from 'util';
 
-import { FinishReason, GoogleGenerativeAI } from '@google/generative-ai';
+import { FinishReason, GoogleGenAI, ThinkingConfig, ThinkingLevel } from '@google/genai';
 import * as core from '@actions/core';
 
 import { buildExitDiagnostics, runCli, sanitizeLogOutput, seedAuthFile } from './cli-utils';
@@ -19,7 +19,7 @@ export function resolveGeminiCredsDir(): string {
 }
 
 const GEMINI_OAUTH_BOOTSTRAP_HINT =
-  'Bootstrap with `gemini` (sign in with Google) then `cat ~/.gemini/oauth_creds.json | base64 | gh secret set GEMINI_OAUTH_TOKEN`. Re-run the bootstrap when the refresh_token expires.';
+  'Bootstrap with `gemini` (sign in with Google using a Gemini Code Assist Standard or Enterprise account) then `cat ~/.gemini/oauth_creds.json | base64 | gh secret set GEMINI_OAUTH_TOKEN`. Re-run the bootstrap when the refresh_token expires. Personal accounts can no longer sign in, so use gemini_api_key instead.';
 
 const GEMINI_BLOCKED_BARE = new Set([
   'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
@@ -36,13 +36,26 @@ export function buildGeminiAuth(oauthToken: string, apiKey: string): GeminiAuth 
   throw new Error('Either gemini_oauth_token or gemini_api_key must be provided');
 }
 
-/** Map effort level to Gemini thinking budget. `low` disables thinking entirely. */
-export function geminiThinkingBudget(effort: SendMessageOptions['effort']): number | undefined {
-  if (!effort || effort === 'low') return undefined;
-  if (effort === 'medium') return 5000;
-  // 'high' and 'max' both map to the maximum thinking budget supported across
-  // Gemini 2.5/3.x families.
-  return 10000;
+function geminiMajorMinor(model: string): [number, number] | undefined {
+  const match = /^gemini-(\d+)(?:\.(\d+))?(?:-|$)/i.exec(model);
+  return match ? [Number(match[1]), Number(match[2] ?? 0)] : undefined;
+}
+
+/**
+ * Maps an effort tier to the model's thinking config, or `undefined` to keep the model default.
+ * Gemini 3 onwards takes `thinkingLevel` and rejects `thinkingBudget`. Gemini 2.5 takes only
+ * `thinkingBudget`, where `low` leaves thinking off. Older models reject any thinking config.
+ */
+export function geminiThinkingConfig(model: string, effort: SendMessageOptions['effort']): ThinkingConfig | undefined {
+  const version = geminiMajorMinor(model);
+  if (!effort || !version) return undefined;
+  const [major, minor] = version;
+  if (major >= 3) {
+    const levels = { low: ThinkingLevel.LOW, medium: ThinkingLevel.MEDIUM, high: ThinkingLevel.HIGH, max: ThinkingLevel.HIGH };
+    return { thinkingLevel: levels[effort] };
+  }
+  if (major < 2 || minor < 5 || effort === 'low') return undefined;
+  return { thinkingBudget: effort === 'medium' ? 5000 : 10000 };
 }
 
 // Pinned like the Codex CLI and installed without lifecycle scripts. The package has none, and only
@@ -63,7 +76,7 @@ export interface GeminiClientOptions {
 
 export class GeminiClient implements LLMClient {
   private readonly auth: GeminiAuth;
-  private genAI?: GoogleGenerativeAI;
+  private genAI?: GoogleGenAI;
   private readonly model: string;
   private cachedCLIPath?: string;
 
@@ -72,7 +85,7 @@ export class GeminiClient implements LLMClient {
     this.model = options.model;
 
     if (this.auth.kind === 'apiKey') {
-      this.genAI = new GoogleGenerativeAI(this.auth.key);
+      this.genAI = new GoogleGenAI({ apiKey: this.auth.key });
     }
   }
 
@@ -118,12 +131,12 @@ export class GeminiClient implements LLMClient {
   }
 
   private async sendViaOAuth(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
-    // The Gemini CLI does not currently expose a thinking-budget flag, so any
+    // The Gemini CLI does not currently expose a thinking flag, so any
     // requested effort beyond `low` is silently unsupported on this path. Surface
     // it as a warning instead of dropping the option without a trace.
     if (options?.effort && options.effort !== 'low') {
       core.warning(
-        `Gemini CLI (OAuth) path does not support effort=${options.effort}; thinking budget is not applied. Use API key auth for thinking-budget control.`,
+        `Gemini CLI (OAuth) path does not support effort=${options.effort}; thinking config is not applied. Use API key auth for thinking control.`,
       );
     }
     // Use a structural delimiter that is harder to spoof from inside diff content
@@ -205,46 +218,31 @@ export class GeminiClient implements LLMClient {
   private async sendViaAPI(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
     if (!this.genAI) throw new Error('Gemini client not initialized');
 
-    const thinkingBudget = geminiThinkingBudget(options?.effort);
-
-    // The SDK type for GenerationConfig predates Gemini 2.5 thinking config.
-    // The underlying REST API accepts `thinkingConfig.thinkingBudget` — pass it
-    // through with a cast so we don't have to wait for the SDK types to catch up.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const generationConfig: any = {
-      maxOutputTokens: thinkingBudget !== undefined ? 32768 : 16384,
-    };
-    if (thinkingBudget !== undefined) {
-      generationConfig.thinkingConfig = { thinkingBudget };
-    }
-
-    const model = this.genAI.getGenerativeModel({
-      model: this.model,
-      systemInstruction: systemPrompt,
-    });
+    const thinkingConfig = geminiThinkingConfig(this.model, options?.effort);
+    // Gemini 3 onwards always thinks, so its thoughts need room even without an effort tier.
+    const thinks = thinkingConfig !== undefined || (geminiMajorMinor(this.model)?.[0] ?? 0) >= 3;
 
     const startTime = Date.now();
-    const response = await model.generateContent({
+    const response = await this.genAI.models.generateContent({
+      model: this.model,
       contents: [{ role: 'user', parts: [{ text: userMessage }] }],
-      generationConfig,
+      config: {
+        systemInstruction: systemPrompt,
+        maxOutputTokens: thinks ? 32768 : 16384,
+        ...(thinkingConfig && { thinkingConfig }),
+      },
     });
 
-    let content: string;
-    try {
-      content = response.response.text();
-    } catch (err) {
-      throw new Error(`Gemini API returned no usable content: ${(err as Error).message}`);
+    const finishReason = response.candidates?.[0]?.finishReason;
+    const truncated = finishReason === FinishReason.MAX_TOKENS;
+    const content = response.text ?? '';
+    if (!content && !truncated) {
+      const reason = response.promptFeedback?.blockReason ?? finishReason ?? 'no candidates';
+      throw new Error(`Gemini API returned no usable content: ${reason}`);
     }
     core.debug(sanitizeLogOutput(content.slice(0, 200)));
 
-    const usageMetadata = (response.response as unknown as {
-      usageMetadata?: {
-        promptTokenCount?: number;
-        candidatesTokenCount?: number;
-        cachedContentTokenCount?: number;
-        thoughtsTokenCount?: number;
-      };
-    }).usageMetadata;
+    const usageMetadata = response.usageMetadata;
     const usage: LLMUsage = usageMetadata
       ? {
           inputTokens: readCount(usageMetadata.promptTokenCount),
@@ -254,7 +252,6 @@ export class GeminiClient implements LLMClient {
         }
       : { ...ZERO_USAGE };
 
-    const truncated = response.response.candidates?.[0]?.finishReason === FinishReason.MAX_TOKENS;
     return { content, usage, latencyMs: Date.now() - startTime, truncated };
   }
 }

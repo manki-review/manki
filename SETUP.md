@@ -101,12 +101,12 @@ The `low | medium | high | max` knobs map per provider as follows. Manki passes 
 
 | Effort | Anthropic | OpenAI reasoning models | Other OpenAI models | Gemini |
 |--------|-----------|-------------------------|---------------------|--------|
-| low    | no thinking | `reasoning_effort: low` | (ignored, warning) | no thinking |
-| medium | `budget_tokens: 5000` | `reasoning_effort: medium` | (ignored, warning) | `thinkingBudget: 5000` |
-| high   | `budget_tokens: 10000` | `reasoning_effort: high` | (ignored, warning) | `thinkingBudget: 10000` |
-| max    | `budget_tokens: 16000` | the model's highest value (see below) | (ignored, warning) | `thinkingBudget: 10000` (collapsed) |
+| low    | adaptive, `effort: low` (4.5 models: no thinking) | `reasoning_effort: low` | (ignored, warning) | `thinkingLevel: LOW` (Gemini 3+), no thinking (2.5) |
+| medium | adaptive, `effort: medium` (4.5 models: `budget_tokens: 5000`) | `reasoning_effort: medium` | (ignored, warning) | `thinkingLevel: MEDIUM` (Gemini 3+), `thinkingBudget: 5000` (2.5) |
+| high   | adaptive, `effort: high` (4.5 models: `budget_tokens: 10000`) | `reasoning_effort: high` | (ignored, warning) | `thinkingLevel: HIGH` (Gemini 3+), `thinkingBudget: 10000` (2.5) |
+| max    | adaptive, `effort: max` (4.5 models: `budget_tokens: 16000`) | the model's highest value (see below) | (ignored, warning) | same as `high` (collapsed) |
 
-OpenAI reasoning models are the o-series and GPT-5 onwards. For `max`, Manki sends the highest `reasoning_effort` the model accepts: `high` for o-series, `gpt-5` and `gpt-5.1`, `xhigh` for `gpt-5.2` to `gpt-5.5`, and `max` for `gpt-5.6` onwards. GPT-4 models (`gpt-4o`, `gpt-4.1`), `-chat` snapshots and `-pro` models do not accept effort, so Manki logs a warning and sends none. Via the Codex CLI (OAuth path), the CLI then applies its own default effort. Via the API, effort has no effect. The `max` tier collapses silently to `high` for Gemini. The Gemini OAuth (CLI) path passes prompts through the Gemini CLI binary and does not support effort tiers. Use API key auth if you need thinking budgets on Gemini.
+OpenAI reasoning models are the o-series and GPT-5 onwards. For `max`, Manki sends the highest `reasoning_effort` the model accepts: `high` for o-series, `gpt-5` and `gpt-5.1`, `xhigh` for `gpt-5.2` to `gpt-5.5`, and `max` for `gpt-5.6` onwards. GPT-4 models (`gpt-4o`, `gpt-4.1`), `-chat` snapshots and `-pro` models do not accept effort, so Manki logs a warning and sends none. Via the Codex CLI (OAuth path), the CLI then applies its own default effort. Via the API, effort has no effect. The `max` tier collapses silently to `high` for Gemini. Gemini 3 onwards takes `thinkingLevel` and rejects `thinkingBudget`, while Gemini 2.5 takes only `thinkingBudget`. The Gemini OAuth (CLI) path passes prompts through the Gemini CLI binary and does not support effort tiers. Use API key auth if you need thinking control on Gemini.
 
 ### Anthropic
 
@@ -171,12 +171,14 @@ If you have a ChatGPT Plus or Pro subscription and the Codex CLI installed:
    gh secret set GEMINI_API_KEY --repo <owner>/<repo>
    ```
 
-#### Gemini CLI OAuth Token (subscription)
+#### Gemini CLI OAuth Token (Gemini Code Assist Standard or Enterprise only)
 
-Rides a Google AI subscription via the Gemini CLI binary. Effort tiers are not honored on this path.
+Runs reviews through the Gemini CLI binary, signed in with Google. Effort tiers are not honored on this path.
+
+> **Who can still use this:** Google [ended "Login with Google" for the Gemini CLI](https://developers.google.com/gemini-code-assist/docs/deprecations/code-assist-individuals) on 2026-06-18 for Gemini Code Assist for individuals, Google AI Pro and Google AI Ultra. Personal Google accounts on those tiers can no longer sign in, so use `GEMINI_API_KEY` instead. Only organization accounts with a Gemini Code Assist Standard or Enterprise license can still sign in, and those editions are [being retired](https://docs.cloud.google.com/gemini/docs/codeassist/sunset): no new subscriptions since 2026-10-09, and renewals end on 2027-01-31 for annual and 2027-12-31 for monthly subscriptions.
 
 1. Install the Gemini CLI: see [github.com/google-gemini/gemini-cli](https://github.com/google-gemini/gemini-cli)
-2. Sign in with Google when prompted (`gemini` opens a browser flow)
+2. Sign in with Google when prompted (`gemini` opens a browser flow) using the organization account that holds the license. These accounts need a Google Cloud project, so also set `GOOGLE_CLOUD_PROJECT` in the `env:` of the Manki step.
 3. Bootstrap the secret from `~/.gemini/oauth_creds.json`:
    ```bash
    cat ~/.gemini/oauth_creds.json | base64 | gh secret set GEMINI_OAUTH_TOKEN --repo <owner>/<repo>
@@ -184,7 +186,7 @@ Rides a Google AI subscription via the Gemini CLI binary. Effort tiers are not h
    The secret must be the base64-encoded contents of `~/.gemini/oauth_creds.json`, which contains `access_token` and `refresh_token`. Re-run when the refresh token expires.
 4. The workflow needs to install the Gemini CLI on the runner (see [Step 3](#step-3-add-the-workflow))
 
-> **Security note:** The base64 encoding is for transport format only — it is not encrypted. Anyone with access to repository secrets can decode the full credential, including the refresh token, which grants ongoing access to your Google AI subscription. If this secret is ever compromised, revoke the OAuth session immediately at [myaccount.google.com/permissions](https://myaccount.google.com/permissions). For production use, prefer the API key path (`GEMINI_API_KEY`), which can be rotated without affecting your account session.
+> **Security note:** The base64 encoding is for transport format only — it is not encrypted. Anyone with access to repository secrets can decode the full credential, including the refresh token, which grants ongoing access to your Gemini Code Assist license. If this secret is ever compromised, revoke the OAuth session immediately at [myaccount.google.com/permissions](https://myaccount.google.com/permissions). For production use, prefer the API key path (`GEMINI_API_KEY`), which can be rotated without affecting your account session.
 
 ### Review Memory Token (Optional)
 
@@ -289,7 +291,7 @@ Gemini API key:
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
 ```
 
-Gemini CLI OAuth (requires the CLI on the runner):
+Gemini CLI OAuth (requires the CLI on the runner and a Gemini Code Assist Standard or Enterprise license):
 
 ```yaml
       - name: Install Gemini CLI
@@ -297,6 +299,8 @@ Gemini CLI OAuth (requires the CLI on the runner):
         run: npm install -g --ignore-scripts '@google/gemini-cli@0.66.0'
       - name: Manki Review
         uses: manki-review/manki@v5
+        env:
+          GOOGLE_CLOUD_PROJECT: <your-project-id>
         with:
           gemini_oauth_token: ${{ secrets.GEMINI_OAUTH_TOKEN }}
 ```
@@ -315,10 +319,10 @@ models:
 
 # Gemini
 models:
-  planner: gemini-2.5-flash
-  reviewer: gemini-2.5-flash
-  judge: gemini-2.5-pro
-  dedup: gemini-2.5-flash
+  planner: gemini-3.5-flash-lite
+  reviewer: gemini-3.8-flash
+  judge: gemini-3.8-flash
+  dedup: gemini-3.5-flash-lite
 ```
 
 ### Action inputs

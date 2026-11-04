@@ -58,10 +58,10 @@
 #
 # To use Gemini, set `gemini_api_key` (or `gemini_oauth_token` for Gemini CLI) and override models:
 # models:
-#   planner: gemini-2.5-flash
-#   reviewer: gemini-2.5-flash
-#   judge: gemini-2.5-pro
-#   dedup: gemini-2.5-flash
+#   planner: gemini-3.5-flash-lite
+#   reviewer: gemini-3.8-flash
+#   judge: gemini-3.8-flash
+#   dedup: gemini-3.5-flash-lite
 #
 # Models are auto-detected by prefix: `claude-*` -> Anthropic, `gpt-*` / `o*` -> OpenAI, `gemini-*` -> Gemini.
 # You can also use explicit `provider/model` syntax (e.g. `anthropic/claude-haiku-4-5`).
