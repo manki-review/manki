@@ -1,4 +1,7 @@
 import { spawn } from 'child_process';
+import { readdirSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import OpenAI from 'openai';
 import * as core from '@actions/core';
 
@@ -325,7 +328,7 @@ describe('sendViaOAuth (Codex CLI path)', () => {
     mockSpawn.mockReturnValue(proc as unknown as ReturnType<typeof spawn>);
   }
 
-  it('passes --model and exec subcommand to codex CLI', async () => {
+  it('runs `codex exec` with the model in an empty temp directory', async () => {
     setupSpawnMock('hello\n');
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'o3' });
 
@@ -333,9 +336,13 @@ describe('sendViaOAuth (Codex CLI path)', () => {
 
     const spawnArgs = mockSpawn.mock.calls[0][1] as string[];
     expect(spawnArgs[0]).toBe('exec');
+    expect(spawnArgs).toContain('--skip-git-repo-check');
     const modelIdx = spawnArgs.indexOf('--model');
     expect(modelIdx).toBeGreaterThan(-1);
     expect(spawnArgs[modelIdx + 1]).toBe('o3');
+    const { cwd } = mockSpawn.mock.calls[0][2] as { cwd: string };
+    expect(cwd.startsWith(join(tmpdir(), 'manki-cli-'))).toBe(true);
+    expect(readdirSync(cwd)).toEqual([]);
   });
 
   it('passes model_reasoning_effort override when effort is set on o-series model', async () => {

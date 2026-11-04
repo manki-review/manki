@@ -171,7 +171,8 @@ export class OpenAIClient implements LLMClient {
 
     // `codex exec` runs a non-interactive completion, reading the prompt from stdin
     // when invoked with `-` as the prompt argument. `--model` selects the model.
-    const args = ['exec', '--model', this.model];
+    // `runCli` runs it in an empty directory, which is not a git repository.
+    const args = ['exec', '--skip-git-repo-check', '--model', this.model];
 
     if (options?.effort && isReasoningModel(this.model)) {
       // Codex CLI's `-c` accepts bare `key=value` overrides; embedded double-quotes

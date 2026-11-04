@@ -1,4 +1,7 @@
 import { spawn } from 'child_process';
+import { readdirSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
@@ -356,7 +359,7 @@ describe('sendViaOAuth — error paths', () => {
     expect(spawnOpts.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('my-oauth-token');
   });
 
-  it('passes --verbose, --output-format stream-json, and --include-partial-messages to CLI', async () => {
+  it('passes the output and isolation flags and runs the CLI in an empty temp directory', async () => {
     setupSpawnMock({ stdout: 'ok' });
     const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
 
@@ -369,6 +372,12 @@ describe('sendViaOAuth — error paths', () => {
     expect(spawnArgs).toContain('--verbose');
     expect(spawnArgs).toContain('--include-partial-messages');
     expect(spawnArgs[spawnArgs.indexOf('--tools') + 1]).toBe('');
+    expect(spawnArgs).toContain('--strict-mcp-config');
+    expect(spawnArgs).not.toContain('--mcp-config');
+    expect(spawnArgs[spawnArgs.indexOf('--setting-sources') + 1]).toBe('');
+    const { cwd } = mockSpawn.mock.calls[0][2] as { cwd: string };
+    expect(cwd.startsWith(join(tmpdir(), 'manki-cli-'))).toBe(true);
+    expect(readdirSync(cwd)).toEqual([]);
   });
 
   it('extracts text from content_block_delta events', async () => {

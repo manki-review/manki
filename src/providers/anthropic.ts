@@ -171,6 +171,9 @@ export class AnthropicClient implements LLMClient {
       '--include-partial-messages',
       // Without tools the reply is a single turn. With them, a reviewer could write its JSON in one turn and end on a prose summary, and the CLI's `result` keeps only that last message.
       '--tools', '',
+      // No MCP servers and no settings files: only the environment configures the CLI.
+      '--strict-mcp-config',
+      '--setting-sources', '',
       '--model', this.model,
     ];
 

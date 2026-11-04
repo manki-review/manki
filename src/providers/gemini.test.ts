@@ -1,9 +1,12 @@
 import { spawn } from 'child_process';
+import { readdirSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import * as core from '@actions/core';
 
-import { buildGeminiAuth, GeminiClient, geminiThinkingBudget, resetGeminiCLIInstallPromise, resolveGeminiCredsDir } from './gemini';
+import { buildGeminiAuth, GEMINI_CLI_VERSION, GeminiClient, geminiThinkingBudget, resetGeminiCLIInstallPromise, resolveGeminiCredsDir } from './gemini';
 import { parseModelSpec } from './model-registry';
 
 // Seeding `~/.gemini/oauth_creds.json` is exercised separately in `cli-utils.test.ts`.
@@ -465,7 +468,7 @@ describe('GeminiClient OAuth path', () => {
     );
   });
 
-  it('passes --model flag with the configured model name to the CLI', async () => {
+  it('passes the model to the CLI and runs it in an empty, trusted temp directory', async () => {
     setupOAuthSpawnMock({ stdout: 'ok' });
     const client = new GeminiClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gemini-3.1-pro-preview' });
 
@@ -475,6 +478,10 @@ describe('GeminiClient OAuth path', () => {
     const idx = args.indexOf('--model');
     expect(idx).toBeGreaterThanOrEqual(0);
     expect(args[idx + 1]).toBe('gemini-3.1-pro-preview');
+    expect(args).toContain('--skip-trust');
+    const { cwd } = mockSpawn.mock.calls[0][2] as { cwd: string };
+    expect(cwd.startsWith(join(tmpdir(), 'manki-cli-'))).toBe(true);
+    expect(readdirSync(cwd)).toEqual([]);
   });
 
   it('uses untrusted-content delimiter when concatenating prompts on stdin', async () => {
@@ -562,7 +569,7 @@ describe('GeminiClient OAuth path', () => {
 
     expect(result.content).toBe('installed-ok');
     const installCall = mockExecFileAsync.mock.calls.find((c) => c[0] === 'npm');
-    expect(installCall).toBeDefined();
+    expect(installCall![1]).toEqual(['install', '-g', '--ignore-scripts', `@google/gemini-cli@${GEMINI_CLI_VERSION}`]);
   });
 
   it('rejects when the CLI install ultimately fails', async () => {

@@ -45,6 +45,11 @@ export function geminiThinkingBudget(effort: SendMessageOptions['effort']): numb
   return 10000;
 }
 
+// Pinned like the Codex CLI and installed without lifecycle scripts. The package has none, and only
+// its optional keychain dependency has one, which the seeded `oauth_creds.json` file does not need.
+// Keep this in sync with the install step in `.github/workflows/manki.yml`.
+export const GEMINI_CLI_VERSION = '0.66.0';
+
 let cliInstallPromise: Promise<string> | null = null;
 
 export function resetGeminiCLIInstallPromise(): void {
@@ -91,7 +96,7 @@ export class GeminiClient implements LLMClient {
       if (!cliInstallPromise) {
         cliInstallPromise = (async () => {
           core.info('Gemini CLI not found, installing via npm...');
-          await execFileAsync('npm', ['install', '-g', '@google/gemini-cli'], {
+          await execFileAsync('npm', ['install', '-g', '--ignore-scripts', `@google/gemini-cli@${GEMINI_CLI_VERSION}`], {
             timeout: 120000,
           });
           try {
@@ -142,6 +147,8 @@ export class GeminiClient implements LLMClient {
     // Prompt is written to stdin; the CLI reads until EOF and responds on stdout.
     // We pass the full prompt on stdin to avoid argv length limits.
     const args = [
+      // Headless runs refuse an untrusted directory. `runCli` runs the CLI in an empty one.
+      '--skip-trust',
       '--model', this.model,
     ];
 

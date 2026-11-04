@@ -1,6 +1,7 @@
 import { spawn } from 'child_process';
-import { chmodSync, mkdirSync, writeFileSync } from 'fs';
-import { dirname } from 'path';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { dirname, join } from 'path';
 import { StringDecoder } from 'string_decoder';
 
 import * as core from '@actions/core';
@@ -210,6 +211,21 @@ function hasNestedString(obj: Record<string, unknown>, dottedPath: string): bool
   return typeof current === 'string' && current.length > 0;
 }
 
+let emptyCwd: string | undefined;
+
+/**
+ * Returns an empty directory, created once per process, to run the CLIs in. In the PR
+ * checkout they would load the PR's own hooks, MCP servers and settings files.
+ */
+function emptyCliCwd(): string {
+  if (!emptyCwd) {
+    const dir = mkdtempSync(join(tmpdir(), 'manki-cli-'));
+    process.once('exit', () => rmSync(dir, { recursive: true, force: true }));
+    emptyCwd = dir;
+  }
+  return emptyCwd;
+}
+
 export interface RunCliOptions {
   /** Provider name used in error messages, e.g. `Claude`. */
   label: string;
@@ -232,7 +248,7 @@ export interface CliExit {
 }
 
 /**
- * Spawn a provider CLI, feed it `input` on stdin and resolve once it exits. Rejects when
+ * Spawn a provider CLI in an empty directory, feed it `input` on stdin and resolve once it exits. Rejects when
  * the CLI fails to spawn, stalls for `STALE_TIMEOUT_MS`, runs past the hard timeout,
  * exceeds the output cap or stdin cannot be written. A non-zero exit still resolves, so
  * the caller can build its own diagnostics.
@@ -241,6 +257,7 @@ export function runCli(opts: RunCliOptions): Promise<CliExit> {
   const { label } = opts;
   return new Promise((resolve, reject) => {
     const child = spawn(opts.cliPath, opts.args, {
+      cwd: emptyCliCwd(),
       env: opts.env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
