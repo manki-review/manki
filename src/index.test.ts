@@ -1203,48 +1203,18 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
     expect(jest.mocked(ghUtils.hasBotReviewOnCommit)).not.toHaveBeenCalled();
   });
 
-  it('handleReviewCommentInteraction bails and skips LLM when bot already reviewed head SHA', async () => {
+  it('handleReviewCommentInteraction handles `@manki help` on the reviewed head without the dedupe gate', async () => {
     jest.mocked(core.getInput).mockImplementation((name: string) =>
       name === 'claude_code_oauth_token' ? 'oauth-tok' : '',
     );
     jest.mocked(interaction.hasBotMention).mockReturnValue(true);
-    jest.mocked(ghUtils.hasBotReviewOnCommit).mockResolvedValueOnce(true);
+    jest.mocked(interaction.parseCommand).mockReturnValueOnce({ type: 'help', args: '' });
 
     setContext({
       eventName: 'pull_request_review_comment',
       payload: {
         action: 'created',
-        comment: { id: 99, body: '@manki help', user: { type: 'User' } },
-        pull_request: { base: { ref: 'main' }, number: 7, head: { sha: 'cafe123456789' } },
-      },
-    });
-
-    await handleReviewCommentInteraction();
-
-    expect(jest.mocked(ghUtils.hasBotReviewOnCommit)).toHaveBeenCalledWith(
-      expect.anything(), 'test-owner', 'test-repo', 7, 'cafe123456789',
-    );
-    expect(jest.mocked(interaction.handleReviewCommentReply)).not.toHaveBeenCalled();
-    expect(jest.mocked(interaction.handleReviewCommentCommand)).not.toHaveBeenCalled();
-    const skipCall = mockOctokitInstance.rest.issues.createComment.mock.calls.find(
-      (c: [{ body: string }]) => c[0].body.includes('already been posted for this commit'),
-    );
-    expect(skipCall).toBeDefined();
-    expect(skipCall[0].body).toContain('`cafe123`');
-  });
-
-  it('handleReviewCommentInteraction bypasses the dedupe gate when the comment is a review request', async () => {
-    jest.mocked(core.getInput).mockImplementation((name: string) =>
-      name === 'claude_code_oauth_token' ? 'oauth-tok' : '',
-    );
-    jest.mocked(interaction.hasBotMention).mockReturnValue(true);
-    jest.mocked(interaction.isReviewRequest).mockReturnValue(true);
-
-    setContext({
-      eventName: 'pull_request_review_comment',
-      payload: {
-        action: 'created',
-        comment: { id: 99, body: '@manki review', user: { type: 'User' } },
+        comment: { id: 99, body: '@manki help', user: { type: 'User' }, in_reply_to_id: 5 },
         pull_request: { base: { ref: 'main' }, number: 7, head: { sha: 'cafe123456789' } },
       },
     });
@@ -1252,6 +1222,13 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
     await handleReviewCommentInteraction();
 
     expect(jest.mocked(ghUtils.hasBotReviewOnCommit)).not.toHaveBeenCalled();
+    expect(jest.mocked(interaction.handleReviewCommentCommand)).toHaveBeenCalledWith(
+      expect.anything(), 'test-owner', 'test-repo', 7, 99, { type: 'help', args: '' }, undefined, undefined,
+    );
+    const skipCalls = mockOctokitInstance.rest.issues.createComment.mock.calls.filter(
+      (c: [{ body: string }]) => c[0].body.includes('Review skipped'),
+    );
+    expect(skipCalls).toHaveLength(0);
   });
 
   it('proceeds when there is no prior bot review on the head SHA (default mock returns false)', async () => {

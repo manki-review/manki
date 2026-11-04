@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A blocker the judge marks as `hypothetical` (not reachable from any visible caller) now keeps its blocker severity. Only warnings and suggestions are still capped at nitpick with the `defensive-hardening` tag. Closes [#867](https://github.com/manki-review/manki/issues/867)
 
+### Fixed
+
+- Replies and `@manki` commands on a review thread are handled again when Manki has already reviewed the head commit. The head-SHA dedupe gate now applies only to runs that start a full review, so `@manki dismiss`, `@manki help` and free-form replies no longer get a "Review skipped" comment. Closes [#869](https://github.com/manki-review/manki/issues/869)
+
 ## [5.3.0] - 2026-05-25
 
 ### Added
