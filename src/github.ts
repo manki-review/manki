@@ -22,6 +22,17 @@ interface IssueComment {
 
 const BOT_LOGIN = 'manki-review[bot]';
 const ACTIONS_BOT_LOGIN = 'github-actions[bot]';
+
+/** The logins Manki's comments and reviews can carry on this repo, in REST form (`<slug>[bot]`). */
+interface BotIdentity {
+  logins: readonly string[];
+}
+
+/** Whether `login` is one of `bot`'s logins. GraphQL reports a bot as `<slug>`, REST as `<slug>[bot]`, so both match. */
+function isBotLogin(bot: BotIdentity, login: string | null | undefined): boolean {
+  if (!login) return false;
+  return bot.logins.includes(login) || bot.logins.includes(`${login}[bot]`);
+}
 const BOT_MARKER = '<!-- manki-bot -->';
 const REVIEW_COMPLETE_MARKER = '<!-- manki-review-complete -->';
 const FORCE_REVIEW_MARKER = '<!-- manki-force-review -->';
@@ -1554,9 +1565,9 @@ async function fetchPRComments(
 /**
  * Find the most recent non-complete, non-cancelled progress comment posted by the bot.
  */
-function findProgressComment(comments: IssueComment[]): ProgressComment | null {
+function findProgressComment(comments: IssueComment[], bot: BotIdentity): ProgressComment | null {
   const match = comments.find(c =>
-    c.user?.login === BOT_LOGIN &&
+    isBotLogin(bot, c.user?.login) &&
     c.user?.type === 'Bot' &&
     c.body?.includes(BOT_MARKER) &&
     !c.body?.includes(REVIEW_COMPLETE_MARKER) &&
@@ -1578,11 +1589,11 @@ const ACTIVE_RUN_STATUSES = new Set([
  * cancelled/failed runs are marked as cancelled in-place (not deleted) so the
  * audit trail is preserved.
  */
-async function isReviewInProgress(octokit: Octokit, owner: string, repo: string, prNumber: number): Promise<boolean> {
+async function isReviewInProgress(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number): Promise<boolean> {
   let progress: ProgressComment | null;
   try {
     const comments = await fetchPRComments(octokit, owner, repo, prNumber);
-    progress = findProgressComment(comments);
+    progress = findProgressComment(comments, bot);
   } catch {
     return false;
   }
@@ -1644,9 +1655,9 @@ interface InProgressLock {
  * workflow-level `concurrency` group, which is best-effort and can let two
  * runs reach `in_progress` within the same scheduling window.
  */
-function findInProgressLock(comments: IssueComment[], currentRunId: number): InProgressLock | null {
+function findInProgressLock(comments: IssueComment[], bot: BotIdentity, currentRunId: number): InProgressLock | null {
   for (const c of comments) {
-    if (c.user?.login !== BOT_LOGIN || c.user?.type !== 'Bot') continue;
+    if (!isBotLogin(bot, c.user?.login) || c.user?.type !== 'Bot') continue;
     if (!c.body?.includes(BOT_MARKER)) continue;
     if (c.body.includes(REVIEW_COMPLETE_MARKER)) continue;
     if (c.body.includes(CANCELLED_MARKER)) continue;
@@ -1693,7 +1704,7 @@ function readConcurrencyLockTtlSeconds(config?: ReviewConfig): number {
 }
 
 /**
- * Defense-in-depth check before any LLM call. When another `manki-review[bot]`
+ * Defense-in-depth check before any LLM call. When another Manki
  * run has posted an in-progress marker comment whose `manki-run-id` differs
  * from ours and whose `updated_at` is within the configured TTL, bail to avoid
  * a double review. The workflow-level `concurrency` group is best-effort and
@@ -1702,13 +1713,13 @@ function readConcurrencyLockTtlSeconds(config?: ReviewConfig): number {
  * Returns `true` when the caller should bail.
  */
 async function checkConcurrentSubmissionLock(
-  octokit: Octokit, owner: string, repo: string, prNumber: number, config?: ReviewConfig,
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, config?: ReviewConfig,
 ): Promise<boolean> {
   const currentRunId = github.context.runId;
   let lock;
   try {
     const comments = await fetchPRComments(octokit, owner, repo, prNumber);
-    lock = findInProgressLock(comments, currentRunId);
+    lock = findInProgressLock(comments, bot, currentRunId);
   } catch (error) {
     core.warning(`Concurrency lock scan failed: ${error instanceof Error ? error.message : error}`);
     return false;
@@ -1731,12 +1742,12 @@ async function checkConcurrentSubmissionLock(
  * Invoked when GitHub Actions cancels the main step.
  */
 async function markOwnProgressCommentCancelled(
-  octokit: Octokit, owner: string, repo: string, prNumber: number, runId: number,
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, runId: number,
 ): Promise<boolean> {
   try {
     const comments = await fetchPRComments(octokit, owner, repo, prNumber);
     const target = comments.find(c =>
-      c.user?.login === BOT_LOGIN &&
+      isBotLogin(bot, c.user?.login) &&
       c.user?.type === 'Bot' &&
       c.body?.includes(BOT_MARKER) &&
       !c.body?.includes(REVIEW_COMPLETE_MARKER) &&
@@ -1761,7 +1772,7 @@ type BotReviewSummary = {
 };
 
 /**
- * Shared scanner: returns all non-DISMISSED `manki-review[bot]` reviews on the
+ * Shared scanner: returns all non-DISMISSED reviews by `bot` on the
  * PR in API order (oldest first). Callers filter to the commit SHA they care
  * about.
  *
@@ -1771,7 +1782,7 @@ type BotReviewSummary = {
  * a try/catch to handle errors — the catch is already here.
  */
 async function fetchBotReviews(
-  octokit: Octokit, owner: string, repo: string, prNumber: number,
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number,
 ): Promise<BotReviewSummary[]> {
   try {
     const reviews = await octokit.paginate(octokit.rest.pulls.listReviews, {
@@ -1782,7 +1793,7 @@ async function fetchBotReviews(
     });
     return reviews.slice(-500)
       .filter((r: { state?: string; user?: { login?: string; type?: string } | null; body?: string | null }) =>
-        r.user?.login === BOT_LOGIN && r.user?.type === 'Bot' && r.state !== 'DISMISSED' &&
+        isBotLogin(bot, r.user?.login) && r.user?.type === 'Bot' && r.state !== 'DISMISSED' &&
         !!r.body && r.body.includes(BOT_MARKER),
       )
       .map((r: unknown) => {
@@ -1802,24 +1813,24 @@ async function fetchBotReviews(
 
 /**
  * State-based head-SHA dedupe gate. Returns the most-recent non-DISMISSED
- * `manki-review[bot]` review whose `commit_id` matches `commitSha`, otherwise
+ * review by `bot` whose `commit_id` matches `commitSha`, otherwise
  * `undefined`. Run entry points consult this before any LLM call so serialized
  * sibling events (e.g., the `pull_request_review` + `pull_request_review_comment`
  * fan-out from a single human review) cannot post duplicate reviews on the
  * same commit. Complements the temporally-overlapping `checkConcurrentSubmissionLock`.
  */
 async function findBotReviewOnCommit(
-  octokit: Octokit, owner: string, repo: string, prNumber: number, commitSha: string,
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, commitSha: string,
 ): Promise<BotReviewSummary | undefined> {
-  const reviews = await fetchBotReviews(octokit, owner, repo, prNumber);
+  const reviews = await fetchBotReviews(octokit, bot, owner, repo, prNumber);
   const onCommit = reviews.filter(r => r.commitId === commitSha);
   return onCommit[onCommit.length - 1];
 }
 
 async function hasBotReviewOnCommit(
-  octokit: Octokit, owner: string, repo: string, prNumber: number, commitSha: string,
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, commitSha: string,
 ): Promise<boolean> {
-  return (await findBotReviewOnCommit(octokit, owner, repo, prNumber, commitSha)) !== undefined;
+  return (await findBotReviewOnCommit(octokit, bot, owner, repo, prNumber, commitSha)) !== undefined;
 }
 
 /**
@@ -1828,8 +1839,8 @@ async function hasBotReviewOnCommit(
  * "latest across all commits" semantic is preserved so a fresh CHANGES_REQUESTED
  * on a newer commit overrides an older APPROVED.
  */
-async function isApprovedOnCommit(octokit: Octokit, owner: string, repo: string, prNumber: number, commitSha: string): Promise<boolean> {
-  const reviews = await fetchBotReviews(octokit, owner, repo, prNumber);
+async function isApprovedOnCommit(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, commitSha: string): Promise<boolean> {
+  const reviews = await fetchBotReviews(octokit, bot, owner, repo, prNumber);
   const latest = reviews[reviews.length - 1];
   if (!latest || latest.state !== 'APPROVED') return false;
   return latest.commitId === commitSha;
@@ -1840,6 +1851,7 @@ const CONFIG_ERROR_MARKER = '<!-- manki-config-error -->';
 
 async function postAppWarningIfNeeded(
   octokit: Octokit,
+  bot: BotIdentity,
   owner: string,
   repo: string,
   prNumber: number,
@@ -1849,7 +1861,7 @@ async function postAppWarningIfNeeded(
   });
 
   if (comments.some(c =>
-    (c.user?.login === BOT_LOGIN || c.user?.login === ACTIONS_BOT_LOGIN) &&
+    isBotLogin(bot, c.user?.login) &&
     c.body?.includes(APP_WARNING_MARKER)
   )) {
     return;
@@ -1889,6 +1901,7 @@ async function postConfigErrorComment(
  */
 async function cancelActiveReviewRun(
   octokit: Octokit,
+  bot: BotIdentity,
   owner: string,
   repo: string,
   prNumber: number,
@@ -1896,7 +1909,7 @@ async function cancelActiveReviewRun(
   let progress: ProgressComment | null;
   try {
     const comments = await fetchPRComments(octokit, owner, repo, prNumber);
-    progress = findProgressComment(comments);
+    progress = findProgressComment(comments, bot);
   } catch {
     return false;
   }
@@ -1935,5 +1948,5 @@ async function cancelActiveReviewRun(
   }
 }
 
-export { dynamicFence, formatContextBlock, formatFindingComment, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment };
+export { dynamicFence, formatContextBlock, formatFindingComment, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment };
 export type { InProgressLock };

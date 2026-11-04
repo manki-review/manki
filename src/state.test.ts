@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 import { areAllFindingsResolved, fetchBotReviewThreads, checkAndAutoApprove, BOT_MARKER, ReviewThread } from './state';
-import { LAST_PAGE, paginateSinglePage } from './test-utils';
+import { LAST_PAGE, paginateSinglePage, TEST_BOT } from './test-utils';
 
 jest.mock('./github', () => ({
   ...jest.requireActual('./github'),
@@ -206,7 +206,7 @@ describe('checkAndAutoApprove', () => {
     mockIsReviewInProgress.mockResolvedValueOnce(true);
     const octokit = {} as unknown as Octokit;
 
-    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+    const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(false);
   });
@@ -256,7 +256,7 @@ describe('checkAndAutoApprove', () => {
       createReviewFn: createReviewMock,
     });
 
-    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+    const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(true);
     expect(createReviewMock).toHaveBeenCalledWith(
@@ -275,7 +275,7 @@ describe('checkAndAutoApprove', () => {
       createReviewFn: createReviewMock,
     });
 
-    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+    const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(true);
     expect(createReviewMock).toHaveBeenCalledWith(
@@ -290,7 +290,7 @@ describe('checkAndAutoApprove', () => {
       ],
     });
 
-    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+    const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(false);
   });
@@ -304,7 +304,7 @@ describe('checkAndAutoApprove', () => {
       createReviewFn: createReviewMock,
     });
 
-    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+    const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(false);
     expect(createReviewMock).not.toHaveBeenCalled();
@@ -319,7 +319,7 @@ describe('checkAndAutoApprove', () => {
       createReviewFn: createReviewMock,
     });
 
-    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+    const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(true);
     expect(createReviewMock).toHaveBeenCalledWith(
@@ -334,7 +334,7 @@ describe('checkAndAutoApprove', () => {
       createReviewFn: createReviewMock,
     });
 
-    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+    const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(true);
     expect(createReviewMock).toHaveBeenCalledWith(
@@ -358,7 +358,7 @@ describe('checkAndAutoApprove', () => {
       createCommentFn: createCommentMock,
     });
 
-    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+    const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(true);
     expect(createReviewMock).toHaveBeenCalledTimes(1);
@@ -387,7 +387,7 @@ describe('checkAndAutoApprove', () => {
       createReviewFn: createReviewMock,
     });
 
-    await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+    await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     const call = createReviewMock.mock.calls[0][0] as { body: string };
     expect(call.body).toContain(BOT_MARKER);
@@ -402,7 +402,7 @@ describe('checkAndAutoApprove', () => {
       createReviewFn: createReviewMock,
     });
 
-    await checkAndAutoApprove(octokit, 'owner', 'repo', 42);
+    await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 42);
 
     expect(dismissPreviousReviews).toHaveBeenCalledWith(octokit, 'owner', 'repo', 42);
     expect(createReviewMock.mock.invocationCallOrder[0]).toBeLessThan(dismissPreviousReviews.mock.invocationCallOrder[0]);
@@ -420,7 +420,7 @@ describe('checkAndAutoApprove', () => {
       ],
     });
 
-    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+    const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(true);
     expect(createReviewMock).not.toHaveBeenCalled();
@@ -437,7 +437,7 @@ describe('checkAndAutoApprove', () => {
       { body: '<!-- manki -->', state: 'APPROVED', commit_id: 'abc123', user: bot },
     ]);
 
-    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+    const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(true);
     expect(octokit.paginate).toHaveBeenCalledWith(octokit.rest.pulls.listReviews, expect.objectContaining({ per_page: 100 }));
@@ -456,7 +456,7 @@ describe('checkAndAutoApprove', () => {
       ],
     });
 
-    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+    const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(true);
     expect(createReviewMock).toHaveBeenCalledWith(
@@ -478,7 +478,7 @@ describe('checkAndAutoApprove', () => {
       ],
     });
 
-    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+    const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(false);
     expect(createReviewMock).not.toHaveBeenCalled();
@@ -517,7 +517,7 @@ describe('checkAndAutoApprove', () => {
         ],
       });
 
-      const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+      const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
       expect(result).toBe(false);
       expect(createReviewMock).not.toHaveBeenCalled();
@@ -554,7 +554,7 @@ describe('checkAndAutoApprove', () => {
         ],
       });
 
-      const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+      const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
       expect(result).toBe(true);
       expect(createReviewMock).toHaveBeenCalledWith(
@@ -582,7 +582,7 @@ describe('checkAndAutoApprove', () => {
         ],
       });
 
-      const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+      const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
       expect(result).toBe(false);
       expect(createReviewMock).not.toHaveBeenCalled();
@@ -603,7 +603,7 @@ describe('checkAndAutoApprove', () => {
         ],
       });
 
-      const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+      const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
       expect(result).toBe(false);
       expect(createReviewMock).not.toHaveBeenCalled();
@@ -625,7 +625,7 @@ describe('checkAndAutoApprove', () => {
         ],
       });
 
-      const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+      const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
       expect(result).toBe(false);
       expect(createReviewMock).not.toHaveBeenCalled();
@@ -649,7 +649,7 @@ describe('checkAndAutoApprove', () => {
         existingReviews: [],
       });
 
-      const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+      const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
       expect(result).toBe(false);
       expect(createReviewMock).not.toHaveBeenCalled();
@@ -694,7 +694,7 @@ describe('checkAndAutoApprove — concurrent run guard', () => {
     const octokit = makeMockOctokit();
     const createReviewMock = (octokit as unknown as { rest: { pulls: { createReview: jest.Mock } } }).rest.pulls.createReview;
 
-    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+    const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(false);
     expect(createReviewMock).not.toHaveBeenCalled();
@@ -707,7 +707,7 @@ describe('checkAndAutoApprove — concurrent run guard', () => {
     const octokit = makeMockOctokit();
     const createReviewMock = (octokit as unknown as { rest: { pulls: { createReview: jest.Mock } } }).rest.pulls.createReview;
 
-    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+    const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(true);
     expect(createReviewMock).toHaveBeenCalledWith(
@@ -718,12 +718,12 @@ describe('checkAndAutoApprove — concurrent run guard', () => {
   it('forwards the supplied config to the lock guard', async () => {
     mockCheckConcurrentSubmissionLock.mockResolvedValueOnce(false);
     const octokit = makeMockOctokit();
-    const config = { concurrency_lock_ttl_seconds: 300 } as Parameters<typeof checkAndAutoApprove>[4];
+    const config = { concurrency_lock_ttl_seconds: 300 } as Parameters<typeof checkAndAutoApprove>[5];
 
-    await checkAndAutoApprove(octokit, 'owner', 'repo', 1, config);
+    await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1, config);
 
     expect(mockCheckConcurrentSubmissionLock).toHaveBeenCalledWith(
-      octokit, 'owner', 'repo', 1, config,
+      octokit, TEST_BOT, 'owner', 'repo', 1, config,
     );
   });
 
@@ -781,7 +781,7 @@ describe('checkAndAutoApprove — concurrent run guard', () => {
       ]);
       const createReviewMock = (octokit as unknown as { rest: { pulls: { createReview: jest.Mock } } }).rest.pulls.createReview;
 
-      const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+      const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
       expect(result).toBe(false);
       expect(createReviewMock).not.toHaveBeenCalled();
@@ -793,7 +793,7 @@ describe('checkAndAutoApprove — concurrent run guard', () => {
       ]);
       const createReviewMock = (octokit as unknown as { rest: { pulls: { createReview: jest.Mock } } }).rest.pulls.createReview;
 
-      const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+      const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
       expect(result).toBe(true);
       expect(createReviewMock).toHaveBeenCalledWith(
@@ -805,7 +805,7 @@ describe('checkAndAutoApprove — concurrent run guard', () => {
       const octokit = makeOctokit([]);
       const createReviewMock = (octokit as unknown as { rest: { pulls: { createReview: jest.Mock } } }).rest.pulls.createReview;
 
-      const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+      const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
       expect(result).toBe(true);
       expect(createReviewMock).toHaveBeenCalledWith(
@@ -819,7 +819,7 @@ describe('checkAndAutoApprove — concurrent run guard', () => {
       ]);
       const createReviewMock = (octokit as unknown as { rest: { pulls: { createReview: jest.Mock } } }).rest.pulls.createReview;
 
-      const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+      const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
       expect(result).toBe(true);
       expect(createReviewMock).toHaveBeenCalledWith(
@@ -845,7 +845,7 @@ describe('checkAndAutoApprove — concurrent run guard', () => {
           botComment(7, inProgressBody(999), '2026-05-22T11:59:00Z'),
         ]);
 
-        await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+        await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
         expect(warningSpy).toHaveBeenCalledWith(
           expect.stringContaining('Invalid concurrency_lock_ttl_seconds=not-a-number'),
@@ -858,7 +858,7 @@ describe('checkAndAutoApprove — concurrent run guard', () => {
           botComment(7, inProgressBody(999), '2026-05-22T11:59:00Z'),
         ]);
 
-        await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+        await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
         expect(warningSpy).toHaveBeenCalledWith(
           expect.stringContaining('Invalid concurrency_lock_ttl_seconds=0'),
@@ -871,7 +871,7 @@ describe('checkAndAutoApprove — concurrent run guard', () => {
           botComment(7, inProgressBody(999), '2026-05-22T11:59:00Z'),
         ]);
 
-        await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+        await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
         expect(warningSpy).toHaveBeenCalledWith(
           expect.stringContaining('Invalid concurrency_lock_ttl_seconds=-1'),
@@ -884,7 +884,7 @@ describe('checkAndAutoApprove — concurrent run guard', () => {
           botComment(7, inProgressBody(999), '2026-05-22T11:59:00Z'),
         ]);
 
-        await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+        await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
         expect(warningSpy).toHaveBeenCalledWith(
           expect.stringContaining('Invalid concurrency_lock_ttl_seconds=9999'),
@@ -896,9 +896,9 @@ describe('checkAndAutoApprove — concurrent run guard', () => {
           botComment(7, inProgressBody(999), '2026-05-22T11:59:00Z'),
         ]);
         const createReviewMock = (octokit as unknown as { rest: { pulls: { createReview: jest.Mock } } }).rest.pulls.createReview;
-        const config = { concurrency_lock_ttl_seconds: 0 } as Parameters<typeof checkAndAutoApprove>[4];
+        const config = { concurrency_lock_ttl_seconds: 0 } as Parameters<typeof checkAndAutoApprove>[5];
 
-        const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1, config);
+        const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1, config);
 
         expect(warningSpy).toHaveBeenCalledWith(
           expect.stringContaining('Invalid `concurrency_lock_ttl_seconds` in config (0)'),
@@ -970,7 +970,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
     });
 
     const octokit = makeMockOctokit({ createReviewFn: createReviewMock });
-    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+    const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(true);
     expect(callOrder).toEqual(['post', 'createReview', 'complete']);
@@ -982,7 +982,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
     ghMock.checkConcurrentSubmissionLock.mockResolvedValueOnce(true);
     const octokit = makeMockOctokit();
 
-    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+    const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(false);
     expect(ghMock.postAutoApproveProgressComment).not.toHaveBeenCalled();
@@ -994,7 +994,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
     ghMock.isReviewInProgress.mockResolvedValueOnce(true);
     const octokit = makeMockOctokit();
 
-    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+    const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(false);
     expect(ghMock.postAutoApproveProgressComment).not.toHaveBeenCalled();
@@ -1015,7 +1015,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
       },
     } as unknown as Octokit;
 
-    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+    const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(false);
     expect(ghMock.postAutoApproveProgressComment).not.toHaveBeenCalled();
@@ -1031,7 +1031,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
       ],
     });
 
-    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+    const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(true);
     expect(ghMock.postAutoApproveProgressComment).not.toHaveBeenCalled();
@@ -1043,7 +1043,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
     const createCommentMock = jest.fn().mockRejectedValueOnce(new Error('comment also forbidden'));
     const octokit = makeMockOctokit({ createReviewFn: createReviewMock, createCommentFn: createCommentMock });
 
-    await expect(checkAndAutoApprove(octokit, 'owner', 'repo', 1)).rejects.toThrow('comment also forbidden');
+    await expect(checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1)).rejects.toThrow('comment also forbidden');
     expect(ghMock.markProgressCommentFailed).toHaveBeenCalledWith(
       octokit, 'owner', 'repo', 7777, 'Auto-approve', 'comment also forbidden',
     );
@@ -1056,7 +1056,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
     const createCommentMock = jest.fn().mockResolvedValueOnce({});
     const octokit = makeMockOctokit({ createReviewFn: createReviewMock, createCommentFn: createCommentMock });
 
-    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+    const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(true);
     expect(createCommentMock).toHaveBeenCalledWith(expect.objectContaining({
@@ -1102,8 +1102,8 @@ describe('postAutoApproveProgressComment / markAutoApprove*', () => {
     const comments = [
       { id: 1, body: postedBody, user: { login: 'manki-review[bot]', type: 'Bot' }, updated_at: '2026-05-22T11:59:00Z' },
     ];
-    expect(ghActual.findInProgressLock(comments, /* different run */ 999)).not.toBeNull();
-    expect(ghActual.findInProgressLock(comments, 12345)).toBeNull();
+    expect(ghActual.findInProgressLock(comments, TEST_BOT, /* different run */ 999)).not.toBeNull();
+    expect(ghActual.findInProgressLock(comments, TEST_BOT, 12345)).toBeNull();
     expect(postedBody).toContain('Auto-approving');
   });
 
@@ -1120,7 +1120,7 @@ describe('postAutoApproveProgressComment / markAutoApprove*', () => {
     const comments = [
       { id: 1, body: updatedBody, user: { login: 'manki-review[bot]', type: 'Bot' }, updated_at: '2026-05-22T11:59:30Z' },
     ];
-    expect(ghActual.findInProgressLock(comments, 999)).toBeNull();
+    expect(ghActual.findInProgressLock(comments, TEST_BOT, 999)).toBeNull();
     expect(updatedBody).toContain('Auto-approved (all findings resolved)');
   });
 
@@ -1137,7 +1137,7 @@ describe('postAutoApproveProgressComment / markAutoApprove*', () => {
     const comments = [
       { id: 1, body: updatedBody, user: { login: 'manki-review[bot]', type: 'Bot' }, updated_at: '2026-05-22T11:59:30Z' },
     ];
-    expect(ghActual.findInProgressLock(comments, 999)).toBeNull();
+    expect(ghActual.findInProgressLock(comments, TEST_BOT, 999)).toBeNull();
     expect(updatedBody).toContain('API rate limited for [REDACTED]');
     expect(updatedBody).not.toContain('ghs_secret123');
   });

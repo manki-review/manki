@@ -244,6 +244,7 @@ describe('createAuthenticatedOctokit', () => {
     const fakeOctokit = {
       rest: {
         apps: {
+          getAuthenticated: jest.fn().mockResolvedValue({ data: { slug: 'acme-reviewer' } }),
           getRepoInstallation: jest.fn().mockResolvedValue({ data: { id: 999 } }),
         },
       },
@@ -260,6 +261,7 @@ describe('createAuthenticatedOctokit', () => {
     expect(result.octokit).toBeDefined();
     expect(result.resolvedToken).toBe('installation-token-abc');
     expect(result.identity).toBe('app');
+    expect(result.bot).toEqual({ logins: ['acme-reviewer[bot]'] });
   });
 
   it('throws when github_app_id is not a number', async () => {
@@ -297,6 +299,7 @@ describe('createAuthenticatedOctokit', () => {
     expect(result.octokit).toBeDefined();
     expect(result.resolvedToken).toBe('ghp_fallback');
     expect(result.identity).toBe('actions');
+    expect(result.bot).toEqual({ logins: ['manki-review[bot]', 'github-actions[bot]'] });
     expect(mockGetOctokit).toHaveBeenCalledWith('ghp_fallback', expect.anything(), retry, throttling);
   });
 
@@ -339,6 +342,7 @@ describe('createAuthenticatedOctokit', () => {
 
     expect(result.resolvedToken).toBe('resolved-app-token');
     expect(result.identity).toBe('app');
+    expect(result.bot).toEqual({ logins: ['manki-review[bot]', 'github-actions[bot]'] });
     expect(getMemoryToken(result.resolvedToken)).toBe('resolved-app-token');
   });
 
@@ -381,6 +385,7 @@ describe('createAuthenticatedOctokit', () => {
     const fakeOctokit = {
       rest: {
         apps: {
+          getAuthenticated: jest.fn().mockResolvedValue({ data: { slug: 'acme-reviewer' } }),
           getRepoInstallation: jest.fn().mockRejectedValue(new Error('Not installed')),
         },
       },

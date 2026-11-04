@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 import { createAppAuth } from '@octokit/auth-app';
 import { retry } from '@octokit/plugin-retry';
 import { throttling } from '@octokit/plugin-throttling';
-import { BOT_LOGIN } from './github';
+import { ACTIONS_BOT_LOGIN, BOT_LOGIN, BotIdentity } from './github';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -27,7 +27,12 @@ export interface AuthResult {
   octokit: Octokit;
   resolvedToken: string;
   identity: 'app' | 'actions';
+  bot: BotIdentity;
 }
+
+// Without custom App credentials a run posts as `manki-review[bot]`, or as `github-actions[bot]` when the App token
+// is unavailable. Earlier rounds can carry either login.
+const MANKI_BOT: BotIdentity = { logins: [BOT_LOGIN, ACTIONS_BOT_LOGIN] };
 
 export interface TokenResult {
   token: string;
@@ -100,8 +105,8 @@ export async function createAuthenticatedOctokit(): Promise<AuthResult> {
 
   if (appId && privateKey) {
     core.info('Using GitHub App authentication for custom bot identity');
-    const token = await getInstallationToken(appId, privateKey);
-    return { octokit: createOctokit(token), resolvedToken: token, identity: 'app' };
+    const { token, slug } = await getInstallationToken(appId, privateKey);
+    return { octokit: createOctokit(token), resolvedToken: token, identity: 'app', bot: { logins: [`${slug}[bot]`] } };
   }
 
   if (!githubToken) {
@@ -112,7 +117,7 @@ export async function createAuthenticatedOctokit(): Promise<AuthResult> {
   const { owner, repo: repoName } = github.context.repo;
   const { token, identity } = await resolveGitHubToken(githubToken, tokenUrl, owner, repoName);
 
-  return { octokit: createOctokit(token), resolvedToken: token, identity };
+  return { octokit: createOctokit(token), resolvedToken: token, identity, bot: MANKI_BOT };
 }
 
 /**
@@ -137,7 +142,7 @@ export function getMemoryToken(resolvedToken: string | null): string | null {
 async function getInstallationToken(
   appId: string,
   privateKey: string,
-): Promise<string> {
+): Promise<{ token: string; slug: string }> {
   const appIdNum = parseInt(appId, 10);
   if (isNaN(appIdNum)) {
     throw new Error(`Invalid github_app_id: "${appId}" is not a number`);
@@ -156,6 +161,9 @@ async function getInstallationToken(
   const repo = github.context.repo.repo;
 
   try {
+    const { data: app } = await appOctokit.rest.apps.getAuthenticated();
+    if (!app?.slug) throw new Error('GET /app returned no slug');
+
     const { data: installation } = await appOctokit.rest.apps.getRepoInstallation({
       owner,
       repo,
@@ -167,8 +175,8 @@ async function getInstallationToken(
     });
 
     core.setSecret(installationAuth.token);
-    core.info(`Authenticated as GitHub App (installation ${installation.id})`);
-    return installationAuth.token;
+    core.info(`Authenticated as GitHub App ${app.slug}[bot] (installation ${installation.id})`);
+    return { token: installationAuth.token, slug: app.slug };
   } catch (error) {
     throw new Error(`GitHub App authentication failed: ${error}. Check that the app is installed on this repo and credentials are correct.`);
   }

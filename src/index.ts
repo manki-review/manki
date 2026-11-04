@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as github from '@actions/github';
 import * as path from 'path';
 
-import { createAuthenticatedOctokit, getMemoryToken } from './auth';
+import { AuthResult, createAuthenticatedOctokit, getMemoryToken } from './auth';
 import { sanitizeTokens } from './utils';
 import { loadConfig, loadConfigFromFile, sanitizeForkConfig, resolveAgentModel, resolveModel } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
@@ -32,11 +32,11 @@ import {
   postReview,
   reactToIssueComment,
   fetchLinkedIssues,
-  BOT_LOGIN,
   BOT_MARKER as PROGRESS_MARKER,
   FORCE_REVIEW_MARKER,
   FORCE_CAP_MARKER,
   MANKI_VERSION,
+  isBotLogin,
   isReviewInProgress,
   isApprovedOnCommit,
   hasBotReviewOnCommit,
@@ -131,20 +131,11 @@ function buildLLMClientFromInputs(opts: {
   }
 }
 
-const octokitCache = {
-  instance: null as Octokit | null,
-  resolvedToken: null as string | null,
-  identity: null as 'app' | 'actions' | null,
-};
+let authCache: AuthResult | null = null;
 
-async function getOctokit(): Promise<Octokit> {
-  if (!octokitCache.instance) {
-    const { octokit, resolvedToken, identity } = await createAuthenticatedOctokit();
-    octokitCache.instance = octokit;
-    octokitCache.resolvedToken = resolvedToken;
-    octokitCache.identity = identity;
-  }
-  return octokitCache.instance;
+async function getAuth(): Promise<AuthResult> {
+  authCache ??= await createAuthenticatedOctokit();
+  return authCache;
 }
 
 async function run(): Promise<void> {
@@ -164,8 +155,7 @@ async function run(): Promise<void> {
     return;
   }
 
-  const commentAuthorLogin = github.context.payload.comment?.user?.login as string | undefined;
-  const isBotComment = commentAuthorLogin === BOT_LOGIN;
+  let tickedMarker: ReturnType<typeof detectTickedMarker> = null;
 
   // Event filtering — exit immediately for irrelevant events.
   // Tested via integration (live PR reviews) since it depends on GitHub Actions context.
@@ -184,8 +174,11 @@ async function run(): Promise<void> {
       return;
     }
     const body = github.context.payload.comment?.body ?? '';
-    const isForceReviewChecked = action === 'edited' && isBotComment && detectTickedMarker(body) !== null;
-    if (!isForceReviewChecked && !hasBotMention(body) && !isReviewRequest(body)) {
+    const marker = action === 'edited' ? detectTickedMarker(body) : null;
+    if (marker !== null && isBotLogin((await getAuth()).bot, github.context.payload.comment?.user?.login)) {
+      tickedMarker = marker;
+    }
+    if (tickedMarker === null && !hasBotMention(body) && !isReviewRequest(body)) {
       core.info('Comment does not mention Manki — ignoring');
       return;
     }
@@ -194,14 +187,13 @@ async function run(): Promise<void> {
       const commentId = github.context.payload.comment?.id;
       if (commentId) {
         try {
-          const octokit = await getOctokit();
+          const { octokit, bot } = await getAuth();
           const { owner, repo } = github.context.repo;
           const { data: reactions } = await octokit.rest.reactions.listForIssueComment({
             owner, repo, comment_id: commentId,
           });
           const alreadyProcessed = reactions.some(r =>
-            r.content === 'eyes' &&
-            (r.user?.login === BOT_LOGIN || r.user?.login === 'github-actions[bot]')
+            r.content === 'eyes' && isBotLogin(bot, r.user?.login)
           );
           if (alreadyProcessed) {
             core.info('Edited comment already processed (has eyes reaction) — skipping');
@@ -245,7 +237,6 @@ async function run(): Promise<void> {
 
     case 'issue_comment': {
       const commentBody = github.context.payload.comment?.body ?? '';
-      const tickedMarker = action === 'edited' && isBotComment ? detectTickedMarker(commentBody) : null;
       if (tickedMarker === 'FORCE_CAP_MARKER' && github.context.payload.issue?.pull_request) {
         await handleCommentTrigger(false, true, 'skip_cap');
       } else if (tickedMarker === 'FORCE_REVIEW_MARKER' && github.context.payload.issue?.pull_request) {
@@ -317,18 +308,18 @@ async function handlePullRequest(): Promise<void> {
     return;
   }
 
-  const octokit = await getOctokit();
-  if (await isReviewInProgress(octokit, owner, repo, prNumber)) {
+  const { octokit, bot } = await getAuth();
+  if (await isReviewInProgress(octokit, bot, owner, repo, prNumber)) {
     await postReviewSkippedComment(octokit, owner, repo, prNumber, commitSha, 'in_progress');
     return;
   }
 
-  if (await isApprovedOnCommit(octokit, owner, repo, prNumber, commitSha)) {
+  if (await isApprovedOnCommit(octokit, bot, owner, repo, prNumber, commitSha)) {
     core.info('Already approved on this commit — skipping review');
     return;
   }
 
-  if (await hasBotReviewOnCommit(octokit, owner, repo, prNumber, commitSha)) {
+  if (await hasBotReviewOnCommit(octokit, bot, owner, repo, prNumber, commitSha)) {
     core.info(`Bot already reviewed commit ${commitSha.slice(0, 7)} — skipping serialized sibling run`);
     await postReviewSkippedComment(octokit, owner, repo, prNumber, commitSha, 'already_reviewed');
     return;
@@ -394,7 +385,7 @@ async function handleCommentTrigger(forceReview?: boolean, skipCap?: boolean, by
   const repo = github.context.repo.repo;
   const prNumber = payload.issue.number;
 
-  const octokit = await getOctokit();
+  const { octokit, bot } = await getAuth();
 
   // Acknowledge the command unconditionally so the user knows it was received.
   if (payload.comment?.id) {
@@ -420,7 +411,7 @@ async function handleCommentTrigger(forceReview?: boolean, skipCap?: boolean, by
   });
 
   if (!forceReview) {
-    if (await isReviewInProgress(octokit, owner, repo, prNumber)) {
+    if (await isReviewInProgress(octokit, bot, owner, repo, prNumber)) {
       await postReviewSkippedComment(octokit, owner, repo, prNumber, pr.head.sha, 'in_progress');
       core.info('Review already in progress — skipping');
       return;
@@ -428,14 +419,14 @@ async function handleCommentTrigger(forceReview?: boolean, skipCap?: boolean, by
   }
 
   if (!forceReview) {
-    if (await isApprovedOnCommit(octokit, owner, repo, prNumber, pr.head.sha)) {
+    if (await isApprovedOnCommit(octokit, bot, owner, repo, prNumber, pr.head.sha)) {
       core.info('Already approved on this commit — skipping review');
       return;
     }
   }
 
   if (!forceReview) {
-    if (await hasBotReviewOnCommit(octokit, owner, repo, prNumber, pr.head.sha)) {
+    if (await hasBotReviewOnCommit(octokit, bot, owner, repo, prNumber, pr.head.sha)) {
       core.info(`Bot already reviewed commit ${pr.head.sha.slice(0, 7)} — skipping serialized sibling run`);
       await postReviewSkippedComment(octokit, owner, repo, prNumber, pr.head.sha, 'already_reviewed');
       return;
@@ -512,11 +503,11 @@ async function runFullReview(
 
   const startTime = Date.now();
   const configPathInput = core.getInput('config_path');
-  const octokit = await getOctokit();
+  const { octokit, bot, identity, resolvedToken } = await getAuth();
 
-  if (octokitCache.identity === 'actions') {
+  if (identity === 'actions') {
     try {
-      await postAppWarningIfNeeded(octokit, owner, repo, prNumber);
+      await postAppWarningIfNeeded(octokit, bot, owner, repo, prNumber);
     } catch (error) {
       core.warning(`Failed to post app warning: ${error}`);
     }
@@ -562,7 +553,7 @@ async function runFullReview(
     // Scan for a competing in-progress marker before posting our own to shorten
     // the race window. A residual window remains when two runs both pass this scan
     // before either posts; tracking issue for the strict atomic fix: https://github.com/manki-review/manki/issues/798
-    if (await checkConcurrentSubmissionLock(octokit, owner, repo, prNumber, config)) {
+    if (await checkConcurrentSubmissionLock(octokit, bot, owner, repo, prNumber, config)) {
       core.warning('Defense-in-depth lock engaged — this run will not post a review. If no review appears on the PR, re-trigger with `/manki review`.');
       return;
     }
@@ -572,7 +563,7 @@ async function runFullReview(
     // pass the in-progress scan when the prior run's marker has already been
     // cleared. The state-based check on the bot's posted reviews catches that.
     // Honors `forceReview` so explicit re-review on the same SHA still proceeds.
-    if (!forceReview && await hasBotReviewOnCommit(octokit, owner, repo, prNumber, commitSha)) {
+    if (!forceReview && await hasBotReviewOnCommit(octokit, bot, owner, repo, prNumber, commitSha)) {
       core.warning(`Bot already posted a non-DISMISSED review on commit ${commitSha.slice(0, 7)} — bailing serialized sibling run.`);
       await postReviewSkippedComment(octokit, owner, repo, prNumber, commitSha, 'already_reviewed');
       return;
@@ -597,7 +588,7 @@ async function runFullReview(
 
     progressCommentId = await postProgressComment(octokit, owner, repo, prNumber);
 
-    const recap = await fetchRecapState(octokit, owner, repo, prNumber, prAuthorLogin);
+    const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, prAuthorLogin);
 
     if (github.context.eventName === 'pull_request' && !config.auto_review) {
       core.info('auto_review is disabled — skipping');
@@ -743,7 +734,7 @@ async function runFullReview(
     if (!config.memory?.enabled) {
       memoryLoadStatus = 'disabled';
     } else {
-      const memoryToken = getMemoryToken(octokitCache.resolvedToken);
+      const memoryToken = getMemoryToken(resolvedToken);
       if (!memoryToken) {
         core.warning('No memory token available — skipping memory load. Set memory_repo_token or github_token.');
         memoryLoadStatus = 'no_token';
@@ -1429,7 +1420,7 @@ async function runFullReview(
 }
 
 async function handleReviewStateCheck(): Promise<void> {
-  const octokit = await getOctokit();
+  const { octokit, bot } = await getAuth();
 
   const pr = github.context.payload.pull_request;
   if (!pr) {
@@ -1457,7 +1448,7 @@ async function handleReviewStateCheck(): Promise<void> {
     return;
   }
 
-  const approved = await checkAndAutoApprove(octokit, owner, repo, prNumber, config);
+  const approved = await checkAndAutoApprove(octokit, bot, owner, repo, prNumber, config);
   if (approved) {
     core.info(`PR #${prNumber} auto-approved after all findings resolved`);
   }
@@ -1474,7 +1465,7 @@ async function handleInteraction(): Promise<void> {
 
   const configPathInput = core.getInput('config_path');
 
-  const octokit = await getOctokit();
+  const { octokit, bot, resolvedToken } = await getAuth();
 
   const { owner, repo } = github.context.repo;
   const prNumber = github.context.payload.issue?.number;
@@ -1493,9 +1484,9 @@ async function handleInteraction(): Promise<void> {
   const { client } = built;
 
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;
-  const memoryToken = config.memory?.enabled ? getMemoryToken(octokitCache.resolvedToken) ?? undefined : undefined;
+  const memoryToken = config.memory?.enabled ? getMemoryToken(resolvedToken) ?? undefined : undefined;
 
-  await handlePRComment(octokit, client, owner, repo, prNumber, memoryConfig, memoryToken, config);
+  await handlePRComment(octokit, bot, client, owner, repo, prNumber, memoryConfig, memoryToken, config);
 }
 
 async function handleIssueInteraction(): Promise<void> {
@@ -1509,7 +1500,7 @@ async function handleIssueInteraction(): Promise<void> {
   const issueNumber = payload.issue?.number;
   if (!issueNumber) return;
 
-  const octokit = await getOctokit();
+  const { octokit, bot, resolvedToken } = await getAuth();
   const configPathInput = core.getInput('config_path');
 
   const configPath = configPathInput || '.manki.yml';
@@ -1517,9 +1508,9 @@ async function handleIssueInteraction(): Promise<void> {
   const config = loadConfig(configContent ?? undefined, configPath);
 
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;
-  const memoryToken = config.memory?.enabled ? getMemoryToken(octokitCache.resolvedToken) ?? undefined : undefined;
+  const memoryToken = config.memory?.enabled ? getMemoryToken(resolvedToken) ?? undefined : undefined;
 
-  await handlePRComment(octokit, null, owner, repo, issueNumber, memoryConfig, memoryToken, config);
+  await handlePRComment(octokit, bot, null, owner, repo, issueNumber, memoryConfig, memoryToken, config);
 }
 
 async function handleReviewCommentInteraction(): Promise<void> {
@@ -1552,7 +1543,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
 
   const configPathInput = core.getInput('config_path');
 
-  const octokit = await getOctokit();
+  const { octokit, bot, resolvedToken } = await getAuth();
   const { owner, repo } = github.context.repo;
 
   const baseRef = payload.pull_request?.base?.ref ?? 'main';
@@ -1565,7 +1556,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
   const { client } = built;
 
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;
-  const memoryToken = config.memory?.enabled ? getMemoryToken(octokitCache.resolvedToken) ?? undefined : undefined;
+  const memoryToken = config.memory?.enabled ? getMemoryToken(resolvedToken) ?? undefined : undefined;
 
   const command = parseCommand(body);
   if (command.type !== 'generic') {
@@ -1587,7 +1578,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
   // Check if all review threads are now resolved (e.g. the reply resolved the last conversation)
   const prNum = payload.pull_request?.number;
   if (prNum && config.auto_approve) {
-    const approved = await checkAndAutoApprove(octokit, owner, repo, prNum, config);
+    const approved = await checkAndAutoApprove(octokit, bot, owner, repo, prNum, config);
     if (approved) {
       core.info(`PR #${prNum} auto-approved after all findings resolved`);
     }
@@ -1612,8 +1603,8 @@ async function postCleanup(): Promise<void> {
   const { owner, repo } = github.context.repo;
   const runId = github.context.runId;
   try {
-    const octokit = await getOctokit();
-    const marked = await markOwnProgressCommentCancelled(octokit, owner, repo, prNumber, runId);
+    const { octokit, bot } = await getAuth();
+    const marked = await markOwnProgressCommentCancelled(octokit, bot, owner, repo, prNumber, runId);
     if (marked) {
       core.info(`Post-cleanup: marked progress comment for run ${runId} as cancelled`);
     } else {
@@ -1659,9 +1650,7 @@ if (process.env.NODE_ENV !== 'test') {
 }
 
 function _resetOctokitCache(): void {
-  octokitCache.instance = null;
-  octokitCache.resolvedToken = null;
-  octokitCache.identity = null;
+  authCache = null;
 }
 
 export { run, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, runFullReview, main, _resetOctokitCache, _buildRoundRecap };

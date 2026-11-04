@@ -1,5 +1,5 @@
 import { AuthorReplyClass, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, RoundContext } from './types';
-import { titleToSlug } from './github';
+import { BotIdentity, titleToSlug } from './github';
 
 /** `pageInfo` of the last page of a GraphQL connection. */
 export const LAST_PAGE = { hasNextPage: false, endCursor: null };
@@ -148,3 +148,6 @@ function legacyFindingToFingerprintEntry(f: LegacyHandoverFindingFixture): Findi
     title: f.title,
   };
 }
+
+/** The identity a run without custom App credentials resolves to. */
+export const TEST_BOT: BotIdentity = { logins: ['manki-review[bot]', 'github-actions[bot]'] };

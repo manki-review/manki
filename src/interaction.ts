@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 
 import { LLMClient } from './providers';
 import { writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
-import { dynamicFence, reactToIssueComment, reactToReviewComment, fetchPRDiff } from './github';
+import { BotIdentity, dynamicFence, reactToIssueComment, reactToReviewComment, fetchPRDiff } from './github';
 import { truncateDiff } from './review';
 import { checkAndAutoApprove, fetchBotReviewThreads, resolveReviewThread } from './state';
 import { ReviewConfig } from './types';
@@ -225,6 +225,7 @@ export async function handleReviewCommentReply(
  */
 export async function handlePRComment(
   octokit: Octokit,
+  bot: BotIdentity,
   client: LLMClient | null,
   owner: string,
   repo: string,
@@ -293,7 +294,7 @@ export async function handlePRComment(
       break;
     case 'check':
       await reactToIssueComment(octokit, owner, repo, commentId, 'eyes');
-      await handleCheck(octokit, owner, repo, issueNumber, config);
+      await handleCheck(octokit, bot, owner, repo, issueNumber, config);
       break;
     case 'help':
       await reactToIssueComment(octokit, owner, repo, commentId, '+1');
@@ -620,6 +621,7 @@ async function handleForget(
 
 async function handleCheck(
   octokit: Octokit,
+  bot: BotIdentity,
   owner: string,
   repo: string,
   prNumber: number,
@@ -646,7 +648,7 @@ async function handleCheck(
     return;
   }
 
-  const approved = await checkAndAutoApprove(octokit, owner, repo, prNumber, config);
+  const approved = await checkAndAutoApprove(octokit, bot, owner, repo, prNumber, config);
 
   if (!approved) {
     const threads = await fetchBotReviewThreads(octokit, owner, repo, prNumber);

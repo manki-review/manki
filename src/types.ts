@@ -413,7 +413,7 @@ export interface ReviewConfig {
   };
   /**
    * TTL (in seconds) for the in-app concurrent-submission lock. When another
-   * `manki-review[bot]` run has posted an in-progress marker comment that was
+   * Manki run has posted an in-progress marker comment that was
    * updated within this window, the current run bails before any LLM call.
    * Acts as defense in depth on top of the workflow-level concurrency group.
    */
