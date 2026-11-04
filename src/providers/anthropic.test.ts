@@ -3,6 +3,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
 import { AnthropicClient, buildAnthropicAuth, extractAnthropicCLIUsage, resetCLIInstallPromise, sanitizeLogOutput, STALE_TIMEOUT_MS } from './anthropic';
+import { SendMessageOptions } from './types';
 
 jest.mock('child_process', () => ({
   execFile: jest.fn(),
@@ -118,69 +119,68 @@ describe('sendMessage effort option (CLI path)', () => {
 });
 
 describe('sendMessage effort option (API path)', () => {
-  let mockCreate: jest.Mock;
+  let mockStream: jest.Mock;
+  let mockFinalMessage: jest.Mock;
 
   beforeEach(() => {
-    mockCreate = jest.fn().mockResolvedValue({
+    mockFinalMessage = jest.fn().mockResolvedValue({
       content: [{ type: 'text', text: 'response' }],
     });
+    mockStream = jest.fn(() => ({ finalMessage: mockFinalMessage }));
     (Anthropic as unknown as jest.Mock).mockImplementation(() => ({
-      messages: { create: mockCreate },
+      messages: { stream: mockStream },
     }));
   });
 
-  it('includes thinking param when effort is high', async () => {
-    const client = new AnthropicClient({ auth: { kind: 'apiKey', key: 'sk-key' }, model: 'claude-opus-4-6' });
+  async function sentParams(model: string, effort?: SendMessageOptions['effort']): Promise<Record<string, unknown>> {
+    mockStream.mockClear();
+    const client = new AnthropicClient({ auth: { kind: 'apiKey', key: 'sk-key' }, model });
+    await client.sendMessage('system', 'user', effort ? { effort } : undefined);
+    return mockStream.mock.calls[0][0];
+  }
 
-    await client.sendMessage('system', 'user', { effort: 'high' });
-
-    const params = mockCreate.mock.calls[0][0];
-    expect(params.thinking).toEqual({ type: 'enabled', budget_tokens: 10000 });
-    expect(params.max_tokens).toBe(32768);
+  it('sends adaptive thinking with the native effort level on models after the 4.5 generation', async () => {
+    const models = ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-7', 'claude-opus-4-8', 'claude-opus-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'claude-future-9'];
+    for (const model of models) {
+      for (const effort of ['low', 'medium', 'high', 'max'] as const) {
+        const params = await sentParams(model, effort);
+        expect(params.thinking).toEqual({ type: 'adaptive' });
+        expect(params.output_config).toEqual({ effort });
+        expect(params.max_tokens).toBe(32768);
+      }
+    }
   });
 
-  it('includes thinking param when effort is max', async () => {
-    const client = new AnthropicClient({ auth: { kind: 'apiKey', key: 'sk-key' }, model: 'claude-opus-4-6' });
-
-    await client.sendMessage('system', 'user', { effort: 'max' });
-
-    const params = mockCreate.mock.calls[0][0];
-    expect(params.thinking).toEqual({ type: 'enabled', budget_tokens: 16000 });
-    expect(params.max_tokens).toBe(32768);
+  it('sends budget_tokens on the 4.5 generation', async () => {
+    const models = ['claude-opus-4-5', 'claude-opus-4-5-20251101', 'claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001'];
+    for (const model of models) {
+      expect((await sentParams(model, 'medium')).thinking).toEqual({ type: 'enabled', budget_tokens: 5000 });
+      expect((await sentParams(model, 'high')).thinking).toEqual({ type: 'enabled', budget_tokens: 10000 });
+      const params = await sentParams(model, 'max');
+      expect(params.thinking).toEqual({ type: 'enabled', budget_tokens: 16000 });
+      expect(params.output_config).toBeUndefined();
+      expect(params.max_tokens).toBe(32768);
+    }
   });
 
-  it('includes thinking param when effort is medium', async () => {
-    const client = new AnthropicClient({ auth: { kind: 'apiKey', key: 'sk-key' }, model: 'claude-opus-4-6' });
-
-    await client.sendMessage('system', 'user', { effort: 'medium' });
-
-    const params = mockCreate.mock.calls[0][0];
-    expect(params.thinking).toEqual({ type: 'enabled', budget_tokens: 5000 });
-    expect(params.max_tokens).toBe(32768);
-  });
-
-  it('omits thinking param when effort is low', async () => {
-    const client = new AnthropicClient({ auth: { kind: 'apiKey', key: 'sk-key' }, model: 'claude-opus-4-6' });
-
-    await client.sendMessage('system', 'user', { effort: 'low' });
-
-    const params = mockCreate.mock.calls[0][0];
+  it('omits thinking on the 4.5 generation when effort is low', async () => {
+    const params = await sentParams('claude-sonnet-4-5', 'low');
     expect(params.thinking).toBeUndefined();
+    expect(params.output_config).toBeUndefined();
     expect(params.max_tokens).toBe(16384);
   });
 
-  it('omits thinking param when no options provided', async () => {
-    const client = new AnthropicClient({ auth: { kind: 'apiKey', key: 'sk-key' }, model: 'claude-opus-4-6' });
-
-    await client.sendMessage('system', 'user');
-
-    const params = mockCreate.mock.calls[0][0];
-    expect(params.thinking).toBeUndefined();
-    expect(params.max_tokens).toBe(16384);
+  it('omits thinking and effort when no options provided', async () => {
+    for (const model of ['claude-opus-4-7', 'claude-sonnet-4-5']) {
+      const params = await sentParams(model);
+      expect(params.thinking).toBeUndefined();
+      expect(params.output_config).toBeUndefined();
+      expect(params.max_tokens).toBe(16384);
+    }
   });
 
   it('concatenates multiple text blocks', async () => {
-    mockCreate.mockResolvedValue({
+    mockFinalMessage.mockResolvedValue({
       content: [
         { type: 'thinking', thinking: 'hmm' },
         { type: 'text', text: 'first' },
@@ -1354,17 +1354,17 @@ describe('extractAnthropicCLIUsage', () => {
 });
 
 describe('AnthropicClient API-path usage', () => {
-  let mockCreate: jest.Mock;
+  let mockFinalMessage: jest.Mock;
 
   beforeEach(() => {
-    mockCreate = jest.fn();
+    mockFinalMessage = jest.fn();
     (Anthropic as unknown as jest.Mock).mockImplementation(() => ({
-      messages: { create: mockCreate },
+      messages: { stream: () => ({ finalMessage: mockFinalMessage }) },
     }));
   });
 
   it('lifts usage and measures latency on the SDK path', async () => {
-    mockCreate.mockResolvedValue({
+    mockFinalMessage.mockResolvedValue({
       content: [{ type: 'text', text: 'response' }],
       usage: { input_tokens: 100, output_tokens: 25, cache_read_input_tokens: 10 },
     });
@@ -1376,7 +1376,7 @@ describe('AnthropicClient API-path usage', () => {
   });
 
   it('returns zero usage when the SDK omits the usage block', async () => {
-    mockCreate.mockResolvedValue({ content: [{ type: 'text', text: 'response' }] });
+    mockFinalMessage.mockResolvedValue({ content: [{ type: 'text', text: 'response' }] });
     const client = new AnthropicClient({ auth: { kind: 'apiKey', key: 'sk-key' }, model: 'claude-opus-4-6' });
     const result = await client.sendMessage('sys', 'user');
     expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 });
