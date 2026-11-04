@@ -522,6 +522,7 @@ describe('fetchRecapState', () => {
     return {
       id: 'thread-1',
       isResolved: false,
+      resolvedBy: { login: 'alice' },
       path: 'src/foo.ts',
       line: 10,
       comments: {
@@ -1209,20 +1210,20 @@ describe('fetchRecapState', () => {
     it('counts a thread Manki resolved as dismissed only when the judge marked it addressed', async () => {
       const title = 'Missing null check';
       const slug = titleToSlug(title);
-      const files = { human: 'src/human.ts', bot: 'src/bot.ts', judge: 'src/judge.ts' };
+      const files = { human: 'src/human.ts', bot: 'src/bot.ts', judge: 'src/judge.ts', unknown: 'src/unknown.ts' };
       const entries = Object.values(files).map(file => ({
         fingerprint: { file, lineStart: 10, lineEnd: 10, slug },
         severity: 'blocker' as const,
         title,
       }));
       const ctx = makeRoundContext(1, {
-        findings: { count: 3, severityCounts: { blocker: 3, warning: 0, suggestion: 0, nitpick: 0 }, entries },
+        findings: { count: 4, severityCounts: { blocker: 4, warning: 0, suggestion: 0, nitpick: 0 }, entries },
         judge: { summary: 'ok', threadEvaluations: [{ threadId: 'T_JUDGE', status: 'addressed', reason: 'fixed' }] },
       });
-      const thread = (id: string, path: string, resolver: string) => makeThread({
+      const thread = (id: string, path: string, resolver: string | null) => makeThread({
         id,
         isResolved: true,
-        resolvedBy: { login: resolver },
+        resolvedBy: resolver === null ? null : { login: resolver },
         path,
         line: 10,
         comments: { nodes: [{ body: `**Blocker**: ${title}\n\n<!-- manki:blocker:${slug} -->`, author: { login: BOT_LOGIN } }] },
@@ -1231,20 +1232,21 @@ describe('fetchRecapState', () => {
         thread('T_HUMAN', files.human, 'alice'),
         thread('T_BOT', files.bot, BOT_LOGIN),
         thread('T_JUDGE', files.judge, BOT_LOGIN),
+        thread('T_UNKNOWN', files.unknown, null),
       ], [
         { id: 100, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
       ]);
 
       const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
-      expect(state.previousFindings.map(f => f.status)).toEqual(['resolved', 'auto-resolved', 'resolved']);
+      expect(state.previousFindings.map(f => f.status)).toEqual(['resolved', 'auto-resolved', 'resolved', 'auto-resolved']);
 
       const newFindings = Object.values(files).map(file => makeFinding({ title, file, line: 10 }));
-      expect(deduplicateFindings(newFindings, state.previousFindings).unique.map(f => f.file)).toEqual([files.bot]);
+      expect(deduplicateFindings(newFindings, state.previousFindings).unique.map(f => f.file)).toEqual([files.bot, files.unknown]);
       expect(collectInPrSuppressions(state.previousFindings).map(s => s.fingerprint.file)).toEqual([files.human, files.judge]);
       const resolvedThreadIds = collectResolvedThreadIds(state.previousFindings);
       expect(resolvedThreadIds).toEqual(new Set(['T_HUMAN', 'T_JUDGE']));
       const ratcheted = applyCrossRoundSuppression(newFindings, state.priorRounds, { resolvedThreadIds, suppressResolvedThreads: true });
-      expect(ratcheted.findings.filter(f => f.severity !== 'ignore').map(f => f.file)).toEqual([files.bot]);
+      expect(ratcheted.findings.filter(f => f.severity !== 'ignore').map(f => f.file)).toEqual([files.bot, files.unknown]);
 
       const judgePrior = state.priorRounds[0].findings.entries.filter(e => e.threadId === 'T_JUDGE');
       expect(judgePrior).toHaveLength(1);

@@ -372,7 +372,7 @@ async function fetchRecapState(
 
 function threadStatus(t: ReviewThread, judgeAddressedThreadIds: Set<string>): PreviousFinding['status'] {
   if (!t.isResolved) return t.hasHumanReply ? 'replied' : 'open';
-  if (t.resolvedByManki && !judgeAddressedThreadIds.has(t.threadId)) return 'auto-resolved';
+  if (!t.resolvedByHuman && !judgeAddressedThreadIds.has(t.threadId)) return 'auto-resolved';
   return 'resolved';
 }
 
@@ -496,7 +496,7 @@ interface ReviewThread extends FindingMetadata {
   originalLine?: number;
   isBotThread: boolean;
   isResolved: boolean;
-  resolvedByManki: boolean;
+  resolvedByHuman: boolean;
   hasHumanReply: boolean;
   findingTitle: string;
   file: string;
@@ -672,7 +672,7 @@ async function fetchReviewThreads(
         threadUrl: firstComment?.url ?? '',
         isBotThread,
         isResolved: thread.isResolved,
-        resolvedByManki: isMankiLogin(thread.resolvedBy?.login),
+        resolvedByHuman: !!thread.resolvedBy?.login && !isMankiLogin(thread.resolvedBy.login),
         hasHumanReply,
         findingTitle,
         description,
