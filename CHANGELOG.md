@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `dist/` is no longer committed to `main`. The `Release` workflow builds it when a `vX.Y.Z` tag is pushed and moves the tag to the build commit. Pin to a release tag such as `@v5`. `@main` and commit SHAs from `main` no longer run. Closes [#825](https://github.com/manki-review/manki/issues/825).
 
+### Changed
+
+- `claude_code_oauth_token` is no longer deprecated and no longer logs a warning on every run. `SETUP.md` documents it as a regular subscription option, with a note to use `anthropic_api_key` for secrets shared across many repositories or an organization. Closes [#860](https://github.com/manki-review/manki/issues/860)
+
 ## [5.3.0] - 2026-05-25
 
 ### Added
