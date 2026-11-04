@@ -58,12 +58,14 @@ function makeGraphqlFetchThreadNode(overrides: {
   isResolved?: boolean;
   body?: string;
   authorLogin?: string | null;
+  databaseId?: number;
 } = {}) {
   return {
     id: overrides.id ?? 'thread-1',
     isResolved: overrides.isResolved ?? false,
     comments: {
       nodes: [{
+        ...(overrides.databaseId !== undefined && { databaseId: overrides.databaseId }),
         body: overrides.body ?? '<!-- manki:blocker:test-finding --> **Blocker**: test finding',
         author: overrides.authorLogin !== undefined
           ? (overrides.authorLogin === null ? null : { login: overrides.authorLogin })
@@ -87,7 +89,7 @@ describe('fetchBotReviewThreads', () => {
   it('returns bot threads with parsed severity and title', async () => {
     const graphqlMock = jest.fn().mockResolvedValueOnce(
       makeGraphqlFetchResponse([
-        makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:null-check --> **Blocker**: null check' }),
+        makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:null-check --> **Blocker**: null check', databaseId: 501 }),
         makeGraphqlFetchThreadNode({ id: 't2', body: '<!-- manki:suggestion:rename-var --> **Suggestion**: rename var', isResolved: true }),
       ]),
     );
@@ -96,7 +98,7 @@ describe('fetchBotReviewThreads', () => {
     const threads = await fetchBotReviewThreads(octokit, 'owner', 'repo', 1);
 
     expect(threads).toHaveLength(2);
-    expect(threads[0]).toEqual({ id: 't1', isResolved: false, isBlocking: true, findingTitle: 'null check' });
+    expect(threads[0]).toEqual({ id: 't1', rootCommentId: 501, isResolved: false, isBlocking: true, findingTitle: 'null check' });
     expect(threads[1]).toEqual({ id: 't2', isResolved: true, isBlocking: false, findingTitle: 'rename var' });
   });
 
