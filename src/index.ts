@@ -16,7 +16,7 @@ import { loadMemory, applyEscalations, updatePattern, RepoMemory } from './memor
 import { collectResolvedThreadIds, fetchRecapState, fingerprintFinding, PreviousFinding } from './recap';
 import { buildAgentPool } from './agents';
 import { buildPriorRoundLookup, collectPriorRoundAgents, runReview, determineVerdict, selectTeam } from './review';
-import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DashboardData, FullReviewOptions, MemoryLoadStatus, OWN_PROPOSAL_TAG, PrContext, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReclassifiedPrior, ReviewMetadata, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundRecap, RoundTrigger, RoundUsage, RoundUsageStage, ThreadResolutionOverrides, roundContextToFlatAliases } from './types';
+import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DashboardData, FullReviewOptions, MemoryLoadStatus, OWN_PROPOSAL_TAG, PrContext, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReclassifiedPrior, ReviewMetadata, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundRecap, RoundTrigger, RoundUsage, RoundUsageStage, ReviewConfig, ThreadResolutionOverrides, roundContextToFlatAliases } from './types';
 import type { LLMUsage } from './providers';
 import {
   fetchPRDiff,
@@ -44,6 +44,7 @@ import {
   markProgressCommentFailed,
   postAppWarningIfNeeded,
   checkConcurrentSubmissionLock,
+  postConfigErrorComment,
 } from './github';
 import { checkAndAutoApprove, resolveStaleThreads } from './state';
 
@@ -167,7 +168,7 @@ async function run(): Promise<void> {
   // Event filtering — exit immediately for irrelevant events.
   // Tested via integration (live PR reviews) since it depends on GitHub Actions context.
   if (eventName === 'pull_request') {
-    if (action !== 'opened' && action !== 'synchronize') {
+    if (action !== 'opened' && action !== 'synchronize' && action !== 'ready_for_review') {
       core.info(`Ignoring pull_request action: ${action}`);
       return;
     }
@@ -501,7 +502,15 @@ async function runFullReview(
     const effectiveConfigPath = (resolvedConfigPath === cwd || resolvedConfigPath.startsWith(cwd + path.sep))
       ? resolvedConfigPath
       : path.join(cwd, '.manki.yml');
-    const rawConfig = loadConfigFromFile(effectiveConfigPath);
+    let rawConfig: ReviewConfig;
+    try {
+      rawConfig = loadConfigFromFile(effectiveConfigPath);
+    } catch (error) {
+      const reason = failureReason(error);
+      core.setFailed(reason);
+      await postConfigErrorComment(octokit, owner, repo, prNumber, reason);
+      return;
+    }
     const isFork = headRepoFullName !== undefined && headRepoFullName !== `${owner}/${repo}`;
     const config = isFork ? sanitizeForkConfig(rawConfig) : rawConfig;
 
@@ -1445,13 +1454,9 @@ async function handleReviewStateCheck(): Promise<void> {
   const prNumber = pr.number;
   const configPathInput = core.getInput('config_path');
 
-  let configContent: string | null = null;
-  if (configPathInput) {
-    configContent = await fetchConfigFile(octokit, owner, repo, pr.base.ref, configPathInput);
-  } else {
-    configContent = await fetchConfigFile(octokit, owner, repo, pr.base.ref, '.manki.yml');
-  }
-  const config = loadConfig(configContent ?? undefined);
+  const configPath = configPathInput || '.manki.yml';
+  const configContent = await fetchConfigFile(octokit, owner, repo, pr.base.ref, configPath);
+  const config = loadConfig(configContent ?? undefined, configPath);
 
   if (!config.auto_approve) {
     core.info('auto_approve is disabled — skipping state check');
@@ -1485,13 +1490,9 @@ async function handleInteraction(): Promise<void> {
   const { data: pr } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
   baseRef = pr.base.ref;
 
-  let configContent: string | null = null;
-  if (configPathInput) {
-    configContent = await fetchConfigFile(octokit, owner, repo, baseRef, configPathInput);
-  } else {
-    configContent = await fetchConfigFile(octokit, owner, repo, baseRef, '.manki.yml');
-  }
-  const config = loadConfig(configContent ?? undefined);
+  const configPath = configPathInput || '.manki.yml';
+  const configContent = await fetchConfigFile(octokit, owner, repo, baseRef, configPath);
+  const config = loadConfig(configContent ?? undefined, configPath);
 
   const built = buildLLMClientFromInputs({ inputs: providerInputs, model: resolveModel(config, 'judge') });
   if (!built) return;
@@ -1517,13 +1518,9 @@ async function handleIssueInteraction(): Promise<void> {
   const octokit = await getOctokit();
   const configPathInput = core.getInput('config_path');
 
-  let configContent: string | null = null;
-  if (configPathInput) {
-    configContent = await fetchConfigFile(octokit, owner, repo, 'main', configPathInput);
-  } else {
-    configContent = await fetchConfigFile(octokit, owner, repo, 'main', '.manki.yml');
-  }
-  const config = loadConfig(configContent ?? undefined);
+  const configPath = configPathInput || '.manki.yml';
+  const configContent = await fetchConfigFile(octokit, owner, repo, 'main', configPath);
+  const config = loadConfig(configContent ?? undefined, configPath);
 
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;
   const memoryToken = config.memory?.enabled ? getMemoryToken(octokitCache.resolvedToken) ?? undefined : undefined;
@@ -1565,13 +1562,9 @@ async function handleReviewCommentInteraction(): Promise<void> {
   const { owner, repo } = github.context.repo;
 
   const baseRef = payload.pull_request?.base?.ref ?? 'main';
-  let configContent: string | null = null;
-  if (configPathInput) {
-    configContent = await fetchConfigFile(octokit, owner, repo, baseRef, configPathInput);
-  } else {
-    configContent = await fetchConfigFile(octokit, owner, repo, baseRef, '.manki.yml');
-  }
-  const config = loadConfig(configContent ?? undefined);
+  const configPath = configPathInput || '.manki.yml';
+  const configContent = await fetchConfigFile(octokit, owner, repo, baseRef, configPath);
+  const config = loadConfig(configContent ?? undefined, configPath);
 
   const built = buildLLMClientFromInputs({ inputs: providerInputs, model: resolveModel(config, 'judge') });
   if (!built) return;

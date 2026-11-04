@@ -260,20 +260,24 @@ memory:
       expect(config.memory.repo).toBe('');
     });
 
-    it('handles invalid YAML gracefully', () => {
-      const yaml = '{{{{not valid yaml';
-      const config = loadConfigFromContent(yaml);
-      expect(config).toEqual(DEFAULT_CONFIG);
-      expect(core.warning).toHaveBeenCalledWith(
-        expect.stringContaining('Failed to parse config YAML')
-      );
+    it('throws on invalid YAML, naming the file and the parse error', () => {
+      expect(() => loadConfigFromContent('auto_approve: [false\n', 'cfg/manki.yml'))
+        .toThrow(/^Invalid YAML in cfg\/manki\.yml: .*Flow sequence/s);
+      expect(() => loadConfigFromContent('{{{{not valid yaml')).toThrow(/^Invalid YAML in \.manki\.yml: /);
     });
 
-    it('handles YAML that parses to non-object', () => {
-      const yaml = '- just\n- a\n- list';
-      const config = loadConfigFromContent(yaml);
-      expect(config).toEqual(DEFAULT_CONFIG);
-      expect(core.warning).toHaveBeenCalledWith('Config YAML root must be an object. Using defaults.');
+    it('throws when the YAML root is not a mapping', () => {
+      expect(() => loadConfigFromContent('- just\n- a\n- list')).toThrow('Invalid config in .manki.yml: the top level must be a mapping');
+      expect(() => loadConfigFromContent('just a string')).toThrow('Invalid config in .manki.yml: the top level must be a mapping');
+    });
+
+    it('returns defaults for a comment-only file', () => {
+      expect(loadConfigFromContent('# everything commented out\n# auto_approve: false\n')).toEqual(DEFAULT_CONFIG);
+    });
+
+    it('names the file in schema errors', () => {
+      expect(() => loadConfigFromContent('auto_approve: "no"\n', 'cfg/manki.yml'))
+        .toThrow(/^Invalid config in cfg\/manki\.yml: /);
     });
 
     it('throws when review_thresholds.small >= review_thresholds.medium', () => {
@@ -747,6 +751,12 @@ models:
       jest.spyOn(fs, 'readFileSync').mockReturnValue('max_diff_lines: 9999\n');
       const config = loadConfigFromFile('/repo/.manki.yml');
       expect(config.max_diff_lines).toBe(9999);
+    });
+
+    it('throws with the file path when the file has invalid YAML', () => {
+      jest.spyOn(fs, 'existsSync').mockReturnValue(true);
+      jest.spyOn(fs, 'readFileSync').mockReturnValue('auto_approve: [false\n');
+      expect(() => loadConfigFromFile('/repo/.manki.yml')).toThrow(/^Invalid YAML in \/repo\/\.manki\.yml: /);
     });
 
     it('falls back to defaults and warns on I/O error', () => {

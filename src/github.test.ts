@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 
-import { buildDashboard, formatBlockingPriorThreads, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, truncateContextToFitBody, dynamicFence, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded } from './github';
+import { buildDashboard, formatBlockingPriorThreads, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, truncateContextToFitBody, dynamicFence, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment } from './github';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { DEFAULT_CONFIG } from './config';
 
@@ -3296,6 +3296,29 @@ describe('isReviewInProgress', () => {
 
     expect(result).toBe(true);
     expect(getWorkflowRun).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', run_id: 12345 });
+  });
+
+  it('skips a config-error comment and finds the real progress comment behind it', async () => {
+    const createComment = jest.fn().mockResolvedValue({});
+    const poster = { rest: { issues: { createComment } } } as unknown as Octokit;
+    await postConfigErrorComment(poster, 'owner', 'repo', 1, 'Invalid YAML in .manki.yml: bad ``` indent');
+    const configErrorBody = createComment.mock.calls[0][0].body as string;
+    expect(configErrorBody).toContain(CONFIG_ERROR_MARKER);
+    expect(configErrorBody).not.toContain(BOT_MARKER);
+    expect(configErrorBody).toContain('````\nInvalid YAML in .manki.yml: bad ``` indent\n````');
+
+    const { octokit, getWorkflowRun, updateComment } = makeMockOctokit({
+      comments: [
+        { id: 5, body: configErrorBody, user: { type: 'Bot' } },
+        { id: 6, body: makeRunIdBody(12345), user: { type: 'Bot' } },
+      ],
+      workflowRun: { status: 'in_progress', conclusion: null },
+    });
+
+    expect(await isReviewInProgress(octokit, 'owner', 'repo', 1)).toBe(true);
+    expect(getWorkflowRun).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', run_id: 12345 });
+    expect(updateComment).not.toHaveBeenCalled();
+    expect(findInProgressLock([{ id: 5, body: configErrorBody, user: { login: BOT_LOGIN, type: 'Bot' }, updated_at: '2026-01-01T00:00:00Z' }], 42)).toBeNull();
   });
 
   it('returns false and marks comment as cancelled when run is completed (cancelled)', async () => {

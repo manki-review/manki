@@ -1,0 +1,75 @@
+import * as fs from 'fs';
+import * as path from 'path';
+import { parse as parseYaml } from 'yaml';
+
+interface ActionInput {
+  required?: boolean;
+  default?: string;
+}
+
+interface MankiStep {
+  uses: string;
+  with?: Record<string, unknown>;
+}
+
+const ROOT = path.join(__dirname, '..');
+
+function readRepoFile(name: string): string {
+  return fs.readFileSync(path.join(ROOT, name), 'utf-8');
+}
+
+function markdownYamlBlocks(markdown: string): string[] {
+  return [...markdown.matchAll(/^```yaml\n([\s\S]*?)^```$/gm)].map(m => m[1]);
+}
+
+function htmlCodeBlocks(html: string): string[] {
+  return [...html.matchAll(/<pre><code[^>]*>([\s\S]*?)<\/code><\/pre>/g)].map(m => m[1]
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&'));
+}
+
+function findMankiSteps(node: unknown): MankiStep[] {
+  if (Array.isArray(node)) return node.flatMap(findMankiSteps);
+  if (!node || typeof node !== 'object') return [];
+  const obj = node as Record<string, unknown>;
+  if (typeof obj.uses === 'string' && obj.uses.startsWith('manki-review/manki@')) return [obj as unknown as MankiStep];
+  return Object.values(obj).flatMap(findMankiSteps);
+}
+
+describe('documented workflow snippets', () => {
+  const inputs = (parseYaml(readRepoFile('action.yml')) as { inputs: Record<string, ActionInput> }).inputs;
+  const requiredInputs = Object.entries(inputs)
+    .filter(([, input]) => input.required === true && input.default === undefined)
+    .map(([name]) => name);
+  const setup = readRepoFile('SETUP.md');
+  const usesManki = (block: string) => block.includes('manki-review/manki@');
+  const snippets = {
+    'SETUP.md': markdownYamlBlocks(setup).filter(usesManki),
+    'docs/index.html': htmlCodeBlocks(readRepoFile('docs/index.html')).filter(usesManki),
+  };
+
+  it('includes the full workflow from SETUP.md Step 3 and docs/index.html', () => {
+    const step3 = setup.slice(setup.indexOf('## Step 3: Add the Workflow'));
+    for (const block of [markdownYamlBlocks(step3)[0], snippets['docs/index.html'][0]]) {
+      const workflow = parseYaml(block) as { on: Record<string, unknown> };
+      expect(Object.keys(workflow.on)).toContain('pull_request');
+      expect(findMankiSteps(workflow)).toHaveLength(1);
+    }
+    expect(snippets['SETUP.md'].length).toBeGreaterThan(1);
+  });
+
+  it('passes only inputs that `action.yml` accepts and every required input', () => {
+    const problems = Object.entries(snippets).flatMap(([file, blocks]) => blocks.flatMap((block, index) =>
+      findMankiSteps(parseYaml(block)).flatMap(step => {
+        const passed = Object.keys(step.with ?? {});
+        return [
+          ...passed.filter(name => !(name in inputs)).map(name => `${file} snippet ${index}: unknown input \`${name}\``),
+          ...requiredInputs.filter(name => !passed.includes(name)).map(name => `${file} snippet ${index}: missing required input \`${name}\``),
+        ];
+      })));
+    expect(problems).toEqual([]);
+  });
+});
