@@ -247,8 +247,7 @@ export class AnthropicClient implements LLMClient {
     const useThinking = effort !== undefined && !(budgetThinking && effort === 'low');
     const budgetMap: Record<string, number> = { medium: 5000, high: 10000, max: 16000 };
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const params: any = {
+    const params: Anthropic.MessageStreamParams = {
       model: this.model,
       max_tokens: useThinking ? 32768 : 16384,
       system: systemPrompt,
