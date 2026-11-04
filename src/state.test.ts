@@ -1175,6 +1175,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
       octokit, 'owner', 'repo', 7777, 'Auto-approve', 'comment also forbidden',
     );
     expect(ghMock.markAutoApproveComplete).not.toHaveBeenCalled();
+    expect(ghMock.dismissPreviousReviews).not.toHaveBeenCalled();
   });
 
   it('still transitions to complete when APPROVE fails but the issue-comment fallback succeeds', async () => {
