@@ -122,7 +122,7 @@ function fullyPopulatedContext(): RoundContext {
       crossRoundDemoted: 1,
     },
     dedup: { staticDropped: 1, llmDropped: 0, durationMs: 200 },
-    memory: { patternsApplied: 2, suppressionsApplied: 1, escalationsApplied: 0 },
+    memory: { suppressionsApplied: 1 },
     findings: {
       count: 3,
       severityCounts: { blocker: 0, warning: 1, suggestion: 1, nitpick: 1 },

@@ -4,7 +4,7 @@ import { minimatch } from 'minimatch';
 import { TRIVIAL_VERIFIER_AGENT, buildAgentPool } from './agents';
 import { addUsage, LLMClient, LLMUsage, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
 import { runJudgeAgent, JudgeInput, computeProvenanceMap } from './judge';
-import { RepoMemory, applyEscalations, applySuppressions, buildMemoryContext } from './memory';
+import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
 import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, llmDeduplicateFindings, PreviousFinding } from './recap';
 import { ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, TeamRoster, PrContext, PlannerResult, PlannerRoundHint, PriorRoundEffortDowngrade, RoundContext, RoundDedupDuplicateMatch, RoundPlannerSource, SpecialistOutcome, EffortLevel, AgentPick, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
@@ -1298,12 +1298,6 @@ export async function runReview(
       testNitSuppressedCount = before - finalFindings.length;
     }
   }
-  let escalationsApplied = 0;
-  if (memory && memory.patterns.length > 0) {
-    const escalated = applyEscalations(finalFindings, memory.patterns);
-    escalationsApplied = escalated.filter((f, i) => f.severity !== finalFindings[i].severity).length;
-    finalFindings = escalated;
-  }
   const sortedPriorRounds = [...(priorRounds ?? [])].sort((a, b) => a.meta.round - b.meta.round);
   const priorFindingsFlat: FindingFingerprintEntry[] = sortedPriorRounds.flatMap(r => r.findings.entries);
   const priorRoundLookup = buildPriorRoundLookup(sortedPriorRounds);
@@ -1362,7 +1356,6 @@ export async function runReview(
     crossRoundDemoted: judgeCrossRoundDemoted,
     ...(judgeInterRoundDiffEmptyOverride && { interRoundDiffEmptyOverride: judgeInterRoundDiffEmptyOverride }),
     ...(testNitSuppressedCount > 0 && { testNitSuppressedCount }),
-    ...(escalationsApplied > 0 && { escalationsApplied }),
     ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, priorRoundEffortDowngrades, agentMultiPassConsistency, agentRunEffort),
   };
 }

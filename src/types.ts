@@ -227,8 +227,6 @@ export interface ReviewResult {
   /** Set when the judge stage forced every open thread to `not_addressed` because the inter-round diff was known-empty. */
   interRoundDiffEmptyOverride?: InterRoundDiffEmptyOverride;
   testNitSuppressedCount?: number;
-  /** Findings raised to `blocker` by escalated memory patterns. */
-  escalationsApplied?: number;
   verdictTrace?: VerdictTrace;
   /** Team-selection provenance: which path produced this round's roster. */
   plannerSource?: RoundPlannerSource;
@@ -945,15 +943,13 @@ export interface RoundDedup {
 export type MemoryLoadStatus = 'loaded' | 'disabled' | 'no_token' | 'failed';
 
 export interface RoundMemory {
-  patternsApplied?: number;
   suppressionsApplied?: number;
-  escalationsApplied?: number;
   /**
    * Outcome of the memory-load step. `disabled` when `config.memory.enabled`
    * is false, `no_token` when memory is enabled but no token was available,
    * `failed` when the load attempt threw, `loaded` on success. Optional so
    * legacy context blocks parse cleanly; absence is treated as `loaded` when
-   * `patternsApplied`/`suppressionsApplied` are present.
+   * `suppressionsApplied` is present.
    */
   loadStatus?: MemoryLoadStatus;
   /** Truncated error message recorded when `loadStatus === 'failed'`. */

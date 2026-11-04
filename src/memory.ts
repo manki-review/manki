@@ -27,22 +27,9 @@ export interface Learning {
   last_used?: string;
 }
 
-export interface Pattern {
-  id: string;
-  finding_title: string;
-  occurrences: number;
-  accepted_count: number;
-  rejected_count: number;
-  repos: string[];
-  first_seen: string;
-  last_seen: string;
-  escalated: boolean;
-}
-
 export interface RepoMemory {
   learnings: Learning[];
   suppressions: Suppression[];
-  patterns: Pattern[];
 }
 
 /**
@@ -56,10 +43,9 @@ export async function loadMemory(
 ): Promise<RepoMemory> {
   const [owner, repo] = memoryRepo.split('/');
 
-  const [repoLearnings, repoSuppressions, repoPatterns, globalLearnings, globalConventions] = await Promise.all([
+  const [repoLearnings, repoSuppressions, globalLearnings, globalConventions] = await Promise.all([
     fetchYamlFile<Learning[]>(octokit, owner, repo, `${targetRepo}/learnings.yml`),
     fetchYamlFile<Suppression[]>(octokit, owner, repo, `${targetRepo}/suppressions.yml`),
-    fetchYamlFile<Pattern[]>(octokit, owner, repo, `${targetRepo}/patterns.yml`),
     fetchYamlFile<Learning[]>(octokit, owner, repo, '_global/learnings.yml'),
     fetchTextFile(octokit, owner, repo, '_global/conventions.md'),
   ]);
@@ -78,7 +64,6 @@ export async function loadMemory(
   return {
     learnings,
     suppressions: repoSuppressions || [],
-    patterns: repoPatterns || [],
   };
 }
 
@@ -345,79 +330,6 @@ export async function removeSuppression(
   await writeFile(octokit, owner, repo, path, content, `Remove suppression: ${removed.pattern.slice(0, 50)}`);
 
   return { removed, remaining: existing.length };
-}
-
-/**
- * Update a pattern tracker in the memory repo.
- */
-export async function updatePattern(
-  octokit: Octokit,
-  memoryRepo: string,
-  targetRepo: string,
-  findingTitle: string,
-  repoName: string,
-): Promise<Pattern | null> {
-  const [owner, repo] = memoryRepo.split('/');
-  const path = `${targetRepo}/patterns.yml`;
-
-  const existing = await fetchYamlFile<Pattern[]>(octokit, owner, repo, path) || [];
-
-  const normalized = findingTitle.toLowerCase().trim();
-  let pattern = existing.find(p => p.finding_title === normalized);
-
-  if (pattern) {
-    pattern.occurrences++;
-    pattern.last_seen = new Date().toISOString().split('T')[0];
-    if (!pattern.repos.includes(repoName)) {
-      pattern.repos.push(repoName);
-    }
-    if (pattern.occurrences >= 5 && !pattern.escalated) {
-      pattern.escalated = true;
-      core.info(`Pattern "${findingTitle}" escalated — seen ${pattern.occurrences} times`);
-    }
-  } else {
-    pattern = {
-      id: `pat-${Date.now()}`,
-      finding_title: normalized,
-      occurrences: 1,
-      accepted_count: 0,
-      rejected_count: 0,
-      repos: [repoName],
-      first_seen: new Date().toISOString().split('T')[0],
-      last_seen: new Date().toISOString().split('T')[0],
-      escalated: false,
-    };
-    existing.push(pattern);
-  }
-
-  const content = stringifyYaml(existing);
-  await writeFile(octokit, owner, repo, path, content, `Update pattern: ${findingTitle.slice(0, 50)}`);
-
-  return pattern;
-}
-
-/**
- * Escalate findings whose patterns have been consistently accepted by the team.
- */
-export function applyEscalations(
-  findings: Finding[],
-  patterns: Pattern[],
-): Finding[] {
-  return findings.map(f => {
-    if (f.severity !== 'warning' && f.severity !== 'suggestion' && f.severity !== 'nitpick') return f;
-
-    const normalized = f.title.toLowerCase().trim();
-    const pattern = patterns.find(p =>
-      p.escalated && p.finding_title === normalized,
-    );
-
-    if (pattern) {
-      core.info(`Escalating "${f.title}" from ${f.severity} to blocker (pattern accepted ${pattern.accepted_count || 0} times)`);
-      return { ...f, severity: 'blocker' as const };
-    }
-
-    return f;
-  });
 }
 
 async function getFileSha(

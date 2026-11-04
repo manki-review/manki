@@ -117,7 +117,6 @@ jest.mock('./interaction', () => ({
 
 jest.mock('./memory', () => ({
   loadMemory: jest.fn().mockResolvedValue(null),
-  updatePattern: jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.mock('./recap', () => ({
@@ -1761,8 +1760,6 @@ describe('runFullReview orchestration', () => {
     jest.mocked(ghUtils.updateProgressDashboard).mockResolvedValue(undefined);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     jest.mocked(memoryModule.loadMemory).mockResolvedValue(null as any);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    jest.mocked(memoryModule.updatePattern).mockResolvedValue(undefined as any);
   });
 
   const baseArgs = {
@@ -2775,7 +2772,7 @@ describe('runFullReview orchestration', () => {
     });
     jest.mocked(authModule.getMemoryToken).mockReturnValue('token123');
     jest.mocked(memoryModule.loadMemory).mockResolvedValue({
-      learnings: [], suppressions: [], patterns: [],
+      learnings: [], suppressions: [],
     });
 
     const priorRounds = [{
@@ -2963,7 +2960,7 @@ describe('runFullReview orchestration', () => {
       });
       jest.mocked(authModule.getMemoryToken).mockReturnValue('token123');
       jest.mocked(memoryModule.loadMemory).mockResolvedValue({
-        learnings: [], suppressions: [], patterns: [],
+        learnings: [], suppressions: [],
       });
 
       const priorRounds: LegacyHandoverRoundFixture[] = [
@@ -3322,7 +3319,7 @@ describe('runFullReview orchestration', () => {
       jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [pinTestFile], excluded: [] });
       jest.mocked(authModule.getMemoryToken).mockReturnValue('token123');
       jest.mocked(memoryModule.loadMemory).mockResolvedValue({
-        learnings: [], suppressions: [], patterns: [],
+        learnings: [], suppressions: [],
       });
       jest.mocked(configModule.loadConfig).mockReturnValue({
         auto_review: true, auto_approve: false, exclude_paths: [], max_diff_lines: 10000,
@@ -3732,14 +3729,13 @@ describe('runFullReview orchestration', () => {
     await callRunFullReview();
 
     expect(jest.mocked(memoryModule.loadMemory)).not.toHaveBeenCalled();
-    expect(jest.mocked(memoryModule.updatePattern)).not.toHaveBeenCalled();
     const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0];
     // Consumers read prior rounds from `RecapState.priorRounds`, which is
     // always an array (empty when recap finds no prior context blocks).
     expect(runReviewCall[RUN_REVIEW_PRIOR_ROUNDS_ARG]).toEqual([]);
   });
 
-  it('records escalations and the verdict reported by `runReview`', async () => {
+  it('records the verdict reported by `runReview` and no pattern counters', async () => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
@@ -3759,24 +3755,16 @@ describe('runFullReview orchestration', () => {
     });
     jest.mocked(authModule.getMemoryToken).mockReturnValue('token123');
 
-    const memory = {
-      learnings: [], suppressions: [],
-      patterns: [{
-        id: 'p1', finding_title: 'Bug', occurrences: 5, accepted_count: 3,
-        rejected_count: 0, repos: ['test-repo'], first_seen: '2024-01-01',
-        last_seen: '2024-06-01', escalated: true,
-      }],
-    };
+    const memory = { learnings: [], suppressions: [] };
     jest.mocked(memoryModule.loadMemory).mockResolvedValue(memory);
 
-    const escalated = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['general'] };
+    const blocker = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['general'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'REQUEST_CHANGES', verdictReason: 'required_present', summary: 'Escalated',
-      findings: [escalated], highlights: [], reviewComplete: true,
+      verdict: 'REQUEST_CHANGES', verdictReason: 'required_present', summary: 'Blocker',
+      findings: [blocker], highlights: [], reviewComplete: true,
       agentNames: ['general'],
-      escalationsApplied: 1,
     });
-    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [escalated], duplicates: [] });
+    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [blocker], duplicates: [] });
 
     await callRunFullReview();
 
@@ -3785,7 +3773,8 @@ describe('runFullReview orchestration', () => {
     expect(statsArg?.judge.verdictReason).toBe('required_present');
     const reviewResultArg = jest.mocked(ghUtils.postReview).mock.calls[0][5];
     expect(reviewResultArg?.verdict).toBe('REQUEST_CHANGES');
-    expect(statsArg?.memory.escalationsApplied).toBe(1);
+    expect(statsArg?.memory).not.toHaveProperty('escalationsApplied');
+    expect(statsArg?.memory).not.toHaveProperty('patternsApplied');
   });
 
   it('populates verdictReason in judge on clean APPROVE with no findings', async () => {
@@ -4244,7 +4233,6 @@ describe('runFullReview orchestration', () => {
         id: 's1', pattern: 'Noise', reason: 'false positive',
         created_by: 'tester', created_at: '2024-01-01', pr_ref: 'test-owner/test-repo#1',
       }],
-      patterns: [],
     };
     jest.mocked(memoryModule.loadMemory).mockResolvedValue(memory);
 
@@ -4575,7 +4563,7 @@ describe('runFullReview orchestration', () => {
     });
     jest.mocked(authModule.getMemoryToken).mockReturnValue('token123');
     jest.mocked(memoryModule.loadMemory).mockResolvedValue({
-      learnings: [], suppressions: [], patterns: [],
+      learnings: [], suppressions: [],
     });
     seedPriorRounds([{
       round: 1, commitSha: 'prior-sha', timestamp: '2025-01-01T00:00:00Z', findings: [],
@@ -4640,7 +4628,7 @@ describe('runFullReview orchestration', () => {
     });
     jest.mocked(authModule.getMemoryToken).mockReturnValue('token123');
     jest.mocked(memoryModule.loadMemory).mockResolvedValue({
-      learnings: [], suppressions: [], patterns: [],
+      learnings: [], suppressions: [],
     });
     // Prior round commit equals the current commitSha (`baseArgs.commitSha`).
     seedPriorRounds([{
@@ -4693,7 +4681,7 @@ describe('runFullReview orchestration', () => {
     });
     jest.mocked(authModule.getMemoryToken).mockReturnValue('token123');
     jest.mocked(memoryModule.loadMemory).mockResolvedValue({
-      learnings: [], suppressions: [], patterns: [],
+      learnings: [], suppressions: [],
     });
     seedPriorRounds([{
       round: 1, commitSha: 'prior-sha', timestamp: '2025-01-01T00:00:00Z', findings: [],
@@ -4849,7 +4837,7 @@ describe('runFullReview orchestration', () => {
     });
     jest.mocked(authModule.getMemoryToken).mockReturnValue('token123');
     jest.mocked(memoryModule.loadMemory).mockResolvedValue({
-      learnings: [], suppressions: [], patterns: [],
+      learnings: [], suppressions: [],
     });
     seedPriorRounds(
       [{ round: 1, commitSha: baseArgs.commitSha, timestamp: '2025-01-01T00:00:00Z', findings: [] }],
@@ -4902,7 +4890,7 @@ describe('runFullReview orchestration', () => {
     });
     jest.mocked(authModule.getMemoryToken).mockReturnValue('token123');
     jest.mocked(memoryModule.loadMemory).mockResolvedValue({
-      learnings: [], suppressions: [], patterns: [],
+      learnings: [], suppressions: [],
     });
     seedPriorRounds(
       [{ round: 1, commitSha: 'prior-sha', timestamp: '2025-01-01T00:00:00Z', findings: [] }],
@@ -5355,7 +5343,7 @@ describe('runFullReview orchestration', () => {
     beforeEach(() => {
       jest.mocked(authModule.getMemoryToken).mockReturnValue('mem-token');
       jest.mocked(memoryModule.loadMemory).mockResolvedValue({
-        learnings: [], suppressions: [], patterns: [],
+        learnings: [], suppressions: [],
       });
       jest.mocked(diffModule.parsePRDiff).mockReturnValue({
         files: [reviewableFile], totalAdditions: 5, totalDeletions: 5,
@@ -6347,7 +6335,7 @@ describe('force review checkbox', () => {
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
     };
     jest.mocked(authModule.getMemoryToken).mockReturnValue('mem-token');
-    jest.mocked(memoryModule.loadMemory).mockResolvedValue({ learnings: [], suppressions: [], patterns: [] });
+    jest.mocked(memoryModule.loadMemory).mockResolvedValue({ learnings: [], suppressions: [] });
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [reviewableFile], totalAdditions: 5, totalDeletions: 5 });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [reviewableFile], excluded: [] });
     jest.mocked(configModule.loadConfig).mockReturnValue({
@@ -6392,7 +6380,7 @@ describe('force review checkbox', () => {
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
     };
     jest.mocked(authModule.getMemoryToken).mockReturnValue('mem-token');
-    jest.mocked(memoryModule.loadMemory).mockResolvedValue({ learnings: [], suppressions: [], patterns: [] });
+    jest.mocked(memoryModule.loadMemory).mockResolvedValue({ learnings: [], suppressions: [] });
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [reviewableFile], totalAdditions: 5, totalDeletions: 5 });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [reviewableFile], excluded: [] });
     jest.mocked(configModule.loadConfig).mockReturnValue({
