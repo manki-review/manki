@@ -5294,13 +5294,41 @@ describe('runFullReview orchestration', () => {
       jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [reviewableFile], excluded: [] });
     });
 
-    it('runs review normally when prior rounds are below the cap', async () => {
+    it('runs review normally when prior rounds are below the cap, at the full bar until the last round', async () => {
       jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(5));
-      seedPriorRounds(priorRounds(4));
+      seedPriorRounds(priorRounds(3));
 
       await callRunFullReview();
 
-      expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
+      expect(jest.mocked(reviewModule.runReview).mock.calls[0].at(-1)).toEqual({ headSha: 'abc123', blockersOnly: false, finalRound: false });
+
+      seedPriorRounds(priorRounds(4));
+      await callRunFullReview();
+
+      expect(jest.mocked(reviewModule.runReview).mock.calls[1].at(-1)).toEqual({ headSha: 'abc123', blockersOnly: false, finalRound: true });
+    });
+
+    it('pauses after a round that did not converge, and `@manki review` then runs at the blockers-only bar', async () => {
+      jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(5));
+      const rounds = priorRounds(2).map(roundContextFromLegacy);
+      rounds[1].meta.outcome = 'NOT_CONVERGING';
+      jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: rounds });
+
+      await callRunFullReview();
+
+      expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+      const notice = jest.mocked(mockOctokitInstance.rest.issues.createComment).mock.calls
+        .find(([args]) => typeof args.body === 'string' && args.body.includes('Automatic review is paused'));
+      expect(notice![0].body).toContain('came back after a fix');
+      expect(notice![0].body).toContain(FORCE_CAP_MARKER);
+
+      await runFullReview(
+        baseArgs.owner, baseArgs.repo, baseArgs.prNumber,
+        baseArgs.commitSha, baseArgs.baseRef, baseArgs.prContext,
+        { forceReview: true, skipCap: true },
+      );
+
+      expect(jest.mocked(reviewModule.runReview).mock.calls[0].at(-1)).toEqual({ headSha: 'abc123', blockersOnly: true, finalRound: false });
     });
 
     it('skips review and posts notice when prior rounds reach the cap on auto trigger', async () => {
@@ -5461,6 +5489,7 @@ describe('runFullReview orchestration', () => {
       await run();
 
       expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
+      expect(jest.mocked(reviewModule.runReview).mock.calls[0].at(-1)).toEqual(expect.objectContaining({ blockersOnly: true, finalRound: false }));
     });
   });
 

@@ -3,11 +3,11 @@ import { minimatch } from 'minimatch';
 
 import { TRIVIAL_VERIFIER_AGENT, buildAgentPool } from './agents';
 import { addUsage, LLMClient, LLMUsage, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
-import { runJudgeAgent, JudgeInput, computeProvenanceMap } from './judge';
+import { runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
-import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, llmDeduplicateFindings, PreviousFinding } from './recap';
-import { FOLLOW_UP_TAG, ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, TeamRoster, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundPlannerSource, EffortLevel, AgentPick, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, llmDeduplicateFindings, PreviousFinding, titleOverlapType } from './recap';
+import { FOLLOW_UP_TAG, ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, TeamRoster, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundPlannerSource, EffortLevel, AgentPick, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { rebuildRawDiff } from './diff';
 import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
@@ -23,7 +23,18 @@ const OUTCOME_VERDICT: Record<RoundOutcome, ReviewVerdict> = {
   READY: 'APPROVE',
   ADDRESS_FIRST: 'REQUEST_CHANGES',
   INCOMPLETE: 'COMMENT',
+  NOT_CONVERGING: 'REQUEST_CHANGES',
+  BUDGET: 'APPROVE',
 };
+
+interface RoundOptions {
+  /** Commit under review. A prior blocker raised on another commit was followed by a push. */
+  headSha?: string;
+  /** Blocks on blockers only whatever the round. Set for the round `@manki review` runs after a pause. */
+  blockersOnly?: boolean;
+  /** The last automatic round the round cap allows. It blocks on blockers only and ends `BUDGET` or `NOT_CONVERGING`. */
+  finalRound?: boolean;
+}
 
 export const PLANNER_TIMEOUT_MS = 60_000;
 
@@ -546,6 +557,7 @@ export async function runReview(
   priorRounds?: RoundContext[],
   prAuthorLogin?: string,
   interRoundDiff?: string,
+  roundOptions: RoundOptions = {},
 ): Promise<ReviewResult & { outcome: RoundOutcome }> {
   const provenanceMap = computeProvenanceMap(priorRounds, rawDiff);
   let team: TeamRoster;
@@ -1135,11 +1147,14 @@ export async function runReview(
   const priorFindingsFlat: FindingFingerprintEntry[] = sortedPriorRounds.flatMap(r => r.findings.entries);
   const priorRoundLookup = buildPriorRoundLookup(sortedPriorRounds);
   const changedFiles = new Set(diff.files.map(f => f.path));
-  const blockersOnly = roundNumber > FULL_BAR_ROUNDS;
+  const blockersOnly = roundOptions.blockersOnly || roundOptions.finalRound || roundNumber > FULL_BAR_ROUNDS;
   if (blockersOnly) {
     finalFindings = finalFindings.map(f => f.severity === 'warning' ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f);
   }
-  let { outcome, verdictReason, verdictTrace } = determineOutcome(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, judgeThreadEvaluations, priorRoundLookup, changedFiles, blockersOnly);
+  const decided = determineOutcome(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, judgeThreadEvaluations, priorRoundLookup, changedFiles, blockersOnly);
+  let outcome: RoundOutcome = decided.outcome;
+  let { verdictReason, verdictTrace } = decided;
+  const priorBlockers = collectPriorBlockers(sortedPriorRounds);
 
   let verdictReport: VerdictReport | undefined;
   let verdictUsage: LLMUsage | undefined;
@@ -1164,11 +1179,29 @@ export async function runReview(
     verdictUsage = verdictWrap.getTotals().usage;
     core.info(`Verdict reader: ${verdictReport.verdict}. ${verdictReport.summary}`);
     if (verdictReport.verdict === 'ADDRESS_FIRST') {
-      const readerFindings = verdictReport.blockers.map(verdictBlockerToFinding);
+      const readerFindings = verdictReport.blockers.map(verdictBlockerToFinding).map(f => {
+        const sameAs = matchPriorBlocker(f, priorBlockers);
+        return sameAs ? { ...f, sameAs } : f;
+      });
       finalFindings = [...finalFindings, ...readerFindings];
       outcome = 'ADDRESS_FIRST';
       verdictReason = 'verdict_reader';
       verdictTrace = { survivingBlockers: readerFindings.map(findingToTraceEntry), novelWarnings: [], unresolvedPriors: [] };
+    }
+  }
+
+  let needsHuman: NeedsHuman | undefined;
+  const repeated = findRepeatedBlockers(finalFindings, priorBlockers, roundOptions.headSha);
+  if (repeated.length > 0) {
+    const openThreadIndex = new Map((openThreads ?? []).map(t => [t.threadId, t]));
+    outcome = 'NOT_CONVERGING';
+    needsHuman = { cause: 'repeated', blockers: repeated.map(p => priorToTraceEntry(p.entry, priorRoundLookup, openThreadIndex)) };
+  } else if (roundOptions.finalRound) {
+    if (outcome === 'READY') {
+      outcome = 'BUDGET';
+    } else {
+      outcome = 'NOT_CONVERGING';
+      needsHuman = { cause: 'budget', blockers: [...verdictTrace.survivingBlockers, ...verdictTrace.unresolvedPriors] };
     }
   }
   const verdict = OUTCOME_VERDICT[outcome];
@@ -1191,6 +1224,7 @@ export async function runReview(
     verdict,
     outcome,
     ...(verdictReport && { verdictReport }),
+    ...(needsHuman && { needsHuman }),
     verdictReason,
     verdictTrace,
     summary,
@@ -1685,6 +1719,29 @@ export function determineOutcome(
   }
 
   return { outcome: 'READY', verdictReason: 'only_nit_or_suggestion', verdictTrace: emptyTrace() };
+}
+
+/**
+ * Returns the prior blockers that a blocker in `findings` names again after a push.
+ * A prior blocker last raised on `headSha` saw no push since, so it is left out.
+ */
+function findRepeatedBlockers(findings: Finding[], priorBlockers: PriorBlocker[], headSha: string | undefined): PriorBlocker[] {
+  if (!headSha) return [];
+  const named = new Set(findings.filter(f => f.severity === 'blocker' && f.sameAs).map(f => f.sameAs));
+  return priorBlockers.filter(p => p.commitSha !== headSha && named.has(stringifyFindingFingerprint(p.entry.fingerprint)));
+}
+
+/**
+ * Returns the key of the prior blocker on the same file and nearby line whose title overlaps the finding's.
+ * The verdict reader runs after the judge, so its blockers are matched here instead of by the judge.
+ */
+function matchPriorBlocker(finding: Finding, priorBlockers: PriorBlocker[]): string | undefined {
+  const match = priorBlockers.find(({ entry }) =>
+    entry.fingerprint.file === finding.file
+    && Math.abs(entry.fingerprint.lineStart - finding.line) <= DISMISSED_LINE_TOLERANCE
+    && titleOverlapType(finding.title, entry.title ?? '') !== null,
+  );
+  return match && stringifyFindingFingerprint(match.entry.fingerprint);
 }
 
 function findingToTraceEntry(f: Finding): VerdictTraceEntry {

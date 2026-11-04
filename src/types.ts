@@ -156,6 +156,8 @@ export interface Finding {
   reachabilityReasoning?: string;
   tags?: string[];
   originalSeverity?: FindingSeverity;
+  /** Fingerprint key of the prior-round blocker that names the same defect. */
+  sameAs?: string;
 }
 
 /**
@@ -189,7 +191,14 @@ export interface InPrSuppression {
 export type ReviewVerdict = 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES';
 
 /** How a review round ended. Each outcome posts one review event, see `OUTCOME_VERDICT` in `review.ts`. */
-export type RoundOutcome = 'READY' | 'ADDRESS_FIRST' | 'INCOMPLETE';
+export type RoundOutcome = 'READY' | 'ADDRESS_FIRST' | 'INCOMPLETE' | 'NOT_CONVERGING' | 'BUDGET';
+
+/** Blockers a human has to settle, posted with a `NOT_CONVERGING` outcome. */
+export interface NeedsHuman {
+  /** `repeated`: a blocker came back after a fix push. `budget`: the last automatic round the round cap allows still has one open. */
+  cause: 'repeated' | 'budget';
+  blockers: VerdictTraceEntry[];
+}
 
 export type VerdictReason = 'required_present' | 'novel_suggestion' | 'prior_unaddressed' | 'only_nit_or_suggestion' | 'verdict_reader';
 
@@ -209,6 +218,8 @@ export interface ReviewResult {
   outcome?: RoundOutcome;
   /** Set when the verdict reader ran and answered. */
   verdictReport?: VerdictReport;
+  /** Set on a `NOT_CONVERGING` outcome. */
+  needsHuman?: NeedsHuman;
   verdictReason?: VerdictReason;
   summary: string;
   findings: Finding[];
@@ -372,9 +383,9 @@ export interface ReviewConfig {
   review_passes?: number;
   convergence?: {
     /**
-     * Hard cap on the number of automatic review rounds per PR. Once exceeded,
-     * automatic review is paused; the author can re-trigger with `@manki review`.
-     * Set to `0` to disable the cap.
+     * Hard cap on the number of automatic review rounds per PR. The last round
+     * blocks on blockers only. After it, automatic review is paused until
+     * `@manki review`, which runs one round at the same bar. `0` disables the cap.
      */
     max_auto_rounds?: number;
     /** Glob patterns for test files. Suggestion/nitpick findings on these paths are dropped on round 2+. */

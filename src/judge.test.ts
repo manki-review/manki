@@ -135,6 +135,8 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('set `duplicateOf` to the number N of an EARLIER "Finding N"');
     expect(prompt).toContain('never by wording');
     expect(prompt).toContain('"duplicateOf": 0');
+    expect(prompt).toContain('set `sameAs` to the ID (such as "B2") of the prior blocker that names the same defect');
+    expect(prompt).toContain('"sameAs": ""');
     expect(prompt).toContain('"id": 1');
     expect(prompt).toContain('Return one entry per finding, in the same order as the input. Set `id` to the N of the finding\'s "Finding N" heading.');
     expect(prompt).not.toContain('ONE entry for the merged finding');
@@ -542,12 +544,16 @@ describe('buildJudgeUserMessage', () => {
     expect(msg).toContain('"authorReply": "agree"');
     expect(msg).toContain('"authorReply": "disagree"');
     expect(msg).toContain('"slug": "Null-check"');
+    expect(msg).toContain('## Prior Blockers');
+    expect(msg).toContain('- **B1** (round 1): "Null check" at src/a.ts:10');
+    expect(msg).not.toContain('**B2**');
   });
 
   it('omits prior rounds section when priorRounds is undefined or empty', () => {
     const findings = [makeFinding()];
     expect(buildJudgeUserMessage(findings, new Map(), '')).not.toContain('## Prior Round Findings');
     expect(buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, [])).not.toContain('## Prior Round Findings');
+    expect(buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, [])).not.toContain('## Prior Blockers');
   });
 
   it('caps prior rounds at 3 most recent when more are provided', () => {
@@ -2300,6 +2306,27 @@ describe('runJudgeAgent', () => {
     ];
     const verdict = (title: string, severity: string, duplicateOf?: unknown) => ({
       title, severity, reasoning: `${severity}.`, confidence: 'high', ...(duplicateOf !== undefined && { duplicateOf }),
+    });
+
+    it('maps `sameAs` to the prior blocker it names and ignores an unknown ID', async () => {
+      const blocker = (title: string, line: number, round: number): LegacyHandoverRoundFixture => ({
+        round, commitSha: `sha${round}`, timestamp: '2025-01-01T00:00:00Z',
+        findings: [{ fingerprint: { file: 'a.ts', lineStart: line, lineEnd: line, slug: titleToSlug(title) }, severity: 'blocker', title, authorReply: 'none' }],
+      });
+      mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 'x', findings: [
+        { ...verdict('Timer never cleared', 'blocker'), id: 1, sameAs: 'B2' },
+        { ...verdict('Unrelated naming', 'nitpick'), id: 2, sameAs: 'B9' },
+        { ...verdict('Leaked timeout handle', 'blocker', 1), id: 3, sameAs: '' },
+      ] }) });
+      const input: JudgeInput = {
+        findings: three(), diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 3,
+        priorRounds: [blocker('Lock order', 3, 1), blocker('Timer leak', 5, 2)].map(roundContextFromLegacy),
+      };
+      const result = (await runJudgeAgent(mockClient, makeConfig(), input)).findings;
+      expect(result.map(f => [f.title, f.sameAs])).toEqual([
+        ['Timer never cleared', 'a.ts:5:5:Timer-leak'],
+        ['Unrelated naming', undefined],
+      ]);
     });
 
     it('folds a duplicate into the earlier finding and merges reviewers', async () => {
