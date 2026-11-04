@@ -11,6 +11,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4  # first-party GitHub action
+        with:
+          fetch-depth: 2
+      - name: Keep CHANGELOG.md edits to release PRs
+        if: github.event_name == 'pull_request'
+        # On a pull_request event HEAD is the merge commit, so HEAD^1 is the base it merges into.
+        run: |
+          git diff --quiet HEAD^1 HEAD -- CHANGELOG.md && exit 0
+          base=$(git show HEAD^1:package.json | node -p "JSON.parse(require('fs').readFileSync(0)).version")
+          head=$(node -p "require('./package.json').version")
+          [ "$base" != "$head" ] && exit 0
+          echo "::error file=CHANGELOG.md::Only release PRs edit CHANGELOG.md. Put what users need to know in the PR title and body, and the release PR collects it."
+          exit 1
       - uses: actions/setup-node@v4  # first-party GitHub action
         with:
           node-version: '24'
