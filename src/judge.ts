@@ -1086,7 +1086,7 @@ function applyReachability(finding: Finding, judged: JudgedFinding): void {
     finding.reachabilityReasoning = judged.reachabilityReasoning;
   }
   if (judged.reachability !== 'hypothetical') return;
-  if (judged.severity !== 'blocker' && judged.severity !== 'warning' && judged.severity !== 'suggestion') return;
+  if (judged.severity !== 'warning' && judged.severity !== 'suggestion') return;
   finding.originalSeverity = judged.severity;
   finding.severity = 'nitpick';
   finding.tags = addTag(finding.tags, DEFENSIVE_HARDENING_TAG);
