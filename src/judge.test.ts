@@ -1210,7 +1210,7 @@ describe('runJudgeAgent', () => {
     expect(userMessage).toContain('Null check missing');
   });
 
-  it('demotes hypothetical required findings to nit with defensive-hardening tag', async () => {
+  it('keeps a hypothetical blocker at blocker severity', async () => {
     const judgedResponse = JSON.stringify({
       summary: 'One defensive guard flagged.',
       findings: [
@@ -1236,9 +1236,9 @@ describe('runJudgeAgent', () => {
 
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
     expect(result.findings).toHaveLength(1);
-    expect(result.findings[0].severity).toBe('nitpick');
-    expect(result.findings[0].originalSeverity).toBe('blocker');
-    expect(result.findings[0].tags).toEqual(['defensive-hardening']);
+    expect(result.findings[0].severity).toBe('blocker');
+    expect(result.findings[0].originalSeverity).toBeUndefined();
+    expect(result.findings[0].tags).toBeUndefined();
     expect(result.findings[0].reachability).toBe('hypothetical');
   });
 
@@ -2974,7 +2974,7 @@ describe('mapJudgedToFindings', () => {
   });
 
   it.each([
-    ['blocker' as const],
+    ['warning' as const],
     ['suggestion' as const],
   ])('demotes hypothetical %s findings to nit and tags defensive-hardening', (severity) => {
     const originals = [makeFinding({ title: 'Bug', severity: 'suggestion' })];
@@ -2998,11 +2998,11 @@ describe('mapJudgedToFindings', () => {
   });
 
   it('appends defensive-hardening without dropping pre-existing tags', () => {
-    const originals = [makeFinding({ title: 'Bug', severity: 'blocker', tags: ['security'] })];
+    const originals = [makeFinding({ title: 'Bug', severity: 'warning', tags: ['security'] })];
     const judged: JudgedFinding[] = [
       {
         title: 'Bug',
-        severity: 'blocker',
+        severity: 'warning',
         reasoning: 'Correct but unreachable.',
         confidence: 'high',
         reachability: 'hypothetical',
@@ -3112,7 +3112,7 @@ describe('mapJudgedToFindings', () => {
     const judged: JudgedFinding[] = [
       {
         title: 'Defensive guard',
-        severity: 'blocker',
+        severity: 'warning',
         reasoning: 'Merged.',
         confidence: 'high',
         reachability: 'hypothetical',
@@ -3123,7 +3123,7 @@ describe('mapJudgedToFindings', () => {
     const result = mapJudgedToFindings(originals, judged);
     expect(result).toHaveLength(1);
     expect(result[0].severity).toBe('nitpick');
-    expect(result[0].originalSeverity).toBe('blocker');
+    expect(result[0].originalSeverity).toBe('warning');
     expect(result[0].tags).toEqual(['defensive-hardening']);
     expect(result[0].reachability).toBe('hypothetical');
   });
@@ -3311,7 +3311,7 @@ describe('mapJudgedToFindings own-proposal demotion', () => {
     const judged: JudgedFinding[] = [
       {
         title: 'Guard',
-        severity: 'blocker',
+        severity: 'warning',
         reasoning: 'Unreachable.',
         confidence: 'high',
         reachability: 'hypothetical',
@@ -3321,7 +3321,7 @@ describe('mapJudgedToFindings own-proposal demotion', () => {
 
     const result = mapJudgedToFindings(originals, judged, [makeProvenance()]);
     expect(result[0].severity).toBe('nitpick');
-    expect(result[0].originalSeverity).toBe('blocker');
+    expect(result[0].originalSeverity).toBe('warning');
     expect(result[0].tags).toContain('defensive-hardening');
     expect(result[0].tags).toContain('own-proposal-followup');
   });

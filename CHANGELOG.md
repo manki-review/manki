@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `claude_code_oauth_token` is no longer deprecated and no longer logs a warning on every run. `SETUP.md` documents it as a regular subscription option, with a note to use `anthropic_api_key` for secrets shared across many repositories or an organization. Closes [#860](https://github.com/manki-review/manki/issues/860)
 
+### Fixed
+
+- A blocker the judge marks as `hypothetical` (not reachable from any visible caller) now keeps its blocker severity. Only warnings and suggestions are still capped at nitpick with the `defensive-hardening` tag. Closes [#867](https://github.com/manki-review/manki/issues/867)
+
 ## [5.3.0] - 2026-05-25
 
 ### Added
