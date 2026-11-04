@@ -15,7 +15,7 @@ import { isEmptyInterRoundDiff, MAX_INTER_ROUND_DIFF_CHARS } from './judge';
 import { loadMemory, RepoMemory } from './memory';
 import { collectResolvedThreadIds, fetchRecapState, fingerprintFinding, PreviousFinding } from './recap';
 import { runReview, selectTeam } from './review';
-import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DashboardData, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OWN_PROPOSAL_TAG, PrContext, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReclassifiedPrior, ReviewMetadata, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundRecap, RoundTrigger, RoundUsage, RoundUsageStage, ReviewConfig, ThreadResolutionOverrides, roundContextToFlatAliases } from './types';
+import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DashboardData, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OWN_PROPOSAL_TAG, PrContext, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReclassifiedPrior, ReviewMetadata, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundRecap, RoundTrigger, RoundUsage, RoundUsageStage, ReviewConfig, SECURITY_TAG, ThreadResolutionOverrides, roundContextToFlatAliases } from './types';
 import type { LLMUsage } from './providers';
 import {
   fetchPRDiff,
@@ -56,6 +56,7 @@ const ALLOWED_FINGERPRINT_TAGS = new Set<string>([
   RATCHET_SUPPRESSED_TAG,
   RESOLVED_THREAD_SUPPRESSED_TAG,
   FOLLOW_UP_TAG,
+  SECURITY_TAG,
 ]);
 
 export function detectTickedMarker(body: string): 'FORCE_REVIEW_MARKER' | 'FORCE_CAP_MARKER' | null {

@@ -7,7 +7,7 @@ import { runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeP
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
 import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, llmDeduplicateFindings, PreviousFinding, titleOverlapType } from './recap';
-import { FOLLOW_UP_TAG, ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, TeamRoster, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundPlannerSource, EffortLevel, AgentPick, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { FOLLOW_UP_TAG, SECURITY_TAG, isBlockingSeverity, ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, TeamRoster, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundPlannerSource, EffortLevel, AgentPick, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { rebuildRawDiff } from './diff';
 import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
@@ -15,9 +15,11 @@ import { runVerdictReader, verdictBlockerToFinding } from './verdict';
 
 const DISMISSED_LINE_TOLERANCE = 5;
 
-// Rounds that block on warnings as well as blockers. Later rounds block on blockers only, and
-// their warnings become follow-ups. The bar lives here so no prompt ever names the round.
+// Rounds that block on warnings as well as blockers. Later rounds block on blockers and security
+// warnings, and their other warnings become follow-ups. The bar lives here so no prompt names the round.
 const FULL_BAR_ROUNDS = 2;
+
+const SECURITY_AGENT_NAME = 'Security & Safety';
 
 const OUTCOME_VERDICT: Record<RoundOutcome, ReviewVerdict> = {
   READY: 'APPROVE',
@@ -97,7 +99,7 @@ export function selectTeam(
   let level: 'small' | 'medium' | 'large';
 
   const pool = buildAgentPool(customReviewers);
-  const securityAgent = pool.find(a => a.name === 'Security & Safety');
+  const securityAgent = pool.find(a => a.name === SECURITY_AGENT_NAME);
   const sensitive = hasSensitivePaths(diff);
 
   if (teamSizeOverride === 1) {
@@ -1148,8 +1150,12 @@ export async function runReview(
   const priorRoundLookup = buildPriorRoundLookup(sortedPriorRounds);
   const changedFiles = new Set(diff.files.map(f => f.path));
   const blockersOnly = roundOptions.blockersOnly || roundOptions.finalRound || roundNumber > FULL_BAR_ROUNDS;
+  finalFindings = finalFindings.map(f =>
+    f.reviewers.includes(SECURITY_AGENT_NAME) && isBlockingSeverity(f.severity) && !f.tags?.includes(SECURITY_TAG)
+      ? { ...f, tags: [...(f.tags ?? []), SECURITY_TAG] }
+      : f);
   if (blockersOnly) {
-    finalFindings = finalFindings.map(f => f.severity === 'warning' ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f);
+    finalFindings = finalFindings.map(f => f.severity === 'warning' && !f.tags?.includes(SECURITY_TAG) ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f);
   }
   const decided = determineOutcome(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, judgeThreadEvaluations, priorRoundLookup, changedFiles, blockersOnly);
   let outcome: RoundOutcome = decided.outcome;
@@ -1201,7 +1207,7 @@ export async function runReview(
       outcome = 'BUDGET';
     } else {
       outcome = 'NOT_CONVERGING';
-      needsHuman = { cause: 'budget', blockers: [...verdictTrace.survivingBlockers, ...verdictTrace.unresolvedPriors] };
+      needsHuman = { cause: 'budget', blockers: [...verdictTrace.survivingBlockers, ...verdictTrace.novelWarnings, ...verdictTrace.unresolvedPriors] };
     }
   }
   const verdict = OUTCOME_VERDICT[outcome];
@@ -1669,7 +1675,8 @@ export function buildPriorRoundLookup(sortedPriorRounds: RoundContext[]): Map<st
  *
  * Nitpicks and suggestions are non-blocking, and prior-round dismissed warnings
  * have already been acknowledged by the author. None of these cases block.
- * With `blockersOnly`, no warning blocks, whether raised now or in a prior round.
+ * With `blockersOnly`, no warning blocks, whether raised now or in a prior round,
+ * unless it carries `SECURITY_TAG`.
  */
 export function determineOutcome(
   findings: Finding[],
@@ -1695,8 +1702,8 @@ export function determineOutcome(
   }
 
   const prior = dedupePriorFindings(priorRounds ?? []);
-  const novelWarnings = blockersOnly ? [] : findings.filter(
-    f => f.severity === 'warning' && !wasDismissedInPriorRound(f, prior),
+  const novelWarnings = findings.filter(
+    f => f.severity === 'warning' && (!blockersOnly || f.tags?.includes(SECURITY_TAG)) && !wasDismissedInPriorRound(f, prior),
   );
   if (novelWarnings.length > 0) {
     const trace = emptyTrace();
@@ -1708,7 +1715,7 @@ export function determineOutcome(
   const openThreadIds = new Set((openThreads ?? []).map(t => t.threadId));
   const threadEvaluationsByThreadId = indexThreadEvaluations(threadEvaluations);
   const unresolvedPriors = prior.filter(p =>
-    !(blockersOnly && p.severity === 'warning')
+    !(blockersOnly && p.severity === 'warning' && !p.tags?.includes(SECURITY_TAG))
     && isPriorLikelyUnresolved(p, openThreadIds, openThreadsUnknown, resolvedThreadIds, threadEvaluationsByThreadId, changedFiles),
   );
   if (unresolvedPriors.length > 0) {
