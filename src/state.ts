@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { ACTIONS_BOT_LOGIN, BOT_LOGIN, checkConcurrentSubmissionLock, dismissPreviousReviews, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, postAutoApproveProgressComment } from './github';
-import { migrateLegacySeverity, ReviewConfig, SEVERITY_TOKEN_PATTERN } from './types';
+import { FindingSeverity, isBlockingSeverity, migrateLegacySeverity, ReviewConfig, SEVERITY_TOKEN_PATTERN } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 type ReviewEntry = { body?: string | null; state?: string; commit_id?: string | null; user?: { login?: string; type?: string } | null };
@@ -17,7 +17,7 @@ function staleApproveMarker(headSha: string): string {
 interface ReviewThread {
   id: string;
   isResolved: boolean;
-  isRequired: boolean;
+  isBlocking: boolean;
   findingTitle: string;
 }
 
@@ -84,28 +84,28 @@ async function fetchBotReviewThreads(
     .map(thread => {
       const body = thread.comments.nodes[0]?.body ?? '';
       const severityMatch = body.match(new RegExp(`<!-- manki:(${SEVERITY_TOKEN_PATTERN}):`));
-      const isRequired = severityMatch?.[1]
-        ? migrateLegacySeverity(severityMatch[1]) === 'blocker'
-        : false;
+      // A thread without a severity marker predates them, so it keeps blocking.
+      const isBlocking = severityMatch?.[1]
+        ? isBlockingSeverity(migrateLegacySeverity(severityMatch[1]) as FindingSeverity)
+        : true;
       const titleMatch = body.match(/<!-- manki:\w+:(.+?) -->/);
       const findingTitle = titleMatch?.[1]?.replace(/-/g, ' ') ?? 'Unknown';
 
       return {
         id: thread.id,
         isResolved: thread.isResolved,
-        isRequired,
+        isBlocking,
         findingTitle,
       };
     });
 }
 
 /**
- * Check if all bot review threads (blocker, warning, suggestion, nitpick) are resolved.
- * Auto-approve should only fire when every finding is resolved, because
- * CHANGES_REQUESTED can be caused by high-confidence warnings too.
+ * Check if every blocking bot review thread is resolved. Suggestion and nitpick
+ * threads posted by older versions never block, matching the verdict's bar.
  */
 function areAllFindingsResolved(threads: ReviewThread[]): boolean {
-  return threads.every(t => t.isResolved);
+  return threads.every(t => t.isResolved || !t.isBlocking);
 }
 
 /**
@@ -138,7 +138,7 @@ async function postStaleApproveSkippedComment(
     const shortLatest = latestReviewSha.slice(0, 7);
     const body = [
       marker,
-      `**Auto-approve withheld** for \`${shortHead}\` — all review threads are resolved on the current HEAD, but manki has not reviewed this commit (latest manki review was on \`${shortLatest}\`).`,
+      `**Auto-approve withheld** for \`${shortHead}\` — all blocking review threads are resolved on the current HEAD, but manki has not reviewed this commit (latest manki review was on \`${shortLatest}\`).`,
       '',
       'To approve, request a fresh review by commenting `@manki review` or by ticking the **Force review** checkbox on the latest progress comment.',
     ].join('\n');
@@ -184,7 +184,7 @@ async function checkAndAutoApprove(
   core.info(`Review threads: ${resolvedCount}/${totalCount} resolved`);
 
   if (!areAllFindingsResolved(threads)) {
-    core.info('Not all findings resolved — skipping auto-approve');
+    core.info('Not all blocking findings resolved — skipping auto-approve');
     return false;
   }
 

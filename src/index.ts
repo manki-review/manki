@@ -1264,7 +1264,8 @@ async function runFullReview(
       }
     }
 
-    const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, context, reviewTimeMs, config);
+    const parsedInterRoundDiff = hasPriorRounds && interRoundDiff !== undefined ? parsePRDiff(interRoundDiff) : undefined;
+    const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, context, reviewTimeMs, config, parsedInterRoundDiff);
     await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId);
 
     // Reconcile the dashboard with the actual resolved team. Agents may fail

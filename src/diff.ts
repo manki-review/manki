@@ -125,40 +125,6 @@ export function isLineInDiff(file: DiffFile, line: number): boolean {
 }
 
 /**
- * Find the closest valid diff line for a finding.
- * Returns the exact line if it's in a hunk, otherwise the nearest hunk line.
- * Returns null if the file has no hunks.
- */
-export function findClosestDiffLine(file: DiffFile, line: number): number | null {
-  if (file.hunks.length === 0) return null;
-
-  if (isLineInDiff(file, line)) return line;
-
-  let closest: number | null = null;
-  let minDistance = Infinity;
-
-  for (const hunk of file.hunks) {
-    const hunkEnd = hunk.newStart + hunk.newLines - 1;
-
-    // Check distance to hunk start
-    const distStart = Math.abs(line - hunk.newStart);
-    if (distStart < minDistance) {
-      minDistance = distStart;
-      closest = hunk.newStart;
-    }
-
-    // Check distance to hunk end
-    const distEnd = Math.abs(line - hunkEnd);
-    if (distEnd < minDistance) {
-      minDistance = distEnd;
-      closest = hunkEnd;
-    }
-  }
-
-  return closest;
-}
-
-/**
  * Sum additions and deletions across the given files. Files lacking
  * per-file counts contribute zero, matching the behavior of test fixtures
  * that omit them.

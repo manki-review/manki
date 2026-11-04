@@ -1040,28 +1040,28 @@ describe('handleCheck (via handlePRComment)', () => {
     );
   });
 
-  it('reports open required issues when not auto-approved', async () => {
+  it('reports open blocking issues when not auto-approved', async () => {
     setContext({ comment: { id: 42, body: '@manki check', user: { type: 'User' }, author_association: 'OWNER' } });
     (state.checkAndAutoApprove as jest.Mock).mockResolvedValueOnce(false);
     (state.fetchBotReviewThreads as jest.Mock).mockResolvedValueOnce([
-      { findingTitle: 'Null deref', isRequired: true, isResolved: false },
-      { findingTitle: 'Style nit', isRequired: false, isResolved: false },
+      { findingTitle: 'Null deref', isBlocking: true, isResolved: false },
+      { findingTitle: 'Style nit', isBlocking: false, isResolved: false },
     ]);
     const octokit = createMockOctokit();
     await handlePRComment(octokit, null, 'test-owner', 'test-repo', 1, undefined, undefined, { auto_approve: true } as Partial<ReviewConfig> as ReviewConfig);
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
-      expect.objectContaining({ body: expect.stringContaining('1 required issue(s) still open') }),
+      expect.objectContaining({ body: expect.stringContaining('1 blocking issue(s) still open') }),
     );
   });
 
-  it('reports checking status when no required issues but not approved', async () => {
+  it('reports checking status when no blocking issues but not approved', async () => {
     setContext({ comment: { id: 42, body: '@manki check', user: { type: 'User' }, author_association: 'OWNER' } });
     (state.checkAndAutoApprove as jest.Mock).mockResolvedValueOnce(false);
     (state.fetchBotReviewThreads as jest.Mock).mockResolvedValueOnce([]);
     const octokit = createMockOctokit();
     await handlePRComment(octokit, null, 'test-owner', 'test-repo', 1, undefined, undefined, { auto_approve: true } as Partial<ReviewConfig> as ReviewConfig);
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
-      expect.objectContaining({ body: expect.stringContaining('No required issues found') }),
+      expect.objectContaining({ body: expect.stringContaining('No blocking issues found') }),
     );
   });
 

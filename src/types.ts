@@ -17,6 +17,11 @@ export function migrateLegacySeverity(severity: string): FindingSeverity | strin
   return severity;
 }
 
+/** Whether a finding of this severity blocks the PR, so it is posted as a review thread. */
+export function isBlockingSeverity(severity: FindingSeverity): boolean {
+  return severity === 'blocker' || severity === 'warning';
+}
+
 /** Regex source matching all current and legacy severity tokens. */
 export const SEVERITY_TOKEN_PATTERN = 'blocker|warning|suggestion|nitpick|ignore|required|nit';
 

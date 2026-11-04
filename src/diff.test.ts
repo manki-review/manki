@@ -4,7 +4,6 @@ import {
   filterFilesWithAttribution,
   filterRawDiff,
   isLineInDiff,
-  findClosestDiffLine,
   isDiffTooLarge,
   rebuildRawDiff,
 } from './diff';
@@ -413,45 +412,6 @@ describe('isLineInDiff', () => {
 
   it('returns false for line before first hunk', () => {
     expect(isLineInDiff(file, 1)).toBe(false);
-  });
-});
-
-describe('findClosestDiffLine', () => {
-  const file: DiffFile = {
-    path: 'src/utils.ts',
-    changeType: 'modified',
-    hunks: [
-      { oldStart: 5, oldLines: 3, newStart: 5, newLines: 4, content: '' },
-      { oldStart: 20, oldLines: 3, newStart: 21, newLines: 4, content: '' },
-    ],
-  };
-
-  it('returns exact line when it is in a hunk', () => {
-    expect(findClosestDiffLine(file, 6)).toBe(6);
-  });
-
-  it('returns closest hunk line when exact line is not in diff', () => {
-    // Line 10 is between hunk 1 (5-8) and hunk 2 (21-24)
-    // Closest is 8 (end of first hunk)
-    expect(findClosestDiffLine(file, 10)).toBe(8);
-  });
-
-  it('returns hunk start when line is before first hunk', () => {
-    expect(findClosestDiffLine(file, 1)).toBe(5);
-  });
-
-  it('returns hunk end when line is after last hunk', () => {
-    expect(findClosestDiffLine(file, 50)).toBe(24); // 21 + 4 - 1
-  });
-
-  it('returns null for file with no hunks', () => {
-    const emptyFile: DiffFile = { path: 'empty.ts', changeType: 'modified', hunks: [] };
-    expect(findClosestDiffLine(emptyFile, 10)).toBeNull();
-  });
-
-  it('picks the closer hunk when line is between two hunks', () => {
-    // Line 19 is closer to hunk 2 start (21) than hunk 1 end (8)
-    expect(findClosestDiffLine(file, 19)).toBe(21);
   });
 });
 

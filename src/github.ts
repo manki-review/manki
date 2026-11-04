@@ -3,8 +3,8 @@ import { createRequire } from 'module';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { AgentProgressEntry, DEFENSIVE_HARDENING_TAG, DashboardData, Finding, FindingFingerprintEntry, FindingSeverity, OWN_PROPOSAL_TAG, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, ReviewVerdict, VALID_PR_TYPES, VerdictReason, VerdictTrace } from './types';
-import { isLineInDiff, findClosestDiffLine } from './diff';
+import { AgentProgressEntry, DEFENSIVE_HARDENING_TAG, DashboardData, Finding, FindingFingerprintEntry, FindingSeverity, OWN_PROPOSAL_TAG, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, ReviewVerdict, VALID_PR_TYPES, VerdictReason, VerdictTrace, isBlockingSeverity } from './types';
+import { isLineInDiff } from './diff';
 import { MAX_AGENT_RETRIES } from './types';
 import { MAX_LOCK_TTL_SECONDS } from './config';
 import { safeTruncate, sanitizeTokens } from './utils';
@@ -680,8 +680,89 @@ function truncateContextToFitBody(
 
 const REVIEW_BODY_BUDGET = 60000;
 
+/** Whether a finding sits on code that the inter-round diff did not touch. */
+function isOnUnchangedCode(finding: Finding, interRoundDiff: ParsedDiff): boolean {
+  if (!finding.file) return false;
+  const diffFile = interRoundDiff.files.find(df => df.path === finding.file);
+  if (!diffFile) return true;
+  return finding.line > 0 && !isLineInDiff(diffFile, finding.line);
+}
+
+function inlineCode(text: string): string {
+  const longestRun = (text.match(/`+/g) ?? []).reduce((max, run) => Math.max(max, run.length), 0);
+  const ticks = '`'.repeat(longestRun + 1);
+  return longestRun > 0 ? `${ticks} ${text} ${ticks}` : `${ticks}${text}${ticks}`;
+}
+
+function formatSmallerFinding(finding: Finding): string {
+  const location = finding.file
+    ? `\`${sanitizeFilePath(finding.file)}${finding.line > 0 ? `:${finding.line}` : ''}\`: `
+    : '';
+  let entry = `- ${location}${sanitizeMarkdown(finding.title)}`;
+  const fix = finding.suggestedFix?.replace(/\s+/g, ' ').trim();
+  if (fix) {
+    entry += `. Fix: ${inlineCode(safeTruncate(fix, 120))}`;
+  }
+  return entry;
+}
+
+function formatSmallerFindings(entries: string[], unpostedCount: number): string | null {
+  const parts: string[] = [];
+  if (entries.length > 0) {
+    parts.push(`<details>\n<summary>Suggestions and nitpicks (${entries.length})</summary>\n\n${entries.join('\n')}\n</details>`);
+  }
+  if (unpostedCount > 0) {
+    const noun = unpostedCount === 1 ? 'smaller finding' : 'smaller findings';
+    parts.push(`${unpostedCount} ${noun} on code unchanged since the last review were not posted.`);
+  }
+  return parts.length > 0 ? parts.join('\n\n') : null;
+}
+
+function formatUnpostedFinding(finding: Finding): string {
+  const desc = safeTruncate(sanitizeMarkdown(finding.description), 200);
+  const location = finding.line > 0 ? `${sanitizeFilePath(finding.file)}:${finding.line}` : sanitizeFilePath(finding.file);
+  return `**[${getSeverityLabel(finding.severity)}] ${sanitizeMarkdown(finding.title)}** (\`${location}\`): ${desc}`;
+}
+
 /**
- * Post the review with inline comments.
+ * Posts each comment as a file-level review thread and returns the findings GitHub refused.
+ * The create-review endpoint does not document `subject_type` on its comments, so these
+ * go through the single-comment endpoint.
+ */
+async function postFileLevelComments(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  commitSha: string,
+  comments: Array<{ path: string; body: string; finding: Finding }>,
+): Promise<Finding[]> {
+  const refused: Finding[] = [];
+  for (const c of comments) {
+    try {
+      await octokit.rest.pulls.createReviewComment({
+        owner,
+        repo,
+        pull_number: prNumber,
+        commit_id: commitSha,
+        path: c.path,
+        body: c.body,
+        subject_type: 'file',
+      });
+    } catch (error) {
+      core.warning(`Could not post file-level comment on ${c.path}: ${error instanceof Error ? error.message : error}`);
+      refused.push(c.finding);
+    }
+  }
+  return refused;
+}
+
+/**
+ * Post the review. Blocking findings become threads, all other findings go in the body.
+ *
+ * A blocking finding on a changed line gets a line comment, one elsewhere in a diff file
+ * gets a file-level comment. When `interRoundDiff` is given, non-blocking findings on code
+ * it did not change are only counted.
  *
  * When `context` is provided without `reviewTimeMs`, the stats one-liner
  * will display `0s` for review time. Pass both together to avoid this.
@@ -697,17 +778,30 @@ export async function postReview(
   context?: RoundContext,
   reviewTimeMs?: number,
   config?: ReviewConfig,
+  interRoundDiff?: ParsedDiff,
 ): Promise<number> {
   const statsHidden = config?.stats?.hidden ?? false;
   const event = mapVerdictToEvent(result.verdict);
 
-  // Validate and filter inline comments against the diff
   const validComments: Array<{path: string; line: number; side: 'RIGHT'; body: string}> = [];
+  const fileComments: Array<{ path: string; body: string; finding: Finding }> = [];
   const invalidComments: string[] = [];
   const generalFindings: string[] = [];
+  const smallerFindings: string[] = [];
+  let unpostedCount = 0;
 
   for (const f of result.findings) {
-    if (!f.file || f.line <= 0) {
+    if (!isBlockingSeverity(f.severity)) {
+      if (interRoundDiff && isOnUnchangedCode(f, interRoundDiff)) {
+        unpostedCount++;
+      } else {
+        smallerFindings.push(formatSmallerFinding(f));
+      }
+      continue;
+    }
+
+    const diffFile = f.file ? diff?.files.find(df => df.path === f.file) : undefined;
+    if (!f.file || (f.line <= 0 && !diffFile)) {
       const safeFile = f.file ? sanitizeFilePath(f.file) : '';
       const location = f.file ? ` — \`${safeFile}\`` : '';
       const safeTitle = sanitizeMarkdown(f.title);
@@ -730,30 +824,19 @@ export async function postReview(
 
     const commentBody = formatFindingComment(f);
 
-    if (diff) {
-      const diffFile = diff.files.find(df => df.path === f.file);
-      if (diffFile) {
-        if (isLineInDiff(diffFile, f.line)) {
-          validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: commentBody });
-        } else {
-          const closest = findClosestDiffLine(diffFile, f.line);
-          if (closest) {
-            validComments.push({ path: f.file, line: closest, side: 'RIGHT', body: commentBody });
-          } else {
-            const desc = sanitizeMarkdown(f.description);
-            const truncDesc = safeTruncate(desc, 200);
-            invalidComments.push(`**[${getSeverityLabel(f.severity)}] ${sanitizeMarkdown(f.title)}** (\`${sanitizeFilePath(f.file)}:${f.line}\`): ${truncDesc}`);
-          }
-        }
-      } else {
-        const desc = sanitizeMarkdown(f.description);
-        const truncDesc = safeTruncate(desc, 200);
-        invalidComments.push(`**[${getSeverityLabel(f.severity)}] ${sanitizeMarkdown(f.title)}** (\`${sanitizeFilePath(f.file)}:${f.line}\`): ${truncDesc}`);
-      }
-    } else {
+    if (!diff) {
       validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: commentBody });
+    } else if (!diffFile) {
+      invalidComments.push(formatUnpostedFinding(f));
+    } else if (f.line > 0 && isLineInDiff(diffFile, f.line)) {
+      validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: commentBody });
+    } else {
+      fileComments.push({ path: f.file, body: commentBody, finding: f });
     }
   }
+
+  const refusedFileComments = await postFileLevelComments(octokit, owner, repo, prNumber, commitSha, fileComments);
+  invalidComments.push(...refusedFileComments.map(formatUnpostedFinding));
 
   const reviewedCommitFooter = buildReviewedCommitFooter(owner, repo, commitSha, github.context.serverUrl);
 
@@ -780,6 +863,10 @@ export async function postReview(
     if (invalidComments.length > 0) {
       b += `\n\n**Findings (not on changed lines):**\n${invalidComments.map(c => `- ${c}`).join('\n')}`;
     }
+    const smaller = formatSmallerFindings(smallerFindings, unpostedCount);
+    if (smaller) {
+      b += `\n\n${smaller}`;
+    }
     return b;
   };
 
@@ -798,9 +885,9 @@ export async function postReview(
   const body = renderBody(effectiveContext);
 
   if (invalidComments.length > 0) {
-    core.info(`Moved ${invalidComments.length} comments to review body (lines not in diff)`);
+    core.info(`Moved ${invalidComments.length} comments to review body (not postable as threads)`);
   }
-  core.info(`Posting review: ${event} with ${validComments.length} inline comments`);
+  core.info(`Posting review: ${event} with ${validComments.length} line comments and ${fileComments.length - refusedFileComments.length} file-level comments`);
 
   try {
     const { data: review } = await octokit.rest.pulls.createReview({
