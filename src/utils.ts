@@ -47,5 +47,6 @@ export function safeJsonParse(text: string): unknown | null {
  * or user-visible output.
  */
 export function sanitizeTokens(s: string): string {
-  return s.replace(/\b(ghp|ghs|gho|github_pat)_[A-Za-z0-9_]+/g, '[REDACTED]');
+  // Stateless installation tokens are `ghs_`-prefixed JWTs, so the body can contain `.` and `-`.
+  return s.replace(/\b(ghp|ghs|gho|ghu|ghr|github_pat)_[A-Za-z0-9._-]+/g, '[REDACTED]');
 }

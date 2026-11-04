@@ -89,8 +89,13 @@ describe('utils', () => {
       expect(sanitizeTokens('token: ghp_ABCDEF123')).toBe('token: [REDACTED]');
     });
 
-    it('redacts ghs_ tokens', () => {
+    it('redacts ghs_ tokens, including stateless JWT-format ones', () => {
       expect(sanitizeTokens('ghs_ABCDEF123')).toBe('[REDACTED]');
+      expect(sanitizeTokens('auth ghs_eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiIxMjMifQ.c2ln-YXR1cmVfXw failed')).toBe('auth [REDACTED] failed');
+    });
+
+    it('redacts ghu_ and ghr_ tokens', () => {
+      expect(sanitizeTokens('ghu_ABCDEF123 ghr_ABCDEF456')).toBe('[REDACTED] [REDACTED]');
     });
 
     it('redacts gho_ tokens', () => {
