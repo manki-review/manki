@@ -50,3 +50,21 @@ export function sanitizeTokens(s: string): string {
   // Stateless installation tokens are `ghs_`-prefixed JWTs, so the body can contain `.` and `-`.
   return s.replace(/\b(ghp|ghs|gho|ghu|ghr|github_pat)_[A-Za-z0-9._-]+/g, '[REDACTED]');
 }
+
+/**
+ * Sends a request and parses its reply. When parsing throws, it sends once more and parses that
+ * reply, so a single malformed model reply does not fail the stage. A second failure is thrown.
+ */
+export async function sendWithParseRetry<R, T>(
+  send: () => Promise<R>,
+  parse: (reply: R) => T,
+  onRetry: (error: unknown) => void,
+): Promise<T> {
+  const first = await send();
+  try {
+    return parse(first);
+  } catch (error) {
+    onRetry(error);
+  }
+  return parse(await send());
+}

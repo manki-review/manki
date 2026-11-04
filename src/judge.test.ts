@@ -1114,7 +1114,7 @@ describe('runJudgeAgent', () => {
     );
   });
 
-  it('rejects instead of returning unjudged findings when the judge output is unusable', async () => {
+  it('asks once more on an unusable judge reply and rejects instead of returning unjudged findings when that fails too', async () => {
     const openThreads: OpenThread[] = [
       { threadId: 'T1', title: 'Prior issue', file: 'src/index.ts', line: 10, severity: 'warning' },
     ];
@@ -1131,8 +1131,21 @@ describe('runJudgeAgent', () => {
       mockSendMessage.mockReset();
       mockSendMessage.mockResolvedValue({ content });
       await expect(runJudgeAgent(mockClient, makeConfig(), input)).rejects.toThrow();
-      expect(mockSendMessage).toHaveBeenCalledTimes(1);
+      expect(mockSendMessage).toHaveBeenCalledTimes(2);
     }
+
+    const valid = JSON.stringify({
+      summary: 'Ok.',
+      findings: [{ id: 1, title: 'Unused variable', severity: 'blocker', reasoning: 'r', confidence: 'high' }],
+      threadEvaluations: [{ threadId: 'T1', status: 'not_addressed', reason: 'unchanged' }],
+    });
+    mockSendMessage.mockReset();
+    mockSendMessage
+      .mockResolvedValueOnce({ content: '{"confidence":medium}' })
+      .mockResolvedValue({ content: valid });
+    const recovered = await runJudgeAgent(mockClient, makeConfig(), input);
+    expect(mockSendMessage).toHaveBeenCalledTimes(2);
+    expect(recovered.findings).toHaveLength(1);
   });
 
   it('matches judge findings by fuzzy title when order differs', async () => {

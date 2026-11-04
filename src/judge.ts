@@ -12,7 +12,7 @@ import {
   RepoMemory,
 } from './memory';
 import { dynamicFence, LinkedIssue, titleToSlug } from './github';
-import { safeTruncate } from './utils';
+import { safeTruncate, sendWithParseRetry } from './utils';
 import { sanitize, titleOverlapType } from './recap';
 import { truncateDiff, validateSeverity } from './review';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
@@ -894,11 +894,17 @@ export async function runJudgeAgent(
   const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads, priorRounds, interRoundDiff, rawDiff);
 
   const effort = input.effort ?? 'high';
-  const response = await client.sendMessage(systemPrompt, userMessage, { effort });
-  let judgeResult = parseJudgeResponse(response.content);
-  if (judgeResult.findings.length === 0 && findings.length > 0) {
-    throw new Error(`Judge returned no results for ${findings.length} findings`);
-  }
+  let judgeResult = await sendWithParseRetry(
+    () => client.sendMessage(systemPrompt, userMessage, { effort }),
+    (reply) => {
+      const parsed = parseJudgeResponse(reply.content);
+      if (parsed.findings.length === 0 && findings.length > 0) {
+        throw new Error(`Judge returned no results for ${findings.length} findings`);
+      }
+      return parsed;
+    },
+    (error) => core.warning(`Judge reply could not be used (${error}), asking once more`),
+  );
 
   // Defense-in-depth: when the inter-round diff is empty, force every open
   // thread to `not_addressed` regardless of what the LLM returned. The

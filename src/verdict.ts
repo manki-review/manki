@@ -1,7 +1,9 @@
+import * as core from '@actions/core';
+
 import { LLMClient } from './providers';
 import { extractJSON } from './json';
 import { Finding, VerdictReport } from './types';
-import { safeTruncate } from './utils';
+import { safeTruncate, sendWithParseRetry } from './utils';
 
 const VERDICT_READER_NAME = 'Verdict reader';
 const MAX_BLOCKER_TITLE_LENGTH = 100;
@@ -70,11 +72,16 @@ function parseVerdictReport(responseText: string): VerdictReport {
 
 /** Runs the verdict reader once on `userMessage`. Throws when the call fails or its output is truncated or unparseable. */
 export async function runVerdictReader(client: LLMClient, userMessage: string): Promise<VerdictReport> {
-  const response = await client.sendMessage(VERDICT_READER_SYSTEM_PROMPT, userMessage, { effort: 'high' });
-  if (response.truncated) {
-    throw new Error(`verdict truncated at the output token limit (length ${response.content.length})`);
-  }
-  return parseVerdictReport(response.content);
+  return sendWithParseRetry(
+    () => client.sendMessage(VERDICT_READER_SYSTEM_PROMPT, userMessage, { effort: 'high' }),
+    (response) => {
+      if (response.truncated) {
+        throw new Error(`verdict truncated at the output token limit (length ${response.content.length})`);
+      }
+      return parseVerdictReport(response.content);
+    },
+    (error) => core.warning(`Verdict reader reply could not be used (${error}), asking once more`),
+  );
 }
 
 /** Turns a `file:line: defect` blocker into a blocking finding. A blocker without a location lands in the review body. */
