@@ -2,7 +2,7 @@ import { spawn } from 'child_process';
 import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
-import { AnthropicClient, buildAnthropicAuth, extractAnthropicCLIUsage, resetCLIInstallPromise, sanitizeLogOutput, STALE_TIMEOUT_MS } from './anthropic';
+import { AnthropicClient, buildAnthropicAuth, CLAUDE_CLI_VERSION, extractAnthropicCLIUsage, resetCLIInstallPromise, sanitizeLogOutput, STALE_TIMEOUT_MS } from './anthropic';
 import { SendMessageOptions } from './types';
 
 jest.mock('child_process', () => ({
@@ -26,6 +26,8 @@ const mockExecFileAsync = jest.fn().mockResolvedValue({ stdout: '/usr/bin/claude
 _execMock.fn = mockExecFileAsync;
 
 const mockSpawn = spawn as jest.MockedFunction<typeof spawn>;
+
+const AUTH_CHECK_OK = { stdout: JSON.stringify({ type: 'result', is_error: false, result: 'OK' }) };
 
 describe('AnthropicClient', () => {
   it('accepts oauth auth', () => {
@@ -786,7 +788,8 @@ describe('ensureCLI — install path', () => {
     mockExecFileAsync
       .mockRejectedValueOnce(new Error('not found'))
       .mockResolvedValueOnce({ stdout: '' }) // npm install
-      .mockResolvedValueOnce({ stdout: '/usr/local/bin/claude\n' }); // which after install
+      .mockResolvedValueOnce({ stdout: '/usr/local/bin/claude\n' }) // which after install
+      .mockResolvedValueOnce(AUTH_CHECK_OK);
 
     setupSpawnForSuccess('installed ok');
     const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
@@ -815,8 +818,8 @@ describe('ensureCLI — install path', () => {
     await client.sendMessage('sys', 'first');
     await client.sendMessage('sys', 'second');
 
-    // execFileAsync (which) should only be called once, then cached
-    expect(mockExecFileAsync).toHaveBeenCalledTimes(1);
+    // `which` and the auth check each run once, then both are cached
+    expect(mockExecFileAsync).toHaveBeenCalledTimes(2);
     expect(mockSpawn).toHaveBeenCalledTimes(2);
   });
 
@@ -849,28 +852,50 @@ describe('warmupCLI', () => {
     resetCLIInstallPromise();
   });
 
-  it('invokes ensureCLI once for OAuth auth', async () => {
-    mockExecFileAsync.mockResolvedValue({ stdout: '/usr/bin/claude\n' });
+  it('finds the CLI and checks its auth once for OAuth auth', async () => {
+    mockExecFileAsync.mockResolvedValueOnce({ stdout: '/usr/bin/claude\n' }).mockResolvedValueOnce(AUTH_CHECK_OK);
     const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
 
     await client.warmupCLI();
     await client.warmupCLI();
 
-    // First call hits `which`; second call hits the cached path.
-    expect(mockExecFileAsync).toHaveBeenCalledTimes(1);
-    expect(mockExecFileAsync).toHaveBeenCalledWith('which', ['claude']);
+    expect(mockExecFileAsync).toHaveBeenCalledTimes(2);
+    expect(mockExecFileAsync).toHaveBeenNthCalledWith(1, 'which', ['claude']);
+    const [cliPath, args, opts] = mockExecFileAsync.mock.calls[1];
+    expect(cliPath).toBe('/usr/bin/claude');
+    expect(args).toEqual(expect.arrayContaining(['-p', '--output-format', 'json', '--model', 'claude-opus-4-6']));
+    expect(opts.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('token');
+  });
+
+  it('fails with an error naming the token when the CLI cannot authenticate', async () => {
+    const notLoggedIn = Object.assign(new Error('Command failed'), {
+      stdout: JSON.stringify({ type: 'result', is_error: true, result: 'Not logged in · Please run /login' }),
+      stderr: '',
+    });
+    mockExecFileAsync.mockImplementation((cmd: string) =>
+      cmd === 'which' ? Promise.resolve({ stdout: '/usr/bin/claude\n' }) : Promise.reject(notLoggedIn),
+    );
+    const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
+
+    await expect(client.warmupCLI()).rejects.toThrow('Claude CLI cannot run with claude_code_oauth_token: Not logged in · Please run /login');
+    await expect(client.sendMessage('sys', 'user')).rejects.toThrow('claude_code_oauth_token');
+    expect(mockSpawn).not.toHaveBeenCalled();
+
+    mockExecFileAsync.mockResolvedValue(AUTH_CHECK_OK);
+    await expect(client.warmupCLI()).resolves.toBeUndefined();
   });
 
   it('triggers npm install when CLI is missing', async () => {
     mockExecFileAsync
       .mockRejectedValueOnce(new Error('not found'))
       .mockResolvedValueOnce({ stdout: '' })
-      .mockResolvedValueOnce({ stdout: '/usr/local/bin/claude\n' });
+      .mockResolvedValueOnce({ stdout: '/usr/local/bin/claude\n' })
+      .mockResolvedValueOnce(AUTH_CHECK_OK);
     const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
 
     await client.warmupCLI();
 
-    expect(mockExecFileAsync).toHaveBeenNthCalledWith(2, 'npm', ['install', '-g', '@anthropic-ai/claude-code'], expect.any(Object));
+    expect(mockExecFileAsync).toHaveBeenNthCalledWith(2, 'npm', ['install', '-g', `@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}`], expect.any(Object));
   });
 
   it('is a no-op for API-key auth', async () => {
