@@ -39,5 +39,5 @@ Locally, `npm run build` writes `dist/` for testing. The repo's own `Manki` work
 ## Commit and PR conventions
 
 - Commit messages and PR titles use [Conventional Commits](https://www.conventionalcommits.org/) (`feat`, `fix`, `refactor`, `build`, `ci`, `chore`, `docs`, `test`). PR titles are enforced by CI.
-- Add a CHANGELOG entry under `## [Unreleased]` for any user-visible change.
+- Do not edit `CHANGELOG.md` in a PR. CI fails any PR that does unless it bumps the `package.json` version, which only release PRs do. Give the PR a clear title and say in its body what changes for users. The release PR writes the changelog from the merged PRs.
 - Open the PR against `main`. CI must be green before merge.

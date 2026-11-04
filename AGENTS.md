@@ -20,6 +20,10 @@ When listing per-stage items anywhere — code, docs, logs, config keys — **us
 - Short, imperative, with backtick highlighting for identifiers (function names, types, file paths, etc.)
 - Example: `` fix: handle `None` case in `parseConfig` for missing `models` field ``
 
+## Changelog
+
+- Never edit `CHANGELOG.md` in a feature or fix PR. CI rejects it. The release PR writes the changelog from the merged PRs, so put what users need to know in the PR title and body.
+
 ## Code style
 
 - Imports at the top of the module. No `import` inside functions, methods, or blocks.

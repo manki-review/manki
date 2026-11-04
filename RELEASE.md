@@ -16,7 +16,7 @@ npm run check-changelog-version
 
 ## Release PR checklist
 
-1. Move entries out of `## [Unreleased]` and into a new `## [X.Y.Z] - YYYY-MM-DD` heading in `CHANGELOG.md`.
+1. Write a new `## [X.Y.Z] - YYYY-MM-DD` section in `CHANGELOG.md` from the PRs merged since the last tag (`git log --oneline vPREV..main`, then each PR's title and body), grouped as Added, Changed, Fixed and Removed. Fold anything still under `## [Unreleased]` into it. Feature and fix PRs never edit `CHANGELOG.md`, and CI rejects one that does, so this is the only place entries are written.
 2. Bump `version` in `package.json` to `X.Y.Z`.
 3. Refresh `package-lock.json` (`npm install` will do it).
 4. Open the release PR. CI runs `check-changelog-version` automatically.
