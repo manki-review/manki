@@ -51,10 +51,10 @@
 #
 # To use OpenAI, set `openai_api_key` (or `openai_oauth_token` for Codex CLI) and override models:
 # models:
-#   planner: gpt-4o-mini
-#   reviewer: gpt-4o-mini
-#   judge: o4-mini
-#   dedup: gpt-4o-mini
+#   planner: gpt-6-luna
+#   reviewer: gpt-6.1-terra
+#   judge: gpt-6.1-sol
+#   dedup: gpt-6-luna
 #
 # To use Gemini, set `gemini_api_key` (or `gemini_oauth_token` for Gemini CLI) and override models:
 # models:
