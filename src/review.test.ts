@@ -26,6 +26,8 @@ import {
   PlannerOutcomeSink,
 } from './review';
 import { AGENT_POOL, TRIVIAL_VERIFIER_AGENT } from './agents';
+import { DEFAULT_CONFIG } from './config';
+import { filterRawDiff } from './diff';
 import * as core from '@actions/core';
 import { LinkedIssue, titleToSlug } from './github';
 import { Finding, RoundContext, OpenThread, ReviewerAgent, ReviewConfig, ParsedDiff, DiffFile, AgentPick, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES } from './types';
@@ -1332,6 +1334,20 @@ describe('buildReviewerUserMessage', () => {
     expect(message).toContain('Pull Request Diff');
   });
 
+  it('shows the source hunks when a huge generated file sorts first', () => {
+    const generated = (path: string) =>
+      `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1 +1 @@\n-old\n+${'x'.repeat(200000)}\n`;
+    const source = 'diff --git a/src/app.ts b/src/app.ts\n--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1,1 +1,2 @@\n const a = 1;\n+const b = 2;\n';
+    const rawDiff = generated('dist/index.js.map') + generated('build/bundle.js') + source;
+
+    const message = buildReviewerUserMessage(filterRawDiff(rawDiff, DEFAULT_CONFIG.exclude_paths), '');
+
+    expect(message).not.toContain('dist/index.js.map');
+    expect(message).toContain('diff --git a/build/bundle.js b/build/bundle.js');
+    expect(message).toContain('... (1 more lines in this file truncated)');
+    expect(message).toContain('@@ -1,1 +1,2 @@\n const a = 1;\n+const b = 2;');
+  });
+
   it('includes repo context when provided', () => {
     const message = buildReviewerUserMessage('diff content', 'This is a TypeScript project.');
     expect(message).toContain('Repository Context');
@@ -1681,40 +1697,64 @@ describe('buildReviewerUserMessage truncation', () => {
   it('truncates diff at newline boundary when exceeding 50000 chars', () => {
     const longDiff = ('a'.repeat(99) + '\n').repeat(600); // 60000 chars
     const message = buildReviewerUserMessage(longDiff, '');
-    expect(message).toContain('... (truncated)');
+    expect(message).toContain('more lines in this file truncated');
     expect(message.length).toBeLessThan(longDiff.length);
   });
 
   it('does not truncate diff under 50000 chars', () => {
     const shortDiff = 'short diff content';
     const message = buildReviewerUserMessage(shortDiff, '');
-    expect(message).not.toContain('... (truncated)');
+    expect(message).not.toContain('more lines in this file truncated');
     expect(message).toContain(shortDiff);
   });
 });
 
 describe('truncateDiff', () => {
-  it('returns original when under maxLength', () => {
-    const diff = 'short diff';
-    expect(truncateDiff(diff)).toBe(diff);
-  });
+  const fileDiff = (path: string, bodyLines: number, lineWidth = 10) =>
+    [
+      `diff --git a/${path} b/${path}`,
+      `--- a/${path}`,
+      `+++ b/${path}`,
+      `@@ -1,0 +1,${bodyLines} @@`,
+      ...Array.from({ length: bodyLines }, (_, i) => `+${path}:${i}`.padEnd(lineWidth, 'x')),
+    ].join('\n') + '\n';
 
-  it('truncates at last newline before maxLength', () => {
-    const lines = 'line one\nline two\nline three\n';
-    const result = truncateDiff(lines, 15);
-    expect(result).toBe('line one\n... (truncated)');
-  });
-
-  it('truncates at maxLength when no newline found', () => {
-    const noNewlines = 'a'.repeat(100);
-    const result = truncateDiff(noNewlines, 50);
-    expect(result).toBe('a'.repeat(50) + '\n... (truncated)');
-  });
-
-  it('returns original when exactly at maxLength', () => {
+  it('returns original when under or exactly at maxLength', () => {
+    expect(truncateDiff('short diff')).toBe('short diff');
     const exact = 'a'.repeat(50);
     expect(truncateDiff(exact, 50)).toBe(exact);
   });
+
+  it('cuts a large file that sorts first and keeps every other file whole', () => {
+    const huge = fileDiff('build/bundle.js', 5000, 100);
+    const small = fileDiff('src/app.ts', 5);
+    const result = truncateDiff(huge + small, 2000);
+    expect(result.length).toBeLessThanOrEqual(2000);
+    expect(result.endsWith(small)).toBe(true);
+    expect(result).toContain('diff --git a/build/bundle.js b/build/bundle.js\n--- a/build/bundle.js\n+++ b/build/bundle.js\n@@ -1,0 +1,5000 @@\n');
+    const kept = result.split('\n').filter(line => line.startsWith('+build/bundle.js:')).length;
+    expect(kept).toBeGreaterThan(0);
+    expect(result).toContain(`... (${5000 - kept} more lines in this file truncated)\n`);
+  });
+
+  it('splits the budget fairly so every large file keeps its header and first lines', () => {
+    const paths = ['a.ts', 'b.ts', 'c.ts'];
+    const result = truncateDiff(paths.map(p => fileDiff(p, 1000)).join(''), 3000);
+    expect(result.length).toBeLessThanOrEqual(3000);
+    for (const p of paths) {
+      expect(result).toContain(`diff --git a/${p} b/${p}`);
+      expect(result).toContain(`+${p}:0`);
+    }
+    expect(result.match(/more lines in this file truncated/g)).toHaveLength(3);
+  });
+
+  it('keeps the file header and first hunk header even when a single line exceeds the share', () => {
+    const minified = `diff --git a/vendor/lib.min.js b/vendor/lib.min.js\n@@ -1 +1 @@\n+${'x'.repeat(5000)}\n`;
+    const result = truncateDiff(minified + fileDiff('src/app.ts', 3), 1000);
+    expect(result).toContain('diff --git a/vendor/lib.min.js b/vendor/lib.min.js\n@@ -1 +1 @@\n... (1 more lines in this file truncated)\n');
+    expect(result).toContain('+src/app.ts:2');
+  });
+
 });
 
 describe('titlesMatch boundary', () => {

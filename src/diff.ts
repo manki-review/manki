@@ -53,20 +53,8 @@ export function parsePRDiff(rawDiff: string): ParsedDiff {
 }
 
 /**
- * Filter diff files based on exclude glob patterns.
- * A file is included unless it matches ANY exclude pattern.
- */
-export function filterFiles(
-  files: DiffFile[],
-  excludePaths: string[],
-): DiffFile[] {
-  return filterFilesWithAttribution(files, excludePaths).included;
-}
-
-/**
- * Same as `filterFiles` but also returns per-file exclusion attribution
- * (path + first matched pattern) so callers can surface noise-debugging
- * provenance in `RoundDiff.excludedFiles`.
+ * Splits diff files by the exclude glob patterns. A file is included unless it
+ * matches any pattern. Each excluded file records the first pattern it matched.
  */
 export function filterFilesWithAttribution(
   files: DiffFile[],
@@ -90,13 +78,40 @@ export function filterFilesWithAttribution(
 
 export function rebuildRawDiff(diff: ParsedDiff): string {
   return diff.files.map((f) => {
-    const header = `diff --git a/${f.path} b/${f.path}`;
+    const oldPath = f.oldPath ?? f.path;
+    const from = f.changeType === 'added' ? '/dev/null' : `a/${oldPath}`;
+    const to = f.changeType === 'deleted' ? '/dev/null' : `b/${f.path}`;
+    const header = `diff --git a/${oldPath} b/${f.path}\n--- ${from}\n+++ ${to}`;
     const hunks = f.hunks.map(h => {
       const hunkHeader = `@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@`;
       return `${hunkHeader}\n${h.content}`;
     }).join('\n');
     return `${header}\n${hunks}`;
   }).join('\n');
+}
+
+/**
+ * Drops files matching `excludePaths` from a parsed diff and recomputes its totals.
+ */
+export function filterDiff(
+  diff: ParsedDiff,
+  excludePaths: string[],
+): { diff: ParsedDiff; excluded: RoundDiffExcludedFile[] } {
+  const { included, excluded } = filterFilesWithAttribution(diff.files, excludePaths);
+  let totalAdditions = 0;
+  let totalDeletions = 0;
+  for (const file of included) {
+    totalAdditions += file.additions ?? 0;
+    totalDeletions += file.deletions ?? 0;
+  }
+  return { diff: { ...diff, files: included, totalAdditions, totalDeletions }, excluded };
+}
+
+/**
+ * Removes files matching `excludePaths` from a raw unified diff.
+ */
+export function filterRawDiff(rawDiff: string, excludePaths: string[]): string {
+  return rebuildRawDiff(filterDiff(parsePRDiff(rawDiff), excludePaths).diff);
 }
 
 /**
@@ -157,17 +172,10 @@ export function countDiffLines(files: DiffFile[]): number {
 }
 
 /**
- * Check if the reviewable diff size exceeds the maximum line count.
- * Files matching `excludePaths` are dropped before the count so generated
- * artifacts the user has opted out of (e.g., `dist/**`) cannot trip the gate.
+ * Check if the diff size exceeds the maximum line count.
  */
-export function isDiffTooLarge(
-  diff: ParsedDiff,
-  maxLines: number,
-  excludePaths: string[] = [],
-): boolean {
-  const reviewable = filterFiles(diff.files, excludePaths);
-  return countDiffLines(reviewable) > maxLines;
+export function isDiffTooLarge(diff: ParsedDiff, maxLines: number): boolean {
+  return countDiffLines(diff.files) > maxLines;
 }
 
 function isBinaryFile(file: parseDiff.File): boolean {

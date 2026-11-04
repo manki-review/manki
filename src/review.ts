@@ -1967,10 +1967,40 @@ export function stringifyFindingFingerprint(fp: FindingFingerprint): string {
   return `${fp.file}:${fp.lineStart}:${fp.lineEnd}:${fp.slug}`;
 }
 
+/**
+ * Shortens a diff to about `maxLength` characters by giving each file a fair share.
+ * Files under their share stay whole and pass the unused budget to larger files.
+ * Each cut file keeps its header lines through the first hunk header. The total can
+ * exceed `maxLength` only when those lines alone are longer than a file's share.
+ */
 export function truncateDiff(rawDiff: string, maxLength: number = 50000): string {
   if (rawDiff.length <= maxLength) return rawDiff;
-  const cutoff = rawDiff.lastIndexOf('\n', maxLength);
-  return rawDiff.slice(0, cutoff > 0 ? cutoff : maxLength) + '\n... (truncated)';
+  const sections = rawDiff.split(/(?=^diff --git )/m);
+  const order = sections.map((_, i) => i).sort((a, b) => sections[a].length - sections[b].length || a - b);
+  const budgets: number[] = [];
+  let remaining = maxLength;
+  order.forEach((index, rank) => {
+    const share = Math.floor(remaining / (sections.length - rank));
+    budgets[index] = Math.min(sections[index].length, share);
+    remaining -= budgets[index];
+  });
+  return sections.map((section, i) => truncateDiffSection(section, budgets[i])).join('');
+}
+
+function truncateDiffSection(section: string, budget: number): string {
+  if (section.length <= budget) return section;
+  const lines = section.replace(/\n$/, '').split('\n');
+  const marker = (dropped: number) => `... (${dropped} more lines in this file truncated)\n`;
+  const reserve = marker(lines.length).length;
+  const firstHunk = lines.findIndex(line => line.startsWith('@@'));
+  let kept = Math.max(1, firstHunk + 1);
+  let used = lines.slice(0, kept).join('\n').length + 1;
+  while (kept < lines.length && used + lines[kept].length + 1 + reserve <= budget) {
+    used += lines[kept].length + 1;
+    kept++;
+  }
+  if (kept >= lines.length) return section;
+  return `${lines.slice(0, kept).join('\n')}\n${marker(lines.length - kept)}`;
 }
 
 // Intentionally loose substring matching for dedup. The 10-char minimum guards
