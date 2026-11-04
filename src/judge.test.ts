@@ -130,10 +130,38 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('code review judge');
   });
 
-  it('includes duplicate detection instructions', () => {
+  it('asks for `duplicateOf` and one entry per finding instead of merged entries', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     expect(prompt).toContain('Duplicate Detection');
-    expect(prompt).toContain('ONE entry for the merged finding');
+    expect(prompt).toContain('set `duplicateOf` to the number N of an EARLIER "Finding N"');
+    expect(prompt).toContain('never by wording');
+    expect(prompt).toContain('"duplicateOf": 0');
+    expect(prompt).toContain('Return one entry per finding, in the same order as the input.');
+    expect(prompt).not.toContain('ONE entry for the merged finding');
+  });
+
+  it('grades against the fixed rubric instead of trusting reviewer severity', () => {
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
+    expect(prompt).toContain('## Grading Rules');
+    expect(prompt).toContain('Your grade is final');
+    expect(prompt).toContain('**Missing test coverage is `suggestion`.**');
+    expect(prompt).toContain('**A finding that rests on a fact you cannot check is capped at `suggestion`.**');
+    expect(prompt).toContain('**Code the PR did not touch is never a finding.**');
+    expect(prompt).toContain('**Verification status is never a finding.**');
+    expect(prompt).toContain('**Commit messages never block.**');
+    expect(prompt).toContain('- `blocker` or `warning`: keep it');
+    expect(prompt).toContain('- `suggestion` or `nitpick`: drop it (`ignore`)');
+    expect(prompt).toContain('Agreement never raises or protects a finding\'s severity.');
+    expect(prompt).not.toMatch(/trust (the )?(reviewer )?severity/i);
+    expect(prompt).not.toContain('keeping the reviewer\'s severity');
+  });
+
+  it('puts the verdict fields before the reasoning in the output schema', () => {
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
+    const schema = prompt.slice(prompt.indexOf('"findings": ['));
+    expect(schema.indexOf('"severity"')).toBeLessThan(schema.indexOf('"reasoning"'));
+    expect(schema.indexOf('"duplicateOf"')).toBeLessThan(schema.indexOf('"reasoning"'));
+    expect(prompt).toContain('Start `reasoning` with your verdict');
   });
 
   it('does not include scope validation (handled by reviewers)', () => {
@@ -201,18 +229,27 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('Follow-Up Review');
     expect(prompt).toContain('previous review state is in the user message');
     expect(prompt).not.toContain('repository context');
-    expect(prompt).toContain('opinionated progress update');
+    expect(prompt).toContain('brief progress update');
     expect(prompt).toContain('Never start with "The author"');
-    expect(prompt).not.toContain('opinionated review summary');
+    expect(prompt).not.toContain('Write a review summary');
   });
 
   it('uses standard summary instruction when isFollowUp is false', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5, false);
-    expect(prompt).toContain('opinionated review summary');
+    expect(prompt).toContain('Write a review summary');
     expect(prompt).toContain('Never start with "The author"');
     expect(prompt).toContain('Good examples:');
     expect(prompt).toContain('Bad examples (do NOT write like this)');
     expect(prompt).not.toContain('Follow-Up Review');
+  });
+
+  it.each([false, true])('gives summary examples without praise or em-dashes (isFollowUp=%s)', (isFollowUp) => {
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp);
+    const instructions = prompt.slice(prompt.indexOf('## Summary Instructions'), prompt.indexOf('## Output Format'));
+    const good = instructions.slice(instructions.indexOf('Good examples:'), instructions.indexOf('Bad examples'));
+    expect(instructions).toMatch(/do not praise the change/i);
+    expect(instructions).not.toContain('\u2014');
+    expect(good).not.toMatch(/\b(clean|solid|nice|great)\b/i);
   });
 
   it('includes threadEvaluations in output format when openThreadsCount > 0', () => {
@@ -255,71 +292,11 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('"reachable" | "hypothetical" | "unknown"');
   });
 
-  it('inverts the calibration note at noise_level "low" — borderline demotes and nitpicks drop', () => {
-    const prompt = buildJudgeSystemPrompt(makeConfig(), 5, false, 0, 'low');
-    expect(prompt).toContain('At `noise_level: low`');
-    expect(prompt).toContain('choose the **lower** one');
-    expect(prompt).toContain('Drop `nitpick`-severity findings entirely');
-    expect(prompt).toContain('block a senior reviewer from approving the PR');
+  it('carries no `noise_level` calibration note', () => {
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
+    expect(prompt).not.toContain('Calibration note');
     expect(prompt).not.toContain('choose the higher one');
-    expect(prompt).not.toContain('is `blocker`, not `warning`');
-  });
-
-  it.each(['medium', 'high'] as const)(
-    'keeps today\'s calibration note verbatim at noise_level "%s"',
-    (level) => {
-      const prompt = buildJudgeSystemPrompt(makeConfig(), 5, false, 0, level);
-      expect(prompt).toContain('LLMs tend toward leniency when judging code review findings');
-      expect(prompt).toContain('When a finding is borderline between two severities, choose the higher one');
-      expect(prompt).toContain('"could cause problems" under realistic conditions is `blocker`, not `warning`');
-      expect(prompt).toContain('Only downgrade a finding if you can articulate a specific reason the issue won\'t manifest');
-      expect(prompt).not.toContain('choose the **lower** one');
-      expect(prompt).not.toContain('Drop `nitpick`-severity findings entirely');
-    },
-  );
-
-  it('defaults to noise_level "low" when the argument is omitted', () => {
-    const flagCombos: Array<[boolean, number]> = [
-      [false, 0],
-      [false, 2],
-      [true, 0],
-      [true, 2],
-    ];
-    for (const [isFollowUp, openThreadsCount] of flagCombos) {
-      const defaultPrompt = buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, openThreadsCount);
-      const lowPrompt = buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, openThreadsCount, 'low');
-      expect(defaultPrompt).toBe(lowPrompt);
-    }
-  });
-
-  it('produces identical prompts for noise_level "medium" and "high" (asymmetry lives in the reviewer prompts)', () => {
-    const flagCombos: Array<[boolean, number]> = [
-      [false, 0],
-      [false, 2],
-      [true, 0],
-      [true, 2],
-    ];
-    for (const [isFollowUp, openThreadsCount] of flagCombos) {
-      const mediumPrompt = buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, openThreadsCount, 'medium');
-      const highPrompt = buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp, openThreadsCount, 'high');
-      expect(highPrompt).toBe(mediumPrompt);
-    }
-  });
-
-  it('leaves Impact x Likelihood and reachability sections unchanged across noise levels', () => {
-    const promptLow = buildJudgeSystemPrompt(makeConfig(), 5, false, 0, 'low');
-    const promptMedium = buildJudgeSystemPrompt(makeConfig(), 5, false, 0, 'medium');
-    const promptHigh = buildJudgeSystemPrompt(makeConfig(), 5, false, 0, 'high');
-    for (const prompt of [promptLow, promptMedium, promptHigh]) {
-      expect(prompt).toContain('## Severity Assessment');
-      expect(prompt).toContain('**Impact** — How bad is it if this issue manifests?');
-      expect(prompt).toContain('**Likelihood** — How likely is this issue to actually occur?');
-      expect(prompt).toContain('**Severity mapping:**');
-      expect(prompt).toContain('## Practical Reachability');
-      expect(prompt).toContain('**reachable**');
-      expect(prompt).toContain('**hypothetical**');
-      expect(prompt).toContain('**unknown**');
-    }
+    expect(prompt).not.toContain('choose the **lower** one');
   });
 });
 
@@ -453,7 +430,7 @@ describe('buildJudgeUserMessage', () => {
     const largeDiff = `${prDiff}\n${'+filler line\n'.repeat(6000)}+tail marker`;
     const truncatedMsg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, undefined, undefined, largeDiff);
     expect(truncatedMsg).toContain(truncateDiff(largeDiff));
-    expect(truncatedMsg).toContain('... (truncated)');
+    expect(truncatedMsg).toContain('more lines in this file truncated)');
     expect(truncatedMsg).not.toContain('+tail marker');
 
     for (const empty of [undefined, '', '  \n']) {
@@ -2261,44 +2238,8 @@ describe('runJudgeAgent', () => {
     expect(result.inPrSuppressedCount).toBeUndefined();
   });
 
-  it('instructs the judge to demote borderline findings at noise_level "low"', async () => {
-    const judgedResponse = JSON.stringify({
-      summary: 'One borderline finding demoted.',
-      findings: [
-        { title: 'Borderline naming', severity: 'ignore', reasoning: 'Borderline between nitpick and suggestion. Demoted per noise_level: low calibration.', confidence: 'high' },
-      ],
-    });
-    mockSendMessage.mockResolvedValue({ content: judgedResponse });
-
-    const config = makeConfig({ noise_level: 'low' });
-    const borderlineFinding = makeFinding({
-      severity: 'nitpick',
-      title: 'Borderline naming',
-      description: 'Variable name could be slightly clearer. Borderline between nitpick and suggestion.',
-    });
-    const input: JudgeInput = {
-      findings: [borderlineFinding],
-      diff: makeDiff(),
-      rawDiff: '',
-      repoContext: '',
-      agentCount: 5,
-    };
-
-    const result = await runJudgeAgent(mockClient, config, input);
-
-    const [systemPrompt] = mockSendMessage.mock.calls[0];
-    expect(systemPrompt).toContain('choose the **lower** one');
-    expect(systemPrompt).toContain('Drop `nitpick`-severity findings entirely');
-    expect(systemPrompt).not.toContain('choose the higher one');
-
-    expect(result.findings).toHaveLength(1);
-    expect(result.findings[0].severity).toBe('ignore');
-  });
-
-  it('forwards config.noise_level to buildJudgeSystemPrompt', async () => {
+  it('sends the same system prompt whatever `noise_level` is', async () => {
     mockSendMessage.mockResolvedValue({ content: '{"summary":"x","findings":[]}' });
-
-    const config = makeConfig({ noise_level: 'medium' });
     const input: JudgeInput = {
       findings: [],
       diff: makeDiff(),
@@ -2306,44 +2247,100 @@ describe('runJudgeAgent', () => {
       repoContext: '',
       agentCount: 5,
     };
+    const withoutLevel = makeConfig();
+    delete (withoutLevel as Partial<ReviewConfig>).noise_level;
 
-    await runJudgeAgent(mockClient, config, input);
+    for (const config of [makeConfig({ noise_level: 'low' }), makeConfig({ noise_level: 'medium' }), makeConfig({ noise_level: 'high' }), withoutLevel]) {
+      await runJudgeAgent(mockClient, config, input);
+    }
 
-    const [systemPrompt] = mockSendMessage.mock.calls[0];
-    const expectedPrompt = buildJudgeSystemPrompt(
-      config,
-      input.agentCount,
-      input.isFollowUp,
-      input.openThreads?.length ?? 0,
-      'medium',
-    );
-    expect(systemPrompt).toBe(expectedPrompt);
+    const prompts = mockSendMessage.mock.calls.map(([systemPrompt]) => systemPrompt);
+    expect(prompts).toHaveLength(4);
+    expect(new Set(prompts).size).toBe(1);
+    expect(prompts[0]).toBe(buildJudgeSystemPrompt(makeConfig(), input.agentCount, input.isFollowUp, 0));
   });
 
-  it('defaults to noise_level "low" when config omits it', async () => {
-    mockSendMessage.mockResolvedValue({ content: '{"summary":"x","findings":[]}' });
-
-    const config = makeConfig();
-    delete (config as Partial<ReviewConfig>).noise_level;
-    const input: JudgeInput = {
-      findings: [],
-      diff: makeDiff(),
-      rawDiff: '',
-      repoContext: '',
-      agentCount: 5,
+  describe('duplicateOf folding', () => {
+    const runWith = async (findings: Finding[], judged: Array<Record<string, unknown>>) => {
+      mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 'x', findings: judged }) });
+      const input: JudgeInput = { findings, diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 3 };
+      return (await runJudgeAgent(mockClient, makeConfig(), input)).findings;
     };
+    const three = (): Finding[] => [
+      makeFinding({ title: 'Timer never cleared', file: 'a.ts', line: 5, reviewers: ['Correctness'] }),
+      makeFinding({ title: 'Unrelated naming', file: 'b.ts', line: 9, reviewers: ['Style'] }),
+      makeFinding({ title: 'Leaked timeout handle', file: 'a.ts', line: 7, reviewers: ['Reliability', 'Correctness'] }),
+    ];
+    const verdict = (title: string, severity: string, duplicateOf?: unknown) => ({
+      title, severity, reasoning: `${severity}.`, confidence: 'high', ...(duplicateOf !== undefined && { duplicateOf }),
+    });
 
-    await runJudgeAgent(mockClient, config, input);
+    it('folds a duplicate into the earlier finding and merges reviewers', async () => {
+      const result = await runWith(three(), [
+        verdict('Timer never cleared', 'warning'),
+        verdict('Unrelated naming', 'nitpick', 0),
+        verdict('Leaked timeout handle', 'blocker', 1),
+      ]);
+      expect(result.map(f => f.title)).toEqual(['Timer never cleared', 'Unrelated naming']);
+      expect(result[0].severity).toBe('warning');
+      expect(result[0].reviewers).toEqual(['Correctness', 'Reliability']);
+      expect(result[1].reviewers).toEqual(['Style']);
+    });
 
-    const [systemPrompt] = mockSendMessage.mock.calls[0];
-    const expectedPrompt = buildJudgeSystemPrompt(
-      config,
-      input.agentCount,
-      input.isFollowUp,
-      input.openThreads?.length ?? 0,
-      'low',
-    );
-    expect(systemPrompt).toBe(expectedPrompt);
+    it('follows a chain of duplicates to the first finding', async () => {
+      const result = await runWith(three(), [
+        verdict('Timer never cleared', 'warning'),
+        verdict('Unrelated naming', 'warning', 1),
+        verdict('Leaked timeout handle', 'warning', 2),
+      ]);
+      expect(result.map(f => f.title)).toEqual(['Timer never cleared']);
+      expect(result[0].reviewers).toEqual(['Correctness', 'Style', 'Reliability']);
+    });
+
+    it.each([
+      ['a self-reference', 3, 3],
+      ['a forward pointer', 1, 3],
+      ['an out-of-range pointer', 3, 99],
+      ['a negative pointer', 3, -1],
+      ['a non-integer pointer', 3, 1.5],
+      ['a string pointer', 3, '1'],
+    ])('ignores %s', async (_, finding, pointer) => {
+      const verdicts = [
+        verdict('Timer never cleared', 'warning'),
+        verdict('Unrelated naming', 'nitpick'),
+        verdict('Leaked timeout handle', 'blocker'),
+      ];
+      verdicts[finding - 1] = { ...verdicts[finding - 1], duplicateOf: pointer };
+      const result = await runWith(three(), verdicts);
+      expect(result.map(f => [f.title, f.severity, f.reviewers])).toEqual([
+        ['Timer never cleared', 'warning', ['Correctness']],
+        ['Unrelated naming', 'nitpick', ['Style']],
+        ['Leaked timeout handle', 'blocker', ['Reliability', 'Correctness']],
+      ]);
+    });
+
+    it('drops a duplicate together with the refuted finding it points at', async () => {
+      const result = await runWith(three(), [
+        verdict('Timer never cleared', 'ignore'),
+        verdict('Unrelated naming', 'nitpick'),
+        verdict('Leaked timeout handle', 'blocker', 1),
+      ]);
+      expect(result.map(f => [f.title, f.severity])).toEqual([
+        ['Timer never cleared', 'ignore'],
+        ['Unrelated naming', 'nitpick'],
+      ]);
+    });
+
+    it('leaves findings alone when the judge returned fewer entries than findings', async () => {
+      const result = await runWith(three(), [
+        verdict('Timer never cleared', 'warning'),
+        verdict('Unrelated naming', 'nitpick', 1),
+      ]);
+      expect(result.map(f => [f.title, f.reviewers])).toEqual([
+        ['Timer never cleared', ['Correctness']],
+        ['Unrelated naming', ['Style']],
+      ]);
+    });
   });
 
   describe('threadEvaluations coverage enforcement', () => {

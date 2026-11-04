@@ -16,7 +16,7 @@ import { safeTruncate } from './utils';
 import { sanitize, titlesOverlap } from './recap';
 import { truncateDiff, validateSeverity } from './review';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
-import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DiffFile, Finding, FindingFingerprintEntry, FindingReachability, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, InterRoundDiffEmptyOverride, NoiseLevel, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, ParsedDiff, PrContext, ThreadEvaluation } from './types';
+import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DiffFile, Finding, FindingFingerprintEntry, FindingReachability, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, ParsedDiff, PrContext, ThreadEvaluation } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -257,6 +257,8 @@ export interface JudgedFinding {
   confidence: 'high' | 'medium' | 'low';
   reachability?: FindingReachability;
   reachabilityReasoning?: string;
+  /** Number of the earlier "Finding N" this one repeats. */
+  duplicateOf?: number;
 }
 
 export interface JudgeResult {
@@ -272,61 +274,26 @@ export function buildJudgeSystemPrompt(
   agentCount: number,
   isFollowUp?: boolean,
   openThreadsCount: number = 0,
-  noiseLevel: NoiseLevel = 'low',
 ): string {
   const hasOpenThreads = openThreadsCount > 0;
   const majorityThreshold = Math.max(1, Math.ceil(agentCount / 2));
-  const calibrationNote = noiseLevel === 'low'
-    ? `**Calibration note**: At \`noise_level: low\` the project wants to surface only findings that materially affect the PR. Counteract the LLM tendency to over-flag:
-- When a finding is borderline between two severities, choose the **lower** one
-- Drop \`nitpick\`-severity findings entirely (mark them \`ignore\`) unless they would block a senior reviewer from approving the PR
-- A finding that "could cause problems" only under unrealistic conditions is \`suggestion\` or lower, not \`warning\``
-    : `**Calibration note**: LLMs tend toward leniency when judging code review findings. Counteract this bias:
-- When a finding is borderline between two severities, choose the higher one
-- A finding that "could cause problems" under realistic conditions is \`blocker\`, not \`warning\`
-- Only downgrade a finding if you can articulate a specific reason the issue won't manifest`;
-
   const summaryInstruction = isFollowUp
-    ? `Write a brief, opinionated progress update in 1-2 sentences. Focus on whether previous concerns were addressed and what's new. Be direct — don't re-describe the PR. Never start with "The author" or "Since last review —". Good examples:
-- "All previous findings addressed cleanly. Two new nits on test coverage but nothing blocking."
-- "The timeout leak is fixed but introduced a new issue: clearTimeout never fires on success."
-- "Previous concerns resolved. Nothing new — this is ready."
+    ? `Write a brief progress update in 1-2 sentences. Say whether the previous concerns were addressed and what is new. Do not re-describe the PR and do not praise the change. Never start with "The author" or "Since last review". If you can swap the project name and the summary still works, it is too generic. Good examples:
+- "Both open findings are fixed. One new blocker: \`clearTimeout\` never runs on the success path."
+- "The timeout leak is fixed, but the new retry loop drops the error reason, so operators see '3 attempts failed' with no cause."
+- "Previous concerns are resolved and nothing new turned up."
 Bad examples (do NOT write like this):
 - "The author addressed the positional slice ordering issue..."
-- "Since last review — All 11 previously open findings resolved."
-
-Never start with "Core logic looks solid", "Clean implementation", "Solid X", or any generic praise opener. Skip pleasantries — lead with the most interesting observation about this specific PR. If you can swap the project name and the summary still works, it's too generic.
-
-Good specificity examples:
-- "The retry loop silently swallows the error reason — operators will see '3 attempts failed' with no clue why."
-- "Planner now picks agents by specialty instead of the hardcoded top-3, but 2-agent picks accidentally trigger the trivial verifier."
-- "Half the test file is mocking infrastructure that a real integration test would cover in 5 lines."
-
-Bad generic examples:
-- "Solid retry implementation with one concern about error handling."
-- "Core logic looks good. A few suggestions for improvement."
-- "Clean refactor with comprehensive test coverage."`
-    : `Write a concise, opinionated review summary in 1-2 sentences. Lead with what matters most — the biggest risk, the smartest decision, or the thing that needs attention. Be direct and conversational, not formal. Never start with "The author" or "This PR" or "The refactor". Vary your opening. Never list agent names. Never mention agent count or review level. Never say "after judge evaluation". Good examples:
-- "Clean refactor — the new planner is half the code with better results."
-- "One real issue buried in an otherwise solid change: the timeout handler leaks."
-- "Mostly mechanical, but the auth token validation path needs a closer look."
-- "Nothing to flag — straightforward config cleanup."
+- "Solid follow-up with a few remaining suggestions."`
+    : `Write a review summary in 1-2 sentences. Lead with what matters most: the biggest risk or the thing that needs attention. Do not praise the change. Never start with "The author", "This PR" or "The refactor". Never list agent names, agent count or review level, and never say "after judge evaluation". If you can swap the project name and the summary still works, it is too generic. Good examples:
+- "The timeout handler leaks a listener on every failed request."
+- "The retry loop swallows the error reason, so operators see '3 attempts failed' with no cause."
+- "The planner picks agents by specialty, but a 2-agent pick triggers the trivial verifier."
+- "Nothing to flag in this config cleanup."
 Bad examples (do NOT write like this):
-- "The author addressed all issues from the prior cycle..."
+- "Clean refactor with one concern about error handling."
 - "The refactor looks solid overall. The main actionable issue is..."
-- "This PR modifies the review pipeline to..."
-
-Never start with "Core logic looks solid", "Clean implementation", "Solid X", or any generic praise opener. Skip pleasantries — lead with the most interesting observation about this specific PR. If you can swap the project name and the summary still works, it's too generic.
-
-Good specificity examples:
-- "The retry loop silently swallows the error reason — operators will see '3 attempts failed' with no clue why."
-- "Planner now picks agents by specialty instead of the hardcoded top-3, but 2-agent picks accidentally trigger the trivial verifier."
-- "Half the test file is mocking infrastructure that a real integration test would cover in 5 lines."
-
-Bad generic examples:
-- "Solid retry implementation with one concern about error handling."
-- "Core logic looks good. A few suggestions for improvement."
-- "Clean refactor with comprehensive test coverage."`;
+- "This PR modifies the review pipeline to..."`;
   let prompt = `You are a code review judge. You evaluate findings from multiple specialist reviewers for accuracy, actionability, and severity.
 
 ## Severity Assessment
@@ -352,9 +319,26 @@ Evaluate each finding on two dimensions:
 - **nitpick**: minor cosmetic — wording, formatting, tiny naming tweaks. Purely optional.
 - **ignore**: False positives, intentional patterns, style preferences, reviewer misunderstandings.
 
-${calibrationNote}
+## Grading Rules
 
-Include your impact and likelihood assessment in the reasoning field (e.g., "Impact: High (silent data loss), Likelihood: Probable (happens on every error path) → blocker").
+Your grade is final: the verdict acts on the severity you return, not on the reviewer's. Re-grade every finding against these rules. Grade what actually goes wrong in the code, never how confidently the finding is worded.
+
+- **Missing test coverage is \`suggestion\`.** A missing or weak test is never \`blocker\` or \`warning\`.
+- **A finding that rests on a fact you cannot check is capped at \`suggestion\`.** When the claim needs something not visible in the diff or the provided code (a caller elsewhere, another branch or repo, CI output, an issue), grade it by what stands without that fact.
+- **Code the PR did not touch is never a finding.** Mark it \`ignore\`, even when the problem is real.
+- **Verification status is never a finding.** "Tests were not run" or "could not confirm" describes no defect in the diff. Mark it \`ignore\`.
+- **Commit messages never block.** A finding about a commit message is at most \`suggestion\`.
+
+## When You Are Unsure
+
+When you cannot tell whether a finding is real, resolve it by its grade:
+
+- \`blocker\` or \`warning\`: keep it, and say in \`reasoning\` what you could not determine. A wrongly dropped defect ships. A wrongly kept one costs a single fix.
+- \`suggestion\` or \`nitpick\`: drop it (\`ignore\`). A missed suggestion is cheap. Chasing a false one is not.
+
+Being certain overrides this. It governs doubt, never judgment.
+
+Start \`reasoning\` with your verdict, then give the impact and likelihood behind it (e.g., "blocker. Impact: High (silent data loss), Likelihood: Probable (happens on every error path).").
 
 Examples of **blocker** (correctness bug, data loss, or security):
   - SQL injection or unsanitized user input passed to any external system
@@ -413,20 +397,17 @@ For each finding, evaluate:
 ## Guidelines
 
 - Respect the project's review memory when calibrating severity. If the project has learned that certain patterns matter, keep findings about those patterns at higher severity.
-- Trust reviewer severity unless you have clear evidence it's overstated or understated. The reviewers see the full code context, but may understate severity due to framing bias.
-- When multiple reviewers agree, give their consensus significant weight.
-- Use \`ignore\` for genuine false positives and intentional patterns only — not as a way to reduce finding count.
+- Use \`ignore\` for false positives, intentional patterns and the cases the rules above drop. Never use it just to reduce the finding count.
 - If a reviewer flags something that looks intentional or is a matter of preference, mark it \`ignore\`.
-- When downgrading a finding that multiple reviewers flagged, explicitly explain why in your reasoning.
 
 ## Reviewer Consensus
 
-This review used ${agentCount} specialist agents. When evaluating severity, consider the proportion of reviewers who independently flagged each finding:
-- **Majority or more flagged it** (${majorityThreshold}+ of ${agentCount}) — strong signal. Default to keeping the reviewer's severity. Only downgrade if you're certain it's a false positive.
-- **More than one flagged it** (2+ of ${agentCount}) — moderate signal. Trust the severity unless you have specific evidence to downgrade.
-- **Only one flagged it** (1 of ${agentCount}) — use your independent judgment. May downgrade or ignore if not convincing.
+This review used ${agentCount} specialist agents. Independent agreement is evidence that a finding is real:
+- **Majority or more flagged it** (${majorityThreshold}+ of ${agentCount}): strong evidence. Drop it only when you can say concretely why they are all wrong.
+- **More than one flagged it** (2+ of ${agentCount}): moderate evidence.
+- **Only one flagged it** (1 of ${agentCount}): ordinary. The others not mentioning it is not evidence against it.
 
-Multiple independent reviewers reaching the same conclusion is strong evidence that the finding is real. Downgrading a consensus finding requires explicit justification in your reasoning.
+Agreement never raises or protects a finding's severity. Grade it by the rules above.
 
 ## Acceptance Criteria
 
@@ -438,12 +419,9 @@ If the PR description or linked issues contain acceptance criteria (checkbox ite
 
 ## Duplicate Detection
 
-Multiple specialist reviewers may flag the same issue independently. When you see findings that describe the same underlying problem (even with different wording, slightly different line numbers, or different titles):
+Reviewers often report one defect twice, in different words, on different lines or under different titles. For each finding, set \`duplicateOf\` to the number N of an EARLIER "Finding N" that names the same underlying defect, or 0 when it is its own. Judge by what goes wrong in the code, never by wording. Two separate bugs in one function are two findings, however similar they read. When you cannot tell, treat them as separate.
 
-- Return only ONE entry for the merged finding
-- Use the best/clearest title from the duplicates
-- Use the most detailed description
-- In your reasoning, note which findings you merged (e.g., "Merged findings 1 and 4 — same issue")
+Still judge a duplicate on its own merits. It is folded into the finding it points at, which keeps its own grade.
 
 ${isFollowUp ? `## Follow-Up Review
 
@@ -463,9 +441,10 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
     {
       "title": "Short title matching or close to the original finding title",
       "severity": "blocker" | "warning" | "suggestion" | "nitpick" | "ignore",
-      "reasoning": "1-2 sentences explaining your judgment",
+      "duplicateOf": 0,
       "confidence": "high" | "medium" | "low",
       "reachability": "reachable" | "hypothetical" | "unknown",
+      "reasoning": "Your verdict first, then 1-2 sentences on why",
       "reachabilityReasoning": "Required when reachability is 'hypothetical'. One sentence explaining why no current caller triggers the failure"
     }
   ]${hasOpenThreads ? `,
@@ -489,7 +468,7 @@ You MUST return exactly ${openThreadsCount} \`threadEvaluations\` entries — on
 
 The flagged thread \`line\` is GitHub-anchored from when the thread was created and may have drifted relative to the current head. Treat it as a hint, not a strict boundary: scan the full provided code window for the fix. Resolution requires concrete evidence — cite the changed lines or current-code excerpt that supports your call in \`reason\`. Use the thread IDs provided in the open threads section below.
 ` : ''}
-The findings array may be shorter than the input when duplicates are merged. Preserve the order of first appearance.`;
+Return one entry per finding, in the same order as the input. State the verdict before the reasoning.`;
 
   if (config.instructions) {
     prompt += `\n\n## Project Instructions\n\n${config.instructions}`;
@@ -769,6 +748,9 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
       const reachabilityReasoning = reachability && typeof f.reachabilityReasoning === 'string' && f.reachabilityReasoning
         ? f.reachabilityReasoning
         : undefined;
+      const duplicateOf = Number.isInteger(f.duplicateOf) && (f.duplicateOf as number) > 0
+        ? f.duplicateOf as number
+        : undefined;
       return {
         title: String(f.title || 'Untitled'),
         severity: validateSeverity(f.severity),
@@ -776,6 +758,7 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
         confidence: validateConfidence(f.confidence),
         ...(reachability && { reachability }),
         ...(reachabilityReasoning && { reachabilityReasoning }),
+        ...(duplicateOf && { duplicateOf }),
       };
     });
 
@@ -897,7 +880,7 @@ export async function runJudgeAgent(
 
   const changedFiles = diff.files;
 
-  const systemPrompt = buildJudgeSystemPrompt(config, agentCount, isFollowUp, openThreads?.length ?? 0, config.noise_level);
+  const systemPrompt = buildJudgeSystemPrompt(config, agentCount, isFollowUp, openThreads?.length ?? 0);
   const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads, priorRounds, interRoundDiff, rawDiff);
 
   const effort = input.effort ?? 'high';
@@ -961,7 +944,10 @@ export async function runJudgeAgent(
 
   const crossRoundOptions: CrossRoundSuppressionOptions = { resolvedThreadIds, suppressResolvedThreads, threadEvaluations };
 
-  const mapped = deduplicateFindings(mapJudgedToFindings(findings, judgeResult.findings, provenanceMap));
+  const graded = mapJudgedToFindings(findings, judgeResult.findings, provenanceMap);
+  // Positions line up with the judge's entries only when it returned one per finding.
+  const folded = judgeResult.findings.length >= findings.length ? foldDuplicates(graded, judgeResult.findings) : graded;
+  const mapped = deduplicateFindings(folded);
   const suppression = applyCrossRoundSuppression(mapped, priorRounds, crossRoundOptions);
   const { findings: suppressed, count: inPrCount } = applyInPrSuppression(suppression.findings, inPrSuppressions);
 
@@ -1065,6 +1051,34 @@ export function mapJudgedToFindings(
   }
 
   return result;
+}
+
+/**
+ * Removes each finding the judge marked as `duplicateOf` an earlier one and adds its reviewers to that earlier finding.
+ * `findings[i]` is "Finding i + 1" and `judged[i]` is the judge's entry for it. A self-reference, a forward pointer or an
+ * out-of-range pointer is ignored. A duplicate of a finding graded `ignore` is removed while that finding stays `ignore`.
+ */
+function foldDuplicates(findings: Finding[], judged: JudgedFinding[]): Finding[] {
+  const rootOf = (n: number): number => {
+    let node = n;
+    for (;;) {
+      const to = judged[node - 1]?.duplicateOf;
+      if (to === undefined || to >= node) return node;
+      node = to;
+    }
+  };
+
+  const result = findings.map(f => ({ ...f }));
+  const folded = new Set<number>();
+  for (let i = 0; i < findings.length; i++) {
+    const root = rootOf(i + 1);
+    if (root === i + 1) continue;
+    folded.add(i);
+    const survivor = result[root - 1];
+    survivor.reviewers = [...new Set([...survivor.reviewers, ...findings[i].reviewers])];
+    core.info(`Judge folded duplicate "${findings[i].title}" into "${survivor.title}"`);
+  }
+  return result.filter((_, i) => !folded.has(i));
 }
 
 function applyReachability(finding: Finding, judged: JudgedFinding): void {
