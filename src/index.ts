@@ -45,7 +45,7 @@ import {
   checkConcurrentSubmissionLock,
   postConfigErrorComment,
 } from './github';
-import { checkAndAutoApprove, resolveStaleThreads } from './state';
+import { checkAndAutoApprove } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -551,14 +551,7 @@ async function runFullReview(
 
     progressCommentId = await postProgressComment(octokit, owner, repo, prNumber);
 
-    // Capture recap state before resolving stale threads so dedup sees
-    // the original open/resolved status of each previous finding.
     const recap = await fetchRecapState(octokit, owner, repo, prNumber, prAuthorLogin);
-
-    const staleCount = await resolveStaleThreads(octokit, owner, repo, prNumber, commitSha);
-    if (staleCount > 0) {
-      core.info(`Resolved ${staleCount} stale review threads from previous commits`);
-    }
 
     if (github.context.eventName === 'pull_request' && !config.auto_review) {
       core.info('auto_review is disabled — skipping');
