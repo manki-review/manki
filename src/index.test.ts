@@ -396,7 +396,7 @@ describe('run', () => {
         return;
       }
       expect(fixRateModule.recordFixRate).toHaveBeenCalledWith(
-        expect.anything(), 'test-owner', 'test-repo',
+        expect.anything(), TEST_BOT, 'test-owner', 'test-repo',
         { number: 7, headSha: 'head', mergedSha: 'merged', authorLogin: 'author' },
         toMemory ? expect.objectContaining({ repo: 'test-owner/review-memory' }) : undefined,
       );

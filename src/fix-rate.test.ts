@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 
 import { recordFixRate } from './fix-rate';
 import { fetchRecapState, PreviousFinding } from './recap';
-import { makeFindingFingerprintEntry, makeRoundContext } from './test-utils';
+import { makeFindingFingerprintEntry, makeRoundContext, TEST_BOT } from './test-utils';
 
 jest.mock('@actions/core', () => {
   const summary = {
@@ -97,7 +97,7 @@ describe('recordFixRate', () => {
     const github = mockOctokit();
     const memory = mockOctokit('{"pr":41}\n');
 
-    await recordFixRate(github.octokit, 'owner', 'repo', PR, { octokit: memory.octokit, repo: 'owner/review-memory' });
+    await recordFixRate(github.octokit, TEST_BOT, 'owner', 'repo', PR, { octokit: memory.octokit, repo: 'owner/review-memory' });
 
     const expected = {
       pr: 42,
@@ -122,7 +122,7 @@ describe('recordFixRate', () => {
     const github = mockOctokit();
     github.repos.compareCommits.mockRejectedValueOnce(new Error('diff too large'));
 
-    await recordFixRate(github.octokit, 'owner', 'repo', PR);
+    await recordFixRate(github.octokit, TEST_BOT, 'owner', 'repo', PR);
 
     expect(summaryLine()).toMatchObject({ pr: 42, partial: true });
     expect(github.repos.createOrUpdateFileContents).not.toHaveBeenCalled();
@@ -132,7 +132,7 @@ describe('recordFixRate', () => {
     jest.mocked(fetchRecapState).mockResolvedValue({ priorRounds: [], previousFindings: [] });
     const memory = mockOctokit();
 
-    await recordFixRate(mockOctokit().octokit, 'owner', 'repo', PR, { octokit: memory.octokit, repo: 'owner/review-memory' });
+    await recordFixRate(mockOctokit().octokit, TEST_BOT, 'owner', 'repo', PR, { octokit: memory.octokit, repo: 'owner/review-memory' });
 
     expect(core.summary.write).not.toHaveBeenCalled();
     expect(memory.repos.createOrUpdateFileContents).not.toHaveBeenCalled();

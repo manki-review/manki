@@ -345,7 +345,7 @@ async function handleMergedPullRequest(): Promise<void> {
     return;
   }
 
-  const octokit = await getOctokit();
+  const { octokit, bot, resolvedToken } = await getAuth();
   const { owner, repo } = github.context.repo;
   const configPath = core.getInput('config_path') || '.manki.yml';
   const configContent = await fetchConfigFile(octokit, owner, repo, pr.base.ref, configPath);
@@ -357,7 +357,7 @@ async function handleMergedPullRequest(): Promise<void> {
 
   let memory: { octokit: Octokit; repo: string } | undefined;
   if (config.memory?.enabled) {
-    const memoryToken = getMemoryToken(octokitCache.resolvedToken);
+    const memoryToken = getMemoryToken(resolvedToken);
     if (memoryToken) {
       memory = { octokit: github.getOctokit(memoryToken), repo: config.memory.repo || `${owner}/review-memory` };
     } else {
@@ -365,7 +365,7 @@ async function handleMergedPullRequest(): Promise<void> {
     }
   }
 
-  await recordFixRate(octokit, owner, repo, {
+  await recordFixRate(octokit, bot, owner, repo, {
     number: pr.number,
     headSha: pr.head.sha,
     mergedSha: pr.merge_commit_sha ?? '',
