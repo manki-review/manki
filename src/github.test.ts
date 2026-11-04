@@ -3000,10 +3000,12 @@ describe('dismissPreviousReviews', () => {
       },
     } as unknown as Parameters<typeof dismissPreviousReviews>[0];
 
-    await dismissPreviousReviews(mockOctokit, 'owner', 'repo', 1, 35);
+    const keepReviewId = reviews[reviews.length - 1].id;
+    await dismissPreviousReviews(mockOctokit, 'owner', 'repo', 1, keepReviewId);
 
     expect(mockOctokit.paginate).toHaveBeenCalledWith(mockOctokit.rest.pulls.listReviews, expect.objectContaining({ per_page: 100 }));
-    expect(dismissMock).toHaveBeenCalledTimes(34);
+    expect(dismissMock).toHaveBeenCalledTimes(reviews.length - 1);
+    expect(dismissMock).not.toHaveBeenCalledWith(expect.objectContaining({ review_id: keepReviewId }));
   });
 
   it('warns instead of throwing when listing reviews fails', async () => {

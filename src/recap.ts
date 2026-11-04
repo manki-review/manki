@@ -622,11 +622,16 @@ async function fetchReviewThreads(
     `);
     for (const thread of threadNodes) {
       if (!thread.comments.pageInfo.hasNextPage) continue;
-      thread.comments.nodes.push(...await paginateGraphql(
-        octokit, THREAD_COMMENTS_QUERY, { threadId: thread.id },
-        (result: { node: { comments: GraphqlConnection<ThreadCommentNode> } }) => result.node.comments,
-        thread.comments.pageInfo.endCursor,
-      ));
+      // A missing later reply can only keep a prior open, never retire it, so the comments read so far are safe to use.
+      try {
+        thread.comments.nodes.push(...await paginateGraphql(
+          octokit, THREAD_COMMENTS_QUERY, { threadId: thread.id },
+          (result: { node: { comments: GraphqlConnection<ThreadCommentNode> } }) => result.node.comments,
+          thread.comments.pageInfo.endCursor,
+        ));
+      } catch (error) {
+        core.warning(`Failed to fetch the remaining comments of review thread ${thread.id}, using the first ${thread.comments.nodes.length}: ${error}`);
+      }
     }
 
     const threads = threadNodes.map(thread => {

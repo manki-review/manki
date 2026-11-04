@@ -876,8 +876,10 @@ describe('fetchRecapState', () => {
       ...longThread,
       comments: { ...longThread.comments, pageInfo: { hasNextPage: true, endCursor: 'c1' }, nodes: [...longThread.comments.nodes, ...botReplies] },
     } as typeof longThread;
+    let threadCommentsError: Error | null = null;
     const graphql = jest.fn(async (_query: string, vars: { cursor: string | null; threadId?: string }) => {
       if (vars.threadId) {
+        if (threadCommentsError) throw threadCommentsError;
         return { node: { comments: { pageInfo: LAST_PAGE, nodes: [{ body: 'Final answer.', author: { login: 'developer' } }] } } };
       }
       const firstPage = vars.cursor === null;
@@ -886,7 +888,8 @@ describe('fetchRecapState', () => {
           pullRequest: {
             reviewThreads: {
               pageInfo: firstPage ? { hasNextPage: true, endCursor: 'p2' } : LAST_PAGE,
-              nodes: (firstPage ? threads.slice(0, 100) : threads.slice(100)).map(t => ({ ...t, comments: { pageInfo: LAST_PAGE, ...t.comments } })),
+              nodes: (firstPage ? threads.slice(0, 100) : threads.slice(100))
+                .map(t => ({ ...t, comments: { pageInfo: LAST_PAGE, ...t.comments, nodes: [...t.comments.nodes] } })),
             },
           },
         },
@@ -903,6 +906,14 @@ describe('fetchRecapState', () => {
       expect.objectContaining({ cursor: 'p2' }),
       { threadId: 't149', cursor: 'c1' },
     ]);
+
+    threadCommentsError = new Error('network down');
+    const partial = await fetchRecapState(octokit, 'owner', 'repo', 1);
+
+    expect(partial.openThreadsState).toBe('fetched');
+    expect(partial.previousFindings).toHaveLength(150);
+    expect(partial.previousFindings[149]).toMatchObject({ status: 'open', authorReplyText: undefined });
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('review thread t149, using the first 10: Error: network down'));
   });
 
   it('populates lineStart from startLine when present for multi-line annotations', async () => {
