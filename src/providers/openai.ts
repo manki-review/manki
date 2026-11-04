@@ -394,7 +394,8 @@ export class OpenAIClient implements LLMClient {
 
     const startTime = Date.now();
     const response = await this.openai.chat.completions.create(params);
-    const content = response.choices?.[0]?.message?.content ?? '';
+    const choice = response.choices?.[0];
+    const content = choice?.message?.content ?? '';
     core.debug(sanitizeLogOutput(content.slice(0, 200)));
 
     const sdkUsage = response.usage as undefined | {
@@ -412,6 +413,6 @@ export class OpenAIClient implements LLMClient {
         }
       : { ...ZERO_USAGE };
 
-    return { content, usage, latencyMs: Date.now() - startTime };
+    return { content, usage, latencyMs: Date.now() - startTime, truncated: choice?.finish_reason === 'length' };
   }
 }

@@ -377,6 +377,22 @@ describe('sendViaOAuth — error paths', () => {
     expect(result.content).toBe('final answer');
   });
 
+  it.each<[string | undefined, boolean]>([
+    ['max_tokens', true],
+    ['end_turn', false],
+    [undefined, false],
+  ])('reports truncated for result event stop_reason %s', async (stopReason, expected) => {
+    const streamOutput = [
+      JSON.stringify({ type: 'result', subtype: 'success', result: '[', stop_reason: stopReason }),
+      '',
+    ].join('\n');
+    setupSpawnMock({ stdout: streamOutput, rawStdout: true });
+    const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
+
+    const result = await client.sendMessage('sys', 'user');
+    expect(result.truncated).toBe(expected);
+  });
+
   it('silently skips non-JSON lines (e.g. verbose debug output)', async () => {
     setupSpawnMock({ stdout: 'plain text fallback\n', rawStdout: true });
     const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
@@ -1373,6 +1389,17 @@ describe('AnthropicClient API-path usage', () => {
     expect(result.usage).toEqual({ inputTokens: 100, outputTokens: 25, cachedTokens: 10, reasoningTokens: 0 });
     expect(typeof result.latencyMs).toBe('number');
     expect(result.latencyMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it.each<[string | undefined, boolean]>([
+    ['max_tokens', true],
+    ['end_turn', false],
+    [undefined, false],
+  ])('reports truncated for stop_reason %s', async (stopReason, expected) => {
+    mockCreate.mockResolvedValue({ content: [{ type: 'text', text: '[' }], stop_reason: stopReason });
+    const client = new AnthropicClient({ auth: { kind: 'apiKey', key: 'sk-key' }, model: 'claude-opus-4-6' });
+    const result = await client.sendMessage('sys', 'user');
+    expect(result.truncated).toBe(expected);
   });
 
   it('returns zero usage when the SDK omits the usage block', async () => {

@@ -543,7 +543,7 @@ export function parseAgentPicks(
  * Optional sink that captures the short tag describing why the planner fell
  * back, when it did. Mutated in place by `runPlanner` on the failure paths so
  * callers can record it on `RoundPlanner.fallbackReason` without changing the
- * public return type. Values: `'timeout'`, `'invalid_teamSize'`,
+ * public return type. Values: `'timeout'`, `'truncated'`, `'invalid_teamSize'`,
  * `'invalid_judgeEffort'`, `'agents_teamSize_mismatch'`, `'exception'`.
  */
 export interface PlannerOutcomeSink {
@@ -575,6 +575,12 @@ export async function runPlanner(
       timeoutPromise,
     ]);
     clearTimeout(timeoutId!);
+
+    if (response.truncated) {
+      core.warning('Planner response was truncated at the output token limit, falling back to heuristic');
+      if (outcome) outcome.fallbackReason = 'truncated';
+      return null;
+    }
 
     const jsonText = extractJSON(response.content);
     const parsed = JSON.parse(jsonText);
@@ -1465,6 +1471,9 @@ export async function runReviewerAgent(
 
   const sendOptions = effort ? { effort } : undefined;
   const response = await client.sendMessage(systemPrompt, userMessage, sendOptions);
+  if (response.truncated) {
+    throw new Error(`response truncated at the output token limit (length ${response.content.length})`);
+  }
   const findings = parseFindings(response.content, reviewer.name);
   return {
     findings,
@@ -1698,36 +1707,29 @@ export function parseFindings(responseText: string, reviewerName: string): Findi
   core.debug(`${reviewerName} response length: ${responseText.length}`);
 
   if (responseText.trim().length === 0) {
-    return [];
+    throw new Error('empty response, expected a JSON array');
   }
 
-  const jsonText = extractJSON(responseText);
-
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(jsonText);
-    if (parsed === null) {
-      core.warning(`${reviewerName} returned null instead of an array (length ${responseText.length})`);
-      return [];
-    }
-    if (!Array.isArray(parsed)) {
-      core.warning(`${reviewerName} did not return an array, got ${typeof parsed} (length ${responseText.length})`);
-      return [];
-    }
-
-    return parsed.map((f: Record<string, unknown>) => ({
-      severity: validateSeverity(f.severity),
-      title: String(f.title || 'Untitled finding'),
-      file: String(f.file || ''),
-      line: Number(f.line) || 0,
-      description: String(f.description || ''),
-      suggestedFix: f.suggestedFix ? String(f.suggestedFix) : undefined,
-      reviewers: [reviewerName],
-    }));
+    parsed = JSON.parse(extractJSON(responseText));
   } catch (e) {
     const errorMsg = e instanceof Error ? e.message : String(e);
-    core.warning(`${reviewerName}: malformed response (length: ${responseText.length}, error: ${errorMsg.slice(0, 200)})`);
-    return [];
+    throw new Error(`malformed response (length ${responseText.length}): ${errorMsg.slice(0, 200)}`);
   }
+  if (!Array.isArray(parsed)) {
+    throw new Error(`response is not a JSON array, got ${parsed === null ? 'null' : typeof parsed} (length ${responseText.length})`);
+  }
+
+  return parsed.map((f: Record<string, unknown>) => ({
+    severity: validateSeverity(f.severity),
+    title: String(f.title || 'Untitled finding'),
+    file: String(f.file || ''),
+    line: Number(f.line) || 0,
+    description: String(f.description || ''),
+    suggestedFix: f.suggestedFix ? String(f.suggestedFix) : undefined,
+    reviewers: [reviewerName],
+  }));
 }
 
 export function validateSeverity(severity: unknown): Finding['severity'] {
