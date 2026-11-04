@@ -68,9 +68,9 @@
 
 # Planner stage (default: enabled)
 # When enabled and review_level is "auto", a fast pre-review pass chooses the
-# team size (1/2/3/4/5/6/7), reviewer/judge effort, and PR type. teamSize=1 routes
-# trivial changes (docs, renames, comment-only edits) to a single Trivial
-# Change Verifier. Disable to always use the heuristic team selector.
+# team size (1/2/3, by the nature of the change), reviewer/judge effort, and PR
+# type. teamSize=1 routes changes where a defect could not hide (deletions,
+# renames, docs, tests, config, CI) to a single Trivial Change Verifier. Disable to always use the heuristic team selector.
 # planner:
 #   enabled: true
 

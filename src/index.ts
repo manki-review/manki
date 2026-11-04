@@ -14,8 +14,7 @@ import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, 
 import { isEmptyInterRoundDiff, MAX_INTER_ROUND_DIFF_CHARS } from './judge';
 import { loadMemory, RepoMemory } from './memory';
 import { collectResolvedThreadIds, fetchRecapState, fingerprintFinding, PreviousFinding } from './recap';
-import { buildAgentPool } from './agents';
-import { collectPriorRoundAgents, runReview, selectTeam } from './review';
+import { runReview, selectTeam } from './review';
 import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DashboardData, FullReviewOptions, MemoryLoadStatus, OWN_PROPOSAL_TAG, PrContext, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReclassifiedPrior, ReviewMetadata, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundRecap, RoundTrigger, RoundUsage, RoundUsageStage, ReviewConfig, ThreadResolutionOverrides, roundContextToFlatAliases } from './types';
 import type { LLMUsage } from './providers';
 import {
@@ -608,8 +607,8 @@ async function runFullReview(
     const plannerEnabled = !!plannerClient && config.review_level === 'auto';
     const team = selectTeam(diff, config, config.reviewers);
     // `team` here is only used for the initial dashboard preview; the actual
-    // review team is resolved inside `runReview` once the handover and planner
-    // result are available, so prior-round pinning is applied there.
+    // review team is resolved inside `runReview` once the planner result is
+    // available.
     const lineCount = diff.totalAdditions + diff.totalDeletions;
 
     const dashboard: DashboardData = plannerEnabled
@@ -839,24 +838,6 @@ async function runFullReview(
 
     let reviewEndTime = parseEndTime;
 
-    // Names of every agent that participated in any prior round of this PR.
-    // Used to pin the team across rounds so the roster grows monotonically:
-    // an agent that flagged something earlier always reviews later rounds.
-    const priorRoundAgents = collectPriorRoundAgents(recap.priorRounds);
-
-    // On the non-planner path the dashboard was seeded with the heuristic team
-    // before prior-round agents were known. Pre-populate any pinned agents now
-    // so that agent-complete callbacks can record their metrics.
-    if (!plannerEnabled && priorRoundAgents.length > 0 && dashboard.agentProgress) {
-      const poolNames = new Set(buildAgentPool(config.reviewers).map(a => a.name));
-      const inDashboard = new Set(dashboard.agentProgress.map(a => a.name));
-      for (const name of priorRoundAgents) {
-        if (!inDashboard.has(name) && poolNames.has(name)) {
-          dashboard.agentProgress.push({ name, status: 'reviewing' as const });
-        }
-      }
-    }
-
     function scheduleDashboardFlush(): void {
       if (dashboardFlushTimer) clearTimeout(dashboardFlushTimer);
       dashboardFlushTimer = setTimeout(() => {
@@ -880,7 +861,7 @@ async function runFullReview(
         if (progress.phase === 'planning') {
           core.info('Planner analyzing PR content...');
           if (progress.plannerResult) {
-            const plannerTeam = selectTeam(diff, config, config.reviewers, progress.plannerResult.teamSize, progress.plannerResult.agents, priorRoundAgents, true);
+            const plannerTeam = selectTeam(diff, config, config.reviewers, progress.plannerResult.teamSize, progress.plannerResult.agents, true);
             dashboard.plannerInfo = {
               agentCount: plannerTeam.agents.length,
               reviewerEffort: progress.plannerResult.reviewerEffort,
@@ -1177,7 +1158,6 @@ async function runFullReview(
           source,
           used,
           coreAgentInjections: result.coreAgentInjections ?? [],
-          priorRoundEffortDowngrades: result.priorRoundEffortDowngrades ?? [],
           ...(result.plannerFallbackReason && { fallbackReason: result.plannerFallbackReason }),
         };
         if (!result.plannerResult) return base;
@@ -1285,11 +1265,9 @@ async function runFullReview(
     const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, context, reviewTimeMs, config);
     await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId);
 
-    // Reconcile the dashboard with the actual resolved team. On round 2+ the
-    // initial dashboard was built without priorRoundAgents (not yet loaded),
-    // so the agent list would otherwise show a stale, too-small count. On
-    // round 1 without a planner, agents may fail and drop out, so reconcile
-    // unconditionally to keep agentCount and agentProgress accurate.
+    // Reconcile the dashboard with the actual resolved team. Agents may fail
+    // and drop out, so reconcile unconditionally to keep agentCount and
+    // agentProgress accurate.
     reconcileDashboardAgents(dashboard, result.agentNames);
 
     if (result.plannerResult) {

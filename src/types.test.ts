@@ -91,7 +91,6 @@ function fullyPopulatedContext(): RoundContext {
       prType: 'feat',
       durationMs: 1200,
       coreAgentInjections: [],
-      priorRoundEffortDowngrades: [],
     },
     reviewers: {
       agents: ['typescript', 'security', 'tests'],
@@ -348,7 +347,7 @@ describe('roundContextToFlatAliases', () => {
       config: { reviewLevel: 'small', memoryEnabled: false },
       diff: { lines: 10, additions: 10, deletions: 0, filesReviewed: 1, fileTypes: {} },
       models: { reviewer: 'model-a', judge: 'model-b' },
-      planner: { source: 'disabled', used: false, coreAgentInjections: [], priorRoundEffortDowngrades: [] },
+      planner: { source: 'disabled', used: false, coreAgentInjections: [] },
       reviewers: { agents: [] },
       judge: { summary: '' },
       dedup: {},

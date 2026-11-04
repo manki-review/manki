@@ -129,22 +129,17 @@ jest.mock('./recap', () => ({
   sanitize: jest.requireActual('./recap').sanitize,
 }));
 
-jest.mock('./review', () => {
-  const actual = jest.requireActual('./review') as typeof import('./review');
-  return {
-    runReview: jest.fn().mockResolvedValue({
-      verdict: 'APPROVE',
-      summary: 'Looks good',
-      findings: [],
-      highlights: [],
-      reviewComplete: true,
-      agentNames: ['general'],
-    }),
-    selectTeam: jest.fn().mockReturnValue({ level: 'standard', agents: [{ name: 'general' }] }),
-    buildPlannerHints: actual.buildPlannerHints,
-    collectPriorRoundAgents: actual.collectPriorRoundAgents,
-  };
-});
+jest.mock('./review', () => ({
+  runReview: jest.fn().mockResolvedValue({
+    verdict: 'APPROVE',
+    summary: 'Looks good',
+    findings: [],
+    highlights: [],
+    reviewComplete: true,
+    agentNames: ['general'],
+  }),
+  selectTeam: jest.fn().mockReturnValue({ level: 'standard', agents: [{ name: 'general' }] }),
+}));
 
 jest.mock('./github', () => {
   const coreMod = jest.requireMock('@actions/core') as typeof import('@actions/core');
@@ -243,7 +238,7 @@ import { LegacyHandoverRoundFixture, roundContextFromLegacy } from './test-utils
 
 /**
  * Seed `RecapState.priorRounds` (the consumer surface for round cap,
- * `lastPriorSha`, planner hints, etc.) with the given prior-round fixtures.
+ * `lastPriorSha`, etc.) with the given prior-round fixtures.
  */
 function seedPriorRounds(
   rounds: LegacyHandoverRoundFixture[],
@@ -2385,7 +2380,6 @@ describe('runFullReview orchestration', () => {
       },
       plannerSource: 'planner',
       coreAgentInjections: ['Security & Safety'],
-      priorRoundEffortDowngrades: [{ agent: 'Security & Safety', from: 'high', to: 'low' }],
       agentEffortMap: new Map([['Security & Safety', 'medium']]),
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
@@ -2404,7 +2398,6 @@ describe('runFullReview orchestration', () => {
       context: 'GitHub Actions bot',
       agents: [{ name: 'Architecture & Design', effort: 'low' }],
       coreAgentInjections: ['Security & Safety'],
-      priorRoundEffortDowngrades: [{ agent: 'Security & Safety', from: 'high', to: 'low' }],
     }));
   });
 
@@ -2431,7 +2424,6 @@ describe('runFullReview orchestration', () => {
       source: 'heuristic_fallback',
       used: false,
       coreAgentInjections: [],
-      priorRoundEffortDowngrades: [],
       fallbackReason: 'timeout',
     });
   });
@@ -3305,7 +3297,7 @@ describe('runFullReview orchestration', () => {
     });
   });
 
-  describe('prior-round agent pinning', () => {
+  describe('dashboard team on follow-up rounds', () => {
     const pinTestFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
@@ -3329,7 +3321,7 @@ describe('runFullReview orchestration', () => {
       });
     });
 
-    it('forwards prior-round agents through to the dashboard selectTeam call', async () => {
+    it('builds the dashboard team from the planner picks alone, without prior-round agents', async () => {
       const priorRounds: LegacyHandoverRoundFixture[] = [{
         round: 1,
         commitSha: 'abc',
@@ -3366,16 +3358,13 @@ describe('runFullReview orchestration', () => {
 
       await callRunFullReview();
 
-      // The dashboard selectTeam call inside the planning callback receives the
-      // prior-round agents as the 6th positional argument.
       const calls = jest.mocked(reviewModule.selectTeam).mock.calls;
       // Identify the planning-phase call by the exact agent picks the planner emitted.
       const planningCall = calls.find(c =>
         Array.isArray(c[4]) && c[4].length === 3 && c[4][0]?.name === 'Security & Safety',
       );
       expect(planningCall).toBeDefined();
-      const { 5: priorRoundAgentsArg } = planningCall!;
-      expect(priorRoundAgentsArg).toEqual(['Security & Safety', 'Architecture & Design', 'Correctness & Logic', 'Testing & Coverage']);
+      expect(planningCall!.slice(3)).toEqual([3, expect.any(Array), true]);
     });
 
     it('reconciles planner-path dashboard with prior-round agents after runReview', async () => {
@@ -3452,7 +3441,7 @@ describe('runFullReview orchestration', () => {
       expect(secEntry?.durationMs).toBe(1200);
     });
 
-    it('reconciles non-planner dashboard with pinned agents after runReview', async () => {
+    it('reconciles non-planner dashboard with the resolved team after runReview', async () => {
       // Non-planner path: review_level is explicitly 'small', not 'auto'.
       jest.mocked(configModule.loadConfig).mockReturnValue({
         auto_review: true, auto_approve: false, exclude_paths: [], max_diff_lines: 10000,
@@ -3479,56 +3468,12 @@ describe('runFullReview orchestration', () => {
 
       await callRunFullReview();
 
-      // The final completeDashboard passed to updateProgressComment must include the pinned agents.
+      // The final completeDashboard passed to updateProgressComment must list the resolved team.
       const progressCommentCalls = jest.mocked(ghUtils.updateProgressComment).mock.calls;
       expect(progressCommentCalls.length).toBeGreaterThan(0);
       const finalDashboard = progressCommentCalls[progressCommentCalls.length - 1][4];
       expect(finalDashboard.agentCount).toBe(4);
       expect(finalDashboard.agentProgress?.map((a: { name: string }) => a.name)).toEqual(resolvedNames);
-    });
-
-    it('silently drops unknown prior-round agent from non-planner dashboard without error', async () => {
-      // Non-planner path with a prior-round agent name not present in the agent pool.
-      // The pool-check guard in runFullReview silently omits the unknown agent from the
-      // dashboard; selectTeam already warns for this case so no duplicate warning is needed.
-      jest.mocked(configModule.loadConfig).mockReturnValue({
-        auto_review: true, auto_approve: false, exclude_paths: [], max_diff_lines: 10000,
-        reviewers: [], instructions: '', review_level: 'small',
-        review_thresholds: { small: 200, medium: 800 },
-        memory: { enabled: true, repo: 'owner/memory' },
-      });
-
-      const priorRounds: LegacyHandoverRoundFixture[] = [{
-        round: 1,
-        commitSha: 'abc',
-        timestamp: '2025-01-01T00:00:00Z',
-        findings: [],
-        agents: ['Security & Safety', 'Bogus Unknown Agent'],
-      }];
-      seedPriorRounds(priorRounds);
-
-      const resolvedNames = ['Security & Safety'];
-      jest.mocked(reviewModule.runReview).mockResolvedValue({
-        verdict: 'APPROVE', summary: 'ok',
-        findings: [], highlights: [], reviewComplete: true,
-        agentNames: resolvedNames,
-      });
-
-      await expect(callRunFullReview()).resolves.not.toThrow();
-
-      const progressCommentCalls = jest.mocked(ghUtils.updateProgressComment).mock.calls;
-      expect(progressCommentCalls.length).toBeGreaterThan(0);
-      const finalDashboard = progressCommentCalls[progressCommentCalls.length - 1][4];
-      // Unknown agent must not appear in the dashboard.
-      const agentNames = finalDashboard.agentProgress?.map((a: { name: string }) => a.name) ?? [];
-      expect(agentNames).not.toContain('Bogus Unknown Agent');
-      // agentCount reflects only known-pool agents that were reconciled.
-      expect(finalDashboard.agentCount).toBe(resolvedNames.length);
-      // The dashboard pre-population path silently skips unknown agents — no warning
-      // should fire for the unknown name here (selectTeam handles its own warning).
-      const bogusWarnings = jest.mocked(core.warning).mock.calls
-        .filter(c => String(c[0]).includes('Bogus Unknown Agent'));
-      expect(bogusWarnings).toHaveLength(0);
     });
   });
 

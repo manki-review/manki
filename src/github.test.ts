@@ -675,7 +675,7 @@ function makeContext(overrides: Partial<RoundContext> = {}): RoundContext {
     config: { reviewLevel: 'medium', memoryEnabled: false },
     diff: { lines: 120, additions: 80, deletions: 40, filesReviewed: 5, fileTypes: { '.ts': 5 } },
     models: { reviewer: 'claude-sonnet-4-20250514', judge: 'claude-opus-4-20250514' },
-    planner: { source: 'disabled', used: false, coreAgentInjections: [], priorRoundEffortDowngrades: [] },
+    planner: { source: 'disabled', used: false, coreAgentInjections: [] },
     reviewers: { agents: ['Security & Safety', 'Correctness'] },
     judge: { summary: 'All checks done.' },
     dedup: {},

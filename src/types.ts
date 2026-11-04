@@ -234,8 +234,6 @@ export interface ReviewResult {
   plannerFallbackReason?: string;
   /** Names of agents the team-builder reinjected after the planner omitted them. */
   coreAgentInjections?: string[];
-  /** Effort downgrades applied by the prior-round safety net. */
-  priorRoundEffortDowngrades?: PriorRoundEffortDowngrade[];
   /** Per-agent multi-pass intersection stats. Keyed by agent name. */
   agentMultiPassConsistency?: Map<string, { consistent: number; totalRaw: number }>;
   /** Per-agent effort level actually used at run time. Keyed by agent name. */
@@ -285,21 +283,6 @@ export interface PlannerResult {
   agents?: AgentPick[];
   language?: string;
   context?: string;
-}
-
-/** Per-specialist outcome aggregate for a single prior round. */
-export interface SpecialistOutcome {
-  specialist: string;
-  /** Count of findings the author did not acknowledge as fixed (`authorReply !== 'agree'`). */
-  findingsKept: number;
-  /** Count of findings the author agreed with and acted on (`authorReply === 'agree'`). */
-  findingsDismissed: number;
-}
-
-/** Compact summary of a prior review round fed back to the planner for budget allocation. */
-export interface PlannerRoundHint {
-  round: number;
-  specialistOutcomes: SpecialistOutcome[];
 }
 
 export type ReviewLevel = 'auto' | 'small' | 'medium' | 'large';
@@ -779,19 +762,6 @@ export interface RoundPlanner {
    * "no reinjection" (`[]`) from "data not recorded" (`undefined`).
    */
   coreAgentInjections: string[];
-  /**
-   * Effort levels the safety-net downgrader stepped down because the most
-   * recent prior round dismissed all of that specialist's findings. One entry
-   * per downgraded pick. Empty when nothing was downgraded.
-   */
-  priorRoundEffortDowngrades: PriorRoundEffortDowngrade[];
-}
-
-/** One effort downgrade applied by the prior-round safety net. */
-export interface PriorRoundEffortDowngrade {
-  agent: string;
-  from: EffortLevel;
-  to: EffortLevel;
 }
 
 export interface RoundReviewers {
@@ -820,8 +790,8 @@ export interface RoundAgentMetric {
    */
   model?: string;
   /**
-   * Effort level the agent actually ran with, after the planner pick (or the
-   * default `reviewerEffort`) and any prior-round downgrade.
+   * Effort level the agent actually ran with: the planner pick, or the
+   * default `reviewerEffort`.
    */
   effort?: EffortLevel;
   /**
@@ -834,7 +804,7 @@ export interface RoundAgentMetric {
 }
 
 export interface RoundJudge {
-  /** Narrative summary used by `buildPlannerHints`. */
+  /** Narrative summary written by the judge. */
   summary: string;
   confidenceDistribution?: { high: number; medium: number; low: number };
   severityChanges?: number;

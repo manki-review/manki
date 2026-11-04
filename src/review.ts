@@ -7,7 +7,7 @@ import { runJudgeAgent, JudgeInput, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
 import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, llmDeduplicateFindings, PreviousFinding } from './recap';
-import { ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, TeamRoster, PrContext, PlannerResult, PlannerRoundHint, PriorRoundEffortDowngrade, RoundContext, RoundDedupDuplicateMatch, RoundPlannerSource, SpecialistOutcome, EffortLevel, AgentPick, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, TeamRoster, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundPlannerSource, EffortLevel, AgentPick, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { rebuildRawDiff } from './diff';
 import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
@@ -61,53 +61,12 @@ function hasSensitivePaths(diff: ParsedDiff): boolean {
   );
 }
 
-// Resolves prior-round agent names against the current pool. Names that no
-// longer exist in the pool (e.g., a custom reviewer removed from config) are
-// dropped with a warning so reviews still make progress.
-function resolvePriorRoundAgents(
-  priorRoundAgents: string[],
-  pool: ReviewerAgent[],
-  silent?: boolean,
-): ReviewerAgent[] {
-  const poolMap = new Map(pool.map(a => [a.name, a]));
-  const resolved: ReviewerAgent[] = [];
-  for (const name of priorRoundAgents) {
-    const agent = poolMap.get(name);
-    if (!agent) {
-      // Strip control characters and GitHub Actions workflow-command prefix (::)
-      // to prevent log injection from attacker-controlled handover file content.
-      // eslint-disable-next-line no-control-regex
-      const safeName = name.replace(/[\x00-\x1f\x7f]/g, ' ').replace(/^::/, '');
-      if (!silent) core.warning(`prior-round agent "${safeName}" no longer exists in the pool; skipping`);
-      continue;
-    }
-    if (!resolved.some(r => r.name === agent.name)) {
-      resolved.push(agent);
-    }
-  }
-  return resolved;
-}
-
-// Logs a one-line audit message distinguishing agents inherited from a prior
-// round from agents newly added in the current round.
-function logPinAudit(final: ReviewerAgent[], priorNames: Set<string>, silent?: boolean): void {
-  if (priorNames.size === 0 || silent) return;
-  const inherited: string[] = [];
-  const added: string[] = [];
-  for (const agent of final) {
-    if (priorNames.has(agent.name)) inherited.push(agent.name);
-    else added.push(agent.name);
-  }
-  core.info(`pinned team: inherited [${inherited.join(', ')}], added [${added.join(', ')}]`);
-}
-
 export function selectTeam(
   diff: ParsedDiff,
   config: ReviewConfig,
   customReviewers?: ReviewerAgent[],
   teamSizeOverride?: 1 | 2 | 3 | 4 | 5 | 6 | 7,
   agentPicks?: AgentPick[],
-  priorRoundAgents?: string[],
   silent?: boolean,
 ): TeamRoster {
   const lineCount = diff.totalAdditions + diff.totalDeletions;
@@ -119,17 +78,10 @@ export function selectTeam(
     if (customReviewers && customReviewers.length > 0) {
       core.info(`teamSize=1: skipping custom reviewers [${customReviewers.map(r => r.name).join(', ')}]`);
     }
-    // Trivial verifier path runs alone. Cross-round pinning does not apply:
-    // a PR does not flip from non-trivial to trivial in practice, and the
-    // verifier is intentionally a single-agent specialist.
     return { level: 'trivial', agents: [TRIVIAL_VERIFIER_AGENT], lineCount };
   }
 
   const pool = buildAgentPool(customReviewers);
-  const priorAgents = priorRoundAgents && priorRoundAgents.length > 0
-    ? resolvePriorRoundAgents(priorRoundAgents, pool, silent)
-    : [];
-  const priorNames = new Set(priorAgents.map(a => a.name));
 
   // Planner-driven agent selection: resolve each picked name from the pool
   if (agentPicks && agentPicks.length > 0 && teamSizeOverride) {
@@ -143,34 +95,30 @@ export function selectTeam(
     }
 
     if (resolved.length > 0) {
-      // Pin prior-round agents first (preserving their order), then append
-      // any new planner picks. Deduplication keeps the prior order stable.
-      const final: ReviewerAgent[] = [...priorAgents];
-      for (const agent of resolved) {
-        if (!final.some(u => u.name === agent.name)) final.push(agent);
-      }
-
       // Code-level security backstop: if the planner omitted Security & Safety
-      // but the diff touches security-sensitive paths, force-add it. The planner
+      // but the diff touches security-sensitive paths, force it in. The planner
       // receives untrusted PR content and prompt injection in diff comments or
       // string literals could suppress the security specialist on a sensitive
       // change. This guard is path-based, not prompt-based, so it cannot be
-      // bypassed by injected instructions.
+      // bypassed by injected instructions. It takes the place of the planner's
+      // last pick so the team keeps the size the planner chose.
       const coreAgentInjections: string[] = [];
       const securityAgent = pool.find(a => a.name === 'Security & Safety');
-      if (securityAgent && !final.some(a => a.name === 'Security & Safety') && hasSensitivePaths(diff)) {
-        if (!silent) core.info('Security & Safety force-added: planner omitted it but diff touches security-sensitive paths');
-        final.push(securityAgent);
+      if (securityAgent && !resolved.some(a => a.name === securityAgent.name) && hasSensitivePaths(diff)) {
+        const replaced = resolved.length >= teamSizeOverride ? resolved.pop() : undefined;
+        if (!silent) {
+          const detail = replaced ? `, replacing "${replaced.name}"` : '';
+          core.info(`Security & Safety force-added${detail}: planner omitted it but diff touches security-sensitive paths`);
+        }
+        resolved.push(securityAgent);
         coreAgentInjections.push(securityAgent.name);
       }
 
-      logPinAudit(final, priorNames, silent);
-
       let level: 'trivial' | 'small' | 'medium' | 'large';
-      if (final.length <= 3) level = 'small';
-      else if (final.length <= 5) level = 'medium';
+      if (resolved.length <= 3) level = 'small';
+      else if (resolved.length <= 5) level = 'medium';
       else level = 'large';
-      return { level, agents: final, lineCount, coreAgentInjections };
+      return { level, agents: resolved, lineCount, coreAgentInjections };
     }
     // If resolution failed entirely, fall through to heuristic
   }
@@ -197,18 +145,12 @@ export function selectTeam(
   }
 
   // Heuristic / fallback roster: start from the fixed fallback specialists,
-  // then pin prior-round agents, then add explicitly configured custom
-  // reviewers. Any remaining slots up to `teamSize` are filled from the pool
-  // in declared order. No path-keyword scoring lives here: the planner is the
-  // only place where PR context drives agent selection. When the planner is
-  // unavailable, the fallback stays conservative and predictable.
+  // then add explicitly configured custom reviewers. Any remaining slots up to
+  // `teamSize` are filled from the pool in declared order. No path-keyword
+  // scoring lives here: the planner is the only place where PR context drives
+  // agent selection. When the planner is unavailable, the fallback stays
+  // conservative and predictable.
   const selected: ReviewerAgent[] = FALLBACK_AGENTS.map(i => pool[i]);
-
-  for (const agent of priorAgents) {
-    if (!selected.some(s => s.name === agent.name)) {
-      selected.push(agent);
-    }
-  }
 
   for (const custom of (customReviewers || [])) {
     if (!selected.some(s => s.name === custom.name)) {
@@ -225,7 +167,6 @@ export function selectTeam(
     }
   }
 
-  logPinAudit(selected, priorNames, silent);
   return { level, agents: selected, lineCount };
 }
 
@@ -330,83 +271,27 @@ function buildPlannerSummary(diff: ParsedDiff, prContext?: PrContext): string {
   return summary.slice(0, 2000);
 }
 
-/** Number of most recent rounds consumed when building planner hints. */
-const PLANNER_HINTS_ROUND_WINDOW = 2;
-
-/**
- * Summarize recent rounds from the per-PR handover as per-specialist outcome
- * counts for the planner. Groups each round's findings by `specialist`,
- * skipping entries that predate the `specialist` field. Returns an empty
- * array when no round carries specialist attribution.
- */
-export function buildPlannerHints(rounds: RoundContext[] | undefined): PlannerRoundHint[] {
-  if (!rounds || rounds.length === 0) return [];
-
-  const recent = rounds.slice(-PLANNER_HINTS_ROUND_WINDOW);
-  const hints: PlannerRoundHint[] = [];
-
-  for (const round of recent) {
-    const bySpecialist = new Map<string, SpecialistOutcome>();
-    for (const f of round.findings.entries) {
-      if (!f.specialist) continue;
-      let entry = bySpecialist.get(f.specialist);
-      if (!entry) {
-        entry = { specialist: f.specialist, findingsKept: 0, findingsDismissed: 0 };
-        bySpecialist.set(f.specialist, entry);
-      }
-      if (f.authorReplyClass === 'agree') entry.findingsDismissed++;
-      else entry.findingsKept++;
-    }
-
-    if (bySpecialist.size === 0) continue;
-    hints.push({ round: round.meta.round, specialistOutcomes: Array.from(bySpecialist.values()) });
-  }
-
-  return hints;
-}
-
-function renderPlannerHints(hints: PlannerRoundHint[]): string {
-  // Most recent round first — helps the model weight recent signal strongest.
-  const ordered = [...hints].sort((a, b) => b.round - a.round);
-  const lines = ordered.map(hint => {
-    const entries = hint.specialistOutcomes
-      .map(o => `"${o.specialist}" — ${o.findingsKept} kept, ${o.findingsDismissed} dismissed`)
-      .join(' | ');
-    return `Round ${hint.round}: ${entries}`;
-  });
-  return `## Prior Round Outcomes (most recent first)
-
-${lines.join('\n')}
-
-Specialists whose recent findings were entirely dismissed warrant lower priority. Specialists with strong keep rates warrant full weight. Use this to calibrate agent selection and effort levels.
-
-`;
-}
-
 export function buildPlannerSystemPrompt(
   agents: Array<{ name: string; focus: string }>,
-  hints?: PlannerRoundHint[],
 ): string {
   const agentList = agents.map(a => `  - "${a.name}" — ${a.focus}`).join('\n');
-  const hintsBlock = hints && hints.length > 0 ? renderPlannerHints(hints) : '';
 
   return `You are a code review planning assistant. Analyze this PR and decide how to review it.
 
-${hintsBlock}Decide:
-1. teamSize: 1-7 reviewer agents.
-   Default to 3. Use 2 when the change is small but non-trivial. Scale to 4-5 for broader changes. 7 is rare — reserve it for changes where missing a specialist would be dangerous. Diff size alone doesn't determine team size — a 50-line auth change needs more eyes than a 500-line rename.
-   - 1: changes where a bug is unrealistic (docs, comments, renames)
-   - 2: small focused changes — single bug fix, config tweak, one-file refactor
-   - 3: most PRs — features, refactors, multi-file changes
-   - 4-5: PRs spanning multiple concerns or subsystems
-   - 6-7: security/crypto-critical, architectural overhauls
-2. agents: pick exactly teamSize agents from the pool below, each with an effort level ("low", "medium", or "high"):
+Decide:
+1. teamSize: 1, 2 or 3 reviewer agents.
+   Judge the nature of the change, never its size and never the number of specialists available. A 500-line deletion or rename needs fewer eyes than a 20-line change to locking or auth, so line counts are no guide.
+   - 1: the whole diff is of a kind where a defect could not hide: deleted code whose remaining callers keep their behavior, renames or moved code, comments or documentation, tests or test data, configuration, build files or CI workflows with no new logic.
+   - 2: ordinary code changes: new or changed logic, conditions, error paths, features and fixes that touch none of the areas listed under 3.
+   - 3: the change touches concurrency or async ordering, security, authentication or authorization, persistence or stored data, a protocol, wire or file format, or public API surface.
+   When you are not sure between two sizes, pick the larger one.
+2. agents: pick exactly teamSize agents from the pool below, most important first, each with an effort level ("low", "medium", or "high"):
 ${agentList}
-   Your picks stand as-is, no agent is auto-added on top. Include "Security & Safety" whenever the change could plausibly affect a security surface (authentication, authorization, parsers, deserialization, network handlers, file or process operations, permission checks, token or secret handling, cryptography). Judge the change, not the filename: a small auth tweak warrants Security even when the diff is tiny.
-   Effort controls thinking depth and cost. low = fast pass, no extended reasoning. medium = moderate reasoning (~5K thinking tokens). high = deep analysis (~10K thinking tokens). Higher effort catches subtle bugs but costs more. Match effort to the risk level of each agent's assignment — security on auth code needs high, maintainability on a rename needs low.
-   - low: the agent's specialty is not very relevant to this PR
-   - medium: standard relevance
-   - high: the agent's specialty is critical for this PR
+   Include "Security & Safety" whenever the change could plausibly affect a security surface (authentication, authorization, parsers, deserialization, network handlers, file or process operations, permission checks, token or secret handling, cryptography). Judge the change, not the filename: a small auth tweak warrants Security even when the diff is tiny.
+   Effort controls thinking depth and cost. low = fast pass, no extended reasoning. medium = moderate reasoning (~5K thinking tokens). high = deep analysis (~10K thinking tokens).
+   - medium: the default for every agent
+   - high: only on a team of 3, for the agents whose specialty covers the area that made it a team of 3
+   - low: the agent's specialty barely applies to this PR
 3. judgeEffort: "low", "medium", or "high" — how much effort the judge should spend evaluating findings.
    - low: few expected findings, straightforward changes
    - medium: moderate findings expected
@@ -429,20 +314,19 @@ ${agentList}
 
 Respond with ONLY a JSON object (no markdown fences):
 {
-  "teamSize": 3,
+  "teamSize": 2,
   "judgeEffort": "medium",
   "prType": "feat",
   "language": "typescript",
   "context": "GitHub Actions bot",
   "agents": [
-    { "name": "Security & Safety", "effort": "medium" },
-    { "name": "Correctness & Logic", "effort": "high" },
-    { "name": "Architecture & Design", "effort": "medium" }
+    { "name": "Correctness & Logic", "effort": "medium" },
+    { "name": "Testing & Coverage", "effort": "medium" }
   ]
 }`;
 }
 
-const VALID_TEAM_SIZES = new Set([1, 2, 3, 4, 5, 6, 7]);
+const VALID_TEAM_SIZES = new Set([1, 2, 3]);
 const VALID_EFFORTS = new Set(['low', 'medium', 'high']);
 
 /**
@@ -503,7 +387,6 @@ export async function runPlanner(
   diff: ParsedDiff,
   prContext?: PrContext,
   customReviewers?: ReviewerAgent[],
-  priorRoundHints?: PlannerRoundHint[],
   outcome?: PlannerOutcomeSink,
 ): Promise<PlannerResult | null> {
   let timeoutId: ReturnType<typeof setTimeout>;
@@ -514,7 +397,7 @@ export async function runPlanner(
   try {
     const pool = buildAgentPool(customReviewers);
     const availableNames = new Set(pool.map(a => a.name));
-    const systemPrompt = buildPlannerSystemPrompt(pool, priorRoundHints);
+    const systemPrompt = buildPlannerSystemPrompt(pool);
 
     const userMessage = buildPlannerSummary(diff, prContext);
     const response = await Promise.race([
@@ -591,74 +474,18 @@ function heuristicFallback(
   diff: ParsedDiff,
   config: ReviewConfig,
   /**
-   * Agents from prior rounds to carry forward for continuity. Intentionally
-   * ignored when `forceFixedRoster=true`: the fixed failure roster must be
-   * exact, so prior-round pinning is suppressed on the planner-failure path.
-   */
-  priorRoundAgents?: string[],
-  /**
    * When `true`, ignore `review_level` and force the conservative fixed roster
    * of {Security, Architecture, Correctness}. Used when the planner is
    * unavailable so failures stay predictable. When `false`, honor the
    * configured `review_level` (the user explicitly opted out of the planner).
    */
-  forceFixedRoster?: boolean,
+  forceFixedRoster: boolean,
 ): TeamRoster {
   const team = forceFixedRoster
-    ? selectTeam(diff, config, undefined, FALLBACK_AGENTS.length as 1 | 2 | 3 | 4 | 5 | 6 | 7, undefined, undefined)
-    : selectTeam(diff, config, config.reviewers, undefined, undefined, priorRoundAgents);
+    ? selectTeam(diff, config, undefined, FALLBACK_AGENTS.length as 1 | 2 | 3 | 4 | 5 | 6 | 7)
+    : selectTeam(diff, config, config.reviewers);
   core.info(`Review team (${team.level}): ${team.agents.map(a => a.name).join(', ')}`);
   return team;
-}
-
-// Collects the union of agent names that participated in any prior round of
-// this PR. Used to pin the team across rounds so the roster grows
-// monotonically: an agent that flagged something earlier reviews later rounds.
-export function collectPriorRoundAgents(priorRounds?: RoundContext[]): string[] {
-  if (!priorRounds || priorRounds.length === 0) return [];
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const round of priorRounds) {
-    for (const name of round.reviewers.agents ?? []) {
-      if (!seen.has(name)) {
-        seen.add(name);
-        out.push(name);
-      }
-    }
-  }
-  return out;
-}
-
-/** Minimum dismissed-finding sample size required before a 100% dismiss rate triggers an effort downgrade. */
-const EFFORT_DOWNGRADE_MIN_SAMPLE = 2;
-
-/**
- * Safety net for when the planner LLM keeps an agent at \`high\` effort despite
- * the most recent round dismissing all of that specialist's findings. Clamps
- * such picks to \`low\` and logs the change. Mutates picks in place for
- * simplicity. The planner result object is not shared across reviews.
- */
-function applyEffortDowngrade(picks: AgentPick[], hints: PlannerRoundHint[]): PriorRoundEffortDowngrade[] {
-  if (hints.length === 0) return [];
-
-  const lastHint = hints[hints.length - 1];
-  const byName = new Map(lastHint.specialistOutcomes.map(o => [o.specialist, o]));
-  const downgrades: PriorRoundEffortDowngrade[] = [];
-
-  for (const pick of picks) {
-    if (pick.effort !== 'high') continue;
-    const outcome = byName.get(pick.name);
-    if (!outcome) continue;
-    if (outcome.findingsDismissed < EFFORT_DOWNGRADE_MIN_SAMPLE) continue;
-    if (outcome.findingsKept !== 0) continue;
-    core.info(
-      `Downgrading "${pick.name}" effort from high to low — round ${lastHint.round} dismissed all ${outcome.findingsDismissed} findings from this specialist`,
-    );
-    downgrades.push({ agent: pick.name, from: pick.effort, to: 'low' });
-    pick.effort = 'low';
-  }
-
-  return downgrades;
 }
 
 function emitHeuristicFallbackPlanning(
@@ -678,15 +505,13 @@ export function buildProvenanceFields(
   plannerSource: RoundPlannerSource,
   plannerFallbackReason: string | undefined,
   team: TeamRoster,
-  priorRoundEffortDowngrades: PriorRoundEffortDowngrade[],
   agentMultiPassConsistency: Map<string, { consistent: number; totalRaw: number }>,
   agentRunEffort: Map<string, EffortLevel>,
-): Pick<ReviewResult, 'plannerSource' | 'plannerFallbackReason' | 'coreAgentInjections' | 'priorRoundEffortDowngrades' | 'agentMultiPassConsistency' | 'agentEffortMap'> {
+): Pick<ReviewResult, 'plannerSource' | 'plannerFallbackReason' | 'coreAgentInjections' | 'agentMultiPassConsistency' | 'agentEffortMap'> {
   return {
     plannerSource,
     ...(plannerFallbackReason && { plannerFallbackReason }),
     coreAgentInjections: team.coreAgentInjections ?? [],
-    priorRoundEffortDowngrades,
     ...(agentMultiPassConsistency.size > 0 && { agentMultiPassConsistency }),
     agentEffortMap: agentRunEffort,
   };
@@ -710,16 +535,13 @@ export async function runReview(
   prAuthorLogin?: string,
   interRoundDiff?: string,
 ): Promise<ReviewResult> {
-  const priorRoundHints = buildPlannerHints(priorRounds);
   const provenanceMap = computeProvenanceMap(priorRounds, rawDiff);
-  const priorRoundAgents = collectPriorRoundAgents(priorRounds);
   let team: TeamRoster;
   let plannerResult: PlannerResult | null = null;
   let plannerUsage: LLMUsage | undefined;
   let plannerDurationMs: number | undefined;
   let plannerSource: RoundPlannerSource;
   let plannerFallbackReason: string | undefined;
-  let priorRoundEffortDowngrades: PriorRoundEffortDowngrade[] = [];
 
   if (clients.planner && config.review_level === 'auto') {
     if (onProgress) {
@@ -728,14 +550,11 @@ export async function runReview(
     const plannerStart = Date.now();
     const plannerWrap = wrapClientForUsage(clients.planner);
     const outcome: PlannerOutcomeSink = {};
-    plannerResult = await runPlanner(plannerWrap.client, diff, prContext, config.reviewers, priorRoundHints, outcome);
+    plannerResult = await runPlanner(plannerWrap.client, diff, prContext, config.reviewers, outcome);
     plannerUsage = plannerWrap.getTotals().usage;
     plannerDurationMs = Date.now() - plannerStart;
     if (plannerResult) {
-      if (plannerResult.agents && priorRoundHints.length > 0) {
-        priorRoundEffortDowngrades = applyEffortDowngrade(plannerResult.agents, priorRoundHints);
-      }
-      team = selectTeam(diff, config, config.reviewers, plannerResult.teamSize, plannerResult.agents, priorRoundAgents);
+      team = selectTeam(diff, config, config.reviewers, plannerResult.teamSize, plannerResult.agents);
       plannerSource = 'planner';
       core.info(`Planner: ${plannerResult.teamSize} agents, reviewer: ${plannerResult.reviewerEffort}, judge: ${plannerResult.judgeEffort} (${plannerResult.prType})`);
       if (plannerResult.teamSize === 1) {
@@ -747,7 +566,7 @@ export async function runReview(
       }
     } else {
       // Planner was attempted and failed. Force the fixed three-core roster.
-      team = heuristicFallback(diff, config, undefined, true);
+      team = heuristicFallback(diff, config, true);
       plannerSource = 'heuristic_fallback';
       plannerFallbackReason = outcome.fallbackReason;
       if (onProgress) {
@@ -757,7 +576,7 @@ export async function runReview(
   } else {
     // Planner is disabled (either no client or user pinned `review_level`).
     // Honor the configured `review_level` so explicit user choice is preserved.
-    team = heuristicFallback(diff, config, priorRoundAgents, false);
+    team = heuristicFallback(diff, config, false);
     plannerSource = clients.planner ? 'heuristic' : 'disabled';
     if (onProgress) {
       emitHeuristicFallbackPlanning(onProgress, team);
@@ -774,8 +593,8 @@ export async function runReview(
   const defaultReviewerEffort = plannerResult?.reviewerEffort;
   const judgeEffort = plannerResult?.judgeEffort ?? 'high';
 
-  // Record the effort each agent actually runs with: the planner pick (post
-  // downgrade) when present, otherwise the planner's reviewerEffort default,
+  // Record the effort each agent actually runs with: the planner pick when
+  // present, otherwise the planner's reviewerEffort default,
   // otherwise `'medium'` (matching `runReviewerAgent`'s implicit default when
   // `effort` is `undefined` in the reviewer prompt).
   const agentRunEffort = new Map<string, EffortLevel>();
@@ -1136,7 +955,7 @@ export async function runReview(
         agentNames: team.agents.map(a => a.name),
         failedAgents,
         ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
-        ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, priorRoundEffortDowngrades, agentMultiPassConsistency, agentRunEffort),
+        ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency, agentRunEffort),
       };
     }
 
@@ -1273,7 +1092,7 @@ export async function runReview(
       highlights: [],
       reviewComplete: false,
       agentNames: team.agents.map(a => a.name),
-      ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, priorRoundEffortDowngrades, agentMultiPassConsistency, agentRunEffort),
+      ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency, agentRunEffort),
     };
   }
 
@@ -1356,7 +1175,7 @@ export async function runReview(
     crossRoundDemoted: judgeCrossRoundDemoted,
     ...(judgeInterRoundDiffEmptyOverride && { interRoundDiffEmptyOverride: judgeInterRoundDiffEmptyOverride }),
     ...(testNitSuppressedCount > 0 && { testNitSuppressedCount }),
-    ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, priorRoundEffortDowngrades, agentMultiPassConsistency, agentRunEffort),
+    ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency, agentRunEffort),
   };
 }
 
