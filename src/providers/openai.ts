@@ -1,18 +1,18 @@
-import { execFile, spawn } from 'child_process';
+import { execFile } from 'child_process';
 import { join } from 'path';
-import { StringDecoder } from 'string_decoder';
 import { promisify } from 'util';
 
 import OpenAI from 'openai';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import * as core from '@actions/core';
 
-import { buildExitDiagnostics, buildTimeoutDiagnostics, seedAuthFile } from './cli-utils';
+import { buildExitDiagnostics, runCli, seedAuthFile, STALE_TIMEOUT_MS } from './cli-utils';
 import { LLMClient, LLMResponse, LLMUsage, OpenAIAuth, readCount, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
 
-export const STALE_TIMEOUT_MS = 90_000;
+// Re-export for existing test imports.
+export { STALE_TIMEOUT_MS };
 
 export function resolveCodexHome(): string {
   const explicit = process.env.CODEX_HOME;
@@ -169,200 +169,59 @@ export class OpenAIClient implements LLMClient {
     const cliPath = await this.ensureCLI();
     const startTime = Date.now();
 
-    return new Promise((resolve, reject) => {
-      // `codex exec` runs a non-interactive completion, reading the prompt from stdin
-      // when invoked with `-` as the prompt argument. `--model` selects the model.
-      const args = ['exec', '--model', this.model];
+    // `codex exec` runs a non-interactive completion, reading the prompt from stdin
+    // when invoked with `-` as the prompt argument. `--model` selects the model.
+    const args = ['exec', '--model', this.model];
 
-      if (options?.effort && isReasoningModel(this.model)) {
-        // Codex CLI's `-c` accepts bare `key=value` overrides; embedded double-quotes
-        // here would be passed as literal characters because `spawn` bypasses the shell.
-        args.push('-c', `model_reasoning_effort=${resolveEffortTier(options.effort)}`);
-      } else if (options?.effort) {
-        core.warning(`Ignoring effort=${options.effort} for model "${this.model}" — not a reasoning model. The Codex CLI will apply its own default effort instead.`);
-      }
+    if (options?.effort && isReasoningModel(this.model)) {
+      // Codex CLI's `-c` accepts bare `key=value` overrides; embedded double-quotes
+      // here would be passed as literal characters because `spawn` bypasses the shell.
+      args.push('-c', `model_reasoning_effort=${resolveEffortTier(options.effort)}`);
+    } else if (options?.effort) {
+      core.warning(`Ignoring effort=${options.effort} for model "${this.model}" — not a reasoning model. The Codex CLI will apply its own default effort instead.`);
+    }
 
-      // Read prompt from stdin
-      args.push('-');
+    // Read prompt from stdin
+    args.push('-');
 
-      const safeCodexEnv = Object.fromEntries(
-        Object.entries(process.env).filter(
-          ([k]) => !CODEX_BLOCKED_BARE.has(k) && !k.startsWith('INPUT_'),
-        ),
-      ) as NodeJS.ProcessEnv;
+    const safeCodexEnv = Object.fromEntries(
+      Object.entries(process.env).filter(
+        ([k]) => !CODEX_BLOCKED_BARE.has(k) && !k.startsWith('INPUT_'),
+      ),
+    ) as NodeJS.ProcessEnv;
 
-      const child = spawn(cliPath, args, {
-        env: { ...safeCodexEnv, CODEX_HOME: codexHome },
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-
-      let output = '';
-      let stderr = '';
-      let timedOut = false;
-      let stale = false;
-      let outputExceeded = false;
-      let settled = false;
-      let killTimer: NodeJS.Timeout | undefined;
-      let staleKillTimer: NodeJS.Timeout | undefined;
-      let outputKillTimer: NodeJS.Timeout | undefined;
-      let stdinKillTimer: NodeJS.Timeout | undefined;
-      let lastStdoutChunk = '';
-      let rawStdoutBytes = 0;
-      let rawStderrBytes = 0;
-
-      const clearAllTimers = (): void => {
-        clearTimeout(timer);
-        clearTimeout(staleTimer);
-        if (killTimer) clearTimeout(killTimer);
-        if (staleKillTimer) clearTimeout(staleKillTimer);
-        if (outputKillTimer) clearTimeout(outputKillTimer);
-        if (stdinKillTimer) clearTimeout(stdinKillTimer);
-      };
-
-      const timer = setTimeout(() => {
-        timedOut = true;
-        clearTimeout(staleTimer);
-        child.kill('SIGTERM');
-        killTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, 5000);
-        killTimer.unref();
-      }, 1200000);
-      timer.unref();
-
-      const handleStale = (): void => {
-        if (outputExceeded || timedOut) return;
-        stale = true;
-        clearTimeout(timer);
-        child.kill('SIGTERM');
-        staleKillTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, 5000);
-        staleKillTimer.unref();
-      };
-      let staleTimer = setTimeout(handleStale, STALE_TIMEOUT_MS);
-      staleTimer.unref();
-
-      const MAX_OUTPUT = 50 * 1024 * 1024; // 50 MB
-      const killOnOutputExceeded = (): void => {
-        if (outputExceeded) return;
-        outputExceeded = true;
-        clearTimeout(timer);
-        clearTimeout(staleTimer);
-        child.kill('SIGTERM');
-        outputKillTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, 5000);
-        outputKillTimer.unref();
-      };
-      const stdoutDecoder = new StringDecoder('utf8');
-      const stderrDecoder = new StringDecoder('utf8');
-      child.stdout.on('data', (data: Buffer) => {
-        if (outputExceeded || settled || stale || timedOut) return;
-        clearTimeout(staleTimer);
-        staleTimer = setTimeout(handleStale, STALE_TIMEOUT_MS);
-        staleTimer.unref();
-
-        rawStdoutBytes += data.length;
-        if (rawStdoutBytes + rawStderrBytes > MAX_OUTPUT) { killOnOutputExceeded(); return; }
-
-        const chunk = stdoutDecoder.write(data);
-        if (chunk.length >= 500) {
-          lastStdoutChunk = chunk.slice(-500);
-        } else {
-          lastStdoutChunk = (lastStdoutChunk + chunk).slice(-500);
-        }
-        output += chunk;
-      });
-      child.stderr.on('data', (data: Buffer) => {
-        if (outputExceeded || settled || stale || timedOut) return;
-        // Stderr counts as forward progress: long-running CLI invocations may write
-        // diagnostics exclusively to stderr while still actively making progress.
-        clearTimeout(staleTimer);
-        staleTimer = setTimeout(handleStale, STALE_TIMEOUT_MS);
-        staleTimer.unref();
-        rawStderrBytes += data.length;
-        stderr += stderrDecoder.write(data);
-        if (rawStdoutBytes + rawStderrBytes > MAX_OUTPUT) killOnOutputExceeded();
-      });
-
-      child.on('close', (code, signal) => {
-        clearAllTimers();
-        if (settled) return;
-        settled = true;
-        const remaining = stdoutDecoder.end();
-        if (remaining) output += remaining;
-        stderr += stderrDecoder.end();
-        if (stale) {
-          const details = buildTimeoutDiagnostics(lastStdoutChunk, stderr);
-          const msg = `Codex CLI stale — no output for ${STALE_TIMEOUT_MS / 1000}s${details ? `. ${details}` : ''}`;
-          core.warning(msg);
-          reject(new Error(msg));
-          return;
-        }
-        if (timedOut) {
-          const details = buildTimeoutDiagnostics(lastStdoutChunk, stderr);
-          const msg = `Codex CLI timed out after 1200s${details ? `. ${details}` : ''}`;
-          core.warning(msg);
-          reject(new Error(msg));
-          return;
-        }
-        if (outputExceeded) {
-          reject(new Error('Codex CLI output exceeded 50MB limit'));
-          return;
-        }
-        if (code !== 0) {
-          const msg = buildExitDiagnostics({
-            exitCode: code,
-            signal,
-            stderr,
-            lastStdoutChunk,
-            model,
-            effort: options?.effort,
-            promptChars: fullPrompt.length,
-            elapsedMs: Date.now() - startTime,
-          });
-          core.warning(`Codex CLI failed (${msg})`);
-          reject(new Error(`Codex CLI invocation failed (${msg})`));
-          return;
-        }
-        const content = output.trim();
-        core.debug(sanitizeLogOutput(content.slice(0, 200)));
-        resolve({
-          content,
-          usage: { ...ZERO_USAGE },
-          latencyMs: Date.now() - startTime,
-        });
-      });
-
-      child.on('error', (error) => {
-        clearAllTimers();
-        if (settled) return;
-        settled = true;
-        reject(new Error(`Codex CLI spawn failed: ${error.message}`));
-      });
-
-      child.stdin.on('error', (err) => {
-        core.warning(`stdin write error: ${err.message}`);
-      });
-
-      try {
-        const canWrite = child.stdin.write(fullPrompt);
-        if (!canWrite) {
-          child.stdin.once('drain', () => {
-            if (!settled) {
-              try { child.stdin.end(); } catch { /* stream already destroyed */ }
-            }
-          });
-        } else {
-          try { child.stdin.end(); } catch { /* stream may be destroyed */ }
-        }
-      } catch (err) {
-        core.warning(`stdin write failed: ${(err as Error).message}`);
-        if (!settled) {
-          settled = true;
-          clearAllTimers();
-          reject(new Error(`stdin write failed: ${(err as Error).message}`));
-        }
-        try { child.kill('SIGTERM'); } catch { /* already dead */ }
-        stdinKillTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, 5000);
-        stdinKillTimer.unref();
-      }
+    let output = '';
+    const { code, signal, stderr, lastStdoutChunk } = await runCli({
+      label: 'Codex',
+      cliPath,
+      args,
+      env: { ...safeCodexEnv, CODEX_HOME: codexHome },
+      input: fullPrompt,
+      onStdout: (chunk) => { output += chunk; },
+      stderrResetsStale: true,
     });
+
+    if (code !== 0) {
+      const msg = buildExitDiagnostics({
+        exitCode: code,
+        signal,
+        stderr,
+        lastStdoutChunk,
+        model,
+        effort: options?.effort,
+        promptChars: fullPrompt.length,
+        elapsedMs: Date.now() - startTime,
+      });
+      core.warning(`Codex CLI failed (${msg})`);
+      throw new Error(`Codex CLI invocation failed (${msg})`);
+    }
+    const content = output.trim();
+    core.debug(sanitizeLogOutput(content.slice(0, 200)));
+    return {
+      content,
+      usage: { ...ZERO_USAGE },
+      latencyMs: Date.now() - startTime,
+    };
   }
 
   private async sendViaAPI(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
