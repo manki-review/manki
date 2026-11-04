@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `dist/` is no longer committed to `main`. The `Release` workflow builds it when a `vX.Y.Z` tag is pushed and moves the tag to the build commit. Pin to a release tag such as `@v5`. `@main` and commit SHAs from `main` no longer run. Closes [#825](https://github.com/manki-review/manki/issues/825).
+
 ## [5.3.0] - 2026-05-25
 
 ### Added

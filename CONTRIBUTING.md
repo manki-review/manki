@@ -30,21 +30,11 @@ The `all` script runs all four in one command:
 npm run all
 ```
 
-## Building `dist/` before opening a PR
+## `dist/` is built at release time
 
-Manki follows the canonical TypeScript-Action release model: the compiled bundle in `dist/` is committed to `main` so consumers can pin to `manki-review/manki@v5` or `manki-review/manki@v5.x.y` and have a runnable action without any extra setup on their side.
+`main` holds source only. `dist/` is in `.gitignore`, so never commit it. When a `vX.Y.Z` tag is pushed, the `Release` workflow builds `dist/`, commits it on top of the tagged commit, and moves the tag (and the floating `vX` tag) to that build commit. Consumers pinned to `manki-review/manki@v5` or an exact `@v5.x.y` get a tree that contains `dist/`. Pinning to `@main` or a commit SHA on `main` is not supported.
 
-Any change under `src/` (or anything that affects the bundle output, including dependency bumps) requires a fresh `dist/`:
-
-```sh
-npm run build
-git add dist/
-git commit
-```
-
-The `.github/workflows/check-dist.yml` workflow is the backstop. It runs on every PR and on `push` to `main`, rebuilds `dist/`, and fails if the committed copy differs from the freshly built one. If you forget the rebuild, this check will tell you and upload the expected `dist/` as a workflow artifact for easy recovery.
-
-`dist/` is marked `linguist-generated=true` in `.gitattributes`, so GitHub collapses its diff in the PR Files view by default. Reviewers can expand it on demand. The minified `dist/index.js` is additionally marked `-diff` to skip the textual diff entirely.
+Locally, `npm run build` writes `dist/` for testing. The repo's own `Manki` workflow builds it before running the action from the checkout.
 
 ## Commit and PR conventions
 

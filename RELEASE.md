@@ -20,7 +20,7 @@ npm run check-changelog-version
 2. Bump `version` in `package.json` to `X.Y.Z`.
 3. Refresh `package-lock.json` (`npm install` will do it).
 4. Open the release PR. CI runs `check-changelog-version` automatically.
-5. Once merged, tag `vX.Y.Z` on `main`. The `Release` workflow (`.github/workflows/release.yml`) compiles `dist/`, force-updates the major version tag (`vX`), and publishes the GitHub Release.
+5. Once merged, tag `vX.Y.Z` on `main`. The `Release` workflow (`.github/workflows/release.yml`) builds `dist/`, commits it on top of the tagged commit, moves `vX.Y.Z` and the major tag (`vX`) to that build commit, and publishes the GitHub Release. `main` never carries `dist/`.
 
 ## Why all three files in one commit
 
