@@ -5548,8 +5548,7 @@ describe('runFullReview orchestration', () => {
     it('does not count a skipped push toward the round cap', async () => {
       jest.mocked(configModule.loadConfig).mockReturnValue({
         auto_review: true, auto_approve: false, max_diff_lines: 5000,
-        exclude_paths: [], reviewers: [], instructions: '', review_level: 'auto',
-        review_thresholds: { small: 200, medium: 800 },
+        exclude_paths: [], reviewers: [], instructions: '',
         memory: { enabled: false, repo: '' },
         convergence: { max_auto_rounds: 2, test_path_patterns: [], suppress_resolved_threads: true },
       });
