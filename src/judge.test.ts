@@ -839,15 +839,10 @@ describe('parseJudgeResponse', () => {
     expect(result.findings[0].severity).toBe('suggestion');
   });
 
-  it('returns empty findings for empty response', () => {
-    const result = parseJudgeResponse('');
-    expect(result.findings).toEqual([]);
-    expect(result.summary).toBe('Review complete.');
-  });
-
-  it('returns empty findings for malformed JSON', () => {
-    const result = parseJudgeResponse('not json {broken');
-    expect(result.findings).toEqual([]);
+  it('throws for empty, malformed or non-object responses', () => {
+    expect(() => parseJudgeResponse('')).toThrow();
+    expect(() => parseJudgeResponse('not json {broken')).toThrow();
+    expect(() => parseJudgeResponse('"just a string"')).toThrow('unexpected format');
   });
 
   it('returns empty findings for unrecognized object', () => {
@@ -1100,22 +1095,25 @@ describe('runJudgeAgent', () => {
     );
   });
 
-  it('returns originals when judge response is empty', async () => {
-    mockSendMessage.mockResolvedValue({ content: '' });
-
-    const finding = makeFinding({ severity: 'blocker' });
+  it('rejects instead of returning unjudged findings when the judge output is unusable', async () => {
+    const openThreads: OpenThread[] = [
+      { threadId: 'T1', title: 'Prior issue', file: 'src/index.ts', line: 10, severity: 'warning' },
+    ];
     const input: JudgeInput = {
-      findings: [finding],
+      findings: [makeFinding({ severity: 'blocker' })],
       diff: makeDiff(),
       rawDiff: '',
       repoContext: '',
       agentCount: 5,
+      openThreads,
     };
 
-    const result = await runJudgeAgent(mockClient, makeConfig(), input);
-    expect(result.findings).toHaveLength(1);
-    expect(result.findings[0].severity).toBe('blocker');
-    expect(result.findings[0].judgeNotes).toBeUndefined();
+    for (const content of ['', 'not json {broken', JSON.stringify({ summary: 'Nothing.', findings: [] })]) {
+      mockSendMessage.mockReset();
+      mockSendMessage.mockResolvedValue({ content });
+      await expect(runJudgeAgent(mockClient, makeConfig(), input)).rejects.toThrow();
+      expect(mockSendMessage).toHaveBeenCalledTimes(1);
+    }
   });
 
   it('matches judge findings by fuzzy title when order differs', async () => {
@@ -2235,31 +2233,6 @@ describe('runJudgeAgent', () => {
     expect(result.inPrSuppressedCount).toBeUndefined();
   });
 
-  it('applies in-PR suppression when judge returns no findings', async () => {
-    mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 'empty', findings: [] }) });
-
-    const inPrSuppressions: InPrSuppression[] = [
-      {
-        fingerprint: { file: 'src/index.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
-        reason: 'resolved-thread',
-      },
-    ];
-
-    const input: JudgeInput = {
-      findings: [makeFinding()],
-      diff: makeDiff(),
-      rawDiff: '',
-      repoContext: '',
-      agentCount: 1,
-      inPrSuppressions,
-    };
-
-    const result = await runJudgeAgent(mockClient, makeConfig(), input);
-    expect(result.findings[0].severity).toBe('ignore');
-    expect(result.findings[0].tags).toContain(IN_PR_SUPPRESSED_TAG);
-    expect(result.inPrSuppressedCount).toBe(1);
-  });
-
   it('instructs the judge to demote borderline findings at noise_level "low"', async () => {
     const judgedResponse = JSON.stringify({
       summary: 'One borderline finding demoted.',
@@ -2607,7 +2580,7 @@ describe('runJudgeAgent', () => {
         { threadId: 'PRRT_a', status: 'addressed', reason: 'Fixed' },
         { threadId: 'PRRT_b', status: 'uncertain', reason: 'judge omitted evaluation after retry' },
       ]);
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('retry call failed'));
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Judge retry failed'));
       warnSpy.mockRestore();
     });
 
@@ -4586,36 +4559,6 @@ describe('runJudgeAgent cross-round suppression', () => {
     expect(result.crossRoundSuppressed).toBeUndefined();
     expect(result.findings[0].severity).toBe('nitpick');
     expect(result.findings[0].tags).toContain('contradicts-prior-round');
-  });
-
-  it('applies cross-round suppression on early return when judge returns empty findings', async () => {
-    const emptyJudgeResponse = JSON.stringify({ summary: 'Nothing left.', findings: [] });
-    mockSendMessage.mockResolvedValue({ content: emptyJudgeResponse });
-
-    const input: JudgeInput = {
-      findings: [makeFinding({ title: 'Unused variable', file: 'src/index.ts', line: 10 })],
-      diff: makeDiff(),
-      rawDiff: '',
-      repoContext: '',
-      agentCount: 3,
-      priorRounds: [roundContextFromLegacy({
-        round: 1,
-        commitSha: 'abc',
-        timestamp: 't',
-        findings: [{
-          fingerprint: { file: 'src/index.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Unused variable') },
-          severity: 'suggestion',
-          title: 'Unused variable',
-          authorReply: 'agree',
-        }],
-      })],
-    };
-
-    const result = await runJudgeAgent(mockClient, makeConfig(), input);
-    expect(result.crossRoundSuppressed).toBe(1);
-    expect(result.crossRoundDemoted).toBeUndefined();
-    expect(result.findings[0].severity).toBe('ignore');
-    expect(result.findings[0].tags).toContain('suppressed-by-ratchet');
   });
 
   it('does not double-count when both in-PR suppression and cross-round prior agree match', async () => {
