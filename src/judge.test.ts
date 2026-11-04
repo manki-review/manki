@@ -23,6 +23,7 @@ import { LLMClient } from './providers';
 import { AnthropicClient } from './providers/anthropic';
 import { RepoMemory, Learning, Suppression } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
+import { truncateDiff } from './review';
 import { Finding, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, ReviewConfig, RoundContext, ParsedDiff, DiffFile, DiffHunk, ThreadEvaluation } from './types';
 import { LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy } from './test-utils';
 
@@ -198,6 +199,8 @@ describe('buildJudgeSystemPrompt', () => {
   it('uses follow-up summary instruction when isFollowUp is true', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5, true);
     expect(prompt).toContain('Follow-Up Review');
+    expect(prompt).toContain('previous review state is in the user message');
+    expect(prompt).not.toContain('repository context');
     expect(prompt).toContain('opinionated progress update');
     expect(prompt).toContain('Never start with "The author"');
     expect(prompt).not.toContain('opinionated review summary');
@@ -435,6 +438,28 @@ describe('buildJudgeUserMessage', () => {
     const msg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, []);
 
     expect(msg).not.toContain('## Changed Files in This PR');
+  });
+
+  it('includes the PR diff section only when a diff is given, truncated like the reviewer diff', () => {
+    const findings = [makeFinding()];
+    const prDiff = 'diff --git a/src/foo.ts b/src/foo.ts\n+const x = 1;';
+    const msg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, undefined, undefined, prDiff);
+
+    expect(msg).toContain('## Pull Request Diff');
+    expect(msg).toContain('+const x = 1;');
+    expect(msg).toContain('untrusted PR author content');
+    expect(msg.indexOf('## Pull Request Diff')).toBeLessThan(msg.indexOf('## Findings to Evaluate'));
+
+    const largeDiff = `${prDiff}\n${'+filler line\n'.repeat(6000)}+tail marker`;
+    const truncatedMsg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, undefined, undefined, largeDiff);
+    expect(truncatedMsg).toContain(truncateDiff(largeDiff));
+    expect(truncatedMsg).toContain('... (truncated)');
+    expect(truncatedMsg).not.toContain('+tail marker');
+
+    for (const empty of [undefined, '', '  \n']) {
+      const noDiffMsg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, undefined, undefined, empty);
+      expect(noDiffMsg).not.toContain('## Pull Request Diff');
+    }
   });
 
   it('omits changed files section when undefined', () => {
@@ -1055,7 +1080,7 @@ describe('runJudgeAgent', () => {
     const input: JudgeInput = {
       findings: [makeFinding()],
       diff: makeDiff(),
-      rawDiff: '',
+      rawDiff: 'diff --git a/src/index.ts b/src/index.ts\n+const unused = 1;',
       repoContext: '',
       agentCount: 5,
     };
@@ -1067,6 +1092,9 @@ describe('runJudgeAgent', () => {
     expect(result.findings[0].judgeConfidence).toBe('high');
     expect(result.summary).toBe('One false positive found.');
     expect(mockSendMessage).toHaveBeenCalledTimes(1);
+    const [, userMessage] = mockSendMessage.mock.calls[0];
+    expect(userMessage).toContain('## Pull Request Diff');
+    expect(userMessage).toContain('+const unused = 1;');
   });
 
   it('passes effort option to sendMessage', async () => {
