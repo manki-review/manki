@@ -15,12 +15,10 @@ import {
   findingsMatch,
   intersectFindings,
   runReview,
-  runReviewerAgent,
   runPlanner,
   parseAgentPicks,
   sanitizePlannerField,
   buildProvenanceFields,
-  countChangedLines,
   ReviewClients,
   PLANNER_TIMEOUT_MS,
   PlannerOutcomeSink,
@@ -1409,63 +1407,6 @@ describe('buildReviewerUserMessage', () => {
 
 });
 
-describe('buildReviewerUserMessage inter-round delta', () => {
-  it('uses the full PR diff when `interRoundDiff` is undefined (round 1)', () => {
-    const message = buildReviewerUserMessage(
-      'full pr diff', '',
-    );
-    expect(message).toContain('## Pull Request Diff\n\n```diff\nfull pr diff\n```');
-    expect(message).not.toContain('(delta since prior review round)');
-  });
-
-  it('substitutes the delta in place of the full diff when supplied', () => {
-    const delta = '--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n';
-    const message = buildReviewerUserMessage(
-      'full pr diff', '', { interRoundDiff: delta },
-    );
-    expect(message).toContain('## Pull Request Diff (delta since prior review round)');
-    expect(message).toContain(delta);
-    expect(message).not.toContain('```diff\nfull pr diff\n```');
-  });
-
-  it('keeps the full-PR file contents block even when the delta drives the diff', () => {
-    const fileContents = new Map([
-      ['src/touched.ts', 'export const a = 1;'],
-      ['src/untouched-by-delta.ts', 'export const b = 2;'],
-    ]);
-    const delta = '--- a/src/touched.ts\n+++ b/src/touched.ts\n@@ -1 +1 @@\n-export const a = 0;\n+export const a = 1;\n';
-    const message = buildReviewerUserMessage(
-      'full pr diff', '', { fileContents, interRoundDiff: delta },
-    );
-    expect(message).toContain('### File: src/touched.ts');
-    expect(message).toContain('### File: src/untouched-by-delta.ts');
-    expect(message).toContain('export const b = 2;');
-  });
-
-  it('falls through to the full PR diff when `interRoundDiff` is empty', () => {
-    const message = buildReviewerUserMessage(
-      'full pr diff', '', { interRoundDiff: '' },
-    );
-    expect(message).toContain('## Pull Request Diff\n\n```diff\nfull pr diff\n```');
-    expect(message).not.toContain('(delta since prior review round)');
-  });
-
-  it('omits the `## Changed Files` grounding note when fileContents are absent', () => {
-    const delta = '--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n';
-    const message = buildReviewerUserMessage('full pr diff', '', { interRoundDiff: delta });
-    expect(message).toContain('## Pull Request Diff (delta since prior review round)');
-    expect(message).not.toContain('`## Changed Files`');
-  });
-
-  it('includes the `## Changed Files` grounding note when fileContents are present', () => {
-    const fileContents = new Map([['src/x.ts', 'const x = 1;']]);
-    const delta = '--- a/src/x.ts\n+++ b/src/x.ts\n@@ -1 +1 @@\n-const x = 0;\n+const x = 1;\n';
-    const message = buildReviewerUserMessage('full pr diff', '', { fileContents, interRoundDiff: delta });
-    expect(message).toContain('## Pull Request Diff (delta since prior review round)');
-    expect(message).toContain('`## Changed Files`');
-  });
-});
-
 describe('parseFindings with extractJSON', () => {
   it('extracts JSON array from text with preamble', () => {
     const input = 'Here are my findings:\n\n[{"severity":"blocking","title":"Bug","file":"a.ts","line":1,"description":"Crash"}]';
@@ -1778,127 +1719,6 @@ describe('buildReviewerUserMessage with linked issues', () => {
     expect(prIdx).toBeLessThan(issuesIdx);
     expect(issuesIdx).toBeLessThan(repoIdx);
     expect(repoIdx).toBeLessThan(diffIdx);
-  });
-});
-
-describe('buildReviewerUserMessage with provenance map', () => {
-  const makeEntry = (overrides: Partial<ProvenanceEntry> = {}): ProvenanceEntry => ({
-    file: 'src/foo.ts',
-    lineStart: 2,
-    lineEnd: 3,
-    originatingRound: 1,
-    originatingTitle: 'Prior finding',
-    ...overrides,
-  });
-
-  it('annotates matched file regions with a factual round note', () => {
-    const fileContents = new Map([
-      ['src/foo.ts', 'const a = 1;\nconst b = 2;\nconst c = 3;\nconst d = 4;'],
-    ]);
-    const provenance = [makeEntry({ lineStart: 2, lineEnd: 3, originatingRound: 2 })];
-    const message = buildReviewerUserMessage('diff', '', { fileContents, provenanceMap: provenance });
-    expect(message).toContain('// [manki: added in round 2]');
-    const annotationIdx = message.indexOf('// [manki: added in round 2]');
-    const bIdx = message.indexOf('const b = 2;');
-    expect(annotationIdx).toBeLessThan(bIdx);
-    expect(message).toContain('const a = 1;');
-    expect(message).toContain('const d = 4;');
-  });
-
-  it('does not inject finding text, severity, or resolution', () => {
-    const fileContents = new Map([['src/foo.ts', 'line1\nline2\nline3']]);
-    const provenance = [makeEntry({
-      lineStart: 2,
-      lineEnd: 2,
-      originatingRound: 3,
-      originatingTitle: 'Missing null check could crash the app',
-    })];
-    const message = buildReviewerUserMessage('diff', '', { fileContents, provenanceMap: provenance });
-    expect(message).toContain('// [manki: added in round 3]');
-    expect(message).not.toContain('Missing null check');
-    expect(message).not.toContain('required');
-    expect(message).not.toContain('suggestion');
-    expect(message).not.toContain('agree');
-    expect(message).not.toContain('disagree');
-  });
-
-  it('skips annotation when provenance map is empty', () => {
-    const fileContents = new Map([['src/foo.ts', 'const a = 1;\nconst b = 2;']]);
-    const message = buildReviewerUserMessage('diff', '', { fileContents, provenanceMap: [] });
-    expect(message).not.toContain('// [manki:');
-    expect(message).not.toContain('added by manki');
-  });
-
-  it('skips annotation when provenance map is undefined', () => {
-    const fileContents = new Map([['src/foo.ts', 'const a = 1;\nconst b = 2;']]);
-    const message = buildReviewerUserMessage('diff', '', { fileContents });
-    expect(message).not.toContain('// [manki:');
-  });
-
-  it('only annotates the matching file', () => {
-    const fileContents = new Map([
-      ['src/foo.ts', 'foo1\nfoo2\nfoo3'],
-      ['src/bar.ts', 'bar1\nbar2\nbar3'],
-    ]);
-    const provenance = [makeEntry({ file: 'src/foo.ts', lineStart: 2, lineEnd: 2, originatingRound: 1 })];
-    const message = buildReviewerUserMessage('diff', '', { fileContents, provenanceMap: provenance });
-    const fooSection = message.slice(message.indexOf('### File: src/foo.ts'), message.indexOf('### File: src/bar.ts'));
-    const barSection = message.slice(message.indexOf('### File: src/bar.ts'));
-    expect(fooSection).toContain('// [manki: added in round 1]');
-    expect(barSection).not.toContain('// [manki:');
-  });
-
-  it('handles multiple annotations in one file in original order', () => {
-    const fileContents = new Map([
-      ['src/foo.ts', 'a\nb\nc\nd\ne\nf'],
-    ]);
-    const provenance = [
-      makeEntry({ lineStart: 2, lineEnd: 2, originatingRound: 1 }),
-      makeEntry({ lineStart: 5, lineEnd: 5, originatingRound: 2 }),
-    ];
-    const message = buildReviewerUserMessage('diff', '', { fileContents, provenanceMap: provenance });
-    const firstIdx = message.indexOf('// [manki: added in round 1]');
-    const secondIdx = message.indexOf('// [manki: added in round 2]');
-    const lineBIdx = message.indexOf('\nb\n');
-    const lineEIdx = message.indexOf('\ne\n');
-    expect(firstIdx).toBeLessThan(lineBIdx);
-    expect(lineBIdx).toBeLessThan(secondIdx);
-    expect(secondIdx).toBeLessThan(lineEIdx);
-  });
-
-  it('includes a short explanation of the annotation when provenance is present', () => {
-    const fileContents = new Map([['src/foo.ts', 'a\nb']]);
-    const provenance = [makeEntry({ lineStart: 2, lineEnd: 2, originatingRound: 1 })];
-    const message = buildReviewerUserMessage('diff', '', { fileContents, provenanceMap: provenance });
-    // Annotation uses the numeric round
-    expect(message).toContain('// [manki: added in round 1]');
-    // Explanation text uses the literal `N` placeholder and the `factual note` phrase
-    expect(message).toContain('[manki: added in round N]');
-    expect(message).toContain('factual note');
-  });
-
-  it('skips annotation when lineStart is out of bounds', () => {
-    const fileContents = new Map([['src/foo.ts', 'line1\nline2']]);
-    const provenance = [makeEntry({ lineStart: 10, lineEnd: 10, originatingRound: 1 })];
-    const message = buildReviewerUserMessage('diff', '', { fileContents, provenanceMap: provenance });
-    expect(message).not.toContain('[manki: added in round 1]');
-  });
-
-  it('uses # comment prefix for Python files', () => {
-    const fileContents = new Map([['src/script.py', 'x = 1\ny = 2\nz = 3']]);
-    const provenance = [makeEntry({ file: 'src/script.py', lineStart: 2, lineEnd: 2, originatingRound: 1 })];
-    const message = buildReviewerUserMessage('diff', '', { fileContents, provenanceMap: provenance });
-    expect(message).toContain('# [manki: added in round 1]');
-    expect(message).not.toContain('// [manki: added in round 1]');
-  });
-
-  it('skips annotation and explanation for HTML files with no comment syntax', () => {
-    const fileContents = new Map([['src/template.html', '<div>\n<span>hi</span>\n</div>']]);
-    const provenance = [makeEntry({ file: 'src/template.html', lineStart: 2, lineEnd: 2, originatingRound: 1 })];
-    const message = buildReviewerUserMessage('diff', '', { fileContents, provenanceMap: provenance });
-    expect(message).not.toContain('[manki:');
-    expect(message).not.toContain('factual note');
-    expect(message).toContain('<span>hi</span>');
   });
 });
 
@@ -3739,9 +3559,7 @@ describe('runReview', () => {
     expect(secPick?.effort).toBe('high');
   });
 
-  it('composes follow-up planner context with applyEffortDowngrade — both layers apply', async () => {
-    // The planner sees the new follow-up section (round, delta, pinned team)
-    // AND the downgrade still clamps a 100%-dismiss specialist from high to low.
+  it('applies applyEffortDowngrade on a follow-up round without giving the planner round context', async () => {
     const { clients, config, diff } = makeEffortDowngradeFixture();
 
     const priorRounds: LegacyHandoverRoundFixture[] = [{
@@ -3764,16 +3582,12 @@ describe('runReview', () => {
         '--- a/foo.ts\n+++ b/foo.ts\n@@ -1,3 +1,3 @@\n context\n-removed line one\n-removed line two\n+added line one',
       );
 
-      // Follow-up context rendered into the system prompt the planner client saw.
       const plannerSend = (clients.planner!.sendMessage as jest.Mock).mock.calls[0];
       const systemPrompt = plannerSend[0] as string;
-      expect(systemPrompt).toContain('Follow-Up Round Context');
-      expect(systemPrompt).toContain('This is round 2');
-      expect(systemPrompt).toContain('3 lines');
-      expect(systemPrompt).toContain('"Security & Safety"');
-      expect(systemPrompt).toContain('Prior Round Outcomes');
+      expect(systemPrompt).not.toContain('Follow-Up Round Context');
+      expect(systemPrompt).not.toContain('This is round');
+      expect(systemPrompt).not.toContain('pinned team');
 
-      // Downgrade still applies on top of the new prompt guidance.
       const secPick = result.plannerResult!.agents!.find(a => a.name === 'Security & Safety');
       expect(secPick?.effort).toBe('low');
     } finally {
@@ -4445,7 +4259,7 @@ describe('runReview', () => {
     expect(result.findings[0].title).toBe('SQL injection');
   });
 
-  it('threads a non-empty provenance map to reviewer agents and judge', async () => {
+  it('threads a non-empty provenance map to the judge but not into reviewer prompts', async () => {
     const mockedComputeProvenanceMap = jest.mocked(computeProvenanceMap);
     const provenance: ProvenanceEntry[] = [{
       file: 'src/foo.ts',
@@ -4471,11 +4285,11 @@ describe('runReview', () => {
 
     await runReview(clients, config, diff, 'raw diff', 'repo context', undefined, fileContents);
 
-    // Each reviewer agent should have received the annotated content in its user message
     expect(reviewerSendMessage).toHaveBeenCalled();
     for (const call of reviewerSendMessage.mock.calls) {
       const userMessage = call[1] as string;
-      expect(userMessage).toContain('// [manki: added in round 2]');
+      expect(userMessage).not.toContain('[manki:');
+      expect(userMessage).toContain('const a = 1;\nconst b = 2;\nconst c = 3;\nconst d = 4;');
     }
 
     // computeProvenanceMap must be called exactly once per review cycle, with the
@@ -4487,68 +4301,6 @@ describe('runReview', () => {
     expect(mockedRunJudgeAgent).toHaveBeenCalledTimes(1);
     const judgeInput = mockedRunJudgeAgent.mock.calls[0][2];
     expect(judgeInput.provenanceMap).toEqual(provenance);
-  });
-
-  it('does not inject annotations or explanation when provenance entries reference files absent from fileContents', async () => {
-    const mockedComputeProvenanceMap = jest.mocked(computeProvenanceMap);
-    // Provenance entry references a file that is NOT among the loaded fileContents.
-    const provenance: ProvenanceEntry[] = [{
-      file: 'src/other.ts',
-      lineStart: 2,
-      lineEnd: 3,
-      originatingRound: 2,
-      originatingTitle: 'Prior finding',
-    }];
-    mockedComputeProvenanceMap.mockReturnValueOnce(provenance);
-
-    const reviewerSendMessage = jest.fn().mockResolvedValue({ content: '[]' });
-    const clients: ReviewClients = {
-      reviewer: { sendMessage: reviewerSendMessage } as unknown as import('./providers').LLMClient,
-      judge: {
-        sendMessage: jest.fn().mockResolvedValue({ content: '{"summary":"ok","findings":[]}' }),
-      } as unknown as import('./providers').LLMClient,
-    };
-    const config = makeConfig();
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
-    const fileContents = new Map([
-      ['src/foo.ts', 'const a = 1;\nconst b = 2;\nconst c = 3;'],
-    ]);
-
-    await runReview(clients, config, diff, 'raw diff', 'repo context', undefined, fileContents);
-
-    expect(reviewerSendMessage).toHaveBeenCalled();
-    for (const call of reviewerSendMessage.mock.calls) {
-      const userMessage = call[1] as string;
-      expect(userMessage).not.toContain('[manki:');
-      expect(userMessage).not.toContain('factual note');
-    }
-  });
-
-  it('does not inject annotations or explanation when provenance is empty', async () => {
-    const mockedComputeProvenanceMap = jest.mocked(computeProvenanceMap);
-    mockedComputeProvenanceMap.mockReturnValueOnce([]);
-
-    const reviewerSendMessage = jest.fn().mockResolvedValue({ content: '[]' });
-    const clients: ReviewClients = {
-      reviewer: { sendMessage: reviewerSendMessage } as unknown as import('./providers').LLMClient,
-      judge: {
-        sendMessage: jest.fn().mockResolvedValue({ content: '{"summary":"ok","findings":[]}' }),
-      } as unknown as import('./providers').LLMClient,
-    };
-    const config = makeConfig();
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
-    const fileContents = new Map([
-      ['src/foo.ts', 'const a = 1;\nconst b = 2;\nconst c = 3;'],
-    ]);
-
-    await runReview(clients, config, diff, 'raw diff', 'repo context', undefined, fileContents);
-
-    expect(reviewerSendMessage).toHaveBeenCalled();
-    for (const call of reviewerSendMessage.mock.calls) {
-      const userMessage = call[1] as string;
-      expect(userMessage).not.toContain('[manki:');
-      expect(userMessage).not.toContain('factual note');
-    }
   });
 
   it('passes prior-round agents through to selectTeam when priorRounds carries agents', async () => {
@@ -4587,145 +4339,47 @@ describe('runReview', () => {
     expect(new Set(result.agentNames).size).toBe(result.agentNames.length);
   });
 
-  // On follow-up rounds with a non-empty delta, the reviewer prompt's diff
-  // block must use the delta instead of the full PR diff. Without a delta
-  // (first round, or empty delta on a force-pushed reset) the prompt falls
-  // through to the full PR diff so reviewers still have something to chew on.
-  it('substitutes the inter-round delta into the reviewer prompt when non-empty', async () => {
+  it('sends reviewers the same prompts on a follow-up round as on round 1 for the same diff', async () => {
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
-    const delta = '--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n';
+    const fileContents = new Map([['src/x.ts', 'const a = 1;\nconst b = 2;']]);
+    const priorTitle = 'Prior round finding title';
+    const delta = '--- a/src/x.ts\n+++ b/src/x.ts\n@@ -1 +1 @@\n-old\n+new\n';
 
-    const baselineClients = makeClients();
-    await runReview(
-      baselineClients, config, diff, 'raw diff', 'repo context',
-      undefined, undefined, undefined, undefined, undefined,
-      undefined, undefined, undefined, undefined, undefined,
-    );
+    const round1Clients = makeClients();
+    await runReview(round1Clients, config, diff, 'raw diff', 'repo context', undefined, fileContents);
 
-    const withDiffClients = makeClients();
+    jest.mocked(computeProvenanceMap).mockReturnValueOnce([{
+      file: 'src/x.ts', lineStart: 2, lineEnd: 2, originatingRound: 1, originatingTitle: priorTitle,
+    }]);
+    const round2Clients = makeClients();
     await runReview(
-      withDiffClients, config, diff, 'raw diff', 'repo context',
-      undefined, undefined, undefined, undefined, undefined,
-      undefined, undefined, undefined, undefined, undefined,
+      round2Clients, config, diff, 'raw diff', 'repo context', undefined, fileContents,
+      undefined, undefined, undefined,
+      true,
+      [makePriorOpenThread({ title: priorTitle })],
+      [{ title: priorTitle, file: 'src/x.ts', line: 10, severity: 'warning', status: 'open', threadId: 'T1' }],
+      [buildPriorRound(1, [makePriorWarningFinding({ title: priorTitle })])],
+      undefined,
       delta,
     );
 
-    const baselineMock = baselineClients.reviewer.sendMessage as jest.Mock;
-    const withDiffMock = withDiffClients.reviewer.sendMessage as jest.Mock;
-    const baselineUser = baselineMock.mock.calls[0][1] as string;
-    const withDiffUser = withDiffMock.mock.calls[0][1] as string;
-    expect(baselineUser).toContain('## Pull Request Diff\n\n```diff\nraw diff\n```');
-    expect(withDiffUser).toContain('## Pull Request Diff (delta since prior review round)');
-    expect(withDiffUser).toContain(delta);
-    expect(withDiffUser).not.toContain('```diff\nraw diff\n```');
-  });
+    const round1Calls = (round1Clients.reviewer.sendMessage as jest.Mock).mock.calls;
+    const round2Calls = (round2Clients.reviewer.sendMessage as jest.Mock).mock.calls;
+    expect(round2Calls.length).toBeGreaterThan(0);
+    expect(round2Calls).toEqual(round1Calls);
+    for (const [systemPrompt, userMessage] of round2Calls as [string, string][]) {
+      const prompt = `${systemPrompt}\n${userMessage}`;
+      expect(prompt).not.toContain(priorTitle);
+      expect(prompt).not.toMatch(/round \d/i);
+      expect(prompt).not.toContain(delta);
+    }
 
-  // Empty or undefined delta must not change the diff block — the prompt is
-  // byte-identical to the no-delta call. This preserves first-round semantics
-  // and the "empty delta on identical resync" fallback.
-  it('leaves the reviewer prompt unchanged when `interRoundDiff` is empty', async () => {
-    const config = makeConfig();
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
-
-    const baselineClients = makeClients();
-    await runReview(
-      baselineClients, config, diff, 'raw diff', 'repo context',
-      undefined, undefined, undefined, undefined, undefined,
-      undefined, undefined, undefined, undefined, undefined,
-    );
-
-    const emptyDiffClients = makeClients();
-    await runReview(
-      emptyDiffClients, config, diff, 'raw diff', 'repo context',
-      undefined, undefined, undefined, undefined, undefined,
-      undefined, undefined, undefined, undefined, undefined,
-      '',
-    );
-
-    const baselineMock = baselineClients.reviewer.sendMessage as jest.Mock;
-    const emptyDiffMock = emptyDiffClients.reviewer.sendMessage as jest.Mock;
-    expect(emptyDiffMock.mock.calls).toEqual(baselineMock.mock.calls);
-  });
-});
-
-describe('runReviewerAgent', () => {
-  it('uses the inter-round delta in the diff block when supplied', async () => {
-    const config = makeConfig();
-    const reviewer = AGENT_POOL[0];
-
-    const baselineClient = {
-      sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-    } as unknown as LLMClient;
-    await runReviewerAgent(
-      baselineClient, config, reviewer, 'full PR diff', 'repo context',
-      undefined, undefined, '', undefined, {},
-    );
-
-    const delta = '--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n';
-    const withDiffClient = {
-      sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-    } as unknown as LLMClient;
-    await runReviewerAgent(
-      withDiffClient, config, reviewer, 'full PR diff', 'repo context',
-      undefined, undefined, '', undefined,
-      { interRoundDiff: delta },
-    );
-
-    const baselineUser = (baselineClient.sendMessage as jest.Mock).mock.calls[0][1] as string;
-    const withDiffUser = (withDiffClient.sendMessage as jest.Mock).mock.calls[0][1] as string;
-    expect(baselineUser).toContain('## Pull Request Diff\n\n```diff\nfull PR diff\n```');
-    expect(withDiffUser).toContain('## Pull Request Diff (delta since prior review round)');
-    expect(withDiffUser).toContain(delta);
-    expect(withDiffUser).not.toContain('```diff\nfull PR diff\n```');
-  });
-
-  it('ships full-PR file contents in `## Changed Files` even when the delta drives the diff block', async () => {
-    const config = makeConfig();
-    const reviewer = AGENT_POOL[0];
-    const fileContents = new Map([
-      ['src/foo.ts', 'export const foo = 1;'],
-      ['src/bar.ts', 'export const bar = 2;'],
-    ]);
-    const delta = '--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -1 +1 @@\n-export const foo = 0;\n+export const foo = 1;\n';
-
-    const client = {
-      sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-    } as unknown as LLMClient;
-    await runReviewerAgent(
-      client, config, reviewer, 'full PR diff', 'repo context',
-      fileContents, undefined, '', undefined,
-      { interRoundDiff: delta },
-    );
-
-    const userMessage = (client.sendMessage as jest.Mock).mock.calls[0][1] as string;
-    expect(userMessage).toContain('## Changed Files');
-    expect(userMessage).toContain('### File: src/foo.ts');
-    expect(userMessage).toContain('export const foo = 1;');
-    // `bar.ts` is not in the delta but is part of the whole PR — it must still
-    // appear so the reviewer has the surrounding code as context.
-    expect(userMessage).toContain('### File: src/bar.ts');
-    expect(userMessage).toContain('export const bar = 2;');
-    expect(userMessage).toContain('## Pull Request Diff (delta since prior review round)');
-    expect(userMessage).toContain(delta);
-  });
-
-  it('falls through to the full PR diff when `interRoundDiff` is whitespace-only', async () => {
-    const config = makeConfig();
-    const reviewer = AGENT_POOL[0];
-
-    const client = {
-      sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-    } as unknown as LLMClient;
-    await runReviewerAgent(
-      client, config, reviewer, 'full PR diff', 'repo context',
-      undefined, undefined, '', undefined,
-      { interRoundDiff: '   \n\n' },
-    );
-
-    const userMessage = (client.sendMessage as jest.Mock).mock.calls[0][1] as string;
-    expect(userMessage).toContain('## Pull Request Diff\n\n```diff\nfull PR diff\n```');
-    expect(userMessage).not.toContain('(delta since prior review round)');
+    // The judge still gets the history.
+    const judgeInput = mockedRunJudgeAgent.mock.calls[1][2];
+    expect(judgeInput.interRoundDiff).toBe(delta);
+    expect(judgeInput.priorRounds).toHaveLength(1);
+    expect(judgeInput.openThreads?.[0].title).toBe(priorTitle);
   });
 });
 
@@ -5894,83 +5548,6 @@ describe('buildPlannerSystemPrompt', () => {
     const withEmptyHints = buildPlannerSystemPrompt(agents, []);
     expect(withEmptyHints).toBe(baseline);
     expect(withEmptyHints).not.toContain('Prior Round Outcomes');
-  });
-
-  it('omits the follow-up section on round 1', () => {
-    const agents = [{ name: 'A', focus: 'test focus' }];
-    const baseline = buildPlannerSystemPrompt(agents);
-    const round1 = buildPlannerSystemPrompt(agents, undefined, {
-      round: 1,
-      deltaLines: 0,
-      pinnedTeam: [],
-    });
-    expect(round1).toBe(baseline);
-    expect(round1).not.toContain('Follow-Up Round Context');
-    expect(round1).not.toContain('pinned team');
-    expect(round1).not.toContain('unioned');
-  });
-
-  it('renders round number, delta line count, pinned team, and union semantics on follow-up rounds', () => {
-    const agents = [{ name: 'A', focus: 'test focus' }];
-    const prompt = buildPlannerSystemPrompt(agents, undefined, {
-      round: 3,
-      deltaLines: 42,
-      pinnedTeam: ['Correctness & Logic', 'Testing & Coverage'],
-    });
-
-    expect(prompt).toContain('Follow-Up Round Context');
-    expect(prompt).toContain('This is round 3');
-    expect(prompt).toContain('42 lines');
-    expect(prompt).toContain('"Correctness & Logic"');
-    expect(prompt).toContain('"Testing & Coverage"');
-    expect(prompt).toContain('unioned with the pinned team');
-    expect(prompt).toContain('Default to the pinned team');
-
-    // Follow-up section appears before the "Decide:" block so the planner reads it first.
-    const followUpIdx = prompt.indexOf('Follow-Up Round Context');
-    expect(followUpIdx).toBeLessThan(prompt.indexOf('Decide:'));
-  });
-
-  it('renders the follow-up section even when the delta is empty', () => {
-    const agents = [{ name: 'A', focus: 'test focus' }];
-    const prompt = buildPlannerSystemPrompt(agents, undefined, {
-      round: 2,
-      deltaLines: 0,
-      pinnedTeam: ['Correctness & Logic'],
-    });
-
-    expect(prompt).toContain('Follow-Up Round Context');
-    expect(prompt).toContain('This is round 2');
-    expect(prompt).toContain('0 lines');
-    expect(prompt).toContain('"Correctness & Logic"');
-    expect(prompt).toContain('Default to the pinned team');
-  });
-
-  it('composes follow-up context with prior-round hints, both blocks render before Decide', () => {
-    const agents = [{ name: 'A', focus: 'test focus' }];
-    const hints = [
-      {
-        round: 1,
-        specialistOutcomes: [
-          { specialist: 'Testing & Coverage', findingsKept: 0, findingsDismissed: 3 },
-        ],
-      },
-    ];
-    const prompt = buildPlannerSystemPrompt(agents, hints, {
-      round: 2,
-      deltaLines: 17,
-      pinnedTeam: ['Testing & Coverage'],
-    });
-
-    expect(prompt).toContain('Prior Round Outcomes');
-    expect(prompt).toContain('Follow-Up Round Context');
-    expect(prompt).toContain('17 lines');
-
-    const hintsIdx = prompt.indexOf('Prior Round Outcomes');
-    const followUpIdx = prompt.indexOf('Follow-Up Round Context');
-    const decideIdx = prompt.indexOf('Decide:');
-    expect(hintsIdx).toBeLessThan(followUpIdx);
-    expect(followUpIdx).toBeLessThan(decideIdx);
   });
 });
 
@@ -7225,32 +6802,5 @@ describe('buildProvenanceFields', () => {
   it('omits `agentMultiPassConsistency` when the map is empty', () => {
     const result = buildProvenanceFields('planner', undefined, baseTeam, [], new Map(), new Map());
     expect(result).not.toHaveProperty('agentMultiPassConsistency');
-  });
-});
-
-describe('countChangedLines', () => {
-  it('counts only added and removed lines, excluding headers, hunk markers, and context', () => {
-    const diff = [
-      'diff --git a/foo.ts b/foo.ts',
-      '--- a/foo.ts',
-      '+++ b/foo.ts',
-      '@@ -1,5 +1,6 @@',
-      ' context line',
-      '-removed line',
-      '+added line one',
-      '+added line two',
-      ' another context line',
-      '-second removed',
-    ].join('\n');
-    expect(countChangedLines(diff)).toBe(4);
-  });
-
-  it('returns 0 for an empty string', () => {
-    expect(countChangedLines('')).toBe(0);
-  });
-
-  it('does not count --- or +++ file header lines', () => {
-    const diff = '--- a/foo.ts\n+++ b/foo.ts\n-removed\n+added';
-    expect(countChangedLines(diff)).toBe(2);
   });
 });
