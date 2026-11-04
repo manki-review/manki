@@ -3596,7 +3596,7 @@ describe('runFullReview orchestration', () => {
         judgeConfidence: 'medium' as const,
         reachability: 'hypothetical' as const,
         reachabilityReasoning: 'Caller serializes via mutex',
-        tags: ['defensive-hardening', 'own-proposal-followup'],
+        tags: ['defensive-hardening', 'own-proposal-followup', 'follow-up'],
         originalSeverity: 'warning' as const,
       }],
       highlights: [], reviewComplete: true, agentNames: ['Concurrency'],
@@ -3610,7 +3610,7 @@ describe('runFullReview orchestration', () => {
     expect(entry.judgeConfidence).toBe('medium');
     expect(entry.reachability).toBe('hypothetical');
     expect(entry.reachabilityReasoning).toBe('Caller serializes via mutex');
-    expect(entry.tags).toEqual(['defensive-hardening', 'own-proposal-followup']);
+    expect(entry.tags).toEqual(['defensive-hardening', 'own-proposal-followup', 'follow-up']);
     expect(entry.originalSeverity).toBe('warning');
   });
 

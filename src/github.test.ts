@@ -1461,6 +1461,29 @@ describe('postReview ready report', () => {
     expect(refused.body).not.toContain('What this does');
     expect(refused.body).not.toContain('What to test');
   });
+
+  it('lists follow-up warnings in the body instead of posting them as threads', async () => {
+    const followUp = (title: string, line: number, suggestedFix?: string): Finding => ({
+      severity: 'warning', title, file: 'src/a.ts', line, description: 'd', reviewers: ['r'], tags: ['follow-up'], ...(suggestedFix && { suggestedFix }),
+    });
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', {
+      verdict: 'APPROVE',
+      outcome: 'READY',
+      verdictReport,
+      summary: 'All clear.',
+      findings: [
+        followUp('Unbounded retry', 4, 'cap at `3`\nattempts'),
+        followUp('Log level too loud', 9),
+        { severity: 'blocker', title: 'Real bug', file: 'src/a.ts', line: 2, description: 'd', reviewers: ['r'] },
+      ],
+      highlights: [],
+      reviewComplete: true,
+      agentNames: [],
+    });
+    const { body, comments } = mockCreateReview.mock.calls[0][0] as { body: string; comments: Array<{ line: number }> };
+    expect(comments.map(c => c.line)).toEqual([2]);
+    expect(body).toContain('<summary>2 smaller fixes in this PR</summary>\n\n- `src/a.ts:4`: Unbounded retry. Fix: `` cap at `3` attempts ``\n- `src/a.ts:9`: Log level too loud\n</details>');
+  });
 });
 
 describe('getSeverityLabel', () => {

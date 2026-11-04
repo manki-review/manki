@@ -3,7 +3,7 @@ import { createRequire } from 'module';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { AgentProgressEntry, DEFENSIVE_HARDENING_TAG, DashboardData, Finding, FindingFingerprintEntry, FindingSeverity, OWN_PROPOSAL_TAG, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, ReviewVerdict, VALID_PR_TYPES, VerdictReason, VerdictTrace, isBlockingSeverity } from './types';
+import { AgentProgressEntry, DEFENSIVE_HARDENING_TAG, DashboardData, FOLLOW_UP_TAG, Finding, FindingFingerprintEntry, FindingSeverity, OWN_PROPOSAL_TAG, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, ReviewVerdict, VALID_PR_TYPES, VerdictReason, VerdictTrace, isBlockingSeverity } from './types';
 import { isLineInDiff } from './diff';
 import { findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
@@ -726,6 +726,12 @@ function formatUnpostedFinding(finding: Finding): string {
   return `**[${getSeverityLabel(finding.severity)}] ${sanitizeMarkdown(finding.title)}** (\`${location}\`): ${desc}`;
 }
 
+function formatFollowUps(entries: string[]): string | null {
+  if (entries.length === 0) return null;
+  const noun = entries.length === 1 ? 'smaller fix' : 'smaller fixes';
+  return `<details>\n<summary>${entries.length} ${noun} in this PR</summary>\n\n${entries.join('\n')}\n</details>`;
+}
+
 /**
  * Posts each comment as a file-level review thread and returns the findings GitHub refused.
  * The create-review endpoint does not document `subject_type` on its comments, so these
@@ -798,8 +804,13 @@ export async function postReview(
   const generalFindings: string[] = [];
   const smallerFindings: string[] = [];
   let unpostedCount = 0;
+  const followUps: string[] = [];
 
   for (const f of result.findings) {
+    if (f.tags?.includes(FOLLOW_UP_TAG)) {
+      followUps.push(formatSmallerFinding(f));
+      continue;
+    }
     if (!isBlockingSeverity(f.severity)) {
       if (interRoundDiff && isOnUnchangedCode(f, interRoundDiff)) {
         unpostedCount++;
@@ -860,6 +871,10 @@ export async function postReview(
     const readyReport = formatReadyReport(result);
     if (readyReport) {
       b += `\n\n${readyReport}`;
+    }
+    const followUpSection = formatFollowUps(followUps);
+    if (followUpSection) {
+      b += `\n\n${followUpSection}`;
     }
     if (ctx) {
       b += `\n\n${formatStatsOneLiner(ctx, reviewTimeMs ?? 0)}`;

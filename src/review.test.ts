@@ -590,6 +590,20 @@ describe('determineOutcome', () => {
       expect(result.verdictReason).toBe('prior_unaddressed');
     });
 
+    it('blocks only on blockers, new or prior, at the blockers-only bar', () => {
+      const warning: Finding = { severity: 'warning', title: 'New concern', file: 'src/y.ts', line: 2, description: 'd', reviewers: ['r'] };
+      const priorWarning = fingerprintEntriesFromLegacy([makePriorWarning()]);
+      expect(determineOutcome([warning, nitpick], priorWarning, [makeOpenThread()], undefined, undefined, undefined, undefined, true))
+        .toEqual(expect.objectContaining({ outcome: 'READY', verdictReason: 'only_nit_or_suggestion' }));
+      expect(determineOutcome([warning, nitpick], priorWarning, null, undefined, undefined, undefined, undefined, true).outcome).toBe('READY');
+
+      const priorBlocker = fingerprintEntriesFromLegacy([makePriorWarning({ severity: 'blocker' })]);
+      expect(determineOutcome([warning], priorBlocker, [makeOpenThread({ severity: 'blocker' })], undefined, undefined, undefined, undefined, true).verdictReason)
+        .toBe('prior_unaddressed');
+      expect(determineOutcome([{ ...warning, severity: 'blocker' }], [], [], undefined, undefined, undefined, undefined, true).verdictReason)
+        .toBe('required_present');
+    });
+
     it('first review round (no priors) falls through to existing rules', () => {
       const result = determineOutcome([nitpick], [], []);
       expect(result.outcome).toBe('READY');
@@ -2042,6 +2056,39 @@ describe('runReview', () => {
     expect(unnamed.findings).toEqual([expect.objectContaining({ severity: 'blocker', title: 'The retry loop never ends.', description: 'The retry loop never ends.' })]);
   });
 
+  it('turns warnings into follow-ups from round 3, while a verdict reader blocker still blocks', async () => {
+    const warning: Finding = { severity: 'warning', title: 'Unbounded retry', file: 'src/a.ts', line: 4, description: 'd', reviewers: ['r'] };
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [warning], summary: 'One warning.' });
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const runAtRound = (clients: ReviewClients, round: number) => runReview(
+      clients, makeConfig(), diff, 'raw diff', 'repo context',
+      undefined, undefined, undefined, undefined, undefined, true, [], [],
+      Array.from({ length: round - 1 }, (_, i) => buildPriorRound(i + 1, [])),
+    );
+
+    const second = await runAtRound(makeClients(), 2);
+    expect(second.outcome).toBe('ADDRESS_FIRST');
+    expect(second.verdictReason).toBe('novel_suggestion');
+    expect(second.findings[0].tags).toBeUndefined();
+
+    const third = await runAtRound(makeClients(), 3);
+    expect(third.outcome).toBe('READY');
+    expect(third.verdict).toBe('APPROVE');
+    expect(third.findings).toEqual([expect.objectContaining({ severity: 'warning', title: 'Unbounded retry', tags: ['follow-up'] })]);
+
+    const refusing = makeClients();
+    jest.mocked(refusing.judge.sendMessage).mockResolvedValue({
+      content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: ['src/a.ts:9: Tokens leak into logs.'], summary: 'One defect.', whatThisDoes: 'x', whatToTest: 'y' }),
+    });
+    const refused = await runAtRound(refusing, 3);
+    expect(refused.outcome).toBe('ADDRESS_FIRST');
+    expect(refused.verdictReason).toBe('verdict_reader');
+    expect(refused.findings).toEqual([
+      expect.objectContaining({ title: 'Unbounded retry', tags: ['follow-up'] }),
+      expect.objectContaining({ severity: 'blocker', title: 'Tokens leak into logs.' }),
+    ]);
+  });
+
   it.each([
     ['unparseable output', { content: 'I think this is fine to merge.' }],
     ['truncated output', { content: READY_VERDICT, truncated: true }],
@@ -2998,11 +3045,11 @@ describe('runReview', () => {
       threadEvaluations: [],
     });
 
-    const round1 = buildPriorRound(1, [makePriorWarningFinding({ authorReply: 'agree' })]);
-    const round2 = buildPriorRound(2, [makePriorWarningFinding({ authorReply: 'none' })]);
+    const round1 = buildPriorRound(1, [makePriorWarningFinding({ severity: 'blocker', authorReply: 'agree' })]);
+    const round2 = buildPriorRound(2, [makePriorWarningFinding({ severity: 'blocker', authorReply: 'none' })]);
     // Pass rounds out of chronological order on purpose.
     const priorRounds: RoundContext[] = [round2, round1];
-    const openThreads: OpenThread[] = [makePriorOpenThread()];
+    const openThreads: OpenThread[] = [makePriorOpenThread({ severity: 'blocker' })];
 
     const result = await runReview(
       clients, config, diff, 'raw diff', 'repo context',
