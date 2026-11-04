@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A blocker the judge marks as `hypothetical` (not reachable from any visible caller) now keeps its blocker severity. Only warnings and suggestions are still capped at nitpick with the `defensive-hardening` tag. Closes [#867](https://github.com/manki-review/manki/issues/867)
 
+### Fixed
+
+- GitHub API calls retry server errors and wait out rate limits through `@octokit/plugin-retry` and `@octokit/plugin-throttling`. A review that still cannot be posted fails the run instead of being downgraded from `REQUEST_CHANGES` or `APPROVE` to `COMMENT`. The downgrade now happens only when GitHub refuses the review event itself with a 422. Closes [#865](https://github.com/manki-review/manki/issues/865)
+
 ## [5.3.0] - 2026-05-25
 
 ### Added

@@ -617,7 +617,7 @@ describe('postReview reviewed-commit footer', () => {
 
   it('keeps the footer at the bottom when APPROVE falls back to COMMENT due to permissions', async () => {
     const createReviewMock = jest.fn()
-      .mockRejectedValueOnce(new Error('Resource not accessible by integration'))
+      .mockRejectedValueOnce(Object.assign(new Error('GitHub Actions is not permitted to approve pull requests.'), { status: 422 }))
       .mockResolvedValueOnce({ data: { id: 10 } });
     const octokit = {
       rest: { pulls: { createReview: createReviewMock } },
@@ -3046,9 +3046,9 @@ describe('postReview fallback paths', () => {
     expect(createReviewMock.mock.calls[1][0].comments).toEqual([]);
   });
 
-  it('falls back to COMMENT when APPROVE fails due to permission', async () => {
+  it('falls back to COMMENT when GitHub refuses APPROVE with a 422', async () => {
     const createReviewMock = jest.fn()
-      .mockRejectedValueOnce(new Error('Resource not accessible by integration'))
+      .mockRejectedValueOnce(Object.assign(new Error('GitHub Actions is not permitted to approve pull requests.'), { status: 422 }))
       .mockResolvedValueOnce({ data: { id: 3 } });
 
     const mockOctokit = {
@@ -3076,9 +3076,9 @@ describe('postReview fallback paths', () => {
     expect(createReviewMock.mock.calls[1][0].event).toBe('COMMENT');
   });
 
-  it('falls back to COMMENT when REQUEST_CHANGES fails', async () => {
+  it('falls back to COMMENT when GitHub refuses REQUEST_CHANGES with a 422', async () => {
     const createReviewMock = jest.fn()
-      .mockRejectedValueOnce(new Error('Permission denied'))
+      .mockRejectedValueOnce(Object.assign(new Error('Can not request changes on your own pull request'), { status: 422 }))
       .mockResolvedValueOnce({ data: { id: 4 } });
 
     const mockOctokit = {
@@ -3104,6 +3104,20 @@ describe('postReview fallback paths', () => {
     const reviewId = await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
     expect(reviewId).toBe(4);
     expect(createReviewMock.mock.calls[1][0].event).toBe('COMMENT');
+  });
+
+  it.each([
+    ['a 5xx', 502, 'Bad Gateway'],
+    ['a rate limit', 403, 'API rate limit exceeded'],
+    ['a missing permission', 403, 'Resource not accessible by integration'],
+  ])('throws instead of downgrading REQUEST_CHANGES to COMMENT on %s', async (_label, status, message) => {
+    const createReviewMock = jest.fn().mockRejectedValue(Object.assign(new Error(message), { status }));
+    const octokit = {
+      rest: { pulls: { createReview: createReviewMock } },
+    } as unknown as Parameters<typeof postReview>[0];
+
+    await expect(postReview(octokit, 'owner', 'repo', 1, 'sha', { verdict: 'REQUEST_CHANGES', summary: 'Issues found.', findings: [], highlights: [], reviewComplete: true, agentNames: [] })).rejects.toThrow(message);
+    expect(createReviewMock).toHaveBeenCalledTimes(1);
   });
 
   it('throws when COMMENT event fails (no further fallback)', async () => {

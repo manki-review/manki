@@ -830,7 +830,10 @@ export async function postReview(
       return review.id;
     }
 
-    if (event === 'COMMENT') {
+    // Only a 422 is GitHub refusing this review event (e.g. approving or requesting
+    // changes is not allowed), so a 5xx or rate limit must not weaken the verdict.
+    const status = (error as { status?: number }).status;
+    if (event === 'COMMENT' || status !== 422) {
       throw error;
     }
 
