@@ -324,6 +324,7 @@ export class AnthropicClient implements LLMClient {
           content,
           usage: extractAnthropicCLIUsage(lastResultEvent),
           latencyMs: Date.now() - startTime,
+          truncated: (lastResultEvent as { stop_reason?: unknown } | null)?.stop_reason === 'max_tokens',
         });
       });
 
@@ -411,6 +412,6 @@ export class AnthropicClient implements LLMClient {
         }
       : { ...ZERO_USAGE };
 
-    return { content, usage, latencyMs: Date.now() - startTime };
+    return { content, usage, latencyMs: Date.now() - startTime, truncated: response.stop_reason === 'max_tokens' };
   }
 }

@@ -193,6 +193,19 @@ describe('sendMessage effort option (API path)', () => {
     expect(result.latencyMs).toBeGreaterThanOrEqual(0);
   });
 
+  it.each<[string | undefined, boolean]>([
+    ['MAX_TOKENS', true],
+    ['STOP', false],
+    [undefined, false],
+  ])('reports truncated for finishReason %s', async (finishReason, expected) => {
+    mockGenerateContent.mockResolvedValueOnce({
+      response: { text: () => '[', candidates: [{ finishReason }] },
+    });
+    const client = new GeminiClient({ auth: { kind: 'apiKey', key: 'k' }, model: 'gemini-3.1-flash-lite' });
+    const result = await client.sendMessage('system', 'user');
+    expect(result.truncated).toBe(expected);
+  });
+
   it('returns zero usage when `usageMetadata` is absent', async () => {
     mockGenerateContent.mockResolvedValueOnce({
       response: { text: () => 'response' },

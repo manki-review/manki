@@ -11,6 +11,8 @@ export interface LLMResponse {
   content: string;
   usage?: LLMUsage;
   latencyMs?: number;
+  /** Whether the provider reports that the output stopped at its token limit. Unset when the provider does not expose a stop reason. */
+  truncated?: boolean;
 }
 
 /**

@@ -3,7 +3,7 @@ import { join } from 'path';
 import { StringDecoder } from 'string_decoder';
 import { promisify } from 'util';
 
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { FinishReason, GoogleGenerativeAI } from '@google/generative-ai';
 import * as core from '@actions/core';
 
 import { buildExitDiagnostics, buildTimeoutDiagnostics, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS } from './cli-utils';
@@ -386,6 +386,7 @@ export class GeminiClient implements LLMClient {
         }
       : { ...ZERO_USAGE };
 
-    return { content, usage, latencyMs: Date.now() - startTime };
+    const truncated = response.response.candidates?.[0]?.finishReason === FinishReason.MAX_TOKENS;
+    return { content, usage, latencyMs: Date.now() - startTime, truncated };
   }
 }

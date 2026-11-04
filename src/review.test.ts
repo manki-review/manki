@@ -110,86 +110,23 @@ describe('parseFindings', () => {
     expect(findings[0].severity).toBe('nitpick');
   });
 
-  it('returns empty array for invalid JSON', () => {
-    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
-    try {
-      const findings = parseFindings('this is not json', 'Reviewer');
-      expect(findings).toEqual([]);
-      expect(warnSpy).toHaveBeenCalled();
-    } finally {
-      warnSpy.mockRestore();
-    }
+  it.each<[string, string, RegExp]>([
+    ['invalid JSON', 'this is garbage text', /^malformed response \(length 20\): /],
+    ['a truncated array', '[{"severity":"blocker","title":"Cut', /^malformed response \(length 35\): /],
+    ['non-array JSON', '{"key": "value"}', /^response is not a JSON array, got object/],
+    ['null', 'null', /^response is not a JSON array, got null/],
+    ['an empty response', '', /^empty response/],
+    ['a whitespace-only response', '  \n ', /^empty response/],
+  ])('throws on %s', (_label, input, expected) => {
+    expect(() => parseFindings(input, 'Reviewer')).toThrow(expected);
   });
 
-  it('returns empty array for non-array JSON', () => {
+  it('parses empty array without warning', () => {
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     try {
-      const findings = parseFindings('{"not": "an array"}', 'Reviewer');
-      expect(findings).toEqual([]);
-      expect(warnSpy).toHaveBeenCalled();
-    } finally {
-      warnSpy.mockRestore();
-    }
-  });
-
-  it('parses empty array', () => {
-    const findings = parseFindings('[]', 'Reviewer');
-    expect(findings).toEqual([]);
-  });
-
-  it('does not warn for empty array response', () => {
-    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
-    try {
-      const findings = parseFindings('[]', 'TestAgent');
-      expect(findings).toEqual([]);
+      expect(parseFindings('[]', 'Reviewer')).toEqual([]);
+      expect(parseFindings('```json\n[]\n```', 'Reviewer')).toEqual([]);
       expect(warnSpy).not.toHaveBeenCalled();
-    } finally {
-      warnSpy.mockRestore();
-    }
-  });
-
-  it('does not warn for empty response', () => {
-    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
-    try {
-      const findings = parseFindings('', 'TestAgent');
-      expect(findings).toEqual([]);
-      expect(warnSpy).not.toHaveBeenCalled();
-    } finally {
-      warnSpy.mockRestore();
-    }
-  });
-
-  it('warns on malformed non-empty response', () => {
-    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
-    try {
-      const findings = parseFindings('this is garbage text', 'SecurityAgent');
-      expect(findings).toEqual([]);
-      expect(warnSpy).toHaveBeenCalledTimes(1);
-      expect(warnSpy.mock.calls[0][0]).toMatch(/SecurityAgent.*malformed.*length: 20/);
-    } finally {
-      warnSpy.mockRestore();
-    }
-  });
-
-  it('warns when parsed result is not an array', () => {
-    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
-    try {
-      const findings = parseFindings('{"key": "value"}', 'ArchAgent');
-      expect(findings).toEqual([]);
-      expect(warnSpy).toHaveBeenCalledTimes(1);
-      expect(warnSpy.mock.calls[0][0]).toMatch(/ArchAgent.*did not return an array.*object/);
-    } finally {
-      warnSpy.mockRestore();
-    }
-  });
-
-  it('warns when parsed result is null', () => {
-    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
-    try {
-      const findings = parseFindings('null', 'NullAgent');
-      expect(findings).toEqual([]);
-      expect(warnSpy).toHaveBeenCalledTimes(1);
-      expect(warnSpy.mock.calls[0][0]).toMatch(/NullAgent.*null/);
     } finally {
       warnSpy.mockRestore();
     }
@@ -2256,11 +2193,14 @@ describe('runReview', () => {
     expect(systemPrompt).toBe(buildReviewerSystemPrompt(agent!, config, undefined, undefined, 'low'));
   });
 
-  it('returns COMMENT verdict when all agents fail', async () => {
+  it.each<[string, () => Promise<LLMResponse>, string]>([
+    ['the provider call rejects', () => Promise.reject(new Error('API error')), 'API error'],
+    ['the output is not JSON', () => Promise.resolve({ content: 'I cannot review this.' }), 'malformed response'],
+    ['the output is truncated', () => Promise.resolve({ content: '[]', truncated: true }), 'truncated at the output token limit'],
+  ])('returns COMMENT verdict after retries when all agents fail because %s', async (_label, respond, reason) => {
+    const sendMessage = jest.fn().mockImplementation(respond);
     const clients: ReviewClients = {
-      reviewer: {
-        sendMessage: jest.fn().mockRejectedValue(new Error('API error')),
-      } as unknown as import('./providers').LLMClient,
+      reviewer: { sendMessage } as unknown as import('./providers').LLMClient,
       judge: {
         sendMessage: jest.fn(),
       } as unknown as import('./providers').LLMClient,
@@ -2274,6 +2214,11 @@ describe('runReview', () => {
     expect(result.summary).toContain('all reviewer agents failed');
     expect(result.failedAgents).toBeDefined();
     expect(result.failedAgents!.length).toBe(3);
+    expect(sendMessage).toHaveBeenCalledTimes(3 * (MAX_AGENT_RETRIES + 1));
+    for (const name of result.failedAgents!) {
+      expect(result.agentFailureReasons?.[name]).toContain(reason);
+    }
+    expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
   });
 
   it('fires onProgress callback per agent and for judging phase', async () => {
@@ -4856,8 +4801,8 @@ describe('runReview test-file nit suppression', () => {
 });
 
 describe('runPlanner', () => {
-  const makeClient = (response: string) => ({
-    sendMessage: jest.fn().mockResolvedValue({ content: response }),
+  const makeClient = (response: string, truncated = false) => ({
+    sendMessage: jest.fn().mockResolvedValue({ content: response, truncated }),
   } as unknown as import('./providers').LLMClient);
 
   it('returns valid PlannerResult from mocked LLM response', async () => {
@@ -5191,12 +5136,13 @@ describe('runPlanner', () => {
     }
   });
 
-  it.each<[string, string, string]>([
-    ['invalid teamSize', JSON.stringify({ teamSize: 99, reviewerEffort: 'medium', judgeEffort: 'medium', prType: 'feat' }), 'invalid_teamSize'],
-    ['invalid judgeEffort', JSON.stringify({ teamSize: 3, reviewerEffort: 'medium', judgeEffort: 'max', prType: 'feat' }), 'invalid_judgeEffort'],
-    ['exception', 'not valid json', 'exception'],
-  ])('sets outcome.fallbackReason on failure: %s', async (_label, response, expectedReason) => {
-    const client = makeClient(response);
+  it.each<[string, string, string, boolean]>([
+    ['invalid teamSize', JSON.stringify({ teamSize: 99, reviewerEffort: 'medium', judgeEffort: 'medium', prType: 'feat' }), 'invalid_teamSize', false],
+    ['invalid judgeEffort', JSON.stringify({ teamSize: 3, reviewerEffort: 'medium', judgeEffort: 'max', prType: 'feat' }), 'invalid_judgeEffort', false],
+    ['exception', 'not valid json', 'exception', false],
+    ['truncated', JSON.stringify({ teamSize: 3, reviewerEffort: 'medium', judgeEffort: 'medium', prType: 'feat' }), 'truncated', true],
+  ])('sets outcome.fallbackReason on failure: %s', async (_label, response, expectedReason, truncated) => {
+    const client = makeClient(response, truncated);
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
     const outcome: PlannerOutcomeSink = {};
     const result = await runPlanner(client, diff, undefined, undefined, undefined, outcome);

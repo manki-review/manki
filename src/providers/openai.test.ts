@@ -240,6 +240,17 @@ describe('sendMessage (API path)', () => {
     expect(result.latencyMs).toBeGreaterThanOrEqual(0);
   });
 
+  it.each<[string | undefined, boolean]>([
+    ['length', true],
+    ['stop', false],
+    [undefined, false],
+  ])('reports truncated for finish_reason %s', async (finishReason, expected) => {
+    mockCreate.mockResolvedValueOnce({ choices: [{ message: { content: '[' }, finish_reason: finishReason }] });
+    const client = new OpenAIClient({ auth: { kind: 'apiKey', key: 'sk' }, model: 'gpt-4o' });
+    const result = await client.sendMessage('sys', 'user');
+    expect(result.truncated).toBe(expected);
+  });
+
   it('returns zero usage when the SDK omits the usage block', async () => {
     mockCreate.mockResolvedValueOnce({ choices: [{ message: { content: 'response text' } }] });
     const client = new OpenAIClient({ auth: { kind: 'apiKey', key: 'sk' }, model: 'gpt-4o' });
