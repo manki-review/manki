@@ -789,7 +789,7 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
         ? f.duplicateOf as number
         : undefined;
       const id = parseFindingNumber(f.id);
-      const sameAs = typeof f.sameAs === 'string' ? parseFindingNumber(f.sameAs.trim().replace(/^B/i, '')) : undefined;
+      const sameAs = parseFindingNumber(typeof f.sameAs === 'string' ? f.sameAs.trim().replace(/^B/i, '') : f.sameAs);
       return {
         ...(id !== undefined && { id }),
         title: String(f.title || 'Untitled'),

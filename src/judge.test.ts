@@ -2308,13 +2308,13 @@ describe('runJudgeAgent', () => {
       title, severity, reasoning: `${severity}.`, confidence: 'high', ...(duplicateOf !== undefined && { duplicateOf }),
     });
 
-    it('maps `sameAs` to the prior blocker it names and ignores an unknown ID', async () => {
+    it.each<[string | number]>([['B2'], [2]])('maps `sameAs` %p to the prior blocker it names and ignores an unknown ID', async (sameAsTimer) => {
       const blocker = (title: string, line: number, round: number): LegacyHandoverRoundFixture => ({
         round, commitSha: `sha${round}`, timestamp: '2025-01-01T00:00:00Z',
         findings: [{ fingerprint: { file: 'a.ts', lineStart: line, lineEnd: line, slug: titleToSlug(title) }, severity: 'blocker', title, authorReply: 'none' }],
       });
       mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 'x', findings: [
-        { ...verdict('Timer never cleared', 'blocker'), id: 1, sameAs: 'B2' },
+        { ...verdict('Timer never cleared', 'blocker'), id: 1, sameAs: sameAsTimer },
         { ...verdict('Unrelated naming', 'nitpick'), id: 2, sameAs: 'B9' },
         { ...verdict('Leaked timeout handle', 'blocker', 1), id: 3, sameAs: '' },
       ] }) });
