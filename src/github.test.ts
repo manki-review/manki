@@ -1,9 +1,11 @@
 import * as core from '@actions/core';
 
-import { buildDashboard, titleToSlug, formatBlockingPriorThreads, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, truncateContextToFitBody, dynamicFence, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment } from './github';
+import { buildDashboard, titleToSlug, formatBlockingPriorThreads, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, truncateContextToFitBody, dynamicFence, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment } from './github';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { DEFAULT_CONFIG } from './config';
-import { paginateSinglePage } from './test-utils';
+import { paginateSinglePage, TEST_BOT } from './test-utils';
+
+const CUSTOM_APP_BOT: BotIdentity = { logins: ['acme-reviewer[bot]'] };
 
 describe('formatFindingComment', () => {
   const baseFinding: Finding = {
@@ -3595,10 +3597,20 @@ describe('isReviewInProgress', () => {
       workflowRun: { status: 'in_progress', conclusion: null },
     });
 
-    const result = await isReviewInProgress(octokit, 'owner', 'repo', 1);
+    const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(true);
     expect(getWorkflowRun).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', run_id: 12345 });
+  });
+
+  it('recognises a progress comment only when its author is the bot identity', async () => {
+    const { octokit } = makeMockOctokit({
+      comments: [{ body: makeRunIdBody(12345), user: { login: 'github-actions[bot]', type: 'Bot' } }],
+      workflowRun: { status: 'in_progress', conclusion: null },
+    });
+
+    expect(await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1)).toBe(true);
+    expect(await isReviewInProgress(octokit, CUSTOM_APP_BOT, 'owner', 'repo', 1)).toBe(false);
   });
 
   it('skips a config-error comment and finds the real progress comment behind it', async () => {
@@ -3618,10 +3630,10 @@ describe('isReviewInProgress', () => {
       workflowRun: { status: 'in_progress', conclusion: null },
     });
 
-    expect(await isReviewInProgress(octokit, 'owner', 'repo', 1)).toBe(true);
+    expect(await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1)).toBe(true);
     expect(getWorkflowRun).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', run_id: 12345 });
     expect(updateComment).not.toHaveBeenCalled();
-    expect(findInProgressLock([{ id: 5, body: configErrorBody, user: { login: BOT_LOGIN, type: 'Bot' }, updated_at: '2026-01-01T00:00:00Z' }], 42)).toBeNull();
+    expect(findInProgressLock([{ id: 5, body: configErrorBody, user: { login: BOT_LOGIN, type: 'Bot' }, updated_at: '2026-01-01T00:00:00Z' }], TEST_BOT, 42)).toBeNull();
   });
 
   it('returns false and marks comment as cancelled when run is completed (cancelled)', async () => {
@@ -3630,7 +3642,7 @@ describe('isReviewInProgress', () => {
       workflowRun: { status: 'completed', conclusion: 'cancelled' },
     });
 
-    const result = await isReviewInProgress(octokit, 'owner', 'repo', 1);
+    const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(false);
     expect(updateComment).toHaveBeenCalledWith(expect.objectContaining({
@@ -3645,7 +3657,7 @@ describe('isReviewInProgress', () => {
       workflowRun: { status: 'completed', conclusion: 'failure' },
     });
 
-    const result = await isReviewInProgress(octokit, 'owner', 'repo', 1);
+    const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(false);
     expect(updateComment).toHaveBeenCalled();
@@ -3656,7 +3668,7 @@ describe('isReviewInProgress', () => {
       comments: [{ body: `${BOT_MARKER}\n**Manki** — Review complete\n${REVIEW_COMPLETE_MARKER}`, user: { type: 'Bot' } }],
     });
 
-    const result = await isReviewInProgress(octokit, 'owner', 'repo', 1);
+    const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(false);
     expect(getWorkflowRun).not.toHaveBeenCalled();
@@ -3667,7 +3679,7 @@ describe('isReviewInProgress', () => {
       comments: [{ id: 55, body: `${BOT_MARKER}\n**Manki** — Review in progress`, user: { type: 'Bot' } }],
     });
 
-    const result = await isReviewInProgress(octokit, 'owner', 'repo', 1);
+    const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(false);
     expect(getWorkflowRun).not.toHaveBeenCalled();
@@ -3679,7 +3691,7 @@ describe('isReviewInProgress', () => {
       comments: [{ body: 'Some random comment', user: { type: 'User' } }],
     });
 
-    const result = await isReviewInProgress(octokit, 'owner', 'repo', 1);
+    const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(false);
   });
@@ -3689,7 +3701,7 @@ describe('isReviewInProgress', () => {
       comments: [{ body: makeRunIdBody(1), user: { type: 'User' } }],
     });
 
-    const result = await isReviewInProgress(octokit, 'owner', 'repo', 1);
+    const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(false);
   });
@@ -3699,7 +3711,7 @@ describe('isReviewInProgress', () => {
       comments: [{ body: `${BOT_MARKER}\n**Review skipped**\n\n${FORCE_REVIEW_MARKER}`, user: { type: 'Bot' } }],
     });
 
-    const result = await isReviewInProgress(octokit, 'owner', 'repo', 1);
+    const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(false);
   });
@@ -3709,7 +3721,7 @@ describe('isReviewInProgress', () => {
       comments: [{ body: `${BOT_MARKER}\nAutomatic review is paused.\n\n- [ ] Force review\n\n${FORCE_CAP_MARKER}`, user: { type: 'Bot' } }],
     });
 
-    const result = await isReviewInProgress(octokit, 'owner', 'repo', 1);
+    const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(false);
   });
@@ -3724,7 +3736,7 @@ describe('isReviewInProgress', () => {
       },
     } as unknown as Octokit;
 
-    const result = await isReviewInProgress(octokit, 'owner', 'repo', 1);
+    const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(false);
   });
@@ -3735,7 +3747,7 @@ describe('isReviewInProgress', () => {
       workflowRunError: new Error('403 forbidden'),
     });
 
-    const result = await isReviewInProgress(octokit, 'owner', 'repo', 1);
+    const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(false);
   });
@@ -3752,7 +3764,7 @@ describe('isReviewInProgress', () => {
         comments: [{ body: makeRunIdBody(4242), user: { type: 'Bot' } }],
       });
 
-      const result = await isReviewInProgress(octokit, 'owner', 'repo', 1);
+      const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
 
       expect(result).toBe(false);
       expect(getWorkflowRun).not.toHaveBeenCalled();
@@ -3771,7 +3783,7 @@ describe('isReviewInProgress', () => {
           comments: [{ id: 11, body: makeRunIdBody(500), user: { type: 'Bot' } }],
           workflowRun: { status, conclusion },
         });
-        const result = await isReviewInProgress(octokit, 'owner', 'repo', 1);
+        const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
         expect(result).toBe(false);
         expect(updateComment).toHaveBeenCalled();
       }
@@ -3784,7 +3796,7 @@ describe('isReviewInProgress', () => {
         comments: [{ body: makeRunIdBody(600), user: { type: 'Bot' } }],
         workflowRun: { status, conclusion: null },
       });
-      const result = await isReviewInProgress(octokit, 'owner', 'repo', 1);
+      const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(result).toBe(true);
     }
   });
@@ -3794,7 +3806,7 @@ describe('isReviewInProgress', () => {
       comments: [{ body: makeRunIdBody(700), user: { login: 'dependabot[bot]', type: 'Bot' } }],
     });
 
-    const result = await isReviewInProgress(octokit, 'owner', 'repo', 1);
+    const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(false);
     expect(getWorkflowRun).not.toHaveBeenCalled();
@@ -3859,7 +3871,7 @@ describe('markOwnProgressCommentCancelled', () => {
       { id: 10, body: makeBody(77), user: { type: 'Bot' } },
     ]);
 
-    const result = await markOwnProgressCommentCancelled(octokit, 'owner', 'repo', 1, 77);
+    const result = await markOwnProgressCommentCancelled(octokit, TEST_BOT, 'owner', 'repo', 1, 77);
 
     expect(result).toBe(true);
     expect(updateComment).toHaveBeenCalledWith(expect.objectContaining({
@@ -3875,7 +3887,7 @@ describe('markOwnProgressCommentCancelled', () => {
       comments.map(c => ({ ...c, user: { login: BOT_LOGIN, type: 'Bot' }, updated_at: '2026-01-01T00:00:00Z' })),
     );
 
-    expect(await markOwnProgressCommentCancelled(octokit, 'owner', 'repo', 1, 150)).toBe(true);
+    expect(await markOwnProgressCommentCancelled(octokit, TEST_BOT, 'owner', 'repo', 1, 150)).toBe(true);
     expect(updateComment).toHaveBeenCalledWith(expect.objectContaining({ comment_id: 150 }));
   });
 
@@ -3884,7 +3896,7 @@ describe('markOwnProgressCommentCancelled', () => {
       { id: 10, body: makeBody(99), user: { type: 'Bot' } },
     ]);
 
-    const result = await markOwnProgressCommentCancelled(octokit, 'owner', 'repo', 1, 77);
+    const result = await markOwnProgressCommentCancelled(octokit, TEST_BOT, 'owner', 'repo', 1, 77);
 
     expect(result).toBe(false);
     expect(updateComment).not.toHaveBeenCalled();
@@ -3896,7 +3908,7 @@ describe('markOwnProgressCommentCancelled', () => {
       { id: 10, body: cancelledBody, user: { type: 'Bot' } },
     ]);
 
-    const result = await markOwnProgressCommentCancelled(octokit, 'owner', 'repo', 1, 77);
+    const result = await markOwnProgressCommentCancelled(octokit, TEST_BOT, 'owner', 'repo', 1, 77);
 
     expect(result).toBe(false);
     expect(updateComment).not.toHaveBeenCalled();
@@ -3907,7 +3919,7 @@ describe('markOwnProgressCommentCancelled', () => {
       { id: 10, body: makeBody(77), user: { type: 'User' } },
     ]);
 
-    const result = await markOwnProgressCommentCancelled(octokit, 'owner', 'repo', 1, 77);
+    const result = await markOwnProgressCommentCancelled(octokit, TEST_BOT, 'owner', 'repo', 1, 77);
 
     expect(result).toBe(false);
   });
@@ -3917,7 +3929,7 @@ describe('markOwnProgressCommentCancelled', () => {
       { id: 10, body: makeBody(77), user: { login: 'dependabot[bot]', type: 'Bot' } },
     ]);
 
-    const result = await markOwnProgressCommentCancelled(octokit, 'owner', 'repo', 1, 77);
+    const result = await markOwnProgressCommentCancelled(octokit, TEST_BOT, 'owner', 'repo', 1, 77);
 
     expect(result).toBe(false);
     expect(updateComment).not.toHaveBeenCalled();
@@ -3929,7 +3941,7 @@ describe('markOwnProgressCommentCancelled', () => {
       rest: { issues: { listComments: jest.fn().mockRejectedValue(new Error('API error')) } },
     } as unknown as Octokit;
 
-    const result = await markOwnProgressCommentCancelled(octokit, 'owner', 'repo', 1, 77);
+    const result = await markOwnProgressCommentCancelled(octokit, TEST_BOT, 'owner', 'repo', 1, 77);
 
     expect(result).toBe(false);
   });
@@ -3944,7 +3956,7 @@ describe('markOwnProgressCommentCancelled', () => {
     ]);
 
     // Outer filter excludes CANCELLED_MARKER, so this returns false
-    const result = await markOwnProgressCommentCancelled(octokit, 'owner', 'repo', 1, 77);
+    const result = await markOwnProgressCommentCancelled(octokit, TEST_BOT, 'owner', 'repo', 1, 77);
     expect(result).toBe(false);
     expect(updateComment).not.toHaveBeenCalled();
   });
@@ -3969,7 +3981,7 @@ describe('isApprovedOnCommit', () => {
       { body: `${BOT_MARKER}\nReview`, state: 'APPROVED', commit_id: 'sha-123', user: { login: BOT_LOGIN, type: 'Bot' } },
     ]);
 
-    expect(await isApprovedOnCommit(octokit, 'owner', 'repo', 1, 'sha-123')).toBe(true);
+    expect(await isApprovedOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(true);
   });
 
   it('returns false when the approval is on a different commit', async () => {
@@ -3977,7 +3989,7 @@ describe('isApprovedOnCommit', () => {
       { body: `${BOT_MARKER}\nReview`, state: 'APPROVED', commit_id: 'sha-old', user: { login: BOT_LOGIN, type: 'Bot' } },
     ]);
 
-    expect(await isApprovedOnCommit(octokit, 'owner', 'repo', 1, 'sha-new')).toBe(false);
+    expect(await isApprovedOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-new')).toBe(false);
   });
 
   it('returns false when the latest bot review is DISMISSED', async () => {
@@ -3985,13 +3997,13 @@ describe('isApprovedOnCommit', () => {
       { body: `${BOT_MARKER}\nReview`, state: 'DISMISSED', commit_id: 'sha-123', user: { login: BOT_LOGIN, type: 'Bot' } },
     ]);
 
-    expect(await isApprovedOnCommit(octokit, 'owner', 'repo', 1, 'sha-123')).toBe(false);
+    expect(await isApprovedOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(false);
   });
 
   it('returns false when there are no bot reviews', async () => {
     const octokit = makeMockOctokit([]);
 
-    expect(await isApprovedOnCommit(octokit, 'owner', 'repo', 1, 'sha-123')).toBe(false);
+    expect(await isApprovedOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(false);
   });
 
   it('returns false when the API call fails', async () => {
@@ -4000,7 +4012,7 @@ describe('isApprovedOnCommit', () => {
       rest: { pulls: { listReviews: {} } },
     } as unknown as Octokit;
 
-    expect(await isApprovedOnCommit(octokit, 'owner', 'repo', 1, 'sha-123')).toBe(false);
+    expect(await isApprovedOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(false);
   });
 
   it('picks the latest non-dismissed review when multiple exist', async () => {
@@ -4009,7 +4021,7 @@ describe('isApprovedOnCommit', () => {
       { body: `${BOT_MARKER}\nNew`, state: 'APPROVED', commit_id: 'sha-123', user: { login: BOT_LOGIN, type: 'Bot' } },
     ]);
 
-    expect(await isApprovedOnCommit(octokit, 'owner', 'repo', 1, 'sha-123')).toBe(true);
+    expect(await isApprovedOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(true);
   });
 
   it('returns false when latest non-dismissed review is CHANGES_REQUESTED', async () => {
@@ -4018,7 +4030,7 @@ describe('isApprovedOnCommit', () => {
       { body: `${BOT_MARKER}\nNew`, state: 'CHANGES_REQUESTED', commit_id: 'sha-123', user: { login: BOT_LOGIN, type: 'Bot' } },
     ]);
 
-    expect(await isApprovedOnCommit(octokit, 'owner', 'repo', 1, 'sha-123')).toBe(false);
+    expect(await isApprovedOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(false);
   });
 
   it('ignores reviews from other bots without the bot marker', async () => {
@@ -4026,7 +4038,7 @@ describe('isApprovedOnCommit', () => {
       { body: 'Some other bot review', state: 'APPROVED', commit_id: 'sha-123', user: { type: 'Bot' } },
     ]);
 
-    expect(await isApprovedOnCommit(octokit, 'owner', 'repo', 1, 'sha-123')).toBe(false);
+    expect(await isApprovedOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(false);
   });
 });
 
@@ -4053,7 +4065,7 @@ describe('hasBotReviewOnCommit', () => {
       { body: `${BOT_MARKER}\nReview`, state, commit_id: 'sha-123', user: { login: BOT_LOGIN, type: 'Bot' } },
     ]);
 
-    expect(await hasBotReviewOnCommit(octokit, 'owner', 'repo', 1, 'sha-123')).toBe(true);
+    expect(await hasBotReviewOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(true);
   });
 
   it('returns false when the only bot review on the SHA is DISMISSED', async () => {
@@ -4061,7 +4073,7 @@ describe('hasBotReviewOnCommit', () => {
       { body: `${BOT_MARKER}\nReview`, state: 'DISMISSED', commit_id: 'sha-123', user: { login: BOT_LOGIN, type: 'Bot' } },
     ]);
 
-    expect(await hasBotReviewOnCommit(octokit, 'owner', 'repo', 1, 'sha-123')).toBe(false);
+    expect(await hasBotReviewOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(false);
   });
 
   it('returns false when the only bot review is on a different commit', async () => {
@@ -4069,13 +4081,13 @@ describe('hasBotReviewOnCommit', () => {
       { body: `${BOT_MARKER}\nReview`, state: 'COMMENTED', commit_id: 'sha-old', user: { login: BOT_LOGIN, type: 'Bot' } },
     ]);
 
-    expect(await hasBotReviewOnCommit(octokit, 'owner', 'repo', 1, 'sha-new')).toBe(false);
+    expect(await hasBotReviewOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-new')).toBe(false);
   });
 
   it('returns false when there are no bot reviews', async () => {
     const octokit = makeMockOctokit([]);
 
-    expect(await hasBotReviewOnCommit(octokit, 'owner', 'repo', 1, 'sha-123')).toBe(false);
+    expect(await hasBotReviewOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(false);
   });
 
   it('returns false on API error (fail-open)', async () => {
@@ -4084,7 +4096,7 @@ describe('hasBotReviewOnCommit', () => {
       rest: { pulls: { listReviews: {} } },
     } as unknown as Octokit;
 
-    expect(await hasBotReviewOnCommit(octokit, 'owner', 'repo', 1, 'sha-123')).toBe(false);
+    expect(await hasBotReviewOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(false);
   });
 
   it('ignores non-bot reviewers', async () => {
@@ -4092,7 +4104,16 @@ describe('hasBotReviewOnCommit', () => {
       { state: 'APPROVED', commit_id: 'sha-123', user: { login: 'human', type: 'User' } },
     ]);
 
-    expect(await hasBotReviewOnCommit(octokit, 'owner', 'repo', 1, 'sha-123')).toBe(false);
+    expect(await hasBotReviewOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(false);
+  });
+
+  it('counts a review only when its author is the bot identity', async () => {
+    const octokit = makeMockOctokit([
+      { body: `${BOT_MARKER}\nReview`, state: 'COMMENTED', commit_id: 'sha-123', user: { login: 'github-actions[bot]', type: 'Bot' } },
+    ]);
+
+    expect(await hasBotReviewOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(true);
+    expect(await hasBotReviewOnCommit(octokit, CUSTOM_APP_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(false);
   });
 
   it('returns true when a prior bot review is on the SHA and a later DISMISSED one is too', async () => {
@@ -4101,7 +4122,7 @@ describe('hasBotReviewOnCommit', () => {
       { state: 'DISMISSED', commit_id: 'sha-123', body: `${BOT_MARKER}\nreview body`, user: { login: BOT_LOGIN, type: 'Bot' } },
     ]);
 
-    expect(await hasBotReviewOnCommit(octokit, 'owner', 'repo', 1, 'sha-123')).toBe(true);
+    expect(await hasBotReviewOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(true);
   });
 
   it('returns true when the matching review is the 501st (beyond the 500-cap), not among the first 500', async () => {
@@ -4114,7 +4135,7 @@ describe('hasBotReviewOnCommit', () => {
     const newest = { state: 'COMMENTED', commit_id: 'sha-new', body: `${BOT_MARKER}\nreview body`, user: { login: BOT_LOGIN, type: 'Bot' } };
     const octokit = makeMockOctokit([...old, newest]);
 
-    expect(await hasBotReviewOnCommit(octokit, 'owner', 'repo', 1, 'sha-new')).toBe(true);
+    expect(await hasBotReviewOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-new')).toBe(true);
   });
 });
 
@@ -4138,7 +4159,7 @@ describe('findBotReviewOnCommit', () => {
     const reviewA2 = { id: 3, state: 'CHANGES_REQUESTED', commit_id: 'sha-a', body: `${BOT_MARKER}\nreview body`, user: { login: BOT_LOGIN, type: 'Bot' } };
     const octokit = makeMockOctokit([reviewA1, reviewB, reviewA2]);
 
-    const result = await findBotReviewOnCommit(octokit, 'owner', 'repo', 1, 'sha-a');
+    const result = await findBotReviewOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-a');
     expect(result?.id).toBe(3);
   });
 
@@ -4146,7 +4167,7 @@ describe('findBotReviewOnCommit', () => {
     const reviewB = { id: 2, state: 'APPROVED', commit_id: 'sha-b', user: { login: BOT_LOGIN, type: 'Bot' } };
     const octokit = makeMockOctokit([reviewB]);
 
-    expect(await findBotReviewOnCommit(octokit, 'owner', 'repo', 1, 'sha-a')).toBeUndefined();
+    expect(await findBotReviewOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-a')).toBeUndefined();
   });
 });
 
@@ -4166,7 +4187,7 @@ describe('postAppWarningIfNeeded', () => {
   it('posts warning comment when no existing warning is present', async () => {
     const { octokit, createComment } = makeOctokit([]);
 
-    await postAppWarningIfNeeded(octokit, 'owner', 'repo', 1);
+    await postAppWarningIfNeeded(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(createComment).toHaveBeenCalledWith(expect.objectContaining({
       body: expect.stringContaining(APP_WARNING_MARKER),
@@ -4181,7 +4202,7 @@ describe('postAppWarningIfNeeded', () => {
       { body: `${APP_WARNING_MARKER}\nWarning text`, user: { login: 'github-actions[bot]' } },
     ]);
 
-    await postAppWarningIfNeeded(octokit, 'owner', 'repo', 1);
+    await postAppWarningIfNeeded(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(createComment).not.toHaveBeenCalled();
   });
@@ -4191,7 +4212,7 @@ describe('postAppWarningIfNeeded', () => {
       { body: `${APP_WARNING_MARKER}\nWarning text`, user: { login: BOT_LOGIN } },
     ]);
 
-    await postAppWarningIfNeeded(octokit, 'owner', 'repo', 1);
+    await postAppWarningIfNeeded(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(createComment).not.toHaveBeenCalled();
   });
@@ -4201,7 +4222,7 @@ describe('postAppWarningIfNeeded', () => {
       { body: `${APP_WARNING_MARKER}\nCopied marker`, user: { login: 'some-human' } },
     ]);
 
-    await postAppWarningIfNeeded(octokit, 'owner', 'repo', 1);
+    await postAppWarningIfNeeded(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(createComment).toHaveBeenCalledWith(expect.objectContaining({
       body: expect.stringContaining(APP_WARNING_MARKER),
@@ -4213,7 +4234,7 @@ describe('postAppWarningIfNeeded', () => {
       { body: `${APP_WARNING_MARKER}\nWarning`, user: null },
     ]);
 
-    await expect(postAppWarningIfNeeded(octokit, 'owner', 'repo', 1)).resolves.toBeUndefined();
+    await expect(postAppWarningIfNeeded(octokit, TEST_BOT, 'owner', 'repo', 1)).resolves.toBeUndefined();
     expect(createComment).toHaveBeenCalled();
   });
 });
@@ -4259,7 +4280,7 @@ describe('cancelActiveReviewRun', () => {
   it('returns false when no progress comment exists', async () => {
     const { octokit, cancelWorkflowRun } = makeMockOctokit({ comment: null });
 
-    const result = await cancelActiveReviewRun(octokit, 'owner', 'repo', 1);
+    const result = await cancelActiveReviewRun(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(false);
     expect(cancelWorkflowRun).not.toHaveBeenCalled();
@@ -4270,7 +4291,7 @@ describe('cancelActiveReviewRun', () => {
       comment: { id: 10, body: `${BOT_MARKER}\n**Manki** — Review in progress` },
     });
 
-    const result = await cancelActiveReviewRun(octokit, 'owner', 'repo', 1);
+    const result = await cancelActiveReviewRun(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(false);
     expect(cancelWorkflowRun).not.toHaveBeenCalled();
@@ -4287,7 +4308,7 @@ describe('cancelActiveReviewRun', () => {
         comment: { id: 11, body: makeRunIdBody(9999) },
       });
 
-      const result = await cancelActiveReviewRun(octokit, 'owner', 'repo', 1);
+      const result = await cancelActiveReviewRun(octokit, TEST_BOT, 'owner', 'repo', 1);
 
       expect(result).toBe(false);
       expect(cancelWorkflowRun).not.toHaveBeenCalled();
@@ -4307,7 +4328,7 @@ describe('cancelActiveReviewRun', () => {
       updateComment,
     });
 
-    const result = await cancelActiveReviewRun(octokit, 'owner', 'repo', 1);
+    const result = await cancelActiveReviewRun(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(true);
     expect(cancelWorkflowRun).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', run_id: 5555 });
@@ -4325,7 +4346,7 @@ describe('cancelActiveReviewRun', () => {
       cancelError: new Error('API failure'),
     });
 
-    const result = await cancelActiveReviewRun(octokit, 'owner', 'repo', 1);
+    const result = await cancelActiveReviewRun(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(false);
     expect(cancelWorkflowRun).toHaveBeenCalled();
@@ -4338,7 +4359,7 @@ describe('cancelActiveReviewRun', () => {
       runStatus: 'completed',
     });
 
-    const result = await cancelActiveReviewRun(octokit, 'owner', 'repo', 1);
+    const result = await cancelActiveReviewRun(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(false);
     expect(cancelWorkflowRun).not.toHaveBeenCalled();
@@ -4357,7 +4378,7 @@ describe('cancelActiveReviewRun', () => {
       },
     } as unknown as Octokit;
 
-    const result = await cancelActiveReviewRun(octokit, 'owner', 'repo', 1);
+    const result = await cancelActiveReviewRun(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(false);
     expect(octokit.rest.actions.cancelWorkflowRun).not.toHaveBeenCalled();
@@ -4371,7 +4392,7 @@ describe('cancelActiveReviewRun', () => {
       runStatus: 'queued',
     });
 
-    const result = await cancelActiveReviewRun(octokit, 'owner', 'repo', 1);
+    const result = await cancelActiveReviewRun(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(true);
     expect(cancelWorkflowRun).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', run_id: 5556 });
@@ -4386,7 +4407,7 @@ describe('cancelActiveReviewRun', () => {
     });
     getWorkflowRun.mockRejectedValue(new Error('Not Found'));
 
-    const result = await cancelActiveReviewRun(octokit, 'owner', 'repo', 1);
+    const result = await cancelActiveReviewRun(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(false);
     expect(cancelWorkflowRun).not.toHaveBeenCalled();
@@ -4403,7 +4424,7 @@ describe('cancelActiveReviewRun', () => {
         runStatus,
       });
 
-      const result = await cancelActiveReviewRun(octokit, 'owner', 'repo', 1);
+      const result = await cancelActiveReviewRun(octokit, TEST_BOT, 'owner', 'repo', 1);
 
       expect(result).toBe(true);
       expect(cancelWorkflowRun).toHaveBeenCalled();
@@ -4420,11 +4441,24 @@ describe('cancelActiveReviewRun', () => {
       updateComment,
     });
 
-    const result = await cancelActiveReviewRun(octokit, 'owner', 'repo', 1);
+    const result = await cancelActiveReviewRun(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(true);
     expect(cancelWorkflowRun).toHaveBeenCalled();
     expect(updateComment).toHaveBeenCalled();
+  });
+});
+
+describe('isBotLogin', () => {
+  it('matches the REST and GraphQL forms of each bot login', () => {
+    for (const login of ['manki-review[bot]', 'manki-review', 'github-actions[bot]', 'github-actions']) {
+      expect(isBotLogin(TEST_BOT, login)).toBe(true);
+    }
+    expect(isBotLogin(CUSTOM_APP_BOT, 'acme-reviewer')).toBe(true);
+    expect(isBotLogin(CUSTOM_APP_BOT, 'manki-review[bot]')).toBe(false);
+    for (const login of ['someone', 'manki-review[bot][bot]', '', null, undefined]) {
+      expect(isBotLogin(TEST_BOT, login)).toBe(false);
+    }
   });
 });
 
@@ -4446,19 +4480,19 @@ describe('findInProgressLock', () => {
   it('returns null when no in-progress bot comment exists (lock acquisition)', () => {
     const comments = [makeComment(1, 'Some user comment', 'someone', 'User', '2026-01-01T00:00:00Z')];
 
-    expect(findInProgressLock(comments, 42)).toBeNull();
+    expect(findInProgressLock(comments, TEST_BOT, 42)).toBeNull();
   });
 
   it('returns the lock when a different run posted an in-progress marker (contention)', () => {
     const comments = [botComment(7, makeInProgressBody(999), '2026-05-22T12:00:00Z')];
 
-    expect(findInProgressLock(comments, 42)).toEqual({ runId: 999, updatedAt: '2026-05-22T12:00:00Z', commentId: 7 });
+    expect(findInProgressLock(comments, TEST_BOT, 42)).toEqual({ runId: 999, updatedAt: '2026-05-22T12:00:00Z', commentId: 7 });
   });
 
   it('ignores the current run\'s own in-progress marker (self re-entry)', () => {
     const comments = [botComment(7, makeInProgressBody(42))];
 
-    expect(findInProgressLock(comments, 42)).toBeNull();
+    expect(findInProgressLock(comments, TEST_BOT, 42)).toBeNull();
   });
 
   it('skips comments bearing terminal markers (complete, cancelled, force-review, force-cap)', () => {
@@ -4469,22 +4503,23 @@ describe('findInProgressLock', () => {
       botComment(4, `${makeInProgressBody(104)}\n${FORCE_CAP_MARKER}`),
     ];
 
-    expect(findInProgressLock(comments, 42)).toBeNull();
+    expect(findInProgressLock(comments, TEST_BOT, 42)).toBeNull();
   });
 
   it('skips comments without a parseable run-id marker (legacy)', () => {
     const comments = [botComment(1, `${BOT_MARKER}\n**Manki** — Review in progress`)];
 
-    expect(findInProgressLock(comments, 42)).toBeNull();
+    expect(findInProgressLock(comments, TEST_BOT, 42)).toBeNull();
   });
 
-  it('skips comments that are not from the bot login', () => {
+  it('skips comments that are not from the bot identity', () => {
     const comments = [
-      makeComment(1, makeInProgressBody(999), 'github-actions[bot]', 'Bot', '2026-01-01T00:00:00Z'),
-      makeComment(2, makeInProgressBody(888), 'human', 'User', '2026-01-01T00:00:00Z'),
+      makeComment(1, makeInProgressBody(888), 'human', 'User', '2026-01-01T00:00:00Z'),
+      makeComment(2, makeInProgressBody(999), 'github-actions[bot]', 'Bot', '2026-01-01T00:00:00Z'),
     ];
 
-    expect(findInProgressLock(comments, 42)).toBeNull();
+    expect(findInProgressLock(comments, CUSTOM_APP_BOT, 42)).toBeNull();
+    expect(findInProgressLock(comments, TEST_BOT, 42)).toEqual({ runId: 999, updatedAt: '2026-01-01T00:00:00Z', commentId: 2 });
   });
 
   it('returns the first (most recent) lock when multiple in-progress markers exist', () => {
@@ -4493,7 +4528,7 @@ describe('findInProgressLock', () => {
       botComment(10, makeInProgressBody(100), '2026-05-22T11:55:00Z'),
     ];
 
-    expect(findInProgressLock(comments, 42)).toEqual({ runId: 200, updatedAt: '2026-05-22T12:05:00Z', commentId: 20 });
+    expect(findInProgressLock(comments, TEST_BOT, 42)).toEqual({ runId: 200, updatedAt: '2026-05-22T12:05:00Z', commentId: 20 });
   });
 });
 

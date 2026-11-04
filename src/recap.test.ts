@@ -2,7 +2,7 @@ import { Finding, FindingFingerprintEntry, RoundContext } from './types';
 import { Suppression } from './memory';
 import { classifyAuthorReply, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment } from './recap';
 import { BOT_LOGIN, titleToSlug } from './github';
-import { LAST_PAGE, paginateSinglePage } from './test-utils';
+import { LAST_PAGE, paginateSinglePage, TEST_BOT } from './test-utils';
 import { determineOutcome } from './review';
 import { applyCrossRoundSuppression } from './judge';
 
@@ -577,7 +577,7 @@ describe('fetchRecapState', () => {
       }),
     ]);
 
-    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
     expect(state.previousFindings).toHaveLength(2);
     expect(state.previousFindings[0].status).toBe('resolved');
     expect(state.previousFindings[1].status).toBe('open');
@@ -586,7 +586,7 @@ describe('fetchRecapState', () => {
 
   it('reports `openThreadsState: "empty"` when GraphQL returned zero threads', async () => {
     const octokit = mockOctokit([]);
-    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
     expect(state.previousFindings).toHaveLength(0);
     expect(state.openThreadsState).toBe('empty');
   });
@@ -604,7 +604,7 @@ describe('fetchRecapState', () => {
       }),
     ]);
 
-    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
     expect(state.previousFindings).toHaveLength(0);
   });
 
@@ -628,7 +628,7 @@ describe('fetchRecapState', () => {
       }),
     ]);
 
-    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
     expect(state.previousFindings).toHaveLength(1);
     expect(state.previousFindings[0].status).toBe('replied');
   });
@@ -644,7 +644,7 @@ describe('fetchRecapState', () => {
       },
     } as unknown as ReturnType<typeof import('@actions/github').getOctokit>;
 
-    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
     expect(state.previousFindings).toHaveLength(0);
     expect(state.openThreadsState).toBe('fetch_failed');
   });
@@ -663,7 +663,7 @@ describe('fetchRecapState', () => {
       }),
     ]);
 
-    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
     expect(state.previousFindings[0].severity).toBe('nitpick');
   });
 
@@ -680,7 +680,7 @@ describe('fetchRecapState', () => {
       }),
     ]);
 
-    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
     expect(state.previousFindings[0].severity).toBe('unknown');
   });
 
@@ -706,7 +706,7 @@ describe('fetchRecapState', () => {
       }),
     ]);
 
-    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
     expect(state.previousFindings[0].severity).toBe('blocker');
     expect(state.previousFindings[1].severity).toBe('nitpick');
   });
@@ -737,7 +737,7 @@ describe('fetchRecapState', () => {
       }),
     ]);
 
-    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
     expect(state.previousFindings[0].title).toBe('Prompt injection via unsanitized file paths');
     expect(state.previousFindings[1].title).toBe('LLM dedup only compares against resolved findings');
   });
@@ -747,7 +747,7 @@ describe('fetchRecapState', () => {
       makeThread({ id: 't1', line: null }),
     ]);
 
-    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
     expect(state.previousFindings[0].line).toBe(0);
   });
 
@@ -765,7 +765,7 @@ describe('fetchRecapState', () => {
       }),
     ]);
 
-    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
     expect(state.previousFindings[0].threadUrl).toBe('https://github.com/owner/repo/pull/1#discussion_r123');
   });
 
@@ -782,7 +782,7 @@ describe('fetchRecapState', () => {
       }),
     ]);
 
-    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
     expect(state.previousFindings[0].threadUrl).toBe('');
   });
 
@@ -806,7 +806,7 @@ describe('fetchRecapState', () => {
       }),
     ]);
 
-    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
     expect(state.previousFindings[0].authorReplyText).toBe('Fixed, done.');
   });
 
@@ -834,7 +834,7 @@ describe('fetchRecapState', () => {
       }),
     ]);
 
-    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
     expect(state.previousFindings[0].authorReplyText).toBe('Actually, disagree -- reverting.');
   });
 
@@ -857,12 +857,16 @@ describe('fetchRecapState', () => {
               body: 'Another follow-up from the Actions identity.',
               author: { login: 'github-actions[bot]' },
             },
+            {
+              body: 'GraphQL reports the App without the `[bot]` suffix.',
+              author: { login: 'manki-review' },
+            },
           ],
         },
       }),
     ]);
 
-    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
     expect(state.previousFindings[0].authorReplyText).toBeUndefined();
     expect(state.previousFindings[1].authorReplyText).toBeUndefined();
     expect(state.previousFindings[1].status).toBe('open');
@@ -897,7 +901,7 @@ describe('fetchRecapState', () => {
     });
     const octokit = { ...mockOctokit([]), graphql } as unknown as ReturnType<typeof mockOctokit>;
 
-    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(state.previousFindings).toHaveLength(150);
     expect(state.previousFindings[149]).toMatchObject({ status: 'replied', authorReplyText: 'Final answer.' });
@@ -908,7 +912,7 @@ describe('fetchRecapState', () => {
     ]);
 
     threadCommentsError = new Error('network down');
-    const partial = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    const partial = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(partial.openThreadsState).toBe('fetched');
     expect(partial.previousFindings).toHaveLength(150);
@@ -921,7 +925,7 @@ describe('fetchRecapState', () => {
       makeThread({ id: 't1', line: 44, startLine: 40 }),
     ]);
 
-    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
     expect(state.previousFindings[0].line).toBe(44);
     expect(state.previousFindings[0].lineStart).toBe(40);
   });
@@ -931,7 +935,7 @@ describe('fetchRecapState', () => {
       makeThread({ id: 't1', line: 42, startLine: null }),
     ]);
 
-    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
     expect(state.previousFindings[0].lineStart).toBe(42);
   });
 
@@ -953,7 +957,7 @@ describe('fetchRecapState', () => {
       }),
     ]);
 
-    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
     expect(state.previousFindings[0].authorReplyLogin).toBe('pr-author');
     expect(state.previousFindings[0].authorReplyText).toBe('Fixed, done.');
   });
@@ -982,7 +986,7 @@ describe('fetchRecapState', () => {
       }),
     ]);
 
-    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
     expect(state.previousFindings[0].description).toBe('The pointer is dereferenced without a prior null check.');
     expect(state.previousFindings[0].suggestedFix).toBe('Add null check before dereferencing ptr.');
   });
@@ -1010,7 +1014,7 @@ describe('fetchRecapState', () => {
       }),
     ]);
 
-    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
     expect(state.previousFindings[0].description).toBe('Cast lacks a type guard.');
     expect(state.previousFindings[0].suggestedFix).toBeUndefined();
   });
@@ -1039,7 +1043,7 @@ describe('fetchRecapState', () => {
       }),
     ]);
 
-    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+    const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
     expect(state.previousFindings[0].description).toBe('The variable name is misleading.');
     expect(state.previousFindings[0].suggestedFix).toBeUndefined();
   });
@@ -1085,7 +1089,7 @@ describe('fetchRecapState', () => {
 
     it('returns empty priorRounds when no review summary comments exist', async () => {
       const octokit = mockOctokit([], []);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds).toEqual([]);
     });
 
@@ -1094,7 +1098,7 @@ describe('fetchRecapState', () => {
       const octokit = mockOctokit([], [
         { id: 100, body: `Header\n\n${detailsBlock(ctx)}\n`, user: { login: BOT_LOGIN } },
       ]);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds).toHaveLength(1);
       expect(state.priorRounds[0].meta.round).toBe(1);
       expect(state.priorRounds[0].meta.mankiVersion).toBe('4.7.0');
@@ -1105,7 +1109,7 @@ describe('fetchRecapState', () => {
       const octokit = mockOctokit([], [
         { id: 200, body: `Public summary\n${htmlCommentBlock(ctx)}\n`, user: { login: BOT_LOGIN } },
       ]);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds).toHaveLength(1);
       expect(state.priorRounds[0].meta.round).toBe(2);
     });
@@ -1121,7 +1125,7 @@ describe('fetchRecapState', () => {
       const octokit = mockOctokit([], [
         { id: 100, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
       ]);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds).toHaveLength(1);
       expect(state.priorRounds[0].planner.prType).toBe(canonical);
     });
@@ -1133,7 +1137,7 @@ describe('fetchRecapState', () => {
       const octokit = mockOctokit([], [
         { id: 100, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
       ]);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds[0].planner.prType).toBe('docs');
     });
 
@@ -1154,7 +1158,7 @@ describe('fetchRecapState', () => {
       const octokit = mockOctokit([], [
         { id: 100, body: detailsBlock(legacy), user: { login: BOT_LOGIN } },
       ]);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds).toHaveLength(1);
       expect(state.priorRounds[0].planner.source).toBe(expectedSource);
     });
@@ -1168,7 +1172,7 @@ describe('fetchRecapState', () => {
       const octokit = mockOctokit([], [
         { id: 100, body: detailsBlock(legacy), user: { login: BOT_LOGIN } },
       ]);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds).toHaveLength(1);
       expect(state.priorRounds[0].planner.coreAgentInjections).toEqual([]);
     });
@@ -1180,7 +1184,7 @@ describe('fetchRecapState', () => {
       const octokit = mockOctokit([], [
         { id: 100, body, user: { login: BOT_LOGIN } },
       ]);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds).toHaveLength(1);
       expect(state.priorRounds[0].meta.round).toBe(1);
       expect(state.priorRounds[0].judge.summary).toBe('from details');
@@ -1200,7 +1204,7 @@ describe('fetchRecapState', () => {
       const octokit = mockOctokit([], [
         { id: 100, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
       ]);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds).toHaveLength(1);
       expect(state.priorRounds[0].findings.entries).toEqual([entry]);
     });
@@ -1243,7 +1247,7 @@ describe('fetchRecapState', () => {
         { id: 100, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
       ]);
 
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       const attached = state.priorRounds[0].findings.entries;
       expect(attached.map(e => e.threadId)).toEqual(['T_RESOLVED', undefined, undefined, 'T_FILE']);
 
@@ -1282,14 +1286,14 @@ describe('fetchRecapState', () => {
       });
       const octokit = mockOctokit([
         thread('T_HUMAN', files.human, 'alice'),
-        thread('T_BOT', files.bot, BOT_LOGIN),
+        thread('T_BOT', files.bot, 'manki-review'),
         thread('T_JUDGE', files.judge, BOT_LOGIN),
         thread('T_UNKNOWN', files.unknown, null),
       ], [
         { id: 100, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
       ]);
 
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.previousFindings.map(f => f.status)).toEqual(['resolved', 'auto-resolved', 'resolved', 'auto-resolved']);
 
       const newFindings = Object.values(files).map(file => makeFinding({ title, file, line: 10 }));
@@ -1322,7 +1326,7 @@ describe('fetchRecapState', () => {
       const octokit = mockOctokit([], [
         { id: 100, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
       ]);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds).toHaveLength(1);
       expect(state.priorRounds[0].findings.entries[0].suggestedFix).toBe(entry.suggestedFix);
     });
@@ -1341,7 +1345,7 @@ describe('fetchRecapState', () => {
       const octokit = mockOctokit([], [
         { id: 200, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } },
       ]);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds[0].findings.entries[0].specialist).toBe('Style');
       expect(state.priorRounds[0].findings.entries[0].suggestedFix).toBe('Remove the unused `path` import.');
       expect(state.priorRounds[0].findings.entries[0].title).toBe('Unused import');
@@ -1356,7 +1360,7 @@ describe('fetchRecapState', () => {
         { id: 12, body: detailsBlock(c1), user: { login: BOT_LOGIN } },
         { id: 13, body: htmlCommentBlock(c2), user: { login: BOT_LOGIN } },
       ]);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds.map(r => r.meta.round)).toEqual([1, 2, 3]);
     });
 
@@ -1365,7 +1369,7 @@ describe('fetchRecapState', () => {
       const octokit = mockOctokit([], [
         { id: 500, body: malformed, user: { login: BOT_LOGIN } },
       ]);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds).toEqual([]);
       expect(core.warning).toHaveBeenCalledWith(
         expect.stringContaining('https://github.com/owner/repo/pull/1#pullrequestreview-500'),
@@ -1378,7 +1382,7 @@ describe('fetchRecapState', () => {
       const octokit = mockOctokit([], [
         { id: 600, body, user: { login: BOT_LOGIN } },
       ]);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds).toEqual([]);
       expect(core.warning).toHaveBeenCalledWith(
         expect.stringContaining('meta.round'),
@@ -1392,7 +1396,7 @@ describe('fetchRecapState', () => {
         { id: 10, body: detailsBlock(earlier), user: { login: BOT_LOGIN } },
         { id: 20, body: detailsBlock(later), user: { login: BOT_LOGIN } },
       ]);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds).toHaveLength(1);
       expect(state.priorRounds[0].judge.summary).toBe('final version');
       expect(core.warning).toHaveBeenCalledWith(
@@ -1405,7 +1409,7 @@ describe('fetchRecapState', () => {
       const octokit = mockOctokit([], [
         { id: 700, body, user: { login: BOT_LOGIN } },
       ]);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds).toEqual([]);
       expect(core.warning).toHaveBeenCalledWith(
         expect.stringContaining('not an object'),
@@ -1418,7 +1422,7 @@ describe('fetchRecapState', () => {
       const octokit = mockOctokit([], [
         { id: 800, body, user: { login: BOT_LOGIN } },
       ]);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds).toEqual([]);
       expect(core.warning).toHaveBeenCalledWith(
         expect.stringContaining('missing meta'),
@@ -1431,7 +1435,7 @@ describe('fetchRecapState', () => {
       const octokit = mockOctokit([], [
         { id: 900, body, user: { login: BOT_LOGIN } },
       ]);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds).toEqual([]);
       expect(core.warning).toHaveBeenCalledWith(
         expect.stringContaining('meta.mankiVersion'),
@@ -1454,7 +1458,7 @@ describe('fetchRecapState', () => {
           },
         },
       } as unknown as ReturnType<typeof import('@actions/github').getOctokit>;
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds).toEqual([]);
       expect(core.warning).toHaveBeenCalledWith(
         expect.stringContaining('Failed to fetch prior round contexts'),
@@ -1472,7 +1476,7 @@ describe('fetchRecapState', () => {
         if (text.trim() === sentinel) throw new TypeError('unexpected mock error');
         return original(text);
       });
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       spy.mockRestore();
       expect(state.priorRounds).toEqual([]);
       expect(core.warning).toHaveBeenCalledWith(
@@ -1480,13 +1484,15 @@ describe('fetchRecapState', () => {
       );
     });
 
-    it('excludes reviews from non-bot users', async () => {
-      const ctx = makeRoundContext(1);
+    it('reads context only from reviews by the bot identity', async () => {
       const octokit = mockOctokit([], [
-        { id: 100, body: detailsBlock(ctx), user: { login: 'some-user' } },
+        { id: 100, body: detailsBlock(makeRoundContext(1)), user: { login: 'some-user' } },
+        { id: 101, body: detailsBlock(makeRoundContext(2)), user: { login: 'github-actions[bot]' } },
       ]);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
-      expect(state.priorRounds).toEqual([]);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
+      expect(state.priorRounds.map(r => r.meta.round)).toEqual([2]);
+      const customApp = await fetchRecapState(octokit, { logins: ['acme-reviewer[bot]'] }, 'owner', 'repo', 1);
+      expect(customApp.priorRounds).toEqual([]);
     });
 
     it('skips malformed JSON block but still loads subsequent valid blocks', async () => {
@@ -1496,7 +1502,7 @@ describe('fetchRecapState', () => {
         { id: 500, body: malformed, user: { login: BOT_LOGIN } },
         { id: 501, body: detailsBlock(ctx3), user: { login: BOT_LOGIN } },
       ]);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds).toHaveLength(1);
       expect(state.priorRounds[0].meta.round).toBe(3);
       expect(core.warning).toHaveBeenCalledWith(
@@ -1509,7 +1515,7 @@ describe('fetchRecapState', () => {
       const octokit = mockOctokit([], [
         { id: 400, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
       ]);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds).toHaveLength(1);
       expect(state.priorRounds[0].judge.summary).toBe('use `foo()` here');
     });
@@ -1519,7 +1525,7 @@ describe('fetchRecapState', () => {
       const octokit = mockOctokit([], [
         { id: 300, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } },
       ]);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds).toHaveLength(1);
       expect(state.priorRounds[0].judge.summary).toBe('Verdict --> pass');
     });
@@ -1532,7 +1538,7 @@ describe('fetchRecapState', () => {
       }));
       const octokit = mockOctokit([], reviews.slice(0, 100));
       jest.mocked(octokit.paginate).mockResolvedValueOnce(reviews);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(octokit.paginate).toHaveBeenCalledWith(octokit.rest.pulls.listReviews, expect.objectContaining({ per_page: 100 }));
       expect(state.priorRounds).toHaveLength(150);
       expect(core.warning).not.toHaveBeenCalled();
@@ -1545,7 +1551,7 @@ describe('fetchRecapState', () => {
       const octokit = mockOctokit([], [
         { id: 100, body, user: { login: BOT_LOGIN } },
       ]);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds.map(r => r.meta.round)).toEqual([1, 2]);
     });
 
@@ -1575,7 +1581,7 @@ describe('fetchRecapState', () => {
       const octokit = mockOctokit([thread], [
         { id: 200, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
       ]);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds[0].findings.entries[0].authorReplyClass).toBe('agree');
     });
 
@@ -1604,7 +1610,7 @@ describe('fetchRecapState', () => {
       const octokit = mockOctokit([thread], [
         { id: 200, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
       ]);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds[0].findings.entries[0].authorReplyClass).toBe('agree');
     });
 
@@ -1624,7 +1630,7 @@ describe('fetchRecapState', () => {
       const octokit = mockOctokit([], [
         { id: 200, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
       ]);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds[0].findings.entries[0].authorReplyClass).toBe('none');
     });
 
@@ -1645,7 +1651,7 @@ describe('fetchRecapState', () => {
       const octokit = mockOctokit([], [
         { id: 200, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
       ]);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds[0].findings.entries[0].authorReplyClass).toBe('none');
     });
 
@@ -1675,7 +1681,7 @@ describe('fetchRecapState', () => {
       const octokit = mockOctokit([thread], [
         { id: 200, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
       ]);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds[0].findings.entries[0].authorReplyClass).toBe('disagree');
     });
 
@@ -1722,7 +1728,7 @@ describe('fetchRecapState', () => {
       const octokit = mockOctokit([threadAgree, threadNoChange], [
         { id: 200, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
       ]);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.reclassifiedPriorCount).toBe(1);
       expect(state.reclassifiedPriors).toEqual([{ threadId: 'thread-agree', from: 'none', to: 'agree' }]);
     });
@@ -1754,14 +1760,14 @@ describe('fetchRecapState', () => {
       const octokit = mockOctokit([thread], [
         { id: 200, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
       ]);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.reclassifiedPriorCount).toBe(1);
       expect(state.reclassifiedPriors).toEqual([]);
     });
 
     it('returns zero reclassified count when no priors exist', async () => {
       const octokit = mockOctokit([], []);
-      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.reclassifiedPriorCount).toBe(0);
       expect(state.reclassifiedPriors).toEqual([]);
     });

@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { ACTIONS_BOT_LOGIN, BOT_LOGIN, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchReviewThreadNodes, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, postAutoApproveProgressComment } from './github';
+import { BotIdentity, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchReviewThreadNodes, isBotLogin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, postAutoApproveProgressComment } from './github';
 import { FindingSeverity, isBlockingSeverity, migrateLegacySeverity, ReviewConfig, SEVERITY_TOKEN_PATTERN } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -104,6 +104,7 @@ function areAllFindingsResolved(threads: ReviewThread[]): boolean {
  */
 async function postStaleApproveSkippedComment(
   octokit: Octokit,
+  bot: BotIdentity,
   owner: string,
   repo: string,
   prNumber: number,
@@ -116,7 +117,7 @@ async function postStaleApproveSkippedComment(
       owner, repo, issue_number: prNumber, per_page: 100,
     });
     if (existing.some(c =>
-      (c.user?.login === BOT_LOGIN || c.user?.login === ACTIONS_BOT_LOGIN) &&
+      isBotLogin(bot, c.user?.login) &&
       c.body?.includes(marker)
     )) {
       core.info(`Stale-approve comment already present for ${headSha.slice(0, 7)} — skipping duplicate`);
@@ -149,17 +150,18 @@ async function postStaleApproveSkippedComment(
  */
 async function checkAndAutoApprove(
   octokit: Octokit,
+  bot: BotIdentity,
   owner: string,
   repo: string,
   prNumber: number,
   config?: ReviewConfig,
 ): Promise<boolean> {
-  if (await checkConcurrentSubmissionLock(octokit, owner, repo, prNumber, config)) {
+  if (await checkConcurrentSubmissionLock(octokit, bot, owner, repo, prNumber, config)) {
     core.info('Skipping auto-approve — another run holds the in-progress lock');
     return false;
   }
 
-  if (await isReviewInProgress(octokit, owner, repo, prNumber)) {
+  if (await isReviewInProgress(octokit, bot, owner, repo, prNumber)) {
     core.info('Skipping auto-approve — review in progress');
     return false;
   }
@@ -182,7 +184,7 @@ async function checkAndAutoApprove(
     pull_number: prNumber,
     per_page: 100,
   });
-  const isBotReview = (r: ReviewEntry) => r.body?.includes('<!-- manki') && r.user?.login?.includes('[bot]');
+  const isBotReview = (r: ReviewEntry) => r.body?.includes('<!-- manki') && isBotLogin(bot, r.user?.login);
   const botReviews = reviews.filter((r: ReviewEntry) => isBotReview(r) && r.state !== 'DISMISSED');
   const latestBotReview = botReviews[botReviews.length - 1];
 
@@ -203,7 +205,7 @@ async function checkAndAutoApprove(
     core.warning(
       `Skipping auto-approve — manki has not reviewed HEAD (head=${pr.head.sha}, stale=${staleSha})`,
     );
-    await postStaleApproveSkippedComment(octokit, owner, repo, prNumber, pr.head.sha, staleSha);
+    await postStaleApproveSkippedComment(octokit, bot, owner, repo, prNumber, pr.head.sha, staleSha);
     return false;
   }
 

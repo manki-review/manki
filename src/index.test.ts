@@ -48,7 +48,7 @@ const mockOctokitInstance = {
 };
 
 jest.mock('./auth', () => ({
-  createAuthenticatedOctokit: jest.fn().mockResolvedValue({ octokit: mockOctokitInstance, resolvedToken: 'mock-resolved-token', identity: 'app' }),
+  createAuthenticatedOctokit: jest.fn().mockResolvedValue({ octokit: mockOctokitInstance, resolvedToken: 'mock-resolved-token', identity: 'app', bot: { logins: ['manki-review[bot]', 'github-actions[bot]'] } }),
   getMemoryToken: jest.fn().mockReturnValue(null),
 }));
 
@@ -173,13 +173,13 @@ jest.mock('./github', () => {
   findInProgressLock: findInProgressLockMock,
   isLockExpired: isLockExpiredMock,
   checkConcurrentSubmissionLock: jest.fn(async (
-    _octokit: unknown, _owner: string, _repo: string, _prNumber: number,
+    _octokit: unknown, bot: unknown, _owner: string, _repo: string, _prNumber: number,
     config?: { concurrency_lock_ttl_seconds?: number },
   ) => {
     let lock;
     try {
       const comments = await fetchPRCommentsMock();
-      lock = findInProgressLockMock(comments, context.runId);
+      lock = findInProgressLockMock(comments, bot, context.runId);
     } catch (error) {
       coreMod.warning(`Concurrency lock scan failed: ${error instanceof Error ? error.message : error}`);
       return false;
@@ -205,7 +205,7 @@ jest.mock('./github', () => {
     return true;
   }),
   BOT_LOGIN: 'manki-review[bot]',
-  ACTIONS_BOT_LOGIN: 'github-actions[bot]',
+  isBotLogin: jest.requireActual('./github').isBotLogin,
   BOT_MARKER: '<!-- manki-bot -->',
   REVIEW_COMPLETE_MARKER: '<!-- manki-review-complete -->',
   FORCE_REVIEW_MARKER: '<!-- manki-force-review -->',
@@ -239,7 +239,7 @@ import * as memoryModule from './memory';
 import * as stateModule from './state';
 import * as authModule from './auth';
 import * as fixRateModule from './fix-rate';
-import { LegacyHandoverRoundFixture, roundContextFromLegacy } from './test-utils';
+import { LegacyHandoverRoundFixture, roundContextFromLegacy, TEST_BOT } from './test-utils';
 
 /**
  * Seed `RecapState.priorRounds` (the consumer surface for round cap,
@@ -396,7 +396,7 @@ describe('run', () => {
         return;
       }
       expect(fixRateModule.recordFixRate).toHaveBeenCalledWith(
-        expect.anything(), 'test-owner', 'test-repo',
+        expect.anything(), TEST_BOT, 'test-owner', 'test-repo',
         { number: 7, headSha: 'head', mergedSha: 'merged', authorLogin: 'author' },
         toMemory ? expect.objectContaining({ repo: 'test-owner/review-memory' }) : undefined,
       );
@@ -567,7 +567,7 @@ describe('run', () => {
       await run();
 
       expect(jest.mocked(interaction.handlePRComment)).toHaveBeenCalledWith(
-        expect.anything(), null, 'test-owner', 'test-repo', 10,
+        expect.anything(), TEST_BOT, null, 'test-owner', 'test-repo', 10,
         undefined, undefined, expect.anything(),
       );
     });
@@ -984,7 +984,7 @@ describe('handleCommentTrigger', () => {
 
     expect(jest.mocked(ghUtils.cancelActiveReviewRun)).not.toHaveBeenCalled();
     expect(jest.mocked(ghUtils.isApprovedOnCommit)).toHaveBeenCalledWith(
-      expect.anything(), 'test-owner', 'test-repo', 1, expect.any(String),
+      expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 1, expect.any(String),
     );
     expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
   });
@@ -1195,7 +1195,7 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
     await handlePullRequest();
 
     expect(jest.mocked(ghUtils.hasBotReviewOnCommit)).toHaveBeenCalledWith(
-      expect.anything(), 'test-owner', 'test-repo', 1, 'abc1234567890',
+      expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 1, 'abc1234567890',
     );
     const skipCall = mockOctokitInstance.rest.issues.createComment.mock.calls.find(
       (c: [{ body: string }]) => c[0].body.includes('this commit already has a review'),
@@ -1667,7 +1667,7 @@ describe('postCleanup (via main dispatch)', () => {
     await runPostPhase();
 
     expect(jest.mocked(ghUtils.markOwnProgressCommentCancelled)).toHaveBeenCalledWith(
-      expect.anything(), 'test-owner', 'test-repo', 42, 12345,
+      expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 42, 12345,
     );
     expect(jest.mocked(core.info)).toHaveBeenCalledWith(
       expect.stringContaining('marked progress comment for run 12345 as cancelled'),
@@ -1698,7 +1698,7 @@ describe('postCleanup (via main dispatch)', () => {
     await runPostPhase();
 
     expect(jest.mocked(ghUtils.markOwnProgressCommentCancelled)).toHaveBeenCalledWith(
-      expect.anything(), 'test-owner', 'test-repo', 55, 12345,
+      expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 55, 12345,
     );
   });
 
@@ -5265,12 +5265,13 @@ describe('runFullReview orchestration', () => {
       octokit: mockOctokitInstance as any,
       resolvedToken: 'mock-token',
       identity: 'actions',
+      bot: TEST_BOT,
     });
 
     await callRunFullReview();
 
     expect(jest.mocked(ghUtils.postAppWarningIfNeeded)).toHaveBeenCalledWith(
-      mockOctokitInstance, 'test-owner', 'test-repo', 42,
+      mockOctokitInstance, TEST_BOT, 'test-owner', 'test-repo', 42,
     );
   });
 
@@ -5281,6 +5282,7 @@ describe('runFullReview orchestration', () => {
       octokit: mockOctokitInstance as any,
       resolvedToken: 'mock-token',
       identity: 'app',
+      bot: TEST_BOT,
     });
 
     await callRunFullReview();
@@ -5295,6 +5297,7 @@ describe('runFullReview orchestration', () => {
       octokit: mockOctokitInstance as any,
       resolvedToken: 'mock-token',
       identity: 'actions',
+      bot: TEST_BOT,
     });
     jest.mocked(ghUtils.postAppWarningIfNeeded).mockRejectedValueOnce(new Error('API error'));
 
@@ -5745,6 +5748,7 @@ describe('handleInteraction', () => {
     );
     expect(jest.mocked(interaction.handlePRComment)).toHaveBeenCalledWith(
       expect.anything(),  // octokit
+      TEST_BOT,
       expect.anything(),  // claude client
       'test-owner', 'test-repo', 7,
       undefined,          // memoryConfig (memory not enabled)
@@ -6007,6 +6011,7 @@ describe('handleIssueInteraction', () => {
 
     expect(jest.mocked(interaction.handlePRComment)).toHaveBeenCalledWith(
       expect.anything(),  // octokit
+      TEST_BOT,
       null,               // no claude client for issue interactions
       'test-owner', 'test-repo', 15,
       undefined, undefined, expect.anything(),
@@ -6066,7 +6071,7 @@ describe('handleReviewStateCheck', () => {
     await handleReviewStateCheck();
 
     expect(jest.mocked(stateModule.checkAndAutoApprove)).toHaveBeenCalledWith(
-      expect.anything(), 'test-owner', 'test-repo', 5, expect.objectContaining({ auto_approve: true }),
+      expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 5, expect.objectContaining({ auto_approve: true }),
     );
     expect(jest.mocked(core.info)).toHaveBeenCalledWith(
       'PR #5 auto-approved after all findings resolved',
@@ -6116,7 +6121,7 @@ describe('handleReviewCommentInteraction auto-approve', () => {
     );
     expect(jest.mocked(interaction.handleReviewCommentReply)).toHaveBeenCalled();
     expect(jest.mocked(stateModule.checkAndAutoApprove)).toHaveBeenCalledWith(
-      expect.anything(), 'test-owner', 'test-repo', 8, expect.objectContaining({ auto_approve: true }),
+      expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 8, expect.objectContaining({ auto_approve: true }),
     );
   });
 

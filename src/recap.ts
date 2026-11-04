@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { LLMClient } from './providers';
-import { ACTIONS_BOT_LOGIN, BOT_LOGIN, fetchReviewThreadNodes, GraphqlConnection, paginateGraphql, titleToSlug } from './github';
+import { BotIdentity, fetchReviewThreadNodes, GraphqlConnection, isBotLogin, paginateGraphql, titleToSlug } from './github';
 import { findPriorThreadId } from './finding-fingerprint';
 import { matchesSuppression, Suppression } from './memory';
 import { AuthorReplyClass, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacyPrType, migrateLegacySeverity, OpenThreadsState, RoundContext, SEVERITY_TOKEN_PATTERN } from './types';
@@ -308,14 +308,15 @@ function parseContextBlocks(
  */
 async function fetchRecapState(
   octokit: Octokit,
+  bot: BotIdentity,
   owner: string,
   repo: string,
   prNumber: number,
   prAuthorLogin?: string,
 ): Promise<RecapState> {
   const [threadsResult, priorRounds] = await Promise.all([
-    fetchReviewThreads(octokit, owner, repo, prNumber),
-    fetchPriorRoundContexts(octokit, owner, repo, prNumber),
+    fetchReviewThreads(octokit, bot, owner, repo, prNumber),
+    fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber),
   ]);
   const { threads, state: openThreadsState } = threadsResult;
   const addressedThreadIds = judgeAddressedThreadIds(priorRounds);
@@ -465,6 +466,7 @@ function refreshAuthorReplyClass(
 
 async function fetchPriorRoundContexts(
   octokit: Octokit,
+  bot: BotIdentity,
   owner: string,
   repo: string,
   prNumber: number,
@@ -480,7 +482,7 @@ async function fetchPriorRoundContexts(
       .filter((r): r is typeof r & { body: string; id: number } => {
         const body = r.body;
         if (!body) return false;
-        if (r.user?.login !== BOT_LOGIN) return false;
+        if (!isBotLogin(bot, r.user?.login)) return false;
         return body.includes('<summary>Manki context</summary>') || body.includes('<!-- manki-context:');
       })
       .map(r => ({ body: r.body, id: r.id }));
@@ -566,10 +568,6 @@ interface FetchReviewThreadsResult {
   state: OpenThreadsState;
 }
 
-function isMankiLogin(login: string | undefined): boolean {
-  return login === BOT_LOGIN || login === ACTIONS_BOT_LOGIN;
-}
-
 const THREAD_COMMENT_FIELDS = 'body url author { login }';
 
 const THREAD_COMMENTS_QUERY = `
@@ -604,6 +602,7 @@ interface ReviewThreadNode {
 
 async function fetchReviewThreads(
   octokit: Octokit,
+  bot: BotIdentity,
   owner: string,
   repo: string,
   prNumber: number,
@@ -647,7 +646,7 @@ async function fetchReviewThreads(
       // "Fixed!" followed by a retraction) classify by the author's current
       // stance rather than their first reaction.
       const nonBotReplies = thread.comments.nodes.filter((c, i) =>
-        i > 0 && !isMankiLogin(c.author?.login)
+        i > 0 && !isBotLogin(bot, c.author?.login)
       );
       const lastNonBotReply = nonBotReplies[nonBotReplies.length - 1];
       const hasHumanReply = lastNonBotReply !== undefined;
@@ -676,7 +675,7 @@ async function fetchReviewThreads(
         threadUrl: firstComment?.url ?? '',
         isBotThread,
         isResolved: thread.isResolved,
-        resolvedByHuman: !!thread.resolvedBy?.login && !isMankiLogin(thread.resolvedBy.login),
+        resolvedByHuman: !!thread.resolvedBy?.login && !isBotLogin(bot, thread.resolvedBy.login),
         hasHumanReply,
         findingTitle,
         description,

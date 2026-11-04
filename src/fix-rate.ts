@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { parsePRDiff } from './diff';
-import { fetchInterRoundDiff } from './github';
+import { BotIdentity, fetchInterRoundDiff } from './github';
 import { appendMemoryLine } from './memory';
 import { classifyAuthorReply, fetchRecapState, judgeAddressedThreadIds, PreviousFinding } from './recap';
 import { FindingFingerprint, FindingFingerprintEntry, ParsedDiff, RoundContext } from './types';
@@ -39,12 +39,13 @@ interface PostedFinding {
  */
 export async function recordFixRate(
   octokit: Octokit,
+  bot: BotIdentity,
   owner: string,
   repo: string,
   pr: MergedPullRequest,
   memory?: { octokit: Octokit; repo: string },
 ): Promise<void> {
-  const { previousFindings, priorRounds } = await fetchRecapState(octokit, owner, repo, pr.number, pr.authorLogin);
+  const { previousFindings, priorRounds } = await fetchRecapState(octokit, bot, owner, repo, pr.number, pr.authorLogin);
   if (priorRounds.length === 0) {
     core.info('No Manki review rounds on this pull request, no fix rate to record');
     return;
