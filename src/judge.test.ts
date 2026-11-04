@@ -453,7 +453,7 @@ describe('buildJudgeUserMessage', () => {
     const largeDiff = `${prDiff}\n${'+filler line\n'.repeat(6000)}+tail marker`;
     const truncatedMsg = buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, undefined, undefined, undefined, largeDiff);
     expect(truncatedMsg).toContain(truncateDiff(largeDiff));
-    expect(truncatedMsg).toContain('... (truncated)');
+    expect(truncatedMsg).toContain('more lines in this file truncated)');
     expect(truncatedMsg).not.toContain('+tail marker');
 
     for (const empty of [undefined, '', '  \n']) {
