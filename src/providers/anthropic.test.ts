@@ -1396,7 +1396,7 @@ describe('AnthropicClient API-path usage', () => {
     ['end_turn', false],
     [undefined, false],
   ])('reports truncated for stop_reason %s', async (stopReason, expected) => {
-    mockCreate.mockResolvedValue({ content: [{ type: 'text', text: '[' }], stop_reason: stopReason });
+    mockFinalMessage.mockResolvedValue({ content: [{ type: 'text', text: '[' }], stop_reason: stopReason });
     const client = new AnthropicClient({ auth: { kind: 'apiKey', key: 'sk-key' }, model: 'claude-opus-4-6' });
     const result = await client.sendMessage('sys', 'user');
     expect(result.truncated).toBe(expected);
