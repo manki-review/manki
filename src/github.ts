@@ -441,28 +441,28 @@ export async function markAutoApproveComplete(
 }
 
 /**
- * Transition the auto-approve progress comment to a terminal failure state.
- * Uses `CANCELLED_MARKER` so `findInProgressLock` no longer treats it as a
- * live lock, while preserving an audit trail of which run attempted the
- * approval and why it failed.
+ * Transition a progress comment to a terminal failure state that names the
+ * failed `action` and the reason. Uses `CANCELLED_MARKER` so `findInProgressLock`
+ * no longer treats it as a live lock.
  */
-export async function markAutoApproveFailed(
+export async function markProgressCommentFailed(
   octokit: Octokit,
   owner: string,
   repo: string,
   commentId: number,
+  action: 'Review' | 'Auto-approve',
   reason: string,
 ): Promise<void> {
   const body = [
     BOT_MARKER,
     VERSION_MARKER,
     CANCELLED_MARKER,
-    `**Manki** — Auto-approve failed: ${sanitizeMarkdown(String(reason)).slice(0, 300)}`,
+    `**Manki** — ${action} failed: ${sanitizeMarkdown(String(reason)).slice(0, 300)}`,
   ].join('\n');
   try {
     await octokit.rest.issues.updateComment({ owner, repo, comment_id: commentId, body });
   } catch (error) {
-    core.warning(`Failed to mark auto-approve comment as failed: ${error instanceof Error ? error.message : error}`);
+    core.warning(`Failed to mark ${action.toLowerCase()} comment as failed: ${error instanceof Error ? error.message : error}`);
   }
 }
 

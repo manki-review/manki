@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { ACTIONS_BOT_LOGIN, BOT_LOGIN, checkConcurrentSubmissionLock, dismissPreviousReviews, isReviewInProgress, markAutoApproveComplete, markAutoApproveFailed, postAutoApproveProgressComment } from './github';
+import { ACTIONS_BOT_LOGIN, BOT_LOGIN, checkConcurrentSubmissionLock, dismissPreviousReviews, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, postAutoApproveProgressComment } from './github';
 import { migrateLegacySeverity, ReviewConfig, SEVERITY_TOKEN_PATTERN } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -266,7 +266,7 @@ async function checkAndAutoApprove(
     }
   } catch (error) {
     const rawReason = error instanceof Error ? error.message : String(error);
-    await markAutoApproveFailed(octokit, owner, repo, progressCommentId, rawReason);
+    await markProgressCommentFailed(octokit, owner, repo, progressCommentId, 'Auto-approve', rawReason);
     throw error;
   }
 
