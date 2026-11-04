@@ -13,6 +13,10 @@ export { sanitizeLogOutput, STALE_TIMEOUT_MS };
 
 const execFileAsync = promisify(execFile);
 
+// Pinned because a future release makes `--bare` the default for `-p`, and bare mode never reads
+// `CLAUDE_CODE_OAUTH_TOKEN`. Keep this in sync with the install step in `.github/workflows/manki.yml`.
+export const CLAUDE_CLI_VERSION = '2.1.318';
+
 export function buildAnthropicAuth(oauthToken: string, apiKey: string): AnthropicAuth {
   if (oauthToken) return { kind: 'oauth', token: oauthToken };
   if (apiKey) return { kind: 'apiKey', key: apiKey };
@@ -74,6 +78,18 @@ export function resetCLIInstallPromise(): void {
   cliInstallPromise = null;
 }
 
+const OAUTH_ERROR_HINT =
+  'Check the claude_code_oauth_token secret (create a new token with `claude setup-token`) or use anthropic_api_key instead.';
+
+// Error texts that point at the credential rather than at the request, such as a revoked token or an organization that disabled subscription access.
+const AUTH_ERROR_PATTERN = /\b(authenticat\w*|log ?in|credentials?|token|subscription|organization|unauthori[sz]ed|forbidden|401|403)\b/i;
+
+function readResultError(resultEvent: unknown): string | null {
+  if (!resultEvent || typeof resultEvent !== 'object') return null;
+  const event = resultEvent as { is_error?: unknown; result?: unknown };
+  return event.is_error === true && typeof event.result === 'string' && event.result ? event.result : null;
+}
+
 export interface AnthropicClientOptions {
   auth: AnthropicAuth;
   model: string;
@@ -119,7 +135,8 @@ export class AnthropicClient implements LLMClient {
       if (!cliInstallPromise) {
         cliInstallPromise = (async () => {
           core.info('Claude CLI not found, installing via npm...');
-          await execFileAsync('npm', ['install', '-g', '@anthropic-ai/claude-code'], {
+          // No `--ignore-scripts`: the package's postinstall puts the native binary in place.
+          await execFileAsync('npm', ['install', '-g', `@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}`], {
             timeout: 120000,
           });
           try {
@@ -154,6 +171,8 @@ export class AnthropicClient implements LLMClient {
         '--verbose',
         '--output-format', 'stream-json',
         '--include-partial-messages',
+        // Without tools the reply is a single turn. With them, a reviewer could write its JSON in one turn and end on a prose summary, and the CLI's `result` keeps only that last message.
+        '--tools', '',
         '--model', this.model,
       ];
 
@@ -314,8 +333,11 @@ export class AnthropicClient implements LLMClient {
             elapsedMs: Date.now() - startTime,
             resultEvent: lastResultEvent,
           });
-          core.warning(`Claude CLI failed (${msg})`);
-          reject(new Error(`Claude CLI invocation failed (${msg})`));
+          const cliError = readResultError(lastResultEvent);
+          const hint = cliError && AUTH_ERROR_PATTERN.test(cliError) ? ` ${OAUTH_ERROR_HINT}` : '';
+          const lead = cliError ? `Claude CLI error: ${sanitizeLogOutput(cliError)}.${hint} ` : '';
+          core.warning(`${lead}Claude CLI failed (${msg})`);
+          reject(new Error(`${lead}Claude CLI invocation failed (${msg})`));
           return;
         }
         const content = output.trim();

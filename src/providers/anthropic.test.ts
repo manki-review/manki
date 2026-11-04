@@ -2,7 +2,7 @@ import { spawn } from 'child_process';
 import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
-import { AnthropicClient, buildAnthropicAuth, extractAnthropicCLIUsage, resetCLIInstallPromise, sanitizeLogOutput, STALE_TIMEOUT_MS } from './anthropic';
+import { AnthropicClient, buildAnthropicAuth, CLAUDE_CLI_VERSION, extractAnthropicCLIUsage, resetCLIInstallPromise, sanitizeLogOutput, STALE_TIMEOUT_MS } from './anthropic';
 import { SendMessageOptions } from './types';
 
 jest.mock('child_process', () => ({
@@ -263,10 +263,11 @@ describe('sendViaOAuth — error paths', () => {
     );
   });
 
-  it('surfaces stdout tail, <empty stderr>, and parsed result event when exit-1 has no stderr', async () => {
+  it('leads with the CLI error text and keeps the diagnostics when exit-1 has no stderr', async () => {
+    const cliError = 'Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask your admin to enable access';
     const streamWithResultError = [
       JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'partial thinking emitted right before exit' } }),
-      JSON.stringify({ type: 'result', subtype: 'error_during_execution', is_error: true, result: 'Maximum tokens exceeded' }),
+      JSON.stringify({ type: 'result', subtype: 'error_during_execution', is_error: true, result: cliError }),
       '',
     ].join('\n');
     setupSpawnMock({
@@ -278,14 +279,34 @@ describe('sendViaOAuth — error paths', () => {
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
 
-    await expect(client.sendMessage('sys', 'user')).rejects.toThrow(/Claude CLI invocation failed/);
+    const error = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
+    expect(error?.message.startsWith(`Claude CLI error: ${cliError}. `)).toBe(true);
+    expect(error?.message).toContain('claude setup-token');
+    expect(error?.message).toMatch(/Claude CLI invocation failed \(exit 1: <empty stderr>/);
     const allWarnings = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(allWarnings).toContain(`Claude CLI error: ${cliError}`);
     expect(allWarnings).toContain('Claude CLI failed');
     expect(allWarnings).toContain('<empty stderr>');
     expect(allWarnings).toContain('stderrChars=0');
     expect(allWarnings).toContain('is_error=true');
     expect(allWarnings).toContain('subtype=error_during_execution');
-    expect(allWarnings).toContain('Maximum tokens exceeded');
+    warnSpy.mockRestore();
+  });
+
+  it('leads with a non-auth CLI error without the token hint', async () => {
+    const cliError = 'Prompt is too long: 250000 tokens > 200000 maximum';
+    setupSpawnMock({
+      exitCode: 1,
+      stderr: '',
+      stdout: `${JSON.stringify({ type: 'result', subtype: 'error_during_execution', is_error: true, result: cliError })}\n`,
+      rawStdout: true,
+    });
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
+
+    const error = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
+    expect(error?.message.startsWith(`Claude CLI error: ${cliError}. Claude CLI invocation failed`)).toBe(true);
+    expect(error?.message).not.toContain('claude setup-token');
     warnSpy.mockRestore();
   });
 
@@ -303,7 +324,7 @@ describe('sendViaOAuth — error paths', () => {
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
 
-    await expect(client.sendMessage('sys', 'user')).rejects.toThrow(/Claude CLI invocation failed/);
+    await expect(client.sendMessage('sys', 'user')).rejects.toThrow(/^Claude CLI invocation failed/);
     const allWarnings = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(allWarnings).toContain('<no result event>');
     expect(allWarnings).not.toContain('is_error=');
@@ -347,6 +368,7 @@ describe('sendViaOAuth — error paths', () => {
     expect(spawnArgs[fmtIdx + 1]).toBe('stream-json');
     expect(spawnArgs).toContain('--verbose');
     expect(spawnArgs).toContain('--include-partial-messages');
+    expect(spawnArgs[spawnArgs.indexOf('--tools') + 1]).toBe('');
   });
 
   it('extracts text from content_block_delta events', async () => {
@@ -870,7 +892,7 @@ describe('warmupCLI', () => {
 
     await client.warmupCLI();
 
-    expect(mockExecFileAsync).toHaveBeenNthCalledWith(2, 'npm', ['install', '-g', '@anthropic-ai/claude-code'], expect.any(Object));
+    expect(mockExecFileAsync).toHaveBeenNthCalledWith(2, 'npm', ['install', '-g', `@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}`], expect.any(Object));
   });
 
   it('is a no-op for API-key auth', async () => {
