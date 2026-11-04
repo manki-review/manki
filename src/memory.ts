@@ -278,6 +278,19 @@ export async function writeLearning(
   await writeFile(octokit, owner, repo, path, content, `Add learning: ${learning.content.slice(0, 50)}`);
 }
 
+/** Appends `line` to `<targetRepo>/<file>` in the memory repo, creating the file when it is missing. */
+export async function appendMemoryLine(
+  octokit: Octokit,
+  memoryRepo: string,
+  targetRepo: string,
+  file: string,
+  line: string,
+  message: string,
+): Promise<void> {
+  const [owner, repo] = memoryRepo.split('/');
+  await writeFile(octokit, owner, repo, `${targetRepo}/${file}`, current => `${current ?? ''}${line}\n`, message);
+}
+
 /**
  * Remove a learning from the memory repo by case-insensitive substring match on content.
  */

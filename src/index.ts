@@ -9,6 +9,7 @@ import { loadConfig, loadConfigFromFile, sanitizeForkConfig, resolveAgentModel, 
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
+import { recordFixRate } from './fix-rate';
 import { parsePRDiff, filterDiff, filterRawDiff, isDiffTooLarge, rebuildRawDiff } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff, MAX_INTER_ROUND_DIFF_CHARS } from './judge';
@@ -168,8 +169,12 @@ async function run(): Promise<void> {
   // Event filtering — exit immediately for irrelevant events.
   // Tested via integration (live PR reviews) since it depends on GitHub Actions context.
   if (eventName === 'pull_request') {
-    if (action !== 'opened' && action !== 'synchronize' && action !== 'ready_for_review') {
+    if (action !== 'opened' && action !== 'synchronize' && action !== 'ready_for_review' && action !== 'closed') {
       core.info(`Ignoring pull_request action: ${action}`);
+      return;
+    }
+    if (action === 'closed' && !github.context.payload.pull_request?.merged) {
+      core.info('Ignoring pull_request closed without merging');
       return;
     }
   } else if (eventName === 'issue_comment') {
@@ -230,7 +235,11 @@ async function run(): Promise<void> {
   // Route to the appropriate handler
   switch (eventName) {
     case 'pull_request':
-      await handlePullRequest();
+      if (action === 'closed') {
+        await handleMergedPullRequest();
+      } else {
+        await handlePullRequest();
+      }
       break;
 
     case 'issue_comment': {
@@ -335,6 +344,41 @@ async function handlePullRequest(): Promise<void> {
     headRepoFullName: pr.head.repo?.full_name,
     trigger: buildRoundTrigger(),
   });
+}
+
+async function handleMergedPullRequest(): Promise<void> {
+  const pr = github.context.payload.pull_request;
+  if (!pr) {
+    core.warning('No pull request found in event payload');
+    return;
+  }
+
+  const octokit = await getOctokit();
+  const { owner, repo } = github.context.repo;
+  const configPath = core.getInput('config_path') || '.manki.yml';
+  const configContent = await fetchConfigFile(octokit, owner, repo, pr.base.ref, configPath);
+  const config = loadConfig(configContent ?? undefined, configPath);
+  if (!(config.metrics?.fix_rate ?? config.memory?.enabled)) {
+    core.info('Fix-rate metrics are off, skipping');
+    return;
+  }
+
+  let memory: { octokit: Octokit; repo: string } | undefined;
+  if (config.memory?.enabled) {
+    const memoryToken = getMemoryToken(octokitCache.resolvedToken);
+    if (memoryToken) {
+      memory = { octokit: github.getOctokit(memoryToken), repo: config.memory.repo || `${owner}/review-memory` };
+    } else {
+      core.warning('No memory token available, the fix rate goes to the job summary only. Set memory_repo_token or github_token.');
+    }
+  }
+
+  await recordFixRate(octokit, owner, repo, {
+    number: pr.number,
+    headSha: pr.head.sha,
+    mergedSha: pr.merge_commit_sha ?? '',
+    authorLogin: pr.user?.login,
+  }, memory);
 }
 
 async function handleCommentTrigger(forceReview?: boolean, skipCap?: boolean, bypassHint?: FullReviewOptions['bypassHint']): Promise<void> {

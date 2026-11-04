@@ -112,6 +112,18 @@ describe('config', () => {
     });
   });
 
+  describe('metrics config', () => {
+    it('leaves metrics.fix_rate unset by default and accepts a boolean', () => {
+      expect(loadConfigFromContent('').metrics?.fix_rate).toBeUndefined();
+      expect(loadConfigFromContent('metrics:\n  fix_rate: false\n').metrics?.fix_rate).toBe(false);
+    });
+
+    it('rejects non-boolean metrics.fix_rate and non-object metrics', () => {
+      expect(() => loadConfigFromContent('metrics:\n  fix_rate: "no"\n')).toThrow(/metrics\.fix_rate/);
+      expect(() => loadConfigFromContent('metrics: "nope"\n')).toThrow(/`metrics` must be an object/);
+    });
+  });
+
   describe('loadConfig', () => {
     it('returns defaults when no content provided', () => {
       const config = loadConfig(undefined);

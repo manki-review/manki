@@ -318,11 +318,7 @@ async function fetchRecapState(
     fetchPriorRoundContexts(octokit, owner, repo, prNumber),
   ]);
   const { threads, state: openThreadsState } = threadsResult;
-  const judgeAddressedThreadIds = new Set(
-    priorRounds.flatMap(r => r.judge.threadEvaluations ?? [])
-      .filter(e => e.status === 'addressed')
-      .map(e => e.threadId),
-  );
+  const addressedThreadIds = judgeAddressedThreadIds(priorRounds);
 
   const previousFindings = threads
     .filter(t => t.isBotThread)
@@ -332,7 +328,7 @@ async function fetchRecapState(
       line: t.line,
       lineStart: t.lineStart,
       severity: t.severity,
-      status: threadStatus(t, judgeAddressedThreadIds),
+      status: threadStatus(t, addressedThreadIds),
       threadId: t.threadId,
       threadUrl: t.threadUrl,
       ...(t.markerSlug && { markerSlug: t.markerSlug }),
@@ -370,9 +366,18 @@ async function fetchRecapState(
   };
 }
 
-function threadStatus(t: ReviewThread, judgeAddressedThreadIds: Set<string>): PreviousFinding['status'] {
+/** IDs of the threads that the judge of any round evaluated as `addressed`. */
+function judgeAddressedThreadIds(rounds: RoundContext[]): Set<string> {
+  return new Set(
+    rounds.flatMap(r => r.judge.threadEvaluations ?? [])
+      .filter(e => e.status === 'addressed')
+      .map(e => e.threadId),
+  );
+}
+
+function threadStatus(t: ReviewThread, addressedThreadIds: Set<string>): PreviousFinding['status'] {
   if (!t.isResolved) return t.hasHumanReply ? 'replied' : 'open';
-  if (!t.resolvedByHuman && !judgeAddressedThreadIds.has(t.threadId)) return 'auto-resolved';
+  if (!t.resolvedByHuman && !addressedThreadIds.has(t.threadId)) return 'auto-resolved';
   return 'resolved';
 }
 
@@ -867,4 +872,4 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
   );
 }
 
-export { DuplicateMatch, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchRecapState, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment };
+export { DuplicateMatch, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchRecapState, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment };
