@@ -47,7 +47,7 @@ import {
   checkConcurrentSubmissionLock,
   postConfigErrorComment,
 } from './github';
-import type { StandingVerdict } from './github';
+import type { BotIdentity, StandingVerdict } from './github';
 import { checkAndAutoApprove, resolveReviewThread } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -475,10 +475,10 @@ function failureReason(error: unknown): string {
  * compared against `baseRef`, so a clean rebase or an empty commit matches.
  */
 async function findUnchangedVerdict(
-  octokit: Octokit, owner: string, repo: string, prNumber: number,
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number,
   baseRef: string, commitSha: string, excludePaths: string[],
 ): Promise<StandingVerdict | undefined> {
-  const standing = await fetchStandingVerdict(octokit, owner, repo, prNumber);
+  const standing = await fetchStandingVerdict(octokit, bot, owner, repo, prNumber);
   if (!standing || standing.commitSha === commitSha) return undefined;
   try {
     const [reviewed, current] = await Promise.all([
@@ -613,7 +613,7 @@ async function runFullReview(
     }
 
     if (trigger.event === 'pull_request:synchronize' && config.auto_review) {
-      const standing = await findUnchangedVerdict(octokit, owner, repo, prNumber, baseRef, commitSha, config.exclude_paths);
+      const standing = await findUnchangedVerdict(octokit, bot, owner, repo, prNumber, baseRef, commitSha, config.exclude_paths);
       if (standing) {
         const shortSha = standing.commitSha.slice(0, 7);
         try {

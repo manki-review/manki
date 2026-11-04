@@ -1857,9 +1857,9 @@ type StandingVerdict = {
  * for a comment, a dismissal by hand, or when the reviews cannot be read.
  */
 async function fetchStandingVerdict(
-  octokit: Octokit, owner: string, repo: string, prNumber: number,
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number,
 ): Promise<StandingVerdict | undefined> {
-  const latest = (await fetchBotReviews(octokit, owner, repo, prNumber, true)).at(-1);
+  const latest = (await fetchBotReviews(octokit, bot, owner, repo, prNumber, true)).at(-1);
   if (!latest) return undefined;
   if (latest.state === 'APPROVED') return { verdict: 'APPROVE', commitSha: latest.commitId };
   if (latest.state === 'CHANGES_REQUESTED') return { verdict: 'REQUEST_CHANGES', commitSha: latest.commitId };

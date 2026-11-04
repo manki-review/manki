@@ -4196,17 +4196,17 @@ describe('fetchStandingVerdict', () => {
       { id: 1, state: 'CHANGES_REQUESTED', commit_id: 'sha-a' },
       { id: 2, state: 'APPROVED', commit_id: 'sha-b' },
     ]);
-    expect(await fetchStandingVerdict(approved, 'owner', 'repo', 1)).toEqual({ verdict: 'APPROVE', commitSha: 'sha-b' });
+    expect(await fetchStandingVerdict(approved, TEST_BOT, 'owner', 'repo', 1)).toEqual({ verdict: 'APPROVE', commitSha: 'sha-b' });
 
     const changesRequested = makeMockOctokit([{ id: 1, state: 'CHANGES_REQUESTED', commit_id: 'sha-a' }]);
-    expect(await fetchStandingVerdict(changesRequested, 'owner', 'repo', 1)).toEqual({ verdict: 'REQUEST_CHANGES', commitSha: 'sha-a' });
+    expect(await fetchStandingVerdict(changesRequested, TEST_BOT, 'owner', 'repo', 1)).toEqual({ verdict: 'REQUEST_CHANGES', commitSha: 'sha-a' });
 
     const commented = makeMockOctokit([
       { id: 1, state: 'APPROVED', commit_id: 'sha-a' },
       { id: 2, state: 'COMMENTED', commit_id: 'sha-b' },
     ]);
-    expect(await fetchStandingVerdict(commented, 'owner', 'repo', 1)).toBeUndefined();
-    expect(await fetchStandingVerdict(makeMockOctokit([]), 'owner', 'repo', 1)).toBeUndefined();
+    expect(await fetchStandingVerdict(commented, TEST_BOT, 'owner', 'repo', 1)).toBeUndefined();
+    expect(await fetchStandingVerdict(makeMockOctokit([]), TEST_BOT, 'owner', 'repo', 1)).toBeUndefined();
   });
 
   it('counts an approval dismissed by a push as APPROVE', async () => {
@@ -4214,14 +4214,14 @@ describe('fetchStandingVerdict', () => {
       [{ id: 7, state: 'DISMISSED', commit_id: 'sha-a' }],
       [dismissal(6, 'changes_requested'), dismissal(7, 'approved', 'sha-pushed')],
     );
-    expect(await fetchStandingVerdict(octokit, 'owner', 'repo', 1)).toEqual({ verdict: 'APPROVE', commitSha: 'sha-a' });
+    expect(await fetchStandingVerdict(octokit, TEST_BOT, 'owner', 'repo', 1)).toEqual({ verdict: 'APPROVE', commitSha: 'sha-a' });
   });
 
   it('returns undefined for a review dismissed by hand or when the timeline cannot be read', async () => {
     const reviews = [{ id: 7, state: 'DISMISSED', commit_id: 'sha-a' }];
-    expect(await fetchStandingVerdict(makeMockOctokit(reviews, [dismissal(7, 'approved')]), 'owner', 'repo', 1)).toBeUndefined();
-    expect(await fetchStandingVerdict(makeMockOctokit(reviews, [dismissal(7, 'changes_requested')]), 'owner', 'repo', 1)).toBeUndefined();
-    expect(await fetchStandingVerdict(makeMockOctokit(reviews, new Error('API error')), 'owner', 'repo', 1)).toBeUndefined();
+    expect(await fetchStandingVerdict(makeMockOctokit(reviews, [dismissal(7, 'approved')]), TEST_BOT, 'owner', 'repo', 1)).toBeUndefined();
+    expect(await fetchStandingVerdict(makeMockOctokit(reviews, [dismissal(7, 'changes_requested')]), TEST_BOT, 'owner', 'repo', 1)).toBeUndefined();
+    expect(await fetchStandingVerdict(makeMockOctokit(reviews, new Error('API error')), TEST_BOT, 'owner', 'repo', 1)).toBeUndefined();
   });
 });
 
