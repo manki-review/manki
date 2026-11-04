@@ -794,7 +794,7 @@ async function runFullReview(
       ...t,
       currentCode: extractCurrentCodeWindow(fileContents, t.file, t.line),
     }));
-    // `null` tells `determineVerdict` the open threads are unknown, so no prior can retire.
+    // `null` tells `determineOutcome` the open threads are unknown, so no prior can retire.
     const verdictOpenThreads = recap.openThreadsState === 'fetch_failed' ? null : openThreads;
 
     // Fetch inter-round diff (prior round commit -> current head) so the judge
@@ -1079,13 +1079,14 @@ async function runFullReview(
           { inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 },
         )
       : undefined;
-    const stageUsages: Array<['planner' | 'reviewer' | 'judge' | 'dedup', LLMUsage | undefined]> = [
+    const stageUsages: Array<['planner' | 'reviewer' | 'judge' | 'dedup' | 'verdict', LLMUsage | undefined]> = [
       ['planner', result.plannerUsage],
       ['reviewer', reviewerUsage],
       ['judge', result.judgeUsage],
       ['dedup', result.dedupUsage],
+      ['verdict', result.verdictUsage],
     ];
-    const perStage: Partial<Record<'planner' | 'reviewer' | 'judge' | 'dedup', RoundUsageStage>> = {};
+    const perStage: NonNullable<RoundUsage['perStage']> = {};
     let totalInput = 0;
     let totalOutput = 0;
     for (const [name, u] of stageUsages) {
@@ -1123,6 +1124,7 @@ async function runFullReview(
         mankiVersion: MANKI_VERSION,
         cap,
         trigger,
+        ...(result.outcome && { outcome: result.outcome }),
       },
       config: {
         reviewLevel: team.level === 'trivial' ? 'small' : team.level,

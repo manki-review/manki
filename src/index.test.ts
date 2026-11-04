@@ -2294,21 +2294,25 @@ describe('runFullReview orchestration', () => {
       judgeRetryCount: 2,
       dedupUsage: { inputTokens: 40, outputTokens: 8, cachedTokens: 0, reasoningTokens: 0 },
       dedupDurationMs: 200,
+      verdictUsage: { inputTokens: 60, outputTokens: 12, cachedTokens: 0, reasoningTokens: 0 },
+      outcome: 'ADDRESS_FIRST',
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [security], duplicates: [] });
 
     await callRunFullReview();
 
     const ctx = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+    expect(ctx!.meta.outcome).toBe('ADDRESS_FIRST');
     expect(ctx!.usage.perStage).toEqual({
       planner: { inputTokens: 30, outputTokens: 5, totalTokens: 35 },
       reviewer: { inputTokens: 180, outputTokens: 30, totalTokens: 210 },
       judge: { inputTokens: 200, outputTokens: 50, totalTokens: 250 },
       dedup: { inputTokens: 40, outputTokens: 8, totalTokens: 48 },
+      verdict: { inputTokens: 60, outputTokens: 12, totalTokens: 72 },
     });
-    expect(ctx!.usage.inputTokens).toBe(450);
-    expect(ctx!.usage.outputTokens).toBe(93);
-    expect(ctx!.usage.totalTokens).toBe(543);
+    expect(ctx!.usage.inputTokens).toBe(510);
+    expect(ctx!.usage.outputTokens).toBe(105);
+    expect(ctx!.usage.totalTokens).toBe(615);
 
     expect(ctx!.judge.retryCount).toBe(2);
     expect(ctx!.dedup.durationMs).toBe(200);

@@ -1,0 +1,90 @@
+import { LLMClient } from './providers';
+import { extractJSON } from './json';
+import { buildReviewerUserMessage } from './review';
+import { Finding, VerdictReport } from './types';
+
+const VERDICT_READER_NAME = 'Verdict reader';
+
+// Every input here is identical on every round for the same tree. The reader must never learn
+// about earlier rounds, findings or the PR's own description, or it starts confirming instead of
+// looking for defects.
+const VERDICT_READER_SYSTEM_PROMPT = `You give the final merge-readiness verdict on a pull request.
+
+Read the WHOLE diff, every file in it. Not a sample, not the interesting-looking parts. You are the only pass guaranteed to see all of it, so a file you skip is a file nothing checked.
+
+Your job is to find a reason this change should NOT merge. Be adversarial, and judge the code cold. Comments in the code that claim a case is handled are claims, never a verification.
+
+CI builds the change and runs its tests separately, so whether it compiles and its tests pass is not yours to establish. Never withhold READY for want of that evidence. A defect you can see by reading the code is still a blocker. A commit message is never a blocker.
+
+Return READY only if you would merge it as it stands. When you return ADDRESS_FIRST, every blocker must be specific enough for someone else to fix without asking you what you meant. Name as a blocker only what you would refuse to merge with, and put everything else in the summary as a suggestion. Write each blocker as \`path/to/file.ext:LINE: the defect and why it matters\`, with the path as shown in the diff and the line number on the new side of the diff.
+
+Also write two things for the pull request:
+- whatThisDoes: 2 to 5 sentences a non-specialist could follow. What was wrong or missing, what the change does now, what it gets the user. Ground it in the diff, never in the change's own framing.
+- whatToTest: a manual testing guide from the diff. Preconditions, then "do X, expect Y" steps, then behaviour changes worth confirming and edge cases. Never invent behaviour the code does not implement.
+
+Respond with ONLY a JSON object (no markdown fences):
+{
+  "verdict": "READY" | "ADDRESS_FIRST",
+  "blockers": ["path/to/file.ext:LINE: defect"],
+  "summary": "string",
+  "whatThisDoes": "string",
+  "whatToTest": "string"
+}`;
+
+/** Parses the reader's JSON strictly. Throws on anything that is not a complete, well-formed verdict. */
+function parseVerdictReport(responseText: string): VerdictReport {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(extractJSON(responseText));
+  } catch (e) {
+    const errorMsg = e instanceof Error ? e.message : String(e);
+    throw new Error(`malformed verdict (length ${responseText.length}): ${errorMsg.slice(0, 200)}`);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('verdict is not a JSON object');
+  }
+  const { verdict, blockers, summary, whatThisDoes, whatToTest } = parsed as Record<string, unknown>;
+  if (verdict !== 'READY' && verdict !== 'ADDRESS_FIRST') {
+    throw new Error(`unknown verdict ${JSON.stringify(verdict)?.slice(0, 50)}`);
+  }
+  if (typeof summary !== 'string' || typeof whatThisDoes !== 'string' || typeof whatToTest !== 'string') {
+    throw new Error('verdict is missing `summary`, `whatThisDoes` or `whatToTest`');
+  }
+  if (blockers !== undefined && (!Array.isArray(blockers) || blockers.some(b => typeof b !== 'string'))) {
+    throw new Error('verdict `blockers` is not an array of strings');
+  }
+  const named = ((blockers ?? []) as string[]).map(b => b.trim()).filter(b => b.length > 0);
+  // An ADDRESS_FIRST that names no blocker still refuses the merge, so its summary is the blocker.
+  const effectiveBlockers = verdict === 'ADDRESS_FIRST' && named.length === 0 ? [summary] : named;
+  return { verdict, blockers: verdict === 'READY' ? [] : effectiveBlockers, summary, whatThisDoes, whatToTest };
+}
+
+/** Runs the verdict reader once. Throws when the call fails or its output is truncated or unparseable. */
+export async function runVerdictReader(
+  client: LLMClient,
+  rawDiff: string,
+  repoContext: string,
+  fileContents?: Map<string, string>,
+): Promise<VerdictReport> {
+  const userMessage = buildReviewerUserMessage(rawDiff, repoContext, { fileContents });
+  const response = await client.sendMessage(VERDICT_READER_SYSTEM_PROMPT, userMessage, { effort: 'high' });
+  if (response.truncated) {
+    throw new Error(`verdict truncated at the output token limit (length ${response.content.length})`);
+  }
+  return parseVerdictReport(response.content);
+}
+
+/** Turns a `file:line: defect` blocker into a blocking finding. A blocker without a location lands in the review body. */
+export function verdictBlockerToFinding(blocker: string): Finding {
+  const located = blocker.match(/^`?([^\s:`][^:`]*)`?:(\d+)(?:-\d+)?`?:\s*([\s\S]+)$/);
+  const text = (located ? located[3] : blocker).trim();
+  const [title, ...rest] = text.split(/(?<=[.!?])\s+/);
+  return {
+    severity: 'blocker',
+    title,
+    file: located ? located[1] : '',
+    line: located ? Number(located[2]) : 0,
+    description: rest.join(' '),
+    reviewers: [VERDICT_READER_NAME],
+  };
+}

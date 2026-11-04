@@ -2,7 +2,7 @@ import { Finding, FindingFingerprintEntry, RoundContext } from './types';
 import { Suppression } from './memory';
 import { classifyAuthorReply, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment } from './recap';
 import { BOT_LOGIN, titleToSlug } from './github';
-import { determineVerdict } from './review';
+import { determineOutcome } from './review';
 
 jest.mock('@actions/core', () => ({
   info: jest.fn(),
@@ -1190,10 +1190,10 @@ describe('fetchRecapState', () => {
       const openThreads = state.previousFindings
         .filter(f => f.status === 'open')
         .map(f => ({ threadId: f.threadId!, title: f.title, file: f.file, line: f.line, severity: f.severity }));
-      const { verdict } = determineVerdict([], attached, openThreads, collectResolvedThreadIds(state.previousFindings), undefined, undefined, new Set(['src/foo.ts']));
-      expect(verdict).toBe('APPROVE');
+      const { outcome } = determineOutcome([], attached, openThreads, collectResolvedThreadIds(state.previousFindings), undefined, undefined, new Set(['src/foo.ts']));
+      expect(outcome).toBe('READY');
       const unattached = attached.map(({ threadId: _threadId, ...rest }) => rest);
-      expect(determineVerdict([], unattached, openThreads, collectResolvedThreadIds(state.previousFindings), undefined, undefined, new Set(['src/foo.ts'])).verdict).toBe('REQUEST_CHANGES');
+      expect(determineOutcome([], unattached, openThreads, collectResolvedThreadIds(state.previousFindings), undefined, undefined, new Set(['src/foo.ts'])).outcome).toBe('ADDRESS_FIRST');
     });
 
     it('round-trips suggestedFix containing a literal \\u0060 escape sequence without parse error', async () => {

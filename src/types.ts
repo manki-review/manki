@@ -52,7 +52,7 @@ export interface InterRoundDiffEmptyOverride {
 
 /**
  * Three-way state of the GitHub review-thread fetch consumed by
- * `determineVerdict`. `fetched` and `empty` distinguish "threads returned"
+ * `determineOutcome`. `fetched` and `empty` distinguish "threads returned"
  * from "fetched, none open"; `fetch_failed` means the GraphQL call errored
  * and downstream code is operating on the conservative unknown-state
  * fallback.
@@ -90,7 +90,8 @@ export interface VerdictTraceEntry {
 }
 
 /**
- * Per-branch breakdown of which findings or priors triggered `determineVerdict`.
+ * Per-branch breakdown of which findings or priors triggered `determineOutcome`.
+ * The verdict reader's blockers go in `survivingBlockers`.
  * Only the branch that fired needs to be non-empty; the other arrays stay empty.
  * Recorded on `RoundJudge.verdictTrace` so replay tooling can answer "which N
  * priors gated APPROVE on round 15?" without re-deriving from `findings.entries`.
@@ -180,10 +181,27 @@ export interface InPrSuppression {
 
 export type ReviewVerdict = 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES';
 
-export type VerdictReason = 'required_present' | 'novel_suggestion' | 'prior_unaddressed' | 'only_nit_or_suggestion';
+/** How a review round ended. Each outcome posts one review event, see `OUTCOME_VERDICT` in `review.ts`. */
+export type RoundOutcome = 'READY' | 'ADDRESS_FIRST' | 'INCOMPLETE';
+
+export type VerdictReason = 'required_present' | 'novel_suggestion' | 'prior_unaddressed' | 'only_nit_or_suggestion' | 'verdict_reader';
+
+/** The verdict reader's answer on a round where no finding blocked. */
+export interface VerdictReport {
+  verdict: 'READY' | 'ADDRESS_FIRST';
+  /** Each entry reads `file:line: defect`. Empty on `READY`. */
+  blockers: string[];
+  summary: string;
+  whatThisDoes: string;
+  whatToTest: string;
+}
 
 export interface ReviewResult {
   verdict: ReviewVerdict;
+  /** Set on every result from `runReview`. `verdict` is derived from it. */
+  outcome?: RoundOutcome;
+  /** Set when the verdict reader ran and answered. */
+  verdictReport?: VerdictReport;
   verdictReason?: VerdictReason;
   summary: string;
   findings: Finding[];
@@ -222,6 +240,8 @@ export interface ReviewResult {
   /** Aggregated dedup LLM usage and wall-clock duration (LLM dedup step only). */
   dedupUsage?: LLMUsage;
   dedupDurationMs?: number;
+  /** Verdict reader LLM usage. */
+  verdictUsage?: LLMUsage;
   crossRoundSuppressed?: number;
   crossRoundDemoted?: number;
   /** Set when the judge stage forced every open thread to `not_addressed` because the inter-round diff was known-empty. */
@@ -614,6 +634,8 @@ export interface RoundMeta {
    * tooling reading older context blocks keeps working.
    */
   trigger?: RoundTrigger;
+  /** How the round ended. Optional so older context blocks keep parsing. */
+  outcome?: RoundOutcome;
 }
 
 /** Round-cap accounting captured at the moment a round was admitted. */
@@ -845,14 +867,14 @@ export interface RoundJudge {
    * Per-open-thread judgment from the judge stage. Surfaced in the embedded
    * round-context block so the resolution signal is observable post-hoc when
    * debugging stuck reviews. Producers omit this field on rounds with no open
-   * threads. `status: 'addressed'` retires warning priors via `determineVerdict`
+   * threads. `status: 'addressed'` retires warning priors via `determineOutcome`
    * and ratchets suggestion/nitpick priors via `applyCrossRoundSuppression`;
    * blockers require GitHub thread resolution or explicit `authorReply: 'agree'`.
    */
   threadEvaluations?: ThreadEvaluation[];
   /**
    * Identity of every finding or prior that triggered the verdict gate
-   * (`determineVerdict`). Only the branch that fired is non-empty; the others
+   * (`determineOutcome`). Only the branch that fired is non-empty; the others
    * stay as empty arrays. Without this, a round returning `prior_unaddressed`
    * loses which N priors gated APPROVE — the `summary` text was the only
    * signal distinguishing a 1-prior round from a 12-prior one.
@@ -999,7 +1021,7 @@ export interface RoundUsage {
   outputTokens?: number;
   totalTokens?: number;
   estimatedCostUsd?: number;
-  perStage?: Partial<Record<'planner' | 'reviewer' | 'judge' | 'dedup', RoundUsageStage>>;
+  perStage?: Partial<Record<'planner' | 'reviewer' | 'judge' | 'dedup' | 'verdict', RoundUsageStage>>;
 }
 
 export interface RoundUsageStage {
