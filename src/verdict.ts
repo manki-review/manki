@@ -36,7 +36,7 @@ Respond with ONLY a JSON object (no markdown fences):
 function parseVerdictReport(responseText: string): VerdictReport {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(extractJSON(responseText));
+    parsed = JSON.parse(extractJSON(responseText, 'object'));
   } catch (e) {
     const errorMsg = e instanceof Error ? e.message : String(e);
     throw new Error(`malformed verdict (length ${responseText.length}): ${errorMsg.slice(0, 200)}`);

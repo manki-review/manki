@@ -77,4 +77,22 @@ describe('extractJSON', () => {
     const result = JSON.parse(extractJSON(input));
     expect(result).toEqual({ key: 'value with "quotes"' });
   });
+  it('skips bracketed prose before the object when an object is expected', () => {
+    const input = 'The diff touches [changeType] handling in two files.\n\n```json\n{"verdict": "READY", "blockers": []}\n```';
+    expect(JSON.parse(extractJSON(input, 'object'))).toEqual({ verdict: 'READY', blockers: [] });
+  });
+
+  it('skips a leading object when an array is expected', () => {
+    const input = 'Context {"note": "x"} then the findings: [{"title": "bug"}]';
+    expect(JSON.parse(extractJSON(input, 'array'))).toEqual([{ title: 'bug' }]);
+  });
+
+  it('moves past a bracketed span that is not JSON', () => {
+    const input = 'See [the docs] for details. {"a": 1}';
+    expect(JSON.parse(extractJSON(input))).toEqual({ a: 1 });
+  });
+
+  it('returns the cleaned text when nothing of the expected shape parses', () => {
+    expect(extractJSON('only [1, 2] here', 'object')).toBe('only [1, 2] here');
+  });
 });
