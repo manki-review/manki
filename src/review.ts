@@ -420,7 +420,7 @@ export async function runPlanner(
       return null;
     }
 
-    const jsonText = extractJSON(response.content);
+    const jsonText = extractJSON(response.content, 'object');
     const parsed = JSON.parse(jsonText);
 
     const teamSize = parsed.teamSize;
@@ -1449,7 +1449,7 @@ export function parseFindings(responseText: string, reviewerName: string): Findi
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(extractJSON(responseText));
+    parsed = JSON.parse(extractJSON(responseText, 'array'));
   } catch (e) {
     const errorMsg = e instanceof Error ? e.message : String(e);
     throw new Error(`malformed response (length ${responseText.length}): ${errorMsg.slice(0, 200)}`);

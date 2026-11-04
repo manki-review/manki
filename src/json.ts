@@ -1,44 +1,29 @@
-/**
- * Extract a JSON object or array from LLM response text that may contain
- * markdown fences, preamble, or other non-JSON content.
- */
-export function extractJSON(text: string): string {
-  let cleaned = text.trim();
+type JsonShape = 'object' | 'array';
 
-  // Strip markdown fences
-  if (cleaned.startsWith('```')) {
-    cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?\s*```\s*$/, '');
-  }
+// Bounds the scan so a long reply full of unmatched brackets cannot turn extraction quadratic.
+const MAX_CANDIDATES = 50;
 
-  // Try parsing directly first
+function parsesAs(text: string, shape?: JsonShape): boolean {
   try {
-    JSON.parse(cleaned);
-    return cleaned;
+    const value: unknown = JSON.parse(text);
+    if (!shape) return true;
+    if (shape === 'array') return Array.isArray(value);
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
   } catch {
-    // Not valid JSON as-is, try to extract
+    return false;
   }
+}
 
-  // Find the first { or [ and its matching closing bracket
-  const objStart = cleaned.indexOf('{');
-  const arrStart = cleaned.indexOf('[');
-
-  let start: number;
-  let openChar: string;
-  let closeChar: string;
-
-  if (objStart === -1 && arrStart === -1) return cleaned;
-  if (objStart === -1) { start = arrStart; openChar = '['; closeChar = ']'; }
-  else if (arrStart === -1) { start = objStart; openChar = '{'; closeChar = '}'; }
-  else if (objStart < arrStart) { start = objStart; openChar = '{'; closeChar = '}'; }
-  else { start = arrStart; openChar = '['; closeChar = ']'; }
-
-  // Find matching close bracket by counting nesting
+/** Returns the index of the bracket that closes the one at `start`, or -1 when it never closes. */
+function matchingClose(text: string, start: number): number {
+  const openChar = text[start];
+  const closeChar = openChar === '{' ? '}' : ']';
   let depth = 0;
   let inString = false;
   let escaped = false;
 
-  for (let i = start; i < cleaned.length; i++) {
-    const ch = cleaned[i];
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
 
     if (escaped) { escaped = false; continue; }
     if (ch === '\\' && inString) { escaped = true; continue; }
@@ -48,9 +33,36 @@ export function extractJSON(text: string): string {
     if (ch === openChar) depth++;
     if (ch === closeChar) depth--;
 
-    if (depth === 0) {
-      return cleaned.slice(start, i + 1);
-    }
+    if (depth === 0) return i;
+  }
+  return -1;
+}
+
+/**
+ * Extract a JSON object or array from LLM response text that may contain
+ * markdown fences, preamble, or other non-JSON content. With `shape`, only a
+ * value of that kind is accepted, so prose such as `[changeType]` before the
+ * real object is skipped.
+ */
+export function extractJSON(text: string, shape?: JsonShape): string {
+  let cleaned = text.trim();
+
+  // Strip markdown fences
+  if (cleaned.startsWith('```')) {
+    cleaned = cleaned.replace(/^```(?:json)?\s*\n?/, '').replace(/\n?\s*```\s*$/, '');
+  }
+
+  if (parsesAs(cleaned, shape)) return cleaned;
+
+  const opens = shape === 'object' ? '{' : shape === 'array' ? '[' : '{[';
+  let tried = 0;
+  for (let i = 0; i < cleaned.length && tried < MAX_CANDIDATES; i++) {
+    if (!opens.includes(cleaned[i])) continue;
+    tried++;
+    const end = matchingClose(cleaned, i);
+    if (end === -1) continue;
+    const candidate = cleaned.slice(i, end + 1);
+    if (parsesAs(candidate, shape)) return candidate;
   }
 
   return cleaned;
