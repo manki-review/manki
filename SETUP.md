@@ -472,7 +472,7 @@ The judge assigns one of five severity levels to each finding:
 | `nit` | Minor style or preference issue | Listed in a collapsed section of the review body, PR can still be approved |
 | `ignore` | False positive or irrelevant | Dropped silently |
 
-Rounds 1 and 2 block on `required` and `warning` findings. From round 3 only `required` findings block. A `warning` raised then is listed under "smaller fixes in this PR" in the review body instead of becoming a thread, so the round can approve. A blocker from the verdict reader blocks at every round.
+Rounds 1 and 2 block on `required` and `warning` findings. From round 3 only `required` findings block. A `warning` raised then is listed under "smaller fixes in this PR" in the review body instead of becoming a thread, so the round can approve. A blocker from the verdict reader blocks at every round, and so does a security finding: one the judge tags `security`, or one from the Security & Safety reviewer kept at `warning` or above.
 
 When a blocker comes back after the author pushed a fix for it, the review keeps requesting changes, lists the blocker under "Needs a human", and pauses automatic review. The last automatic round, round `convergence.max_auto_rounds` (default 5), blocks on blockers only: it approves with the remaining warnings as smaller fixes, or stops the same way when a blocker is still open. After a pause, commenting `@manki review` runs one more round that blocks on blockers only.
 

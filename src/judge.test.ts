@@ -158,6 +158,20 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).not.toContain('keeping the reviewer\'s severity');
   });
 
+  it('makes a reachable security defect on attacker-controlled input a blocker unless refuted', () => {
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
+    expect(prompt).toContain('Rate that likelihood Certain, never Possible.');
+    expect(prompt).toContain('**A reachable security defect is a `blocker` when an attacker controls the input that triggers it, however unlikely it looks.**');
+    expect(prompt).toContain('PR content and diffs, file contents, comments and replies, branch names, and config read from the PR');
+    for (const cls of ['prompt injection', 'permission bypass', 'secret or token exposure', 'code, command or path injection', 'unsafe execution of config the PR controls']) {
+      expect(prompt).toContain(cls);
+    }
+    expect(prompt).toContain('If you can show the attacker gains no capability they do not already have');
+    expect(prompt).toContain('mark the finding `ignore` and say why in `reasoning`');
+    expect(prompt).toContain('Never keep it at a lower grade.');
+    expect(prompt).toContain('"security": false');
+  });
+
   it('puts the verdict fields before the reasoning in the output schema', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     const schema = prompt.slice(prompt.indexOf('"findings": ['));
@@ -1335,6 +1349,28 @@ describe('runJudgeAgent', () => {
     expect(result.findings[0].severity).toBe('blocker');
     expect(result.findings[0].tags).toBeUndefined();
     expect(result.findings[0].reachability).toBe('reachable');
+  });
+
+  it('tags the findings the judge marks `security`', async () => {
+    mockSendMessage.mockResolvedValue({ content: JSON.stringify({
+      summary: 'One injection.',
+      findings: [
+        { id: 1, title: 'Reply prompt takes injected instructions', severity: 'warning', reasoning: 'r', confidence: 'high', security: true },
+        { id: 2, title: 'Off by one', severity: 'warning', reasoning: 'r', confidence: 'high', security: false },
+        { id: 3, title: 'Token in log', severity: 'blocker', reasoning: 'r', confidence: 'high', security: 'yes' },
+      ],
+    }) });
+    const input: JudgeInput = {
+      findings: [makeFinding({ title: 'Reply prompt takes injected instructions' }), makeFinding({ title: 'Off by one' }), makeFinding({ title: 'Token in log' })],
+      diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 3,
+    };
+
+    const result = await runJudgeAgent(mockClient, makeConfig(), input);
+    expect(result.findings.map(f => [f.title, f.tags])).toEqual([
+      ['Reply prompt takes injected instructions', ['security']],
+      ['Off by one', undefined],
+      ['Token in log', undefined],
+    ]);
   });
 
   it('calls judge with only openThreads when findings are empty', async () => {

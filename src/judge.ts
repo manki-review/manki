@@ -16,7 +16,7 @@ import { safeTruncate, sendWithParseRetry } from './utils';
 import { sanitize, titleOverlapType } from './recap';
 import { stringifyFindingFingerprint, truncateDiff, validateSeverity } from './review';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
-import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DiffFile, DuplicateMatchType, Finding, FindingFingerprintEntry, FindingReachability, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, ParsedDiff, PrContext, ThreadEvaluation } from './types';
+import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DiffFile, DuplicateMatchType, Finding, FindingFingerprintEntry, FindingReachability, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, ParsedDiff, PrContext, ThreadEvaluation } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -263,6 +263,8 @@ export interface JudgedFinding {
   duplicateOf?: number;
   /** Number of the prior blocker "BN" this finding names again. */
   sameAs?: number;
+  /** Whether the judge classed the finding as a security defect. */
+  security?: boolean;
 }
 
 /** A blocker from an earlier round, with the commit of the latest round that raised it. */
@@ -335,6 +337,8 @@ Evaluate each finding on two dimensions:
 - Possible: could happen under specific edge cases or unusual input
 - Unlikely: requires unusual circumstances or rare conditions
 
+When an attacker supplies the input that triggers a security defect, the attacker decides whether it happens. Rate that likelihood Certain, never Possible.
+
 **Severity mapping:**
 - **blocker**: correctness bug, data loss risk, or security issue. Must be fixed.
 - **warning**: real behavioral concern — e.g., an edge case that will fail, a misuse of an API that will produce wrong output, a race condition. Not catastrophic but shouldn't ship.
@@ -351,6 +355,20 @@ Your grade is final: the verdict acts on the severity you return, not on the rev
 - **Code the PR did not touch is never a finding.** Mark it \`ignore\`, even when the problem is real.
 - **Verification status is never a finding.** "Tests were not run" or "could not confirm" describes no defect in the diff. Mark it \`ignore\`.
 - **Commit messages never block.** A finding about a commit message is at most \`suggestion\`.
+
+## Security Defects
+
+**A reachable security defect is a \`blocker\` when an attacker controls the input that triggers it, however unlikely it looks.** Attacker-controlled input is anything a PR author or commenter can write: PR content and diffs, file contents, comments and replies, branch names, and config read from the PR. The classes are:
+
+- prompt injection that changes what an LLM or agent in the code does
+- authentication or permission bypass
+- secret or token exposure
+- code, command or path injection
+- unsafe execution of config the PR controls
+
+Set \`security\` to true on every finding in these classes that you keep, and false on all others.
+
+If you can show the attacker gains no capability they do not already have, for example because their own repository permissions already let them do it, mark the finding \`ignore\` and say why in \`reasoning\`. Refute it or keep it as a \`blocker\`. Never keep it at a lower grade.
 
 ## When You Are Unsure
 
@@ -469,6 +487,7 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
       "severity": "blocker" | "warning" | "suggestion" | "nitpick" | "ignore",
       "duplicateOf": 0,
       "sameAs": "",
+      "security": false,
       "confidence": "high" | "medium" | "low",
       "reachability": "reachable" | "hypothetical" | "unknown",
       "reasoning": "Your verdict first, then 1-2 sentences on why",
@@ -800,6 +819,7 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
         ...(reachabilityReasoning && { reachabilityReasoning }),
         ...(duplicateOf && { duplicateOf }),
         ...(sameAs !== undefined && { sameAs }),
+        ...(f.security === true && { security: true }),
       };
     });
 
@@ -1079,6 +1099,7 @@ export function mapJudgedToFindings(
       finding.severity = match.severity;
       finding.judgeNotes = match.reasoning;
       finding.judgeConfidence = match.confidence;
+      if (match.security) finding.tags = addTag(finding.tags, SECURITY_TAG);
       applyReachability(finding, match);
       applyOwnProposal(finding, provenanceMap);
       const prior = match.sameAs !== undefined ? priorBlockers[match.sameAs - 1] : undefined;

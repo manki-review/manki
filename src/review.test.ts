@@ -590,7 +590,7 @@ describe('determineOutcome', () => {
       expect(result.verdictReason).toBe('prior_unaddressed');
     });
 
-    it('blocks only on blockers, new or prior, at the blockers-only bar', () => {
+    it('blocks only on blockers and security warnings, new or prior, at the blockers-only bar', () => {
       const warning: Finding = { severity: 'warning', title: 'New concern', file: 'src/y.ts', line: 2, description: 'd', reviewers: ['r'] };
       const priorWarning = fingerprintEntriesFromLegacy([makePriorWarning()]);
       expect(determineOutcome([warning, nitpick], priorWarning, [makeOpenThread()], undefined, undefined, undefined, undefined, true))
@@ -602,6 +602,16 @@ describe('determineOutcome', () => {
         .toBe('prior_unaddressed');
       expect(determineOutcome([{ ...warning, severity: 'blocker' }], [], [], undefined, undefined, undefined, undefined, true).verdictReason)
         .toBe('required_present');
+
+      expect(determineOutcome([{ ...warning, tags: ['security'] }], [], [], undefined, undefined, undefined, undefined, true))
+        .toEqual(expect.objectContaining({ outcome: 'ADDRESS_FIRST', verdictReason: 'novel_suggestion' }));
+      for (const priorSecurity of [
+        priorWarning.map(p => ({ ...p, tags: ['security'] })),
+        fingerprintEntriesFromLegacy([makePriorWarning({ specialist: 'Security & Safety' })]),
+      ]) {
+        expect(determineOutcome([nitpick], priorSecurity, [makeOpenThread()], undefined, undefined, undefined, undefined, true))
+          .toEqual(expect.objectContaining({ outcome: 'ADDRESS_FIRST', verdictReason: 'prior_unaddressed' }));
+      }
     });
 
     it('first review round (no priors) falls through to existing rules', () => {
@@ -2077,6 +2087,30 @@ describe('runReview', () => {
     expect(third.verdict).toBe('APPROVE');
     expect(third.findings).toEqual([expect.objectContaining({ severity: 'warning', title: 'Unbounded retry', tags: ['follow-up'] })]);
 
+    const injection: Finding = { ...warning, title: 'Reply prompt takes injected instructions', line: 7, tags: ['security'] };
+    const specialist: Finding = { ...warning, title: 'Token in log', line: 9, reviewers: ['r', 'Security & Safety'] };
+    const specialistNit: Finding = { ...warning, severity: 'nitpick', title: 'Log wording', line: 11, reviewers: ['Security & Safety'] };
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [warning, injection, specialist, specialistNit], summary: 'Two security warnings.' });
+    const secure = await runAtRound(makeClients(), 3);
+    expect(secure.outcome).toBe('ADDRESS_FIRST');
+    expect(secure.verdict).toBe('REQUEST_CHANGES');
+    expect(secure.verdictTrace?.novelWarnings.map(e => e.title)).toEqual(['Reply prompt takes injected instructions', 'Token in log']);
+    expect(secure.findings.map(f => [f.title, f.tags])).toEqual([
+      ['Unbounded retry', ['follow-up']],
+      ['Reply prompt takes injected instructions', ['security']],
+      ['Token in log', ['security']],
+      ['Log wording', undefined],
+    ]);
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'Clean.' });
+    const priorSecurity = await runReview(
+      makeClients(), makeConfig(), diff, 'raw diff', 'repo context',
+      undefined, undefined, undefined, undefined, undefined, true, [makePriorOpenThread()], [],
+      [buildPriorRound(1, [makePriorWarningFinding({ specialist: 'Security & Safety' })]), buildPriorRound(2, [])],
+    );
+    expect(priorSecurity.outcome).toBe('ADDRESS_FIRST');
+    expect(priorSecurity.verdictReason).toBe('prior_unaddressed');
+
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [warning], summary: 'One warning.' });
     const refusing = makeClients();
     jest.mocked(refusing.judge.sendMessage).mockResolvedValue({
       content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: ['src/a.ts:9: Tokens leak into logs.'], summary: 'One defect.', whatThisDoes: 'x', whatToTest: 'y' }),
@@ -2142,6 +2176,12 @@ describe('runReview', () => {
     expect(budget.verdict).toBe('APPROVE');
     expect(budget.findings).toEqual([expect.objectContaining({ title: 'Unbounded retry', tags: ['follow-up'] })]);
     expect(budget.verdictReport?.whatThisDoes).toBe('Adds a feature.');
+
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [{ ...warning, tags: ['security'] }], summary: 'One security warning.' });
+    const secure = await runFinal(makeClients());
+    expect(secure.outcome).toBe('NOT_CONVERGING');
+    expect(secure.verdictTrace?.novelWarnings.map(e => e.title)).toEqual(['Unbounded retry']);
+    expect(secure.needsHuman).toEqual({ cause: 'budget', blockers: [expect.objectContaining({ title: 'Unbounded retry' })] });
 
     mockedRunJudgeAgent.mockResolvedValue({ findings: [{ ...warning, severity: 'blocker', title: 'Real bug' }], summary: 'One blocker.' });
     const stuck = await runFinal(makeClients());
