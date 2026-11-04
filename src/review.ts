@@ -978,8 +978,8 @@ export async function runReview(
 
     if (succeededCount < quorum) {
       const summary = failedAgents.length === team.agents.length
-        ? 'Review could not be completed — all reviewer agents failed.'
-        : `Review incomplete — ${failedAgents.join(', ')} failed after retries. Retry with @manki review.`;
+        ? 'All reviewers failed. Retry with @manki review.'
+        : `${failedAgents.join(', ')} failed after retries. Retry with @manki review.`;
       return {
         verdict: OUTCOME_VERDICT.INCOMPLETE,
         outcome: 'INCOMPLETE',
@@ -1123,7 +1123,7 @@ export async function runReview(
     return {
       verdict: OUTCOME_VERDICT.INCOMPLETE,
       outcome: 'INCOMPLETE',
-      summary: 'Review incomplete — judge failed. Retry with @manki review.',
+      summary: 'The judge failed. Retry with @manki review.',
       findings: [],
       highlights: [],
       reviewComplete: false,
@@ -1182,7 +1182,7 @@ export async function runReview(
       return {
         verdict: OUTCOME_VERDICT.INCOMPLETE,
         outcome: 'INCOMPLETE',
-        summary: `Review incomplete: the verdict reader failed (${sanitizeLogOutput(String((error as Error)?.message ?? error)).slice(0, 200)}). Retry with @manki review.`,
+        summary: `The verdict reader failed (${sanitizeLogOutput(String((error as Error)?.message ?? error)).slice(0, 200)}). Retry with @manki review.`,
         findings: [],
         highlights: [],
         reviewComplete: false,

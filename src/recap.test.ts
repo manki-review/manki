@@ -1,7 +1,7 @@
 import { Finding, FindingFingerprintEntry, RoundContext } from './types';
 import { Suppression } from './memory';
 import { classifyAuthorReply, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment } from './recap';
-import { BOT_LOGIN, titleToSlug } from './github';
+import { BOT_LOGIN, formatFindingComment, titleToSlug } from './github';
 import { LAST_PAGE, paginateSinglePage, TEST_BOT } from './test-utils';
 import { determineOutcome } from './review';
 import { applyCrossRoundSuppression } from './judge';
@@ -989,6 +989,34 @@ describe('fetchRecapState', () => {
     const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
     expect(state.previousFindings[0].description).toBe('The pointer is dereferenced without a prior null check.');
     expect(state.previousFindings[0].suggestedFix).toBe('Add null check before dereferencing ptr.');
+  });
+
+  it('recovers the title, `description` and `suggestedFix` from a comment posted by `formatFindingComment`', async () => {
+    const body = formatFindingComment({
+      severity: 'warning',
+      title: 'Null pointer dereference',
+      file: 'src/a.ts',
+      line: 4,
+      description: 'The pointer is dereferenced without a prior null check.',
+      suggestedFix: 'if (!ptr) return;',
+      reviewers: ['SecurityReviewer'],
+    });
+    const octokit = mockOctokit([
+      makeThread({
+        id: 't1',
+        isResolved: false,
+        comments: { nodes: [{ body, author: { login: 'github-actions[bot]' } }] },
+      }),
+    ]);
+
+    const [finding] = (await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1)).previousFindings;
+    expect(finding).toMatchObject({
+      title: 'Null pointer dereference',
+      severity: 'warning',
+      markerSlug: 'Null-pointer-dereference',
+      description: 'The pointer is dereferenced without a prior null check.…(truncated)',
+      suggestedFix: 'if (!ptr) return;',
+    });
   });
 
   it('skips `suggestedFix` when AI context JSON is malformed, still recovers `description`', async () => {

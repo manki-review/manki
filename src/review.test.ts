@@ -2332,7 +2332,7 @@ describe('runReview', () => {
     const result = await runReview(clients, config, diff, 'raw diff', 'repo context');
     expect(result.verdict).toBe('COMMENT');
     expect(result.reviewComplete).toBe(false);
-    expect(result.summary).toContain('all reviewer agents failed');
+    expect(result.summary).toContain('All reviewers failed');
     expect(result.failedAgents).toBeDefined();
     expect(result.failedAgents!.length).toBe(3);
     expect(sendMessage).toHaveBeenCalledTimes(3 * (MAX_AGENT_RETRIES + 1));
@@ -3971,7 +3971,7 @@ describe('runReview', () => {
     const result = await runReview(clients, config, diff, 'raw diff', 'repo context');
     expect(result.reviewComplete).toBe(false);
     expect(result.verdict).toBe('COMMENT');
-    expect(result.summary).toContain('all reviewer agents failed');
+    expect(result.summary).toContain('All reviewers failed');
     expect(result.failedAgents!.length).toBe(5);
     expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
   });
