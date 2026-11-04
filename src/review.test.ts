@@ -2478,6 +2478,33 @@ describe('runReview', () => {
     expect(result.suppressionCount).toBe(1);
   });
 
+  it('escalates findings from accepted memory patterns before computing the verdict', async () => {
+    const clients = makeClients('[]');
+    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+    const memory = {
+      suppressions: [],
+      learnings: [],
+      patterns: [{
+        id: 'p1', finding_title: 'missing await', occurrences: 5, accepted_count: 3,
+        rejected_count: 0, repos: ['repo'], first_seen: '2025-01-01', last_seen: '2025-06-01', escalated: true,
+      }],
+    };
+    mockedRunJudgeAgent.mockResolvedValue({
+      findings: [
+        { severity: 'nitpick', title: 'Missing await', file: 'src/a.ts', line: 3, description: 'd', reviewers: ['R1'] },
+        { severity: 'nitpick', title: 'Typo', file: 'src/a.ts', line: 4, description: 'd', reviewers: ['R1'] },
+      ],
+      summary: 'Two nits.',
+    });
+
+    const result = await runReview(clients, makeConfig(), diff, 'raw diff', 'repo context', memory);
+
+    expect(result.findings.map(f => f.severity)).toEqual(['blocker', 'nitpick']);
+    expect(result.escalationsApplied).toBe(1);
+    expect(result.verdict).toBe('REQUEST_CHANGES');
+    expect(result.verdictReason).toBe('required_present');
+  });
+
   it('drops findings matching dismissed previous ones before judge sees them', async () => {
     const findingJson = JSON.stringify([
       { severity: 'blocker', title: 'Null dereference bug', file: 'src/a.ts', line: 10, description: 'Bug found.' },

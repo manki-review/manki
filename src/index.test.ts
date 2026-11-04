@@ -117,7 +117,6 @@ jest.mock('./interaction', () => ({
 
 jest.mock('./memory', () => ({
   loadMemory: jest.fn().mockResolvedValue(null),
-  applyEscalations: jest.fn((findings: unknown[]) => findings),
   updatePattern: jest.fn().mockResolvedValue(undefined),
 }));
 
@@ -142,10 +141,8 @@ jest.mock('./review', () => {
       reviewComplete: true,
       agentNames: ['general'],
     }),
-    determineVerdict: jest.fn().mockReturnValue({ verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } }),
     selectTeam: jest.fn().mockReturnValue({ level: 'standard', agents: [{ name: 'general' }] }),
     buildPlannerHints: actual.buildPlannerHints,
-    buildPriorRoundLookup: actual.buildPriorRoundLookup,
     collectPriorRoundAgents: actual.collectPriorRoundAgents,
   };
 });
@@ -1752,7 +1749,6 @@ describe('runFullReview orchestration', () => {
       findings: [], highlights: [], reviewComplete: true,
       agentNames: ['general'],
     });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
     jest.mocked(reviewModule.selectTeam).mockReturnValue({ level: 'standard' as 'small', agents: [{ name: 'general', focus: '' }], lineCount: 0 });
     jest.mocked(ghUtils.postProgressComment).mockResolvedValue(1);
     jest.mocked(ghUtils.postReview).mockResolvedValue(123);
@@ -1767,7 +1763,6 @@ describe('runFullReview orchestration', () => {
     jest.mocked(ghUtils.updateProgressDashboard).mockResolvedValue(undefined);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     jest.mocked(memoryModule.loadMemory).mockResolvedValue(null as any);
-    jest.mocked(memoryModule.applyEscalations).mockImplementation((findings) => findings);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     jest.mocked(memoryModule.updatePattern).mockResolvedValue(undefined as any);
   });
@@ -1970,7 +1965,6 @@ describe('runFullReview orchestration', () => {
       agentNames: ['general'],
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
 
     await callRunFullReview();
 
@@ -2032,9 +2026,9 @@ describe('runFullReview orchestration', () => {
       agentNames: ['security', 'general'],
       allJudgedFindings: allJudged,
       rawFindings,
+      verdictReason: 'novel_suggestion',
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
 
     await callRunFullReview();
 
@@ -2105,7 +2099,6 @@ describe('runFullReview orchestration', () => {
       llmDedupCount: 1,
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
 
     await callRunFullReview();
 
@@ -2157,7 +2150,6 @@ describe('runFullReview orchestration', () => {
       suppressionCount: 2,
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
 
     await callRunFullReview();
 
@@ -2195,7 +2187,6 @@ describe('runFullReview orchestration', () => {
       rawFindings: [...findings],
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
 
     await callRunFullReview();
 
@@ -2230,7 +2221,6 @@ describe('runFullReview orchestration', () => {
       crossRoundDemoted: 1,
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'required_present', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
 
     await callRunFullReview();
 
@@ -2272,7 +2262,6 @@ describe('runFullReview orchestration', () => {
       testNitSuppressedCount: 1,
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [survivingFinding], duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
 
     await callRunFullReview();
 
@@ -2317,7 +2306,6 @@ describe('runFullReview orchestration', () => {
       dedupDurationMs: 200,
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [security], duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
 
     await callRunFullReview();
 
@@ -2369,7 +2357,6 @@ describe('runFullReview orchestration', () => {
       allJudgedFindings: [finding], rawFindings: [finding],
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
 
     await callRunFullReview();
 
@@ -2407,7 +2394,6 @@ describe('runFullReview orchestration', () => {
       agentEffortMap: new Map([['Security & Safety', 'medium']]),
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
 
     await callRunFullReview();
 
@@ -2442,7 +2428,6 @@ describe('runFullReview orchestration', () => {
       plannerFallbackReason: 'timeout',
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
 
     await callRunFullReview();
 
@@ -2470,7 +2455,6 @@ describe('runFullReview orchestration', () => {
       plannerSource: 'disabled',
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
 
     await callRunFullReview();
 
@@ -2494,7 +2478,6 @@ describe('runFullReview orchestration', () => {
       agentMultiPassConsistency: new Map([['Security & Safety', { consistent: 2, totalRaw: 5 }]]),
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
 
     await callRunFullReview();
 
@@ -2534,7 +2517,6 @@ describe('runFullReview orchestration', () => {
       allJudgedFindings: [finding], rawFindings: [finding],
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
 
     await callRunFullReview();
 
@@ -2573,7 +2555,6 @@ describe('runFullReview orchestration', () => {
       allJudgedFindings: [security, correctness], rawFindings: [security, correctness],
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [security, correctness], duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
 
     await callRunFullReview();
 
@@ -2606,7 +2587,6 @@ describe('runFullReview orchestration', () => {
       allJudgedFindings: [finding], rawFindings: [finding],
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
 
     await callRunFullReview();
 
@@ -2635,7 +2615,6 @@ describe('runFullReview orchestration', () => {
       judgeRetryCount: 0,
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
 
     await callRunFullReview();
 
@@ -2663,7 +2642,6 @@ describe('runFullReview orchestration', () => {
       agentNames: ['general'],
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [nitFinding], duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'COMMENT', verdictReason: 'only_nit_or_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
 
     await callRunFullReview();
 
@@ -2856,11 +2834,6 @@ describe('runFullReview orchestration', () => {
         priorRounds: [],
         openThreadsState: 'empty',
       });
-      jest.mocked(reviewModule.determineVerdict).mockReturnValue({
-        verdict: 'APPROVE',
-        verdictReason: 'only_nit_or_suggestion',
-        verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] },
-      });
 
       await callRunFullReview();
 
@@ -2883,9 +2856,6 @@ describe('runFullReview orchestration', () => {
         verdict: 'REQUEST_CHANGES', summary: 'blocker present',
         findings: [blockerFinding], highlights: [], reviewComplete: true,
         agentNames: ['general'],
-      });
-      jest.mocked(reviewModule.determineVerdict).mockReturnValue({
-        verdict: 'REQUEST_CHANGES',
         verdictReason: 'required_present',
         verdictTrace: {
           survivingBlockers: [
@@ -3235,10 +3205,6 @@ describe('runFullReview orchestration', () => {
           { severity: 'nitpick', title: 'A', file: 'src/app.ts', line: 1, description: 'd', reviewers: ['general'] },
         ],
       });
-      jest.mocked(reviewModule.determineVerdict).mockReturnValue({
-        verdict: 'COMMENT', verdictReason: 'only_nit_or_suggestion',
-        verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] },
-      });
 
       await callRunFullReview();
       const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7];
@@ -3261,10 +3227,6 @@ describe('runFullReview orchestration', () => {
         findings: [], highlights: [], reviewComplete: true,
         agentNames: ['general'],
       });
-      jest.mocked(reviewModule.determineVerdict).mockReturnValue({
-        verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion',
-        verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] },
-      });
 
       await callRunFullReview();
       const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7];
@@ -3279,10 +3241,6 @@ describe('runFullReview orchestration', () => {
         verdict: 'APPROVE', summary: 'done',
         findings: [], highlights: [], reviewComplete: true,
         agentNames: ['general'],
-      });
-      jest.mocked(reviewModule.determineVerdict).mockReturnValue({
-        verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion',
-        verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] },
       });
 
       await callRunFullReview();
@@ -3301,10 +3259,6 @@ describe('runFullReview orchestration', () => {
         verdict: 'APPROVE', summary: 'done',
         findings: [], highlights: [], reviewComplete: true,
         agentNames: ['general'],
-      });
-      jest.mocked(reviewModule.determineVerdict).mockReturnValue({
-        verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion',
-        verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] },
       });
 
       await callRunFullReview();
@@ -3329,10 +3283,6 @@ describe('runFullReview orchestration', () => {
         findings: [], highlights: [], reviewComplete: true,
         agentNames: ['general'],
       });
-      jest.mocked(reviewModule.determineVerdict).mockReturnValue({
-        verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion',
-        verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] },
-      });
 
       await callRunFullReview();
       const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7];
@@ -3352,10 +3302,6 @@ describe('runFullReview orchestration', () => {
         verdict: 'APPROVE', summary: 'done',
         findings: [], highlights: [], reviewComplete: true,
         agentNames: ['general'],
-      });
-      jest.mocked(reviewModule.determineVerdict).mockReturnValue({
-        verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion',
-        verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] },
       });
 
       await callRunFullReview();
@@ -3799,7 +3745,7 @@ describe('runFullReview orchestration', () => {
     expect(runReviewCall[RUN_REVIEW_PRIOR_ROUNDS_ARG]).toEqual([]);
   });
 
-  it('applies memory escalations when patterns exist', async () => {
+  it('records escalations and the verdict reported by `runReview`', async () => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
@@ -3829,31 +3775,22 @@ describe('runFullReview orchestration', () => {
     };
     jest.mocked(memoryModule.loadMemory).mockResolvedValue(memory);
 
-    const finding = { severity: 'nitpick' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['general'] };
-    const escalated = { ...finding, severity: 'blocker' as const };
+    const escalated = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['general'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'COMMENT', summary: 'Nits',
-      findings: [finding], highlights: [], reviewComplete: true,
+      verdict: 'REQUEST_CHANGES', verdictReason: 'required_present', summary: 'Escalated',
+      findings: [escalated], highlights: [], reviewComplete: true,
       agentNames: ['general'],
+      escalationsApplied: 1,
     });
-    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
-    jest.mocked(memoryModule.applyEscalations).mockReturnValue([escalated]);
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
+    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [escalated], duplicates: [] });
 
     await callRunFullReview();
 
-    expect(jest.mocked(memoryModule.applyEscalations)).toHaveBeenCalledWith(
-      [finding], memory.patterns,
-    );
-    // Verdict recalculated after escalation
-    expect(jest.mocked(reviewModule.determineVerdict)).toHaveBeenCalled();
-
+    expect(jest.mocked(reviewModule.runReview).mock.calls[0][5]).toBe(memory);
     const statsArg = jest.mocked(ghUtils.postReview).mock.calls[0][7];
-    expect(statsArg?.judge.verdictReason).toBe('novel_suggestion');
-    // result.verdictReason must also be updated alongside result.verdict after escalation
+    expect(statsArg?.judge.verdictReason).toBe('required_present');
     const reviewResultArg = jest.mocked(ghUtils.postReview).mock.calls[0][5];
-    expect(reviewResultArg?.verdictReason).toBe('novel_suggestion');
-    // one finding changed severity → escalationsApplied must reflect that
+    expect(reviewResultArg?.verdict).toBe('REQUEST_CHANGES');
     expect(statsArg?.memory.escalationsApplied).toBe(1);
   });
 
@@ -3871,9 +3808,9 @@ describe('runFullReview orchestration', () => {
       verdict: 'APPROVE', summary: 'Looks good',
       findings: [], highlights: [], reviewComplete: true,
       agentNames: ['general'],
+      verdictReason: 'only_nit_or_suggestion',
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [], duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
 
     await callRunFullReview();
 
@@ -3903,7 +3840,6 @@ describe('runFullReview orchestration', () => {
       agentNames: ['general'],
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'COMMENT', verdictReason: 'only_nit_or_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
 
     await callRunFullReview();
 
@@ -4337,7 +4273,6 @@ describe('runFullReview orchestration', () => {
         };
       },
     );
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'COMMENT', verdictReason: 'only_nit_or_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
 
     await callRunFullReview();
 
@@ -4392,11 +4327,7 @@ describe('runFullReview orchestration', () => {
     ]);
   });
 
-  it('passes openThreads to the post-escalation `determineVerdict` so prior unaddressed warnings block APPROVE', async () => {
-    // Regression for the dispatch-site bug: `runFullReview` recomputes the
-    // verdict after memory escalations and must forward `openThreads` so the
-    // `prior_unaddressed` branch can fire. Without the third argument every
-    // unresolved prior warning silently falls through to APPROVE.
+  it('posts the verdict from `runReview`, keeping the judge\'s addressed overrides', async () => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
@@ -4407,38 +4338,34 @@ describe('runFullReview orchestration', () => {
     });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
+    // A prior warning whose thread is still open blocks unless the judge's
+    // `addressed` evaluation is honoured.
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings: [
         { title: 'Old warning', file: 'src/app.ts', line: 5, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_OPEN' },
       ],
       recapContext: '',
-      priorRounds: [],
+      priorRounds: [roundContextFromLegacy({
+        round: 1, commitSha: 'prior-sha', timestamp: '2025-01-01T00:00:00Z',
+        findings: [{ fingerprint: { file: 'src/app.ts', lineStart: 5, lineEnd: 5, slug: 'Old-warning' }, severity: 'warning', title: 'Old warning', authorReply: 'none', threadId: 'PRRT_OPEN' }],
+      })],
     });
 
-    const finding = { severity: 'nitpick' as const, title: 'Tiny', file: 'src/app.ts', line: 9, description: 'd', reviewers: ['general'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'APPROVE', summary: 'Nits',
-      findings: [finding], highlights: [], reviewComplete: true,
+      verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion', summary: 'Fixed',
+      findings: [], highlights: [], reviewComplete: true,
       agentNames: ['general'],
+      threadEvaluations: [{ threadId: 'PRRT_OPEN', status: 'addressed', reason: 'fixed in diff' }],
     });
-    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'REQUEST_CHANGES', verdictReason: 'prior_unaddressed', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
 
     await callRunFullReview();
 
-    const determineVerdictCalls = jest.mocked(reviewModule.determineVerdict).mock.calls;
-    expect(determineVerdictCalls.length).toBeGreaterThan(0);
-    const lastCall = determineVerdictCalls[determineVerdictCalls.length - 1];
-    expect(lastCall[2]).toEqual([
-      expect.objectContaining({ threadId: 'PRRT_OPEN', file: 'src/app.ts', line: 5 }),
-    ]);
-
     const reviewResultArg = jest.mocked(ghUtils.postReview).mock.calls[0][5];
-    expect(reviewResultArg?.verdict).toBe('REQUEST_CHANGES');
-    expect(reviewResultArg?.verdictReason).toBe('prior_unaddressed');
+    expect(reviewResultArg?.verdict).toBe('APPROVE');
+    expect(reviewResultArg?.verdictReason).toBe('only_nit_or_suggestion');
   });
 
-  it('passes `null` open threads to `runReview` and `determineVerdict` when the thread fetch failed', async () => {
+  it('passes `null` open threads to `runReview` when the thread fetch failed', async () => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
@@ -4457,51 +4384,6 @@ describe('runFullReview orchestration', () => {
     await callRunFullReview();
 
     expect(jest.mocked(reviewModule.runReview).mock.calls[0][RUN_REVIEW_OPEN_THREADS_ARG]).toBeNull();
-    const determineVerdictCalls = jest.mocked(reviewModule.determineVerdict).mock.calls;
-    expect(determineVerdictCalls[determineVerdictCalls.length - 1][2]).toBeNull();
-  });
-
-  it('passes `resolvedThreadIds` (from `collectResolvedThreadIds`) to the post-escalation `determineVerdict`', async () => {
-    // The recompute site must forward the resolved-thread allowlist derived
-    // from `recap.previousFindings` so threads the author resolved via fix
-    // (without an agree-reply) approve the PR.
-    const testFile = {
-      path: 'src/app.ts', changeType: 'modified' as const,
-      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
-    };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
-    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
-      files: [testFile], totalAdditions: 10, totalDeletions: 5,
-    });
-    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
-
-    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
-      previousFindings: [
-        { title: 'Resolved warning', file: 'src/app.ts', line: 5, severity: 'warning' as const, status: 'resolved' as const, threadId: 'PRRT_RESOLVED' },
-        { title: 'Still open', file: 'src/app.ts', line: 6, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_OPEN' },
-      ],
-      recapContext: '',
-      priorRounds: [],
-    });
-
-    const finding = { severity: 'nitpick' as const, title: 'Tiny', file: 'src/app.ts', line: 9, description: 'd', reviewers: ['general'] };
-    jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'APPROVE', summary: 'Nits',
-      findings: [finding], highlights: [], reviewComplete: true,
-      agentNames: ['general'],
-    });
-    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
-
-    await callRunFullReview();
-
-    const determineVerdictCalls = jest.mocked(reviewModule.determineVerdict).mock.calls;
-    expect(determineVerdictCalls.length).toBeGreaterThan(0);
-    const lastCall = determineVerdictCalls[determineVerdictCalls.length - 1];
-    const resolvedArg = lastCall[3] as Set<string> | undefined;
-    expect(resolvedArg).toBeInstanceOf(Set);
-    expect(resolvedArg?.has('PRRT_RESOLVED')).toBe(true);
-    expect(resolvedArg?.has('PRRT_OPEN')).toBe(false);
   });
 
   it('forwards `description` and `suggestedFix` from `previousFindings` into `baseOpenThreads`', async () => {
@@ -6612,7 +6494,6 @@ describe('runFullReview concurrent-submission lock', () => {
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'APPROVE', summary: '', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
     });
-    jest.mocked(reviewModule.determineVerdict).mockReturnValue({ verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion', verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] } });
     jest.mocked(reviewModule.selectTeam).mockReturnValue({ level: 'standard' as 'small', agents: [{ name: 'general', focus: '' }], lineCount: 0 });
     jest.mocked(ghUtils.postProgressComment).mockResolvedValue(1);
     jest.mocked(ghUtils.findInProgressLock).mockReturnValue(null);
