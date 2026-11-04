@@ -65,7 +65,7 @@ export function selectTeam(
   diff: ParsedDiff,
   config: ReviewConfig,
   customReviewers?: ReviewerAgent[],
-  teamSizeOverride?: 1 | 2 | 3 | 4 | 5 | 6 | 7,
+  teamSizeOverride?: PlannerResult['teamSize'],
   agentPicks?: AgentPick[],
   silent?: boolean,
 ): TeamRoster {
@@ -121,20 +121,14 @@ export function selectTeam(
         coreAgentInjections.push(securityAgent.name);
       }
 
-      let level: 'trivial' | 'small' | 'medium' | 'large';
-      if (resolved.length <= 3) level = 'small';
-      else if (resolved.length <= 5) level = 'medium';
-      else level = 'large';
-      return { level, agents: resolved, lineCount, coreAgentInjections };
+      return { level: 'small', agents: resolved, lineCount, coreAgentInjections };
     }
     // If resolution failed entirely, fall through to heuristic
   }
 
   if (teamSizeOverride) {
     teamSize = teamSizeOverride;
-    if (teamSize <= 3) level = 'small';
-    else if (teamSize <= 5) level = 'medium';
-    else level = 'large';
+    level = 'small';
   } else {
     const configLevel = config.review_level;
     if (configLevel === 'auto' || !['small', 'medium', 'large'].includes(configLevel)) {
@@ -489,7 +483,7 @@ function heuristicFallback(
   forceFixedRoster: boolean,
 ): TeamRoster {
   const team = forceFixedRoster
-    ? selectTeam(diff, config, undefined, FALLBACK_AGENTS.length as 1 | 2 | 3 | 4 | 5 | 6 | 7)
+    ? selectTeam(diff, config, undefined, FALLBACK_AGENTS.length as PlannerResult['teamSize'])
     : selectTeam(diff, config, config.reviewers);
   core.info(`Review team (${team.level}): ${team.agents.map(a => a.name).join(', ')}`);
   return team;

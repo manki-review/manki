@@ -4433,14 +4433,6 @@ describe('runPlanner', () => {
 });
 
 describe('selectTeam with teamSizeOverride', () => {
-  it('uses override instead of line-count-based sizing', () => {
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
-    const config = makeConfig();
-    const roster = selectTeam(diff, config, undefined, 7);
-    expect(roster.agents).toHaveLength(7);
-    expect(roster.level).toBe('large');
-  });
-
   it('maps override of 2 to small level with agent picks', () => {
     const diff = makeDiff({ totalAdditions: 30, totalDeletions: 5 });
     const config = makeConfig();
@@ -4460,28 +4452,6 @@ describe('selectTeam with teamSizeOverride', () => {
     const roster = selectTeam(diff, config, undefined, 3);
     expect(roster.agents).toHaveLength(3);
     expect(roster.level).toBe('small');
-  });
-
-  it('maps override of 4 to medium level with agent picks', () => {
-    const diff = makeDiff({ totalAdditions: 100, totalDeletions: 50 });
-    const config = makeConfig();
-    const picks: AgentPick[] = [
-      { name: 'Security & Safety', effort: 'high' },
-      { name: 'Correctness & Logic', effort: 'medium' },
-      { name: 'Architecture & Design', effort: 'medium' },
-      { name: 'Testing & Coverage', effort: 'low' },
-    ];
-    const roster = selectTeam(diff, config, undefined, 4, picks);
-    expect(roster.agents).toHaveLength(4);
-    expect(roster.level).toBe('medium');
-  });
-
-  it('maps override of 5 to medium level', () => {
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
-    const config = makeConfig();
-    const roster = selectTeam(diff, config, undefined, 5);
-    expect(roster.agents).toHaveLength(5);
-    expect(roster.level).toBe('medium');
   });
 
   it('returns single trivial verifier agent when override is 1', () => {
@@ -4513,18 +4483,6 @@ describe('selectTeam with teamSizeOverride', () => {
     } finally {
       infoSpy.mockRestore();
     }
-  });
-
-  it('keeps heuristic agent scoring with override', () => {
-    const diff = makeDiff({
-      totalAdditions: 10,
-      totalDeletions: 5,
-      files: [{ path: 'src/review.test.ts', changeType: 'modified', hunks: [] }],
-    });
-    const config = makeConfig();
-    const roster = selectTeam(diff, config, undefined, 5);
-    expect(roster.agents).toHaveLength(5);
-    expect(roster.agents.map(a => a.name)).toContain('Testing & Coverage');
   });
 
   it('uses planner agent picks when provided', () => {
@@ -4565,12 +4523,11 @@ describe('selectTeam with teamSizeOverride', () => {
     const config = makeConfig();
     const picks: AgentPick[] = [
       { name: 'Security & Safety', effort: 'high' },
-      { name: 'Architecture & Design', effort: 'medium' },
       { name: 'Correctness & Logic', effort: 'low' },
       { name: 'Protocol Expert', effort: 'medium' },
     ];
-    const roster = selectTeam(diff, config, [custom], 4, picks);
-    expect(roster.agents).toHaveLength(4);
+    const roster = selectTeam(diff, config, [custom], 3, picks);
+    expect(roster.agents).toHaveLength(3);
     expect(roster.agents.map(a => a.name)).toContain('Protocol Expert');
   });
 
@@ -4678,6 +4635,15 @@ describe('selectTeam with teamSizeOverride', () => {
       infoSpy.mockClear();
       selectTeam(diff, config, undefined, 2, picks, true);
       expect(infoSpy).not.toHaveBeenCalled();
+
+      // A duplicate pick leaves room, so Security & Safety fills it and the team stays at the planner's size.
+      const duplicatePicks: AgentPick[] = [
+        { name: 'Architecture & Design', effort: 'medium' },
+        { name: 'Architecture & Design', effort: 'low' },
+      ];
+      const underSized = selectTeam(diff, config, undefined, 2, duplicatePicks);
+      expect(underSized.agents.map(a => a.name)).toEqual(['Architecture & Design', 'Security & Safety']);
+      expect(underSized.coreAgentInjections).toEqual(['Security & Safety']);
     } finally {
       infoSpy.mockRestore();
     }
@@ -5202,27 +5168,6 @@ describe('selectTeam planner-driven path', () => {
     expect(roster.level).toBe('small');
   });
 
-  it('assigns correct level based on resolved count', () => {
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
-    const config = makeConfig();
-
-    const picks5: AgentPick[] = [
-      { name: 'Security & Safety', effort: 'high' },
-      { name: 'Correctness & Logic', effort: 'medium' },
-      { name: 'Architecture & Design', effort: 'low' },
-      { name: 'Testing & Coverage', effort: 'medium' },
-      { name: 'Performance & Efficiency', effort: 'low' },
-    ];
-    expect(selectTeam(diff, config, undefined, 5, picks5).level).toBe('medium');
-
-    const picks7: AgentPick[] = [
-      ...picks5,
-      { name: 'Maintainability & Readability', effort: 'low' },
-      { name: 'Dependencies & Integration', effort: 'low' },
-    ];
-    expect(selectTeam(diff, config, undefined, 7, picks7).level).toBe('large');
-  });
-
   it('falls back to the fixed roster when all picks resolve to unknown names', () => {
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
     const config = makeConfig();
@@ -5744,6 +5689,25 @@ describe('planner provenance in ReviewResult', () => {
     expect(result.plannerFallbackReason).toBe('invalid_teamSize');
   });
 
+  it('rejects a planner `teamSize: 4` and runs the fixed fallback roster', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 4,
+      reviewerEffort: 'medium',
+      judgeEffort: 'medium',
+      prType: 'feat',
+      agents: [
+        { name: 'Architecture & Design', effort: 'medium' },
+        { name: 'Correctness & Logic', effort: 'medium' },
+        { name: 'Testing & Coverage', effort: 'medium' },
+        { name: 'Performance & Efficiency', effort: 'medium' },
+      ],
+    });
+    const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'auto' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
+    expect(result.plannerSource).toBe('heuristic_fallback');
+    expect(result.plannerFallbackReason).toBe('invalid_teamSize');
+    expect(result.agentNames).toEqual(['Security & Safety', 'Architecture & Design', 'Correctness & Logic']);
+  });
+
   it('records `source: "heuristic"` when the user pinned `review_level`', async () => {
     const plannerResponse = JSON.stringify({ teamSize: 3, reviewerEffort: 'medium', judgeEffort: 'medium', prType: 'feat' });
     const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'small' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
@@ -5797,6 +5761,28 @@ describe('planner provenance in ReviewResult', () => {
     const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'auto' }), diff, 'raw diff', 'repo');
     expect(result.coreAgentInjections).toEqual(['Security & Safety']);
     expect(result.agentNames).toContain('Security & Safety');
+  });
+
+  it('replaces the planner\'s last pick with Security & Safety and keeps the team at `teamSize`', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 3,
+      reviewerEffort: 'medium',
+      judgeEffort: 'medium',
+      prType: 'fix',
+      agents: [
+        { name: 'Architecture & Design', effort: 'medium' },
+        { name: 'Correctness & Logic', effort: 'medium' },
+        { name: 'Testing & Coverage', effort: 'medium' },
+      ],
+    });
+    const diff = makeDiff({
+      totalAdditions: 10,
+      totalDeletions: 5,
+      files: [{ path: 'src/auth/token.ts', changeType: 'modified', hunks: [] }],
+    });
+    const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'auto' }), diff, 'raw diff', 'repo');
+    expect(result.agentNames).toEqual(['Architecture & Design', 'Correctness & Logic', 'Security & Safety']);
+    expect(result.coreAgentInjections).toEqual(['Security & Safety']);
   });
 
   it('emits `coreAgentInjections` as empty array when no reinjection fires', async () => {

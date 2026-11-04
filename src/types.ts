@@ -276,7 +276,7 @@ export type ValidPrType = typeof VALID_PR_TYPE_VALUES[number];
 export const VALID_PR_TYPES = new Set<string>(VALID_PR_TYPE_VALUES);
 
 export interface PlannerResult {
-  teamSize: 1 | 2 | 3 | 4 | 5 | 6 | 7;
+  teamSize: 1 | 2 | 3;
   reviewerEffort: EffortLevel;
   judgeEffort: EffortLevel;
   prType: ValidPrType | 'unknown';
