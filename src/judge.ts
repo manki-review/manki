@@ -13,10 +13,10 @@ import {
 } from './memory';
 import { dynamicFence, LinkedIssue, titleToSlug } from './github';
 import { safeTruncate } from './utils';
-import { sanitize, titlesOverlap } from './recap';
+import { sanitize, titleOverlapType } from './recap';
 import { truncateDiff, validateSeverity } from './review';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
-import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DiffFile, Finding, FindingFingerprintEntry, FindingReachability, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, ParsedDiff, PrContext, ThreadEvaluation } from './types';
+import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DiffFile, DuplicateMatchType, Finding, FindingFingerprintEntry, FindingReachability, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, ParsedDiff, PrContext, ThreadEvaluation } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -251,6 +251,8 @@ export interface JudgeInput {
 }
 
 export interface JudgedFinding {
+  /** Number of the "Finding N" this entry judges. */
+  id?: number;
   title: string;
   severity: FindingSeverity;
   reasoning: string;
@@ -439,6 +441,7 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
   "summary": "Your review summary (see Summary Instructions above)",
   "findings": [
     {
+      "id": 1,
       "title": "Short title matching or close to the original finding title",
       "severity": "blocker" | "warning" | "suggestion" | "nitpick" | "ignore",
       "duplicateOf": 0,
@@ -468,7 +471,7 @@ You MUST return exactly ${openThreadsCount} \`threadEvaluations\` entries — on
 
 The flagged thread \`line\` is GitHub-anchored from when the thread was created and may have drifted relative to the current head. Treat it as a hint, not a strict boundary: scan the full provided code window for the fix. Resolution requires concrete evidence — cite the changed lines or current-code excerpt that supports your call in \`reason\`. Use the thread IDs provided in the open threads section below.
 ` : ''}
-Return one entry per finding, in the same order as the input. State the verdict before the reasoning.`;
+Return one entry per finding, in the same order as the input. Set \`id\` to the N of the finding's "Finding N" heading. State the verdict before the reasoning.`;
 
   if (config.instructions) {
     prompt += `\n\n## Project Instructions\n\n${config.instructions}`;
@@ -751,7 +754,9 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
       const duplicateOf = Number.isInteger(f.duplicateOf) && (f.duplicateOf as number) > 0
         ? f.duplicateOf as number
         : undefined;
+      const id = parseFindingNumber(f.id);
       return {
+        ...(id !== undefined && { id }),
         title: String(f.title || 'Untitled'),
         severity: validateSeverity(f.severity),
         reasoning: String(f.reasoning || ''),
@@ -786,6 +791,11 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
   }
 
   throw new Error(`Judge returned unexpected format: ${typeof parsed}`);
+}
+
+function parseFindingNumber(value: unknown): number | undefined {
+  const n = typeof value === 'string' && /^\s*\d+\s*$/.test(value) ? Number(value) : value;
+  return typeof n === 'number' && Number.isInteger(n) && n > 0 ? n : undefined;
 }
 
 function validateConfidence(value: unknown): 'high' | 'medium' | 'low' {
@@ -944,10 +954,7 @@ export async function runJudgeAgent(
 
   const crossRoundOptions: CrossRoundSuppressionOptions = { resolvedThreadIds, suppressResolvedThreads, threadEvaluations };
 
-  const graded = mapJudgedToFindings(findings, judgeResult.findings, provenanceMap);
-  // Positions line up with the judge's entries only when it returned one per finding.
-  const folded = judgeResult.findings.length >= findings.length ? foldDuplicates(graded, judgeResult.findings) : graded;
-  const mapped = deduplicateFindings(folded);
+  const mapped = deduplicateFindings(mapJudgedToFindings(findings, judgeResult.findings, provenanceMap));
   const suppression = applyCrossRoundSuppression(mapped, priorRounds, crossRoundOptions);
   const { findings: suppressed, count: inPrCount } = applyInPrSuppression(suppression.findings, inPrSuppressions);
 
@@ -1011,34 +1018,19 @@ function matchesInPrSuppression(finding: Finding, suppression: InPrSuppression):
   return finding.line >= lo && finding.line <= hi;
 }
 
+/**
+ * Applies the judge's entries to the findings they name by `id`, then folds the
+ * findings the judge marked as duplicates.
+ */
 export function mapJudgedToFindings(
   original: Finding[],
   judged: JudgedFinding[],
   provenanceMap?: ProvenanceEntry[],
 ): Finding[] {
-  // When judge returns fewer results (due to merging duplicates), use fuzzy matching only
-  if (judged.length < original.length) {
-    return mapMergedFindings(original, judged, provenanceMap);
-  }
-
-  // 1:1 mapping: match by position, fall back to fuzzy title match
-  const result: Finding[] = [];
-
-  for (let i = 0; i < original.length; i++) {
-    const finding = { ...original[i] };
-
-    let match: JudgedFinding | undefined;
-    if (i < judged.length) {
-      match = judged[i];
-    }
-
-    if (match && !titlesOverlap(finding.title, match.title)) {
-      const titleMatch = judged.find(j => titlesOverlap(finding.title, j.title));
-      if (titleMatch) {
-        match = titleMatch;
-      }
-    }
-
+  const aligned = alignJudgedToFindings(original, judged);
+  const graded = original.map((o, i) => {
+    const finding = { ...o };
+    const match = aligned[i];
     if (match) {
       finding.severity = match.severity;
       finding.judgeNotes = match.reasoning;
@@ -1046,11 +1038,55 @@ export function mapJudgedToFindings(
       applyReachability(finding, match);
       applyOwnProposal(finding, provenanceMap);
     }
+    return finding;
+  });
+  return foldDuplicates(graded, aligned);
+}
 
-    result.push(finding);
+/**
+ * Returns the judge's entry for each finding, matched by the `id` the entry
+ * echoes. An entry without a usable `id` goes to the free finding with the
+ * closest title. A finding left without an entry keeps its reviewer severity.
+ * Both fallbacks log a warning.
+ */
+function alignJudgedToFindings(original: Finding[], judged: JudgedFinding[]): Array<JudgedFinding | undefined> {
+  const aligned: Array<JudgedFinding | undefined> = original.map(() => undefined);
+  const unmatched: JudgedFinding[] = [];
+  for (const j of judged) {
+    const index = (j.id ?? 0) - 1;
+    if (index >= 0 && index < original.length && !aligned[index]) {
+      aligned[index] = j;
+    } else {
+      unmatched.push(j);
+    }
   }
+  for (const j of unmatched) {
+    const index = closestTitle(j.title, original.map((o, i) => (aligned[i] ? undefined : o.title)));
+    if (index === undefined) {
+      core.warning(`Judge entry "${j.title}" (id ${j.id ?? 'missing'}) matches no finding. Skipping it.`);
+      continue;
+    }
+    core.warning(`Judge entry "${j.title}" (id ${j.id ?? 'missing'}) mapped by title to finding ${index + 1}.`);
+    aligned[index] = j;
+  }
+  aligned.forEach((j, i) => {
+    if (!j) core.warning(`Finding ${i + 1} "${original[i].title}" has no judge entry. Keeping the reviewer severity.`);
+  });
+  return aligned;
+}
 
-  return result;
+const TITLE_MATCH_RANK: Record<DuplicateMatchType, number> = { exact: 0, substring: 1, word_overlap: 2, llm: 3 };
+
+/** Returns the index of the candidate whose title overlaps `title` most closely. */
+function closestTitle(title: string, candidates: Array<string | undefined>): number | undefined {
+  let best: { index: number; rank: number } | undefined;
+  candidates.forEach((candidate, index) => {
+    const type = candidate === undefined ? null : titleOverlapType(title, candidate);
+    if (type && (!best || TITLE_MATCH_RANK[type] < best.rank)) {
+      best = { index, rank: TITLE_MATCH_RANK[type] };
+    }
+  });
+  return best?.index;
 }
 
 /**
@@ -1058,7 +1094,7 @@ export function mapJudgedToFindings(
  * `findings[i]` is "Finding i + 1" and `judged[i]` is the judge's entry for it. A self-reference, a forward pointer or an
  * out-of-range pointer is ignored. A duplicate of a finding graded `ignore` is removed while that finding stays `ignore`.
  */
-function foldDuplicates(findings: Finding[], judged: JudgedFinding[]): Finding[] {
+function foldDuplicates(findings: Finding[], judged: Array<JudgedFinding | undefined>): Finding[] {
   const rootOf = (n: number): number => {
     let node = n;
     for (;;) {
@@ -1128,52 +1164,6 @@ function addTag(tags: string[] | undefined, tag: string): string[] {
   if (!tags || tags.length === 0) return [tag];
   if (tags.includes(tag)) return tags;
   return [...tags, tag];
-}
-
-function mapMergedFindings(
-  original: Finding[],
-  judged: JudgedFinding[],
-  provenanceMap?: ProvenanceEntry[],
-): Finding[] {
-  const result: Finding[] = [];
-
-  for (const j of judged) {
-    // Find all original findings that match this judge result
-    const matches = original.filter(o => titlesOverlap(o.title, j.title));
-
-    if (matches.length === 0) {
-      // No match found — skip this judge result (should not happen in practice)
-      continue;
-    }
-
-    // Use the first match as the base finding
-    const merged: Finding = { ...matches[0] };
-    merged.severity = j.severity;
-    merged.judgeNotes = j.reasoning;
-    merged.judgeConfidence = j.confidence;
-    applyReachability(merged, j);
-    applyOwnProposal(merged, provenanceMap);
-
-    // Combine reviewers from all matched originals
-    const allReviewers = new Set<string>();
-    for (const m of matches) {
-      for (const r of m.reviewers) {
-        allReviewers.add(r);
-      }
-    }
-    merged.reviewers = [...allReviewers];
-
-    // Use the longest description among matches
-    for (const m of matches) {
-      if (m.description.length > merged.description.length) {
-        merged.description = m.description;
-      }
-    }
-
-    result.push(merged);
-  }
-
-  return result;
 }
 
 /**

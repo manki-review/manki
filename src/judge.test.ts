@@ -136,7 +136,8 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('set `duplicateOf` to the number N of an EARLIER "Finding N"');
     expect(prompt).toContain('never by wording');
     expect(prompt).toContain('"duplicateOf": 0');
-    expect(prompt).toContain('Return one entry per finding, in the same order as the input.');
+    expect(prompt).toContain('"id": 1');
+    expect(prompt).toContain('Return one entry per finding, in the same order as the input. Set `id` to the N of the finding\'s "Finding N" heading.');
     expect(prompt).not.toContain('ONE entry for the merged finding');
   });
 
@@ -790,6 +791,20 @@ describe('parseJudgeResponse', () => {
     expect(result.findings[0].severity).toBe('blocker');
     expect(result.findings[0].reasoning).toBe('This is a real bug.');
     expect(result.findings[0].confidence).toBe('high');
+  });
+
+  it('parses finding ids and drops unusable ones', () => {
+    const json = JSON.stringify({
+      findings: [
+        { id: 2, title: 'A', severity: 'warning', reasoning: '', confidence: 'high' },
+        { id: '1', title: 'B', severity: 'nitpick', reasoning: '', confidence: 'low' },
+        { id: 'Finding 3', title: 'C', severity: 'nitpick', reasoning: '', confidence: 'low' },
+        { id: 0, title: 'D', severity: 'nitpick', reasoning: '', confidence: 'low' },
+      ],
+    });
+
+    const { findings } = parseJudgeResponse(json);
+    expect(findings.map(f => f.id)).toEqual([2, 1, undefined, undefined]);
   });
 
   it('falls back to default summary when plain array is returned', () => {
@@ -2331,14 +2346,14 @@ describe('runJudgeAgent', () => {
       ]);
     });
 
-    it('leaves findings alone when the judge returned fewer entries than findings', async () => {
+    it('folds by id when the judge reorders or omits entries', async () => {
       const result = await runWith(three(), [
-        verdict('Timer never cleared', 'warning'),
-        verdict('Unrelated naming', 'nitpick', 1),
+        { id: 3, ...verdict('Leaked timeout handle', 'blocker', 1) },
+        { id: 1, ...verdict('Timer never cleared', 'warning') },
       ]);
-      expect(result.map(f => [f.title, f.reviewers])).toEqual([
-        ['Timer never cleared', ['Correctness']],
-        ['Unrelated naming', ['Style']],
+      expect(result.map(f => [f.title, f.severity, f.reviewers])).toEqual([
+        ['Timer never cleared', 'warning', ['Correctness', 'Reliability']],
+        ['Unrelated naming', 'suggestion', ['Style']],
       ]);
     });
   });
@@ -2899,6 +2914,55 @@ describe('applyInPrSuppression', () => {
 });
 
 describe('mapJudgedToFindings', () => {
+  it('maps reordered entries by id instead of position or title', () => {
+    const originals = [
+      makeFinding({ title: 'Missing null check in parser', file: 'parser.ts' }),
+      makeFinding({ title: 'Missing null check in lexer', file: 'lexer.ts' }),
+    ];
+    const judged: JudgedFinding[] = [
+      { id: 2, title: 'Missing null check in parser', severity: 'blocker', reasoning: 'Lexer crashes.', confidence: 'high' },
+      { id: 1, title: 'Missing null check in lexer', severity: 'nitpick', reasoning: 'Parser is guarded.', confidence: 'low' },
+    ];
+
+    const result = mapJudgedToFindings(originals, judged);
+    expect(result.map(f => [f.file, f.severity])).toEqual([['parser.ts', 'nitpick'], ['lexer.ts', 'blocker']]);
+    expect(result[1].judgeNotes).toBe('Lexer crashes.');
+  });
+
+  it('logs and falls back to the closest title when an id is missing or unusable', () => {
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const originals = [
+      makeFinding({ title: 'Bug A', severity: 'suggestion' }),
+      makeFinding({ title: 'Bug B', severity: 'suggestion' }),
+    ];
+    const judged: JudgedFinding[] = [
+      { id: 9, title: 'Bug B', severity: 'blocker', reasoning: '', confidence: 'high' },
+      { title: 'Bug A', severity: 'nitpick', reasoning: '', confidence: 'low' },
+    ];
+
+    const result = mapJudgedToFindings(originals, judged);
+    expect(result.map(f => f.severity)).toEqual(['nitpick', 'blocker']);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('mapped by title to finding 2'));
+    warnSpy.mockRestore();
+  });
+
+  it('keeps a finding the judge left out at its reviewer severity and logs it', () => {
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const originals = [
+      makeFinding({ title: 'Off-by-one in pager', severity: 'warning' }),
+      makeFinding({ title: 'Unused import', severity: 'nitpick' }),
+    ];
+    const judged: JudgedFinding[] = [
+      { id: 2, title: 'Unused import', severity: 'ignore', reasoning: '', confidence: 'high' },
+    ];
+
+    const result = mapJudgedToFindings(originals, judged);
+    expect(result.map(f => [f.title, f.severity])).toEqual([['Off-by-one in pager', 'warning'], ['Unused import', 'ignore']]);
+    expect(result[0].judgeNotes).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('has no judge entry'));
+    warnSpy.mockRestore();
+  });
+
   it('handles 1:1 mapping when judge returns same count', () => {
     const originals = [
       makeFinding({ title: 'Bug A', severity: 'suggestion', reviewers: ['R1'] }),
@@ -2913,62 +2977,6 @@ describe('mapJudgedToFindings', () => {
     expect(result).toHaveLength(2);
     expect(result[0].severity).toBe('blocker');
     expect(result[1].severity).toBe('nitpick');
-  });
-
-  it('handles fewer judge results by merging duplicates', () => {
-    const originals = [
-      makeFinding({ title: 'Null check missing', severity: 'suggestion', reviewers: ['SecurityReviewer'] }),
-      makeFinding({ title: 'Missing null check', severity: 'blocker', reviewers: ['BugReviewer'] }),
-      makeFinding({ title: 'Unused import', severity: 'nitpick', reviewers: ['StyleReviewer'] }),
-    ];
-    const judged: JudgedFinding[] = [
-      { title: 'Null check missing', severity: 'blocker', reasoning: 'Merged findings 1 and 2 — same issue.', confidence: 'high' },
-      { title: 'Unused import', severity: 'nitpick', reasoning: 'Minor style issue.', confidence: 'medium' },
-    ];
-
-    const result = mapJudgedToFindings(originals, judged);
-    expect(result).toHaveLength(2);
-
-    // First result should have merged reviewers from both null-check findings
-    expect(result[0].severity).toBe('blocker');
-    expect(result[0].reviewers).toContain('SecurityReviewer');
-    expect(result[0].reviewers).toContain('BugReviewer');
-    expect(result[0].judgeNotes).toContain('Merged findings 1 and 2');
-
-    // Second result maps normally
-    expect(result[1].severity).toBe('nitpick');
-    expect(result[1].reviewers).toEqual(['StyleReviewer']);
-  });
-
-  it('deduplicates reviewers when merging', () => {
-    const originals = [
-      makeFinding({ title: 'Error handling', reviewers: ['R1', 'R2'] }),
-      makeFinding({ title: 'Error handling missing', reviewers: ['R2', 'R3'] }),
-    ];
-    const judged: JudgedFinding[] = [
-      { title: 'Error handling', severity: 'suggestion', reasoning: 'Merged.', confidence: 'medium' },
-    ];
-
-    const result = mapJudgedToFindings(originals, judged);
-    expect(result).toHaveLength(1);
-    expect(result[0].reviewers).toHaveLength(3);
-    expect(result[0].reviewers).toContain('R1');
-    expect(result[0].reviewers).toContain('R2');
-    expect(result[0].reviewers).toContain('R3');
-  });
-
-  it('uses the longest description when merging', () => {
-    const originals = [
-      makeFinding({ title: 'Null check', description: 'Short.' }),
-      makeFinding({ title: 'Null check missing', description: 'This is a much more detailed description of the null check issue.' }),
-    ];
-    const judged: JudgedFinding[] = [
-      { title: 'Null check', severity: 'blocker', reasoning: 'Merged.', confidence: 'high' },
-    ];
-
-    const result = mapJudgedToFindings(originals, judged);
-    expect(result).toHaveLength(1);
-    expect(result[0].description).toBe('This is a much more detailed description of the null check issue.');
   });
 
   it.each([
@@ -3100,56 +3108,6 @@ describe('mapJudgedToFindings', () => {
     expect(result[0].originalSeverity).toBeUndefined();
     expect(result[0].tags).toBeUndefined();
     expect(result[0].reachability).toBeUndefined();
-  });
-
-  it('demotes hypothetical findings when merging duplicates', () => {
-    const originals = [
-      makeFinding({ title: 'Defensive guard', severity: 'blocker', reviewers: ['R1'] }),
-      makeFinding({ title: 'Defensive guard missing', severity: 'suggestion', reviewers: ['R2'] }),
-    ];
-    const judged: JudgedFinding[] = [
-      {
-        title: 'Defensive guard',
-        severity: 'warning',
-        reasoning: 'Merged.',
-        confidence: 'high',
-        reachability: 'hypothetical',
-        reachabilityReasoning: 'No caller exercises this branch.',
-      },
-    ];
-
-    const result = mapJudgedToFindings(originals, judged);
-    expect(result).toHaveLength(1);
-    expect(result[0].severity).toBe('nitpick');
-    expect(result[0].originalSeverity).toBe('warning');
-    expect(result[0].tags).toEqual(['defensive-hardening']);
-    expect(result[0].reachability).toBe('hypothetical');
-  });
-
-  it.each([
-    ['reachable' as const],
-    ['unknown' as const],
-  ])('preserves severity when merging duplicates with reachability %s', (reachability) => {
-    const originals = [
-      makeFinding({ title: 'Null check', severity: 'suggestion', reviewers: ['R1'] }),
-      makeFinding({ title: 'Null check missing', severity: 'blocker', reviewers: ['R2'] }),
-    ];
-    const judged: JudgedFinding[] = [
-      {
-        title: 'Null check',
-        severity: 'blocker',
-        reasoning: 'Merged.',
-        confidence: 'high',
-        reachability,
-      },
-    ];
-
-    const result = mapJudgedToFindings(originals, judged);
-    expect(result).toHaveLength(1);
-    expect(result[0].severity).toBe('blocker');
-    expect(result[0].originalSeverity).toBeUndefined();
-    expect(result[0].tags).toBeUndefined();
-    expect(result[0].reachability).toBe(reachability);
   });
 });
 
@@ -3324,13 +3282,14 @@ describe('mapJudgedToFindings own-proposal demotion', () => {
     expect(result[0].tags).toContain('own-proposal-followup');
   });
 
-  it('demotes through mapMergedFindings when judge merges duplicates', () => {
+  it('demotes the surviving finding when the judge marks a duplicate', () => {
     const originals = [
       makeFinding({ title: 'Clamp A', severity: 'blocker', line: 10, reviewers: ['R1'] }),
       makeFinding({ title: 'Clamp A missing', severity: 'suggestion', line: 10, reviewers: ['R2'] }),
     ];
     const judged: JudgedFinding[] = [
-      { title: 'Clamp A', severity: 'suggestion', reasoning: 'Merged caveat.', confidence: 'high' },
+      { id: 1, title: 'Clamp A', severity: 'suggestion', reasoning: 'Caveat.', confidence: 'high' },
+      { id: 2, title: 'Clamp A missing', severity: 'suggestion', reasoning: 'Same defect.', confidence: 'high', duplicateOf: 1 },
     ];
 
     const result = mapJudgedToFindings(originals, judged, [makeProvenance()]);
