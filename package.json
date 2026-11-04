@@ -23,6 +23,8 @@
     "@anthropic-ai/sdk": "^0.39.0",
     "@google/generative-ai": "^0.24.1",
     "@octokit/auth-app": "^8.2.0",
+    "@octokit/plugin-retry": "^6.1.0",
+    "@octokit/plugin-throttling": "^8.2.0",
     "@octokit/rest": "^21.1.1",
     "minimatch": "^10.2.4",
     "openai": "^6.37.0",

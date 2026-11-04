@@ -1,9 +1,27 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { createAppAuth } from '@octokit/auth-app';
+import { retry } from '@octokit/plugin-retry';
+import { throttling } from '@octokit/plugin-throttling';
 import { BOT_LOGIN } from './github';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
+
+const RATE_LIMIT_RETRIES = 2;
+
+function onRateLimit(retryAfter: number, options: { method: string; url: string }, _octokit: unknown, retryCount: number): boolean {
+  if (retryCount >= RATE_LIMIT_RETRIES) {
+    core.warning(`GitHub rate limit on ${options.method} ${options.url}, giving up after ${RATE_LIMIT_RETRIES} retries`);
+    return false;
+  }
+  core.warning(`GitHub rate limit on ${options.method} ${options.url}, retrying in ${retryAfter}s`);
+  return true;
+}
+
+/** Octokit that retries 5xx responses and waits out primary and secondary rate limits. */
+function createOctokit(token: string): Octokit {
+  return github.getOctokit(token, { throttle: { onRateLimit, onSecondaryRateLimit: onRateLimit } }, retry, throttling);
+}
 
 export interface AuthResult {
   octokit: Octokit;
@@ -83,7 +101,7 @@ export async function createAuthenticatedOctokit(): Promise<AuthResult> {
   if (appId && privateKey) {
     core.info('Using GitHub App authentication for custom bot identity');
     const token = await getInstallationToken(appId, privateKey);
-    return { octokit: github.getOctokit(token), resolvedToken: token, identity: 'app' };
+    return { octokit: createOctokit(token), resolvedToken: token, identity: 'app' };
   }
 
   if (!githubToken) {
@@ -94,7 +112,7 @@ export async function createAuthenticatedOctokit(): Promise<AuthResult> {
   const { owner, repo: repoName } = github.context.repo;
   const { token, identity } = await resolveGitHubToken(githubToken, tokenUrl, owner, repoName);
 
-  return { octokit: github.getOctokit(token), resolvedToken: token, identity };
+  return { octokit: createOctokit(token), resolvedToken: token, identity };
 }
 
 /**
@@ -132,7 +150,7 @@ async function getInstallationToken(
 
   const appAuth = await auth({ type: 'app' });
   core.setSecret(appAuth.token);
-  const appOctokit = github.getOctokit(appAuth.token);
+  const appOctokit = createOctokit(appAuth.token);
 
   const owner = github.context.repo.owner;
   const repo = github.context.repo.repo;

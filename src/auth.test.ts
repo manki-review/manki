@@ -1,6 +1,8 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { createAppAuth } from '@octokit/auth-app';
+import { retry } from '@octokit/plugin-retry';
+import { throttling } from '@octokit/plugin-throttling';
 
 import { createAuthenticatedOctokit, getMemoryToken, resolveGitHubToken, TokenResult } from './auth';
 
@@ -295,7 +297,26 @@ describe('createAuthenticatedOctokit', () => {
     expect(result.octokit).toBeDefined();
     expect(result.resolvedToken).toBe('ghp_fallback');
     expect(result.identity).toBe('actions');
-    expect(mockGetOctokit).toHaveBeenCalledWith('ghp_fallback');
+    expect(mockGetOctokit).toHaveBeenCalledWith('ghp_fallback', expect.anything(), retry, throttling);
+  });
+
+  it('retries a rate-limited request at most twice', async () => {
+    mockGetInput.mockImplementation((name: string) => (name === 'github_token' ? 'ghp_fallback' : ''));
+    jest.spyOn(core, 'getIDToken').mockRejectedValue(new Error('No OIDC'));
+    mockGetOctokit.mockReturnValue({} as ReturnType<typeof github.getOctokit>);
+
+    await createAuthenticatedOctokit();
+
+    const { throttle } = mockGetOctokit.mock.calls[0][1] as {
+      throttle: Record<'onRateLimit' | 'onSecondaryRateLimit', (retryAfter: number, options: { method: string; url: string }, octokit: unknown, retryCount: number) => boolean>;
+    };
+    const request = { method: 'POST', url: '/repos/o/r/pulls/1/reviews' };
+    for (const handler of [throttle.onRateLimit, throttle.onSecondaryRateLimit]) {
+      expect(handler(5, request, {}, 0)).toBe(true);
+      expect(handler(5, request, {}, 1)).toBe(true);
+      expect(handler(5, request, {}, 2)).toBe(false);
+    }
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('giving up after 2 retries'));
   });
 
   it('returns resolved app token for use with getMemoryToken', async () => {
