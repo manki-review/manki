@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A blocker the judge marks as `hypothetical` (not reachable from any visible caller) now keeps its blocker severity. Only warnings and suggestions are still capped at nitpick with the `defensive-hardening` tag. Closes [#867](https://github.com/manki-review/manki/issues/867)
 
+### Fixed
+
+- A failed or incomplete review run no longer removes the merge block. Previous `CHANGES_REQUESTED` reviews are dismissed only after the new review is posted, the job fails with the reason instead of ending green, and the progress comment shows the reason instead of a dashboard of zeros. A failed review-thread fetch now counts as unknown, so prior findings stay blocking instead of retiring. Closes [#865](https://github.com/manki-review/manki/issues/865)
+
 ## [5.3.0] - 2026-05-25
 
 ### Added

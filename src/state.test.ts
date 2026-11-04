@@ -517,6 +517,7 @@ describe('checkAndAutoApprove', () => {
       issue_number: 1,
       body: expect.stringContaining('auto-approve is blocked'),
     }));
+    expect(dismissPreviousReviews).not.toHaveBeenCalled();
   });
 
   it('approve review body is non-empty so it does not register as a placeholder', async () => {
@@ -540,32 +541,19 @@ describe('checkAndAutoApprove', () => {
     expect(call.body.replace(/<!--[^]*?-->/g, '').trim().length).toBeGreaterThan(0);
   });
 
-  it('dismisses previous reviews before approving', async () => {
-    const octokit = makeMockOctokit({
-      threads: [],
-      createReviewFn: jest.fn().mockResolvedValue({}),
-    });
-
-    await checkAndAutoApprove(octokit, 'owner', 'repo', 42);
-
-    expect(dismissPreviousReviews).toHaveBeenCalledWith(octokit, 'owner', 'repo', 42);
-  });
-
-  it('continues with approval when dismissPreviousReviews fails', async () => {
-    dismissPreviousReviews.mockRejectedValueOnce(new Error('dismiss failed'));
+  it('dismisses previous reviews only after the approval posts', async () => {
     const createReviewMock = jest.fn().mockResolvedValue({});
     const octokit = makeMockOctokit({
       threads: [],
       createReviewFn: createReviewMock,
     });
 
-    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+    await checkAndAutoApprove(octokit, 'owner', 'repo', 42);
 
-    expect(result).toBe(true);
-    expect(createReviewMock).toHaveBeenCalledWith(
-      expect.objectContaining({ event: 'APPROVE' }),
-    );
+    expect(dismissPreviousReviews).toHaveBeenCalledWith(octokit, 'owner', 'repo', 42);
+    expect(createReviewMock.mock.invocationCallOrder[0]).toBeLessThan(dismissPreviousReviews.mock.invocationCallOrder[0]);
   });
+
 
   it('skips duplicate approval when bot already has an active APPROVED review on HEAD', async () => {
     const createReviewMock = jest.fn().mockResolvedValue({});

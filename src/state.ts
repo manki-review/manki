@@ -225,12 +225,6 @@ async function checkAndAutoApprove(
 
   const progressCommentId = await postAutoApproveProgressComment(octokit, owner, repo, prNumber);
 
-  try {
-    await dismissPreviousReviews(octokit, owner, repo, prNumber);
-  } catch (error) {
-    core.warning(`Failed to dismiss previous reviews during auto-approve: ${error}`);
-  }
-
   core.info('All findings resolved — auto-approving');
   // A visible body so the API does not render this review as `body_length: 0`.
   // An empty review body trips the head-SHA dedupe gate (`hasBotReviewOnCommit`)
@@ -248,6 +242,7 @@ async function checkAndAutoApprove(
         body,
       });
       core.info('Auto-approved PR');
+      await dismissPreviousReviews(octokit, owner, repo, prNumber);
     } catch {
       // Do not fall back to a `COMMENT` review here. A `COMMENT` placeholder
       // with this body would still register as a bot review on the head SHA

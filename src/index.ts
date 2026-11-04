@@ -41,6 +41,7 @@ import {
   isApprovedOnCommit,
   hasBotReviewOnCommit,
   markOwnProgressCommentCancelled,
+  markProgressCommentFailed,
   postAppWarningIfNeeded,
   checkConcurrentSubmissionLock,
 } from './github';
@@ -425,6 +426,10 @@ function _buildRoundRecap(recap: {
   };
 }
 
+function failureReason(error: unknown): string {
+  return sanitizeLogOutput(sanitizeTokens(error instanceof Error ? error.message : String(error)));
+}
+
 function reconcileDashboardAgents(dashboard: DashboardData, names: string[]): void {
   const existingByName = new Map(dashboard.agentProgress?.map(a => [a.name, a]) ?? []);
   const reconciled = names.map(name => existingByName.get(name) ?? { name, status: 'done' as const });
@@ -621,13 +626,8 @@ async function runFullReview(
         reviewComplete: true,
         agentNames: [] as string[],
       };
-      // Dismiss stale CHANGES_REQUESTED reviews before posting the skip comment
-      try {
-        await dismissPreviousReviews(octokit, owner, repo, prNumber);
-      } catch (error) {
-        core.warning(`Failed to dismiss previous reviews: ${error}`);
-      }
-      await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
+      const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
+      await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId);
       await updateProgressComment(octokit, owner, repo, progressCommentId, dashboard);
       return;
     }
@@ -645,8 +645,8 @@ async function runFullReview(
         reviewComplete: true,
         agentNames: [] as string[],
       };
-      await dismissPreviousReviews(octokit, owner, repo, prNumber);
-      await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
+      const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
+      await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId);
       await updateProgressComment(octokit, owner, repo, progressCommentId, dashboard);
       return;
     }
@@ -788,6 +788,8 @@ async function runFullReview(
       ...t,
       currentCode: extractCurrentCodeWindow(fileContents, t.file, t.line),
     }));
+    // `null` tells `determineVerdict` the open threads are unknown, so no prior can retire.
+    const verdictOpenThreads = recap.openThreadsState === 'fetch_failed' ? null : openThreads;
 
     // Fetch inter-round diff (prior round commit -> current head) so the judge
     // can ground per-thread resolution in actual changes since last review.
@@ -826,8 +828,6 @@ async function runFullReview(
         core.warning(`Failed to fetch linked issues: ${linkedIssuesResult.reason}`);
       }
     }
-
-    await dismissPreviousReviews(octokit, owner, repo, prNumber);
 
     let reviewEndTime = parseEndTime;
 
@@ -933,7 +933,7 @@ async function runFullReview(
         }
       },
       isFollowUp,
-      openThreads,
+      verdictOpenThreads,
       recap.previousFindings,
       recap.priorRounds,
       prAuthorLogin,
@@ -946,7 +946,7 @@ async function runFullReview(
         clearTimeout(dashboardFlushTimer);
         dashboardFlushTimer = null;
       }
-      core.warning(`Review incomplete: ${result.summary}`);
+      core.setFailed(`Review incomplete: ${failureReason(result.summary)}`);
       result.verdict = 'COMMENT';
       await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
       dashboard.phase = 'complete';
@@ -964,7 +964,7 @@ async function runFullReview(
       escalationsApplied = result.findings.filter((f, i) => f.severity !== beforeSeverities[i]).length;
     }
     const resolvedThreadIds = collectResolvedThreadIds(recap.previousFindings);
-    const { verdict: recomputedVerdict, verdictReason, verdictTrace } = determineVerdict(result.findings, priorFindingsFlat, openThreads, resolvedThreadIds, undefined, priorRoundLookup);
+    const { verdict: recomputedVerdict, verdictReason, verdictTrace } = determineVerdict(result.findings, priorFindingsFlat, verdictOpenThreads, resolvedThreadIds, undefined, priorRoundLookup);
     result.verdict = recomputedVerdict;
     result.verdictReason = verdictReason;
     result.verdictTrace = verdictTrace;
@@ -1292,6 +1292,7 @@ async function runFullReview(
     }
 
     const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, context, reviewTimeMs, config);
+    await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId);
 
     if (memory && config.memory?.enabled) {
       const memoryToken = getMemoryToken(octokitCache.resolvedToken);
@@ -1414,15 +1415,11 @@ async function runFullReview(
       clearTimeout(dashboardFlushTimer);
       dashboardFlushTimer = null;
     }
-    const msg = error instanceof Error ? error.message : String(error);
-    core.warning(`Review failed: ${msg}`);
+    const reason = failureReason(error);
+    core.setFailed(`Review failed: ${reason}`);
 
     if (progressCommentId !== undefined) {
-      await updateProgressComment(octokit, owner, repo, progressCommentId, {
-        phase: 'complete',
-        lineCount: 0,
-        agentCount: 0,
-      });
+      await markProgressCommentFailed(octokit, owner, repo, progressCommentId, 'Review', reason);
     }
   }
 }
@@ -1661,7 +1658,7 @@ async function main(): Promise<void> {
       await run();
     }
   } catch (error) {
-    core.warning(`Manki encountered an error: ${error}`);
+    core.setFailed(`Manki encountered an error: ${failureReason(error)}`);
   }
   // Let Node exit naturally. `core.setFailed` sets `process.exitCode = 1` which
   // propagates to GitHub Actions so the `post-if: failure()` condition fires.

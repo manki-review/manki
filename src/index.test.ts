@@ -168,6 +168,7 @@ jest.mock('./github', () => {
   isApprovedOnCommit: jest.fn().mockResolvedValue(false),
   hasBotReviewOnCommit: jest.fn().mockResolvedValue(false),
   markOwnProgressCommentCancelled: jest.fn().mockResolvedValue(false),
+  markProgressCommentFailed: jest.fn().mockResolvedValue(undefined),
   postAppWarningIfNeeded: jest.fn().mockResolvedValue(undefined),
   cancelActiveReviewRun: jest.fn().mockResolvedValue(false),
   fetchPRComments: fetchPRCommentsMock,
@@ -1533,7 +1534,7 @@ describe('main', () => {
     );
   });
 
-  it('catches errors and reports via core.warning', async () => {
+  it('catches errors and fails the job', async () => {
     setContext({
       eventName: 'pull_request',
       payload: {
@@ -1555,8 +1556,7 @@ describe('main', () => {
 
     await main();
 
-    const warnings = jest.mocked(core.warning).mock.calls.map(c => String(c[0]));
-    expect(warnings.some(w => w.includes('Something broke'))).toBe(true);
+    expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(expect.stringContaining('Something broke'));
   });
 
   it('does not call process.exit so exit code propagates to post step', async () => {
@@ -1872,7 +1872,7 @@ describe('runFullReview orchestration', () => {
     expect(warmupCLI).not.toHaveBeenCalled();
   });
 
-  it('dismisses previous reviews before posting diff-too-large warning', async () => {
+  it('dismisses previous reviews other than the diff-too-large comment after posting it', async () => {
     jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(true);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [], totalAdditions: 6000, totalDeletions: 0,
@@ -1880,23 +1880,11 @@ describe('runFullReview orchestration', () => {
 
     await callRunFullReview();
 
-    expect(jest.mocked(ghUtils.dismissPreviousReviews)).toHaveBeenCalled();
-  });
-
-  it('gracefully handles dismissPreviousReviews failure on diff-too-large path', async () => {
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(true);
-    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
-      files: [], totalAdditions: 6000, totalDeletions: 0,
-    });
-    jest.mocked(ghUtils.dismissPreviousReviews).mockRejectedValueOnce(new Error('permission denied'));
-
-    await callRunFullReview();
-
-    // Should still post the review despite dismiss failure
-    expect(jest.mocked(ghUtils.postReview)).toHaveBeenCalled();
-    expect(jest.mocked(core.warning)).toHaveBeenCalledWith(
-      expect.stringContaining('Failed to dismiss previous reviews'),
+    expect(jest.mocked(ghUtils.dismissPreviousReviews)).toHaveBeenCalledWith(
+      expect.anything(), 'test-owner', 'test-repo', 42, 123,
     );
+    expect(jest.mocked(ghUtils.postReview).mock.invocationCallOrder[0])
+      .toBeLessThan(jest.mocked(ghUtils.dismissPreviousReviews).mock.invocationCallOrder[0]);
   });
 
   it('approves when all files are filtered out by config', async () => {
@@ -2700,27 +2688,52 @@ describe('runFullReview orchestration', () => {
       expect.objectContaining({ verdict: 'COMMENT' }),
       expect.anything(),
     );
-    expect(jest.mocked(core.warning)).toHaveBeenCalledWith(
-      expect.stringContaining('Review incomplete'),
-    );
+    expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith('Review incomplete: Review incomplete');
+    expect(jest.mocked(ghUtils.dismissPreviousReviews)).not.toHaveBeenCalled();
     // Should not call dedup since we return early
     expect(jest.mocked(recapModule.deduplicateFindings)).not.toHaveBeenCalled();
   });
 
-  it('catches review failure and updates progress comment with error state', async () => {
-    jest.mocked(ghUtils.fetchPRDiff).mockRejectedValue(new Error('GitHub API down'));
+  it('dismisses previous reviews other than the new one only after it posts', async () => {
+    const testFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+    };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+      files: [testFile], totalAdditions: 10, totalDeletions: 5,
+    });
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     await callRunFullReview();
 
-    // Error should be caught and reported
-    expect(jest.mocked(core.warning)).toHaveBeenCalledWith(
-      expect.stringContaining('Review failed: GitHub API down'),
+    expect(jest.mocked(ghUtils.dismissPreviousReviews)).toHaveBeenCalledWith(
+      expect.anything(), 'test-owner', 'test-repo', 42, 123,
     );
-    // Progress comment should be updated even on failure
-    expect(jest.mocked(ghUtils.updateProgressComment)).toHaveBeenCalledWith(
-      expect.anything(), 'test-owner', 'test-repo', 1,
-      expect.objectContaining({ phase: 'complete', lineCount: 0 }),
+    expect(jest.mocked(ghUtils.postReview).mock.invocationCallOrder[0])
+      .toBeLessThan(jest.mocked(ghUtils.dismissPreviousReviews).mock.invocationCallOrder[0]);
+    expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
+  });
+
+  it('fails the job, keeps previous reviews and puts the reason in the progress comment when the review throws', async () => {
+    const testFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+    };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+      files: [testFile], totalAdditions: 10, totalDeletions: 5,
+    });
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
+    jest.mocked(reviewModule.runReview).mockRejectedValueOnce(new Error('provider down, token ghs_abc123'));
+
+    await callRunFullReview();
+
+    expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith('Review failed: provider down, token [REDACTED]');
+    expect(jest.mocked(ghUtils.markProgressCommentFailed)).toHaveBeenCalledWith(
+      expect.anything(), 'test-owner', 'test-repo', 1, 'Review', 'provider down, token [REDACTED]',
     );
+    expect(jest.mocked(ghUtils.updateProgressComment)).not.toHaveBeenCalled();
+    expect(jest.mocked(ghUtils.postReview)).not.toHaveBeenCalled();
+    expect(jest.mocked(ghUtils.dismissPreviousReviews)).not.toHaveBeenCalled();
   });
 
   it('passes recap previousFindings to runReview so dedup runs before judge', async () => {
@@ -4413,6 +4426,29 @@ describe('runFullReview orchestration', () => {
     const reviewResultArg = jest.mocked(ghUtils.postReview).mock.calls[0][5];
     expect(reviewResultArg?.verdict).toBe('REQUEST_CHANGES');
     expect(reviewResultArg?.verdictReason).toBe('prior_unaddressed');
+  });
+
+  it('passes `null` open threads to `runReview` and `determineVerdict` when the thread fetch failed', async () => {
+    const testFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
+    };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+      files: [testFile], totalAdditions: 10, totalDeletions: 5,
+    });
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
+    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
+      previousFindings: [],
+      recapContext: '',
+      priorRounds: [],
+      openThreadsState: 'fetch_failed',
+    });
+
+    await callRunFullReview();
+
+    expect(jest.mocked(reviewModule.runReview).mock.calls[0][RUN_REVIEW_OPEN_THREADS_ARG]).toBeNull();
+    const determineVerdictCalls = jest.mocked(reviewModule.determineVerdict).mock.calls;
+    expect(determineVerdictCalls[determineVerdictCalls.length - 1][2]).toBeNull();
   });
 
   it('passes `resolvedThreadIds` (from `collectResolvedThreadIds`) to the post-escalation `determineVerdict`', async () => {
@@ -6715,8 +6751,7 @@ describe('runFullReview concurrent-submission lock', () => {
 
     await expect(callRunFullReview()).resolves.toBeUndefined();
 
-    const warnings = jest.mocked(core.warning).mock.calls.map(c => String(c[0]));
-    expect(warnings.some(w => w.includes('Review failed'))).toBe(true);
+    expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith('Review failed: disk read failed');
     expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
     expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
   });
