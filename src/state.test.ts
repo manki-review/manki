@@ -1121,7 +1121,7 @@ describe('postAutoApproveProgressComment / markAutoApprove*', () => {
       { id: 1, body: updatedBody, user: { login: 'manki-review[bot]', type: 'Bot' }, updated_at: '2026-05-22T11:59:30Z' },
     ];
     expect(ghActual.findInProgressLock(comments, TEST_BOT, 999)).toBeNull();
-    expect(updatedBody).toContain('Auto-approved (all findings resolved)');
+    expect(updatedBody).toContain('**Auto-approved:** all findings are resolved.');
   });
 
   it('failure-transition body no longer registers as a live lock', async () => {

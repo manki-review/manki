@@ -3,7 +3,7 @@ import { createRequire } from 'module';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { AgentProgressEntry, DashboardData, FOLLOW_UP_TAG, Finding, FindingFingerprintEntry, FindingSeverity, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, ReviewVerdict, VALID_PR_TYPES, VerdictReason, VerdictTrace, VerdictTraceEntry, isBlockingSeverity } from './types';
+import { AgentProgressEntry, DashboardData, FOLLOW_UP_TAG, Finding, FindingFingerprintEntry, FindingSeverity, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, VALID_PR_TYPES, VerdictReason, VerdictTrace, VerdictTraceEntry, isBlockingSeverity } from './types';
 import { isLineInDiff } from './diff';
 import { findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
@@ -255,19 +255,19 @@ export const INDENT = '&nbsp;&nbsp;&nbsp;&nbsp;';
 function renderAgentLines(agents: AgentProgressEntry[]): string {
   return agents.map(a => {
     if (a.status === 'done') {
-      return `${INDENT}✅ ${a.name} — ${a.findingCount ?? 0} (${formatDuration(a.durationMs ?? 0)})`;
+      return `${INDENT}✅ ${a.name}: ${countOf(a.findingCount ?? 0, 'finding')} (${formatDuration(a.durationMs ?? 0)})`;
     }
     if (a.status === 'failed') {
       if (a.retryCount && a.retryCount > 0) {
-        return `${INDENT}✗ ${a.name} — failed after ${a.retryCount + 1} attempts (${formatDuration(a.durationMs ?? 0)})`;
+        return `${INDENT}🔴 ${a.name}: failed after ${a.retryCount + 1} attempts (${formatDuration(a.durationMs ?? 0)})`;
       }
-      return `${INDENT}✗ ${a.name} — failed (${formatDuration(a.durationMs ?? 0)})`;
+      return `${INDENT}🔴 ${a.name}: failed (${formatDuration(a.durationMs ?? 0)})`;
     }
     if (a.status === 'retrying') {
       if (a.retryCount != null) {
-        return `${INDENT}🔄 ${a.name} — retrying (${a.retryCount + 1}/${MAX_AGENT_RETRIES + 1})...`;
+        return `${INDENT}⚠️ ${a.name}: retrying (${a.retryCount + 1}/${MAX_AGENT_RETRIES + 1})`;
       }
-      return `${INDENT}🔄 ${a.name} — retrying...`;
+      return `${INDENT}⚠️ ${a.name}: retrying`;
     }
     if (a.status === 'reviewing') {
       return `${INDENT}⏳ ${a.name}`;
@@ -305,7 +305,7 @@ export function buildDashboard(data: DashboardData): string {
   const sections: string[] = [];
 
   if (data.phase !== 'complete') {
-    sections.push('**Manki** — Review in progress');
+    sections.push('**Review in progress**');
   }
 
   const plannerLines: string[] = [];
@@ -340,14 +340,14 @@ export function buildDashboard(data: DashboardData): string {
   } else if (data.phase === 'started') {
     if (hasAgentProgress) {
       const done = agents.filter(a => a.status === 'done' || a.status === 'failed' || a.status === 'retrying').length;
-      reviewLines.push(`**Review** — ${done}/${agents.length} agents complete`);
+      reviewLines.push(`**Review:** ${done}/${agents.length} agents complete`);
       reviewLines.push(renderAgentLines(agents));
     } else {
       reviewLines.push(`**Review**`);
       reviewLines.push(`${INDENT}reviewing with ${data.agentCount} agents...`);
     }
   } else {
-    reviewLines.push(`**Review** — ${data.rawFindingCount ?? 0} findings`);
+    reviewLines.push(`**Review:** ${countOf(data.rawFindingCount ?? 0, 'finding')}`);
     if (hasAgentProgress) {
       reviewLines.push(renderAgentLines(agents));
     }
@@ -363,7 +363,7 @@ export function buildDashboard(data: DashboardData): string {
     judgeLines.push(`${INDENT}evaluating ${data.judgeInputCount ?? data.rawFindingCount ?? 0} findings...`);
   } else {
     const judgeDur = data.judgeDurationMs != null ? ` (${formatDuration(data.judgeDurationMs)})` : '';
-    judgeLines.push(`**Judge** — ${data.keptCount ?? 0} kept · ${data.droppedCount ?? 0} dropped${judgeDur}`);
+    judgeLines.push(`**Judge:** ${data.keptCount ?? 0} kept · ${data.droppedCount ?? 0} dropped${judgeDur}`);
     if (data.keptSeverities) {
       const breakdown = renderSeverityBreakdown(data.keptSeverities);
       if (breakdown) judgeLines.push(`${INDENT}kept: ${breakdown}`);
@@ -395,7 +395,7 @@ export async function postProgressComment(
   const runIdMarker = buildRunIdMarker(github.context.runId);
   const body = dashboard
     ? `${BOT_MARKERS}\n${runIdMarker}\n${buildDashboard(dashboard)}`
-    : `${BOT_MARKERS}\n${runIdMarker}\n**Manki** — Review started`;
+    : `${BOT_MARKERS}\n${runIdMarker}\n**Review started**`;
 
   const { data } = await octokit.rest.issues.createComment({
     owner,
@@ -419,7 +419,7 @@ export async function postAutoApproveProgressComment(
   prNumber: number,
 ): Promise<number> {
   const runIdMarker = buildRunIdMarker(github.context.runId);
-  const body = `${BOT_MARKERS}\n${runIdMarker}\n**Manki** — Auto-approving (no findings remain)`;
+  const body = `${BOT_MARKERS}\n${runIdMarker}\n**Auto-approving:** no findings remain.`;
   const { data } = await octokit.rest.issues.createComment({
     owner,
     repo,
@@ -443,7 +443,7 @@ export async function markAutoApproveComplete(
   const body = [
     BOT_MARKER,
     VERSION_MARKER,
-    '**Manki** — Auto-approved (all findings resolved)',
+    '✅ **Auto-approved:** all findings are resolved.',
     REVIEW_COMPLETE_MARKER,
   ].join('\n');
   try {
@@ -470,7 +470,7 @@ export async function markProgressCommentFailed(
     BOT_MARKER,
     VERSION_MARKER,
     CANCELLED_MARKER,
-    `**Manki** — ${action} failed: ${sanitizeMarkdown(sanitizeTokens(String(reason))).slice(0, 300)}`,
+    `🔴 **${action} failed:** ${sanitizeMarkdown(sanitizeTokens(String(reason))).slice(0, 300)}`,
   ].join('\n');
   try {
     await octokit.rest.issues.updateComment({ owner, repo, comment_id: commentId, body });
@@ -494,7 +494,7 @@ export async function updateProgressComment(
   const parts: string[] = [
     BOT_MARKER,
     VERSION_MARKER,
-    `**Manki** — ${metadata ? 'Review complete' : 'Review failed'}`,
+    metadata ? '✅ **Review complete**' : '🔴 **Review failed**',
     '',
     buildDashboard({ ...dashboard, phase: 'complete' }),
   ];
@@ -515,8 +515,7 @@ export async function updateProgressComment(
     if (metadata.judgeDecisions.length > 0) {
       parts.push('**Judge decisions:**');
       for (const d of metadata.judgeDecisions) {
-        const icon = d.kept ? '\u2713 Kept' : '\u2717 Dropped';
-        parts.push(`- ${icon}: "${sanitizeMarkdown(d.title)}" (${d.severity}, ${d.confidence} confidence) — "${sanitizeMarkdown(d.reasoning)}"`);
+        parts.push(`- ${d.kept ? 'Kept' : 'Dropped'}: "${sanitizeMarkdown(d.title)}" (${d.severity}, ${d.confidence} confidence): "${sanitizeMarkdown(d.reasoning)}"`);
       }
       parts.push('');
     }
@@ -865,7 +864,7 @@ export async function postReview(
   const reviewedCommitFooter = buildReviewedCommitFooter(owner, repo, commitSha, github.context.serverUrl);
 
   const blockingFindings = result.findings.filter(f => isBlockingSeverity(f.severity) && !f.tags?.includes(FOLLOW_UP_TAG));
-  const lead = formatLead(result, blockingFindings, generalFindings.length + invalidComments.length > 0);
+  const lead = formatLead(result, blockingFindings);
 
   const renderBody = (ctx: RoundContext | undefined): string => {
     let b = `${BOT_MARKERS}\n${lead}`;
@@ -1074,31 +1073,38 @@ function asSentence(text: string): string {
   return /[.!?:]$/.test(trimmed) ? trimmed : `${trimmed}.`;
 }
 
-/** Returns the outcome line and the sentences under it that open the review body. */
-function formatLead(result: ReviewResult, blocking: Finding[], blockersInBody: boolean): string {
+/** The first line of the review body for each outcome. Its emoji is the only one in the review. */
+const VERDICT_LINES: Record<RoundOutcome, (result: ReviewResult, blockerCount: number) => string> = {
+  READY: () => '✅ **Approved.**',
+  ADDRESS_FIRST: (_result, blockerCount) => `🔴 **Changes requested:** ${countOf(blockerCount, 'blocker')}.`,
+  INCOMPLETE: result => `⚠️ **Review incomplete:** ${asSentence(sanitizeMarkdown(result.summary.trim()) || 'The review did not finish')}`,
+  NOT_CONVERGING: result => {
+    const blockers = countOf(result.needsHuman?.blockers.length ?? 0, 'blocker');
+    return result.needsHuman?.cause === 'budget'
+      ? `🛑 **Needs a human:** ${blockers} still open after the last automatic round.`
+      : `🛑 **Needs a human:** ${blockers} came back after a fix.`;
+  },
+  BUDGET: () => '✅ **Approved.**',
+};
+
+/** Returns what goes wrong in practice, from the judge summary or else the top blocker's description. */
+function formatVerdictDetail(result: ReviewResult, blocking: Finding[]): string {
   const summary = sanitizeMarkdown(result.summary.trim());
-  switch (result.outcome) {
-    case 'READY': {
-      const headline = '**READY. Nothing blocks merge.**';
-      return result.verdictReport || !summary ? headline : `${headline}\n\n${summary}`;
-    }
-    case 'ADDRESS_FIRST': {
-      const top = blocking.find(f => f.severity === 'blocker') ?? blocking[0];
-      const headline = top?.title || result.verdictTrace?.unresolvedPriors[0]?.title || 'A blocking thread from an earlier review is still open';
-      const detail: string[] = [];
-      // The judge writes its summary before the verdict reader runs, so it never describes the reader's blockers.
-      if (summary && result.verdictReason !== 'verdict_reader') detail.push(asSentence(summary));
-      if (blocking.length > 0) detail.push(`${countOf(blocking.length, 'blocker')}, ${blockersInBody ? 'see below' : 'inline below'}.`);
-      const lead = `**ADDRESS FIRST: ${asSentence(sanitizeMarkdown(headline))}**`;
-      return detail.length > 0 ? `${lead}\n\n${detail.join(' ')}` : lead;
-    }
-    case 'INCOMPLETE': {
-      const headline = '**INCOMPLETE: The review did not finish.**';
-      return summary ? `${headline}\n\n${summary}` : headline;
-    }
-    default:
-      return summary;
-  }
+  if (result.outcome === 'READY' || result.outcome === 'BUDGET') return result.verdictReport ? '' : summary;
+  if (result.outcome !== 'ADDRESS_FIRST') return '';
+  // The judge writes its summary before the verdict reader runs, so it never describes the reader's blockers.
+  if (summary && result.verdictReason !== 'verdict_reader') return asSentence(summary);
+  const top = blocking.find(f => f.severity === 'blocker') ?? blocking[0];
+  return top ? sanitizeMarkdown(top.description.trim()).split(/(?<=[.!?])\s+/).slice(0, 2).join(' ') : '';
+}
+
+/** Returns the verdict line and the sentences under it that open the review body. */
+function formatLead(result: ReviewResult, blocking: Finding[]): string {
+  if (!result.outcome) return sanitizeMarkdown(result.summary.trim());
+  const blockerCount = blocking.length || (result.verdictTrace?.unresolvedPriors.length ?? 0);
+  const line = VERDICT_LINES[result.outcome](result, blockerCount);
+  const detail = formatVerdictDetail(result, blocking);
+  return detail ? `${line}\n\n${detail}` : line;
 }
 
 function formatPartialNote(result: ReviewResult): string | null {
@@ -1133,11 +1139,7 @@ function formatTraceEntry(p: VerdictTraceEntry): string {
 
 function formatNeedsHuman(result: ReviewResult): string | null {
   if (result.outcome !== 'NOT_CONVERGING' || !result.needsHuman) return null;
-  const { cause, blockers } = result.needsHuman;
-  const why = cause === 'repeated'
-    ? 'These blockers came back after a fix was pushed, so a fix and the review disagree.'
-    : 'This was the last automatic round and these blockers are still open.';
-  return `### Needs a human\n\n${why} Automatic review is paused until someone comments \`@manki review\`.\n\n${blockers.map(formatTraceEntry).join('\n')}`;
+  return `Automatic review is paused until someone comments \`@manki review\`.\n\n${result.needsHuman.blockers.map(formatTraceEntry).join('\n')}`;
 }
 
 function formatLabelled(label: string, text: string): string {
@@ -1546,7 +1548,7 @@ async function markProgressCommentCancelled(
   if (originalBody.includes(CANCELLED_MARKER)) return;
   const body = [
     CANCELLED_MARKER,
-    '**Manki** — Review cancelled (superseded by newer run)',
+    '**Review cancelled:** a newer run replaced it.',
     '',
     '<details><summary>Original progress</summary>',
     '',
@@ -1967,7 +1969,7 @@ async function postAppWarningIfNeeded(
 
   await octokit.rest.issues.createComment({
     owner, repo, issue_number: prNumber,
-    body: `${APP_WARNING_MARKER}\n**Manki** — The [Manki GitHub App](https://github.com/apps/manki-review) is not installed on this repository. Reviews are posting as \`github-actions[bot]\` instead of \`manki-review[bot]\`. Some features (memory repo access, bot identity for review dismissal) may not work correctly.\n\nInstall the app at: https://github.com/apps/manki-review`,
+    body: `${APP_WARNING_MARKER}\nThe [Manki GitHub App](https://github.com/apps/manki-review) is not installed on this repository. Reviews are posting as \`github-actions[bot]\` instead of \`manki-review[bot]\`. Some features (memory repo access, bot identity for review dismissal) may not work correctly.\n\nInstall the app at: https://github.com/apps/manki-review`,
   });
 }
 
