@@ -592,12 +592,23 @@ describe('determineVerdict', () => {
       expect(result.verdictReason).toBe('only_nit_or_suggestion');
     });
 
-    it('treats a prior warning without threadId as unresolved (conservative default)', () => {
+    it('does not block on a prior warning posted without a thread, even while other threads are open', () => {
       const priors = [makePriorWarning({ threadId: undefined })];
       const open = [makeOpenThread({ threadId: 'OTHER' })];
       const result = determineVerdict([nitpick], fingerprintEntriesFromLegacy(priors), open);
-      expect(result.verdict).toBe('REQUEST_CHANGES');
-      expect(result.verdictReason).toBe('prior_unaddressed');
+      expect(result.verdict).toBe('APPROVE');
+      expect(result.verdictReason).toBe('only_nit_or_suggestion');
+    });
+
+    it('blocks on a prior blocker posted without a thread only while the PR still changes its file', () => {
+      const priors = fingerprintEntriesFromLegacy([makePriorWarning({ severity: 'blocker', threadId: undefined })]);
+      const stillChanged = determineVerdict([nitpick], priors, [], undefined, undefined, undefined, new Set(['src/x.ts']));
+      expect(stillChanged.verdict).toBe('REQUEST_CHANGES');
+      expect(stillChanged.verdictReason).toBe('prior_unaddressed');
+
+      const noLongerChanged = determineVerdict([nitpick], priors, [], undefined, undefined, undefined, new Set(['src/other.ts']));
+      expect(noLongerChanged.verdict).toBe('APPROVE');
+      expect(noLongerChanged.verdictTrace.unresolvedPriors).toEqual([]);
     });
 
     it('novel current-round warning takes precedence over an unresolved prior', () => {
@@ -683,7 +694,7 @@ describe('determineVerdict', () => {
     });
 
     it('keeps `prior_unaddressed` when the prior has no `threadId` (cannot match a judge evaluation)', () => {
-      const priors = [makePriorWarning({ threadId: undefined })];
+      const priors = [makePriorWarning({ severity: 'blocker', threadId: undefined })];
       const open = [makeOpenThread()];
       const evaluations: ThreadEvaluation[] = [{ threadId: 'SOME_OTHER', status: 'addressed', reason: 'irrelevant' }];
       const result = determineVerdict([nitpick], fingerprintEntriesFromLegacy(priors), open, undefined, evaluations);
@@ -691,12 +702,7 @@ describe('determineVerdict', () => {
       expect(result.verdictReason).toBe('prior_unaddressed');
     });
 
-    it('approves when a prior has no `threadId` and GitHub reports zero open threads (legacy handover, all resolved)', () => {
-      // Round 1 of a long-running PR ran on a manki version that did not
-      // persist `threadId` on findings, so the prior survives without an id.
-      // Once GitHub confirms zero open review threads, no prior can still be
-      // blocking, regardless of whether the id is present, so the missing-id
-      // case must retire alongside the id-bearing ones.
+    it('approves when a prior warning has no `threadId` and GitHub reports zero open threads', () => {
       const priors = [makePriorWarning({ threadId: undefined })];
       const result = determineVerdict([nitpick], fingerprintEntriesFromLegacy(priors), []);
       expect(result.verdict).toBe('APPROVE');
@@ -898,14 +904,10 @@ describe('determineVerdict', () => {
         expect(result.verdictReason).toBe('only_nit_or_suggestion');
       });
 
-      it('blocks a PR-level prior finding without `threadId` while open threads remain on the PR', () => {
-        // The prior carries no id (legacy handover format), and at least one
-        // review thread is still open on the PR, so the prior cannot be
-        // matched against `resolvedThreadIds` and the conservative block
-        // stands. When zero threads remain open the prior retires instead,
-        // covered by the dedicated test in the `unresolved prior findings`
-        // describe block.
-        const priors = [makePriorWarning({ threadId: undefined })];
+      it('blocks on a prior blocker without `threadId` whatever `resolvedThreadIds` holds', () => {
+        // A prior without a thread was posted in the review body, so no
+        // resolved thread can retire it.
+        const priors = [makePriorWarning({ severity: 'blocker', threadId: undefined })];
         const stillOpen = [makeOpenThread({ threadId: 'OTHER' })];
         const result = determineVerdict(
           [],
@@ -1066,7 +1068,7 @@ describe('determineVerdict', () => {
     });
 
     it('omits `threadId` from the trace when the prior has none', () => {
-      const priors = fingerprintEntriesFromLegacy([priorWarning({ threadId: undefined })]);
+      const priors = fingerprintEntriesFromLegacy([priorWarning({ severity: 'blocker', threadId: undefined })]);
       const { verdictTrace } = determineVerdict([], priors, [openThreadFor('OTHER')]);
       expect(verdictTrace.unresolvedPriors).toHaveLength(1);
       expect(verdictTrace.unresolvedPriors[0].threadId).toBeUndefined();

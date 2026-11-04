@@ -1352,7 +1352,8 @@ export async function runReview(
   const sortedPriorRounds = [...(priorRounds ?? [])].sort((a, b) => a.meta.round - b.meta.round);
   const priorFindingsFlat: FindingFingerprintEntry[] = sortedPriorRounds.flatMap(r => r.findings.entries);
   const priorRoundLookup = buildPriorRoundLookup(sortedPriorRounds);
-  const { verdict, verdictReason, verdictTrace } = determineVerdict(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, judgeThreadEvaluations, priorRoundLookup);
+  const changedFiles = new Set(diff.files.map(f => f.path));
+  const { verdict, verdictReason, verdictTrace } = determineVerdict(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, judgeThreadEvaluations, priorRoundLookup, changedFiles);
 
   const summary = judgeSummary;
 
@@ -1768,6 +1769,7 @@ function isPriorLikelyUnresolved(
   openThreadsUnknown: boolean,
   resolvedThreadIds: Set<string> | undefined,
   threadEvaluationsByThreadId: Map<string, ThreadEvaluation>,
+  changedFiles: ReadonlySet<string> | undefined,
 ): boolean {
   if (p.severity !== 'warning' && p.severity !== 'blocker') return false;
   if (p.authorReplyClass === 'agree') return false;
@@ -1788,13 +1790,10 @@ function isPriorLikelyUnresolved(
   }
   if (openThreadsUnknown) return true;
   if (p.threadId && resolvedThreadIds?.has(p.threadId)) return false;
-  // A prior with no `threadId` originates from a pre-`threadId` handover
-  // format. When GitHub confirms zero open review threads on the PR, no prior
-  // can still be blocking regardless of how the fingerprint was stored, so the
-  // missing-id case is allowed to retire alongside the id-bearing ones. When
-  // open threads do exist, the absent id leaves no way to match this prior
-  // against them, so the conservative block stands.
-  if (!p.threadId) return (openThreadIds?.size ?? 0) > 0;
+  // A prior still without a `threadId` matched no Manki thread, so it was
+  // posted in the review body and nobody can resolve it. Only a blocker on a
+  // file the PR still changes keeps blocking.
+  if (!p.threadId) return p.severity === 'blocker' && (!changedFiles || changedFiles.has(p.fingerprint.file));
   return false;
 }
 
@@ -1829,10 +1828,9 @@ export function buildPriorRoundLookup(sortedPriorRounds: RoundContext[]): Map<st
  *
  * A prior `warning`/`blocker` is "unresolved" when the author has not agreed to
  * dismiss it (`authorReply !== 'agree'`) and the underlying GitHub thread is
- * still in `openThreads`. A prior finding without a `threadId` (older handover
- * format) is treated as unresolved while open threads remain on the PR, but
- * retires once GitHub reports zero open threads, since no prior can still be
- * blocking when nothing is open.
+ * still in `openThreads`. A prior without a `threadId` was posted in the review
+ * body. It blocks only when it is a `blocker` on a file in `changedFiles`, or
+ * on any file when `changedFiles` is omitted.
  *
  * The judge's `threadEvaluations.status === 'addressed'` resolves a prior
  * thread. `uncertain` and missing entries collapse to "not addressed" so the
@@ -1889,6 +1887,7 @@ export function determineVerdict(
   resolvedThreadIds?: Set<string>,
   threadEvaluations?: ThreadEvaluation[],
   priorRoundLookup?: Map<string, number>,
+  changedFiles?: ReadonlySet<string>,
 ): { verdict: ReviewVerdict; verdictReason: VerdictReason; verdictTrace: VerdictTrace } {
   const emptyTrace = (): VerdictTrace => ({
     survivingBlockers: [],
@@ -1917,7 +1916,7 @@ export function determineVerdict(
   const openThreadIds = new Set((openThreads ?? []).map(t => t.threadId));
   const threadEvaluationsByThreadId = indexThreadEvaluations(threadEvaluations);
   const unresolvedPriors = prior.filter(p =>
-    isPriorLikelyUnresolved(p, openThreadIds, openThreadsUnknown, resolvedThreadIds, threadEvaluationsByThreadId),
+    isPriorLikelyUnresolved(p, openThreadIds, openThreadsUnknown, resolvedThreadIds, threadEvaluationsByThreadId, changedFiles),
   );
   if (unresolvedPriors.length > 0) {
     const trace = emptyTrace();

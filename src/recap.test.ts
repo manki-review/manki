@@ -2,6 +2,7 @@ import { Finding, FindingFingerprintEntry, RoundContext } from './types';
 import { Suppression } from './memory';
 import { classifyAuthorReply, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment } from './recap';
 import { BOT_LOGIN, titleToSlug } from './github';
+import { determineVerdict } from './review';
 
 jest.mock('@actions/core', () => ({
   info: jest.fn(),
@@ -1307,6 +1308,51 @@ describe('fetchRecapState', () => {
       const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
       expect(state.priorRounds).toHaveLength(1);
       expect(state.priorRounds[0].findings.entries).toEqual([entry]);
+    });
+
+    it('attaches each prior to its Manki thread by marker, file and nearest line', async () => {
+      const prior = (file: string, line: number, slug: string, severity: 'warning' | 'blocker' = 'warning') => ({
+        fingerprint: { file, lineStart: line, lineEnd: line, slug },
+        severity,
+        title: slug.replace(/-/g, ' '),
+      });
+      const entries = [
+        prior('src/foo.ts', 10, 'Old-issue', 'blocker'),
+        prior('src/foo.ts', 30, 'Other-issue'),
+        prior('src/body.ts', 5, 'Old-issue', 'blocker'),
+      ];
+      const ctx = makeRoundContext(1, {
+        findings: { count: 3, severityCounts: { blocker: 2, warning: 1, suggestion: 0, nitpick: 0 }, entries },
+      });
+      const thread = (id: string, isResolved: boolean, slug: string, originalLine: number) => makeThread({
+        id,
+        isResolved,
+        line: null,
+        originalLine,
+        comments: { nodes: [{ body: `**Warning**: x\n\n<!-- manki:warning:${slug} -->`, author: { login: BOT_LOGIN } }] },
+      });
+      const octokit = mockOctokit([
+        thread('T_FAR', false, 'Old-issue', 40),
+        thread('T_RESOLVED', true, 'Old-issue', 12),
+        thread('T_OTHER', false, 'Other-issue', 60),
+      ], [
+        { id: 100, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
+      ]);
+
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      const attached = state.priorRounds[0].findings.entries;
+      expect(attached.map(e => e.threadId)).toEqual(['T_RESOLVED', undefined, undefined]);
+
+      // The resolved thread retires its blocker. The warning too far from its
+      // thread and the body-only blocker on a file the PR no longer changes
+      // block nothing either, though thread `T_OTHER` is still open.
+      const openThreads = state.previousFindings
+        .filter(f => f.status === 'open')
+        .map(f => ({ threadId: f.threadId!, title: f.title, file: f.file, line: f.line, severity: f.severity }));
+      const { verdict } = determineVerdict([], attached, openThreads, collectResolvedThreadIds(state.previousFindings), undefined, undefined, new Set(['src/foo.ts']));
+      expect(verdict).toBe('APPROVE');
+      const unattached = attached.map(({ threadId: _threadId, ...rest }) => rest);
+      expect(determineVerdict([], unattached, openThreads, collectResolvedThreadIds(state.previousFindings), undefined, undefined, new Set(['src/foo.ts'])).verdict).toBe('REQUEST_CHANGES');
     });
 
     it('round-trips suggestedFix containing a literal \\u0060 escape sequence without parse error', async () => {

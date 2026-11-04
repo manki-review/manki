@@ -27,10 +27,8 @@ export function indexThreadEvaluations(
  * and cross-round suppression paths default to the safer outcome when the
  * judge could not produce a confident answer.
  *
- * Only callable for priors that carry a `threadId`. Priors from older
- * handover formats without a `threadId` cannot be matched to a judge
- * evaluation and must be handled by the caller (typically by treating them
- * as still unresolved).
+ * A prior without a `threadId` has no thread to evaluate and is never
+ * addressed here.
  */
 export function isPriorAddressedByJudge(
   prior: FindingFingerprintEntry,
