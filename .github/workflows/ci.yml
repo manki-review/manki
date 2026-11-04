@@ -10,7 +10,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4  # first-party GitHub action
+      - uses: actions/checkout@v7  # first-party GitHub action
         with:
           fetch-depth: 2
       - name: Keep CHANGELOG.md edits to release PRs
@@ -23,7 +23,7 @@ jobs:
           [ "$base" != "$head" ] && exit 0
           echo "::error file=CHANGELOG.md::Only release PRs edit CHANGELOG.md. Put what users need to know in the PR title and body, and the release PR collects it."
           exit 1
-      - uses: actions/setup-node@v4  # first-party GitHub action
+      - uses: actions/setup-node@v7  # first-party GitHub action
         with:
           node-version: '24'
           cache: 'npm'
