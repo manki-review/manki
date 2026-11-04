@@ -38,9 +38,11 @@ const mockListComments = jest.fn().mockResolvedValue({ data: [] });
 
 const mockGraphql = jest.fn().mockResolvedValue({ resolveReviewThread: { thread: { isResolved: true } } });
 
+const mockCreateReview = jest.fn().mockResolvedValue({ data: { id: 777 } });
+
 const mockOctokitInstance = {
   rest: {
-    pulls: { get: mockPullsGet, listReviews: mockListReviews },
+    pulls: { get: mockPullsGet, listReviews: mockListReviews, createReview: mockCreateReview },
     issues: { deleteComment: jest.fn().mockResolvedValue(undefined), listComments: mockListComments, createComment: jest.fn().mockResolvedValue({ data: { id: 999 } }), updateComment: jest.fn().mockResolvedValue({}) },
     reactions: { listForIssueComment: mockListReactionsForIssueComment },
   },
@@ -100,6 +102,7 @@ jest.mock('./diff', () => {
     }),
     filterRawDiff: jest.fn((rawDiff: string) => rawDiff),
     isDiffTooLarge: jest.fn().mockReturnValue(false),
+    isSameChange: jest.requireActual('./diff').isSameChange,
     rebuildRawDiff: jest.requireActual('./diff').rebuildRawDiff,
   };
 });
@@ -166,6 +169,7 @@ jest.mock('./github', () => {
   isReviewInProgress: jest.fn().mockResolvedValue(false),
   isApprovedOnCommit: jest.fn().mockResolvedValue(false),
   hasBotReviewOnCommit: jest.fn().mockResolvedValue(false),
+  fetchStandingVerdict: jest.fn().mockResolvedValue(undefined),
   markOwnProgressCommentCancelled: jest.fn().mockResolvedValue(false),
   markProgressCommentFailed: jest.fn().mockResolvedValue(undefined),
   postAppWarningIfNeeded: jest.fn().mockResolvedValue(undefined),
@@ -5555,6 +5559,132 @@ describe('runFullReview orchestration', () => {
 
       expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
       expect(jest.mocked(reviewModule.runReview).mock.calls[0].at(-1)).toEqual(expect.objectContaining({ blockersOnly: true, finalRound: false }));
+    });
+  });
+
+  describe('no-op push skip', () => {
+    const REVIEWED_DIFF = [
+      'diff --git a/src/app.ts b/src/app.ts',
+      'index 1111111..2222222 100644',
+      '--- a/src/app.ts',
+      '+++ b/src/app.ts',
+      '@@ -10,3 +10,4 @@ function a() {',
+      ' const a = 1;',
+      '+const b = 2;',
+      ' const c = 3;',
+    ].join('\n');
+    const REBASED_DIFF = REVIEWED_DIFF
+      .replace('index 1111111..2222222', 'index 3333333..4444444')
+      .replace('@@ -10,3 +10,4 @@ function a() {', '@@ -40,3 +40,4 @@ function z() {');
+    const reviewableFile = {
+      path: 'src/app.ts', changeType: 'modified' as const,
+      hunks: [{ oldStart: 10, oldLines: 3, newStart: 10, newLines: 4, content: '+const b = 2;' }],
+    };
+
+    function seedPush(verdict: 'APPROVE' | 'REQUEST_CHANGES', currentDiff: string): void {
+      jest.mocked(ghUtils.fetchStandingVerdict).mockResolvedValue({ verdict, commitSha: 'old9999999' });
+      jest.mocked(ghUtils.fetchInterRoundDiff).mockImplementation(
+        async (_octokit, _owner, _repo, _base, head) => (head === 'old9999999' ? REVIEWED_DIFF : currentDiff),
+      );
+    }
+
+    beforeEach(() => {
+      setContext({ eventName: 'pull_request', payload: { action: 'synchronize', sender: { login: 'alice' } } });
+      jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [reviewableFile], totalAdditions: 1, totalDeletions: 0 });
+      jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [reviewableFile], excluded: [] });
+    });
+
+    afterEach(() => {
+      jest.mocked(ghUtils.fetchStandingVerdict).mockResolvedValue(undefined);
+      jest.mocked(ghUtils.fetchInterRoundDiff).mockResolvedValue('');
+    });
+
+    function expectNoRound(): void {
+      expect(jest.mocked(createLLMClient)).not.toHaveBeenCalled();
+      expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+      expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
+      expect(jest.mocked(ghUtils.postReview)).not.toHaveBeenCalled();
+    }
+
+    it.each([
+      ['a clean rebase', REBASED_DIFF],
+      ['an empty commit', REVIEWED_DIFF],
+    ])('re-posts the previous APPROVE on the new head after %s without any LLM call', async (_label, currentDiff) => {
+      seedPush('APPROVE', currentDiff);
+
+      await callRunFullReview();
+
+      expectNoRound();
+      expect(jest.mocked(ghUtils.fetchInterRoundDiff)).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 'main', 'old9999999');
+      expect(jest.mocked(ghUtils.fetchInterRoundDiff)).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 'main', 'abc123');
+      expect(mockCreateReview).toHaveBeenCalledTimes(1);
+      expect(mockCreateReview).toHaveBeenCalledWith(expect.objectContaining({
+        pull_number: 42,
+        commit_id: 'abc123',
+        event: 'APPROVE',
+        body: expect.stringContaining('No change to this PR since the reviewed commit `old9999`. The previous verdict stands.'),
+      }));
+    });
+
+    it('leaves a previous REQUEST_CHANGES standing without posting another review', async () => {
+      seedPush('REQUEST_CHANGES', REBASED_DIFF);
+
+      await callRunFullReview();
+
+      expectNoRound();
+      expect(mockCreateReview).not.toHaveBeenCalled();
+    });
+
+    it('runs a normal round when the PR change differs from the reviewed commit', async () => {
+      seedPush('APPROVE', REBASED_DIFF.replace('+const b = 2;', '+const b = 3;'));
+
+      await callRunFullReview();
+
+      expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
+      expect(mockCreateReview).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['@manki review', 'issue_comment:created:@manki review', 'manual_review_command' as const],
+      ['the force-review checkbox', 'issue_comment:edited:tick:FORCE_REVIEW_MARKER', 'force_review' as const],
+    ])('never skips on %s', async (_label, event, bypassHint) => {
+      seedPush('APPROVE', REBASED_DIFF);
+
+      await runFullReview(
+        baseArgs.owner, baseArgs.repo, baseArgs.prNumber,
+        baseArgs.commitSha, baseArgs.baseRef, baseArgs.prContext,
+        { forceReview: true, bypassHint, trigger: { event, sender: 'alice' } },
+      );
+
+      expect(jest.mocked(ghUtils.fetchStandingVerdict)).not.toHaveBeenCalled();
+      expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
+      expect(mockCreateReview).not.toHaveBeenCalled();
+    });
+
+    it('does not count a skipped push toward the round cap', async () => {
+      jest.mocked(configModule.loadConfig).mockReturnValue({
+        auto_review: true, auto_approve: false, max_diff_lines: 5000,
+        exclude_paths: [], reviewers: [], instructions: '', review_level: 'auto',
+        review_thresholds: { small: 200, medium: 800 },
+        memory: { enabled: false, repo: '' },
+        convergence: { max_auto_rounds: 2, test_path_patterns: [], suppress_resolved_threads: true },
+      });
+      seedPriorRounds([{ round: 1, commitSha: 'old9999999', timestamp: '2025-01-01T00:00:00Z', findings: [] }]);
+      seedPush('APPROVE', REBASED_DIFF);
+
+      await callRunFullReview();
+
+      expectNoRound();
+      const skipBody = mockCreateReview.mock.calls[0][0].body as string;
+      expect(skipBody).not.toContain('Manki context');
+      expect(skipBody).not.toContain('manki-context');
+
+      seedPush('APPROVE', REBASED_DIFF.replace('+const b = 2;', '+const b = 3;'));
+      await callRunFullReview();
+
+      expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalledTimes(1);
+      const comments = mockOctokitInstance.rest.issues.createComment.mock.calls.map(c => String(c[0].body));
+      expect(comments.some(b => b.includes('Automatic review is paused'))).toBe(false);
     });
   });
 

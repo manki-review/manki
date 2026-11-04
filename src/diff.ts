@@ -115,6 +115,22 @@ export function filterRawDiff(rawDiff: string, excludePaths: string[]): string {
 }
 
 /**
+ * Whether two raw diffs make the same change once `excludePaths` are dropped.
+ * Hunk positions and `index` lines are ignored, so a diff moved by a rebase
+ * still matches.
+ */
+export function isSameChange(a: string, b: string, excludePaths: string[]): boolean {
+  const changeKey = (raw: string): string => {
+    const diff = filterDiff(parsePRDiff(raw), excludePaths).diff;
+    return JSON.stringify([
+      diff.files.map(f => [f.changeType, f.oldPath, f.path, f.hunks.map(h => h.content)]),
+      diff.binarySkipped,
+    ]);
+  };
+  return changeKey(a) === changeKey(b);
+}
+
+/**
  * Check if a line number is within the diff hunks for a file.
  * GitHub only allows inline comments on lines that are part of the diff.
  */

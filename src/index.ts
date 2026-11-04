@@ -10,7 +10,7 @@ import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parse
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
 import { recordFixRate } from './fix-rate';
-import { parsePRDiff, filterDiff, filterRawDiff, isDiffTooLarge, rebuildRawDiff } from './diff';
+import { parsePRDiff, filterDiff, filterRawDiff, isDiffTooLarge, isSameChange, rebuildRawDiff } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff, MAX_INTER_ROUND_DIFF_CHARS } from './judge';
 import { loadMemory, RepoMemory } from './memory';
@@ -40,12 +40,14 @@ import {
   isReviewInProgress,
   isApprovedOnCommit,
   hasBotReviewOnCommit,
+  fetchStandingVerdict,
   markOwnProgressCommentCancelled,
   markProgressCommentFailed,
   postAppWarningIfNeeded,
   checkConcurrentSubmissionLock,
   postConfigErrorComment,
 } from './github';
+import type { StandingVerdict } from './github';
 import { checkAndAutoApprove, resolveReviewThread } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -467,6 +469,30 @@ function failureReason(error: unknown): string {
   return sanitizeLogOutput(sanitizeTokens(error instanceof Error ? error.message : String(error)));
 }
 
+/**
+ * Returns the standing verdict when the PR's own change at `commitSha` equals
+ * the change at the reviewed commit, otherwise `undefined`. Both commits are
+ * compared against `baseRef`, so a clean rebase or an empty commit matches.
+ */
+async function findUnchangedVerdict(
+  octokit: Octokit, owner: string, repo: string, prNumber: number,
+  baseRef: string, commitSha: string, excludePaths: string[],
+): Promise<StandingVerdict | undefined> {
+  const standing = await fetchStandingVerdict(octokit, owner, repo, prNumber);
+  if (!standing || standing.commitSha === commitSha) return undefined;
+  try {
+    const [reviewed, current] = await Promise.all([
+      fetchInterRoundDiff(octokit, owner, repo, baseRef, standing.commitSha),
+      fetchInterRoundDiff(octokit, owner, repo, baseRef, commitSha),
+    ]);
+    if (!reviewed.trim() || !current.trim()) return undefined;
+    return isSameChange(reviewed, current, excludePaths) ? standing : undefined;
+  } catch (error) {
+    core.warning(`Could not compare with the reviewed commit, reviewing in full: ${error instanceof Error ? error.message : error}`);
+    return undefined;
+  }
+}
+
 function reconcileDashboardAgents(dashboard: DashboardData, names: string[]): void {
   const existingByName = new Map(dashboard.agentProgress?.map(a => [a.name, a]) ?? []);
   const reconciled = names.map(name => existingByName.get(name) ?? { name, status: 'done' as const });
@@ -584,6 +610,22 @@ async function runFullReview(
       }
     } catch (error) {
       core.warning(`Head SHA lookup failed, proceeding: ${error instanceof Error ? error.message : error}`);
+    }
+
+    if (trigger.event === 'pull_request:synchronize' && config.auto_review) {
+      const standing = await findUnchangedVerdict(octokit, owner, repo, prNumber, baseRef, commitSha, config.exclude_paths);
+      if (standing) {
+        const shortSha = standing.commitSha.slice(0, 7);
+        core.info(`Round SKIPPED: no change since reviewed commit ${shortSha}, ${standing.verdict} stands`);
+        // A push can dismiss approvals, so the approval is posted again on the new head.
+        if (standing.verdict === 'APPROVE') {
+          await octokit.rest.pulls.createReview({
+            owner, repo, pull_number: prNumber, commit_id: commitSha, event: 'APPROVE',
+            body: `${PROGRESS_MARKER}\nNo change to this PR since the reviewed commit \`${shortSha}\`. The previous verdict stands.`,
+          });
+        }
+        return;
+      }
     }
 
     progressCommentId = await postProgressComment(octokit, owner, repo, prNumber);
