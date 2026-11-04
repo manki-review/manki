@@ -542,7 +542,7 @@ export async function runReview(
   priorRounds?: RoundContext[],
   prAuthorLogin?: string,
   interRoundDiff?: string,
-): Promise<ReviewResult> {
+): Promise<ReviewResult & { outcome: RoundOutcome }> {
   const provenanceMap = computeProvenanceMap(priorRounds, rawDiff);
   let team: TeamRoster;
   let plannerResult: PlannerResult | null = null;
@@ -1139,7 +1139,7 @@ export async function runReview(
     const verdictWrap = wrapClientForUsage(clients.judge);
     const readerFiles = fileContents && new Map([...fileContents].filter(([path]) => changedFiles.has(path)));
     try {
-      verdictReport = await runVerdictReader(verdictWrap.client, rawDiff, repoContext, readerFiles);
+      verdictReport = await runVerdictReader(verdictWrap.client, buildReviewerUserMessage(rawDiff, repoContext, { fileContents: readerFiles }));
     } catch (error) {
       core.warning(`Verdict reader failed: ${error}`);
       return {
@@ -1150,7 +1150,7 @@ export async function runReview(
         highlights: [],
         reviewComplete: false,
         agentNames: team.agents.map(a => a.name),
-        ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, priorRoundEffortDowngrades, agentMultiPassConsistency, agentRunEffort),
+        ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency, agentRunEffort),
       };
     }
     verdictUsage = verdictWrap.getTotals().usage;

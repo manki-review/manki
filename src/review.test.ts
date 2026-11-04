@@ -2002,7 +2002,12 @@ describe('runReview', () => {
     jest.mocked(clients.judge.sendMessage).mockResolvedValue({
       content: JSON.stringify({
         verdict: 'ADDRESS_FIRST',
-        blockers: ['src/a.ts:12: The cache is never invalidated. Stale entries are served forever.', 'No migration for the renamed column.', '`src/b.ts:3-5`: Off by one.'],
+        blockers: [
+          'src/a.ts:12: The cache is never invalidated. Stale entries are served forever.',
+          'No migration for the renamed column.',
+          '`src/b.ts:3-5`: Off by one.',
+          `src/c.ts:7: ${'The retry budget is shared across every tenant '.repeat(4)}so one tenant starves the rest`,
+        ],
         summary: 'Two defects.',
         whatThisDoes: 'Adds a cache.',
         whatToTest: 'Load twice.',
@@ -2017,17 +2022,24 @@ describe('runReview', () => {
     expect(result.verdictReason).toBe('verdict_reader');
     expect(result.findings).toEqual([
       expect.objectContaining({ severity: 'blocker', file: 'src/a.ts', line: 12, title: 'The cache is never invalidated.', description: 'Stale entries are served forever.' }),
-      expect.objectContaining({ severity: 'blocker', file: '', line: 0, title: 'No migration for the renamed column.' }),
-      expect.objectContaining({ severity: 'blocker', file: 'src/b.ts', line: 3, title: 'Off by one.' }),
+      expect.objectContaining({ severity: 'blocker', file: '', line: 0, title: 'No migration for the renamed column.', description: 'No migration for the renamed column.' }),
+      expect.objectContaining({ severity: 'blocker', file: 'src/b.ts', line: 3, title: 'Off by one.', description: 'Off by one.' }),
+      expect.objectContaining({
+        severity: 'blocker',
+        file: 'src/c.ts',
+        line: 7,
+        title: `${'The retry budget is shared across every tenant '.repeat(4).slice(0, 100)}...`,
+        description: `${'The retry budget is shared across every tenant '.repeat(4)}so one tenant starves the rest`,
+      }),
     ]);
-    expect(result.verdictTrace?.survivingBlockers.map(e => e.file)).toEqual(['src/a.ts', '', 'src/b.ts']);
+    expect(result.verdictTrace?.survivingBlockers.map(e => e.file)).toEqual(['src/a.ts', '', 'src/b.ts', 'src/c.ts']);
 
     jest.mocked(clients.judge.sendMessage).mockResolvedValue({
       content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: [], summary: 'The retry loop never ends.', whatThisDoes: '', whatToTest: '' }),
     });
     const unnamed = await runReview(clients, makeConfig(), diff, 'raw diff', 'repo context');
     expect(unnamed.outcome).toBe('ADDRESS_FIRST');
-    expect(unnamed.findings).toEqual([expect.objectContaining({ severity: 'blocker', title: 'The retry loop never ends.' })]);
+    expect(unnamed.findings).toEqual([expect.objectContaining({ severity: 'blocker', title: 'The retry loop never ends.', description: 'The retry loop never ends.' })]);
   });
 
   it.each([
@@ -2036,6 +2048,9 @@ describe('runReview', () => {
     ['an unknown verdict', { content: JSON.stringify({ verdict: 'LGTM', summary: '', whatThisDoes: '', whatToTest: '' }) }],
     ['missing fields', { content: JSON.stringify({ verdict: 'READY', blockers: [] }) }],
     ['blockers that are not strings', { content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: [{ file: 'a' }], summary: '', whatThisDoes: '', whatToTest: '' }) }],
+    ['ADDRESS_FIRST with no blocker and a blank summary', { content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: ['  '], summary: ' ', whatThisDoes: 'x', whatToTest: 'y' }) }],
+    ['READY with a blank whatThisDoes', { content: JSON.stringify({ verdict: 'READY', blockers: [], summary: 'ok', whatThisDoes: ' ', whatToTest: 'y' }) }],
+    ['READY with a blank whatToTest', { content: JSON.stringify({ verdict: 'READY', blockers: [], summary: 'ok', whatThisDoes: 'x', whatToTest: '' }) }],
   ])('ends the round INCOMPLETE, never READY, when the verdict reader returns %s', async (_label, response) => {
     const clients = makeClients();
     jest.mocked(clients.judge.sendMessage).mockResolvedValue(response);

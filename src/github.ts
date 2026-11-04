@@ -968,12 +968,8 @@ export function formatBlockingPriorThreads(result: { verdictReason?: VerdictReas
 
 function formatReadyReport(result: ReviewResult): string | null {
   if (result.outcome !== 'READY' || !result.verdictReport) return null;
-  const sections = [
-    ['What this does', result.verdictReport.whatThisDoes],
-    ['What to test', result.verdictReport.whatToTest],
-  ].filter(([, text]) => text.trim().length > 0);
-  if (sections.length === 0) return null;
-  return sections.map(([heading, text]) => `### ${heading}\n\n${sanitizeMarkdown(text.trim())}`).join('\n\n');
+  const { whatThisDoes, whatToTest } = result.verdictReport;
+  return `### What this does\n\n${sanitizeMarkdown(whatThisDoes.trim())}\n\n### What to test\n\n${sanitizeMarkdown(whatToTest.trim())}`;
 }
 
 function getSeverityEmoji(severity: FindingSeverity): string {

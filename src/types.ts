@@ -198,7 +198,7 @@ export interface VerdictReport {
 
 export interface ReviewResult {
   verdict: ReviewVerdict;
-  /** Set on every result from `runReview`. `verdict` is derived from it. */
+  /** Required on what `runReview` returns. `verdict` is derived from it. */
   outcome?: RoundOutcome;
   /** Set when the verdict reader ran and answered. */
   verdictReport?: VerdictReport;

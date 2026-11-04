@@ -1,9 +1,10 @@
 import { LLMClient } from './providers';
 import { extractJSON } from './json';
-import { buildReviewerUserMessage } from './review';
 import { Finding, VerdictReport } from './types';
+import { safeTruncate } from './utils';
 
 const VERDICT_READER_NAME = 'Verdict reader';
+const MAX_BLOCKER_TITLE_LENGTH = 100;
 
 // Every input here is identical on every round for the same tree. The reader must never learn
 // about earlier rounds, findings or the PR's own description, or it starts confirming instead of
@@ -53,20 +54,22 @@ function parseVerdictReport(responseText: string): VerdictReport {
   if (blockers !== undefined && (!Array.isArray(blockers) || blockers.some(b => typeof b !== 'string'))) {
     throw new Error('verdict `blockers` is not an array of strings');
   }
+  if (verdict === 'READY') {
+    if (whatThisDoes.trim().length === 0 || whatToTest.trim().length === 0) {
+      throw new Error('READY verdict has a blank `whatThisDoes` or `whatToTest`');
+    }
+    return { verdict, blockers: [], summary, whatThisDoes, whatToTest };
+  }
   const named = ((blockers ?? []) as string[]).map(b => b.trim()).filter(b => b.length > 0);
   // An ADDRESS_FIRST that names no blocker still refuses the merge, so its summary is the blocker.
-  const effectiveBlockers = verdict === 'ADDRESS_FIRST' && named.length === 0 ? [summary] : named;
-  return { verdict, blockers: verdict === 'READY' ? [] : effectiveBlockers, summary, whatThisDoes, whatToTest };
+  if (named.length === 0 && summary.trim().length === 0) {
+    throw new Error('ADDRESS_FIRST verdict names no blocker and has a blank `summary`');
+  }
+  return { verdict, blockers: named.length > 0 ? named : [summary.trim()], summary, whatThisDoes, whatToTest };
 }
 
-/** Runs the verdict reader once. Throws when the call fails or its output is truncated or unparseable. */
-export async function runVerdictReader(
-  client: LLMClient,
-  rawDiff: string,
-  repoContext: string,
-  fileContents?: Map<string, string>,
-): Promise<VerdictReport> {
-  const userMessage = buildReviewerUserMessage(rawDiff, repoContext, { fileContents });
+/** Runs the verdict reader once on `userMessage`. Throws when the call fails or its output is truncated or unparseable. */
+export async function runVerdictReader(client: LLMClient, userMessage: string): Promise<VerdictReport> {
   const response = await client.sendMessage(VERDICT_READER_SYSTEM_PROMPT, userMessage, { effort: 'high' });
   if (response.truncated) {
     throw new Error(`verdict truncated at the output token limit (length ${response.content.length})`);
@@ -78,13 +81,14 @@ export async function runVerdictReader(
 export function verdictBlockerToFinding(blocker: string): Finding {
   const located = blocker.match(/^`?([^\s:`][^:`]*)`?:(\d+)(?:-\d+)?`?:\s*([\s\S]+)$/);
   const text = (located ? located[3] : blocker).trim();
-  const [title, ...rest] = text.split(/(?<=[.!?])\s+/);
+  const [first, ...rest] = text.split(/(?<=[.!?])\s+/);
+  const titled = first.length <= MAX_BLOCKER_TITLE_LENGTH;
   return {
     severity: 'blocker',
-    title,
+    title: safeTruncate(first, MAX_BLOCKER_TITLE_LENGTH),
     file: located ? located[1] : '',
     line: located ? Number(located[2]) : 0,
-    description: rest.join(' '),
+    description: titled && rest.length > 0 ? rest.join(' ') : text,
     reviewers: [VERDICT_READER_NAME],
   };
 }
