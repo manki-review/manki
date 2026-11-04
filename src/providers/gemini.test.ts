@@ -3,10 +3,10 @@ import { readdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenAI } from '@google/genai';
 import * as core from '@actions/core';
 
-import { buildGeminiAuth, GEMINI_CLI_VERSION, GeminiClient, geminiThinkingBudget, resetGeminiCLIInstallPromise, resolveGeminiCredsDir } from './gemini';
+import { buildGeminiAuth, GEMINI_CLI_VERSION, GeminiClient, geminiThinkingConfig, resetGeminiCLIInstallPromise, resolveGeminiCredsDir } from './gemini';
 import { parseModelSpec } from './model-registry';
 
 // Seeding `~/.gemini/oauth_creds.json` is exercised separately in `cli-utils.test.ts`.
@@ -21,7 +21,7 @@ jest.mock('child_process', () => ({
   spawn: jest.fn(),
 }));
 
-jest.mock('@google/generative-ai');
+jest.mock('@google/genai', () => ({ ...jest.requireActual('@google/genai'), GoogleGenAI: jest.fn() }));
 
 // Container for the execFileAsync mock — must be a plain object so the
 // hoisted jest.mock factory can capture a reference to it before const
@@ -54,53 +54,51 @@ describe('GeminiClient', () => {
   });
 });
 
-describe('geminiThinkingBudget', () => {
-  it('returns undefined for low (no thinking)', () => {
-    expect(geminiThinkingBudget('low')).toBeUndefined();
+describe('geminiThinkingConfig', () => {
+  it.each([
+    ['gemini-3.1-pro-preview', 'low', { thinkingLevel: 'LOW' }],
+    ['gemini-3.6-flash', 'medium', { thinkingLevel: 'MEDIUM' }],
+    ['gemini-3.8-flash', 'high', { thinkingLevel: 'HIGH' }],
+    ['gemini-4-argon', 'max', { thinkingLevel: 'HIGH' }],
+    ['gemini-2.5-pro', 'low', undefined],
+    ['gemini-2.5-flash', 'medium', { thinkingBudget: 5000 }],
+    ['gemini-2.5-flash-lite', 'high', { thinkingBudget: 10000 }],
+    ['gemini-2.5-pro', 'max', { thinkingBudget: 10000 }],
+    ['gemini-2.0-flash', 'high', undefined],
+    ['gemini-1.5-pro', 'high', undefined],
+    ['gemini-omni-1.1-flash', 'high', undefined],
+  ] as const)('maps %s at effort %s to %j', (model, effort, expected) => {
+    expect(geminiThinkingConfig(model, effort)).toEqual(expected);
   });
 
-  it('returns undefined when effort is omitted', () => {
-    expect(geminiThinkingBudget(undefined)).toBeUndefined();
-  });
-
-  it('returns 5000 for medium', () => {
-    expect(geminiThinkingBudget('medium')).toBe(5000);
-  });
-
-  it('returns 10000 for high', () => {
-    expect(geminiThinkingBudget('high')).toBe(10000);
-  });
-
-  it('returns 10000 for max (clamped to high)', () => {
-    expect(geminiThinkingBudget('max')).toBe(10000);
+  it('keeps the model default when no effort is given', () => {
+    expect(geminiThinkingConfig('gemini-3.8-flash', undefined)).toBeUndefined();
+    expect(geminiThinkingConfig('gemini-2.5-pro', undefined)).toBeUndefined();
   });
 });
 
 describe('sendMessage effort option (API path)', () => {
   let mockGenerateContent: jest.Mock;
-  let mockGetGenerativeModel: jest.Mock;
 
   beforeEach(() => {
     mockGenerateContent = jest.fn().mockResolvedValue({
-      response: { text: () => 'response text' },
+      text: 'response text',
+      candidates: [{ finishReason: 'STOP' }],
     });
-    mockGetGenerativeModel = jest.fn().mockReturnValue({
-      generateContent: mockGenerateContent,
-    });
-    (GoogleGenerativeAI as unknown as jest.Mock).mockImplementation(() => ({
-      getGenerativeModel: mockGetGenerativeModel,
+    (GoogleGenAI as unknown as jest.Mock).mockImplementation(() => ({
+      models: { generateContent: mockGenerateContent },
     }));
   });
 
-  it('passes model name and system instruction to getGenerativeModel', async () => {
+  it('passes the API key, model name and system instruction to the SDK', async () => {
     const client = new GeminiClient({ auth: { kind: 'apiKey', key: 'k' }, model: 'gemini-3.1-flash-lite' });
 
     await client.sendMessage('system', 'user');
 
-    expect(mockGetGenerativeModel).toHaveBeenCalledWith({
-      model: 'gemini-3.1-flash-lite',
-      systemInstruction: 'system',
-    });
+    expect(GoogleGenAI).toHaveBeenCalledWith({ apiKey: 'k' });
+    const params = mockGenerateContent.mock.calls[0][0];
+    expect(params.model).toBe('gemini-3.1-flash-lite');
+    expect(params.config.systemInstruction).toBe('system');
     const { seedAuthFile } = jest.requireMock('./cli-utils') as { seedAuthFile: jest.Mock };
     expect(seedAuthFile).not.toHaveBeenCalled();
   });
@@ -114,64 +112,48 @@ describe('sendMessage effort option (API path)', () => {
     expect(params.contents).toEqual([{ role: 'user', parts: [{ text: 'hello world' }] }]);
   });
 
-  it('includes thinkingConfig when effort is high', async () => {
+  it('sends thinkingLevel to Gemini 3 models', async () => {
     const client = new GeminiClient({ auth: { kind: 'apiKey', key: 'k' }, model: 'gemini-3.1-pro-preview' });
-
-    await client.sendMessage('system', 'user', { effort: 'high' });
-
-    const params = mockGenerateContent.mock.calls[0][0];
-    expect(params.generationConfig.thinkingConfig).toEqual({ thinkingBudget: 10000 });
-  });
-
-  it('includes thinkingConfig when effort is medium', async () => {
-    const client = new GeminiClient({ auth: { kind: 'apiKey', key: 'k' }, model: 'gemini-3.1-flash-lite' });
-
-    await client.sendMessage('system', 'user', { effort: 'medium' });
-
-    const params = mockGenerateContent.mock.calls[0][0];
-    expect(params.generationConfig.thinkingConfig).toEqual({ thinkingBudget: 5000 });
-  });
-
-  it('omits thinkingConfig when effort is low', async () => {
-    const client = new GeminiClient({ auth: { kind: 'apiKey', key: 'k' }, model: 'gemini-3.1-flash-lite' });
 
     await client.sendMessage('system', 'user', { effort: 'low' });
 
-    const params = mockGenerateContent.mock.calls[0][0];
-    expect(params.generationConfig.thinkingConfig).toBeUndefined();
+    const { config } = mockGenerateContent.mock.calls[0][0];
+    expect(config.thinkingConfig).toEqual({ thinkingLevel: 'LOW' });
+    expect(config.maxOutputTokens).toBe(32768);
   });
 
-  it('omits thinkingConfig when no options provided', async () => {
+  it('sends thinkingBudget to Gemini 2.5 models', async () => {
+    const client = new GeminiClient({ auth: { kind: 'apiKey', key: 'k' }, model: 'gemini-2.5-flash' });
+
+    await client.sendMessage('system', 'user', { effort: 'medium' });
+
+    const { config } = mockGenerateContent.mock.calls[0][0];
+    expect(config.thinkingConfig).toEqual({ thinkingBudget: 5000 });
+    expect(config.maxOutputTokens).toBe(32768);
+  });
+
+  it('omits thinkingConfig at low effort on Gemini 2.5 and caps output at 16384', async () => {
+    const client = new GeminiClient({ auth: { kind: 'apiKey', key: 'k' }, model: 'gemini-2.5-flash' });
+
+    await client.sendMessage('system', 'user', { effort: 'low' });
+
+    const { config } = mockGenerateContent.mock.calls[0][0];
+    expect(config.thinkingConfig).toBeUndefined();
+    expect(config.maxOutputTokens).toBe(16384);
+  });
+
+  it('omits thinkingConfig but leaves room for thoughts on Gemini 3 without effort', async () => {
     const client = new GeminiClient({ auth: { kind: 'apiKey', key: 'k' }, model: 'gemini-3.1-flash-lite' });
 
     await client.sendMessage('system', 'user');
 
-    const params = mockGenerateContent.mock.calls[0][0];
-    expect(params.generationConfig.thinkingConfig).toBeUndefined();
-  });
-
-  it('sets maxOutputTokens to 16384 when thinking is disabled', async () => {
-    const client = new GeminiClient({ auth: { kind: 'apiKey', key: 'k' }, model: 'gemini-3.1-flash-lite' });
-
-    await client.sendMessage('system', 'user', { effort: 'low' });
-
-    const params = mockGenerateContent.mock.calls[0][0];
-    expect(params.generationConfig.maxOutputTokens).toBe(16384);
-  });
-
-  it('sets maxOutputTokens to 32768 when thinking is enabled', async () => {
-    const client = new GeminiClient({ auth: { kind: 'apiKey', key: 'k' }, model: 'gemini-3.1-pro-preview' });
-
-    await client.sendMessage('system', 'user', { effort: 'high' });
-
-    const params = mockGenerateContent.mock.calls[0][0];
-    expect(params.generationConfig.maxOutputTokens).toBe(32768);
+    const { config } = mockGenerateContent.mock.calls[0][0];
+    expect(config.thinkingConfig).toBeUndefined();
+    expect(config.maxOutputTokens).toBe(32768);
   });
 
   it('returns the response text', async () => {
-    mockGenerateContent.mockResolvedValue({
-      response: { text: () => 'hello there' },
-    });
+    mockGenerateContent.mockResolvedValue({ text: 'hello there' });
     const client = new GeminiClient({ auth: { kind: 'apiKey', key: 'k' }, model: 'gemini-3.1-flash-lite' });
 
     const result = await client.sendMessage('system', 'user');
@@ -180,14 +162,12 @@ describe('sendMessage effort option (API path)', () => {
 
   it('lifts `usageMetadata` token counts on the SDK path', async () => {
     mockGenerateContent.mockResolvedValueOnce({
-      response: {
-        text: () => 'response',
-        usageMetadata: {
-          promptTokenCount: 350,
-          candidatesTokenCount: 90,
-          cachedContentTokenCount: 25,
-          thoughtsTokenCount: 70,
-        },
+      text: 'response',
+      usageMetadata: {
+        promptTokenCount: 350,
+        candidatesTokenCount: 90,
+        cachedContentTokenCount: 25,
+        thoughtsTokenCount: 70,
       },
     });
     const client = new GeminiClient({ auth: { kind: 'apiKey', key: 'k' }, model: 'gemini-3.1-pro-preview' });
@@ -201,30 +181,36 @@ describe('sendMessage effort option (API path)', () => {
     ['STOP', false],
     [undefined, false],
   ])('reports truncated for finishReason %s', async (finishReason, expected) => {
-    mockGenerateContent.mockResolvedValueOnce({
-      response: { text: () => '[', candidates: [{ finishReason }] },
-    });
+    mockGenerateContent.mockResolvedValueOnce({ text: '[', candidates: [{ finishReason }] });
     const client = new GeminiClient({ auth: { kind: 'apiKey', key: 'k' }, model: 'gemini-3.1-flash-lite' });
     const result = await client.sendMessage('system', 'user');
     expect(result.truncated).toBe(expected);
   });
 
   it('returns zero usage when `usageMetadata` is absent', async () => {
-    mockGenerateContent.mockResolvedValueOnce({
-      response: { text: () => 'response' },
-    });
+    mockGenerateContent.mockResolvedValueOnce({ text: 'response' });
     const client = new GeminiClient({ auth: { kind: 'apiKey', key: 'k' }, model: 'gemini-3.1-flash-lite' });
     const result = await client.sendMessage('system', 'user');
     expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 });
   });
 
-  it('wraps GoogleGenerativeAIResponseError from .text() with a descriptive message', async () => {
-    mockGenerateContent.mockResolvedValue({
-      response: { text: () => { throw new Error('SAFETY'); } },
-    });
+  it.each([
+    [{ candidates: [{ finishReason: 'SAFETY' }] }, 'SAFETY'],
+    [{ promptFeedback: { blockReason: 'PROHIBITED_CONTENT' } }, 'PROHIBITED_CONTENT'],
+    [{}, 'no candidates'],
+  ])('rejects a response without text (%j)', async (response, reason) => {
+    mockGenerateContent.mockResolvedValue(response);
     const client = new GeminiClient({ auth: { kind: 'apiKey', key: 'k' }, model: 'gemini-3.1-flash-lite' });
 
-    await expect(client.sendMessage('system', 'user')).rejects.toThrow('Gemini API returned no usable content: SAFETY');
+    await expect(client.sendMessage('system', 'user')).rejects.toThrow(`Gemini API returned no usable content: ${reason}`);
+  });
+
+  it('returns empty truncated content when thoughts used every output token', async () => {
+    mockGenerateContent.mockResolvedValue({ candidates: [{ finishReason: 'MAX_TOKENS' }] });
+    const client = new GeminiClient({ auth: { kind: 'apiKey', key: 'k' }, model: 'gemini-3.1-flash-lite' });
+
+    const result = await client.sendMessage('system', 'user');
+    expect(result).toMatchObject({ content: '', truncated: true });
   });
 
   it('propagates SDK errors from generateContent', async () => {

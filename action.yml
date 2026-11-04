@@ -16,7 +16,7 @@ inputs:
     description: 'OpenAI API key (alternative to OAuth token)'
     required: false
   gemini_oauth_token:
-    description: 'Base64-encoded contents of `~/.gemini/oauth_creds.json` (Gemini CLI OAuth credentials, including `access_token` and `refresh_token`). Bootstrap with `cat ~/.gemini/oauth_creds.json | base64 | gh secret set GEMINI_OAUTH_TOKEN`. Re-run when the refresh_token expires.'
+    description: 'Base64-encoded contents of `~/.gemini/oauth_creds.json` (Gemini CLI OAuth credentials, including `access_token` and `refresh_token`). Bootstrap with `cat ~/.gemini/oauth_creds.json | base64 | gh secret set GEMINI_OAUTH_TOKEN`. Re-run when the refresh_token expires. Login with Google ended on 2026-06-18 for Gemini Code Assist for individuals, Google AI Pro and Google AI Ultra, so this works only for organization accounts with a Gemini Code Assist Standard or Enterprise license. Everyone else should use `gemini_api_key`.'
     required: false
   gemini_api_key:
     description: 'Google Generative AI API key (alternative to Gemini OAuth token)'

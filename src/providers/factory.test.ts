@@ -7,7 +7,7 @@ import { ProviderName } from './types';
 
 jest.mock('@anthropic-ai/sdk');
 jest.mock('openai');
-jest.mock('@google/generative-ai');
+jest.mock('@google/genai', () => ({ ...jest.requireActual('@google/genai'), GoogleGenAI: jest.fn() }));
 
 describe('createLLMClient', () => {
   it('returns an AnthropicClient for the anthropic provider', () => {
