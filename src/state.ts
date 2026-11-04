@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { ACTIONS_BOT_LOGIN, BOT_LOGIN, checkConcurrentSubmissionLock, dismissPreviousReviews, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, postAutoApproveProgressComment } from './github';
+import { ACTIONS_BOT_LOGIN, BOT_LOGIN, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchReviewThreadNodes, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, postAutoApproveProgressComment } from './github';
 import { FindingSeverity, isBlockingSeverity, migrateLegacySeverity, ReviewConfig, SEVERITY_TOKEN_PATTERN } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -31,49 +31,27 @@ async function fetchBotReviewThreads(
   repo: string,
   prNumber: number,
 ): Promise<ReviewThread[]> {
-  const query = `
-    query($owner: String!, $repo: String!, $prNumber: Int!) {
-      repository(owner: $owner, name: $repo) {
-        pullRequest(number: $prNumber) {
-          reviewThreads(first: 100) {
-            nodes {
-              id
-              isResolved
-              comments(first: 1) {
-                nodes {
-                  body
-                  author {
-                    login
-                  }
-                }
-              }
-            }
-          }
+  const threads = await fetchReviewThreadNodes<{
+    id: string;
+    isResolved: boolean;
+    comments: {
+      nodes: Array<{
+        body: string;
+        author: { login: string } | null;
+      }>;
+    };
+  }>(octokit, owner, repo, prNumber, `
+    id
+    isResolved
+    comments(first: 1) {
+      nodes {
+        body
+        author {
+          login
         }
       }
     }
-  `;
-
-  const result: {
-    repository: {
-      pullRequest: {
-        reviewThreads: {
-          nodes: Array<{
-            id: string;
-            isResolved: boolean;
-            comments: {
-              nodes: Array<{
-                body: string;
-                author: { login: string } | null;
-              }>;
-            };
-          }>;
-        };
-      };
-    };
-  } = await octokit.graphql(query, { owner, repo, prNumber });
-
-  const threads = result.repository.pullRequest.reviewThreads.nodes;
+  `);
 
   return threads
     .filter(thread => {
@@ -188,10 +166,11 @@ async function checkAndAutoApprove(
     return false;
   }
 
-  const { data: reviews } = await octokit.rest.pulls.listReviews({
+  const reviews = await octokit.paginate(octokit.rest.pulls.listReviews, {
     owner,
     repo,
     pull_number: prNumber,
+    per_page: 100,
   });
   const isBotReview = (r: ReviewEntry) => r.body?.includes('<!-- manki') && r.user?.login?.includes('[bot]');
   const botReviews = reviews.filter((r: ReviewEntry) => isBotReview(r) && r.state !== 'DISMISSED');

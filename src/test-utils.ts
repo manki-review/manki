@@ -1,6 +1,14 @@
 import { AuthorReplyClass, FindingFingerprint, FindingFingerprintEntry, FindingSeverity, RoundContext } from './types';
 import { titleToSlug } from './github';
 
+/** `pageInfo` of the last page of a GraphQL connection. */
+export const LAST_PAGE = { hasNextPage: false, endCursor: null };
+
+/** Stands in for `octokit.paginate` over a mocked list method that resolves one page as `{ data }`. */
+export function paginateSinglePage(method: (params: unknown) => Promise<{ data: unknown[] }>, params: unknown): Promise<unknown[]> {
+  return method(params).then(response => response.data);
+}
+
 /**
  * Build a `RoundContext` test fixture. Required-but-uninteresting fields are
  * filled with neutral defaults so each test only declares the slice it cares

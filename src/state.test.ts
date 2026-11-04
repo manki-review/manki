@@ -1,5 +1,6 @@
 import * as core from '@actions/core';
 import { areAllFindingsResolved, fetchBotReviewThreads, checkAndAutoApprove, BOT_MARKER, ReviewThread } from './state';
+import { LAST_PAGE, paginateSinglePage } from './test-utils';
 
 jest.mock('./github', () => ({
   ...jest.requireActual('./github'),
@@ -76,7 +77,7 @@ function makeGraphqlFetchResponse(nodes: ReturnType<typeof makeGraphqlFetchThrea
   return {
     repository: {
       pullRequest: {
-        reviewThreads: { nodes },
+        reviewThreads: { pageInfo: LAST_PAGE, nodes },
       },
     },
   };
@@ -97,6 +98,20 @@ describe('fetchBotReviewThreads', () => {
     expect(threads).toHaveLength(2);
     expect(threads[0]).toEqual({ id: 't1', isResolved: false, isBlocking: true, findingTitle: 'null check' });
     expect(threads[1]).toEqual({ id: 't2', isResolved: true, isBlocking: false, findingTitle: 'rename var' });
+  });
+
+  it('reads every page of review threads', async () => {
+    const nodes = Array.from({ length: 150 }, (_, i) => makeGraphqlFetchThreadNode({ id: `t${i}` }));
+    const graphqlMock = jest.fn()
+      .mockResolvedValueOnce({ repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: true, endCursor: 'p2' }, nodes: nodes.slice(0, 100) } } } })
+      .mockResolvedValueOnce(makeGraphqlFetchResponse(nodes.slice(100)));
+
+    const octokit = { graphql: graphqlMock } as unknown as Octokit;
+    const threads = await fetchBotReviewThreads(octokit, 'owner', 'repo', 1);
+
+    expect(threads.map(t => t.id)).toEqual(nodes.map(n => n.id));
+    expect(graphqlMock).toHaveBeenNthCalledWith(1, expect.any(String), expect.objectContaining({ cursor: null }));
+    expect(graphqlMock).toHaveBeenNthCalledWith(2, expect.any(String), expect.objectContaining({ cursor: 'p2' }));
   });
 
   it('filters out non-bot threads', async () => {
@@ -213,7 +228,7 @@ describe('checkAndAutoApprove', () => {
 
     return {
       graphql: jest.fn().mockResolvedValue(makeGraphqlFetchResponse(threads)),
-      paginate: jest.fn().mockResolvedValue(existingComments),
+      paginate: jest.fn(paginateSinglePage),
       rest: {
         pulls: {
           get: jest.fn().mockResolvedValue({ data: { head: { sha: prHeadSha } } }),
@@ -221,7 +236,7 @@ describe('checkAndAutoApprove', () => {
           listReviews: jest.fn().mockResolvedValue({ data: existingReviews }),
         },
         issues: {
-          listComments: jest.fn(),
+          listComments: jest.fn().mockResolvedValue({ data: existingComments }),
           createComment: createCommentFn,
         },
       },
@@ -408,6 +423,23 @@ describe('checkAndAutoApprove', () => {
     expect(result).toBe(true);
     expect(createReviewMock).not.toHaveBeenCalled();
     expect(dismissPreviousReviews).not.toHaveBeenCalled();
+  });
+
+  it('finds the latest bot review past the first page of reviews', async () => {
+    const createReviewMock = jest.fn().mockResolvedValue({});
+    const bot = { login: 'github-actions[bot]', type: 'Bot' };
+    const older = Array.from({ length: 30 }, (_, i) => ({ body: '<!-- manki -->', state: 'CHANGES_REQUESTED', commit_id: `old-${i}`, user: bot }));
+    const octokit = makeMockOctokit({ threads: [], prHeadSha: 'abc123', createReviewFn: createReviewMock, existingReviews: older });
+    (octokit.paginate as unknown as jest.Mock).mockResolvedValueOnce([
+      ...older,
+      { body: '<!-- manki -->', state: 'APPROVED', commit_id: 'abc123', user: bot },
+    ]);
+
+    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+
+    expect(result).toBe(true);
+    expect(octokit.paginate).toHaveBeenCalledWith(octokit.rest.pulls.listReviews, expect.objectContaining({ per_page: 100 }));
+    expect(createReviewMock).not.toHaveBeenCalled();
   });
 
   it('creates new approval when latest bot review is CHANGES_REQUESTED', async () => {
@@ -641,7 +673,7 @@ describe('checkAndAutoApprove — concurrent run guard', () => {
   function makeMockOctokit(): Octokit {
     return {
       graphql: jest.fn().mockResolvedValue(makeGraphqlFetchResponse([])),
-      paginate: jest.fn().mockResolvedValue([]),
+      paginate: jest.fn(paginateSinglePage),
       rest: {
         pulls: {
           get: jest.fn().mockResolvedValue({ data: { head: { sha: 'sha-1' } } }),
@@ -650,7 +682,7 @@ describe('checkAndAutoApprove — concurrent run guard', () => {
             { body: '<!-- manki -->', state: 'CHANGES_REQUESTED', commit_id: 'sha-1', user: { login: 'github-actions[bot]', type: 'Bot' } },
           ] }),
         },
-        issues: { listComments: jest.fn(), createComment: jest.fn().mockResolvedValue({ data: { id: 1 } }) },
+        issues: { listComments: jest.fn().mockResolvedValue({ data: [] }), createComment: jest.fn().mockResolvedValue({ data: { id: 1 } }) },
       },
     } as unknown as Octokit;
   }
@@ -712,7 +744,7 @@ describe('checkAndAutoApprove — concurrent run guard', () => {
     function makeOctokit(comments: ReturnType<typeof botComment>[]): Octokit {
       return {
         graphql: jest.fn().mockResolvedValue(makeGraphqlFetchResponse([])),
-        paginate: jest.fn().mockResolvedValue([]),
+        paginate: jest.fn(paginateSinglePage),
         rest: {
           pulls: {
             get: jest.fn().mockResolvedValue({ data: { head: { sha: 'sha-1' } } }),
@@ -907,6 +939,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
     ];
     return {
       graphql: jest.fn().mockResolvedValue(makeGraphqlFetchResponse([])),
+      paginate: jest.fn(paginateSinglePage),
       rest: {
         pulls: {
           get: jest.fn().mockResolvedValue({ data: { head: { sha: prHeadSha } } }),
@@ -970,6 +1003,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
       graphql: jest.fn().mockResolvedValue(makeGraphqlFetchResponse([
         makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix --> fix', isResolved: false }),
       ])),
+      paginate: jest.fn(paginateSinglePage),
       rest: {
         pulls: {
           get: jest.fn().mockResolvedValue({ data: { head: { sha: 'sha-x' } } }),

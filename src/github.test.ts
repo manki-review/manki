@@ -3,6 +3,7 @@ import * as core from '@actions/core';
 import { buildDashboard, titleToSlug, formatBlockingPriorThreads, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, truncateContextToFitBody, dynamicFence, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment } from './github';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { DEFAULT_CONFIG } from './config';
+import { paginateSinglePage } from './test-utils';
 
 describe('formatFindingComment', () => {
   const baseFinding: Finding = {
@@ -2965,6 +2966,7 @@ describe('dismissPreviousReviews', () => {
   it('dismisses reviews with bot marker and CHANGES_REQUESTED state', async () => {
     const dismissMock = jest.fn().mockResolvedValue({});
     const mockOctokit = {
+      paginate: jest.fn(paginateSinglePage),
       rest: {
         pulls: {
           listReviews: jest.fn().mockResolvedValue({
@@ -2985,10 +2987,30 @@ describe('dismissPreviousReviews', () => {
     expect(dismissMock).toHaveBeenCalledWith(expect.objectContaining({ review_id: 1 }));
   });
 
+  it('dismisses reviews past the first page', async () => {
+    const dismissMock = jest.fn().mockResolvedValue({});
+    const reviews = Array.from({ length: 35 }, (_, i) => ({ id: i + 1, body: `${BOT_MARKER}\nReview`, state: 'CHANGES_REQUESTED' }));
+    const mockOctokit = {
+      paginate: jest.fn().mockResolvedValue(reviews),
+      rest: {
+        pulls: {
+          listReviews: jest.fn().mockResolvedValue({ data: reviews.slice(0, 30) }),
+          dismissReview: dismissMock,
+        },
+      },
+    } as unknown as Parameters<typeof dismissPreviousReviews>[0];
+
+    await dismissPreviousReviews(mockOctokit, 'owner', 'repo', 1, 35);
+
+    expect(mockOctokit.paginate).toHaveBeenCalledWith(mockOctokit.rest.pulls.listReviews, expect.objectContaining({ per_page: 100 }));
+    expect(dismissMock).toHaveBeenCalledTimes(34);
+  });
+
   it('warns instead of throwing when listing reviews fails', async () => {
     const warningSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const dismissMock = jest.fn();
     const mockOctokit = {
+      paginate: jest.fn(paginateSinglePage),
       rest: {
         pulls: {
           listReviews: jest.fn().mockRejectedValue(new Error('Server Error')),
@@ -3005,6 +3027,7 @@ describe('dismissPreviousReviews', () => {
 
   it('handles dismiss failure gracefully', async () => {
     const mockOctokit = {
+      paginate: jest.fn(paginateSinglePage),
       rest: {
         pulls: {
           listReviews: jest.fn().mockResolvedValue({
@@ -3493,6 +3516,7 @@ describe('isReviewInProgress', () => {
       : jest.fn().mockResolvedValue({ data: opts.workflowRun ?? { status: 'in_progress', conclusion: null } });
     const updateComment = jest.fn().mockResolvedValue({});
     const octokit = {
+      paginate: jest.fn(paginateSinglePage),
       rest: {
         issues: {
           listComments: jest.fn().mockResolvedValue({
@@ -3639,6 +3663,7 @@ describe('isReviewInProgress', () => {
 
   it('returns false when the listComments API call fails', async () => {
     const octokit = {
+      paginate: jest.fn(paginateSinglePage),
       rest: {
         issues: {
           listComments: jest.fn().mockRejectedValue(new Error('API error')),
@@ -3770,6 +3795,7 @@ describe('markOwnProgressCommentCancelled', () => {
       })),
     });
     const octokit = {
+      paginate: jest.fn(paginateSinglePage),
       rest: { issues: { listComments, updateComment } },
     } as unknown as Octokit;
     return { octokit, updateComment, listComments };
@@ -3787,6 +3813,17 @@ describe('markOwnProgressCommentCancelled', () => {
       comment_id: 10,
       body: expect.stringContaining('Review cancelled (superseded by newer run)'),
     }));
+  });
+
+  it('finds the progress comment past the first page of comments', async () => {
+    const comments = Array.from({ length: 150 }, (_, i) => ({ id: i + 1, body: makeBody(i + 1), user: { type: 'Bot' } }));
+    const { octokit, updateComment } = makeOctokit(comments.slice(0, 100));
+    (octokit.paginate as unknown as jest.Mock).mockResolvedValueOnce(
+      comments.map(c => ({ ...c, user: { login: BOT_LOGIN, type: 'Bot' }, updated_at: '2026-01-01T00:00:00Z' })),
+    );
+
+    expect(await markOwnProgressCommentCancelled(octokit, 'owner', 'repo', 1, 150)).toBe(true);
+    expect(updateComment).toHaveBeenCalledWith(expect.objectContaining({ comment_id: 150 }));
   });
 
   it('returns false when no comment has the matching runId', async () => {
@@ -3835,6 +3872,7 @@ describe('markOwnProgressCommentCancelled', () => {
 
   it('returns false and warns when listComments API fails', async () => {
     const octokit = {
+      paginate: jest.fn(paginateSinglePage),
       rest: { issues: { listComments: jest.fn().mockRejectedValue(new Error('API error')) } },
     } as unknown as Octokit;
 
@@ -4146,6 +4184,7 @@ describe('cancelActiveReviewRun', () => {
       : jest.fn().mockResolvedValue({});
     const getWorkflowRun = jest.fn().mockResolvedValue({ data: { status: opts.runStatus ?? 'in_progress' } });
     const octokit = {
+      paginate: jest.fn(paginateSinglePage),
       rest: {
         issues: {
           listComments: jest.fn().mockResolvedValue({
@@ -4255,6 +4294,7 @@ describe('cancelActiveReviewRun', () => {
 
   it('returns false when listComments throws', async () => {
     const octokit = {
+      paginate: jest.fn(paginateSinglePage),
       rest: {
         issues: {
           listComments: jest.fn().mockRejectedValue(new Error('network error')),
@@ -4430,6 +4470,7 @@ describe('fetchPRComments', () => {
 
   function makeMockOctokit(comments: Array<{ id: number; body: string; updated_at: string }>) {
     const octokit = {
+      paginate: jest.fn(paginateSinglePage),
       rest: {
         issues: {
           listComments: jest.fn().mockResolvedValue({ data: comments }),
@@ -4484,6 +4525,7 @@ describe('fetchPRComments', () => {
 
   it('propagates API rejection to the caller', async () => {
     const octokit = {
+      paginate: jest.fn(paginateSinglePage),
       rest: {
         issues: {
           listComments: jest.fn().mockRejectedValue(new Error('API error')),
@@ -4499,10 +4541,24 @@ describe('fetchPRComments', () => {
 
     await fetchPRComments(octokit, 'my-owner', 'my-repo', 42);
 
-    expect(octokit.rest.issues.listComments).toHaveBeenCalledWith(expect.objectContaining({
+    expect(octokit.paginate).toHaveBeenCalledWith(octokit.rest.issues.listComments, expect.objectContaining({
       owner: 'my-owner',
       repo: 'my-repo',
       issue_number: 42,
+      per_page: 100,
     }));
+  });
+
+  it('returns comments from every page, newest first', async () => {
+    const comments = Array.from({ length: 150 }, (_, i) => ({
+      id: i + 1, body: `comment ${i + 1}`, updated_at: new Date(Date.UTC(2026, 4, 22, 0, i)).toISOString(),
+    }));
+    const octokit = makeMockOctokit(comments.slice(0, 100));
+    (octokit.paginate as unknown as jest.Mock).mockResolvedValueOnce(comments);
+
+    const result = await fetchPRComments(octokit, 'owner', 'repo', 1);
+
+    expect(result).toHaveLength(150);
+    expect(result[0].id).toBe(150);
   });
 });

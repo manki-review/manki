@@ -2,6 +2,7 @@ import { Finding, FindingFingerprintEntry, RoundContext } from './types';
 import { Suppression } from './memory';
 import { classifyAuthorReply, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment } from './recap';
 import { BOT_LOGIN, titleToSlug } from './github';
+import { LAST_PAGE, paginateSinglePage } from './test-utils';
 import { determineOutcome } from './review';
 import { applyCrossRoundSuppression } from './judge';
 
@@ -544,11 +545,13 @@ describe('fetchRecapState', () => {
         repository: {
           pullRequest: {
             reviewThreads: {
-              nodes: threads,
+              pageInfo: LAST_PAGE,
+              nodes: threads.map(t => ({ ...t, comments: { pageInfo: LAST_PAGE, ...t.comments } })),
             },
           },
         },
       }),
+      paginate: jest.fn(paginateSinglePage),
       rest: {
         pulls: {
           listReviews: jest.fn().mockResolvedValue({ data: reviews }),
@@ -633,6 +636,7 @@ describe('fetchRecapState', () => {
   it('handles graphql errors gracefully', async () => {
     const octokit = {
       graphql: jest.fn().mockRejectedValue(new Error('GraphQL error')),
+      paginate: jest.fn(paginateSinglePage),
       rest: {
         pulls: {
           listReviews: jest.fn().mockResolvedValue({ data: [] }),
@@ -862,6 +866,43 @@ describe('fetchRecapState', () => {
     expect(state.previousFindings[0].authorReplyText).toBeUndefined();
     expect(state.previousFindings[1].authorReplyText).toBeUndefined();
     expect(state.previousFindings[1].status).toBe('open');
+  });
+
+  it('reads every page of review threads and every comment of a long thread', async () => {
+    const threads = Array.from({ length: 150 }, (_, i) => makeThread({ id: `t${i}`, line: i + 1 }));
+    const longThread = threads[149];
+    const botReplies = Array.from({ length: 9 }, (_, i) => ({ body: `Bot follow-up ${i}`, author: { login: 'github-actions[bot]' } }));
+    threads[149] = {
+      ...longThread,
+      comments: { ...longThread.comments, pageInfo: { hasNextPage: true, endCursor: 'c1' }, nodes: [...longThread.comments.nodes, ...botReplies] },
+    } as typeof longThread;
+    const graphql = jest.fn(async (_query: string, vars: { cursor: string | null; threadId?: string }) => {
+      if (vars.threadId) {
+        return { node: { comments: { pageInfo: LAST_PAGE, nodes: [{ body: 'Final answer.', author: { login: 'developer' } }] } } };
+      }
+      const firstPage = vars.cursor === null;
+      return {
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              pageInfo: firstPage ? { hasNextPage: true, endCursor: 'p2' } : LAST_PAGE,
+              nodes: (firstPage ? threads.slice(0, 100) : threads.slice(100)).map(t => ({ ...t, comments: { pageInfo: LAST_PAGE, ...t.comments } })),
+            },
+          },
+        },
+      };
+    });
+    const octokit = { ...mockOctokit([]), graphql } as unknown as ReturnType<typeof mockOctokit>;
+
+    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+
+    expect(state.previousFindings).toHaveLength(150);
+    expect(state.previousFindings[149]).toMatchObject({ status: 'replied', authorReplyText: 'Final answer.' });
+    expect(graphql.mock.calls.map(([, vars]) => vars)).toEqual([
+      expect.objectContaining({ cursor: null }),
+      expect.objectContaining({ cursor: 'p2' }),
+      { threadId: 't149', cursor: 'c1' },
+    ]);
   });
 
   it('populates lineStart from startLine when present for multi-line annotations', async () => {
@@ -1391,10 +1432,11 @@ describe('fetchRecapState', () => {
         graphql: jest.fn().mockResolvedValue({
           repository: {
             pullRequest: {
-              reviewThreads: { nodes: [] },
+              reviewThreads: { pageInfo: LAST_PAGE, nodes: [] },
             },
           },
         }),
+        paginate: jest.fn(paginateSinglePage),
         rest: {
           pulls: {
             listReviews: jest.fn().mockRejectedValue(new Error('API unavailable')),
@@ -1471,17 +1513,18 @@ describe('fetchRecapState', () => {
       expect(state.priorRounds[0].judge.summary).toBe('Verdict --> pass');
     });
 
-    it('warns when listReviews returns exactly 100 reviews', async () => {
-      const reviews = Array.from({ length: 100 }, (_, i) => ({
+    it('reads context from every page of reviews', async () => {
+      const reviews = Array.from({ length: 150 }, (_, i) => ({
         id: i + 1,
         body: detailsBlock(makeRoundContext(i + 1)),
         user: { login: BOT_LOGIN },
       }));
-      const octokit = mockOctokit([], reviews);
-      await fetchRecapState(octokit, 'owner', 'repo', 1);
-      expect(core.warning).toHaveBeenCalledWith(
-        expect.stringContaining('pagination not implemented'),
-      );
+      const octokit = mockOctokit([], reviews.slice(0, 100));
+      jest.mocked(octokit.paginate).mockResolvedValueOnce(reviews);
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(octokit.paginate).toHaveBeenCalledWith(octokit.rest.pulls.listReviews, expect.objectContaining({ per_page: 100 }));
+      expect(state.priorRounds).toHaveLength(150);
+      expect(core.warning).not.toHaveBeenCalled();
     });
 
     it('parses two context blocks from a single review body', async () => {
