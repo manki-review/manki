@@ -368,6 +368,7 @@ describe('sendViaOAuth — error paths', () => {
     expect(spawnArgs[fmtIdx + 1]).toBe('stream-json');
     expect(spawnArgs).toContain('--verbose');
     expect(spawnArgs).toContain('--include-partial-messages');
+    expect(spawnArgs[spawnArgs.indexOf('--tools') + 1]).toBe('');
   });
 
   it('extracts text from content_block_delta events', async () => {
