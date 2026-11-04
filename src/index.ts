@@ -12,10 +12,10 @@ import { extractCurrentCodeWindow } from './code-window';
 import { parsePRDiff, filterDiff, filterRawDiff, isDiffTooLarge, rebuildRawDiff } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff, MAX_INTER_ROUND_DIFF_CHARS } from './judge';
-import { loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
+import { loadMemory, updatePattern, RepoMemory } from './memory';
 import { collectResolvedThreadIds, fetchRecapState, fingerprintFinding, PreviousFinding } from './recap';
 import { buildAgentPool } from './agents';
-import { buildPriorRoundLookup, collectPriorRoundAgents, runReview, determineVerdict, selectTeam } from './review';
+import { collectPriorRoundAgents, runReview, selectTeam } from './review';
 import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DashboardData, FullReviewOptions, MemoryLoadStatus, OWN_PROPOSAL_TAG, PrContext, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReclassifiedPrior, ReviewMetadata, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundRecap, RoundTrigger, RoundUsage, RoundUsageStage, ReviewConfig, ThreadResolutionOverrides, roundContextToFlatAliases } from './types';
 import type { LLMUsage } from './providers';
 import {
@@ -964,21 +964,6 @@ async function runFullReview(
       return;
     }
 
-    const sortedPriorRounds = [...recap.priorRounds].sort((a, b) => a.meta.round - b.meta.round);
-    const priorFindingsFlat = sortedPriorRounds.flatMap(r => r.findings.entries ?? []);
-    const priorRoundLookup = buildPriorRoundLookup(sortedPriorRounds);
-    let escalationsApplied = 0;
-    if (memory && memory.patterns.length > 0) {
-      const beforeSeverities = result.findings.map(f => f.severity);
-      result.findings = applyEscalations(result.findings, memory.patterns);
-      escalationsApplied = result.findings.filter((f, i) => f.severity !== beforeSeverities[i]).length;
-    }
-    const resolvedThreadIds = collectResolvedThreadIds(recap.previousFindings);
-    const { verdict: recomputedVerdict, verdictReason, verdictTrace } = determineVerdict(result.findings, priorFindingsFlat, verdictOpenThreads, resolvedThreadIds, undefined, priorRoundLookup);
-    result.verdict = recomputedVerdict;
-    result.verdictReason = verdictReason;
-    result.verdictTrace = verdictTrace;
-
     // Enrich findings with code context from the diff for nit issues
     for (const finding of result.findings) {
       if (finding.file && finding.line) {
@@ -1058,7 +1043,7 @@ async function runFullReview(
     const interRoundDiffEmptyOverride = result.interRoundDiffEmptyOverride;
     const inPrSuppressedCount = result.inPrSuppressedCount ?? 0;
     const openThreadCount = openThreads.length;
-    const resolvedThreadIdCount = resolvedThreadIds.size;
+    const resolvedThreadIdCount = collectResolvedThreadIds(recap.previousFindings).size;
     const hasPriorRoundsForJudge = recap.priorRounds.length > 0;
     const interRoundDiffState: 'unknown' | 'empty' | 'changed' = !hasPriorRoundsForJudge || interRoundDiff === undefined
       ? 'unknown'
@@ -1221,7 +1206,7 @@ async function runFullReview(
         mergedDuplicates,
         durationMs: judgeEndTime - reviewEndTime,
         retryCount: result.judgeRetryCount ?? 0,
-        ...(verdictReason && { verdictReason }),
+        ...(result.verdictReason && { verdictReason: result.verdictReason }),
         ...(defensiveHardeningCount > 0 && { defensiveHardeningCount }),
         ...(ownProposalDemotedCount > 0 && { ownProposalDemotedCount }),
         ...(contradictionDemotedCount > 0 && { contradictionDemotedCount }),
@@ -1232,7 +1217,7 @@ async function runFullReview(
         ...(crossRoundDemoted != null && crossRoundDemoted > 0 && { crossRoundDemoted }),
         ...(interRoundDiffEmptyOverride && { interRoundDiffEmptyOverride }),
         ...(result.threadEvaluations && result.threadEvaluations.length > 0 && { threadEvaluations: result.threadEvaluations }),
-        ...(verdictTrace && { verdictTrace }),
+        ...(result.verdictTrace && { verdictTrace: result.verdictTrace }),
         openThreadsState: recap.openThreadsState,
         openThreadCount,
         resolvedThreadIdCount,
@@ -1252,7 +1237,7 @@ async function runFullReview(
       memory: {
         ...(memory && memory.patterns.length > 0 && { patternsApplied: memory.patterns.length }),
         ...(result.suppressionCount != null && result.suppressionCount > 0 && { suppressionsApplied: result.suppressionCount }),
-        ...(escalationsApplied > 0 && { escalationsApplied }),
+        ...(result.escalationsApplied && { escalationsApplied: result.escalationsApplied }),
         loadStatus: memoryLoadStatus,
         ...(memoryLoadError && { loadError: memoryLoadError }),
       },
