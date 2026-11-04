@@ -2071,6 +2071,11 @@ const makeCommentBody = (description: string, aiContextJson?: string): string =>
 };
 
 describe('parseFindingFromComment', () => {
+  it('extracts the description of a not-blocking comment from `formatFindingComment`', () => {
+    const body = formatFindingComment({ severity: 'suggestion', title: 'Extract helper', file: 'src/a.ts', line: 2, description: 'The logic is duplicated.', reviewers: [] });
+    expect(parseFindingFromComment(body)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
+  });
+
   it('extracts description up to the <details> stop marker', () => {
     const body = makeCommentBody('The variable is never checked for null.');
     const result = parseFindingFromComment(body);

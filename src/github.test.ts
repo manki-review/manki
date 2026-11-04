@@ -35,9 +35,12 @@ describe('formatFindingComment', () => {
     ['warning', 'medium'],
     ['suggestion', 'low'],
     ['nitpick', undefined],
-  ] as const)('opens a %s finding with its bold title and no label, emoji or confidence dot', (severity, judgeConfidence) => {
+  ] as const)('opens a %s finding with its title and no emoji or confidence dot', (severity, judgeConfidence) => {
     const comment = formatFindingComment({ ...baseFinding, severity, judgeConfidence });
-    expect(comment.startsWith(`**${baseFinding.title}**\n\n${baseFinding.description}`)).toBe(true);
+    const titleLine = severity === 'blocker' || severity === 'warning'
+      ? `**${baseFinding.title}**`
+      : `**${severity[0].toUpperCase()}${severity.slice(1)}, not blocking:** ${baseFinding.title}`;
+    expect(comment.startsWith(`${titleLine}\n\n${baseFinding.description}`)).toBe(true);
     expect(comment).not.toMatch(EMOJI_RE);
     expect(comment).not.toMatch(DASH_SEPARATOR_RE);
     expect(comment).not.toMatch(/\*\*(?:Blocker|Warning|Suggestion|Nitpick)\*\*/);
@@ -229,8 +232,8 @@ describe('postReview generalFindings', () => {
     expect(call.body).not.toContain('Fix:');
   });
 
-  it('truncates long suggestedFix to 200 chars in general findings', async () => {
-    const longFix = 'x'.repeat(250);
+  it('truncates long suggestedFix to 600 chars in general findings', async () => {
+    const longFix = 'x'.repeat(700);
     const result: ReviewResult = {
       verdict: 'APPROVE',
       summary: 'Summary',
@@ -252,11 +255,11 @@ describe('postReview generalFindings', () => {
 
     await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
     const body = mockCreateReview.mock.calls[0][0].body as string;
-    expect(body).toContain('x'.repeat(200) + '...');
-    expect(body).not.toContain('x'.repeat(201));
+    expect(body).toContain('x'.repeat(597) + '...');
+    expect(body).not.toContain('x'.repeat(601));
   });
 
-  it('uses code block for suggestedFix containing backticks', async () => {
+  it('keeps backticks in a one-line suggestedFix inside a longer inline code span', async () => {
     const fixWithBackticks = 'use `foo` instead of `bar`';
     const result: ReviewResult = {
       verdict: 'APPROVE',
@@ -279,9 +282,7 @@ describe('postReview generalFindings', () => {
 
     await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
     const body = mockCreateReview.mock.calls[0][0].body as string;
-    expect(body).toContain('```');
-    expect(body).toContain(fixWithBackticks);
-    expect(body).not.toContain('Fix: `');
+    expect(body).toContain('Fix: `` use `foo` instead of `bar` ``');
   });
 
   it('uses longer fence when suggestedFix contains triple backticks', async () => {
@@ -1325,12 +1326,6 @@ describe('postReview body lead', () => {
       '',
       '**What to test:** Load the page twice, expect one request.',
       '',
-      '<details>',
-      '<summary>1 smaller fix in this PR</summary>',
-      '',
-      '- `src/a.ts:7`: Extract helper',
-      '</details>',
-      '',
       'Reviewed [`abcdef1`](https://github.com/owner/repo/commit/abcdef1234).',
     ].join('\n'));
   });
@@ -1423,22 +1418,22 @@ describe('postReview body lead', () => {
     expect(lead(body)).toBe('\u26A0\uFE0F **Review incomplete:** The judge failed.\n\nReviewed [`abcdef1`](https://github.com/owner/repo/commit/abcdef1234).');
   });
 
-  it('lists follow-up warnings with the smaller fixes instead of posting them as threads', async () => {
+  it('lists follow-up warnings off the diff with the smaller fixes in one section', async () => {
     const followUp = (title: string, line: number, suggestedFix?: string): Finding => ({
       severity: 'warning', title, file: 'src/a.ts', line, description: 'd', reviewers: ['r'], tags: ['follow-up'], ...(suggestedFix && { suggestedFix }),
     });
     const { body } = await postedBody({
       ...ready,
       findings: [
-        followUp('Unbounded retry', 4, 'cap at `3`\nattempts'),
-        { severity: 'suggestion', title: 'Extract helper', file: 'src/a.ts', line: 7, description: 'Duplicated.', reviewers: [] },
-        followUp('Log level too loud', 9),
+        followUp('Unbounded retry', 40, 'cap at `3`\nattempts'),
+        { severity: 'suggestion', title: 'Extract helper', file: 'src/a.ts', line: 47, description: 'Duplicated.', reviewers: [] },
         blocker,
       ],
     });
     const { comments } = mockCreateReview.mock.calls[0][0] as { comments: Array<{ line: number }> };
     expect(comments.map(c => c.line)).toEqual([5]);
-    expect(body).toContain('<summary>3 smaller fixes in this PR</summary>\n\n- `src/a.ts:4`: Unbounded retry. Fix: `` cap at `3` attempts ``\n- `src/a.ts:7`: Extract helper\n- `src/a.ts:9`: Log level too loud\n</details>');
+    expect(body).toContain('<summary>2 smaller fixes in this PR</summary>\n\n**Unbounded retry**\n');
+    expect(body).toContain('\n\n**Extract helper**\n[`src/a.ts:47`](https://github.com/owner/repo/blob/abcdef1234/src/a.ts#L47)\nDuplicated.\n\n</details>');
     expect(body.match(/smaller fix/g)).toHaveLength(1);
   });
 
@@ -3250,7 +3245,7 @@ describe('postReview fallback paths', () => {
 
     await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result, diff);
     const body = createReviewMock.mock.calls[0][0].body as string;
-    expect(body).toContain('**Blockers in files outside this diff:**\n- **Issue in missing file** (`src/missing.ts:10`): Desc.');
+    expect(body).toContain('**Blockers in files outside this diff:**\n\n**Issue in missing file**\n[`src/missing.ts:10`](https://github.com/owner/repo/blob/sha/src/missing.ts#L10)\nDesc.');
     expect(createReviewMock.mock.calls[0][0].comments).toEqual([]);
   });
 
@@ -3356,7 +3351,7 @@ describe('postReview fallback paths', () => {
       const update = updateReview.mock.calls[0][0];
       expect(update.review_id).toBe(7);
       expect(update.body.startsWith(review.body.slice(0, review.body.lastIndexOf('\n\nReviewed [')))).toBe(true);
-      expect(update.body).toContain('**Blockers that could not be posted as threads:**\n- **Refused thread** (`src/a.ts:40`)');
+      expect(update.body).toContain('**Blockers that could not be posted as threads:**\n\n**Refused thread**\n[`src/a.ts:40`](https://github.com/owner/repo/blob/sha/src/a.ts#L40)');
       expect(update.body).toMatch(/Reviewed \[`sha`\]\([^)]+\)\.$/);
     });
 
@@ -3369,7 +3364,7 @@ describe('postReview fallback paths', () => {
 
       const update = updateReview.mock.calls[0][0].body as string;
       expect(update).toContain('*(Review body truncated)*');
-      expect(update).toContain('**Blockers that could not be posted as threads:**\n- **Refused thread** (`src/a.ts:40`): Desc.\n\nReviewed [');
+      expect(update).toContain('**Blockers that could not be posted as threads:**\n\n**Refused thread**\n[`src/a.ts:40`](https://github.com/owner/repo/blob/sha/src/a.ts#L40)\nDesc.\n\nReviewed [');
       expect(update.length).toBeLessThanOrEqual(60000 + 200);
     });
 
@@ -3413,30 +3408,78 @@ describe('postReview non-blocking findings', () => {
     return { octokit, createReview, createReviewComment };
   }
 
-  it('lists suggestions and nitpicks in a collapsed body section instead of threads', async () => {
+  const nonBlocking = (severity: Finding['severity'], title: string, line: number, extra: Partial<Finding> = {}): Finding => ({
+    severity, title, file: 'src/a.ts', line, description: 'It goes wrong. Second sentence. Third sentence.', reviewers: [], ...extra,
+  });
+
+  it('posts non-blocking findings on changed lines inline as not blocking, and lists the rest as blocks', async () => {
     const { octokit, createReview, createReviewComment } = makeOctokit();
 
-    await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([
-      { severity: 'suggestion', title: 'Extract helper', file: 'src/a.ts', line: 5, description: 'Duplicated.', suggestedFix: 'const x =\n  helper();', reviewers: [] },
-      { severity: 'nitpick', title: 'Typo in name', file: 'src/a.ts', line: 7, description: 'Typo.', suggestedFix: 'use `name`', reviewers: [], judgeConfidence: 'high' },
-      { severity: 'suggestion', title: 'General idea', file: '', line: 0, description: 'Desc.', reviewers: [] },
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', buildResult([
+      nonBlocking('suggestion', 'Extract helper', 5, { suggestedFix: 'const x = helper();' }),
+      nonBlocking('nitpick', 'Typo in name', 7, { judgeConfidence: 'high' }),
+      nonBlocking('suggestion', 'Missing file context', 0, { file: '', suggestedFix: 'Use the shared helper.' }),
+      nonBlocking('suggestion', 'Off the diff', 40, { suggestedFix: 'if (a) {\n  b();\n}' }),
     ]), diff);
 
     const review = createReview.mock.calls[0][0];
-    expect(review.comments).toEqual([]);
     expect(createReviewComment).not.toHaveBeenCalled();
+    expect(review.comments.map((c: { line: number }) => c.line)).toEqual([5, 7]);
+    expect(review.comments[0].body).toMatch(/^\*\*Suggestion, not blocking:\*\* Extract helper\n\nIt goes wrong\./);
+    expect(review.comments[0].body).toContain('<!-- manki:suggestion:Extract-helper -->');
+    expect(review.comments[1].body).toMatch(/^\*\*Nitpick, not blocking:\*\* Typo in name\n/);
     expect(review.body).toContain([
       '<details>',
-      '<summary>3 smaller fixes in this PR</summary>',
+      '<summary>2 smaller fixes in this PR</summary>',
       '',
-      '- `src/a.ts:5`: Extract helper. Fix: `const x = helper();`',
-      '- `src/a.ts:7`: Typo in name. Fix: `` use `name` ``',
-      '- General idea',
+      '**Missing file context**',
+      'It goes wrong. Second sentence.',
+      'Fix: Use the shared helper.',
+      '',
+      '**Off the diff**',
+      '[`src/a.ts:40`](https://github.com/owner/repo/blob/abc1234/src/a.ts#L40)',
+      'It goes wrong. Second sentence.',
+      'Fix:',
+      '```',
+      'if (a) {',
+      '  b();',
+      '}',
+      '```',
+      '',
       '</details>',
     ].join('\n'));
-    expect(review.body).not.toContain('\u{1F534}');
-    expect(review.body).not.toContain('manki:nitpick');
     expect(review.body).not.toContain('not listed');
+  });
+
+  it('posts at most five non-blocking findings inline, most severe first, and lists the sixth', async () => {
+    const { octokit, createReview } = makeOctokit();
+
+    await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([
+      nonBlocking('nitpick', 'Nit one', 1),
+      nonBlocking('suggestion', 'Suggestion one', 2),
+      nonBlocking('warning', 'Deferred warning', 3, { tags: ['follow-up'] }),
+      nonBlocking('suggestion', 'Suggestion two', 4),
+      nonBlocking('nitpick', 'Nit two', 5),
+      nonBlocking('suggestion', 'Suggestion three', 6),
+    ]), diff);
+
+    const review = createReview.mock.calls[0][0];
+    const byLine = new Map(review.comments.map((c: { line: number; body: string }) => [c.line, c.body]));
+    expect([...byLine.keys()].sort()).toEqual([1, 2, 3, 4, 6]);
+    expect(byLine.get(3)).toMatch(/^\*\*Warning, not blocking:\*\* Deferred warning\n/);
+    expect(byLine.get(3)).toContain('<!-- manki:warning:Deferred-warning -->\n<!-- manki-follow-up -->');
+    expect(review.body).toContain('<summary>1 smaller fix in this PR</summary>\n\n**Nit two**\n');
+  });
+
+  it('does not post a non-blocking finding again while its open thread carries it', async () => {
+    const { octokit, createReview } = makeOctokit();
+    const existingThreads = [{ title: 'Extract helper', file: 'src/a.ts', line: 5, severity: 'suggestion' as const, status: 'open' as const, threadId: 'T1', markerSlug: 'Extract-helper' }];
+
+    await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([nonBlocking('suggestion', 'Extract helper', 5)]), diff, undefined, undefined, undefined, { existingThreads });
+
+    const review = createReview.mock.calls[0][0];
+    expect(review.comments).toEqual([]);
+    expect(review.body).not.toContain('Extract helper');
   });
 
   it('counts non-blocking findings on code the inter-round diff did not change', async () => {
@@ -3448,20 +3491,17 @@ describe('postReview non-blocking findings', () => {
     };
 
     await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([
-      { severity: 'suggestion', title: 'On new code', file: 'src/a.ts', line: 11, description: 'Desc.', reviewers: [] },
-      { severity: 'suggestion', title: 'On old code', file: 'src/a.ts', line: 3, description: 'Desc.', reviewers: [] },
-      { severity: 'nitpick', title: 'Untouched file', file: 'src/b.ts', line: 3, description: 'Desc.', reviewers: [] },
-      { severity: 'blocker', title: 'Old blocker', file: 'src/a.ts', line: 3, description: 'Desc.', reviewers: [] },
+      nonBlocking('suggestion', 'On new code', 11),
+      nonBlocking('suggestion', 'On old code', 3),
+      nonBlocking('nitpick', 'Untouched file', 3, { file: 'src/b.ts' }),
+      nonBlocking('blocker', 'Old blocker', 3),
     ]), diff, undefined, undefined, undefined, { interRoundDiff });
 
     const review = createReview.mock.calls[0][0];
-    expect(review.body).toContain('<summary>1 smaller fix in this PR</summary>');
-    expect(review.body).toContain('On new code');
+    expect(review.comments.map((c: { body: string }) => c.body.split('\n')[0])).toEqual(['**Old blocker**', '**Suggestion, not blocking:** On new code']);
     expect(review.body).not.toContain('On old code');
     expect(review.body).not.toContain('Untouched file');
     expect(review.body).toContain('2 smaller fixes on code unchanged since the last review are not listed.');
-    expect(review.comments).toHaveLength(1);
-    expect(review.comments[0].body).toContain('Old blocker');
   });
 });
 

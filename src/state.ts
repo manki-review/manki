@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { BotIdentity, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchReviewThreadNodes, isBotLogin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, postAutoApproveProgressComment } from './github';
+import { BotIdentity, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchReviewThreadNodes, FOLLOW_UP_MARKER, isBotLogin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, postAutoApproveProgressComment } from './github';
 import { FindingSeverity, isBlockingSeverity, migrateLegacySeverity, ReviewConfig, SEVERITY_TOKEN_PATTERN } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -68,7 +68,7 @@ async function fetchBotReviewThreads(
       const severityMatch = body.match(new RegExp(`<!-- manki:(${SEVERITY_TOKEN_PATTERN}):`));
       // A thread without a severity marker predates them, so it keeps blocking.
       const isBlocking = severityMatch?.[1]
-        ? isBlockingSeverity(migrateLegacySeverity(severityMatch[1]) as FindingSeverity)
+        ? isBlockingSeverity(migrateLegacySeverity(severityMatch[1]) as FindingSeverity) && !body.includes(FOLLOW_UP_MARKER)
         : true;
       const titleMatch = body.match(/<!-- manki:\w+:(.+?) -->/);
       const findingTitle = titleMatch?.[1]?.replace(/-/g, ' ') ?? 'Unknown';

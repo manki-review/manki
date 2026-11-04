@@ -694,6 +694,21 @@ function truncateContextToFitBody(
 
 const REVIEW_BODY_BUDGET = 60000;
 
+/** Non-blocking findings posted as line comments per review. The rest go in the body list. */
+const MAX_NON_BLOCKING_INLINE = 5;
+
+/** Marks a thread for a warning that no longer blocks, so auto-approve skips it. */
+const FOLLOW_UP_MARKER = '<!-- manki-follow-up -->';
+
+function isBlockingFinding(finding: Finding): boolean {
+  return isBlockingSeverity(finding.severity) && !finding.tags?.includes(FOLLOW_UP_TAG);
+}
+
+function isOnChangedLine(finding: Finding, diff: ParsedDiff): boolean {
+  const diffFile = finding.file ? diff.files.find(df => df.path === finding.file) : undefined;
+  return !!diffFile && isLineInDiff(diffFile, finding.line);
+}
+
 /** Whether a finding sits on code that the inter-round diff did not touch. */
 function isOnUnchangedCode(finding: Finding, interRoundDiff: ParsedDiff): boolean {
   if (!finding.file) return false;
@@ -708,33 +723,55 @@ function inlineCode(text: string): string {
   return longestRun > 0 ? `${ticks} ${text} ${ticks}` : `${ticks}${text}${ticks}`;
 }
 
-function formatSmallerFinding(finding: Finding): string {
-  const location = finding.file
-    ? `\`${sanitizeFilePath(finding.file)}${finding.line > 0 ? `:${finding.line}` : ''}\`: `
-    : '';
-  let entry = `- ${location}${sanitizeMarkdown(finding.title)}`;
-  const fix = finding.suggestedFix?.replace(/\s+/g, ' ').trim();
-  if (fix) {
-    entry += `. Fix: ${inlineCode(safeTruncate(fix, 120))}`;
+type LineLink = (file: string, line: number) => string;
+
+function repoUrl(serverUrl: string, owner: string, repo: string): string {
+  return `${serverUrl.replace(/\/+$/, '')}/${owner}/${repo}`;
+}
+
+function buildLineLink(owner: string, repo: string, commitSha: string, serverUrl: string): LineLink {
+  return (file, line) => `${repoUrl(serverUrl, owner, repo)}/blob/${commitSha}/${file.split('/').map(encodeURIComponent).join('/')}${line > 0 ? `#L${line}` : ''}`;
+}
+
+/** Renders a fix for the body: one line of prose or code inline, anything longer as text and code blocks. */
+function formatBodyFix(fix: string, file: string): string {
+  const parts = splitFix(safeTruncate(fix, 600), file);
+  const code = parts.filter(p => p.kind === 'code');
+  if (code.length === 0) return `Fix: ${sanitizeMarkdown(parts.map(p => p.lines.join(' ')).join(' '))}`;
+  if (parts.length === 1 && code[0].lines.length === 1 && code[0].lines[0].length <= SUGGESTION_MAX_LENGTH) {
+    return `Fix: ${inlineCode(code[0].lines[0].trim())}`;
   }
-  return entry;
+  const rendered = parts.map(p => {
+    const text = p.lines.join('\n');
+    if (p.kind === 'prose') return sanitizeMarkdown(text);
+    const fence = dynamicFence(text);
+    return `${fence}${(p.lang ?? '').replace(/[^\w+#.-]/g, '')}\n${text}\n${fence}`;
+  }).join('\n');
+  return `Fix:\n${rendered}`;
+}
+
+/** Renders a finding listed in the review body: title, link to the line, what goes wrong, and the fix. */
+function formatFindingBlock(finding: Finding, linkTo: LineLink): string {
+  const lines = [`**${sanitizeMarkdown(finding.title)}**`];
+  if (finding.file) {
+    const location = `${sanitizeFilePath(finding.file)}${finding.line > 0 ? `:${finding.line}` : ''}`;
+    lines.push(`[${inlineCode(location)}](${linkTo(finding.file, finding.line)})`);
+  }
+  const description = sanitizeMarkdown(finding.description.trim()).split(/(?<=[.!?])\s+/).slice(0, 2).join(' ');
+  if (description) lines.push(safeTruncate(description, 300));
+  if (finding.suggestedFix?.trim()) lines.push(formatBodyFix(finding.suggestedFix, finding.file));
+  return lines.join('\n');
 }
 
 function formatSmallerFindings(entries: string[], unpostedCount: number): string | null {
   const parts: string[] = [];
   if (entries.length > 0) {
-    parts.push(`<details>\n<summary>${countOf(entries.length, 'smaller fix', 'smaller fixes')} in this PR</summary>\n\n${entries.join('\n')}\n</details>`);
+    parts.push(`<details>\n<summary>${countOf(entries.length, 'smaller fix', 'smaller fixes')} in this PR</summary>\n\n${entries.join('\n\n')}\n\n</details>`);
   }
   if (unpostedCount > 0) {
     parts.push(`${countOf(unpostedCount, 'smaller fix', 'smaller fixes')} on code unchanged since the last review ${unpostedCount === 1 ? 'is' : 'are'} not listed.`);
   }
   return parts.length > 0 ? parts.join('\n\n') : null;
-}
-
-function formatUnpostedFinding(finding: Finding): string {
-  const desc = safeTruncate(sanitizeMarkdown(finding.description), 200);
-  const location = finding.line > 0 ? `${sanitizeFilePath(finding.file)}:${finding.line}` : sanitizeFilePath(finding.file);
-  return `**${sanitizeMarkdown(finding.title)}** (\`${location}\`): ${desc}`;
 }
 
 /**
@@ -778,11 +815,14 @@ function hasOpenThread(finding: Finding, existingThreads: PreviousFinding[]): bo
 }
 
 /**
- * Post the review. Blocking findings become threads, all other findings go in the body.
+ * Post the review. Blocking findings become threads. Non-blocking findings on a changed line
+ * become line comments marked "not blocking", up to `MAX_NON_BLOCKING_INLINE` and most severe
+ * first. The rest go in the body.
  *
  * A blocking finding on a changed line gets a line comment, one elsewhere in a diff file
- * gets a file-level comment, unless one of `existingThreads` still open was posted for it. When `interRoundDiff` is given, non-blocking findings on code it did not change
- * are only counted.
+ * gets a file-level comment. A finding that one of the open `existingThreads` already carries
+ * is not posted again. When `interRoundDiff` is given, non-blocking findings on code it did not
+ * change are only counted.
  *
  * When `context` is provided without `reviewTimeMs`, the hidden stats line
  * records `0s` for review time. Pass both together to avoid this.
@@ -809,40 +849,24 @@ export async function postReview(
   const generalFindings: string[] = [];
   const smallerFindings: string[] = [];
   let unpostedCount = 0;
+  const nonBlocking: Finding[] = [];
+  const linkTo = buildLineLink(owner, repo, commitSha, github.context.serverUrl);
 
   for (const f of result.findings) {
-    if (f.tags?.includes(FOLLOW_UP_TAG)) {
-      smallerFindings.push(formatSmallerFinding(f));
-      continue;
-    }
-    if (!isBlockingSeverity(f.severity)) {
-      if (interRoundDiff && isOnUnchangedCode(f, interRoundDiff)) {
+    if (!isBlockingFinding(f)) {
+      if (!f.tags?.includes(FOLLOW_UP_TAG) && interRoundDiff && isOnUnchangedCode(f, interRoundDiff)) {
         unpostedCount++;
+      } else if (hasOpenThread(f, existingThreads)) {
+        core.info(`Skipping "${f.title}" on ${f.file}: an open thread already carries it`);
       } else {
-        smallerFindings.push(formatSmallerFinding(f));
+        nonBlocking.push(f);
       }
       continue;
     }
 
     const diffFile = f.file ? diff?.files.find(df => df.path === f.file) : undefined;
     if (!f.file || (f.line <= 0 && !diffFile)) {
-      const safeFile = f.file ? sanitizeFilePath(f.file) : '';
-      const location = f.file ? ` (\`${safeFile}\`)` : '';
-      const safeTitle = sanitizeMarkdown(f.title);
-      const fullDesc = sanitizeMarkdown(f.description);
-      const safeDesc = safeTruncate(fullDesc, 300);
-      let entry = `**${safeTitle}**${location}\n  ${safeDesc}`;
-      if (f.suggestedFix) {
-        const fix = safeTruncate(f.suggestedFix, 200);
-        if (fix.includes('`') || fix.includes('\n')) {
-          // Dynamic fence: content inside code fences is literal, so no sanitization needed.
-          const fence = dynamicFence(fix);
-          entry += `\n  ${fence}\n  ${fix}\n  ${fence}`;
-        } else {
-          entry += `\n  Fix: \`${fix}\``;
-        }
-      }
-      generalFindings.push(entry);
+      generalFindings.push(formatFindingBlock(f, linkTo));
       continue;
     }
 
@@ -851,7 +875,7 @@ export async function postReview(
     if (!diff) {
       validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: commentBody });
     } else if (!diffFile) {
-      invalidComments.push(formatUnpostedFinding(f));
+      invalidComments.push(formatFindingBlock(f, linkTo));
     } else if (f.line > 0 && isLineInDiff(diffFile, f.line)) {
       validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: commentBody });
     } else if (hasOpenThread(f, existingThreads)) {
@@ -861,9 +885,21 @@ export async function postReview(
     }
   }
 
+  const inline = new Set(nonBlocking
+    .filter(f => diff && f.line > 0 && isOnChangedLine(f, diff))
+    .sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity))
+    .slice(0, MAX_NON_BLOCKING_INLINE));
+  for (const f of nonBlocking) {
+    if (inline.has(f)) {
+      validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: formatFindingComment(f) });
+    } else {
+      smallerFindings.push(formatFindingBlock(f, linkTo));
+    }
+  }
+
   const reviewedCommitFooter = buildReviewedCommitFooter(owner, repo, commitSha, github.context.serverUrl);
 
-  const blockingFindings = result.findings.filter(f => isBlockingSeverity(f.severity) && !f.tags?.includes(FOLLOW_UP_TAG));
+  const blockingFindings = result.findings.filter(isBlockingFinding);
   const lead = formatLead(result, blockingFindings);
 
   const renderBody = (ctx: RoundContext | undefined): string => {
@@ -885,10 +921,10 @@ export async function postReview(
       b += `\n\n${readyReport}`;
     }
     if (generalFindings.length > 0) {
-      b += `\n\n**Blockers not tied to a line:**\n${generalFindings.map(c => `- ${c}`).join('\n')}`;
+      b += `\n\n**Blockers not tied to a line:**\n\n${generalFindings.join('\n\n')}`;
     }
     if (invalidComments.length > 0) {
-      b += `\n\n**Blockers in files outside this diff:**\n${invalidComments.map(c => `- ${c}`).join('\n')}`;
+      b += `\n\n**Blockers in files outside this diff:**\n\n${invalidComments.join('\n\n')}`;
     }
     const smaller = formatSmallerFindings(smallerFindings, unpostedCount);
     if (smaller) {
@@ -924,7 +960,7 @@ export async function postReview(
   const refused = await postFileLevelComments(octokit, owner, repo, prNumber, commitSha, fileComments);
   if (refused.length > 0) {
     const titles = refused.map(f => `"${f.title}" (${f.file})`).join(', ');
-    const section = `\n\n**Blockers that could not be posted as threads:**\n${refused.map(f => `- ${formatUnpostedFinding(f)}`).join('\n')}`;
+    const section = `\n\n**Blockers that could not be posted as threads:**\n\n${refused.map(f => formatFindingBlock(f, linkTo)).join('\n\n')}`;
     // Truncate the existing body, never the blocking findings appended to it.
     const room = REVIEW_BODY_BUDGET - section.length;
     if (room <= 0) {
@@ -1039,9 +1075,7 @@ function dynamicFence(content: string): string {
 }
 
 function buildReviewedCommitFooter(owner: string, repo: string, commitSha: string, serverUrl: string): string {
-  const shortSha = commitSha.slice(0, 7);
-  const base = serverUrl.replace(/\/+$/, '');
-  return `Reviewed [\`${shortSha}\`](${base}/${owner}/${repo}/commit/${commitSha}).`;
+  return `Reviewed [\`${commitSha.slice(0, 7)}\`](${repoUrl(serverUrl, owner, repo)}/commit/${commitSha}).`;
 }
 
 function appendReviewedCommitFooter(body: string, footer: string): string {
@@ -1283,7 +1317,9 @@ function formatSuggestedFix(fix: string, file: string): string {
 }
 
 function formatFindingComment(finding: Finding): string {
-  let comment = `**${sanitizeMarkdown(finding.title)}**\n\n${sanitizeMarkdown(finding.description)}`;
+  const title = sanitizeMarkdown(finding.title);
+  const label = `${finding.severity[0].toUpperCase()}${finding.severity.slice(1)}, not blocking:`;
+  let comment = `${isBlockingFinding(finding) ? `**${title}**` : `**${label}** ${title}`}\n\n${sanitizeMarkdown(finding.description)}`;
   if (finding.suggestedFix?.trim()) {
     comment += `\n\n${formatSuggestedFix(finding.suggestedFix, finding.file)}`;
   }
@@ -1302,6 +1338,7 @@ function formatFindingComment(finding: Finding): string {
     ...(finding.originalSeverity && { originalSeverity: finding.originalSeverity }),
   };
   comment += `\n\n<!-- manki:${finding.severity}:${titleToSlug(finding.title)} -->`;
+  if (finding.tags?.includes(FOLLOW_UP_TAG)) comment += `\n${FOLLOW_UP_MARKER}`;
   comment += `\n<!-- manki-finding: ${sanitizeHtmlCommentJson(JSON.stringify(data))} -->`;
 
   return comment;
@@ -2048,5 +2085,5 @@ async function cancelActiveReviewRun(
   }
 }
 
-export { dynamicFence, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict };
+export { dynamicFence, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, FOLLOW_UP_MARKER };
 export type { InProgressLock, StandingVerdict };
