@@ -110,6 +110,10 @@ interface PreviousFinding extends FindingMetadata {
   status: 'open' | 'resolved' | 'replied';
   threadId?: string;
   threadUrl?: string;
+  /** Slug from the thread's `<!-- manki:<severity>:<slug> -->` marker. */
+  markerSlug?: string;
+  /** Line the thread was posted on. Stays set after the thread goes outdated, unlike `line`. */
+  originalLine?: number;
   authorReplyText?: string;
   /** Login of the latest non-bot replier on this thread, if any. */
   authorReplyLogin?: string;
@@ -328,6 +332,8 @@ async function fetchRecapState(
       status: t.isResolved ? 'resolved' as const : (t.hasHumanReply ? 'replied' as const : 'open' as const),
       threadId: t.threadId,
       threadUrl: t.threadUrl,
+      ...(t.markerSlug && { markerSlug: t.markerSlug }),
+      ...(t.originalLine && { originalLine: t.originalLine }),
       authorReplyText: t.authorReplyText,
       authorReplyLogin: t.authorReplyLogin,
       description: t.description,
@@ -378,7 +384,7 @@ async function fetchRecapState(
   core.info(`Recap: ${resolved.length} resolved, ${open.length} open, ${previousFindings.length} total previous findings`);
 
   const { rounds: enrichedPriorRounds, reclassifiedPriorCount, reclassifiedPriors } =
-    refreshAuthorReplyClass(priorRounds, previousFindings);
+    refreshAuthorReplyClass(attachPriorThreadIds(priorRounds, previousFindings), previousFindings);
 
   return {
     previousFindings,
@@ -388,6 +394,45 @@ async function fetchRecapState(
     reclassifiedPriorCount,
     reclassifiedPriors,
   };
+}
+
+/** How far a thread's posted line may sit from a prior's fingerprint lines and still match. */
+const PRIOR_THREAD_LINE_TOLERANCE = 5;
+
+/**
+ * Gives each prior-round finding without a `threadId` the ID of the Manki
+ * thread posted for it. Round contexts are written before GitHub assigns
+ * thread IDs, so the match goes by the thread marker's slug, the file, and the
+ * nearest posted line. A prior left without a match was posted in the review
+ * body, not as a thread.
+ */
+function attachPriorThreadIds(rounds: RoundContext[], previousFindings: PreviousFinding[]): RoundContext[] {
+  const threads = previousFindings.filter(pf => pf.threadId && pf.markerSlug);
+  if (threads.length === 0) return rounds;
+  return rounds.map(r => ({
+    ...r,
+    findings: {
+      ...r.findings,
+      entries: r.findings.entries.map(entry => {
+        if (entry.threadId) return entry;
+        const threadId = findPriorThreadId(entry.fingerprint, threads);
+        return threadId ? { ...entry, threadId } : entry;
+      }),
+    },
+  }));
+}
+
+function findPriorThreadId(fp: FindingFingerprint, threads: PreviousFinding[]): string | undefined {
+  let best: { threadId: string; distance: number } | undefined;
+  for (const t of threads) {
+    if (t.file !== fp.file || t.markerSlug !== fp.slug) continue;
+    const line = t.originalLine ?? t.line;
+    if (!line) continue;
+    const distance = line < fp.lineStart ? fp.lineStart - line : Math.max(0, line - fp.lineEnd);
+    if (distance > PRIOR_THREAD_LINE_TOLERANCE) continue;
+    if (!best || distance < best.distance) best = { threadId: t.threadId!, distance };
+  }
+  return best?.threadId;
 }
 
 /** Cap on `reclassifiedPriors[]` to bound context-block size. */
@@ -483,6 +528,8 @@ async function fetchPriorRoundContexts(
 interface ReviewThread extends FindingMetadata {
   threadId: string;
   threadUrl: string;
+  markerSlug?: string;
+  originalLine?: number;
   isBotThread: boolean;
   isResolved: boolean;
   hasHumanReply: boolean;
@@ -571,6 +618,7 @@ async function fetchReviewThreads(
               path
               line
               startLine
+              originalLine
               comments(first: 10) {
                 nodes {
                   body
@@ -598,6 +646,7 @@ async function fetchReviewThreads(
               path: string;
               line: number | null;
               startLine: number | null;
+              originalLine?: number | null;
               comments: {
                 nodes: Array<{
                   body: string;
@@ -633,6 +682,8 @@ async function fetchReviewThreads(
         ? migrateLegacySeverity(severityMatch[1])
         : 'unknown') as FindingSeverity | 'unknown';
 
+      const markerSlug = firstComment?.body?.match(new RegExp(`<!-- manki:(?:${SEVERITY_TOKEN_PATTERN}):(.+?) -->`))?.[1];
+
       const titleMatch = firstComment?.body?.match(new RegExp(FINDING_TITLE_RE.source + '(.+?)(?:\\n|$)'));
       const findingTitle = titleMatch?.[1]?.trim() ?? '';
 
@@ -655,6 +706,8 @@ async function fetchReviewThreads(
         file: thread.path ?? '',
         line,
         lineStart,
+        ...(thread.originalLine && { originalLine: thread.originalLine }),
+        ...(markerSlug && { markerSlug }),
         severity,
         authorReplyText,
         authorReplyLogin,
