@@ -4368,7 +4368,6 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings: [],
-      recapContext: '',
       priorRounds: [],
       openThreadsState: 'fetch_failed',
     });
