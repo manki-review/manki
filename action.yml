@@ -10,7 +10,7 @@ inputs:
     description: 'Anthropic API key (alternative to OAuth token)'
     required: false
   openai_oauth_token:
-    description: 'Base64-encoded contents of `~/.codex/auth.json` (Codex CLI OAuth credentials, including `tokens.access_token` and `tokens.refresh_token`). Bootstrap with `cat ~/.codex/auth.json | base64 | gh secret set OPENAI_OAUTH_TOKEN`. Re-run when the refresh_token expires.'
+    description: 'Base64-encoded contents of `~/.codex/auth.json` (Codex CLI OAuth credentials, including `tokens.access_token` and `tokens.refresh_token`). Bootstrap with `cat ~/.codex/auth.json | base64 | gh secret set OPENAI_OAUTH_TOKEN`. Codex rotates the tokens on refresh, so this copy goes stale and must be re-uploaded when Codex fails to authenticate. `openai_api_key` avoids this.'
     required: false
   openai_api_key:
     description: 'OpenAI API key (alternative to OAuth token)'

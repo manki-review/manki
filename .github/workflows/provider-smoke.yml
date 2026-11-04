@@ -22,7 +22,7 @@ jobs:
             model: claude-haiku-4-5
             effort: low
           - provider: openai
-            model: o4-mini
+            model: gpt-6-luna
             effort: low
           - provider: gemini
             model: gemini-2.5-flash

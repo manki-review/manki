@@ -7,11 +7,10 @@ import * as core from '@actions/core';
 
 import {
   buildOpenAIAuth,
-  isReasoningModel,
   OpenAIClient,
   resetCLIInstallPromise,
   resolveCodexHome,
-  resolveEffortTier,
+  resolveReasoningEffort,
   sanitizeLogOutput,
   STALE_TIMEOUT_MS,
 } from './openai';
@@ -63,23 +62,50 @@ describe('buildOpenAIAuth', () => {
   });
 });
 
-describe('isReasoningModel', () => {
-  it('detects o-series models', () => {
-    expect(isReasoningModel('o1')).toBe(true);
-    expect(isReasoningModel('o3')).toBe(true);
-    expect(isReasoningModel('o3-mini')).toBe(true);
-    expect(isReasoningModel('o4-mini')).toBe(true);
+describe('resolveReasoningEffort', () => {
+  it.each([
+    ['o1', 'high'],
+    ['o3', 'high'],
+    ['o3-mini', 'high'],
+    ['o4-mini', 'high'],
+    ['gpt-5', 'high'],
+    ['gpt-5-mini', 'high'],
+    ['gpt-5-nano-2025-08-07', 'high'],
+    ['gpt-5.1', 'high'],
+    ['gpt-5.2', 'xhigh'],
+    ['gpt-5.3-codex', 'xhigh'],
+    ['gpt-5.4-nano', 'xhigh'],
+    ['gpt-5.5', 'xhigh'],
+    ['gpt-5.6-sol', 'max'],
+    ['gpt-5.6-luna', 'max'],
+    ['GPT-6-Luna', 'max'],
+    ['gpt-6-astra', 'max'],
+    ['gpt-6.1-sol', 'max'],
+    ['gpt-6.1-terra', 'max'],
+  ])('maps max to the highest effort %s accepts', (model, expected) => {
+    expect(resolveReasoningEffort(model, 'max')).toBe(expected);
+    for (const tier of ['low', 'medium', 'high'] as const) {
+      expect(resolveReasoningEffort(model, tier)).toBe(tier);
+    }
   });
 
-  it('rejects gpt-family models', () => {
-    expect(isReasoningModel('gpt-4o')).toBe(false);
-    expect(isReasoningModel('gpt-4.1')).toBe(false);
-    expect(isReasoningModel('gpt-4o-mini')).toBe(false);
-  });
-
-  it('rejects unrelated names', () => {
-    expect(isReasoningModel('claude-opus-4-6')).toBe(false);
-    expect(isReasoningModel('overlord')).toBe(false);
+  it.each([
+    'gpt-4o',
+    'gpt-4o-mini',
+    'gpt-4.1',
+    'gpt-4.1-mini',
+    'gpt-3.5-turbo',
+    'gpt-5-chat-latest',
+    'gpt-5.3-chat-latest',
+    'gpt-5-pro',
+    'o3-pro-2025-06-10',
+    'gpt-realtime-2.1',
+    'gpt-image-2.5',
+    'claude-opus-4-6',
+    'overlord',
+  ])('returns undefined for %s, which rejects reasoning effort', (model) => {
+    expect(resolveReasoningEffort(model, 'high')).toBeUndefined();
+    expect(resolveReasoningEffort(model, 'max')).toBeUndefined();
   });
 });
 
@@ -185,11 +211,21 @@ describe('sendMessage (API path)', () => {
     expect(mockCreate.mock.calls[0][0].reasoning_effort).toBe('high');
   });
 
-  it('maps max effort to reasoning_effort=high (the highest tier the API exposes)', async () => {
-    const client = new OpenAIClient({ auth: { kind: 'apiKey', key: 'sk' }, model: 'o4-mini' });
+  it('maps max effort to the highest reasoning_effort the model accepts', async () => {
+    const client = new OpenAIClient({ auth: { kind: 'apiKey', key: 'sk' }, model: 'o3' });
     await client.sendMessage('sys', 'user', { effort: 'max' });
+    const gpt6 = new OpenAIClient({ auth: { kind: 'apiKey', key: 'sk' }, model: 'gpt-6.1-sol' });
+    await gpt6.sendMessage('sys', 'user', { effort: 'max' });
 
     expect(mockCreate.mock.calls[0][0].reasoning_effort).toBe('high');
+    expect(mockCreate.mock.calls[1][0].reasoning_effort).toBe('max');
+  });
+
+  it('sends reasoning_effort to GPT-5 family models', async () => {
+    const client = new OpenAIClient({ auth: { kind: 'apiKey', key: 'sk' }, model: 'gpt-5.6-terra' });
+    await client.sendMessage('sys', 'user', { effort: 'low' });
+
+    expect(mockCreate.mock.calls[0][0].reasoning_effort).toBe('low');
   });
 
   it('omits reasoning_effort when no effort is provided on a reasoning model', async () => {
@@ -536,15 +572,15 @@ describe('sendViaOAuth (Codex CLI path)', () => {
     expect(spawnArgs[overrideIdx]).toBe('model_reasoning_effort=medium');
   });
 
-  it('maps max effort to model_reasoning_effort=high on o-series CLI invocation', async () => {
+  it('maps max effort to the highest model_reasoning_effort the model accepts on CLI invocation', async () => {
     setupSpawnMock('ok\n');
-    const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'o4-mini' });
+    const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-5.4' });
 
     await client.sendMessage('sys', 'user', { effort: 'max' });
 
     const spawnArgs = mockSpawn.mock.calls[0][1] as string[];
     const overrideIdx = spawnArgs.findIndex(a => a.startsWith('model_reasoning_effort'));
-    expect(spawnArgs[overrideIdx]).toBe('model_reasoning_effort=high');
+    expect(spawnArgs[overrideIdx]).toBe('model_reasoning_effort=xhigh');
   });
 
   it('returns trimmed stdout content on success', async () => {
@@ -631,19 +667,6 @@ describe('sanitizeLogOutput', () => {
   it('returns empty string unchanged', () => {
     expect(sanitizeLogOutput('')).toBe('');
   });
-});
-
-describe('resolveEffortTier', () => {
-  it('passes through low/medium/high unchanged', () => {
-    expect(resolveEffortTier('low')).toBe('low');
-    expect(resolveEffortTier('medium')).toBe('medium');
-    expect(resolveEffortTier('high')).toBe('high');
-  });
-
-  it('collapses max to high', () => {
-    expect(resolveEffortTier('max')).toBe('high');
-  });
-
 });
 
 describe('sendViaOAuth — extended coverage', () => {

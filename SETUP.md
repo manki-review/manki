@@ -99,14 +99,14 @@ The table lists action input names (lowercase, passed in `with:`). The correspon
 
 The `low | medium | high | max` knobs map per provider as follows. Manki passes effort tiers per stage and per agent based on planner decisions and config.
 
-| Effort | Anthropic | OpenAI o-series | OpenAI GPT | Gemini |
-|--------|-----------|-----------------|------------|--------|
+| Effort | Anthropic | OpenAI reasoning models | Other OpenAI models | Gemini |
+|--------|-----------|-------------------------|---------------------|--------|
 | low    | no thinking | `reasoning_effort: low` | (ignored, warning) | no thinking |
 | medium | `budget_tokens: 5000` | `reasoning_effort: medium` | (ignored, warning) | `thinkingBudget: 5000` |
 | high   | `budget_tokens: 10000` | `reasoning_effort: high` | (ignored, warning) | `thinkingBudget: 10000` |
-| max    | `budget_tokens: 16000` | `reasoning_effort: high` (collapsed) | (ignored, warning) | `thinkingBudget: 10000` (collapsed) |
+| max    | `budget_tokens: 16000` | the model's highest value (see below) | (ignored, warning) | `thinkingBudget: 10000` (collapsed) |
 
-The `max` tier collapses silently to `high` for OpenAI o-series and Gemini — no warning is emitted, unlike the GPT non-reasoning path which logs a warning when effort is ignored. For GPT models via the Codex CLI (OAuth path), the warning notes that the CLI will apply its own default effort (which may differ from the requested tier). For GPT models via the API, the warning notes that effort has no effect. The Gemini OAuth (CLI) path passes prompts through the Gemini CLI binary and does not support effort tiers. Use API key auth if you need thinking budgets on Gemini.
+OpenAI reasoning models are the o-series and GPT-5 onwards. For `max`, Manki sends the highest `reasoning_effort` the model accepts: `high` for o-series, `gpt-5` and `gpt-5.1`, `xhigh` for `gpt-5.2` to `gpt-5.5`, and `max` for `gpt-5.6` onwards. GPT-4 models (`gpt-4o`, `gpt-4.1`), `-chat` snapshots and `-pro` models do not accept effort, so Manki logs a warning and sends none. Via the Codex CLI (OAuth path), the CLI then applies its own default effort. Via the API, effort has no effect. The `max` tier collapses silently to `high` for Gemini. The Gemini OAuth (CLI) path passes prompts through the Gemini CLI binary and does not support effort tiers. Use API key auth if you need thinking budgets on Gemini.
 
 ### Anthropic
 
@@ -143,11 +143,11 @@ Reviews run through the Claude Code CLI on your own Claude subscription instead 
    gh secret set OPENAI_API_KEY --repo <owner>/<repo>
    ```
 
-Reasoning models (`o1`, `o3`, `o4`, ...) accept the effort tiers above. Non-reasoning chat models (`gpt-4o`, `gpt-4.1`, ...) ignore effort and log a warning.
+Reasoning models (o-series and GPT-5 onwards, such as `gpt-5.6-terra` or `gpt-6.1-sol`) accept the effort tiers above. GPT-4 models (`gpt-4o`, `gpt-4.1`), `-chat` snapshots and `-pro` models ignore effort and log a warning.
 
 #### Codex CLI OAuth Token (subscription, experimental)
 
-> **Status: experimental for CI.** The Codex CLI stores subscription auth in `~/.codex/auth.json` as short-lived tokens (`access_token` ~1h) refreshed automatically when the CLI runs. For CI workflows, use the API-key path above unless you can keep the secret refreshed externally.
+> **Status: experimental for CI.** The Codex CLI keeps subscription auth in `~/.codex/auth.json` and refreshes it during a run once the tokens are about 8 days old. A refresh rotates the tokens and writes them back to `auth.json` on the runner, which is discarded when the job ends. The secret still holds the old tokens, so later runs fail to authenticate until you bootstrap again and re-upload the secret. Concurrent jobs, or a local Codex that refreshes the same login, invalidate it the same way. An API key has none of these problems, and [OpenAI's CI/CD auth guide](https://learn.chatgpt.com/docs/auth/ci-cd-auth) recommends it for most CI jobs.
 
 If you have a ChatGPT Plus or Pro subscription and the Codex CLI installed:
 
@@ -156,7 +156,7 @@ If you have a ChatGPT Plus or Pro subscription and the Codex CLI installed:
    ```bash
    cat ~/.codex/auth.json | base64 | gh secret set OPENAI_OAUTH_TOKEN --repo <owner>/<repo>
    ```
-   The secret must be the base64-encoded contents of `~/.codex/auth.json`, which contains `tokens.access_token` and `tokens.refresh_token`. Re-run when the refresh token expires.
+   The secret must be the base64-encoded contents of `~/.codex/auth.json`, which contains `tokens.access_token` and `tokens.refresh_token`. Re-run this step and re-upload the secret whenever Codex fails to authenticate in CI.
 3. The workflow needs to install the Codex CLI on the runner (see [Step 3](#step-3-add-the-workflow))
 
 > **Security note:** The base64 encoding is for transport format only — it is not encrypted. Anyone with access to repository secrets can decode the full credential, including the refresh token, which grants ongoing access to your ChatGPT Plus/Pro subscription. If this secret is ever compromised, revoke the OAuth session immediately at [platform.openai.com/account/sessions](https://platform.openai.com/account/sessions). For production use, prefer the API key path (`OPENAI_API_KEY`), which can be rotated without affecting your account session.
@@ -272,8 +272,8 @@ OpenAI Codex CLI OAuth (requires the CLI on the runner):
 
 ```yaml
       - name: Install Codex CLI
-        # --ignore-scripts is safe: @openai/codex@0.129.0 ships a plain JS bin with no postinstall steps. Re-verify if you bump the version pin.
-        run: npm install -g --ignore-scripts '@openai/codex@0.129.0'
+        # --ignore-scripts is safe: @openai/codex@0.166.0 ships a plain JS bin with no postinstall steps. Re-verify if you bump the version pin.
+        run: npm install -g --ignore-scripts '@openai/codex@0.166.0'
       - name: Manki Review
         uses: manki-review/manki@v5
         with:
@@ -308,10 +308,10 @@ Pair each workflow with a matching `models:` block in `.manki.yml`, for example:
 ```yaml
 # OpenAI
 models:
-  planner: gpt-4o-mini
-  reviewer: gpt-4o-mini
-  judge: o4-mini
-  dedup: gpt-4o-mini
+  planner: gpt-6-luna
+  reviewer: gpt-6.1-terra
+  judge: gpt-6.1-sol
+  dedup: gpt-6-luna
 
 # Gemini
 models:

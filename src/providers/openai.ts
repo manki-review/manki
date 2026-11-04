@@ -27,12 +27,12 @@ export function resolveCodexHome(): string {
 }
 
 const OPENAI_OAUTH_BOOTSTRAP_HINT =
-  'Bootstrap with `codex login` then `cat ~/.codex/auth.json | base64 | gh secret set OPENAI_OAUTH_TOKEN`. Re-run the bootstrap when the refresh_token expires.';
+  'Bootstrap with `codex login` then `cat ~/.codex/auth.json | base64 | gh secret set OPENAI_OAUTH_TOKEN`. Codex rotates the tokens when it refreshes them, so the stored copy goes stale: re-run the bootstrap when Codex fails to authenticate, or use openai_api_key instead.';
 
 // Pin Codex CLI to a known-good version and disable lifecycle scripts on install
 // to mitigate supply-chain risk if a compromised release is published. Keep this
 // in sync with the explicit install step in `.github/workflows/manki.yml`.
-export const CODEX_CLI_VERSION = '0.129.0';
+export const CODEX_CLI_VERSION = '0.166.0';
 
 const CODEX_BLOCKED_BARE = new Set([
   'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
@@ -54,23 +54,38 @@ export function sanitizeLogOutput(text: string): string {
   return text.replace(/^::[a-z].*$/gim, '[redacted-workflow-cmd]');
 }
 
+type OpenAIReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
 /**
- * o-series reasoning models (o1, o3, o4, ...) accept the `reasoning_effort`
- * parameter on the chat completions API; GPT-family models (gpt-4o, gpt-4.1,
- * gpt-5, ...) do not and will reject the field.
+ * Returns the highest `reasoning_effort` the model accepts, or `undefined` if it rejects the
+ * parameter. Per OpenAI's model pages: `high` for o-series, `gpt-5` and `gpt-5.1`, `xhigh` for
+ * `gpt-5.2` to `gpt-5.5`, `max` from `gpt-5.6`. GPT-4, `-chat` and `-pro` models take none.
  */
-export function isReasoningModel(model: string): boolean {
-  return /^o\d/i.test(model);
+function maxReasoningEffort(model: string): OpenAIReasoningEffort | undefined {
+  const name = model.toLowerCase();
+  if (/-(chat|pro)(-|$)/.test(name)) return undefined;
+  if (/^o\d/.test(name)) return 'high';
+  const gpt = /^gpt-(\d+)(?:\.(\d+))?(?:-|$)/.exec(name);
+  if (!gpt) return undefined;
+  const major = Number(gpt[1]);
+  const minor = Number(gpt[2] ?? 0);
+  if (major < 5) return undefined;
+  if (major > 5 || minor >= 6) return 'max';
+  return minor >= 2 ? 'xhigh' : 'high';
 }
 
 /**
- * Map manki's effort tiers (`low|medium|high|max`) to the values the OpenAI
- * stack accepts. Both the chat completions API and the Codex CLI cap reasoning
- * effort at `'high'`, so manki's `'max'` collapses to `'high'` on both paths.
+ * Maps manki's effort tier to the `reasoning_effort` value for `model`, or `undefined`
+ * when the model rejects the parameter. `max` becomes the model's highest value.
+ * The chat completions API and the Codex CLI accept the same values.
  */
-export function resolveEffortTier(effort: 'low' | 'medium' | 'high' | 'max'): 'low' | 'medium' | 'high' {
-  if (effort === 'max') return 'high';
-  return effort;
+export function resolveReasoningEffort(
+  model: string,
+  effort: 'low' | 'medium' | 'high' | 'max',
+): OpenAIReasoningEffort | undefined {
+  const ceiling = maxReasoningEffort(model);
+  if (!ceiling) return undefined;
+  return effort === 'max' ? ceiling : effort;
 }
 
 let cliInstallPromise: Promise<string> | null = null;
@@ -174,12 +189,13 @@ export class OpenAIClient implements LLMClient {
     // `runCli` runs it in an empty directory, which is not a git repository.
     const args = ['exec', '--skip-git-repo-check', '--model', this.model];
 
-    if (options?.effort && isReasoningModel(this.model)) {
+    const reasoningEffort = options?.effort && resolveReasoningEffort(this.model, options.effort);
+    if (reasoningEffort) {
       // Codex CLI's `-c` accepts bare `key=value` overrides; embedded double-quotes
       // here would be passed as literal characters because `spawn` bypasses the shell.
-      args.push('-c', `model_reasoning_effort=${resolveEffortTier(options.effort)}`);
+      args.push('-c', `model_reasoning_effort=${reasoningEffort}`);
     } else if (options?.effort) {
-      core.warning(`Ignoring effort=${options.effort} for model "${this.model}" — not a reasoning model. The Codex CLI will apply its own default effort instead.`);
+      core.warning(`Ignoring effort=${options.effort} for model "${this.model}": it does not accept reasoning effort. The Codex CLI will apply its own default effort instead.`);
     }
 
     // Read prompt from stdin
@@ -228,17 +244,14 @@ export class OpenAIClient implements LLMClient {
   private async sendViaAPI(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
     if (!this.openai) throw new Error('OpenAI client not initialized');
 
-    const reasoning = isReasoningModel(this.model);
-    if (options?.effort && !reasoning) {
-      core.warning(`Ignoring effort=${options.effort} for model "${this.model}" — not a reasoning model. Effort has no effect via the OpenAI API for GPT-family models.`);
+    const reasoningEffort = options?.effort && resolveReasoningEffort(this.model, options.effort);
+    if (options?.effort && !reasoningEffort) {
+      core.warning(`Ignoring effort=${options.effort} for model "${this.model}": it does not accept reasoning effort. Effort has no effect via the OpenAI API for this model.`);
     }
 
-    // `reasoning_effort` is only valid on o-series chat completions and the SDK's
-    // non-streaming union doesn't always surface it on every model branch. Intersecting
-    // with a narrow `{ reasoning_effort?: ... }` keeps the rest of the call site fully
-    // typed while letting us assign the field with compile-time checking.
-    type ParamsWithReasoningEffort = ChatCompletionCreateParamsNonStreaming & {
-      reasoning_effort?: 'low' | 'medium' | 'high';
+    // The SDK's `reasoning_effort` union lacks `max`, which `gpt-5.6` onwards accept.
+    type ParamsWithReasoningEffort = Omit<ChatCompletionCreateParamsNonStreaming, 'reasoning_effort'> & {
+      reasoning_effort?: OpenAIReasoningEffort;
     };
     const params: ParamsWithReasoningEffort = {
       model: this.model,
@@ -248,12 +261,12 @@ export class OpenAIClient implements LLMClient {
       ],
     };
 
-    if (reasoning && options?.effort) {
-      params.reasoning_effort = resolveEffortTier(options.effort);
+    if (reasoningEffort) {
+      params.reasoning_effort = reasoningEffort;
     }
 
     const startTime = Date.now();
-    const response = await this.openai.chat.completions.create(params);
+    const response = await this.openai.chat.completions.create(params as ChatCompletionCreateParamsNonStreaming);
     const choice = response.choices?.[0];
     const content = choice?.message?.content ?? '';
     core.debug(sanitizeLogOutput(content.slice(0, 200)));
