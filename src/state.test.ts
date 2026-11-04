@@ -281,7 +281,7 @@ describe('checkAndAutoApprove', () => {
 
     expect(result).toBe(true);
     expect(createReviewMock).toHaveBeenCalledWith(
-      expect.objectContaining({ event: 'APPROVE', commit_id: 'sha-456' }),
+      expect.objectContaining({ event: 'APPROVE', commit_id: 'sha-456', body: expect.stringMatching(/\n\u2705 \*\*Approved\.\*\* All blocking threads are resolved\.$/) }),
     );
   });
 
@@ -390,7 +390,7 @@ describe('checkAndAutoApprove', () => {
       owner: 'owner',
       repo: 'repo',
       issue_number: 1,
-      body: expect.stringContaining('auto-approve is blocked'),
+      body: expect.stringContaining('repository settings block the approval'),
     }));
     expect(dismissPreviousReviews).not.toHaveBeenCalled();
   });
@@ -1082,7 +1082,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
     expect(result).toBe(true);
     expect(createCommentMock).toHaveBeenCalledWith(expect.objectContaining({
       issue_number: 1,
-      body: expect.stringContaining('auto-approve is blocked'),
+      body: expect.stringContaining('repository settings block the approval'),
     }));
     // Crucially, no `COMMENT` review was posted (which would trip the head-SHA
     // dedupe gate on subsequent force-review ticks, see [#840]).

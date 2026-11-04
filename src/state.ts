@@ -220,7 +220,7 @@ async function checkAndAutoApprove(
   // A visible body so the API does not render this review as `body_length: 0`.
   // An empty review body trips the head-SHA dedupe gate (`hasBotReviewOnCommit`)
   // for any subsequent force-review tick on the same commit ([#840]).
-  const body = `${BOT_MARKER}\n**Manki** — Auto-approved (all findings resolved).`;
+  const body = `${BOT_MARKER}\n✅ **Approved.** All blocking threads are resolved.`;
 
   try {
     try {
@@ -246,7 +246,7 @@ async function checkAndAutoApprove(
         owner,
         repo,
         issue_number: prNumber,
-        body: `${BOT_MARKER}\n**Manki** — All findings are resolved but auto-approve is blocked by repository settings. Enable "Allow GitHub Actions to create and approve pull requests" in repo settings, or approve manually.`,
+        body: `${BOT_MARKER}\nAll blocking threads are resolved, but repository settings block the approval. Enable "Allow GitHub Actions to create and approve pull requests" in the repo settings, or approve by hand.`,
       });
       core.info('Posted auto-approve permission notice as issue comment');
     }
