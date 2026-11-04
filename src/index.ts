@@ -16,7 +16,7 @@ import { loadMemory, applyEscalations, updatePattern, RepoMemory } from './memor
 import { collectResolvedThreadIds, fetchRecapState, fingerprintFinding, PreviousFinding } from './recap';
 import { buildAgentPool } from './agents';
 import { buildPriorRoundLookup, collectPriorRoundAgents, runReview, determineVerdict, selectTeam } from './review';
-import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DashboardData, FullReviewOptions, MemoryLoadStatus, OWN_PROPOSAL_TAG, PrContext, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReclassifiedPrior, ReviewMetadata, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundRecap, RoundTrigger, RoundUsage, RoundUsageStage, ThreadResolutionOverrides, roundContextToFlatAliases } from './types';
+import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DashboardData, FullReviewOptions, MemoryLoadStatus, OWN_PROPOSAL_TAG, PrContext, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReclassifiedPrior, ReviewMetadata, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundRecap, RoundTrigger, RoundUsage, RoundUsageStage, ReviewConfig, ThreadResolutionOverrides, roundContextToFlatAliases } from './types';
 import type { LLMUsage } from './providers';
 import {
   fetchPRDiff,
@@ -44,6 +44,7 @@ import {
   markProgressCommentFailed,
   postAppWarningIfNeeded,
   checkConcurrentSubmissionLock,
+  dynamicFence,
 } from './github';
 import { checkAndAutoApprove, resolveStaleThreads } from './state';
 
@@ -167,7 +168,7 @@ async function run(): Promise<void> {
   // Event filtering — exit immediately for irrelevant events.
   // Tested via integration (live PR reviews) since it depends on GitHub Actions context.
   if (eventName === 'pull_request') {
-    if (action !== 'opened' && action !== 'synchronize') {
+    if (action !== 'opened' && action !== 'synchronize' && action !== 'ready_for_review') {
       core.info(`Ignoring pull_request action: ${action}`);
       return;
     }
@@ -286,6 +287,21 @@ async function postReviewSkippedComment(
     await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
   } catch (error) {
     core.warning(`Failed to post review-skipped comment: ${error instanceof Error ? error.message : error}`);
+  }
+}
+
+/** Fails the run with the config error and posts it on the PR, since no review will follow. */
+async function reportConfigError(
+  octokit: Octokit, owner: string, repo: string, prNumber: number, error: unknown,
+): Promise<void> {
+  const msg = failureReason(error);
+  core.setFailed(msg);
+  const fence = dynamicFence(msg);
+  const body = `${PROGRESS_MARKER}\n**Manki** could not load its config, so no review ran. Fix the file and push again.\n\n${fence}\n${msg}\n${fence}`;
+  try {
+    await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+  } catch (commentError) {
+    core.warning(`Failed to post config error comment: ${commentError instanceof Error ? commentError.message : commentError}`);
   }
 }
 
@@ -501,7 +517,13 @@ async function runFullReview(
     const effectiveConfigPath = (resolvedConfigPath === cwd || resolvedConfigPath.startsWith(cwd + path.sep))
       ? resolvedConfigPath
       : path.join(cwd, '.manki.yml');
-    const rawConfig = loadConfigFromFile(effectiveConfigPath);
+    let rawConfig: ReviewConfig;
+    try {
+      rawConfig = loadConfigFromFile(effectiveConfigPath);
+    } catch (error) {
+      await reportConfigError(octokit, owner, repo, prNumber, error);
+      return;
+    }
     const isFork = headRepoFullName !== undefined && headRepoFullName !== `${owner}/${repo}`;
     const config = isFork ? sanitizeForkConfig(rawConfig) : rawConfig;
 
@@ -1445,13 +1467,9 @@ async function handleReviewStateCheck(): Promise<void> {
   const prNumber = pr.number;
   const configPathInput = core.getInput('config_path');
 
-  let configContent: string | null = null;
-  if (configPathInput) {
-    configContent = await fetchConfigFile(octokit, owner, repo, pr.base.ref, configPathInput);
-  } else {
-    configContent = await fetchConfigFile(octokit, owner, repo, pr.base.ref, '.manki.yml');
-  }
-  const config = loadConfig(configContent ?? undefined);
+  const configPath = configPathInput || '.manki.yml';
+  const configContent = await fetchConfigFile(octokit, owner, repo, pr.base.ref, configPath);
+  const config = loadConfig(configContent ?? undefined, configPath);
 
   if (!config.auto_approve) {
     core.info('auto_approve is disabled — skipping state check');
@@ -1485,13 +1503,9 @@ async function handleInteraction(): Promise<void> {
   const { data: pr } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
   baseRef = pr.base.ref;
 
-  let configContent: string | null = null;
-  if (configPathInput) {
-    configContent = await fetchConfigFile(octokit, owner, repo, baseRef, configPathInput);
-  } else {
-    configContent = await fetchConfigFile(octokit, owner, repo, baseRef, '.manki.yml');
-  }
-  const config = loadConfig(configContent ?? undefined);
+  const configPath = configPathInput || '.manki.yml';
+  const configContent = await fetchConfigFile(octokit, owner, repo, baseRef, configPath);
+  const config = loadConfig(configContent ?? undefined, configPath);
 
   const built = buildLLMClientFromInputs({ inputs: providerInputs, model: resolveModel(config, 'judge') });
   if (!built) return;
@@ -1517,13 +1531,9 @@ async function handleIssueInteraction(): Promise<void> {
   const octokit = await getOctokit();
   const configPathInput = core.getInput('config_path');
 
-  let configContent: string | null = null;
-  if (configPathInput) {
-    configContent = await fetchConfigFile(octokit, owner, repo, 'main', configPathInput);
-  } else {
-    configContent = await fetchConfigFile(octokit, owner, repo, 'main', '.manki.yml');
-  }
-  const config = loadConfig(configContent ?? undefined);
+  const configPath = configPathInput || '.manki.yml';
+  const configContent = await fetchConfigFile(octokit, owner, repo, 'main', configPath);
+  const config = loadConfig(configContent ?? undefined, configPath);
 
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;
   const memoryToken = config.memory?.enabled ? getMemoryToken(octokitCache.resolvedToken) ?? undefined : undefined;
@@ -1565,13 +1575,9 @@ async function handleReviewCommentInteraction(): Promise<void> {
   const { owner, repo } = github.context.repo;
 
   const baseRef = payload.pull_request?.base?.ref ?? 'main';
-  let configContent: string | null = null;
-  if (configPathInput) {
-    configContent = await fetchConfigFile(octokit, owner, repo, baseRef, configPathInput);
-  } else {
-    configContent = await fetchConfigFile(octokit, owner, repo, baseRef, '.manki.yml');
-  }
-  const config = loadConfig(configContent ?? undefined);
+  const configPath = configPathInput || '.manki.yml';
+  const configContent = await fetchConfigFile(octokit, owner, repo, baseRef, configPath);
+  const config = loadConfig(configContent ?? undefined, configPath);
 
   const built = buildLLMClientFromInputs({ inputs: providerInputs, model: resolveModel(config, 'judge') });
   if (!built) return;

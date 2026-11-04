@@ -358,27 +358,34 @@ function deepMerge(defaults: ReviewConfig, overrides: Record<string, unknown>): 
   return result;
 }
 
-export function loadConfigFromContent(content: string): ReviewConfig {
+/**
+ * Parses and validates a config file's content. Throws on invalid YAML or an invalid schema
+ * rather than falling back to defaults, because the defaults include `auto_approve: true`.
+ */
+export function loadConfigFromContent(content: string, source = '.manki.yml'): ReviewConfig {
   if (!content.trim()) {
     core.info('Empty config, using defaults');
     return { ...DEFAULT_CONFIG, reviewers: [...DEFAULT_CONFIG.reviewers], memory: { ...DEFAULT_CONFIG.memory } };
   }
 
-  let parsed: Record<string, unknown>;
+  let parsed: unknown;
   try {
-    parsed = parseYaml(content) as Record<string, unknown>;
+    parsed = parseYaml(content);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    core.warning(`Failed to parse config YAML: ${msg}. Using defaults.`);
+    throw new Error(`Invalid YAML in ${source}: ${msg}`);
+  }
+
+  if (parsed === null || parsed === undefined) {
+    core.info('Config has no settings, using defaults');
     return { ...DEFAULT_CONFIG, reviewers: [...DEFAULT_CONFIG.reviewers], memory: { ...DEFAULT_CONFIG.memory } };
   }
 
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    core.warning('Config YAML root must be an object. Using defaults.');
-    return { ...DEFAULT_CONFIG, reviewers: [...DEFAULT_CONFIG.reviewers], memory: { ...DEFAULT_CONFIG.memory } };
+  if (typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`Invalid config in ${source}: the top level must be a mapping of keys to values`);
   }
 
-  const validation = validateConfig(parsed);
+  const validation = validateConfig(parsed as Record<string, unknown>);
 
   for (const warning of validation.warnings) {
     core.warning(warning);
@@ -388,13 +395,13 @@ export function loadConfigFromContent(content: string): ReviewConfig {
     for (const error of validation.errors) {
       core.error(error);
     }
-    throw new Error(`Invalid config: ${validation.errors.join('; ')}`);
+    throw new Error(`Invalid config in ${source}: ${validation.errors.join('; ')}`);
   }
 
-  const merged = deepMerge(DEFAULT_CONFIG, parsed);
+  const merged = deepMerge(DEFAULT_CONFIG, parsed as Record<string, unknown>);
 
   if (merged.review_thresholds.small >= merged.review_thresholds.medium) {
-    throw new Error('Invalid config: `review_thresholds.small` must be less than `review_thresholds.medium`');
+    throw new Error(`Invalid config in ${source}: \`review_thresholds.small\` must be less than \`review_thresholds.medium\``);
   }
 
   return merged;
@@ -415,7 +422,7 @@ export function loadConfigFromFile(filePath: string): ReviewConfig {
     return { ...DEFAULT_CONFIG, reviewers: [...DEFAULT_CONFIG.reviewers], memory: { ...DEFAULT_CONFIG.memory } };
   }
 
-  return loadConfigFromContent(content);
+  return loadConfigFromContent(content, filePath);
 }
 
 export function resolveModel(config: ReviewConfig, stage: 'planner' | 'reviewer' | 'judge' | 'dedup'): string {
@@ -436,13 +443,13 @@ export function resolveAgentModel(
   return resolveModel(config, stage);
 }
 
-export function loadConfig(yamlContent: string | undefined): ReviewConfig {
+export function loadConfig(yamlContent: string | undefined, source?: string): ReviewConfig {
   if (!yamlContent) {
     core.info('No config content provided, using defaults');
     return { ...DEFAULT_CONFIG, reviewers: [...DEFAULT_CONFIG.reviewers], memory: { ...DEFAULT_CONFIG.memory } };
   }
 
-  return loadConfigFromContent(yamlContent);
+  return loadConfigFromContent(yamlContent, source);
 }
 
 export function sanitizeForkConfig(config: ReviewConfig): ReviewConfig {

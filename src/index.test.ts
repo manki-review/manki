@@ -220,6 +220,7 @@ jest.mock('./github', () => {
   FORCE_REVIEW_MARKER: '<!-- manki-force-review -->',
   FORCE_CAP_MARKER: '<!-- manki-force-cap -->',
   APP_WARNING_MARKER: '<!-- manki-app-warning -->',
+  dynamicFence: jest.requireActual('./github').dynamicFence,
   };
 });
 
@@ -361,33 +362,11 @@ describe('run', () => {
       );
     });
 
-    it('processes pull_request opened events', async () => {
+    it.each(['opened', 'synchronize', 'ready_for_review'])('processes pull_request %s events', async (action) => {
       setContext({
         eventName: 'pull_request',
         payload: {
-          action: 'opened',
-          sender: { login: 'user' },
-          pull_request: {
-            number: 1,
-            head: { sha: 'abc123' },
-            base: { ref: 'main' },
-            title: 'Test PR',
-            body: 'Test body',
-            draft: false,
-          },
-        },
-      });
-
-      await run();
-
-      expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
-    });
-
-    it('processes pull_request synchronize events', async () => {
-      setContext({
-        eventName: 'pull_request',
-        payload: {
-          action: 'synchronize',
+          action,
           sender: { login: 'user' },
           pull_request: {
             number: 1,
@@ -1564,6 +1543,29 @@ describe('main', () => {
     await main();
 
     expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(expect.stringContaining('Something broke'));
+  });
+
+  it('fails the run when the config fetched for a non-review event is invalid', async () => {
+    jest.mocked(core.getInput).mockImplementation((name: string) => (name === 'config_path' ? 'ci/manki.yml' : ''));
+    jest.mocked(ghUtils.fetchConfigFile).mockResolvedValueOnce('auto_approve: [');
+    jest.mocked(configModule.loadConfig).mockImplementationOnce(() => {
+      throw new Error('Invalid YAML in ci/manki.yml: bad');
+    });
+    setContext({
+      eventName: 'pull_request_review',
+      payload: {
+        action: 'submitted',
+        sender: { login: 'user' },
+        pull_request: { number: 1, head: { sha: 'abc' }, base: { ref: 'main' } },
+      },
+    });
+
+    await main();
+
+    expect(jest.mocked(ghUtils.fetchConfigFile)).toHaveBeenCalledWith(mockOctokitInstance, 'test-owner', 'test-repo', 'main', 'ci/manki.yml');
+    expect(jest.mocked(configModule.loadConfig)).toHaveBeenCalledWith('auto_approve: [', 'ci/manki.yml');
+    expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(expect.stringContaining('Invalid YAML in ci/manki.yml'));
+    expect(jest.mocked(stateModule.checkAndAutoApprove)).not.toHaveBeenCalled();
   });
 
   it('does not call process.exit so exit code propagates to post step', async () => {
@@ -6758,14 +6760,18 @@ describe('runFullReview concurrent-submission lock', () => {
     expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalledTimes(2);
   });
 
-  it('does not propagate uncaught when local config read throws — catch path runs instead', async () => {
+  it('fails the run and posts the error on the PR when the config cannot be loaded', async () => {
     jest.mocked(configModule.loadConfigFromFile).mockImplementationOnce(() => {
-      throw new Error('disk read failed');
+      throw new Error('Invalid YAML in /repo/.manki.yml: Flow sequence in block collection must be sufficiently indented');
     });
 
     await expect(callRunFullReview()).resolves.toBeUndefined();
 
-    expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith('Review failed: disk read failed');
+    expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(expect.stringContaining('Invalid YAML in /repo/.manki.yml'));
+    expect(mockOctokitInstance.rest.issues.createComment).toHaveBeenCalledWith(expect.objectContaining({
+      issue_number: 42,
+      body: expect.stringMatching(/no review ran[\s\S]*```\nInvalid YAML in \/repo\/\.manki\.yml: Flow sequence/),
+    }));
     expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
     expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
   });

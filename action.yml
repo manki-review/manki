@@ -22,8 +22,9 @@ inputs:
     description: 'Google Generative AI API key (alternative to Gemini OAuth token)'
     required: false
   github_token:
-    description: 'GitHub token for posting reviews and comments (not required when using GitHub App auth)'
+    description: 'GitHub token for posting reviews and comments. Defaults to the workflow token. Used when the Manki GitHub App is not installed, and as the fallback when its token cannot be fetched.'
     required: false
+    default: '${{ github.token }}'
   config_path:
     description: 'Path to .manki.yml config file'
     required: false
