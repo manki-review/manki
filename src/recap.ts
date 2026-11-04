@@ -394,8 +394,10 @@ function findPriorThreadId(fp: FindingFingerprint, threads: PreviousFinding[]): 
   for (const t of threads) {
     if (t.file !== fp.file || t.markerSlug !== fp.slug) continue;
     const line = t.originalLine ?? t.line;
-    if (!line) continue;
-    const distance = line < fp.lineStart ? fp.lineStart - line : Math.max(0, line - fp.lineEnd);
+    // A file-level thread has no line, so it matches on file and slug alone, behind any line thread.
+    const distance = !line
+      ? PRIOR_THREAD_LINE_TOLERANCE
+      : line < fp.lineStart ? fp.lineStart - line : Math.max(0, line - fp.lineEnd);
     if (distance > PRIOR_THREAD_LINE_TOLERANCE) continue;
     if (!best || distance < best.distance) best = { threadId: t.threadId!, distance };
   }

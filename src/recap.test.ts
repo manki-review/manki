@@ -1161,9 +1161,10 @@ describe('fetchRecapState', () => {
         prior('src/foo.ts', 10, 'Old-issue', 'blocker'),
         prior('src/foo.ts', 30, 'Other-issue'),
         prior('src/body.ts', 5, 'Old-issue', 'blocker'),
+        prior('src/bar.ts', 77, 'File-issue', 'blocker'),
       ];
       const ctx = makeRoundContext(1, {
-        findings: { count: 3, severityCounts: { blocker: 2, warning: 1, suggestion: 0, nitpick: 0 }, entries },
+        findings: { count: 4, severityCounts: { blocker: 3, warning: 1, suggestion: 0, nitpick: 0 }, entries },
       });
       const thread = (id: string, isResolved: boolean, slug: string, originalLine: number) => makeThread({
         id,
@@ -1176,24 +1177,32 @@ describe('fetchRecapState', () => {
         thread('T_FAR', false, 'Old-issue', 40),
         thread('T_RESOLVED', true, 'Old-issue', 12),
         thread('T_OTHER', false, 'Other-issue', 60),
+        makeThread({
+          id: 'T_FILE',
+          isResolved: true,
+          path: 'src/bar.ts',
+          line: null,
+          originalLine: null,
+          comments: { nodes: [{ body: '**Blocker**: x\n\n<!-- manki:blocker:File-issue -->', author: { login: BOT_LOGIN } }] },
+        }),
       ], [
         { id: 100, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
       ]);
 
       const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
       const attached = state.priorRounds[0].findings.entries;
-      expect(attached.map(e => e.threadId)).toEqual(['T_RESOLVED', undefined, undefined]);
+      expect(attached.map(e => e.threadId)).toEqual(['T_RESOLVED', undefined, undefined, 'T_FILE']);
 
-      // The resolved thread retires its blocker. The warning too far from its
+      // The resolved threads, line or file-level, retire their blockers. The warning too far from its
       // thread and the body-only blocker on a file the PR no longer changes
       // block nothing either, though thread `T_OTHER` is still open.
       const openThreads = state.previousFindings
         .filter(f => f.status === 'open')
         .map(f => ({ threadId: f.threadId!, title: f.title, file: f.file, line: f.line, severity: f.severity }));
-      const { outcome } = determineOutcome([], attached, openThreads, collectResolvedThreadIds(state.previousFindings), undefined, undefined, new Set(['src/foo.ts']));
+      const { outcome } = determineOutcome([], attached, openThreads, collectResolvedThreadIds(state.previousFindings), undefined, undefined, new Set(['src/foo.ts', 'src/bar.ts']));
       expect(outcome).toBe('READY');
       const unattached = attached.map(({ threadId: _threadId, ...rest }) => rest);
-      expect(determineOutcome([], unattached, openThreads, collectResolvedThreadIds(state.previousFindings), undefined, undefined, new Set(['src/foo.ts'])).outcome).toBe('ADDRESS_FIRST');
+      expect(determineOutcome([], unattached, openThreads, collectResolvedThreadIds(state.previousFindings), undefined, undefined, new Set(['src/foo.ts', 'src/bar.ts'])).outcome).toBe('ADDRESS_FIRST');
     });
 
     it('round-trips suggestedFix containing a literal \\u0060 escape sequence without parse error', async () => {
