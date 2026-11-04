@@ -760,8 +760,6 @@ async function runFullReview(
       return;
     }
 
-    const fullContext = [repoContext, recap.recapContext].filter(Boolean).join('\n\n');
-
     const isFollowUp = recap.previousFindings.length > 0;
     const baseOpenThreads = recap.previousFindings
       .filter((f): f is PreviousFinding & { threadId: string } =>
@@ -876,7 +874,7 @@ async function runFullReview(
         dedup: dedupClient,
         reviewerForAgent: (agentName: string) =>
           perAgentClients.get(agentName) ?? reviewerClient,
-      }, config, diff, rawDiff, fullContext,
+      }, config, diff, rawDiff, repoContext,
       memory, fileContents, prContext, linkedIssues,
       (progress) => {
         if (progress.phase === 'planning') {

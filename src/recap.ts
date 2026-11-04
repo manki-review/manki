@@ -173,7 +173,6 @@ function inPrSuppressionReasonFor(
 
 interface RecapState {
   previousFindings: PreviousFinding[];
-  recapContext: string;
   priorRounds: RoundContext[];
   /** Three-way state of the open-thread fetch. Optional so legacy callers and test mocks omitting the field still typecheck; treated as `'fetched'` downstream. */
   openThreadsState?: OpenThreadsState;
@@ -341,10 +340,7 @@ async function fetchRecapState(
     }));
 
   // Mirror the `prAuthorLogin` gate from inPrSuppressionReasonFor: only the
-  // PR author's "agree" replies promote a thread to Resolved. Without this,
-  // any third-party commenter on a public repo could move a finding out of
-  // 'Still Open' in the LLM context by replying "Fixed!", even though
-  // applyInPrSuppression would correctly refuse to suppress it.
+  // PR author's "agree" reply counts a replied thread as resolved.
   const resolved = previousFindings.filter(
     f => f.status === 'resolved' ||
     (
@@ -354,32 +350,7 @@ async function fetchRecapState(
       classifyAuthorReply(f.authorReplyText) === 'agree'
     ),
   );
-  // open-status findings (no human reply yet) stay in 'Still Open'. Only
-  // replied+agree threads are promoted to Resolved above; applyInPrSuppression
-  // handles post-LLM suppression for resolved-thread and agreed replied-thread fingerprints.
   const open = previousFindings.filter(f => f.status === 'open');
-
-  let recapContext = '';
-  if (previousFindings.length > 0) {
-    const parts: string[] = ['## Previous Review State\n'];
-
-    if (resolved.length > 0) {
-      parts.push(`### Resolved (${resolved.length} findings -- do NOT re-flag these):`);
-      for (const f of resolved) {
-        parts.push(`- "${f.title}" at ${f.file}:${f.line}`);
-      }
-    }
-
-    if (open.length > 0) {
-      parts.push(`\n### Still Open (${open.length} findings -- context only, may re-flag if still present):`);
-      for (const f of open) {
-        parts.push(`- [${f.severity}] "${f.title}" at ${f.file}:${f.line}`);
-      }
-    }
-
-    parts.push('\nFocus on genuinely new issues in the code changes. Do not re-flag resolved findings.');
-    recapContext = parts.join('\n');
-  }
 
   core.info(`Recap: ${resolved.length} resolved, ${open.length} open, ${previousFindings.length} total previous findings`);
 
@@ -388,7 +359,6 @@ async function fetchRecapState(
 
   return {
     previousFindings,
-    recapContext,
     priorRounds: enrichedPriorRounds,
     openThreadsState,
     reclassifiedPriorCount,

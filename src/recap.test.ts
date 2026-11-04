@@ -576,9 +576,6 @@ describe('fetchRecapState', () => {
     expect(state.previousFindings).toHaveLength(2);
     expect(state.previousFindings[0].status).toBe('resolved');
     expect(state.previousFindings[1].status).toBe('open');
-    expect(state.recapContext).toContain('Previous Review State');
-    expect(state.recapContext).toContain('Resolved (1 findings');
-    expect(state.recapContext).toContain('Still Open (1 findings');
     expect(state.openThreadsState).toBe('fetched');
   });
 
@@ -604,7 +601,6 @@ describe('fetchRecapState', () => {
 
     const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
     expect(state.previousFindings).toHaveLength(0);
-    expect(state.recapContext).toBe('');
   });
 
   it('detects human replies on bot threads', async () => {
@@ -644,7 +640,6 @@ describe('fetchRecapState', () => {
 
     const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
     expect(state.previousFindings).toHaveLength(0);
-    expect(state.recapContext).toBe('');
     expect(state.openThreadsState).toBe('fetch_failed');
   });
 
@@ -884,158 +879,6 @@ describe('fetchRecapState', () => {
 
     const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
     expect(state.previousFindings[0].lineStart).toBe(42);
-  });
-
-  it('builds recap context with only resolved findings', async () => {
-    const octokit = mockOctokit([
-      makeThread({ id: 't1', isResolved: true }),
-    ]);
-
-    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
-    expect(state.recapContext).toContain('Resolved (1 findings');
-    expect(state.recapContext).not.toContain('Still Open');
-  });
-
-  it('builds recap context with only open findings', async () => {
-    const octokit = mockOctokit([
-      makeThread({ id: 't1', isResolved: false }),
-    ]);
-
-    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
-    expect(state.recapContext).not.toContain('Resolved');
-    expect(state.recapContext).toContain('Still Open (1 findings');
-  });
-
-  it('includes replied+agree findings from the PR author in the resolved section of recapContext', async () => {
-    const octokit = mockOctokit([
-      makeThread({
-        id: 't1',
-        isResolved: false,
-        comments: {
-          nodes: [
-            {
-              body: '<!-- manki:suggestion:unused-var --> 💡 **Suggestion**: Unused variable\n\nDesc.',
-              author: { login: 'github-actions[bot]' },
-            },
-            { body: 'Fixed, done.', author: { login: 'developer' } },
-          ],
-        },
-      }),
-    ]);
-
-    const state = await fetchRecapState(octokit, 'owner', 'repo', 1, 'developer');
-    expect(state.recapContext).toContain('### Resolved');
-    expect(state.recapContext).toContain('Unused variable');
-    expect(state.recapContext).not.toContain('### Still Open');
-  });
-
-  // Mirrors the prAuthorLogin gate in inPrSuppressionReasonFor: a third-party
-  // commenter replying "Fixed!" must not be able to promote a finding to the
-  // Resolved section of recapContext. Without this gate, agents would stop
-  // re-flagging the issue even though applyInPrSuppression would (correctly)
-  // refuse to suppress it. replied threads land in neither section by design,
-  // matching the existing replied+disagree behaviour.
-  it('omits replied+agree findings from a third-party commenter from the Resolved section of recapContext', async () => {
-    const octokit = mockOctokit([
-      makeThread({
-        id: 't1',
-        isResolved: false,
-        comments: {
-          nodes: [
-            {
-              body: '<!-- manki:suggestion:unused-var --> 💡 **Suggestion**: Unused variable\n\nDesc.',
-              author: { login: 'github-actions[bot]' },
-            },
-            { body: 'Fixed!', author: { login: 'random-user' } },
-          ],
-        },
-      }),
-    ]);
-
-    const state = await fetchRecapState(octokit, 'owner', 'repo', 1, 'pr-author');
-    expect(state.previousFindings[0].status).toBe('replied');
-    expect(state.recapContext).not.toContain('### Resolved');
-    expect(state.recapContext).not.toContain('### Still Open');
-  });
-
-  // When prAuthorLogin is undefined (e.g. PR author cannot be determined),
-  // replied+agree findings are not promoted to Resolved. This matches the
-  // conservative posture of inPrSuppressionReasonFor.
-  it('omits replied+agree findings from the Resolved section when prAuthorLogin is undefined', async () => {
-    const octokit = mockOctokit([
-      makeThread({
-        id: 't1',
-        isResolved: false,
-        comments: {
-          nodes: [
-            {
-              body: '<!-- manki:suggestion:unused-var --> 💡 **Suggestion**: Unused variable\n\nDesc.',
-              author: { login: 'github-actions[bot]' },
-            },
-            { body: 'Fixed, done.', author: { login: 'developer' } },
-          ],
-        },
-      }),
-    ]);
-
-    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
-    expect(state.previousFindings[0].status).toBe('replied');
-    expect(state.recapContext).not.toContain('### Resolved');
-    expect(state.recapContext).not.toContain('### Still Open');
-  });
-
-  // Locks in the invariant that open-status findings (no human reply yet) stay in
-  // 'Still Open' and are not promoted to Resolved. Only replied+agree threads are
-  // promoted; `applyInPrSuppression` handles any post-LLM suppression separately.
-  it('keeps open findings (no human reply) in Still Open section of recapContext (not Resolved)', async () => {
-    const octokit = mockOctokit([
-      makeThread({
-        id: 't1',
-        isResolved: false,
-        path: 'src/foo.ts',
-        line: 10,
-        comments: {
-          nodes: [
-            {
-              body: '<!-- manki:suggestion:unused-var --> 💡 **Suggestion**: Unused variable\n\nDesc.',
-              author: { login: 'github-actions[bot]' },
-            },
-          ],
-        },
-      }),
-    ]);
-
-    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
-    expect(state.previousFindings[0].status).toBe('open');
-    expect(state.recapContext).toContain('### Still Open');
-    expect(state.recapContext).toContain('Unused variable');
-    expect(state.recapContext).not.toContain('### Resolved');
-  });
-
-  // Locks in the invariant that replied+disagree (and replied+partial) findings
-  // appear in neither the Resolved nor the Still Open section of recapContext.
-  // They remain pending human resolution; surfacing them again would re-bias agents.
-  it('omits replied+disagree findings from both Resolved and Still Open sections of recapContext', async () => {
-    const octokit = mockOctokit([
-      makeThread({
-        id: 't1',
-        isResolved: false,
-        comments: {
-          nodes: [
-            {
-              body: '<!-- manki:suggestion:unused-var --> 💡 **Suggestion**: Unused variable\n\nDesc.',
-              author: { login: 'github-actions[bot]' },
-            },
-            { body: 'I disagree, keeping as-is.', author: { login: 'developer' } },
-          ],
-        },
-      }),
-    ]);
-
-    const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
-    expect(state.previousFindings[0].status).toBe('replied');
-    expect(state.recapContext).not.toContain('### Resolved');
-    expect(state.recapContext).not.toContain('### Still Open');
   });
 
   it('captures authorReplyLogin from the latest non-bot reply', async () => {

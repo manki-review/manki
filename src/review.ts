@@ -7,7 +7,7 @@ import { runJudgeAgent, JudgeInput, computeProvenanceMap } from './judge';
 import { RepoMemory, applyEscalations, applySuppressions, buildMemoryContext } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
 import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, llmDeduplicateFindings, PreviousFinding } from './recap';
-import { ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, TeamRoster, PrContext, PlannerResult, PlannerRoundHint, PriorRoundEffortDowngrade, RoundContext, RoundDedupDuplicateMatch, RoundPlannerSource, SpecialistOutcome, EffortLevel, AgentPick, ProvenanceEntry, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, TeamRoster, PrContext, PlannerResult, PlannerRoundHint, PriorRoundEffortDowngrade, RoundContext, RoundDedupDuplicateMatch, RoundPlannerSource, SpecialistOutcome, EffortLevel, AgentPick, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { rebuildRawDiff } from './diff';
 import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
@@ -383,58 +383,16 @@ Specialists whose recent findings were entirely dismissed warrant lower priority
 `;
 }
 
-/**
- * Single-shot context for the current planner invocation. Distinct from
- * `PlannerRoundHint` (which is per-prior-round). Only rendered when `round > 1`
- * so round 1 prompts stay identical to the pre-follow-up baseline.
- */
-export interface PlannerFollowUpContext {
-  /** 1-indexed round number for the current review. */
-  round: number;
-  /** Line count of the inter-round delta diff (0 when the delta is empty). */
-  deltaLines: number;
-  /**
-   * Agent names from prior rounds that will be unioned with the planner's
-   * picks before the team runs. Empty array is treated as no pinned team.
-   */
-  pinnedTeam: string[];
-}
-
-export function countChangedLines(diff: string): number {
-  if (!diff) return 0;
-  return diff.split('\n').filter(line => {
-    if (line.startsWith('+++') || line.startsWith('---')) return false;
-    return line.startsWith('+') || line.startsWith('-');
-  }).length;
-}
-
-function renderFollowUpContext(ctx: PlannerFollowUpContext): string {
-  const teamList = ctx.pinnedTeam.length > 0
-    ? ctx.pinnedTeam.map(n => `"${n}"`).join(', ')
-    : '(none)';
-  return `## Follow-Up Round Context
-
-This is round ${ctx.round}. The inter-round delta is ${ctx.deltaLines} lines. The pinned team from prior rounds is: ${teamList}.
-
-Your picks will be unioned with the pinned team before the review runs. Picking a subset of the pinned team keeps the team the same size. Picking names outside the pinned team grows the team. Default to the pinned team unless the delta introduces a concern outside its coverage, in which case add the missing specialist.
-
-`;
-}
-
 export function buildPlannerSystemPrompt(
   agents: Array<{ name: string; focus: string }>,
   hints?: PlannerRoundHint[],
-  followUpContext?: PlannerFollowUpContext,
 ): string {
   const agentList = agents.map(a => `  - "${a.name}" — ${a.focus}`).join('\n');
   const hintsBlock = hints && hints.length > 0 ? renderPlannerHints(hints) : '';
-  const followUpBlock = followUpContext && followUpContext.round > 1
-    ? renderFollowUpContext(followUpContext)
-    : '';
 
   return `You are a code review planning assistant. Analyze this PR and decide how to review it.
 
-${hintsBlock}${followUpBlock}Decide:
+${hintsBlock}Decide:
 1. teamSize: 1-7 reviewer agents.
    Default to 3. Use 2 when the change is small but non-trivial. Scale to 4-5 for broader changes. 7 is rare — reserve it for changes where missing a specialist would be dangerous. Diff size alone doesn't determine team size — a 50-line auth change needs more eyes than a 500-line rename.
    - 1: changes where a bug is unrealistic (docs, comments, renames)
@@ -547,7 +505,6 @@ export async function runPlanner(
   customReviewers?: ReviewerAgent[],
   priorRoundHints?: PlannerRoundHint[],
   outcome?: PlannerOutcomeSink,
-  followUpContext?: PlannerFollowUpContext,
 ): Promise<PlannerResult | null> {
   let timeoutId: ReturnType<typeof setTimeout>;
   const timeoutPromise = new Promise<never>((_, reject) => {
@@ -557,7 +514,7 @@ export async function runPlanner(
   try {
     const pool = buildAgentPool(customReviewers);
     const availableNames = new Set(pool.map(a => a.name));
-    const systemPrompt = buildPlannerSystemPrompt(pool, priorRoundHints, followUpContext);
+    const systemPrompt = buildPlannerSystemPrompt(pool, priorRoundHints);
 
     const userMessage = buildPlannerSummary(diff, prContext);
     const response = await Promise.race([
@@ -771,15 +728,7 @@ export async function runReview(
     const plannerStart = Date.now();
     const plannerWrap = wrapClientForUsage(clients.planner);
     const outcome: PlannerOutcomeSink = {};
-    const currentRound = (priorRounds?.length ?? 0) + 1;
-    const followUpContext: PlannerFollowUpContext | undefined = currentRound > 1
-      ? {
-          round: currentRound,
-          deltaLines: countChangedLines(interRoundDiff ?? ''),
-          pinnedTeam: priorRoundAgents,
-        }
-      : undefined;
-    plannerResult = await runPlanner(plannerWrap.client, diff, prContext, config.reviewers, priorRoundHints, outcome, followUpContext);
+    plannerResult = await runPlanner(plannerWrap.client, diff, prContext, config.reviewers, priorRoundHints, outcome);
     plannerUsage = plannerWrap.getTotals().usage;
     plannerDurationMs = Date.now() - plannerStart;
     if (plannerResult) {
@@ -858,7 +807,7 @@ export async function runReview(
         Array.from({ length: passes }, () => {
           const shuffledDiff = shuffleDiffFiles(diff);
           const shuffledRawDiff = rebuildRawDiff(shuffledDiff);
-          return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: agentEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap, interRoundDiff });
+          return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: agentEffort, language: plannerResult?.language, context: plannerResult?.context });
         })
       );
 
@@ -955,7 +904,7 @@ export async function runReview(
             const shuffledDiff = shuffleDiffFiles(diff);
             const shuffledRawDiff = rebuildRawDiff(shuffledDiff);
             const retryEffort = agentEffortMap.get(agent.name) ?? defaultReviewerEffort;
-            return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: retryEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap, interRoundDiff });
+            return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: retryEffort, language: plannerResult?.language, context: plannerResult?.context });
           })
         );
 
@@ -1025,7 +974,7 @@ export async function runReview(
     const agentPromises = team.agents.map(agent => {
       const startTime = Date.now();
       const agentEffort = agentEffortMap.get(agent.name) ?? defaultReviewerEffort;
-      return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: agentEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap, interRoundDiff })
+      return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: agentEffort, language: plannerResult?.language, context: plannerResult?.context })
         .then(agentResult => {
           completedCount++;
           agentResponseLengths.set(agent.name, agentResult.responseLength);
@@ -1110,7 +1059,7 @@ export async function runReview(
       const retryPromises = agentsToRetry.map(agent => {
         const startTime = Date.now();
         const retryEffort = agentEffortMap.get(agent.name) ?? defaultReviewerEffort;
-        return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: retryEffort, language: plannerResult?.language, context: plannerResult?.context, provenanceMap, interRoundDiff })
+        return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: retryEffort, language: plannerResult?.language, context: plannerResult?.context })
           .then(agentResult => ({ agent, agentResult, durationMs: Date.now() - startTime, error: null as unknown }))
           .catch(error => ({ agent, agentResult: null as AgentResult | null, durationMs: Date.now() - startTime, error: error as unknown }));
       });
@@ -1430,28 +1379,15 @@ export interface BuildReviewerUserMessageOptions {
   prContext?: PrContext;
   memoryContext?: string;
   linkedIssues?: LinkedIssue[];
-  provenanceMap?: ProvenanceEntry[];
-  // On follow-up rounds, when non-empty, this delta replaces the full PR diff
-  // in the `## Pull Request Diff` block so reviewers focus on what changed
-  // since the prior round. Empty or undefined falls through to the full PR
-  // diff (first-round and "no new commits" semantics).
-  interRoundDiff?: string;
 }
 
-export interface RunReviewerAgentOptions {
+interface RunReviewerAgentOptions {
   effort?: EffortLevel;
   language?: string;
   context?: string;
-  provenanceMap?: ProvenanceEntry[];
-  // On follow-up rounds, when non-empty, this delta replaces the full PR diff
-  // in the `## Pull Request Diff` block so reviewers focus on what changed
-  // since the prior round. The `## Changed Files` block still ships full-PR
-  // files so the surrounding code is visible. Empty or undefined falls through
-  // to the full PR diff (first-round and "no new commits" semantics).
-  interRoundDiff?: string;
 }
 
-export async function runReviewerAgent(
+async function runReviewerAgent(
   client: LLMClient,
   config: ReviewConfig,
   reviewer: ReviewerAgent,
@@ -1463,9 +1399,9 @@ export async function runReviewerAgent(
   linkedIssues?: LinkedIssue[],
   options: RunReviewerAgentOptions = {},
 ): Promise<AgentResult> {
-  const { effort, language, context, provenanceMap, interRoundDiff } = options;
+  const { effort, language, context } = options;
   const systemPrompt = buildReviewerSystemPrompt(reviewer, config, language, context, config.noise_level);
-  const userMessage = buildReviewerUserMessage(rawDiff, repoContext, { fileContents, prContext, memoryContext, linkedIssues, provenanceMap, interRoundDiff });
+  const userMessage = buildReviewerUserMessage(rawDiff, repoContext, { fileContents, prContext, memoryContext, linkedIssues });
 
   const sendOptions = effort ? { effort } : undefined;
   const response = await client.sendMessage(systemPrompt, userMessage, sendOptions);
@@ -1594,43 +1530,12 @@ Surface marginal suggestions: in addition to substantive findings, actively incl
   return prompt;
 }
 
-function commentPrefixForPath(path: string): string | null {
-  const ext = path.split('.').pop() ?? '';
-  if (['py', 'rb', 'sh', 'bash', 'zsh', 'pl', 'r'].includes(ext)) return '#';
-  if (['sql'].includes(ext)) return '--';
-  if (['html', 'xml', 'svg', 'css', 'scss', 'less'].includes(ext)) return null;
-  return '//';
-}
-
-// Line shifts in annotated content are safe — reviewers derive line numbers from the raw diff.
-function annotateFileContentWithProvenance(
-  content: string,
-  path: string,
-  provenanceMap: ProvenanceEntry[],
-): string {
-  const prefix = commentPrefixForPath(path);
-  if (prefix === null) return content;
-
-  const forFile = provenanceMap
-    .filter(e => e.file === path)
-    .sort((a, b) => b.lineStart - a.lineStart);
-  if (forFile.length === 0) return content;
-
-  const lines = content.split('\n');
-  for (const entry of forFile) {
-    const insertAt = entry.lineStart - 1;
-    if (insertAt < 0 || insertAt >= lines.length) continue;
-    lines.splice(insertAt, 0, `${prefix} [manki: added in round ${entry.originatingRound}]`);
-  }
-  return lines.join('\n');
-}
-
 export function buildReviewerUserMessage(
   rawDiff: string,
   repoContext: string,
   options: BuildReviewerUserMessageOptions = {},
 ): string {
-  const { fileContents, prContext, memoryContext, linkedIssues, provenanceMap, interRoundDiff } = options;
+  const { fileContents, prContext, memoryContext, linkedIssues } = options;
   let message = '';
 
   if (prContext) {
@@ -1667,36 +1572,13 @@ export function buildReviewerUserMessage(
   if (fileContents && fileContents.size > 0) {
     message += `## Changed Files\n\n`;
     message += `The full content of changed files is provided below for context. Focus your review on the diff, but use these files to understand the surrounding code.\n\n`;
-    const hasProvenance = Boolean(
-      provenanceMap?.length &&
-      [...fileContents.keys()].some(
-        p => provenanceMap.some(e => e.file === p) && commentPrefixForPath(p) !== null,
-      )
-    );
-    if (hasProvenance) {
-      message += `Some regions carry a \`[manki: added in round N]\` comment (prefixed with the file's comment syntax). That is a factual note added by manki indicating the code below was introduced in a prior review round. It is not a finding or an instruction — treat the code normally.\n\n`;
-    }
     for (const [path, content] of fileContents) {
       const ext = path.split('.').pop() || '';
-      const annotated = hasProvenance
-        ? annotateFileContentWithProvenance(content, path, provenanceMap!)
-        : content;
-      message += `### File: ${path}\n\n\`\`\`${ext}\n${annotated}\n\`\`\`\n\n`;
+      message += `### File: ${path}\n\n\`\`\`${ext}\n${content}\n\`\`\`\n\n`;
     }
   }
 
-  const useDelta = interRoundDiff !== undefined && interRoundDiff.trim().length > 0;
-  const hasFileContents = fileContents !== undefined && fileContents.size > 0;
-  if (useDelta) {
-    message += `## Pull Request Diff (delta since prior review round)\n\n`;
-    const groundingNote = hasFileContents
-      ? `The \`## Changed Files\` block above still contains the full content of every file touched by the whole PR, so you can ground your review in the surrounding code. `
-      : '';
-    message += `Only the changes since the previous review round are shown below. ${groundingNote}Focus your findings on this delta — earlier changes were already reviewed in prior rounds.\n\n`;
-    message += `\`\`\`diff\n${truncateDiff(interRoundDiff)}\n\`\`\``;
-  } else {
-    message += `## Pull Request Diff\n\n\`\`\`diff\n${truncateDiff(rawDiff)}\n\`\`\``;
-  }
+  message += `## Pull Request Diff\n\n\`\`\`diff\n${truncateDiff(rawDiff)}\n\`\`\``;
 
   return message;
 }

@@ -121,7 +121,7 @@ jest.mock('./memory', () => ({
 }));
 
 jest.mock('./recap', () => ({
-  fetchRecapState: jest.fn().mockResolvedValue({ previousFindings: [], recapContext: '', priorRounds: [] }),
+  fetchRecapState: jest.fn().mockResolvedValue({ previousFindings: [], priorRounds: [] }),
   deduplicateFindings: jest.fn().mockReturnValue({ unique: [], duplicates: [] }),
   llmDeduplicateFindings: jest.fn().mockResolvedValue({ unique: [], duplicates: [] }),
   classifyAuthorReply: jest.fn().mockReturnValue('none'),
@@ -249,11 +249,9 @@ import { LegacyHandoverRoundFixture, roundContextFromLegacy } from './test-utils
 function seedPriorRounds(
   rounds: LegacyHandoverRoundFixture[],
   previousFindings: RecapState['previousFindings'] = [],
-  recapContext = '',
 ): void {
   jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
     previousFindings,
-    recapContext,
     priorRounds: rounds.map(roundContextFromLegacy),
   });
 }
@@ -1741,7 +1739,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [], totalAdditions: 0, totalDeletions: 0 });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [], excluded: [] });
     jest.mocked(authModule.getMemoryToken).mockReturnValue(null);
-    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], recapContext: '', priorRounds: [] });
+    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: [] });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [], duplicates: [] });
     jest.mocked(stateModule.resolveStaleThreads).mockResolvedValue(0);
     jest.mocked(reviewModule.runReview).mockResolvedValue({
@@ -2740,7 +2738,6 @@ describe('runFullReview orchestration', () => {
     ];
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings,
-      recapContext: 'previous context',
       priorRounds: [],
     });
 
@@ -2830,7 +2827,6 @@ describe('runFullReview orchestration', () => {
     it('propagates `judge.openThreadsState`, `openThreadCount`, `resolvedThreadIdCount`, and `interRoundDiffState` to the round context', async () => {
       jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
         previousFindings: [],
-        recapContext: '',
         priorRounds: [],
         openThreadsState: 'empty',
       });
@@ -2901,7 +2897,6 @@ describe('runFullReview orchestration', () => {
         previousFindings: [
           { title: 'Old issue', file: 'src/app.ts', line: 1, severity: 'warning' as const, status: 'open' as const, threadId: 'T_open' },
         ],
-        recapContext: '',
         priorRounds: [],
         openThreadsState: 'fetched',
       });
@@ -3270,7 +3265,6 @@ describe('runFullReview orchestration', () => {
     it('populates `recap` with `priorRoundCount`, `reclassifiedPriorCount`, and `reclassifiedPriors`', async () => {
       jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
         previousFindings: [],
-        recapContext: '',
         priorRounds: [],
         reclassifiedPriorCount: 2,
         reclassifiedPriors: [
@@ -4302,7 +4296,6 @@ describe('runFullReview orchestration', () => {
     ];
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings,
-      recapContext: 'previous context',
       priorRounds: [],
     });
 
@@ -4344,7 +4337,6 @@ describe('runFullReview orchestration', () => {
       previousFindings: [
         { title: 'Old warning', file: 'src/app.ts', line: 5, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_OPEN' },
       ],
-      recapContext: '',
       priorRounds: [roundContextFromLegacy({
         round: 1, commitSha: 'prior-sha', timestamp: '2025-01-01T00:00:00Z',
         findings: [{ fingerprint: { file: 'src/app.ts', lineStart: 5, lineEnd: 5, slug: 'Old-warning' }, severity: 'warning', title: 'Old warning', authorReply: 'none', threadId: 'PRRT_OPEN' }],
@@ -4376,7 +4368,6 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings: [],
-      recapContext: '',
       priorRounds: [],
       openThreadsState: 'fetch_failed',
     });
@@ -4408,7 +4399,6 @@ describe('runFullReview orchestration', () => {
         description: 'Error enum lacks the rotation chainlock variant.',
         suggestedFix: 'Add `MissingRotationChainLockSigs(QuorumHash)` to the enum.',
       }],
-      recapContext: '',
       priorRounds: [],
     });
 
@@ -4439,7 +4429,6 @@ describe('runFullReview orchestration', () => {
       previousFindings: [
         { title: 'Bug A', file: threadFile, line: 10, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_code' },
       ],
-      recapContext: '',
       priorRounds: [],
     });
 
@@ -4472,7 +4461,6 @@ describe('runFullReview orchestration', () => {
     ];
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings,
-      recapContext: '',
       priorRounds: [],
     });
 
@@ -4503,7 +4491,6 @@ describe('runFullReview orchestration', () => {
     ];
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
       previousFindings,
-      recapContext: '',
       priorRounds: [],
     });
 
@@ -4574,7 +4561,6 @@ describe('runFullReview orchestration', () => {
       previousFindings: [
         { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_a' },
       ],
-      recapContext: 'previous context',
       priorRounds: [],
     });
 
@@ -4643,7 +4629,6 @@ describe('runFullReview orchestration', () => {
       previousFindings: [
         { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_a' },
       ],
-      recapContext: 'previous context',
       priorRounds: [],
     });
 
@@ -4698,7 +4683,7 @@ describe('runFullReview orchestration', () => {
     });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
-      previousFindings: [], recapContext: '', priorRounds: [],
+      previousFindings: [], priorRounds: [],
     });
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, exclude_paths: [], max_diff_lines: 10000,
@@ -4825,7 +4810,7 @@ describe('runFullReview orchestration', () => {
     // (not the empty-string assigned in the same-SHA branch).
     setupParallelFetchCase();
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
-      previousFindings: [], recapContext: '', priorRounds: [],
+      previousFindings: [], priorRounds: [],
     });
     jest.mocked(ghUtils.fetchLinkedIssues).mockResolvedValue([
       { number: 11, title: 'First-round linked issue', body: 'Issue body' },
@@ -4869,7 +4854,6 @@ describe('runFullReview orchestration', () => {
     seedPriorRounds(
       [{ round: 1, commitSha: baseArgs.commitSha, timestamp: '2025-01-01T00:00:00Z', findings: [] }],
       [{ title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'warning' as const, status: 'open' as const, threadId: 'PRRT_override' }],
-      'previous context',
     );
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
@@ -4923,7 +4907,6 @@ describe('runFullReview orchestration', () => {
     seedPriorRounds(
       [{ round: 1, commitSha: 'prior-sha', timestamp: '2025-01-01T00:00:00Z', findings: [] }],
       [{ title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_abc' }],
-      'previous context',
     );
     jest.mocked(ghUtils.fetchInterRoundDiff).mockResolvedValue(
       'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
@@ -4978,7 +4961,6 @@ describe('runFullReview orchestration', () => {
         { title: 'Bug B', file: 'src/app.ts', line: 2, severity: 'suggestion' as const, status: 'open' as const, threadId: 'PRRT_def' },
         { title: 'Bug C', file: 'src/app.ts', line: 3, severity: 'suggestion' as const, status: 'open' as const, threadId: 'PRRT_ghi' },
       ],
-      recapContext: 'previous context',
       priorRounds: [],
     });
 
@@ -5033,7 +5015,6 @@ describe('runFullReview orchestration', () => {
       previousFindings: [
         { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_known' },
       ],
-      recapContext: 'previous context',
       priorRounds: [],
     });
 
@@ -5079,7 +5060,6 @@ describe('runFullReview orchestration', () => {
         { title: 'Bug B', file: 'src/app.ts', line: 2, severity: 'suggestion' as const, status: 'replied' as const, threadId: 'PRRT_replied' },
         { title: 'Bug C', file: 'src/app.ts', line: 3, severity: 'nitpick' as const, status: 'resolved' as const, threadId: 'PRRT_resolved' },
       ],
-      recapContext: 'previous context',
       priorRounds: [],
     });
 
@@ -5109,7 +5089,6 @@ describe('runFullReview orchestration', () => {
       previousFindings: [
         { title: 'Bug A', file: 'src/app.ts', line: 1, severity: 'blocker' as const, status: 'open' as const, threadId: 'PRRT_fail' },
       ],
-      recapContext: 'previous context',
       priorRounds: [],
     });
 
@@ -5510,7 +5489,6 @@ describe('runFullReview orchestration', () => {
       jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(5));
       jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
         previousFindings: [],
-        recapContext: '',
         priorRounds: priorRounds(5).map(roundContextFromLegacy),
       });
 
@@ -5526,7 +5504,6 @@ describe('runFullReview orchestration', () => {
       jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(5));
       jest.mocked(recapModule.fetchRecapState).mockResolvedValue({
         previousFindings: [],
-        recapContext: '',
         priorRounds: priorRounds(4).map(roundContextFromLegacy),
       });
 
@@ -6489,7 +6466,7 @@ describe('runFullReview concurrent-submission lock', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
     jest.mocked(authModule.getMemoryToken).mockReturnValue(null);
-    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], recapContext: '', priorRounds: [] });
+    jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: [] });
     jest.mocked(stateModule.resolveStaleThreads).mockResolvedValue(0);
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'APPROVE', summary: '', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
