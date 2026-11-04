@@ -61,6 +61,13 @@ export function extractAnthropicCLIUsage(resultEvent: unknown): LLMUsage {
   };
 }
 
+// The 4.5 generation rejects adaptive thinking and needs `budget_tokens`. Every later model rejects `budget_tokens`.
+const BUDGET_THINKING_MODELS = ['claude-opus-4-5', 'claude-sonnet-4-5', 'claude-haiku-4-5'];
+
+function usesBudgetThinking(model: string): boolean {
+  return BUDGET_THINKING_MODELS.some((id) => model === id || model.startsWith(`${id}-`));
+}
+
 let cliInstallPromise: Promise<string> | null = null;
 
 export function resetCLIInstallPromise(): void {
@@ -366,7 +373,9 @@ export class AnthropicClient implements LLMClient {
   private async sendViaAPI(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
     if (!this.anthropic) throw new Error('Anthropic client not initialized');
 
-    const useThinking = options?.effort && options.effort !== 'low';
+    const effort = options?.effort;
+    const budgetThinking = usesBudgetThinking(this.model);
+    const useThinking = effort !== undefined && !(budgetThinking && effort === 'low');
     const budgetMap: Record<string, number> = { medium: 5000, high: 10000, max: 16000 };
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -377,12 +386,16 @@ export class AnthropicClient implements LLMClient {
       messages: [{ role: 'user', content: userMessage }],
     };
 
-    if (useThinking) {
-      params.thinking = { type: 'enabled', budget_tokens: budgetMap[options!.effort!] };
+    if (useThinking && budgetThinking) {
+      params.thinking = { type: 'enabled', budget_tokens: budgetMap[effort!] };
+    } else if (useThinking) {
+      params.thinking = { type: 'adaptive' };
+      params.output_config = { effort };
     }
 
     const startTime = Date.now();
-    const response = await this.anthropic.messages.create(params);
+    // The SDK refuses non-streaming requests whose `max_tokens` could run past its 10 minute timeout.
+    const response = await this.anthropic.messages.stream(params).finalMessage();
 
     const textBlocks = response.content.filter((b) => b.type === 'text');
     const content = textBlocks.map((b) => 'text' in b ? b.text : '').join('\n');
