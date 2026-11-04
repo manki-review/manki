@@ -4,6 +4,7 @@ import { LLMClient } from './providers';
 import { extractJSON } from './json';
 import { Finding, VerdictReport } from './types';
 import { safeTruncate, sendWithParseRetry } from './utils';
+import { WRITING_RULES } from './writing-rules';
 
 const VERDICT_READER_NAME = 'Verdict reader';
 const MAX_BLOCKER_TITLE_LENGTH = 100;
@@ -19,11 +20,13 @@ Your job is to find a reason this change should NOT merge. Be adversarial, and j
 
 CI builds the change and runs its tests separately, so whether it compiles and its tests pass is not yours to establish. Never withhold READY for want of that evidence. A defect you can see by reading the code is still a blocker. A commit message is never a blocker.
 
-Return READY only if you would merge it as it stands. When you return ADDRESS_FIRST, every blocker must be specific enough for someone else to fix without asking you what you meant. Name as a blocker only what you would refuse to merge with, and put everything else in the summary as a suggestion. Write each blocker as \`path/to/file.ext:LINE: the defect and why it matters\`, with the path as shown in the diff and the line number on the new side of the diff.
+Return READY only if you would merge it as it stands. When you return ADDRESS_FIRST, every blocker must be specific enough for someone else to fix without asking you what you meant. Name as a blocker only what you would refuse to merge with, and put everything else in the summary as a suggestion. Write each blocker as \`path/to/file.ext:LINE: <the defect in one plain sentence>. <what goes wrong in practice and the change that fixes it>\`, with the path as shown in the diff and the line number on the new side of the diff. For example: \`src/sync.ts:42: Startup aborts for a client synced from a checkpoint. With no filter headers the bound falls back to 0, and truncating storage above 0 fails, so handle the missing header separately.\`
 
 Also write two things for the pull request:
-- whatThisDoes: 2 to 5 sentences a non-specialist could follow. What was wrong or missing, what the change does now, what it gets the user. Ground it in the diff, never in the change's own framing.
-- whatToTest: a manual testing guide from the diff. Preconditions, then "do X, expect Y" steps, then behaviour changes worth confirming and edge cases. Never invent behaviour the code does not implement.
+- whatThisDoes: two or three sentences a non-specialist can follow. What was wrong or missing, what the change does now, what it gets the user. Ground it in the diff, never in the change's own framing.
+- whatToTest: a numbered list of manual checks from the diff, each in the form "Do X. Expect Y." Start with any setup the checks need, and end with edge cases worth trying. Never invent behaviour the code does not implement.
+
+${WRITING_RULES}
 
 Respond with ONLY a JSON object (no markdown fences):
 {

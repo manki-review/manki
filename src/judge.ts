@@ -15,6 +15,7 @@ import { dynamicFence, LinkedIssue, titleToSlug } from './github';
 import { safeTruncate, sendWithParseRetry } from './utils';
 import { sanitize, titleOverlapType } from './recap';
 import { stringifyFindingFingerprint, truncateDiff, validateSeverity } from './review';
+import { WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DiffFile, DuplicateMatchType, Finding, FindingFingerprintEntry, FindingReachability, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, ParsedDiff, PrContext, ThreadEvaluation } from './types';
 
@@ -301,21 +302,22 @@ export function buildJudgeSystemPrompt(
   const hasOpenThreads = openThreadsCount > 0;
   const majorityThreshold = Math.max(1, Math.ceil(agentCount / 2));
   const summaryInstruction = isFollowUp
-    ? `Write a brief progress update in 1-2 sentences. Say whether the previous concerns were addressed and what is new. Do not re-describe the PR and do not praise the change. Never start with "The author" or "Since last review". If you can swap the project name and the summary still works, it is too generic. Good examples:
-- "Both open findings are fixed. One new blocker: \`clearTimeout\` never runs on the success path."
-- "The timeout leak is fixed, but the new retry loop drops the error reason, so operators see '3 attempts failed' with no cause."
-- "Previous concerns are resolved and nothing new turned up."
+    ? `Write one or two sentences on where the change stands now: whether the earlier problems are fixed, and what still goes wrong in practice. The review already shows each finding's title, so do not repeat a title word for word. Do not re-describe the PR and do not praise the change. Never start with "The author" or "Since last review". If you can swap the project name and the summary still works, it is too generic. Good examples:
+- "Both earlier problems are fixed. The new retry loop drops the error reason, so operators see '3 attempts failed' with no cause."
+- "The listener leak is fixed, but \`clearTimeout\` still never runs on the success path, so every request keeps a timer alive."
+- "The earlier problems are fixed and nothing new blocks merge."
 Bad examples (do NOT write like this):
 - "The author addressed the positional slice ordering issue..."
-- "Solid follow-up with a few remaining suggestions."`
-    : `Write a review summary in 1-2 sentences. Lead with what matters most: the biggest risk or the thing that needs attention. Do not praise the change. Never start with "The author", "This PR" or "The refactor". Never list agent names, agent count or review level, and never say "after judge evaluation". If you can swap the project name and the summary still works, it is too generic. Good examples:
-- "The timeout handler leaks a listener on every failed request."
-- "The retry loop swallows the error reason, so operators see '3 attempts failed' with no cause."
-- "The planner picks agents by specialty, but a 2-agent pick triggers the trivial verifier."
-- "Nothing to flag in this config cleanup."
+- "Solid follow-up with a few remaining suggestions."
+- "No findings submitted for evaluation this round."`
+    : `Write one or two sentences on the most important problem: what goes wrong in practice when this code runs, and who notices. The review already shows each finding's title, so do not repeat a title word for word. When nothing blocks, say so in one short sentence. Do not praise the change or describe what the PR does. Never start with "The author", "This PR" or "The refactor". If you can swap the project name and the summary still works, it is too generic. Good examples:
+- "A client synced from a checkpoint can no longer start, because the filter header bound falls back to 0."
+- "Every failed request leaves a listener behind, so a long-running worker slowly runs out of memory."
+- "The retry loop drops the error reason, so operators see '3 attempts failed' with no cause."
+- "Nothing blocks merge."
 Bad examples (do NOT write like this):
 - "Clean refactor with one concern about error handling."
-- "The refactor looks solid overall. The main actionable issue is..."
+- "Findings 1 and 4 identify the same real bug, which all 3 reviewers caught."
 - "This PR modifies the review pipeline to..."`;
   let prompt = `You are a code review judge. You evaluate findings from multiple specialist reviewers for accuracy, actionability, and severity.
 
@@ -323,13 +325,13 @@ Bad examples (do NOT write like this):
 
 Evaluate each finding on two dimensions:
 
-**Impact** — How bad is it if this issue manifests?
+**Impact**: How bad is it if this issue manifests?
 - Critical: data loss, security breach, crash, broken core functionality
 - High: incorrect behavior, silent failures, missing error handling that loses information
 - Medium: degraded experience, confusing behavior, inconsistency, tech debt
 - Low: cosmetic, style, naming, minor readability
 
-**Likelihood** — How likely is this issue to actually occur?
+**Likelihood**: How likely is this issue to actually occur?
 - Certain: will happen on every execution of the affected code path
 - Probable: will happen under common conditions or normal usage
 - Possible: could happen under specific edge cases or unusual input
@@ -337,9 +339,9 @@ Evaluate each finding on two dimensions:
 
 **Severity mapping:**
 - **blocker**: correctness bug, data loss risk, or security issue. Must be fixed.
-- **warning**: real behavioral concern — e.g., an edge case that will fail, a misuse of an API that will produce wrong output, a race condition. Not catastrophic but shouldn't ship.
-- **suggestion**: improvement open to discussion — refactoring, deduplication, API clarity, code style. The code works today but could be cleaner.
-- **nitpick**: minor cosmetic — wording, formatting, tiny naming tweaks. Purely optional.
+- **warning**: real behavioral concern, such as an edge case that will fail, a misuse of an API that will produce wrong output, a race condition. Not catastrophic but shouldn't ship.
+- **suggestion**: improvement open to discussion: refactoring, deduplication, API clarity, code style. The code works today but could be cleaner.
+- **nitpick**: minor cosmetic: wording, formatting, tiny naming tweaks. Purely optional.
 - **ignore**: False positives, intentional patterns, style preferences, reviewer misunderstandings.
 
 ## Grading Rules
@@ -404,9 +406,9 @@ For every finding, decide whether the failure mode it describes is **practically
 - **hypothetical**: the finding is technically correct about the code as written, but no caller, input, or control flow visible in the diff would exercise the failure mode. Typical examples: defensive guards on values that are always produced by trusted internal code, branches that cannot be reached with the current call graph, edge cases that would require the author to change unrelated code to trigger.
 - **unknown**: you cannot determine reachability from the diff alone. Use this when the flagged code is exported or called from outside the changed files and you have no visibility into its callers.
 
-Populate \`reachability\` on every finding. When you choose \`hypothetical\`, also give a one-sentence \`reachabilityReasoning\` explaining why no current caller triggers the failure — this is how the author audits a demotion.
+Populate \`reachability\` on every finding. When you choose \`hypothetical\`, also give a one-sentence \`reachabilityReasoning\` explaining why no current caller triggers the failure. This is how the author audits a demotion.
 
-Reachability is independent of severity. A finding can be \`blocker\` and \`hypothetical\`, or \`nitpick\` and \`reachable\`. Severity captures how bad the failure is; reachability captures whether it can actually happen today.
+Reachability is independent of severity. A finding can be \`blocker\` and \`hypothetical\`, or \`nitpick\` and \`reachable\`. Severity captures how bad the failure is. Reachability captures whether it can actually happen today.
 
 ## Evaluation Criteria
 
@@ -455,6 +457,8 @@ This is a follow-up review. The previous review state is in the user message, un
 
 ${summaryInstruction}
 
+${WRITING_RULES}
+
 ## Output Format
 
 Respond with ONLY a JSON object (no markdown fences, no explanation):
@@ -487,13 +491,13 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
 ${hasOpenThreads ? `
 ## Open Thread Evaluation
 
-You MUST return exactly ${openThreadsCount} \`threadEvaluations\` entries — one for every open review thread listed in the user message. Omitting any thread is a contract violation that forces a retry. Status values:
+You MUST return exactly ${openThreadsCount} \`threadEvaluations\` entries, one for every open review thread listed in the user message. Omitting any thread is a contract violation that forces a retry. Status values:
 
-- **addressed**: the current code at the flagged region clearly no longer exhibits the original concern, OR the inter-round diff contains an explicit fix for it. Either signal alone is sufficient — you may pick \`addressed\` even when the inter-round diff does not touch the thread's file, as long as the current code window plainly resolves the concern. (Note: when the inter-round diff is known-empty the resolver may override this verdict as a safety measure.)
+- **addressed**: the current code at the flagged region clearly no longer exhibits the original concern, OR the inter-round diff contains an explicit fix for it. Either signal alone is sufficient: you may pick \`addressed\` even when the inter-round diff does not touch the thread's file, as long as the current code window plainly resolves the concern. (Note: when the inter-round diff is known-empty the resolver may override this verdict as a safety measure.)
 - **not_addressed**: the current code still exhibits the concern (and the inter-round diff did not fix it). When the code window is unavailable and the inter-round diff does not touch the file, default to \`not_addressed\` rather than \`uncertain\`.
 - **uncertain**: insufficient evidence to decide. The downstream resolver treats this as not-addressed, so prefer it over a speculative \`addressed\`.
 
-The flagged thread \`line\` is GitHub-anchored from when the thread was created and may have drifted relative to the current head. Treat it as a hint, not a strict boundary: scan the full provided code window for the fix. Resolution requires concrete evidence — cite the changed lines or current-code excerpt that supports your call in \`reason\`. Use the thread IDs provided in the open threads section below.
+The flagged thread \`line\` is GitHub-anchored from when the thread was created and may have drifted relative to the current head. Treat it as a hint, not a strict boundary: scan the full provided code window for the fix. Resolution requires concrete evidence: cite the changed lines or current-code excerpt that supports your call in \`reason\`. Use the thread IDs provided in the open threads section below.
 ` : ''}
 Return one entry per finding, in the same order as the input. Set \`id\` to the N of the finding's "Finding N" heading. State the verdict before the reasoning.`;
 

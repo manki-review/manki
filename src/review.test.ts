@@ -30,6 +30,7 @@ import { Finding, RoundContext, OpenThread, ReviewerAgent, ReviewConfig, ParsedD
 import { fingerprintEntriesFromLegacy, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, roundContextFromLegacy } from './test-utils';
 import { runJudgeAgent, computeProvenanceMap } from './judge';
 import { applySuppressions } from './memory';
+import { WRITING_RULES } from './writing-rules';
 import { LLMClient, LLMResponse, wrapClientForUsage } from './providers';
 
 const READY_VERDICT = JSON.stringify({
@@ -1180,11 +1181,12 @@ describe('buildReviewerSystemPrompt', () => {
     expect(prompt).toContain('splitting into a separate PR');
   });
 
-  it('instructs the reviewer to list caveats of any suggestedFix in the description', () => {
+  it('limits `suggestedFix` to code that applies as is and keeps caveats in the description', () => {
     const prompt = buildReviewerSystemPrompt(reviewer, makeConfig());
-    expect(prompt).toContain('When you include a `suggestedFix`');
-    expect(prompt).toContain('caveats');
-    expect(prompt).toContain('description');
+    expect(prompt).toContain('Put in it only code that applies as is: no prose, no markdown fences');
+    expect(prompt).toContain('List any known caveats of the fix in the `description`');
+    expect(prompt).toContain(WRITING_RULES);
+    expect(prompt).not.toMatch(/[\u2014\u2013]| -- /);
   });
 
   describe('noise_level', () => {
@@ -2228,6 +2230,7 @@ describe('runReview', () => {
     expect(prompt).toContain('raw diff');
     expect(prompt).toContain('export const a = 1;');
     expect(prompt).toContain('CI builds the change and runs its tests separately');
+    expect(laterCall[0]).toContain(WRITING_RULES);
   });
 
   it('forwards config.noise_level to buildReviewerSystemPrompt for each agent', async () => {
