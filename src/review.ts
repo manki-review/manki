@@ -7,7 +7,8 @@ import { runJudgeAgent, JudgeInput, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
 import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, llmDeduplicateFindings, PreviousFinding } from './recap';
-import { ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, PlannerRoundHint, PriorRoundEffortDowngrade, RoundContext, RoundDedupDuplicateMatch, RoundPlannerSource, SpecialistOutcome, EffortLevel, AgentPick, ProvenanceEntry, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, TeamRoster, PrContext, PlannerResult, PlannerRoundHint, PriorRoundEffortDowngrade, RoundContext, RoundDedupDuplicateMatch, RoundPlannerSource, SpecialistOutcome, EffortLevel, AgentPick, ProvenanceEntry, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { rebuildRawDiff } from './diff';
 import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 
@@ -235,17 +236,6 @@ export function shuffleDiffFiles(diff: ParsedDiff): ParsedDiff {
     [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
   }
   return { ...diff, files: shuffled };
-}
-
-export function rebuildRawDiff(diff: ParsedDiff): string {
-  return diff.files.map((f: DiffFile) => {
-    const header = `diff --git a/${f.path} b/${f.path}`;
-    const hunks = f.hunks.map(h => {
-      const hunkHeader = `@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@`;
-      return `${hunkHeader}\n${h.content}`;
-    }).join('\n');
-    return `${header}\n${hunks}`;
-  }).join('\n');
 }
 
 export function findingsMatch(a: Finding, b: Finding): boolean {

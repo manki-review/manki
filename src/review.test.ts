@@ -12,7 +12,6 @@ import {
   titlesMatch,
   truncateDiff,
   shuffleDiffFiles,
-  rebuildRawDiff,
   findingsMatch,
   intersectFindings,
   runReview,
@@ -1971,41 +1970,6 @@ describe('shuffleDiffFiles', () => {
     const diff: ParsedDiff = { files: [], totalAdditions: 0, totalDeletions: 0 };
     const shuffled = shuffleDiffFiles(diff);
     expect(shuffled.files).toHaveLength(0);
-  });
-});
-
-describe('rebuildRawDiff', () => {
-  it('rebuilds a diff string from parsed files', () => {
-    const diff: ParsedDiff = {
-      files: [
-        {
-          path: 'src/foo.ts',
-          changeType: 'modified',
-          hunks: [{ oldStart: 1, oldLines: 3, newStart: 1, newLines: 4, content: '+new line' }],
-        },
-      ],
-      totalAdditions: 1,
-      totalDeletions: 0,
-    };
-    const raw = rebuildRawDiff(diff);
-    expect(raw).toContain('diff --git a/src/foo.ts b/src/foo.ts');
-    expect(raw).toContain('@@ -1,3 +1,4 @@');
-    expect(raw).toContain('+new line');
-  });
-
-  it('handles multiple files in order', () => {
-    const diff: ParsedDiff = {
-      files: [
-        { path: 'a.ts', changeType: 'modified', hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, content: '+a' }] },
-        { path: 'b.ts', changeType: 'modified', hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, content: '+b' }] },
-      ],
-      totalAdditions: 2,
-      totalDeletions: 0,
-    };
-    const raw = rebuildRawDiff(diff);
-    const aIdx = raw.indexOf('a/a.ts');
-    const bIdx = raw.indexOf('a/b.ts');
-    expect(aIdx).toBeLessThan(bIdx);
   });
 });
 

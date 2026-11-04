@@ -88,6 +88,17 @@ export function filterFilesWithAttribution(
   return { included, excluded };
 }
 
+export function rebuildRawDiff(diff: ParsedDiff): string {
+  return diff.files.map((f) => {
+    const header = `diff --git a/${f.path} b/${f.path}`;
+    const hunks = f.hunks.map(h => {
+      const hunkHeader = `@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@`;
+      return `${hunkHeader}\n${h.content}`;
+    }).join('\n');
+    return `${header}\n${hunks}`;
+  }).join('\n');
+}
+
 /**
  * Check if a line number is within the diff hunks for a file.
  * GitHub only allows inline comments on lines that are part of the diff.
