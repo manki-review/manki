@@ -78,6 +78,10 @@ async function fetchBotReviewThreads(
     });
 }
 
+async function resolveReviewThread(octokit: Octokit, threadId: string): Promise<void> {
+  await octokit.graphql('mutation($threadId: ID!) { resolveReviewThread(input: { threadId: $threadId }) { thread { isResolved } } }', { threadId });
+}
+
 /**
  * Check if every blocking bot review thread is resolved. Suggestion and nitpick
  * threads posted by older versions never block, matching the verdict's bar.
@@ -248,4 +252,4 @@ async function checkAndAutoApprove(
   return true;
 }
 
-export { ReviewThread, areAllFindingsResolved, checkAndAutoApprove, fetchBotReviewThreads, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
+export { ReviewThread, areAllFindingsResolved, checkAndAutoApprove, fetchBotReviewThreads, resolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };

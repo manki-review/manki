@@ -45,7 +45,7 @@ import {
   checkConcurrentSubmissionLock,
   postConfigErrorComment,
 } from './github';
-import { checkAndAutoApprove } from './state';
+import { checkAndAutoApprove, resolveReviewThread } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -1259,7 +1259,7 @@ async function runFullReview(
           continue;
         }
         try {
-          await octokit.graphql(`mutation($threadId: ID!) { resolveReviewThread(input: { threadId: $threadId }) { thread { isResolved } } }`, { threadId });
+          await resolveReviewThread(octokit, threadId);
           core.info(`Judge resolved: "${reason}" — thread ${threadId}`);
         } catch (error) {
           core.debug(`Failed to resolve thread ${threadId}: ${error}`);
