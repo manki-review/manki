@@ -52,6 +52,10 @@ export function parsePRDiff(rawDiff: string): ParsedDiff {
   return { files, totalAdditions, totalDeletions, binarySkipped };
 }
 
+function findExcludePattern(path: string, excludePaths: string[]): string | undefined {
+  return excludePaths.find((pattern) => minimatch(path, pattern, { matchBase: true, dot: true }));
+}
+
 /**
  * Splits diff files by the exclude glob patterns. A file is included unless it
  * matches any pattern. Each excluded file records the first pattern it matched.
@@ -60,13 +64,10 @@ export function filterFilesWithAttribution(
   files: DiffFile[],
   excludePaths: string[],
 ): { included: DiffFile[]; excluded: RoundDiffExcludedFile[] } {
-  const matchOpts = { matchBase: true, dot: true };
   const included: DiffFile[] = [];
   const excluded: RoundDiffExcludedFile[] = [];
   for (const file of files) {
-    const matchedPattern = excludePaths.find((pattern) =>
-      minimatch(file.path, pattern, matchOpts),
-    );
+    const matchedPattern = findExcludePattern(file.path, excludePaths);
     if (matchedPattern) {
       excluded.push({ path: file.path, matchedPattern });
     } else {
@@ -124,7 +125,7 @@ export function isSameChange(a: string, b: string, excludePaths: string[]): bool
     const diff = filterDiff(parsePRDiff(raw), excludePaths).diff;
     return JSON.stringify([
       diff.files.map(f => [f.changeType, f.oldPath, f.path, f.hunks.map(h => h.content)]),
-      diff.binarySkipped,
+      diff.binarySkipped?.filter(path => !findExcludePattern(path, excludePaths)),
     ]);
   };
   return changeKey(a) === changeKey(b);
