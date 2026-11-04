@@ -32,7 +32,7 @@
     "yaml": "^2.8.3"
   },
   "overrides": {
-    "undici": "^6.25.0"
+    "undici": "^6.29.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
