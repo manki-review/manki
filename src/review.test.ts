@@ -1803,6 +1803,19 @@ describe('intersectFindings', () => {
   });
 });
 
+jest.mock('./judge', () => ({
+  runJudgeAgent: jest.fn(),
+  JudgeInput: {},
+  computeProvenanceMap: jest.fn().mockReturnValue([]),
+  collectPriorBlockers: jest.requireActual('./judge').collectPriorBlockers,
+}));
+
+jest.mock('./memory', () => ({
+  ...jest.requireActual('./memory'),
+  buildMemoryContext: jest.fn().mockReturnValue('memory context'),
+  applySuppressions: jest.fn().mockReturnValue({ kept: [], suppressed: [] }),
+}));
+
 describe('runReview', () => {
   const mockedRunJudgeAgent = jest.mocked(runJudgeAgent);
   const mockedApplySuppressions = jest.mocked(applySuppressions);
