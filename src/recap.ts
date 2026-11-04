@@ -108,7 +108,8 @@ interface PreviousFinding extends FindingMetadata {
   line: number;
   lineStart?: number;
   severity: FindingSeverity | 'unknown';
-  status: 'open' | 'resolved' | 'replied';
+  /** `auto-resolved`: Manki resolved the thread without the judge marking it `addressed`. It counts as neither dismissed nor open. */
+  status: 'open' | 'resolved' | 'replied' | 'auto-resolved';
   threadId?: string;
   threadUrl?: string;
   /** Slug from the thread's `<!-- manki:<severity>:<slug> -->` marker. */
@@ -317,6 +318,11 @@ async function fetchRecapState(
     fetchPriorRoundContexts(octokit, owner, repo, prNumber),
   ]);
   const { threads, state: openThreadsState } = threadsResult;
+  const judgeAddressedThreadIds = new Set(
+    priorRounds.flatMap(r => r.judge.threadEvaluations ?? [])
+      .filter(e => e.status === 'addressed')
+      .map(e => e.threadId),
+  );
 
   const previousFindings = threads
     .filter(t => t.isBotThread)
@@ -326,7 +332,7 @@ async function fetchRecapState(
       line: t.line,
       lineStart: t.lineStart,
       severity: t.severity,
-      status: t.isResolved ? 'resolved' as const : (t.hasHumanReply ? 'replied' as const : 'open' as const),
+      status: threadStatus(t, judgeAddressedThreadIds),
       threadId: t.threadId,
       threadUrl: t.threadUrl,
       ...(t.markerSlug && { markerSlug: t.markerSlug }),
@@ -362,6 +368,12 @@ async function fetchRecapState(
     reclassifiedPriorCount,
     reclassifiedPriors,
   };
+}
+
+function threadStatus(t: ReviewThread, judgeAddressedThreadIds: Set<string>): PreviousFinding['status'] {
+  if (!t.isResolved) return t.hasHumanReply ? 'replied' : 'open';
+  if (t.resolvedByManki && !judgeAddressedThreadIds.has(t.threadId)) return 'auto-resolved';
+  return 'resolved';
 }
 
 /**
@@ -484,6 +496,7 @@ interface ReviewThread extends FindingMetadata {
   originalLine?: number;
   isBotThread: boolean;
   isResolved: boolean;
+  resolvedByManki: boolean;
   hasHumanReply: boolean;
   findingTitle: string;
   file: string;
@@ -551,6 +564,10 @@ interface FetchReviewThreadsResult {
   state: OpenThreadsState;
 }
 
+function isMankiLogin(login: string | undefined): boolean {
+  return login === BOT_LOGIN || login === ACTIONS_BOT_LOGIN;
+}
+
 async function fetchReviewThreads(
   octokit: Octokit,
   owner: string,
@@ -567,6 +584,9 @@ async function fetchReviewThreads(
             nodes {
               id
               isResolved
+              resolvedBy {
+                login
+              }
               path
               line
               startLine
@@ -595,6 +615,7 @@ async function fetchReviewThreads(
             nodes: Array<{
               id: string;
               isResolved: boolean;
+              resolvedBy?: { login: string } | null;
               path: string;
               line: number | null;
               startLine: number | null;
@@ -622,7 +643,7 @@ async function fetchReviewThreads(
       // cap above means threads with more than 10 replies can still miss the
       // true last reply.
       const nonBotReplies = thread.comments.nodes.filter((c, i) =>
-        i > 0 && c.author?.login !== BOT_LOGIN && c.author?.login !== ACTIONS_BOT_LOGIN
+        i > 0 && !isMankiLogin(c.author?.login)
       );
       const lastNonBotReply = nonBotReplies[nonBotReplies.length - 1];
       const hasHumanReply = lastNonBotReply !== undefined;
@@ -651,6 +672,7 @@ async function fetchReviewThreads(
         threadUrl: firstComment?.url ?? '',
         isBotThread,
         isResolved: thread.isResolved,
+        resolvedByManki: isMankiLogin(thread.resolvedBy?.login),
         hasHumanReply,
         findingTitle,
         description,

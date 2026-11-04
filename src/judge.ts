@@ -244,7 +244,7 @@ export interface JudgeInput {
    * prior round to compare against (first round of a PR).
    */
   interRoundDiff?: string;
-  /** IDs of prior-round threads currently resolved on GitHub. */
+  /** IDs of prior-round threads a human resolved or Manki resolved as judge-addressed. */
   resolvedThreadIds?: Set<string>;
   /** When true, resolved prior-round threads suppress matching findings. */
   suppressResolvedThreads?: boolean;
@@ -1172,10 +1172,10 @@ function addTag(tags: string[] | undefined, tag: string): string[] {
  */
 export interface CrossRoundSuppressionOptions {
   /**
-   * IDs of prior-round threads currently resolved on GitHub. Any prior finding
-   * whose `threadId` is in this set is treated as accepted regardless of how
-   * the thread was resolved (agree reply, manual resolve, etc.). Requires
-   * `suppressResolvedThreads` to be true.
+   * IDs of prior-round threads a human resolved or Manki resolved as
+   * judge-addressed. Any prior finding whose `threadId` is in this set is
+   * treated as accepted. A thread Manki resolved without the judge marking it
+   * `addressed` is left out. Requires `suppressResolvedThreads` to be true.
    */
   resolvedThreadIds?: Set<string>;
   /** When true, treat resolved prior-round threads as accepted priors. */

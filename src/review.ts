@@ -1614,9 +1614,9 @@ export function buildPriorRoundLookup(sortedPriorRounds: RoundContext[]): Map<st
  *   - `OpenThread[]` (non-empty) → "fetched, here they are": only priors
  *     whose `threadId` appears in the set are treated as still open.
  *
- * `resolvedThreadIds` is an explicit allowlist of thread ids that GitHub
- * reports as `isResolved: true` (derived from `previousFindings[i].status ===
- * 'resolved'`). It is consulted only when `openThreads` is a fetched array
+ * `resolvedThreadIds` is an explicit allowlist of thread ids a human resolved
+ * or Manki resolved as judge-addressed (derived from
+ * `previousFindings[i].status === 'resolved'`). It is consulted only when `openThreads` is a fetched array
  * (empty or non-empty) and the thread is not present in it. The precedence
  * is: live `openThreads` > unknown-fallback (conservative block) >
  * `resolvedThreadIds` (cached "resolved via fix") > implicit resolution
