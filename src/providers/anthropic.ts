@@ -5,7 +5,7 @@ import { promisify } from 'util';
 import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
-import { sanitizeLogOutput, STALE_TIMEOUT_MS, buildTimeoutDiagnostics, buildExitDiagnostics, extractCliErrorSnippet } from './cli-utils';
+import { sanitizeLogOutput, STALE_TIMEOUT_MS, buildTimeoutDiagnostics, buildExitDiagnostics } from './cli-utils';
 import { AnthropicAuth, LLMClient, LLMResponse, LLMUsage, readCount, SendMessageOptions, ZERO_USAGE } from './types';
 
 // Re-export for backward compatibility with existing test imports.
@@ -73,42 +73,18 @@ function usesBudgetThinking(model: string): boolean {
 }
 
 let cliInstallPromise: Promise<string> | null = null;
-let cliAuthPromise: Promise<void> | null = null;
 
 export function resetCLIInstallPromise(): void {
   cliInstallPromise = null;
-  cliAuthPromise = null;
 }
 
-function readResultError(stdout: unknown): string | null {
-  try {
-    const event = JSON.parse(String(stdout));
-    return event?.is_error && typeof event.result === 'string' ? event.result : null;
-  } catch {
-    return null;
-  }
-}
+const OAUTH_ERROR_HINT =
+  'Check the claude_code_oauth_token secret (create a new token with `claude setup-token`) or use anthropic_api_key instead.';
 
-/** Runs one tiny prompt so a CLI that cannot use the OAuth token fails with an error naming the token. */
-async function checkCLIAuth(cliPath: string, token: string, model: string): Promise<void> {
-  let failure: string | null;
-  try {
-    const { stdout } = await execFileAsync(
-      cliPath,
-      ['-p', 'Reply with OK.', '--output-format', 'json', '--max-turns', '1', '--model', model],
-      { timeout: 120000, env: { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: token } },
-    );
-    failure = readResultError(stdout);
-  } catch (error) {
-    const { stdout, stderr, message } = error as { stdout?: unknown; stderr?: unknown; message: string };
-    failure = readResultError(stdout) ?? (extractCliErrorSnippet(String(stderr ?? '')) || message);
-  }
-  if (failure !== null) {
-    throw new Error(
-      `Claude CLI cannot run with claude_code_oauth_token: ${sanitizeLogOutput(failure)}. ` +
-      'If the token is invalid or expired, create a new one with `claude setup-token` and update the CLAUDE_CODE_OAUTH_TOKEN secret.',
-    );
-  }
+function readResultError(resultEvent: unknown): string | null {
+  if (!resultEvent || typeof resultEvent !== 'object') return null;
+  const event = resultEvent as { is_error?: unknown; result?: unknown };
+  return event.is_error === true && typeof event.result === 'string' && event.result ? event.result : null;
 }
 
 export interface AnthropicClientOptions {
@@ -140,20 +116,7 @@ export class AnthropicClient implements LLMClient {
 
   async warmupCLI(): Promise<void> {
     if (this.auth.kind !== 'oauth') return;
-    await this.ensureAuthenticatedCLI();
-  }
-
-  private async ensureAuthenticatedCLI(): Promise<string> {
-    const cliPath = await this.ensureCLI();
-    if (this.auth.kind !== 'oauth') return cliPath;
-    if (!cliAuthPromise) cliAuthPromise = checkCLIAuth(cliPath, this.auth.token, this.model);
-    try {
-      await cliAuthPromise;
-    } catch (error) {
-      cliAuthPromise = null;
-      throw error;
-    }
-    return cliPath;
+    await this.ensureCLI();
   }
 
   private async ensureCLI(): Promise<string> {
@@ -193,7 +156,7 @@ export class AnthropicClient implements LLMClient {
 
   private async sendViaOAuth(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
     const fullPrompt = `${systemPrompt}\n\n---\n\n${userMessage}`;
-    const cliPath = await this.ensureAuthenticatedCLI();
+    const cliPath = await this.ensureCLI();
     const oauthToken = this.auth.kind === 'oauth' ? this.auth.token : undefined;
     const startTime = Date.now();
     const model = this.model;
@@ -365,8 +328,10 @@ export class AnthropicClient implements LLMClient {
             elapsedMs: Date.now() - startTime,
             resultEvent: lastResultEvent,
           });
-          core.warning(`Claude CLI failed (${msg})`);
-          reject(new Error(`Claude CLI invocation failed (${msg})`));
+          const cliError = readResultError(lastResultEvent);
+          const lead = cliError ? `Claude CLI error: ${sanitizeLogOutput(cliError)}. ${OAUTH_ERROR_HINT} ` : '';
+          core.warning(`${lead}Claude CLI failed (${msg})`);
+          reject(new Error(`${lead}Claude CLI invocation failed (${msg})`));
           return;
         }
         const content = output.trim();

@@ -27,8 +27,6 @@ _execMock.fn = mockExecFileAsync;
 
 const mockSpawn = spawn as jest.MockedFunction<typeof spawn>;
 
-const AUTH_CHECK_OK = { stdout: JSON.stringify({ type: 'result', is_error: false, result: 'OK' }) };
-
 describe('AnthropicClient', () => {
   it('accepts oauth auth', () => {
     const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'test-token' }, model: 'claude-opus-4-6' });
@@ -265,10 +263,11 @@ describe('sendViaOAuth — error paths', () => {
     );
   });
 
-  it('surfaces stdout tail, <empty stderr>, and parsed result event when exit-1 has no stderr', async () => {
+  it('leads with the CLI error text and keeps the diagnostics when exit-1 has no stderr', async () => {
+    const cliError = 'Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask your admin to enable access';
     const streamWithResultError = [
       JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'partial thinking emitted right before exit' } }),
-      JSON.stringify({ type: 'result', subtype: 'error_during_execution', is_error: true, result: 'Maximum tokens exceeded' }),
+      JSON.stringify({ type: 'result', subtype: 'error_during_execution', is_error: true, result: cliError }),
       '',
     ].join('\n');
     setupSpawnMock({
@@ -280,14 +279,17 @@ describe('sendViaOAuth — error paths', () => {
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
 
-    await expect(client.sendMessage('sys', 'user')).rejects.toThrow(/Claude CLI invocation failed/);
+    const error = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
+    expect(error?.message.startsWith(`Claude CLI error: ${cliError}. `)).toBe(true);
+    expect(error?.message).toContain('claude setup-token');
+    expect(error?.message).toMatch(/Claude CLI invocation failed \(exit 1: <empty stderr>/);
     const allWarnings = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(allWarnings).toContain(`Claude CLI error: ${cliError}`);
     expect(allWarnings).toContain('Claude CLI failed');
     expect(allWarnings).toContain('<empty stderr>');
     expect(allWarnings).toContain('stderrChars=0');
     expect(allWarnings).toContain('is_error=true');
     expect(allWarnings).toContain('subtype=error_during_execution');
-    expect(allWarnings).toContain('Maximum tokens exceeded');
     warnSpy.mockRestore();
   });
 
@@ -305,7 +307,7 @@ describe('sendViaOAuth — error paths', () => {
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
 
-    await expect(client.sendMessage('sys', 'user')).rejects.toThrow(/Claude CLI invocation failed/);
+    await expect(client.sendMessage('sys', 'user')).rejects.toThrow(/^Claude CLI invocation failed/);
     const allWarnings = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(allWarnings).toContain('<no result event>');
     expect(allWarnings).not.toContain('is_error=');
@@ -788,8 +790,7 @@ describe('ensureCLI — install path', () => {
     mockExecFileAsync
       .mockRejectedValueOnce(new Error('not found'))
       .mockResolvedValueOnce({ stdout: '' }) // npm install
-      .mockResolvedValueOnce({ stdout: '/usr/local/bin/claude\n' }) // which after install
-      .mockResolvedValueOnce(AUTH_CHECK_OK);
+      .mockResolvedValueOnce({ stdout: '/usr/local/bin/claude\n' }); // which after install
 
     setupSpawnForSuccess('installed ok');
     const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
@@ -818,8 +819,8 @@ describe('ensureCLI — install path', () => {
     await client.sendMessage('sys', 'first');
     await client.sendMessage('sys', 'second');
 
-    // `which` and the auth check each run once, then both are cached
-    expect(mockExecFileAsync).toHaveBeenCalledTimes(2);
+    // execFileAsync (which) should only be called once, then cached
+    expect(mockExecFileAsync).toHaveBeenCalledTimes(1);
     expect(mockSpawn).toHaveBeenCalledTimes(2);
   });
 
@@ -852,45 +853,23 @@ describe('warmupCLI', () => {
     resetCLIInstallPromise();
   });
 
-  it('finds the CLI and checks its auth once for OAuth auth', async () => {
-    mockExecFileAsync.mockResolvedValueOnce({ stdout: '/usr/bin/claude\n' }).mockResolvedValueOnce(AUTH_CHECK_OK);
+  it('invokes ensureCLI once for OAuth auth', async () => {
+    mockExecFileAsync.mockResolvedValue({ stdout: '/usr/bin/claude\n' });
     const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
 
     await client.warmupCLI();
     await client.warmupCLI();
 
-    expect(mockExecFileAsync).toHaveBeenCalledTimes(2);
-    expect(mockExecFileAsync).toHaveBeenNthCalledWith(1, 'which', ['claude']);
-    const [cliPath, args, opts] = mockExecFileAsync.mock.calls[1];
-    expect(cliPath).toBe('/usr/bin/claude');
-    expect(args).toEqual(expect.arrayContaining(['-p', '--output-format', 'json', '--model', 'claude-opus-4-6']));
-    expect(opts.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('token');
-  });
-
-  it('fails with an error naming the token when the CLI cannot authenticate', async () => {
-    const notLoggedIn = Object.assign(new Error('Command failed'), {
-      stdout: JSON.stringify({ type: 'result', is_error: true, result: 'Not logged in · Please run /login' }),
-      stderr: '',
-    });
-    mockExecFileAsync.mockImplementation((cmd: string) =>
-      cmd === 'which' ? Promise.resolve({ stdout: '/usr/bin/claude\n' }) : Promise.reject(notLoggedIn),
-    );
-    const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
-
-    await expect(client.warmupCLI()).rejects.toThrow('Claude CLI cannot run with claude_code_oauth_token: Not logged in · Please run /login');
-    await expect(client.sendMessage('sys', 'user')).rejects.toThrow('claude_code_oauth_token');
-    expect(mockSpawn).not.toHaveBeenCalled();
-
-    mockExecFileAsync.mockResolvedValue(AUTH_CHECK_OK);
-    await expect(client.warmupCLI()).resolves.toBeUndefined();
+    // First call hits `which`; second call hits the cached path.
+    expect(mockExecFileAsync).toHaveBeenCalledTimes(1);
+    expect(mockExecFileAsync).toHaveBeenCalledWith('which', ['claude']);
   });
 
   it('triggers npm install when CLI is missing', async () => {
     mockExecFileAsync
       .mockRejectedValueOnce(new Error('not found'))
       .mockResolvedValueOnce({ stdout: '' })
-      .mockResolvedValueOnce({ stdout: '/usr/local/bin/claude\n' })
-      .mockResolvedValueOnce(AUTH_CHECK_OK);
+      .mockResolvedValueOnce({ stdout: '/usr/local/bin/claude\n' });
     const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
 
     await client.warmupCLI();
