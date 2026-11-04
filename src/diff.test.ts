@@ -5,6 +5,7 @@ import {
   filterRawDiff,
   isLineInDiff,
   isDiffTooLarge,
+  isSameChange,
   rebuildRawDiff,
 } from './diff';
 import { DEFAULT_CONFIG } from './config';
@@ -335,6 +336,25 @@ describe('filterRawDiff', () => {
   it('returns an empty string for an empty diff or one with only excluded files', () => {
     expect(filterRawDiff('', DEFAULT_CONFIG.exclude_paths)).toBe('');
     expect(filterRawDiff(GENERATED_FIRST_DIFF, ['dist/**', 'src/**'])).toBe('');
+  });
+});
+
+describe('isSameChange', () => {
+  it('ignores hunk positions, index lines and excluded files', () => {
+    const rebased = MULTI_FILE_DIFF
+      .replace('index 1111111..2222222', 'index 5555555..6666666')
+      .replace('@@ -5,3 +5,4 @@ export function b() {', '@@ -42,3 +57,4 @@ export function moved() {');
+    expect(isSameChange(MULTI_FILE_DIFF, rebased, [])).toBe(true);
+    expect(isSameChange(MULTI_FILE_DIFF, GENERATED_FIRST_DIFF, DEFAULT_CONFIG.exclude_paths)).toBe(true);
+    expect(isSameChange(MULTI_FILE_DIFF, `${BINARY_FILE_DIFF}${MULTI_FILE_DIFF}`, ['assets/**'])).toBe(true);
+  });
+
+  it('detects a changed line, an added file or a changed context line', () => {
+    expect(isSameChange(MULTI_FILE_DIFF, MULTI_FILE_DIFF.replace('+added line', '+edited line'), [])).toBe(false);
+    expect(isSameChange(MULTI_FILE_DIFF, `${MULTI_FILE_DIFF}${ADDED_FILE_DIFF}`, [])).toBe(false);
+    expect(isSameChange(MULTI_FILE_DIFF, MULTI_FILE_DIFF.replace(' line2', ' line2 from base'), [])).toBe(false);
+    expect(isSameChange(MULTI_FILE_DIFF, GENERATED_FIRST_DIFF, [])).toBe(false);
+    expect(isSameChange(MULTI_FILE_DIFF, `${BINARY_FILE_DIFF}${MULTI_FILE_DIFF}`, [])).toBe(false);
   });
 });
 

@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 
-import { buildDashboard, titleToSlug, formatBlockingPriorThreads, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, truncateContextToFitBody, dynamicFence, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment } from './github';
+import { buildDashboard, titleToSlug, formatBlockingPriorThreads, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, truncateContextToFitBody, dynamicFence, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict } from './github';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { DEFAULT_CONFIG } from './config';
 import { paginateSinglePage, TEST_BOT } from './test-utils';
@@ -4168,6 +4168,60 @@ describe('findBotReviewOnCommit', () => {
     const octokit = makeMockOctokit([reviewB]);
 
     expect(await findBotReviewOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-a')).toBeUndefined();
+  });
+});
+
+describe('fetchStandingVerdict', () => {
+  type Octokit = ReturnType<typeof import('@actions/github').getOctokit>;
+  const bot = { login: BOT_LOGIN, type: 'Bot' };
+
+  function makeMockOctokit(reviews: Array<{ id: number; state: string; commit_id: string }>, timeline: unknown[] | Error = []) {
+    const listReviews = {};
+    const listEventsForTimeline = {};
+    return {
+      paginate: jest.fn().mockImplementation((endpoint: unknown) => {
+        if (endpoint === listReviews) return Promise.resolve(reviews.map(r => ({ ...r, body: `${BOT_MARKER}\nreview`, user: bot })));
+        return timeline instanceof Error ? Promise.reject(timeline) : Promise.resolve(timeline);
+      }),
+      rest: { pulls: { listReviews }, issues: { listEventsForTimeline } },
+    } as unknown as Octokit;
+  }
+
+  function dismissal(reviewId: number, state: string, dismissalCommitId?: string) {
+    return { event: 'review_dismissed', dismissed_review: { review_id: reviewId, state, dismissal_message: null, dismissal_commit_id: dismissalCommitId } };
+  }
+
+  it('reads the state of the latest bot review and the commit it reviewed', async () => {
+    const approved = makeMockOctokit([
+      { id: 1, state: 'CHANGES_REQUESTED', commit_id: 'sha-a' },
+      { id: 2, state: 'APPROVED', commit_id: 'sha-b' },
+    ]);
+    expect(await fetchStandingVerdict(approved, TEST_BOT, 'owner', 'repo', 1)).toEqual({ verdict: 'APPROVE', commitSha: 'sha-b' });
+
+    const changesRequested = makeMockOctokit([{ id: 1, state: 'CHANGES_REQUESTED', commit_id: 'sha-a' }]);
+    expect(await fetchStandingVerdict(changesRequested, TEST_BOT, 'owner', 'repo', 1)).toEqual({ verdict: 'REQUEST_CHANGES', commitSha: 'sha-a' });
+
+    const commented = makeMockOctokit([
+      { id: 1, state: 'APPROVED', commit_id: 'sha-a' },
+      { id: 2, state: 'COMMENTED', commit_id: 'sha-b' },
+    ]);
+    expect(await fetchStandingVerdict(commented, TEST_BOT, 'owner', 'repo', 1)).toBeUndefined();
+    expect(await fetchStandingVerdict(makeMockOctokit([]), TEST_BOT, 'owner', 'repo', 1)).toBeUndefined();
+  });
+
+  it('counts an approval dismissed by a push as APPROVE', async () => {
+    const octokit = makeMockOctokit(
+      [{ id: 7, state: 'DISMISSED', commit_id: 'sha-a' }],
+      [dismissal(6, 'changes_requested'), dismissal(7, 'approved', 'sha-pushed')],
+    );
+    expect(await fetchStandingVerdict(octokit, TEST_BOT, 'owner', 'repo', 1)).toEqual({ verdict: 'APPROVE', commitSha: 'sha-a' });
+  });
+
+  it('returns undefined for a review dismissed by hand or when the timeline cannot be read', async () => {
+    const reviews = [{ id: 7, state: 'DISMISSED', commit_id: 'sha-a' }];
+    expect(await fetchStandingVerdict(makeMockOctokit(reviews, [dismissal(7, 'approved')]), TEST_BOT, 'owner', 'repo', 1)).toBeUndefined();
+    expect(await fetchStandingVerdict(makeMockOctokit(reviews, [dismissal(7, 'changes_requested')]), TEST_BOT, 'owner', 'repo', 1)).toBeUndefined();
+    expect(await fetchStandingVerdict(makeMockOctokit(reviews, new Error('API error')), TEST_BOT, 'owner', 'repo', 1)).toBeUndefined();
   });
 });
 

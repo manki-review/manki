@@ -94,11 +94,11 @@ export async function fetchPRDiff(octokit: Octokit, owner: string, repo: string,
 }
 
 /**
- * Fetch the unified diff between two commits via GitHub's compare API.
- * Used to ground the judge's per-thread evaluation in actual code changes
- * since the prior review round, distinguishing real fixes from no-op pushes
- * (force-pushed rebases, branch resets) where every open thread should remain
- * unresolved. Returns an empty string when `base === head` or when the
+ * Fetch the unified diff between two commits via GitHub's compare API, which
+ * diffs `head` against its merge base with `base`. Used to ground the judge's
+ * per-thread evaluation in actual code changes since the prior review round,
+ * distinguishing real fixes from no-op pushes (force-pushed rebases, branch
+ * resets) where every open thread should remain unresolved. Returns an empty string when `base === head` or when the
  * comparison yields a non-string payload. Throws on API failure so the caller
  * can distinguish "no changes" (empty string) from "unknown" (caught error,
  * leaves the diff undefined upstream).
@@ -1772,9 +1772,9 @@ type BotReviewSummary = {
 };
 
 /**
- * Shared scanner: returns all non-DISMISSED reviews by `bot` on the
- * PR in API order (oldest first). Callers filter to the commit SHA they care
- * about.
+  * Shared scanner: returns all non-DISMISSED reviews by `bot` on the
+  * PR in API order (oldest first), or every one with `includeDismissed`. Callers
+  * filter to the commit SHA they care about.
  *
  * Fail-open contract: any API error returns `[]` rather than throwing, so
  * callers such as `hasBotReviewOnCommit` and `isApprovedOnCommit` return
@@ -1782,7 +1782,7 @@ type BotReviewSummary = {
  * a try/catch to handle errors — the catch is already here.
  */
 async function fetchBotReviews(
-  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number,
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, includeDismissed = false,
 ): Promise<BotReviewSummary[]> {
   try {
     const reviews = await octokit.paginate(octokit.rest.pulls.listReviews, {
@@ -1793,7 +1793,7 @@ async function fetchBotReviews(
     });
     return reviews.slice(-500)
       .filter((r: { state?: string; user?: { login?: string; type?: string } | null; body?: string | null }) =>
-        isBotLogin(bot, r.user?.login) && r.user?.type === 'Bot' && r.state !== 'DISMISSED' &&
+        isBotLogin(bot, r.user?.login) && r.user?.type === 'Bot' && (includeDismissed || r.state !== 'DISMISSED') &&
         !!r.body && r.body.includes(BOT_MARKER),
       )
       .map((r: unknown) => {
@@ -1844,6 +1844,42 @@ async function isApprovedOnCommit(octokit: Octokit, bot: BotIdentity, owner: str
   const latest = reviews[reviews.length - 1];
   if (!latest || latest.state !== 'APPROVED') return false;
   return latest.commitId === commitSha;
+}
+
+type StandingVerdict = {
+  verdict: 'APPROVE' | 'REQUEST_CHANGES';
+  commitSha: string;
+};
+
+/**
+ * Returns the verdict of the latest bot review and the commit it reviewed. An
+ * approval that a push dismissed still counts as APPROVE. Returns `undefined`
+ * for a comment, a dismissal by hand, or when the reviews cannot be read.
+ */
+async function fetchStandingVerdict(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number,
+): Promise<StandingVerdict | undefined> {
+  const latest = (await fetchBotReviews(octokit, bot, owner, repo, prNumber, true)).at(-1);
+  if (!latest) return undefined;
+  if (latest.state === 'APPROVED') return { verdict: 'APPROVE', commitSha: latest.commitId };
+  if (latest.state === 'CHANGES_REQUESTED') return { verdict: 'REQUEST_CHANGES', commitSha: latest.commitId };
+  if (latest.state !== 'DISMISSED') return undefined;
+  // The reviews API reports only `DISMISSED`. The timeline keeps the state
+  // before the dismissal and, for a push, the commit that caused it.
+  try {
+    const events = await octokit.paginate(octokit.rest.issues.listEventsForTimeline, {
+      owner, repo, issue_number: prNumber, per_page: 100,
+    });
+    const dismissed = events
+      .map(e => ('dismissed_review' in e ? e.dismissed_review : undefined))
+      .find(d => d?.review_id === latest.id);
+    if (dismissed?.state === 'approved' && dismissed.dismissal_commit_id) {
+      return { verdict: 'APPROVE', commitSha: latest.commitId };
+    }
+  } catch (error) {
+    core.warning(`Failed to read review dismissals: ${error instanceof Error ? error.message : error}`);
+  }
+  return undefined;
 }
 
 const APP_WARNING_MARKER = '<!-- manki-app-warning -->';
@@ -1948,5 +1984,5 @@ async function cancelActiveReviewRun(
   }
 }
 
-export { dynamicFence, formatContextBlock, formatFindingComment, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment };
-export type { InProgressLock };
+export { dynamicFence, formatContextBlock, formatFindingComment, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict };
+export type { InProgressLock, StandingVerdict };
