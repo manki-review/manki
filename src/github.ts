@@ -563,11 +563,12 @@ export async function dismissPreviousReviews(
 ): Promise<void> {
   let reviews;
   try {
-    ({ data: reviews } = await octokit.rest.pulls.listReviews({
+    reviews = await octokit.paginate(octokit.rest.pulls.listReviews, {
       owner,
       repo,
       pull_number: prNumber,
-    }));
+      per_page: 100,
+    });
   } catch (error) {
     core.warning(`Failed to dismiss previous reviews: ${error instanceof Error ? error.message : error}`);
     return;
@@ -1459,16 +1460,64 @@ async function markProgressCommentCancelled(
   }
 }
 
+interface GraphqlConnection<T> {
+  nodes: T[];
+  pageInfo: { hasNextPage: boolean; endCursor: string | null };
+}
+
+/**
+ * Runs `query` page by page from `cursor` and returns every node of the connection `connectionOf` picks.
+ * `query` must take a `$cursor: String` variable and select `pageInfo { hasNextPage endCursor }`.
+ */
+async function paginateGraphql<R, T>(
+  octokit: Octokit,
+  query: string,
+  variables: Record<string, unknown>,
+  connectionOf: (result: R) => GraphqlConnection<T>,
+  cursor: string | null = null,
+): Promise<T[]> {
+  const nodes: T[] = [];
+  do {
+    const connection = connectionOf(await octokit.graphql<R>(query, { ...variables, cursor }));
+    nodes.push(...connection.nodes);
+    cursor = connection.pageInfo.hasNextPage ? connection.pageInfo.endCursor : null;
+  } while (cursor);
+  return nodes;
+}
+
+/** Returns every review thread on the PR. `threadFields` is the GraphQL selection for one thread. */
+async function fetchReviewThreadNodes<T>(
+  octokit: Octokit, owner: string, repo: string, prNumber: number, threadFields: string,
+): Promise<T[]> {
+  const query = `
+    query($owner: String!, $repo: String!, $prNumber: Int!, $cursor: String) {
+      repository(owner: $owner, name: $repo) {
+        pullRequest(number: $prNumber) {
+          reviewThreads(first: 100, after: $cursor) {
+            pageInfo { hasNextPage endCursor }
+            nodes { ${threadFields} }
+          }
+        }
+      }
+    }
+  `;
+  return paginateGraphql(
+    octokit, query, { owner, repo, prNumber },
+    (result: { repository: { pullRequest: { reviewThreads: GraphqlConnection<T> } } }) => result.repository.pullRequest.reviewThreads,
+  );
+}
+
 interface ProgressComment {
   id: number;
   body: string;
   runId: number | null;
 }
 
+/** Returns every comment on the PR, most recently updated first. */
 async function fetchPRComments(
   octokit: Octokit, owner: string, repo: string, prNumber: number,
 ): Promise<IssueComment[]> {
-  const { data } = await octokit.rest.issues.listComments({
+  const data = await octokit.paginate(octokit.rest.issues.listComments, {
     owner, repo, issue_number: prNumber, per_page: 100,
   });
   return [...data].sort((a, b) => (a.updated_at < b.updated_at ? 1 : a.updated_at > b.updated_at ? -1 : 0));
@@ -1657,9 +1706,7 @@ async function markOwnProgressCommentCancelled(
   octokit: Octokit, owner: string, repo: string, prNumber: number, runId: number,
 ): Promise<boolean> {
   try {
-    const { data: comments } = await octokit.rest.issues.listComments({
-      owner, repo, issue_number: prNumber, per_page: 100,
-    });
+    const comments = await fetchPRComments(octokit, owner, repo, prNumber);
     const target = comments.find(c =>
       c.user?.login === BOT_LOGIN &&
       c.user?.type === 'Bot' &&
@@ -1860,5 +1907,5 @@ async function cancelActiveReviewRun(
   }
 }
 
-export { dynamicFence, formatContextBlock, formatFindingComment, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment };
+export { dynamicFence, formatContextBlock, formatFindingComment, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment };
 export type { InProgressLock };

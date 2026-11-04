@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { LLMClient } from './providers';
-import { ACTIONS_BOT_LOGIN, BOT_LOGIN, titleToSlug } from './github';
+import { ACTIONS_BOT_LOGIN, BOT_LOGIN, fetchReviewThreadNodes, GraphqlConnection, paginateGraphql, titleToSlug } from './github';
 import { findPriorThreadId } from './finding-fingerprint';
 import { matchesSuppression, Suppression } from './memory';
 import { AuthorReplyClass, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacyPrType, migrateLegacySeverity, OpenThreadsState, RoundContext, SEVERITY_TOKEN_PATTERN } from './types';
@@ -465,15 +465,12 @@ async function fetchPriorRoundContexts(
   prNumber: number,
 ): Promise<RoundContext[]> {
   try {
-    const { data: reviews } = await octokit.rest.pulls.listReviews({
+    const reviews = await octokit.paginate(octokit.rest.pulls.listReviews, {
       owner,
       repo,
       pull_number: prNumber,
       per_page: 100,
     });
-    if (reviews.length === 100) {
-      core.warning(`fetchPriorRoundContexts: received exactly 100 reviews for PR #${prNumber}; earlier rounds may be missing (pagination not implemented).`);
-    }
     const candidates = reviews
       .filter((r): r is typeof r & { body: string; id: number } => {
         const body = r.body;
@@ -568,80 +565,82 @@ function isMankiLogin(login: string | undefined): boolean {
   return login === BOT_LOGIN || login === ACTIONS_BOT_LOGIN;
 }
 
+const THREAD_COMMENT_FIELDS = 'body url author { login }';
+
+const THREAD_COMMENTS_QUERY = `
+  query($threadId: ID!, $cursor: String) {
+    node(id: $threadId) {
+      ... on PullRequestReviewThread {
+        comments(first: 100, after: $cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes { ${THREAD_COMMENT_FIELDS} }
+        }
+      }
+    }
+  }
+`;
+
+interface ThreadCommentNode {
+  body: string;
+  url?: string;
+  author: { login: string } | null;
+}
+
+interface ReviewThreadNode {
+  id: string;
+  isResolved: boolean;
+  resolvedBy?: { login: string } | null;
+  path: string;
+  line: number | null;
+  startLine: number | null;
+  originalLine?: number | null;
+  comments: GraphqlConnection<ThreadCommentNode>;
+}
+
 async function fetchReviewThreads(
   octokit: Octokit,
   owner: string,
   repo: string,
   prNumber: number,
 ): Promise<FetchReviewThreadsResult> {
-  // Note: `comments(first: 10)` caps at 10 comments per thread — sufficient for
-  // fingerprinting and reply extraction, but longer discussions are truncated.
-  const query = `
-    query($owner: String!, $repo: String!, $prNumber: Int!) {
-      repository(owner: $owner, name: $repo) {
-        pullRequest(number: $prNumber) {
-          reviewThreads(first: 100) {
-            nodes {
-              id
-              isResolved
-              resolvedBy {
-                login
-              }
-              path
-              line
-              startLine
-              originalLine
-              comments(first: 10) {
-                nodes {
-                  body
-                  url
-                  author {
-                    login
-                  }
-                }
-              }
-            }
-          }
-        }
+  try {
+    // Ten comments per thread keep the query's rate-limit cost low. Longer threads are read in full below.
+    const threadNodes = await fetchReviewThreadNodes<ReviewThreadNode>(octokit, owner, repo, prNumber, `
+      id
+      isResolved
+      resolvedBy {
+        login
+      }
+      path
+      line
+      startLine
+      originalLine
+      comments(first: 10) {
+        pageInfo { hasNextPage endCursor }
+        nodes { ${THREAD_COMMENT_FIELDS} }
+      }
+    `);
+    for (const thread of threadNodes) {
+      if (!thread.comments.pageInfo.hasNextPage) continue;
+      // A missing later reply can only keep a prior open, never retire it, so the comments read so far are safe to use.
+      try {
+        thread.comments.nodes.push(...await paginateGraphql(
+          octokit, THREAD_COMMENTS_QUERY, { threadId: thread.id },
+          (result: { node: { comments: GraphqlConnection<ThreadCommentNode> } }) => result.node.comments,
+          thread.comments.pageInfo.endCursor,
+        ));
+      } catch (error) {
+        core.warning(`Failed to fetch the remaining comments of review thread ${thread.id}, using the first ${thread.comments.nodes.length}: ${error}`);
       }
     }
-  `;
 
-  try {
-    const result: {
-      repository: {
-        pullRequest: {
-          reviewThreads: {
-            nodes: Array<{
-              id: string;
-              isResolved: boolean;
-              resolvedBy?: { login: string } | null;
-              path: string;
-              line: number | null;
-              startLine: number | null;
-              originalLine?: number | null;
-              comments: {
-                nodes: Array<{
-                  body: string;
-                  url?: string;
-                  author: { login: string } | null;
-                }>;
-              };
-            }>;
-          };
-        };
-      };
-    } = await octokit.graphql(query, { owner, repo, prNumber });
-
-    const threads = result.repository.pullRequest.reviewThreads.nodes.map(thread => {
+    const threads = threadNodes.map(thread => {
       const firstComment = thread.comments.nodes[0];
       const isBotThread = firstComment?.body?.includes(BOT_MARKER) ?? false;
 
       // Use the latest non-bot reply so evolving threads (e.g. initial
       // "Fixed!" followed by a retraction) classify by the author's current
-      // stance rather than their first reaction. The `comments(first: 10)`
-      // cap above means threads with more than 10 replies can still miss the
-      // true last reply.
+      // stance rather than their first reaction.
       const nonBotReplies = thread.comments.nodes.filter((c, i) =>
         i > 0 && !isMankiLogin(c.author?.login)
       );
