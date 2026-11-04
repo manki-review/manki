@@ -4,7 +4,7 @@ author: 'xdustinface'
 
 inputs:
   claude_code_oauth_token:
-    description: 'Claude Code OAuth token for Max subscription authentication'
+    description: 'Claude Code OAuth token from `claude setup-token` (Claude subscription authentication)'
     required: false
   anthropic_api_key:
     description: 'Anthropic API key (alternative to OAuth token)'

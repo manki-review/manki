@@ -89,13 +89,11 @@ Manki supports Anthropic, OpenAI, and Gemini. You only need credentials for the 
 
 | Provider | API key input | OAuth input |
 |----------|--------------|-------------|
-| Anthropic | `anthropic_api_key` | `claude_code_oauth_token` (deprecated, see note) |
+| Anthropic | `anthropic_api_key` | `claude_code_oauth_token` (Claude Code CLI) |
 | OpenAI | `openai_api_key` | `openai_oauth_token` (Codex CLI) |
 | Gemini | `gemini_api_key` | `gemini_oauth_token` (Gemini CLI) |
 
 The table lists action input names (lowercase, passed in `with:`). The corresponding GitHub secret is the uppercase version: `anthropic_api_key` reads from `secrets.ANTHROPIC_API_KEY`, and so on, as shown in the workflow examples below.
-
-> **`claude_code_oauth_token` is deprecated.** Anthropic restricted Claude Code OAuth tokens for third-party tools on April 4, 2026. The input still works and the action emits a one-line `core.warning` per run. New setups should use `anthropic_api_key`. If you want a subscription-based path with no extra API charges, switch to `openai_oauth_token` (Codex CLI) or `gemini_oauth_token` (Gemini CLI).
 
 #### Effort mapping
 
@@ -120,16 +118,20 @@ The `max` tier collapses silently to `high` for OpenAI o-series and Gemini — n
    gh secret set ANTHROPIC_API_KEY --repo <owner>/<repo>
    ```
 
-#### Claude Code OAuth Token (deprecated)
+#### Claude Code OAuth Token (subscription)
 
-Older setups used `claude_code_oauth_token` to ride a Claude Max subscription. Anthropic restricted this token type for third-party tools on April 4, 2026. Existing tokens still work, the action prints a deprecation warning. New installations should use `ANTHROPIC_API_KEY` or one of the other providers below.
+Reviews run through the Claude Code CLI on your own Claude subscription instead of API billing. The action installs the CLI on the runner when it is missing.
 
-For reference, the original setup was:
+1. Generate a long-lived token locally:
+   ```bash
+   claude setup-token
+   ```
+2. Add it as a repository secret:
+   ```bash
+   gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo <owner>/<repo>
+   ```
 
-```bash
-claude setup-token
-gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo <owner>/<repo>
-```
+> **Shared secrets:** the token is tied to the subscription of the person who ran `claude setup-token`. For a secret shared across many repositories or set at the organization level, use `ANTHROPIC_API_KEY` instead, as [Anthropic's GitHub Actions docs](https://code.claude.com/docs/en/github-actions) advise.
 
 ### OpenAI
 
@@ -248,6 +250,15 @@ jobs:
 ```
 
 #### Workflow examples per provider
+
+Claude Code OAuth:
+
+```yaml
+      - name: Manki Review
+        uses: manki-review/manki@v5
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+```
 
 OpenAI API key:
 
@@ -577,7 +588,7 @@ Provide credentials for the providers you actually use. The model ID in `.manki.
 
 | Provider | API key | OAuth alternative |
 |----------|---------|-------------------|
-| Anthropic | `ANTHROPIC_API_KEY` | `CLAUDE_CODE_OAUTH_TOKEN` (deprecated) |
+| Anthropic | `ANTHROPIC_API_KEY` | `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) |
 | OpenAI | `OPENAI_API_KEY` | `OPENAI_OAUTH_TOKEN` (base64 of `~/.codex/auth.json`) |
 | Gemini | `GEMINI_API_KEY` | `GEMINI_OAUTH_TOKEN` (base64 of `~/.gemini/oauth_creds.json`) |
 
