@@ -6,8 +6,6 @@ import {
   buildReviewerSystemPrompt,
   buildReviewerUserMessage,
   buildPlannerSystemPrompt,
-  buildPlannerHints,
-  collectPriorRoundAgents,
   selectTeam,
   titlesMatch,
   truncateDiff,
@@ -2938,7 +2936,7 @@ describe('runReview', () => {
 
   it('uses planner result to set team size and effort when planner client is provided', async () => {
     const plannerResponse = JSON.stringify({
-      teamSize: 5,
+      teamSize: 3,
       reviewerEffort: 'medium',
       judgeEffort: 'medium',
       prType: 'feat',
@@ -2962,7 +2960,7 @@ describe('runReview', () => {
     const onProgress = jest.fn();
     const result = await runReview(clients, config, diff, 'raw diff', 'repo context', null, undefined, undefined, undefined, onProgress);
     expect(result.reviewComplete).toBe(true);
-    expect(result.agentNames).toHaveLength(5);
+    expect(result.agentNames).toHaveLength(3);
 
     // Planner client should have been called
     expect((clients.planner!.sendMessage as jest.Mock)).toHaveBeenCalledTimes(1);
@@ -2977,7 +2975,7 @@ describe('runReview', () => {
 
     // Planner result should be in the review result
     expect(result.plannerResult).toBeDefined();
-    expect(result.plannerResult!.teamSize).toBe(5);
+    expect(result.plannerResult!.teamSize).toBe(3);
     expect(result.plannerResult!.reviewerEffort).toBe('medium');
     expect(result.plannerResult!.judgeEffort).toBe('medium');
     expect(result.plannerResult!.prType).toBe('feat');
@@ -2989,12 +2987,12 @@ describe('runReview', () => {
     }
   });
 
-  it('runs a single trivial verifier agent and still invokes the judge when planner picks teamSize=1', async () => {
+  it('runs a single trivial verifier agent and still invokes the judge when planner picks teamSize=1 for a deletion-heavy diff', async () => {
     const plannerResponse = JSON.stringify({
       teamSize: 1,
       reviewerEffort: 'low',
       judgeEffort: 'low',
-      prType: 'docs',
+      prType: 'refactor',
     });
 
     const clients: ReviewClients = {
@@ -3010,7 +3008,7 @@ describe('runReview', () => {
     };
 
     const config = makeConfig({ review_level: 'auto' });
-    const diff = makeDiff({ totalAdditions: 2, totalDeletions: 0 });
+    const diff = makeDiff({ totalAdditions: 62, totalDeletions: 842 });
 
     mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
 
@@ -3040,6 +3038,36 @@ describe('runReview', () => {
     } finally {
       infoSpy.mockRestore();
     }
+  });
+
+  it('adds Security & Safety to the trivial verifier when a deletion-heavy teamSize=1 diff touches a sensitive path', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 1,
+      reviewerEffort: 'low',
+      judgeEffort: 'low',
+      prType: 'refactor',
+      agents: [{ name: 'Correctness & Logic', effort: 'low' }],
+    });
+    const reviewerSendMessage = jest.fn().mockResolvedValue({ content: '[]' });
+    const clients: ReviewClients = {
+      reviewer: { sendMessage: reviewerSendMessage } as unknown as import('./providers').LLMClient,
+      judge: { sendMessage: jest.fn() } as unknown as import('./providers').LLMClient,
+      planner: {
+        sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
+      } as unknown as import('./providers').LLMClient,
+    };
+    const diff = makeDiff({
+      totalAdditions: 62,
+      totalDeletions: 842,
+      files: [{ path: 'src/auth/session.ts', changeType: 'modified', hunks: [] }],
+    });
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
+
+    const result = await runReview(clients, makeConfig({ review_level: 'auto' }), diff, 'raw diff', 'repo context');
+
+    expect(result.agentNames).toEqual(['Trivial Change Verifier', 'Security & Safety']);
+    expect(result.coreAgentInjections).toEqual(['Security & Safety']);
+    expect(reviewerSendMessage).toHaveBeenCalledTimes(2);
   });
 
   it('passes planner judgeEffort to the judge agent', async () => {
@@ -3150,7 +3178,7 @@ describe('runReview', () => {
 
   it('includes custom reviewers when planner sets team size', async () => {
     const plannerResponse = JSON.stringify({
-      teamSize: 5,
+      teamSize: 3,
       reviewerEffort: 'medium',
       judgeEffort: 'medium',
       prType: 'feat',
@@ -3179,466 +3207,16 @@ describe('runReview', () => {
     expect(result.agentNames).toContain('Domain Expert');
   });
 
-  it('clamps high effort to low when last-round dismiss rate is 100% with sample size >= 2', async () => {
+  it('picks each round\'s team fresh from the planner, without prior-round agents or outcomes', async () => {
     const plannerResponse = JSON.stringify({
-      teamSize: 3,
+      teamSize: 2,
       reviewerEffort: 'medium',
       judgeEffort: 'medium',
-      prType: 'feat',
+      prType: 'fix',
       agents: [
-        { name: 'Security & Safety', effort: 'high' },
-        { name: 'Correctness & Logic', effort: 'high' },
-        { name: 'Architecture & Design', effort: 'medium' },
-      ],
-    });
-    const clients: ReviewClients = {
-      reviewer: {
-        sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-      } as unknown as import('./providers').LLMClient,
-      judge: {
-        sendMessage: jest.fn(),
-      } as unknown as import('./providers').LLMClient,
-      planner: {
-        sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
-      } as unknown as import('./providers').LLMClient,
-    };
-    const config = makeConfig({ review_level: 'auto' });
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
-    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
-
-    const priorRounds: LegacyHandoverRoundFixture[] = [
-      {
-        round: 1,
-        commitSha: 'sha1',
-        timestamp: '2024-01-01T00:00:00Z',
-        findings: [
-          { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'blocker', title: 't1', authorReply: 'agree', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'blocker', title: 't2', authorReply: 'agree', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 3, lineEnd: 3, slug: 's3' }, severity: 'blocker', title: 't3', authorReply: 'agree', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 4, lineEnd: 4, slug: 's4' }, severity: 'blocker', title: 't4', authorReply: 'none', specialist: 'Correctness & Logic' },
-          { fingerprint: { file: 'a.ts', lineStart: 5, lineEnd: 5, slug: 's5' }, severity: 'blocker', title: 't5', authorReply: 'agree', specialist: 'Correctness & Logic' },
-          { fingerprint: { file: 'a.ts', lineStart: 6, lineEnd: 6, slug: 's6' }, severity: 'blocker', title: 't6', authorReply: 'agree', specialist: 'Correctness & Logic' },
-        ],
-      },
-    ];
-
-    const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
-    try {
-      const result = await runReview(
-        clients, config, diff, 'raw diff', 'repo context',
-        undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-        priorRounds.map(roundContextFromLegacy),
-      );
-      expect(result.plannerResult?.agents).toBeDefined();
-      const secPick = result.plannerResult!.agents!.find(a => a.name === 'Security & Safety');
-      const corPick = result.plannerResult!.agents!.find(a => a.name === 'Correctness & Logic');
-      // 100% dismiss rate with sample >= 2 and effort high -> clamp to low
-      expect(secPick?.effort).toBe('low');
-      // Non-zero keep rate, guard does not fire
-      expect(corPick?.effort).toBe('high');
-
-      const clampLogs = infoSpy.mock.calls.filter(
-        c => typeof c[0] === 'string' && c[0].includes('Downgrading "Security & Safety"'),
-      );
-      expect(clampLogs.length).toBe(1);
-    } finally {
-      infoSpy.mockRestore();
-    }
-  });
-
-  it('does not downgrade effort when dismiss sample is below threshold', async () => {
-    const plannerResponse = JSON.stringify({
-      teamSize: 3,
-      reviewerEffort: 'medium',
-      judgeEffort: 'medium',
-      prType: 'feat',
-      agents: [
-        { name: 'Security & Safety', effort: 'high' },
         { name: 'Correctness & Logic', effort: 'medium' },
-        { name: 'Architecture & Design', effort: 'low' },
+        { name: 'Testing & Coverage', effort: 'medium' },
       ],
-    });
-    const clients: ReviewClients = {
-      reviewer: {
-        sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-      } as unknown as import('./providers').LLMClient,
-      judge: {
-        sendMessage: jest.fn(),
-      } as unknown as import('./providers').LLMClient,
-      planner: {
-        sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
-      } as unknown as import('./providers').LLMClient,
-    };
-    const config = makeConfig({ review_level: 'auto' });
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
-    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
-
-    const priorRounds: LegacyHandoverRoundFixture[] = [
-      {
-        round: 1,
-        commitSha: 'sha1',
-        timestamp: '2024-01-01T00:00:00Z',
-        findings: [
-          { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'blocker', title: 't1', authorReply: 'agree', specialist: 'Security & Safety' },
-        ],
-      },
-    ];
-
-    const result = await runReview(
-      clients, config, diff, 'raw diff', 'repo context',
-      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      priorRounds.map(roundContextFromLegacy),
-    );
-    const secPick = result.plannerResult!.agents!.find(a => a.name === 'Security & Safety');
-    expect(secPick?.effort).toBe('high');
-  });
-
-  it('uses only the most recent hint when an older round has 100% dismissals but the latest does not', async () => {
-    const plannerResponse = JSON.stringify({
-      teamSize: 1,
-      reviewerEffort: 'medium',
-      judgeEffort: 'medium',
-      prType: 'feat',
-      agents: [{ name: 'Security & Safety', effort: 'high' }],
-    });
-    const clients: ReviewClients = {
-      reviewer: {
-        sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-      } as unknown as import('./providers').LLMClient,
-      judge: { sendMessage: jest.fn() } as unknown as import('./providers').LLMClient,
-      planner: {
-        sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
-      } as unknown as import('./providers').LLMClient,
-    };
-    const config = makeConfig({ review_level: 'auto' });
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
-    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
-
-    // Round 1: 100% dismiss rate (would trigger downgrade). Round 2 (most recent): 50% keep rate (guard must NOT fire).
-    const priorRounds: LegacyHandoverRoundFixture[] = [
-      {
-        round: 1,
-        commitSha: 'sha1',
-        timestamp: '2024-01-01T00:00:00Z',
-        findings: [
-          { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'blocker', title: 't1', authorReply: 'agree', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'blocker', title: 't2', authorReply: 'agree', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 3, lineEnd: 3, slug: 's3' }, severity: 'blocker', title: 't3', authorReply: 'agree', specialist: 'Security & Safety' },
-        ],
-      },
-      {
-        round: 2,
-        commitSha: 'sha2',
-        timestamp: '2024-01-02T00:00:00Z',
-        findings: [
-          { fingerprint: { file: 'a.ts', lineStart: 4, lineEnd: 4, slug: 's4' }, severity: 'blocker', title: 't4', authorReply: 'none', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 5, lineEnd: 5, slug: 's5' }, severity: 'blocker', title: 't5', authorReply: 'none', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 6, lineEnd: 6, slug: 's6' }, severity: 'blocker', title: 't6', authorReply: 'agree', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 7, lineEnd: 7, slug: 's7' }, severity: 'blocker', title: 't7', authorReply: 'agree', specialist: 'Security & Safety' },
-        ],
-      },
-    ];
-
-    const result = await runReview(
-      clients, config, diff, 'raw diff', 'repo context',
-      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      priorRounds.map(roundContextFromLegacy),
-    );
-    const secPick = result.plannerResult!.agents!.find(a => a.name === 'Security & Safety');
-    // Most recent round has kept findings — guard must not fire even though round 1 had 100% dismissals.
-    expect(secPick?.effort).toBe('high');
-  });
-
-  it('downgrades based on most recent hint when an older round has non-zero keeps', async () => {
-    const plannerResponse = JSON.stringify({
-      teamSize: 1,
-      reviewerEffort: 'medium',
-      judgeEffort: 'medium',
-      prType: 'feat',
-      agents: [{ name: 'Security & Safety', effort: 'high' }],
-    });
-    const clients: ReviewClients = {
-      reviewer: {
-        sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-      } as unknown as import('./providers').LLMClient,
-      judge: { sendMessage: jest.fn() } as unknown as import('./providers').LLMClient,
-      planner: {
-        sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
-      } as unknown as import('./providers').LLMClient,
-    };
-    const config = makeConfig({ review_level: 'auto' });
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
-    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
-
-    // Round 1: non-zero keeps (guard would not fire). Round 2 (most recent): 100% dismissals (guard SHOULD fire).
-    const priorRounds: LegacyHandoverRoundFixture[] = [
-      {
-        round: 1,
-        commitSha: 'sha1',
-        timestamp: '2024-01-01T00:00:00Z',
-        findings: [
-          { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'blocker', title: 't1', authorReply: 'none', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'blocker', title: 't2', authorReply: 'none', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 3, lineEnd: 3, slug: 's3' }, severity: 'blocker', title: 't3', authorReply: 'agree', specialist: 'Security & Safety' },
-        ],
-      },
-      {
-        round: 2,
-        commitSha: 'sha2',
-        timestamp: '2024-01-02T00:00:00Z',
-        findings: [
-          { fingerprint: { file: 'a.ts', lineStart: 4, lineEnd: 4, slug: 's4' }, severity: 'blocker', title: 't4', authorReply: 'agree', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 5, lineEnd: 5, slug: 's5' }, severity: 'blocker', title: 't5', authorReply: 'agree', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 6, lineEnd: 6, slug: 's6' }, severity: 'blocker', title: 't6', authorReply: 'agree', specialist: 'Security & Safety' },
-        ],
-      },
-    ];
-
-    const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
-    try {
-      const result = await runReview(
-        clients, config, diff, 'raw diff', 'repo context',
-        undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-        priorRounds.map(roundContextFromLegacy),
-      );
-      const secPick = result.plannerResult!.agents!.find(a => a.name === 'Security & Safety');
-      // Most recent round dismissed all findings — guard fires based on last hint.
-      expect(secPick?.effort).toBe('low');
-    } finally {
-      infoSpy.mockRestore();
-    }
-  });
-
-  it('applies effort downgrade per-specialist independently when hints cover multiple specialists', async () => {
-    const plannerResponse = JSON.stringify({
-      teamSize: 3,
-      reviewerEffort: 'medium',
-      judgeEffort: 'medium',
-      prType: 'feat',
-      agents: [
-        { name: 'Security & Safety', effort: 'high' },
-        { name: 'Correctness & Logic', effort: 'high' },
-        { name: 'Architecture & Design', effort: 'high' },
-      ],
-    });
-    const clients: ReviewClients = {
-      reviewer: {
-        sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-      } as unknown as import('./providers').LLMClient,
-      judge: { sendMessage: jest.fn() } as unknown as import('./providers').LLMClient,
-      planner: {
-        sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
-      } as unknown as import('./providers').LLMClient,
-    };
-    const config = makeConfig({ review_level: 'auto' });
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
-    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
-
-    // Single round with three specialists: two should downgrade, one should not.
-    const priorRounds: LegacyHandoverRoundFixture[] = [
-      {
-        round: 1,
-        commitSha: 'sha1',
-        timestamp: '2024-01-01T00:00:00Z',
-        findings: [
-          { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'blocker', title: 't1', authorReply: 'agree', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'blocker', title: 't2', authorReply: 'agree', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 3, lineEnd: 3, slug: 's3' }, severity: 'blocker', title: 't3', authorReply: 'agree', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 4, lineEnd: 4, slug: 's4' }, severity: 'blocker', title: 't4', authorReply: 'none', specialist: 'Correctness & Logic' },
-          { fingerprint: { file: 'a.ts', lineStart: 5, lineEnd: 5, slug: 's5' }, severity: 'blocker', title: 't5', authorReply: 'agree', specialist: 'Correctness & Logic' },
-          { fingerprint: { file: 'a.ts', lineStart: 6, lineEnd: 6, slug: 's6' }, severity: 'blocker', title: 't6', authorReply: 'agree', specialist: 'Correctness & Logic' },
-          { fingerprint: { file: 'a.ts', lineStart: 7, lineEnd: 7, slug: 's7' }, severity: 'blocker', title: 't7', authorReply: 'agree', specialist: 'Architecture & Design' },
-          { fingerprint: { file: 'a.ts', lineStart: 8, lineEnd: 8, slug: 's8' }, severity: 'blocker', title: 't8', authorReply: 'agree', specialist: 'Architecture & Design' },
-          { fingerprint: { file: 'a.ts', lineStart: 9, lineEnd: 9, slug: 's9' }, severity: 'blocker', title: 't9', authorReply: 'agree', specialist: 'Architecture & Design' },
-          { fingerprint: { file: 'a.ts', lineStart: 10, lineEnd: 10, slug: 's10' }, severity: 'blocker', title: 't10', authorReply: 'agree', specialist: 'Architecture & Design' },
-        ],
-      },
-    ];
-
-    const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
-    try {
-      const result = await runReview(
-        clients, config, diff, 'raw diff', 'repo context',
-        undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-        priorRounds.map(roundContextFromLegacy),
-      );
-      const secPick = result.plannerResult!.agents!.find(a => a.name === 'Security & Safety');
-      const corPick = result.plannerResult!.agents!.find(a => a.name === 'Correctness & Logic');
-      const archPick = result.plannerResult!.agents!.find(a => a.name === 'Architecture & Design');
-      // 100% dismiss, sample >= 2 -> downgrade
-      expect(secPick?.effort).toBe('low');
-      // Non-zero keeps -> no downgrade
-      expect(corPick?.effort).toBe('high');
-      // 100% dismiss, sample >= 2 -> downgrade
-      expect(archPick?.effort).toBe('low');
-    } finally {
-      infoSpy.mockRestore();
-    }
-  });
-
-  function makeEffortDowngradeFixture() {
-    const plannerResponse = JSON.stringify({
-      teamSize: 1,
-      reviewerEffort: 'medium',
-      judgeEffort: 'medium',
-      prType: 'feat',
-      agents: [{ name: 'Security & Safety', effort: 'high' }],
-    });
-    const clients: ReviewClients = {
-      reviewer: {
-        sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-      } as unknown as import('./providers').LLMClient,
-      judge: { sendMessage: jest.fn() } as unknown as import('./providers').LLMClient,
-      planner: {
-        sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
-      } as unknown as import('./providers').LLMClient,
-    };
-    const config = makeConfig({ review_level: 'auto' });
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
-    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
-    return { clients, config, diff };
-  }
-
-  it('fires effort downgrade when findingsDismissed equals EFFORT_DOWNGRADE_MIN_SAMPLE (2)', async () => {
-    const { clients, config, diff } = makeEffortDowngradeFixture();
-
-    // Exactly 2 dismissed, 0 kept → 100% dismiss rate at EFFORT_DOWNGRADE_MIN_SAMPLE boundary.
-    const priorRounds: LegacyHandoverRoundFixture[] = [{
-      round: 1,
-      commitSha: 'abc',
-      timestamp: 't',
-      findings: [
-        { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'suggestion', title: 't1', authorReply: 'agree', specialist: 'Security & Safety' },
-        { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'suggestion', title: 't2', authorReply: 'agree', specialist: 'Security & Safety' },
-      ],
-    }];
-
-    const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
-    try {
-      const result = await runReview(
-        clients, config, diff, 'raw diff', 'repo context',
-        undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-        priorRounds.map(roundContextFromLegacy),
-      );
-      const secPick = result.plannerResult!.agents!.find(a => a.name === 'Security & Safety');
-      expect(secPick?.effort).toBe('low');
-    } finally {
-      infoSpy.mockRestore();
-    }
-  });
-
-  it('does not fire effort downgrade when findingsDismissed is below EFFORT_DOWNGRADE_MIN_SAMPLE (1 < 2)', async () => {
-    const { clients, config, diff } = makeEffortDowngradeFixture();
-
-    // Only 1 dismissed — below the minimum sample threshold, guard must not fire.
-    const priorRounds: LegacyHandoverRoundFixture[] = [{
-      round: 1,
-      commitSha: 'abc',
-      timestamp: 't',
-      findings: [
-        { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'suggestion', title: 't1', authorReply: 'agree', specialist: 'Security & Safety' },
-      ],
-    }];
-
-    const result = await runReview(
-      clients, config, diff, 'raw diff', 'repo context',
-      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      priorRounds.map(roundContextFromLegacy),
-    );
-    const secPick = result.plannerResult!.agents!.find(a => a.name === 'Security & Safety');
-    expect(secPick?.effort).toBe('high');
-  });
-
-  it('applies applyEffortDowngrade on a follow-up round without giving the planner round context', async () => {
-    const { clients, config, diff } = makeEffortDowngradeFixture();
-
-    const priorRounds: LegacyHandoverRoundFixture[] = [{
-      round: 1,
-      commitSha: 'abc',
-      timestamp: 't',
-      findings: [
-        { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'suggestion', title: 't1', authorReply: 'agree', specialist: 'Security & Safety' },
-        { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'suggestion', title: 't2', authorReply: 'agree', specialist: 'Security & Safety' },
-      ],
-    }];
-
-    const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
-    try {
-      const result = await runReview(
-        clients, config, diff, 'raw diff', 'repo context',
-        undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-        priorRounds.map(roundContextFromLegacy),
-        undefined,
-        '--- a/foo.ts\n+++ b/foo.ts\n@@ -1,3 +1,3 @@\n context\n-removed line one\n-removed line two\n+added line one',
-      );
-
-      const plannerSend = (clients.planner!.sendMessage as jest.Mock).mock.calls[0];
-      const systemPrompt = plannerSend[0] as string;
-      expect(systemPrompt).not.toContain('Follow-Up Round Context');
-      expect(systemPrompt).not.toContain('This is round');
-      expect(systemPrompt).not.toContain('pinned team');
-
-      const secPick = result.plannerResult!.agents!.find(a => a.name === 'Security & Safety');
-      expect(secPick?.effort).toBe('low');
-    } finally {
-      infoSpy.mockRestore();
-    }
-  });
-
-  it('applyEffortDowngrade uses last hint by array position, not by round number', async () => {
-    // When hints are out of order by round number, the guard reads hints[hints.length - 1]
-    // (the last element by position). This test documents that coupling so future changes
-    // to sort hints before reading are caught.
-    const { clients, config, diff } = makeEffortDowngradeFixture();
-
-    // priorRounds in non-chronological order: round 3 first in the array, round 1 last.
-    // buildPlannerHints preserves array order, so hints[hints.length - 1] = round 1 (100%
-    // dismiss, sample >= 2). Round 3 has non-zero keeps but is at index 0 so the guard ignores it.
-    const priorRoundsOutOfOrder: LegacyHandoverRoundFixture[] = [
-      {
-        round: 3,
-        commitSha: 'abc3',
-        timestamp: 't3',
-        findings: [
-          { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'suggestion', title: 't1', authorReply: 'none', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'suggestion', title: 't2', authorReply: 'none', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 3, lineEnd: 3, slug: 's3' }, severity: 'suggestion', title: 't3', authorReply: 'agree', specialist: 'Security & Safety' },
-        ],
-      },
-      {
-        round: 1,
-        commitSha: 'abc1',
-        timestamp: 't1',
-        findings: [
-          { fingerprint: { file: 'a.ts', lineStart: 4, lineEnd: 4, slug: 's4' }, severity: 'suggestion', title: 't4', authorReply: 'agree', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 5, lineEnd: 5, slug: 's5' }, severity: 'suggestion', title: 't5', authorReply: 'agree', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 6, lineEnd: 6, slug: 's6' }, severity: 'suggestion', title: 't6', authorReply: 'agree', specialist: 'Security & Safety' },
-        ],
-      },
-    ];
-
-    const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
-    try {
-      const result = await runReview(
-        clients, config, diff, 'raw diff', 'repo context',
-        undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-        priorRoundsOutOfOrder.map(roundContextFromLegacy),
-      );
-      const secPick = result.plannerResult!.agents!.find(a => a.name === 'Security & Safety');
-      // Guard fires on the last array element (round 1, 100% dismiss) even though
-      // the numerically most-recent round (3) has non-zero keeps.
-      expect(secPick?.effort).toBe('low');
-    } finally {
-      infoSpy.mockRestore();
-    }
-  });
-
-  it('derives planner hints from priorRounds and forwards them to the planner prompt', async () => {
-    const plannerResponse = JSON.stringify({
-      teamSize: 3,
-      reviewerEffort: 'medium',
-      judgeEffort: 'medium',
-      prType: 'feat',
     });
     const plannerSpy = jest.fn().mockResolvedValue({ content: plannerResponse });
     const clients: ReviewClients = {
@@ -3659,52 +3237,24 @@ describe('runReview', () => {
         round: 1,
         commitSha: 'sha1',
         timestamp: '2024-01-01T00:00:00Z',
+        agents: ['Architecture & Design', 'Correctness & Logic', 'Testing & Coverage', 'Maintainability & Readability'],
         findings: [
           { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'blocker', title: 't1', authorReply: 'none', specialist: 'Architecture & Design' },
-          { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'blocker', title: 't2', authorReply: 'none', specialist: 'Architecture & Design' },
-          { fingerprint: { file: 'a.ts', lineStart: 3, lineEnd: 3, slug: 's3' }, severity: 'blocker', title: 't3', authorReply: 'none', specialist: 'Architecture & Design' },
-          { fingerprint: { file: 'a.ts', lineStart: 4, lineEnd: 4, slug: 's4' }, severity: 'blocker', title: 't4', authorReply: 'agree', specialist: 'Architecture & Design' },
-          { fingerprint: { file: 'a.ts', lineStart: 5, lineEnd: 5, slug: 's5' }, severity: 'blocker', title: 't5', authorReply: 'agree', specialist: 'Architecture & Design' },
+          { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'blocker', title: 't2', authorReply: 'agree', specialist: 'Architecture & Design' },
         ],
       },
     ];
 
-    await runReview(
+    const result = await runReview(
       clients, config, diff, 'raw diff', 'repo context',
       undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
       priorRounds.map(roundContextFromLegacy),
     );
 
-    const systemPrompt = plannerSpy.mock.calls[0][0] as string;
-    expect(systemPrompt).toContain('Prior Round Outcomes');
-    expect(systemPrompt).toContain('"Architecture & Design" — 3 kept, 2 dismissed');
-  });
-
-  it('passes empty hints to planner when priorRounds is undefined', async () => {
-    const plannerResponse = JSON.stringify({
-      teamSize: 3,
-      reviewerEffort: 'medium',
-      judgeEffort: 'medium',
-      prType: 'feat',
-    });
-    const plannerSpy = jest.fn().mockResolvedValue({ content: plannerResponse });
-    const clients: ReviewClients = {
-      reviewer: {
-        sendMessage: jest.fn().mockResolvedValue({ content: '[]' }),
-      } as unknown as import('./providers').LLMClient,
-      judge: {
-        sendMessage: jest.fn(),
-      } as unknown as import('./providers').LLMClient,
-      planner: { sendMessage: plannerSpy } as unknown as import('./providers').LLMClient,
-    };
-    const config = makeConfig({ review_level: 'auto' });
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
-    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
-
-    await runReview(clients, config, diff, 'raw diff', 'repo context');
-
+    expect(result.agentNames).toEqual(['Correctness & Logic', 'Testing & Coverage']);
     const systemPrompt = plannerSpy.mock.calls[0][0] as string;
     expect(systemPrompt).not.toContain('Prior Round Outcomes');
+    expect(systemPrompt).not.toContain('kept,');
   });
 
   it('falls back to selectTeam when planner returns error', async () => {
@@ -4293,7 +3843,7 @@ describe('runReview', () => {
     expect(judgeInput.provenanceMap).toEqual(provenance);
   });
 
-  it('passes prior-round agents through to selectTeam when priorRounds carries agents', async () => {
+  it('leaves prior-round agents out of the heuristic team', async () => {
     const priorRounds: LegacyHandoverRoundFixture[] = [
       {
         round: 1,
@@ -4320,13 +3870,7 @@ describe('runReview', () => {
       false, [], [], priorRounds.map(roundContextFromLegacy),
     );
 
-    // Prior-round non-core agents must be preserved in the resolved team.
-    expect(result.agentNames).toContain('Testing & Coverage');
-    expect(result.agentNames).toContain('Maintainability & Readability');
-    // Core agents are always present.
-    expect(result.agentNames).toContain('Security & Safety');
-    // No duplicates from the union of core and prior-round agents.
-    expect(new Set(result.agentNames).size).toBe(result.agentNames.length);
+    expect(result.agentNames).toEqual(['Security & Safety', 'Architecture & Design', 'Correctness & Logic']);
   });
 
   it('sends reviewers the same prompts on a follow-up round as on round 1 for the same diff', async () => {
@@ -4494,7 +4038,7 @@ describe('runPlanner', () => {
 
   it('returns valid PlannerResult from mocked LLM response', async () => {
     const response = JSON.stringify({
-      teamSize: 5,
+      teamSize: 3,
       reviewerEffort: 'medium',
       judgeEffort: 'high',
       prType: 'feat',
@@ -4509,7 +4053,7 @@ describe('runPlanner', () => {
 
     const result = await runPlanner(client, diff);
     expect(result).not.toBeNull();
-    expect(result!.teamSize).toBe(5);
+    expect(result!.teamSize).toBe(3);
     expect(result!.reviewerEffort).toBe('medium');
     expect(result!.judgeEffort).toBe('high');
     expect(result!.prType).toBe('feat');
@@ -4539,20 +4083,22 @@ describe('runPlanner', () => {
   });
 
   it('returns null when teamSize is invalid', async () => {
-    const client = makeClient(JSON.stringify({
-      teamSize: 8,
-      reviewerEffort: 'medium',
-      judgeEffort: 'medium',
-      prType: 'feat',
-    }));
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
-    const result = await runPlanner(client, diff);
-    expect(result).toBeNull();
+    for (const size of [0, 4, 7, 8]) {
+      const client = makeClient(JSON.stringify({
+        teamSize: size,
+        reviewerEffort: 'medium',
+        judgeEffort: 'medium',
+        prType: 'feat',
+      }));
+      const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
+      const result = await runPlanner(client, diff);
+      expect(result).toBeNull();
+    }
   });
 
   it('returns null when judgeEffort is invalid', async () => {
     const client = makeClient(JSON.stringify({
-      teamSize: 5,
+      teamSize: 3,
       reviewerEffort: 'medium',
       judgeEffort: 'max',
       prType: 'feat',
@@ -4583,7 +4129,7 @@ describe('runPlanner', () => {
   });
 
   it('accepts all valid team sizes', async () => {
-    for (const size of [1, 2, 3, 4, 5, 6, 7]) {
+    for (const size of [1, 2, 3]) {
       const client = makeClient(JSON.stringify({
         teamSize: size,
         reviewerEffort: 'low',
@@ -4832,7 +4378,7 @@ describe('runPlanner', () => {
     const client = makeClient(response, truncated);
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
     const outcome: PlannerOutcomeSink = {};
-    const result = await runPlanner(client, diff, undefined, undefined, undefined, outcome);
+    const result = await runPlanner(client, diff, undefined, undefined, outcome);
     expect(result).toBeNull();
     expect(outcome.fallbackReason).toBe(expectedReason);
   });
@@ -4845,7 +4391,7 @@ describe('runPlanner', () => {
       } as unknown as import('./providers').LLMClient;
       const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
       const outcome: PlannerOutcomeSink = {};
-      const resultPromise = runPlanner(client, diff, undefined, undefined, undefined, outcome);
+      const resultPromise = runPlanner(client, diff, undefined, undefined, outcome);
       jest.advanceTimersByTime(PLANNER_TIMEOUT_MS);
       const result = await resultPromise;
       expect(result).toBeNull();
@@ -4870,7 +4416,7 @@ describe('runPlanner', () => {
     const client = makeClient(response);
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
     const outcome: PlannerOutcomeSink = {};
-    const result = await runPlanner(client, diff, undefined, undefined, undefined, outcome);
+    const result = await runPlanner(client, diff, undefined, undefined, outcome);
     expect(result).toBeNull();
     expect(outcome.fallbackReason).toBe('agents_teamSize_mismatch');
   });
@@ -4880,21 +4426,13 @@ describe('runPlanner', () => {
     const client = makeClient(response);
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
     const outcome: PlannerOutcomeSink = {};
-    const result = await runPlanner(client, diff, undefined, undefined, undefined, outcome);
+    const result = await runPlanner(client, diff, undefined, undefined, outcome);
     expect(result).not.toBeNull();
     expect(outcome.fallbackReason).toBeUndefined();
   });
 });
 
 describe('selectTeam with teamSizeOverride', () => {
-  it('uses override instead of line-count-based sizing', () => {
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
-    const config = makeConfig();
-    const roster = selectTeam(diff, config, undefined, 7);
-    expect(roster.agents).toHaveLength(7);
-    expect(roster.level).toBe('large');
-  });
-
   it('maps override of 2 to small level with agent picks', () => {
     const diff = makeDiff({ totalAdditions: 30, totalDeletions: 5 });
     const config = makeConfig();
@@ -4914,28 +4452,6 @@ describe('selectTeam with teamSizeOverride', () => {
     const roster = selectTeam(diff, config, undefined, 3);
     expect(roster.agents).toHaveLength(3);
     expect(roster.level).toBe('small');
-  });
-
-  it('maps override of 4 to medium level with agent picks', () => {
-    const diff = makeDiff({ totalAdditions: 100, totalDeletions: 50 });
-    const config = makeConfig();
-    const picks: AgentPick[] = [
-      { name: 'Security & Safety', effort: 'high' },
-      { name: 'Correctness & Logic', effort: 'medium' },
-      { name: 'Architecture & Design', effort: 'medium' },
-      { name: 'Testing & Coverage', effort: 'low' },
-    ];
-    const roster = selectTeam(diff, config, undefined, 4, picks);
-    expect(roster.agents).toHaveLength(4);
-    expect(roster.level).toBe('medium');
-  });
-
-  it('maps override of 5 to medium level', () => {
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
-    const config = makeConfig();
-    const roster = selectTeam(diff, config, undefined, 5);
-    expect(roster.agents).toHaveLength(5);
-    expect(roster.level).toBe('medium');
   });
 
   it('returns single trivial verifier agent when override is 1', () => {
@@ -4967,18 +4483,6 @@ describe('selectTeam with teamSizeOverride', () => {
     } finally {
       infoSpy.mockRestore();
     }
-  });
-
-  it('keeps heuristic agent scoring with override', () => {
-    const diff = makeDiff({
-      totalAdditions: 10,
-      totalDeletions: 5,
-      files: [{ path: 'src/review.test.ts', changeType: 'modified', hunks: [] }],
-    });
-    const config = makeConfig();
-    const roster = selectTeam(diff, config, undefined, 5);
-    expect(roster.agents).toHaveLength(5);
-    expect(roster.agents.map(a => a.name)).toContain('Testing & Coverage');
   });
 
   it('uses planner agent picks when provided', () => {
@@ -5019,12 +4523,11 @@ describe('selectTeam with teamSizeOverride', () => {
     const config = makeConfig();
     const picks: AgentPick[] = [
       { name: 'Security & Safety', effort: 'high' },
-      { name: 'Architecture & Design', effort: 'medium' },
       { name: 'Correctness & Logic', effort: 'low' },
       { name: 'Protocol Expert', effort: 'medium' },
     ];
-    const roster = selectTeam(diff, config, [custom], 4, picks);
-    expect(roster.agents).toHaveLength(4);
+    const roster = selectTeam(diff, config, [custom], 3, picks);
+    expect(roster.agents).toHaveLength(3);
     expect(roster.agents.map(a => a.name)).toContain('Protocol Expert');
   });
 
@@ -5111,219 +4614,6 @@ describe('selectTeam with teamSizeOverride', () => {
     expect(roster.level).toBe('small');
   });
 
-  it('round 2 reuses round 1 team verbatim when planner adds nothing', () => {
-    const diff = makeDiff({ totalAdditions: 50, totalDeletions: 20 });
-    const config = makeConfig();
-    const prior = ['Security & Safety', 'Architecture & Design', 'Correctness & Logic', 'Testing & Coverage'];
-    const picks: AgentPick[] = [
-      { name: 'Security & Safety', effort: 'high' },
-      { name: 'Architecture & Design', effort: 'medium' },
-      { name: 'Correctness & Logic', effort: 'medium' },
-      { name: 'Testing & Coverage', effort: 'low' },
-    ];
-    const roster = selectTeam(diff, config, undefined, 4, picks, prior);
-    expect(roster.agents.map(a => a.name)).toEqual(prior);
-    expect(roster.agents).toHaveLength(4);
-  });
-
-  it('round 2 adds a new agent on top of prior-round team', () => {
-    const diff = makeDiff({ totalAdditions: 100, totalDeletions: 50 });
-    const config = makeConfig();
-    const prior = ['Security & Safety', 'Architecture & Design', 'Correctness & Logic'];
-    const picks: AgentPick[] = [
-      { name: 'Security & Safety', effort: 'high' },
-      { name: 'Architecture & Design', effort: 'medium' },
-      { name: 'Correctness & Logic', effort: 'medium' },
-      { name: 'Performance & Efficiency', effort: 'low' },
-    ];
-    const roster = selectTeam(diff, config, undefined, 4, picks, prior);
-    expect(roster.agents.map(a => a.name)).toEqual([
-      'Security & Safety',
-      'Architecture & Design',
-      'Correctness & Logic',
-      'Performance & Efficiency',
-    ]);
-  });
-
-  it('round 2 includes prior-round agent the planner omitted, with audit log', () => {
-    const diff = makeDiff({ totalAdditions: 50, totalDeletions: 20 });
-    const config = makeConfig();
-    const prior = ['Security & Safety', 'Architecture & Design', 'Correctness & Logic', 'Testing & Coverage'];
-    // Planner omits Testing & Coverage in round 2.
-    const picks: AgentPick[] = [
-      { name: 'Security & Safety', effort: 'high' },
-      { name: 'Architecture & Design', effort: 'medium' },
-      { name: 'Correctness & Logic', effort: 'medium' },
-    ];
-    const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
-    try {
-      const roster = selectTeam(diff, config, undefined, 3, picks, prior);
-      expect(roster.agents.map(a => a.name)).toContain('Testing & Coverage');
-      expect(roster.agents.map(a => a.name)).toEqual([
-        'Security & Safety',
-        'Architecture & Design',
-        'Correctness & Logic',
-        'Testing & Coverage',
-      ]);
-      expect(infoSpy).toHaveBeenCalledWith(
-        'pinned team: inherited [Security & Safety, Architecture & Design, Correctness & Logic, Testing & Coverage], added []',
-      );
-    } finally {
-      infoSpy.mockRestore();
-    }
-  });
-
-  it('round 2 audit log distinguishes inherited from newly added', () => {
-    const diff = makeDiff({ totalAdditions: 50, totalDeletions: 20 });
-    const config = makeConfig();
-    const prior = ['Security & Safety', 'Architecture & Design', 'Correctness & Logic'];
-    const picks: AgentPick[] = [
-      { name: 'Security & Safety', effort: 'high' },
-      { name: 'Architecture & Design', effort: 'medium' },
-      { name: 'Correctness & Logic', effort: 'medium' },
-      { name: 'Performance & Efficiency', effort: 'low' },
-    ];
-    const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
-    try {
-      selectTeam(diff, config, undefined, 4, picks, prior);
-      expect(infoSpy).toHaveBeenCalledWith(
-        'pinned team: inherited [Security & Safety, Architecture & Design, Correctness & Logic], added [Performance & Efficiency]',
-      );
-    } finally {
-      infoSpy.mockRestore();
-    }
-  });
-
-  it('heuristic path also honors prior-round agents', () => {
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
-    const config = makeConfig();
-    // Heuristic on a tiny diff would not include Maintainability & Readability
-    // (no test paths, no large file count). Pinning must keep it in.
-    const prior = ['Security & Safety', 'Architecture & Design', 'Correctness & Logic', 'Maintainability & Readability'];
-    const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
-    try {
-      const roster = selectTeam(diff, config, undefined, undefined, undefined, prior);
-      expect(roster.agents.map(a => a.name)).toContain('Maintainability & Readability');
-      expect(infoSpy).toHaveBeenCalledWith(
-        'pinned team: inherited [Security & Safety, Architecture & Design, Correctness & Logic, Maintainability & Readability], added []',
-      );
-    } finally {
-      infoSpy.mockRestore();
-    }
-  });
-
-  it('heuristic path places prior agents before heuristic fills', () => {
-    const diff = makeDiff({ totalAdditions: 300, totalDeletions: 100 });
-    const config = makeConfig();
-    // Include Security & Safety (a core agent) alongside Maintainability & Readability
-    // so we can confirm core agents appear before the non-core prior agent.
-    const priorWithCore = ['Security & Safety', 'Maintainability & Readability'];
-    const roster = selectTeam(diff, config, undefined, undefined, undefined, priorWithCore);
-    const names = roster.agents.map(a => a.name);
-    const secIdx = names.indexOf('Security & Safety');
-    const maintIdx = names.indexOf('Maintainability & Readability');
-    expect(maintIdx).toBeGreaterThan(-1);
-    // Security & Safety is a core agent and must come before Maintainability & Readability.
-    expect(secIdx).toBeLessThan(maintIdx);
-    // Heuristic fills (agents not in the prior list and not core) come after prior agents.
-    const coreAndPrior = new Set(['Security & Safety', 'Architecture & Design', 'Correctness & Logic', 'Maintainability & Readability']);
-    // Guard: the heuristic must add at least one agent beyond core+prior for the ordering assertion below to be meaningful.
-    expect(names.length).toBeGreaterThan(coreAndPrior.size);
-    const firstHeuristicFill = names.findIndex(n => !coreAndPrior.has(n));
-    expect(firstHeuristicFill).toBeGreaterThan(-1);
-    expect(maintIdx).toBeLessThan(firstHeuristicFill);
-  });
-
-  it('skips unknown prior-round agent name and warns', () => {
-    const diff = makeDiff({ totalAdditions: 50, totalDeletions: 20 });
-    const config = makeConfig();
-    const prior = ['Bogus Agent', 'Security & Safety'];
-    const picks: AgentPick[] = [
-      { name: 'Security & Safety', effort: 'high' },
-      { name: 'Architecture & Design', effort: 'medium' },
-      { name: 'Correctness & Logic', effort: 'medium' },
-    ];
-    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
-    try {
-      const roster = selectTeam(diff, config, undefined, 3, picks, prior);
-      expect(roster.agents.map(a => a.name)).not.toContain('Bogus Agent');
-      expect(warnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('prior-round agent "Bogus Agent" no longer exists'),
-      );
-    } finally {
-      warnSpy.mockRestore();
-    }
-  });
-
-  it('does not log pin audit when priorRoundAgents is empty', () => {
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
-    const config = makeConfig();
-    const picks: AgentPick[] = [
-      { name: 'Security & Safety', effort: 'high' },
-      { name: 'Architecture & Design', effort: 'medium' },
-      { name: 'Correctness & Logic', effort: 'medium' },
-    ];
-    const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
-    try {
-      selectTeam(diff, config, undefined, 3, picks);
-      expect(infoSpy).not.toHaveBeenCalledWith(expect.stringContaining('pinned team:'));
-    } finally {
-      infoSpy.mockRestore();
-    }
-  });
-
-  it('suppresses logPinAudit and unknown-agent warning when silent is true', () => {
-    const diff = makeDiff({ totalAdditions: 50, totalDeletions: 20 });
-    const config = makeConfig();
-    const prior = ['Bogus Agent', 'Security & Safety', 'Architecture & Design', 'Correctness & Logic'];
-    const picks: AgentPick[] = [
-      { name: 'Security & Safety', effort: 'high' },
-      { name: 'Architecture & Design', effort: 'medium' },
-      { name: 'Correctness & Logic', effort: 'medium' },
-    ];
-    const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
-    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
-    try {
-      const roster = selectTeam(diff, config, undefined, 3, picks, prior, true);
-      expect(roster.agents.map(a => a.name)).not.toContain('Bogus Agent');
-      expect(infoSpy).not.toHaveBeenCalledWith(expect.stringContaining('pinned team:'));
-      expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('prior-round agent'));
-    } finally {
-      infoSpy.mockRestore();
-      warnSpy.mockRestore();
-    }
-  });
-
-  it('preserves planner team when prior agents are a subset of the picks', () => {
-    const diff = makeDiff({ totalAdditions: 50, totalDeletions: 20 });
-    const config = makeConfig();
-    const prior = ['Security & Safety', 'Architecture & Design'];
-    const picks: AgentPick[] = [
-      { name: 'Security & Safety', effort: 'high' },
-      { name: 'Architecture & Design', effort: 'medium' },
-      { name: 'Correctness & Logic', effort: 'medium' },
-      { name: 'Performance & Efficiency', effort: 'low' },
-    ];
-    const roster = selectTeam(diff, config, undefined, 4, picks, prior);
-    // Prior agents lead, planner-new picks follow, core injection ensures Correctness.
-    expect(roster.agents.map(a => a.name)).toEqual([
-      'Security & Safety',
-      'Architecture & Design',
-      'Correctness & Logic',
-      'Performance & Efficiency',
-    ]);
-  });
-
-  it('does not pin prior agents on the trivial-verifier path', () => {
-    const diff = makeDiff({ totalAdditions: 2, totalDeletions: 0 });
-    const config = makeConfig();
-    const prior = ['Security & Safety', 'Architecture & Design', 'Correctness & Logic'];
-    const roster = selectTeam(diff, config, undefined, 1, undefined, prior);
-    expect(roster.agents).toHaveLength(1);
-    expect(roster.agents[0]).toBe(TRIVIAL_VERIFIER_AGENT);
-    expect(roster.level).toBe('trivial');
-  });
-
   it('populates `coreAgentInjections` when the planner omits Security & Safety on a sensitive diff', () => {
     const diff = makeDiff({
       totalAdditions: 10,
@@ -5335,9 +4625,28 @@ describe('selectTeam with teamSizeOverride', () => {
       { name: 'Architecture & Design', effort: 'medium' },
       { name: 'Correctness & Logic', effort: 'medium' },
     ];
-    const roster = selectTeam(diff, config, undefined, 2, picks);
-    expect(roster.coreAgentInjections).toEqual(['Security & Safety']);
-    expect(roster.agents.map(a => a.name)).toContain('Security & Safety');
+    const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
+    try {
+      const roster = selectTeam(diff, config, undefined, 2, picks);
+      expect(roster.coreAgentInjections).toEqual(['Security & Safety']);
+      expect(roster.agents.map(a => a.name)).toEqual(['Architecture & Design', 'Security & Safety']);
+      expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining('replacing "Correctness & Logic"'));
+
+      infoSpy.mockClear();
+      selectTeam(diff, config, undefined, 2, picks, true);
+      expect(infoSpy).not.toHaveBeenCalled();
+
+      // A duplicate pick leaves room, so Security & Safety fills it and the team stays at the planner's size.
+      const duplicatePicks: AgentPick[] = [
+        { name: 'Architecture & Design', effort: 'medium' },
+        { name: 'Architecture & Design', effort: 'low' },
+      ];
+      const underSized = selectTeam(diff, config, undefined, 2, duplicatePicks);
+      expect(underSized.agents.map(a => a.name)).toEqual(['Architecture & Design', 'Security & Safety']);
+      expect(underSized.coreAgentInjections).toEqual(['Security & Safety']);
+    } finally {
+      infoSpy.mockRestore();
+    }
   });
 
   it('leaves `coreAgentInjections` empty when Security & Safety is already in the planner picks', () => {
@@ -5353,122 +4662,6 @@ describe('selectTeam with teamSizeOverride', () => {
     ];
     const roster = selectTeam(diff, config, undefined, 2, picks);
     expect(roster.coreAgentInjections).toEqual([]);
-  });
-});
-
-describe('collectPriorRoundAgents', () => {
-  it('returns empty array for no rounds', () => {
-    expect(collectPriorRoundAgents(undefined)).toEqual([]);
-    expect(collectPriorRoundAgents([])).toEqual([]);
-  });
-
-  it('deduplicates overlapping agents across rounds preserving first-seen order', () => {
-    const rounds: LegacyHandoverRoundFixture[] = [
-      { round: 1, commitSha: 'a', timestamp: '2025-01-01T00:00:00Z', findings: [], agents: ['Security & Safety', 'Architecture & Design'] },
-      { round: 2, commitSha: 'b', timestamp: '2025-01-02T00:00:00Z', findings: [], agents: ['Security & Safety', 'Correctness & Logic'] },
-    ];
-    expect(collectPriorRoundAgents(rounds.map(roundContextFromLegacy))).toEqual([
-      'Security & Safety',
-      'Architecture & Design',
-      'Correctness & Logic',
-    ]);
-  });
-
-  it('handles rounds with no agents field', () => {
-    const rounds: LegacyHandoverRoundFixture[] = [
-      { round: 1, commitSha: 'a', timestamp: '2025-01-01T00:00:00Z', findings: [] },
-      { round: 2, commitSha: 'b', timestamp: '2025-01-02T00:00:00Z', findings: [], agents: ['Security & Safety'] },
-    ];
-    expect(collectPriorRoundAgents(rounds.map(roundContextFromLegacy))).toEqual(['Security & Safety']);
-  });
-
-  it('returns empty array when all rounds lack the agents field (legacy handovers)', () => {
-    const rounds: LegacyHandoverRoundFixture[] = [
-      { round: 1, commitSha: 'a', timestamp: '2025-01-01T00:00:00Z', findings: [] },
-      { round: 2, commitSha: 'b', timestamp: '2025-01-02T00:00:00Z', findings: [] },
-    ];
-    expect(collectPriorRoundAgents(rounds.map(roundContextFromLegacy))).toEqual([]);
-  });
-});
-
-describe('buildPlannerHints', () => {
-  const makeRound = (round: number, findings: LegacyHandoverFindingFixture[]): RoundContext =>
-    roundContextFromLegacy({
-      round,
-      commitSha: `sha${round}`,
-      timestamp: '2025-01-01T00:00:00Z',
-      findings,
-    });
-
-  it('returns [] for undefined or empty rounds', () => {
-    expect(buildPlannerHints(undefined)).toEqual([]);
-    expect(buildPlannerHints([])).toEqual([]);
-  });
-
-  it('groups findings by specialist with kept/dismissed counts', () => {
-    const rounds = [
-      makeRound(1, [
-        { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'blocker', title: 't1', authorReply: 'agree', specialist: 'Security & Safety' },
-        { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'blocker', title: 't2', authorReply: 'agree', specialist: 'Security & Safety' },
-        { fingerprint: { file: 'a.ts', lineStart: 3, lineEnd: 3, slug: 's3' }, severity: 'suggestion', title: 't3', authorReply: 'none', specialist: 'Testing & Coverage' },
-      ]),
-    ];
-    const hints = buildPlannerHints(rounds);
-    expect(hints).toHaveLength(1);
-    expect(hints[0].round).toBe(1);
-    const sec = hints[0].specialistOutcomes.find(o => o.specialist === 'Security & Safety');
-    const test = hints[0].specialistOutcomes.find(o => o.specialist === 'Testing & Coverage');
-    expect(sec).toEqual({ specialist: 'Security & Safety', findingsKept: 0, findingsDismissed: 2 });
-    expect(test).toEqual({ specialist: 'Testing & Coverage', findingsKept: 1, findingsDismissed: 0 });
-  });
-
-  it('skips findings without a specialist field (legacy handover entries)', () => {
-    const rounds = [
-      makeRound(1, [
-        { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'blocker', title: 't1', authorReply: 'agree' },
-        { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'blocker', title: 't2', authorReply: 'none', specialist: 'Correctness & Logic' },
-      ]),
-    ];
-    const hints = buildPlannerHints(rounds);
-    expect(hints).toHaveLength(1);
-    expect(hints[0].specialistOutcomes).toHaveLength(1);
-    expect(hints[0].specialistOutcomes[0].specialist).toBe('Correctness & Logic');
-  });
-
-  it('consumes only the last two rounds when more are present', () => {
-    const make = (n: number, spec: string): RoundContext => makeRound(n, [
-      { fingerprint: { file: 'a.ts', lineStart: n, lineEnd: n, slug: `s${n}` }, severity: 'blocker', title: `t${n}`, authorReply: 'none' as const, specialist: spec },
-    ]);
-    const rounds = [make(1, 'Security & Safety'), make(2, 'Architecture & Design'), make(3, 'Testing & Coverage')];
-    const hints = buildPlannerHints(rounds);
-    expect(hints.map(h => h.round)).toEqual([2, 3]);
-  });
-
-  it('omits rounds whose findings all lack a specialist', () => {
-    const rounds = [
-      makeRound(1, [
-        { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'blocker', title: 't1', authorReply: 'agree' },
-      ]),
-      makeRound(2, [
-        { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'blocker', title: 't2', authorReply: 'none', specialist: 'Correctness & Logic' },
-      ]),
-    ];
-    const hints = buildPlannerHints(rounds);
-    expect(hints.map(h => h.round)).toEqual([2]);
-  });
-
-  it('treats disagree/partial/none replies as kept', () => {
-    const rounds = [
-      makeRound(1, [
-        { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'blocker', title: 't1', authorReply: 'disagree', specialist: 'Security & Safety' },
-        { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'blocker', title: 't2', authorReply: 'partial', specialist: 'Security & Safety' },
-        { fingerprint: { file: 'a.ts', lineStart: 3, lineEnd: 3, slug: 's3' }, severity: 'blocker', title: 't3', authorReply: 'none', specialist: 'Security & Safety' },
-      ]),
-    ];
-    const hints = buildPlannerHints(rounds);
-    expect(hints[0].specialistOutcomes[0]).toEqual({
-      specialist: 'Security & Safety', findingsKept: 3, findingsDismissed: 0,
-    });
   });
 });
 
@@ -5499,45 +4692,17 @@ describe('buildPlannerSystemPrompt', () => {
     expect(prompt).not.toContain('reviewerEffort:');
   });
 
-  it('renders prior round outcomes when hints are provided', () => {
-    const hints = [
-      {
-        round: 2,
-        specialistOutcomes: [
-          { specialist: 'Testing & Coverage', findingsKept: 0, findingsDismissed: 7 },
-          { specialist: 'Architecture & Design', findingsKept: 3, findingsDismissed: 2 },
-        ],
-      },
-      {
-        round: 3,
-        specialistOutcomes: [
-          { specialist: 'Testing & Coverage', findingsKept: 7, findingsDismissed: 0 },
-        ],
-      },
-    ];
-    const prompt = buildPlannerSystemPrompt([{ name: 'A', focus: 'test focus' }], hints);
-
-    expect(prompt).toContain('Prior Round Outcomes');
-    expect(prompt).toContain('Round 3: "Testing & Coverage" — 7 kept, 0 dismissed');
-    expect(prompt).toContain('Round 2: "Testing & Coverage" — 0 kept, 7 dismissed');
-    expect(prompt).toContain('"Architecture & Design" — 3 kept, 2 dismissed');
-
-    // Most recent round first.
-    const r3 = prompt.indexOf('Round 3:');
-    const r2 = prompt.indexOf('Round 2:');
-    expect(r3).toBeGreaterThan(-1);
-    expect(r2).toBeGreaterThan(r3);
-
-    // Outcomes block appears before the "Decide:" section.
-    expect(r3).toBeLessThan(prompt.indexOf('Decide:'));
-  });
-
-  it('produces identical output to no-hint call when hints array is empty', () => {
-    const agents = [{ name: 'A', focus: 'test focus' }];
-    const baseline = buildPlannerSystemPrompt(agents);
-    const withEmptyHints = buildPlannerSystemPrompt(agents, []);
-    expect(withEmptyHints).toBe(baseline);
-    expect(withEmptyHints).not.toContain('Prior Round Outcomes');
+  it('sizes the team by the nature of the change, from 1 to 3 agents', () => {
+    const prompt = buildPlannerSystemPrompt([{ name: 'A', focus: 'test focus' }]);
+    expect(prompt).toContain('teamSize: 1, 2 or 3 reviewer agents');
+    expect(prompt).toContain('never its size and never the number of specialists available');
+    expect(prompt).toMatch(/- 1: .*deleted code.*renames or moved code.*documentation.*tests.*configuration.*CI workflows/);
+    expect(prompt).toMatch(/- 2: ordinary code changes/);
+    expect(prompt).toMatch(/- 3: .*concurrency.*security.*authentication.*persistence.*protocol, wire or file format.*public API/);
+    expect(prompt).toContain('When you are not sure between two sizes, pick the larger one.');
+    expect(prompt).toContain('- medium: the default for every agent');
+    expect(prompt).toContain('- high: only on a team of 3');
+    expect(prompt).not.toMatch(/Default to 3|4-5|6-7/);
   });
 });
 
@@ -5693,31 +4858,6 @@ describe('runPlanner with agents and language', () => {
     expect(systemPrompt).toContain('"Security & Safety"');
     expect(systemPrompt).toContain('"Domain Expert"');
     expect(systemPrompt).toContain('"agents"');
-  });
-
-  it('forwards prior-round hints into the planner system prompt', async () => {
-    const response = JSON.stringify({
-      teamSize: 3,
-      reviewerEffort: 'low',
-      judgeEffort: 'low',
-      prType: 'chore',
-    });
-    const client = makeClient(response);
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
-    const hints = [
-      {
-        round: 1,
-        specialistOutcomes: [
-          { specialist: 'Testing & Coverage', findingsKept: 0, findingsDismissed: 3 },
-        ],
-      },
-    ];
-
-    await runPlanner(client, diff, undefined, undefined, hints);
-
-    const systemPrompt = (client.sendMessage as jest.Mock).mock.calls[0][0] as string;
-    expect(systemPrompt).toContain('Prior Round Outcomes');
-    expect(systemPrompt).toContain('"Testing & Coverage" — 0 kept, 3 dismissed');
   });
 });
 
@@ -6028,27 +5168,6 @@ describe('selectTeam planner-driven path', () => {
     expect(roster.level).toBe('small');
   });
 
-  it('assigns correct level based on resolved count', () => {
-    const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
-    const config = makeConfig();
-
-    const picks5: AgentPick[] = [
-      { name: 'Security & Safety', effort: 'high' },
-      { name: 'Correctness & Logic', effort: 'medium' },
-      { name: 'Architecture & Design', effort: 'low' },
-      { name: 'Testing & Coverage', effort: 'medium' },
-      { name: 'Performance & Efficiency', effort: 'low' },
-    ];
-    expect(selectTeam(diff, config, undefined, 5, picks5).level).toBe('medium');
-
-    const picks7: AgentPick[] = [
-      ...picks5,
-      { name: 'Maintainability & Readability', effort: 'low' },
-      { name: 'Dependencies & Integration', effort: 'low' },
-    ];
-    expect(selectTeam(diff, config, undefined, 7, picks7).level).toBe('large');
-  });
-
   it('falls back to the fixed roster when all picks resolve to unknown names', () => {
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
     const config = makeConfig();
@@ -6271,8 +5390,8 @@ describe('runPlanner teamSize correction', () => {
     expect(result).toBeNull();
   });
 
-  it('accepts teamSize 2 and 4 without correction when agents match', async () => {
-    for (const size of [2, 4] as const) {
+  it('accepts teamSize 2 and 3 without correction when agents match', async () => {
+    for (const size of [2, 3] as const) {
       const agents = [
         { name: 'Security & Safety', effort: 'high' },
         { name: 'Correctness & Logic', effort: 'medium' },
@@ -6570,6 +5689,25 @@ describe('planner provenance in ReviewResult', () => {
     expect(result.plannerFallbackReason).toBe('invalid_teamSize');
   });
 
+  it('rejects a planner `teamSize: 4` and runs the fixed fallback roster', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 4,
+      reviewerEffort: 'medium',
+      judgeEffort: 'medium',
+      prType: 'feat',
+      agents: [
+        { name: 'Architecture & Design', effort: 'medium' },
+        { name: 'Correctness & Logic', effort: 'medium' },
+        { name: 'Testing & Coverage', effort: 'medium' },
+        { name: 'Performance & Efficiency', effort: 'medium' },
+      ],
+    });
+    const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'auto' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
+    expect(result.plannerSource).toBe('heuristic_fallback');
+    expect(result.plannerFallbackReason).toBe('invalid_teamSize');
+    expect(result.agentNames).toEqual(['Security & Safety', 'Architecture & Design', 'Correctness & Logic']);
+  });
+
   it('records `source: "heuristic"` when the user pinned `review_level`', async () => {
     const plannerResponse = JSON.stringify({ teamSize: 3, reviewerEffort: 'medium', judgeEffort: 'medium', prType: 'feat' });
     const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'small' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
@@ -6625,6 +5763,28 @@ describe('planner provenance in ReviewResult', () => {
     expect(result.agentNames).toContain('Security & Safety');
   });
 
+  it('replaces the planner\'s last pick with Security & Safety and keeps the team at `teamSize`', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 3,
+      reviewerEffort: 'medium',
+      judgeEffort: 'medium',
+      prType: 'fix',
+      agents: [
+        { name: 'Architecture & Design', effort: 'medium' },
+        { name: 'Correctness & Logic', effort: 'medium' },
+        { name: 'Testing & Coverage', effort: 'medium' },
+      ],
+    });
+    const diff = makeDiff({
+      totalAdditions: 10,
+      totalDeletions: 5,
+      files: [{ path: 'src/auth/token.ts', changeType: 'modified', hunks: [] }],
+    });
+    const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'auto' }), diff, 'raw diff', 'repo');
+    expect(result.agentNames).toEqual(['Architecture & Design', 'Correctness & Logic', 'Security & Safety']);
+    expect(result.coreAgentInjections).toEqual(['Security & Safety']);
+  });
+
   it('emits `coreAgentInjections` as empty array when no reinjection fires', async () => {
     const plannerResponse = JSON.stringify({
       teamSize: 3,
@@ -6639,54 +5799,6 @@ describe('planner provenance in ReviewResult', () => {
     });
     const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'auto' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
     expect(result.coreAgentInjections).toEqual([]);
-  });
-
-  it('emits `priorRoundEffortDowngrades` as empty array when no prior rounds exist', async () => {
-    const plannerResponse = JSON.stringify({
-      teamSize: 3,
-      reviewerEffort: 'medium',
-      judgeEffort: 'medium',
-      prType: 'feat',
-      agents: [
-        { name: 'Security & Safety', effort: 'high' },
-        { name: 'Architecture & Design', effort: 'medium' },
-        { name: 'Correctness & Logic', effort: 'medium' },
-      ],
-    });
-    const result = await runReview(makeClients(plannerResponse), makeConfig({ review_level: 'auto' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
-    expect(result.priorRoundEffortDowngrades).toEqual([]);
-  });
-
-  it('records `priorRoundEffortDowngrades` when the safety net clamps a pick', async () => {
-    const plannerResponse = JSON.stringify({
-      teamSize: 3,
-      reviewerEffort: 'medium',
-      judgeEffort: 'medium',
-      prType: 'feat',
-      agents: [
-        { name: 'Security & Safety', effort: 'high' },
-        { name: 'Architecture & Design', effort: 'medium' },
-        { name: 'Correctness & Logic', effort: 'medium' },
-      ],
-    });
-    const priorRounds: LegacyHandoverRoundFixture[] = [
-      {
-        round: 1,
-        commitSha: 'abc1',
-        timestamp: 't1',
-        findings: [
-          { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'suggestion', title: 't1', authorReply: 'agree', specialist: 'Security & Safety' },
-          { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'suggestion', title: 't2', authorReply: 'agree', specialist: 'Security & Safety' },
-        ],
-      },
-    ];
-    const result = await runReview(
-      makeClients(plannerResponse), makeConfig({ review_level: 'auto' }), makeDiff({ totalAdditions: 10, totalDeletions: 5 }),
-      'raw diff', 'repo',
-      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
-      priorRounds.map(roundContextFromLegacy),
-    );
-    expect(result.priorRoundEffortDowngrades).toEqual([{ agent: 'Security & Safety', from: 'high', to: 'low' }]);
   });
 
   it('populates `agentEffortMap` with per-agent run-time effort from planner picks', async () => {
@@ -6761,10 +5873,9 @@ describe('planner provenance in ReviewResult', () => {
 describe('buildProvenanceFields', () => {
   const baseTeam = { level: 'medium' as const, agents: [], lineCount: 0 };
 
-  it('always includes `coreAgentInjections` and `priorRoundEffortDowngrades` even when empty', () => {
-    const result = buildProvenanceFields('planner', undefined, baseTeam, [], new Map(), new Map());
+  it('always includes `coreAgentInjections` even when empty', () => {
+    const result = buildProvenanceFields('planner', undefined, baseTeam, new Map(), new Map());
     expect(result.coreAgentInjections).toEqual([]);
-    expect(result.priorRoundEffortDowngrades).toEqual([]);
     expect(result.plannerSource).toBe('planner');
     expect(result).not.toHaveProperty('plannerFallbackReason');
     expect(result).not.toHaveProperty('agentMultiPassConsistency');
@@ -6772,25 +5883,19 @@ describe('buildProvenanceFields', () => {
 
   it('includes non-empty `coreAgentInjections`', () => {
     const team = { ...baseTeam, coreAgentInjections: ['Security & Safety'] };
-    const result = buildProvenanceFields('planner', undefined, team, [], new Map(), new Map());
+    const result = buildProvenanceFields('heuristic_fallback', 'timeout', team, new Map(), new Map());
     expect(result.coreAgentInjections).toEqual(['Security & Safety']);
-  });
-
-  it('includes non-empty `priorRoundEffortDowngrades`', () => {
-    const downgrades = [{ agent: 'Security & Safety', from: 'high' as const, to: 'low' as const }];
-    const result = buildProvenanceFields('heuristic_fallback', 'timeout', baseTeam, downgrades, new Map(), new Map());
-    expect(result.priorRoundEffortDowngrades).toEqual(downgrades);
     expect(result.plannerFallbackReason).toBe('timeout');
   });
 
   it('includes `agentMultiPassConsistency` when non-empty', () => {
     const consistency = new Map([['Security & Safety', { consistent: 2, totalRaw: 4 }]]);
-    const result = buildProvenanceFields('planner', undefined, baseTeam, [], consistency, new Map());
+    const result = buildProvenanceFields('planner', undefined, baseTeam, consistency, new Map());
     expect(result.agentMultiPassConsistency?.get('Security & Safety')).toEqual({ consistent: 2, totalRaw: 4 });
   });
 
   it('omits `agentMultiPassConsistency` when the map is empty', () => {
-    const result = buildProvenanceFields('planner', undefined, baseTeam, [], new Map(), new Map());
+    const result = buildProvenanceFields('planner', undefined, baseTeam, new Map(), new Map());
     expect(result).not.toHaveProperty('agentMultiPassConsistency');
   });
 });

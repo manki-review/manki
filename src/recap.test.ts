@@ -1003,7 +1003,7 @@ describe('fetchRecapState', () => {
         config: { reviewLevel: 'medium', memoryEnabled: false },
         diff: { lines: 100, additions: 60, deletions: 40, filesReviewed: 3, fileTypes: { '.ts': 3 } },
         models: { reviewer: 'r', judge: 'j' },
-        planner: { source: 'disabled', used: false, coreAgentInjections: [], priorRoundEffortDowngrades: [] },
+        planner: { source: 'disabled', used: false, coreAgentInjections: [] },
         reviewers: { agents: ['Correctness'] },
         judge: { summary: 'ok' },
         dedup: {},
@@ -1062,7 +1062,7 @@ describe('fetchRecapState', () => {
       ['rename', 'refactor'],
     ])('migrates legacy planner.prType `%s` to canonical `%s` on read', async (legacy, canonical) => {
       const ctx = makeRoundContext(1, {
-        planner: { source: 'planner', used: true, teamSize: 3, reviewerEffort: 'medium', judgeEffort: 'medium', prType: legacy, coreAgentInjections: [], priorRoundEffortDowngrades: [] },
+        planner: { source: 'planner', used: true, teamSize: 3, reviewerEffort: 'medium', judgeEffort: 'medium', prType: legacy, coreAgentInjections: [] },
       });
       const octokit = mockOctokit([], [
         { id: 100, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
@@ -1074,7 +1074,7 @@ describe('fetchRecapState', () => {
 
     it('passes a canonical Conventional Commits prType through unchanged', async () => {
       const ctx = makeRoundContext(1, {
-        planner: { source: 'planner', used: true, teamSize: 2, reviewerEffort: 'low', judgeEffort: 'low', prType: 'docs', coreAgentInjections: [], priorRoundEffortDowngrades: [] },
+        planner: { source: 'planner', used: true, teamSize: 2, reviewerEffort: 'low', judgeEffort: 'low', prType: 'docs', coreAgentInjections: [] },
       });
       const octokit = mockOctokit([], [
         { id: 100, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
@@ -1094,7 +1094,6 @@ describe('fetchRecapState', () => {
         planner: {
           used: expectedSource === 'planner',
           coreAgentInjections: [],
-          priorRoundEffortDowngrades: [],
           ...(fallbackReason ? { fallbackReason } : {}),
         },
       } as unknown as RoundContext;
@@ -1106,7 +1105,7 @@ describe('fetchRecapState', () => {
       expect(state.priorRounds[0].planner.source).toBe(expectedSource);
     });
 
-    it('seeds `coreAgentInjections` and `priorRoundEffortDowngrades` to [] when absent in pre-5.2.0 context', async () => {
+    it('seeds `coreAgentInjections` to [] when absent in pre-5.2.0 context', async () => {
       const base = makeRoundContext(1);
       const legacy = {
         ...base,
@@ -1118,7 +1117,6 @@ describe('fetchRecapState', () => {
       const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
       expect(state.priorRounds).toHaveLength(1);
       expect(state.priorRounds[0].planner.coreAgentInjections).toEqual([]);
-      expect(state.priorRounds[0].planner.priorRoundEffortDowngrades).toEqual([]);
     });
 
     it('ignores HTML-comment block when a details block is present in the same review', async () => {
@@ -2068,7 +2066,7 @@ describe('refreshAuthorReplyClass', () => {
       config: { reviewLevel: 'medium', memoryEnabled: false },
       diff: { lines: 0, additions: 0, deletions: 0, filesReviewed: 0, fileTypes: {} },
       models: { reviewer: 'r', judge: 'j' },
-      planner: { source: 'disabled', used: false, coreAgentInjections: [], priorRoundEffortDowngrades: [] },
+      planner: { source: 'disabled', used: false, coreAgentInjections: [] },
       reviewers: { agents: [] },
       judge: { summary: '' },
       dedup: {},
