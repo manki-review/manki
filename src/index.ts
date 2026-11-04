@@ -616,15 +616,19 @@ async function runFullReview(
       const standing = await findUnchangedVerdict(octokit, owner, repo, prNumber, baseRef, commitSha, config.exclude_paths);
       if (standing) {
         const shortSha = standing.commitSha.slice(0, 7);
-        core.info(`Round SKIPPED: no change since reviewed commit ${shortSha}, ${standing.verdict} stands`);
-        // A push can dismiss approvals, so the approval is posted again on the new head.
-        if (standing.verdict === 'APPROVE') {
-          await octokit.rest.pulls.createReview({
-            owner, repo, pull_number: prNumber, commit_id: commitSha, event: 'APPROVE',
-            body: `${PROGRESS_MARKER}\nNo change to this PR since the reviewed commit \`${shortSha}\`. The previous verdict stands.`,
-          });
+        try {
+          // A push can dismiss approvals, so the approval is posted again on the new head.
+          if (standing.verdict === 'APPROVE') {
+            await octokit.rest.pulls.createReview({
+              owner, repo, pull_number: prNumber, commit_id: commitSha, event: 'APPROVE',
+              body: `${PROGRESS_MARKER}\nNo change to this PR since the reviewed commit \`${shortSha}\`. The previous verdict stands.`,
+            });
+          }
+          core.info(`Round SKIPPED: no change since reviewed commit ${shortSha}, ${standing.verdict} stands`);
+          return;
+        } catch (error) {
+          core.warning(`Could not post the previous approval again, reviewing in full: ${error instanceof Error ? error.message : error}`);
         }
-        return;
       }
     }
 

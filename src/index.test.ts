@@ -5644,6 +5644,43 @@ describe('runFullReview orchestration', () => {
       expect(mockCreateReview).not.toHaveBeenCalled();
     });
 
+    it('runs a normal round when the previous verdict was a COMMENT', async () => {
+      seedPush('APPROVE', REBASED_DIFF);
+      jest.mocked(ghUtils.fetchStandingVerdict).mockResolvedValue(undefined);
+
+      await callRunFullReview();
+
+      expect(jest.mocked(ghUtils.fetchStandingVerdict)).toHaveBeenCalled();
+      expect(jest.mocked(ghUtils.fetchInterRoundDiff)).not.toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 'main', 'abc123');
+      expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
+      expect(mockCreateReview).not.toHaveBeenCalled();
+    });
+
+    it('runs a normal round when a diff fetch throws', async () => {
+      jest.mocked(ghUtils.fetchStandingVerdict).mockResolvedValue({ verdict: 'APPROVE', commitSha: 'old9999999' });
+      jest.mocked(ghUtils.fetchInterRoundDiff).mockRejectedValue(new Error('API 500'));
+
+      await callRunFullReview();
+
+      const warnings = jest.mocked(core.warning).mock.calls.map(c => String(c[0]));
+      expect(warnings.some(w => w.includes('Could not compare with the reviewed commit') && w.includes('API 500'))).toBe(true);
+      expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
+      expect(mockCreateReview).not.toHaveBeenCalled();
+    });
+
+    it('runs a normal round when posting the previous approval again fails', async () => {
+      seedPush('APPROVE', REBASED_DIFF);
+      mockCreateReview.mockRejectedValueOnce(new Error('API 422'));
+
+      await callRunFullReview();
+
+      expect(mockCreateReview).toHaveBeenCalledTimes(1);
+      const warnings = jest.mocked(core.warning).mock.calls.map(c => String(c[0]));
+      expect(warnings.some(w => w.includes('Could not post the previous approval again') && w.includes('API 422'))).toBe(true);
+      expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
+      expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
+    });
+
     it.each([
       ['@manki review', 'issue_comment:created:@manki review', 'manual_review_command' as const],
       ['the force-review checkbox', 'issue_comment:edited:tick:FORCE_REVIEW_MARKER', 'force_review' as const],
@@ -5675,6 +5712,7 @@ describe('runFullReview orchestration', () => {
       await callRunFullReview();
 
       expectNoRound();
+      expect(mockCreateReview).toHaveBeenCalledTimes(1);
       const skipBody = mockCreateReview.mock.calls[0][0].body as string;
       expect(skipBody).not.toContain('Manki context');
       expect(skipBody).not.toContain('manki-context');
