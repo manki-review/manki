@@ -609,6 +609,7 @@ describe('determineOutcome', () => {
       for (const priorSecurity of [
         priorWarning.map(p => ({ ...p, tags: ['security'] })),
         fingerprintEntriesFromLegacy([makePriorWarning({ specialist: 'Security & Safety' })]),
+        priorWarning.map(p => ({ ...p, reviewers: ['Correctness & Logic', 'Security & Safety'] })),
       ]) {
         expect(determineOutcome([nitpick], priorSecurity, [makeOpenThread()], undefined, undefined, undefined, undefined, true))
           .toEqual(expect.objectContaining({ outcome: 'ADDRESS_FIRST', verdictReason: 'prior_unaddressed' }));

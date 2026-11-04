@@ -5,7 +5,7 @@ import * as path from 'path';
 
 import { AuthResult, createAuthenticatedOctokit, getMemoryToken } from './auth';
 import { sanitizeTokens } from './utils';
-import { loadConfig, loadConfigFromFile, sanitizeForkConfig, resolveAgentModel, resolveModel } from './config';
+import { loadConfig, loadConfigFromFile, sanitizeForkConfig, resolveAgentModel, resolveModel, resolvePairModel } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
@@ -598,6 +598,7 @@ async function runFullReview(
 
     const plannerModel = resolveModel(config, 'planner');
     const reviewerModel = resolveModel(config, 'reviewer');
+    const reviewerPairModel = resolvePairModel(config);
     const judgeModel = resolveModel(config, 'judge');
     const dedupModel = resolveModel(config, 'dedup');
     core.info(`Models — planner: ${plannerModel}, reviewer: ${reviewerModel}, judge: ${judgeModel}, dedup: ${dedupModel}`);
@@ -612,11 +613,12 @@ async function runFullReview(
       const auth = buildAuthForProvider(spec.provider, providerInputs);
       return createLLMClient(spec.provider, spec.model, auth);
     };
-    let reviewerClient: LLMClient, judgeClient: LLMClient, dedupClient: LLMClient;
+    let reviewerClient: LLMClient, reviewerPairClient: LLMClient, judgeClient: LLMClient, dedupClient: LLMClient;
     let plannerClient: LLMClient | undefined;
     const perAgentClients = new Map<string, LLMClient>();
     try {
       reviewerClient = buildClient(reviewerModel);
+      reviewerPairClient = reviewerPairModel === reviewerModel ? reviewerClient : buildClient(reviewerPairModel);
       judgeClient = buildClient(judgeModel);
       plannerClient = config.planner?.enabled !== false ? buildClient(plannerModel) : undefined;
       dedupClient = buildClient(dedupModel);
@@ -698,7 +700,7 @@ async function runFullReview(
     // diff-size and empty-files guards so cold installs are skipped on paths
     // that never invoke an LLM.
     const warmupTargets = new Set<LLMClient>(
-      [plannerClient, reviewerClient, judgeClient, dedupClient, ...perAgentClients.values()].filter(
+      [plannerClient, reviewerClient, reviewerPairClient, judgeClient, dedupClient, ...perAgentClients.values()].filter(
         (c): c is LLMClient => !!c,
       ),
     );
@@ -884,6 +886,7 @@ async function runFullReview(
     const result = await runReview(
       {
         reviewer: reviewerClient,
+        reviewerPair: reviewerPairClient,
         judge: judgeClient,
         planner: plannerClient,
         dedup: dedupClient,
@@ -1011,13 +1014,14 @@ async function runFullReview(
     const agentNames = result.agentNames;
     const allJudged = result.allJudgedFindings ?? [];
     const rawFindings = result.rawFindings ?? allJudged;
+    const agentModels = new Map(agentNames.map(name => [name, resolveAgentModel(config, name, 'reviewer')]));
     const agentMetrics = agentNames.length > 0
       ? agentNames.map(name => {
           const usage = result.agentUsage?.get(name);
           const durationMs = result.agentDurationMs?.get(name);
           const retryCount = result.agentRetryCount?.get(name);
           const failureReason = result.agentFailureReasons?.[name];
-          const model = resolveAgentModel(config, name, 'reviewer');
+          const model = agentModels.get(name);
           const effort = result.agentEffortMap?.get(name);
           const multiPassConsistency = result.agentMultiPassConsistency?.get(name);
           return {
@@ -1037,6 +1041,15 @@ async function runFullReview(
           };
         })
       : undefined;
+    const corroboration = { keptPrimaryOnly: 0, keptPairOnly: 0, keptBoth: 0 };
+    for (const f of result.findings) {
+      const models = f.reviewers.filter(r => agentModels.has(r)).map(r => agentModels.get(r));
+      const primary = models.includes(reviewerModel);
+      const pair = models.some(m => m !== reviewerModel);
+      if (primary && pair) corroboration.keptBoth++;
+      else if (primary) corroboration.keptPrimaryOnly++;
+      else if (pair) corroboration.keptPairOnly++;
+    }
 
     // Judge calibration metrics
     const confidenceDistribution = { high: 0, medium: 0, low: 0 };
@@ -1144,7 +1157,7 @@ async function runFullReview(
     const findingEntries = result.findings.map(f => ({
       fingerprint: fingerprintFinding(f.title, f.file ?? '', f.line || 0),
       severity: f.severity,
-      ...(f.reviewers[0] && { specialist: f.reviewers[0] }),
+      ...(f.reviewers.length > 0 && { reviewers: f.reviewers }),
       ...(f.suggestedFix && { suggestedFix: f.suggestedFix.slice(0, 300) }),
       ...(f.title && { title: f.title.slice(0, 200) }),
       ...(f.judgeNotes && { judgeNotes: f.judgeNotes.slice(0, 500) }),
@@ -1217,6 +1230,7 @@ async function runFullReview(
       reviewers: {
         agents: result.agentNames,
         ...(agentMetrics && { agentMetrics }),
+        ...corroboration,
       },
       judge: {
         summary: result.summary,

@@ -68,7 +68,7 @@ export async function recordFixRate(
   const threads = new Map(previousFindings.filter(f => f.threadId).map(f => [f.threadId as string, f]));
   const counts = new Map<string, FixRateCounts>();
   for (const { entry, commitSha } of posted) {
-    const specialist = entry.specialist ?? 'unknown';
+    const specialist = entry.reviewers?.[0] ?? entry.specialist ?? 'unknown';
     const key = `${entry.severity}\n${specialist}`;
     const row = counts.get(key) ?? { severity: entry.severity, specialist, posted: 0, fixed: 0, dismissed: 0, untouched: 0 };
     row.posted++;

@@ -242,6 +242,8 @@ export function intersectFindings(passes: Finding[][], threshold: number): Findi
 
 export interface ReviewClients {
   reviewer: LLMClient;
+  /** Client for the second finder's model. */
+  reviewerPair?: LLMClient;
   judge: LLMClient;
   planner?: LLMClient;
   dedup?: LLMClient;
@@ -1736,7 +1738,7 @@ export function determineOutcome(
   const openThreadIds = new Set((openThreads ?? []).map(t => t.threadId));
   const threadEvaluationsByThreadId = indexThreadEvaluations(threadEvaluations);
   const unresolvedPriors = prior.filter(p =>
-    !(blockersOnly && p.severity === 'warning' && !isSecurityFinding(p.tags, [p.specialist]))
+    !(blockersOnly && p.severity === 'warning' && !isSecurityFinding(p.tags, p.reviewers ?? [p.specialist]))
     && isPriorLikelyUnresolved(p, openThreadIds, openThreadsUnknown, resolvedThreadIds, threadEvaluationsByThreadId, changedFiles),
   );
   if (unresolvedPriors.length > 0) {

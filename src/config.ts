@@ -7,6 +7,9 @@ import { ReviewerAgent, ReviewConfig } from './types';
 
 export const MAX_LOCK_TTL_SECONDS = 3600;
 
+const SONNET_MODEL = 'claude-sonnet-4-6';
+const OPUS_MODEL = 'claude-opus-4-7';
+
 export const DEFAULT_CONFIG: ReviewConfig = {
   auto_review: true,
   auto_approve: true,
@@ -18,8 +21,8 @@ export const DEFAULT_CONFIG: ReviewConfig = {
   review_thresholds: { small: 200, medium: 1000 },
   models: {
     planner: 'claude-haiku-4-5',
-    reviewer: 'claude-sonnet-4-6',
-    judge: 'claude-opus-4-7',
+    reviewer: SONNET_MODEL,
+    judge: OPUS_MODEL,
     dedup: 'claude-haiku-4-5',
   },
   planner: {
@@ -182,6 +185,9 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
       }
       if ('reviewer' in models && typeof models.reviewer !== 'string') {
         errors.push('`models.reviewer` must be a string');
+      }
+      if ('reviewer_pair' in models && (typeof models.reviewer_pair !== 'string' || models.reviewer_pair === '')) {
+        errors.push('`models.reviewer_pair` must be a non-empty string');
       }
       if ('judge' in models && typeof models.judge !== 'string') {
         errors.push('`models.judge` must be a string');
@@ -437,6 +443,21 @@ export function loadConfigFromFile(filePath: string): ReviewConfig {
 
 export function resolveModel(config: ReviewConfig, stage: 'planner' | 'reviewer' | 'judge' | 'dedup'): string {
   return config.models?.[stage] || DEFAULT_CONFIG.models![stage]!;
+}
+
+/**
+ * Returns the model for the second finder: `models.reviewer_pair`, else the other Claude tier of the
+ * reviewer model, else the reviewer model itself. The tier swap needs no credential beyond the reviewer's.
+ */
+export function resolvePairModel(config: ReviewConfig): string {
+  const pinned = config.models?.reviewer_pair;
+  if (pinned) return pinned;
+  const reviewer = resolveModel(config, 'reviewer');
+  const id = reviewer.replace(/^anthropic\//, '');
+  if (id.startsWith('claude-opus-')) return SONNET_MODEL;
+  if (id.startsWith('claude-sonnet-')) return OPUS_MODEL;
+  if (id.startsWith('claude-haiku-')) return SONNET_MODEL;
+  return reviewer;
 }
 
 /**

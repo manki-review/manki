@@ -69,6 +69,7 @@ export function makeFindingFingerprintEntry(
     severity: overrides.severity ?? 'warning',
     authorReplyClass: overrides.authorReplyClass ?? 'none',
     ...(overrides.threadId !== undefined && { threadId: overrides.threadId }),
+    ...(overrides.reviewers !== undefined && { reviewers: overrides.reviewers }),
     ...(overrides.specialist !== undefined && { specialist: overrides.specialist }),
     ...(overrides.suggestedFix !== undefined && { suggestedFix: overrides.suggestedFix }),
     title,
