@@ -86,6 +86,13 @@
 # stats:
 #   hidden: false
 
+# On merge, count per severity and specialist how many posted findings were fixed,
+# dismissed or left untouched. Needs `closed` in the workflow's `pull_request` types.
+# Written to the job summary, and appended to `<repo>/metrics/fix-rate.jsonl` in the
+# memory repo when memory is enabled. Default: on when `memory.enabled` is true.
+# metrics:
+#   fix_rate: true
+
 # Review memory (requires memory_repo_token)
 # Stores learnings, suppressions, and patterns to improve reviews over time
 # memory:

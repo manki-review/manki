@@ -278,6 +278,19 @@ export async function writeLearning(
   await writeFile(octokit, owner, repo, path, content, `Add learning: ${learning.content.slice(0, 50)}`);
 }
 
+/** Appends `line` to `<targetRepo>/<file>` in the memory repo, creating the file when it is missing. */
+export async function appendMemoryLine(
+  octokit: Octokit,
+  memoryRepo: string,
+  targetRepo: string,
+  file: string,
+  line: string,
+  message: string,
+): Promise<void> {
+  const [owner, repo] = memoryRepo.split('/');
+  await writeFile(octokit, owner, repo, `${targetRepo}/${file}`, current => `${current ?? ''}${line}\n`, message);
+}
+
 /**
  * Remove a learning from the memory repo by case-insensitive substring match on content.
  */
@@ -332,36 +345,51 @@ export async function removeSuppression(
   return { removed, remaining: existing.length };
 }
 
-async function getFileSha(
+interface StoredFile {
+  sha?: string;
+  /** Decoded content, or `null` when the file is missing or too large for the contents API to inline. */
+  text: string | null;
+}
+
+async function fetchStoredFile(
   octokit: Octokit,
   owner: string,
   repo: string,
   path: string,
-): Promise<string | undefined> {
+): Promise<StoredFile> {
   try {
     const { data } = await octokit.rest.repos.getContent({ owner, repo, path });
-    if ('sha' in data) {
-      return data.sha;
-    }
-    return undefined;
+    if (!('sha' in data)) return { text: null };
+    const text = 'content' in data && data.encoding === 'base64'
+      ? Buffer.from(data.content, 'base64').toString('utf-8')
+      : null;
+    return { sha: data.sha, text };
   } catch {
-    return undefined;
+    return { text: null };
   }
 }
 
 const DEFAULT_MAX_RETRIES = 3;
 
+/**
+ * Writes `content` to `path`. An updater function is called with the file's current text on every
+ * attempt, so a retry after a write conflict builds on the latest version.
+ */
 async function writeFile(
   octokit: Octokit,
   owner: string,
   repo: string,
   path: string,
-  content: string,
+  content: string | ((current: string | null) => string),
   message: string,
   maxRetries: number = DEFAULT_MAX_RETRIES,
 ): Promise<void> {
   for (let attempt = 0; attempt < maxRetries; attempt++) {
-    const sha = await getFileSha(octokit, owner, repo, path);
+    const { sha, text } = await fetchStoredFile(octokit, owner, repo, path);
+    if (typeof content !== 'string' && sha && text === null) {
+      throw new Error(`Cannot read ${path} to update it`);
+    }
+    const body = typeof content === 'string' ? content : content(text);
 
     try {
       await octokit.rest.repos.createOrUpdateFileContents({
@@ -369,7 +397,7 @@ async function writeFile(
         repo,
         path,
         message,
-        content: Buffer.from(content).toString('base64'),
+        content: Buffer.from(body).toString('base64'),
         sha,
       });
       return;

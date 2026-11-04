@@ -219,6 +219,10 @@ jest.mock('./state', () => ({
   checkAndAutoApprove: jest.fn().mockResolvedValue(false),
 }));
 
+jest.mock('./fix-rate', () => ({
+  recordFixRate: jest.fn().mockResolvedValue(undefined),
+}));
+
 import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, main, _resetOctokitCache, detectTickedMarker, _buildRoundRecap } from './index';
 import { FORCE_REVIEW_MARKER, FORCE_CAP_MARKER } from './github';
 import type { ParsedDiff, ReviewConfig } from './types';
@@ -233,6 +237,7 @@ import type { RecapState } from './recap';
 import * as memoryModule from './memory';
 import * as stateModule from './state';
 import * as authModule from './auth';
+import * as fixRateModule from './fix-rate';
 import { LegacyHandoverRoundFixture, roundContextFromLegacy } from './test-utils';
 
 /**
@@ -340,14 +345,61 @@ describe('run', () => {
     it('skips pull_request events with non-opened/synchronize action', async () => {
       setContext({
         eventName: 'pull_request',
-        payload: { action: 'closed', sender: { login: 'user' } },
+        payload: { action: 'labeled', sender: { login: 'user' } },
       });
 
       await run();
 
       expect(jest.mocked(core.info)).toHaveBeenCalledWith(
-        'Ignoring pull_request action: closed',
+        'Ignoring pull_request action: labeled',
       );
+    });
+
+    it('records nothing for a pull request closed without merging', async () => {
+      setContext({
+        eventName: 'pull_request',
+        payload: { action: 'closed', sender: { login: 'user' }, pull_request: { number: 7, merged: false, base: { ref: 'main' } } },
+      });
+
+      await run();
+
+      expect(jest.mocked(core.info)).toHaveBeenCalledWith('Ignoring pull_request closed without merging');
+      expect(fixRateModule.recordFixRate).not.toHaveBeenCalled();
+      expect(ghUtils.fetchConfigFile).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { name: 'memory on, fix_rate unset', memory: true, fixRate: undefined, records: true, toMemory: true },
+      { name: 'memory on, fix_rate false', memory: true, fixRate: false, records: false, toMemory: false },
+      { name: 'memory off, fix_rate unset', memory: false, fixRate: undefined, records: false, toMemory: false },
+      { name: 'memory off, fix_rate true', memory: false, fixRate: true, records: true, toMemory: false },
+    ])('records the fix rate of a merged pull request: $name', async ({ memory, fixRate, records, toMemory }) => {
+      jest.mocked(configModule.loadConfig).mockReturnValueOnce({
+        memory: { enabled: memory, repo: '' },
+        ...(fixRate !== undefined && { metrics: { fix_rate: fixRate } }),
+      } as ReviewConfig);
+      if (toMemory) jest.mocked(authModule.getMemoryToken).mockReturnValueOnce('memory-token');
+      setContext({
+        eventName: 'pull_request',
+        payload: {
+          action: 'closed',
+          sender: { login: 'user' },
+          pull_request: { number: 7, merged: true, merge_commit_sha: 'merged', head: { sha: 'head' }, base: { ref: 'main' }, user: { login: 'author' } },
+        },
+      });
+
+      await run();
+
+      if (!records) {
+        expect(fixRateModule.recordFixRate).not.toHaveBeenCalled();
+        return;
+      }
+      expect(fixRateModule.recordFixRate).toHaveBeenCalledWith(
+        expect.anything(), 'test-owner', 'test-repo',
+        { number: 7, headSha: 'head', mergedSha: 'merged', authorLogin: 'author' },
+        toMemory ? expect.objectContaining({ repo: 'test-owner/review-memory' }) : undefined,
+      );
+      expect(ghUtils.postProgressComment).not.toHaveBeenCalled();
     });
 
     it.each(['opened', 'synchronize', 'ready_for_review'])('processes pull_request %s events', async (action) => {

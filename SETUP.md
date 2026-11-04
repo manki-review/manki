@@ -202,7 +202,7 @@ Required only if you enable the review memory system. This is a fine-grained PAT
    gh secret set REVIEW_MEMORY_TOKEN --repo <owner>/<repo>
    ```
 
-The token's write surface is limited to cross-PR memory files (`learnings.yml`, `suppressions.yml`). As of v5.0.0, per-round state lives in a `Manki context` block embedded in each review summary on the PR, so the memory repo no longer receives `prs/{n}/handover.json` writes. Existing `handover.json` files in older memory repos are orphaned but harmless and require no migration.
+The token's write surface is limited to cross-PR memory files (`learnings.yml`, `suppressions.yml`, `metrics/fix-rate.jsonl`). As of v5.0.0, per-round state lives in a `Manki context` block embedded in each review summary on the PR, so the memory repo no longer receives `prs/{n}/handover.json` writes. Existing `handover.json` files in older memory repos are orphaned but harmless and require no migration.
 
 ## Step 3: Add the Workflow
 
@@ -213,7 +213,7 @@ name: Manki
 
 on:
   pull_request:
-    types: [opened, synchronize, ready_for_review]
+    types: [opened, synchronize, ready_for_review, closed]
   pull_request_review:
     types: [submitted, dismissed]
   issue_comment:
@@ -372,6 +372,7 @@ You can also forward `severity_counts` or `findings_json` to a metrics sink (Sla
 |-------|---------|
 | `pull_request: [opened, synchronize]` | Auto-review on PR open and new pushes |
 | `pull_request: [ready_for_review]` | Auto-review when a draft PR is marked ready (head SHA unchanged, so the planner sees the same diff a `synchronize` would have produced) |
+| `pull_request: [closed]` | On merge, records how many posted findings were fixed, dismissed or left untouched (see `metrics.fix_rate` below). Closing without merging does nothing |
 | `issue_comment: [created, edited]` | `/manki` commands on PRs and issues. PR-only commands: `review`, `check`, `explain`. Available on both: `help`, `dismiss`, `remember`, `forget`, and free-form questions. |
 | `pull_request_review_comment: [created]` | Replies to review comment threads |
 | `pull_request_review: [submitted, dismissed]` | Auto-approve check when reviews change state |
@@ -431,6 +432,13 @@ planner:
 # (`<!-- manki-context: ... -->`) instead of a `<details>` block (default: false).
 # stats:
 #   hidden: false
+
+# On merge, count per severity and specialist how many posted findings were
+# fixed, dismissed or left untouched. Written to the job summary, and appended
+# to `<repo>/metrics/fix-rate.jsonl` in the memory repo when memory is enabled.
+# Default: on when `memory.enabled` is true, off otherwise.
+# metrics:
+#   fix_rate: true
 
 # Additional context for reviewers
 instructions: |
@@ -533,6 +541,7 @@ Make sure the `REVIEW_MEMORY_TOKEN` secret is set (see Step 2).
 - **Suppressions** -- Created by `/manki dismiss`. Non-blocking findings matching a suppression pattern are filtered out (blocking findings are never suppressed).
 - **Patterns** -- Automatically tracked from recurring findings. After 5 occurrences a pattern is escalated for visibility.
 - **Global conventions** -- A `_global/conventions.md` file applied to all repos using the memory system.
+- **Fix rate** -- On each merge, one JSON line per PR is appended to `<repo-name>/metrics/fix-rate.jsonl` with the posted, fixed, dismissed and untouched findings per severity and specialist. A finding counts as fixed when the judge marked its thread addressed or the code at its lines changed before the merge. Turn it off with `metrics.fix_rate: false`.
 
 ## Verification
 

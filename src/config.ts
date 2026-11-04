@@ -59,6 +59,7 @@ const KNOWN_KEYS = new Set([
   'review_passes',
   'convergence',
   'stats',
+  'metrics',
   'concurrency_lock_ttl_seconds',
 ]);
 
@@ -283,6 +284,15 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
       if ('hidden' in stats && typeof stats.hidden !== 'boolean') {
         errors.push('`stats.hidden` must be a boolean');
       }
+    }
+  }
+
+  if ('metrics' in config) {
+    const metrics = config.metrics as Record<string, unknown>;
+    if (!metrics || typeof metrics !== 'object' || Array.isArray(metrics)) {
+      errors.push('`metrics` must be an object');
+    } else if ('fix_rate' in metrics && typeof metrics.fix_rate !== 'boolean') {
+      errors.push('`metrics.fix_rate` must be a boolean');
     }
   }
 
