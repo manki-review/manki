@@ -12,7 +12,7 @@ import { extractCurrentCodeWindow } from './code-window';
 import { parsePRDiff, filterDiff, filterRawDiff, isDiffTooLarge, rebuildRawDiff } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff, MAX_INTER_ROUND_DIFF_CHARS } from './judge';
-import { loadMemory, updatePattern, RepoMemory } from './memory';
+import { loadMemory, RepoMemory } from './memory';
 import { collectResolvedThreadIds, fetchRecapState, fingerprintFinding, PreviousFinding } from './recap';
 import { buildAgentPool } from './agents';
 import { collectPriorRoundAgents, runReview, selectTeam } from './review';
@@ -1235,9 +1235,7 @@ async function runFullReview(
         ...(result.dedupDurationMs != null && { durationMs: result.dedupDurationMs }),
       },
       memory: {
-        ...(memory && memory.patterns.length > 0 && { patternsApplied: memory.patterns.length }),
         ...(result.suppressionCount != null && result.suppressionCount > 0 && { suppressionsApplied: result.suppressionCount }),
-        ...(result.escalationsApplied && { escalationsApplied: result.escalationsApplied }),
         loadStatus: memoryLoadStatus,
         ...(memoryLoadError && { loadError: memoryLoadError }),
       },
@@ -1288,25 +1286,6 @@ async function runFullReview(
 
     const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, context, reviewTimeMs, config);
     await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId);
-
-    if (memory && config.memory?.enabled) {
-      const memoryToken = getMemoryToken(octokitCache.resolvedToken);
-      if (!memoryToken) {
-        core.warning('No memory token available — skipping memory update. Set memory_repo_token or github_token.');
-      } else {
-        const memoryOctokit = github.getOctokit(memoryToken);
-        const memoryRepo = config.memory?.repo || `${owner}/review-memory`;
-
-        for (const finding of result.findings) {
-          try {
-            await updatePattern(memoryOctokit, memoryRepo, repo, finding.title, repo);
-          } catch (error) {
-            core.debug(`Failed to update pattern for "${finding.title}": ${error}`);
-          }
-        }
-        core.info(`Updated ${result.findings.length} patterns in memory repo`);
-      }
-    }
 
     // Reconcile the dashboard with the actual resolved team. On round 2+ the
     // initial dashboard was built without priorRoundAgents (not yet loaded),

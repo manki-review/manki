@@ -94,7 +94,6 @@ const makeSuppression = (overrides: Partial<Suppression> = {}): Suppression => (
 const makeMemory = (overrides: Partial<RepoMemory> = {}): RepoMemory => ({
   learnings: [makeLearning()],
   suppressions: [makeSuppression()],
-  patterns: [],
   ...overrides,
 });
 

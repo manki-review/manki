@@ -202,7 +202,7 @@ Required only if you enable the review memory system. This is a fine-grained PAT
    gh secret set REVIEW_MEMORY_TOKEN --repo <owner>/<repo>
    ```
 
-The token's write surface is limited to cross-PR memory files (`learnings.yml`, `patterns.yml`, `suppressions.yml`). As of v5.0.0, per-round state lives in a `Manki context` block embedded in each review summary on the PR, so the memory repo no longer receives `prs/{n}/handover.json` writes. Existing `handover.json` files in older memory repos are orphaned but harmless and require no migration.
+The token's write surface is limited to cross-PR memory files (`learnings.yml`, `suppressions.yml`). As of v5.0.0, per-round state lives in a `Manki context` block embedded in each review summary on the PR, so the memory repo no longer receives `prs/{n}/handover.json` writes. Existing `handover.json` files in older memory repos are orphaned but harmless and require no migration.
 
 ## Step 3: Add the Workflow
 
@@ -473,7 +473,7 @@ Use the `models` config section to choose different Claude models for the review
 
 ## Step 5: Set Up Review Memory (Optional)
 
-The memory system makes reviews smarter over time by tracking learnings, suppressions, and recurring patterns.
+The memory system makes reviews smarter over time by tracking learnings and suppressions.
 
 ### Create the Memory Repository
 
@@ -501,7 +501,6 @@ EOF
 
 # Empty files for repo-specific memory
 echo "[]" > <repo-name>/suppressions.yml
-echo "[]" > <repo-name>/patterns.yml
 echo "[]" > <repo-name>/learnings.yml
 
 git add -A
