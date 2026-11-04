@@ -7,7 +7,7 @@ import { AgentProgressEntry, DEFENSIVE_HARDENING_TAG, DashboardData, Finding, Fi
 import { isLineInDiff, findClosestDiffLine } from './diff';
 import { MAX_AGENT_RETRIES } from './types';
 import { MAX_LOCK_TTL_SECONDS } from './config';
-import { safeTruncate } from './utils';
+import { safeTruncate, sanitizeTokens } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -442,8 +442,8 @@ export async function markAutoApproveComplete(
 
 /**
  * Transition a progress comment to a terminal failure state that names the
- * failed `action` and the reason. Uses `CANCELLED_MARKER` so `findInProgressLock`
- * no longer treats it as a live lock.
+ * failed `action` and the reason, with tokens redacted. Uses `CANCELLED_MARKER`
+ * so `findInProgressLock` no longer treats it as a live lock.
  */
 export async function markProgressCommentFailed(
   octokit: Octokit,
@@ -457,7 +457,7 @@ export async function markProgressCommentFailed(
     BOT_MARKER,
     VERSION_MARKER,
     CANCELLED_MARKER,
-    `**Manki** — ${action} failed: ${sanitizeMarkdown(String(reason)).slice(0, 300)}`,
+    `**Manki** — ${action} failed: ${sanitizeMarkdown(sanitizeTokens(String(reason))).slice(0, 300)}`,
   ].join('\n');
   try {
     await octokit.rest.issues.updateComment({ owner, repo, comment_id: commentId, body });

@@ -1258,12 +1258,13 @@ describe('postAutoApproveProgressComment / markAutoApprove*', () => {
     });
     const octokit = { rest: { issues: { updateComment } } } as unknown as Octokit;
 
-    await ghActual.markProgressCommentFailed(octokit, 'o', 'r', 1, 'Auto-approve', 'API rate limited');
+    await ghActual.markProgressCommentFailed(octokit, 'o', 'r', 1, 'Auto-approve', 'API rate limited for ghs_secret123');
 
     const comments = [
       { id: 1, body: updatedBody, user: { login: 'manki-review[bot]', type: 'Bot' }, updated_at: '2026-05-22T11:59:30Z' },
     ];
     expect(ghActual.findInProgressLock(comments, 999)).toBeNull();
-    expect(updatedBody).toContain('API rate limited');
+    expect(updatedBody).toContain('API rate limited for [REDACTED]');
+    expect(updatedBody).not.toContain('ghs_secret123');
   });
 });
