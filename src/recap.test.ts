@@ -2071,8 +2071,8 @@ const makeCommentBody = (description: string, aiContextJson?: string): string =>
 };
 
 describe('parseFindingFromComment', () => {
-  it('extracts the description of a not-blocking comment from `formatFindingComment`', () => {
-    const body = formatFindingComment({ severity: 'suggestion', title: 'Extract helper', file: 'src/a.ts', line: 2, description: 'The logic is duplicated.', reviewers: [] });
+  it('extracts the description of a not-blocking, low-confidence comment from `formatFindingComment`', () => {
+    const body = formatFindingComment({ severity: 'suggestion', title: 'Extract helper', file: 'src/a.ts', line: 2, description: 'The logic is duplicated.', reviewers: [], judgeConfidence: 'low' });
     expect(parseFindingFromComment(body)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
   });
 

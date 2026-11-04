@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { LLMClient } from './providers';
-import { BotIdentity, fetchReviewThreadNodes, GraphqlConnection, isBotLogin, paginateGraphql, titleToSlug } from './github';
+import { BotIdentity, fetchReviewThreadNodes, GraphqlConnection, isBotLogin, LOW_CONFIDENCE_NOTE, paginateGraphql, titleToSlug } from './github';
 import { findPriorThreadId } from './finding-fingerprint';
 import { matchesSuppression, Suppression } from './memory';
 import { AuthorReplyClass, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacyPrType, migrateLegacySeverity, OpenThreadsState, RoundContext, SEVERITY_TOKEN_PATTERN } from './types';
@@ -35,7 +35,7 @@ function parseFindingData(body: string): { title?: string; fix?: string } | unde
 /** Matches the title line of a thread comment in either layout. */
 function matchTitleLine(body: string): RegExpMatchArray | null {
   return body.match(new RegExp(FINDING_TITLE_RE.source + '(.+?)(?:\\n|$)'))
-    ?? (FINDING_DATA_RE.test(body) ? body.match(/^\*\*(?:\w+, not blocking:\*\* )?(.+?)(?:\*\*)?[ \t]*(?:\n|$)/) : null);
+    ?? (FINDING_DATA_RE.test(body) ? body.match(/^\S+ \*\*\w+(?:, not blocking)?:\*\* (.+?)[ \t]*(?:\n|$)/) : null);
 }
 
 /** Escape double quotes and strip triple-backtick sequences from untrusted text before LLM interpolation. */
@@ -565,6 +565,7 @@ function parseFindingFromComment(body: string): FindingMetadata {
     }
   }
   descSlice = descSlice.slice(0, earliest).replace(/^[\s\n]+|[\s\n]+$/g, '');
+  if (descSlice.startsWith(LOW_CONFIDENCE_NOTE)) descSlice = descSlice.slice(LOW_CONFIDENCE_NOTE.length).replace(/^\s+/, '');
   const remainingSubs = descSlice.match(/^(?:<sub>[^\n]*<\/sub>\s*\n?)+/);
   if (remainingSubs) descSlice = descSlice.slice(remainingSubs[0].length).replace(/^\s+/, '');
   if (descSlice.length > 500) descSlice = descSlice.slice(0, 500) + '...';

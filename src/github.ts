@@ -3,8 +3,9 @@ import { createRequire } from 'module';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { AgentProgressEntry, DashboardData, FOLLOW_UP_TAG, Finding, FindingFingerprintEntry, FindingSeverity, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, VALID_PR_TYPES, VerdictReason, VerdictTrace, VerdictTraceEntry, SECURITY_TAG, isBlockingSeverity } from './types';
+import { AgentProgressEntry, DashboardData, FOLLOW_UP_TAG, Finding, FindingFingerprintEntry, FindingSeverity, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, VALID_PR_TYPES, VerdictReason, VerdictTrace, VerdictTraceEntry, SECURITY_TAG, TestGuide, isBlockingSeverity } from './types';
 import { isLineInDiff } from './diff';
+import { codeTokensFromDiff, highlightCode } from './highlight';
 import { findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
 import { MAX_AGENT_RETRIES } from './types';
@@ -694,6 +695,18 @@ function truncateContextToFitBody(
 
 const REVIEW_BODY_BUDGET = 60000;
 
+/** The icon that opens a finding comment. Apart from the verdict line, the only emoji Manki posts. */
+const SEVERITY_EMOJI: Record<FindingSeverity, string> = {
+  blocker: '🚫',
+  warning: '⚠️',
+  suggestion: '✨',
+  nitpick: '📝',
+  ignore: '⚪',
+};
+
+/** Shown under a finding the judge kept with low confidence. */
+const LOW_CONFIDENCE_NOTE = '_Manki is not sure this applies, so please check it._';
+
 /** Non-blocking findings posted as line comments per review. The rest go in the body list. */
 const MAX_NON_BLOCKING_INLINE = 5;
 
@@ -758,6 +771,7 @@ function formatBodyFix(fix: string, file: string): string {
 /** Renders a finding listed in the review body: title, link to the line, what goes wrong, and the fix. */
 function formatFindingBlock(finding: Finding, linkTo: LineLink): string {
   const lines = [`**${sanitizeMarkdown(finding.title)}**`];
+  if (finding.judgeConfidence === 'low') lines.push(LOW_CONFIDENCE_NOTE);
   if (finding.file) {
     const location = `${sanitizeFilePath(finding.file)}${finding.line > 0 ? `:${finding.line}` : ''}`;
     lines.push(`[${inlineCode(location)}](${linkTo(finding.file, finding.line)})`);
@@ -845,7 +859,7 @@ export async function postReview(
   config?: ReviewConfig,
   { interRoundDiff, existingThreads = [] }: { interRoundDiff?: ParsedDiff; existingThreads?: PreviousFinding[] } = {},
 ): Promise<number> {
-  const statsHidden = config?.stats?.hidden ?? false;
+  const statsHidden = config?.stats?.hidden ?? true;
   const event = mapVerdictToEvent(result.verdict);
 
   const validComments: Array<{path: string; line: number; side: 'RIGHT'; body: string}> = [];
@@ -954,18 +968,21 @@ export async function postReview(
       core.warning(`Manki context truncated: dropped ${droppedCount} finding entries${summaryCapped ? ', judge summary capped at 2000 chars' : ''} to fit comment body`);
     }
   }
-  const body = renderBody(effectiveContext);
+  // Generated text often names code without backticks, so every posted body is highlighted before it goes out.
+  const codeTokens = diff ? codeTokensFromDiff(diff) : new Set<string>();
+  const highlight = <T extends { body: string }>(c: T): T => ({ ...c, body: highlightCode(c.body, codeTokens) });
+  const body = highlightCode(renderBody(effectiveContext), codeTokens);
 
   if (invalidComments.length > 0) {
     core.info(`Moved ${invalidComments.length} comments to review body (not postable as threads)`);
   }
   core.info(`Posting review: ${event} with ${validComments.length} line comments and ${fileComments.length} file-level comments`);
 
-  const review = await submitReview(octokit, owner, repo, prNumber, commitSha, result.verdict, body, validComments, reviewedCommitFooter);
-  const refused = await postFileLevelComments(octokit, owner, repo, prNumber, commitSha, fileComments);
+  const review = await submitReview(octokit, owner, repo, prNumber, commitSha, result.verdict, body, validComments.map(highlight), reviewedCommitFooter);
+  const refused = await postFileLevelComments(octokit, owner, repo, prNumber, commitSha, fileComments.map(highlight));
   if (refused.length > 0) {
     const titles = refused.map(f => `"${f.title}" (${f.file})`).join(', ');
-    const section = `\n\n**Blockers that could not be posted as threads:**\n\n${refused.map(f => formatFindingBlock(f, linkTo)).join('\n\n')}`;
+    const section = highlightCode(`\n\n**Blockers that could not be posted as threads:**\n\n${refused.map(f => formatFindingBlock(f, linkTo)).join('\n\n')}`, codeTokens);
     // Truncate the existing body, never the blocking findings appended to it.
     const room = REVIEW_BODY_BUDGET - section.length;
     if (room <= 0) {
@@ -1186,10 +1203,17 @@ function formatLabelled(label: string, text: string): string {
   return `**${label}:**${safe.includes('\n') ? '\n\n' : ' '}${safe}`;
 }
 
+/** Renders the setup on its own line and the steps as a numbered list, one step per line. */
+function formatTestGuide(guide: TestGuide): string {
+  const oneLine = (text: string): string => sanitizeMarkdown(text.replace(/\s+/g, ' ').trim());
+  const steps = guide.steps.map((step, i) => `${i + 1}. ${oneLine(step.replace(/^\s*\d+[.)]\s*/, ''))}`).join('\n');
+  return guide.setup ? `**Setup:** ${oneLine(guide.setup)}\n\n${steps}` : steps;
+}
+
 function formatReadyReport(result: ReviewResult): string | null {
   if ((result.outcome !== 'READY' && result.outcome !== 'BUDGET') || !result.verdictReport) return null;
   const { whatThisDoes, whatToTest } = result.verdictReport;
-  return `${formatLabelled('What this does', whatThisDoes)}\n\n${formatLabelled('What to test', whatToTest)}`;
+  return `${formatLabelled('What this does', whatThisDoes)}\n\n**What to test:**\n\n${formatTestGuide(whatToTest)}`;
 }
 
 // Sanitizes LLM-generated text (titles, descriptions, summaries) before embedding
@@ -1322,9 +1346,11 @@ function formatSuggestedFix(fix: string, file: string): string {
 }
 
 function formatFindingComment(finding: Finding): string {
-  const title = sanitizeMarkdown(finding.title);
-  const label = `${finding.severity[0].toUpperCase()}${finding.severity.slice(1)}, not blocking:`;
-  let comment = `${isBlockingFinding(finding) ? `**${title}**` : `**${label}** ${title}`}\n\n${sanitizeMarkdown(finding.description)}`;
+  const severity = `${finding.severity[0].toUpperCase()}${finding.severity.slice(1)}`;
+  const label = isBlockingFinding(finding) ? severity : `${severity}, not blocking`;
+  let comment = `${SEVERITY_EMOJI[finding.severity]} **${label}:** ${sanitizeMarkdown(finding.title)}\n\n`;
+  if (finding.judgeConfidence === 'low') comment += `${LOW_CONFIDENCE_NOTE}\n\n`;
+  comment += sanitizeMarkdown(finding.description);
   if (finding.suggestedFix?.trim()) {
     comment += `\n\n${formatSuggestedFix(finding.suggestedFix, finding.file)}`;
   }
@@ -2090,5 +2116,5 @@ async function cancelActiveReviewRun(
   }
 }
 
-export { dynamicFence, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, FOLLOW_UP_MARKER };
+export { dynamicFence, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, FOLLOW_UP_MARKER, LOW_CONFIDENCE_NOTE };
 export type { InProgressLock, StandingVerdict };

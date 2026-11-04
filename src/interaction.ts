@@ -5,6 +5,8 @@ import { LLMClient } from './providers';
 import { writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
 import { BotIdentity, dynamicFence, reactToIssueComment, reactToReviewComment, fetchPRDiff } from './github';
 import { truncateDiff } from './review';
+import { parsePRDiff } from './diff';
+import { codeTokensFromDiff, highlightCode } from './highlight';
 import { checkAndAutoApprove, fetchBotReviewThreads, resolveReviewThread } from './state';
 import { ReviewConfig } from './types';
 import { WRITING_RULES } from './writing-rules';
@@ -145,10 +147,12 @@ export async function handleReviewCommentReply(
 
     // Fetch the PR diff scoped to the file under discussion
     let diffContext = '';
+    let codeTokens = new Set<string>();
     try {
       const fullDiff = await fetchPRDiff(octokit, owner, repo, prNumber);
       const filePath = root.comment.path;
       const scopedDiff = filePath ? scopeDiffToFile(fullDiff, filePath) : fullDiff;
+      codeTokens = codeTokensFromDiff(parsePRDiff(scopedDiff));
       const truncated = truncateDiff(scopedDiff, 15000);
       if (truncated.trim()) {
         const sanitizedDiff = truncated.replace(/```/g, '` ` `');
@@ -167,7 +171,7 @@ export async function handleReviewCommentReply(
     );
 
     const response = await client.sendMessage(REPLY_SYSTEM_PROMPT, context + diffContext);
-    const reply = response.content.trim();
+    const reply = highlightCode(response.content.trim(), codeTokens);
 
     await octokit.rest.pulls.createReplyForReviewComment({
       owner,

@@ -432,10 +432,10 @@ planner:
 # times with shuffled file ordering; only consistent findings are kept.
 # review_passes: 1
 
-# Hide the structured `Manki context` block as an HTML comment
-# (`<!-- manki-context: ... -->`) instead of a `<details>` block (default: false).
+# Keep the structured `Manki context` block in an HTML comment
+# (`<!-- manki-context: ... -->`). Set to false to show it as a `<details>` block (default: true).
 # stats:
-#   hidden: false
+#   hidden: true
 
 # On merge, count per severity and specialist how many posted findings were
 # fixed, dismissed or left untouched. Written to the job summary, and appended

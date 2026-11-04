@@ -8,4 +8,7 @@ Text that is posted on the pull request follows these rules.
 - No praise, thanks or apologies. No filler such as "great catch", "you're right", "happy to", "if you want" or "let me know".
 - Never describe the review process: no agent or reviewer counts, no rounds, no judge.
 - No semicolons and no dashes between clauses. Use a full stop, a comma or a colon.
-- No emoji, no headings and no quote blocks. Use backticks for identifiers.`;
+- No emoji, no headings and no quote blocks.
+- Put code identifiers, file paths, config keys, commands and literal values in backticks, such as \`createReview\`, \`src/github.ts\`, \`exclude_paths\`, \`npm test\` and \`null\`.
+- In prose, put multi-line code in a fenced code block with a language tag from the file extension, such as \`ts\` for \`.ts\` files. A field that holds raw code, such as \`suggestedFix\`, takes the code alone.
+- Use bold for labels and a real markdown list for steps.`;

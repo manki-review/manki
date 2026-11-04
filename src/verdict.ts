@@ -2,12 +2,13 @@ import * as core from '@actions/core';
 
 import { LLMClient } from './providers';
 import { extractJSON } from './json';
-import { Finding, VerdictReport } from './types';
+import { Finding, TestGuide, VerdictReport } from './types';
 import { safeTruncate, sendWithParseRetry } from './utils';
 import { WRITING_RULES } from './writing-rules';
 
 const VERDICT_READER_NAME = 'Verdict reader';
 const MAX_BLOCKER_TITLE_LENGTH = 100;
+const MAX_TEST_STEPS = 8;
 
 // Every input here is identical on every round for the same tree. The reader must never learn
 // about earlier rounds, findings or the PR's own description, or it starts confirming instead of
@@ -24,7 +25,7 @@ Return READY only if you would merge it as it stands. When you return ADDRESS_FI
 
 Also write two things for the pull request:
 - whatThisDoes: two or three sentences a non-specialist can follow. What was wrong or missing, what the change does now, what it gets the user. Ground it in the diff, never in the change's own framing.
-- whatToTest: a numbered list of manual checks from the diff, each in the form "Do X. Expect Y." Start with any setup the checks need, and end with edge cases worth trying. Never invent behaviour the code does not implement.
+- whatToTest: manual checks from the diff. \`setup\` says in one or two sentences what the checks need first, and is left out when they need nothing. \`steps\` holds at most ${MAX_TEST_STEPS} checks, each one "Do X. Expect Y." pair, ending with edge cases worth trying. Never invent behaviour the code does not implement.
 
 ${WRITING_RULES}
 
@@ -34,8 +35,33 @@ Respond with ONLY a JSON object (no markdown fences):
   "blockers": ["path/to/file.ext:LINE: defect"],
   "summary": "string",
   "whatThisDoes": "string",
-  "whatToTest": "string"
+  "whatToTest": { "setup": "string, optional", "steps": ["Do X. Expect Y."] }
 }`;
+
+/**
+ * Reads `whatToTest` as `{ setup?, steps }`. A plain string is split into steps at its
+ * `1.`, `2.` markers, with any text before the first marker as the setup.
+ */
+function parseTestGuide(value: unknown): TestGuide {
+  if (typeof value === 'string') {
+    const [lead, ...steps] = value.split(/(?:^|\s)\d+\.\s/);
+    const setup = lead.replace(/^\s*setup:\s*/i, '').trim();
+    const parts = steps.length > 0 ? steps : [value];
+    return {
+      ...(steps.length > 0 && setup && { setup }),
+      steps: parts.map(s => s.trim()).filter(s => s.length > 0).slice(0, MAX_TEST_STEPS),
+    };
+  }
+  const { setup, steps } = (value ?? {}) as Record<string, unknown>;
+  if (!value || typeof value !== 'object' || !Array.isArray(steps) || steps.some(s => typeof s !== 'string') || (setup !== undefined && typeof setup !== 'string')) {
+    throw new Error('verdict `whatToTest` is not `{ setup?, steps }`');
+  }
+  const trimmed = setup?.trim();
+  return {
+    ...(trimmed && { setup: trimmed }),
+    steps: (steps as string[]).map(s => s.trim()).filter(s => s.length > 0).slice(0, MAX_TEST_STEPS),
+  };
+}
 
 /** Parses the reader's JSON strictly. Throws on anything that is not a complete, well-formed verdict. */
 function parseVerdictReport(responseText: string): VerdictReport {
@@ -49,19 +75,20 @@ function parseVerdictReport(responseText: string): VerdictReport {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('verdict is not a JSON object');
   }
-  const { verdict, blockers, summary, whatThisDoes, whatToTest } = parsed as Record<string, unknown>;
+  const { verdict, blockers, summary, whatThisDoes, whatToTest: rawWhatToTest } = parsed as Record<string, unknown>;
   if (verdict !== 'READY' && verdict !== 'ADDRESS_FIRST') {
     throw new Error(`unknown verdict ${JSON.stringify(verdict)?.slice(0, 50)}`);
   }
-  if (typeof summary !== 'string' || typeof whatThisDoes !== 'string' || typeof whatToTest !== 'string') {
+  if (typeof summary !== 'string' || typeof whatThisDoes !== 'string' || rawWhatToTest === undefined) {
     throw new Error('verdict is missing `summary`, `whatThisDoes` or `whatToTest`');
   }
+  const whatToTest = parseTestGuide(rawWhatToTest);
   if (blockers !== undefined && (!Array.isArray(blockers) || blockers.some(b => typeof b !== 'string'))) {
     throw new Error('verdict `blockers` is not an array of strings');
   }
   if (verdict === 'READY') {
-    if (whatThisDoes.trim().length === 0 || whatToTest.trim().length === 0) {
-      throw new Error('READY verdict has a blank `whatThisDoes` or `whatToTest`');
+    if (whatThisDoes.trim().length === 0 || whatToTest.steps.length === 0) {
+      throw new Error('READY verdict has a blank `whatThisDoes` or no `whatToTest` steps');
     }
     return { verdict, blockers: [], summary, whatThisDoes, whatToTest };
   }
