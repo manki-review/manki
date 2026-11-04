@@ -85,6 +85,7 @@ jest.mock('./config', () => {
     sanitizeForkConfig,
     resolveModel: jest.fn().mockReturnValue('claude-sonnet-4-20250514'),
     resolveAgentModel: jest.fn().mockImplementation(actual.resolveAgentModel),
+    resolvePairModel: jest.fn().mockImplementation(actual.resolvePairModel),
   };
 });
 
@@ -1835,7 +1836,7 @@ describe('runFullReview orchestration', () => {
     it('warms up the provider CLI before runReview to avoid the planner-install race', async () => {
       // Return a distinct client per call so the Set-based dedup in
       // `runFullReview` keeps every role's warmup target, letting us assert
-      // that planner, reviewer, judge, and dedup were each warmed up.
+      // that planner, reviewer, reviewer pair, judge, and dedup were each warmed up.
       const warmups: jest.Mock[] = [];
       jest.mocked(createLLMClient).mockImplementation(() => {
         const warmupCLI = jest.fn().mockResolvedValue(undefined);
@@ -1845,8 +1846,8 @@ describe('runFullReview orchestration', () => {
 
       await callRunFullReview();
 
-      // Default config builds 4 distinct clients: reviewer, judge, planner, dedup.
-      expect(warmups).toHaveLength(4);
+      // Default config builds 5 distinct clients: reviewer, reviewer pair, judge, planner, dedup.
+      expect(warmups).toHaveLength(5);
       for (const w of warmups) expect(w).toHaveBeenCalledTimes(1);
       const firstWarmupOrder = warmups[0].mock.invocationCallOrder[0];
       const runReviewOrder = jest.mocked(reviewModule.runReview).mock.invocationCallOrder[0];
@@ -2588,15 +2589,20 @@ describe('runFullReview orchestration', () => {
       },
     });
 
+    jest.mocked(configModule.resolveModel).mockReturnValueOnce('claude-haiku-4-5').mockReturnValueOnce('claude-sonnet-4-6');
+
     const security = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['Security & Safety'] };
     const correctness = { severity: 'suggestion' as const, title: 'Style', file: 'src/app.ts', line: 8, description: 'd', reviewers: ['Correctness & Logic'] };
+    const both = { severity: 'warning' as const, title: 'Race', file: 'src/app.ts', line: 9, description: 'd', reviewers: ['Correctness & Logic', 'Security & Safety'] };
+    const reader = { severity: 'blocker' as const, title: 'Leak', file: 'src/app.ts', line: 3, description: 'd', reviewers: ['Verdict reader'] };
+    const findings = [security, correctness, both, reader];
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Issues found',
-      findings: [security, correctness], highlights: [], reviewComplete: true,
+      findings, highlights: [], reviewComplete: true,
       agentNames: ['Security & Safety', 'Correctness & Logic'],
-      allJudgedFindings: [security, correctness], rawFindings: [security, correctness],
+      allJudgedFindings: findings, rawFindings: findings,
     });
-    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [security, correctness], duplicates: [] });
+    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
 
     await callRunFullReview();
 
@@ -2605,6 +2611,8 @@ describe('runFullReview orchestration', () => {
     const correctnessMetric = ctx!.reviewers.agentMetrics?.find((m: { name: string }) => m.name === 'Correctness & Logic');
     expect(securityMetric?.model).toBe('claude-opus-4-7');
     expect(correctnessMetric?.model).toBe('claude-sonnet-4-6');
+    expect(ctx!.reviewers).toEqual(expect.objectContaining({ keptPrimaryOnly: 1, keptPairOnly: 1, keptBoth: 1 }));
+    expect(ctx!.findings.entries.find(e => e.title === 'Race')?.reviewers).toEqual(['Correctness & Logic', 'Security & Safety']);
   });
 
   it('uses built-in default model for `RoundAgentMetric.model` when `config.models` is absent', async () => {
@@ -3532,7 +3540,7 @@ describe('runFullReview orchestration', () => {
     });
   });
 
-  it('includes specialist, suggestedFix, and title in RoundContext findingEntries', async () => {
+  it('includes reviewers, suggestedFix, and title in RoundContext findingEntries', async () => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
@@ -3564,7 +3572,8 @@ describe('runFullReview orchestration', () => {
     const [,,,,,,,roundContextArg] = calls[0];
     expect(roundContextArg).toBeDefined();
     const entry = roundContextArg!.findings.entries[0];
-    expect(entry.specialist).toBe('Correctness & Logic');
+    expect(entry.reviewers).toEqual(['Correctness & Logic']);
+    expect(entry).not.toHaveProperty('specialist');
     expect(entry.suggestedFix).toBe('Rename `x` to `userCount`.');
     expect(entry.title).toBe('Misleading variable');
   });
@@ -5651,6 +5660,42 @@ describe('runFullReview orchestration', () => {
       const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0];
       const clientsArg = runReviewCall[0] as { reviewerForAgent: (n: string) => unknown; reviewer: unknown };
       expect(clientsArg.reviewerForAgent('Architecture & Design')).toBe(clientsArg.reviewer);
+    });
+
+    it('builds the pair client from `resolvePairModel` and fails the run when it cannot be built', async () => {
+      const pairClient = { sendMessage: jest.fn() };
+      jest.mocked(createLLMClient).mockImplementation((_p: unknown, model: unknown) =>
+        model === 'claude-opus-4-7' ? pairClient : { sendMessage: jest.fn() },
+      );
+      jest.mocked(configModule.loadConfig).mockReturnValue(configWithAgents({}));
+      const testFile = {
+        path: 'src/app.ts', changeType: 'modified' as const,
+        hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: '' }],
+      };
+      jest.mocked(diffModule.parsePRDiff).mockReturnValue({
+        files: [testFile], totalAdditions: 10, totalDeletions: 5,
+      });
+      jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
+
+      await callRunFullReview();
+
+      const clientsArg = jest.mocked(reviewModule.runReview).mock.calls[0][0] as { reviewerPair: unknown };
+      expect(clientsArg.reviewerPair).toBe(pairClient);
+
+      jest.mocked(reviewModule.runReview).mockClear();
+      jest.mocked(configModule.loadConfig).mockReturnValue({
+        ...configWithAgents({}),
+        models: { reviewer: 'claude-sonnet-4-6', reviewer_pair: 'bogus-pair' },
+      });
+      jest.mocked(parseModelSpec).mockImplementation((m: string) => {
+        if (m === 'bogus-pair') throw new Error('Unknown model "bogus-pair"');
+        return { provider: 'anthropic', model: m };
+      });
+
+      await callRunFullReview();
+
+      expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(expect.stringContaining('Unknown model "bogus-pair"'));
+      expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
     });
 
     it('reviewerForAgent caches per-agent clients across repeated invocations', async () => {

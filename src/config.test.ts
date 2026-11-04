@@ -1,4 +1,4 @@
-import { DEFAULT_CONFIG, loadConfig, loadConfigFromContent, loadConfigFromFile, resolveAgentModel, resolveModel, sanitizeForkConfig } from './config';
+import { DEFAULT_CONFIG, loadConfig, loadConfigFromContent, loadConfigFromFile, resolveAgentModel, resolveModel, resolvePairModel, sanitizeForkConfig } from './config';
 import { ReviewConfig } from './types';
 
 // Suppress @actions/core output during tests
@@ -364,6 +364,15 @@ models:
       expect(core.error).toHaveBeenCalledWith('`models.reviewer` must be a string');
     });
 
+    it('accepts `models.reviewer_pair` and rejects a non-string or empty one', () => {
+      expect(loadConfigFromContent('models:\n  reviewer_pair: gpt-5.5\n').models?.reviewer_pair).toBe('gpt-5.5');
+      for (const value of ['123', '""']) {
+        expect(() => loadConfigFromContent(`models:\n  reviewer_pair: ${value}\n`)).toThrow('Invalid config');
+        expect(core.error).toHaveBeenCalledWith('`models.reviewer_pair` must be a non-empty string');
+      }
+      expect(core.warning).not.toHaveBeenCalled();
+    });
+
     it('throws on invalid models.judge type', () => {
       const yaml = `
 models:
@@ -544,6 +553,22 @@ models:
         models: { planner: 'claude-sonnet-4-6' },
       };
       expect(resolveModel(config, 'planner')).toBe('claude-sonnet-4-6');
+    });
+  });
+
+  describe('resolvePairModel', () => {
+    const withModels = (models: ReviewConfig['models']): ReviewConfig => ({ ...DEFAULT_CONFIG, models });
+
+    it('pairs the reviewer with the other Claude tier when `reviewer_pair` is unset', () => {
+      expect(resolvePairModel(DEFAULT_CONFIG)).toBe('claude-opus-4-7');
+      expect(resolvePairModel(withModels({ reviewer: 'claude-opus-4-7' }))).toBe('claude-sonnet-4-6');
+      expect(resolvePairModel(withModels({ reviewer: 'anthropic/claude-opus-4-6' }))).toBe('claude-sonnet-4-6');
+      expect(resolvePairModel(withModels({ reviewer: 'claude-haiku-4-5' }))).toBe('claude-sonnet-4-6');
+    });
+
+    it('keeps the reviewer model for other providers and honours `reviewer_pair`', () => {
+      expect(resolvePairModel(withModels({ reviewer: 'gpt-5.5' }))).toBe('gpt-5.5');
+      expect(resolvePairModel(withModels({ reviewer: 'claude-sonnet-4-6', reviewer_pair: 'gemini-3-pro' }))).toBe('gemini-3-pro');
     });
   });
 

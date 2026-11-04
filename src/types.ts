@@ -363,6 +363,8 @@ export interface ReviewConfig {
   models?: {
     planner?: string;
     reviewer?: string;
+    /** Model of the second finder. Unset means the other Claude tier of `reviewer`. */
+    reviewer_pair?: string;
     judge?: string;
     dedup?: string;
     /**
@@ -817,6 +819,12 @@ export interface RoundReviewers {
   /** Reviewer agent names that participated in this round. */
   agents: string[];
   agentMetrics?: RoundAgentMetric[];
+  /** Kept findings raised only by agents on `models.reviewer`. */
+  keptPrimaryOnly?: number;
+  /** Kept findings raised only by agents on another model. */
+  keptPairOnly?: number;
+  /** Kept findings raised by agents on `models.reviewer` and on another model. */
+  keptBoth?: number;
 }
 
 export interface RoundAgentMetric {
@@ -1023,7 +1031,9 @@ export interface FindingFingerprintEntry {
   threadId?: string;
   severity: FindingSeverity | 'unknown';
   authorReplyClass?: AuthorReplyClass;
-  /** Originating specialist name (from `Finding.reviewers[0]`). */
+  /** Every reviewer agent that raised the finding (`Finding.reviewers`). */
+  reviewers?: string[];
+  /** First reviewer of the finding. Written by releases before `reviewers`, read only as a fallback. */
   specialist?: string;
   /** Reviewer's proposed fix at the time the finding was raised. Stored so later rounds can detect code that implements a prior-round proposal (own-proposal caveat rule). */
   suggestedFix?: string;

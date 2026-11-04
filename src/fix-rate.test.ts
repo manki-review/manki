@@ -68,7 +68,7 @@ describe('recordFixRate', () => {
               makeFindingFingerprintEntry({ title: 'Changed line', file: 'src/a.ts', lineStart: 10, severity: 'warning', specialist: 'Security' }),
               makeFindingFingerprintEntry({ title: 'Judge addressed', file: 'src/b.ts', lineStart: 5, severity: 'suggestion', specialist: 'Style', threadId: 'T_B' }),
               makeFindingFingerprintEntry({ title: 'Human resolved', file: 'src/b.ts', lineStart: 20, severity: 'warning', specialist: 'Security', threadId: 'T_C' }),
-              makeFindingFingerprintEntry({ title: 'Far from change', file: 'src/a.ts', lineStart: 80, severity: 'warning', specialist: 'Security' }),
+              makeFindingFingerprintEntry({ title: 'Far from change', file: 'src/a.ts', lineStart: 80, severity: 'warning', reviewers: ['Security', 'Style'] }),
             ],
           },
         }),

@@ -1372,17 +1372,18 @@ describe('buildAnthropicAuth', () => {
 });
 
 describe('extractAnthropicCLIUsage', () => {
-  it('lifts standard usage fields from a result event', () => {
+  it('lifts standard usage fields from a result event, counting cache writes and reads as input', () => {
     expect(
       extractAnthropicCLIUsage({
         type: 'result',
         usage: {
-          input_tokens: 1234,
+          input_tokens: 3,
           output_tokens: 56,
+          cache_creation_input_tokens: 1200,
           cache_read_input_tokens: 999,
         },
       }),
-    ).toEqual({ inputTokens: 1234, outputTokens: 56, cachedTokens: 999, reasoningTokens: 0 });
+    ).toEqual({ inputTokens: 2202, outputTokens: 56, cachedTokens: 999, reasoningTokens: 0 });
   });
 
   it('coerces string-valued counters to integers', () => {
@@ -1417,7 +1418,7 @@ describe('AnthropicClient API-path usage', () => {
     });
     const client = new AnthropicClient({ auth: { kind: 'apiKey', key: 'sk-key' }, model: 'claude-opus-4-6' });
     const result = await client.sendMessage('sys', 'user');
-    expect(result.usage).toEqual({ inputTokens: 100, outputTokens: 25, cachedTokens: 10, reasoningTokens: 0 });
+    expect(result.usage).toEqual({ inputTokens: 110, outputTokens: 25, cachedTokens: 10, reasoningTokens: 0 });
     expect(typeof result.latencyMs).toBe('number');
     expect(result.latencyMs).toBeGreaterThanOrEqual(0);
   });
