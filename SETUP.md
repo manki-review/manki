@@ -293,7 +293,8 @@ Gemini CLI OAuth (requires the CLI on the runner):
 
 ```yaml
       - name: Install Gemini CLI
-        run: npm install -g @google/gemini-cli
+        # --ignore-scripts is safe: @google/gemini-cli@0.66.0 has no install script of its own. Re-verify if you bump the version pin.
+        run: npm install -g --ignore-scripts '@google/gemini-cli@0.66.0'
       - name: Manki Review
         uses: manki-review/manki@v5
         with:

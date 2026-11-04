@@ -1,7 +1,15 @@
-import { chmodSync, mkdirSync, writeFileSync } from 'fs';
-import { dirname } from 'path';
+import { spawn } from 'child_process';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { dirname, join } from 'path';
+import { StringDecoder } from 'string_decoder';
+
+import * as core from '@actions/core';
 
 export const STALE_TIMEOUT_MS = 90_000;
+const HARD_TIMEOUT_MS = 1_200_000;
+const KILL_GRACE_MS = 5000;
+const MAX_OUTPUT_BYTES = 50 * 1024 * 1024;
 
 /** Strip GitHub Actions workflow commands to prevent injection when logging CLI output. */
 export function sanitizeLogOutput(text: string): string {
@@ -201,4 +209,193 @@ function hasNestedString(obj: Record<string, unknown>, dottedPath: string): bool
     current = (current as Record<string, unknown>)[part];
   }
   return typeof current === 'string' && current.length > 0;
+}
+
+let emptyCwd: string | undefined;
+
+/**
+ * Returns an empty directory, created once per process, to run the CLIs in. In the PR
+ * checkout they would load the PR's own hooks, MCP servers and settings files.
+ */
+function emptyCliCwd(): string {
+  if (!emptyCwd) {
+    const dir = mkdtempSync(join(tmpdir(), 'manki-cli-'));
+    process.once('exit', () => rmSync(dir, { recursive: true, force: true }));
+    emptyCwd = dir;
+  }
+  return emptyCwd;
+}
+
+export interface RunCliOptions {
+  /** Provider name used in error messages, e.g. `Claude`. */
+  label: string;
+  cliPath: string;
+  args: string[];
+  env: NodeJS.ProcessEnv;
+  /** Written to stdin, which is then closed. */
+  input: string;
+  /** Receives decoded stdout text as it arrives, including the decoder's final flush. */
+  onStdout: (chunk: string) => void;
+  /** Whether stderr output also resets the stale timer. */
+  stderrResetsStale?: boolean;
+}
+
+export interface CliExit {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  stderr: string;
+  lastStdoutChunk: string;
+}
+
+/**
+ * Spawn a provider CLI in an empty directory, feed it `input` on stdin and resolve once it exits. Rejects when
+ * the CLI fails to spawn, stalls for `STALE_TIMEOUT_MS`, runs past the hard timeout,
+ * exceeds the output cap or stdin cannot be written. A non-zero exit still resolves, so
+ * the caller can build its own diagnostics.
+ */
+export function runCli(opts: RunCliOptions): Promise<CliExit> {
+  const { label } = opts;
+  return new Promise((resolve, reject) => {
+    const child = spawn(opts.cliPath, opts.args, {
+      cwd: emptyCliCwd(),
+      env: opts.env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    let stderr = '';
+    let timedOut = false;
+    let stale = false;
+    let outputExceeded = false;
+    let settled = false;
+    let lastStdoutChunk = '';
+    let rawBytes = 0;
+    const killTimers: NodeJS.Timeout[] = [];
+
+    const terminate = (): void => {
+      try { child.kill('SIGTERM'); } catch { /* already dead */ }
+      const killTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, KILL_GRACE_MS);
+      killTimer.unref();
+      killTimers.push(killTimer);
+    };
+
+    const clearAllTimers = (): void => {
+      clearTimeout(timer);
+      clearTimeout(staleTimer);
+      killTimers.forEach(clearTimeout);
+    };
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      clearTimeout(staleTimer);
+      terminate();
+    }, HARD_TIMEOUT_MS);
+    timer.unref();
+
+    const handleStale = (): void => {
+      if (outputExceeded || timedOut) return;
+      stale = true;
+      clearTimeout(timer);
+      terminate();
+    };
+    let staleTimer = setTimeout(handleStale, STALE_TIMEOUT_MS);
+    staleTimer.unref();
+    const resetStaleTimer = (): void => {
+      clearTimeout(staleTimer);
+      staleTimer = setTimeout(handleStale, STALE_TIMEOUT_MS);
+      staleTimer.unref();
+    };
+
+    const countBytes = (n: number): boolean => {
+      rawBytes += n;
+      if (rawBytes <= MAX_OUTPUT_BYTES) return true;
+      if (!outputExceeded) {
+        outputExceeded = true;
+        clearTimeout(timer);
+        clearTimeout(staleTimer);
+        terminate();
+      }
+      return false;
+    };
+
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
+    const takeStdout = (chunk: string): void => {
+      if (!chunk) return;
+      lastStdoutChunk = chunk.length >= 500 ? chunk.slice(-500) : (lastStdoutChunk + chunk).slice(-500);
+      opts.onStdout(chunk);
+    };
+
+    child.stdout.on('data', (data: Buffer) => {
+      if (outputExceeded || settled || stale || timedOut) return;
+      resetStaleTimer();
+      if (!countBytes(data.length)) return;
+      takeStdout(stdoutDecoder.write(data));
+    });
+    child.stderr.on('data', (data: Buffer) => {
+      if (outputExceeded || settled) return;
+      if (opts.stderrResetsStale && !stale && !timedOut) resetStaleTimer();
+      stderr += stderrDecoder.write(data);
+      countBytes(data.length);
+    });
+
+    child.on('close', (code, signal) => {
+      clearAllTimers();
+      if (settled) return;
+      settled = true;
+      takeStdout(stdoutDecoder.end());
+      stderr += stderrDecoder.end();
+      if (stale) {
+        const details = buildTimeoutDiagnostics(lastStdoutChunk, stderr);
+        const msg = `${label} CLI stale — no output for ${STALE_TIMEOUT_MS / 1000}s${details ? `. ${details}` : ''}`;
+        core.warning(msg);
+        reject(new Error(msg));
+        return;
+      }
+      if (timedOut) {
+        const details = buildTimeoutDiagnostics(lastStdoutChunk, stderr);
+        const msg = `${label} CLI timed out after ${HARD_TIMEOUT_MS / 1000}s${details ? `. ${details}` : ''}`;
+        core.warning(msg);
+        reject(new Error(msg));
+        return;
+      }
+      if (outputExceeded) {
+        reject(new Error(`${label} CLI output exceeded 50MB limit`));
+        return;
+      }
+      resolve({ code, signal, stderr, lastStdoutChunk });
+    });
+
+    child.on('error', (error) => {
+      clearAllTimers();
+      if (settled) return;
+      settled = true;
+      reject(new Error(`${label} CLI spawn failed: ${error.message}`));
+    });
+
+    child.stdin.on('error', (err) => {
+      core.warning(`stdin write error: ${err.message}`);
+    });
+
+    // `write()` never writes partially: a `false` return only means the buffer is above
+    // `highWaterMark`, so `end()` waits for `drain`.
+    try {
+      if (child.stdin.write(opts.input)) {
+        try { child.stdin.end(); } catch { /* stream may be destroyed */ }
+      } else {
+        child.stdin.once('drain', () => {
+          if (!settled) {
+            try { child.stdin.end(); } catch { /* stream already destroyed */ }
+          }
+        });
+      }
+    } catch (err) {
+      core.warning(`stdin write failed: ${(err as Error).message}`);
+      if (!settled) {
+        settled = true;
+        clearAllTimers();
+        reject(new Error(`stdin write failed: ${(err as Error).message}`));
+      }
+      terminate();
+    }
+  });
 }

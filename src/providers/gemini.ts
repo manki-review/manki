@@ -1,12 +1,11 @@
-import { execFile, spawn } from 'child_process';
+import { execFile } from 'child_process';
 import { join } from 'path';
-import { StringDecoder } from 'string_decoder';
 import { promisify } from 'util';
 
 import { FinishReason, GoogleGenerativeAI } from '@google/generative-ai';
 import * as core from '@actions/core';
 
-import { buildExitDiagnostics, buildTimeoutDiagnostics, sanitizeLogOutput, seedAuthFile, STALE_TIMEOUT_MS } from './cli-utils';
+import { buildExitDiagnostics, runCli, sanitizeLogOutput, seedAuthFile } from './cli-utils';
 import { GeminiAuth, LLMClient, LLMResponse, LLMUsage, readCount, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -45,6 +44,11 @@ export function geminiThinkingBudget(effort: SendMessageOptions['effort']): numb
   // Gemini 2.5/3.x families.
   return 10000;
 }
+
+// Pinned like the Codex CLI and installed without lifecycle scripts. The package has none, and only
+// its optional keychain dependency has one, which the seeded `oauth_creds.json` file does not need.
+// Keep this in sync with the install step in `.github/workflows/manki.yml`.
+export const GEMINI_CLI_VERSION = '0.66.0';
 
 let cliInstallPromise: Promise<string> | null = null;
 
@@ -92,7 +96,7 @@ export class GeminiClient implements LLMClient {
       if (!cliInstallPromise) {
         cliInstallPromise = (async () => {
           core.info('Gemini CLI not found, installing via npm...');
-          await execFileAsync('npm', ['install', '-g', '@google/gemini-cli'], {
+          await execFileAsync('npm', ['install', '-g', '--ignore-scripts', `@google/gemini-cli@${GEMINI_CLI_VERSION}`], {
             timeout: 120000,
           });
           try {
@@ -140,198 +144,62 @@ export class GeminiClient implements LLMClient {
       });
     }
 
-    return new Promise((resolve, reject) => {
-      // Prompt is written to stdin; the CLI reads until EOF and responds on stdout.
-      // We pass the full prompt on stdin to avoid argv length limits.
-      const args = [
-        '--model', this.model,
-      ];
+    // Prompt is written to stdin; the CLI reads until EOF and responds on stdout.
+    // We pass the full prompt on stdin to avoid argv length limits.
+    const args = [
+      // Headless runs refuse an untrusted directory. `runCli` runs the CLI in an empty one.
+      '--skip-trust',
+      '--model', this.model,
+    ];
 
-      // Strip other providers' secrets and all INPUT_* vars (GitHub Actions delivers
-      // every action input as INPUT_<NAME>, which would otherwise bypass bare-name
-      // stripping) from the forwarded env. PATH/HOME etc. flow through `safeEnv`.
-      const safeEnv = Object.fromEntries(
-        Object.entries(process.env).filter(
-          ([k]) => !GEMINI_BLOCKED_BARE.has(k) && !/^INPUT_/i.test(k),
-        ),
-      ) as NodeJS.ProcessEnv;
+    // Strip other providers' secrets and all INPUT_* vars (GitHub Actions delivers
+    // every action input as INPUT_<NAME>, which would otherwise bypass bare-name
+    // stripping) from the forwarded env. PATH/HOME etc. flow through `safeEnv`.
+    const safeEnv = Object.fromEntries(
+      Object.entries(process.env).filter(
+        ([k]) => !GEMINI_BLOCKED_BARE.has(k) && !/^INPUT_/i.test(k),
+      ),
+    ) as NodeJS.ProcessEnv;
 
-      const child = spawn(cliPath, args, {
-        env: {
-          ...safeEnv,
-          // GOOGLE_GENAI_USE_GCA=true selects the LOGIN_WITH_GOOGLE auth type in
-          // non-interactive mode. The CLI then loads its credentials from the
-          // `oauth_creds.json` file seeded above (which carries a refresh_token,
-          // unlike the GOOGLE_CLOUD_ACCESS_TOKEN env-var path that only sets a
-          // short-lived access_token).
-          ...(oauthToken ? { GOOGLE_GENAI_USE_GCA: 'true' } : {}),
-        },
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-
-      let output = '';
-      let stderr = '';
-      let timedOut = false;
-      let stale = false;
-      let outputExceeded = false;
-      let settled = false;
-      let killTimer: NodeJS.Timeout | undefined;
-      let staleKillTimer: NodeJS.Timeout | undefined;
-      let outputKillTimer: NodeJS.Timeout | undefined;
-      let stdinKillTimer: NodeJS.Timeout | undefined;
-      let lastStdoutChunk = '';
-      let rawBytes = 0;
-      let rawStderrBytes = 0;
-
-      const clearAllTimers = (): void => {
-        clearTimeout(timer);
-        clearTimeout(staleTimer);
-        if (killTimer) clearTimeout(killTimer);
-        if (staleKillTimer) clearTimeout(staleKillTimer);
-        if (outputKillTimer) clearTimeout(outputKillTimer);
-        if (stdinKillTimer) clearTimeout(stdinKillTimer);
-      };
-
-      const timer = setTimeout(() => {
-        timedOut = true;
-        clearTimeout(staleTimer);
-        child.kill('SIGTERM');
-        killTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, 5000);
-        killTimer.unref();
-      }, 1200000);
-      timer.unref();
-
-      const handleStale = (): void => {
-        if (outputExceeded || timedOut) return;
-        stale = true;
-        clearTimeout(timer);
-        child.kill('SIGTERM');
-        staleKillTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, 5000);
-        staleKillTimer.unref();
-      };
-      let staleTimer = setTimeout(handleStale, STALE_TIMEOUT_MS);
-      staleTimer.unref();
-
-      const MAX_OUTPUT = 50 * 1024 * 1024; // 50 MB
-      const killOnOutputExceeded = (): void => {
-        if (outputExceeded) return;
-        outputExceeded = true;
-        clearTimeout(timer);
-        clearTimeout(staleTimer);
-        child.kill('SIGTERM');
-        outputKillTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, 5000);
-        outputKillTimer.unref();
-      };
-      const stdoutDecoder = new StringDecoder('utf8');
-      const stderrDecoder = new StringDecoder('utf8');
-      child.stdout.on('data', (data: Buffer) => {
-        if (outputExceeded || settled || stale) return;
-        clearTimeout(staleTimer);
-        staleTimer = setTimeout(handleStale, STALE_TIMEOUT_MS);
-        staleTimer.unref();
-
-        rawBytes += data.length;
-        if (rawBytes + rawStderrBytes > MAX_OUTPUT) { killOnOutputExceeded(); return; }
-
-        const chunk = stdoutDecoder.write(data);
-        if (chunk.length >= 500) {
-          lastStdoutChunk = chunk.slice(-500);
-        } else {
-          lastStdoutChunk = (lastStdoutChunk + chunk).slice(-500);
-        }
-        // Gemini CLI emits plain text on stdout — concatenate verbatim.
-        output += chunk;
-      });
-      child.stderr.on('data', (data: Buffer) => {
-        if (outputExceeded || settled) return;
-        rawStderrBytes += data.length;
-        stderr += stderrDecoder.write(data);
-        if (rawBytes + rawStderrBytes > MAX_OUTPUT) killOnOutputExceeded();
-      });
-
-      child.on('close', (code, signal) => {
-        clearAllTimers();
-        if (settled) return;
-        settled = true;
-        const remaining = stdoutDecoder.end();
-        if (remaining) output += remaining;
-        stderr += stderrDecoder.end();
-        if (stale) {
-          const details = buildTimeoutDiagnostics(lastStdoutChunk, stderr);
-          const msg = `Gemini CLI stale — no output for ${STALE_TIMEOUT_MS / 1000}s${details ? `. ${details}` : ''}`;
-          core.warning(msg);
-          reject(new Error(msg));
-          return;
-        }
-        if (timedOut) {
-          const details = buildTimeoutDiagnostics(lastStdoutChunk, stderr);
-          const msg = `Gemini CLI timed out after 1200s${details ? `. ${details}` : ''}`;
-          core.warning(msg);
-          reject(new Error(msg));
-          return;
-        }
-        if (outputExceeded) {
-          reject(new Error('Gemini CLI output exceeded 50MB limit'));
-          return;
-        }
-        if (code !== 0) {
-          const msg = buildExitDiagnostics({
-            exitCode: code,
-            signal,
-            stderr,
-            lastStdoutChunk,
-            model,
-            effort: options?.effort,
-            promptChars: fullPrompt.length,
-            elapsedMs: Date.now() - startTime,
-          });
-          core.warning(`Gemini CLI failed (${msg})`);
-          reject(new Error(`Gemini CLI invocation failed (${msg})`));
-          return;
-        }
-        const content = output.trim();
-        core.debug(sanitizeLogOutput(content.slice(0, 200)));
-        resolve({
-          content,
-          usage: { ...ZERO_USAGE },
-          latencyMs: Date.now() - startTime,
-        });
-      });
-
-      child.on('error', (error) => {
-        clearAllTimers();
-        if (settled) return;
-        settled = true;
-        reject(new Error(`Gemini CLI spawn failed: ${error.message}`));
-      });
-
-      child.stdin.on('error', (err) => {
-        core.warning(`stdin write error: ${err.message}`);
-      });
-
-      try {
-        const canWrite = child.stdin.write(fullPrompt);
-        if (!canWrite) {
-          child.stdin.once('drain', () => {
-            if (!settled) {
-              try { child.stdin.end(); } catch { /* stream already destroyed */ }
-            }
-          });
-        } else {
-          try { child.stdin.end(); } catch { /* stream may be destroyed */ }
-        }
-      } catch (err) {
-        core.warning(`stdin write failed: ${(err as Error).message}`);
-        if (!settled) {
-          settled = true;
-          clearAllTimers();
-          reject(new Error(`stdin write failed: ${(err as Error).message}`));
-        }
-        try { child.kill('SIGTERM'); } catch { /* already dead */ }
-        stdinKillTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch { /* already dead */ } }, 5000);
-        stdinKillTimer.unref();
-      }
+    let output = '';
+    const { code, signal, stderr, lastStdoutChunk } = await runCli({
+      label: 'Gemini',
+      cliPath,
+      args,
+      env: {
+        ...safeEnv,
+        // GOOGLE_GENAI_USE_GCA=true selects the LOGIN_WITH_GOOGLE auth type in
+        // non-interactive mode. The CLI then loads its credentials from the
+        // `oauth_creds.json` file seeded above (which carries a refresh_token,
+        // unlike the GOOGLE_CLOUD_ACCESS_TOKEN env-var path that only sets a
+        // short-lived access_token).
+        ...(oauthToken ? { GOOGLE_GENAI_USE_GCA: 'true' } : {}),
+      },
+      input: fullPrompt,
+      onStdout: (chunk) => { output += chunk; },
     });
+
+    if (code !== 0) {
+      const msg = buildExitDiagnostics({
+        exitCode: code,
+        signal,
+        stderr,
+        lastStdoutChunk,
+        model,
+        effort: options?.effort,
+        promptChars: fullPrompt.length,
+        elapsedMs: Date.now() - startTime,
+      });
+      core.warning(`Gemini CLI failed (${msg})`);
+      throw new Error(`Gemini CLI invocation failed (${msg})`);
+    }
+    const content = output.trim();
+    core.debug(sanitizeLogOutput(content.slice(0, 200)));
+    return {
+      content,
+      usage: { ...ZERO_USAGE },
+      latencyMs: Date.now() - startTime,
+    };
   }
 
   private async sendViaAPI(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
