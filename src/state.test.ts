@@ -14,7 +14,7 @@ jest.mock('./github', () => ({
 const makeThread = (overrides: Partial<ReviewThread> = {}): ReviewThread => ({
   id: 'thread-1',
   isResolved: false,
-  isRequired: false,
+  isBlocking: true,
   findingTitle: 'Test finding',
   ...overrides,
 });
@@ -26,42 +26,25 @@ describe('areAllFindingsResolved', () => {
 
   it('returns true when all threads are resolved', () => {
     const threads = [
-      makeThread({ id: '1', isRequired: true, isResolved: true }),
-      makeThread({ id: '2', isRequired: false, isResolved: true }),
+      makeThread({ id: '1', isBlocking: true, isResolved: true }),
+      makeThread({ id: '2', isBlocking: false, isResolved: true }),
     ];
     expect(areAllFindingsResolved(threads)).toBe(true);
   });
 
-  it('returns false when unresolved suggestion threads exist', () => {
+  it('returns false when some blocking threads are unresolved', () => {
     const threads = [
-      makeThread({ id: '1', isRequired: false, isResolved: false }),
-      makeThread({ id: '2', isRequired: false, isResolved: true }),
+      makeThread({ id: '1', isBlocking: true, isResolved: true }),
+      makeThread({ id: '2', isBlocking: true, isResolved: false }),
     ];
     expect(areAllFindingsResolved(threads)).toBe(false);
   });
 
-  it('returns false when some required threads are unresolved', () => {
+  it('ignores unresolved non-blocking threads', () => {
     const threads = [
-      makeThread({ id: '1', isRequired: true, isResolved: true }),
-      makeThread({ id: '2', isRequired: true, isResolved: false }),
-    ];
-    expect(areAllFindingsResolved(threads)).toBe(false);
-  });
-
-  it('returns false when required threads are resolved but suggestions are not', () => {
-    const threads = [
-      makeThread({ id: '1', isRequired: true, isResolved: true }),
-      makeThread({ id: '2', isRequired: false, isResolved: false }),
-      makeThread({ id: '3', isRequired: false, isResolved: false }),
-    ];
-    expect(areAllFindingsResolved(threads)).toBe(false);
-  });
-
-  it('returns true when all required and suggestion threads are resolved', () => {
-    const threads = [
-      makeThread({ id: '1', isRequired: true, isResolved: true }),
-      makeThread({ id: '2', isRequired: false, isResolved: true }),
-      makeThread({ id: '3', isRequired: false, isResolved: true }),
+      makeThread({ id: '1', isBlocking: true, isResolved: true }),
+      makeThread({ id: '2', isBlocking: false, isResolved: false }),
+      makeThread({ id: '3', isBlocking: false, isResolved: false }),
     ];
     expect(areAllFindingsResolved(threads)).toBe(true);
   });
@@ -263,8 +246,8 @@ describe('fetchBotReviewThreads', () => {
     const threads = await fetchBotReviewThreads(octokit, 'owner', 'repo', 1);
 
     expect(threads).toHaveLength(2);
-    expect(threads[0]).toEqual({ id: 't1', isResolved: false, isRequired: true, findingTitle: 'null check' });
-    expect(threads[1]).toEqual({ id: 't2', isResolved: true, isRequired: false, findingTitle: 'rename var' });
+    expect(threads[0]).toEqual({ id: 't1', isResolved: false, isBlocking: true, findingTitle: 'null check' });
+    expect(threads[1]).toEqual({ id: 't2', isResolved: true, isBlocking: false, findingTitle: 'rename var' });
   });
 
   it('filters out non-bot threads', async () => {
@@ -293,24 +276,26 @@ describe('fetchBotReviewThreads', () => {
     const threads = await fetchBotReviewThreads(octokit, 'owner', 'repo', 1);
 
     expect(threads).toHaveLength(1);
-    expect(threads[0].isRequired).toBe(false);
+    expect(threads[0].isBlocking).toBe(true);
     expect(threads[0].findingTitle).toBe('Unknown');
   });
 
-  it('parses nit and ignore severities as non-required', async () => {
+  it('parses warning as blocking and nit and ignore as non-blocking', async () => {
     const graphqlMock = jest.fn().mockResolvedValueOnce(
       makeGraphqlFetchResponse([
         makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:nitpick:style-issue --> nit' }),
         makeGraphqlFetchThreadNode({ id: 't2', body: '<!-- manki:ignore:false-positive --> ignore' }),
+        makeGraphqlFetchThreadNode({ id: 't3', body: '<!-- manki:warning:race --> warning' }),
       ]),
     );
 
     const octokit = { graphql: graphqlMock } as unknown as Octokit;
     const threads = await fetchBotReviewThreads(octokit, 'owner', 'repo', 1);
 
-    expect(threads).toHaveLength(2);
-    expect(threads[0]).toEqual({ id: 't1', isResolved: false, isRequired: false, findingTitle: 'style issue' });
-    expect(threads[1]).toEqual({ id: 't2', isResolved: false, isRequired: false, findingTitle: 'false positive' });
+    expect(threads).toHaveLength(3);
+    expect(threads[0]).toEqual({ id: 't1', isResolved: false, isBlocking: false, findingTitle: 'style issue' });
+    expect(threads[1]).toEqual({ id: 't2', isResolved: false, isBlocking: false, findingTitle: 'false positive' });
+    expect(threads[2]).toEqual({ id: 't3', isResolved: false, isBlocking: true, findingTitle: 'race' });
   });
 
   it('migrates legacy severity markers (`required`, `nit`) on read', async () => {
@@ -325,8 +310,8 @@ describe('fetchBotReviewThreads', () => {
     const threads = await fetchBotReviewThreads(octokit, 'owner', 'repo', 1);
 
     expect(threads).toHaveLength(2);
-    expect(threads[0].isRequired).toBe(true);
-    expect(threads[1].isRequired).toBe(false);
+    expect(threads[0].isBlocking).toBe(true);
+    expect(threads[1].isBlocking).toBe(false);
   });
 
   it('returns empty array when no threads exist', async () => {
@@ -413,20 +398,23 @@ describe('checkAndAutoApprove', () => {
     );
   });
 
-  it('does not approve when required threads are resolved but suggestions are not', async () => {
+  it('approves when blocking threads are resolved and only old suggestion and nitpick threads are open', async () => {
     const createReviewMock = jest.fn().mockResolvedValue({});
     const octokit = makeMockOctokit({
       threads: [
         makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix-bug --> fix', isResolved: true }),
         makeGraphqlFetchThreadNode({ id: 't2', body: '<!-- manki:suggestion:style --> style', isResolved: false }),
+        makeGraphqlFetchThreadNode({ id: 't3', body: '<!-- manki:nit:naming --> naming', isResolved: false }),
       ],
       createReviewFn: createReviewMock,
     });
 
     const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
 
-    expect(result).toBe(false);
-    expect(createReviewMock).not.toHaveBeenCalled();
+    expect(result).toBe(true);
+    expect(createReviewMock).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'APPROVE' }),
+    );
   });
 
   it('returns false when unresolved required threads remain', async () => {
@@ -441,11 +429,11 @@ describe('checkAndAutoApprove', () => {
     expect(result).toBe(false);
   });
 
-  it('does not approve when only suggestion threads exist and are unresolved', async () => {
+  it('does not approve while a warning thread is unresolved', async () => {
     const createReviewMock = jest.fn().mockResolvedValue({});
     const octokit = makeMockOctokit({
       threads: [
-        makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:suggestion:style --> style', isResolved: false }),
+        makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:warning:race --> race', isResolved: false }),
       ],
       createReviewFn: createReviewMock,
     });

@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 
-import { buildDashboard, formatBlockingPriorThreads, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, truncateContextToFitBody, dynamicFence, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment } from './github';
+import { buildDashboard, titleToSlug, formatBlockingPriorThreads, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, truncateContextToFitBody, dynamicFence, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment } from './github';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { DEFAULT_CONFIG } from './config';
 
@@ -329,7 +329,7 @@ describe('postReview generalFindings', () => {
       summary: 'Summary',
       findings: [
         {
-          severity: 'suggestion',
+          severity: 'warning',
           title: 'Add error handling',
           file: '',
           line: 0,
@@ -355,7 +355,7 @@ describe('postReview generalFindings', () => {
       summary: 'Summary',
       findings: [
         {
-          severity: 'suggestion',
+          severity: 'warning',
           title: 'Add error handling',
           file: '',
           line: 0,
@@ -381,7 +381,7 @@ describe('postReview generalFindings', () => {
       summary: 'Summary',
       findings: [
         {
-          severity: 'suggestion',
+          severity: 'warning',
           title: 'Long fix',
           file: '',
           line: 0,
@@ -408,7 +408,7 @@ describe('postReview generalFindings', () => {
       summary: 'Summary',
       findings: [
         {
-          severity: 'suggestion',
+          severity: 'warning',
           title: 'Backtick fix',
           file: '',
           line: 0,
@@ -435,7 +435,7 @@ describe('postReview generalFindings', () => {
       summary: 'Summary',
       findings: [
         {
-          severity: 'suggestion',
+          severity: 'warning',
           title: 'Fence break',
           file: '',
           line: 0,
@@ -461,7 +461,7 @@ describe('postReview generalFindings', () => {
       summary: 'Summary',
       findings: [
         {
-          severity: 'suggestion',
+          severity: 'warning',
           title: 'Some title',
           file: '',
           line: 0,
@@ -502,7 +502,7 @@ describe('postReview generalFindings', () => {
       summary: 'Summary',
       findings: [
         {
-          severity: 'suggestion',
+          severity: 'warning',
           title: 'Some title',
           file: 'src/utils.ts',
           line: 0,
@@ -597,7 +597,7 @@ describe('postReview reviewed-commit footer', () => {
       verdict: 'COMMENT',
       summary: 'Summary.',
       findings: [{
-        severity: 'suggestion',
+        severity: 'warning',
         title: 'Issue',
         file: 'src/a.ts',
         line: 10,
@@ -3100,7 +3100,7 @@ describe('postReview fallback paths', () => {
       verdict: 'APPROVE',
       summary: 'Summary',
       findings: [{
-        severity: 'suggestion',
+        severity: 'warning',
         title: 'Some issue',
         file: 'src/a.ts',
         line: 10,
@@ -3234,7 +3234,7 @@ describe('postReview fallback paths', () => {
       verdict: 'APPROVE',
       summary: 'Summary',
       findings: [{
-        severity: 'suggestion',
+        severity: 'warning',
         title: 'Issue in missing file',
         file: 'src/missing.ts',
         line: 10,
@@ -3253,42 +3253,214 @@ describe('postReview fallback paths', () => {
     expect(createReviewMock.mock.calls[0][0].comments).toEqual([]);
   });
 
-  it('moves finding to body when file has empty hunks and line cannot be resolved', async () => {
-    const createReviewMock = jest.fn().mockResolvedValue({ data: { id: 7 } });
-    const mockOctokit = {
-      rest: { pulls: { createReview: createReviewMock } },
-    } as unknown as Parameters<typeof postReview>[0];
-
+  describe('blocking findings off changed lines', () => {
     const diff: ParsedDiff = {
-      files: [{
-        path: 'src/a.ts',
-        changeType: 'modified',
-        hunks: [],
-      }],
+      files: [
+        { path: 'src/a.ts', changeType: 'modified', hunks: [{ oldStart: 1, oldLines: 3, newStart: 1, newLines: 3, content: '' }] },
+        { path: 'src/renamed.ts', changeType: 'renamed', hunks: [] },
+      ],
       totalAdditions: 1,
       totalDeletions: 0,
     };
 
-    const result: ReviewResult = {
-      verdict: 'APPROVE',
-      summary: 'Summary',
-      findings: [{
-        severity: 'suggestion',
-        title: 'Issue in empty hunk file',
-        file: 'src/a.ts',
-        line: 10,
-        description: 'Desc.',
-        reviewers: [],
-      }],
-      highlights: [],
-      reviewComplete: true,
-      agentNames: [],
+    function buildResult(findings: Finding[]): ReviewResult {
+      return { verdict: 'REQUEST_CHANGES', summary: 'Summary', findings, highlights: [], reviewComplete: true, agentNames: [] };
+    }
+
+    function makeOctokit(
+      createReviewComment: jest.Mock,
+      createReview = jest.fn().mockResolvedValue({ data: { id: 7 } }),
+      updateReview = jest.fn().mockResolvedValue({}),
+    ) {
+      const octokit = {
+        rest: { pulls: { createReview, createReviewComment, updateReview } },
+      } as unknown as Parameters<typeof postReview>[0];
+      return { octokit, createReview, updateReview };
+    }
+
+    const offLineBlocker: Finding = { severity: 'blocker', title: 'Refused thread', file: 'src/a.ts', line: 40, description: 'Desc.', reviewers: [] };
+
+    it('posts blockers outside the hunks as file-level comments with the finding marker', async () => {
+      const createReviewComment = jest.fn().mockResolvedValue({ data: { id: 1 } });
+      const { octokit, createReview } = makeOctokit(createReviewComment);
+
+      await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([
+        { severity: 'blocker', title: 'Unchanged line bug', file: 'src/a.ts', line: 40, description: 'Desc.', reviewers: [] },
+        { severity: 'warning', title: 'Rename only', file: 'src/renamed.ts', line: 0, description: 'Desc.', reviewers: [] },
+        { severity: 'blocker', title: 'On changed line', file: 'src/a.ts', line: 2, description: 'Desc.', reviewers: [] },
+      ]), diff);
+
+      expect(createReviewComment).toHaveBeenCalledTimes(2);
+      expect(createReviewComment.mock.calls[0][0]).toEqual(expect.objectContaining({
+        pull_number: 1, commit_id: 'sha', path: 'src/a.ts', subject_type: 'file',
+      }));
+      expect(createReviewComment.mock.calls[0][0]).not.toHaveProperty('line');
+      expect(createReviewComment.mock.calls[0][0].body).toContain('<!-- manki:blocker:Unchanged-line-bug -->');
+      expect(createReviewComment.mock.calls[1][0]).toEqual(expect.objectContaining({ path: 'src/renamed.ts', subject_type: 'file' }));
+      expect(createReviewComment.mock.calls[1][0].body).toContain('<!-- manki:warning:Rename-only -->');
+
+      const review = createReview.mock.calls[0][0];
+      expect(review.comments).toHaveLength(1);
+      expect(review.comments[0]).toEqual(expect.objectContaining({ path: 'src/a.ts', line: 2 }));
+      expect(review.comments[0].body).toContain('<!-- manki:blocker:On-changed-line -->');
+      expect(review.body).not.toContain('Findings (not on changed lines)');
+    });
+
+    it('posts no file-level comment when creating the review fails', async () => {
+      const createReviewComment = jest.fn();
+      const createReview = jest.fn().mockRejectedValue(Object.assign(new Error('Bad Gateway'), { status: 502 }));
+      const { octokit } = makeOctokit(createReviewComment, createReview);
+
+      await expect(postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([offLineBlocker]), diff)).rejects.toThrow('Bad Gateway');
+      expect(createReviewComment).not.toHaveBeenCalled();
+    });
+
+    it('skips a file-level comment only when an open thread was posted for the same finding', async () => {
+      const createReviewComment = jest.fn().mockResolvedValue({ data: { id: 1 } });
+      const { octokit } = makeOctokit(createReviewComment);
+      const thread = (title: string, line: number, status: 'open' | 'resolved' | 'replied') => ({
+        title, file: 'src/a.ts', line, severity: 'blocker' as const, markerSlug: titleToSlug(title), threadId: `T-${title}`, status,
+      });
+      const findings: Finding[] = ['File thread', 'Nearby line thread', 'Resolved thread', 'Far line thread', 'Other file']
+        .map(title => ({ ...offLineBlocker, title }));
+      findings[4] = { ...findings[4], file: 'src/renamed.ts', line: 0 };
+
+      await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult(findings), diff, undefined, undefined, undefined, {
+        existingThreads: [
+          thread('File thread', 0, 'open'),
+          thread('Nearby line thread', 37, 'replied'),
+          thread('Resolved thread', 0, 'resolved'),
+          thread('Far line thread', 10, 'open'),
+          thread('Other file', 0, 'open'),
+        ],
+      });
+
+      const posted = createReviewComment.mock.calls.map(c => (c[0].body as string).match(/<!-- manki:blocker:(.+?) -->/)?.[1]);
+      expect(posted).toEqual(['Resolved-thread', 'Far-line-thread', 'Other-file']);
+    });
+
+    it.each([
+      ['a 422', 422],
+      ['a 5xx', 502],
+    ])('adds a file-level comment GitHub refuses with %s to the posted review body', async (_label, status) => {
+      const createReviewComment = jest.fn().mockRejectedValue(Object.assign(new Error('refused'), { status }));
+      const { octokit, createReview, updateReview } = makeOctokit(createReviewComment);
+
+      await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([offLineBlocker]), diff);
+
+      const review = createReview.mock.calls[0][0];
+      expect(review.event).toBe('REQUEST_CHANGES');
+      expect(review.comments).toEqual([]);
+      expect(updateReview).toHaveBeenCalledTimes(1);
+      const update = updateReview.mock.calls[0][0];
+      expect(update.review_id).toBe(7);
+      expect(update.body.startsWith(review.body.slice(0, review.body.lastIndexOf('\n\nReviewed commit')))).toBe(true);
+      expect(update.body).toContain('**Findings (could not post as threads):**\n- **[Blocker] Refused thread** (`src/a.ts:40`)');
+      expect(update.body).toMatch(/Reviewed commit \[`sha`\]\([^)]+\)$/);
+    });
+
+    it('truncates the existing body, never the refused findings, when the review is near the size limit', async () => {
+      const createReviewComment = jest.fn().mockRejectedValue(Object.assign(new Error('refused'), { status: 422 }));
+      const { octokit, updateReview } = makeOctokit(createReviewComment);
+      const result = { ...buildResult([offLineBlocker]), summary: 'word '.repeat(11990) };
+
+      await postReview(octokit, 'owner', 'repo', 1, 'sha', result, diff);
+
+      const update = updateReview.mock.calls[0][0].body as string;
+      expect(update).toContain('*(Review body truncated)*');
+      expect(update).toContain('**Findings (could not post as threads):**\n- **[Blocker] Refused thread** (`src/a.ts:40`): Desc.\n\nReviewed commit');
+      expect(update.length).toBeLessThanOrEqual(60000 + 200);
+    });
+
+    it('fails the run naming the findings when they cannot fit in the review body', async () => {
+      const createReviewComment = jest.fn().mockRejectedValue(Object.assign(new Error('refused'), { status: 422 }));
+      const { octokit, updateReview } = makeOctokit(createReviewComment);
+      const huge: Finding = { ...offLineBlocker, title: 'Huge '.repeat(12000) };
+
+      await expect(postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([huge]), diff)).rejects.toThrow('(src/a.ts)');
+      expect(updateReview).not.toHaveBeenCalled();
+    });
+
+    it('fails the run naming the finding when the refused comment cannot be added to the review either', async () => {
+      const createReviewComment = jest.fn().mockRejectedValue(Object.assign(new Error('refused'), { status: 422 }));
+      const updateReview = jest.fn().mockRejectedValue(new Error('update down'));
+      const { octokit } = makeOctokit(createReviewComment, undefined, updateReview);
+
+      await expect(postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([offLineBlocker]), diff))
+        .rejects.toThrow('"Refused thread" (src/a.ts)');
+    });
+  });
+});
+
+describe('postReview non-blocking findings', () => {
+  const diff: ParsedDiff = {
+    files: [{ path: 'src/a.ts', changeType: 'modified', hunks: [{ oldStart: 1, oldLines: 30, newStart: 1, newLines: 30, content: '' }] }],
+    totalAdditions: 30,
+    totalDeletions: 0,
+  };
+
+  function buildResult(findings: Finding[]): ReviewResult {
+    return { verdict: 'APPROVE', summary: 'Summary', findings, highlights: [], reviewComplete: true, agentNames: [] };
+  }
+
+  function makeOctokit() {
+    const createReview = jest.fn().mockResolvedValue({ data: { id: 1 } });
+    const createReviewComment = jest.fn();
+    const octokit = {
+      rest: { pulls: { createReview, createReviewComment } },
+    } as unknown as Parameters<typeof postReview>[0];
+    return { octokit, createReview, createReviewComment };
+  }
+
+  it('lists suggestions and nitpicks in a collapsed body section instead of threads', async () => {
+    const { octokit, createReview, createReviewComment } = makeOctokit();
+
+    await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([
+      { severity: 'suggestion', title: 'Extract helper', file: 'src/a.ts', line: 5, description: 'Duplicated.', suggestedFix: 'const x =\n  helper();', reviewers: [] },
+      { severity: 'nitpick', title: 'Typo in name', file: 'src/a.ts', line: 7, description: 'Typo.', suggestedFix: 'use `name`', reviewers: [], judgeConfidence: 'high' },
+      { severity: 'suggestion', title: 'General idea', file: '', line: 0, description: 'Desc.', reviewers: [] },
+    ]), diff);
+
+    const review = createReview.mock.calls[0][0];
+    expect(review.comments).toEqual([]);
+    expect(createReviewComment).not.toHaveBeenCalled();
+    expect(review.body).toContain([
+      '<details>',
+      '<summary>Suggestions and nitpicks (3)</summary>',
+      '',
+      '- `src/a.ts:5`: Extract helper. Fix: `const x = helper();`',
+      '- `src/a.ts:7`: Typo in name. Fix: `` use `name` ``',
+      '- General idea',
+      '</details>',
+    ].join('\n'));
+    expect(review.body).not.toContain('\u{1F534}');
+    expect(review.body).not.toContain('manki:nitpick');
+    expect(review.body).not.toContain('not posted');
+  });
+
+  it('counts non-blocking findings on code the inter-round diff did not change', async () => {
+    const { octokit, createReview } = makeOctokit();
+    const interRoundDiff: ParsedDiff = {
+      files: [{ path: 'src/a.ts', changeType: 'modified', hunks: [{ oldStart: 10, oldLines: 2, newStart: 10, newLines: 3, content: '' }] }],
+      totalAdditions: 1,
+      totalDeletions: 0,
     };
 
-    await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result, diff);
-    const body = createReviewMock.mock.calls[0][0].body as string;
-    expect(body).toContain('Findings (not on changed lines)');
-    expect(body).toContain('Issue in empty hunk file');
+    await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([
+      { severity: 'suggestion', title: 'On new code', file: 'src/a.ts', line: 11, description: 'Desc.', reviewers: [] },
+      { severity: 'suggestion', title: 'On old code', file: 'src/a.ts', line: 3, description: 'Desc.', reviewers: [] },
+      { severity: 'nitpick', title: 'Untouched file', file: 'src/b.ts', line: 3, description: 'Desc.', reviewers: [] },
+      { severity: 'blocker', title: 'Old blocker', file: 'src/a.ts', line: 3, description: 'Desc.', reviewers: [] },
+    ]), diff, undefined, undefined, undefined, { interRoundDiff });
+
+    const review = createReview.mock.calls[0][0];
+    expect(review.body).toContain('<summary>Suggestions and nitpicks (1)</summary>');
+    expect(review.body).toContain('On new code');
+    expect(review.body).not.toContain('On old code');
+    expect(review.body).not.toContain('Untouched file');
+    expect(review.body).toContain('2 smaller findings on code unchanged since the last review were not posted.');
+    expect(review.comments).toHaveLength(1);
+    expect(review.comments[0].body).toContain('Old blocker');
   });
 });
 

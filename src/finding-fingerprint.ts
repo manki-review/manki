@@ -1,4 +1,4 @@
-import { FindingFingerprintEntry, ThreadEvaluation } from './types';
+import { FindingFingerprint, FindingFingerprintEntry, ThreadEvaluation } from './types';
 
 /**
  * Index `threadEvaluations` by `threadId` for O(1) lookup.
@@ -37,4 +37,35 @@ export function isPriorAddressedByJudge(
   if (!prior.threadId) return false;
   const evaluation = threadEvaluationsByThreadId.get(prior.threadId);
   return evaluation?.status === 'addressed';
+}
+
+/** How far a thread's posted line may sit from a prior's fingerprint lines and still match. */
+const PRIOR_THREAD_LINE_TOLERANCE = 5;
+
+/** A posted Manki thread, as far as matching it to a finding needs. */
+interface PostedThread {
+  threadId?: string;
+  file: string;
+  line: number;
+  originalLine?: number;
+  markerSlug?: string;
+}
+
+/**
+ * Returns the ID of the thread posted for a finding: same file and marker slug, nearest
+ * line within `PRIOR_THREAD_LINE_TOLERANCE`. A file-level thread matches any line.
+ */
+export function findPriorThreadId(fp: FindingFingerprint, threads: PostedThread[]): string | undefined {
+  let best: { threadId: string; distance: number } | undefined;
+  for (const t of threads) {
+    if (t.file !== fp.file || t.markerSlug !== fp.slug) continue;
+    const line = t.originalLine ?? t.line;
+    // A file-level thread has no line, so it matches on file and slug alone, behind any line thread.
+    const distance = !line
+      ? PRIOR_THREAD_LINE_TOLERANCE
+      : line < fp.lineStart ? fp.lineStart - line : Math.max(0, line - fp.lineEnd);
+    if (distance > PRIOR_THREAD_LINE_TOLERANCE) continue;
+    if (!best || distance < best.distance) best = { threadId: t.threadId!, distance };
+  }
+  return best?.threadId;
 }

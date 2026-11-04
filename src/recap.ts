@@ -2,6 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { LLMClient } from './providers';
 import { ACTIONS_BOT_LOGIN, BOT_LOGIN, titleToSlug } from './github';
+import { findPriorThreadId } from './finding-fingerprint';
 import { matchesSuppression, Suppression } from './memory';
 import { AuthorReplyClass, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacyPrType, migrateLegacySeverity, OpenThreadsState, RoundContext, SEVERITY_TOKEN_PATTERN } from './types';
 
@@ -363,9 +364,6 @@ async function fetchRecapState(
   };
 }
 
-/** How far a thread's posted line may sit from a prior's fingerprint lines and still match. */
-const PRIOR_THREAD_LINE_TOLERANCE = 5;
-
 /**
  * Gives each prior-round finding without a `threadId` the ID of the Manki
  * thread posted for it. Round contexts are written before GitHub assigns
@@ -387,19 +385,6 @@ function attachPriorThreadIds(rounds: RoundContext[], previousFindings: Previous
       }),
     },
   }));
-}
-
-function findPriorThreadId(fp: FindingFingerprint, threads: PreviousFinding[]): string | undefined {
-  let best: { threadId: string; distance: number } | undefined;
-  for (const t of threads) {
-    if (t.file !== fp.file || t.markerSlug !== fp.slug) continue;
-    const line = t.originalLine ?? t.line;
-    if (!line) continue;
-    const distance = line < fp.lineStart ? fp.lineStart - line : Math.max(0, line - fp.lineEnd);
-    if (distance > PRIOR_THREAD_LINE_TOLERANCE) continue;
-    if (!best || distance < best.distance) best = { threadId: t.threadId!, distance };
-  }
-  return best?.threadId;
 }
 
 /** Cap on `reclassifiedPriors[]` to bound context-block size. */

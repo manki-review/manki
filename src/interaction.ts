@@ -584,20 +584,20 @@ async function handleCheck(
 
   if (!approved) {
     const threads = await fetchBotReviewThreads(octokit, owner, repo, prNumber);
-    const required = threads.filter(t => t.isRequired && !t.isResolved);
+    const blocking = threads.filter(t => t.isBlocking && !t.isResolved);
 
-    if (required.length > 0) {
-      const list = required.map(t => `- \`${t.findingTitle}\``).join('\n');
+    if (blocking.length > 0) {
+      const list = blocking.map(t => `- \`${t.findingTitle}\``).join('\n');
       await octokit.rest.issues.createComment({
         owner, repo,
         issue_number: prNumber,
-        body: `${BOT_MARKER}\n**Manki** — ${required.length} required issue(s) still open:\n${list}\n\nResolve these to trigger auto-approval.`,
+        body: `${BOT_MARKER}\n**Manki** — ${blocking.length} blocking issue(s) still open:\n${list}\n\nResolve these to trigger auto-approval.`,
       });
     } else {
       await octokit.rest.issues.createComment({
         owner, repo,
         issue_number: prNumber,
-        body: `${BOT_MARKER}\n**Manki** — No required issues found, checking approval status...`,
+        body: `${BOT_MARKER}\n**Manki** — No blocking issues found, checking approval status...`,
       });
     }
   }

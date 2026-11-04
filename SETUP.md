@@ -462,13 +462,14 @@ Manki reviews run in these stages:
 
 ### Severity tiers
 
-The judge assigns one of four severity levels to each finding:
+The judge assigns one of five severity levels to each finding:
 
 | Severity | Meaning | Effect |
 |----------|---------|--------|
-| `required` | Must fix before merge | Blocks approval (REQUEST_CHANGES) |
-| `suggestion` | Should fix, but not blocking | Posted as inline comment, PR can still be approved |
-| `nit` | Minor style or preference issue | Posted as inline comment, PR can still be approved |
+| `required` | Must fix before merge | Blocks approval (REQUEST_CHANGES), posted as a review thread |
+| `warning` | Should fix before merge | Blocks approval (REQUEST_CHANGES), posted as a review thread |
+| `suggestion` | Should fix, but not blocking | Listed in a collapsed section of the review body, PR can still be approved |
+| `nit` | Minor style or preference issue | Listed in a collapsed section of the review body, PR can still be approved |
 | `ignore` | False positive or irrelevant | Dropped silently |
 
 Use the `models` config section to choose different Claude models for the reviewer and judge stages (e.g., a faster model for reviewers and a more precise model for the judge).
@@ -562,7 +563,7 @@ Manki handles untrusted PR content and cross-repo tokens. The security model res
 | Review doesn't trigger on `/manki review` | The workflow file must exist on the default branch (main) |
 | "Diff too large" | Increase `max_diff_lines` in config or split the PR |
 | Auto-approve not working | Check that `auto_approve: true` is set in `.manki.yml` and the `pull_request_review` event trigger is in the workflow |
-| Inline comments land on wrong lines | The judge agent validated line numbers but the diff may have shifted. Findings that can't be placed inline are moved to the review body |
+| Inline comments land on wrong lines | The judge agent validated line numbers but the diff may have shifted. A blocking finding that is not on a changed line is posted as a comment on its file instead |
 
 ## Known Limitations
 
