@@ -217,7 +217,6 @@ jest.mock('./github', () => {
 
 jest.mock('./state', () => ({
   checkAndAutoApprove: jest.fn().mockResolvedValue(false),
-  resolveStaleThreads: jest.fn().mockResolvedValue(0),
 }));
 
 import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, main, _resetOctokitCache, detectTickedMarker, _buildRoundRecap } from './index';
@@ -1735,7 +1734,6 @@ describe('runFullReview orchestration', () => {
     jest.mocked(authModule.getMemoryToken).mockReturnValue(null);
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: [] });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [], duplicates: [] });
-    jest.mocked(stateModule.resolveStaleThreads).mockResolvedValue(0);
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'APPROVE', outcome: 'READY' as const, summary: 'Looks good',
       findings: [], highlights: [], reviewComplete: true,
@@ -3784,16 +3782,6 @@ describe('runFullReview orchestration', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const postedFindings = (jest.mocked(ghUtils.postReview).mock.calls[0][5] as any).findings;
     expect(postedFindings.length).toBeGreaterThan(0);
-  });
-
-  it('resolves stale threads and logs count', async () => {
-    jest.mocked(stateModule.resolveStaleThreads).mockResolvedValue(3);
-
-    await callRunFullReview();
-
-    expect(jest.mocked(core.info)).toHaveBeenCalledWith(
-      'Resolved 3 stale review threads from previous commits',
-    );
   });
 
   it('updates dashboard on agent-complete progress', async () => {
@@ -6410,7 +6398,6 @@ describe('runFullReview concurrent-submission lock', () => {
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
     jest.mocked(authModule.getMemoryToken).mockReturnValue(null);
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: [] });
-    jest.mocked(stateModule.resolveStaleThreads).mockResolvedValue(0);
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'APPROVE', outcome: 'READY' as const, summary: '', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
     });

@@ -3,6 +3,7 @@ import { Suppression } from './memory';
 import { classifyAuthorReply, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment } from './recap';
 import { BOT_LOGIN, titleToSlug } from './github';
 import { determineOutcome } from './review';
+import { applyCrossRoundSuppression } from './judge';
 
 jest.mock('@actions/core', () => ({
   info: jest.fn(),
@@ -521,6 +522,7 @@ describe('fetchRecapState', () => {
     return {
       id: 'thread-1',
       isResolved: false,
+      resolvedBy: { login: 'alice' },
       path: 'src/foo.ts',
       line: 10,
       comments: {
@@ -1203,6 +1205,52 @@ describe('fetchRecapState', () => {
       expect(outcome).toBe('READY');
       const unattached = attached.map(({ threadId: _threadId, ...rest }) => rest);
       expect(determineOutcome([], unattached, openThreads, collectResolvedThreadIds(state.previousFindings), undefined, undefined, new Set(['src/foo.ts', 'src/bar.ts'])).outcome).toBe('ADDRESS_FIRST');
+    });
+
+    it('counts a thread Manki resolved as dismissed only when the judge marked it addressed', async () => {
+      const title = 'Missing null check';
+      const slug = titleToSlug(title);
+      const files = { human: 'src/human.ts', bot: 'src/bot.ts', judge: 'src/judge.ts', unknown: 'src/unknown.ts' };
+      const entries = Object.values(files).map(file => ({
+        fingerprint: { file, lineStart: 10, lineEnd: 10, slug },
+        severity: 'blocker' as const,
+        title,
+      }));
+      const ctx = makeRoundContext(1, {
+        findings: { count: 4, severityCounts: { blocker: 4, warning: 0, suggestion: 0, nitpick: 0 }, entries },
+        judge: { summary: 'ok', threadEvaluations: [{ threadId: 'T_JUDGE', status: 'addressed', reason: 'fixed' }] },
+      });
+      const thread = (id: string, path: string, resolver: string | null) => makeThread({
+        id,
+        isResolved: true,
+        resolvedBy: resolver === null ? null : { login: resolver },
+        path,
+        line: 10,
+        comments: { nodes: [{ body: `**Blocker**: ${title}\n\n<!-- manki:blocker:${slug} -->`, author: { login: BOT_LOGIN } }] },
+      });
+      const octokit = mockOctokit([
+        thread('T_HUMAN', files.human, 'alice'),
+        thread('T_BOT', files.bot, BOT_LOGIN),
+        thread('T_JUDGE', files.judge, BOT_LOGIN),
+        thread('T_UNKNOWN', files.unknown, null),
+      ], [
+        { id: 100, body: detailsBlock(ctx), user: { login: BOT_LOGIN } },
+      ]);
+
+      const state = await fetchRecapState(octokit, 'owner', 'repo', 1);
+      expect(state.previousFindings.map(f => f.status)).toEqual(['resolved', 'auto-resolved', 'resolved', 'auto-resolved']);
+
+      const newFindings = Object.values(files).map(file => makeFinding({ title, file, line: 10 }));
+      expect(deduplicateFindings(newFindings, state.previousFindings).unique.map(f => f.file)).toEqual([files.bot, files.unknown]);
+      expect(collectInPrSuppressions(state.previousFindings).map(s => s.fingerprint.file)).toEqual([files.human, files.judge]);
+      const resolvedThreadIds = collectResolvedThreadIds(state.previousFindings);
+      expect(resolvedThreadIds).toEqual(new Set(['T_HUMAN', 'T_JUDGE']));
+      const ratcheted = applyCrossRoundSuppression(newFindings, state.priorRounds, { resolvedThreadIds, suppressResolvedThreads: true });
+      expect(ratcheted.findings.filter(f => f.severity !== 'ignore').map(f => f.file)).toEqual([files.bot, files.unknown]);
+
+      const judgePrior = state.priorRounds[0].findings.entries.filter(e => e.threadId === 'T_JUDGE');
+      expect(judgePrior).toHaveLength(1);
+      expect(determineOutcome([], judgePrior, [], resolvedThreadIds).outcome).toBe('READY');
     });
 
     it('round-trips suggestedFix containing a literal \\u0060 escape sequence without parse error', async () => {
