@@ -286,7 +286,7 @@ function parseContextBlocks(
         // Back-compat: pre-5.2.0 context blocks predate the structured planner
         // provenance fields. Project the old `used: boolean` onto the new
         // `source` enum so consumers reading `ctx.planner.source` get a defined
-        // value, and seed an empty `coreAgentInjections` list.
+        // value.
         if (typeof ctx.planner.source !== 'string') {
           // `fallbackReason` was not persisted before 5.2.0, so the
           // `heuristic_fallback` branch below is unreachable for old context
@@ -301,9 +301,6 @@ function parseContextBlocks(
             ctx.planner.source = 'heuristic';
           }
           (ctx.planner as { used: boolean }).used = ctx.planner.source === 'planner';
-        }
-        if (!Array.isArray(ctx.planner.coreAgentInjections)) {
-          ctx.planner.coreAgentInjections = [];
         }
       }
       const existing = byRound.get(round);

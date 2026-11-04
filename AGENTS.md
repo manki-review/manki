@@ -6,12 +6,12 @@ See `README.md` for what manki does and `SETUP.md` for installing it in a repo. 
 
 ## Pipeline order
 
-The review stages are listed in this order: **planner, reviewer, judge, dedup**. Per-stage config keys (`models.{planner,reviewer,judge,dedup}`), logs and docs follow it, so keep new per-stage items in the same order.
+The review stages are listed in this order: **planner, reviewer, judge, dedup**. Per-stage config keys (`models.{planner,reviewer,reviewer_pair,judge,dedup}`), logs and docs follow it, so keep new per-stage items in the same order. `reviewer_pair` is the second finder's model and sits next to `reviewer`.
 
 At run time, `runReview` in `src/review.ts` calls dedup before the judge:
 
-1. **Planner** picks team size, agents and effort levels.
-2. **Reviewer** agents run in parallel and produce findings.
+1. **Planner** triages the change (`trivial`, `subtle`, `paired`) and picks the judge effort. `selectTeam` turns that into the trivial verifier alone, one finder, or two finders on different models with the same prompt. Security-sensitive paths force two finders.
+2. **Finders** run in parallel and produce findings. A finder that fails after its retry makes the round incomplete.
 3. **Dedup** drops findings matching memory suppressions or resolved findings from earlier rounds, first statically, then with the `dedup` model.
 4. **Judge** evaluates the rest, merges same-round duplicates and classifies them by severity. `determineOutcome` then decides whether any finding blocks.
 5. **Verdict reader** runs only when nothing blocks. It reads the whole diff cold on the judge's client and returns `READY` or `ADDRESS_FIRST` (`src/verdict.ts`).
@@ -42,7 +42,8 @@ At run time, `runReview` in `src/review.ts` calls dedup before the judge:
 
 - `src/providers/` holds the LLM integration. Every model call goes through the `LLMClient` interface (`types.ts`), built per stage by `createLLMClient` (`factory.ts`). `anthropic.ts`, `openai.ts` and `gemini.ts` implement it over each provider's SDK or CLI.
 - `src/config.ts`: config schema, defaults, validation (`DEFAULT_CONFIG`, `KNOWN_KEYS`, `validateConfig`).
-- `src/review.ts`: planner (`runPlanner`), team selection (`selectTeam`), parallel reviewer loop, dedup and judge calls, round outcome (`runReview`, `determineOutcome`).
+- `src/review.ts`: planner (`runPlanner`), team selection (`selectTeam`), parallel finder loop, dedup and judge calls, round outcome (`runReview`, `determineOutcome`).
+- `src/agents.ts`: the finder prompt (`buildFinderAgent`) and the trivial verifier.
 - `src/judge.ts`: judge agent (`runJudgeAgent`).
 - `src/verdict.ts`: verdict reader (`runVerdictReader`).
 - `src/recap.ts`: prior-round state from review threads, and dedup (static and LLM) against earlier findings.

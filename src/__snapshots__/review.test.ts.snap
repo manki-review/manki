@@ -5,7 +5,7 @@ exports[`buildReviewerSystemPrompt noise_level reproduces the pre-noise_level pr
 
 Your role: Security & Correctness
 
-Review the provided pull request diff carefully from your specialist perspective. Return your findings as a JSON array.
+Review the provided pull request diff carefully through that focus. Return your findings as a JSON array.
 
 ## Response Format
 

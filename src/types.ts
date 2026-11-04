@@ -241,8 +241,6 @@ export interface ReviewResult {
   plannerResult?: PlannerResult;
   failedAgents?: string[];
   agentFailureReasons?: Record<string, string>;
-  partialReview?: boolean;
-  partialNote?: string;
   staticDedupCount?: number;
   llmDedupCount?: number;
   /** Per-drop cross-round dedup attribution: both `deduplicateFindings` (static) and `llmDeduplicateFindings` (llm) entries, in the order they were dropped. */
@@ -278,8 +276,14 @@ export interface ReviewResult {
   plannerSource?: RoundPlannerSource;
   /** Short tag describing the planner fallback path, when one fired. */
   plannerFallbackReason?: string;
-  /** Names of agents the team-builder reinjected after the planner omitted them. */
-  coreAgentInjections?: string[];
+  /** Triage the team was built from, after the pin and the sensitive-path rule. */
+  triage?: Triage;
+  /** Whether the diff touches a security-sensitive path. */
+  sensitivePaths?: boolean;
+  /** Model each agent ran on. Keyed by agent name. */
+  agentModels?: Map<string, string>;
+  /** Name of the second finder, when one ran. */
+  pairAgentName?: string;
   /** Per-agent multi-pass intersection stats. Keyed by agent name. */
   agentMultiPassConsistency?: Map<string, { consistent: number; totalRaw: number }>;
   /** Per-agent effort level actually used at run time. Keyed by agent name. */
@@ -293,8 +297,24 @@ export interface ReviewerAgent {
 
 export type EffortLevel = 'low' | 'medium' | 'high';
 
-export interface AgentPick {
+/** The planner's three triage answers. Each takes the side that adds review when unknown. */
+export interface Triage {
+  /** No defect could hide in the change, so the trivial verifier reads it alone. */
+  trivial: boolean;
+  /** Judging the change needs reasoning about behavior, so finders run at high effort. */
+  subtle: boolean;
+  /** A defect could reach a user if every reader missed it, so a second finder on another model reads it. */
+  paired: boolean;
+}
+
+/** Who reads the diff in a round. Every non-trivial finder gets the same prompt. */
+export interface Finder {
+  /** Label on its findings and metrics. */
   name: string;
+  prompt: ReviewerAgent;
+  /** Runs on the pair model instead of `models.reviewer`. */
+  pair: boolean;
+  model: string;
   effort: EffortLevel;
 }
 
@@ -321,36 +341,26 @@ export type ValidPrType = typeof VALID_PR_TYPE_VALUES[number];
 
 export const VALID_PR_TYPES = new Set<string>(VALID_PR_TYPE_VALUES);
 
-export interface PlannerResult {
-  teamSize: 1 | 2 | 3;
-  reviewerEffort: EffortLevel;
+export interface PlannerResult extends Triage {
   judgeEffort: EffortLevel;
   prType: ValidPrType | 'unknown';
-  agents?: AgentPick[];
   language?: string;
   context?: string;
+  /** Answers the planner left out or got wrong, which took the side that adds review. */
+  defaultedFields?: string[];
 }
 
 export type ReviewLevel = 'auto' | 'small' | 'medium' | 'large';
 
 export type NoiseLevel = 'low' | 'medium' | 'high';
 
-export interface ReviewThresholds {
-  small: number;
-  medium: number;
-}
+export type PairedPin = 'auto' | 'always' | 'never';
 
 export interface TeamRoster {
-  level: 'trivial' | 'small' | 'medium' | 'large';  // resolved, never 'auto'
-  agents: ReviewerAgent[];
-  lineCount: number;
-  /**
-   * Names of agents added by a code-level reinjection backstop after the
-   * planner omitted them (e.g., Security & Safety force-add on sensitive
-   * paths). Empty when no reinjection fired. Populated by `selectTeam` on the
-   * planner path; the heuristic-fallback path leaves it empty.
-   */
-  coreAgentInjections?: string[];
+  finders: Finder[];
+  /** Triage after `planner.paired` and the sensitive-path rule. */
+  triage: Triage;
+  sensitivePaths: boolean;
 }
 
 export interface ReviewConfig {
@@ -360,8 +370,6 @@ export interface ReviewConfig {
   max_diff_lines: number;
   reviewers: ReviewerAgent[];
   instructions: string;
-  review_level: ReviewLevel;
-  review_thresholds: ReviewThresholds;
   memory: {
     enabled: boolean;
     repo: string;
@@ -373,15 +381,11 @@ export interface ReviewConfig {
     reviewer_pair?: string;
     judge?: string;
     dedup?: string;
-    /**
-     * Per-agent model overrides. Keys are reviewer agent names (built-in or
-     * custom). When set, the resolver picks this model for the named agent
-     * instead of `models.reviewer`.
-     */
-    agents?: Record<string, string>;
   };
   planner?: {
     enabled?: boolean;
+    /** Pins the planner's `paired` answer. A security-sensitive path still gets a pair. */
+    paired?: PairedPin;
   };
   /**
    * @deprecated Removed in v5.1.0. All surviving findings post inline as PR
@@ -558,10 +562,7 @@ export interface DashboardData {
   droppedCount?: number;
   agentProgress?: AgentProgressEntry[];
   plannerInfo?: {
-    /**
-     * Size of the final resolved roster (after prior-round pinning and any
-     * other adjustments), not the raw `teamSize` the planner asked for.
-     */
+    /** Number of agents that read the diff. */
     agentCount: number;
     reviewerEffort: EffortLevel;
     judgeEffort: EffortLevel;
@@ -594,8 +595,8 @@ export interface ReviewMetadata {
   config: {
     reviewerModel: string;
     judgeModel: string;
-    reviewLevel: string;
-    reviewLevelReason: string;
+    /** Triage answers and where they came from, as one readable line. */
+    triage: string;
     teamAgents: string[];
     memoryEnabled: boolean;
     memoryRepo: string;
@@ -718,7 +719,8 @@ export interface PromptVersions {
 
 /** Effective config snapshot for the round: AI pipeline behavior fields (model behavior, pass configuration, memory). Convergence/post-processing rules are not included. */
 export interface RoundConfig {
-  reviewLevel: ReviewLevel;
+  /** Written by releases that sized the team by `review_level`. */
+  reviewLevel?: ReviewLevel;
   memoryEnabled: boolean;
   reviewPasses?: number;
 }
@@ -760,21 +762,20 @@ export interface RoundDiff {
 export interface RoundModels {
   planner?: string;
   reviewer: string;
+  /** Model of the second finder, on rounds where one ran. */
+  reviewerPair?: string;
   judge: string;
   dedup?: string;
 }
 
 /**
- * Provenance of the team-selection path that produced this round's roster.
+ * Provenance of the triage that produced this round's team.
  *
- * - `planner`: the planner LLM returned a valid result and its picks were used.
+ * - `planner`: the planner LLM answered. Any answer it left out took the side that adds review.
  * - `heuristic_fallback`: the planner was attempted but failed (timeout,
- *   validation error, parse error) and team-builder substituted the fixed
- *   three-core roster.
- * - `heuristic`: the planner was not attempted because the user pinned
- *   `review_level` to an explicit value (heuristic on by user choice).
- * - `disabled`: the planner has no client (no `planner` provider configured)
- *   and team selection ran via the heuristic path.
+ *   truncation, parse error), so every answer took the side that adds review.
+ * - `heuristic`: written by releases that skipped the planner for a pinned `review_level`.
+ * - `disabled`: `planner.enabled` is false, so every answer took the side that adds review.
  */
 export type RoundPlannerSource = 'planner' | 'heuristic' | 'heuristic_fallback' | 'disabled';
 
@@ -796,7 +797,17 @@ export interface RoundPlanner {
    * timeout, parse failure). Free-text, capped, sanitized for logs.
    */
   fallbackReason?: string;
-  teamSize?: PlannerResult['teamSize'];
+  /** Triage the team was built from, after `planner.paired` and the sensitive-path rule. */
+  trivial?: boolean;
+  subtle?: boolean;
+  paired?: boolean;
+  /** Whether the diff touches a security-sensitive path, which forces `trivial: false` and `paired: true`. */
+  sensitivePaths?: boolean;
+  /** Planner answers that were missing or invalid and took the side that adds review. */
+  defaultedFields?: string[];
+  /** Number of agents that read the diff. */
+  teamSize?: number;
+  /** Effort the agents ran at. */
   reviewerEffort?: EffortLevel;
   judgeEffort?: EffortLevel;
   prType?: string;
@@ -805,20 +816,6 @@ export interface RoundPlanner {
   language?: string;
   /** Sanitized free-text PR context hint, when the planner identified one. */
   context?: string;
-  /**
-   * Per-agent picks the planner emitted (or that the team-builder synthesized
-   * on the `planner` path before reinjections). Each entry carries the
-   * planner's intended effort for that agent; the actual run-time effort is
-   * recorded on `RoundAgentMetric.effort`.
-   */
-  agents?: AgentPick[];
-  /**
-   * Names of agents the planner omitted that the team-builder added back via a
-   * code-level backstop (e.g., the security path-prefix guard). Empty when no
-   * reinjection fired. Always present so audit tooling can distinguish
-   * "no reinjection" (`[]`) from "data not recorded" (`undefined`).
-   */
-  coreAgentInjections: string[];
 }
 
 export interface RoundReviewers {
@@ -827,9 +824,9 @@ export interface RoundReviewers {
   agentMetrics?: RoundAgentMetric[];
   /** Kept findings raised only by agents on `models.reviewer`. */
   keptPrimaryOnly?: number;
-  /** Kept findings raised only by agents on another model. */
+  /** Kept findings raised only by the second finder. */
   keptPairOnly?: number;
-  /** Kept findings raised by agents on `models.reviewer` and on another model. */
+  /** Kept findings raised by the second finder and an agent on `models.reviewer`. */
   keptBoth?: number;
 }
 
@@ -848,14 +845,11 @@ export interface RoundAgentMetric {
   /** Last-failure reason recorded by the reviewer loop. Present only when retries exhausted. */
   failureReason?: string;
   /**
-   * Resolved per-agent model ID. Falls back to `RoundModels.reviewer` when no
-   * `models.agents` override applies. Present whenever the agent ran.
+   * Model the agent ran on: `RoundModels.reviewer`, or `RoundModels.reviewerPair`
+   * for the second finder. Present whenever the agent ran.
    */
   model?: string;
-  /**
-   * Effort level the agent actually ran with: the planner pick, or the
-   * default `reviewerEffort`.
-   */
+  /** Effort level the agent ran with. */
   effort?: EffortLevel;
   /**
    * Multi-pass intersection stats for this agent on `review_passes > 1` rounds.

@@ -1,13 +1,14 @@
 import * as core from '@actions/core';
 import { minimatch } from 'minimatch';
 
-import { TRIVIAL_VERIFIER_AGENT, buildAgentPool } from './agents';
+import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
+import { resolveModel, resolvePairModel } from './config';
 import { addUsage, LLMClient, LLMUsage, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
 import { runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
 import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, llmDeduplicateFindings, PreviousFinding, titleOverlapType } from './recap';
-import { FOLLOW_UP_TAG, SECURITY_TAG, isBlockingSeverity, ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, TeamRoster, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundPlannerSource, EffortLevel, AgentPick, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { FOLLOW_UP_TAG, SECURITY_TAG, ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, TeamRoster, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundPlannerSource, EffortLevel, Finder, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { rebuildRawDiff } from './diff';
 import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
@@ -20,11 +21,15 @@ const DISMISSED_LINE_TOLERANCE = 5;
 // warnings, and their other warnings become follow-ups. The bar lives here so no prompt names the round.
 const FULL_BAR_ROUNDS = 2;
 
-const SECURITY_AGENT_NAME = 'Security & Safety';
+// Priors saved before the generalist finders carry this reviewer instead of the judge's `security` tag.
+const LEGACY_SECURITY_AGENT_NAME = 'Security & Safety';
 
-/** Whether a finding or prior is a security defect: tagged `SECURITY_TAG`, or raised by the Security & Safety reviewer. */
-function isSecurityFinding(tags: string[] | undefined, reviewers: ReadonlyArray<string | undefined>): boolean {
-  return Boolean(tags?.includes(SECURITY_TAG)) || reviewers.includes(SECURITY_AGENT_NAME);
+/**
+ * Whether a finding or prior is a security defect, which the judge tags `SECURITY_TAG`.
+ * A prior also counts when the retired Security & Safety reviewer raised it.
+ */
+function isSecurityFinding(tags: string[] | undefined, priorReviewers: ReadonlyArray<string | undefined> = []): boolean {
+  return Boolean(tags?.includes(SECURITY_TAG)) || priorReviewers.includes(LEGACY_SECURITY_AGENT_NAME);
 }
 
 const OUTCOME_VERDICT: Record<RoundOutcome, ReviewVerdict> = {
@@ -63,18 +68,12 @@ function accumulateAgentDuration(map: Map<string, number>, name: string, duratio
   map.set(name, (map.get(name) ?? 0) + durationMs);
 }
 
-// Fixed fallback roster used when the planner LLM is unavailable. Indexes into
-// `AGENT_POOL`: Security & Safety, Architecture & Design, Correctness & Logic.
-// The planner is trusted to pick agents on the success path; these three are
-// only a conservative default when no planner judgment is available.
-const FALLBACK_AGENTS: readonly number[] = Object.freeze([0, 1, 2]);
+/** The answers used when the planner is disabled or fails: each takes the side that adds review. */
+const FAIL_SAFE_TRIAGE: Readonly<Triage> = Object.freeze({ trivial: false, subtle: true, paired: true });
 
-// Path segment prefixes that indicate security-sensitive files. Used as a code-level
-// backstop: if the planner omits Security & Safety but the diff touches one of
-// these paths, the agent is force-added regardless of planner output. This
-// guard is narrow by design: it only targets the Security agent and only fires
-// when a sensitive path is detected, so it cannot be silenced by prompt
-// injection in the PR content.
+// Path segment prefixes that indicate security-sensitive files. A diff touching one never gets a
+// single reader, whatever the planner answered. The rule is path-based, not prompt-based, so prompt
+// injection in the PR content cannot switch it off.
 const SECURITY_SENSITIVE_PREFIXES: readonly string[] = Object.freeze([
   'auth', 'oauth', 'token', 'secret', 'credential', 'password', 'passwd',
   'crypto', 'cipher', 'encrypt', 'decrypt', 'hmac', 'sign',
@@ -91,114 +90,36 @@ function hasSensitivePaths(diff: ParsedDiff): boolean {
   );
 }
 
-export function selectTeam(
-  diff: ParsedDiff,
-  config: ReviewConfig,
-  customReviewers?: ReviewerAgent[],
-  teamSizeOverride?: PlannerResult['teamSize'],
-  agentPicks?: AgentPick[],
-  silent?: boolean,
-): TeamRoster {
-  const lineCount = diff.totalAdditions + diff.totalDeletions;
-
-  let teamSize: number;
-  let level: 'small' | 'medium' | 'large';
-
-  const pool = buildAgentPool(customReviewers);
-  const securityAgent = pool.find(a => a.name === SECURITY_AGENT_NAME);
-  const sensitive = hasSensitivePaths(diff);
-
-  if (teamSizeOverride === 1) {
-    if (customReviewers && customReviewers.length > 0) {
-      core.info(`teamSize=1: skipping custom reviewers [${customReviewers.map(r => r.name).join(', ')}]`);
-    }
-    // The verifier never runs alone on a sensitive path, for the same reason
-    // as the security backstop below.
-    if (securityAgent && sensitive) {
-      if (!silent) core.info('Security & Safety force-added next to the Trivial Change Verifier: diff touches security-sensitive paths');
-      return { level: 'small', agents: [TRIVIAL_VERIFIER_AGENT, securityAgent], lineCount, coreAgentInjections: [securityAgent.name] };
-    }
-    return { level: 'trivial', agents: [TRIVIAL_VERIFIER_AGENT], lineCount };
+/**
+ * Builds the round's readers from the triage. A trivial change gets the trivial verifier alone.
+ * Any other change gets one finder, plus a second on the pair model when `paired`.
+ * Both finders get the same prompt. `planner.paired` pins the `paired` answer, and a
+ * security-sensitive path forces `trivial: false` and `paired: true` over both.
+ */
+export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triage = FAIL_SAFE_TRIAGE): TeamRoster {
+  const pin = config.planner?.paired ?? 'auto';
+  const sensitivePaths = hasSensitivePaths(diff);
+  const effective: Triage = {
+    trivial: triage.trivial && !sensitivePaths,
+    subtle: triage.subtle,
+    paired: sensitivePaths || (pin === 'auto' ? triage.paired : pin === 'always'),
+  };
+  const model = resolveModel(config, 'reviewer');
+  if (effective.trivial) {
+    return {
+      finders: [{ name: TRIVIAL_VERIFIER_AGENT.name, prompt: TRIVIAL_VERIFIER_AGENT, pair: false, model, effort: 'medium' }],
+      triage: effective,
+      sensitivePaths,
+    };
   }
-
-  // Planner-driven agent selection: resolve each picked name from the pool
-  if (agentPicks && agentPicks.length > 0 && teamSizeOverride) {
-    const poolMap = new Map(pool.map(a => [a.name, a]));
-    const resolved: ReviewerAgent[] = [];
-    for (const pick of agentPicks) {
-      const agent = poolMap.get(pick.name);
-      if (agent && !resolved.some(r => r.name === agent.name)) {
-        resolved.push(agent);
-      }
-    }
-
-    if (resolved.length > 0) {
-      // Code-level security backstop: if the planner omitted Security & Safety
-      // but the diff touches security-sensitive paths, force it in. The planner
-      // receives untrusted PR content and prompt injection in diff comments or
-      // string literals could suppress the security specialist on a sensitive
-      // change. This guard is path-based, not prompt-based, so it cannot be
-      // bypassed by injected instructions. It takes the place of the planner's
-      // last pick so the team keeps the size the planner chose.
-      const coreAgentInjections: string[] = [];
-      if (securityAgent && !resolved.some(a => a.name === securityAgent.name) && sensitive) {
-        const replaced = resolved.length >= teamSizeOverride ? resolved.pop() : undefined;
-        if (!silent) {
-          const detail = replaced ? `, replacing "${replaced.name}"` : '';
-          core.info(`Security & Safety force-added${detail}: planner omitted it but diff touches security-sensitive paths`);
-        }
-        resolved.push(securityAgent);
-        coreAgentInjections.push(securityAgent.name);
-      }
-
-      return { level: 'small', agents: resolved, lineCount, coreAgentInjections };
-    }
-    // If resolution failed entirely, fall through to heuristic
+  const prompt = buildFinderAgent(config.reviewers);
+  const effort: EffortLevel = effective.subtle ? 'high' : 'medium';
+  const finders: Finder[] = [{ name: `Finder (${model})`, prompt, pair: false, model, effort }];
+  if (effective.paired) {
+    const pairModel = resolvePairModel(config);
+    finders.push({ name: `Pair finder (${pairModel})`, prompt, pair: true, model: pairModel, effort });
   }
-
-  if (teamSizeOverride) {
-    teamSize = teamSizeOverride;
-    level = 'small';
-  } else {
-    const configLevel = config.review_level;
-    if (configLevel === 'auto' || !['small', 'medium', 'large'].includes(configLevel)) {
-      if (configLevel !== 'auto') {
-        core.warning(`Unrecognized review_level "${configLevel}", using auto`);
-      }
-      const thresholds = config.review_thresholds || { small: 200, medium: 1000 };
-      if (lineCount < thresholds.small) level = 'small';
-      else if (lineCount < thresholds.medium) level = 'medium';
-      else level = 'large';
-    } else {
-      level = configLevel as 'small' | 'medium' | 'large';
-    }
-    teamSize = level === 'small' ? 3 : level === 'medium' ? 5 : 7;
-  }
-
-  // Heuristic / fallback roster: start from the fixed fallback specialists,
-  // then add explicitly configured custom reviewers. Any remaining slots up to
-  // `teamSize` are filled from the pool in declared order. No path-keyword
-  // scoring lives here: the planner is the only place where PR context drives
-  // agent selection. When the planner is unavailable, the fallback stays
-  // conservative and predictable.
-  const selected: ReviewerAgent[] = FALLBACK_AGENTS.map(i => pool[i]);
-
-  for (const custom of (customReviewers || [])) {
-    if (!selected.some(s => s.name === custom.name)) {
-      selected.push(custom);
-    }
-  }
-
-  if (selected.length < teamSize) {
-    for (const agent of pool) {
-      if (selected.length >= teamSize) break;
-      if (!selected.some(s => s.name === agent.name)) {
-        selected.push(agent);
-      }
-    }
-  }
-
-  return { level, agents: selected, lineCount };
+  return { finders, triage: effective, sensitivePaths };
 }
 
 export function shuffleDiffFiles(diff: ParsedDiff): ParsedDiff {
@@ -242,21 +163,15 @@ export function intersectFindings(passes: Finding[][], threshold: number): Findi
 
 export interface ReviewClients {
   reviewer: LLMClient;
-  /** Client for the second finder's model. */
+  /** Client for the second finder's model. Defaults to `reviewer`. */
   reviewerPair?: LLMClient;
   judge: LLMClient;
   planner?: LLMClient;
   dedup?: LLMClient;
-  /**
-   * Optional resolver returning the reviewer client for a specific agent. When
-   * present, it takes precedence over `reviewer`. Used to apply per-agent
-   * model overrides from `models.agents`.
-   */
-  reviewerForAgent?: (agentName: string) => LLMClient;
 }
 
-function pickReviewerClient(clients: ReviewClients, agentName: string): LLMClient {
-  return clients.reviewerForAgent?.(agentName) ?? clients.reviewer;
+function pickReviewerClient(clients: ReviewClients, finder: Finder): LLMClient {
+  return finder.pair ? clients.reviewerPair ?? clients.reviewer : clients.reviewer;
 }
 
 export interface ReviewProgress {
@@ -272,9 +187,11 @@ export interface ReviewProgress {
   plannerResult?: PlannerResult;
   plannerDurationMs?: number;
   retryCount?: number;
-  /** Names of agents resolved for this review. Emitted with a `planning` event on the heuristic-fallback path so the dashboard can seed per-agent entries even though no `plannerResult` is available. */
+  /** Names of the agents that read the diff. Emitted with the `planning` event that follows team selection. */
   teamAgentNames?: string[];
-  /** True when team selection fell back to the heuristic because the planner failed or timed out. */
+  /** Effort those agents run at. Emitted with `teamAgentNames`. */
+  reviewerEffort?: EffortLevel;
+  /** True when the planner failed or timed out, so the fail-safe triage was used. */
   heuristicFallback?: boolean;
 }
 
@@ -304,32 +221,26 @@ function buildPlannerSummary(diff: ParsedDiff, prContext?: PrContext): string {
   return summary.slice(0, 2000);
 }
 
-export function buildPlannerSystemPrompt(
-  agents: Array<{ name: string; focus: string }>,
-): string {
-  const agentList = agents.map(a => `  - "${a.name}" — ${a.focus}`).join('\n');
+export function buildPlannerSystemPrompt(): string {
+  return `You are a code review triage assistant. Read this PR summary and answer the questions below.
 
-  return `You are a code review planning assistant. Analyze this PR and decide how to review it.
+Answer each of trivial, subtle and paired by its own rule only, never from another answer. Judge the nature of the change, never its size: a 500-line rename is simpler than a 20-line change to locking or auth, so line counts are no guide.
 
-Decide:
-1. teamSize: 1, 2 or 3 reviewer agents.
-   Judge the nature of the change, never its size and never the number of specialists available. A 500-line deletion or rename needs fewer eyes than a 20-line change to locking or auth, so line counts are no guide.
-   - 1: the whole diff is of a kind where a defect could not hide: deleted code whose remaining callers keep their behavior, renames or moved code, comments or documentation, tests or test data, configuration, build files or CI workflows with no new logic.
-   - 2: ordinary code changes: new or changed logic, conditions, error paths, features and fixes that touch none of the areas listed under 3.
-   - 3: the change touches concurrency or async ordering, security, authentication or authorization, persistence or stored data, a protocol, wire or file format, or public API surface.
-   When you are not sure between two sizes, pick the larger one.
-2. agents: pick exactly teamSize agents from the pool below, most important first, each with an effort level ("low", "medium", or "high"):
-${agentList}
-   Include "Security & Safety" whenever the change could plausibly affect a security surface (authentication, authorization, parsers, deserialization, network handlers, file or process operations, permission checks, token or secret handling, cryptography). Judge the change, not the filename: a small auth tweak warrants Security even when the diff is tiny.
-   Effort controls thinking depth and cost. low = fast pass, no extended reasoning. medium = moderate reasoning (~5K thinking tokens). high = deep analysis (~10K thinking tokens).
-   - medium: the default for every agent
-   - high: only on a team of 3, for the agents whose specialty covers the area that made it a team of 3
-   - low: the agent's specialty barely applies to this PR
-3. judgeEffort: "low", "medium", or "high" — how much effort the judge should spend evaluating findings.
+1. trivial: could a defect hide in this change at all?
+   Answer true only when the whole diff is one of: documentation or comments, a rename or move, one mechanical edit repeated where every site follows the same pattern, deleted dead code whose callers are unchanged, test fixtures or test data. Logging is never trivial.
+   Otherwise answer false.
+2. subtle: does judging this change need reasoning about behavior?
+   Answer false only when the whole diff is one of: logging that nothing reads back, user-facing text, code moved behind an unchanged signature, configuration or CI, tests, a new field that follows a pattern already in the same file.
+   Otherwise answer true.
+3. paired: could a defect in this change reach a user if every reviewer missed it?
+   Answer false only when the whole diff is tests, test fixtures, build or CI configuration, developer tooling, or prose.
+   Otherwise answer true.
+   When you are unsure, answer trivial false, subtle true and paired true.
+4. judgeEffort: "low", "medium", or "high": how much effort the judge should spend evaluating findings.
    - low: few expected findings, straightforward changes
    - medium: moderate findings expected
    - high: many findings expected, nuanced severity decisions
-4. prType: one Conventional Commits type that best fits the PR. Pick from:
+5. prType: one Conventional Commits type that best fits the PR. Pick from:
    - "build": build system, packaging, or dependency changes
    - "chore": maintenance with no user-visible behavior change
    - "ci": CI/CD configuration changes
@@ -342,24 +253,21 @@ ${agentList}
    - "style": formatting or whitespace with no structural change
    - "test": adding or updating tests only
    Pick the dominant intent. Prefer "feat" over "chore" when the change adds capability, "fix" over "refactor" when it corrects broken behavior, "build" over "ci" when it touches packaging or deps rather than workflow YAML, "refactor" over "style" when structure changes, not just formatting.
-5. language: the primary programming language of the changed code (e.g., "typescript", "rust", "python"). Omit if unclear.
-6. context: a short phrase describing the project domain (e.g., "blockchain consensus library", "REST API server"). Omit if unclear.
+6. language: the primary programming language of the changed code (e.g., "typescript", "rust", "python"). Omit if unclear.
+7. context: a short phrase describing the project domain (e.g., "blockchain consensus library", "REST API server"). Omit if unclear.
 
 Respond with ONLY a JSON object (no markdown fences):
 {
-  "teamSize": 2,
+  "trivial": false,
+  "subtle": true,
+  "paired": true,
   "judgeEffort": "medium",
   "prType": "feat",
   "language": "typescript",
-  "context": "GitHub Actions bot",
-  "agents": [
-    { "name": "Correctness & Logic", "effort": "medium" },
-    { "name": "Testing & Coverage", "effort": "medium" }
-  ]
+  "context": "GitHub Actions bot"
 }`;
 }
 
-const VALID_TEAM_SIZES = new Set([1, 2, 3]);
 const VALID_EFFORTS = new Set(['low', 'medium', 'high']);
 
 /**
@@ -384,42 +292,24 @@ export function sanitizePlannerField(raw: string, maxLength: number): string {
   return s.slice(0, maxLength);
 }
 
-export function parseAgentPicks(
-  raw: unknown,
-  availableNames: Set<string>,
-): AgentPick[] | null {
-  if (!Array.isArray(raw)) return null;
-
-  const picks: AgentPick[] = [];
-  for (const entry of raw) {
-    if (!entry || typeof entry !== 'object') return null;
-    const name = typeof entry.name === 'string' ? entry.name : '';
-    const effort = typeof entry.effort === 'string' ? entry.effort : '';
-    if (!availableNames.has(name) || !VALID_EFFORTS.has(effort)) return null;
-    picks.push({ name, effort: effort as EffortLevel });
-  }
-
-  if (picks.length === 0) return null;
-
-  return picks;
-}
-
 /**
- * Optional sink that captures the short tag describing why the planner fell
- * back, when it did. Mutated in place by `runPlanner` on the failure paths so
- * callers can record it on `RoundPlanner.fallbackReason` without changing the
- * public return type. Values: `'timeout'`, `'truncated'`, `'invalid_teamSize'`,
- * `'invalid_judgeEffort'`, `'agents_teamSize_mismatch'`, `'exception'`.
+ * Optional sink that captures why the planner failed, when it did. Mutated in place by
+ * `runPlanner` so callers can record it on `RoundPlanner.fallbackReason`.
+ * Values: `'timeout'`, `'truncated'`, `'exception'`.
  */
 export interface PlannerOutcomeSink {
   fallbackReason?: string;
 }
 
+/**
+ * Asks the planner for the triage answers. A missing or invalid answer takes the side that
+ * adds review, and is listed in `defaultedFields`. Returns null when the planner times out,
+ * is truncated or replies with something other than a JSON object.
+ */
 export async function runPlanner(
   client: LLMClient,
   diff: ParsedDiff,
   prContext?: PrContext,
-  customReviewers?: ReviewerAgent[],
   outcome?: PlannerOutcomeSink,
 ): Promise<PlannerResult | null> {
   let timeoutId: ReturnType<typeof setTimeout>;
@@ -428,110 +318,71 @@ export async function runPlanner(
   });
 
   try {
-    const pool = buildAgentPool(customReviewers);
-    const availableNames = new Set(pool.map(a => a.name));
-    const systemPrompt = buildPlannerSystemPrompt(pool);
-
     const userMessage = buildPlannerSummary(diff, prContext);
     const response = await Promise.race([
-      client.sendMessage(systemPrompt, userMessage, { effort: 'high' }),
+      client.sendMessage(buildPlannerSystemPrompt(), userMessage, { effort: 'high' }),
       timeoutPromise,
     ]);
     clearTimeout(timeoutId!);
 
     if (response.truncated) {
-      core.warning('Planner response was truncated at the output token limit, falling back to heuristic');
+      core.warning('Planner response was truncated at the output token limit, using the fail-safe triage');
       if (outcome) outcome.fallbackReason = 'truncated';
       return null;
     }
 
-    const jsonText = extractJSON(response.content, 'object');
-    const parsed = JSON.parse(jsonText);
+    const parsed: unknown = JSON.parse(extractJSON(response.content, 'object'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('reply is not a JSON object');
+    }
+    const answers = parsed as Record<string, unknown>;
 
-    const teamSize = parsed.teamSize;
-    if (!VALID_TEAM_SIZES.has(teamSize)) {
-      core.warning(`Planner returned invalid teamSize ${teamSize} — falling back to heuristic`);
-      if (outcome) outcome.fallbackReason = 'invalid_teamSize';
-      return null;
+    const defaultedFields: string[] = [];
+    const answer = (field: keyof Triage): boolean => {
+      const value = answers[field];
+      if (typeof value === 'boolean') return value;
+      defaultedFields.push(field);
+      return FAIL_SAFE_TRIAGE[field];
+    };
+    const trivial = answer('trivial');
+    const subtle = answer('subtle');
+    const paired = answer('paired');
+    let judgeEffort: EffortLevel = 'high';
+    if (typeof answers.judgeEffort === 'string' && VALID_EFFORTS.has(answers.judgeEffort)) {
+      judgeEffort = answers.judgeEffort as EffortLevel;
+    } else {
+      defaultedFields.push('judgeEffort');
+    }
+    if (defaultedFields.length > 0) {
+      core.warning(`Planner left out or gave an invalid ${defaultedFields.join(', ')}, using the side that adds review`);
     }
 
-    const judgeEffort = parsed.judgeEffort;
-    if (!VALID_EFFORTS.has(judgeEffort)) {
-      core.warning('Planner returned invalid judgeEffort — falling back to heuristic');
-      if (outcome) outcome.fallbackReason = 'invalid_judgeEffort';
-      return null;
-    }
-
-    // Parse reviewerEffort as fallback (backward compat)
-    const reviewerEffortRaw = parsed.reviewerEffort;
-    const reviewerEffort: EffortLevel = VALID_EFFORTS.has(reviewerEffortRaw)
-      ? (reviewerEffortRaw as EffortLevel)
-      : 'medium';
-
-    const prTypeRaw = typeof parsed.prType === 'string' ? parsed.prType : 'unknown';
+    const prTypeRaw = typeof answers.prType === 'string' ? answers.prType : 'unknown';
     const prType: ValidPrType | 'unknown' = VALID_PR_TYPES.has(prTypeRaw) ? (prTypeRaw as ValidPrType) : 'unknown';
 
-    // Parse agent picks
-    const agents = parseAgentPicks(parsed.agents, availableNames);
-    if (agents) {
-      if (agents.length !== teamSize) {
-        core.warning(`Planner agents.length (${agents.length}) differs from teamSize (${teamSize}) — falling back to heuristic`);
-        if (outcome) outcome.fallbackReason = 'agents_teamSize_mismatch';
-        return null;
-      }
-    }
-
     // Parse and sanitize language and context to prevent prompt injection
-    const rawLang = typeof parsed.language === 'string' ? sanitizePlannerField(parsed.language, 100) : '';
+    const rawLang = typeof answers.language === 'string' ? sanitizePlannerField(answers.language, 100) : '';
     const language = rawLang ? rawLang.toLowerCase() : undefined;
-    const rawCtx = typeof parsed.context === 'string' ? sanitizePlannerField(parsed.context, 200) : '';
+    const rawCtx = typeof answers.context === 'string' ? sanitizePlannerField(answers.context, 200) : '';
     const context = rawCtx || undefined;
 
-    return { teamSize, reviewerEffort, judgeEffort, prType, agents: agents ?? undefined, language, context };
+    return {
+      trivial, subtle, paired, judgeEffort, prType, language, context,
+      ...(defaultedFields.length > 0 && { defaultedFields }),
+    };
   } catch (error) {
     clearTimeout(timeoutId!);
     if (error instanceof PlannerTimeoutError) {
       core.warning(
-        'Planner timed out, falling back to heuristic team selection. If your workflow does not pre-install the Claude Code CLI, see the "spawn claude ENOENT" row in SETUP.md.',
+        'Planner timed out, using the fail-safe triage. If your workflow does not pre-install the Claude Code CLI, see the "spawn claude ENOENT" row in SETUP.md.',
       );
       if (outcome) outcome.fallbackReason = 'timeout';
       return null;
     }
-    core.warning(`Planner failed: ${error} — falling back to heuristic team selection`);
+    core.warning(`Planner failed: ${error}, using the fail-safe triage`);
     if (outcome) outcome.fallbackReason = 'exception';
     return null;
   }
-}
-
-function heuristicFallback(
-  diff: ParsedDiff,
-  config: ReviewConfig,
-  /**
-   * When `true`, ignore `review_level` and force the conservative fixed roster
-   * of {Security, Architecture, Correctness}. Used when the planner is
-   * unavailable so failures stay predictable. When `false`, honor the
-   * configured `review_level` (the user explicitly opted out of the planner).
-   */
-  forceFixedRoster: boolean,
-): TeamRoster {
-  const team = forceFixedRoster
-    ? selectTeam(diff, config, undefined, FALLBACK_AGENTS.length as PlannerResult['teamSize'])
-    : selectTeam(diff, config, config.reviewers);
-  core.info(`Review team (${team.level}): ${team.agents.map(a => a.name).join(', ')}`);
-  return team;
-}
-
-function emitHeuristicFallbackPlanning(
-  onProgress: (progress: ReviewProgress) => void,
-  team: TeamRoster,
-  plannerDurationMs?: number,
-): void {
-  onProgress({
-    phase: 'planning',
-    teamAgentNames: team.agents.map(a => a.name),
-    heuristicFallback: true,
-    ...(plannerDurationMs !== undefined ? { plannerDurationMs } : {}),
-  });
 }
 
 export function buildProvenanceFields(
@@ -539,14 +390,17 @@ export function buildProvenanceFields(
   plannerFallbackReason: string | undefined,
   team: TeamRoster,
   agentMultiPassConsistency: Map<string, { consistent: number; totalRaw: number }>,
-  agentRunEffort: Map<string, EffortLevel>,
-): Pick<ReviewResult, 'plannerSource' | 'plannerFallbackReason' | 'coreAgentInjections' | 'agentMultiPassConsistency' | 'agentEffortMap'> {
+): Pick<ReviewResult, 'plannerSource' | 'plannerFallbackReason' | 'triage' | 'sensitivePaths' | 'agentMultiPassConsistency' | 'agentEffortMap' | 'agentModels' | 'pairAgentName'> {
+  const pairAgentName = team.finders.find(f => f.pair)?.name;
   return {
     plannerSource,
     ...(plannerFallbackReason && { plannerFallbackReason }),
-    coreAgentInjections: team.coreAgentInjections ?? [],
+    triage: team.triage,
+    sensitivePaths: team.sensitivePaths,
     ...(agentMultiPassConsistency.size > 0 && { agentMultiPassConsistency }),
-    agentEffortMap: agentRunEffort,
+    agentEffortMap: new Map(team.finders.map(f => [f.name, f.effort])),
+    agentModels: new Map(team.finders.map(f => [f.name, f.model])),
+    ...(pairAgentName && { pairAgentName }),
   };
 }
 
@@ -570,71 +424,47 @@ export async function runReview(
   roundOptions: RoundOptions = {},
 ): Promise<ReviewResult & { outcome: RoundOutcome }> {
   const provenanceMap = computeProvenanceMap(priorRounds, rawDiff);
-  let team: TeamRoster;
   let plannerResult: PlannerResult | null = null;
   let plannerUsage: LLMUsage | undefined;
   let plannerDurationMs: number | undefined;
-  let plannerSource: RoundPlannerSource;
+  let plannerSource: RoundPlannerSource = 'disabled';
   let plannerFallbackReason: string | undefined;
 
-  if (clients.planner && config.review_level === 'auto') {
+  if (clients.planner) {
     if (onProgress) {
       onProgress({ phase: 'planning' });
     }
     const plannerStart = Date.now();
     const plannerWrap = wrapClientForUsage(clients.planner);
     const outcome: PlannerOutcomeSink = {};
-    plannerResult = await runPlanner(plannerWrap.client, diff, prContext, config.reviewers, outcome);
+    plannerResult = await runPlanner(plannerWrap.client, diff, prContext, outcome);
     plannerUsage = plannerWrap.getTotals().usage;
     plannerDurationMs = Date.now() - plannerStart;
-    if (plannerResult) {
-      team = selectTeam(diff, config, config.reviewers, plannerResult.teamSize, plannerResult.agents);
-      plannerSource = 'planner';
-      core.info(`Planner: ${plannerResult.teamSize} agents, reviewer: ${plannerResult.reviewerEffort}, judge: ${plannerResult.judgeEffort} (${plannerResult.prType})`);
-      if (plannerResult.teamSize === 1) {
-        const totalLines = diff.totalAdditions + diff.totalDeletions;
-        core.info(`teamSize=1 decision: prType=${plannerResult.prType}, lines=${totalLines}, files=${diff.files.length}`);
-      }
-      if (onProgress) {
-        onProgress({ phase: 'planning', plannerResult, plannerDurationMs });
-      }
-    } else {
-      // Planner was attempted and failed. Force the fixed three-core roster.
-      team = heuristicFallback(diff, config, true);
-      plannerSource = 'heuristic_fallback';
-      plannerFallbackReason = outcome.fallbackReason;
-      if (onProgress) {
-        emitHeuristicFallbackPlanning(onProgress, team, plannerDurationMs);
-      }
-    }
-  } else {
-    // Planner is disabled (either no client or user pinned `review_level`).
-    // Honor the configured `review_level` so explicit user choice is preserved.
-    team = heuristicFallback(diff, config, false);
-    plannerSource = clients.planner ? 'heuristic' : 'disabled';
-    if (onProgress) {
-      emitHeuristicFallbackPlanning(onProgress, team);
-    }
+    plannerSource = plannerResult ? 'planner' : 'heuristic_fallback';
+    plannerFallbackReason = outcome.fallbackReason;
+  }
+  const team = selectTeam(diff, config, plannerResult ?? undefined);
+  const judgeEffort = plannerResult?.judgeEffort ?? 'high';
+  const reviewerEffort = team.finders[0].effort;
+  const { trivial, subtle, paired } = team.triage;
+  core.info(`Triage (${plannerSource}): trivial=${trivial}, subtle=${subtle}, paired=${paired}${team.sensitivePaths ? ', security-sensitive paths' : ''}`);
+  core.info(`Review team: ${team.finders.map(f => f.name).join(', ')} at ${reviewerEffort} effort, judge: ${judgeEffort}${plannerResult ? ` (${plannerResult.prType})` : ''}`);
+  if (trivial) {
+    core.info(`trivial decision: prType=${plannerResult?.prType}, lines=${diff.totalAdditions + diff.totalDeletions}, files=${diff.files.length}`);
+  }
+  if (onProgress) {
+    onProgress({
+      phase: 'planning',
+      teamAgentNames: team.finders.map(f => f.name),
+      reviewerEffort,
+      ...(plannerResult && { plannerResult }),
+      ...(plannerSource === 'heuristic_fallback' && { heuristicFallback: true }),
+      ...(plannerDurationMs !== undefined && { plannerDurationMs }),
+    });
   }
 
   const memoryContext = memory ? buildMemoryContext(memory) : '';
-  const agentEffortMap = new Map<string, EffortLevel>();
-  if (plannerResult?.agents) {
-    for (const pick of plannerResult.agents) {
-      agentEffortMap.set(pick.name, pick.effort);
-    }
-  }
-  const defaultReviewerEffort = plannerResult?.reviewerEffort;
-  const judgeEffort = plannerResult?.judgeEffort ?? 'high';
-
-  // Record the effort each agent actually runs with: the planner pick when
-  // present, otherwise the planner's reviewerEffort default,
-  // otherwise `'medium'` (matching `runReviewerAgent`'s implicit default when
-  // `effort` is `undefined` in the reviewer prompt).
-  const agentRunEffort = new Map<string, EffortLevel>();
-  for (const agent of team.agents) {
-    agentRunEffort.set(agent.name, agentEffortMap.get(agent.name) ?? defaultReviewerEffort ?? 'medium');
-  }
+  const finderOptions = (finder: Finder): RunReviewerAgentOptions => ({ effort: finder.effort, language: plannerResult?.language, context: plannerResult?.context });
 
   const passes = config.review_passes ?? 1;
   const multiPass = passes > 1;
@@ -652,15 +482,14 @@ export async function runReview(
   let progressFindingCount = 0;
 
   if (multiPass) {
-    core.info(`Running ${team.agents.length} reviewer agents with ${passes} passes each (multi-pass mode)...`);
-    for (const agent of team.agents) {
+    core.info(`Running ${team.finders.length} reviewer agents with ${passes} passes each (multi-pass mode)...`);
+    for (const agent of team.finders) {
       const startTime = Date.now();
-      const agentEffort = agentEffortMap.get(agent.name) ?? defaultReviewerEffort;
       const passResults = await Promise.allSettled(
         Array.from({ length: passes }, () => {
           const shuffledDiff = shuffleDiffFiles(diff);
           const shuffledRawDiff = rebuildRawDiff(shuffledDiff);
-          return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: agentEffort, language: plannerResult?.language, context: plannerResult?.context });
+          return runReviewerAgent(pickReviewerClient(clients, agent), config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent));
         })
       );
 
@@ -704,7 +533,7 @@ export async function runReview(
             agentStatus: 'success',
             rawFindingCount: allFindings.length,
             completedAgents: completedCount,
-            totalAgents: team.agents.length,
+            totalAgents: team.finders.length,
           });
         }
       } else {
@@ -721,7 +550,7 @@ export async function runReview(
             agentStatus: 'failure',
             rawFindingCount: allFindings.length,
             completedAgents: completedCount,
-            totalAgents: team.agents.length,
+            totalAgents: team.finders.length,
           });
         }
       }
@@ -730,7 +559,7 @@ export async function runReview(
     // Retry failed agents up to MAX_AGENT_RETRIES times (multi-pass)
     const retryCountMap: Record<string, number> = {};
     for (let retry = 1; retry <= MAX_AGENT_RETRIES && failedAgents.length > 0; retry++) {
-      const agentsToRetry = failedAgents.map(name => team.agents.find(a => a.name === name)!);
+      const agentsToRetry = failedAgents.map(name => team.finders.find(a => a.name === name)!);
       core.info(`Retry ${retry}/${MAX_AGENT_RETRIES} (multi-pass): retrying ${agentsToRetry.map(a => a.name).join(', ')}...`);
 
       const stillFailed: string[] = [];
@@ -746,7 +575,7 @@ export async function runReview(
             agentStatus: 'retrying',
             rawFindingCount: allFindings.length,
             completedAgents: completedCount,
-            totalAgents: team.agents.length,
+            totalAgents: team.finders.length,
             retryCount: retryCountMap[agent.name],
           });
         }
@@ -756,8 +585,7 @@ export async function runReview(
           Array.from({ length: passes }, () => {
             const shuffledDiff = shuffleDiffFiles(diff);
             const shuffledRawDiff = rebuildRawDiff(shuffledDiff);
-            const retryEffort = agentEffortMap.get(agent.name) ?? defaultReviewerEffort;
-            return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: retryEffort, language: plannerResult?.language, context: plannerResult?.context });
+            return runReviewerAgent(pickReviewerClient(clients, agent), config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent));
           })
         );
 
@@ -796,7 +624,7 @@ export async function runReview(
               agentStatus: 'success',
               rawFindingCount: allFindings.length,
               completedAgents: completedCount,
-              totalAgents: team.agents.length,
+              totalAgents: team.finders.length,
             });
           }
         } else {
@@ -812,7 +640,7 @@ export async function runReview(
               agentStatus: 'failure',
               rawFindingCount: allFindings.length,
               completedAgents: completedCount,
-              totalAgents: team.agents.length,
+              totalAgents: team.finders.length,
               retryCount: retryCountMap[agent.name],
             });
           }
@@ -823,11 +651,10 @@ export async function runReview(
       failedAgents.push(...stillFailed);
     }
   } else {
-    core.info(`Running ${team.agents.length} reviewer agents in parallel...`);
-    const agentPromises = team.agents.map(agent => {
+    core.info(`Running ${team.finders.length} reviewer agents in parallel...`);
+    const agentPromises = team.finders.map(agent => {
       const startTime = Date.now();
-      const agentEffort = agentEffortMap.get(agent.name) ?? defaultReviewerEffort;
-      return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: agentEffort, language: plannerResult?.language, context: plannerResult?.context })
+      return runReviewerAgent(pickReviewerClient(clients, agent), config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent))
         .then(agentResult => {
           completedCount++;
           agentResponseLengths.set(agent.name, agentResult.responseLength);
@@ -849,7 +676,7 @@ export async function runReview(
               agentStatus: 'success',
               rawFindingCount: progressFindingCount,
               completedAgents: completedCount,
-              totalAgents: team.agents.length,
+              totalAgents: team.finders.length,
             });
           }
           return agentResult.findings;
@@ -865,7 +692,7 @@ export async function runReview(
               agentStatus: 'failure',
               rawFindingCount: progressFindingCount,
               completedAgents: completedCount,
-              totalAgents: team.agents.length,
+              totalAgents: team.finders.length,
             });
           }
           throw error;
@@ -878,18 +705,18 @@ export async function runReview(
       const result = agentResults[i];
       if (result.status === 'fulfilled') {
         allFindings.push(...result.value);
-        core.info(`${team.agents[i].name}: ${result.value.length} findings`);
+        core.info(`${team.finders[i].name}: ${result.value.length} findings`);
       } else {
-        failedAgents.push(team.agents[i].name);
-        agentFailureReasons.set(team.agents[i].name, sanitizeLogOutput(String(((result.reason as Error)?.message ?? result.reason) || 'unknown failure')).slice(0, 500));
-        core.warning(`${team.agents[i].name} failed: ${result.reason}`);
+        failedAgents.push(team.finders[i].name);
+        agentFailureReasons.set(team.finders[i].name, sanitizeLogOutput(String(((result.reason as Error)?.message ?? result.reason) || 'unknown failure')).slice(0, 500));
+        core.warning(`${team.finders[i].name} failed: ${result.reason}`);
       }
     }
 
     // Retry failed agents up to MAX_AGENT_RETRIES times
     const retryCount: Record<string, number> = {};
     for (let retry = 1; retry <= MAX_AGENT_RETRIES && failedAgents.length > 0; retry++) {
-      const agentsToRetry = failedAgents.map(name => team.agents.find(a => a.name === name)!);
+      const agentsToRetry = failedAgents.map(name => team.finders.find(a => a.name === name)!);
       core.info(`Retry ${retry}/${MAX_AGENT_RETRIES}: retrying ${agentsToRetry.map(a => a.name).join(', ')}...`);
 
       for (const agent of agentsToRetry) {
@@ -903,7 +730,7 @@ export async function runReview(
             agentStatus: 'retrying',
             rawFindingCount: progressFindingCount,
             completedAgents: completedCount,
-            totalAgents: team.agents.length,
+            totalAgents: team.finders.length,
             retryCount: retryCount[agent.name],
           });
         }
@@ -911,8 +738,7 @@ export async function runReview(
 
       const retryPromises = agentsToRetry.map(agent => {
         const startTime = Date.now();
-        const retryEffort = agentEffortMap.get(agent.name) ?? defaultReviewerEffort;
-        return runReviewerAgent(pickReviewerClient(clients, agent.name), config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, { effort: retryEffort, language: plannerResult?.language, context: plannerResult?.context })
+        return runReviewerAgent(pickReviewerClient(clients, agent), config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent))
           .then(agentResult => ({ agent, agentResult, durationMs: Date.now() - startTime, error: null as unknown }))
           .catch(error => ({ agent, agentResult: null as AgentResult | null, durationMs: Date.now() - startTime, error: error as unknown }));
       });
@@ -921,7 +747,7 @@ export async function runReview(
 
       const stillFailed: string[] = [];
       for (const settled of retryResults) {
-        const { agent, agentResult, durationMs, error } = (settled as PromiseFulfilledResult<{ agent: ReviewerAgent; agentResult: AgentResult | null; durationMs: number; error: unknown }>).value;
+        const { agent, agentResult, durationMs, error } = (settled as PromiseFulfilledResult<{ agent: Finder; agentResult: AgentResult | null; durationMs: number; error: unknown }>).value;
         if (agentResult !== null) {
           // Remove from failed list, add findings
           allFindings.push(...agentResult.findings);
@@ -941,7 +767,7 @@ export async function runReview(
               agentStatus: 'success',
               rawFindingCount: progressFindingCount,
               completedAgents: completedCount,
-              totalAgents: team.agents.length,
+              totalAgents: team.finders.length,
             });
           }
         } else {
@@ -957,7 +783,7 @@ export async function runReview(
               agentStatus: 'failure',
               rawFindingCount: progressFindingCount,
               completedAgents: completedCount,
-              totalAgents: team.agents.length,
+              totalAgents: team.finders.length,
               retryCount: retryCount[agent.name],
             });
           }
@@ -969,34 +795,23 @@ export async function runReview(
     }
   }
 
-  let partialReview = false;
-  let partialNote: string | undefined;
-
+  // Every reader counts: a round where one finder failed must not approve on the other's word.
   if (failedAgents.length > 0) {
-    const quorum = Math.ceil(team.agents.length / 2);
-    const succeededCount = team.agents.length - failedAgents.length;
-
-    if (succeededCount < quorum) {
-      const summary = failedAgents.length === team.agents.length
-        ? 'All reviewers failed. Retry with @manki review.'
-        : `${failedAgents.join(', ')} failed after retries. Retry with @manki review.`;
-      return {
-        verdict: OUTCOME_VERDICT.INCOMPLETE,
-        outcome: 'INCOMPLETE',
-        summary,
-        findings: [],
-        highlights: [],
-        reviewComplete: false,
-        agentNames: team.agents.map(a => a.name),
-        failedAgents,
-        ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
-        ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency, agentRunEffort),
-      };
-    }
-
-    partialReview = true;
-    partialNote = `${succeededCount} of ${team.agents.length} agents completed (${failedAgents.join(', ')} failed after ${MAX_AGENT_RETRIES + 1} attempts)`;
-    core.info(`Quorum met: ${partialNote}`);
+    const summary = failedAgents.length === team.finders.length
+      ? 'All reviewers failed. Retry with @manki review.'
+      : `${failedAgents.join(', ')} failed after retries. Retry with @manki review.`;
+    return {
+      verdict: OUTCOME_VERDICT.INCOMPLETE,
+      outcome: 'INCOMPLETE',
+      summary,
+      findings: [],
+      highlights: [],
+      reviewComplete: false,
+      agentNames: team.finders.map(a => a.name),
+      failedAgents,
+      ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
+      ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
+    };
   }
 
   if (onProgress) {
@@ -1052,8 +867,8 @@ export async function runReview(
       phase: 'judging',
       rawFindingCount: allFindings.length,
       judgeInputCount: findingsForJudge.length,
-      totalAgents: team.agents.length,
-      completedAgents: team.agents.length,
+      totalAgents: team.finders.length,
+      completedAgents: team.finders.length,
     });
   }
 
@@ -1091,7 +906,7 @@ export async function runReview(
       repoContext,
       prContext,
       linkedIssues,
-      agentCount: team.agents.length,
+      agentCount: team.finders.length,
       isFollowUp,
       openThreads: openThreads ?? undefined,
       priorRounds,
@@ -1127,8 +942,8 @@ export async function runReview(
       findings: [],
       highlights: [],
       reviewComplete: false,
-      agentNames: team.agents.map(a => a.name),
-      ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency, agentRunEffort),
+      agentNames: team.finders.map(a => a.name),
+      ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
     };
   }
 
@@ -1158,10 +973,6 @@ export async function runReview(
   const priorRoundLookup = buildPriorRoundLookup(sortedPriorRounds);
   const changedFiles = new Set(diff.files.map(f => f.path));
   const blockersOnly = roundOptions.blockersOnly || roundOptions.finalRound || roundNumber > FULL_BAR_ROUNDS;
-  finalFindings = finalFindings.map(f =>
-    isBlockingSeverity(f.severity) && isSecurityFinding(f.tags, f.reviewers) && !f.tags?.includes(SECURITY_TAG)
-      ? { ...f, tags: [...(f.tags ?? []), SECURITY_TAG] }
-      : f);
   if (blockersOnly) {
     finalFindings = finalFindings.map(f => f.severity === 'warning' && !f.tags?.includes(SECURITY_TAG) ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f);
   }
@@ -1186,8 +997,8 @@ export async function runReview(
         findings: [],
         highlights: [],
         reviewComplete: false,
-        agentNames: team.agents.map(a => a.name),
-        ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency, agentRunEffort),
+        agentNames: team.finders.map(a => a.name),
+        ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
       };
     }
     verdictUsage = verdictWrap.getTotals().usage;
@@ -1223,8 +1034,8 @@ export async function runReview(
   const summary = judgeSummary;
 
   core.startGroup('Review Summary');
-  core.info(`Team: ${team.agents.map(a => a.name).join(', ')}`);
-  core.info(`Level: ${team.level} (${team.lineCount} lines changed)`);
+  core.info(`Team: ${team.finders.map(a => a.name).join(', ')}`);
+  core.info(`Triage: trivial=${trivial}, subtle=${subtle}, paired=${paired} (${diff.totalAdditions + diff.totalDeletions} lines changed)`);
   core.info(`Verdict: ${verdict}`);
   core.info(`Findings: ${finalFindings.length}`);
   for (const f of finalFindings) {
@@ -1246,14 +1057,11 @@ export async function runReview(
     highlights: [],
     reviewComplete: true,
     rawFindingCount: allFindings.length,
-    agentNames: team.agents.map(a => a.name),
+    agentNames: team.finders.map(a => a.name),
     allJudgedFindings,
     rawFindings: allFindings,
     threadEvaluations: judgeThreadEvaluations,
     plannerResult: plannerResult ?? undefined,
-    failedAgents: failedAgents.length > 0 ? failedAgents : undefined,
-    partialReview: partialReview || undefined,
-    partialNote,
     staticDedupCount,
     llmDedupCount,
     ...(duplicateMatches.length > 0 && { duplicateMatches }),
@@ -1276,7 +1084,7 @@ export async function runReview(
     crossRoundDemoted: judgeCrossRoundDemoted,
     ...(judgeInterRoundDiffEmptyOverride && { interRoundDiffEmptyOverride: judgeInterRoundDiffEmptyOverride }),
     ...(testNitSuppressedCount > 0 && { testNitSuppressedCount }),
-    ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency, agentRunEffort),
+    ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
   };
 }
 
@@ -1303,7 +1111,7 @@ interface RunReviewerAgentOptions {
 async function runReviewerAgent(
   client: LLMClient,
   config: ReviewConfig,
-  reviewer: ReviewerAgent,
+  finder: Finder,
   rawDiff: string,
   repoContext: string,
   fileContents?: Map<string, string>,
@@ -1313,7 +1121,7 @@ async function runReviewerAgent(
   options: RunReviewerAgentOptions = {},
 ): Promise<AgentResult> {
   const { effort, language, context } = options;
-  const systemPrompt = buildReviewerSystemPrompt(reviewer, config, language, context, config.noise_level);
+  const systemPrompt = buildReviewerSystemPrompt(finder.prompt, config, language, context, config.noise_level);
   const userMessage = buildReviewerUserMessage(rawDiff, repoContext, { fileContents, prContext, memoryContext, linkedIssues });
 
   const sendOptions = effort ? { effort } : undefined;
@@ -1321,7 +1129,7 @@ async function runReviewerAgent(
   if (response.truncated) {
     throw new Error(`response truncated at the output token limit (length ${response.content.length})`);
   }
-  const findings = parseFindings(response.content, reviewer.name);
+  const findings = parseFindings(response.content, finder.name);
   return {
     findings,
     responseLength: response.content.length,
@@ -1353,7 +1161,7 @@ Your role: ${reviewer.name}`;
 
   prompt += `
 
-Review the provided pull request diff carefully from your specialist perspective. Return your findings as a JSON array.
+Review the provided pull request diff carefully through that focus. Return your findings as a JSON array.
 
 ## Response Format
 
@@ -1726,7 +1534,7 @@ export function determineOutcome(
 
   const prior = dedupePriorFindings(priorRounds ?? []);
   const novelWarnings = findings.filter(
-    f => f.severity === 'warning' && (!blockersOnly || isSecurityFinding(f.tags, f.reviewers)) && !wasDismissedInPriorRound(f, prior),
+    f => f.severity === 'warning' && (!blockersOnly || isSecurityFinding(f.tags)) && !wasDismissedInPriorRound(f, prior),
   );
   if (novelWarnings.length > 0) {
     const trace = emptyTrace();

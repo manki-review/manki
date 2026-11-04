@@ -534,7 +534,7 @@ function makeContext(overrides: Partial<RoundContext> = {}): RoundContext {
     config: { reviewLevel: 'medium', memoryEnabled: false },
     diff: { lines: 120, additions: 80, deletions: 40, filesReviewed: 5, fileTypes: { '.ts': 5 } },
     models: { reviewer: 'claude-sonnet-4-20250514', judge: 'claude-opus-4-20250514' },
-    planner: { source: 'disabled', used: false, coreAgentInjections: [] },
+    planner: { source: 'disabled', used: false },
     reviewers: { agents: ['Security & Safety', 'Correctness'] },
     judge: { summary: 'All checks done.' },
     dedup: {},
@@ -1215,55 +1215,6 @@ describe('postReview with context', () => {
     const parsed = JSON.parse(match![1]) as RoundContext;
     expect(parsed.findings.truncated).toBeUndefined();
     expect(parsed.judge.summary.length).toBeLessThanOrEqual(2003);
-  });
-});
-
-describe('postReview partialNote', () => {
-  const mockCreateReview = jest.fn().mockResolvedValue({ data: { id: 1 } });
-  const mockOctokit = {
-    rest: {
-      pulls: {
-        createReview: mockCreateReview,
-      },
-    },
-  } as unknown as Parameters<typeof postReview>[0];
-
-  beforeEach(() => {
-    mockCreateReview.mockClear();
-  });
-
-  it('includes partialNote in review body when agents failed after retries', async () => {
-    const result: ReviewResult = {
-      verdict: 'APPROVE',
-      summary: 'Looks good overall.',
-      findings: [],
-      highlights: [],
-      reviewComplete: true,
-      agentNames: [],
-      partialNote: '4 of 5 agents completed (Correctness & Logic failed after 2 attempts)',
-      failedAgents: ['Correctness & Logic'],
-    };
-
-    await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
-    const body = mockCreateReview.mock.calls[0][0].body as string;
-    expect(body).toContain('\n\nThis review is partial: Correctness & Logic failed.');
-    expect(body).not.toContain('agents completed');
-    expect(body).not.toContain('> ');
-  });
-
-  it('omits partialNote section when not provided', async () => {
-    const result: ReviewResult = {
-      verdict: 'APPROVE',
-      summary: 'All clear.',
-      findings: [],
-      highlights: [],
-      reviewComplete: true,
-      agentNames: [],
-    };
-
-    await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
-    const body = mockCreateReview.mock.calls[0][0].body as string;
-    expect(body).not.toContain('This review is partial');
   });
 });
 
@@ -2622,9 +2573,8 @@ describe('updateProgressComment', () => {
     config: {
       reviewerModel: 'claude-sonnet-4-20250514',
       judgeModel: 'claude-sonnet-4-20250514',
-      reviewLevel: 'medium',
-      reviewLevelReason: 'auto, 200 lines',
-      teamAgents: ['Security & Safety', 'Correctness & Logic', 'Architecture & Design'],
+      triage: 'trivial=false, subtle=true, paired=true (planner)',
+      teamAgents: ['Finder (claude-sonnet-4-6)', 'Pair finder (claude-opus-4-7)'],
       memoryEnabled: true,
       memoryRepo: 'owner/review-memory',
     },
@@ -2661,8 +2611,8 @@ describe('updateProgressComment', () => {
     expect(body).toContain('**Config:**');
     expect(body).toContain('reviewer=claude-sonnet-4-20250514');
     expect(body).toContain('judge=claude-sonnet-4-20250514');
-    expect(body).toContain('Review level: medium (auto, 200 lines)');
-    expect(body).toContain('Security & Safety, Correctness & Logic, Architecture & Design');
+    expect(body).toContain('Triage: trivial=false, subtle=true, paired=true (planner)');
+    expect(body).toContain('Team: Finder (claude-sonnet-4-6), Pair finder (claude-opus-4-7)');
     expect(body).toContain('enabled (owner/review-memory)');
   });
 

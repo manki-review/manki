@@ -5,7 +5,7 @@ import * as path from 'path';
 
 import { AuthResult, createAuthenticatedOctokit, getMemoryToken } from './auth';
 import { sanitizeTokens } from './utils';
-import { loadConfig, loadConfigFromFile, sanitizeForkConfig, resolveAgentModel, resolveModel, resolvePairModel } from './config';
+import { loadConfig, loadConfigFromFile, sanitizeForkConfig, resolveModel, resolvePairModel } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
@@ -647,12 +647,7 @@ async function runFullReview(
     const reviewerPairModel = resolvePairModel(config);
     const judgeModel = resolveModel(config, 'judge');
     const dedupModel = resolveModel(config, 'dedup');
-    core.info(`Models — planner: ${plannerModel}, reviewer: ${reviewerModel}, judge: ${judgeModel}, dedup: ${dedupModel}`);
-    const agentOverrides = config.models?.agents;
-    if (agentOverrides && Object.keys(agentOverrides).length > 0) {
-      const formatted = Object.entries(agentOverrides).map(([n, m]) => `${n}=${m}`).join(', ');
-      core.info(`Per-agent model overrides — ${formatted}`);
-    }
+    core.info(`Models — planner: ${plannerModel}, reviewer: ${reviewerModel}, reviewer pair: ${reviewerPairModel}, judge: ${judgeModel}, dedup: ${dedupModel}`);
 
     const buildClient = (model: string) => {
       const spec = parseModelSpec(model);
@@ -661,16 +656,12 @@ async function runFullReview(
     };
     let reviewerClient: LLMClient, reviewerPairClient: LLMClient, judgeClient: LLMClient, dedupClient: LLMClient;
     let plannerClient: LLMClient | undefined;
-    const perAgentClients = new Map<string, LLMClient>();
     try {
       reviewerClient = buildClient(reviewerModel);
       reviewerPairClient = reviewerPairModel === reviewerModel ? reviewerClient : buildClient(reviewerPairModel);
       judgeClient = buildClient(judgeModel);
       plannerClient = config.planner?.enabled !== false ? buildClient(plannerModel) : undefined;
       dedupClient = buildClient(dedupModel);
-      for (const [name, model] of Object.entries(config.models?.agents ?? {})) {
-        if (model !== reviewerModel) perAgentClients.set(name, buildClient(model));
-      }
     } catch (error) {
       core.setFailed(`Invalid model config: ${error instanceof Error ? error.message : error}`);
       await octokit.rest.issues.deleteComment({ owner, repo, comment_id: progressCommentId }).catch(() => {});
@@ -682,11 +673,9 @@ async function runFullReview(
     const filteredFiles = diff.files;
     const rawDiff = rebuildRawDiff(diff);
     const parseEndTime = Date.now();
-    const plannerEnabled = !!plannerClient && config.review_level === 'auto';
-    const team = selectTeam(diff, config, config.reviewers);
-    // `team` here is only used for the initial dashboard preview; the actual
-    // review team is resolved inside `runReview` once the planner result is
-    // available.
+    const plannerEnabled = !!plannerClient;
+    // Without a planner the team is the fail-safe one. With one, `runReview` reports the team after triage.
+    const previewTeam = selectTeam(diff, config);
     const lineCount = diff.totalAdditions + diff.totalDeletions;
 
     const dashboard: DashboardData = plannerEnabled
@@ -698,8 +687,8 @@ async function runFullReview(
       : {
           phase: 'started',
           lineCount,
-          agentCount: team.agents.length,
-          agentProgress: team.agents.map(a => ({ name: a.name, status: 'reviewing' as const })),
+          agentCount: previewTeam.finders.length,
+          agentProgress: previewTeam.finders.map(a => ({ name: a.name, status: 'reviewing' as const })),
         };
     await updateProgressDashboard(octokit, owner, repo, progressCommentId, dashboard);
 
@@ -746,7 +735,7 @@ async function runFullReview(
     // diff-size and empty-files guards so cold installs are skipped on paths
     // that never invoke an LLM.
     const warmupTargets = new Set<LLMClient>(
-      [plannerClient, reviewerClient, reviewerPairClient, judgeClient, dedupClient, ...perAgentClients.values()].filter(
+      [plannerClient, reviewerClient, reviewerPairClient, judgeClient, dedupClient].filter(
         (c): c is LLMClient => !!c,
       ),
     );
@@ -936,31 +925,24 @@ async function runFullReview(
         judge: judgeClient,
         planner: plannerClient,
         dedup: dedupClient,
-        reviewerForAgent: (agentName: string) =>
-          perAgentClients.get(agentName) ?? reviewerClient,
       }, config, diff, rawDiff, repoContext,
       memory, fileContents, prContext, linkedIssues,
       (progress) => {
         if (progress.phase === 'planning') {
           core.info('Planner analyzing PR content...');
-          if (progress.plannerResult) {
-            const plannerTeam = selectTeam(diff, config, config.reviewers, progress.plannerResult.teamSize, progress.plannerResult.agents, true);
-            dashboard.plannerInfo = {
-              agentCount: plannerTeam.agents.length,
-              reviewerEffort: progress.plannerResult.reviewerEffort,
-              judgeEffort: progress.plannerResult.judgeEffort,
-              prType: progress.plannerResult.prType,
-            };
-            dashboard.agentCount = plannerTeam.agents.length;
-            dashboard.agentProgress = plannerTeam.agents.map(a => ({ name: a.name, status: 'reviewing' as const }));
-            dashboard.plannerDurationMs = progress.plannerDurationMs;
-            dashboard.phase = 'started';
-            scheduleDashboardFlush();
-          } else if (progress.heuristicFallback && progress.teamAgentNames) {
+          if (progress.teamAgentNames) {
+            if (progress.plannerResult && progress.reviewerEffort) {
+              dashboard.plannerInfo = {
+                agentCount: progress.teamAgentNames.length,
+                reviewerEffort: progress.reviewerEffort,
+                judgeEffort: progress.plannerResult.judgeEffort,
+                prType: progress.plannerResult.prType,
+              };
+            }
             dashboard.agentCount = progress.teamAgentNames.length;
             dashboard.agentProgress = progress.teamAgentNames.map(name => ({ name, status: 'reviewing' as const }));
             dashboard.plannerDurationMs = progress.plannerDurationMs;
-            dashboard.heuristicFallback = true;
+            if (progress.heuristicFallback) dashboard.heuristicFallback = true;
             dashboard.phase = 'started';
             scheduleDashboardFlush();
           }
@@ -1060,7 +1042,8 @@ async function runFullReview(
     const agentNames = result.agentNames;
     const allJudged = result.allJudgedFindings ?? [];
     const rawFindings = result.rawFindings ?? allJudged;
-    const agentModels = new Map(agentNames.map(name => [name, resolveAgentModel(config, name, 'reviewer')]));
+    const agentModels = result.agentModels ?? new Map<string, string>();
+    const reviewerEffort = result.agentEffortMap?.values().next().value;
     const agentMetrics = agentNames.length > 0
       ? agentNames.map(name => {
           const usage = result.agentUsage?.get(name);
@@ -1089,9 +1072,9 @@ async function runFullReview(
       : undefined;
     const corroboration = { keptPrimaryOnly: 0, keptPairOnly: 0, keptBoth: 0 };
     for (const f of result.findings) {
-      const models = f.reviewers.filter(r => agentModels.has(r)).map(r => agentModels.get(r));
-      const primary = models.includes(reviewerModel);
-      const pair = models.some(m => m !== reviewerModel);
+      const agents = f.reviewers.filter(r => agentModels.has(r));
+      const pair = agents.some(r => r === result.pairAgentName);
+      const primary = agents.some(r => r !== result.pairAgentName);
       if (primary && pair) corroboration.keptBoth++;
       else if (primary) corroboration.keptPrimaryOnly++;
       else if (pair) corroboration.keptPairOnly++;
@@ -1225,7 +1208,6 @@ async function runFullReview(
         ...(result.outcome && { outcome: result.outcome }),
       },
       config: {
-        reviewLevel: team.level === 'trivial' ? 'small' : team.level,
         memoryEnabled: config.memory?.enabled ?? false,
         ...(config.review_passes != null && { reviewPasses: config.review_passes }),
       },
@@ -1248,6 +1230,7 @@ async function runFullReview(
       models: {
         ...(plannerClient && { planner: plannerModel }),
         reviewer: reviewerModel,
+        ...(result.pairAgentName && { reviewerPair: reviewerPairModel }),
         judge: judgeModel,
         dedup: dedupModel,
       },
@@ -1257,20 +1240,21 @@ async function runFullReview(
         const base = {
           source,
           used,
-          coreAgentInjections: result.coreAgentInjections ?? [],
           ...(result.plannerFallbackReason && { fallbackReason: result.plannerFallbackReason }),
+          ...result.triage,
+          ...(result.sensitivePaths != null && { sensitivePaths: result.sensitivePaths }),
+          teamSize: result.agentNames.length,
+          ...(reviewerEffort && { reviewerEffort }),
         };
         if (!result.plannerResult) return base;
         return {
           ...base,
-          teamSize: result.plannerResult.teamSize,
-          reviewerEffort: result.plannerResult.reviewerEffort,
+          ...(result.plannerResult.defaultedFields && { defaultedFields: result.plannerResult.defaultedFields }),
           judgeEffort: result.plannerResult.judgeEffort,
           prType: result.plannerResult.prType,
           ...(dashboard.plannerDurationMs != null && { durationMs: dashboard.plannerDurationMs }),
           ...(result.plannerResult.language && { language: result.plannerResult.language }),
           ...(result.plannerResult.context && { context: result.plannerResult.context }),
-          ...(result.plannerResult.agents && { agents: result.plannerResult.agents }),
         };
       })(),
       reviewers: {
@@ -1375,10 +1359,10 @@ async function runFullReview(
     // agentProgress accurate.
     reconcileDashboardAgents(dashboard, result.agentNames);
 
-    if (result.plannerResult) {
+    if (result.plannerResult && reviewerEffort) {
       dashboard.plannerInfo = {
         agentCount: result.agentNames.length,
-        reviewerEffort: result.plannerResult.reviewerEffort,
+        reviewerEffort,
         judgeEffort: result.plannerResult.judgeEffort,
         prType: result.plannerResult.prType,
       };
@@ -1440,8 +1424,9 @@ async function runFullReview(
       config: {
         reviewerModel,
         judgeModel,
-        reviewLevel: team.level,
-        reviewLevelReason: `auto, ${diff.totalAdditions + diff.totalDeletions} lines`,
+        triage: result.triage
+          ? `trivial=${result.triage.trivial}, subtle=${result.triage.subtle}, paired=${result.triage.paired} (${result.plannerSource ?? 'planner'}${result.sensitivePaths ? ', security-sensitive paths' : ''})`
+          : 'none',
         teamAgents: result.agentNames,
         memoryEnabled: config.memory?.enabled ?? false,
         memoryRepo: config.memory?.repo ?? '',

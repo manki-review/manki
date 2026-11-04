@@ -1,4 +1,4 @@
-import { DEFAULT_CONFIG, loadConfig, loadConfigFromContent, loadConfigFromFile, resolveAgentModel, resolveModel, resolvePairModel, sanitizeForkConfig } from './config';
+import { DEFAULT_CONFIG, loadConfig, loadConfigFromContent, loadConfigFromFile, resolveModel, resolvePairModel, sanitizeForkConfig } from './config';
 import { ReviewConfig } from './types';
 
 // Suppress @actions/core output during tests
@@ -32,8 +32,7 @@ describe('config', () => {
       expect(typeof DEFAULT_CONFIG.memory.enabled).toBe('boolean');
       expect(typeof DEFAULT_CONFIG.memory.repo).toBe('string');
       expect(DEFAULT_CONFIG.noise_level).toBe('low');
-      expect(DEFAULT_CONFIG.review_level).toBe('auto');
-      expect(DEFAULT_CONFIG.review_thresholds).toEqual({ small: 200, medium: 1000 });
+      expect(DEFAULT_CONFIG.planner).toEqual({ enabled: true, paired: 'auto' });
       expect(DEFAULT_CONFIG.review_passes).toBe(1);
     });
 
@@ -292,31 +291,13 @@ memory:
         .toThrow(/^Invalid config in cfg\/manki\.yml: /);
     });
 
-    it('throws when review_thresholds.small >= review_thresholds.medium', () => {
-      const yaml = `
-review_thresholds:
-  small: 500
-  medium: 100
-`;
-      expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
-    });
-
-    it('throws when review_thresholds.small equals review_thresholds.medium', () => {
-      const yaml = `
-review_thresholds:
-  small: 200
-  medium: 200
-`;
-      expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
-    });
-
-    it('throws when partial threshold override causes small >= medium after merge', () => {
-      const yaml = `
-review_thresholds:
-  small: 1500
-`;
-      // After merge: small=1500, medium=1000 (default) => small >= medium
-      expect(() => loadConfigFromContent(yaml)).toThrow('review_thresholds.small');
+    it('accepts `review_level` and `review_thresholds` with a deprecation warning and drops them', () => {
+      const config = loadConfigFromContent('review_level: large\nreview_thresholds:\n  small: 500\n  medium: 100\n');
+      expect(config).toEqual(DEFAULT_CONFIG);
+      for (const key of ['review_level', 'review_thresholds']) {
+        expect(core.warning).toHaveBeenCalledWith(expect.stringContaining(`\`${key}\` is deprecated and ignored`));
+      }
+      expect(core.warning).not.toHaveBeenCalledWith(expect.stringContaining('Unknown config key'));
     });
 
     it('ignores unknown keys during merge', () => {
@@ -572,171 +553,40 @@ models:
     });
   });
 
-  describe('resolveAgentModel', () => {
-    const baseConfig: ReviewConfig = { ...DEFAULT_CONFIG };
-
-    it('returns per-agent override when present', () => {
-      const config: ReviewConfig = {
-        ...baseConfig,
-        models: {
-          reviewer: 'claude-sonnet-4-6',
-          agents: { 'Security & Safety': 'claude-opus-4-7' },
-        },
-      };
-      expect(resolveAgentModel(config, 'Security & Safety', 'reviewer')).toBe('claude-opus-4-7');
-    });
-
-    it('falls back to stage default when no per-agent override', () => {
-      const config: ReviewConfig = {
-        ...baseConfig,
-        models: {
-          reviewer: 'claude-haiku-4-5',
-          agents: { 'Security & Safety': 'claude-opus-4-7' },
-        },
-      };
-      expect(resolveAgentModel(config, 'Architecture & Design', 'reviewer')).toBe('claude-haiku-4-5');
-    });
-
-    it('falls back to built-in default when no stage override and no agent override', () => {
-      const config: ReviewConfig = { ...baseConfig, models: undefined };
-      expect(resolveAgentModel(config, 'Security & Safety', 'reviewer')).toBe('claude-sonnet-4-6');
-    });
-
-    it('falls back to built-in default when models.agents is undefined', () => {
-      const config: ReviewConfig = { ...baseConfig, models: { reviewer: 'claude-haiku-4-5' } };
-      expect(resolveAgentModel(config, 'Security & Safety', 'reviewer')).toBe('claude-haiku-4-5');
-    });
-
-    it('resolves the per-agent override regardless of stage', () => {
-      const config: ReviewConfig = {
-        ...baseConfig,
-        models: {
-          planner: 'claude-haiku-4-5',
-          judge: 'claude-opus-4-7',
-          dedup: 'claude-haiku-4-5',
-          agents: { 'Security & Safety': 'claude-opus-4-7' },
-        },
-      };
-      expect(resolveAgentModel(config, 'Security & Safety', 'planner')).toBe('claude-opus-4-7');
-      expect(resolveAgentModel(config, 'Security & Safety', 'judge')).toBe('claude-opus-4-7');
-      expect(resolveAgentModel(config, 'Security & Safety', 'dedup')).toBe('claude-opus-4-7');
-    });
-
-    it('falls back to the requested stage default for non-overridden agents', () => {
-      const config: ReviewConfig = {
-        ...baseConfig,
-        models: {
-          planner: 'planner-model',
-          judge: 'judge-model',
-          dedup: 'dedup-model',
-          reviewer: 'reviewer-model',
-        },
-      };
-      expect(resolveAgentModel(config, 'Architecture & Design', 'planner')).toBe('planner-model');
-      expect(resolveAgentModel(config, 'Architecture & Design', 'judge')).toBe('judge-model');
-      expect(resolveAgentModel(config, 'Architecture & Design', 'dedup')).toBe('dedup-model');
-    });
-  });
-
   describe('models.agents config', () => {
-    it('accepts per-agent overrides for built-in agents', () => {
-      const yaml = `
-models:
-  reviewer: claude-sonnet-4-6
-  agents:
-    "Security & Safety": claude-opus-4-7
-`;
-      const config = loadConfig(yaml);
-      expect(config.models?.agents?.['Security & Safety']).toBe('claude-opus-4-7');
-    });
-
-    it('accepts per-agent overrides for custom reviewers declared in config', () => {
-      const yaml = `
-reviewers:
-  - name: "Protocol Compliance"
-    focus: "DIP compliance"
-models:
-  agents:
-    "Protocol Compliance": claude-opus-4-7
-`;
-      const config = loadConfig(yaml);
-      expect(config.models?.agents?.['Protocol Compliance']).toBe('claude-opus-4-7');
-    });
-
-    it('rejects unknown agent names with a list of known agents', () => {
-      const yaml = `
-models:
-  agents:
-    "Foo": claude-opus-4-7
-`;
-      expect(() => loadConfig(yaml)).toThrow(/Unknown agent name "Foo" in `models.agents`. Known agents: /);
-    });
-
-    it('rejects empty model string for an agent', () => {
-      const yaml = `
-models:
-  agents:
-    "Security & Safety": ""
-`;
-      expect(() => loadConfig(yaml)).toThrow(/`models.agents.Security & Safety` must be a non-empty string/);
-    });
-
-    it('rejects non-object models.agents', () => {
-      const yaml = `
-models:
-  agents: "not a map"
-`;
-      expect(() => loadConfig(yaml)).toThrow(/`models.agents` must be an object/);
-    });
-
-    it('omits agents key when not provided', () => {
-      const config = loadConfig('models:\n  reviewer: claude-sonnet-4-6\n');
-      expect(config.models?.agents).toBeUndefined();
-    });
-
-    it('rejects non-string (number) value for an agent override', () => {
-      const yaml = `
-models:
-  agents:
-    "Security & Safety": 42
-`;
-      expect(() => loadConfig(yaml)).toThrow(/`models.agents.Security & Safety` must be a non-empty string/);
-    });
-
-    it('rejects array value for models.agents', () => {
-      const yaml = `
-models:
-  agents:
-    - "Security & Safety"
-`;
-      expect(() => loadConfig(yaml)).toThrow(/`models.agents` must be an object/);
-    });
-
-    it('points malformed reviewer entries at the right error when an override targets them', () => {
-      const yaml = `
-reviewers:
-  - name: "Protocol Compliance"
-models:
-  agents:
-    "Protocol Compliance": claude-opus-4-7
-`;
-      expect(() => loadConfig(yaml)).toThrow(/Agent "Protocol Compliance" in `models.agents` matches a reviewer declared under `reviewers:` but that entry is invalid/);
-    });
-
-    it('merges per-agent overrides through deepMerge without dropping prior entries', () => {
+    it('accepts `models.agents` with a deprecation warning and seeds `reviewer_pair` from its first other model', () => {
       const config = loadConfigFromContent(`
 reviewers:
   - name: "Protocol Compliance"
     focus: "DIP compliance"
 models:
+  reviewer: claude-sonnet-4-6
   agents:
+    "Correctness & Logic": claude-sonnet-4-6
+    "Protocol Compliance": gpt-5.5
     "Security & Safety": claude-opus-4-7
-    "Protocol Compliance": claude-haiku-4-5
 `);
-      expect(config.models?.agents).toEqual({
-        'Security & Safety': 'claude-opus-4-7',
-        'Protocol Compliance': 'claude-haiku-4-5',
-      });
+      expect(config.models).toEqual({ ...DEFAULT_CONFIG.models, reviewer_pair: 'gpt-5.5' });
+      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('`models.agents` is deprecated'));
+    });
+
+    it('keeps an explicit `reviewer_pair` and seeds nothing when every override names the reviewer model', () => {
+      const pinned = loadConfigFromContent('models:\n  reviewer_pair: gemini-3-pro\n  agents:\n    "Security & Safety": claude-opus-4-7\n');
+      expect(pinned.models?.reviewer_pair).toBe('gemini-3-pro');
+      const same = loadConfigFromContent('models:\n  agents:\n    "Security & Safety": claude-sonnet-4-6\n');
+      expect(same.models).toEqual(DEFAULT_CONFIG.models);
+    });
+
+    it.each([
+      ['an empty model', '"Security & Safety": ""', /`models.agents.Security & Safety` must be a non-empty string/],
+      ['a number', '"Security & Safety": 42', /`models.agents.Security & Safety` must be a non-empty string/],
+      ['a list', '- "Security & Safety"', /`models.agents` must be an object/],
+    ])('rejects %s', (_label, entry, expected) => {
+      expect(() => loadConfig(`models:\n  agents:\n    ${entry}\n`)).toThrow(expected);
+    });
+
+    it('rejects a non-object `models.agents`', () => {
+      expect(() => loadConfig('models:\n  agents: "not a map"\n')).toThrow(/`models.agents` must be an object/);
     });
   });
 
@@ -753,6 +603,14 @@ models:
 
     it('rejects invalid planner.enabled type', () => {
       expect(() => loadConfig('planner:\n  enabled: "yes"\n')).toThrow();
+    });
+
+    it('accepts each `planner.paired` pin and rejects any other value', () => {
+      for (const pin of ['auto', 'always', 'never']) {
+        expect(loadConfig(`planner:\n  paired: ${pin}\n`).planner).toEqual({ enabled: true, paired: pin });
+      }
+      expect(() => loadConfig('planner:\n  paired: sometimes\n')).toThrow('Invalid config');
+      expect(core.error).toHaveBeenCalledWith('`planner.paired` must be one of: auto, always, never');
     });
   });
 
