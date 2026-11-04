@@ -5,6 +5,7 @@ import * as github from '@actions/github';
 
 import { AgentProgressEntry, DEFENSIVE_HARDENING_TAG, DashboardData, Finding, FindingFingerprintEntry, FindingSeverity, OWN_PROPOSAL_TAG, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, ReviewVerdict, VALID_PR_TYPES, VerdictReason, VerdictTrace, isBlockingSeverity } from './types';
 import { isLineInDiff } from './diff';
+import type { PreviousFinding } from './recap';
 import { MAX_AGENT_RETRIES } from './types';
 import { MAX_LOCK_TTL_SECONDS } from './config';
 import { safeTruncate, sanitizeTokens } from './utils';
@@ -757,12 +758,21 @@ async function postFileLevelComments(
   return refused;
 }
 
+/** Whether an unresolved Manki thread on the finding's file already carries its marker. */
+function hasOpenThread(finding: Finding, existingThreads: PreviousFinding[]): boolean {
+  const slug = titleToSlug(finding.title);
+  return existingThreads.some(t =>
+    t.status !== 'resolved' && t.file === finding.file && t.severity === finding.severity && t.markerSlug === slug,
+  );
+}
+
 /**
  * Post the review. Blocking findings become threads, all other findings go in the body.
  *
  * A blocking finding on a changed line gets a line comment, one elsewhere in a diff file
- * gets a file-level comment. When `interRoundDiff` is given, non-blocking findings on code
- * it did not change are only counted.
+ * gets a file-level comment, unless one of `existingThreads` is still open with the same
+ * marker. When `interRoundDiff` is given, non-blocking findings on code it did not change
+ * are only counted.
  *
  * When `context` is provided without `reviewTimeMs`, the stats one-liner
  * will display `0s` for review time. Pass both together to avoid this.
@@ -778,7 +788,7 @@ export async function postReview(
   context?: RoundContext,
   reviewTimeMs?: number,
   config?: ReviewConfig,
-  interRoundDiff?: ParsedDiff,
+  { interRoundDiff, existingThreads = [] }: { interRoundDiff?: ParsedDiff; existingThreads?: PreviousFinding[] } = {},
 ): Promise<number> {
   const statsHidden = config?.stats?.hidden ?? false;
   const event = mapVerdictToEvent(result.verdict);
@@ -830,13 +840,12 @@ export async function postReview(
       invalidComments.push(formatUnpostedFinding(f));
     } else if (f.line > 0 && isLineInDiff(diffFile, f.line)) {
       validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: commentBody });
+    } else if (hasOpenThread(f, existingThreads)) {
+      core.info(`Skipping file-level comment for "${f.title}" on ${f.file}: an open thread already carries it`);
     } else {
       fileComments.push({ path: f.file, body: commentBody, finding: f });
     }
   }
-
-  const refusedFileComments = await postFileLevelComments(octokit, owner, repo, prNumber, commitSha, fileComments);
-  invalidComments.push(...refusedFileComments.map(formatUnpostedFinding));
 
   const reviewedCommitFooter = buildReviewedCommitFooter(owner, repo, commitSha, github.context.serverUrl);
 
@@ -887,8 +896,45 @@ export async function postReview(
   if (invalidComments.length > 0) {
     core.info(`Moved ${invalidComments.length} comments to review body (not postable as threads)`);
   }
-  core.info(`Posting review: ${event} with ${validComments.length} line comments and ${fileComments.length - refusedFileComments.length} file-level comments`);
+  core.info(`Posting review: ${event} with ${validComments.length} line comments and ${fileComments.length} file-level comments`);
 
+  const review = await submitReview(octokit, owner, repo, prNumber, commitSha, result.verdict, body, validComments, reviewedCommitFooter);
+  const refused = await postFileLevelComments(octokit, owner, repo, prNumber, commitSha, fileComments);
+  if (refused.length > 0) {
+    const list = refused.map(f => `- ${formatUnpostedFinding(f)}`).join('\n');
+    try {
+      await octokit.rest.pulls.updateReview({
+        owner,
+        repo,
+        pull_number: prNumber,
+        review_id: review.id,
+        body: appendReviewedCommitFooter(truncateBody(`${review.body}\n\n**Findings (could not post as threads):**\n${list}`), reviewedCommitFooter),
+      });
+    } catch (error) {
+      const titles = refused.map(f => `"${f.title}" (${f.file})`).join(', ');
+      throw new Error(`Could not post blocking findings as threads or in review #${review.id}: ${titles}. ${error instanceof Error ? error.message : error}`);
+    }
+  }
+  return review.id;
+}
+
+/**
+ * Creates the review, falling back to a body-only review when GitHub rejects the line
+ * comments and to COMMENT when it refuses the event with a 422. Returns the review ID
+ * and the posted body without the reviewed-commit footer.
+ */
+async function submitReview(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  commitSha: string,
+  verdict: ReviewVerdict,
+  body: string,
+  validComments: Array<{path: string; line: number; side: 'RIGHT'; body: string}>,
+  reviewedCommitFooter: string,
+): Promise<{ id: number; body: string }> {
+  const event = mapVerdictToEvent(verdict);
   try {
     const { data: review } = await octokit.rest.pulls.createReview({
       owner,
@@ -900,8 +946,8 @@ export async function postReview(
       comments: validComments,
     });
 
-    core.info(`Posted review #${review.id} with verdict ${result.verdict}`);
-    return review.id;
+    core.info(`Posted review #${review.id} with verdict ${verdict}`);
+    return { id: review.id, body: truncateBody(body) };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     const isLineError = errorMessage.includes('pull_request_review_thread.line') ||
@@ -911,10 +957,7 @@ export async function postReview(
     if (isLineError && validComments.length > 0) {
       core.warning('Inline comments rejected by GitHub (invalid lines). Posting review without inline comments.');
       const allAsBody = validComments.map(c => `- ${c.body.split('\n')[0]}`).join('\n');
-      const lineErrFallbackBody = appendReviewedCommitFooter(
-        truncateBody(`${body}\n\n**Inline comments could not be posted:**\n${allAsBody}`),
-        reviewedCommitFooter,
-      );
+      const lineErrFallbackBody = truncateBody(`${body}\n\n**Inline comments could not be posted:**\n${allAsBody}`);
 
       const { data: review } = await octokit.rest.pulls.createReview({
         owner,
@@ -922,12 +965,12 @@ export async function postReview(
         pull_number: prNumber,
         commit_id: commitSha,
         event,
-        body: lineErrFallbackBody,
+        body: appendReviewedCommitFooter(lineErrFallbackBody, reviewedCommitFooter),
         comments: [],
       });
 
       core.info(`Posted review #${review.id} without inline comments (line validation failed)`);
-      return review.id;
+      return { id: review.id, body: lineErrFallbackBody };
     }
 
     // Only a 422 is GitHub refusing this review event (e.g. approving or requesting
@@ -946,10 +989,7 @@ export async function postReview(
       const firstLine = c.body.split('\n')[0];
       return `- ${firstLine} (\`${c.path}:${c.line}\`)`;
     }).join('\n');
-    const fallbackBody = appendReviewedCommitFooter(
-      truncateBody(`${body}\n\n**Findings (could not post inline):**\n${findingSummary}`),
-      reviewedCommitFooter,
-    );
+    const fallbackBody = truncateBody(`${body}\n\n**Findings (could not post inline):**\n${findingSummary}`);
 
     const { data: review } = await octokit.rest.pulls.createReview({
       owner,
@@ -957,12 +997,12 @@ export async function postReview(
       pull_number: prNumber,
       commit_id: commitSha,
       event: 'COMMENT',
-      body: fallbackBody,
+      body: appendReviewedCommitFooter(fallbackBody, reviewedCommitFooter),
       comments: [],
     });
 
-    core.info(`Posted fallback COMMENT review #${review.id} (original verdict: ${result.verdict})`);
-    return review.id;
+    core.info(`Posted fallback COMMENT review #${review.id} (original verdict: ${verdict})`);
+    return { id: review.id, body: fallbackBody };
   }
 }
 

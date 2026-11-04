@@ -3267,13 +3267,18 @@ describe('postReview fallback paths', () => {
       return { verdict: 'REQUEST_CHANGES', summary: 'Summary', findings, highlights: [], reviewComplete: true, agentNames: [] };
     }
 
-    function makeOctokit(createReviewComment: jest.Mock) {
-      const createReview = jest.fn().mockResolvedValue({ data: { id: 7 } });
+    function makeOctokit(
+      createReviewComment: jest.Mock,
+      createReview = jest.fn().mockResolvedValue({ data: { id: 7 } }),
+      updateReview = jest.fn().mockResolvedValue({}),
+    ) {
       const octokit = {
-        rest: { pulls: { createReview, createReviewComment } },
+        rest: { pulls: { createReview, createReviewComment, updateReview } },
       } as unknown as Parameters<typeof postReview>[0];
-      return { octokit, createReview };
+      return { octokit, createReview, updateReview };
     }
+
+    const offLineBlocker: Finding = { severity: 'blocker', title: 'Refused thread', file: 'src/a.ts', line: 40, description: 'Desc.', reviewers: [] };
 
     it('posts blockers outside the hunks as file-level comments with the finding marker', async () => {
       const createReviewComment = jest.fn().mockResolvedValue({ data: { id: 1 } });
@@ -3301,19 +3306,59 @@ describe('postReview fallback paths', () => {
       expect(review.body).not.toContain('Findings (not on changed lines)');
     });
 
-    it('moves a file-level comment GitHub refuses into the review body', async () => {
-      const createReviewComment = jest.fn().mockRejectedValue(Object.assign(new Error('Validation Failed'), { status: 422 }));
-      const { octokit, createReview } = makeOctokit(createReviewComment);
+    it('posts no file-level comment when creating the review fails', async () => {
+      const createReviewComment = jest.fn();
+      const createReview = jest.fn().mockRejectedValue(Object.assign(new Error('Bad Gateway'), { status: 502 }));
+      const { octokit } = makeOctokit(createReviewComment, createReview);
 
-      await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([
-        { severity: 'blocker', title: 'Refused thread', file: 'src/a.ts', line: 40, description: 'Desc.', reviewers: [] },
-      ]), diff);
+      await expect(postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([offLineBlocker]), diff)).rejects.toThrow('Bad Gateway');
+      expect(createReviewComment).not.toHaveBeenCalled();
+    });
+
+    it('skips a file-level comment that an open thread with the same marker already carries', async () => {
+      const createReviewComment = jest.fn().mockResolvedValue({ data: { id: 1 } });
+      const { octokit } = makeOctokit(createReviewComment);
+      const thread = { title: 'Refused thread', file: 'src/a.ts', line: 0, severity: 'blocker' as const, markerSlug: 'Refused-thread', threadId: 'T1' };
+      const second: Finding = { ...offLineBlocker, title: 'Second issue' };
+
+      await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([offLineBlocker, second]), diff, undefined, undefined, undefined, {
+        existingThreads: [
+          { ...thread, status: 'open' },
+          { ...thread, title: 'Second issue', markerSlug: 'Second-issue', status: 'resolved' },
+        ],
+      });
+
+      expect(createReviewComment).toHaveBeenCalledTimes(1);
+      expect(createReviewComment.mock.calls[0][0].body).toContain('<!-- manki:blocker:Second-issue -->');
+    });
+
+    it.each([
+      ['a 422', 422],
+      ['a 5xx', 502],
+    ])('adds a file-level comment GitHub refuses with %s to the posted review body', async (_label, status) => {
+      const createReviewComment = jest.fn().mockRejectedValue(Object.assign(new Error('refused'), { status }));
+      const { octokit, createReview, updateReview } = makeOctokit(createReviewComment);
+
+      await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([offLineBlocker]), diff);
 
       const review = createReview.mock.calls[0][0];
       expect(review.event).toBe('REQUEST_CHANGES');
       expect(review.comments).toEqual([]);
-      expect(review.body).toContain('Findings (not on changed lines)');
-      expect(review.body).toContain('Refused thread** (`src/a.ts:40`)');
+      expect(updateReview).toHaveBeenCalledTimes(1);
+      const update = updateReview.mock.calls[0][0];
+      expect(update.review_id).toBe(7);
+      expect(update.body.startsWith(review.body.slice(0, review.body.lastIndexOf('\n\nReviewed commit')))).toBe(true);
+      expect(update.body).toContain('**Findings (could not post as threads):**\n- **[Blocker] Refused thread** (`src/a.ts:40`)');
+      expect(update.body).toMatch(/Reviewed commit \[`sha`\]\([^)]+\)$/);
+    });
+
+    it('fails the run naming the finding when the refused comment cannot be added to the review either', async () => {
+      const createReviewComment = jest.fn().mockRejectedValue(Object.assign(new Error('refused'), { status: 422 }));
+      const updateReview = jest.fn().mockRejectedValue(new Error('update down'));
+      const { octokit } = makeOctokit(createReviewComment, undefined, updateReview);
+
+      await expect(postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([offLineBlocker]), diff))
+        .rejects.toThrow('"Refused thread" (src/a.ts)');
     });
   });
 });
@@ -3377,7 +3422,7 @@ describe('postReview non-blocking findings', () => {
       { severity: 'suggestion', title: 'On old code', file: 'src/a.ts', line: 3, description: 'Desc.', reviewers: [] },
       { severity: 'nitpick', title: 'Untouched file', file: 'src/b.ts', line: 3, description: 'Desc.', reviewers: [] },
       { severity: 'blocker', title: 'Old blocker', file: 'src/a.ts', line: 3, description: 'Desc.', reviewers: [] },
-    ]), diff, undefined, undefined, undefined, interRoundDiff);
+    ]), diff, undefined, undefined, undefined, { interRoundDiff });
 
     const review = createReview.mock.calls[0][0];
     expect(review.body).toContain('<summary>Suggestions and nitpicks (1)</summary>');

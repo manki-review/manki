@@ -1,4 +1,4 @@
-import { migrateLegacyPrType, migrateLegacySeverity, RoundContext, roundContextToFlatAliases } from './types';
+import { isBlockingSeverity, migrateLegacyPrType, migrateLegacySeverity, RoundContext, roundContextToFlatAliases } from './types';
 
 describe('migrateLegacySeverity', () => {
   it('maps `required` to `blocker`', () => {
@@ -22,6 +22,18 @@ describe('migrateLegacySeverity', () => {
 
   it('passes through the empty string unchanged', () => {
     expect(migrateLegacySeverity('')).toBe('');
+  });
+});
+
+describe('isBlockingSeverity', () => {
+  it.each([
+    ['blocker', true],
+    ['warning', true],
+    ['suggestion', false],
+    ['nitpick', false],
+    ['ignore', false],
+  ] as const)('treats `%s` as blocking: %s', (severity, blocking) => {
+    expect(isBlockingSeverity(severity)).toBe(blocking);
   });
 });
 
