@@ -6,14 +6,14 @@ See `README.md` for what manki does and `SETUP.md` for installing it in a repo. 
 
 ## Pipeline order
 
-Manki's review pipeline runs in this order:
+The review stages are listed in this order: **planner, reviewer, judge, dedup**. Per-stage config keys (`models.{planner,reviewer,judge,dedup}`), logs and docs follow it, so keep new per-stage items in the same order.
 
-1. **Planner** — picks team size and effort levels (pre-review)
-2. **Reviewer** — parallel specialist agents produce findings
-3. **Judge** — evaluates, filters, and classifies findings by severity
-4. **Dedup** — filters findings that match previously-dismissed ones (post-judge)
+At run time, `runReview` in `src/review.ts` calls dedup before the judge:
 
-When listing per-stage items anywhere — code, docs, logs, config keys — **use this order**. Config key order should mirror the pipeline mental model.
+1. **Planner** picks team size, agents and effort levels.
+2. **Reviewer** agents run in parallel and produce findings.
+3. **Dedup** drops findings matching memory suppressions or resolved findings from earlier rounds, first statically, then with the `dedup` model.
+4. **Judge** evaluates the rest, merges same-round duplicates and classifies them by severity. `determineVerdict` then picks the verdict.
 
 ## Commit messages
 
@@ -39,15 +39,16 @@ When listing per-stage items anywhere — code, docs, logs, config keys — **us
 
 ## Architecture quick reference
 
-- `src/claude.ts` — the **single LLM integration point** (`ClaudeClient.sendMessage`). All model calls go through here.
-- `src/config.ts` — config schema, defaults, validation (`DEFAULT_CONFIG`, `KNOWN_KEYS`, `validateConfig`).
-- `src/review.ts` — team selection (`selectTeam`), planner, parallel reviewer loop.
-- `src/judge.ts` — judge agent (filters + classifies findings by severity).
-- `src/recap.ts` — dedup (static + LLM) against previously-dismissed findings.
-- `src/index.ts` — top-level orchestration and GitHub API I/O.
-- `action.yml` — action inputs/outputs.
+- `src/providers/` holds the LLM integration. Every model call goes through the `LLMClient` interface (`types.ts`), built per stage by `createLLMClient` (`factory.ts`). `anthropic.ts`, `openai.ts` and `gemini.ts` implement it over each provider's SDK or CLI.
+- `src/config.ts`: config schema, defaults, validation (`DEFAULT_CONFIG`, `KNOWN_KEYS`, `validateConfig`).
+- `src/review.ts`: planner (`runPlanner`), team selection (`selectTeam`), parallel reviewer loop, dedup and judge calls, verdict (`runReview`, `determineVerdict`).
+- `src/judge.ts`: judge agent (`runJudgeAgent`).
+- `src/recap.ts`: prior-round state from review threads, and dedup (static and LLM) against earlier findings.
+- `src/github.ts`: GitHub API helpers (diffs, progress comments, posting reviews).
+- `src/index.ts`: top-level orchestration per GitHub event.
+- `action.yml`: action inputs/outputs.
 
-Per-stage models are configured via `config.models.{planner,reviewer,judge,dedup}` (see pipeline order). The reviewer `effort` parameter maps to provider-specific thinking budgets inside `ClaudeClient.sendMessage`.
+The `effort` level maps to provider-specific thinking or reasoning settings inside each client's `sendMessage`.
 
 ## Where to look
 
