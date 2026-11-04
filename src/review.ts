@@ -74,14 +74,22 @@ export function selectTeam(
   let teamSize: number;
   let level: 'small' | 'medium' | 'large';
 
+  const pool = buildAgentPool(customReviewers);
+  const securityAgent = pool.find(a => a.name === 'Security & Safety');
+  const sensitive = hasSensitivePaths(diff);
+
   if (teamSizeOverride === 1) {
     if (customReviewers && customReviewers.length > 0) {
       core.info(`teamSize=1: skipping custom reviewers [${customReviewers.map(r => r.name).join(', ')}]`);
     }
+    // The verifier never runs alone on a sensitive path, for the same reason
+    // as the security backstop below.
+    if (securityAgent && sensitive) {
+      if (!silent) core.info('Security & Safety force-added next to the Trivial Change Verifier: diff touches security-sensitive paths');
+      return { level: 'small', agents: [TRIVIAL_VERIFIER_AGENT, securityAgent], lineCount, coreAgentInjections: [securityAgent.name] };
+    }
     return { level: 'trivial', agents: [TRIVIAL_VERIFIER_AGENT], lineCount };
   }
-
-  const pool = buildAgentPool(customReviewers);
 
   // Planner-driven agent selection: resolve each picked name from the pool
   if (agentPicks && agentPicks.length > 0 && teamSizeOverride) {
@@ -103,8 +111,7 @@ export function selectTeam(
       // bypassed by injected instructions. It takes the place of the planner's
       // last pick so the team keeps the size the planner chose.
       const coreAgentInjections: string[] = [];
-      const securityAgent = pool.find(a => a.name === 'Security & Safety');
-      if (securityAgent && !resolved.some(a => a.name === securityAgent.name) && hasSensitivePaths(diff)) {
+      if (securityAgent && !resolved.some(a => a.name === securityAgent.name) && sensitive) {
         const replaced = resolved.length >= teamSizeOverride ? resolved.pop() : undefined;
         if (!silent) {
           const detail = replaced ? `, replacing "${replaced.name}"` : '';

@@ -3040,6 +3040,36 @@ describe('runReview', () => {
     }
   });
 
+  it('adds Security & Safety to the trivial verifier when a deletion-heavy teamSize=1 diff touches a sensitive path', async () => {
+    const plannerResponse = JSON.stringify({
+      teamSize: 1,
+      reviewerEffort: 'low',
+      judgeEffort: 'low',
+      prType: 'refactor',
+      agents: [{ name: 'Correctness & Logic', effort: 'low' }],
+    });
+    const reviewerSendMessage = jest.fn().mockResolvedValue({ content: '[]' });
+    const clients: ReviewClients = {
+      reviewer: { sendMessage: reviewerSendMessage } as unknown as import('./providers').LLMClient,
+      judge: { sendMessage: jest.fn() } as unknown as import('./providers').LLMClient,
+      planner: {
+        sendMessage: jest.fn().mockResolvedValue({ content: plannerResponse }),
+      } as unknown as import('./providers').LLMClient,
+    };
+    const diff = makeDiff({
+      totalAdditions: 62,
+      totalDeletions: 842,
+      files: [{ path: 'src/auth/session.ts', changeType: 'modified', hunks: [] }],
+    });
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
+
+    const result = await runReview(clients, makeConfig({ review_level: 'auto' }), diff, 'raw diff', 'repo context');
+
+    expect(result.agentNames).toEqual(['Trivial Change Verifier', 'Security & Safety']);
+    expect(result.coreAgentInjections).toEqual(['Security & Safety']);
+    expect(reviewerSendMessage).toHaveBeenCalledTimes(2);
+  });
+
   it('passes planner judgeEffort to the judge agent', async () => {
     const plannerResponse = JSON.stringify({
       teamSize: 3,
