@@ -88,13 +88,20 @@ jest.mock('./config', () => {
   };
 });
 
-jest.mock('./diff', () => ({
-  parsePRDiff: jest.fn().mockReturnValue({ files: [], totalAdditions: 0, totalDeletions: 0 }),
-  filterFiles: jest.fn().mockReturnValue([]),
-  filterFilesWithAttribution: jest.fn().mockReturnValue({ included: [], excluded: [] }),
-  isDiffTooLarge: jest.fn().mockReturnValue(false),
-  countDiffLines: jest.fn().mockReturnValue(0),
-}));
+jest.mock('./diff', () => {
+  const filterFilesWithAttribution = jest.fn().mockReturnValue({ included: [], excluded: [] });
+  return {
+    parsePRDiff: jest.fn().mockReturnValue({ files: [], totalAdditions: 0, totalDeletions: 0 }),
+    filterFilesWithAttribution,
+    filterDiff: jest.fn((diff: ParsedDiff, excludePaths: string[]) => {
+      const { included, excluded } = filterFilesWithAttribution(diff.files, excludePaths);
+      return { diff: { ...diff, files: included }, excluded };
+    }),
+    filterRawDiff: jest.fn((rawDiff: string) => rawDiff),
+    isDiffTooLarge: jest.fn().mockReturnValue(false),
+    rebuildRawDiff: jest.requireActual('./diff').rebuildRawDiff,
+  };
+});
 
 jest.mock('./interaction', () => ({
   handleReviewCommentReply: jest.fn().mockResolvedValue(undefined),
@@ -222,7 +229,7 @@ jest.mock('./state', () => ({
 
 import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, main, _resetOctokitCache, detectTickedMarker, _buildRoundRecap } from './index';
 import { FORCE_REVIEW_MARKER, FORCE_CAP_MARKER } from './github';
-import type { ReviewConfig } from './types';
+import type { ParsedDiff, ReviewConfig } from './types';
 import { createLLMClient, parseModelSpec } from './providers';
 import * as interaction from './interaction';
 import * as ghUtils from './github';
@@ -1709,6 +1716,7 @@ describe('runFullReview orchestration', () => {
   const RUN_REVIEW_PRIOR_ROUNDS_ARG = 13;
   const RUN_REVIEW_LINKED_ISSUES_ARG = 8;
   const RUN_REVIEW_INTER_ROUND_DIFF_ARG = 15;
+  const RUN_REVIEW_RAW_DIFF_ARG = 3;
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -4983,7 +4991,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     jest.mocked(configModule.loadConfig).mockReturnValue({
-      auto_review: true, auto_approve: false, exclude_paths: [], max_diff_lines: 10000,
+      auto_review: true, auto_approve: false, exclude_paths: ['dist/**'], max_diff_lines: 10000,
       reviewers: [], instructions: '', review_level: 'auto',
       review_thresholds: { small: 200, medium: 800 },
       memory: { enabled: true, repo: 'owner/memory' },
@@ -5013,7 +5021,13 @@ describe('runFullReview orchestration', () => {
     await callRunFullReview();
 
     expect(jest.mocked(ghUtils.fetchInterRoundDiff)).toHaveBeenCalledTimes(1);
+    expect(jest.mocked(diffModule.filterDiff)).toHaveBeenCalledWith(expect.anything(), ['dist/**']);
+    expect(jest.mocked(diffModule.filterRawDiff)).toHaveBeenCalledWith(
+      'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
+      ['dist/**'],
+    );
     const runReviewArgs = jest.mocked(reviewModule.runReview).mock.calls[0];
+    expect(runReviewArgs[RUN_REVIEW_RAW_DIFF_ARG]).toBe(diffModule.rebuildRawDiff({ files: [testFile], totalAdditions: 10, totalDeletions: 5 }));
     const passedInterRoundDiff = runReviewArgs[RUN_REVIEW_INTER_ROUND_DIFF_ARG];
     expect(passedInterRoundDiff).toBe(
       'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',

@@ -1,12 +1,15 @@
 import {
   parsePRDiff,
-  filterFiles,
+  filterDiff,
   filterFilesWithAttribution,
+  filterRawDiff,
   isLineInDiff,
   findClosestDiffLine,
   isDiffTooLarge,
+  rebuildRawDiff,
 } from './diff';
-import { DiffFile } from './types';
+import { DEFAULT_CONFIG } from './config';
+import { DiffFile, ParsedDiff } from './types';
 
 // -- Test fixtures --
 
@@ -102,6 +105,15 @@ const MULTIPLE_HUNKS_DIFF = [
   ' const z = 30;',
   ' const w = 40;',
 ].join('\n');
+
+const GENERATED_FIRST_DIFF = `diff --git a/dist/index.js.map b/dist/index.js.map
+index 1111111..2222222 100644
+--- a/dist/index.js.map
++++ b/dist/index.js.map
+@@ -1 +1 @@
+-{"version":3}
++{"version":3,"mappings":"${'A'.repeat(200000)}"}
+${MULTI_FILE_DIFF}`;
 
 // -- Tests --
 
@@ -211,7 +223,7 @@ describe('parsePRDiff', () => {
   });
 });
 
-describe('filterFiles', () => {
+describe('filterFilesWithAttribution patterns', () => {
   const files: DiffFile[] = [
     { path: 'src/main.ts', changeType: 'modified', hunks: [] },
     { path: 'src/utils.ts', changeType: 'modified', hunks: [] },
@@ -222,25 +234,25 @@ describe('filterFiles', () => {
   ];
 
   it('returns all files when no exclude patterns specified', () => {
-    const result = filterFiles(files, []);
+    const result = filterFilesWithAttribution(files, []).included;
     expect(result).toHaveLength(6);
   });
 
   it('filters by exclude patterns', () => {
-    const result = filterFiles(files, ['dist/**']);
+    const result = filterFilesWithAttribution(files, ['dist/**']).included;
     expect(result).toHaveLength(5);
     expect(result.map((f) => f.path)).not.toContain('dist/index.js');
   });
 
   it('applies multiple exclude patterns', () => {
-    const result = filterFiles(files, ['tests/**', 'dist/**']);
+    const result = filterFilesWithAttribution(files, ['tests/**', 'dist/**']).included;
     expect(result).toHaveLength(4);
     expect(result.map((f) => f.path)).not.toContain('tests/main.test.ts');
     expect(result.map((f) => f.path)).not.toContain('dist/index.js');
   });
 
   it('supports matchBase for patterns without slashes', () => {
-    const result = filterFiles(files, ['*.json']);
+    const result = filterFilesWithAttribution(files, ['*.json']).included;
     expect(result).toHaveLength(5);
     expect(result.map((f) => f.path)).not.toContain('package.json');
   });
@@ -251,7 +263,7 @@ describe('filterFiles', () => {
       { path: '.gitignore', changeType: 'modified', hunks: [] },
       { path: 'src/main.ts', changeType: 'modified', hunks: [] },
     ];
-    const result = filterFiles(dotfiles, ['.*']);
+    const result = filterFilesWithAttribution(dotfiles, ['.*']).included;
     expect(result.map((f) => f.path)).toEqual(['src/main.ts']);
   });
 
@@ -262,7 +274,7 @@ describe('filterFiles', () => {
       { path: '.gitignore', changeType: 'modified', hunks: [] },
       { path: 'src/main.ts', changeType: 'modified', hunks: [] },
     ];
-    const result = filterFiles(dotfiles, []);
+    const result = filterFilesWithAttribution(dotfiles, []).included;
     expect(result).toHaveLength(4);
     expect(result.map((f) => f.path)).toContain('.manki.yml');
     expect(result.map((f) => f.path)).toContain('.github/workflows/ci.yml');
@@ -298,6 +310,74 @@ describe('filterFilesWithAttribution', () => {
     const result = filterFilesWithAttribution(files, ['nothing/**']);
     expect(result.included).toHaveLength(files.length);
     expect(result.excluded).toEqual([]);
+  });
+});
+
+describe('filterDiff', () => {
+  it('drops excluded files and their lines from the totals', () => {
+    const { diff, excluded } = filterDiff(parsePRDiff(GENERATED_FIRST_DIFF), DEFAULT_CONFIG.exclude_paths);
+    expect(diff.files.map(f => f.path)).toEqual(['src/a.ts', 'src/b.ts']);
+    expect(excluded).toEqual([{ path: 'dist/index.js.map', matchedPattern: 'dist/**' }]);
+    expect(diff.totalAdditions).toBe(2);
+    expect(diff.totalDeletions).toBe(0);
+    expect(isDiffTooLarge(diff, 2)).toBe(false);
+  });
+});
+
+describe('filterRawDiff', () => {
+  it('removes excluded files and keeps the hunks of every other file', () => {
+    const result = filterRawDiff(GENERATED_FIRST_DIFF, DEFAULT_CONFIG.exclude_paths);
+    expect(result).not.toContain('dist/index.js.map');
+    expect(result).toContain('diff --git a/src/a.ts b/src/a.ts');
+    expect(result).toContain('+added line');
+    expect(result).toContain('+  return 2;');
+  });
+
+  it('returns an empty string for an empty diff or one with only excluded files', () => {
+    expect(filterRawDiff('', DEFAULT_CONFIG.exclude_paths)).toBe('');
+    expect(filterRawDiff(GENERATED_FIRST_DIFF, ['dist/**', 'src/**'])).toBe('');
+  });
+});
+
+describe('rebuildRawDiff', () => {
+  it('rebuilds a diff string from parsed files', () => {
+    const diff: ParsedDiff = {
+      files: [
+        {
+          path: 'src/foo.ts',
+          changeType: 'modified',
+          hunks: [{ oldStart: 1, oldLines: 3, newStart: 1, newLines: 4, content: '+new line' }],
+        },
+      ],
+      totalAdditions: 1,
+      totalDeletions: 0,
+    };
+    const raw = rebuildRawDiff(diff);
+    expect(raw).toContain('diff --git a/src/foo.ts b/src/foo.ts');
+    expect(raw).toContain('@@ -1,3 +1,4 @@');
+    expect(raw).toContain('+new line');
+  });
+
+  it('handles multiple files in order', () => {
+    const diff: ParsedDiff = {
+      files: [
+        { path: 'a.ts', changeType: 'modified', hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, content: '+a' }] },
+        { path: 'b.ts', changeType: 'modified', hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, content: '+b' }] },
+      ],
+      totalAdditions: 2,
+      totalDeletions: 0,
+    };
+    const raw = rebuildRawDiff(diff);
+    const aIdx = raw.indexOf('a/a.ts');
+    const bIdx = raw.indexOf('a/b.ts');
+    expect(aIdx).toBeLessThan(bIdx);
+  });
+
+  it('keeps the old path and `/dev/null` sides of added, deleted and renamed files', () => {
+    const raw = rebuildRawDiff(parsePRDiff(ADDED_FILE_DIFF + DELETED_FILE_DIFF + RENAMED_FILE_DIFF));
+    expect(raw).toContain('diff --git a/src/new-file.ts b/src/new-file.ts\n--- /dev/null\n+++ b/src/new-file.ts\n');
+    expect(raw).toContain('diff --git a/src/old-file.ts b/src/old-file.ts\n--- a/src/old-file.ts\n+++ /dev/null\n');
+    expect(raw).toContain('diff --git a/src/old-name.ts b/src/new-name.ts\n--- a/src/old-name.ts\n+++ b/src/new-name.ts\n');
   });
 });
 
@@ -418,41 +498,5 @@ describe('isDiffTooLarge', () => {
       totalDeletions: 0,
     };
     expect(isDiffTooLarge(diff, 0)).toBe(true);
-  });
-
-  it('excludes files matching exclude_paths before counting', () => {
-    const diff = {
-      files: [
-        makeFile('dist/index.js', 80000, 0),
-        makeFile('src/main.ts', 50, 0),
-      ],
-      totalAdditions: 80050,
-      totalDeletions: 0,
-    };
-    expect(isDiffTooLarge(diff, 5000, ['dist/**'])).toBe(false);
-  });
-
-  it('triggers when included files alone exceed the limit', () => {
-    const diff = {
-      files: [
-        makeFile('dist/index.js', 80000, 0),
-        makeFile('src/main.ts', 6000, 0),
-      ],
-      totalAdditions: 86000,
-      totalDeletions: 0,
-    };
-    expect(isDiffTooLarge(diff, 5000, ['dist/**'])).toBe(true);
-  });
-
-  it('counts every file when no exclude pattern matches', () => {
-    const diff = {
-      files: [
-        makeFile('build/output.js', 80000, 0),
-        makeFile('src/main.ts', 50, 0),
-      ],
-      totalAdditions: 80050,
-      totalDeletions: 0,
-    };
-    expect(isDiffTooLarge(diff, 5000, ['dist/**'])).toBe(true);
   });
 });

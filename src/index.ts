@@ -9,7 +9,7 @@ import { loadConfig, loadConfigFromFile, sanitizeForkConfig, resolveAgentModel, 
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
-import { parsePRDiff, filterFiles, filterFilesWithAttribution, isDiffTooLarge, countDiffLines } from './diff';
+import { parsePRDiff, filterDiff, filterRawDiff, isDiffTooLarge, rebuildRawDiff } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff, MAX_INTER_ROUND_DIFF_CHARS } from './judge';
 import { loadMemory, applyEscalations, updatePattern, RepoMemory } from './memory';
@@ -586,8 +586,10 @@ async function runFullReview(
       return;
     }
 
-    const rawDiff = await fetchPRDiff(octokit, owner, repo, prNumber);
-    const diff = parsePRDiff(rawDiff);
+    const fullDiff = parsePRDiff(await fetchPRDiff(octokit, owner, repo, prNumber));
+    const { diff, excluded: excludedFiles } = filterDiff(fullDiff, config.exclude_paths);
+    const filteredFiles = diff.files;
+    const rawDiff = rebuildRawDiff(diff);
     const parseEndTime = Date.now();
     const plannerEnabled = !!plannerClient && config.review_level === 'auto';
     const team = selectTeam(diff, config, config.reviewers);
@@ -610,12 +612,11 @@ async function runFullReview(
         };
     await updateProgressDashboard(octokit, owner, repo, progressCommentId, dashboard);
 
-    if (isDiffTooLarge(diff, config.max_diff_lines, config.exclude_paths)) {
-      const reviewableLines = countDiffLines(filterFiles(diff.files, config.exclude_paths));
-      core.warning(`Diff too large (${reviewableLines} reviewable lines > ${config.max_diff_lines} max)`);
+    if (isDiffTooLarge(diff, config.max_diff_lines)) {
+      core.warning(`Diff too large (${lineCount} reviewable lines > ${config.max_diff_lines} max)`);
       const result = {
         verdict: 'COMMENT' as const,
-        summary: `**Manki** — This PR is too large for automated review (${reviewableLines} lines). Consider splitting it up or request a manual review.`,
+        summary: `**Manki** — This PR is too large for automated review (${lineCount} lines). Consider splitting it up or request a manual review.`,
         findings: [],
         highlights: [],
         reviewComplete: true,
@@ -632,8 +633,7 @@ async function runFullReview(
       return;
     }
 
-    const { included: filteredFiles, excluded: excludedFiles } = filterFilesWithAttribution(diff.files, config.exclude_paths);
-    core.info(`Reviewing ${filteredFiles.length} files (${diff.files.length} total, ${diff.files.length - filteredFiles.length} filtered out)`);
+    core.info(`Reviewing ${filteredFiles.length} files (${fullDiff.files.length} total, ${excludedFiles.length} filtered out)`);
 
     if (filteredFiles.length === 0) {
       core.info('No reviewable files in diff');
@@ -799,6 +799,7 @@ async function runFullReview(
     let linkedIssues;
     const diffPromise: Promise<string | undefined> = shouldFetchDiff && lastPriorSha
       ? fetchInterRoundDiff(octokit, owner, repo, lastPriorSha, commitSha)
+        .then(raw => filterRawDiff(raw, config.exclude_paths))
       : Promise.resolve(undefined);
     const linkedIssuesPromise = prBody
       ? fetchLinkedIssues(octokit, owner, repo, prBody)
