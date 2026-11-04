@@ -3,7 +3,7 @@ import { createRequire } from 'module';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { AgentProgressEntry, DashboardData, FOLLOW_UP_TAG, Finding, FindingFingerprintEntry, FindingSeverity, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, VALID_PR_TYPES, VerdictReason, VerdictTrace, VerdictTraceEntry, isBlockingSeverity } from './types';
+import { AgentProgressEntry, DashboardData, FOLLOW_UP_TAG, Finding, FindingFingerprintEntry, FindingSeverity, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, VALID_PR_TYPES, VerdictReason, VerdictTrace, VerdictTraceEntry, SECURITY_TAG, isBlockingSeverity } from './types';
 import { isLineInDiff } from './diff';
 import { findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
@@ -700,8 +700,13 @@ const MAX_NON_BLOCKING_INLINE = 5;
 /** Marks a thread for a warning that no longer blocks, so auto-approve skips it. */
 const FOLLOW_UP_MARKER = '<!-- manki-follow-up -->';
 
+/** Whether a warning was deferred as a follow-up. A security finding never is, whatever its tags say. */
+function isFollowUp(finding: Finding): boolean {
+  return !!finding.tags?.includes(FOLLOW_UP_TAG) && !finding.tags.includes(SECURITY_TAG);
+}
+
 function isBlockingFinding(finding: Finding): boolean {
-  return isBlockingSeverity(finding.severity) && !finding.tags?.includes(FOLLOW_UP_TAG);
+  return isBlockingSeverity(finding.severity) && !isFollowUp(finding);
 }
 
 function isOnChangedLine(finding: Finding, diff: ParsedDiff): boolean {
@@ -854,7 +859,7 @@ export async function postReview(
 
   for (const f of result.findings) {
     if (!isBlockingFinding(f)) {
-      if (!f.tags?.includes(FOLLOW_UP_TAG) && interRoundDiff && isOnUnchangedCode(f, interRoundDiff)) {
+      if (!isFollowUp(f) && interRoundDiff && isOnUnchangedCode(f, interRoundDiff)) {
         unpostedCount++;
       } else if (hasOpenThread(f, existingThreads)) {
         core.info(`Skipping "${f.title}" on ${f.file}: an open thread already carries it`);
@@ -1338,7 +1343,7 @@ function formatFindingComment(finding: Finding): string {
     ...(finding.originalSeverity && { originalSeverity: finding.originalSeverity }),
   };
   comment += `\n\n<!-- manki:${finding.severity}:${titleToSlug(finding.title)} -->`;
-  if (finding.tags?.includes(FOLLOW_UP_TAG)) comment += `\n${FOLLOW_UP_MARKER}`;
+  if (isFollowUp(finding)) comment += `\n${FOLLOW_UP_MARKER}`;
   comment += `\n<!-- manki-finding: ${sanitizeHtmlCommentJson(JSON.stringify(data))} -->`;
 
   return comment;

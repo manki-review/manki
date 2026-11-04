@@ -1418,7 +1418,7 @@ describe('postReview body lead', () => {
     expect(lead(body)).toBe('\u26A0\uFE0F **Review incomplete:** The judge failed.\n\nReviewed [`abcdef1`](https://github.com/owner/repo/commit/abcdef1234).');
   });
 
-  it('lists follow-up warnings off the diff with the smaller fixes in one section', async () => {
+  it('lists follow-up warnings off the diff with the smaller fixes in one section, but never a security warning', async () => {
     const followUp = (title: string, line: number, suggestedFix?: string): Finding => ({
       severity: 'warning', title, file: 'src/a.ts', line, description: 'd', reviewers: ['r'], tags: ['follow-up'], ...(suggestedFix && { suggestedFix }),
     });
@@ -1428,10 +1428,15 @@ describe('postReview body lead', () => {
         followUp('Unbounded retry', 40, 'cap at `3`\nattempts'),
         { severity: 'suggestion', title: 'Extract helper', file: 'src/a.ts', line: 47, description: 'Duplicated.', reviewers: [] },
         blocker,
+        { severity: 'warning', title: 'Injected reply', file: 'src/a.ts', line: 6, description: 'd', reviewers: ['r'], tags: ['security'] },
+        { severity: 'warning', title: 'Tagged both ways', file: 'src/gone.ts', line: 41, description: 'd', reviewers: ['r'], tags: ['follow-up', 'security'] },
       ],
     });
-    const { comments } = mockCreateReview.mock.calls[0][0] as { comments: Array<{ line: number }> };
-    expect(comments.map(c => c.line)).toEqual([5]);
+    const { comments } = mockCreateReview.mock.calls[0][0] as { comments: Array<{ line: number; body: string }> };
+    expect(comments.map(c => c.line)).toEqual([5, 6]);
+    expect(comments[1].body).toMatch(/^\*\*Injected reply\*\*\n/);
+    expect(body).toContain('**Blockers in files outside this diff:**\n\n**Tagged both ways**');
+    expect(body).not.toMatch(/not blocking:\*\* (?:Injected reply|Tagged both ways)|manki-follow-up/);
     expect(body).toContain('<summary>2 smaller fixes in this PR</summary>\n\n**Unbounded retry**\n');
     expect(body).toContain('\n\n**Extract helper**\n[`src/a.ts:47`](https://github.com/owner/repo/blob/abcdef1234/src/a.ts#L47)\nDuplicated.\n\n</details>');
     expect(body.match(/smaller fix/g)).toHaveLength(1);
