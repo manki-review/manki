@@ -217,6 +217,7 @@ jest.mock('./github', () => {
 
 jest.mock('./state', () => ({
   checkAndAutoApprove: jest.fn().mockResolvedValue(false),
+  resolveReviewThread: jest.requireActual('./state').resolveReviewThread,
 }));
 
 jest.mock('./fix-rate', () => ({
@@ -1197,7 +1198,7 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
       expect.anything(), 'test-owner', 'test-repo', 1, 'abc1234567890',
     );
     const skipCall = mockOctokitInstance.rest.issues.createComment.mock.calls.find(
-      (c: [{ body: string }]) => c[0].body.includes('already been posted for this commit'),
+      (c: [{ body: string }]) => c[0].body.includes('this commit already has a review'),
     );
     expect(skipCall).toBeDefined();
     expect(skipCall[0].body).toContain('`abc1234`');
@@ -1216,7 +1217,7 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
     await handleCommentTrigger();
 
     const skipCall = mockOctokitInstance.rest.issues.createComment.mock.calls.find(
-      (c: [{ body: string }]) => c[0].body.includes('already been posted for this commit'),
+      (c: [{ body: string }]) => c[0].body.includes('this commit already has a review'),
     );
     expect(skipCall).toBeDefined();
     expect(skipCall[0].body).toContain('`def4567`');
@@ -1264,7 +1265,7 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
 
     expect(jest.mocked(ghUtils.hasBotReviewOnCommit)).toHaveBeenCalled();
     const skipCalls = mockOctokitInstance.rest.issues.createComment.mock.calls.filter(
-      (c: [{ body: string }]) => c[0].body.includes('already been posted for this commit'),
+      (c: [{ body: string }]) => c[0].body.includes('this commit already has a review'),
     );
     expect(skipCalls).toHaveLength(0);
   });
@@ -1277,7 +1278,7 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
 
     const skipBody = mockOctokitInstance.rest.issues.createComment.mock.calls
       .map((c: [{ body: string }]) => c[0].body)
-      .find((body: string) => body.includes('currently in progress'));
+      .find((body: string) => body.includes('already in progress'));
     expect(skipBody).toBeDefined();
     expect(skipBody).toContain('`abc1234`');
   });
@@ -1291,9 +1292,9 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
     const skipBody = mockOctokitInstance.rest.issues.createComment.mock.calls
       .map((c: [{ body: string }]) => c[0].body)
       .find((body: string) => body.includes('Review skipped'));
-    expect(skipBody).toContain('already been posted for this commit');
+    expect(skipBody).toContain('this commit already has a review');
     expect(skipBody).toContain('`abc1234`');
-    expect(skipBody).not.toContain('currently in progress');
+    expect(skipBody).not.toContain('already in progress');
   });
 });
 
@@ -1907,7 +1908,7 @@ describe('runFullReview orchestration', () => {
       expect.anything(), 'test-owner', 'test-repo', 42, 'abc123',
       expect.objectContaining({
         verdict: 'COMMENT',
-        summary: expect.stringContaining('too large for automated review'),
+        summary: expect.stringContaining('Too large to review automatically'),
       }),
       expect.anything(),
     );
@@ -6655,7 +6656,7 @@ describe('runFullReview concurrent-submission lock', () => {
     const warnings = jest.mocked(core.warning).mock.calls.map(c => String(c[0]));
     expect(warnings.some(w => w.includes('already posted a non-DISMISSED review'))).toBe(true);
     const skipCall = mockOctokitInstance.rest.issues.createComment.mock.calls.find(
-      (c: [{ body: string }]) => c[0].body.includes('already been posted for this commit'),
+      (c: [{ body: string }]) => c[0].body.includes('this commit already has a review'),
     );
     expect(skipCall).toBeDefined();
     expect(skipCall[0].body).toContain('`abc123`');

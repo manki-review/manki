@@ -24,6 +24,7 @@ import { AnthropicClient } from './providers/anthropic';
 import { RepoMemory, Learning, Suppression } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
 import { truncateDiff } from './review';
+import { WRITING_RULES } from './writing-rules';
 import { Finding, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, ReviewConfig, RoundContext, ParsedDiff, DiffFile, DiffHunk, ThreadEvaluation } from './types';
 import { LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy } from './test-utils';
 
@@ -245,26 +246,28 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('Follow-Up Review');
     expect(prompt).toContain('previous review state is in the user message');
     expect(prompt).not.toContain('repository context');
-    expect(prompt).toContain('brief progress update');
+    expect(prompt).toContain('where the change stands now');
     expect(prompt).toContain('Never start with "The author"');
-    expect(prompt).not.toContain('Write a review summary');
+    expect(prompt).not.toContain('the most important problem');
   });
 
   it('uses standard summary instruction when isFollowUp is false', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5, false);
-    expect(prompt).toContain('Write a review summary');
+    expect(prompt).toContain('the most important problem');
     expect(prompt).toContain('Never start with "The author"');
     expect(prompt).toContain('Good examples:');
     expect(prompt).toContain('Bad examples (do NOT write like this)');
     expect(prompt).not.toContain('Follow-Up Review');
   });
 
-  it.each([false, true])('gives summary examples without praise or em-dashes (isFollowUp=%s)', (isFollowUp) => {
+  it.each([false, true])('gives summary examples without praise or dash separators (isFollowUp=%s)', (isFollowUp) => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5, isFollowUp);
     const instructions = prompt.slice(prompt.indexOf('## Summary Instructions'), prompt.indexOf('## Output Format'));
     const good = instructions.slice(instructions.indexOf('Good examples:'), instructions.indexOf('Bad examples'));
     expect(instructions).toMatch(/do not praise the change/i);
-    expect(instructions).not.toContain('\u2014');
+    expect(instructions).toContain(WRITING_RULES);
+    expect(prompt).not.toMatch(/[\u2014\u2013]| -- /);
+    expect(good).not.toMatch(/;|\p{Extended_Pictographic}/u);
     expect(good).not.toMatch(/\b(clean|solid|nice|great)\b/i);
   });
 

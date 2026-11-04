@@ -46,7 +46,7 @@ import {
   checkConcurrentSubmissionLock,
   postConfigErrorComment,
 } from './github';
-import { checkAndAutoApprove } from './state';
+import { checkAndAutoApprove, resolveReviewThread } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -280,8 +280,8 @@ async function postReviewSkippedComment(
   try {
     const shortSha = commitSha.slice(0, 7);
     const line = reason === 'in_progress'
-      ? `**Review skipped** for \`${shortSha}\` — a review is currently in progress. Retry when it completes, or force now:`
-      : `**Review skipped** for \`${shortSha}\` — a review has already been posted for this commit. Force a re-review:`;
+      ? `**Review skipped** for \`${shortSha}\`: a review is already in progress. Retry when it completes, or force one now:`
+      : `**Review skipped** for \`${shortSha}\`: this commit already has a review. Force a new one:`;
     const body = [
       PROGRESS_MARKER,
       line,
@@ -408,7 +408,7 @@ async function handleCommentTrigger(forceReview?: boolean, skipCap?: boolean, by
     core.info(`Ignoring review request from ${senderLogin} (${authorAssociation ?? 'unknown association'})`);
     await octokit.rest.issues.createComment({
       owner, repo, issue_number: prNumber,
-      body: `${PROGRESS_MARKER}\n**Manki** — Only repo contributors can trigger reviews.`,
+      body: `${PROGRESS_MARKER}\nOnly repo contributors can trigger reviews.`,
     });
     return;
   }
@@ -668,7 +668,7 @@ async function runFullReview(
       core.warning(`Diff too large (${lineCount} reviewable lines > ${config.max_diff_lines} max)`);
       const result = {
         verdict: 'COMMENT' as const,
-        summary: `**Manki** — This PR is too large for automated review (${lineCount} lines). Consider splitting it up or request a manual review.`,
+        summary: `Too large to review automatically: ${lineCount} changed lines, above the limit of ${config.max_diff_lines}.`,
         findings: [],
         highlights: [],
         reviewComplete: true,
@@ -1304,7 +1304,7 @@ async function runFullReview(
           continue;
         }
         try {
-          await octokit.graphql(`mutation($threadId: ID!) { resolveReviewThread(input: { threadId: $threadId }) { thread { isResolved } } }`, { threadId });
+          await resolveReviewThread(octokit, threadId);
           core.info(`Judge resolved: "${reason}" — thread ${threadId}`);
         } catch (error) {
           core.debug(`Failed to resolve thread ${threadId}: ${error}`);

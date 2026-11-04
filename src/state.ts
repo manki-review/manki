@@ -16,6 +16,8 @@ function staleApproveMarker(headSha: string): string {
 
 interface ReviewThread {
   id: string;
+  /** REST ID of the thread's first comment, which replies point at through `in_reply_to_id`. */
+  rootCommentId?: number;
   isResolved: boolean;
   isBlocking: boolean;
   findingTitle: string;
@@ -36,6 +38,7 @@ async function fetchBotReviewThreads(
     isResolved: boolean;
     comments: {
       nodes: Array<{
+        databaseId?: number | null;
         body: string;
         author: { login: string } | null;
       }>;
@@ -45,6 +48,7 @@ async function fetchBotReviewThreads(
     isResolved
     comments(first: 1) {
       nodes {
+        databaseId
         body
         author {
           login
@@ -69,13 +73,19 @@ async function fetchBotReviewThreads(
       const titleMatch = body.match(/<!-- manki:\w+:(.+?) -->/);
       const findingTitle = titleMatch?.[1]?.replace(/-/g, ' ') ?? 'Unknown';
 
+      const rootCommentId = thread.comments.nodes[0]?.databaseId;
       return {
         id: thread.id,
+        ...(rootCommentId != null && { rootCommentId }),
         isResolved: thread.isResolved,
         isBlocking,
         findingTitle,
       };
     });
+}
+
+async function resolveReviewThread(octokit: Octokit, threadId: string): Promise<void> {
+  await octokit.graphql('mutation($threadId: ID!) { resolveReviewThread(input: { threadId: $threadId }) { thread { isResolved } } }', { threadId });
 }
 
 /**
@@ -248,4 +258,4 @@ async function checkAndAutoApprove(
   return true;
 }
 
-export { ReviewThread, areAllFindingsResolved, checkAndAutoApprove, fetchBotReviewThreads, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
+export { ReviewThread, areAllFindingsResolved, checkAndAutoApprove, fetchBotReviewThreads, resolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
