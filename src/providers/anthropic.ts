@@ -81,6 +81,9 @@ export function resetCLIInstallPromise(): void {
 const OAUTH_ERROR_HINT =
   'Check the claude_code_oauth_token secret (create a new token with `claude setup-token`) or use anthropic_api_key instead.';
 
+// Error texts that point at the credential rather than at the request, such as a revoked token or an organization that disabled subscription access.
+const AUTH_ERROR_PATTERN = /\b(authenticat\w*|log ?in|credentials?|token|subscription|organization|unauthori[sz]ed|forbidden|401|403)\b/i;
+
 function readResultError(resultEvent: unknown): string | null {
   if (!resultEvent || typeof resultEvent !== 'object') return null;
   const event = resultEvent as { is_error?: unknown; result?: unknown };
@@ -329,7 +332,8 @@ export class AnthropicClient implements LLMClient {
             resultEvent: lastResultEvent,
           });
           const cliError = readResultError(lastResultEvent);
-          const lead = cliError ? `Claude CLI error: ${sanitizeLogOutput(cliError)}. ${OAUTH_ERROR_HINT} ` : '';
+          const hint = cliError && AUTH_ERROR_PATTERN.test(cliError) ? ` ${OAUTH_ERROR_HINT}` : '';
+          const lead = cliError ? `Claude CLI error: ${sanitizeLogOutput(cliError)}.${hint} ` : '';
           core.warning(`${lead}Claude CLI failed (${msg})`);
           reject(new Error(`${lead}Claude CLI invocation failed (${msg})`));
           return;

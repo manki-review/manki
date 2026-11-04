@@ -293,6 +293,23 @@ describe('sendViaOAuth — error paths', () => {
     warnSpy.mockRestore();
   });
 
+  it('leads with a non-auth CLI error without the token hint', async () => {
+    const cliError = 'Prompt is too long: 250000 tokens > 200000 maximum';
+    setupSpawnMock({
+      exitCode: 1,
+      stderr: '',
+      stdout: `${JSON.stringify({ type: 'result', subtype: 'error_during_execution', is_error: true, result: cliError })}\n`,
+      rawStdout: true,
+    });
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
+
+    const error = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
+    expect(error?.message.startsWith(`Claude CLI error: ${cliError}. Claude CLI invocation failed`)).toBe(true);
+    expect(error?.message).not.toContain('claude setup-token');
+    warnSpy.mockRestore();
+  });
+
   it('records <no result event> when exit-1 stream emits only text deltas with no terminal result', async () => {
     const streamWithoutResult = [
       JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'streamed text but no terminal event' } }),
