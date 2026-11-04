@@ -7,7 +7,7 @@ import { AgentProgressEntry, DEFENSIVE_HARDENING_TAG, DashboardData, Finding, Fi
 import { isLineInDiff, findClosestDiffLine } from './diff';
 import { MAX_AGENT_RETRIES } from './types';
 import { MAX_LOCK_TTL_SECONDS } from './config';
-import { safeTruncate } from './utils';
+import { safeTruncate, sanitizeTokens } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -441,28 +441,28 @@ export async function markAutoApproveComplete(
 }
 
 /**
- * Transition the auto-approve progress comment to a terminal failure state.
- * Uses `CANCELLED_MARKER` so `findInProgressLock` no longer treats it as a
- * live lock, while preserving an audit trail of which run attempted the
- * approval and why it failed.
+ * Transition a progress comment to a terminal failure state that names the
+ * failed `action` and the reason, with tokens redacted. Uses `CANCELLED_MARKER`
+ * so `findInProgressLock` no longer treats it as a live lock.
  */
-export async function markAutoApproveFailed(
+export async function markProgressCommentFailed(
   octokit: Octokit,
   owner: string,
   repo: string,
   commentId: number,
+  action: 'Review' | 'Auto-approve',
   reason: string,
 ): Promise<void> {
   const body = [
     BOT_MARKER,
     VERSION_MARKER,
     CANCELLED_MARKER,
-    `**Manki** — Auto-approve failed: ${sanitizeMarkdown(String(reason)).slice(0, 300)}`,
+    `**Manki** — ${action} failed: ${sanitizeMarkdown(sanitizeTokens(String(reason))).slice(0, 300)}`,
   ].join('\n');
   try {
     await octokit.rest.issues.updateComment({ owner, repo, comment_id: commentId, body });
   } catch (error) {
-    core.warning(`Failed to mark auto-approve comment as failed: ${error instanceof Error ? error.message : error}`);
+    core.warning(`Failed to mark ${action.toLowerCase()} comment as failed: ${error instanceof Error ? error.message : error}`);
   }
 }
 
@@ -548,22 +548,31 @@ export async function updateProgressDashboard(
 }
 
 /**
- * Dismiss any previous reviews from the bot on this PR.
+ * Dismiss the bot's `CHANGES_REQUESTED` reviews on this PR, except `keepReviewId`.
+ * Call it only after the new review is posted, so a failed run leaves the merge
+ * block in place. Never throws: the new review already stands.
  */
 export async function dismissPreviousReviews(
   octokit: Octokit,
   owner: string,
   repo: string,
   prNumber: number,
+  keepReviewId?: number,
 ): Promise<void> {
-  const { data: reviews } = await octokit.rest.pulls.listReviews({
-    owner,
-    repo,
-    pull_number: prNumber,
-  });
+  let reviews;
+  try {
+    ({ data: reviews } = await octokit.rest.pulls.listReviews({
+      owner,
+      repo,
+      pull_number: prNumber,
+    }));
+  } catch (error) {
+    core.warning(`Failed to dismiss previous reviews: ${error instanceof Error ? error.message : error}`);
+    return;
+  }
 
   for (const review of reviews) {
-    if (review.body?.includes(BOT_MARKER) && review.state === 'CHANGES_REQUESTED') {
+    if (review.id !== keepReviewId && review.body?.includes(BOT_MARKER) && review.state === 'CHANGES_REQUESTED') {
       try {
         await octokit.rest.pulls.dismissReview({
           owner,

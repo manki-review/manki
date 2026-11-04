@@ -8,7 +8,7 @@ jest.mock('./github', () => ({
   checkConcurrentSubmissionLock: jest.fn().mockResolvedValue(false),
   postAutoApproveProgressComment: jest.fn().mockResolvedValue(12345),
   markAutoApproveComplete: jest.fn().mockResolvedValue(undefined),
-  markAutoApproveFailed: jest.fn().mockResolvedValue(undefined),
+  markProgressCommentFailed: jest.fn().mockResolvedValue(undefined),
 }));
 
 const makeThread = (overrides: Partial<ReviewThread> = {}): ReviewThread => ({
@@ -517,6 +517,7 @@ describe('checkAndAutoApprove', () => {
       issue_number: 1,
       body: expect.stringContaining('auto-approve is blocked'),
     }));
+    expect(dismissPreviousReviews).not.toHaveBeenCalled();
   });
 
   it('approve review body is non-empty so it does not register as a placeholder', async () => {
@@ -540,32 +541,19 @@ describe('checkAndAutoApprove', () => {
     expect(call.body.replace(/<!--[^]*?-->/g, '').trim().length).toBeGreaterThan(0);
   });
 
-  it('dismisses previous reviews before approving', async () => {
-    const octokit = makeMockOctokit({
-      threads: [],
-      createReviewFn: jest.fn().mockResolvedValue({}),
-    });
-
-    await checkAndAutoApprove(octokit, 'owner', 'repo', 42);
-
-    expect(dismissPreviousReviews).toHaveBeenCalledWith(octokit, 'owner', 'repo', 42);
-  });
-
-  it('continues with approval when dismissPreviousReviews fails', async () => {
-    dismissPreviousReviews.mockRejectedValueOnce(new Error('dismiss failed'));
+  it('dismisses previous reviews only after the approval posts', async () => {
     const createReviewMock = jest.fn().mockResolvedValue({});
     const octokit = makeMockOctokit({
       threads: [],
       createReviewFn: createReviewMock,
     });
 
-    const result = await checkAndAutoApprove(octokit, 'owner', 'repo', 1);
+    await checkAndAutoApprove(octokit, 'owner', 'repo', 42);
 
-    expect(result).toBe(true);
-    expect(createReviewMock).toHaveBeenCalledWith(
-      expect.objectContaining({ event: 'APPROVE' }),
-    );
+    expect(dismissPreviousReviews).toHaveBeenCalledWith(octokit, 'owner', 'repo', 42);
+    expect(createReviewMock.mock.invocationCallOrder[0]).toBeLessThan(dismissPreviousReviews.mock.invocationCallOrder[0]);
   });
+
 
   it('skips duplicate approval when bot already has an active APPROVED review on HEAD', async () => {
     const createReviewMock = jest.fn().mockResolvedValue({});
@@ -1058,7 +1046,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
     checkConcurrentSubmissionLock: jest.Mock;
     postAutoApproveProgressComment: jest.Mock;
     markAutoApproveComplete: jest.Mock;
-    markAutoApproveFailed: jest.Mock;
+    markProgressCommentFailed: jest.Mock;
   };
 
   beforeEach(() => {
@@ -1115,7 +1103,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
     expect(result).toBe(true);
     expect(callOrder).toEqual(['post', 'createReview', 'complete']);
     expect(ghMock.markAutoApproveComplete).toHaveBeenCalledWith(octokit, 'owner', 'repo', 7777);
-    expect(ghMock.markAutoApproveFailed).not.toHaveBeenCalled();
+    expect(ghMock.markProgressCommentFailed).not.toHaveBeenCalled();
   });
 
   it('does not post a marker when the concurrency lock guard bails', async () => {
@@ -1127,7 +1115,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
     expect(result).toBe(false);
     expect(ghMock.postAutoApproveProgressComment).not.toHaveBeenCalled();
     expect(ghMock.markAutoApproveComplete).not.toHaveBeenCalled();
-    expect(ghMock.markAutoApproveFailed).not.toHaveBeenCalled();
+    expect(ghMock.markProgressCommentFailed).not.toHaveBeenCalled();
   });
 
   it('does not post a marker when `isReviewInProgress` returns true', async () => {
@@ -1159,7 +1147,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
     expect(result).toBe(false);
     expect(ghMock.postAutoApproveProgressComment).not.toHaveBeenCalled();
     expect(ghMock.markAutoApproveComplete).not.toHaveBeenCalled();
-    expect(ghMock.markAutoApproveFailed).not.toHaveBeenCalled();
+    expect(ghMock.markProgressCommentFailed).not.toHaveBeenCalled();
   });
 
   it('does not post a marker when a prior bot approval already exists for the same SHA', async () => {
@@ -1183,10 +1171,11 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
     const octokit = makeMockOctokit({ createReviewFn: createReviewMock, createCommentFn: createCommentMock });
 
     await expect(checkAndAutoApprove(octokit, 'owner', 'repo', 1)).rejects.toThrow('comment also forbidden');
-    expect(ghMock.markAutoApproveFailed).toHaveBeenCalledWith(
-      octokit, 'owner', 'repo', 7777, 'comment also forbidden',
+    expect(ghMock.markProgressCommentFailed).toHaveBeenCalledWith(
+      octokit, 'owner', 'repo', 7777, 'Auto-approve', 'comment also forbidden',
     );
     expect(ghMock.markAutoApproveComplete).not.toHaveBeenCalled();
+    expect(ghMock.dismissPreviousReviews).not.toHaveBeenCalled();
   });
 
   it('still transitions to complete when APPROVE fails but the issue-comment fallback succeeds', async () => {
@@ -1206,7 +1195,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
     expect(createReviewMock).toHaveBeenCalledTimes(1);
     expect(createReviewMock).toHaveBeenCalledWith(expect.objectContaining({ event: 'APPROVE' }));
     expect(ghMock.markAutoApproveComplete).toHaveBeenCalledWith(octokit, 'owner', 'repo', 7777);
-    expect(ghMock.markAutoApproveFailed).not.toHaveBeenCalled();
+    expect(ghMock.markProgressCommentFailed).not.toHaveBeenCalled();
   });
 });
 
@@ -1270,12 +1259,13 @@ describe('postAutoApproveProgressComment / markAutoApprove*', () => {
     });
     const octokit = { rest: { issues: { updateComment } } } as unknown as Octokit;
 
-    await ghActual.markAutoApproveFailed(octokit, 'o', 'r', 1, 'API rate limited');
+    await ghActual.markProgressCommentFailed(octokit, 'o', 'r', 1, 'Auto-approve', 'API rate limited for ghs_secret123');
 
     const comments = [
       { id: 1, body: updatedBody, user: { login: 'manki-review[bot]', type: 'Bot' }, updated_at: '2026-05-22T11:59:30Z' },
     ];
     expect(ghActual.findInProgressLock(comments, 999)).toBeNull();
-    expect(updatedBody).toContain('API rate limited');
+    expect(updatedBody).toContain('API rate limited for [REDACTED]');
+    expect(updatedBody).not.toContain('ghs_secret123');
   });
 });

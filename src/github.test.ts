@@ -2918,6 +2918,7 @@ describe('dismissPreviousReviews', () => {
               { id: 1, body: `${BOT_MARKER}\nSome review`, state: 'CHANGES_REQUESTED' },
               { id: 2, body: 'Human review', state: 'CHANGES_REQUESTED' },
               { id: 3, body: `${BOT_MARKER}\nApproved`, state: 'APPROVED' },
+              { id: 4, body: `${BOT_MARKER}\nNew review`, state: 'CHANGES_REQUESTED' },
             ],
           }),
           dismissReview: dismissMock,
@@ -2925,9 +2926,27 @@ describe('dismissPreviousReviews', () => {
       },
     } as unknown as Parameters<typeof dismissPreviousReviews>[0];
 
-    await dismissPreviousReviews(mockOctokit, 'owner', 'repo', 1);
+    await dismissPreviousReviews(mockOctokit, 'owner', 'repo', 1, 4);
     expect(dismissMock).toHaveBeenCalledTimes(1);
     expect(dismissMock).toHaveBeenCalledWith(expect.objectContaining({ review_id: 1 }));
+  });
+
+  it('warns instead of throwing when listing reviews fails', async () => {
+    const warningSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const dismissMock = jest.fn();
+    const mockOctokit = {
+      rest: {
+        pulls: {
+          listReviews: jest.fn().mockRejectedValue(new Error('Server Error')),
+          dismissReview: dismissMock,
+        },
+      },
+    } as unknown as Parameters<typeof dismissPreviousReviews>[0];
+
+    await expect(dismissPreviousReviews(mockOctokit, 'owner', 'repo', 1, 4)).resolves.toBeUndefined();
+    expect(dismissMock).not.toHaveBeenCalled();
+    expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to dismiss previous reviews: Server Error'));
+    warningSpy.mockRestore();
   });
 
   it('handles dismiss failure gracefully', async () => {
