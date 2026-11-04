@@ -7,12 +7,19 @@ import { runJudgeAgent, JudgeInput, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
 import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, llmDeduplicateFindings, PreviousFinding } from './recap';
-import { ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, VerdictReason, ParsedDiff, TeamRoster, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundPlannerSource, EffortLevel, AgentPick, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, TeamRoster, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundPlannerSource, EffortLevel, AgentPick, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { rebuildRawDiff } from './diff';
 import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
+import { runVerdictReader, verdictBlockerToFinding } from './verdict';
 
 const DISMISSED_LINE_TOLERANCE = 5;
+
+const OUTCOME_VERDICT: Record<RoundOutcome, ReviewVerdict> = {
+  READY: 'APPROVE',
+  ADDRESS_FIRST: 'REQUEST_CHANGES',
+  INCOMPLETE: 'COMMENT',
+};
 
 export const PLANNER_TIMEOUT_MS = 60_000;
 
@@ -535,7 +542,7 @@ export async function runReview(
   priorRounds?: RoundContext[],
   prAuthorLogin?: string,
   interRoundDiff?: string,
-): Promise<ReviewResult> {
+): Promise<ReviewResult & { outcome: RoundOutcome }> {
   const provenanceMap = computeProvenanceMap(priorRounds, rawDiff);
   let team: TeamRoster;
   let plannerResult: PlannerResult | null = null;
@@ -948,7 +955,8 @@ export async function runReview(
         ? 'Review could not be completed — all reviewer agents failed.'
         : `Review incomplete — ${failedAgents.join(', ')} failed after retries. Retry with @manki review.`;
       return {
-        verdict: 'COMMENT',
+        verdict: OUTCOME_VERDICT.INCOMPLETE,
+        outcome: 'INCOMPLETE',
         summary,
         findings: [],
         highlights: [],
@@ -1087,7 +1095,8 @@ export async function runReview(
   } catch (error) {
     core.warning(`Judge failed: ${error}`);
     return {
-      verdict: 'COMMENT' as ReviewVerdict,
+      verdict: OUTCOME_VERDICT.INCOMPLETE,
+      outcome: 'INCOMPLETE',
       summary: 'Review incomplete — judge failed. Retry with @manki review.',
       findings: [],
       highlights: [],
@@ -1122,7 +1131,39 @@ export async function runReview(
   const priorFindingsFlat: FindingFingerprintEntry[] = sortedPriorRounds.flatMap(r => r.findings.entries);
   const priorRoundLookup = buildPriorRoundLookup(sortedPriorRounds);
   const changedFiles = new Set(diff.files.map(f => f.path));
-  const { verdict, verdictReason, verdictTrace } = determineVerdict(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, judgeThreadEvaluations, priorRoundLookup, changedFiles);
+  let { outcome, verdictReason, verdictTrace } = determineOutcome(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, judgeThreadEvaluations, priorRoundLookup, changedFiles);
+
+  let verdictReport: VerdictReport | undefined;
+  let verdictUsage: LLMUsage | undefined;
+  if (outcome === 'READY') {
+    const verdictWrap = wrapClientForUsage(clients.judge);
+    const readerFiles = fileContents && new Map([...fileContents].filter(([path]) => changedFiles.has(path)));
+    try {
+      verdictReport = await runVerdictReader(verdictWrap.client, buildReviewerUserMessage(rawDiff, repoContext, { fileContents: readerFiles }));
+    } catch (error) {
+      core.warning(`Verdict reader failed: ${error}`);
+      return {
+        verdict: OUTCOME_VERDICT.INCOMPLETE,
+        outcome: 'INCOMPLETE',
+        summary: `Review incomplete: the verdict reader failed (${sanitizeLogOutput(String((error as Error)?.message ?? error)).slice(0, 200)}). Retry with @manki review.`,
+        findings: [],
+        highlights: [],
+        reviewComplete: false,
+        agentNames: team.agents.map(a => a.name),
+        ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency, agentRunEffort),
+      };
+    }
+    verdictUsage = verdictWrap.getTotals().usage;
+    core.info(`Verdict reader: ${verdictReport.verdict}. ${verdictReport.summary}`);
+    if (verdictReport.verdict === 'ADDRESS_FIRST') {
+      const readerFindings = verdictReport.blockers.map(verdictBlockerToFinding);
+      finalFindings = [...finalFindings, ...readerFindings];
+      outcome = 'ADDRESS_FIRST';
+      verdictReason = 'verdict_reader';
+      verdictTrace = { survivingBlockers: readerFindings.map(findingToTraceEntry), novelWarnings: [], unresolvedPriors: [] };
+    }
+  }
+  const verdict = OUTCOME_VERDICT[outcome];
 
   const summary = judgeSummary;
 
@@ -1140,6 +1181,8 @@ export async function runReview(
 
   return {
     verdict,
+    outcome,
+    ...(verdictReport && { verdictReport }),
     verdictReason,
     verdictTrace,
     summary,
@@ -1172,6 +1215,7 @@ export async function runReview(
     judgeRetryCount,
     ...(dedupUsage && { dedupUsage }),
     ...(dedupDurationMs != null && { dedupDurationMs }),
+    ...(verdictUsage && { verdictUsage }),
     crossRoundSuppressed: judgeCrossRoundSuppressed,
     crossRoundDemoted: judgeCrossRoundDemoted,
     ...(judgeInterRoundDiffEmptyOverride && { interRoundDiffEmptyOverride: judgeInterRoundDiffEmptyOverride }),
@@ -1520,13 +1564,15 @@ export function buildPriorRoundLookup(sortedPriorRounds: RoundContext[]): Map<st
 }
 
 /**
- * Pick a verdict plus a machine-readable reason.
+ * Pick the round outcome at the findings bar, plus a machine-readable reason.
+ * `READY` means nothing blocks here. `runReview` still asks the verdict reader
+ * before it approves.
  *
  * Decision order:
- *   1. any surviving `blocker` finding → REQUEST_CHANGES / required_present
- *   2. any `warning` that is NOT a prior-round dismissed match → REQUEST_CHANGES / novel_suggestion
- *   3. any prior-round `warning`/`blocker` still unresolved → REQUEST_CHANGES / prior_unaddressed
- *   4. otherwise (only suggestions/nitpicks / previously-dismissed warnings / empty) → APPROVE / only_nit_or_suggestion
+ *   1. any surviving `blocker` finding → ADDRESS_FIRST / required_present
+ *   2. any `warning` that is NOT a prior-round dismissed match → ADDRESS_FIRST / novel_suggestion
+ *   3. any prior-round `warning`/`blocker` still unresolved → ADDRESS_FIRST / prior_unaddressed
+ *   4. otherwise (only suggestions/nitpicks / previously-dismissed warnings / empty) → READY / only_nit_or_suggestion
  *
  * A prior `warning`/`blocker` is "unresolved" when the author has not agreed to
  * dismiss it (`authorReply !== 'agree'`) and the underlying GitHub thread is
@@ -1556,7 +1602,7 @@ export function buildPriorRoundLookup(sortedPriorRounds: RoundContext[]): Map<st
  * Contract for `openThreads`: three states with distinct meaning.
  *   - `null` / omitted → "unknown": caller did not (or could not) fetch open
  *     threads. Treated conservatively: any prior `warning`/`blocker` with a
- *     non-`agree` `authorReply` blocks APPROVE with `prior_unaddressed`,
+ *     non-`agree` `authorReply` blocks with `prior_unaddressed`,
  *     unconditionally. `resolvedThreadIds` is NOT honored in this branch,
  *     since both signals come from the same recap scan and could be stale
  *     together. Use the unknown state when the GitHub fetch failed, or at
@@ -1580,9 +1626,9 @@ export function buildPriorRoundLookup(sortedPriorRounds: RoundContext[]): Map<st
  * while still blocking when the live state cannot be trusted.
  *
  * Nitpicks and suggestions are non-blocking, and prior-round dismissed warnings
- * have already been acknowledged by the author. All these cases approve the PR.
+ * have already been acknowledged by the author. None of these cases block.
  */
-export function determineVerdict(
+export function determineOutcome(
   findings: Finding[],
   priorRounds?: FindingFingerprintEntry[],
   openThreads?: OpenThread[] | null,
@@ -1590,7 +1636,7 @@ export function determineVerdict(
   threadEvaluations?: ThreadEvaluation[],
   priorRoundLookup?: Map<string, number>,
   changedFiles?: ReadonlySet<string>,
-): { verdict: ReviewVerdict; verdictReason: VerdictReason; verdictTrace: VerdictTrace } {
+): { outcome: Extract<RoundOutcome, 'READY' | 'ADDRESS_FIRST'>; verdictReason: VerdictReason; verdictTrace: VerdictTrace } {
   const emptyTrace = (): VerdictTrace => ({
     survivingBlockers: [],
     novelWarnings: [],
@@ -1601,7 +1647,7 @@ export function determineVerdict(
   if (blockers.length > 0) {
     const trace = emptyTrace();
     trace.survivingBlockers = blockers.map(findingToTraceEntry);
-    return { verdict: 'REQUEST_CHANGES', verdictReason: 'required_present', verdictTrace: trace };
+    return { outcome: 'ADDRESS_FIRST', verdictReason: 'required_present', verdictTrace: trace };
   }
 
   const prior = dedupePriorFindings(priorRounds ?? []);
@@ -1611,7 +1657,7 @@ export function determineVerdict(
   if (novelWarnings.length > 0) {
     const trace = emptyTrace();
     trace.novelWarnings = novelWarnings.map(findingToTraceEntry);
-    return { verdict: 'REQUEST_CHANGES', verdictReason: 'novel_suggestion', verdictTrace: trace };
+    return { outcome: 'ADDRESS_FIRST', verdictReason: 'novel_suggestion', verdictTrace: trace };
   }
 
   const openThreadsUnknown = openThreads == null;
@@ -1624,10 +1670,10 @@ export function determineVerdict(
     const trace = emptyTrace();
     const openThreadIndex = new Map((openThreads ?? []).map(t => [t.threadId, t]));
     trace.unresolvedPriors = unresolvedPriors.map(p => priorToTraceEntry(p, priorRoundLookup, openThreadIndex));
-    return { verdict: 'REQUEST_CHANGES', verdictReason: 'prior_unaddressed', verdictTrace: trace };
+    return { outcome: 'ADDRESS_FIRST', verdictReason: 'prior_unaddressed', verdictTrace: trace };
   }
 
-  return { verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion', verdictTrace: emptyTrace() };
+  return { outcome: 'READY', verdictReason: 'only_nit_or_suggestion', verdictTrace: emptyTrace() };
 }
 
 function findingToTraceEntry(f: Finding): VerdictTraceEntry {

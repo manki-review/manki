@@ -1409,6 +1409,60 @@ describe('postReview partialNote', () => {
   });
 });
 
+describe('postReview ready report', () => {
+  const mockCreateReview = jest.fn().mockResolvedValue({ data: { id: 1 } });
+  const mockOctokit = {
+    rest: {
+      pulls: {
+        createReview: mockCreateReview,
+      },
+    },
+  } as unknown as Parameters<typeof postReview>[0];
+
+  const verdictReport = {
+    verdict: 'READY' as const,
+    blockers: [],
+    summary: 'Nothing blocks.',
+    whatThisDoes: 'Adds a cache in front of the API. <script>x</script>',
+    whatToTest: 'Load the page twice, expect one request.',
+  };
+
+  beforeEach(() => {
+    mockCreateReview.mockClear();
+  });
+
+  it('adds "What this does" and "What to test" to the body of a READY approval only', async () => {
+    const ready: ReviewResult = {
+      verdict: 'APPROVE',
+      outcome: 'READY',
+      verdictReport,
+      summary: 'All clear.',
+      findings: [],
+      highlights: [],
+      reviewComplete: true,
+      agentNames: [],
+    };
+
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', ready);
+    const { body, event } = mockCreateReview.mock.calls[0][0] as { body: string; event: string };
+    expect(event).toBe('APPROVE');
+    expect(body).toContain('### What this does\n\nAdds a cache in front of the API.');
+    expect(body).toContain('### What to test\n\nLoad the page twice, expect one request.');
+    expect(body).not.toContain('<script>');
+
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', {
+      ...ready,
+      verdict: 'REQUEST_CHANGES',
+      outcome: 'ADDRESS_FIRST',
+      verdictReport: { ...verdictReport, verdict: 'ADDRESS_FIRST', blockers: ['src/a.ts:1: bug'] },
+    });
+    const refused = mockCreateReview.mock.calls[1][0] as { body: string; event: string };
+    expect(refused.event).toBe('REQUEST_CHANGES');
+    expect(refused.body).not.toContain('What this does');
+    expect(refused.body).not.toContain('What to test');
+  });
+});
+
 describe('getSeverityLabel', () => {
   it('returns Blocker for blocker severity', () => {
     expect(getSeverityLabel('blocker')).toBe('Blocker');

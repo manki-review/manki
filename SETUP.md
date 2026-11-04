@@ -457,7 +457,8 @@ Manki reviews run in these stages:
 2. **Reviewer agents** -- The chosen team of specialist agents (security, architecture, correctness, etc.) review the diff in parallel. Each produces raw findings.
 3. **Dedup**: A two-tier dedup pass filters findings already posted on the PR before judge evaluation. A static matcher handles exact/near-exact matches, then an LLM dedup pass (Haiku) catches semantic duplicates.
 4. **Judge agent**: A single agent evaluates the deduplicated reviewer findings for accuracy, actionability, and severity. It filters out noise, merges any remaining overlap, and assigns a 4-tier severity to each surviving finding.
-5. **Recap** -- Surviving findings are posted as inline PR comments with a summary review.
+5. **Verdict reader**: Runs only when no finding blocks. One call on the judge's model reads the whole diff cold, without the PR description or earlier rounds, and looks for a reason not to merge. `READY` approves with "What this does" and "What to test" sections. `ADDRESS_FIRST` requests changes and posts its blockers as inline comments. Output that cannot be parsed ends the round as incomplete, never as an approval.
+6. **Recap** -- Surviving findings are posted as inline PR comments with a summary review.
 
 ### Severity tiers
 

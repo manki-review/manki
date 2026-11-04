@@ -766,6 +766,10 @@ export async function postReview(
     if (blockingThreads) {
       b += `\n\n${blockingThreads}`;
     }
+    const readyReport = formatReadyReport(result);
+    if (readyReport) {
+      b += `\n\n${readyReport}`;
+    }
     if (ctx) {
       b += `\n\n${formatStatsOneLiner(ctx, reviewTimeMs ?? 0)}`;
       b += `\n\n${formatContextBlock(ctx, statsHidden)}`;
@@ -960,6 +964,12 @@ export function formatBlockingPriorThreads(result: { verdictReason?: VerdictReas
   });
 
   return `**Blocking unresolved review threads:**\n${lines.join('\n')}`;
+}
+
+function formatReadyReport(result: ReviewResult): string | null {
+  if (result.outcome !== 'READY' || !result.verdictReport) return null;
+  const { whatThisDoes, whatToTest } = result.verdictReport;
+  return `### What this does\n\n${sanitizeMarkdown(whatThisDoes.trim())}\n\n### What to test\n\n${sanitizeMarkdown(whatToTest.trim())}`;
 }
 
 function getSeverityEmoji(severity: FindingSeverity): string {

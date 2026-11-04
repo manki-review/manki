@@ -1737,7 +1737,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [], duplicates: [] });
     jest.mocked(stateModule.resolveStaleThreads).mockResolvedValue(0);
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'APPROVE', summary: 'Looks good',
+      verdict: 'APPROVE', outcome: 'READY' as const, summary: 'Looks good',
       findings: [], highlights: [], reviewComplete: true,
       agentNames: ['general'],
     });
@@ -1947,7 +1947,7 @@ describe('runFullReview orchestration', () => {
       { severity: 'blocker' as const, title: 'Bug found', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['general'] },
     ];
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'REQUEST_CHANGES',
+      verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const,
       summary: 'Issues found',
       findings,
       highlights: [],
@@ -2008,7 +2008,7 @@ describe('runFullReview orchestration', () => {
     ];
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'REQUEST_CHANGES', summary: 'Issues found',
+      verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Issues found',
       findings,
       highlights: [],
       reviewComplete: true,
@@ -2077,7 +2077,7 @@ describe('runFullReview orchestration', () => {
     ];
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'REQUEST_CHANGES', summary: 'Issues found',
+      verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Issues found',
       findings,
       highlights: [],
       reviewComplete: true,
@@ -2127,7 +2127,7 @@ describe('runFullReview orchestration', () => {
     ];
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'REQUEST_CHANGES', summary: 'Issues found',
+      verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Issues found',
       findings,
       highlights: [],
       reviewComplete: true,
@@ -2167,7 +2167,7 @@ describe('runFullReview orchestration', () => {
     const allJudged = [...findings];
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'REQUEST_CHANGES', summary: 'Issues found',
+      verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Issues found',
       findings,
       highlights: [],
       reviewComplete: true,
@@ -2199,7 +2199,7 @@ describe('runFullReview orchestration', () => {
     ];
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'REQUEST_CHANGES', summary: 'Issues found',
+      verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Issues found',
       findings,
       highlights: [],
       reviewComplete: true,
@@ -2242,7 +2242,7 @@ describe('runFullReview orchestration', () => {
     ];
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'REQUEST_CHANGES', summary: 'Issues found',
+      verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Issues found',
       findings: [survivingFinding],
       highlights: [], reviewComplete: true,
       rawFindingCount: 3,
@@ -2294,21 +2294,25 @@ describe('runFullReview orchestration', () => {
       judgeRetryCount: 2,
       dedupUsage: { inputTokens: 40, outputTokens: 8, cachedTokens: 0, reasoningTokens: 0 },
       dedupDurationMs: 200,
+      verdictUsage: { inputTokens: 60, outputTokens: 12, cachedTokens: 0, reasoningTokens: 0 },
+      outcome: 'ADDRESS_FIRST',
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [security], duplicates: [] });
 
     await callRunFullReview();
 
     const ctx = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+    expect(ctx!.meta.outcome).toBe('ADDRESS_FIRST');
     expect(ctx!.usage.perStage).toEqual({
       planner: { inputTokens: 30, outputTokens: 5, totalTokens: 35 },
       reviewer: { inputTokens: 180, outputTokens: 30, totalTokens: 210 },
       judge: { inputTokens: 200, outputTokens: 50, totalTokens: 250 },
       dedup: { inputTokens: 40, outputTokens: 8, totalTokens: 48 },
+      verdict: { inputTokens: 60, outputTokens: 12, totalTokens: 72 },
     });
-    expect(ctx!.usage.inputTokens).toBe(450);
-    expect(ctx!.usage.outputTokens).toBe(93);
-    expect(ctx!.usage.totalTokens).toBe(543);
+    expect(ctx!.usage.inputTokens).toBe(510);
+    expect(ctx!.usage.outputTokens).toBe(105);
+    expect(ctx!.usage.totalTokens).toBe(615);
 
     expect(ctx!.judge.retryCount).toBe(2);
     expect(ctx!.dedup.durationMs).toBe(200);
@@ -2341,7 +2345,7 @@ describe('runFullReview orchestration', () => {
 
     const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['security'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'REQUEST_CHANGES', summary: 'Issues',
+      verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Issues',
       findings: [finding], highlights: [], reviewComplete: true,
       agentNames: ['security'],
       allJudgedFindings: [finding], rawFindings: [finding],
@@ -2365,7 +2369,7 @@ describe('runFullReview orchestration', () => {
 
     const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/auth.ts', line: 5, description: 'd', reviewers: ['Security & Safety'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'REQUEST_CHANGES', summary: 'Issues found',
+      verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Issues found',
       findings: [finding], highlights: [], reviewComplete: true,
       agentNames: ['Security & Safety'],
       allJudgedFindings: [finding], rawFindings: [finding],
@@ -2408,7 +2412,7 @@ describe('runFullReview orchestration', () => {
 
     const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['security'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'REQUEST_CHANGES', summary: 'Issues found',
+      verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Issues found',
       findings: [finding], highlights: [], reviewComplete: true,
       agentNames: ['security'],
       allJudgedFindings: [finding], rawFindings: [finding],
@@ -2435,7 +2439,7 @@ describe('runFullReview orchestration', () => {
 
     const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['security'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'REQUEST_CHANGES', summary: 'Issues found',
+      verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Issues found',
       findings: [finding], highlights: [], reviewComplete: true,
       agentNames: ['security'],
       allJudgedFindings: [finding], rawFindings: [finding],
@@ -2457,7 +2461,7 @@ describe('runFullReview orchestration', () => {
 
     const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['Security & Safety'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'REQUEST_CHANGES', summary: 'Issues found',
+      verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Issues found',
       findings: [finding], highlights: [], reviewComplete: true,
       agentNames: ['Security & Safety'],
       allJudgedFindings: [finding], rawFindings: [finding],
@@ -2498,7 +2502,7 @@ describe('runFullReview orchestration', () => {
 
     const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['Security & Safety'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'REQUEST_CHANGES', summary: 'Issues found',
+      verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Issues found',
       findings: [finding], highlights: [], reviewComplete: true,
       agentNames: ['Security & Safety'],
       allJudgedFindings: [finding], rawFindings: [finding],
@@ -2536,7 +2540,7 @@ describe('runFullReview orchestration', () => {
     const security = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['Security & Safety'] };
     const correctness = { severity: 'suggestion' as const, title: 'Style', file: 'src/app.ts', line: 8, description: 'd', reviewers: ['Correctness & Logic'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'REQUEST_CHANGES', summary: 'Issues found',
+      verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Issues found',
       findings: [security, correctness], highlights: [], reviewComplete: true,
       agentNames: ['Security & Safety', 'Correctness & Logic'],
       allJudgedFindings: [security, correctness], rawFindings: [security, correctness],
@@ -2568,7 +2572,7 @@ describe('runFullReview orchestration', () => {
 
     const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['Security & Safety'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'REQUEST_CHANGES', summary: 'Issues found',
+      verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Issues found',
       findings: [finding], highlights: [], reviewComplete: true,
       agentNames: ['Security & Safety'],
       allJudgedFindings: [finding], rawFindings: [finding],
@@ -2589,7 +2593,7 @@ describe('runFullReview orchestration', () => {
 
     const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['security'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'REQUEST_CHANGES', summary: 'Issues found',
+      verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Issues found',
       findings: [finding], highlights: [], reviewComplete: true,
       rawFindingCount: 1,
       agentNames: ['security'],
@@ -2624,7 +2628,7 @@ describe('runFullReview orchestration', () => {
 
     const nitFinding = { severity: 'nitpick' as const, title: 'Style nit', file: 'src/app.ts', line: 3, description: 'nit desc', reviewers: ['general'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'COMMENT', summary: 'Minor nits',
+      verdict: 'COMMENT', outcome: 'INCOMPLETE' as const, summary: 'Minor nits',
       findings: [nitFinding], highlights: [], reviewComplete: true,
       agentNames: ['general'],
     });
@@ -2650,7 +2654,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'APPROVE', summary: 'Review incomplete',
+      verdict: 'APPROVE', outcome: 'READY' as const, summary: 'Review incomplete',
       findings: [], highlights: [], reviewComplete: false,
       agentNames: ['general'],
     });
@@ -2732,7 +2736,7 @@ describe('runFullReview orchestration', () => {
 
     const finding2 = { severity: 'nitpick' as const, title: 'Style', file: 'src/app.ts', line: 8, description: 'desc', reviewers: ['general'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'COMMENT', summary: 'Issues',
+      verdict: 'COMMENT', outcome: 'INCOMPLETE' as const, summary: 'Issues',
       findings: [finding2], highlights: [], reviewComplete: true,
       agentNames: ['general'],
     });
@@ -2838,7 +2842,7 @@ describe('runFullReview orchestration', () => {
         description: 'desc', reviewers: ['general'],
       };
       jest.mocked(reviewModule.runReview).mockResolvedValue({
-        verdict: 'REQUEST_CHANGES', summary: 'blocker present',
+        verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'blocker present',
         findings: [blockerFinding], highlights: [], reviewComplete: true,
         agentNames: ['general'],
         verdictReason: 'required_present',
@@ -2890,7 +2894,7 @@ describe('runFullReview orchestration', () => {
         openThreadsState: 'fetched',
       });
       jest.mocked(reviewModule.runReview).mockResolvedValue({
-        verdict: 'APPROVE', summary: '', findings: [], highlights: [], reviewComplete: true,
+        verdict: 'APPROVE', outcome: 'READY' as const, summary: '', findings: [], highlights: [], reviewComplete: true,
         agentNames: ['general'],
         threadEvaluations: [
           { threadId: 'T_unknown', status: 'uncertain', reason: 'not sure' },
@@ -2909,7 +2913,7 @@ describe('runFullReview orchestration', () => {
 
     it('omits `threadResolutionOverrides` when all counts are zero', async () => {
       jest.mocked(reviewModule.runReview).mockResolvedValue({
-        verdict: 'APPROVE', summary: '', findings: [], highlights: [], reviewComplete: true,
+        verdict: 'APPROVE', outcome: 'READY' as const, summary: '', findings: [], highlights: [], reviewComplete: true,
         agentNames: ['general'],
         threadEvaluations: [],
       });
@@ -3173,7 +3177,7 @@ describe('runFullReview orchestration', () => {
 
     it('populates `dedup.duplicateMatches`, `sameRoundLlmDropped`, and `testNitSuppressedCount`', async () => {
       jest.mocked(reviewModule.runReview).mockResolvedValue({
-        verdict: 'COMMENT', summary: 'done',
+        verdict: 'COMMENT', outcome: 'INCOMPLETE' as const, summary: 'done',
         findings: [], highlights: [], reviewComplete: true,
         agentNames: ['general'],
         staticDedupCount: 1,
@@ -3207,7 +3211,7 @@ describe('runFullReview orchestration', () => {
 
     it('omits `dedup.duplicateMatches` and `testNitSuppressedCount` when zero', async () => {
       jest.mocked(reviewModule.runReview).mockResolvedValue({
-        verdict: 'APPROVE', summary: 'done',
+        verdict: 'APPROVE', outcome: 'READY' as const, summary: 'done',
         findings: [], highlights: [], reviewComplete: true,
         agentNames: ['general'],
       });
@@ -3222,7 +3226,7 @@ describe('runFullReview orchestration', () => {
 
     it('populates `diff.excludedFiles`, `binarySkipped`, `perFile`, and `oversizedHandled: false`', async () => {
       jest.mocked(reviewModule.runReview).mockResolvedValue({
-        verdict: 'APPROVE', summary: 'done',
+        verdict: 'APPROVE', outcome: 'READY' as const, summary: 'done',
         findings: [], highlights: [], reviewComplete: true,
         agentNames: ['general'],
       });
@@ -3240,7 +3244,7 @@ describe('runFullReview orchestration', () => {
 
     it('populates `memory.loadStatus: "disabled"` when memory is off in config', async () => {
       jest.mocked(reviewModule.runReview).mockResolvedValue({
-        verdict: 'APPROVE', summary: 'done',
+        verdict: 'APPROVE', outcome: 'READY' as const, summary: 'done',
         findings: [], highlights: [], reviewComplete: true,
         agentNames: ['general'],
       });
@@ -3262,7 +3266,7 @@ describe('runFullReview orchestration', () => {
         ],
       });
       jest.mocked(reviewModule.runReview).mockResolvedValue({
-        verdict: 'APPROVE', summary: 'done',
+        verdict: 'APPROVE', outcome: 'READY' as const, summary: 'done',
         findings: [], highlights: [], reviewComplete: true,
         agentNames: ['general'],
       });
@@ -3282,7 +3286,7 @@ describe('runFullReview orchestration', () => {
 
     it('omits `recap.reclassifiedPriors` when none flipped but keeps the count', async () => {
       jest.mocked(reviewModule.runReview).mockResolvedValue({
-        verdict: 'APPROVE', summary: 'done',
+        verdict: 'APPROVE', outcome: 'READY' as const, summary: 'done',
         findings: [], highlights: [], reviewComplete: true,
         agentNames: ['general'],
       });
@@ -3350,7 +3354,7 @@ describe('runFullReview orchestration', () => {
           plannerDurationMs: 100,
         });
         return {
-          verdict: 'APPROVE', summary: 'ok',
+          verdict: 'APPROVE', outcome: 'READY', summary: 'ok',
           findings: [], highlights: [], reviewComplete: true,
           agentNames: ['Security & Safety', 'Architecture & Design', 'Correctness & Logic', 'Testing & Coverage'],
         };
@@ -3415,7 +3419,7 @@ describe('runFullReview orchestration', () => {
           totalAgents: 3,
         });
         return {
-          verdict: 'APPROVE', summary: 'ok',
+          verdict: 'APPROVE', outcome: 'READY', summary: 'ok',
           findings: [], highlights: [], reviewComplete: true,
           agentNames: resolvedNames,
           plannerResult: {
@@ -3461,7 +3465,7 @@ describe('runFullReview orchestration', () => {
 
       const resolvedNames = ['Security & Safety', 'Architecture & Design', 'Correctness & Logic', 'Testing & Coverage'];
       jest.mocked(reviewModule.runReview).mockResolvedValue({
-        verdict: 'APPROVE', summary: 'ok',
+        verdict: 'APPROVE', outcome: 'READY' as const, summary: 'ok',
         findings: [], highlights: [], reviewComplete: true,
         agentNames: resolvedNames,
       });
@@ -3487,7 +3491,7 @@ describe('runFullReview orchestration', () => {
     });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'COMMENT', summary: 'Issues',
+      verdict: 'COMMENT', outcome: 'INCOMPLETE' as const, summary: 'Issues',
       findings: [{
         severity: 'warning' as const,
         title: 'Misleading variable',
@@ -3524,7 +3528,7 @@ describe('runFullReview orchestration', () => {
     });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'COMMENT', summary: 'Issues',
+      verdict: 'COMMENT', outcome: 'INCOMPLETE' as const, summary: 'Issues',
       findings: [{
         severity: 'warning' as const,
         title: 'T',
@@ -3553,7 +3557,7 @@ describe('runFullReview orchestration', () => {
     });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'COMMENT', summary: '',
+      verdict: 'COMMENT', outcome: 'INCOMPLETE' as const, summary: '',
       findings: [{
         severity: 'warning' as const,
         title: 'A'.repeat(201),
@@ -3581,7 +3585,7 @@ describe('runFullReview orchestration', () => {
     });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'COMMENT', summary: 'Issues',
+      verdict: 'COMMENT', outcome: 'INCOMPLETE' as const, summary: 'Issues',
       findings: [{
         severity: 'nitpick' as const,
         title: 'Hypothetical race',
@@ -3634,7 +3638,7 @@ describe('runFullReview orchestration', () => {
       tags: [tag],
     });
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'COMMENT', summary: '',
+      verdict: 'COMMENT', outcome: 'INCOMPLETE' as const, summary: '',
       findings: [],
       allJudgedFindings: [
         tagged('A', 'suppressed-by-ratchet'),
@@ -3705,7 +3709,7 @@ describe('runFullReview orchestration', () => {
 
     const blocker = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['general'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'REQUEST_CHANGES', verdictReason: 'required_present', summary: 'Blocker',
+      verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, verdictReason: 'required_present', summary: 'Blocker',
       findings: [blocker], highlights: [], reviewComplete: true,
       agentNames: ['general'],
     });
@@ -3733,7 +3737,7 @@ describe('runFullReview orchestration', () => {
     });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'APPROVE', summary: 'Looks good',
+      verdict: 'APPROVE', outcome: 'READY' as const, summary: 'Looks good',
       findings: [], highlights: [], reviewComplete: true,
       agentNames: ['general'],
       verdictReason: 'only_nit_or_suggestion',
@@ -3763,7 +3767,7 @@ describe('runFullReview orchestration', () => {
       line: 5, description: 'desc', reviewers: ['general'],
     };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'COMMENT', summary: 'Suggestions',
+      verdict: 'COMMENT', outcome: 'INCOMPLETE' as const, summary: 'Suggestions',
       findings: [finding], highlights: [], reviewComplete: true,
       agentNames: ['general'],
     });
@@ -3825,7 +3829,7 @@ describe('runFullReview orchestration', () => {
         jest.advanceTimersByTime(600);
         await Promise.resolve();
         return {
-          verdict: 'APPROVE', summary: 'ok', findings: [],
+          verdict: 'APPROVE', outcome: 'READY', summary: 'ok', findings: [],
           highlights: [], reviewComplete: true,
           agentNames: [],
         };
@@ -3882,7 +3886,7 @@ describe('runFullReview orchestration', () => {
         jest.advanceTimersByTime(600);
         await Promise.resolve();
         return {
-          verdict: 'APPROVE', summary: 'ok', findings: [],
+          verdict: 'APPROVE', outcome: 'READY', summary: 'ok', findings: [],
           highlights: [], reviewComplete: true,
           agentNames: [],
         };
@@ -3933,7 +3937,7 @@ describe('runFullReview orchestration', () => {
           jest.advanceTimersByTime(600);
           await Promise.resolve();
           return {
-            verdict: 'APPROVE', summary: 'ok', findings: [],
+            verdict: 'APPROVE', outcome: 'READY', summary: 'ok', findings: [],
             highlights: [], reviewComplete: true,
             agentNames: fallbackAgents,
           };
@@ -3990,7 +3994,7 @@ describe('runFullReview orchestration', () => {
           onProgress({ phase: 'judging', rawFindingCount: 0, judgeInputCount: 0 });
         }
         return {
-          verdict: 'APPROVE', summary: 'ok', findings: [],
+          verdict: 'APPROVE', outcome: 'READY', summary: 'ok', findings: [],
           highlights: [], reviewComplete: true,
           agentNames: fallbackAgents,
         };
@@ -4037,7 +4041,7 @@ describe('runFullReview orchestration', () => {
         jest.advanceTimersByTime(600);
         await Promise.resolve();
         return {
-          verdict: 'APPROVE', summary: 'ok', findings: [],
+          verdict: 'APPROVE', outcome: 'READY', summary: 'ok', findings: [],
           highlights: [], reviewComplete: true,
           agentNames: ['general', 'Security & Safety'],
         };
@@ -4091,7 +4095,7 @@ describe('runFullReview orchestration', () => {
           });
         }
         return {
-          verdict: 'APPROVE', summary: 'ok', findings: [],
+          verdict: 'APPROVE', outcome: 'READY', summary: 'ok', findings: [],
           highlights: [], reviewComplete: true,
           agentNames: [],
         };
@@ -4134,7 +4138,7 @@ describe('runFullReview orchestration', () => {
           });
         }
         return {
-          verdict: 'APPROVE', summary: 'ok', findings: [],
+          verdict: 'APPROVE', outcome: 'READY', summary: 'ok', findings: [],
           highlights: [], reviewComplete: true,
           agentNames: [],
         };
@@ -4194,7 +4198,7 @@ describe('runFullReview orchestration', () => {
           });
         }
         return {
-          verdict: 'COMMENT', summary: 'Issues found',
+          verdict: 'COMMENT', outcome: 'INCOMPLETE', summary: 'Issues found',
           findings: [finding1, finding2], highlights: [], reviewComplete: true,
           agentNames: [],
         };
@@ -4277,7 +4281,7 @@ describe('runFullReview orchestration', () => {
     });
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'APPROVE', verdictReason: 'only_nit_or_suggestion', summary: 'Fixed',
+      verdict: 'APPROVE', outcome: 'READY' as const, verdictReason: 'only_nit_or_suggestion', summary: 'Fixed',
       findings: [], highlights: [], reviewComplete: true,
       agentNames: ['general'],
       threadEvaluations: [{ threadId: 'PRRT_OPEN', status: 'addressed', reason: 'fixed in diff' }],
@@ -4456,7 +4460,7 @@ describe('runFullReview orchestration', () => {
         jest.advanceTimersByTime(600);
         await Promise.resolve();
         return {
-          verdict: 'APPROVE', summary: 'ok', findings: [],
+          verdict: 'APPROVE', outcome: 'READY', summary: 'ok', findings: [],
           highlights: [], reviewComplete: true,
           agentNames: ['Security & Safety', 'Correctness & Logic', 'Architecture & Design'],
           plannerResult: { teamSize: 3 as const, reviewerEffort: 'low' as const, judgeEffort: 'low' as const, prType: 'chore' },
@@ -4522,7 +4526,7 @@ describe('runFullReview orchestration', () => {
     // `runReview` is mocked, so the assertion that no resolveReviewThread
     // mutation fires proves the index.ts-level defense-in-depth guard works.
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'COMMENT', summary: 'No changes since last review', findings: [],
+      verdict: 'COMMENT', outcome: 'INCOMPLETE' as const, summary: 'No changes since last review', findings: [],
       highlights: [], reviewComplete: true,
       agentNames: ['general'],
       threadEvaluations: [
@@ -4581,7 +4585,7 @@ describe('runFullReview orchestration', () => {
     }]);
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'COMMENT', summary: 'No changes since last review', findings: [],
+      verdict: 'COMMENT', outcome: 'INCOMPLETE' as const, summary: 'No changes since last review', findings: [],
       highlights: [], reviewComplete: true,
       agentNames: ['general'],
       threadEvaluations: [
@@ -4632,7 +4636,7 @@ describe('runFullReview orchestration', () => {
       round: 1, commitSha: 'prior-sha', timestamp: '2025-01-01T00:00:00Z', findings: [],
     }]);
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'COMMENT', summary: 'ok', findings: [],
+      verdict: 'COMMENT', outcome: 'INCOMPLETE' as const, summary: 'ok', findings: [],
       highlights: [], reviewComplete: true,
       agentNames: ['general'],
       threadEvaluations: [],
@@ -4790,7 +4794,7 @@ describe('runFullReview orchestration', () => {
     );
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'APPROVE', summary: 'ok', findings: [],
+      verdict: 'APPROVE', outcome: 'READY' as const, summary: 'ok', findings: [],
       highlights: [], reviewComplete: true,
       agentNames: ['general'],
       threadEvaluations: [
@@ -4846,7 +4850,7 @@ describe('runFullReview orchestration', () => {
     );
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'APPROVE', summary: 'ok', findings: [],
+      verdict: 'APPROVE', outcome: 'READY' as const, summary: 'ok', findings: [],
       highlights: [], reviewComplete: true,
       agentNames: ['general'],
       threadEvaluations: [
@@ -4898,7 +4902,7 @@ describe('runFullReview orchestration', () => {
     });
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'APPROVE', summary: 'ok', findings: [],
+      verdict: 'APPROVE', outcome: 'READY' as const, summary: 'ok', findings: [],
       highlights: [], reviewComplete: true,
       agentNames: ['general'],
       threadEvaluations: [
@@ -4952,7 +4956,7 @@ describe('runFullReview orchestration', () => {
     });
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'APPROVE', summary: 'ok', findings: [],
+      verdict: 'APPROVE', outcome: 'READY' as const, summary: 'ok', findings: [],
       highlights: [], reviewComplete: true,
       agentNames: ['general'],
       threadEvaluations: [
@@ -5028,7 +5032,7 @@ describe('runFullReview orchestration', () => {
     mockGraphql.mockRejectedValueOnce(new Error('GraphQL error'));
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'APPROVE', summary: 'ok', findings: [],
+      verdict: 'APPROVE', outcome: 'READY' as const, summary: 'ok', findings: [],
       highlights: [], reviewComplete: true,
       agentNames: ['general'],
       threadEvaluations: [
@@ -6402,7 +6406,7 @@ describe('runFullReview concurrent-submission lock', () => {
     jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: [] });
     jest.mocked(stateModule.resolveStaleThreads).mockResolvedValue(0);
     jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'APPROVE', summary: '', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
+      verdict: 'APPROVE', outcome: 'READY' as const, summary: '', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
     });
     jest.mocked(reviewModule.selectTeam).mockReturnValue({ level: 'standard' as 'small', agents: [{ name: 'general', focus: '' }], lineCount: 0 });
     jest.mocked(ghUtils.postProgressComment).mockResolvedValue(1);
