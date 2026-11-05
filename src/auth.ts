@@ -31,8 +31,25 @@ export interface AuthResult {
 }
 
 // Without custom App credentials a run posts as `manki-review[bot]`, or as `github-actions[bot]` when the App token
-// is unavailable. Earlier rounds can carry either login.
+// is unavailable, or as the token's user for a personal access token. Earlier rounds can carry any of these logins.
 const MANKI_BOT: BotIdentity = { logins: [BOT_LOGIN, ACTIONS_BOT_LOGIN] };
+
+// Installation tokens, including the workflow's `GITHUB_TOKEN`, carry this prefix. Any other token belongs to a user.
+const INSTALLATION_TOKEN_PREFIX = 'ghs_';
+
+/** Adds the token's user to `MANKI_BOT` for a personal access token, since a run then posts as that user. */
+async function resolveTokenUserBot(octokit: Octokit, token: string): Promise<BotIdentity> {
+  if (token.startsWith(INSTALLATION_TOKEN_PREFIX)) return MANKI_BOT;
+  try {
+    const { data: user } = await octokit.rest.users.getAuthenticated();
+    if (!user?.login) throw new Error('GET /user returned no login');
+    core.info(`Using personal access token identity ${user.login}`);
+    return { logins: [...MANKI_BOT.logins, user.login] };
+  } catch (error) {
+    core.warning(`Could not resolve the token's user, so comments posted as that user are not recognised: ${error}`);
+    return MANKI_BOT;
+  }
+}
 
 export interface TokenResult {
   token: string;
@@ -117,7 +134,9 @@ export async function createAuthenticatedOctokit(): Promise<AuthResult> {
   const { owner, repo: repoName } = github.context.repo;
   const { token, identity } = await resolveGitHubToken(githubToken, tokenUrl, owner, repoName);
 
-  return { octokit: createOctokit(token), resolvedToken: token, identity, bot: MANKI_BOT };
+  const octokit = createOctokit(token);
+  const bot = identity === 'actions' ? await resolveTokenUserBot(octokit, token) : MANKI_BOT;
+  return { octokit, resolvedToken: token, identity, bot };
 }
 
 /**

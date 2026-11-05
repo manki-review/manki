@@ -292,15 +292,33 @@ describe('createAuthenticatedOctokit', () => {
 
     // OIDC not available — forces fallback to github_token
     jest.spyOn(core, 'getIDToken').mockRejectedValue(new Error('No OIDC'));
-    mockGetOctokit.mockReturnValue({} as ReturnType<typeof github.getOctokit>);
+    const getAuthenticated = jest.fn().mockResolvedValue({ data: { login: 'review-user' } });
+    mockGetOctokit.mockReturnValue({ rest: { users: { getAuthenticated } } } as unknown as ReturnType<typeof github.getOctokit>);
 
     const result = await createAuthenticatedOctokit();
 
     expect(result.octokit).toBeDefined();
     expect(result.resolvedToken).toBe('ghp_fallback');
     expect(result.identity).toBe('actions');
-    expect(result.bot).toEqual({ logins: ['manki-review[bot]', 'github-actions[bot]'] });
+    expect(result.bot).toEqual({ logins: ['manki-review[bot]', 'github-actions[bot]', 'review-user'] });
     expect(mockGetOctokit).toHaveBeenCalledWith('ghp_fallback', expect.anything(), retry, throttling);
+  });
+
+  it('keeps the default identity for the workflow token and when the token user cannot be resolved', async () => {
+    jest.spyOn(core, 'getIDToken').mockRejectedValue(new Error('No OIDC'));
+    const getAuthenticated = jest.fn().mockRejectedValue(new Error('Bad credentials'));
+    mockGetOctokit.mockReturnValue({ rest: { users: { getAuthenticated } } } as unknown as ReturnType<typeof github.getOctokit>);
+
+    mockGetInput.mockImplementation((name: string) => (name === 'github_token' ? 'ghs_workflow' : ''));
+    expect((await createAuthenticatedOctokit()).bot).toEqual({ logins: ['manki-review[bot]', 'github-actions[bot]'] });
+    expect(getAuthenticated).not.toHaveBeenCalled();
+
+    jest.mocked(core.warning).mockClear();
+    mockGetInput.mockImplementation((name: string) => (name === 'github_token' ? 'github_pat_broken' : ''));
+    expect((await createAuthenticatedOctokit()).bot).toEqual({ logins: ['manki-review[bot]', 'github-actions[bot]'] });
+    expect(getAuthenticated).toHaveBeenCalledTimes(1);
+    expect(core.warning).toHaveBeenCalledTimes(1);
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Bad credentials'));
   });
 
   it('retries a rate-limited request at most twice', async () => {

@@ -34,6 +34,11 @@ function isBotLogin(bot: BotIdentity, login: string | null | undefined): boolean
   if (!login) return false;
   return bot.logins.includes(login) || bot.logins.includes(`${login}[bot]`);
 }
+
+/** Whether a REST `user` is one of `bot`'s accounts. REST reports a bot as `<slug>[bot]`, so only an exact login matches. */
+function isBotUser(bot: BotIdentity, user: { login?: string | null } | null | undefined): boolean {
+  return !!user?.login && bot.logins.includes(user.login);
+}
 const BOT_MARKER = '<!-- manki-bot -->';
 const REVIEW_COMPLETE_MARKER = '<!-- manki-review-complete -->';
 const FORCE_REVIEW_MARKER = '<!-- manki-force-review -->';
@@ -1687,8 +1692,7 @@ async function fetchPRComments(
  */
 function findProgressComment(comments: IssueComment[], bot: BotIdentity): ProgressComment | null {
   const match = comments.find(c =>
-    isBotLogin(bot, c.user?.login) &&
-    c.user?.type === 'Bot' &&
+    isBotUser(bot, c.user) &&
     c.body?.includes(BOT_MARKER) &&
     !c.body?.includes(REVIEW_COMPLETE_MARKER) &&
     !c.body?.includes(FORCE_REVIEW_MARKER) &&
@@ -1777,7 +1781,7 @@ interface InProgressLock {
  */
 function findInProgressLock(comments: IssueComment[], bot: BotIdentity, currentRunId: number): InProgressLock | null {
   for (const c of comments) {
-    if (!isBotLogin(bot, c.user?.login) || c.user?.type !== 'Bot') continue;
+    if (!isBotUser(bot, c.user)) continue;
     if (!c.body?.includes(BOT_MARKER)) continue;
     if (c.body.includes(REVIEW_COMPLETE_MARKER)) continue;
     if (c.body.includes(CANCELLED_MARKER)) continue;
@@ -1867,8 +1871,7 @@ async function markOwnProgressCommentCancelled(
   try {
     const comments = await fetchPRComments(octokit, owner, repo, prNumber);
     const target = comments.find(c =>
-      isBotLogin(bot, c.user?.login) &&
-      c.user?.type === 'Bot' &&
+      isBotUser(bot, c.user) &&
       c.body?.includes(BOT_MARKER) &&
       !c.body?.includes(REVIEW_COMPLETE_MARKER) &&
       !c.body?.includes(CANCELLED_MARKER) &&
@@ -1912,8 +1915,8 @@ async function fetchBotReviews(
       per_page: 100,
     });
     return reviews.slice(-500)
-      .filter((r: { state?: string; user?: { login?: string; type?: string } | null; body?: string | null }) =>
-        isBotLogin(bot, r.user?.login) && r.user?.type === 'Bot' && (includeDismissed || r.state !== 'DISMISSED') &&
+      .filter((r: { state?: string; user?: { login?: string } | null; body?: string | null }) =>
+        isBotUser(bot, r.user) && (includeDismissed || r.state !== 'DISMISSED') &&
         !!r.body && r.body.includes(BOT_MARKER),
       )
       .map((r: unknown) => {
