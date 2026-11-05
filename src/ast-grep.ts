@@ -5,7 +5,7 @@ import * as core from '@actions/core';
 import type { NapiConfig, parse, registerDynamicLanguage } from '@ast-grep/napi';
 import { parseAllDocuments } from 'yaml';
 
-import { installTarball, PinnedDownload } from './tool-install';
+import { installPinned, PinnedDownload } from './tool-install';
 import { StaticSignal } from './types';
 
 /** The part of `@ast-grep/napi` the analyzer uses, with the Python grammar registered as `python`. */
@@ -79,8 +79,8 @@ async function loadPinnedAstGrep(): Promise<AstGrepApi> {
   const build = NAPI_BUILDS[platform];
   if (!build) throw new Error(`no pinned ast-grep build for ${platform}`);
   const [bindingDir, grammarDir] = await Promise.all([
-    installTarball({ url: `https://registry.npmjs.org/@ast-grep/napi-${build.target}/-/napi-${build.target}-${NAPI_VERSION}.tgz`, integrity: build.integrity }),
-    installTarball(PYTHON_GRAMMAR),
+    installPinned({ url: `https://registry.npmjs.org/@ast-grep/napi-${build.target}/-/napi-${build.target}-${NAPI_VERSION}.tgz`, integrity: build.integrity }),
+    installPinned(PYTHON_GRAMMAR),
   ]);
   const binding = { exports: {} };
   process.dlopen(binding, join(bindingDir, 'package', `ast-grep-napi.${build.target}.node`));

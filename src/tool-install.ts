@@ -1,15 +1,15 @@
 import { execFile } from 'child_process';
 import { createHash } from 'crypto';
-import { mkdtempSync, writeFileSync } from 'fs';
+import { chmodSync, mkdtempSync, realpathSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { basename, join } from 'path';
 import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
 
 const DOWNLOAD_TIMEOUT_MS = 120_000;
 
-/** A release archive pinned to one version by its digest in Subresource Integrity form, such as `sha512-<base64>`. */
+/** A release file pinned to one version by its digest in Subresource Integrity form, such as `sha512-<base64>`. */
 export interface PinnedDownload {
   url: string;
   integrity: string;
@@ -18,19 +18,25 @@ export interface PinnedDownload {
 const installs = new Map<string, Promise<string>>();
 
 /**
- * Returns the directory a pinned `.tgz` was unpacked into. Each URL is downloaded at most once per run.
+ * Returns the directory a pinned download was installed into. A `.tgz`, `.tar.gz` or `.zip` is unpacked there, and
+ * any other file is saved there as an executable under its own name. Each URL is downloaded at most once per run.
  * Throws when the download fails or its digest differs from `integrity`.
  */
-export function installTarball(download: PinnedDownload): Promise<string> {
+export function installPinned(download: PinnedDownload): Promise<string> {
   let install = installs.get(download.url);
   if (!install) {
-    install = downloadAndExtract(download);
+    install = downloadAndInstall(download);
     installs.set(download.url, install);
   }
   return install;
 }
 
-async function downloadAndExtract({ url, integrity }: PinnedDownload): Promise<string> {
+/** Returns a new empty directory in the runner's temp directory, as a real path so tools report paths under it. */
+export function makeScratchDir(prefix: string): string {
+  return realpathSync(mkdtempSync(join(process.env.RUNNER_TEMP || tmpdir(), `manki-${prefix}-`)));
+}
+
+async function downloadAndInstall({ url, integrity }: PinnedDownload): Promise<string> {
   const response = await fetch(url, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
   if (!response.ok) throw new Error(`download of ${url} failed with HTTP ${response.status}`);
   const data = Buffer.from(await response.arrayBuffer());
@@ -39,10 +45,18 @@ async function downloadAndExtract({ url, integrity }: PinnedDownload): Promise<s
   if (createHash(algorithm).update(data).digest('base64') !== integrity.slice(separator + 1)) {
     throw new Error(`download of ${url} does not match its pinned ${algorithm} digest`);
   }
-  const dir = mkdtempSync(join(process.env.RUNNER_TEMP || tmpdir(), 'manki-tool-'));
-  const archive = join(dir, 'download.tgz');
-  writeFileSync(archive, data);
+  const dir = makeScratchDir('tool');
+  const name = basename(new URL(url).pathname);
+  const file = join(dir, name);
+  writeFileSync(file, data);
   // A relative name keeps a Windows drive letter away from GNU tar, which reads `C:` as a remote host.
-  await execFileAsync('tar', ['-xzf', 'download.tgz'], { cwd: dir });
+  if (/\.(tgz|tar\.gz)$/.test(name)) {
+    await execFileAsync('tar', ['-xzf', name], { cwd: dir });
+  } else if (name.endsWith('.zip')) {
+    // Only Windows builds come as zips, and the Windows `tar` is bsdtar, which reads them.
+    await execFileAsync('tar', ['-xf', name], { cwd: dir });
+  } else {
+    chmodSync(file, 0o755);
+  }
   return dir;
 }

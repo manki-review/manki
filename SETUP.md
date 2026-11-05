@@ -457,17 +457,28 @@ For a repository without CI checks, Manki can run analyzers itself. They are off
 static_analysis:
   analyzers:
     ast_grep: true
+    secrets: true
+    dependencies: true
+    semgrep:
+      rules: [.semgrep/manki.yml]
 ```
 
-`analyzers: all` turns every analyzer on, including ones later releases add.
+`analyzers: all` turns on every analyzer that needs no rules from you, including ones later releases add. Semgrep only runs when you list rule files.
 
-| Analyzer | What it checks |
-|----------|----------------|
-| `ast_grep` | [ast-grep](https://ast-grep.github.io) with Manki's own rules in [`rules/ast-grep`](rules/ast-grep) (MIT licensed): code and shell injection, HTML sinks, disabled TLS checks and unsafe deserialization, plus error-prone patterns such as an async `forEach` callback, a comparison with `NaN` or a mutable default argument. Runs on the changed JavaScript, TypeScript and Python files. |
+| Analyzer | Tool | What it checks |
+|----------|------|----------------|
+| `ast_grep` | [ast-grep](https://ast-grep.github.io) 0.51.1 | Manki's own rules in [`rules/ast-grep`](rules/ast-grep) (MIT licensed): code and shell injection, HTML sinks, disabled TLS checks and unsafe deserialization, plus error-prone patterns such as an async `forEach` callback, a comparison with `NaN` or a mutable default argument. Runs on the changed JavaScript, TypeScript and Python files. |
+| `secrets` | [gitleaks](https://github.com/gitleaks/gitleaks) 8.30.1 | Secrets on the lines the PR adds in any changed file, with gitleaks' default rules through Manki's [`rules/gitleaks.toml`](rules/gitleaks.toml). `gitleaks:allow` comments are ignored. |
+| `dependencies` | [OSV-Scanner](https://github.com/google/osv-scanner) 2.7.0 | Known vulnerabilities in the packages of the changed lockfiles, such as `package-lock.json`, `pnpm-lock.yaml`, `go.mod` or `requirements.txt`, with Manki's [`rules/osv-scanner.toml`](rules/osv-scanner.toml). A result sits on the line that adds the package. |
+| `semgrep` | [Opengrep](https://github.com/opengrep/opengrep) 1.33.1 | Your Semgrep rules on the changed files. List rule files in the repository, read from the base branch. Manki ships no Semgrep rules and never fetches registry rules such as `p/default`. `nosemgrep` comments are ignored. |
 
-The analyzers never run code from the PR. Manki reads the changed files through the API at the head commit and parses them. It never uses rules or config from the PR. It downloads the ast-grep native module and its Python grammar from npm at a pinned version, checks each against its pinned SHA-512 digest, and loads them in process. ncc can only bundle the native module for the platform that builds `dist/`, so they load at run time on Linux and macOS (x64 and arm64) and Windows (x64). If the download fails or the platform has no pinned build, the analyzer is skipped with a warning and the review goes on.
+The analyzers never run code from the PR. Manki reads the changed files through the API at the head commit and gives the tools the files, never a checkout. It never uses rules or config from the PR: each tool gets Manki's config or the rule files from the base branch, and the files a tool would read as its own config or ignore list, such as `.gitleaksignore` or `.semgrepignore`, are left out of what it scans. The tools run without the action's environment, so they never see a token.
 
-Analyzer results follow the path of the CI results above, limited to lines of the diff. Since no CI shows them to the author, every result goes to the judge as a candidate finding, and a reviewer finding on the same line is never dropped for it. A result the judge keeps is posted with the analyzer in its label, such as `⚠️ **Warning** (ast-grep):`. A clean run posts nothing. The `Manki context` block records each enabled analyzer under `staticAnalysis.analyzers`, with how many results it found or why it was skipped.
+Manki downloads each tool at the pinned version, checks it against its pinned digest (SHA-512 for the ast-grep packages from npm, SHA-256 for the release binaries), and caches it for the run. The ast-grep native module and its Python grammar load in process. ncc can only bundle the native module for the platform that builds `dist/`, so they load at run time. Builds are pinned for Linux and macOS (x64 and arm64) and Windows (x64). If a download fails, the platform has no pinned build or a tool fails, that analyzer is skipped with a warning and the review goes on.
+
+`exclude_paths` keeps files away from the reviewers, and `ast_grep` and `semgrep` follow it. `dependencies` checks every lockfile the PR changes, including the ones the default `*.lock` pattern excludes, such as `yarn.lock` or `Cargo.lock`, within 10 MB per lockfile and 40 MB in all. `secrets` checks every changed file, since a PR can add its own `exclude_paths`. A result on an excluded file has no inline thread, so it is listed in the review body.
+
+Analyzer results follow the path of the CI results above, limited to lines of the diff. Since no CI shows them to the author, every result goes to the judge as a candidate finding, and a reviewer finding on the same line is never dropped for it. A result the judge keeps is posted with the tool in its label, such as `⚠️ **Warning** (gitleaks):`. A clean run posts nothing. The `Manki context` block records each enabled analyzer under `staticAnalysis.analyzers`, with how many results it found or why it was skipped.
 
 ## Step 4: Configure Reviews (Optional)
 
@@ -523,7 +534,10 @@ static_analysis:
   wait_for_checks: []      # check runs to wait for, such as [lint, CodeQL]
   wait_timeout_seconds: 300
   analyzers:               # analyzers Manki runs itself (default: off), or `all`
-    ast_grep: false
+    ast_grep: false        # Manki's ast-grep rules
+    secrets: false         # gitleaks on the added lines
+    dependencies: false    # OSV-Scanner on the changed lockfiles
+    semgrep: false         # or `rules: [...]`, your Semgrep rule files
 
 # Multi-pass verification (integer 1-5, default: 1). Runs each reviewer N
 # times with shuffled file ordering; only consistent findings are kept.

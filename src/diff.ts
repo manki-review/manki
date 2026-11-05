@@ -131,6 +131,20 @@ export function isSameChange(a: string, b: string, excludePaths: string[]): bool
   return changeKey(a) === changeKey(b);
 }
 
+/** Returns the text of each line the diff adds to the file, keyed by its line number in the new file. */
+export function addedLines(file: DiffFile): Map<number, string> {
+  const added = new Map<number, string>();
+  for (const hunk of file.hunks) {
+    let line = hunk.newStart;
+    for (const content of hunk.content.split('\n')) {
+      if (content.startsWith('-') || content.startsWith('\\')) continue;
+      if (content.startsWith('+')) added.set(line, content.slice(1));
+      line++;
+    }
+  }
+  return added;
+}
+
 /**
  * Check if a line number is within the diff hunks for a file.
  * GitHub only allows inline comments on lines that are part of the diff.

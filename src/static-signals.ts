@@ -2,10 +2,11 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { AstGrepApi, isAstGrepFile, loadAstGrep, runAstGrep } from './ast-grep';
+import { installTool, isLockfile, runGitleaks, runOpengrep, runOsvScanner, runTool, ToolRunner } from './binary-analyzers';
 import { loadStaticAnalysisConfig } from './config';
-import { isLineInDiff } from './diff';
+import { addedLines, isLineInDiff } from './diff';
 import { dynamicFence, fetchConfigFile, fetchFileContents } from './github';
-import { AnalyzerName, ANALYZERS, DiffFile, Finding, FindingSeverity, ParsedDiff, RoundAnalyzerRun, RoundStaticAnalysis, StaticAnalysisConfig, StaticSignal, StaticSignalSource, ToolEvidence } from './types';
+import { AnalyzerName, ANALYZERS, DiffFile, Finding, FindingSeverity, PackageVulnerability, ParsedDiff, RoundAnalyzerRun, RoundStaticAnalysis, StaticAnalysisConfig, StaticSignal, StaticSignalSource, ToolEvidence } from './types';
 import { safeTruncate } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -21,6 +22,8 @@ const ERROR_LINE_WINDOW = 3;
 const CHECK_POLL_MS = 15_000;
 const MAX_ANALYZED_FILE_BYTES = 1024 * 1024;
 const MAX_ANALYZED_TOTAL_BYTES = 8 * 1024 * 1024;
+const MAX_LOCKFILE_BYTES = 10 * 1024 * 1024;
+const MAX_LOCKFILES_TOTAL_BYTES = 40 * 1024 * 1024;
 
 const SECURITY_RULE = /\b(?:security|injection|xss|csrf|ssrf|cwe|cve|secrets?|traversal|format-string|vulnerab\w*)\b/i;
 const STYLE_RULE = /\b(?:prettier|[a-z]*(?:fmt|style)|stylistic|format(?:ting|ter)?|whitespace|indent(?:ation)?|spacing|quotes|semi|trailing[-_ ]?(?:spaces|comma)|max[-_ ]?len|line[-_ ]?length|eol[-_ ]?last|camel[-_ ]?case|naming[-_ ]?convention)\b/i;
@@ -43,16 +46,20 @@ export interface StaticSignalRequest {
   /** Path of the Manki config file. Its `static_analysis` block is read from `baseRef`. */
   configPath: string;
   diff: ParsedDiff;
+  /** Every file the PR changes, before `exclude_paths`. `dependencies` reads it, so a lockfile the review skips is still scanned. */
+  fullDiff: ParsedDiff;
 }
 
 /** What `collectStaticSignals` needs from outside the GitHub API, so tests can stand in for it. */
-export interface StaticAnalysisRuntime {
+export interface StaticAnalysisRuntime extends ToolRunner {
   loadAstGrep: () => Promise<AstGrepApi>;
   sleep: (ms: number) => Promise<void>;
 }
 
 const DEFAULT_RUNTIME: StaticAnalysisRuntime = {
   loadAstGrep,
+  installTool,
+  runTool,
   sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
 };
 
@@ -69,7 +76,7 @@ export interface StaticAnalysisResult {
 export async function collectStaticSignals(
   octokit: Octokit, request: StaticSignalRequest, runtime: StaticAnalysisRuntime = DEFAULT_RUNTIME,
 ): Promise<StaticAnalysisResult> {
-  const { owner, repo, baseRef, configPath, diff } = request;
+  const { owner, repo, baseRef, configPath, diff, fullDiff } = request;
   const content = await fetchConfigFile(octokit, owner, repo, baseRef, configPath).catch((error: unknown) => {
     core.warning(`Static analysis: could not read ${configPath} on the base branch, reading every source: ${error instanceof Error ? error.message : String(error)}`);
     return null;
@@ -77,21 +84,47 @@ export async function collectStaticSignals(
   const settings = loadStaticAnalysisConfig(content, configPath);
   const checksStillPending = await waitForChecks(octokit, request, settings, runtime.sleep);
   const analyzers = enabledAnalyzers(settings);
+  const semgrepRules = settings.analyzers !== 'all' && settings.analyzers.semgrep ? settings.analyzers.semgrep.rules : [];
+  // The files are read through the API and only parsed, so no code from the PR runs. Each analyzer reads its own files
+  // within its own budget, so turning one on never shrinks what another one scans.
+  const readHeadFiles = (keep: (path: string) => boolean) => fetchFileContents(
+    octokit, owner, repo, request.headSha,
+    diff.files.filter(f => f.changeType !== 'deleted' && keep(f.path)).map(f => f.path),
+    MAX_ANALYZED_FILE_BYTES, MAX_ANALYZED_TOTAL_BYTES,
+  );
   const sources: Array<[StaticSignalSource, () => Promise<StaticSignal[]>]> = [];
   if (settings.checks) sources.push(['checks', () => fetchCheckAnnotations(octokit, request)]);
   if (settings.code_scanning) sources.push(['code_scanning', () => fetchCodeScanningAlerts(octokit, request)]);
   if (settings.dependency_review) sources.push(['dependency_review', () => fetchDependencyReview(octokit, request)]);
-  if (analyzers.includes('ast_grep')) sources.push(['ast_grep', () => runAstGrepAnalyzer(octokit, request, runtime)]);
+  if (analyzers.includes('ast_grep')) {
+    sources.push(['ast_grep', async () => {
+      if (!diff.files.some(f => f.changeType !== 'deleted' && isAstGrepFile(f.path))) return [];
+      const [api, contents] = await Promise.all([runtime.loadAstGrep(), readHeadFiles(isAstGrepFile)]);
+      return runAstGrep(api, contents);
+    }]);
+  }
+  // A PR can change its own `exclude_paths`, so secrets are looked for in every changed file.
+  if (analyzers.includes('secrets')) sources.push(['secrets', () => runGitleaks(fullDiff.files, runtime)]);
+  if (analyzers.includes('dependencies')) {
+    sources.push(['dependencies', async () => {
+      const vulnerabilities = await runOsvScanner(await fetchLockfiles(octokit, request), runtime);
+      return placeVulnerabilities(vulnerabilities, fullDiff, 'osv-scanner', 'dependencies');
+    }]);
+  }
+  if (analyzers.includes('semgrep')) {
+    sources.push(['semgrep', async () => runOpengrep(await fetchSemgrepRules(octokit, request, semgrepRules), await readHeadFiles(() => true), runtime)]);
+  }
 
   const files = new Map(diff.files.map(f => [f.path, f]));
+  const allFiles = new Map(fullDiff.files.map(f => [f.path, f]));
   const runs: RoundAnalyzerRun[] = [];
   const collected = await Promise.all(sources.map(async ([source, fetch]) => {
     const analyzer = analyzers.find(a => a === source);
     try {
       const onDiff = (await fetch()).filter(s => {
-        const file = files.get(s.file);
+        const file = (source === 'dependencies' || source === 'secrets' ? allFiles : files).get(s.file);
         return file !== undefined && isLineInDiff(file, s.line);
-      });
+      }).map(s => analyzer ? { ...s, ruleId: cleanMessage(s.ruleId, MAX_NAME_CHARS), message: cleanMessage(s.message) } : s);
       if (analyzer) runs.push({ analyzer, status: 'ran', results: onDiff.length });
       return onDiff;
     } catch (error) {
@@ -116,7 +149,9 @@ export function isAnalyzerSignal(signal: StaticSignal): boolean {
 
 function enabledAnalyzers(settings: StaticAnalysisConfig): AnalyzerName[] {
   const { analyzers } = settings;
-  return analyzers === 'all' ? [...ANALYZERS] : ANALYZERS.filter(a => analyzers[a] === true);
+  // Semgrep runs only with the user's rules, so `all` cannot turn it on.
+  if (analyzers === 'all') return ANALYZERS.filter(a => a !== 'semgrep');
+  return ANALYZERS.filter(a => a === 'semgrep' ? !!analyzers.semgrep : analyzers[a] === true);
 }
 
 /** Polls the check runs named in `wait_for_checks` until each has finished, and returns the ones still running at the timeout. */
@@ -150,15 +185,33 @@ async function waitForChecks(
   }
 }
 
-async function runAstGrepAnalyzer(octokit: Octokit, { owner, repo, headSha, diff }: StaticSignalRequest, runtime: StaticAnalysisRuntime): Promise<StaticSignal[]> {
-  const paths = diff.files.filter(f => f.changeType !== 'deleted' && isAstGrepFile(f.path)).map(f => f.path);
-  if (paths.length === 0) return [];
-  // The files are read through the API and only parsed, so no code from the PR runs.
-  const [api, contents] = await Promise.all([
-    runtime.loadAstGrep(),
-    fetchFileContents(octokit, owner, repo, headSha, paths, MAX_ANALYZED_FILE_BYTES, MAX_ANALYZED_TOTAL_BYTES),
-  ]);
-  return runAstGrep(api, contents);
+/**
+ * Returns the changed lockfiles at the PR head, within `MAX_LOCKFILE_BYTES` each and `MAX_LOCKFILES_TOTAL_BYTES` in all.
+ * They are fetched raw, since the contents API sends no content above 1 MB.
+ */
+async function fetchLockfiles(octokit: Octokit, { owner, repo, headSha, fullDiff }: StaticSignalRequest): Promise<Map<string, string>> {
+  const lockfiles = new Map<string, string>();
+  let total = 0;
+  for (const { path } of fullDiff.files.filter(f => f.changeType !== 'deleted' && isLockfile(f.path))) {
+    const { data } = await octokit.rest.repos.getContent({ owner, repo, path, ref: headSha, mediaType: { format: 'raw' } });
+    const content = data as unknown as string;
+    if (content.length > MAX_LOCKFILE_BYTES || total + content.length > MAX_LOCKFILES_TOTAL_BYTES) {
+      core.info(`Static analysis: dependencies skips ${path}, ${content.length} bytes is over the lockfile budget`);
+      continue;
+    }
+    lockfiles.set(path, content);
+    total += content.length;
+  }
+  return lockfiles;
+}
+
+/** Returns the Semgrep rule files from the base branch, so a PR can neither change nor add a rule. */
+async function fetchSemgrepRules(octokit: Octokit, { owner, repo, baseRef }: StaticSignalRequest, paths: string[]): Promise<string[]> {
+  return Promise.all(paths.map(async path => {
+    const content = await fetchConfigFile(octokit, owner, repo, baseRef, path);
+    if (content === null) throw new Error(`could not read the Semgrep rules ${path} on the base branch`);
+    return content;
+  }));
 }
 
 /** Renders signals as a prompt section. The tool text is fenced because the PR under review can shape it. */
@@ -328,35 +381,41 @@ async function fetchCodeScanningAlerts(octokit: Octokit, { owner, repo, prNumber
 
 async function fetchDependencyReview(octokit: Octokit, { owner, repo, baseRef, headSha, diff }: StaticSignalRequest): Promise<StaticSignal[]> {
   const { data: changes } = await octokit.rest.dependencyGraph.diffRange({ owner, repo, basehead: `${baseRef}...${headSha}` });
+  const vulnerabilities = changes.flatMap(change => change.change_type !== 'added' ? [] : (change.vulnerabilities ?? []).map((v): PackageVulnerability => ({
+    manifest: change.manifest,
+    name: change.name,
+    version: change.version,
+    id: v.advisory_ghsa_id,
+    severity: v.severity === 'critical' || v.severity === 'high' ? 'error' : v.severity === 'moderate' ? 'warning' : 'note',
+    summary: v.advisory_summary ?? undefined,
+  })));
+  return placeVulnerabilities(vulnerabilities, diff, 'dependency review', 'dependency_review');
+}
+
+function placeVulnerabilities(vulnerabilities: PackageVulnerability[], diff: ParsedDiff, tool: string, source: StaticSignalSource): StaticSignal[] {
   const files = new Map(diff.files.map(f => [f.path, f]));
-  return changes.flatMap((change): StaticSignal[] => {
-    const file = files.get(change.manifest);
-    if (change.change_type !== 'added' || !file || !change.vulnerabilities?.length) return [];
-    // The API reports a manifest but no line, so the result is placed on the added line naming the package.
-    const line = findAddedLine(file, change.name);
+  return vulnerabilities.flatMap((v): StaticSignal[] => {
+    const file = files.get(v.manifest);
+    // Scanners report a manifest but no line, so the result is placed on the added line naming the package.
+    const line = file && findAddedLine(file, v.name);
     if (line === undefined) return [];
-    return change.vulnerabilities.map((v): StaticSignal => ({
-      tool: 'dependency review',
-      ruleId: cleanMessage(v.advisory_ghsa_id, MAX_NAME_CHARS),
-      severity: v.severity === 'critical' || v.severity === 'high' ? 'error' : v.severity === 'moderate' ? 'warning' : 'note',
-      file: change.manifest,
+    return [{
+      tool,
+      ruleId: cleanMessage(v.id, MAX_NAME_CHARS),
+      severity: v.severity,
+      file: v.manifest,
       line,
-      message: cleanMessage(`${change.name}@${change.version}: ${v.advisory_summary ?? 'no summary'}`),
-      source: 'dependency_review',
-    }));
+      message: cleanMessage(`${v.name}@${v.version}: ${v.summary ?? 'no summary'}`),
+      source,
+    }];
   });
 }
 
 function findAddedLine(file: DiffFile, name: string): number | undefined {
   // `lodash` must not match `lodash.merge` or `my-lodash`, but must match `node_modules/lodash` and `lodash@4`.
   const pattern = new RegExp(`(^|[^\\w.@-])${escapeRegExp(name)}($|[^\\w./-])`);
-  for (const hunk of file.hunks) {
-    let line = hunk.newStart;
-    for (const content of hunk.content.split('\n')) {
-      if (content.startsWith('-') || content.startsWith('\\')) continue;
-      if (content.startsWith('+') && pattern.test(content.slice(1))) return line;
-      line++;
-    }
+  for (const [line, text] of addedLines(file)) {
+    if (pattern.test(text)) return line;
   }
   return undefined;
 }
