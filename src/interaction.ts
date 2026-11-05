@@ -7,7 +7,7 @@ import { BotIdentity, dynamicFence, isTrustedAssociation, reactToIssueComment, r
 import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
-import { isOtherThanPrAuthor } from './recap';
+import { mayClearSecurityThread } from './recap';
 import { checkAndAutoApprove, fetchBotReviewThreads, resolveReviewThread } from './state';
 import { ReviewConfig } from './types';
 import { WRITING_RULES } from './writing-rules';
@@ -196,7 +196,7 @@ export async function handleReviewCommentReply(
     const isPrAuthor = !!prAuthorLogin && senderLogin?.toLowerCase() === prAuthorLogin.toLowerCase();
     if (RESOLVING_REPLY_RE.test(reply) && (isTrusted || isPrAuthor)) {
       try {
-        await resolveThreadOf(octokit, bot, owner, repo, prNumber, root.id, isTrusted && isOtherThanPrAuthor(senderLogin, prAuthorLogin));
+        await resolveThreadOf(octokit, bot, owner, repo, prNumber, root.id, isTrusted && mayClearSecurityThread(senderLogin, bot, prAuthorLogin));
       } catch (error) {
         core.warning(`Failed to resolve thread after reply: ${error}`);
       }

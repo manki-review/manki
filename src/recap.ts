@@ -49,17 +49,13 @@ function isSecurityThread(body: string): boolean {
 const REOPENED_MARKER = '<!-- manki-reopened -->';
 
 /**
- * Whether the person who resolved a security thread may clear it: a human other than the PR author.
- * Only the PR author and people with write access can resolve a thread, so with the author unknown any human resolver has write access.
+ * Whether `login` may clear a security thread by resolving it, or by agreeing when they also have write access:
+ * a human other than the PR author. Only the PR author and people with write access can resolve a thread,
+ * so with the author unknown any human resolver has write access.
  */
-function mayClearSecurityThread(resolverLogin: string | undefined, bot: BotIdentity, prAuthorLogin: string | undefined): boolean {
-  if (!resolverLogin || isBotLogin(bot, resolverLogin) || resolverLogin.endsWith('[bot]')) return false;
-  return !prAuthorLogin || isOtherThanPrAuthor(resolverLogin, prAuthorLogin);
-}
-
-/** Whether `login` is someone other than the PR author. The PR author's own dismissal never clears a security finding. */
-function isOtherThanPrAuthor(login: string | undefined, prAuthorLogin: string | undefined): boolean {
-  return !!login && !!prAuthorLogin && login.toLowerCase() !== prAuthorLogin.toLowerCase();
+function mayClearSecurityThread(login: string | undefined, bot: BotIdentity, prAuthorLogin: string | undefined): boolean {
+  if (!login || isBotLogin(bot, login) || login.endsWith('[bot]')) return false;
+  return !prAuthorLogin || login.toLowerCase() !== prAuthorLogin.toLowerCase();
 }
 
 /** Matches the title line of a thread comment in either layout. */
@@ -177,6 +173,8 @@ interface PreviousFinding extends FindingMetadata {
   /** `author_association` of the latest non-bot replier. */
   authorReplyAssociation?: string;
   isSecurity?: boolean;
+  /** On a security thread, whether the latest replier may agree it away: `mayClearSecurityThread` with write access. */
+  authorReplyMayClear?: boolean;
   /** A security thread the PR author resolved, which Manki has not reopened before. */
   reopen?: boolean;
 }
@@ -227,18 +225,16 @@ function inPrSuppressionReasonFor(
   // third-party commenter on a public repo could suppress lower-severity
   // findings by posting "Fixed!" on a manki thread.
   if (
-    prAuthorLogin &&
-    (pf.isSecurity || pf.authorReplyLogin === prAuthorLogin) &&
-    replyClassOf(pf, prAuthorLogin) === 'agree'
+    (pf.isSecurity || (prAuthorLogin && pf.authorReplyLogin === prAuthorLogin)) &&
+    replyClassOf(pf) === 'agree'
   ) return 'agree-reply';
   return undefined;
 }
 
-/** Classifies the latest human reply on `pf`. Only someone other than the PR author with write access can agree a security finding away. */
-function replyClassOf(pf: PreviousFinding, prAuthorLogin: string | undefined): AuthorReplyClass {
+/** Classifies the latest human reply on `pf`. A security finding is agreed away only when `authorReplyMayClear` holds. */
+function replyClassOf(pf: PreviousFinding): AuthorReplyClass {
   const replyClass = classifyAuthorReply(pf.authorReplyText);
-  const mayDismiss = isOtherThanPrAuthor(pf.authorReplyLogin, prAuthorLogin) && isTrustedAssociation(pf.authorReplyAssociation);
-  return replyClass === 'agree' && pf.isSecurity && !mayDismiss ? 'none' : replyClass;
+  return replyClass === 'agree' && pf.isSecurity && !pf.authorReplyMayClear ? 'none' : replyClass;
 }
 
 interface RecapState {
@@ -403,6 +399,8 @@ async function fetchRecapState(
       authorReplyLogin: t.authorReplyLogin,
       ...(t.authorReplyAssociation && { authorReplyAssociation: t.authorReplyAssociation }),
       ...(t.isSecurity && { isSecurity: true }),
+      ...(t.isSecurity && mayClearSecurityThread(t.authorReplyLogin, bot, prAuthorLogin)
+        && isTrustedAssociation(t.authorReplyAssociation) && { authorReplyMayClear: true }),
       ...(shouldReopen(t, addressedThreadIds, prAuthorLogin) && { reopen: true }),
       description: t.description,
       suggestedFix: t.suggestedFix,
@@ -417,7 +415,7 @@ async function fetchRecapState(
   core.info(`Recap: ${resolved.length} resolved, ${open.length} open, ${previousFindings.length} total previous findings`);
 
   const { rounds: enrichedPriorRounds, reclassifiedPriorCount, reclassifiedPriors } =
-    refreshAuthorReplyClass(attachPriorThreadIds(priorRounds, previousFindings), previousFindings, prAuthorLogin);
+    refreshAuthorReplyClass(attachPriorThreadIds(priorRounds, previousFindings), previousFindings);
 
   return {
     previousFindings,
@@ -500,7 +498,6 @@ const RECLASSIFIED_PRIORS_CAP = 50;
 function refreshAuthorReplyClass(
   rounds: RoundContext[],
   previousFindings: PreviousFinding[],
-  prAuthorLogin?: string,
 ): { rounds: RoundContext[]; reclassifiedPriorCount: number; reclassifiedPriors: ReclassifiedPrior[] } {
   if (rounds.length === 0) {
     return { rounds, reclassifiedPriorCount: 0, reclassifiedPriors: [] };
@@ -525,7 +522,7 @@ function refreshAuthorReplyClass(
           ? byThread.get(entry.threadId)
           : bySlugFile.get(`${entry.fingerprint.file}:${entry.fingerprint.slug}`);
         if (!pf) return entry;
-        const next = replyClassOf(pf, prAuthorLogin);
+        const next = replyClassOf(pf);
         const prev = entry.authorReplyClass ?? 'none';
         if (next !== prev) {
           reclassifiedPriorCount++;
@@ -959,4 +956,4 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
   );
 }
 
-export { DuplicateMatch, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchRecapState, isOtherThanPrAuthor, isSecurityThread, mayClearSecurityThread, REOPENED_MARKER, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment };
+export { DuplicateMatch, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchRecapState, isSecurityThread, mayClearSecurityThread, REOPENED_MARKER, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment };

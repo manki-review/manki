@@ -818,17 +818,18 @@ describe('handleReviewCommentReply', () => {
   });
 
   it.each([
-    ['Fixed. The guard now runs first.', 'MEMBER', 'someone', false, true],
-    ['**Agreed.** Deferring it to the follow-up is fine.', 'NONE', 'pr-author', false, true],
-    ['Withdrawn. The caller already checks for null.', 'OWNER', 'someone', false, true],
-    ['Still open. The success path still skips `clearTimeout`.', 'MEMBER', 'someone', false, false],
-    ['Fixed. The guard now runs first.', 'CONTRIBUTOR', 'someone', false, false],
-    ['Agreed. The token never reaches a log.', 'OWNER', 'pr-author', true, false],
-    ['Agreed. The token never reaches a log.', 'MEMBER', 'someone', true, true],
-  ])('resolves the thread after %j from a %s reply by %s, security %s: %s', async (reply, association, sender, isSecurity, resolves) => {
+    ['Fixed. The guard now runs first.', 'MEMBER', 'someone', 'pr-author', false, true],
+    ['**Agreed.** Deferring it to the follow-up is fine.', 'NONE', 'pr-author', 'pr-author', false, true],
+    ['Withdrawn. The caller already checks for null.', 'OWNER', 'someone', 'pr-author', false, true],
+    ['Still open. The success path still skips `clearTimeout`.', 'MEMBER', 'someone', 'pr-author', false, false],
+    ['Fixed. The guard now runs first.', 'CONTRIBUTOR', 'someone', 'pr-author', false, false],
+    ['Agreed. The token never reaches a log.', 'OWNER', 'pr-author', 'pr-author', true, false],
+    ['Agreed. The token never reaches a log.', 'MEMBER', 'someone', 'pr-author', true, true],
+    ['Agreed. The token never reaches a log.', 'MEMBER', 'someone', undefined, true, true],
+  ])('resolves the thread after %j from a %s reply by %s, PR author %s, security %s: %s', async (reply, association, sender, prAuthor, isSecurity, resolves) => {
     setContext({
       comment: { id: 1, body: 'Done in the latest commit.', user: { type: 'User' }, in_reply_to_id: 99, author_association: association },
-      pull_request: { number: 1, user: { login: 'pr-author' } },
+      pull_request: { number: 1, ...(prAuthor && { user: { login: prAuthor } }) },
       sender: { login: sender },
     });
     const octokit = createMockOctokit();

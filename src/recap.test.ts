@@ -1394,6 +1394,9 @@ describe('fetchRecapState', () => {
       const unknownAuthor = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(unknownAuthor.previousFindings.filter(f => f.isSecurity && f.status === 'resolved').map(f => f.file))
         .toEqual(['src/author-resolved.ts', 'src/author-resolved-again.ts', 'src/collaborator-resolved.ts', 'src/judge-addressed.ts']);
+      // A reply from someone with write access agrees a security thread away under the same fallback.
+      expect(collectInPrSuppressions(unknownAuthor.previousFindings).filter(s => s.reason === 'agree-reply').map(s => s.fingerprint.file))
+        .toEqual(['src/author-agreed.ts', 'src/collaborator-agreed.ts']);
     });
 
     it('round-trips suggestedFix containing a literal \\u0060 escape sequence without parse error', async () => {
