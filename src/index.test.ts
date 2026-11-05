@@ -221,6 +221,7 @@ jest.mock('./github', () => {
 
 jest.mock('./state', () => ({
   checkAndAutoApprove: jest.fn().mockResolvedValue(false),
+  reopenAuthorResolvedThreads: jest.fn().mockResolvedValue(undefined),
   resolveReviewThread: jest.requireActual('./state').resolveReviewThread,
 }));
 

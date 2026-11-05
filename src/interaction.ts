@@ -3,10 +3,11 @@ import * as github from '@actions/github';
 
 import { LLMClient } from './providers';
 import { writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
-import { BotIdentity, dynamicFence, reactToIssueComment, reactToReviewComment, fetchPRDiff } from './github';
+import { BotIdentity, dynamicFence, isTrustedAssociation, reactToIssueComment, reactToReviewComment, fetchPRDiff } from './github';
 import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
+import { mayClearSecurityThread } from './recap';
 import { checkAndAutoApprove, fetchBotReviewThreads, resolveReviewThread } from './state';
 import { ReviewConfig } from './types';
 import { WRITING_RULES } from './writing-rules';
@@ -14,7 +15,7 @@ import { WRITING_RULES } from './writing-rules';
 type Octokit = ReturnType<typeof github.getOctokit>;
 
 // GitHub author_association values that indicate the user is a known repo participant.
-// Used to gate LLM-triggering commands — less strict than isTrusted (which guards write ops).
+// Used to gate LLM-triggering commands — less strict than `isTrustedAssociation` (which guards write ops).
 export function isRepoUser(authorAssociation: string | null | undefined): boolean {
   return ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR'].includes(authorAssociation ?? '');
 }
@@ -84,10 +85,16 @@ async function fetchThreadRoot(octokit: Octokit, owner: string, repo: string, id
   return null;
 }
 
-/** Resolves the Manki thread whose first comment is `rootCommentId`. */
-async function resolveThreadOf(octokit: Octokit, owner: string, repo: string, prNumber: number, rootCommentId: number): Promise<void> {
-  const thread = (await fetchBotReviewThreads(octokit, owner, repo, prNumber)).find(t => t.rootCommentId === rootCommentId);
+/** Resolves the Manki thread whose first comment is `rootCommentId`. A security thread is left open unless `securityAllowed`. */
+async function resolveThreadOf(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, rootCommentId: number, securityAllowed: boolean,
+): Promise<void> {
+  const thread = (await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber)).find(t => t.rootCommentId === rootCommentId);
   if (!thread || thread.isResolved) return;
+  if (thread.isSecurity && !securityAllowed) {
+    core.info(`Left security thread ${thread.id} open, since only someone other than the PR author with write access can dismiss it`);
+    return;
+  }
   await resolveReviewThread(octokit, thread.id);
   core.info(`Resolved thread ${thread.id} after the reply`);
 }
@@ -97,6 +104,7 @@ async function resolveThreadOf(octokit: Octokit, owner: string, repo: string, pr
  */
 export async function handleReviewCommentReply(
   octokit: Octokit,
+  bot: BotIdentity,
   client: LLMClient,
   owner: string,
   repo: string,
@@ -184,11 +192,11 @@ export async function handleReviewCommentReply(
     core.info('Posted reply to review comment');
 
     // Only someone who could resolve the thread by hand gets it resolved through a reply.
-    const isTrusted = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(comment.author_association ?? '');
+    const isTrusted = isTrustedAssociation(comment.author_association);
     const isPrAuthor = !!prAuthorLogin && senderLogin?.toLowerCase() === prAuthorLogin.toLowerCase();
     if (RESOLVING_REPLY_RE.test(reply) && (isTrusted || isPrAuthor)) {
       try {
-        await resolveThreadOf(octokit, owner, repo, prNumber, root.id);
+        await resolveThreadOf(octokit, bot, owner, repo, prNumber, root.id, isTrusted && mayClearSecurityThread(senderLogin, bot, prAuthorLogin));
       } catch (error) {
         core.warning(`Failed to resolve thread after reply: ${error}`);
       }
@@ -199,7 +207,7 @@ export async function handleReviewCommentReply(
       const simpleAcks = ['ok', 'done', 'fixed', 'thanks', 'will do', 'got it'];
       const isSubstantive = replyBody.length > 50 && !simpleAcks.includes(replyBody.toLowerCase());
 
-      const isTrusted = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(comment.author_association ?? '');
+      const isTrusted = isTrustedAssociation(comment.author_association);
       if (isSubstantive && isTrusted) {
         try {
           const memoryOctokit = github.getOctokit(memoryToken);
@@ -394,7 +402,7 @@ async function handleDismiss(
   }
 
   const authorAssociation = github.context.payload.comment?.author_association;
-  const isTrusted = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(authorAssociation ?? '');
+  const isTrusted = isTrustedAssociation(authorAssociation);
 
   if (!isTrusted) {
     core.info('Dismiss from non-collaborator — acknowledging but not persisting suppression');
@@ -456,7 +464,7 @@ async function handleRemember(
   memoryToken?: string,
 ): Promise<void> {
   const authorAssociation = github.context.payload.comment?.author_association;
-  const isTrusted = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(authorAssociation ?? '');
+  const isTrusted = isTrustedAssociation(authorAssociation);
 
   if (!isTrusted) {
     await octokit.rest.issues.createComment({
@@ -534,7 +542,7 @@ async function handleForget(
   memoryToken?: string,
 ): Promise<void> {
   const authorAssociation = github.context.payload.comment?.author_association;
-  const isTrusted = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(authorAssociation ?? '');
+  const isTrusted = isTrustedAssociation(authorAssociation);
 
   if (!isTrusted) {
     await octokit.rest.issues.createComment({
@@ -632,7 +640,7 @@ async function handleCheck(
   config?: ReviewConfig,
 ): Promise<void> {
   const authorAssociation = github.context.payload.comment?.author_association;
-  const isTrusted = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(authorAssociation ?? '');
+  const isTrusted = isTrustedAssociation(authorAssociation);
 
   if (!isTrusted) {
     await octokit.rest.issues.createComment({
@@ -655,7 +663,7 @@ async function handleCheck(
   const approved = await checkAndAutoApprove(octokit, bot, owner, repo, prNumber, config);
 
   if (!approved) {
-    const threads = await fetchBotReviewThreads(octokit, owner, repo, prNumber);
+    const threads = await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber);
     const blocking = threads.filter(t => t.isBlocking && !t.isResolved);
 
     if (blocking.length > 0) {

@@ -531,6 +531,8 @@ The judge assigns one of five severity levels to each finding:
 
 Rounds 1 and 2 block on `required` and `warning` findings. From round 3 only `required` findings block. A `warning` raised then is listed under "smaller fixes in this PR" in the review body instead of becoming a thread, so the round can approve. A blocker from the verdict reader blocks at every round, and so does a security finding: one the judge tags `security` and keeps at `warning` or above, whichever finder raised it.
 
+The PR author cannot dismiss a security finding. Their own "agree" reply or resolving the thread leaves it blocking, and auto-approve waits for it. When the author resolves the thread, the next round reopens it once and replies to say why. It is cleared when someone else with write access resolves the thread or replies in agreement, or when the judge marks the thread addressed.
+
 When a blocker comes back after the author pushed a fix for it, the review keeps requesting changes, lists the blocker under "Needs a human", and pauses automatic review. The last automatic round, round `convergence.max_auto_rounds` (default 5), blocks on blockers only: it approves with the remaining warnings as smaller fixes, or stops the same way when a blocker is still open. After a pause, commenting `@manki review` runs one more round that blocks on blockers only.
 
 Use the `models` config section to choose different models for the finders and the judge (e.g., a faster model for the finders and a more precise model for the judge).

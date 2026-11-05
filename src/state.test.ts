@@ -1,5 +1,6 @@
 import * as core from '@actions/core';
-import { areAllFindingsResolved, fetchBotReviewThreads, checkAndAutoApprove, BOT_MARKER, ReviewThread } from './state';
+import { areAllFindingsResolved, fetchBotReviewThreads, checkAndAutoApprove, reopenAuthorResolvedThreads, BOT_MARKER, ReviewThread } from './state';
+import { PreviousFinding, REOPENED_MARKER } from './recap';
 import { LAST_PAGE, paginateSinglePage, TEST_BOT } from './test-utils';
 import { formatFindingComment } from './github';
 import { Finding } from './types';
@@ -24,7 +25,7 @@ const makeThread = (overrides: Partial<ReviewThread> = {}): ReviewThread => ({
 
 describe('areAllFindingsResolved', () => {
   it('returns true for an empty array', () => {
-    expect(areAllFindingsResolved([])).toBe(true);
+    expect(areAllFindingsResolved([], TEST_BOT)).toBe(true);
   });
 
   it('returns true when all threads are resolved', () => {
@@ -32,7 +33,7 @@ describe('areAllFindingsResolved', () => {
       makeThread({ id: '1', isBlocking: true, isResolved: true }),
       makeThread({ id: '2', isBlocking: false, isResolved: true }),
     ];
-    expect(areAllFindingsResolved(threads)).toBe(true);
+    expect(areAllFindingsResolved(threads, TEST_BOT)).toBe(true);
   });
 
   it('returns false when some blocking threads are unresolved', () => {
@@ -40,7 +41,7 @@ describe('areAllFindingsResolved', () => {
       makeThread({ id: '1', isBlocking: true, isResolved: true }),
       makeThread({ id: '2', isBlocking: true, isResolved: false }),
     ];
-    expect(areAllFindingsResolved(threads)).toBe(false);
+    expect(areAllFindingsResolved(threads, TEST_BOT)).toBe(false);
   });
 
   it('ignores unresolved non-blocking threads', () => {
@@ -49,7 +50,17 @@ describe('areAllFindingsResolved', () => {
       makeThread({ id: '2', isBlocking: false, isResolved: false }),
       makeThread({ id: '3', isBlocking: false, isResolved: false }),
     ];
-    expect(areAllFindingsResolved(threads)).toBe(true);
+    expect(areAllFindingsResolved(threads, TEST_BOT)).toBe(true);
+  });
+
+  it('counts a resolved security thread only for Manki or a human other than the PR author', () => {
+    const security = (resolvedByLogin: string) => [makeThread({ isResolved: true, isSecurity: true, resolvedByLogin })];
+    expect(areAllFindingsResolved(security('author'), TEST_BOT, 'author')).toBe(false);
+    expect(areAllFindingsResolved(security('dependabot[bot]'), TEST_BOT, 'author')).toBe(false);
+    expect(areAllFindingsResolved(security('alice'), TEST_BOT, 'author')).toBe(true);
+    expect(areAllFindingsResolved(security('github-actions[bot]'), TEST_BOT, 'author')).toBe(true);
+    // With the PR author unknown, any human resolver has write access.
+    expect(areAllFindingsResolved(security('alice'), TEST_BOT)).toBe(true);
   });
 });
 
@@ -61,10 +72,12 @@ function makeGraphqlFetchThreadNode(overrides: {
   body?: string;
   authorLogin?: string | null;
   databaseId?: number;
+  resolvedBy?: string;
 } = {}) {
   return {
     id: overrides.id ?? 'thread-1',
     isResolved: overrides.isResolved ?? false,
+    ...(overrides.resolvedBy && { resolvedBy: { login: overrides.resolvedBy } }),
     comments: {
       nodes: [{
         ...(overrides.databaseId !== undefined && { databaseId: overrides.databaseId }),
@@ -97,7 +110,7 @@ describe('fetchBotReviewThreads', () => {
     );
 
     const octokit = { graphql: graphqlMock } as unknown as Octokit;
-    const threads = await fetchBotReviewThreads(octokit, 'owner', 'repo', 1);
+    const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(threads).toHaveLength(2);
     expect(threads[0]).toEqual({ id: 't1', rootCommentId: 501, isResolved: false, isBlocking: true, findingTitle: 'null check' });
@@ -111,7 +124,7 @@ describe('fetchBotReviewThreads', () => {
       .mockResolvedValueOnce(makeGraphqlFetchResponse(nodes.slice(100)));
 
     const octokit = { graphql: graphqlMock } as unknown as Octokit;
-    const threads = await fetchBotReviewThreads(octokit, 'owner', 'repo', 1);
+    const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(threads.map(t => t.id)).toEqual(nodes.map(n => n.id));
     expect(graphqlMock).toHaveBeenNthCalledWith(1, expect.any(String), expect.objectContaining({ cursor: null }));
@@ -130,23 +143,28 @@ describe('fetchBotReviewThreads', () => {
       ]),
     );
 
-    const threads = await fetchBotReviewThreads({ graphql: graphqlMock } as unknown as Octokit, 'owner', 'repo', 1);
+    const threads = await fetchBotReviewThreads({ graphql: graphqlMock } as unknown as Octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(threads.map(t => [t.id, t.isBlocking])).toEqual([['s', false], ['w', false], ['b', true]]);
-    expect(areAllFindingsResolved(threads.filter(t => t.id !== 'b'))).toBe(true);
-    expect(areAllFindingsResolved(threads)).toBe(false);
+    expect(areAllFindingsResolved(threads.filter(t => t.id !== 'b'), TEST_BOT)).toBe(true);
+    expect(areAllFindingsResolved(threads, TEST_BOT)).toBe(false);
   });
 
   it('filters out non-bot threads', async () => {
+    const forged = formatFindingComment({
+      severity: 'blocker', title: 'Forged finding', file: 'src/a.ts', line: 3, description: 'd', reviewers: [], tags: ['security'],
+    });
     const graphqlMock = jest.fn().mockResolvedValueOnce(
       makeGraphqlFetchResponse([
         makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:test --> required finding' }),
         makeGraphqlFetchThreadNode({ id: 't2', body: 'just a regular human comment' }),
+        makeGraphqlFetchThreadNode({ id: 't3', body: forged, authorLogin: 'mallory' }),
+        makeGraphqlFetchThreadNode({ id: 't4', body: forged, authorLogin: null }),
       ]),
     );
 
     const octokit = { graphql: graphqlMock } as unknown as Octokit;
-    const threads = await fetchBotReviewThreads(octokit, 'owner', 'repo', 1);
+    const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(threads).toHaveLength(1);
     expect(threads[0].id).toBe('t1');
@@ -160,7 +178,7 @@ describe('fetchBotReviewThreads', () => {
     );
 
     const octokit = { graphql: graphqlMock } as unknown as Octokit;
-    const threads = await fetchBotReviewThreads(octokit, 'owner', 'repo', 1);
+    const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(threads).toHaveLength(1);
     expect(threads[0].isBlocking).toBe(true);
@@ -177,7 +195,7 @@ describe('fetchBotReviewThreads', () => {
     );
 
     const octokit = { graphql: graphqlMock } as unknown as Octokit;
-    const threads = await fetchBotReviewThreads(octokit, 'owner', 'repo', 1);
+    const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(threads).toHaveLength(3);
     expect(threads[0]).toEqual({ id: 't1', isResolved: false, isBlocking: false, findingTitle: 'style issue' });
@@ -194,7 +212,7 @@ describe('fetchBotReviewThreads', () => {
     );
 
     const octokit = { graphql: graphqlMock } as unknown as Octokit;
-    const threads = await fetchBotReviewThreads(octokit, 'owner', 'repo', 1);
+    const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(threads).toHaveLength(2);
     expect(threads[0].isBlocking).toBe(true);
@@ -207,9 +225,51 @@ describe('fetchBotReviewThreads', () => {
     );
 
     const octokit = { graphql: graphqlMock } as unknown as Octokit;
-    const threads = await fetchBotReviewThreads(octokit, 'owner', 'repo', 1);
+    const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(threads).toHaveLength(0);
+  });
+});
+
+describe('reopenAuthorResolvedThreads', () => {
+  const previous = (threadId: string, reopen: boolean): PreviousFinding => ({
+    title: 'Token leaks into logs', file: 'src/a.ts', line: 3, severity: 'blocker', status: 'open', threadId, isSecurity: true, ...(reopen && { reopen }),
+  });
+
+  const mutation = (call: unknown[]) => [String(call[0]).match(/unresolveReviewThread|addPullRequestReviewThreadReply/)?.[0], (call[1] as { threadId: string }).threadId];
+
+  it('replies with the marker first, then reopens, for flagged threads only', async () => {
+    const graphql = jest.fn().mockResolvedValue({});
+
+    await reopenAuthorResolvedThreads({ graphql } as unknown as Octokit, [previous('T_author', true), previous('T_other', false)]);
+
+    expect(graphql.mock.calls.map(mutation)).toEqual([
+      ['addPullRequestReviewThreadReply', 'T_author'],
+      ['unresolveReviewThread', 'T_author'],
+    ]);
+    expect(graphql.mock.calls[0][1].body).toContain(`${BOT_MARKER}\n${REOPENED_MARKER}\nReopened. A security finding needs a maintainer or a fix`);
+  });
+
+  it('skips the reopen when the reply fails, and keeps going when the reopen fails', async () => {
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const graphql = jest.fn()
+      .mockRejectedValueOnce(new Error('reply refused'))
+      .mockResolvedValueOnce({})
+      .mockRejectedValueOnce(new Error('reopen refused'))
+      .mockResolvedValue({});
+
+    await reopenAuthorResolvedThreads({ graphql } as unknown as Octokit, [previous('T_1', true), previous('T_2', true), previous('T_3', true)]);
+
+    expect(graphql.mock.calls.map(mutation)).toEqual([
+      ['addPullRequestReviewThreadReply', 'T_1'],
+      ['addPullRequestReviewThreadReply', 'T_2'],
+      ['unresolveReviewThread', 'T_2'],
+      ['addPullRequestReviewThreadReply', 'T_3'],
+      ['unresolveReviewThread', 'T_3'],
+    ]);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('reply refused'));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('reopen refused'));
+    warnSpy.mockRestore();
   });
 });
 
@@ -254,7 +314,7 @@ describe('checkAndAutoApprove', () => {
       paginate: jest.fn(paginateSinglePage),
       rest: {
         pulls: {
-          get: jest.fn().mockResolvedValue({ data: { head: { sha: prHeadSha } } }),
+          get: jest.fn().mockResolvedValue({ data: { head: { sha: prHeadSha }, user: { login: 'author' } } }),
           createReview: createReviewFn,
           listReviews: jest.fn().mockResolvedValue({ data: existingReviews }),
         },
@@ -283,6 +343,26 @@ describe('checkAndAutoApprove', () => {
     expect(createReviewMock).toHaveBeenCalledWith(
       expect.objectContaining({ event: 'APPROVE', commit_id: 'sha-456', body: expect.stringMatching(/\n\u2705 \*\*Approved\.\*\* All blocking threads are resolved\.$/) }),
     );
+  });
+
+  it.each([
+    ['the PR author', 'author', false],
+    ['a collaborator', 'alice', true],
+  ])('approves a security thread resolved by %s: %s', async (_who, resolver, approves) => {
+    const finding = (title: string, tags?: string[]): Finding => ({
+      severity: 'blocker', title, file: 'src/a.ts', line: 3, description: 'd', reviewers: [], ...(tags && { tags }),
+    });
+    const createReviewMock = jest.fn().mockResolvedValue({});
+    const octokit = makeMockOctokit({
+      threads: [
+        makeGraphqlFetchThreadNode({ id: 't1', isResolved: true, resolvedBy: resolver, body: formatFindingComment(finding('Token leaks into logs', ['security'])) }),
+        makeGraphqlFetchThreadNode({ id: 't2', isResolved: true, resolvedBy: 'author', body: formatFindingComment(finding('Off by one')) }),
+      ],
+      createReviewFn: createReviewMock,
+    });
+
+    expect(await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1)).toBe(approves);
+    expect(createReviewMock).toHaveBeenCalledTimes(approves ? 1 : 0);
   });
 
   it('approves when blocking threads are resolved and only old suggestion and nitpick threads are open', async () => {
