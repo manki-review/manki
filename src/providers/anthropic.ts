@@ -7,7 +7,7 @@ import { promisify } from 'util';
 import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
-import { appendReplyTail, buildExitDiagnostics, callWithTimeout, matchQuotaText, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, warnReplyTail } from './cli-utils';
+import { appendReplyTail, buildExitDiagnostics, callWithTimeout, cliEnv, matchQuotaText, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, warnReplyTail } from './cli-utils';
 import { AnthropicAuth, LLMClient, LLMResponse, LLMUsage, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
 
 // Re-export for backward compatibility with existing test imports.
@@ -246,9 +246,7 @@ export class AnthropicClient implements LLMClient {
       cliPath,
       args,
       env: {
-        // process.env is spread intentionally — Claude CLI requires PATH, HOME, and other system vars.
-        // CLAUDE_CODE_OAUTH_TOKEN is added conditionally. Secrets should be managed via GitHub Actions secret masking.
-        ...process.env,
+        ...cliEnv(),
         ...(oauthToken ? { CLAUDE_CODE_OAUTH_TOKEN: oauthToken } : {}),
         // The CLI defaults to the model's own limit, which lets a runaway reply run for many minutes.
         CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(THINKING_MAX_TOKENS),

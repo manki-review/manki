@@ -283,6 +283,20 @@ function emptyCliCwd(): string {
   return emptyCwd;
 }
 
+// The OIDC endpoint lets a CLI mint an identity token, which the token service trades for an App token.
+const CLI_BLOCKED_ENV = new Set(['ACTIONS_ID_TOKEN_REQUEST_URL', 'ACTIONS_RESULTS_URL']);
+const CLI_SECRET_ENV = /(?:^|_)(?:TOKEN|KEY|SECRET)$/i;
+
+/**
+ * Returns `env` without what a provider CLI must not see: action inputs (`INPUT_*`), the OIDC endpoint and every
+ * `*_TOKEN`, `*_KEY` or `*_SECRET`. A provider adds its own credential back after filtering.
+ */
+export function cliEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return Object.fromEntries(
+    Object.entries(env).filter(([name]) => !CLI_BLOCKED_ENV.has(name) && !/^INPUT_/i.test(name) && !CLI_SECRET_ENV.test(name)),
+  );
+}
+
 export interface RunCliOptions {
   /** Provider name used in error messages, e.g. `Claude`. */
   label: string;

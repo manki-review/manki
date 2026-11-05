@@ -6,7 +6,7 @@ import OpenAI from 'openai';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import * as core from '@actions/core';
 
-import { buildExitDiagnostics, callWithTimeout, extractCliErrorSnippet, matchQuotaText, runCli, seedAuthFile, STALE_TIMEOUT_MS, warnReplyTail } from './cli-utils';
+import { buildExitDiagnostics, callWithTimeout, cliEnv, extractCliErrorSnippet, matchQuotaText, runCli, seedAuthFile, STALE_TIMEOUT_MS, warnReplyTail } from './cli-utils';
 import { LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -33,15 +33,6 @@ const OPENAI_OAUTH_BOOTSTRAP_HINT =
 // to mitigate supply-chain risk if a compromised release is published. Keep this
 // in sync with the explicit install step in `.github/workflows/manki.yml`.
 export const CODEX_CLI_VERSION = '0.166.0';
-
-const CODEX_BLOCKED_BARE = new Set([
-  'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
-  'GEMINI_API_KEY', 'GEMINI_OAUTH_TOKEN',
-  'OPENAI_API_KEY', 'OPENAI_OAUTH_TOKEN', 'CODEX_OAUTH_TOKEN',
-  'GITHUB_TOKEN', 'GITHUB_APP_PRIVATE_KEY',
-  'REVIEW_MEMORY_TOKEN',
-  'ACTIONS_RUNTIME_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'ACTIONS_RESULTS_URL',
-]);
 
 export function buildOpenAIAuth(oauthToken: string, apiKey: string): OpenAIAuth {
   if (oauthToken) return { kind: 'oauth', token: oauthToken };
@@ -210,18 +201,12 @@ export class OpenAIClient implements LLMClient {
     // Read prompt from stdin
     args.push('-');
 
-    const safeCodexEnv = Object.fromEntries(
-      Object.entries(process.env).filter(
-        ([k]) => !CODEX_BLOCKED_BARE.has(k) && !k.startsWith('INPUT_'),
-      ),
-    ) as NodeJS.ProcessEnv;
-
     let output = '';
     const { code, signal, stderr, lastStdoutChunk } = await runCli({
       label: 'Codex',
       cliPath,
       args,
-      env: { ...safeCodexEnv, CODEX_HOME: codexHome },
+      env: { ...cliEnv(), CODEX_HOME: codexHome },
       input: fullPrompt,
       hardTimeoutMs: options?.timeoutMs,
       signal: options?.signal,
