@@ -35,7 +35,6 @@ function mockOctokit() {
         get: jest.fn().mockResolvedValue({ data: ISSUE }),
         getComment: jest.fn().mockResolvedValue({ data: ISSUE_COMMENT }),
       },
-      repos: { getCommit: jest.fn().mockResolvedValue({ data: { author: ALICE, committer: BOB } }) },
     },
     graphql: jest.fn().mockResolvedValue({ node: { editor: { login: 'carol', __typename: 'User' } } }),
   };
@@ -55,7 +54,7 @@ beforeEach(() => {
 
 describe('restoreDispatchedEvent', () => {
   it.each([
-    ['a push, as the head commit author', { event: 'pull_request', action: 'synchronize', pr: '7', head_sha: HEAD },
+    ['a push, as the PR author', { event: 'pull_request', action: 'synchronize', pr: '7', head_sha: HEAD },
       { pull_request: PR }, ALICE],
     ['a merge, as the merger', { event: 'pull_request', action: 'closed', pr: '7', head_sha: HEAD },
       { pull_request: PR }, BOB],

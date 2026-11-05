@@ -137,7 +137,8 @@ async function fetchEvent(octokit: Octokit, inputs: DispatchInputs): Promise<Fet
   switch (inputs.event) {
     case 'pull_request': {
       const pull_request = await fetchPullRequest(octokit, owner, repo, number);
-      const sender = await pullRequestSender(octokit, owner, repo, inputs.action, pull_request);
+      // The API does not say who pushed, and a commit author is forgeable. The service drops bot pushes, so a push counts as the PR author's.
+      const sender = userOf(inputs.action === 'closed' ? pull_request.merged_by ?? pull_request.user : pull_request.user);
       return { objects: { pull_request }, sender, headSha: pull_request.head.sha };
     }
     case 'issue_comment': {
@@ -176,19 +177,6 @@ function assertPartOf(url: string | undefined, path: string, what: string, numbe
   }
 }
 
-/**
- * The API does not say who pushed, so a push counts as the head commit's author.
- * That keeps a bot's push skipped and a person's push to a bot's PR reviewed.
- */
-async function pullRequestSender(
-  octokit: Octokit, owner: string, repo: string, action: string,
-  pr: Awaited<ReturnType<typeof fetchPullRequest>>,
-): Promise<Sender> {
-  if (action === 'closed') return userOf(pr.merged_by ?? pr.user);
-  if (action !== 'synchronize') return userOf(pr.user);
-  const { data: commit } = await octokit.rest.repos.getCommit({ owner, repo, ref: pr.head.sha });
-  return userOf(commit.author ?? commit.committer ?? pr.user);
-}
 
 /** Who last edited a comment, such as the person who ticked a Force review box on Manki's comment. */
 async function lastEditor(octokit: Octokit, nodeId: string): Promise<Sender | undefined> {

@@ -128,7 +128,6 @@ class FakeGitHub {
       if (headers.get('accept')?.includes('diff')) return text(PR_DIFF);
       return json({ number: PR_NUMBER, title: 'Keep the sum in a variable', body: 'Small refactor.', draft: false, head: { sha: this.headSha, ref: 'feature', repo: { full_name: `${OWNER}/${REPO}` } }, base: { ref: 'main', repo: { full_name: `${OWNER}/${REPO}` } }, user: { login: 'alice', type: 'User' } });
     }
-    if (method === 'GET' && route === `/commits/${this.headSha}`) return json({ sha: this.headSha, author: { login: 'alice', type: 'User' }, committer: null });
     if ((match = route.match(/^\/pulls\/comments\/(\d+)(\/reactions)?$/))) {
       const id = Number(match[1]);
       const thread = this.threads.find(t => t.comments.some(c => c.databaseId === id));
