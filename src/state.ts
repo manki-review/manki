@@ -9,6 +9,7 @@ import { FindingSeverity, isBlockingSeverity, migrateLegacySeverity, ReviewConfi
 import { withMarkers } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
+type PullHead = { head: { sha: string }; base: { ref: string } };
 type ReviewEntry = { body?: string | null; state?: string; commit_id?: string | null; user?: { login?: string; type?: string } | null };
 
 const BOT_MARKER = '<!-- manki -->';
@@ -37,7 +38,7 @@ async function findUnchangedVerdict(
     if (!reviewed.trim() || !current.trim()) return undefined;
     return isSameChange(reviewed, current, excludePaths) ? standing : undefined;
   } catch (error) {
-    core.warning(`Could not compare with the reviewed commit, reviewing in full: ${error instanceof Error ? error.message : error}`);
+    core.warning(`Could not compare with the reviewed commit ${standing.commitSha.slice(0, 7)}: ${error instanceof Error ? error.message : error}`);
     return undefined;
   }
 }
@@ -241,6 +242,42 @@ async function autoReviewHalt(octokit: Octokit, bot: BotIdentity, owner: string,
   return reason && `${reason} Automatic review is paused. Tick **Force review** on the pause notice, or comment \`@manki review\`, to review it.`;
 }
 
+function isBotReview(bot: BotIdentity, r: ReviewEntry): boolean {
+  return !!r.body?.includes('<!-- manki') && isBotLogin(bot, r.user?.login);
+}
+
+/**
+ * Whether a Manki review covers the head of `pr`. That is a review on the head that is not dismissed,
+ * or the standing verdict on a commit whose PR diff equals the head's, as after a rebase.
+ */
+async function reviewCoversHead(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number,
+  pr: PullHead, reviews: ReviewEntry[], config?: ReviewConfig,
+): Promise<boolean> {
+  if (reviews.some(r => isBotReview(bot, r) && r.state !== 'DISMISSED' && r.commit_id === pr.head.sha)) return true;
+  const standing = await findUnchangedVerdict(octokit, bot, owner, repo, prNumber, pr.base.ref, pr.head.sha, config?.exclude_paths ?? []);
+  if (standing) core.info(`No change since the reviewed commit ${standing.commitSha.slice(0, 7)}, so its review covers ${pr.head.sha.slice(0, 7)}`);
+  return !!standing;
+}
+
+/**
+ * Returns why auto-approve has to wait because no Manki review covers the head yet, or `undefined` when one does.
+ * A review that is running or queued for the head counts as not covering it yet.
+ */
+async function explainUnreviewedHead(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, config?: ReviewConfig): Promise<string | undefined> {
+  const { data: pr } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
+  const head = `\`${pr.head.sha.slice(0, 7)}\``;
+  if (await isReviewInProgress(octokit, bot, owner, repo, prNumber, pr.head.sha)) {
+    return `A review of ${head} is running or queued. Approval follows from its verdict.`;
+  }
+  const reviews = await octokit.paginate(octokit.rest.pulls.listReviews, { owner, repo, pull_number: prNumber, per_page: 100 });
+  if (await reviewCoversHead(octokit, bot, owner, repo, prNumber, pr, reviews, config)) return undefined;
+  const halt = config && await autoReviewHalt(octokit, bot, owner, repo, prNumber, config);
+  return halt
+    ? `Manki has not reviewed ${head}. ${halt}`
+    : `Manki has not reviewed ${head} yet. A push review should start shortly, and approval follows from its verdict.`;
+}
+
 /**
  * Posts a one-time comment that auto-approve is withheld because Manki has not reviewed `headSha`,
  * and no automatic review will. `halt` says why and how to start one.
@@ -372,18 +409,15 @@ async function checkAndAutoApprove(
     pull_number: prNumber,
     per_page: 100,
   });
-  const isBotReview = (r: ReviewEntry) => r.body?.includes('<!-- manki') && isBotLogin(bot, r.user?.login);
-  const botReviews = reviews.filter((r: ReviewEntry) => isBotReview(r) && r.state !== 'DISMISSED');
+  const botReviews = reviews.filter((r: ReviewEntry) => isBotReview(bot, r) && r.state !== 'DISMISSED');
   const latestBotReview = botReviews[botReviews.length - 1];
 
-  // Stale-SHA gate: bail unless manki has actually submitted a non-DISMISSED
-  // review on the current HEAD commit. This single check covers every variant —
-  // stale prior review, absent commit_id, all reviews DISMISSED, or no bot
-  // review at all.
-  const hasReviewedHead = botReviews.some((r) => r.commit_id === pr.head.sha);
-  if (!hasReviewedHead) {
+  // Stale-SHA gate: bail unless a Manki review covers the current HEAD. This covers
+  // every variant: stale prior review, absent commit_id, all reviews DISMISSED, or
+  // no bot review at all.
+  if (!await reviewCoversHead(octokit, bot, owner, repo, prNumber, pr, reviews, config)) {
     const staleSha =
-      reviews.filter((r: ReviewEntry) => isBotReview(r) && r.commit_id !== pr.head.sha).slice(-1)[0]?.commit_id ?? 'unknown';
+      reviews.filter((r: ReviewEntry) => isBotReview(bot, r) && r.commit_id !== pr.head.sha).slice(-1)[0]?.commit_id ?? 'unknown';
     core.warning(
       `Skipping auto-approve — manki has not reviewed HEAD (head=${pr.head.sha}, stale=${staleSha})`,
     );
@@ -450,4 +484,4 @@ async function checkAndAutoApprove(
   return true;
 }
 
-export { PauseState, ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, fetchBotReviewThreads, findUnchangedVerdict, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
+export { PauseState, ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, explainUnreviewedHead, fetchBotReviewThreads, findUnchangedVerdict, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };

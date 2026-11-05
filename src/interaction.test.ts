@@ -52,6 +52,7 @@ jest.mock('./review', () => ({
 jest.mock('./state', () => ({
   announceSecurityOverrides: jest.fn(async (overrides: unknown[]) => overrides),
   checkAndAutoApprove: jest.fn().mockResolvedValue(false),
+  explainUnreviewedHead: jest.fn().mockResolvedValue(undefined),
   fetchBotReviewThreads: jest.fn().mockResolvedValue([]),
   resolveReviewThread: jest.fn().mockResolvedValue(undefined),
 }));
@@ -1163,14 +1164,23 @@ describe('handleCheck (via handlePRComment)', () => {
     );
   });
 
-  it('reports checking status when no blocking issues but not approved', async () => {
+  it('reports why it did not approve when no blocking issues are open', async () => {
     setContext({ comment: { id: 42, body: '@manki check', user: { type: 'User' }, author_association: 'OWNER' } });
-    (state.checkAndAutoApprove as jest.Mock).mockResolvedValueOnce(false);
-    (state.fetchBotReviewThreads as jest.Mock).mockResolvedValueOnce([]);
+    (state.checkAndAutoApprove as jest.Mock).mockResolvedValueOnce(false).mockResolvedValueOnce(false);
+    (state.fetchBotReviewThreads as jest.Mock).mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    const config = { auto_approve: true } as Partial<ReviewConfig> as ReviewConfig;
     const octokit = createMockOctokit();
-    await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, undefined, undefined, { auto_approve: true } as Partial<ReviewConfig> as ReviewConfig);
-    expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
-      expect.objectContaining({ body: expect.stringContaining('No blocking threads are open') }),
+    await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, undefined, undefined, config);
+    expect(octokit.rest.issues.createComment).toHaveBeenLastCalledWith(
+      expect.objectContaining({ body: expect.stringContaining('No blocking threads are open, but the approval did not go through') }),
+    );
+
+    // A head no review covers yet gets the concrete reason instead.
+    (state.explainUnreviewedHead as jest.Mock).mockResolvedValueOnce('A review of `abc1234` is running or queued.');
+    await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, undefined, undefined, config);
+    expect(state.explainUnreviewedHead).toHaveBeenLastCalledWith(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, config);
+    expect(octokit.rest.issues.createComment).toHaveBeenLastCalledWith(
+      expect.objectContaining({ body: expect.stringMatching(/^A review of `abc1234` is running or queued\.\n/) }),
     );
   });
 

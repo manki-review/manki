@@ -1,8 +1,8 @@
 import * as core from '@actions/core';
-import { areAllFindingsResolved, fetchBotReviewThreads, checkAndAutoApprove, reopenAuthorResolvedThreads, BOT_MARKER, ReviewThread } from './state';
+import { areAllFindingsResolved, fetchBotReviewThreads, checkAndAutoApprove, explainUnreviewedHead, reopenAuthorResolvedThreads, BOT_MARKER, ReviewThread } from './state';
 import { PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
 import { LAST_PAGE, makeRoundContext, paginateSinglePage, TEST_BOT } from './test-utils';
-import { formatContextBlock, formatFindingComment } from './github';
+import { formatContextBlock, formatFindingComment, isReviewInProgress } from './github';
 import { DEFAULT_CONFIG } from './config';
 import { Finding } from './types';
 
@@ -341,6 +341,8 @@ describe('checkAndAutoApprove', () => {
     existingReviews?: Array<{ body?: string; state?: string; commit_id?: string; user?: { login?: string; type?: string } }>;
     existingComments?: Array<{ body?: string; user?: { login?: string } }>;
     permission?: string;
+    /** The PR diff at each commit, keyed by its SHA, as `compareCommits` against the base returns it. */
+    diffs?: Record<string, string>;
   } = {}) {
     const threads = overrides.threads ?? [];
     const prHeadSha = overrides.prHeadSha ?? 'abc123';
@@ -356,7 +358,7 @@ describe('checkAndAutoApprove', () => {
       paginate: jest.fn(paginateSinglePage),
       rest: {
         pulls: {
-          get: jest.fn().mockResolvedValue({ data: { head: { sha: prHeadSha }, user: { login: 'author' } } }),
+          get: jest.fn().mockResolvedValue({ data: { head: { sha: prHeadSha }, base: { ref: 'main' }, user: { login: 'author' } } }),
           createReview: createReviewFn,
           listReviews: jest.fn().mockResolvedValue({ data: existingReviews }),
         },
@@ -366,6 +368,7 @@ describe('checkAndAutoApprove', () => {
         },
         repos: {
           getCollaboratorPermissionLevel: jest.fn().mockResolvedValue({ data: { permission: overrides.permission ?? 'write' } }),
+          compareCommits: jest.fn(async ({ head }: { head: string }) => ({ data: overrides.diffs?.[head] ?? '' })),
         },
       },
     } as unknown as Octokit;
@@ -834,6 +837,44 @@ describe('checkAndAutoApprove', () => {
       expect(warningSpy).toHaveBeenCalledWith(
         expect.stringContaining('manki has not reviewed HEAD'),
       );
+    });
+
+    const rebaseDiff = 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-old\n+new\n';
+    it.each([
+      ['approves the head when its PR diff equals the reviewed commit\'s, as after a rebase', rebaseDiff, true],
+      ['withholds approval when the head changes the PR diff', rebaseDiff.replace('+new', '+newer'), false],
+    ])('%s', async (_label, headDiff, approves) => {
+      const createReviewMock = jest.fn().mockResolvedValue({});
+      const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 1 } });
+      const octokit = makeMockOctokit({
+        threads: [makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix --> fix', isResolved: true })],
+        prHeadSha: 'head-sha-aaaa',
+        createReviewFn: createReviewMock,
+        createCommentFn: createCommentMock,
+        existingReviews: [
+          { body: '<!-- manki-bot -->', state: 'CHANGES_REQUESTED', commit_id: 'old-sha-bbbb', user: { login: 'manki-review[bot]', type: 'Bot' } },
+        ],
+        diffs: { 'old-sha-bbbb': rebaseDiff, 'head-sha-aaaa': headDiff },
+      });
+
+      expect(await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG)).toBe(approves);
+      expect(createReviewMock.mock.calls.map(([args]) => [args.event, args.commit_id])).toEqual(approves ? [['APPROVE', 'head-sha-aaaa']] : []);
+      expect(createCommentMock).not.toHaveBeenCalled();
+      expect(await explainUnreviewedHead(octokit, TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG)).toBe(approves
+        ? undefined
+        : 'Manki has not reviewed `head-sh` yet. A push review should start shortly, and approval follows from its verdict.');
+    });
+
+    it('explains an unreviewed head by the review that is running, the pause, or the absence of both', async () => {
+      const octokit = staleHeadOctokit(jest.fn(), [formatContextBlock(notConverging)]);
+      jest.mocked(isReviewInProgress).mockResolvedValueOnce(true);
+      expect(await explainUnreviewedHead(octokit, TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG))
+        .toBe('A review of `head-sh` is running or queued. Approval follows from its verdict.');
+      expect(isReviewInProgress).toHaveBeenLastCalledWith(octokit, TEST_BOT, 'owner', 'repo', 1, 'head-sha-aaaa');
+      expect(await explainUnreviewedHead(octokit, TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG))
+        .toMatch(/^Manki has not reviewed `head-sh`\. The last Manki round found a blocker that came back after a fix\. Automatic review is paused\./);
+      expect(await explainUnreviewedHead(staleHeadOctokit(jest.fn(), []), TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG))
+        .toBe('Manki has not reviewed `head-sh` yet. A push review should start shortly, and approval follows from its verdict.');
     });
   });
 });

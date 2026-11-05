@@ -8,7 +8,7 @@ import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { isSecurityThread, mayClearSecurityThread } from './recap';
-import { announceSecurityOverrides, checkAndAutoApprove, fetchBotReviewThreads, resolveReviewThread } from './state';
+import { announceSecurityOverrides, checkAndAutoApprove, explainUnreviewedHead, fetchBotReviewThreads, resolveReviewThread } from './state';
 import { ReviewConfig } from './types';
 import { withMarkers } from './utils';
 import { WRITING_RULES } from './writing-rules';
@@ -730,10 +730,12 @@ async function handleCheck(
         body: withMarkers(`${blocking.length === 1 ? '1 blocking thread is' : `${blocking.length} blocking threads are`} still open:\n${list}\n\nApproval follows once ${blocking.length === 1 ? 'it is' : 'they are'} resolved.`, BOT_MARKER),
       });
     } else {
+      const reason = await explainUnreviewedHead(octokit, bot, owner, repo, prNumber, config)
+        ?? 'No blocking threads are open, but the approval did not go through. The workflow log has the reason.';
       await octokit.rest.issues.createComment({
         owner, repo,
         issue_number: prNumber,
-        body: withMarkers('No blocking threads are open, but the approval did not go through. The workflow log has the reason.', BOT_MARKER),
+        body: withMarkers(reason, BOT_MARKER),
       });
     }
   }
