@@ -3168,7 +3168,7 @@ describe('runFullReview orchestration', () => {
       });
     });
 
-    it('populates `dedup.duplicateMatches`, `sameRoundLlmDropped`, and `testNitSuppressedCount`', async () => {
+    it('populates `dedup.duplicateMatches`, `sameRoundLlmDropped`, `testNitSuppressedCount` and `judge.toolAlertCount`', async () => {
       jest.mocked(reviewModule.runReview).mockResolvedValue({
         verdict: 'COMMENT', outcome: 'INCOMPLETE' as const, summary: 'done',
         findings: [], highlights: [], reviewComplete: true,
@@ -3183,8 +3183,10 @@ describe('runFullReview orchestration', () => {
         suppressionCount: 0,
         testNitSuppressedCount: 2,
         staticSignalMatches: [{ droppedTitle: 'Unused import', file: 'src/app.ts', line: 3, tool: 'lint', ruleId: 'no-unused-vars' }],
+        toolAlertCount: 1,
         allJudgedFindings: [
           { severity: 'nitpick', title: 'A', file: 'src/app.ts', line: 1, description: 'd', reviewers: ['general'] },
+          { severity: 'ignore', title: 'js/redos: slow regex', file: 'src/app.ts', line: 2, description: 'd', reviewers: ['CodeQL'], toolSource: 'CodeQL' },
         ],
       });
 
@@ -3197,9 +3199,10 @@ describe('runFullReview orchestration', () => {
         { droppedTitle: 'Dup A', matchedTitle: 'Prior A', matchType: 'exact' },
         { droppedTitle: 'Dup B', matchedTitle: 'Prior B', matchType: 'llm' },
       ]);
-      // `mergedDuplicates = rawFindingCount - suppression - static - llm - judgedSurvivors = 5 - 0 - 1 - 1 - 1 = 2`
+      // `mergedDuplicates = rawFindingCount + toolAlerts - suppression - static - llm - judged = 5 + 1 - 0 - 1 - 1 - 2 = 2`
       expect(rc!.dedup.sameRoundLlmDropped).toBe(2);
       expect(rc!.judge.mergedDuplicates).toBe(2);
+      expect(rc!.judge.toolAlertCount).toBe(1);
       expect(rc!.dedup.testNitSuppressedCount).toBe(2);
       expect(rc!.dedup.staticSignalMatches).toEqual([
         { droppedTitle: 'Unused import', file: 'src/app.ts', line: 3, tool: 'lint', ruleId: 'no-unused-vars' },
@@ -3514,7 +3517,7 @@ describe('runFullReview orchestration', () => {
     expect(rc!.findings.entries[0].title).toHaveLength(200);
   });
 
-  it('carries judge per-finding state into RoundContext findingEntries', async () => {
+  it('carries judge and tool evidence state per finding into RoundContext findingEntries', async () => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
@@ -3538,6 +3541,16 @@ describe('runFullReview orchestration', () => {
         reachabilityReasoning: 'Caller serializes via mutex',
         tags: ['defensive-hardening', 'own-proposal-followup', 'follow-up', 'security'],
         originalSeverity: 'warning' as const,
+        toolEvidence: { status: 'contradicted' as const, note: 'src/gone.ts is not changed in this diff.' },
+      }, {
+        severity: 'warning' as const,
+        title: 'js/sql-injection: Query built from user input',
+        file: 'src/app.ts',
+        line: 6,
+        description: 'Query built from user input',
+        reviewers: ['CodeQL'],
+        toolSource: 'CodeQL',
+        toolEvidence: { status: 'confirmed' as const, note: 'CodeQL reports this result.' },
       }],
       highlights: [], reviewComplete: true, agentNames: ['Concurrency'],
     });
@@ -3545,6 +3558,7 @@ describe('runFullReview orchestration', () => {
     await callRunFullReview();
 
     const [,,,,,,,rc] = jest.mocked(ghUtils.postReview).mock.calls[0];
+    expect(rc!.findings.entries.map(e => [e.toolEvidence, e.toolSource])).toEqual([['contradicted', undefined], ['confirmed', 'CodeQL']]);
     const entry = rc!.findings.entries[0];
     expect(entry.judgeNotes).toBe('Reachable only under shutdown');
     expect(entry.judgeConfidence).toBe('medium');

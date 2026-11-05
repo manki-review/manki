@@ -160,6 +160,19 @@ export interface Finding {
   originalSeverity?: FindingSeverity;
   /** Fingerprint key of the prior-round blocker that names the same defect. */
   sameAs?: string;
+  /** Tool that reported the finding, when it comes from a CI or code-scanning result instead of a reviewer. */
+  toolSource?: string;
+  /** What the deterministic claim checks and CI results say about the finding. */
+  toolEvidence?: ToolEvidence;
+}
+
+/** `none` means no tool spoke to the claim. Silence is never evidence against a finding. */
+export type ToolEvidenceStatus = 'confirmed' | 'contradicted' | 'none';
+
+export interface ToolEvidence {
+  status: ToolEvidenceStatus;
+  /** What was checked, and what confirmed or contradicted the claim. Shown to the judge. */
+  note: string;
 }
 
 /**
@@ -234,6 +247,8 @@ export interface ReviewResult {
   highlights: string[];
   reviewComplete: boolean;
   rawFindingCount?: number;
+  /** Tool results sent to the judge as candidate findings, on top of `rawFindingCount`. */
+  toolAlertCount?: number;
   agentNames: string[];
   allJudgedFindings?: Finding[];
   rawFindings?: Finding[];
@@ -902,6 +917,8 @@ export interface RoundJudge {
   confidenceDistribution?: { high: number; medium: number; low: number };
   severityChanges?: number;
   mergedDuplicates?: number;
+  /** Tool results the judge triaged as candidate findings. */
+  toolAlertCount?: number;
   durationMs?: number;
   /** Number of judge LLM retries (zero when the first call satisfied the validation contract). */
   retryCount?: number;
@@ -1097,6 +1114,10 @@ export interface FindingFingerprintEntry {
   tags?: string[];
   /** Pre-demotion severity, when the judge demoted the finding. Mirrors `Finding.originalSeverity`. */
   originalSeverity?: FindingSeverity;
+  /** Whether a tool confirmed or contradicted the finding, or was silent. Mirrors `Finding.toolEvidence.status`. */
+  toolEvidence?: ToolEvidenceStatus;
+  /** Tool that reported the finding. Mirrors `Finding.toolSource`. */
+  toolSource?: string;
 }
 
 export interface RoundUsage {

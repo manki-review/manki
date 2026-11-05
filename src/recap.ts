@@ -61,7 +61,7 @@ function mayClearSecurityThread(login: string | undefined, bot: BotIdentity, prA
 /** Matches the title line of a thread comment in either layout. */
 function matchTitleLine(body: string): RegExpMatchArray | null {
   return body.match(new RegExp(FINDING_TITLE_RE.source + '(.+?)(?:\\n|$)'))
-    ?? (FINDING_DATA_RE.test(body) ? body.match(/^\S+ \*\*\w+(?:, not blocking)?:\*\* (.+?)[ \t]*(?:\n|$)/) : null);
+    ?? (FINDING_DATA_RE.test(body) ? body.match(/^\S+ \*\*\w+(?:, not blocking)?(?::\*\*|\*\* \(.*?\):) (.+?)[ \t]*(?:\n|$)/) : null);
 }
 
 /** Escape double quotes and strip triple-backtick sequences from untrusted text before LLM interpolation. */
