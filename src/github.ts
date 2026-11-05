@@ -8,7 +8,7 @@ import { isLineInDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
-import { MAX_AGENT_RETRIES } from './types';
+import { MAX_AGENT_RETRIES, SEVERITY_ORDER } from './types';
 import { MAX_LOCK_TTL_SECONDS } from './config';
 import { safeTruncate, sanitizeTokens } from './utils';
 
@@ -300,8 +300,6 @@ const VALID_EFFORTS = new Set(['low', 'medium', 'high']);
 function sanitizeEffort(v: string): string {
   return VALID_EFFORTS.has(v) ? v : 'unknown';
 }
-
-const SEVERITY_ORDER: readonly FindingSeverity[] = ['blocker', 'warning', 'suggestion', 'nitpick', 'ignore'];
 
 function renderSeverityBreakdown(severities: Record<string, number>): string {
   return SEVERITY_ORDER

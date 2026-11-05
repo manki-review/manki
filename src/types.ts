@@ -4,6 +4,9 @@ export const MAX_AGENT_RETRIES = 1;
 
 export type FindingSeverity = 'blocker' | 'warning' | 'suggestion' | 'nitpick' | 'ignore';
 
+/** Severities from most to least severe. */
+export const SEVERITY_ORDER: readonly FindingSeverity[] = ['blocker', 'warning', 'suggestion', 'nitpick', 'ignore'];
+
 /**
  * Maps legacy severity values written by older versions of manki to the
  * current `FindingSeverity` set. `'required'` was renamed to `'blocker'` and
