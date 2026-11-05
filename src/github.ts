@@ -44,6 +44,36 @@ function isBotUser(bot: BotIdentity, user: { login?: string | null } | null | un
 function isTrustedAssociation(authorAssociation: string | null | undefined): boolean {
   return ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(authorAssociation ?? '');
 }
+
+const adminLookups = new WeakMap<Octokit, Map<string, Promise<boolean>>>();
+
+/**
+ * Whether `login` has admin permission on the repo. `author_association` cannot tell, since an org owner shows as `MEMBER`.
+ * Each client caches its answers, so a run asks once per login. A failed lookup counts as no.
+ */
+function isRepoAdmin(octokit: Octokit, owner: string, repo: string, login: string): Promise<boolean> {
+  let lookups = adminLookups.get(octokit);
+  if (!lookups) {
+    lookups = new Map();
+    adminLookups.set(octokit, lookups);
+  }
+  const key = `${owner}/${repo}/${login.toLowerCase()}`;
+  let lookup = lookups.get(key);
+  if (!lookup) {
+    lookup = (async () => {
+      try {
+        const { data } = await octokit.rest.repos.getCollaboratorPermissionLevel({ owner, repo, username: login });
+        return data.permission === 'admin';
+      } catch (error) {
+        core.warning(`Could not read the repo permission of ${login}, treating them as no admin: ${error}`);
+        return false;
+      }
+    })();
+    lookups.set(key, lookup);
+  }
+  return lookup;
+}
+
 const BOT_MARKER = '<!-- manki-bot -->';
 const REVIEW_COMPLETE_MARKER = '<!-- manki-review-complete -->';
 const FORCE_REVIEW_MARKER = '<!-- manki-force-review -->';
@@ -1018,6 +1048,11 @@ export async function postReview(
     if (stillOpen.length > 0) {
       b += `\n\n${STILL_OPEN_HEADING}\n${stillOpen.join('\n')}`;
     }
+    const overrides = event === 'APPROVE' && formatSecurityOverrides(existingThreads.flatMap(t =>
+      t.securityOverride ? [{ title: t.title, threadUrl: t.threadUrl, login: t.securityOverride.login }] : []));
+    if (overrides) {
+      b += `\n\n${overrides}`;
+    }
     const readyReport = formatReadyReport(result);
     if (readyReport) {
       b += `\n\n${readyReport}`;
@@ -1256,11 +1291,15 @@ function formatLead(result: ReviewResult, blocking: Finding[]): string {
 /**
  * Lists every entry in `verdictTrace.unresolvedPriors` when the outcome is blocked by
  * `prior_unaddressed`, with its location and a link to the thread, so the author sees
- * which earlier thread blocks without reading the context JSON.
+ * which earlier thread blocks without reading the context JSON. An entry already listed
+ * under "Needs a human" is left out.
  */
-export function formatBlockingPriorThreads(result: { verdictReason?: VerdictReason; verdictTrace?: VerdictTrace }): string | null {
+export function formatBlockingPriorThreads(
+  result: Pick<ReviewResult, 'verdictReason' | 'verdictTrace' | 'outcome' | 'needsHuman'>,
+): string | null {
   if (result.verdictReason !== 'prior_unaddressed') return null;
-  const priors = result.verdictTrace?.unresolvedPriors ?? [];
+  const listed = new Set(result.outcome === 'NOT_CONVERGING' ? result.needsHuman?.blockers.map(b => b.fingerprint) : []);
+  const priors = (result.verdictTrace?.unresolvedPriors ?? []).filter(p => !listed.has(p.fingerprint));
   if (priors.length === 0) return null;
 
   return `${STILL_OPEN_HEADING}\n${priors.map(formatTraceEntry).join('\n')}`;
@@ -1268,11 +1307,15 @@ export function formatBlockingPriorThreads(result: { verdictReason?: VerdictReas
 
 const STILL_OPEN_HEADING = '**Still open from earlier reviews:**';
 
+function safeThreadUrl(url: string | undefined): string | null {
+  return url && /^https?:\/\/[^\s)]+$/.test(url) ? url : null;
+}
+
 function formatTraceEntry(p: Pick<VerdictTraceEntry, 'file' | 'title' | 'line' | 'threadUrl'>): string {
   const file = sanitizeFilePath(p.file);
   const location = !file ? '' : p.line ? `\`${file}:${p.line}\`: ` : `\`${file}\`: `;
   const title = sanitizeMarkdown(p.title || '(untitled)');
-  const safeUrl = p.threadUrl && /^https?:\/\/[^\s)]+$/.test(p.threadUrl) ? p.threadUrl : null;
+  const safeUrl = safeThreadUrl(p.threadUrl);
   const link = safeUrl ? ` ([view thread](${safeUrl}))` : '';
   return `- ${location}${title}${link}`;
 }
@@ -1280,6 +1323,17 @@ function formatTraceEntry(p: Pick<VerdictTraceEntry, 'file' | 'title' | 'line' |
 function formatNeedsHuman(result: ReviewResult): string | null {
   if (result.outcome !== 'NOT_CONVERGING' || !result.needsHuman) return null;
   return `Automatic review is paused until someone comments \`@manki review\`.\n\n${result.needsHuman.blockers.map(formatTraceEntry).join('\n')}`;
+}
+
+/** Returns one line naming the security findings a repo admin dismissed on their own PR, or null when there are none. */
+function formatSecurityOverrides(overrides: ReadonlyArray<{ title: string; threadUrl?: string; login: string }>): string | null {
+  if (overrides.length === 0) return null;
+  const entries = overrides.map(o => {
+    const title = sanitizeMarkdown(o.title || '(untitled)');
+    const url = safeThreadUrl(o.threadUrl);
+    return `${url ? `[${title}](${url})` : title} by @${o.login}`;
+  });
+  return `**Security findings dismissed by a repo admin:** ${entries.join(', ')}.`;
 }
 
 function formatLabelled(label: string, text: string): string {
@@ -2151,5 +2205,5 @@ async function postConfigErrorComment(
   }
 }
 
-export { dynamicFence, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, isBotLogin, isTrustedAssociation, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, FOLLOW_UP_MARKER, LOW_CONFIDENCE_NOTE };
+export { dynamicFence, formatContextBlock, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, isBotLogin, isRepoAdmin, isTrustedAssociation, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, FOLLOW_UP_MARKER, LOW_CONFIDENCE_NOTE };
 export type { InProgressLock, StandingVerdict };

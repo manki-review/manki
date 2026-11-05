@@ -1205,6 +1205,17 @@ export interface RoundRecap {
   reclassifiedPriorCount: number;
   /** Capped list of the actual flips (top N). Omitted when none flipped. */
   reclassifiedPriors?: ReclassifiedPrior[];
+  /** Security threads the PR author cleared as a repo admin. Omitted when none. */
+  securityOverrides?: SecurityOverride[];
+}
+
+/** A security finding the PR author cleared on their own PR as a repo admin. */
+export interface SecurityOverride {
+  /** Review thread ID. */
+  thread: string;
+  login: string;
+  /** `resolve`: resolved in the GitHub UI. `dismiss`: through `@manki dismiss` in the thread. */
+  via: 'resolve' | 'dismiss';
 }
 
 /**

@@ -14,7 +14,7 @@ import { addCodeContext, parsePRDiff, filterDiff, filterRawDiff, isDiffTooLarge,
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, RepoMemory } from './memory';
-import { fetchRecapState, PreviousFinding, RecapState } from './recap';
+import { fetchRecapState, PreviousFinding, RecapState, securityOverridesIn } from './recap';
 import { ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint, teamModels } from './review';
 import { buildRoundContext, RoundRecordInput } from './round-context';
 import { collectStaticSignals } from './static-signals';
@@ -55,7 +55,7 @@ import {
   postConfigErrorComment,
 } from './github';
 import type { BotIdentity, LinkedIssue, StandingVerdict } from './github';
-import { checkAndAutoApprove, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread } from './state';
+import { announceSecurityOverrides, checkAndAutoApprove, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -634,7 +634,10 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
   return false;
 }
 
-/** Reads the prior rounds and threads, and reopens threads the author resolved. Returns `undefined` when `auto_review` is off for a push. */
+/**
+ * Reads the prior rounds and threads, reopens security threads the author resolved, and records the ones a repo admin author cleared.
+ * Returns `undefined` when `auto_review` is off for a push.
+ */
 async function loadRecap(target: RunTarget, config: ReviewConfig, commentId: number, prAuthorLogin?: string): Promise<RecapState | undefined> {
   const { octokit, bot, owner, repo, prNumber } = target;
   const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, prAuthorLogin);
@@ -646,6 +649,7 @@ async function loadRecap(target: RunTarget, config: ReviewConfig, commentId: num
   }
 
   await reopenAuthorResolvedThreads(octokit, recap.previousFindings, pauseState(recap.priorRounds, config).paused);
+  await announceSecurityOverrides(octokit, securityOverridesIn(recap.previousFindings).filter(o => !o.announced));
   return recap;
 }
 
@@ -1546,7 +1550,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
   if (command.type !== 'generic') {
     const prNumber = payload.pull_request?.number;
     if (prNumber) {
-      await handleReviewCommentCommand(octokit, owner, repo, prNumber, comment.id, command, memoryConfig, memoryToken);
+      await handleReviewCommentCommand(octokit, bot, owner, repo, prNumber, comment.id, command, memoryConfig, memoryToken);
     } else {
       core.warning('Cannot handle command — pull request number not available');
     }

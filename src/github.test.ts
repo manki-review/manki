@@ -5,6 +5,7 @@ import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMeta
 import { DEFAULT_CONFIG } from './config';
 import { paginateSinglePage, TEST_BOT } from './test-utils';
 import { withMarkers } from './utils';
+import type { PreviousFinding } from './recap';
 
 const CUSTOM_APP_BOT: BotIdentity = { logins: ['acme-reviewer[bot]'] };
 const PAT_BOT: BotIdentity = { logins: [...TEST_BOT.logins, 'review-user'] };
@@ -582,6 +583,20 @@ describe('formatBlockingPriorThreads', () => {
       verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] },
     });
     expect(formatBlockingPriorThreads(result)).toBeNull();
+  });
+
+  it('leaves out the priors that "Needs a human" already lists', () => {
+    const listed = { file: 'a.ts', title: 'A', fingerprint: 'a.ts:1:1:a', line: 1 };
+    const other = { file: 'b.ts', title: 'B', fingerprint: 'b.ts:2:2:b', line: 2 };
+    const trace = { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [listed, other] };
+    const paused = (unresolvedPriors: typeof trace.unresolvedPriors) => makeResult({
+      outcome: 'NOT_CONVERGING', verdictTrace: { ...trace, unresolvedPriors }, needsHuman: { cause: 'budget', blockers: [listed] },
+    });
+    expect(formatBlockingPriorThreads(paused([listed, other]))).toBe('**Still open from earlier reviews:**\n- `b.ts:2`: B');
+    expect(formatBlockingPriorThreads(paused([listed]))).toBeNull();
+    // Outside a pause "Needs a human" is not rendered, so every prior is listed.
+    expect(formatBlockingPriorThreads(makeResult({ outcome: 'ADDRESS_FIRST', verdictTrace: trace, needsHuman: { cause: 'budget', blockers: [listed] } })))
+      .toBe('**Still open from earlier reviews:**\n- `a.ts:1`: A\n- `b.ts:2`: B');
   });
 
   it('renders the location, title and a thread link when present', () => {
@@ -1271,9 +1286,9 @@ describe('postReview body lead', () => {
     agentNames: [],
   };
 
-  async function postedBody(result: ReviewResult): Promise<{ body: string; event: string }> {
+  async function postedBody(result: ReviewResult, existingThreads: PreviousFinding[] = []): Promise<{ body: string; event: string }> {
     mockCreateReview.mockClear();
-    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', result, diff);
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', result, diff, undefined, undefined, undefined, { existingThreads });
     return mockCreateReview.mock.calls[0][0] as { body: string; event: string };
   }
 
@@ -1348,9 +1363,36 @@ describe('postReview body lead', () => {
       '- `src/a\\.ts:10`: Cache never invalidated \\(\\[view thread\\]\\(https://github\\.com/o/r/pull/1#t1\\)\\)\\n- No migration',
     ].join('\n\n'), 'u'));
 
-    const budgetStuck = await postedBody({ ...base, verdict: 'REQUEST_CHANGES', outcome: 'NOT_CONVERGING', needsHuman: { cause: 'budget', blockers: [{ file: 'src/a.ts', line: 10, title: 'X', fingerprint: 'k' }] } });
+    const prior = { file: 'src/a.ts', line: 10, title: 'Still open prior', fingerprint: 'k' };
+    const budgetStuck = await postedBody({
+      ...base, verdict: 'REQUEST_CHANGES', outcome: 'NOT_CONVERGING', verdictReason: 'prior_unaddressed',
+      verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [prior] },
+      needsHuman: { cause: 'budget', blockers: [prior] },
+    });
     expect(lead(budgetStuck.body)).toMatch(/^\u{1F6D1} \*\*Needs a human:\*\* 1 blocker still open after the last automatic round\./u);
+    expect(budgetStuck.body.split('Still open prior')).toHaveLength(2);
+    expect(budgetStuck.body).not.toContain('Still open from earlier reviews');
     expect(stuck.body).not.toContain('What this does');
+  });
+
+  it('names the security findings a repo admin dismissed in an approval, and only there', async () => {
+    const thread = (title: string, threadId: string, override?: PreviousFinding['securityOverride']): PreviousFinding => ({
+      title, file: 'src/a.ts', line: 3, severity: 'blocker', status: 'resolved', threadId, isSecurity: true,
+      threadUrl: `https://github.com/o/r/pull/1#${threadId}`, ...(override && { securityOverride: override }),
+    });
+    const threads = [
+      thread('Token leaks into logs', 'r1', { login: 'owner', via: 'resolve', announced: false }),
+      thread('Cleared by a maintainer', 'r2'),
+      thread('Secret in the URL', 'r3', { login: 'owner', via: 'dismiss', announced: true }),
+    ];
+    const line = '**Security findings dismissed by a repo admin:** [Token leaks into logs](https://github.com/o/r/pull/1#r1) by @owner, '
+      + '[Secret in the URL](https://github.com/o/r/pull/1#r3) by @owner.';
+
+    const approved = await postedBody(ready, threads);
+    expect(approved.body.split('\n')).toContain(line);
+    expect((await postedBody(ready, [thread('Cleared by a maintainer', 'r2')])).body).not.toContain('dismissed by a repo admin');
+    const blocked = await postedBody({ ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', findings: [blocker] }, threads);
+    expect(blocked.body).not.toContain('dismissed by a repo admin');
   });
 
   it('explains the top blocker instead of the judge summary when the verdict reader named the blockers', async () => {

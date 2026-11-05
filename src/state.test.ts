@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 import { areAllFindingsResolved, fetchBotReviewThreads, checkAndAutoApprove, reopenAuthorResolvedThreads, BOT_MARKER, ReviewThread } from './state';
-import { PreviousFinding, REOPENED_MARKER } from './recap';
+import { PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
 import { LAST_PAGE, paginateSinglePage, TEST_BOT } from './test-utils';
 import { formatFindingComment } from './github';
 import { Finding } from './types';
@@ -63,6 +63,11 @@ describe('areAllFindingsResolved', () => {
     expect(areAllFindingsResolved(security('github-actions[bot]'), TEST_BOT, 'author')).toBe(true);
     // With the PR author unknown, any human resolver has write access.
     expect(areAllFindingsResolved(security('alice'), TEST_BOT)).toBe(true);
+    // A PR author who is a repo admin clears their own, and so does an override Manki recorded on the thread.
+    expect(areAllFindingsResolved(security('author'), TEST_BOT, 'author', true)).toBe(true);
+    expect(areAllFindingsResolved(security('dependabot[bot]'), TEST_BOT, 'author', true)).toBe(false);
+    expect(areAllFindingsResolved([makeThread({ isResolved: true, isSecurity: true, resolvedByLogin: 'author', recordedOverride: { login: 'author', via: 'dismiss' } })], TEST_BOT, 'author'))
+      .toBe(true);
   });
 });
 
@@ -75,6 +80,8 @@ function makeGraphqlFetchThreadNode(overrides: {
   authorLogin?: string | null;
   databaseId?: number;
   resolvedBy?: string;
+  url?: string;
+  replies?: Array<{ body: string; author: { login: string } }>;
 } = {}) {
   return {
     id: overrides.id ?? 'thread-1',
@@ -84,10 +91,11 @@ function makeGraphqlFetchThreadNode(overrides: {
       nodes: [{
         ...(overrides.databaseId !== undefined && { databaseId: overrides.databaseId }),
         body: overrides.body ?? '<!-- manki:blocker:test-finding --> **Blocker**: test finding',
+        ...(overrides.url && { url: overrides.url }),
         author: overrides.authorLogin !== undefined
           ? (overrides.authorLogin === null ? null : { login: overrides.authorLogin })
           : { login: 'github-actions[bot]' },
-      }],
+      }, ...(overrides.replies ?? [])],
     },
   };
 }
@@ -310,6 +318,7 @@ describe('checkAndAutoApprove', () => {
     createCommentFn?: jest.Mock;
     existingReviews?: Array<{ body?: string; state?: string; commit_id?: string; user?: { login?: string; type?: string } }>;
     existingComments?: Array<{ body?: string; user?: { login?: string } }>;
+    permission?: string;
   } = {}) {
     const threads = overrides.threads ?? [];
     const prHeadSha = overrides.prHeadSha ?? 'abc123';
@@ -332,6 +341,9 @@ describe('checkAndAutoApprove', () => {
         issues: {
           listComments: jest.fn().mockResolvedValue({ data: existingComments }),
           createComment: createCommentFn,
+        },
+        repos: {
+          getCollaboratorPermissionLevel: jest.fn().mockResolvedValue({ data: { permission: overrides.permission ?? 'write' } }),
         },
       },
     } as unknown as Octokit;
@@ -357,23 +369,42 @@ describe('checkAndAutoApprove', () => {
   });
 
   it.each([
-    ['the PR author', 'author', false],
-    ['a collaborator', 'alice', true],
-  ])('approves a security thread resolved by %s: %s', async (_who, resolver, approves) => {
+    ['the PR author', 'author', 'write', false, false],
+    ['a collaborator', 'alice', 'write', false, true],
+    ['the PR author as a repo admin', 'author', 'admin', false, true],
+    ['the PR author as a repo admin, already recorded', 'author', 'admin', true, true],
+  ])('approves a security thread resolved by %s', async (who, resolver, permission, recorded, approves) => {
     const finding = (title: string, tags?: string[]): Finding => ({
       severity: 'blocker', title, file: 'src/a.ts', line: 3, description: 'd', reviewers: [], ...(tags && { tags }),
     });
     const createReviewMock = jest.fn().mockResolvedValue({});
     const octokit = makeMockOctokit({
       threads: [
-        makeGraphqlFetchThreadNode({ id: 't1', isResolved: true, resolvedBy: resolver, body: formatFindingComment(finding('Token leaks into logs', ['security'])) }),
+        makeGraphqlFetchThreadNode({
+          id: 't1', isResolved: true, resolvedBy: resolver, url: 'https://github.com/o/r/pull/1#r1',
+          body: formatFindingComment(finding('Token leaks into logs', ['security'])),
+          ...(recorded && { replies: [{ body: `<!-- manki -->\n${securityOverrideMarker('resolve', 'author')}`, author: { login: 'github-actions[bot]' } }] }),
+        }),
         makeGraphqlFetchThreadNode({ id: 't2', isResolved: true, resolvedBy: 'author', body: formatFindingComment(finding('Off by one')) }),
       ],
       createReviewFn: createReviewMock,
+      permission,
     });
 
     expect(await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1)).toBe(approves);
     expect(createReviewMock).toHaveBeenCalledTimes(approves ? 1 : 0);
+
+    const isAdmin = who.includes('repo admin');
+    const replies = jest.mocked(octokit.graphql).mock.calls.filter(([query]) => String(query).includes('addPullRequestReviewThreadReply'));
+    expect(replies.map(([, vars]) => vars)).toEqual(isAdmin && !recorded
+      ? [{ threadId: 't1', body: 'Security finding dismissed by @author (repo admin).\n\n<!-- manki -->\n<!-- manki-security-override:resolve:author -->' }]
+      : []);
+    // Only a security thread the author resolved, with no override recorded yet, needs the admin lookup.
+    expect(octokit.rest.repos.getCollaboratorPermissionLevel).toHaveBeenCalledTimes(resolver === 'author' && !recorded ? 1 : 0);
+    if (approves) {
+      const line = '**Security findings dismissed by a repo admin:** [Token leaks into logs](https://github.com/o/r/pull/1#r1) by @author.';
+      expect(createReviewMock.mock.calls[0][0].body.includes(line)).toBe(isAdmin);
+    }
   });
 
   it('approves when blocking threads are resolved and only old suggestion and nitpick threads are open', async () => {

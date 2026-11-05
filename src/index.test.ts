@@ -138,6 +138,7 @@ jest.mock('./recap', () => ({
   fingerprintFinding: jest.fn((title: string, file: string, line: number) => ({ file, lineStart: line, lineEnd: line, slug: title })),
   collectResolvedThreadIds: jest.requireActual('./recap').collectResolvedThreadIds,
   sanitize: jest.requireActual('./recap').sanitize,
+  securityOverridesIn: jest.requireActual('./recap').securityOverridesIn,
 }));
 
 jest.mock('./review', () => ({
@@ -235,6 +236,7 @@ jest.mock('./github', () => {
 });
 
 jest.mock('./state', () => ({
+  announceSecurityOverrides: jest.fn().mockResolvedValue([]),
   checkAndAutoApprove: jest.fn().mockResolvedValue(false),
   reopenAuthorResolvedThreads: jest.fn().mockResolvedValue(undefined),
   replyToReviewThread: jest.requireActual('./state').replyToReviewThread,
@@ -261,7 +263,7 @@ import * as configModule from './config';
 import * as reviewModule from './review';
 import { routingDigest } from './routing';
 import * as recapModule from './recap';
-import type { RecapState } from './recap';
+import type { PreviousFinding, RecapState } from './recap';
 import * as memoryModule from './memory';
 import * as stateModule from './state';
 import * as authModule from './auth';
@@ -1276,7 +1278,7 @@ describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
 
     expect(jest.mocked(ghUtils.hasBotReviewOnCommit)).not.toHaveBeenCalled();
     expect(jest.mocked(interaction.handleReviewCommentCommand)).toHaveBeenCalledWith(
-      expect.anything(), 'test-owner', 'test-repo', 7, 99, { type: 'help', args: '' }, undefined, undefined,
+      expect.anything(), expect.anything(), 'test-owner', 'test-repo', 7, 99, { type: 'help', args: '' }, undefined, undefined,
     );
     const skipCalls = mockOctokitInstance.rest.issues.createComment.mock.calls.filter(
       (c: [{ body: string }]) => c[0].body.includes('Review skipped'),
@@ -5423,7 +5425,12 @@ describe('runFullReview orchestration', () => {
       jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(5));
       const rounds = priorRounds(2).map(roundContextFromLegacy);
       rounds[1].meta.outcome = 'NOT_CONVERGING';
-      jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: rounds });
+      const overridden = (threadId: string, announced: boolean) => ({
+        title: 'Token leaks into logs', file: 'src/a.ts', line: 3, severity: 'blocker' as const, status: 'resolved' as const, threadId, isSecurity: true,
+        securityOverride: { login: 'owner', via: 'resolve' as const, announced },
+      });
+      const previousFindings = [overridden('T_new', false), overridden('T_recorded', true)];
+      jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings, priorRounds: rounds });
 
       await callRunFullReview();
 
@@ -5432,7 +5439,11 @@ describe('runFullReview orchestration', () => {
         .find(([args]) => typeof args.body === 'string' && args.body.includes('Automatic review is paused'));
       expect(notice![0].body).toContain('came back after a fix');
       expect(notice![0].body).toContain(FORCE_CAP_MARKER);
-      expect(jest.mocked(stateModule.reopenAuthorResolvedThreads)).toHaveBeenCalledWith(expect.anything(), [], true);
+      expect(jest.mocked(stateModule.reopenAuthorResolvedThreads)).toHaveBeenCalledWith(expect.anything(), previousFindings, true);
+      // A security override is recorded in its thread once, even while review is paused.
+      expect(jest.mocked(stateModule.announceSecurityOverrides)).toHaveBeenCalledWith(expect.anything(), [
+        { thread: 'T_new', login: 'owner', via: 'resolve', announced: false },
+      ]);
 
       // A later push during the same pause updates that notice. A notice from before the last round is left alone.
       const posted = (id: number, updatedAt: string) => ({ id, body: notice![0].body, user: { login: 'manki-review[bot]', type: 'Bot' }, updated_at: updatedAt });
@@ -7092,5 +7103,22 @@ describe('buildRoundRecap', () => {
     const result = buildRoundRecap({ priorRounds: [{}] });
     expect(result.reclassifiedPriorCount).toBe(0);
     expect('reclassifiedPriors' in result).toBe(false);
+    expect('securityOverrides' in result).toBe(false);
+  });
+
+  it('records each security override with its thread, login and path', () => {
+    const finding = (threadId: string, securityOverride?: PreviousFinding['securityOverride']): PreviousFinding => ({
+      title: 'Token leaks into logs', file: 'src/a.ts', line: 3, severity: 'blocker', status: 'resolved', threadId, isSecurity: true,
+      ...(securityOverride && { securityOverride }),
+    });
+    const result = buildRoundRecap({ priorRounds: [{}], previousFindings: [
+      finding('T1', { login: 'owner', via: 'resolve', announced: false }),
+      finding('T2'),
+      finding('T3', { login: 'owner', via: 'dismiss', announced: true }),
+    ] });
+    expect(result.securityOverrides).toEqual([
+      { thread: 'T1', login: 'owner', via: 'resolve' },
+      { thread: 'T3', login: 'owner', via: 'dismiss' },
+    ]);
   });
 });

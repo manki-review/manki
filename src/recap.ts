@@ -1,11 +1,11 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { LLMClient } from './providers';
-import { BotIdentity, fetchReviewThreadNodes, GraphqlConnection, isBotLogin, isTrustedAssociation, LOW_CONFIDENCE_NOTE, paginateGraphql, titleToSlug } from './github';
+import { BotIdentity, fetchReviewThreadNodes, GraphqlConnection, isBotLogin, isRepoAdmin, isTrustedAssociation, LOW_CONFIDENCE_NOTE, paginateGraphql, titleToSlug } from './github';
 import { findPriorThreadId } from './finding-fingerprint';
 import { matchesSuppression, Suppression } from './memory';
 import { isSecurityFinding } from './review';
-import { AuthorReplyClass, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacyPrType, migrateLegacySeverity, OpenThreadsState, RoundContext, SEVERITY_TOKEN_PATTERN } from './types';
+import { AuthorReplyClass, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacyPrType, migrateLegacySeverity, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_TOKEN_PATTERN } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -47,6 +47,59 @@ function isSecurityThread(body: string): boolean {
 
 /** Marks Manki's reply on a security thread it reopened after the PR author resolved it. */
 const REOPENED_MARKER = '<!-- manki-reopened -->';
+
+const SECURITY_OVERRIDE_MARKER_RE = /<!-- manki-security-override:(resolve|dismiss):([A-Za-z0-9-]+) -->/;
+
+/** Marks Manki's reply on a security thread the PR author cleared as a repo admin, with how and by whom. */
+function securityOverrideMarker(via: SecurityOverride['via'], login: string): string {
+  return `<!-- manki-security-override:${via}:${login} -->`;
+}
+
+/** How the PR author cleared a security thread as a repo admin. */
+interface ThreadSecurityOverride extends Omit<SecurityOverride, 'thread'> {
+  /** Whether Manki has already replied on the thread to record the override. */
+  announced: boolean;
+}
+
+/** Returns the override recorded in one of Manki's own comments on a thread, if any. */
+function recordedSecurityOverride(
+  bot: BotIdentity, comments: ReadonlyArray<{ body?: string | null; author: { login: string } | null }>,
+): Omit<SecurityOverride, 'thread'> | undefined {
+  for (const c of comments) {
+    const match = isBotLogin(bot, c.author?.login) ? c.body?.match(SECURITY_OVERRIDE_MARKER_RE) : null;
+    if (match) return { via: match[1] as SecurityOverride['via'], login: match[2] };
+  }
+  return undefined;
+}
+
+interface OverrideCandidate {
+  isSecurity?: boolean;
+  isResolved: boolean;
+  resolvedByLogin?: string;
+  recordedOverride?: Omit<SecurityOverride, 'thread'>;
+}
+
+/** Whether the PR author resolved a security thread with no recorded override, so only an admin check can clear it. */
+function isAuthorResolvedSecurity(t: OverrideCandidate, prAuthorLogin: string | undefined): boolean {
+  return !!t.isSecurity && t.isResolved && !t.recordedOverride
+    && !!prAuthorLogin && t.resolvedByLogin?.toLowerCase() === prAuthorLogin.toLowerCase();
+}
+
+/** The security overrides on `previousFindings`, one per thread. */
+function securityOverridesIn(previousFindings: PreviousFinding[]): Array<SecurityOverride & { announced: boolean }> {
+  return previousFindings.flatMap(f => f.threadId && f.securityOverride ? [{ thread: f.threadId, ...f.securityOverride }] : []);
+}
+
+/**
+ * Returns how the PR author cleared a resolved security thread as a repo admin: the override Manki recorded on it,
+ * or else the author's own resolve when `prAuthorIsAdmin`.
+ */
+function securityOverrideOf(t: OverrideCandidate, prAuthorLogin: string | undefined, prAuthorIsAdmin: boolean): ThreadSecurityOverride | undefined {
+  if (!t.isSecurity || !t.isResolved) return undefined;
+  if (t.recordedOverride) return { ...t.recordedOverride, announced: true };
+  if (!prAuthorIsAdmin || !t.resolvedByLogin || !isAuthorResolvedSecurity(t, prAuthorLogin)) return undefined;
+  return { login: t.resolvedByLogin, via: 'resolve', announced: false };
+}
 
 const LLM_DEDUP_TIMEOUT_MS = 120_000;
 
@@ -179,6 +232,8 @@ interface PreviousFinding extends FindingMetadata {
   authorReplyMayClear?: boolean;
   /** A security thread the PR author resolved, which Manki has not reopened before. */
   reopen?: boolean;
+  /** A security thread the PR author cleared as a repo admin. */
+  securityOverride?: ThreadSecurityOverride;
 }
 
 /**
@@ -383,16 +438,19 @@ async function fetchRecapState(
   ]);
   const { threads, state: openThreadsState } = threadsResult;
   const addressedThreadIds = judgeAddressedThreadIds(priorRounds);
+  const botThreads = threads.filter(t => t.isBotThread);
+  const prAuthorIsAdmin = !!prAuthorLogin && botThreads.some(t => isAuthorResolvedSecurity(t, prAuthorLogin))
+    && await isRepoAdmin(octokit, owner, repo, prAuthorLogin);
 
-  const previousFindings = threads
-    .filter(t => t.isBotThread)
-    .map(t => ({
+  const previousFindings = botThreads.map(t => {
+    const securityOverride = addressedThreadIds.has(t.threadId) ? undefined : securityOverrideOf(t, prAuthorLogin, prAuthorIsAdmin);
+    return {
       title: t.findingTitle,
       file: t.file,
       line: t.line,
       lineStart: t.lineStart,
       severity: t.severity,
-      status: threadStatus(t, addressedThreadIds, bot, prAuthorLogin),
+      status: threadStatus(t, addressedThreadIds, bot, prAuthorLogin, !!securityOverride),
       threadId: t.threadId,
       threadUrl: t.threadUrl,
       ...(t.markerSlug && { markerSlug: t.markerSlug }),
@@ -403,10 +461,12 @@ async function fetchRecapState(
       ...(t.isSecurity && { isSecurity: true }),
       ...(t.isSecurity && mayClearSecurityThread(t.authorReplyLogin, bot, prAuthorLogin)
         && isTrustedAssociation(t.authorReplyAssociation) && { authorReplyMayClear: true }),
-      ...(shouldReopen(t, addressedThreadIds, prAuthorLogin) && { reopen: true }),
+      ...(!securityOverride && shouldReopen(t, addressedThreadIds, prAuthorLogin) && { reopen: true }),
+      ...(securityOverride && { securityOverride }),
       description: t.description,
       suggestedFix: t.suggestedFix,
-    }));
+    };
+  });
 
   // A replied thread counts as resolved on the same "agree" gate as `inPrSuppressionReasonFor`.
   const resolved = previousFindings.filter(
@@ -445,15 +505,15 @@ function shouldReopen(t: ReviewThread, addressedThreadIds: Set<string>, prAuthor
 
 /**
  * Returns the thread's status for the next round. A resolved security thread stays `open` or `replied`
- * unless the judge marked it `addressed` or `mayClearSecurityThread` accepts the resolver.
+ * unless the judge marked it `addressed`, `mayClearSecurityThread` accepts the resolver, or a repo admin overrode it.
  */
 function threadStatus(
-  t: ReviewThread, addressedThreadIds: Set<string>, bot: BotIdentity, prAuthorLogin: string | undefined,
+  t: ReviewThread, addressedThreadIds: Set<string>, bot: BotIdentity, prAuthorLogin: string | undefined, securityOverride: boolean,
 ): PreviousFinding['status'] {
   const unresolved = t.hasHumanReply ? 'replied' : 'open';
   if (!t.isResolved) return unresolved;
   if (addressedThreadIds.has(t.threadId)) return 'resolved';
-  if (t.isSecurity) return mayClearSecurityThread(t.resolvedByLogin, bot, prAuthorLogin) ? 'resolved' : unresolved;
+  if (t.isSecurity) return securityOverride || mayClearSecurityThread(t.resolvedByLogin, bot, prAuthorLogin) ? 'resolved' : unresolved;
   return t.resolvedByHuman ? 'resolved' : 'auto-resolved';
 }
 
@@ -579,6 +639,7 @@ interface ReviewThread extends FindingMetadata {
   resolvedByLogin?: string;
   isSecurity: boolean;
   reopenedByManki: boolean;
+  recordedOverride?: Omit<SecurityOverride, 'thread'>;
   hasHumanReply: boolean;
   findingTitle: string;
   file: string;
@@ -752,6 +813,7 @@ async function fetchReviewThreads(
 
       const line = thread.line ?? 0;
       const lineStart = thread.startLine ?? line;
+      const recordedOverride = isBotThread ? recordedSecurityOverride(bot, thread.comments.nodes) : undefined;
 
       return {
         threadId: thread.id,
@@ -762,6 +824,7 @@ async function fetchReviewThreads(
         ...(thread.resolvedBy?.login && { resolvedByLogin: thread.resolvedBy.login }),
         isSecurity: isBotThread && isSecurityThread(body),
         reopenedByManki: thread.comments.nodes.some(c => isBotLogin(bot, c.author?.login) && c.body?.includes(REOPENED_MARKER)),
+        ...(recordedOverride && { recordedOverride }),
         hasHumanReply,
         findingTitle,
         description,
@@ -958,4 +1021,4 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
   );
 }
 
-export { DuplicateMatch, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchRecapState, isSecurityThread, mayClearSecurityThread, REOPENED_MARKER, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment };
+export { DuplicateMatch, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchRecapState, isAuthorResolvedSecurity, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment };
