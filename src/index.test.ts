@@ -181,6 +181,7 @@ jest.mock('./github', () => {
   postReview: jest.fn().mockResolvedValue(123),
   reactToIssueComment: jest.fn().mockResolvedValue(undefined),
   fetchLinkedIssues: jest.fn().mockResolvedValue([]),
+  hasWriteAccess: jest.fn().mockResolvedValue(true),
   isReviewInProgress: jest.fn().mockResolvedValue(false),
   isApprovedOnCommit: jest.fn().mockResolvedValue(false),
   hasBotReviewOnCommit: jest.fn().mockResolvedValue(false),
@@ -6467,8 +6468,8 @@ describe('force review checkbox', () => {
       payload: {
         action: 'edited',
         sender: { login: 'user' },
-        issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } },
-        comment: { id: 42, body: forceBody, user: { login: ghUtils.BOT_LOGIN }, author_association: 'COLLABORATOR' },
+        issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' }, user: { login: 'pr-author' } },
+        comment: { id: 42, body: forceBody, user: { login: ghUtils.BOT_LOGIN }, author_association: 'NONE' },
       },
     });
 
@@ -6477,9 +6478,42 @@ describe('force review checkbox', () => {
     expect(jest.mocked(ghUtils.reactToIssueComment)).toHaveBeenCalledWith(
       expect.anything(), 'test-owner', 'test-repo', 42, 'eyes',
     );
+    expect(jest.mocked(ghUtils.hasWriteAccess)).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 'user');
     // force review bypasses the isReviewInProgress check entirely
     expect(jest.mocked(ghUtils.isReviewInProgress)).not.toHaveBeenCalled();
     expect(mockPullsGet).toHaveBeenCalled();
+  });
+
+  it.each([
+    ['the PR author without write access', 'pr-author', true],
+    ['an editor without write access who is not the PR author', 'stranger', false],
+  ])('authorizes a force review tick by the editor: %s', async (_name, editor, allowed) => {
+    const forceBody = `<!-- manki-bot -->\n**Review skipped**\n\n- [x] Force review\n\n${FORCE_REVIEW_MARKER}`;
+    setContext({
+      eventName: 'issue_comment',
+      payload: {
+        action: 'edited',
+        sender: { login: editor },
+        issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' }, user: { login: 'pr-author' } },
+        comment: { id: 42, body: forceBody, user: { login: ghUtils.BOT_LOGIN }, author_association: 'COLLABORATOR' },
+      },
+    });
+
+    jest.mocked(ghUtils.hasWriteAccess).mockResolvedValue(false);
+    try {
+      await run();
+    } finally {
+      jest.mocked(ghUtils.hasWriteAccess).mockResolvedValue(true);
+    }
+
+    const refusal = expect.objectContaining({ body: expect.stringContaining('Only repo contributors can trigger reviews') });
+    if (allowed) {
+      expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalledWith(refusal);
+      expect(mockPullsGet).toHaveBeenCalled();
+    } else {
+      expect(mockOctokitInstance.rest.issues.createComment).toHaveBeenCalledWith(refusal);
+      expect(mockPullsGet).not.toHaveBeenCalled();
+    }
   });
 
   it('routes round-cap notice force review checkbox edit to handleCommentTrigger with skipCap only', async () => {
