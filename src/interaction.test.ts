@@ -573,15 +573,6 @@ describe('isLLMAccessAllowed', () => {
     expect(ghUtils.hasWriteAccess).not.toHaveBeenCalled();
   });
 
-  it('lets the PR author comment on their own PR without an API call', async () => {
-    const comment = { id: 42, body: '@manki review', user: { login: 'reader' }, author_association: 'NONE' };
-    setContext({ comment, sender: { login: 'reader' }, issue: { pull_request: { url: 'https://...' }, user: { login: 'Reader' } }, pull_request: undefined });
-    expect(await allowed()).toBe(true);
-    setContext({ comment, sender: { login: 'reader' }, issue: undefined, pull_request: { number: 1, user: { login: 'reader' } } });
-    expect(await allowed()).toBe(true);
-    expect(ghUtils.hasWriteAccess).not.toHaveBeenCalled();
-  });
-
   it.each([
     ['a private org member with write access', 'member', 'CONTRIBUTOR', true],
     ['a stranger with read access', 'reader', 'NONE', false],
@@ -591,24 +582,19 @@ describe('isLLMAccessAllowed', () => {
     expect(ghUtils.hasWriteAccess).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', login);
   });
 
-  it.each(['FIRST_TIMER', 'FIRST_TIME_CONTRIBUTOR'])('asks the API about a PR author marked %s', async association => {
+  it.each([
+    ['a returning fork author without write access', 'reader', 'CONTRIBUTOR', false],
+    ['a first-time fork author', 'reader', 'FIRST_TIME_CONTRIBUTOR', false],
+    ['a same-repo PR author with write access', 'author', 'NONE', true],
+  ])('treats the PR author on their own PR like anyone else: %s', async (_name, login, association, expected) => {
     setContext({
-      comment: { id: 42, body: '@manki review', user: { login: 'reader' }, author_association: association },
-      sender: { login: 'reader' },
-      pull_request: { number: 1, user: { login: 'reader' } },
+      comment: { id: 42, body: '@manki review', user: { login }, author_association: association },
+      sender: { login },
+      issue: { pull_request: { url: 'https://...' }, user: { login } },
+      pull_request: { number: 1, user: { login } },
     });
-    expect(await allowed()).toBe(false);
-    expect(ghUtils.hasWriteAccess).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 'reader');
-  });
-
-  it('does not count an issue author as a PR author', async () => {
-    setContext({
-      comment: { id: 42, body: '@manki help', user: { login: 'reader' }, author_association: 'NONE' },
-      sender: { login: 'reader' },
-      issue: { user: { login: 'reader' } },
-      pull_request: undefined,
-    });
-    expect(await allowed()).toBe(false);
+    expect(await allowed()).toBe(expected);
+    expect(ghUtils.hasWriteAccess).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', login);
   });
 
   it('checks only the editor on an edit of another user\'s comment', async () => {
