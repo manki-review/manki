@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as fs from 'fs';
 import { parse as parseYaml } from 'yaml';
 
-import { PairedPin, ReviewConfig } from './types';
+import { PairedPin, ReviewConfig, StaticAnalysisConfig } from './types';
 
 export const MAX_LOCK_TTL_SECONDS = 3600;
 
@@ -25,6 +25,11 @@ export const DEFAULT_CONFIG: ReviewConfig = {
   planner: {
     enabled: true,
     paired: 'auto',
+  },
+  static_analysis: {
+    checks: true,
+    code_scanning: true,
+    dependency_review: true,
   },
   memory: {
     enabled: false,
@@ -55,6 +60,7 @@ const KNOWN_KEYS = new Set([
   'memory',
   'models',
   'planner',
+  'static_analysis',
   'nit_handling',
   'noise_level',
   'review_passes',
@@ -194,6 +200,19 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
     }
   }
 
+  if ('static_analysis' in config) {
+    const staticAnalysis = config.static_analysis as Record<string, unknown>;
+    if (!staticAnalysis || typeof staticAnalysis !== 'object' || Array.isArray(staticAnalysis)) {
+      errors.push('`static_analysis` must be an object');
+    } else {
+      for (const key of ['checks', 'code_scanning', 'dependency_review']) {
+        if (key in staticAnalysis && typeof staticAnalysis[key] !== 'boolean') {
+          errors.push(`\`static_analysis.${key}\` must be a boolean`);
+        }
+      }
+    }
+  }
+
   if ('nit_handling' in config) {
     if (config.nit_handling === 'issues' || config.nit_handling === 'comments') {
       warnings.push("`nit_handling: '" + config.nit_handling + "'` is deprecated and ignored, surviving nit findings now post inline. See https://github.com/manki-review/manki/issues/738 for context.");
@@ -317,6 +336,8 @@ function deepMerge(defaults: ReviewConfig, overrides: Record<string, unknown>): 
       result.models = models;
     } else if (key === 'planner' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
       result.planner = { ...defaults.planner, ...(value as Record<string, unknown>) } as ReviewConfig['planner'];
+    } else if (key === 'static_analysis' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      result.static_analysis = { ...defaults.static_analysis, ...(value as Record<string, unknown>) } as ReviewConfig['static_analysis'];
     } else if (key === 'convergence' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
       result.convergence = { ...defaults.convergence, ...(value as Record<string, unknown>) } as ReviewConfig['convergence'];
     } else if (key === 'stats' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
@@ -375,6 +396,31 @@ export function loadConfigFromContent(content: string, source = '.manki.yml'): R
   }
 
   return deepMerge(DEFAULT_CONFIG, parsed as Record<string, unknown>);
+}
+
+/**
+ * Returns the `static_analysis` block of a config file's content, with defaults for missing keys.
+ * Falls back to the defaults when the content is missing or invalid, so a broken file never turns sources off.
+ */
+export function loadStaticAnalysisConfig(content: string | null, source = '.manki.yml'): StaticAnalysisConfig {
+  const defaults = DEFAULT_CONFIG.static_analysis!;
+  if (!content) return { ...defaults };
+  try {
+    const parsed: unknown = parseYaml(content);
+    const block = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>).static_analysis
+      : undefined;
+    if (block === undefined) return { ...defaults };
+    const validation = validateConfig({ static_analysis: block });
+    if (!validation.valid) {
+      core.info(`Ignoring invalid \`static_analysis\` in ${source} on the base branch: ${validation.errors.join('; ')}`);
+      return { ...defaults };
+    }
+    return { ...defaults, ...(block as Partial<StaticAnalysisConfig>) };
+  } catch (e) {
+    core.info(`Could not parse ${source} on the base branch, using the default \`static_analysis\`: ${e instanceof Error ? e.message : String(e)}`);
+    return { ...defaults };
+  }
 }
 
 export function loadConfigFromFile(filePath: string): ReviewConfig {

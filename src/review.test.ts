@@ -25,7 +25,7 @@ import { DEFAULT_CONFIG } from './config';
 import { filterRawDiff } from './diff';
 import * as core from '@actions/core';
 import { LinkedIssue, titleToSlug } from './github';
-import { Finding, RoundContext, OpenThread, ReviewerAgent, ReviewConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES } from './types';
+import { Finding, RoundContext, OpenThread, ReviewerAgent, ReviewConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG } from './types';
 import { fingerprintEntriesFromLegacy, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, roundContextFromLegacy } from './test-utils';
 import { runJudgeAgent, computeProvenanceMap } from './judge';
 import { applySuppressions } from './memory';
@@ -3576,7 +3576,7 @@ describe('runReview', () => {
   });
 });
 
-describe('runReview test-file nit suppression', () => {
+describe('runReview post-judge suppression', () => {
   const mockedRunJudgeAgent = jest.mocked(runJudgeAgent);
 
   function makeClients(): ReviewClients {
@@ -3687,6 +3687,34 @@ describe('runReview test-file nit suppression', () => {
       undefined, undefined, [buildPriorRound(1)],
     );
     expect(result.findings).toHaveLength(1);
+  });
+
+  it('drops a suggestion or nitpick a CI tool already reports on the same line, and keeps warnings, blockers and security findings', async () => {
+    const lint = { tool: 'lint', ruleId: 'no-unused-vars', severity: 'error' as const, file: 'src/a.ts', line: 10, message: 'x is unused', source: 'checks' as const };
+    mockedRunJudgeAgent.mockResolvedValue({
+      findings: [
+        makeFinding({ severity: 'suggestion', title: 'Unused variable' }),
+        makeFinding({ severity: 'nitpick', title: 'Unused import' }),
+        makeFinding({ severity: 'warning', title: 'Off-by-one in loop' }),
+        makeFinding({ severity: 'blocker', title: 'Null dereference' }),
+        makeFinding({ severity: 'suggestion', title: 'Token in log', tags: [SECURITY_TAG] }),
+        makeFinding({ severity: 'suggestion', title: 'Rename', line: 11 }),
+      ],
+      summary: 'ok',
+    });
+    const clients = makeClients();
+    const result = await runReview(
+      clients, makeConfig(), makeDiff({ totalAdditions: 5, totalDeletions: 0 }),
+      'raw', 'ctx', undefined, undefined, { title: 'PR', body: '', baseBranch: 'main', staticSignals: [lint] },
+    );
+    expect(result.findings.map(f => f.title)).toEqual(['Off-by-one in loop', 'Null dereference', 'Token in log', 'Rename']);
+    expect(result.staticSignalMatches).toEqual([
+      { droppedTitle: 'Unused variable', file: 'src/a.ts', line: 10, tool: 'lint', ruleId: 'no-unused-vars' },
+      { droppedTitle: 'Unused import', file: 'src/a.ts', line: 10, tool: 'lint', ruleId: 'no-unused-vars' },
+    ]);
+    const reviewerMessage = jest.mocked(clients.reviewer.sendMessage).mock.calls[0][1];
+    expect(reviewerMessage).toContain('## CI Results (untrusted tool output)');
+    expect(reviewerMessage).toContain('```\nsrc/a.ts:10 error lint no-unused-vars: x is unused\n```');
   });
 });
 
