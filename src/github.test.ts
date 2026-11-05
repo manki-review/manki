@@ -6,6 +6,7 @@ import { DEFAULT_CONFIG } from './config';
 import { paginateSinglePage, TEST_BOT } from './test-utils';
 
 const CUSTOM_APP_BOT: BotIdentity = { logins: ['acme-reviewer[bot]'] };
+const PAT_BOT: BotIdentity = { logins: [...TEST_BOT.logins, 'review-user'] };
 
 const EMOJI_RE = /\p{Extended_Pictographic}/u;
 const DASH_SEPARATOR_RE = / [—–] | -- /;
@@ -3579,6 +3580,16 @@ describe('isReviewInProgress', () => {
     expect(await isReviewInProgress(octokit, CUSTOM_APP_BOT, 'owner', 'repo', 1)).toBe(false);
   });
 
+  it('recognises a progress comment posted with a personal access token', async () => {
+    const { octokit } = makeMockOctokit({
+      comments: [{ body: makeRunIdBody(12345), user: { login: 'review-user', type: 'User' } }],
+      workflowRun: { status: 'in_progress', conclusion: null },
+    });
+
+    expect(await isReviewInProgress(octokit, PAT_BOT, 'owner', 'repo', 1)).toBe(true);
+    expect(await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1)).toBe(false);
+  });
+
   it('skips a config-error comment and finds the real progress comment behind it', async () => {
     const createComment = jest.fn().mockResolvedValue({});
     const poster = { rest: { issues: { createComment } } } as unknown as Octokit;
@@ -4080,6 +4091,12 @@ describe('hasBotReviewOnCommit', () => {
 
     expect(await hasBotReviewOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(true);
     expect(await hasBotReviewOnCommit(octokit, CUSTOM_APP_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(false);
+
+    const patOctokit = makeMockOctokit([
+      { body: `${BOT_MARKER}\nReview`, state: 'COMMENTED', commit_id: 'sha-123', user: { login: 'review-user', type: 'User' } },
+    ]);
+    expect(await hasBotReviewOnCommit(patOctokit, PAT_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(true);
+    expect(await hasBotReviewOnCommit(patOctokit, TEST_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(false);
   });
 
   it('returns true when a prior bot review is on the SHA and a later DISMISSED one is too', async () => {
