@@ -141,7 +141,7 @@ jest.mock('./review', () => ({
     reviewComplete: true,
     agentNames: ['general'],
   }),
-  selectTeam: jest.fn().mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, pair: false, model: 'claude-sonnet-4-6', effort: 'high' }], triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, trivialOverridden: false }),
+  selectTeam: jest.fn().mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, pair: false, model: 'claude-sonnet-4-6', effort: 'high' }], triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false }),
 }));
 
 jest.mock('./github', () => {
@@ -1795,7 +1795,7 @@ describe('runFullReview orchestration', () => {
       findings: [], highlights: [], reviewComplete: true,
       agentNames: ['general'],
     });
-    jest.mocked(reviewModule.selectTeam).mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, pair: false, model: 'claude-sonnet-4-6', effort: 'high' }], triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, trivialOverridden: false });
+    jest.mocked(reviewModule.selectTeam).mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, pair: false, model: 'claude-sonnet-4-6', effort: 'high' }], triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false });
     jest.mocked(ghUtils.postProgressComment).mockResolvedValue(1);
     jest.mocked(ghUtils.postReview).mockResolvedValue(123);
     jest.mocked(ghUtils.fetchPRDiff).mockResolvedValue('');
@@ -6437,7 +6437,7 @@ describe('runFullReview concurrent-submission lock', () => {
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'APPROVE', outcome: 'READY' as const, summary: '', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
     });
-    jest.mocked(reviewModule.selectTeam).mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, pair: false, model: 'claude-sonnet-4-6', effort: 'high' }], triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, trivialOverridden: false });
+    jest.mocked(reviewModule.selectTeam).mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, pair: false, model: 'claude-sonnet-4-6', effort: 'high' }], triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false });
     jest.mocked(ghUtils.postProgressComment).mockResolvedValue(1);
     jest.mocked(ghUtils.findInProgressLock).mockReturnValue(null);
     jest.mocked(ghUtils.isLockExpired).mockReturnValue(false);

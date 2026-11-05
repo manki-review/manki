@@ -1243,6 +1243,7 @@ async function runFullReview(
           ...(result.plannerFallbackReason && { fallbackReason: result.plannerFallbackReason }),
           ...result.triage,
           ...(result.sensitivePaths != null && { sensitivePaths: result.sensitivePaths }),
+          ...(result.ciOrDependencyPaths != null && { ciOrDependencyPaths: result.ciOrDependencyPaths }),
           ...(result.trivialOverridden && { trivialOverridden: true }),
           teamSize: result.agentNames.length,
           ...(reviewerEffort && { reviewerEffort }),
@@ -1426,7 +1427,7 @@ async function runFullReview(
         reviewerModel,
         judgeModel,
         triage: result.triage
-          ? `trivial=${result.triage.trivial}, subtle=${result.triage.subtle}, paired=${result.triage.paired} (${result.plannerSource ?? 'planner'}${result.sensitivePaths ? ', security-sensitive paths' : ''})`
+          ? `trivial=${result.triage.trivial}, subtle=${result.triage.subtle}, paired=${result.triage.paired} (${result.plannerSource ?? 'planner'}${result.sensitivePaths ? ', security-sensitive paths' : ''}${result.ciOrDependencyPaths ? ', CI or dependency paths' : ''})`
           : 'none',
         teamAgents: result.agentNames,
         memoryEnabled: config.memory?.enabled ?? false,

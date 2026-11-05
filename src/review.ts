@@ -81,15 +81,28 @@ const SECURITY_SENSITIVE_PREFIXES: readonly string[] = Object.freeze([
   'key', 'cert', 'tls', 'ssl', 'https',
 ]);
 
-// Kinds of file where the planner's `trivial: true` is believed. Test paths come from `convergence.test_path_patterns`.
+// Kinds of file where the planner's `trivial: true` is believed: docs, snapshots and generated files.
+// Test paths come from `convergence.test_path_patterns`.
 const TRIVIAL_FILE_PATTERNS: readonly string[] = Object.freeze([
   '**/*.md', '**/*.mdx', '**/*.rst', '**/*.adoc', '**/*.txt', 'docs/**', '**/LICENSE*',
-  '**/*.json', '**/*.yml', '**/*.yaml', '**/*.toml', '**/*.ini', '**/*.cfg', '**/.*rc', '.github/**',
-  '**/*.lock', '**/*.generated.*', '**/*.snap', '**/__snapshots__/**', 'dist/**',
+  '**/*.snap', '**/__snapshots__/**', '**/*.generated.*', 'dist/**',
 ]);
 
+// CI and automation, which runs with the repository's secrets, and dependency or toolchain pins.
+// Like a security-sensitive path, a diff touching one is never trivial and always gets two finders.
+const CI_OR_DEPENDENCY_PATTERNS: readonly string[] = Object.freeze([
+  '.github/workflows/**', '.github/actions/**', '**/action.yml', '**/action.yaml',
+  '**/package.json', '**/package-lock.json', '**/npm-shrinkwrap.json', '**/pnpm-lock.yaml', '**/*.lock', '**/go.sum',
+  '**/Cargo.toml', '**/go.mod', '**/pyproject.toml', '**/requirements*.txt', '**/Gemfile', '**/*.gemspec',
+  '**/rust-toolchain*', '**/.nvmrc', '**/Dockerfile*',
+]);
+
+function hasCiOrDependencyPaths(diff: ParsedDiff): boolean {
+  return diff.files.some(f => CI_OR_DEPENDENCY_PATTERNS.some(p => minimatch(f.path, p, { dot: true })));
+}
+
 /**
- * Whether every changed file could be trivial: docs, tests, config or generated, deleted, or renamed without edits.
+ * Whether every changed file could be trivial: docs, tests, snapshots or generated, deleted, or renamed without edits.
  * The planner only sees PR-derived text, so its `trivial` answer needs this floor in code.
  */
 function couldBeTrivial(diff: ParsedDiff, config: ReviewConfig): boolean {
@@ -117,15 +130,17 @@ function hasSensitivePaths(diff: ParsedDiff): boolean {
  * Builds the round's readers from the triage. A trivial change gets the trivial verifier alone.
  * Any other change gets one finder, plus a second on the pair model when `paired`.
  * Both finders get the same prompt. `planner.paired` pins the `paired` answer, and a
- * security-sensitive path forces `trivial: false` and `paired: true` over both.
+ * security-sensitive path, or a CI, automation or dependency file, forces `trivial: false` and `paired: true` over both.
  */
 export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triage = FAIL_SAFE_TRIAGE): TeamRoster {
   const pin = config.planner?.paired ?? 'auto';
   const sensitivePaths = hasSensitivePaths(diff);
+  const ciOrDependencyPaths = hasCiOrDependencyPaths(diff);
+  const forced = sensitivePaths || ciOrDependencyPaths;
   const effective: Triage = {
-    trivial: triage.trivial && !sensitivePaths && couldBeTrivial(diff, config),
+    trivial: triage.trivial && !forced && couldBeTrivial(diff, config),
     subtle: triage.subtle,
-    paired: sensitivePaths || (pin === 'auto' ? triage.paired : pin === 'always'),
+    paired: forced || (pin === 'auto' ? triage.paired : pin === 'always'),
   };
   const model = resolveModel(config, 'reviewer');
   if (effective.trivial) {
@@ -133,6 +148,7 @@ export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triag
       finders: [{ name: TRIVIAL_VERIFIER_AGENT.name, prompt: TRIVIAL_VERIFIER_AGENT, pair: false, model, effort: 'medium' }],
       triage: effective,
       sensitivePaths,
+      ciOrDependencyPaths,
       trivialOverridden: false,
     };
   }
@@ -143,7 +159,7 @@ export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triag
     const pairModel = resolvePairModel(config);
     finders.push({ name: `Pair finder (${pairModel})`, prompt, pair: true, model: pairModel, effort });
   }
-  return { finders, triage: effective, sensitivePaths, trivialOverridden: triage.trivial };
+  return { finders, triage: effective, sensitivePaths, ciOrDependencyPaths, trivialOverridden: triage.trivial };
 }
 
 export function shuffleDiffFiles(diff: ParsedDiff): ParsedDiff {
@@ -411,13 +427,14 @@ export function buildProvenanceFields(
   plannerFallbackReason: string | undefined,
   team: TeamRoster,
   agentMultiPassConsistency: Map<string, { consistent: number; totalRaw: number }>,
-): Pick<ReviewResult, 'plannerSource' | 'plannerFallbackReason' | 'triage' | 'sensitivePaths' | 'trivialOverridden' | 'agentMultiPassConsistency' | 'agentEffortMap' | 'agentModels' | 'pairAgentName'> {
+): Pick<ReviewResult, 'plannerSource' | 'plannerFallbackReason' | 'triage' | 'sensitivePaths' | 'ciOrDependencyPaths' | 'trivialOverridden' | 'agentMultiPassConsistency' | 'agentEffortMap' | 'agentModels' | 'pairAgentName'> {
   const pairAgentName = team.finders.find(f => f.pair)?.name;
   return {
     plannerSource,
     ...(plannerFallbackReason && { plannerFallbackReason }),
     triage: team.triage,
     sensitivePaths: team.sensitivePaths,
+    ciOrDependencyPaths: team.ciOrDependencyPaths,
     ...(team.trivialOverridden && { trivialOverridden: true }),
     ...(agentMultiPassConsistency.size > 0 && { agentMultiPassConsistency }),
     agentEffortMap: new Map(team.finders.map(f => [f.name, f.effort])),
@@ -469,7 +486,7 @@ export async function runReview(
   const judgeEffort = plannerResult?.judgeEffort ?? 'high';
   const reviewerEffort = team.finders[0].effort;
   const { trivial, subtle, paired } = team.triage;
-  core.info(`Triage (${plannerSource}): trivial=${trivial}, subtle=${subtle}, paired=${paired}${team.sensitivePaths ? ', security-sensitive paths' : ''}${team.trivialOverridden ? ', planner trivial answer overridden by the changed files' : ''}`);
+  core.info(`Triage (${plannerSource}): trivial=${trivial}, subtle=${subtle}, paired=${paired}${team.sensitivePaths ? ', security-sensitive paths' : ''}${team.ciOrDependencyPaths ? ', CI or dependency paths' : ''}${team.trivialOverridden ? ', planner trivial answer overridden by the changed files' : ''}`);
   core.info(`Review team: ${team.finders.map(f => f.name).join(', ')} at ${reviewerEffort} effort, judge: ${judgeEffort}${plannerResult ? ` (${plannerResult.prType})` : ''}`);
   if (trivial) {
     core.info(`trivial decision: prType=${plannerResult?.prType}, lines=${diff.totalAdditions + diff.totalDeletions}, files=${diff.files.length}`);

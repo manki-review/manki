@@ -1456,8 +1456,8 @@ describe('selectTeam', () => {
     const hunk = (content: string) => [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, content }];
     for (const files of [
       [{ path: 'README.md', changeType: 'modified' as const, hunks: hunk('+text') }],
-      [{ path: 'src/a.test.ts', changeType: 'modified' as const, hunks: hunk('+test') }, { path: '.github/workflows/ci.yml', changeType: 'modified' as const, hunks: hunk('+step') }],
-      [{ path: 'package-lock.json', changeType: 'modified' as const, hunks: hunk('+dep') }, { path: 'src/old.ts', changeType: 'deleted' as const, hunks: hunk('-code') }],
+      [{ path: 'src/a.test.ts', changeType: 'modified' as const, hunks: hunk('+test') }, { path: 'src/__snapshots__/a.test.ts.snap', changeType: 'modified' as const, hunks: hunk('+out') }],
+      [{ path: 'docs/guide.md', changeType: 'modified' as const, hunks: hunk('+text') }, { path: 'src/old.ts', changeType: 'deleted' as const, hunks: hunk('-code') }],
       [{ path: 'src/new-name.ts', oldPath: 'src/old-name.ts', changeType: 'renamed' as const, hunks: [] }],
     ]) {
       const team = selectTeam(makeDiff({ files }), makeConfig(), trivial);
@@ -1465,6 +1465,19 @@ describe('selectTeam', () => {
         { name: TRIVIAL_VERIFIER_AGENT.name, prompt: TRIVIAL_VERIFIER_AGENT, pair: false, model: 'claude-sonnet-4-6', effort: 'medium' },
       ]);
       expect(team.trivialOverridden).toBe(false);
+      expect(team.ciOrDependencyPaths).toBe(false);
+    }
+  });
+
+  it('gives a CI, automation or dependency change two finders, even when the planner calls it trivial and the pin says never', () => {
+    const hunk = [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, content: '+change' }];
+    for (const path of ['.github/workflows/ci.yml', 'package.json', 'action.yml', 'Cargo.lock', 'requirements-dev.txt', 'tools/Dockerfile.ci', '.nvmrc', 'config.json']) {
+      const team = selectTeam(makeDiff({ files: [{ path, changeType: 'modified', hunks: hunk }] }), makeConfig({ planner: { enabled: true, paired: 'never' } }), { trivial: true, subtle: false, paired: false });
+      const forced = path !== 'config.json';
+      expect([path, team.ciOrDependencyPaths]).toEqual([path, forced]);
+      expect(team.trivialOverridden).toBe(true);
+      expect(team.triage).toEqual({ trivial: false, subtle: false, paired: forced });
+      expect(names(team)).toHaveLength(forced ? 2 : 1);
     }
   });
 

@@ -280,6 +280,8 @@ export interface ReviewResult {
   triage?: Triage;
   /** Whether the diff touches a security-sensitive path. */
   sensitivePaths?: boolean;
+  /** Whether the diff touches CI, automation or a dependency or toolchain manifest. */
+  ciOrDependencyPaths?: boolean;
   /** Set when code overrode the planner's `trivial: true`. */
   trivialOverridden?: boolean;
   /** Model each agent ran on. Keyed by agent name. */
@@ -363,6 +365,8 @@ export interface TeamRoster {
   /** Triage after `planner.paired` and the sensitive-path rule. */
   triage: Triage;
   sensitivePaths: boolean;
+  /** Whether the diff touches CI, automation or a dependency or toolchain manifest. */
+  ciOrDependencyPaths: boolean;
   /** The planner answered `trivial: true`, but a changed file is not one that could be trivial or the path is security sensitive. */
   trivialOverridden: boolean;
 }
@@ -807,7 +811,9 @@ export interface RoundPlanner {
   paired?: boolean;
   /** Whether the diff touches a security-sensitive path, which forces `trivial: false` and `paired: true`. */
   sensitivePaths?: boolean;
-  /** Set when the planner answered `trivial: true` and code overrode it, because a changed file is not docs, tests, config or generated, or the path is security sensitive. */
+  /** Whether the diff touches CI, automation or a dependency or toolchain manifest, which also forces `trivial: false` and `paired: true`. */
+  ciOrDependencyPaths?: boolean;
+  /** Set when the planner answered `trivial: true` and code overrode it, because a changed file is not docs, tests, snapshots or generated, or one of the paths above forced it. */
   trivialOverridden?: boolean;
   /** Planner answers that were missing or invalid and took the side that adds review. */
   defaultedFields?: string[];
