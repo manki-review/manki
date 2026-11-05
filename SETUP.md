@@ -496,6 +496,7 @@ models:
   reviewer_pair: claude-opus-5-5 # the second finder on paired rounds (default: the other Claude tier)
   judge: claude-opus-5-5         # precise, single judge
   dedup: claude-haiku-5-5        # fast LLM dedup against prior findings
+  fallback: claude-sonnet-5-5    # reruns a stage a safety filter refused (default: reviewer)
 
 # Planner stage (default: enabled). A fast pre-review pass triages the
 # change (trivial, subtle, paired) and picks the judge effort and PR type.
@@ -568,6 +569,8 @@ Manki reviews run in these stages:
 4. **Judge agent**: A single agent evaluates the deduplicated reviewer findings for accuracy, actionability, and severity. It filters out noise, merges any remaining overlap, and assigns a 4-tier severity to each surviving finding.
 5. **Verdict reader**: Runs only when no finding blocks. One call on the judge's model reads the whole diff cold, without the PR description or earlier rounds, and looks for a reason not to merge. `READY` approves with "What this does" and "What to test" sections. `ADDRESS_FIRST` requests changes and posts its blockers as inline comments. Output that cannot be parsed ends the round as incomplete, never as an approval.
 6. **Recap** -- Surviving findings are posted as inline PR comments with a summary review.
+
+When a provider's safety filter refuses a stage, Manki sends that stage once more on `models.fallback`, which defaults to `models.reviewer`. A stage already on that model goes to its other Claude tier instead. The round context records the stage, the fallback model and the refusal reason under `models.fallbacks`. A second refusal ends the round incomplete, and other errors are never retried on the fallback model.
 
 ### Review groups
 

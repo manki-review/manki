@@ -289,6 +289,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
       ...(result.pairAgentName && { reviewerPair: models.reviewerPair }),
       judge: models.judge,
       dedup: models.dedup,
+      ...(result.modelFallbacks && { fallbacks: result.modelFallbacks }),
     },
     planner: (() => {
       const source = result.plannerSource ?? (result.plannerResult ? 'planner' : 'disabled');

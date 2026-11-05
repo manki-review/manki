@@ -1,4 +1,4 @@
-import { applyBaseReviewConfig, DEFAULT_CONFIG, loadConfig, loadConfigFromContent, loadConfigFromFile, loadReviewConfig, loadStaticAnalysisConfig, resolveModel, resolvePairModel, reviewFloorErrors, sanitizeForkConfig } from './config';
+import { applyBaseReviewConfig, DEFAULT_CONFIG, loadConfig, loadConfigFromContent, loadConfigFromFile, loadReviewConfig, loadStaticAnalysisConfig, resolveFallbackModel, resolveModel, resolvePairModel, reviewFloorErrors, sanitizeForkConfig } from './config';
 import { ReviewConfig } from './types';
 
 // Suppress @actions/core output during tests
@@ -483,11 +483,11 @@ models:
       expect(core.error).toHaveBeenCalledWith('`models.reviewer` must be a string');
     });
 
-    it('accepts `models.reviewer_pair` and rejects a non-string or empty one', () => {
-      expect(loadConfigFromContent('models:\n  reviewer_pair: gpt-5.5\n').models?.reviewer_pair).toBe('gpt-5.5');
+    it.each(['reviewer_pair', 'fallback'])('accepts `models.%s` and rejects a non-string or empty one', (key) => {
+      expect(loadConfigFromContent(`models:\n  ${key}: gpt-5.5\n`).models?.[key as 'reviewer_pair' | 'fallback']).toBe('gpt-5.5');
       for (const value of ['123', '""']) {
-        expect(() => loadConfigFromContent(`models:\n  reviewer_pair: ${value}\n`)).toThrow('Invalid config');
-        expect(core.error).toHaveBeenCalledWith('`models.reviewer_pair` must be a non-empty string');
+        expect(() => loadConfigFromContent(`models:\n  ${key}: ${value}\n`)).toThrow('Invalid config');
+        expect(core.error).toHaveBeenCalledWith(`\`models.${key}\` must be a non-empty string`);
       }
       expect(core.warning).not.toHaveBeenCalled();
     });
@@ -692,6 +692,23 @@ models:
     it('keeps the reviewer model for other providers and honours `reviewer_pair`', () => {
       expect(resolvePairModel(withModels({ reviewer: 'gpt-5.5' }))).toBe('gpt-5.5');
       expect(resolvePairModel(withModels({ reviewer: 'claude-sonnet-4-6', reviewer_pair: 'gemini-3-pro' }))).toBe('gemini-3-pro');
+    });
+  });
+
+  describe('resolveFallbackModel', () => {
+    const withModels = (models: ReviewConfig['models']): ReviewConfig => ({ ...DEFAULT_CONFIG, models });
+
+    it('falls back to the reviewer model, or the other Claude tier for a stage already on it', () => {
+      expect(resolveFallbackModel(DEFAULT_CONFIG, 'claude-opus-5-5')).toBe('claude-sonnet-5-5');
+      expect(resolveFallbackModel(DEFAULT_CONFIG, 'claude-haiku-5-5')).toBe('claude-sonnet-5-5');
+      expect(resolveFallbackModel(DEFAULT_CONFIG, 'claude-sonnet-5-5')).toBe('claude-opus-5-5');
+      expect(resolveFallbackModel(DEFAULT_CONFIG, 'anthropic/claude-sonnet-5-5')).toBe('claude-opus-5-5');
+    });
+
+    it('honours `models.fallback` and returns undefined when no other model is left', () => {
+      expect(resolveFallbackModel(withModels({ fallback: 'gpt-5.5' }), 'claude-opus-5-5')).toBe('gpt-5.5');
+      expect(resolveFallbackModel(withModels({ fallback: 'claude-opus-5-5' }), 'claude-opus-5-5')).toBe('claude-sonnet-5-5');
+      expect(resolveFallbackModel(withModels({ reviewer: 'gpt-5.5' }), 'gpt-5.5')).toBeUndefined();
     });
   });
 

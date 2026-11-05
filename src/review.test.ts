@@ -32,7 +32,7 @@ import { runJudgeAgent, computeProvenanceMap } from './judge';
 import { applySuppressions } from './memory';
 import { PreviousFinding } from './recap';
 import { WRITING_RULES } from './writing-rules';
-import { LLMClient, LLMResponse, wrapClientForUsage } from './providers';
+import { LLMClient, LLMResponse, RefusalError, withRefusalFallback, wrapClientForUsage } from './providers';
 
 const READY_VERDICT = JSON.stringify({
   verdict: 'READY',
@@ -2424,14 +2424,46 @@ describe('runReview', () => {
     infoSpy.mockRestore();
   });
 
-  it('ends the round INCOMPLETE when the verdict reader call fails', async () => {
+  const refusal = new RefusalError("Opus 5.5's safeguards flagged this message", 'refusal (reasoning_extraction)');
+
+  it.each([
+    ['fails, without trying the fallback model', new Error('overloaded'), 0],
+    ['is refused on the fallback model too', refusal, 1],
+  ])('ends the round INCOMPLETE when the verdict reader call %s', async (_label, error, fallbackCalls) => {
     const clients = makeClients();
-    jest.mocked(clients.judge.sendMessage).mockRejectedValue(new Error('overloaded'));
+    jest.mocked(clients.judge.sendMessage).mockRejectedValue(error);
+    const fallback = { sendMessage: jest.fn().mockRejectedValue(refusal) } as unknown as LLMClient;
+    clients.fallbacks = { judge: { model: 'claude-sonnet-5-5', client: fallback } };
 
     const result = await runReview(clients, { config: makeConfig(), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo context' });
     expect(result.outcome).toBe('INCOMPLETE');
     expect(result.verdict).toBe('COMMENT');
-    expect(result.summary).toContain('overloaded');
+    expect(result.summary).toContain(error.message);
+    expect(fallback.sendMessage).toHaveBeenCalledTimes(fallbackCalls);
+  });
+
+  it('sends a refused finder and verdict reader call again on the fallback model and records both', async () => {
+    const clients = makeClients();
+    jest.mocked(clients.reviewer.sendMessage).mockRejectedValueOnce(refusal);
+    jest.mocked(clients.judge.sendMessage).mockRejectedValue(refusal);
+    const reviewerFallback = { sendMessage: jest.fn().mockResolvedValue({ content: '[]' }) } as unknown as LLMClient;
+    const judgeFallback = { sendMessage: jest.fn().mockResolvedValue({ content: READY_VERDICT }) } as unknown as LLMClient;
+    clients.reviewerByModel = new Map([['claude-sonnet-5-5', clients.reviewer]]);
+    clients.fallbacks = {
+      reviewerByModel: new Map([['claude-sonnet-5-5', { model: 'claude-opus-5-5', client: reviewerFallback }]]),
+      judge: { model: 'claude-sonnet-5-5', client: judgeFallback },
+    };
+
+    const result = await runReview(clients, { config: makeConfig(), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo context' });
+    expect(result.outcome).toBe('READY');
+    expect(result.reviewComplete).toBe(true);
+    expect(result.verdictReport?.verdict).toBe('READY');
+    expect(clients.judge.sendMessage).toHaveBeenCalledTimes(1);
+    expect(jest.mocked(judgeFallback.sendMessage).mock.calls[0][2]).toEqual({ effort: 'high' });
+    expect(result.modelFallbacks).toEqual([
+      { stage: 'reviewer', agent: result.agentNames[0], fallbackModel: 'claude-opus-5-5', reason: 'refusal (reasoning_extraction)' },
+      { stage: 'verdict', fallbackModel: 'claude-sonnet-5-5', reason: 'refusal (reasoning_extraction)' },
+    ]);
   });
 
   it('gives the verdict reader the same cold prompt on every round for the same diff', async () => {
@@ -4552,6 +4584,35 @@ describe('runPlanner language and context', () => {
     expect(result).not.toBeNull();
     expect(result!.language!.length).toBeLessThanOrEqual(100);
     expect(result!.context!.length).toBeLessThanOrEqual(200);
+  });
+});
+
+describe('withRefusalFallback', () => {
+  const refusal = new RefusalError('declined', 'content_filter');
+
+  it('moves to the fallback client after a refusal and stays there', async () => {
+    const primary = { sendMessage: jest.fn().mockRejectedValue(refusal) } as unknown as LLMClient;
+    const fallback = { sendMessage: jest.fn().mockResolvedValue({ content: 'ok' }) } as unknown as LLMClient;
+    const onFallback = jest.fn();
+    const client = withRefusalFallback(primary, fallback, onFallback);
+
+    await expect(client.sendMessage('sys', 'first', { effort: 'low' })).resolves.toEqual({ content: 'ok' });
+    await expect(client.sendMessage('sys', 'second')).resolves.toEqual({ content: 'ok' });
+    expect(primary.sendMessage).toHaveBeenCalledTimes(1);
+    expect(jest.mocked(fallback.sendMessage).mock.calls).toEqual([['sys', 'first', { effort: 'low' }], ['sys', 'second', undefined]]);
+    expect(onFallback).toHaveBeenCalledTimes(1);
+    expect(onFallback).toHaveBeenCalledWith(refusal);
+  });
+
+  it('throws any other error, and a refusal without a fallback, unchanged', async () => {
+    const overloaded = new Error('overloaded');
+    const fallback = { sendMessage: jest.fn() } as unknown as LLMClient;
+    const onFallback = jest.fn();
+
+    await expect(withRefusalFallback({ sendMessage: jest.fn().mockRejectedValue(overloaded) }, fallback, onFallback).sendMessage('s', 'u')).rejects.toBe(overloaded);
+    await expect(withRefusalFallback({ sendMessage: jest.fn().mockRejectedValue(refusal) }, undefined, onFallback).sendMessage('s', 'u')).rejects.toBe(refusal);
+    expect(fallback.sendMessage).not.toHaveBeenCalled();
+    expect(onFallback).not.toHaveBeenCalled();
   });
 });
 

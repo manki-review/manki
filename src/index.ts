@@ -5,7 +5,7 @@ import * as path from 'path';
 
 import { AuthResult, createAuthenticatedOctokit, getMemoryToken } from './auth';
 import { sanitizeTokens, withMarkers } from './utils';
-import { applyBaseReviewConfig, BaseReviewConfig, loadConfig, loadConfigFromFile, loadReviewConfig, sanitizeForkConfig, resolveModel, resolvePairModel } from './config';
+import { applyBaseReviewConfig, BaseReviewConfig, loadConfig, loadConfigFromFile, loadReviewConfig, sanitizeForkConfig, resolveFallbackModel, resolveModel, resolvePairModel } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
@@ -657,7 +657,7 @@ function pauseState(priorRounds: RoundContext[], config: ReviewConfig): { capRou
   return { capRounds, capReached, paused: capReached || priorRounds.at(-1)?.meta.outcome === 'NOT_CONVERGING' };
 }
 
-/** Builds one LLM client per stage. Throws on a model spec or credentials that do not resolve. */
+/** Builds one LLM client per stage, plus each stage's refusal fallback. Throws on a model spec or credentials that do not resolve. */
 function buildReviewClients(config: ReviewConfig, providerInputs: ProviderInputs): { clients: ReviewClients; models: ReviewModels } {
   const models: ReviewModels = {
     planner: resolveModel(config, 'planner'),
@@ -681,7 +681,23 @@ function buildReviewClients(config: ReviewConfig, providerInputs: ProviderInputs
   const judge = buildClient(models.judge);
   const planner = config.planner?.enabled !== false ? buildClient(models.planner) : undefined;
   const dedup = buildClient(models.dedup);
-  return { clients: { reviewer, reviewerByModel, judge, planner, dedup }, models };
+  const fallbackClients = new Map<string, LLMClient>([...reviewerByModel, [models.judge, judge]]);
+  const fallbackFor = (stageModel: string) => {
+    const model = resolveFallbackModel(config, stageModel);
+    if (!model) return undefined;
+    if (!fallbackClients.has(model)) fallbackClients.set(model, buildClient(model));
+    return { model, client: fallbackClients.get(model)! };
+  };
+  const fallbacks: NonNullable<ReviewClients['fallbacks']> = {
+    ...(planner && { planner: fallbackFor(models.planner) }),
+    reviewerByModel: new Map([...reviewerByModel.keys()].flatMap((model) => {
+      const fallback = fallbackFor(model);
+      return fallback ? [[model, fallback] as const] : [];
+    })),
+    judge: fallbackFor(models.judge),
+    dedup: fallbackFor(models.dedup),
+  };
+  return { clients: { reviewer, reviewerByModel, judge, planner, dedup, fallbacks }, models };
 }
 
 async function collectDiff(target: RunTarget, config: ReviewConfig) {
@@ -730,9 +746,14 @@ async function postUnreviewedRound(
  * Deduplicate by client instance so roles that share a client don't
  * serialize redundant install retries on failure.
  */
+function fallbackClientsOf({ fallbacks }: ReviewClients): LLMClient[] {
+  if (!fallbacks) return [];
+  return [fallbacks.planner, ...(fallbacks.reviewerByModel?.values() ?? []), fallbacks.judge, fallbacks.dedup].flatMap(f => f ? [f.client] : []);
+}
+
 async function warmUpClients(clients: ReviewClients): Promise<void> {
   const warmupTargets = new Set<LLMClient>(
-    [clients.planner, ...(clients.reviewerByModel?.values() ?? []), clients.judge, clients.dedup].filter(
+    [clients.planner, ...(clients.reviewerByModel?.values() ?? []), clients.judge, clients.dedup, ...fallbackClientsOf(clients)].filter(
       (c): c is LLMClient => !!c,
     ),
   );

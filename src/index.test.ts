@@ -92,6 +92,7 @@ jest.mock('./config', () => {
     resolvePairModel,
     loadReviewConfig: actual.loadReviewConfig,
     applyBaseReviewConfig: actual.applyBaseReviewConfig,
+    resolveFallbackModel: jest.fn().mockImplementation(actual.resolveFallbackModel),
     resolveReviewerModel: jest.fn((config: ReviewConfig, ref: string | undefined) =>
       ref === '@reviewer_pair' ? resolvePairModel(config) : ref === undefined || ref === '@reviewer' ? resolveModel(config, 'reviewer') : ref),
   };
@@ -1936,7 +1937,7 @@ describe('runFullReview orchestration', () => {
     it('warms up the provider CLI before runReview to avoid the planner-install race', async () => {
       // Return a distinct client per call so the Set-based dedup in
       // `runFullReview` keeps every role's warmup target, letting us assert
-      // that planner, reviewer, reviewer pair, judge, and dedup were each warmed up.
+      // that planner, reviewer, reviewer pair, judge, dedup and fallback were each warmed up.
       const warmups: jest.Mock[] = [];
       jest.mocked(createLLMClient).mockImplementation(() => {
         const warmupCLI = jest.fn().mockResolvedValue(undefined);
@@ -1946,8 +1947,8 @@ describe('runFullReview orchestration', () => {
 
       await callRunFullReview();
 
-      // Default config builds 5 distinct clients: reviewer, reviewer pair, judge, planner, dedup.
-      expect(warmups).toHaveLength(5);
+      // Reviewer, reviewer pair, judge, planner and dedup, plus the fallback on `models.reviewer`, which no stage here runs on.
+      expect(warmups).toHaveLength(6);
       for (const w of warmups) expect(w).toHaveBeenCalledTimes(1);
       const firstWarmupOrder = warmups[0].mock.invocationCallOrder[0];
       const runReviewOrder = jest.mocked(reviewModule.runReview).mock.invocationCallOrder[0];
@@ -2669,6 +2670,7 @@ describe('runFullReview orchestration', () => {
       agentEffortMap: new Map([[primaryName, 'high'], [pairName, 'high']]),
       pairAgentName: pairName,
       routing: { class: 'behavior', rank: 50, matched: ['behavior'], classSource: 'triage', group: 'pair', groupSource: 'routing' },
+      modelFallbacks: [{ stage: 'verdict', fallbackModel: 'claude-sonnet-5-5', reason: 'refusal (reasoning_extraction)' }],
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
 
@@ -2694,6 +2696,7 @@ describe('runFullReview orchestration', () => {
     });
     expect(ctx!.findings.entries.find(e => e.title === 'Race')?.reviewers).toEqual([primaryName, pairName]);
     expect(ctx!.models.reviewerPair).toBe('claude-opus-5-5');
+    expect(ctx!.models.fallbacks).toEqual([{ stage: 'verdict', fallbackModel: 'claude-sonnet-5-5', reason: 'refusal (reasoning_extraction)' }]);
   });
 
   it('counts kept findings per finder in a group of three, without the two-finder fields', async () => {
@@ -5860,6 +5863,8 @@ describe('runFullReview orchestration', () => {
 
       const clientsArg = jest.mocked(reviewModule.runReview).mock.calls[0][0];
       expect(clientsArg.reviewerByModel?.get('claude-opus-5-5')).toBe(pairClient);
+      expect(clientsArg.fallbacks?.reviewerByModel?.get('claude-opus-5-5')?.model).toBe('claude-sonnet-5-5');
+      expect(clientsArg.fallbacks?.judge?.client).toBe(clientsArg.fallbacks?.reviewerByModel?.get('claude-opus-5-5')?.client);
 
       jest.mocked(reviewModule.runReview).mockClear();
       jest.mocked(configModule.loadConfig).mockReturnValue({
