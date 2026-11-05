@@ -605,7 +605,8 @@ export interface BaseReviewConfig {
  * PR's copy, so a broken base never blocks the PR that fixes it.
  */
 export function loadReviewConfig(content: string | null, source = '.manki.yml'): BaseReviewConfig {
-  if (!content) return { source: 'builtin' };
+  // A base branch without a config file runs on the default models, so a PR cannot collapse those either.
+  if (!content) return { models: DEFAULT_CONFIG.models, source: 'builtin' };
   let parsed: unknown;
   try {
     parsed = parseYaml(content);

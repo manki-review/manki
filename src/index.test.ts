@@ -1,5 +1,6 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
+import * as path from 'path';
 
 jest.mock('@actions/core', () => ({
   info: jest.fn(),
@@ -1887,6 +1888,26 @@ describe('runFullReview orchestration', () => {
       expect(reviewedConfig().review).toBeUndefined();
       expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('routes the `data_contract` floor class to the `solo` group'));
       expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
+    });
+
+    it('fetches the base config at the repo-relative path of `config_path`', async () => {
+      jest.mocked(configModule.loadConfig).mockReturnValue(headConfig);
+      for (const [input, expected] of [['./ci/manki.yml', 'ci/manki.yml'], [path.join(process.cwd(), 'ci', 'manki.yml'), 'ci/manki.yml'], ['../outside.yml', '.manki.yml']]) {
+        jest.mocked(ghUtils.readConfigFile).mockClear();
+        jest.mocked(core.getInput).mockImplementation((name: string) => name === 'anthropic_api_key' ? 'test-api-key' : name === 'config_path' ? input : '');
+
+        await callRunFullReview();
+
+        expect([input, jest.mocked(ghUtils.readConfigFile).mock.calls[0]?.[4]]).toEqual([input, expected]);
+      }
+    });
+
+    it('keeps the default two reviewer models when the base branch has no config and the PR\'s `models` put both finders on one', async () => {
+      jest.mocked(configModule.loadConfig).mockReturnValue({ ...headConfig, models: { reviewer: 'gpt-5.5' } });
+
+      await callRunFullReview();
+
+      expect(reviewedConfig().models).toEqual(expect.objectContaining({ reviewer: 'claude-sonnet-5-5', reviewer_pair: 'claude-opus-5-5' }));
     });
 
     it('keeps the base branch\'s two reviewer models when the PR\'s `models` would put both finders on one', async () => {

@@ -209,7 +209,7 @@ describe('config', () => {
 
     it('reads the block and models from the base branch, with the built-ins when it is missing, unreadable or invalid', () => {
       const models = DEFAULT_CONFIG.models;
-      expect(loadReviewConfig(null)).toEqual({ source: 'builtin' });
+      expect(loadReviewConfig(null)).toEqual({ models, source: 'builtin' });
       expect(loadReviewConfig('auto_review: true\n')).toEqual({ models, source: 'builtin' });
       expect(loadReviewConfig('review: [\n')).toEqual({ source: 'base_unreadable' });
       expect(loadReviewConfig('models:\n  reviewer: gpt-5.5\nreview:\n  routing:\n    internal: pair\n'))

@@ -547,7 +547,10 @@ async function loadRunConfig(target: RunTarget, configPath: string, headRepoFull
     const rawConfig = loadConfigFromFile(effectiveConfigPath);
     const isFork = headRepoFullName !== undefined && headRepoFullName !== `${owner}/${repo}`;
     const headConfig = isFork ? sanitizeForkConfig(rawConfig) : rawConfig;
-    const base = await loadBaseReviewConfig(octokit, owner, repo, baseRef, configPath);
+    // The contents API takes a repo-relative path, so `./`, absolute and outside paths are normalised first.
+    const repoRelative = path.relative(cwd, configAbsPath);
+    const baseConfigPath = repoRelative.startsWith('..') || path.isAbsolute(repoRelative) ? '.manki.yml' : repoRelative.split(path.sep).join('/');
+    const base = await loadBaseReviewConfig(octokit, owner, repo, baseRef, baseConfigPath);
     return applyBaseReviewConfig(headConfig, base).config;
   } catch (error) {
     const reason = failureReason(error);
