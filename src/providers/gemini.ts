@@ -209,9 +209,11 @@ export class GeminiClient implements LLMClient {
     });
 
     if (code !== 0) {
-      const quota = matchQuotaText(stderr);
+      // The CLI logs 429 retries it recovered from, so only its final error line counts. Stack frames are skipped.
+      const finalLine = stderr.split(/\r?\n/).filter(line => line.trim() && !/^\s+at\s/.test(line)).pop() ?? '';
+      const quota = matchQuotaText(finalLine);
       if (quota && !quota.overloaded) {
-        const message = `Gemini quota exhausted: ${sanitizeLogOutput(stderr.slice(-500)).trim()}`;
+        const message = `Gemini quota exhausted: ${sanitizeLogOutput(finalLine).trim()}`;
         core.warning(message);
         throw new QuotaError(message, 'Gemini quota exhausted', quota.resetsAt, 'token');
       }

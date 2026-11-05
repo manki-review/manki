@@ -527,7 +527,7 @@ describe('GeminiClient OAuth path', () => {
     warnSpy.mockRestore();
   });
 
-  it('throws a `QuotaError` when the Gemini CLI reports a used-up quota', async () => {
+  it('throws a `QuotaError` only when the Gemini CLI ends on a used-up quota, not on a 429 it retried', async () => {
     setupOAuthSpawnMock({ stderr: 'TerminalQuotaError: You have exhausted your capacity on this model. Your quota will reset after 2s.\n', exitCode: 1 });
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const client = new GeminiClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gemini-3.8-flash' });
@@ -535,6 +535,11 @@ describe('GeminiClient OAuth path', () => {
     const error = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
     expect(error).toBeInstanceOf(QuotaError);
     expect(error).toMatchObject({ limit: 'Gemini quota exhausted', resetsAt: 'after 2s', credential: 'token' });
+
+    setupOAuthSpawnMock({ stderr: 'Attempt 1 failed with status 429 RESOURCE_EXHAUSTED. Retrying with backoff...\nError: fetch failed\n    at run (cli.js:1:1)\n', exitCode: 1 });
+    const other = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
+    expect(other).not.toBeInstanceOf(QuotaError);
+    expect(other?.message).toMatch(/Gemini CLI invocation failed/);
     warnSpy.mockRestore();
   });
 
