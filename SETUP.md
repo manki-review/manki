@@ -570,7 +570,7 @@ A new App permission only takes effect once each installation approves it. GitHu
 
 ### Opting in
 
-On the default branch, create `.github/workflows/manki-dispatch.yml` and delete the event-driven workflow, `.github/workflows/manki.yml`:
+Once the installation owner has approved the Actions permission, add `.github/workflows/manki-dispatch.yml` to the default branch:
 
 ```yaml
 name: Manki dispatch
@@ -610,7 +610,9 @@ jobs:
 
 The job has no `if` and no `concurrency` block, since the service filters and orders the events. It needs no checkout: Manki reads the PR's `.manki.yml` at the head commit through the API. Pass the same inputs to the Manki step as in your Step 3 workflow, such as another provider's credential or `memory_repo_token`, and keep any CLI install steps it has.
 
-Keep the file name `manki-dispatch.yml`, since the service starts the workflow by that name. The service only dispatches when the default branch has this workflow and no event-driven Manki workflow. With both present, it starts nothing for the repository and logs why, while the event-driven workflow keeps handling every event. Otherwise each event would run twice. So adding the dispatch workflow before deleting the old one is safe: webhook mode starts once the event-driven workflow is gone.
+Keep the file name `manki-dispatch.yml`, since the service starts the workflow by that name.
+
+Then delete the event-driven workflow, `.github/workflows/manki.yml`, from the default branch. Webhook mode starts once it is gone. The service only dispatches when the default branch has the dispatch workflow and no event-driven Manki workflow. With both present, it starts nothing for the repository and logs why, while the event-driven workflow keeps handling every event. Otherwise each event would run twice. Doing both in one change works as well.
 
 The inputs carry only the event kind and its ids. Manki reads the PR, comment or review itself and checks that it belongs to the PR, so a dispatch cannot hand it anything else. Anyone with write access can also start the workflow by hand, for example to run a review again:
 
