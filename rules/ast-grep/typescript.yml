@@ -19,6 +19,9 @@ rule:
     - pattern: $CP.exec($CMD $$$REST)
     - pattern: $CP.execSync($CMD $$$REST)
 constraints:
+  # Only a `child_process` binding, so a regex `exec` is never taken for a shell command.
+  CP:
+    regex: ^(cp|childProcess|child_process)$
   CMD:
     any:
       - kind: binary_expression
@@ -52,6 +55,15 @@ rule:
         context: '({ rejectUnauthorized: false })'
         selector: pair
     - pattern: process.env.NODE_TLS_REJECT_UNAUTHORIZED = $VALUE
+constraints:
+  # A literal other than `0` leaves the checks on.
+  VALUE:
+    any:
+      - regex: ^['"`]?0['"`]?$
+      - not:
+          any:
+            - kind: string
+            - kind: number
 ---
 id: async-foreach-callback
 language: TypeScript
