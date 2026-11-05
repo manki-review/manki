@@ -271,6 +271,7 @@ export interface ReviewResult {
   /** Set when the judge stage forced every open thread to `not_addressed` because the inter-round diff was known-empty. */
   interRoundDiffEmptyOverride?: InterRoundDiffEmptyOverride;
   testNitSuppressedCount?: number;
+  staticSignalMatches?: RoundStaticSignalMatch[];
   verdictTrace?: VerdictTrace;
   /** Team-selection provenance: which path produced this round's roster. */
   plannerSource?: RoundPlannerSource;
@@ -395,6 +396,8 @@ export interface ReviewConfig {
     /** Pins the planner's `paired` answer. A security-sensitive path still gets a pair. */
     paired?: PairedPin;
   };
+  /** Which CI results reviewers read as evidence. Always read from the base branch, so a PR cannot turn it off. */
+  static_analysis?: StaticAnalysisConfig;
   /**
    * @deprecated Removed in v5.1.0. All surviving findings post inline as PR
    * review comments. The field is still parsed so old configs don't fail,
@@ -469,6 +472,27 @@ export interface PrContext {
   title: string;
   body: string;
   baseBranch: string;
+  /** CI and code-scanning results on lines in the diff, for the PR head commit. */
+  staticSignals?: StaticSignal[];
+}
+
+export interface StaticAnalysisConfig {
+  checks: boolean;
+  code_scanning: boolean;
+  dependency_review: boolean;
+}
+
+export type StaticSignalSource = 'checks' | 'code_scanning' | 'dependency_review';
+
+/** One result a CI tool reported on the PR head commit, normalized across sources. */
+export interface StaticSignal {
+  tool: string;
+  ruleId: string;
+  severity: 'error' | 'warning' | 'note';
+  file: string;
+  line: number;
+  message: string;
+  source: StaticSignalSource;
 }
 
 /**
@@ -951,6 +975,14 @@ export interface RoundDedupDuplicateMatch {
   matchType: DuplicateMatchType;
 }
 
+export interface RoundStaticSignalMatch {
+  droppedTitle: string;
+  file: string;
+  line: number;
+  tool: string;
+  ruleId: string;
+}
+
 export interface RoundDedup {
   staticDropped?: number;
   llmDropped?: number;
@@ -976,6 +1008,8 @@ export interface RoundDedup {
    * never written into `RoundContext`.
    */
   testNitSuppressedCount?: number;
+  /** Findings dropped because a CI tool already reports a result on the same file and line. Capped at 50 entries. */
+  staticSignalMatches?: RoundStaticSignalMatch[];
   durationMs?: number;
 }
 

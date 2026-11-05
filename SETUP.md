@@ -229,6 +229,8 @@ permissions:
   issues: write           # post progress comments and app warnings on PRs
   id-token: write         # OIDC token for GitHub App identity
   actions: read           # verify workflow run is legitimate
+  # checks: read          # optional: read CI annotations, see "Reading CI results"
+  # security-events: read # optional: read code scanning alerts
 
 jobs:
   review:
@@ -389,6 +391,46 @@ The `concurrency` block keeps at most one Manki run active per PR across every P
 
 GitHub Actions concurrency is best-effort, not atomic. Two events dispatched within the same scheduling window can transition to in-progress before either reaches the queue check, in which case both runs proceed concurrently. As defense in depth, the action runs an in-app lock at the review pipeline entry point: it scans its own existing comments for an "in progress" marker carrying a different `manki-run-id`, and bails (with a `core.warning`) before any LLM call when one is found within the configurable TTL. Tune the TTL with the `concurrency_lock_ttl_seconds` action input (default 600 seconds). Lowering it makes the lock recover faster from crashed runs that left a stale marker behind. Raising it tolerates longer-running reviews.
 
+### Reading CI results
+
+Manki reads what your CI already reported on the PR head commit and gives the reviewers the results that sit on lines of the diff: check-run annotations (linters, type checkers, test reporters), open code scanning alerts, and vulnerable packages from the dependency review. The tool text reaches the reviewers fenced and marked as untrusted, and only for the lines they review. When a Manki finding sits on the same file and line as a tool result, Manki drops it because the author already sees the tool's result. Security findings are always kept. The drops are listed in the `Manki context` block.
+
+Manki reads these results with the workflow token (`github_token`), so grant the permissions in the workflow, even when the Manki app posts the review:
+
+| Permission | Source |
+|------------|--------|
+| `checks: read` | Check-run annotations |
+| `security-events: read` | Code scanning alerts (needs code scanning, and GitHub Advanced Security on private repositories) |
+| `contents: read` | Dependency review (needs the dependency graph, and GitHub Advanced Security on private repositories) |
+
+A source Manki cannot read is skipped with one info line in the log. Turn a source off with `static_analysis` in `.manki.yml` (see Step 4). Manki reads that block from the base branch, so a PR cannot turn off the tool that would flag it.
+
+Manki only sees checks that finished before it runs. To make it run after your CI, put the review job in the same workflow as the CI job and make it wait with `needs:`:
+
+```yaml
+jobs:
+  lint:
+    if: github.event_name == 'pull_request' && github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: npm ci && npm run lint
+
+  review:
+    needs: lint
+    # Run even when lint fails or is skipped, such as on comment events.
+    if: ${{ !cancelled() && github.actor != 'manki-review[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Manki Review
+        uses: manki-review/manki@v5
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+Keep the `on:`, `permissions:` and `concurrency:` settings from the workflow above.
+
 ## Step 4: Configure Reviews (Optional)
 
 Create `.manki.yml` in your repository root. If the file is not valid YAML or has an invalid setting, the run fails, and a review run posts the error on the PR instead of reviewing with the defaults.
@@ -423,6 +465,13 @@ models:
 planner:
   enabled: true
   paired: auto
+
+# CI results the reviewers read as evidence (default: all on). Read from the
+# base branch, never from the PR. See "Reading CI results" above.
+static_analysis:
+  checks: true             # check-run annotations, needs `checks: read`
+  code_scanning: true      # code scanning alerts, needs `security-events: read`
+  dependency_review: true  # vulnerable packages the PR adds
 
 # Multi-pass verification (integer 1-5, default: 1). Runs each reviewer N
 # times with shuffled file ordering; only consistent findings are kept.

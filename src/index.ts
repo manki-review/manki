@@ -16,6 +16,7 @@ import { isEmptyInterRoundDiff, MAX_INTER_ROUND_DIFF_CHARS } from './judge';
 import { loadMemory, RepoMemory } from './memory';
 import { collectResolvedThreadIds, fetchRecapState, fingerprintFinding, PreviousFinding } from './recap';
 import { runReview, selectTeam } from './review';
+import { collectStaticSignals } from './static-signals';
 import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DashboardData, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OWN_PROPOSAL_TAG, PrContext, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReclassifiedPrior, ReviewMetadata, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundRecap, RoundTrigger, RoundUsage, RoundUsageStage, ReviewConfig, SECURITY_TAG, ThreadResolutionOverrides, roundContextToFlatAliases } from './types';
 import type { LLMUsage } from './providers';
 import {
@@ -875,6 +876,12 @@ async function runFullReview(
     const shouldFetchDiff = !!(lastPriorSha && lastPriorSha !== commitSha);
     const prBody = prContext?.body;
 
+    // Read with the workflow token, which carries the `checks` and `security-events` permissions the workflow grants.
+    const workflowToken = core.getInput('github_token');
+    const staticSignalsPromise = collectStaticSignals(workflowToken ? github.getOctokit(workflowToken) : octokit, {
+      owner, repo, prNumber, headSha: commitSha, baseRef, configPath: configRelPath, diff,
+    });
+
     let linkedIssues;
     const diffPromise: Promise<string | undefined> = shouldFetchDiff && lastPriorSha
       ? fetchInterRoundDiff(octokit, owner, repo, lastPriorSha, commitSha)
@@ -907,6 +914,9 @@ async function runFullReview(
       }
     }
 
+    const staticSignals = await staticSignalsPromise;
+    const reviewPrContext = prContext && staticSignals.length > 0 ? { ...prContext, staticSignals } : prContext;
+
     let reviewEndTime = parseEndTime;
 
     function scheduleDashboardFlush(): void {
@@ -926,7 +936,7 @@ async function runFullReview(
         planner: plannerClient,
         dedup: dedupClient,
       }, config, diff, rawDiff, repoContext,
-      memory, fileContents, prContext, linkedIssues,
+      memory, fileContents, reviewPrContext, linkedIssues,
       (progress) => {
         if (progress.phase === 'planning') {
           core.info('Planner analyzing PR content...');
@@ -1297,6 +1307,7 @@ async function runFullReview(
         ...(mergedDuplicates > 0 && { sameRoundLlmDropped: mergedDuplicates }),
         ...(result.duplicateMatches && result.duplicateMatches.length > 0 && { duplicateMatches: result.duplicateMatches.slice(0, 50) }),
         ...(result.testNitSuppressedCount != null && result.testNitSuppressedCount > 0 && { testNitSuppressedCount: result.testNitSuppressedCount }),
+        ...(result.staticSignalMatches && result.staticSignalMatches.length > 0 && { staticSignalMatches: result.staticSignalMatches.slice(0, 50) }),
         ...(result.dedupDurationMs != null && { durationMs: result.dedupDurationMs }),
       },
       memory: {

@@ -3576,7 +3576,7 @@ describe('runReview', () => {
   });
 });
 
-describe('runReview test-file nit suppression', () => {
+describe('runReview post-judge suppression', () => {
   const mockedRunJudgeAgent = jest.mocked(runJudgeAgent);
 
   function makeClients(): ReviewClients {
@@ -3687,6 +3687,30 @@ describe('runReview test-file nit suppression', () => {
       undefined, undefined, [buildPriorRound(1)],
     );
     expect(result.findings).toHaveLength(1);
+  });
+
+  it('drops a finding a CI tool already reports on the same line, unless it is a security finding', async () => {
+    const lint = { tool: 'lint', ruleId: 'no-unused-vars', severity: 'error' as const, file: 'src/a.ts', line: 10, message: 'x is unused', source: 'checks' as const };
+    mockedRunJudgeAgent.mockResolvedValue({
+      findings: [
+        makeFinding({ severity: 'warning', title: 'Unused variable' }),
+        makeFinding({ severity: 'blocker', title: 'Injection', reviewers: ['Security & Safety'] }),
+        makeFinding({ severity: 'suggestion', title: 'Rename', line: 11 }),
+      ],
+      summary: 'ok',
+    });
+    const clients = makeClients();
+    const result = await runReview(
+      clients, makeConfig(), makeDiff({ totalAdditions: 5, totalDeletions: 0 }),
+      'raw', 'ctx', undefined, undefined, { title: 'PR', body: '', baseBranch: 'main', staticSignals: [lint] },
+    );
+    expect(result.findings.map(f => f.title)).toEqual(['Injection', 'Rename']);
+    expect(result.staticSignalMatches).toEqual([
+      { droppedTitle: 'Unused variable', file: 'src/a.ts', line: 10, tool: 'lint', ruleId: 'no-unused-vars' },
+    ]);
+    const reviewerMessage = jest.mocked(clients.reviewer.sendMessage).mock.calls[0][1];
+    expect(reviewerMessage).toContain('## CI Results (untrusted tool output)');
+    expect(reviewerMessage).toContain('```\nsrc/a.ts:10 error lint no-unused-vars: x is unused\n```');
   });
 });
 

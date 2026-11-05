@@ -228,6 +228,10 @@ jest.mock('./fix-rate', () => ({
   recordFixRate: jest.fn().mockResolvedValue(undefined),
 }));
 
+jest.mock('./static-signals', () => ({
+  collectStaticSignals: jest.fn().mockResolvedValue([]),
+}));
+
 import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, main, _resetOctokitCache, detectTickedMarker, _buildRoundRecap } from './index';
 import { FORCE_REVIEW_MARKER, FORCE_CAP_MARKER } from './github';
 import type { ParsedDiff, ReviewConfig } from './types';
@@ -243,6 +247,7 @@ import * as memoryModule from './memory';
 import * as stateModule from './state';
 import * as authModule from './auth';
 import * as fixRateModule from './fix-rate';
+import * as staticSignalsModule from './static-signals';
 import { LegacyHandoverRoundFixture, roundContextFromLegacy, TEST_BOT } from './test-utils';
 
 /**
@@ -3176,6 +3181,7 @@ describe('runFullReview orchestration', () => {
         rawFindingCount: 5,
         suppressionCount: 0,
         testNitSuppressedCount: 2,
+        staticSignalMatches: [{ droppedTitle: 'Unused import', file: 'src/app.ts', line: 3, tool: 'lint', ruleId: 'no-unused-vars' }],
         allJudgedFindings: [
           { severity: 'nitpick', title: 'A', file: 'src/app.ts', line: 1, description: 'd', reviewers: ['general'] },
         ],
@@ -3194,6 +3200,22 @@ describe('runFullReview orchestration', () => {
       expect(rc!.dedup.sameRoundLlmDropped).toBe(2);
       expect(rc!.judge.mergedDuplicates).toBe(2);
       expect(rc!.dedup.testNitSuppressedCount).toBe(2);
+      expect(rc!.dedup.staticSignalMatches).toEqual([
+        { droppedTitle: 'Unused import', file: 'src/app.ts', line: 3, tool: 'lint', ruleId: 'no-unused-vars' },
+      ]);
+    });
+
+    it('passes the CI results for the head commit to the review, read against the base branch', async () => {
+      const signal = { tool: 'lint', ruleId: 'no-unused-vars', severity: 'error' as const, file: 'src/app.ts', line: 3, message: 'unused', source: 'checks' as const };
+      jest.mocked(staticSignalsModule.collectStaticSignals).mockResolvedValueOnce([signal]);
+
+      await callRunFullReview();
+
+      expect(staticSignalsModule.collectStaticSignals).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        headSha: 'abc123', baseRef: 'main', prNumber: 42, configPath: '.manki.yml',
+      }));
+      const prContext = jest.mocked(reviewModule.runReview).mock.calls[0][7];
+      expect(prContext?.staticSignals).toEqual([signal]);
     });
 
     it('omits `dedup.duplicateMatches` and `testNitSuppressedCount` when zero', async () => {
@@ -3209,6 +3231,7 @@ describe('runFullReview orchestration', () => {
       expect(rc!.dedup.duplicateMatches).toBeUndefined();
       expect(rc!.dedup.testNitSuppressedCount).toBeUndefined();
       expect(rc!.dedup.sameRoundLlmDropped).toBeUndefined();
+      expect(rc!.dedup.staticSignalMatches).toBeUndefined();
     });
 
     it('populates `diff.excludedFiles`, `binarySkipped`, `perFile`, and `oversizedHandled: false`', async () => {

@@ -1,4 +1,4 @@
-import { DEFAULT_CONFIG, loadConfig, loadConfigFromContent, loadConfigFromFile, resolveModel, resolvePairModel, sanitizeForkConfig } from './config';
+import { DEFAULT_CONFIG, loadConfig, loadConfigFromContent, loadConfigFromFile, loadStaticAnalysisConfig, resolveModel, resolvePairModel, sanitizeForkConfig } from './config';
 import { ReviewConfig } from './types';
 
 // Suppress @actions/core output during tests
@@ -120,6 +120,30 @@ describe('config', () => {
     it('rejects non-boolean metrics.fix_rate and non-object metrics', () => {
       expect(() => loadConfigFromContent('metrics:\n  fix_rate: "no"\n')).toThrow(/metrics\.fix_rate/);
       expect(() => loadConfigFromContent('metrics: "nope"\n')).toThrow(/`metrics` must be an object/);
+    });
+  });
+
+  describe('static_analysis config', () => {
+    it('turns every source on by default and merges a partial block', () => {
+      expect(loadConfigFromContent('').static_analysis).toEqual({ checks: true, code_scanning: true, dependency_review: true });
+      expect(loadConfigFromContent('static_analysis:\n  code_scanning: false\n').static_analysis)
+        .toEqual({ checks: true, code_scanning: false, dependency_review: true });
+    });
+
+    it('rejects a non-boolean source and a non-object block', () => {
+      expect(() => loadConfigFromContent('static_analysis:\n  checks: "yes"\n')).toThrow(/static_analysis\.checks/);
+      expect(() => loadConfigFromContent('static_analysis: true\n')).toThrow(/`static_analysis` must be an object/);
+    });
+
+    it('reads the block alone and falls back to the defaults when it is missing or invalid', () => {
+      const defaults = { checks: true, code_scanning: true, dependency_review: true };
+      expect(loadStaticAnalysisConfig('static_analysis:\n  checks: false\n')).toEqual({ ...defaults, checks: false });
+      expect(loadStaticAnalysisConfig('unknown_key: 1\nstatic_analysis:\n  dependency_review: false\n'))
+        .toEqual({ ...defaults, dependency_review: false });
+      expect(loadStaticAnalysisConfig(null)).toEqual(defaults);
+      expect(loadStaticAnalysisConfig('static_analysis:\n  checks: "no"\n')).toEqual(defaults);
+      expect(loadStaticAnalysisConfig('static_analysis: [\n')).toEqual(defaults);
+      expect(core.warning).not.toHaveBeenCalled();
     });
   });
 

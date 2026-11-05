@@ -8,12 +8,13 @@ import { runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeP
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, LinkedIssue, titleToSlug } from './github';
 import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, llmDeduplicateFindings, PreviousFinding, titleOverlapType } from './recap';
-import { FOLLOW_UP_TAG, SECURITY_TAG, ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundPlannerSource, EffortLevel, Finder, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { FOLLOW_UP_TAG, SECURITY_TAG, ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundPlannerSource, RoundStaticSignalMatch, EffortLevel, Finder, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { rebuildRawDiff } from './diff';
 import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { runVerdictReader, verdictBlockerToFinding } from './verdict';
 import { WRITING_RULES } from './writing-rules';
+import { formatStaticSignals } from './static-signals';
 
 const DISMISSED_LINE_TOLERANCE = 5;
 
@@ -1007,6 +1008,18 @@ export async function runReview(
       testNitSuppressedCount = before - finalFindings.length;
     }
   }
+  const staticSignalMatches: RoundStaticSignalMatch[] = [];
+  const staticSignals = prContext?.staticSignals ?? [];
+  if (staticSignals.length > 0) {
+    finalFindings = finalFindings.filter(f => {
+      if (isSecurityFinding(f.tags, f.reviewers)) return true;
+      const signal = staticSignals.find(s => s.file === f.file && s.line === f.line);
+      if (!signal) return true;
+      core.info(`Static-signal dedup: dropping ${f.severity} "${f.title}" on ${f.file}:${f.line}, ${signal.tool} already reports it`);
+      staticSignalMatches.push({ droppedTitle: f.title, file: f.file, line: f.line, tool: signal.tool, ruleId: signal.ruleId });
+      return false;
+    });
+  }
   const sortedPriorRounds = [...(priorRounds ?? [])].sort((a, b) => a.meta.round - b.meta.round);
   const priorFindingsFlat: FindingFingerprintEntry[] = sortedPriorRounds.flatMap(r => r.findings.entries);
   const priorRoundLookup = buildPriorRoundLookup(sortedPriorRounds);
@@ -1123,6 +1136,7 @@ export async function runReview(
     crossRoundDemoted: judgeCrossRoundDemoted,
     ...(judgeInterRoundDiffEmptyOverride && { interRoundDiffEmptyOverride: judgeInterRoundDiffEmptyOverride }),
     ...(testNitSuppressedCount > 0 && { testNitSuppressedCount }),
+    ...(staticSignalMatches.length > 0 && { staticSignalMatches }),
     ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
   };
 }
@@ -1352,6 +1366,8 @@ export function buildReviewerUserMessage(
       message += `### File: ${path}\n\n\`\`\`${ext}\n${content}\n\`\`\`\n\n`;
     }
   }
+
+  message += formatStaticSignals(prContext?.staticSignals ?? []);
 
   message += `## Pull Request Diff\n\n\`\`\`diff\n${truncateDiff(rawDiff)}\n\`\`\``;
 
