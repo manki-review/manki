@@ -23,9 +23,15 @@ function createOctokit(token: string): Octokit {
   return github.getOctokit(token, { throttle: { onRateLimit, onSecondaryRateLimit: onRateLimit } }, retry, throttling);
 }
 
+/** An App token for review memory. `repo` is the only memory repo it can write, when it is narrowed to one. */
+export interface AppMemoryToken {
+  token: string;
+  repo?: string;
+}
+
 export interface AuthResult {
   octokit: Octokit;
-  resolvedToken: string;
+  appMemory?: AppMemoryToken;
   identity: 'app' | 'actions';
   bot: BotIdentity;
 }
@@ -53,6 +59,8 @@ async function resolveTokenUserBot(octokit: Octokit, token: string): Promise<Bot
 
 export interface TokenResult {
   token: string;
+  /** The token service's `memory_token`, which writes only the owner's `review-memory`. */
+  memoryToken?: string;
   identity: 'app' | 'actions';
 }
 
@@ -85,7 +93,7 @@ export async function resolveGitHubToken(
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${oidcToken}`,
       },
-      body: JSON.stringify({ owner, repo }),
+      body: JSON.stringify({ owner, repo, memory: true }),
       signal: controller.signal,
     });
     clearTimeout(timeout);
@@ -95,7 +103,7 @@ export async function resolveGitHubToken(
       return { token: githubToken, identity: 'actions' };
     }
 
-    const tokenData = await tokenResponse.json() as { token: string; expires_at: string };
+    const tokenData = await tokenResponse.json() as { token: string; expires_at: string; memory_token?: unknown };
 
     if (!tokenData.token || typeof tokenData.token !== 'string') {
       core.warning('Token service returned invalid response — falling back to github-actions[bot]');
@@ -104,7 +112,11 @@ export async function resolveGitHubToken(
 
     core.info(`Using ${BOT_LOGIN} identity (token expires ${tokenData.expires_at})`);
     core.setSecret(tokenData.token);
-    return { token: tokenData.token, identity: 'app' };
+    if (typeof tokenData.memory_token !== 'string' || !tokenData.memory_token) {
+      return { token: tokenData.token, identity: 'app' };
+    }
+    core.setSecret(tokenData.memory_token);
+    return { token: tokenData.token, memoryToken: tokenData.memory_token, identity: 'app' };
   } catch (error) {
     core.info(`App token resolution failed: ${error} — using github-actions[bot] identity`);
     return { token: githubToken, identity: 'actions' };
@@ -123,7 +135,8 @@ export async function createAuthenticatedOctokit(): Promise<AuthResult> {
   if (appId && privateKey) {
     core.info('Using GitHub App authentication for custom bot identity');
     const { token, slug } = await getInstallationToken(appId, privateKey);
-    return { octokit: createOctokit(token), resolvedToken: token, identity: 'app', bot: { logins: [`${slug}[bot]`] } };
+    // A custom App's own token keeps the access its installation grants, so it still writes the memory repo.
+    return { octokit: createOctokit(token), appMemory: { token }, identity: 'app', bot: { logins: [`${slug}[bot]`] } };
   }
 
   if (!githubToken) {
@@ -132,29 +145,27 @@ export async function createAuthenticatedOctokit(): Promise<AuthResult> {
 
   const tokenUrl = core.getInput('manki_token_url') || 'https://manki-api.dustinface.me/token';
   const { owner, repo: repoName } = github.context.repo;
-  const { token, identity } = await resolveGitHubToken(githubToken, tokenUrl, owner, repoName);
+  const { token, memoryToken, identity } = await resolveGitHubToken(githubToken, tokenUrl, owner, repoName);
 
   const octokit = createOctokit(token);
   const bot = identity === 'actions' ? await resolveTokenUserBot(octokit, token) : MANKI_BOT;
-  return { octokit, resolvedToken: token, identity, bot };
+  const appMemory = memoryToken ? { token: memoryToken, repo: `${owner}/review-memory` } : undefined;
+  return { octokit, appMemory, identity, bot };
 }
 
 /**
- * Returns a token suitable for memory repo operations.
- * Prefers memory_repo_token, falls back to github_token, returns null if neither is set.
+ * Returns the token for `memoryRepo`: `memory_repo_token`, else the App's memory token when it covers `memoryRepo`,
+ * else `null` with a warning. The token service's review token is never used, since it can only read the reviewed repo.
  */
-export function getMemoryToken(resolvedToken: string | null): string | null {
-  // Explicit memory_repo_token takes priority
-  const memoryToken = core.getInput('memory_repo_token');
-  if (memoryToken) return memoryToken;
-
-  // Use the resolved app token (cross-repo access if app is installed on memory repo)
-  if (resolvedToken) return resolvedToken;
-
-  // Fall back to raw github_token
-  const githubToken = core.getInput('github_token');
-  if (githubToken) return githubToken;
-
+export function getMemoryToken(appMemory: AppMemoryToken | undefined, memoryRepo: string): string | null {
+  const memoryRepoToken = core.getInput('memory_repo_token');
+  if (memoryRepoToken) return memoryRepoToken;
+  if (appMemory && (!appMemory.repo || appMemory.repo.toLowerCase() === memoryRepo.toLowerCase())) return appMemory.token;
+  core.warning(
+    `No token for the review memory repo \`${memoryRepo}\`, so memory is skipped. Set \`memory_repo_token\`, or install `
+    + 'the manki-review App on `<owner>/review-memory` and use that repo for memory. The App token covers only that '
+    + 'repo, and a token service that predates memory tokens issues none.',
+  );
   return null;
 }
 

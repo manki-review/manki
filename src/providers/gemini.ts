@@ -5,7 +5,7 @@ import { promisify } from 'util';
 import { FinishReason, GoogleGenAI, ThinkingConfig, ThinkingLevel } from '@google/genai';
 import * as core from '@actions/core';
 
-import { buildExitDiagnostics, callWithTimeout, matchQuotaText, runCli, sanitizeLogOutput, seedAuthFile, warnReplyTail } from './cli-utils';
+import { buildExitDiagnostics, callWithTimeout, cliEnv, matchQuotaText, runCli, sanitizeLogOutput, seedAuthFile, warnReplyTail } from './cli-utils';
 import { GeminiAuth, LLMClient, LLMResponse, LLMUsage, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -20,15 +20,6 @@ export function resolveGeminiCredsDir(): string {
 
 const GEMINI_OAUTH_BOOTSTRAP_HINT =
   'Bootstrap with `gemini` (sign in with Google using a Gemini Code Assist Standard or Enterprise account) then `cat ~/.gemini/oauth_creds.json | base64 | gh secret set GEMINI_OAUTH_TOKEN`. Re-run the bootstrap when the refresh_token expires. Personal accounts can no longer sign in, so use gemini_api_key instead.';
-
-const GEMINI_BLOCKED_BARE = new Set([
-  'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
-  'REVIEW_MEMORY_TOKEN', 'GITHUB_TOKEN',
-  'GEMINI_API_KEY', 'GEMINI_OAUTH_TOKEN', 'GITHUB_APP_PRIVATE_KEY',
-  'GOOGLE_CLOUD_ACCESS_TOKEN',
-  'OPENAI_API_KEY', 'OPENAI_OAUTH_TOKEN', 'CODEX_OAUTH_TOKEN',
-  'ACTIONS_RUNTIME_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'ACTIONS_RESULTS_URL',
-]);
 
 export function buildGeminiAuth(oauthToken: string, apiKey: string): GeminiAuth {
   if (oauthToken) return { kind: 'oauth', token: oauthToken };
@@ -176,22 +167,13 @@ export class GeminiClient implements LLMClient {
       '--model', this.model,
     ];
 
-    // Strip other providers' secrets and all INPUT_* vars (GitHub Actions delivers
-    // every action input as INPUT_<NAME>, which would otherwise bypass bare-name
-    // stripping) from the forwarded env. PATH/HOME etc. flow through `safeEnv`.
-    const safeEnv = Object.fromEntries(
-      Object.entries(process.env).filter(
-        ([k]) => !GEMINI_BLOCKED_BARE.has(k) && !/^INPUT_/i.test(k),
-      ),
-    ) as NodeJS.ProcessEnv;
-
     let output = '';
     const { code, signal, stderr, lastStdoutChunk } = await runCli({
       label: 'Gemini',
       cliPath,
       args,
       env: {
-        ...safeEnv,
+        ...cliEnv(),
         // GOOGLE_GENAI_USE_GCA=true selects the LOGIN_WITH_GOOGLE auth type in
         // non-interactive mode. The CLI then loads its credentials from the
         // `oauth_creds.json` file seeded above (which carries a refresh_token,

@@ -420,16 +420,35 @@ describe('sendViaOAuth — error paths', () => {
   });
 
   it('sets CLAUDE_CODE_OAUTH_TOKEN and caps output at the API path\'s limit in spawn env', async () => {
-    process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = '128000';
+    const ambient = {
+      CLAUDE_CODE_MAX_OUTPUT_TOKENS: '128000',
+      CLAUDE_CODE_OAUTH_TOKEN: 'ambient-oauth-token',
+      GITHUB_TOKEN: 'ghs_workflow',
+      ACTIONS_ID_TOKEN_REQUEST_URL: 'https://pipelines.actions.githubusercontent.com/oidc',
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'oidc-request',
+      INPUT_GITHUB_TOKEN: 'ghs_input',
+    };
+    const saved = Object.fromEntries(Object.keys(ambient).map((name) => [name, process.env[name]]));
+    Object.assign(process.env, ambient);
     setupSpawnMock({ stdout: 'ok' });
     const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'my-oauth-token' }, model: 'claude-opus-4-6' });
 
-    await client.sendMessage('sys', 'user');
-    delete process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS;
+    try {
+      await client.sendMessage('sys', 'user');
+    } finally {
+      for (const [name, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
 
     const spawnOpts = mockSpawn.mock.calls[0][2] as { env: Record<string, string> };
     expect(spawnOpts.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('my-oauth-token');
     expect(spawnOpts.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe('32768');
+    expect(spawnOpts.env.PATH).toBe(process.env.PATH);
+    for (const name of ['GITHUB_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_URL', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'INPUT_GITHUB_TOKEN']) {
+      expect(spawnOpts.env).not.toHaveProperty(name);
+    }
   });
 
   it('passes the output and isolation flags and runs the CLI in an empty temp directory', async () => {

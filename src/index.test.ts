@@ -51,7 +51,7 @@ const mockOctokitInstance = {
 };
 
 jest.mock('./auth', () => ({
-  createAuthenticatedOctokit: jest.fn().mockResolvedValue({ octokit: mockOctokitInstance, resolvedToken: 'mock-resolved-token', identity: 'app', bot: { logins: ['manki-review[bot]', 'github-actions[bot]'] } }),
+  createAuthenticatedOctokit: jest.fn().mockResolvedValue({ octokit: mockOctokitInstance, identity: 'app', bot: { logins: ['manki-review[bot]', 'github-actions[bot]'] } }),
   getMemoryToken: jest.fn().mockReturnValue(null),
 }));
 
@@ -93,6 +93,7 @@ jest.mock('./config', () => {
     loadReviewConfig: actual.loadReviewConfig,
     applyBaseReviewConfig: actual.applyBaseReviewConfig,
     resolveFallbackModel: jest.fn().mockImplementation(actual.resolveFallbackModel),
+    resolveMemoryRepo: actual.resolveMemoryRepo,
     resolveReviewerModel: jest.fn((config: ReviewConfig, ref: string | undefined) =>
       ref === '@reviewer_pair' ? resolvePairModel(config) : ref === undefined || ref === '@reviewer' ? resolveModel(config, 'reviewer') : ref),
   };
@@ -5361,7 +5362,6 @@ describe('runFullReview orchestration', () => {
     jest.mocked(authModule.createAuthenticatedOctokit).mockResolvedValue({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       octokit: mockOctokitInstance as any,
-      resolvedToken: 'mock-token',
       identity: 'actions',
       bot: TEST_BOT,
     });
@@ -5378,7 +5378,6 @@ describe('runFullReview orchestration', () => {
     jest.mocked(authModule.createAuthenticatedOctokit).mockResolvedValue({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       octokit: mockOctokitInstance as any,
-      resolvedToken: 'mock-token',
       identity: 'app',
       bot: TEST_BOT,
     });
@@ -5393,7 +5392,6 @@ describe('runFullReview orchestration', () => {
     jest.mocked(authModule.createAuthenticatedOctokit).mockResolvedValue({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       octokit: mockOctokitInstance as any,
-      resolvedToken: 'mock-token',
       identity: 'actions',
       bot: TEST_BOT,
     });

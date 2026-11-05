@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { buildExitDiagnostics, buildTimeoutDiagnostics, callWithTimeout, extractCliErrorSnippet, matchQuotaText, sanitizeLogOutput, seedAuthFile } from './cli-utils';
+import { buildExitDiagnostics, buildTimeoutDiagnostics, callWithTimeout, cliEnv, extractCliErrorSnippet, matchQuotaText, sanitizeLogOutput, seedAuthFile } from './cli-utils';
 
 function encode(json: unknown): string {
   return Buffer.from(JSON.stringify(json), 'utf8').toString('base64');
@@ -39,6 +39,47 @@ describe('sanitizeLogOutput', () => {
   it('redacts workflow commands case-insensitively on the command letter', () => {
     // The regex uses /i so ::Error:: and ::ERROR:: are both matched
     expect(sanitizeLogOutput('::Error::msg')).toBe('[redacted-workflow-cmd]');
+  });
+});
+
+describe('cliEnv', () => {
+  it('drops inputs, the OIDC endpoint and every token, key or secret, and keeps the rest', () => {
+    const env = {
+      PATH: '/usr/bin',
+      HOME: '/home/runner',
+      GITHUB_REPOSITORY: 'manki-review/manki',
+      CLAUDE_CODE_MAX_OUTPUT_TOKENS: '32768',
+      ACTIONS_ID_TOKEN_REQUEST_URL: 'https://pipelines.actions.githubusercontent.com/oidc',
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'oidc-request',
+      ACTIONS_RUNTIME_TOKEN: 'runtime',
+      ACTIONS_RESULTS_URL: 'https://results.actions.githubusercontent.com/',
+      GITHUB_TOKEN: 'ghs_workflow',
+      GH_TOKEN: 'ghs_cli',
+      REVIEW_MEMORY_TOKEN: 'ghp_memory',
+      ANTHROPIC_API_KEY: 'sk-ant',
+      CLAUDE_CODE_OAUTH_TOKEN: 'claude-oauth',
+      GITHUB_APP_PRIVATE_KEY: 'pem',
+      AWS_SECRET: 'aws',
+      DB_PASSWORD: 'db',
+      LDAP_PASSWD: 'ldap',
+      GPG_PASSPHRASE: 'gpg',
+      DEPLOY_PAT: 'ghp_deploy',
+      GOOGLE_APPLICATION_CREDENTIALS: '/tmp/gcp.json',
+      DOCKER_CREDENTIAL: 'docker',
+      NPM_CONFIG__AUTH: 'npm-auth',
+      SSH_AUTH_SOCK: '/tmp/ssh-agent.sock',
+      npm_config_token: 'npm',
+      INPUT_GITHUB_TOKEN: 'ghs_input',
+      INPUT_MODEL: 'claude-opus-4-6',
+      input_config_path: '.manki.yml',
+    };
+    expect(cliEnv(env)).toEqual({
+      PATH: '/usr/bin',
+      HOME: '/home/runner',
+      GITHUB_REPOSITORY: 'manki-review/manki',
+      CLAUDE_CODE_MAX_OUTPUT_TOKENS: '32768',
+      SSH_AUTH_SOCK: '/tmp/ssh-agent.sock',
+    });
   });
 });
 

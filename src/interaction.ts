@@ -4,6 +4,7 @@ import * as github from '@actions/github';
 import { LLMClient } from './providers';
 import { writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
 import { BotIdentity, dynamicFence, hasWriteAccess, isRepoAdmin, isTrustedAssociation, reactToIssueComment, reactToReviewComment, fetchPRDiff } from './github';
+import { resolveMemoryRepo } from './config';
 import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -241,7 +242,7 @@ export async function handleReviewCommentReply(
       if (isSubstantive && isTrusted) {
         try {
           const memoryOctokit = github.getOctokit(memoryToken);
-          const memoryRepo = memoryConfig.repo || `${owner}/review-memory`;
+          const memoryRepo = resolveMemoryRepo(memoryConfig, owner);
           const sanitized = sanitizeMemoryField(replyBody.slice(0, 500));
 
           await writeLearning(memoryOctokit, memoryRepo, repo, {
@@ -454,7 +455,7 @@ async function handleDismiss(
   if (isTrusted && memoryConfig?.enabled && memoryToken && sanitizedPattern) {
     try {
       const memoryOctokit = github.getOctokit(memoryToken);
-      const memoryRepo = memoryConfig.repo || `${owner}/review-memory`;
+      const memoryRepo = resolveMemoryRepo(memoryConfig, owner);
 
       await writeSuppression(memoryOctokit, memoryRepo, repo, {
         id: `supp-${Date.now()}`,
@@ -561,7 +562,7 @@ async function handleRemember(
 
   try {
     const memoryOctokit = github.getOctokit(memoryToken);
-    const memoryRepo = memoryConfig.repo || `${owner}/review-memory`;
+    const memoryRepo = resolveMemoryRepo(memoryConfig, owner);
 
     await writeLearning(memoryOctokit, memoryRepo, repo, {
       id: `learn-${Date.now()}`,
@@ -628,7 +629,7 @@ async function handleForget(
   }
 
   const memoryOctokit = github.getOctokit(memoryToken);
-  const memoryRepo = memoryConfig.repo || `${owner}/review-memory`;
+  const memoryRepo = resolveMemoryRepo(memoryConfig, owner);
   const trimmed = args.trim();
 
   try {

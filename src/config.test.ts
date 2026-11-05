@@ -1,4 +1,4 @@
-import { applyBaseReviewConfig, DEFAULT_CONFIG, loadConfig, loadConfigFromContent, loadConfigFromFile, loadReviewConfig, loadStaticAnalysisConfig, resolveFallbackModel, resolveModel, resolvePairModel, reviewFloorErrors, sanitizeForkConfig } from './config';
+import { applyBaseReviewConfig, DEFAULT_CONFIG, loadConfig, loadConfigFromContent, loadConfigFromFile, loadReviewConfig, loadStaticAnalysisConfig, resolveFallbackModel, resolveMemoryRepo, resolveModel, resolvePairModel, reviewFloorErrors, sanitizeForkConfig } from './config';
 import { ReviewConfig } from './types';
 
 // Suppress @actions/core output during tests
@@ -839,6 +839,13 @@ models:
       const config = loadConfigFromFile('/repo/.manki.yml');
       expect(config).toEqual(DEFAULT_CONFIG);
       expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Failed to read config file'));
+    });
+  });
+
+  describe('resolveMemoryRepo', () => {
+    it('returns `memory.repo`, or the owner\'s `review-memory` when it is empty', () => {
+      expect(resolveMemoryRepo({ repo: 'acme/team-memory' }, 'owner')).toBe('acme/team-memory');
+      expect(resolveMemoryRepo({ repo: '' }, 'owner')).toBe('owner/review-memory');
     });
   });
 
