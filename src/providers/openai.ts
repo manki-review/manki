@@ -215,6 +215,7 @@ export class OpenAIClient implements LLMClient {
       env: { ...safeCodexEnv, CODEX_HOME: codexHome },
       input: fullPrompt,
       hardTimeoutMs: options?.timeoutMs,
+      signal: options?.signal,
       onStdout: (chunk) => { output += chunk; },
       stderrResetsStale: true,
     }).catch((error: unknown) => {
@@ -272,7 +273,7 @@ export class OpenAIClient implements LLMClient {
 
     const startTime = Date.now();
     const openai = this.openai;
-    const response = await callWithTimeout('OpenAI API', options?.timeoutMs, (signal) =>
+    const response = await callWithTimeout('OpenAI API', options, (signal) =>
       openai.chat.completions.create(params as ChatCompletionCreateParamsNonStreaming, signal ? { signal } : undefined));
     const choice = response.choices?.[0];
     const content = choice?.message?.content ?? '';

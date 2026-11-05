@@ -3,6 +3,7 @@ import { createRequire } from 'module';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
+import { assertWritesAllowed } from './abort';
 import { AgentProgressEntry, DashboardData, FOLLOW_UP_TAG, Finding, FindingFingerprintEntry, FindingSeverity, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, VALID_PR_TYPES, VerdictTraceEntry, SECURITY_TAG, TestGuide, isBlockingSeverity } from './types';
 import { isLineInDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -575,7 +576,8 @@ export async function markProgressCommentFailed(
 
 /**
  * Transition a progress comment to a terminal state that says a push to `headSha` superseded
- * the review of `reviewedSha`. Uses `CANCELLED_MARKER` so `findInProgressLock` no longer treats it as a live lock.
+ * the review of `reviewedSha`. With `reviewPosted`, it says the review was posted but replaced no earlier one.
+ * Uses `CANCELLED_MARKER` so `findInProgressLock` no longer treats it as a live lock.
  */
 export async function markProgressCommentSuperseded(
   octokit: Octokit,
@@ -583,9 +585,13 @@ export async function markProgressCommentSuperseded(
   repo: string,
   commentId: number,
   { reviewedSha, headSha }: SupersededError,
+  reviewPosted = false,
 ): Promise<void> {
+  const outcome = reviewPosted
+    ? `The review of \`${reviewedSha.slice(0, 7)}\` was posted, and the earlier reviews stay until the new commit is reviewed.`
+    : `No verdict was posted for \`${reviewedSha.slice(0, 7)}\`.`;
   const body = withMarkers(
-    `**Review superseded** by the new commit \`${headSha.slice(0, 7)}\`. No verdict was posted for \`${reviewedSha.slice(0, 7)}\`.`,
+    `**Review superseded** by the new commit \`${headSha.slice(0, 7)}\`. ${outcome}`,
     ...BOT_MARKERS,
     CANCELLED_MARKER,
   );
@@ -599,6 +605,7 @@ export async function markProgressCommentSuperseded(
 /**
  * Freeze the progress comment as an audit log with the final dashboard
  * and optional review metadata (config, judge decisions, recap, timing).
+ * Throws the abort reason once GitHub writes are stopped.
  */
 export async function updateProgressComment(
   octokit: Octokit,
@@ -645,6 +652,7 @@ export async function updateProgressComment(
     parts.push('</details>');
   }
 
+  assertWritesAllowed();
   await octokit.rest.issues.updateComment({
     owner,
     repo,
@@ -675,7 +683,8 @@ export async function updateProgressDashboard(
 /**
  * Dismiss the bot's `CHANGES_REQUESTED` reviews on this PR, except `keepReviewId`.
  * Call it only after the new review is posted, so a failed run leaves the merge
- * block in place. Never throws: the new review already stands.
+ * block in place. A failed dismissal only warns, since the new review already stands.
+ * Throws the abort reason once GitHub writes are stopped.
  */
 export async function dismissPreviousReviews(
   octokit: Octokit,
@@ -684,6 +693,7 @@ export async function dismissPreviousReviews(
   prNumber: number,
   keepReviewId?: number,
 ): Promise<void> {
+  assertWritesAllowed();
   let reviews;
   try {
     reviews = await octokit.paginate(octokit.rest.pulls.listReviews, {
@@ -699,6 +709,7 @@ export async function dismissPreviousReviews(
 
   for (const review of reviews) {
     if (review.id !== keepReviewId && review.body?.includes(BOT_MARKER) && review.state === 'CHANGES_REQUESTED') {
+      assertWritesAllowed();
       try {
         await octokit.rest.pulls.dismissReview({
           owner,
@@ -709,7 +720,8 @@ export async function dismissPreviousReviews(
         });
         core.info(`Dismissed previous review #${review.id}`);
       } catch (e) {
-        core.debug(`Could not dismiss review #${review.id}: ${e}`);
+        // A repository ruleset can restrict who may dismiss reviews, and the stale review then keeps blocking the merge.
+        core.warning(`Could not dismiss the previous review #${review.id}, it still requests changes: ${e instanceof Error ? e.message : e}`);
       }
     }
   }
@@ -958,6 +970,7 @@ function hasOpenThread(finding: Finding, existingThreads: PreviousFinding[]): bo
  *
  * When `context` is provided without `reviewTimeMs`, the hidden stats line
  * records `0s` for review time. Pass both together to avoid this.
+ * Once GitHub writes are stopped, throws the abort reason and posts nothing.
  */
 export async function postReview(
   octokit: Octokit,
@@ -1154,6 +1167,7 @@ async function submitReview(
   reviewedCommitFooter: string,
 ): Promise<{ id: number; body: string }> {
   const event = mapVerdictToEvent(verdict);
+  assertWritesAllowed();
   try {
     const { data: review } = await octokit.rest.pulls.createReview({
       owner,
@@ -1900,8 +1914,12 @@ async function isReviewInProgress(octokit: Octokit, bot: BotIdentity, owner: str
     status = workflowRun.status;
     conclusion = workflowRun.conclusion;
   } catch (error) {
-    core.warning(`Failed to query Actions run ${progress.runId}: ${error instanceof Error ? error.message : error}`);
-    return false;
+    // GitHub deletes old runs, so a run it no longer knows has finished.
+    if ((error as { status?: number }).status !== 404) {
+      core.warning(`Failed to query Actions run ${progress.runId}: ${error instanceof Error ? error.message : error}`);
+      return false;
+    }
+    status = 'deleted';
   }
 
   if (ACTIVE_RUN_STATUSES.has(status ?? '')) {

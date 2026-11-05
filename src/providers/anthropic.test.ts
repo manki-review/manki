@@ -751,6 +751,36 @@ describe('sendViaOAuth — error paths', () => {
     await expect(promise).rejects.toThrow('Claude CLI output exceeded 50MB limit');
   });
 
+  it('kills the CLI and rejects with the reason when the caller\'s signal aborts, and spawns none once it has aborted', async () => {
+    const proc = {
+      stdin: { write: jest.fn().mockReturnValue(true), end: jest.fn(), on: jest.fn() },
+      stdout: { on: jest.fn() },
+      stderr: { on: jest.fn() },
+      on: jest.fn(),
+      kill: jest.fn(),
+    };
+    let closeCb: ((code: number | null, signal: string | null) => void) | undefined;
+    proc.on.mockImplementation((event: string, cb: (...args: unknown[]) => void) => {
+      if (event === 'close') closeCb = cb as typeof closeCb;
+    });
+    mockSpawn.mockReturnValue(proc as unknown as ReturnType<typeof spawn>);
+    const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
+    const controller = new AbortController();
+    const reason = new Error('head moved');
+
+    const promise = client.sendMessage('sys', 'user', { signal: controller.signal });
+    await new Promise((r) => setTimeout(r, 0));
+    controller.abort(reason);
+
+    expect(proc.kill).toHaveBeenCalledWith('SIGTERM');
+    closeCb!(null, 'SIGTERM');
+    await expect(promise).rejects.toBe(reason);
+
+    mockSpawn.mockClear();
+    await expect(client.sendMessage('sys', 'user', { signal: controller.signal })).rejects.toBe(reason);
+    expect(mockSpawn).not.toHaveBeenCalled();
+  });
+
   it('flushes remaining decoder bytes in close handler', async () => {
     const proc = {
       stdin: { write: jest.fn().mockReturnValue(true), end: jest.fn(), on: jest.fn() },

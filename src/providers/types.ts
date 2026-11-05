@@ -60,6 +60,8 @@ export interface SendMessageOptions {
   effort?: 'low' | 'medium' | 'high' | 'max';
   /** Wall-clock limit for the call. Unset keeps the provider's default limit. */
   timeoutMs?: number;
+  /** Stops the call once it aborts. The call then rejects with the signal's reason. */
+  signal?: AbortSignal;
 }
 
 export interface LLMClient {

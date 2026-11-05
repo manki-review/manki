@@ -2662,6 +2662,9 @@ describe('updateProgressComment', () => {
     expect(body).toContain('No verdict was posted for `abc1234`');
     expect(body).toContain(CANCELLED_MARKER);
     expect(findInProgressLock([{ id: 123, body, user: { login: BOT_LOGIN, type: 'Bot' }, updated_at: new Date().toISOString() }], TEST_BOT, 42)).toBeNull();
+
+    await markProgressCommentSuperseded(mockOctokit, 'owner', 'repo', 123, new SupersededError('abc1234ffff', 'def5678ffff'), true);
+    expect(mockUpdateComment.mock.calls[1][0].body).toContain('**Review superseded** by the new commit `def5678`. The review of `abc1234` was posted, and the earlier reviews stay until the new commit is reviewed.');
   });
 
   it('renders config section in metadata', async () => {
@@ -3035,7 +3038,8 @@ describe('dismissPreviousReviews', () => {
     warningSpy.mockRestore();
   });
 
-  it('handles dismiss failure gracefully', async () => {
+  it('warns naming the review when a dismissal fails, and goes on', async () => {
+    const warningSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const mockOctokit = {
       paginate: jest.fn(paginateSinglePage),
       rest: {
@@ -3048,8 +3052,9 @@ describe('dismissPreviousReviews', () => {
       },
     } as unknown as Parameters<typeof dismissPreviousReviews>[0];
 
-    // Should not throw
-    await dismissPreviousReviews(mockOctokit, 'owner', 'repo', 1);
+    await expect(dismissPreviousReviews(mockOctokit, 'owner', 'repo', 1)).resolves.toBeUndefined();
+    expect(warningSpy).toHaveBeenCalledWith('Could not dismiss the previous review #1, it still requests changes: Forbidden');
+    warningSpy.mockRestore();
   });
 });
 
@@ -3785,15 +3790,19 @@ describe('isReviewInProgress', () => {
     expect(result).toBe(false);
   });
 
-  it('returns false when getWorkflowRun fails (API unreachable)', async () => {
-    const { octokit } = makeMockOctokit({
-      comments: [{ body: makeRunIdBody(123), user: { type: 'Bot' } }],
-      workflowRunError: new Error('403 forbidden'),
+  it.each([
+    ['is unreachable, leaving the comment as it is', 403, false],
+    ['no longer knows the run, which GitHub deletes after 90 days, so the comment is marked cancelled', 404, true],
+  ])('returns false when getWorkflowRun fails because the API %s', async (_label, status, cancelled) => {
+    const { octokit, updateComment } = makeMockOctokit({
+      comments: [{ id: 66, body: makeRunIdBody(123), user: { type: 'Bot' } }],
+      workflowRunError: Object.assign(new Error(`HTTP ${status}`), { status }),
     });
 
     const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
 
     expect(result).toBe(false);
+    expect(updateComment.mock.calls.map(([args]) => [args.comment_id, args.body.includes(CANCELLED_MARKER)])).toEqual(cancelled ? [[66, true]] : []);
   });
 
   it('returns false (without querying Actions API) when run_id matches current run', async () => {

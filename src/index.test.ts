@@ -7030,25 +7030,32 @@ describe('runFullReview concurrent-submission lock', () => {
     };
 
     it.each([
-      ['before the review is posted', false],
-      ['between the review stages', true],
-    ])('posts no verdict and marks the progress comment superseded when the head moves %s', async (_label, atCheckpoint) => {
+      ['before the review is posted', 'post', false],
+      ['between the review stages', 'checkpoint', false],
+      ['after the review is posted, before it replaces the previous one', 'dismiss', true],
+    ] as const)('marks the progress comment superseded and replaces no review when the head moves %s', async (_label, moment, posted) => {
       jest.mocked(reviewModule.runReview).mockImplementationOnce(async (_clients, options) => {
-        mockPullsGet.mockResolvedValueOnce(movedHead);
-        if (atCheckpoint) await options.checkpoint?.();
+        if (moment !== 'dismiss') mockPullsGet.mockResolvedValueOnce(movedHead);
+        if (moment === 'checkpoint') await options.checkpoint?.();
         return readyResult;
       });
+      if (moment === 'dismiss') {
+        jest.mocked(ghUtils.postReview).mockImplementationOnce(async () => {
+          mockPullsGet.mockResolvedValueOnce(movedHead);
+          return 123;
+        });
+      }
 
       await callRunFullReview();
 
-      expect(jest.mocked(ghUtils.postReview)).not.toHaveBeenCalled();
+      expect(jest.mocked(ghUtils.postReview)).toHaveBeenCalledTimes(posted ? 1 : 0);
       expect(jest.mocked(ghUtils.dismissPreviousReviews)).not.toHaveBeenCalled();
       expect(jest.mocked(ghUtils.updateProgressComment)).not.toHaveBeenCalled();
       expect(jest.mocked(ghUtils.markProgressCommentSuperseded)).toHaveBeenCalledWith(
-        expect.anything(), 'test-owner', 'test-repo', 1, expect.objectContaining({ reviewedSha: 'abc123', headSha: 'def456' }),
+        expect.anything(), 'test-owner', 'test-repo', 1, expect.objectContaining({ reviewedSha: 'abc123', headSha: 'def456' }), posted,
       );
       expect(core.setFailed).not.toHaveBeenCalled();
-      expect(jest.mocked(core.info).mock.calls.map(c => String(c[0]))).toContain('The PR head moved from abc123 to def456, posting no verdict for it');
+      expect(jest.mocked(core.info).mock.calls.map(c => String(c[0]))).toContain(`The PR head moved from abc123 to def456, ${posted ? 'replacing no earlier review' : 'posting no verdict for it'}`);
     });
 
     it('posts the verdict when the head is unchanged at every check', async () => {

@@ -58,3 +58,12 @@ export function withRefusalFallback(
     ...(client.warmupCLI ? { warmupCLI: client.warmupCLI.bind(client) } : {}),
   };
 }
+
+/** Sends every request to `client` with `signal`, so its abort stops the call in flight. Without `signal`, returns `client`. */
+export function withSignal(client: LLMClient, signal: AbortSignal | undefined): LLMClient {
+  if (!signal) return client;
+  return {
+    sendMessage: (sys, user, opts) => client.sendMessage(sys, user, { ...opts, signal }),
+    ...(client.warmupCLI ? { warmupCLI: client.warmupCLI.bind(client) } : {}),
+  };
+}

@@ -48,9 +48,21 @@ describe('callWithTimeout', () => {
   });
 
   it('names the label and the limit when its signal aborts the call', async () => {
-    const error = await callWithTimeout('Anthropic API', 20, untilAborted).then(() => null, (e: Error) => e);
+    const error = await callWithTimeout('Anthropic API', { timeoutMs: 20 }, untilAborted).then(() => null, (e: Error) => e);
     expect(error?.message).toBe('Anthropic API timed out after 0.02s');
     expect((error?.cause as Error).message).toBe('Request was aborted.');
+  });
+
+  it('throws the reason of the caller\'s signal when it aborts the call, and makes no call once it has aborted', async () => {
+    const controller = new AbortController();
+    const reason = new Error('head moved');
+    const pending = callWithTimeout('Gemini API', { timeoutMs: 60_000, signal: controller.signal }, untilAborted);
+    controller.abort(reason);
+    await expect(pending).rejects.toBe(reason);
+
+    const call = jest.fn();
+    await expect(callWithTimeout('Gemini API', { signal: controller.signal }, call)).rejects.toBe(reason);
+    expect(call).not.toHaveBeenCalled();
   });
 
   it('passes no signal without a limit and rethrows other errors unchanged', async () => {
@@ -58,7 +70,7 @@ describe('callWithTimeout', () => {
     await expect(callWithTimeout('OpenAI API', undefined, call)).resolves.toBe('ok');
     expect(call).toHaveBeenCalledWith();
     const overloaded = new Error('overloaded');
-    await expect(callWithTimeout('OpenAI API', 60_000, () => Promise.reject(overloaded))).rejects.toBe(overloaded);
+    await expect(callWithTimeout('OpenAI API', { timeoutMs: 60_000 }, () => Promise.reject(overloaded))).rejects.toBe(overloaded);
   });
 });
 
