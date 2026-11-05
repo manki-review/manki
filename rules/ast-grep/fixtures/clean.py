@@ -11,6 +11,8 @@ def handle(cmd, data, url, items=None, options: dict | None = None):
     json.loads(data)
     yaml.safe_load(data)
     yaml.load(data, Loader=yaml.SafeLoader)
+    yaml.load(data, Loader=CSafeLoader)
+    yaml.load_all(data, yaml.BaseLoader)
     requests.get(url, verify=True)
     assert items, "items must not be empty"
     if options is None:

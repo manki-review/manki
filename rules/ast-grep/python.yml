@@ -34,8 +34,22 @@ rule:
     - pattern: pickle.load($$$ARGS)
     - pattern: pickle.loads($$$ARGS)
     - pattern: marshal.loads($$$ARGS)
-    - pattern: yaml.load($DATA)
     - pattern: yaml.unsafe_load($$$ARGS)
+    - pattern: yaml.unsafe_load_all($$$ARGS)
+    - pattern: yaml.full_load($$$ARGS)
+    - pattern: yaml.full_load_all($$$ARGS)
+    # `yaml.load` is only safe with a loader that builds no Python objects.
+    - all:
+        - any:
+            - pattern: yaml.load($$$ARGS)
+            - pattern: yaml.load_all($$$ARGS)
+        - not:
+            has:
+              field: arguments
+              has:
+                stopBy: end
+                kind: identifier
+                regex: ^C?(Safe|Base)Loader$
 ---
 id: security-python-tls-verification-disabled
 language: Python
