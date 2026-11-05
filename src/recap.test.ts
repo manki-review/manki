@@ -1322,6 +1322,69 @@ describe('fetchRecapState', () => {
       expect(determineOutcome([], judgePrior, [], resolvedThreadIds).outcome).toBe('READY');
     });
 
+    it('keeps a security finding blocking until someone other than the PR author dismisses it', async () => {
+      const title = 'Token leaks into logs';
+      const slug = titleToSlug(title);
+      type Case = { resolver?: string; reply?: { login: string; association: string }; security: boolean; blocks: boolean };
+      const cases: Record<string, Case> = {
+        'src/author-resolved.ts': { resolver: 'author', security: true, blocks: true },
+        'src/author-agreed.ts': { reply: { login: 'author', association: 'OWNER' }, security: true, blocks: true },
+        'src/outsider-agreed.ts': { reply: { login: 'carol', association: 'CONTRIBUTOR' }, security: true, blocks: true },
+        'src/collaborator-resolved.ts': { resolver: 'alice', security: true, blocks: false },
+        'src/collaborator-agreed.ts': { reply: { login: 'bob', association: 'MEMBER' }, security: true, blocks: false },
+        'src/judge-addressed.ts': { resolver: 'author', security: true, blocks: false },
+        'src/plain-author-resolved.ts': { resolver: 'author', security: false, blocks: false },
+        'src/plain-author-agreed.ts': { reply: { login: 'author', association: 'NONE' }, security: false, blocks: false },
+      };
+      const files = Object.keys(cases);
+      const ctx = makeRoundContext(1, {
+        findings: {
+          count: files.length,
+          severityCounts: { blocker: 6, warning: 2, suggestion: 0, nitpick: 0 },
+          entries: files.map(file => ({
+            fingerprint: { file, lineStart: 10, lineEnd: 10, slug },
+            severity: cases[file].security ? 'blocker' as const : 'warning' as const,
+            title,
+            ...(cases[file].security && { tags: ['security'] }),
+          })),
+        },
+        judge: { summary: 'ok', threadEvaluations: [{ threadId: 'T_src/judge-addressed.ts', status: 'addressed', reason: 'The token is redacted now.' }] },
+      });
+      const octokit = mockOctokit(files.map(file => {
+        const { resolver, reply, security } = cases[file];
+        const body = formatFindingComment(makeFinding({
+          severity: security ? 'blocker' : 'warning', title, file, line: 10, ...(security && { tags: ['security'] }),
+        }));
+        return makeThread({
+          id: `T_${file}`,
+          isResolved: !!resolver,
+          resolvedBy: resolver ? { login: resolver } : null,
+          path: file,
+          line: 10,
+          comments: { nodes: [
+            { body, author: { login: BOT_LOGIN } },
+            ...(reply ? [{ body: 'Agreed, no change needed.', author: { login: reply.login }, authorAssociation: reply.association }] : []),
+          ] },
+        });
+      }), [{ id: 100, body: detailsBlock(ctx), user: { login: BOT_LOGIN } }]);
+
+      const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1, 'author');
+      const openThreads = state.previousFindings
+        .filter(f => f.status === 'open' || f.status === 'replied')
+        .map(f => ({ threadId: f.threadId!, title: f.title, file: f.file, line: f.line, severity: f.severity }));
+      const resolvedThreadIds = collectResolvedThreadIds(state.previousFindings);
+      const blocking = state.priorRounds[0].findings.entries
+        .filter(e => determineOutcome([], [e], openThreads, resolvedThreadIds).outcome === 'ADDRESS_FIRST')
+        .map(e => e.fingerprint.file);
+      expect(blocking).toEqual(files.filter(file => cases[file].blocks));
+
+      const reRaised = files.map(file => makeFinding({ severity: 'blocker', title, file, line: 10 }));
+      expect(collectInPrSuppressions(state.previousFindings, 'author').map(s => s.fingerprint.file))
+        .toEqual(files.filter(file => !cases[file].blocks));
+      expect(deduplicateFindings(reRaised, state.previousFindings).unique.map(f => f.file))
+        .toEqual(files.filter(file => cases[file].blocks || cases[file].reply));
+    });
+
     it('round-trips suggestedFix containing a literal \\u0060 escape sequence without parse error', async () => {
       // Regression: suggestedFix containing a regex like /`/g (literal backslash + u0060)
       // was stored as \\u0060 in the JSON, which the old parser's naive .replace(/\\u0060/g, '`')

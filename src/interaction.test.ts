@@ -818,12 +818,14 @@ describe('handleReviewCommentReply', () => {
   });
 
   it.each([
-    ['Fixed. The guard now runs first.', 'MEMBER', 'someone', true],
-    ['**Agreed.** Deferring it to the follow-up is fine.', 'NONE', 'pr-author', true],
-    ['Withdrawn. The caller already checks for null.', 'OWNER', 'someone', true],
-    ['Still open. The success path still skips `clearTimeout`.', 'MEMBER', 'someone', false],
-    ['Fixed. The guard now runs first.', 'CONTRIBUTOR', 'someone', false],
-  ])('resolves the thread after %j from a %s reply by %s: %s', async (reply, association, sender, resolves) => {
+    ['Fixed. The guard now runs first.', 'MEMBER', 'someone', false, true],
+    ['**Agreed.** Deferring it to the follow-up is fine.', 'NONE', 'pr-author', false, true],
+    ['Withdrawn. The caller already checks for null.', 'OWNER', 'someone', false, true],
+    ['Still open. The success path still skips `clearTimeout`.', 'MEMBER', 'someone', false, false],
+    ['Fixed. The guard now runs first.', 'CONTRIBUTOR', 'someone', false, false],
+    ['Agreed. The token never reaches a log.', 'OWNER', 'pr-author', true, false],
+    ['Agreed. The token never reaches a log.', 'MEMBER', 'someone', true, true],
+  ])('resolves the thread after %j from a %s reply by %s, security %s: %s', async (reply, association, sender, isSecurity, resolves) => {
     setContext({
       comment: { id: 1, body: 'Done in the latest commit.', user: { type: 'User' }, in_reply_to_id: 99, author_association: association },
       pull_request: { number: 1, user: { login: 'pr-author' } },
@@ -834,7 +836,7 @@ describe('handleReviewCommentReply', () => {
     jest.mocked(client.sendMessage).mockResolvedValue({ content: reply });
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([
       { id: 'PRRT_other', rootCommentId: 98, isResolved: false, isBlocking: true, findingTitle: 'Other' },
-      { id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: true, findingTitle: 'This' },
+      { id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: true, isSecurity, findingTitle: 'This' },
     ]);
     jest.mocked(state.resolveReviewThread).mockClear();
 

@@ -61,10 +61,12 @@ function makeGraphqlFetchThreadNode(overrides: {
   body?: string;
   authorLogin?: string | null;
   databaseId?: number;
+  resolvedBy?: string;
 } = {}) {
   return {
     id: overrides.id ?? 'thread-1',
     isResolved: overrides.isResolved ?? false,
+    ...(overrides.resolvedBy && { resolvedBy: { login: overrides.resolvedBy } }),
     comments: {
       nodes: [{
         ...(overrides.databaseId !== undefined && { databaseId: overrides.databaseId }),
@@ -254,7 +256,7 @@ describe('checkAndAutoApprove', () => {
       paginate: jest.fn(paginateSinglePage),
       rest: {
         pulls: {
-          get: jest.fn().mockResolvedValue({ data: { head: { sha: prHeadSha } } }),
+          get: jest.fn().mockResolvedValue({ data: { head: { sha: prHeadSha }, user: { login: 'author' } } }),
           createReview: createReviewFn,
           listReviews: jest.fn().mockResolvedValue({ data: existingReviews }),
         },
@@ -283,6 +285,26 @@ describe('checkAndAutoApprove', () => {
     expect(createReviewMock).toHaveBeenCalledWith(
       expect.objectContaining({ event: 'APPROVE', commit_id: 'sha-456', body: expect.stringMatching(/\n\u2705 \*\*Approved\.\*\* All blocking threads are resolved\.$/) }),
     );
+  });
+
+  it.each([
+    ['the PR author', 'author', false],
+    ['a collaborator', 'alice', true],
+  ])('approves a security thread resolved by %s: %s', async (_who, resolver, approves) => {
+    const finding = (title: string, tags?: string[]): Finding => ({
+      severity: 'blocker', title, file: 'src/a.ts', line: 3, description: 'd', reviewers: [], ...(tags && { tags }),
+    });
+    const createReviewMock = jest.fn().mockResolvedValue({});
+    const octokit = makeMockOctokit({
+      threads: [
+        makeGraphqlFetchThreadNode({ id: 't1', isResolved: true, resolvedBy: resolver, body: formatFindingComment(finding('Token leaks into logs', ['security'])) }),
+        makeGraphqlFetchThreadNode({ id: 't2', isResolved: true, resolvedBy: 'author', body: formatFindingComment(finding('Off by one')) }),
+      ],
+      createReviewFn: createReviewMock,
+    });
+
+    expect(await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1)).toBe(approves);
+    expect(createReviewMock).toHaveBeenCalledTimes(approves ? 1 : 0);
   });
 
   it('approves when blocking threads are resolved and only old suggestion and nitpick threads are open', async () => {

@@ -7,6 +7,7 @@ import { BotIdentity, dynamicFence, isTrustedAssociation, reactToIssueComment, r
 import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
+import { isOtherThanPrAuthor } from './recap';
 import { checkAndAutoApprove, fetchBotReviewThreads, resolveReviewThread } from './state';
 import { ReviewConfig } from './types';
 import { WRITING_RULES } from './writing-rules';
@@ -84,10 +85,16 @@ async function fetchThreadRoot(octokit: Octokit, owner: string, repo: string, id
   return null;
 }
 
-/** Resolves the Manki thread whose first comment is `rootCommentId`. */
-async function resolveThreadOf(octokit: Octokit, owner: string, repo: string, prNumber: number, rootCommentId: number): Promise<void> {
+/** Resolves the Manki thread whose first comment is `rootCommentId`. A security thread is left open unless `securityAllowed`. */
+async function resolveThreadOf(
+  octokit: Octokit, owner: string, repo: string, prNumber: number, rootCommentId: number, securityAllowed: boolean,
+): Promise<void> {
   const thread = (await fetchBotReviewThreads(octokit, owner, repo, prNumber)).find(t => t.rootCommentId === rootCommentId);
   if (!thread || thread.isResolved) return;
+  if (thread.isSecurity && !securityAllowed) {
+    core.info(`Left security thread ${thread.id} open, since only someone other than the PR author with write access can dismiss it`);
+    return;
+  }
   await resolveReviewThread(octokit, thread.id);
   core.info(`Resolved thread ${thread.id} after the reply`);
 }
@@ -188,7 +195,7 @@ export async function handleReviewCommentReply(
     const isPrAuthor = !!prAuthorLogin && senderLogin?.toLowerCase() === prAuthorLogin.toLowerCase();
     if (RESOLVING_REPLY_RE.test(reply) && (isTrusted || isPrAuthor)) {
       try {
-        await resolveThreadOf(octokit, owner, repo, prNumber, root.id);
+        await resolveThreadOf(octokit, owner, repo, prNumber, root.id, isTrusted && isOtherThanPrAuthor(senderLogin, prAuthorLogin));
       } catch (error) {
         core.warning(`Failed to resolve thread after reply: ${error}`);
       }

@@ -29,7 +29,7 @@ const LEGACY_SECURITY_AGENT_NAME = 'Security & Safety';
  * Whether a finding or prior is a security defect, which the judge tags `SECURITY_TAG`.
  * A prior also counts when the retired Security & Safety reviewer raised it.
  */
-function isSecurityFinding(tags: string[] | undefined, priorReviewers: ReadonlyArray<string | undefined> = []): boolean {
+export function isSecurityFinding(tags: string[] | undefined, priorReviewers: ReadonlyArray<string | undefined> = []): boolean {
   return Boolean(tags?.includes(SECURITY_TAG)) || priorReviewers.includes(LEGACY_SECURITY_AGENT_NAME);
 }
 

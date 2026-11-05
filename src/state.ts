@@ -2,6 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { BotIdentity, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchReviewThreadNodes, FOLLOW_UP_MARKER, isBotLogin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, postAutoApproveProgressComment } from './github';
+import { isOtherThanPrAuthor, isSecurityThread } from './recap';
 import { FindingSeverity, isBlockingSeverity, migrateLegacySeverity, ReviewConfig, SEVERITY_TOKEN_PATTERN } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -19,7 +20,9 @@ interface ReviewThread {
   /** REST ID of the thread's first comment, which replies point at through `in_reply_to_id`. */
   rootCommentId?: number;
   isResolved: boolean;
+  resolvedByLogin?: string;
   isBlocking: boolean;
+  isSecurity?: boolean;
   findingTitle: string;
 }
 
@@ -36,6 +39,7 @@ async function fetchBotReviewThreads(
   const threads = await fetchReviewThreadNodes<{
     id: string;
     isResolved: boolean;
+    resolvedBy?: { login: string } | null;
     comments: {
       nodes: Array<{
         databaseId?: number | null;
@@ -46,6 +50,9 @@ async function fetchBotReviewThreads(
   }>(octokit, owner, repo, prNumber, `
     id
     isResolved
+    resolvedBy {
+      login
+    }
     comments(first: 1) {
       nodes {
         databaseId
@@ -74,11 +81,14 @@ async function fetchBotReviewThreads(
       const findingTitle = titleMatch?.[1]?.replace(/-/g, ' ') ?? 'Unknown';
 
       const rootCommentId = thread.comments.nodes[0]?.databaseId;
+      const resolvedByLogin = thread.resolvedBy?.login;
       return {
         id: thread.id,
         ...(rootCommentId != null && { rootCommentId }),
         isResolved: thread.isResolved,
+        ...(resolvedByLogin && { resolvedByLogin }),
         isBlocking,
+        ...(isSecurityThread(body) && { isSecurity: true }),
         findingTitle,
       };
     });
@@ -91,9 +101,10 @@ async function resolveReviewThread(octokit: Octokit, threadId: string): Promise<
 /**
  * Check if every blocking bot review thread is resolved. Suggestion and nitpick
  * threads posted by older versions never block, matching the verdict's bar.
+ * A security thread the PR author resolved still counts as open.
  */
-function areAllFindingsResolved(threads: ReviewThread[]): boolean {
-  return threads.every(t => t.isResolved || !t.isBlocking);
+function areAllFindingsResolved(threads: ReviewThread[], prAuthorLogin?: string): boolean {
+  return threads.every(t => !t.isBlocking || (t.isResolved && (!t.isSecurity || isOtherThanPrAuthor(t.resolvedByLogin, prAuthorLogin))));
 }
 
 /**
@@ -173,7 +184,13 @@ async function checkAndAutoApprove(
 
   core.info(`Review threads: ${resolvedCount}/${totalCount} resolved`);
 
-  if (!areAllFindingsResolved(threads)) {
+  const { data: pr } = await octokit.rest.pulls.get({
+    owner,
+    repo,
+    pull_number: prNumber,
+  });
+
+  if (!areAllFindingsResolved(threads, pr.user?.login)) {
     core.info('Not all blocking findings resolved — skipping auto-approve');
     return false;
   }
@@ -187,12 +204,6 @@ async function checkAndAutoApprove(
   const isBotReview = (r: ReviewEntry) => r.body?.includes('<!-- manki') && isBotLogin(bot, r.user?.login);
   const botReviews = reviews.filter((r: ReviewEntry) => isBotReview(r) && r.state !== 'DISMISSED');
   const latestBotReview = botReviews[botReviews.length - 1];
-
-  const { data: pr } = await octokit.rest.pulls.get({
-    owner,
-    repo,
-    pull_number: prNumber,
-  });
 
   // Stale-SHA gate: bail unless manki has actually submitted a non-DISMISSED
   // review on the current HEAD commit. This single check covers every variant —
