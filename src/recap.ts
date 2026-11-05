@@ -79,10 +79,13 @@ interface OverrideCandidate {
   recordedOverride?: Omit<SecurityOverride, 'thread'>;
 }
 
-/** Whether the PR author resolved a security thread with no recorded override, so only an admin check can clear it. */
-function isAuthorResolvedSecurity(t: OverrideCandidate, prAuthorLogin: string | undefined): boolean {
-  return !!t.isSecurity && t.isResolved && !t.recordedOverride
-    && !!prAuthorLogin && t.resolvedByLogin?.toLowerCase() === prAuthorLogin.toLowerCase();
+function isLogin(login: string | undefined, prAuthorLogin: string | undefined): login is string {
+  return !!login && !!prAuthorLogin && login.toLowerCase() === prAuthorLogin.toLowerCase();
+}
+
+/** Whether a resolved security thread can only be cleared by the PR author as a repo admin, so it needs the admin check. */
+function isOverrideCandidate(t: OverrideCandidate, prAuthorLogin: string | undefined): boolean {
+  return !!t.isSecurity && t.isResolved && (isLogin(t.resolvedByLogin, prAuthorLogin) || isLogin(t.recordedOverride?.login, prAuthorLogin));
 }
 
 /** The security overrides on `previousFindings`, one per thread. */
@@ -92,13 +95,12 @@ function securityOverridesIn(previousFindings: PreviousFinding[]): Array<Securit
 
 /**
  * Returns how the PR author cleared a resolved security thread as a repo admin: the override Manki recorded on it,
- * or else the author's own resolve when `prAuthorIsAdmin`.
+ * or else the author's own resolve. Both need `prAuthorIsAdmin`: a marker alone proves nothing, since a Manki reply can echo text it was given.
  */
 function securityOverrideOf(t: OverrideCandidate, prAuthorLogin: string | undefined, prAuthorIsAdmin: boolean): ThreadSecurityOverride | undefined {
-  if (!t.isSecurity || !t.isResolved) return undefined;
-  if (t.recordedOverride) return { ...t.recordedOverride, announced: true };
-  if (!prAuthorIsAdmin || !t.resolvedByLogin || !isAuthorResolvedSecurity(t, prAuthorLogin)) return undefined;
-  return { login: t.resolvedByLogin, via: 'resolve', announced: false };
+  if (!prAuthorIsAdmin || !isOverrideCandidate(t, prAuthorLogin)) return undefined;
+  if (t.recordedOverride && isLogin(t.recordedOverride.login, prAuthorLogin)) return { ...t.recordedOverride, announced: true };
+  return isLogin(t.resolvedByLogin, prAuthorLogin) ? { login: t.resolvedByLogin, via: 'resolve', announced: false } : undefined;
 }
 
 const LLM_DEDUP_TIMEOUT_MS = 120_000;
@@ -439,7 +441,7 @@ async function fetchRecapState(
   const { threads, state: openThreadsState } = threadsResult;
   const addressedThreadIds = judgeAddressedThreadIds(priorRounds);
   const botThreads = threads.filter(t => t.isBotThread);
-  const prAuthorIsAdmin = !!prAuthorLogin && botThreads.some(t => isAuthorResolvedSecurity(t, prAuthorLogin))
+  const prAuthorIsAdmin = !!prAuthorLogin && botThreads.some(t => isOverrideCandidate(t, prAuthorLogin))
     && await isRepoAdmin(octokit, owner, repo, prAuthorLogin);
 
   const previousFindings = botThreads.map(t => {
@@ -1021,4 +1023,4 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
   );
 }
 
-export { DuplicateMatch, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchRecapState, isAuthorResolvedSecurity, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment };
+export { DuplicateMatch, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchRecapState, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment };

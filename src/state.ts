@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { BotIdentity, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchReviewThreadNodes, FOLLOW_UP_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, postAutoApproveProgressComment } from './github';
-import { isAuthorResolvedSecurity, isSecurityThread, mayClearSecurityThread, PreviousFinding, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf } from './recap';
+import { isOverrideCandidate, isSecurityThread, mayClearSecurityThread, PreviousFinding, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf } from './recap';
 import { FindingSeverity, isBlockingSeverity, migrateLegacySeverity, ReviewConfig, SecurityOverride, SEVERITY_TOKEN_PATTERN } from './types';
 import { withMarkers } from './utils';
 
@@ -24,7 +24,7 @@ interface ReviewThread {
   resolvedByLogin?: string;
   isBlocking: boolean;
   isSecurity?: boolean;
-  /** The override a repo admin made on this security thread, as Manki recorded it in the thread. */
+  /** The override recorded in one of Manki's comments on this security thread. Trusted only after an admin check. */
   recordedOverride?: Omit<SecurityOverride, 'thread'>;
   findingTitle: string;
   /** URL of the thread's first comment. */
@@ -259,7 +259,7 @@ async function checkAndAutoApprove(
   });
 
   const prAuthorLogin = pr.user?.login;
-  const prAuthorIsAdmin = !!prAuthorLogin && threads.some(t => isAuthorResolvedSecurity(t, prAuthorLogin))
+  const prAuthorIsAdmin = !!prAuthorLogin && threads.some(t => isOverrideCandidate(t, prAuthorLogin))
     && await isRepoAdmin(octokit, owner, repo, prAuthorLogin);
   const overrides = threads.flatMap(t => {
     const o = securityOverrideOf(t, prAuthorLogin, prAuthorIsAdmin);

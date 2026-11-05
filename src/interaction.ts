@@ -106,7 +106,7 @@ async function resolveThreadOf(
       return;
     }
     // The recorded override is what lets later rounds count the resolved thread, so without it the thread stays open.
-    if (!thread.recordedOverride && (await announceSecurityOverrides(octokit, [{ thread: thread.id, login: adminOverride, via: 'dismiss' }])).length === 0) return;
+    if (thread.recordedOverride?.login !== adminOverride && (await announceSecurityOverrides(octokit, [{ thread: thread.id, login: adminOverride, via: 'dismiss' }])).length === 0) return;
   }
   await resolveReviewThread(octokit, thread.id);
   core.info(`Resolved thread ${thread.id} after the reply`);

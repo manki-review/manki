@@ -1330,7 +1330,8 @@ describe('fetchRecapState', () => {
       type Case = { resolver?: string; reply?: { login: string; association: string }; reopened?: boolean; dismissed?: boolean; security: boolean; blocks: boolean };
       const cases: Record<string, Case> = {
         'src/author-resolved.ts': { resolver: 'author', security: true, blocks: true },
-        'src/admin-dismissed.ts': { resolver: BOT_LOGIN, dismissed: true, security: true, blocks: false },
+        // A recorded override counts only once the PR author passes the admin check, since a Manki reply can echo any text.
+        'src/admin-dismissed.ts': { resolver: BOT_LOGIN, dismissed: true, security: true, blocks: true },
         'src/bot-resolved.ts': { resolver: BOT_LOGIN, security: true, blocks: true },
         'src/author-resolved-again.ts': { resolver: 'author', reopened: true, security: true, blocks: true },
         'src/author-agreed.ts': { reply: { login: 'author', association: 'OWNER' }, security: true, blocks: true },
@@ -1377,8 +1378,7 @@ describe('fetchRecapState', () => {
 
       const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1, 'author');
       expect(state.previousFindings.filter(f => f.reopen).map(f => f.file)).toEqual(['src/author-resolved.ts']);
-      expect(state.previousFindings.filter(f => f.securityOverride).map(f => [f.file, f.securityOverride]))
-        .toEqual([['src/admin-dismissed.ts', { login: 'author', via: 'dismiss', announced: true }]]);
+      expect(state.previousFindings.filter(f => f.securityOverride)).toEqual([]);
       const openThreads = state.previousFindings
         .filter(f => f.status === 'open' || f.status === 'replied')
         .map(f => ({ threadId: f.threadId!, title: f.title, file: f.file, line: f.line, severity: f.severity }));
@@ -1398,7 +1398,7 @@ describe('fetchRecapState', () => {
       // With the PR author unknown, any human resolver has write access, so a human resolution clears the thread.
       const unknownAuthor = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(unknownAuthor.previousFindings.filter(f => f.isSecurity && f.status === 'resolved').map(f => f.file))
-        .toEqual(['src/author-resolved.ts', 'src/admin-dismissed.ts', 'src/author-resolved-again.ts', 'src/collaborator-resolved.ts', 'src/judge-addressed.ts']);
+        .toEqual(['src/author-resolved.ts', 'src/author-resolved-again.ts', 'src/collaborator-resolved.ts', 'src/judge-addressed.ts']);
 
       // A PR author with write access but no admin keeps the rule above.
       const permission = jest.fn().mockResolvedValue({ data: { permission: 'write' } });
@@ -1421,7 +1421,7 @@ describe('fetchRecapState', () => {
       expect(adminState.priorRounds[0].findings.entries
         .filter(e => determineOutcome([], [e], adminOpen, collectResolvedThreadIds(adminState.previousFindings)).outcome === 'ADDRESS_FIRST')
         .map(e => e.fingerprint.file))
-        .toEqual(files.filter(file => cases[file].blocks && file !== 'src/author-resolved.ts' && file !== 'src/author-resolved-again.ts'));
+        .toEqual(files.filter(file => cases[file].blocks && !['src/author-resolved.ts', 'src/admin-dismissed.ts', 'src/author-resolved-again.ts'].includes(file)));
       // The lookup is cached per client, so the second read does not ask GitHub again.
       await fetchRecapState(admin, TEST_BOT, 'owner', 'repo', 1, 'author');
       expect(permission).toHaveBeenCalledTimes(2);

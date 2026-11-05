@@ -63,11 +63,13 @@ describe('areAllFindingsResolved', () => {
     expect(areAllFindingsResolved(security('github-actions[bot]'), TEST_BOT, 'author')).toBe(true);
     // With the PR author unknown, any human resolver has write access.
     expect(areAllFindingsResolved(security('alice'), TEST_BOT)).toBe(true);
-    // A PR author who is a repo admin clears their own, and so does an override Manki recorded on the thread.
+    // A PR author who is a repo admin clears their own.
     expect(areAllFindingsResolved(security('author'), TEST_BOT, 'author', true)).toBe(true);
     expect(areAllFindingsResolved(security('dependabot[bot]'), TEST_BOT, 'author', true)).toBe(false);
-    expect(areAllFindingsResolved([makeThread({ isResolved: true, isSecurity: true, resolvedByLogin: 'author', recordedOverride: { login: 'author', via: 'dismiss' } })], TEST_BOT, 'author'))
-      .toBe(true);
+    // A recorded override counts only for an admin author, since a Manki reply can echo any text.
+    const recorded = [makeThread({ isResolved: true, isSecurity: true, resolvedByLogin: 'author', recordedOverride: { login: 'author', via: 'dismiss' } })];
+    expect(areAllFindingsResolved(recorded, TEST_BOT, 'author')).toBe(false);
+    expect(areAllFindingsResolved(recorded, TEST_BOT, 'author', true)).toBe(true);
   });
 });
 
@@ -373,6 +375,7 @@ describe('checkAndAutoApprove', () => {
     ['a collaborator', 'alice', 'write', false, true],
     ['the PR author as a repo admin', 'author', 'admin', false, true],
     ['the PR author as a repo admin, already recorded', 'author', 'admin', true, true],
+    ['the PR author without admin, with a recorded override', 'author', 'write', true, false],
   ])('approves a security thread resolved by %s', async (who, resolver, permission, recorded, approves) => {
     const finding = (title: string, tags?: string[]): Finding => ({
       severity: 'blocker', title, file: 'src/a.ts', line: 3, description: 'd', reviewers: [], ...(tags && { tags }),
@@ -399,8 +402,8 @@ describe('checkAndAutoApprove', () => {
     expect(replies.map(([, vars]) => vars)).toEqual(isAdmin && !recorded
       ? [{ threadId: 't1', body: 'Security finding dismissed by @author (repo admin).\n\n<!-- manki -->\n<!-- manki-security-override:resolve:author -->' }]
       : []);
-    // Only a security thread the author resolved, with no override recorded yet, needs the admin lookup.
-    expect(octokit.rest.repos.getCollaboratorPermissionLevel).toHaveBeenCalledTimes(resolver === 'author' && !recorded ? 1 : 0);
+    // Only a security thread the author resolved or overrode needs the admin lookup.
+    expect(octokit.rest.repos.getCollaboratorPermissionLevel).toHaveBeenCalledTimes(resolver === 'author' ? 1 : 0);
     if (approves) {
       const line = '**Security findings dismissed by a repo admin:** [Token leaks into logs](https://github.com/o/r/pull/1#r1) by @author.';
       expect(createReviewMock.mock.calls[0][0].body.includes(line)).toBe(isAdmin);
