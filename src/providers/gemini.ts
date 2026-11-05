@@ -5,7 +5,7 @@ import { promisify } from 'util';
 import { FinishReason, GoogleGenAI, ThinkingConfig, ThinkingLevel } from '@google/genai';
 import * as core from '@actions/core';
 
-import { buildExitDiagnostics, runCli, sanitizeLogOutput, seedAuthFile } from './cli-utils';
+import { buildExitDiagnostics, callWithTimeout, runCli, sanitizeLogOutput, seedAuthFile, warnReplyTail } from './cli-utils';
 import { GeminiAuth, LLMClient, LLMResponse, LLMUsage, readCount, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -189,7 +189,11 @@ export class GeminiClient implements LLMClient {
         ...(oauthToken ? { GOOGLE_GENAI_USE_GCA: 'true' } : {}),
       },
       input: fullPrompt,
+      hardTimeoutMs: options?.timeoutMs,
       onStdout: (chunk) => { output += chunk; },
+    }).catch((error: unknown) => {
+      warnReplyTail('Gemini CLI', output);
+      throw error;
     });
 
     if (code !== 0) {
@@ -204,6 +208,7 @@ export class GeminiClient implements LLMClient {
         elapsedMs: Date.now() - startTime,
       });
       core.warning(`Gemini CLI failed (${msg})`);
+      warnReplyTail('Gemini CLI', output);
       throw new Error(`Gemini CLI invocation failed (${msg})`);
     }
     const content = output.trim();
@@ -223,19 +228,25 @@ export class GeminiClient implements LLMClient {
     const thinks = thinkingConfig !== undefined || (geminiMajorMinor(this.model)?.[0] ?? 0) >= 3;
 
     const startTime = Date.now();
-    const response = await this.genAI.models.generateContent({
+    const genAI = this.genAI;
+    const response = await callWithTimeout('Gemini API', options?.timeoutMs, (abortSignal) => genAI.models.generateContent({
       model: this.model,
       contents: [{ role: 'user', parts: [{ text: userMessage }] }],
       config: {
         systemInstruction: systemPrompt,
         maxOutputTokens: thinks ? 32768 : 16384,
         ...(thinkingConfig && { thinkingConfig }),
+        ...(abortSignal && { abortSignal }),
       },
-    });
+    }));
 
     const finishReason = response.candidates?.[0]?.finishReason;
     const truncated = finishReason === FinishReason.MAX_TOKENS;
     const content = response.text ?? '';
+    if (finishReason && finishReason !== FinishReason.STOP) {
+      core.warning(`Gemini API reply ended on finishReason ${finishReason}`);
+      warnReplyTail('Gemini API', content);
+    }
     if (!content && !truncated) {
       const reason = response.promptFeedback?.blockReason ?? finishReason ?? 'no candidates';
       throw new Error(`Gemini API returned no usable content: ${reason}`);

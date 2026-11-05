@@ -1155,7 +1155,7 @@ describe('runJudgeAgent', () => {
     expect(mockSendMessage).toHaveBeenCalledWith(
       expect.any(String),
       expect.any(String),
-      { effort: 'high' },
+      { effort: 'high', timeoutMs: 300_000 },
     );
   });
 
@@ -1172,18 +1172,23 @@ describe('runJudgeAgent', () => {
       openThreads,
     };
 
-    for (const content of ['', 'not json {broken', JSON.stringify({ summary: 'Nothing.', findings: [] })]) {
-      mockSendMessage.mockReset();
-      mockSendMessage.mockResolvedValue({ content });
-      await expect(runJudgeAgent(mockClient, makeConfig(), input)).rejects.toThrow();
-      expect(mockSendMessage).toHaveBeenCalledTimes(2);
-    }
-
     const valid = JSON.stringify({
       summary: 'Ok.',
       findings: [{ id: 1, title: 'Unused variable', severity: 'blocker', reasoning: 'r', confidence: 'high' }],
       threadEvaluations: [{ threadId: 'T1', status: 'not_addressed', reason: 'unchanged' }],
     });
+    const unusable = [
+      { content: '' },
+      { content: 'not json {broken' },
+      { content: JSON.stringify({ summary: 'Nothing.', findings: [] }) },
+      { content: valid, truncated: true },
+    ];
+    for (const reply of unusable) {
+      mockSendMessage.mockReset();
+      mockSendMessage.mockResolvedValue(reply);
+      await expect(runJudgeAgent(mockClient, makeConfig(), input)).rejects.toThrow();
+      expect(mockSendMessage).toHaveBeenCalledTimes(2);
+    }
     mockSendMessage.mockReset();
     mockSendMessage
       .mockResolvedValueOnce({ content: '{"confidence":medium}' })

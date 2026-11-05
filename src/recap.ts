@@ -48,6 +48,8 @@ function isSecurityThread(body: string): boolean {
 /** Marks Manki's reply on a security thread it reopened after the PR author resolved it. */
 const REOPENED_MARKER = '<!-- manki-reopened -->';
 
+const LLM_DEDUP_TIMEOUT_MS = 120_000;
+
 /**
  * Whether `login` may clear a security thread by resolving it, or by agreeing when they also have write access:
  * a human other than the PR author. Only the PR author and people with write access can resolve a thread,
@@ -906,7 +908,7 @@ async function llmDeduplicateFindings(
     const response = await client.sendMessage(
       'You are deduplicating code review findings. Given a list of new findings and a list of previously dismissed findings, determine which new findings are about the same issue as a dismissed one — even if phrased differently. Respond with ONLY a JSON array of objects: { "index": <1-based new finding index>, "matchedDismissed": <1-based dismissed finding index> }. Only include findings that match. If none match, return [].',
       `## Previously dismissed findings:\n${dismissedList}\n\n## New findings:\n${newList}`,
-      { effort: 'low' },
+      { effort: 'low', timeoutMs: LLM_DEDUP_TIMEOUT_MS },
     );
 
     let jsonText = response.content.trim();

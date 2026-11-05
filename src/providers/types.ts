@@ -47,6 +47,8 @@ export function addUsage(a: LLMUsage, b: LLMUsage): LLMUsage {
 
 export interface SendMessageOptions {
   effort?: 'low' | 'medium' | 'high' | 'max';
+  /** Wall-clock limit for the call. Unset keeps the provider's default limit. */
+  timeoutMs?: number;
 }
 
 export interface LLMClient {

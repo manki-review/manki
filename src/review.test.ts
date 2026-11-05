@@ -1981,7 +1981,8 @@ describe('runReview', () => {
       whatToTest: { setup: 'Sign in as an admin.', steps: ['Open the page. Expect the feature.'] },
     }));
     expect(clients.judge.sendMessage).toHaveBeenCalledTimes(1);
-    expect(jest.mocked(clients.judge.sendMessage).mock.calls[0][2]).toEqual({ effort: 'high' });
+    expect(jest.mocked(clients.judge.sendMessage).mock.calls[0][2]).toEqual({ effort: 'high', timeoutMs: 900_000 });
+    expect(jest.mocked(clients.judge.sendMessage).mock.calls[0][0]).toContain('Keep the whole reply short. Name at most 8 blockers');
   });
 
   it('splits a plain-string whatToTest from the verdict reader into its setup and numbered steps', async () => {
@@ -2260,7 +2261,8 @@ describe('runReview', () => {
     ['a whatToTest whose steps are not strings', { content: JSON.stringify({ verdict: 'READY', blockers: [], summary: 'ok', whatThisDoes: 'x', whatToTest: { steps: [1] } }) }],
   ])('ends the round INCOMPLETE, never READY, when the verdict reader returns %s', async (_label, response) => {
     const clients = makeClients();
-    jest.mocked(clients.judge.sendMessage).mockResolvedValue(response);
+    jest.mocked(clients.judge.sendMessage).mockResolvedValue({ ...response, usage: { inputTokens: 10, outputTokens: 32768, cachedTokens: 0, reasoningTokens: 0 } });
+    const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
 
     const result = await runReview(clients, { config: makeConfig(), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo context' });
     expect(result.reviewComplete).toBe(false);
@@ -2268,6 +2270,8 @@ describe('runReview', () => {
     expect(result.verdict).toBe('COMMENT');
     expect(result.summary).toContain('verdict reader failed');
     expect(result.findings).toEqual([]);
+    expect(infoSpy).toHaveBeenCalledWith('Verdict reader: 65536 output tokens');
+    infoSpy.mockRestore();
   });
 
   it('ends the round INCOMPLETE when the verdict reader call fails', async () => {
@@ -3470,6 +3474,7 @@ describe('runReview', () => {
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
 
     mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
+    const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
     const result = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context' });
 
     expect(result.agentUsage).toBeDefined();
@@ -3482,6 +3487,11 @@ describe('runReview', () => {
       expect(ms).toBe(1500);
     }
     expect(result.judgeRetryCount).toBe(0);
+    for (const name of result.agentNames) {
+      expect(infoSpy).toHaveBeenCalledWith(`${name}: 20 output tokens`);
+    }
+    expect(infoSpy).toHaveBeenCalledWith('Verdict reader: 60 output tokens');
+    infoSpy.mockRestore();
   });
 
   it('records `agentFailureReasons` when an agent fails after all retries', async () => {
@@ -3935,7 +3945,7 @@ describe('runPlanner', () => {
     const client = makeClient(JSON.stringify({ trivial: false, subtle: false, paired: true, judgeEffort: 'low', prType: 'feat' }));
     const result = await runPlanner(client, makeDiff({ totalAdditions: 100, totalDeletions: 20 }));
     expect(result).toEqual({ trivial: false, subtle: false, paired: true, judgeEffort: 'low', prType: 'feat' });
-    expect(client.sendMessage).toHaveBeenCalledWith(buildPlannerSystemPrompt(), expect.any(String), { effort: 'high' });
+    expect(client.sendMessage).toHaveBeenCalledWith(buildPlannerSystemPrompt(), expect.any(String), { effort: 'high', timeoutMs: PLANNER_TIMEOUT_MS });
   });
 
   it('takes the side that adds review for each missing or invalid answer, independently', async () => {

@@ -6,7 +6,7 @@ import OpenAI from 'openai';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import * as core from '@actions/core';
 
-import { buildExitDiagnostics, runCli, seedAuthFile, STALE_TIMEOUT_MS } from './cli-utils';
+import { buildExitDiagnostics, callWithTimeout, runCli, seedAuthFile, STALE_TIMEOUT_MS, warnReplyTail } from './cli-utils';
 import { LLMClient, LLMResponse, LLMUsage, OpenAIAuth, readCount, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -214,8 +214,12 @@ export class OpenAIClient implements LLMClient {
       args,
       env: { ...safeCodexEnv, CODEX_HOME: codexHome },
       input: fullPrompt,
+      hardTimeoutMs: options?.timeoutMs,
       onStdout: (chunk) => { output += chunk; },
       stderrResetsStale: true,
+    }).catch((error: unknown) => {
+      warnReplyTail('Codex CLI', output);
+      throw error;
     });
 
     if (code !== 0) {
@@ -230,6 +234,7 @@ export class OpenAIClient implements LLMClient {
         elapsedMs: Date.now() - startTime,
       });
       core.warning(`Codex CLI failed (${msg})`);
+      warnReplyTail('Codex CLI', output);
       throw new Error(`Codex CLI invocation failed (${msg})`);
     }
     const content = output.trim();
@@ -266,10 +271,16 @@ export class OpenAIClient implements LLMClient {
     }
 
     const startTime = Date.now();
-    const response = await this.openai.chat.completions.create(params as ChatCompletionCreateParamsNonStreaming);
+    const openai = this.openai;
+    const response = await callWithTimeout('OpenAI API', options?.timeoutMs, (signal) =>
+      openai.chat.completions.create(params as ChatCompletionCreateParamsNonStreaming, signal ? { signal } : undefined));
     const choice = response.choices?.[0];
     const content = choice?.message?.content ?? '';
     core.debug(sanitizeLogOutput(content.slice(0, 200)));
+    if (choice?.finish_reason === 'length' || choice?.finish_reason === 'content_filter') {
+      core.warning(`OpenAI API reply ended on finish_reason ${choice.finish_reason}`);
+      warnReplyTail('OpenAI API', content);
+    }
 
     const sdkUsage = response.usage as undefined | {
       prompt_tokens?: number;

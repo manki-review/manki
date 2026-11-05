@@ -9,6 +9,8 @@ import { WRITING_RULES } from './writing-rules';
 const VERDICT_READER_NAME = 'Verdict reader';
 const MAX_BLOCKER_TITLE_LENGTH = 100;
 const MAX_TEST_STEPS = 8;
+// Most verdicts take under two minutes, but a legitimate one has taken almost 15.
+const VERDICT_TIMEOUT_MS = 900_000;
 
 // Every input here is identical on every round for the same tree. The reader must never learn
 // about earlier rounds, findings or the PR's own description, or it starts confirming instead of
@@ -28,6 +30,8 @@ Also write two things for the pull request:
 - whatToTest: manual checks from the diff. \`setup\` says in one or two sentences what the checks need first, and is left out when they need nothing. \`steps\` holds at most ${MAX_TEST_STEPS} checks, each one "Do X. Expect Y." pair, ending with edge cases worth trying. Never invent behaviour the code does not implement.
 
 ${WRITING_RULES}
+
+Keep the whole reply short. Name at most 8 blockers, keep \`summary\` under 150 words and \`whatThisDoes\` under 60 words, then end the JSON object.
 
 Respond with ONLY a JSON object (no markdown fences):
 {
@@ -103,7 +107,7 @@ function parseVerdictReport(responseText: string): VerdictReport {
 /** Runs the verdict reader once on `userMessage`. Throws when the call fails or its output is truncated or unparseable. */
 export async function runVerdictReader(client: LLMClient, userMessage: string): Promise<VerdictReport> {
   return sendWithParseRetry(
-    () => client.sendMessage(VERDICT_READER_SYSTEM_PROMPT, userMessage, { effort: 'high' }),
+    () => client.sendMessage(VERDICT_READER_SYSTEM_PROMPT, userMessage, { effort: 'high', timeoutMs: VERDICT_TIMEOUT_MS }),
     (response) => {
       if (response.truncated) {
         throw new Error(`verdict truncated at the output token limit (length ${response.content.length})`);
