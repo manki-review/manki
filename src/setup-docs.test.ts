@@ -79,16 +79,19 @@ describe('documented workflow snippets', () => {
     expect(snippets['SETUP.md'].length).toBeGreaterThan(1);
   });
 
-  it('includes a dispatch workflow in SETUP.md that declares the dispatch inputs, with no `if` or `concurrency`', () => {
+  it('includes a dispatch workflow in SETUP.md that declares the dispatch inputs, with no `if` or `concurrency`, as our own does', () => {
     const dispatch = snippets['SETUP.md'].map(block => parseYaml(block) as Workflow).filter(isDispatchWorkflow);
     expect(dispatch).toHaveLength(1);
-    const [workflow] = dispatch;
-    expect(Object.keys(workflow.on)).toEqual(['workflow_dispatch']);
-    const { inputs: dispatchInputs } = workflow.on.workflow_dispatch as { inputs: Record<string, unknown> };
+    const own = parseYaml(readRepoFile('.github/workflows/manki-dispatch.yml')) as Workflow;
+    for (const workflow of [dispatch[0], own]) {
+      expect(Object.keys(workflow.on)).toEqual(['workflow_dispatch']);
+      expect(workflow.on.workflow_dispatch).toEqual(dispatch[0].on.workflow_dispatch);
+      expect((workflow as Workflow & { 'run-name': string })['run-name']).toBe('Manki ${{ inputs.event }}.${{ inputs.action }} on #${{ inputs.pr }} (${{ inputs.delivery_id }})');
+      const { if: condition, concurrency, 'timeout-minutes': timeout } = workflow.jobs.review;
+      expect({ condition, concurrency, timeout }).toEqual({ condition: undefined, concurrency: undefined, timeout: 30 });
+    }
+    const { inputs: dispatchInputs } = dispatch[0].on.workflow_dispatch as { inputs: Record<string, unknown> };
     expect(Object.keys(dispatchInputs)).toEqual(['event', 'action', 'pr', 'head_sha', 'comment_id', 'review_id', 'delivery_id']);
-    expect((workflow as Workflow & { 'run-name': string })['run-name']).toBe('Manki ${{ inputs.event }}.${{ inputs.action }} on #${{ inputs.pr }} (${{ inputs.delivery_id }})');
-    const { if: condition, concurrency, 'timeout-minutes': timeout } = workflow.jobs.review;
-    expect({ condition, concurrency, timeout }).toEqual({ condition: undefined, concurrency: undefined, timeout: 30 });
   });
 
   it('passes only inputs that `action.yml` accepts and every required input', () => {
