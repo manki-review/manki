@@ -300,7 +300,7 @@ async function handlePullRequest(): Promise<void> {
   }
 
   const { octokit, bot } = await getAuth();
-  if (await isReviewInProgress(octokit, bot, owner, repo, prNumber)) {
+  if (await isReviewInProgress(octokit, bot, owner, repo, prNumber, commitSha)) {
     await postReviewSkippedComment(octokit, owner, repo, prNumber, commitSha, 'in_progress');
     return;
   }
@@ -402,7 +402,7 @@ async function handleCommentTrigger(forceReview?: boolean, skipCap?: boolean, by
   });
 
   if (!forceReview) {
-    if (await isReviewInProgress(octokit, bot, owner, repo, prNumber)) {
+    if (await isReviewInProgress(octokit, bot, owner, repo, prNumber, pr.head.sha)) {
       await postReviewSkippedComment(octokit, owner, repo, prNumber, pr.head.sha, 'in_progress');
       core.info('Review already in progress — skipping');
       return;
@@ -585,7 +585,7 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
   // Scan for a competing in-progress marker before posting our own to shorten
   // the race window. A residual window remains when two runs both pass this scan
   // before either posts; tracking issue for the strict atomic fix: https://github.com/manki-review/manki/issues/798
-  if (await checkConcurrentSubmissionLock(octokit, bot, owner, repo, prNumber, config)) {
+  if (await checkConcurrentSubmissionLock(octokit, bot, owner, repo, prNumber, config, commitSha)) {
     core.warning('Defense-in-depth lock engaged — this run will not post a review. If no review appears on the PR, re-trigger with `/manki review`.');
     return true;
   }
@@ -942,14 +942,14 @@ async function collectRoundSignals(
 async function reviewRound(
   run: ReviewRun, clients: ReviewClients, inputs: Omit<ReviewOptions, 'onProgress'>,
 ): Promise<ReviewStageResult> {
-  const { octokit, owner, repo, commentId, dashboard, progress } = run;
+  const { octokit, owner, repo, commitSha, commentId, dashboard, progress } = run;
   let reviewEndTime = run.parseEndTime;
 
   function scheduleDashboardFlush(): void {
     if (progress.flushTimer) clearTimeout(progress.flushTimer);
     progress.flushTimer = setTimeout(() => {
       progress.flushTimer = null;
-      updateProgressDashboard(octokit, owner, repo, commentId, dashboard)
+      updateProgressDashboard(octokit, owner, repo, commentId, dashboard, commitSha)
         .catch(err => core.warning(`Failed to update dashboard: ${err}`));
     }, 500);
   }
@@ -998,14 +998,14 @@ async function reviewRound(
         reviewEndTime = Date.now();
         dashboard.phase = 'reviewed';
         dashboard.rawFindingCount = event.rawFindingCount;
-        updateProgressDashboard(octokit, owner, repo, commentId, dashboard)
+        updateProgressDashboard(octokit, owner, repo, commentId, dashboard, commitSha)
           .catch(err => core.warning(`Failed to update dashboard: ${err}`));
       } else if (event.phase === 'judging') {
         cancelDashboardFlush(progress);
         dashboard.phase = 'reviewed';
         dashboard.rawFindingCount = event.rawFindingCount;
         dashboard.judgeInputCount = event.judgeInputCount;
-        updateProgressDashboard(octokit, owner, repo, commentId, dashboard)
+        updateProgressDashboard(octokit, owner, repo, commentId, dashboard, commitSha)
           .catch(err => core.warning(`Failed to update dashboard: ${err}`));
       }
     },
@@ -1224,7 +1224,7 @@ async function runFullReview(
     const { config, reviewSource } = loaded;
     if (await skipsRound(target, config, trigger, forceReview)) return;
 
-    const commentId = await postProgressComment(octokit, owner, repo, prNumber);
+    const commentId = await postProgressComment(octokit, owner, repo, prNumber, commitSha);
     progress.commentId = commentId;
 
     const recap = await loadRecap(target, config, commentId, prAuthorLogin);
@@ -1244,7 +1244,7 @@ async function runFullReview(
     const parseEndTime = Date.now();
     const lineCount = diff.totalAdditions + diff.totalDeletions;
     const dashboard = initialDashboard(diff, config, !!clients.planner);
-    await updateProgressDashboard(octokit, owner, repo, commentId, dashboard);
+    await updateProgressDashboard(octokit, owner, repo, commentId, dashboard, commitSha);
 
     if (isDiffTooLarge(diff, config.max_diff_lines)) {
       core.warning(`Diff too large (${lineCount} reviewable lines > ${config.max_diff_lines} max)`);

@@ -63,6 +63,7 @@ const VERSION_MARKER = `${VERSION_MARKER_PREFIX} ${MANKI_VERSION} -->`;
 const BOT_MARKERS = [BOT_MARKER, VERSION_MARKER];
 
 const RUN_ID_MARKER_REGEX = /<!-- manki-run-id:(\d+) -->/;
+const COMMIT_MARKER_REGEX = /<!-- manki-commit:([0-9a-f]+) -->/;
 const VERSION_MARKER_REGEX = /<!-- manki-version:\s*([^\s]+)\s*-->/;
 
 function extractVersionFromBody(body: string | null | undefined): string | null {
@@ -73,6 +74,21 @@ function extractVersionFromBody(body: string | null | undefined): string | null 
 
 function buildRunIdMarker(runId: number | string): string {
   return `${RUN_ID_MARKER_PREFIX}${runId} -->`;
+}
+
+function buildCommitMarker(commitSha: string): string {
+  return `<!-- manki-commit:${commitSha} -->`;
+}
+
+/** Returns the commit a progress comment reviews, or `null` for a comment posted without the marker. */
+function extractCommitFromBody(body: string): string | null {
+  return body.match(COMMIT_MARKER_REGEX)?.[1] ?? null;
+}
+
+/** Whether a progress comment reviews a commit other than `commitSha`. A comment without the marker never does. */
+function reviewsOtherCommit(body: string, commitSha: string | undefined): boolean {
+  const reviewed = extractCommitFromBody(body);
+  return !!commitSha && reviewed !== null && reviewed !== commitSha;
 }
 
 function extractRunIdFromBody(body: string | null | undefined): number | null {
@@ -424,7 +440,7 @@ export function buildDashboard(data: DashboardData): string {
 }
 
 /**
- * Post a "review in progress" comment on the PR.
+ * Post a "review in progress" comment for the review of `commitSha` on the PR.
  * Returns the comment ID so we can update/delete it later.
  */
 export async function postProgressComment(
@@ -432,12 +448,14 @@ export async function postProgressComment(
   owner: string,
   repo: string,
   prNumber: number,
+  commitSha: string,
   dashboard?: DashboardData,
 ): Promise<number> {
   const body = withMarkers(
     dashboard ? buildDashboard(dashboard) : '**Review started**',
     ...BOT_MARKERS,
     buildRunIdMarker(github.context.runId),
+    buildCommitMarker(commitSha),
   );
 
   const { data } = await octokit.rest.issues.createComment({
@@ -604,12 +622,13 @@ export async function updateProgressDashboard(
   repo: string,
   commentId: number,
   dashboard: DashboardData,
+  commitSha: string,
 ): Promise<void> {
   await octokit.rest.issues.updateComment({
     owner,
     repo,
     comment_id: commentId,
-    body: withMarkers(buildDashboard(dashboard), ...BOT_MARKERS, buildRunIdMarker(github.context.runId)),
+    body: withMarkers(buildDashboard(dashboard), ...BOT_MARKERS, buildRunIdMarker(github.context.runId), buildCommitMarker(commitSha)),
   });
 }
 
@@ -1766,9 +1785,10 @@ const ACTIVE_RUN_STATUSES = new Set([
  * Check whether a review is currently in progress for a PR by verifying the
  * embedded Actions run_id via the GitHub Actions API. Zombie comments from
  * cancelled/failed runs are marked as cancelled in-place (not deleted) so the
- * audit trail is preserved.
+ * audit trail is preserved. With `headSha`, a live review of another commit does
+ * not count: it stops by itself at its next head check.
  */
-async function isReviewInProgress(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number): Promise<boolean> {
+async function isReviewInProgress(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha?: string): Promise<boolean> {
   let progress: ProgressComment | null;
   try {
     const comments = await fetchPRComments(octokit, owner, repo, prNumber);
@@ -1804,6 +1824,10 @@ async function isReviewInProgress(octokit: Octokit, bot: BotIdentity, owner: str
   }
 
   if (ACTIVE_RUN_STATUSES.has(status ?? '')) {
+    if (reviewsOtherCommit(progress.body, headSha)) {
+      core.info(`Run ${progress.runId} is reviewing ${extractCommitFromBody(progress.body)?.slice(0, 7)}, not the head ${headSha?.slice(0, 7)}. Reviewing the head, the older review stops at its next head check`);
+      return false;
+    }
     core.info(`Skipping — review already in progress (run ${progress.runId}, status=${status})`);
     return true;
   }
@@ -1826,7 +1850,8 @@ interface InProgressLock {
  * Scan the PR's bot comments for an in-progress marker carrying a `manki-run-id`
  * that differs from `currentRunId`. Returns the most recent such comment, or
  * null when none is found. Skips terminal-state comments (complete, cancelled,
- * force-review / force-cap stubs) and comments whose run id cannot be parsed.
+ * force-review / force-cap stubs), comments whose run id cannot be parsed and,
+ * with `commitSha`, comments for another commit.
  *
  * Used as a defense-in-depth check at the review entry point: if a sibling run
  * has already announced "Review in progress" within the configured TTL, the
@@ -1834,7 +1859,7 @@ interface InProgressLock {
  * workflow-level `concurrency` group, which is best-effort and can let two
  * runs reach `in_progress` within the same scheduling window.
  */
-function findInProgressLock(comments: IssueComment[], bot: BotIdentity, currentRunId: number): InProgressLock | null {
+function findInProgressLock(comments: IssueComment[], bot: BotIdentity, currentRunId: number, commitSha?: string): InProgressLock | null {
   for (const c of comments) {
     if (!isBotUser(bot, c.user)) continue;
     if (!c.body?.includes(BOT_MARKER)) continue;
@@ -1845,6 +1870,7 @@ function findInProgressLock(comments: IssueComment[], bot: BotIdentity, currentR
     const runId = extractRunIdFromBody(c.body);
     if (runId === null) continue;
     if (runId === currentRunId) continue;
+    if (reviewsOtherCommit(c.body, commitSha)) continue;
     return { runId, updatedAt: c.updated_at, commentId: c.id };
   }
   return null;
@@ -1888,17 +1914,18 @@ function readConcurrencyLockTtlSeconds(config?: ReviewConfig): number {
  * from ours and whose `updated_at` is within the configured TTL, bail to avoid
  * a double review. The workflow-level `concurrency` group is best-effort and
  * can let two runs reach `in_progress` within the same scheduling window.
+ * With `commitSha`, a marker for another commit is no lock.
  *
  * Returns `true` when the caller should bail.
  */
 async function checkConcurrentSubmissionLock(
-  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, config?: ReviewConfig,
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, config?: ReviewConfig, commitSha?: string,
 ): Promise<boolean> {
   const currentRunId = github.context.runId;
   let lock;
   try {
     const comments = await fetchPRComments(octokit, owner, repo, prNumber);
-    lock = findInProgressLock(comments, bot, currentRunId);
+    lock = findInProgressLock(comments, bot, currentRunId, commitSha);
   } catch (error) {
     core.warning(`Concurrency lock scan failed: ${error instanceof Error ? error.message : error}`);
     return false;

@@ -2882,10 +2882,10 @@ describe('postProgressComment', () => {
       },
     } as unknown as Parameters<typeof postProgressComment>[0];
 
-    const id = await postProgressComment(mockOctokit, 'owner', 'repo', 1);
+    const id = await postProgressComment(mockOctokit, 'owner', 'repo', 1, 'abc123');
     expect(id).toBe(42);
     const body = createCommentMock.mock.calls[0][0].body as string;
-    expect(body).toMatch(new RegExp(`^\\*\\*Review started\\*\\*\\n\\n${BOT_MARKER}\\n<!-- manki-version: [^>]+ -->\\n<!-- manki-run-id:[^>]* -->$`));
+    expect(body).toMatch(new RegExp(`^\\*\\*Review started\\*\\*\\n\\n${BOT_MARKER}\\n<!-- manki-version: [^>]+ -->\\n<!-- manki-run-id:[^>]* -->\\n<!-- manki-commit:abc123 -->$`));
   });
 
   it('uses dashboard data when provided', async () => {
@@ -2899,7 +2899,7 @@ describe('postProgressComment', () => {
     } as unknown as Parameters<typeof postProgressComment>[0];
 
     const dashboard: DashboardData = { phase: 'started', lineCount: 100, agentCount: 3 };
-    const id = await postProgressComment(mockOctokit, 'owner', 'repo', 1, dashboard);
+    const id = await postProgressComment(mockOctokit, 'owner', 'repo', 1, 'abc123', dashboard);
     expect(id).toBe(43);
     const body = createCommentMock.mock.calls[0][0].body as string;
     expect(body).toContain('100 lines');
@@ -2919,11 +2919,12 @@ describe('updateProgressDashboard', () => {
     } as unknown as Parameters<typeof updateProgressDashboard>[0];
 
     const dashboard: DashboardData = { phase: 'reviewed', lineCount: 200, agentCount: 5, rawFindingCount: 8 };
-    await updateProgressDashboard(mockOctokit, 'owner', 'repo', 123, dashboard);
+    await updateProgressDashboard(mockOctokit, 'owner', 'repo', 123, dashboard, 'abc123');
     const body = updateCommentMock.mock.calls[0][0].body as string;
     expect(body).toContain(BOT_MARKER);
     expect(body).toContain('8 findings');
     expect(body).toMatch(/<!-- manki-run-id:[^ ]+ -->/);
+    expect(body).toContain('<!-- manki-commit:abc123 -->');
   });
 });
 
@@ -3553,16 +3554,22 @@ describe('isReviewInProgress', () => {
     return { octokit, getWorkflowRun, updateComment };
   }
 
-  it('returns true when embedded run_id is still in_progress per Actions API', async () => {
-    const { octokit, getWorkflowRun } = makeMockOctokit({
-      comments: [{ body: makeRunIdBody(12345), user: { type: 'Bot' } }],
+  it.each([
+    ['no head is given', '<!-- manki-commit:aaa111 -->', undefined, true],
+    ['the live review is for the head', '<!-- manki-commit:aaa111 -->', 'aaa111', true],
+    ['the live review does not name its commit', '', 'bbb222', true],
+    ['the live review is for an older commit', '<!-- manki-commit:aaa111 -->', 'bbb222', false],
+  ])('reports a live run_id per the Actions API as in progress only when it reviews the head: %s', async (_label, commitMarker, headSha, expected) => {
+    const { octokit, getWorkflowRun, updateComment } = makeMockOctokit({
+      comments: [{ body: `${makeRunIdBody(12345)}\n${commitMarker}`, user: { type: 'Bot' } }],
       workflowRun: { status: 'in_progress', conclusion: null },
     });
 
-    const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
+    const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1, headSha);
 
-    expect(result).toBe(true);
+    expect(result).toBe(expected);
     expect(getWorkflowRun).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', run_id: 12345 });
+    expect(updateComment).not.toHaveBeenCalled();
   });
 
   it('recognises a progress comment only when its author is the bot identity', async () => {
@@ -4317,6 +4324,15 @@ describe('findInProgressLock', () => {
     const comments = [botComment(7, body, '2026-05-22T12:00:00Z')];
 
     expect(findInProgressLock(comments, TEST_BOT, 42)).toEqual({ runId: 999, updatedAt: '2026-05-22T12:00:00Z', commentId: 7 });
+  });
+
+  it('ignores a marker for another commit only when the caller names its own commit', () => {
+    const comments = [botComment(7, `${makeInProgressBody(999)}\n<!-- manki-commit:aaa111 -->`, '2026-05-22T12:00:00Z')];
+    const lock = { runId: 999, updatedAt: '2026-05-22T12:00:00Z', commentId: 7 };
+
+    expect(findInProgressLock(comments, TEST_BOT, 42, 'bbb222')).toBeNull();
+    expect(findInProgressLock(comments, TEST_BOT, 42, 'aaa111')).toEqual(lock);
+    expect(findInProgressLock(comments, TEST_BOT, 42)).toEqual(lock);
   });
 
   it('ignores the current run\'s own in-progress marker (self re-entry)', () => {
