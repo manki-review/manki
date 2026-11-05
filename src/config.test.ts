@@ -191,8 +191,10 @@ describe('config', () => {
       for (const floor of ['supply_chain', 'data_contract']) {
         expect(() => loadConfigFromContent(`review:\n  routing:\n    ${floor}: trivial\n`)).toThrow(`the \`${floor}\` floor class`);
       }
-      const sameModel = 'review:\n  groups:\n    twin:\n      reviewers: [{ model: gpt-5.5 }, { model: gpt-5.5 }]\n  routing:\n    security: twin\n';
-      expect(() => loadConfigFromContent(sameModel)).toThrow('its finders run on fewer than two distinct models');
+      for (const twin of ['[{ model: gpt-5.5 }, { model: gpt-5.5 }]', '[{ model: claude-sonnet-5-5 }, { model: anthropic/claude-sonnet-5-5 }]']) {
+        const sameModel = `review:\n  groups:\n    twin:\n      reviewers: ${twin}\n  routing:\n    security: twin\n`;
+        expect(() => loadConfigFromContent(sameModel)).toThrow('its finders run on fewer than two distinct models');
+      }
       const low = 'review:\n  groups:\n    cheap:\n      reviewers: [{ model: gpt-5.5, effort: low }, { model: claude-opus-5-5 }]\n  routing:\n    data_contract: cheap\n';
       expect(() => loadConfigFromContent(low)).toThrow('a reader runs at `low` effort');
       // Groups without routing send every class, floors included, to the default group.
@@ -230,6 +232,10 @@ describe('config', () => {
       expect(kept.source).toBe('base');
       expect(kept.config.review).toEqual({ routing: { internal: 'solo' } });
       expect(kept.config.models).toEqual(expect.objectContaining({ reviewer: 'claude-sonnet-5-5', reviewer_pair: 'claude-opus-5-5' }));
+
+      const spelledTwice = loadConfigFromContent('models:\n  reviewer: claude-sonnet-5-5\n  reviewer_pair: anthropic/claude-sonnet-5-5\n');
+      expect(applyBaseReviewConfig(spelledTwice, { models: DEFAULT_CONFIG.models, source: 'builtin' }).config.models)
+        .toEqual(expect.objectContaining({ reviewer: 'claude-sonnet-5-5', reviewer_pair: 'claude-opus-5-5' }));
 
       const baseOnOneModel = { ...DEFAULT_CONFIG.models, reviewer: 'gpt-5.5' };
       expect(applyBaseReviewConfig(head, { models: baseOnOneModel, source: 'builtin' }).config.models).toEqual(head.models);

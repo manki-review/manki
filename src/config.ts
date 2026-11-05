@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as fs from 'fs';
 import { parse as parseYaml } from 'yaml';
 
-import { BUILT_IN_CLASSES, BUILT_IN_GROUPS, PATH_ALIASES, floorShortfall, resolveRouting, routeClass } from './routing';
+import { BUILT_IN_CLASSES, BUILT_IN_GROUPS, PATH_ALIASES, floorShortfall, modelIdentity, resolveRouting, routeClass } from './routing';
 import { PairedPin, ReviewConfig, ReviewRoutingConfig, StaticAnalysisConfig } from './types';
 
 export const MAX_LOCK_TTL_SECONDS = 3600;
@@ -640,7 +640,7 @@ export function applyBaseReviewConfig(head: ReviewConfig, base: BaseReviewConfig
   let config: ReviewConfig = { ...head, review: base.review };
   if (base.models) {
     const baseConfig: ReviewConfig = { ...DEFAULT_CONFIG, models: base.models };
-    const onOneModel = (c: ReviewConfig) => resolvePairModel(c) === resolveModel(c, 'reviewer');
+    const onOneModel = (c: ReviewConfig) => modelIdentity(resolvePairModel(c)) === modelIdentity(resolveModel(c, 'reviewer'));
     if (onOneModel(config) && !onOneModel(baseConfig)) {
       const reviewer = resolveModel(baseConfig, 'reviewer');
       const reviewerPair = resolvePairModel(baseConfig);

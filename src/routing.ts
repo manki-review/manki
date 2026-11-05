@@ -1,6 +1,7 @@
 import { minimatch } from 'minimatch';
 
 import { countChangedLines } from './diff';
+import { parseModelSpec } from './providers';
 import { DiffFile, ParsedDiff, ReviewClass, ReviewClassMatch, ReviewGroup, ReviewRoutingConfig, Triage } from './types';
 
 // Path segment prefixes that indicate security-sensitive files. The rule is path-based, not
@@ -166,6 +167,16 @@ export function routeClass(routing: ResolvedRouting, reviewClass: string | undef
   return (reviewClass && routing.routing[reviewClass]) || routing.defaultGroup;
 }
 
+/** Returns one identity per model however it is written, so `claude-x` and `anthropic/claude-x` match. An unknown spec stays as written. */
+export function modelIdentity(model: string): string {
+  try {
+    const spec = parseModelSpec(model);
+    return `${spec.provider}/${spec.model}`;
+  } catch {
+    return model.trim();
+  }
+}
+
 /**
  * Returns why a group misses the floor a floor class needs, or undefined when it meets it.
  * The floor is two finders on two distinct models, and no reader at `low` effort.
@@ -173,7 +184,7 @@ export function routeClass(routing: ResolvedRouting, reviewClass: string | undef
 export function floorShortfall(group: ReviewGroup, resolveModel: (ref: string | undefined) => string): string | undefined {
   const finders = group.reviewers.filter(r => r.role !== 'verifier');
   if (finders.length < 2) return 'it has fewer than two finders';
-  if (new Set(finders.map(r => resolveModel(r.model))).size < 2) return 'its finders run on fewer than two distinct models';
+  if (new Set(finders.map(r => modelIdentity(resolveModel(r.model)))).size < 2) return 'its finders run on fewer than two distinct models';
   if (group.reviewers.some(r => r.effort === 'low')) return 'a reader runs at `low` effort';
   return undefined;
 }

@@ -5703,11 +5703,16 @@ describe('runFullReview orchestration', () => {
   });
 
   it('calls setFailed when parseModelSpec throws for an unknown model', async () => {
-    jest.mocked(parseModelSpec).mockImplementationOnce(() => {
-      throw new Error('Unknown model "x"');
+    const known = (m: string) => ({ provider: 'anthropic' as const, model: m });
+    jest.mocked(parseModelSpec).mockImplementation((m: string) => {
+      if (m === 'claude-sonnet-4-20250514') throw new Error('Unknown model "x"');
+      return known(m);
     });
-
-    await callRunFullReview();
+    try {
+      await callRunFullReview();
+    } finally {
+      jest.mocked(parseModelSpec).mockImplementation(known);
+    }
 
     expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(
       expect.stringContaining('Unknown model "x"'),
