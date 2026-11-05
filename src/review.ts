@@ -3,7 +3,7 @@ import { minimatch } from 'minimatch';
 
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { resolveReviewerModel } from './config';
-import { addUsage, LLMClient, LLMUsage, modelDisplayName, withRefusalFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
+import { addUsage, LLMClient, LLMUsage, modelDisplayName, QuotaError, withRefusalFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
 import { runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, LinkedIssue, titleToSlug } from './github';
@@ -66,6 +66,33 @@ function logOutputTokens(stage: string, usage: LLMUsage): void {
 
 function accumulateAgentDuration(map: Map<string, number>, name: string, durationMs: number): void {
   map.set(name, (map.get(name) ?? 0) + durationMs);
+}
+
+/**
+ * The round's summary when a provider reports a used-up limit, naming the `readers` it stopped
+ * and quoting when the limit lifts if the provider said.
+ */
+function quotaSummary(error: QuotaError, readers: readonly string[] = []): string {
+  const who = readers.length > 0 ? ` for ${readers.join(', ')}` : '';
+  const resets = error.resetsAt ? ` It resets ${error.resetsAt}.` : '';
+  const other = error.credential ? `, or use another ${error.credential}` : '';
+  return `${error.limit}${who}.${resets} Retry with @manki review ${error.resetsAt ? 'after that' : 'later'}${other}.`;
+}
+
+/** Summarises a round whose finders hit a used-up limit, one sentence group per limit, then any finder that failed otherwise. */
+function quotaRoundSummary(quotaErrors: ReadonlyMap<string, QuotaError>, failedAgents: readonly string[]): string {
+  const byLimit = new Map<string, { error: QuotaError; readers: string[] }>();
+  for (const [name, error] of quotaErrors) {
+    const key = quotaSummary(error);
+    const group = byLimit.get(key) ?? { error, readers: [] };
+    group.readers.push(name);
+    byLimit.set(key, group);
+  }
+  const others = failedAgents.filter(name => !quotaErrors.has(name));
+  return [
+    ...[...byLimit.values()].map(({ error, readers }) => quotaSummary(error, readers)),
+    ...(others.length > 0 ? [`${others.join(', ')} also failed after retries.`] : []),
+  ].join(' ');
 }
 
 /** The answers used when the planner is disabled or fails: each takes the side that adds review. */
@@ -541,6 +568,13 @@ export async function runReview(
   const agentDurationMs = new Map<string, number>();
   const agentRetryCount = new Map<string, number>();
   const agentFailureReasons = new Map<string, string>();
+  // A finder whose provider reported a used-up limit is not retried: it would fail the same way.
+  const quotaErrors = new Map<string, QuotaError>();
+  const recordFailure = (name: string, error: unknown): void => {
+    agentFailureReasons.set(name, sanitizeLogOutput(String(((error as Error)?.message ?? error) || 'unknown failure')).slice(0, 500));
+    if (error instanceof QuotaError) quotaErrors.set(name, error);
+  };
+  const retryable = (name: string): boolean => !quotaErrors.has(name);
   const agentMultiPassConsistency = new Map<string, { consistent: number; totalRaw: number }>();
 
   let completedCount = 0;
@@ -568,7 +602,7 @@ export async function runReview(
           accumulateAgentUsage(agentUsage, agent.name, result.value.usage);
           accumulateAgentDuration(agentDurationMs, agent.name, result.value.latencyMs);
         } else {
-          lastPassError = result.reason;
+          if (!(lastPassError instanceof QuotaError)) lastPassError = result.reason;
           core.warning(`${agent.name} pass failed: ${result.reason}`);
         }
       }
@@ -603,7 +637,7 @@ export async function runReview(
         }
       } else {
         failedAgents.push(agent.name);
-        agentFailureReasons.set(agent.name, sanitizeLogOutput(String(((lastPassError as Error)?.message ?? lastPassError) || 'unknown failure')).slice(0, 500));
+        recordFailure(agent.name, lastPassError);
         core.warning(`${agent.name}: all passes failed`);
 
         if (onProgress) {
@@ -623,8 +657,9 @@ export async function runReview(
 
     // Retry failed agents up to MAX_AGENT_RETRIES times (multi-pass)
     const retryCountMap: Record<string, number> = {};
-    for (let retry = 1; retry <= MAX_AGENT_RETRIES && failedAgents.length > 0; retry++) {
-      const agentsToRetry = failedAgents.map(name => team.finders.find(a => a.name === name)!);
+    for (let retry = 1; retry <= MAX_AGENT_RETRIES && failedAgents.some(retryable); retry++) {
+      const agentsToRetry = failedAgents.filter(retryable).map(name => team.finders.find(a => a.name === name)!);
+      const skipped = failedAgents.filter(name => !retryable(name));
       core.info(`Retry ${retry}/${MAX_AGENT_RETRIES} (multi-pass): retrying ${agentsToRetry.map(a => a.name).join(', ')}...`);
 
       const stillFailed: string[] = [];
@@ -664,7 +699,7 @@ export async function runReview(
             accumulateAgentUsage(agentUsage, agent.name, result.value.usage);
             accumulateAgentDuration(agentDurationMs, agent.name, result.value.latencyMs);
           } else {
-            retryLastError = result.reason;
+            if (!(retryLastError instanceof QuotaError)) retryLastError = result.reason;
             core.warning(`${agent.name} retry pass failed: ${result.reason}`);
           }
         }
@@ -694,7 +729,7 @@ export async function runReview(
           }
         } else {
           stillFailed.push(agent.name);
-          agentFailureReasons.set(agent.name, sanitizeLogOutput(String(((retryLastError as Error)?.message ?? retryLastError) || 'unknown failure')).slice(0, 500));
+          recordFailure(agent.name, retryLastError);
           core.warning(`${agent.name}: retry ${retryCountMap[agent.name]} failed (all passes)`);
           if (onProgress) {
             onProgress({
@@ -712,8 +747,7 @@ export async function runReview(
         }
       }
 
-      failedAgents.length = 0;
-      failedAgents.push(...stillFailed);
+      failedAgents.splice(0, failedAgents.length, ...skipped, ...stillFailed);
     }
   } else {
     core.info(`Running ${team.finders.length} reviewer agents in parallel...`);
@@ -773,15 +807,16 @@ export async function runReview(
         core.info(`${team.finders[i].name}: ${result.value.length} findings`);
       } else {
         failedAgents.push(team.finders[i].name);
-        agentFailureReasons.set(team.finders[i].name, sanitizeLogOutput(String(((result.reason as Error)?.message ?? result.reason) || 'unknown failure')).slice(0, 500));
+        recordFailure(team.finders[i].name, result.reason);
         core.warning(`${team.finders[i].name} failed: ${result.reason}`);
       }
     }
 
     // Retry failed agents up to MAX_AGENT_RETRIES times
     const retryCount: Record<string, number> = {};
-    for (let retry = 1; retry <= MAX_AGENT_RETRIES && failedAgents.length > 0; retry++) {
-      const agentsToRetry = failedAgents.map(name => team.finders.find(a => a.name === name)!);
+    for (let retry = 1; retry <= MAX_AGENT_RETRIES && failedAgents.some(retryable); retry++) {
+      const agentsToRetry = failedAgents.filter(retryable).map(name => team.finders.find(a => a.name === name)!);
+      const skipped = failedAgents.filter(name => !retryable(name));
       core.info(`Retry ${retry}/${MAX_AGENT_RETRIES}: retrying ${agentsToRetry.map(a => a.name).join(', ')}...`);
 
       for (const agent of agentsToRetry) {
@@ -837,7 +872,7 @@ export async function runReview(
           }
         } else {
           stillFailed.push(agent.name);
-          agentFailureReasons.set(agent.name, sanitizeLogOutput(String(((error as Error)?.message ?? error) || 'unknown failure')).slice(0, 500));
+          recordFailure(agent.name, error);
           core.warning(`${agent.name}: retry ${retryCount[agent.name]} failed`);
           if (onProgress) {
             onProgress({
@@ -855,8 +890,7 @@ export async function runReview(
         }
       }
 
-      failedAgents.length = 0;
-      failedAgents.push(...stillFailed);
+      failedAgents.splice(0, failedAgents.length, ...skipped, ...stillFailed);
     }
   }
 
@@ -864,9 +898,11 @@ export async function runReview(
 
   // Every reader counts: a round where one finder failed must not approve on the other's word.
   if (failedAgents.length > 0) {
-    const summary = failedAgents.length === team.finders.length
-      ? 'All reviewers failed. Retry with @manki review.'
-      : `${failedAgents.join(', ')} failed after retries. Retry with @manki review.`;
+    const summary = quotaErrors.size > 0
+      ? quotaRoundSummary(quotaErrors, failedAgents)
+      : failedAgents.length === team.finders.length
+        ? 'All reviewers failed. Retry with @manki review.'
+        : `${failedAgents.join(', ')} failed after retries. Retry with @manki review.`;
     return {
       verdict: OUTCOME_VERDICT.INCOMPLETE,
       outcome: 'INCOMPLETE',
@@ -1015,7 +1051,7 @@ export async function runReview(
     return {
       verdict: OUTCOME_VERDICT.INCOMPLETE,
       outcome: 'INCOMPLETE',
-      summary: 'The judge failed. Retry with @manki review.',
+      summary: error instanceof QuotaError ? quotaSummary(error) : 'The judge failed. Retry with @manki review.',
       findings: [],
       highlights: [],
       reviewComplete: false,
@@ -1087,7 +1123,7 @@ export async function runReview(
       return {
         verdict: OUTCOME_VERDICT.INCOMPLETE,
         outcome: 'INCOMPLETE',
-        summary: `The verdict reader failed (${sanitizeLogOutput(String((error as Error)?.message ?? error)).slice(0, 200)}). Retry with @manki review.`,
+        summary: error instanceof QuotaError ? quotaSummary(error) : `The verdict reader failed (${sanitizeLogOutput(String((error as Error)?.message ?? error)).slice(0, 200)}). Retry with @manki review.`,
         findings: [],
         highlights: [],
         reviewComplete: false,

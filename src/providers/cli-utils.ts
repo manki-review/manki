@@ -66,6 +66,30 @@ export function warnReplyTail(label: string, reply: string): void {
   if (tail) core.warning(`${label} reply ended with: ${sanitizeLogOutput(sanitizeTokens(tail))}`);
 }
 
+// How the Claude, Codex and Gemini CLIs and APIs word a used-up usage limit, quota or rate limit.
+const QUOTA_TEXT = /\b(?:hit your (?:\w+ )?limit|(?:usage|rate|weekly|daily|session|opus|sonnet|\d+-hour) limit (?:reached|exceeded)|quota (?:exceeded|exhausted|limit|will reset)|exceeded your current quota|exhausted your (?:\w+ )?(?:quota|capacity)|resource_exhausted|rate_limit_(?:error|exceeded)|insufficient_quota|too many requests)\b/i;
+const OVERLOADED_TEXT = /\boverloaded(?:_error)?\b/i;
+// "resets Nov 6, 8pm (UTC)", "try again at 20 Aug 2026, 16:29", "retry in 23.5s", "reset after 2s".
+const RESET_TEXT = /\b(?:resets\s+|(?:try again|retry|reset)\s+(?=(?:at|in|after)\s))(.+?)(?=\.(?:\s|$)|[·∙|"\n[{]|$)/i;
+// CLIs print their final error last, so only the end of a long output is read.
+const QUOTA_TAIL_CHARS = 2000;
+
+export interface QuotaMatch {
+  /** The provider is short of capacity, rather than the caller out of quota. */
+  overloaded: boolean;
+  /** When the limit lifts, as the provider wrote it. */
+  resetsAt?: string;
+}
+
+/** Returns the used-up limit or overload that `text` reports, or `undefined` when it reports none. */
+export function matchQuotaText(text: string): QuotaMatch | undefined {
+  const tail = text.slice(-QUOTA_TAIL_CHARS);
+  const quota = QUOTA_TEXT.test(tail);
+  if (!quota && !OVERLOADED_TEXT.test(tail)) return undefined;
+  const resetsAt = RESET_TEXT.exec(tail)?.[1].replace(/[^\w\s,:.()+/-]/g, '').replace(/[\s.,:]+$/, '').trim().slice(0, 60);
+  return { overloaded: !quota, ...(resetsAt && { resetsAt }) };
+}
+
 /**
  * Runs `call` with a signal that aborts after `timeoutMs` or with `signal`, or without one when neither is set.
  * A timeout is thrown as an error naming `label` and the limit. An abort from `signal` throws its reason.

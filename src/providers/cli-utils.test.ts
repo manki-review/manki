@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { buildExitDiagnostics, buildTimeoutDiagnostics, callWithTimeout, extractCliErrorSnippet, sanitizeLogOutput, seedAuthFile } from './cli-utils';
+import { buildExitDiagnostics, buildTimeoutDiagnostics, callWithTimeout, extractCliErrorSnippet, matchQuotaText, sanitizeLogOutput, seedAuthFile } from './cli-utils';
 
 function encode(json: unknown): string {
   return Buffer.from(JSON.stringify(json), 'utf8').toString('base64');
@@ -225,6 +225,30 @@ describe('buildExitDiagnostics', () => {
     expect(result).not.toContain('::warning');
     expect(result).not.toContain('q'.repeat(301));
     expect(result).toContain('q'.repeat(200));
+  });
+});
+
+describe('matchQuotaText', () => {
+  it.each<[string, string, { overloaded: boolean; resetsAt?: string }]>([
+    ['a Claude weekly limit', "You've hit your weekly limit · resets Nov 6, 8pm (UTC)", { overloaded: false, resetsAt: 'Nov 6, 8pm (UTC)' }],
+    ['a Claude session limit', '5-hour limit reached ∙ resets 3pm', { overloaded: false, resetsAt: '3pm' }],
+    ['a Claude API 429 through the CLI', 'API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"Rate limited"}}', { overloaded: false }],
+    ['a Claude overload through the CLI', 'API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}', { overloaded: true }],
+    ['a Codex usage limit', "ERROR: You've hit your usage limit. Upgrade your plan or add credits to continue, or try again at 20 Aug 2026, 16:29.", { overloaded: false, resetsAt: 'at 20 Aug 2026, 16:29' }],
+    ['an OpenAI rate limit', 'Rate limit reached for gpt-5.5 on tokens per min (TPM): Limit 30000. Please try again in 2.004s. Visit the docs.', { overloaded: false, resetsAt: 'in 2.004s' }],
+    ['a Gemini quota', '{"error":{"code":429,"message":"You exceeded your current quota. Please retry in 23.5s.","status":"RESOURCE_EXHAUSTED"}}', { overloaded: false, resetsAt: 'in 23.5s' }],
+    ['a Gemini CLI capacity limit', 'TerminalQuotaError: You have exhausted your capacity on this model. Your quota will reset after 2s.', { overloaded: false, resetsAt: 'after 2s' }],
+  ])('matches %s', (_case, text, match) => {
+    expect(matchQuotaText(text)).toEqual(match);
+  });
+
+  it.each(['Prompt is too long: 250000 tokens > 200000 maximum', 'Invalid API key · Please run /login', 'context limit reached', ''])('ignores %p', text => {
+    expect(matchQuotaText(text)).toBeUndefined();
+  });
+
+  it('reads only the end of a long output and keeps the reset text plain', () => {
+    expect(matchQuotaText(`rate limit reached\n${'x'.repeat(5000)}`)).toBeUndefined();
+    expect(matchQuotaText('weekly limit reached · resets <b>soon</b>')?.resetsAt).toBe('bsoon/b');
   });
 });
 

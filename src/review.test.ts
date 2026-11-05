@@ -32,7 +32,7 @@ import { runJudgeAgent, computeProvenanceMap } from './judge';
 import { applySuppressions } from './memory';
 import { PreviousFinding } from './recap';
 import { WRITING_RULES } from './writing-rules';
-import { LLMClient, LLMResponse, RefusalError, withRefusalFallback, wrapClientForUsage } from './providers';
+import { LLMClient, LLMResponse, QuotaError, RefusalError, withRefusalFallback, wrapClientForUsage } from './providers';
 
 const READY_VERDICT = JSON.stringify({
   verdict: 'READY',
@@ -2442,6 +2442,7 @@ describe('runReview', () => {
   it.each([
     ['fails, without trying the fallback model', new Error('overloaded'), 0],
     ['is refused on the fallback model too', refusal, 1],
+    ['reports an overload, without trying the fallback model', new QuotaError('Anthropic API is overloaded', 'Anthropic API is overloaded'), 0],
   ])('ends the round INCOMPLETE when the verdict reader call %s', async (_label, error, fallbackCalls) => {
     const clients = makeClients();
     jest.mocked(clients.judge.sendMessage).mockRejectedValue(error);
@@ -3148,6 +3149,10 @@ describe('runReview', () => {
     expect(result.verdict).toBe('COMMENT');
     expect(result.summary).toContain('judge failed');
 
+    mockedRunJudgeAgent.mockRejectedValueOnce(new QuotaError('429', 'Anthropic API rate limit reached', undefined, 'key'));
+    const limited = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context' });
+    expect([limited.outcome, limited.summary]).toEqual(['INCOMPLETE', 'Anthropic API rate limit reached. Retry with @manki review later, or use another key.']);
+
     const actualJudge = jest.requireActual<typeof import('./judge')>('./judge');
     mockedRunJudgeAgent.mockImplementation(actualJudge.runJudgeAgent);
     for (const judgeOutput of ['not json {broken', '{"summary":"ok","findings":[]}']) {
@@ -3825,6 +3830,28 @@ describe('runReview', () => {
     expect(result.failedAgents).toEqual(failed);
     expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
     expect((clients.reviewer.sendMessage as jest.Mock).mock.calls.length).toBe(MAX_AGENT_RETRIES + 1);
+  });
+
+  it.each([1, 2])('ends INCOMPLETE without retrying a finder whose subscription limit is used up, with %i passes', async passes => {
+    const limit = new QuotaError("You've hit your weekly limit", 'Claude subscription limit reached', 'Nov 6, 8pm (UTC)', 'token');
+    const primary = jest.fn().mockRejectedValue(limit);
+    const pair = jest.fn().mockResolvedValue({ content: '[]' });
+    for (let i = 0; i < passes; i++) pair.mockRejectedValueOnce(new Error('Timeout'));
+    const onProgress = jest.fn();
+
+    const result = await runReview(pairedClients(primary, pair), { config: makeConfig({ review_passes: passes }), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo context', onProgress });
+    expect([result.outcome, result.reviewComplete]).toEqual(['INCOMPLETE', false]);
+    expect(result.summary).toBe('Claude subscription limit reached for Claude Sonnet 5.5 · high. It resets Nov 6, 8pm (UTC). Retry with @manki review after that, or use another token.');
+    expect(result.failedAgents).toEqual(['Claude Sonnet 5.5 · high']);
+    expect(primary).toHaveBeenCalledTimes(passes);
+    expect(pair).toHaveBeenCalledTimes(2 * passes);
+    const retried = onProgress.mock.calls.map(([p]: [ReviewProgress]) => p).filter(p => p.agentStatus === 'retrying').map(p => p.agentName);
+    expect(retried).not.toContain('Claude Sonnet 5.5 · high');
+    expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
+
+    const run = (pairFailure: Error) => runReview(pairedClients(jest.fn().mockRejectedValue(limit), jest.fn().mockRejectedValue(pairFailure)), { config: makeConfig({ review_passes: passes }), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo context' });
+    expect((await run(limit)).summary).toBe('Claude subscription limit reached for Claude Sonnet 5.5 · high, Claude Opus 5.5 · high. It resets Nov 6, 8pm (UTC). Retry with @manki review after that, or use another token.');
+    expect((await run(new Error('Timeout'))).summary).toBe('Claude subscription limit reached for Claude Sonnet 5.5 · high. It resets Nov 6, 8pm (UTC). Retry with @manki review after that, or use another token. Claude Opus 5.5 · high also failed after retries.');
   });
 
   it('retries a failed finder in multi-pass mode and recovers on the retry passes', async () => {

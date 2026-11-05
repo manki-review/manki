@@ -650,7 +650,7 @@ Manki reviews run in these stages:
 5. **Verdict reader**: Runs only when no finding blocks. One call on the judge's model reads the whole diff cold, without the PR description or earlier rounds, and looks for a reason not to merge. `READY` approves with "What this does" and "What to test" sections. `ADDRESS_FIRST` requests changes and posts its blockers as inline comments. Output that cannot be parsed ends the round as incomplete, never as an approval.
 6. **Recap** -- Surviving findings are posted as inline PR comments with a summary review.
 
-When a provider's safety filter refuses a stage, Manki sends that stage once more on `models.fallback`, which defaults to `models.reviewer`. A stage already on that model goes to its other Claude tier instead. The round context records the stage, the fallback model and the refusal reason under `models.fallbacks`. A second refusal ends the round incomplete, and other errors are never retried on the fallback model.
+When a provider's safety filter refuses a stage, Manki sends that stage once more on `models.fallback`, which defaults to `models.reviewer`. A stage already on that model goes to its other Claude tier instead. The round context records the stage, the fallback model and the refusal reason under `models.fallbacks`. A second refusal ends the round incomplete, and other errors are never retried on the fallback model. A used-up subscription limit, quota or rate limit, or an overloaded provider, is neither retried nor sent to the fallback model. The round ends incomplete and names the limit, with its reset time when the provider gives one.
 
 ### Review groups
 
@@ -838,6 +838,7 @@ Manki handles untrusted PR content and cross-repo tokens. The security model res
 | Problem | Solution |
 |---------|----------|
 | "spawn claude ENOENT" | Add the "Install Claude Code CLI" step before the action |
+| "Claude subscription limit reached" or another quota message | The provider's limit is used up. Wait for the reset time the review names, or switch to another token or key |
 | "Failed to post APPROVE review" | Enable "Allow GitHub Actions to create and approve pull requests" in repo settings |
 | Review says "No reviewable files" | Check `exclude_paths` in config -- dotfiles are included by default |
 | Memory not loading | Verify `REVIEW_MEMORY_TOKEN` secret is set and the PAT has Contents read/write on the memory repo |

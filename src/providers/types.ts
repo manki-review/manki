@@ -56,6 +56,19 @@ export class RefusalError extends Error {
   }
 }
 
+/**
+ * Thrown when a provider refuses a request because a quota, rate limit or capacity limit is used up.
+ * Sending it again before `resetsAt` fails the same way, so callers neither retry it nor move it to
+ * another model. `limit` says which limit, such as "Claude subscription limit reached".
+ * `credential` names what the user can swap to get past it, and is unset when no other one helps.
+ */
+export class QuotaError extends Error {
+  constructor(message: string, readonly limit: string, readonly resetsAt?: string, readonly credential?: 'token' | 'key') {
+    super(message);
+    this.name = 'QuotaError';
+  }
+}
+
 export interface SendMessageOptions {
   effort?: 'low' | 'medium' | 'high' | 'max';
   /** Wall-clock limit for the call. Unset keeps the provider's default limit. */

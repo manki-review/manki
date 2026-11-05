@@ -6,7 +6,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
 import { AnthropicClient, buildAnthropicAuth, CLAUDE_CLI_VERSION, extractAnthropicCLIUsage, resetCLIInstallPromise, sanitizeLogOutput, STALE_TIMEOUT_MS } from './anthropic';
-import { RefusalError, SendMessageOptions } from './types';
+import { QuotaError, RefusalError, SendMessageOptions } from './types';
 
 jest.mock('child_process', () => ({
   execFile: jest.fn(),
@@ -320,6 +320,22 @@ describe('sendViaOAuth — error paths', () => {
     expect(error?.message.startsWith(`Claude CLI error: ${cliError}. Claude CLI invocation failed`)).toBe(true);
     expect(error?.message).not.toContain('claude setup-token');
     expect(error).not.toBeInstanceOf(RefusalError);
+    warnSpy.mockRestore();
+  });
+
+  it.each([
+    ['exits 1', 1],
+    ['exits 0 with `is_error`', 0],
+  ])('throws a `QuotaError` with the reset time when the subscription limit is used up and the CLI %s', async (_case, exitCode) => {
+    const limitText = "You've hit your weekly limit · resets Nov 6, 8pm (UTC)";
+    setupSpawnMock({ exitCode, stderr: '', stdout: `${JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: limitText })}\n`, rawStdout: true });
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-sonnet-5-5' });
+
+    const error = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
+    expect(error).toBeInstanceOf(QuotaError);
+    expect(error).toMatchObject({ limit: 'Claude subscription limit reached', resetsAt: 'Nov 6, 8pm (UTC)', credential: 'token' });
+    expect(error?.message).toContain(limitText);
     warnSpy.mockRestore();
   });
 
@@ -1582,6 +1598,27 @@ describe('AnthropicClient API-path usage', () => {
     expect(error).toBeInstanceOf(RefusalError);
     expect((error as RefusalError).reason).toBe('refusal (cyber)');
     expect(error?.message).toBe('Claude API declined the request: refusal (cyber). This request was declined because it could enable cyber harm.');
+  });
+
+  it.each<[string, object, object]>([
+    ['a 429', { status: 429, type: 'rate_limit_error' }, { limit: 'Anthropic API rate limit reached', credential: 'key' }],
+    ['a streamed `rate_limit_error`', { status: undefined, type: 'rate_limit_error' }, { limit: 'Anthropic API rate limit reached', credential: 'key' }],
+    ['an overload', { status: 529, type: 'overloaded_error' }, { limit: 'Anthropic API is overloaded', credential: undefined }],
+  ])('throws a `QuotaError` on %s', async (_case, fields, expected) => {
+    mockFinalMessage.mockRejectedValue(Object.assign(new Error('429 limited'), fields));
+    const client = new AnthropicClient({ auth: { kind: 'apiKey', key: 'sk-key' }, model: 'claude-opus-5-5' });
+
+    const error = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
+    expect(error).toBeInstanceOf(QuotaError);
+    expect(error).toMatchObject(expected);
+  });
+
+  it('passes any other SDK error through unchanged', async () => {
+    const failure = Object.assign(new Error('bad request'), { status: 400, type: 'invalid_request_error' });
+    mockFinalMessage.mockRejectedValue(failure);
+    const client = new AnthropicClient({ auth: { kind: 'apiKey', key: 'sk-key' }, model: 'claude-opus-5-5' });
+
+    await expect(client.sendMessage('sys', 'user')).rejects.toBe(failure);
   });
 
   it('returns zero usage when the SDK omits the usage block', async () => {
