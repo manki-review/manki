@@ -189,6 +189,8 @@ describe('toolAlertFindings', () => {
       signal({ tool: 'rustfmt', ruleId: '', message: 'Diff in src/app.ts' }),
       signal({ tool: 'eslint', ruleId: '@stylistic/indent', message: 'Expected indentation of 2 spaces' }),
       signal({ tool: 'CodeQL', ruleId: 'js/sql-injection', severity: 'warning', message: 'Query built from user input', source: 'code_scanning' }),
+      signal({ tool: 'CodeQL', ruleId: 'js/redos', severity: 'warning', line: 3, message: '', source: 'code_scanning' }),
+      signal({ tool: 'tsc', ruleId: '', line: 3, message: '' }),
     ]);
 
     expect(findings.map(f => f.title)).toEqual([
@@ -197,13 +199,16 @@ describe('toolAlertFindings', () => {
       'no-undef: b is not defined',
       'B602 shell injection: subprocess with shell=True',
       'GHSA-1234: lodash@4.17.0: prototype pollution',
+      'js/redos',
+      'tsc result',
     ]);
+    expect(findings.slice(-2).map(f => f.description)).toEqual(['No message from the tool.', 'No message from the tool.']);
     expect(findings[0]).toEqual({
       severity: 'warning', title: 'js/sql-injection: Query built from user input', file: 'src/app.ts', line: 2,
       description: 'Query built from user input', reviewers: ['CodeQL'], toolSource: 'CodeQL',
       toolEvidence: { status: 'confirmed', note: 'CodeQL reports this result.' },
     });
-    expect(findings.map(f => f.severity)).toEqual(['warning', 'suggestion', 'blocker', 'suggestion', 'suggestion']);
+    expect(findings.map(f => f.severity)).toEqual(['warning', 'suggestion', 'blocker', 'suggestion', 'suggestion', 'warning', 'blocker']);
   });
 });
 

@@ -2494,7 +2494,7 @@ describe('runReview', () => {
     expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
   });
 
-  it('applies suppressions from memory before judge', async () => {
+  it('applies suppressions from memory to reviewer findings before judge, and never to tool alerts', async () => {
     const findingJson = JSON.stringify([
       { severity: 'suggestion', title: 'Suppressed finding here', file: 'src/a.ts', line: 10, description: 'Desc.' },
     ]);
@@ -2511,9 +2511,12 @@ describe('runReview', () => {
       suppressed: [{ severity: 'suggestion', title: 'Suppressed finding here', file: 'src/a.ts', line: 10, description: 'Desc.', reviewers: ['Security & Safety'] }],
     });
 
-    const result = await runReview(clients, config, diff, 'raw diff', 'repo context', memory);
+    const alert = { tool: 'CodeQL', ruleId: 'js/sql-injection', severity: 'warning' as const, file: 'src/a.ts', line: 10, message: 'Suppressed query built from input', source: 'code_scanning' as const };
+
+    const result = await runReview(clients, config, diff, 'raw diff', 'repo context', memory, undefined, { title: 'PR', body: '', baseBranch: 'main', staticSignals: [alert] });
     expect(mockedApplySuppressions).toHaveBeenCalled();
-    expect(result.findings).toEqual([]);
+    expect(mockedApplySuppressions.mock.calls.flatMap(([findings]) => findings).some(f => f.toolSource)).toBe(false);
+    expect(mockedRunJudgeAgent.mock.calls[0][2].findings.map(f => f.title)).toEqual(['js/sql-injection: Suppressed query built from input']);
     expect(result.suppressionCount).toBe(1);
   });
 

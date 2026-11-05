@@ -860,21 +860,20 @@ export async function runReview(
 
   const staticSignals = prContext?.staticSignals ?? [];
   const claimSources = { diff, rawDiff, fileContents, signals: staticSignals };
-  // Tool alerts go first, so a reviewer finding that repeats one folds into the alert and keeps its source label.
-  const toolAlerts = toolAlertFindings(staticSignals);
-  let findingsForJudge = [
-    ...toolAlerts,
-    ...allFindings.map(f => ({ ...f, toolEvidence: checkFindingClaims(f, claimSources) })),
-  ];
+  let finderFindings: Finding[] = allFindings.map(f => ({ ...f, toolEvidence: checkFindingClaims(f, claimSources) }));
   let suppressionCount = 0;
   if (memory?.suppressions && memory.suppressions.length > 0) {
-    const { kept, suppressed } = applySuppressions(findingsForJudge, memory.suppressions);
+    const { kept, suppressed } = applySuppressions(finderFindings, memory.suppressions);
     if (suppressed.length > 0) {
       core.info(`Suppressed ${suppressed.length} findings before judge evaluation`);
     }
-    findingsForJudge = kept;
+    finderFindings = kept;
     suppressionCount = suppressed.length;
   }
+  // Memory suppressions never hide a tool alert, only the judge can refute one. Alerts go first, so a reviewer
+  // finding that repeats one folds into the alert and keeps its source label.
+  const toolAlerts = toolAlertFindings(staticSignals);
+  let findingsForJudge = [...toolAlerts, ...finderFindings];
 
   let staticDedupCount = 0;
   let llmDedupCount = 0;

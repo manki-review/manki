@@ -98,10 +98,10 @@ export function toolAlertFindings(signals: StaticSignal[]): Finding[] {
     return true;
   }).map(s => ({
     severity: TOOL_SEVERITY[s.severity],
-    title: safeTruncate(s.ruleId ? `${s.ruleId}: ${s.message}` : s.message, MAX_TITLE_CHARS),
+    title: safeTruncate([s.ruleId, s.message].filter(Boolean).join(': ') || `${s.tool} result`, MAX_TITLE_CHARS),
     file: s.file,
     line: s.line,
-    description: s.message || s.ruleId,
+    description: s.message || 'No message from the tool.',
     reviewers: [s.tool],
     toolSource: s.tool,
     toolEvidence: { status: 'confirmed', note: `${s.tool} reports this result.` },
