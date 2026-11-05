@@ -606,7 +606,7 @@ Make sure the `REVIEW_MEMORY_TOKEN` secret is set (see Step 2).
 - **Suppressions** -- Created by `/manki dismiss`. Non-blocking findings matching a suppression pattern are filtered out (blocking findings are never suppressed).
 - **Patterns** -- Automatically tracked from recurring findings. After 5 occurrences a pattern is escalated for visibility.
 - **Global conventions** -- A `_global/conventions.md` file applied to all repos using the memory system.
-- **Fix rate** -- On each merge, one JSON line per PR is appended to `<repo-name>/metrics/fix-rate.jsonl` with the posted, fixed, dismissed and untouched findings per severity and first reviewer (the `specialist` field). A finding counts as fixed when the judge marked its thread addressed or the code at its lines changed before the merge. Turn it off with `metrics.fix_rate: false`.
+- **Fix rate** -- On each merge, one JSON line per PR is appended to `<repo-name>/metrics/fix-rate.jsonl` with the posted, fixed, dismissed and untouched findings per severity and first reviewer (the `counts` field), and per severity, judge confidence and tool evidence (the `calibration` field). A finding counts as fixed when the judge marked its thread addressed or the code at its lines changed before the merge. Turn it off with `metrics.fix_rate: false`. To read the totals, run `npm run fix-rate-report -- <path to fix-rate.jsonl> [more paths]` in a manki checkout, which prints one markdown table per dimension.
 
 ## Verification
 

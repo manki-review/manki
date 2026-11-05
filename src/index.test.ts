@@ -2054,13 +2054,13 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: testFiles, excluded: [] });
 
     const findings = [
-      { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const, judgeNotes: 'confirmed' },
+      { severity: 'blocker' as const, reviewerSeverity: 'warning' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const, judgeNotes: 'confirmed' },
       { severity: 'suggestion' as const, title: 'Style', file: 'src/app.ts', line: 8, description: 'desc', reviewers: ['general'], judgeConfidence: 'medium' as const },
-      { severity: 'nitpick' as const, title: 'Nit', file: 'src/utils.js', line: 1, description: 'desc', reviewers: ['general', 'security'], judgeConfidence: 'low' as const },
+      { severity: 'nitpick' as const, originalSeverity: 'warning' as const, reviewerSeverity: 'suggestion' as const, title: 'Nit', file: 'src/utils.js', line: 1, description: 'desc', reviewers: ['general', 'security'], judgeConfidence: 'low' as const },
     ];
     const allJudged = [
       ...findings,
-      { severity: 'ignore' as const, title: 'Dropped', file: 'src/app.ts', line: 2, description: 'dropped', reviewers: ['security'], judgeConfidence: 'high' as const, judgeNotes: 'not relevant' },
+      { severity: 'ignore' as const, reviewerSeverity: 'nitpick' as const, title: 'Dropped', file: 'src/app.ts', line: 2, description: 'dropped', reviewers: ['security'], judgeConfidence: 'high' as const, judgeNotes: 'not relevant' },
     ];
     const rawFindings = [
       ...findings,
@@ -2094,9 +2094,15 @@ describe('runFullReview orchestration', () => {
     expect(statsArg!.judge).toEqual(expect.objectContaining({
       confidenceDistribution: { high: 2, medium: 1, low: 1 },
       severityChanges: 2,
+      regrades: { up: 2, down: 1 },
       mergedDuplicates: 2,
       verdictReason: 'novel_suggestion',
     }));
+    expect(statsArg!.findings.entries.map(e => [e.severity, e.originalSeverity, e.reviewerSeverity])).toEqual([
+      ['blocker', undefined, 'warning'],
+      ['suggestion', undefined, undefined],
+      ['nitpick', 'warning', 'suggestion'],
+    ]);
 
     expect(statsArg!.diff.fileTypes).toEqual({ '.ts': 1, '.js': 1 });
 

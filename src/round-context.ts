@@ -2,7 +2,7 @@ import type { LLMUsage } from './providers';
 import { isEmptyInterRoundDiff, MAX_INTER_ROUND_DIFF_CHARS } from './judge';
 import { collectResolvedThreadIds, fingerprintFinding, RecapState } from './recap';
 import { MANKI_VERSION } from './github';
-import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OpenThread, OWN_PROPOSAL_TAG, ParsedDiff, RATCHET_SUPPRESSED_TAG, ReclassifiedPrior, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ReviewModels, ReviewResult, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundRecap, RoundTrigger, RoundUsage, RoundUsageStage, SECURITY_TAG, ThreadResolutionOverrides } from './types';
+import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OpenThread, OWN_PROPOSAL_TAG, ParsedDiff, RATCHET_SUPPRESSED_TAG, ReclassifiedPrior, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ReviewModels, ReviewResult, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundRecap, RoundTrigger, RoundUsage, RoundUsageStage, SECURITY_TAG, SEVERITY_ORDER, ThreadResolutionOverrides } from './types';
 
 const ALLOWED_FINGERPRINT_TAGS = new Set<string>([
   DEFENSIVE_HARDENING_TAG,
@@ -116,6 +116,12 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     if (f.judgeConfidence) confidenceDistribution[f.judgeConfidence]++;
   }
   const severityChanges = allJudged.filter(f => f.judgeNotes).length;
+  const regrades = { up: 0, down: 0 };
+  for (const f of allJudged) {
+    if (!f.reviewerSeverity) continue;
+    const judgeGrade = f.originalSeverity ?? f.severity;
+    regrades[SEVERITY_ORDER.indexOf(judgeGrade) < SEVERITY_ORDER.indexOf(f.reviewerSeverity) ? 'up' : 'down']++;
+  }
   const mergedDuplicates = allJudged.length > 0
     ? (result.rawFindingCount ?? 0)
       + (result.toolAlertCount ?? 0)
@@ -226,6 +232,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(f.reachabilityReasoning && { reachabilityReasoning: f.reachabilityReasoning.slice(0, 500) }),
     ...(f.tags && f.tags.length > 0 && { tags: f.tags.filter(t => ALLOWED_FINGERPRINT_TAGS.has(t)) }),
     ...(f.originalSeverity && { originalSeverity: f.originalSeverity }),
+    ...(f.reviewerSeverity && { reviewerSeverity: f.reviewerSeverity }),
     ...(f.toolEvidence && { toolEvidence: f.toolEvidence.status }),
     ...(f.toolSource && { toolSource: f.toolSource }),
   }));
@@ -301,6 +308,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
       summary: result.summary,
       confidenceDistribution,
       severityChanges,
+      ...((regrades.up > 0 || regrades.down > 0) && { regrades }),
       mergedDuplicates,
       ...(result.toolAlertCount && { toolAlertCount: result.toolAlertCount }),
       durationMs: judgeDurationMs,

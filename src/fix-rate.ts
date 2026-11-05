@@ -21,10 +21,19 @@ export interface MergedPullRequest {
 
 type Outcome = 'fixed' | 'dismissed' | 'untouched';
 
-interface FixRateCounts extends Record<Outcome, number> {
+interface OutcomeCounts extends Record<Outcome, number> {
+  posted: number;
+}
+
+interface SpecialistKey {
   severity: string;
   specialist: string;
-  posted: number;
+}
+
+interface CalibrationKey {
+  severity: string;
+  confidence: string;
+  toolEvidence: string;
 }
 
 interface PostedFinding {
@@ -34,8 +43,9 @@ interface PostedFinding {
 
 /**
  * Records how many posted findings of a merged pull request were fixed, dismissed or left
- * untouched, per severity and specialist. Writes one JSON line to the job summary, and
- * appends it to `<repo>/metrics/fix-rate.jsonl` in the memory repo when `memory` is given.
+ * untouched, per severity and specialist (`counts`) and per severity, judge confidence and tool
+ * evidence (`calibration`). Writes one JSON line to the job summary, and appends it to
+ * `<repo>/metrics/fix-rate.jsonl` in the memory repo when `memory` is given.
  */
 export async function recordFixRate(
   octokit: Octokit,
@@ -66,17 +76,16 @@ export async function recordFixRate(
 
   const addressed = judgeAddressedThreadIds(priorRounds);
   const threads = new Map(previousFindings.filter(f => f.threadId).map(f => [f.threadId as string, f]));
-  const counts = new Map<string, FixRateCounts>();
+  const counts = new Map<string, SpecialistKey & OutcomeCounts>();
+  const calibration = new Map<string, CalibrationKey & OutcomeCounts>();
   for (const { entry, commitSha } of posted) {
-    const specialist = entry.reviewers?.[0] ?? entry.specialist ?? 'unknown';
-    const key = `${entry.severity}\n${specialist}`;
-    const row = counts.get(key) ?? { severity: entry.severity, specialist, posted: 0, fixed: 0, dismissed: 0, untouched: 0 };
-    row.posted++;
     const thread = entry.threadId ? threads.get(entry.threadId) : undefined;
     const fixed = (entry.threadId !== undefined && addressed.has(entry.threadId))
       || touchesFinding(diffs.get(commitSha), entry.fingerprint);
-    row[fixed ? 'fixed' : isDismissed(thread, pr.authorLogin) ? 'dismissed' : 'untouched']++;
-    counts.set(key, row);
+    const outcome: Outcome = fixed ? 'fixed' : isDismissed(thread, pr.authorLogin) ? 'dismissed' : 'untouched';
+    const specialist = entry.reviewers?.[0] ?? entry.specialist ?? 'unknown';
+    tally<SpecialistKey>(counts, { severity: entry.severity, specialist }, outcome);
+    tally<CalibrationKey>(calibration, { severity: entry.severity, confidence: entry.judgeConfidence ?? 'unknown', toolEvidence: entry.toolEvidence ?? 'unknown' }, outcome);
   }
 
   const line = JSON.stringify({
@@ -84,6 +93,7 @@ export async function recordFixRate(
     mergedSha: pr.mergedSha,
     rounds: priorRounds.length,
     counts: [...counts.values()],
+    calibration: [...calibration.values()],
     ...(partial && { partial: true }),
   });
   core.info(`Fix rate: ${line}`);
@@ -100,6 +110,14 @@ export async function recordFixRate(
   } catch (error) {
     core.warning(`Failed to append the fix rate to ${memory.repo}: ${sanitizeTokens(String(error))}`);
   }
+}
+
+function tally<K extends object>(rows: Map<string, K & OutcomeCounts>, dims: K, outcome: Outcome): void {
+  const key = Object.values(dims).join('\n');
+  const row = rows.get(key) ?? { ...dims, posted: 0, fixed: 0, dismissed: 0, untouched: 0 };
+  row.posted++;
+  row[outcome]++;
+  rows.set(key, row);
 }
 
 /** A finding raised again in a later round counts once, measured from the latest round that raised it. */
