@@ -42,6 +42,8 @@ const OUTCOME_VERDICT: Record<RoundOutcome, ReviewVerdict> = {
   BUDGET: 'APPROVE',
 };
 
+export const RETRY_HINT = 'Retry with @manki review.';
+
 
 export const PLANNER_TIMEOUT_MS = 60_000;
 
@@ -901,8 +903,8 @@ export async function runReview(
     const summary = quotaErrors.size > 0
       ? quotaRoundSummary(quotaErrors, failedAgents)
       : failedAgents.length === team.finders.length
-        ? 'All reviewers failed. Retry with @manki review.'
-        : `${failedAgents.join(', ')} failed after retries. Retry with @manki review.`;
+        ? `All reviewers failed. ${RETRY_HINT}`
+        : `${failedAgents.join(', ')} failed after retries. ${RETRY_HINT}`;
     return {
       verdict: OUTCOME_VERDICT.INCOMPLETE,
       outcome: 'INCOMPLETE',
@@ -1051,7 +1053,7 @@ export async function runReview(
     return {
       verdict: OUTCOME_VERDICT.INCOMPLETE,
       outcome: 'INCOMPLETE',
-      summary: error instanceof QuotaError ? quotaSummary(error) : 'The judge failed. Retry with @manki review.',
+      summary: error instanceof QuotaError ? quotaSummary(error) : `The judge failed. ${RETRY_HINT}`,
       findings: [],
       highlights: [],
       reviewComplete: false,
@@ -1123,7 +1125,7 @@ export async function runReview(
       return {
         verdict: OUTCOME_VERDICT.INCOMPLETE,
         outcome: 'INCOMPLETE',
-        summary: error instanceof QuotaError ? quotaSummary(error) : `The verdict reader failed (${sanitizeLogOutput(String((error as Error)?.message ?? error)).slice(0, 200)}). Retry with @manki review.`,
+        summary: error instanceof QuotaError ? quotaSummary(error) : `The verdict reader failed (${sanitizeLogOutput(String((error as Error)?.message ?? error)).slice(0, 200)}). ${RETRY_HINT}`,
         findings: [],
         highlights: [],
         reviewComplete: false,
