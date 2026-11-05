@@ -19,7 +19,7 @@ jobs:
       matrix:
         include:
           - provider: anthropic
-            model: claude-haiku-4-5
+            model: claude-haiku-5-5
             effort: low
           - provider: openai
             model: gpt-6-luna

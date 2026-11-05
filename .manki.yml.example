@@ -32,11 +32,11 @@
 
 # Per-stage model selection
 # models:
-#   planner: claude-haiku-4-5      # fast pre-review planning pass
-#   reviewer: claude-sonnet-4-6    # the finder on every round
+#   planner: claude-haiku-5-5      # fast pre-review planning pass
+#   reviewer: claude-sonnet-5-5    # the finder on every round
 #   reviewer_pair: gpt-6.1-terra   # the second finder on paired rounds (default: the other Claude tier, Sonnet with Opus)
-#   judge: claude-sonnet-4-6        # precise, single judge
-#   dedup: claude-haiku-4-5        # fast LLM dedup against prior findings
+#   judge: claude-opus-5-5         # precise, single judge
+#   dedup: claude-haiku-5-5        # fast LLM dedup against prior findings
 #
 # To use OpenAI, set `openai_api_key` (or `openai_oauth_token` for Codex CLI) and override models:
 # models:
@@ -53,7 +53,7 @@
 #   dedup: gemini-3.5-flash-lite
 #
 # Models are auto-detected by prefix: `claude-*` -> Anthropic, `gpt-*` / `o*` -> OpenAI, `gemini-*` -> Gemini.
-# You can also use explicit `provider/model` syntax (e.g. `anthropic/claude-haiku-4-5`).
+# You can also use explicit `provider/model` syntax (e.g. `anthropic/claude-haiku-5-5`).
 
 # Planner stage (default: enabled)
 # A fast pre-review pass answers three questions about the nature of the change:

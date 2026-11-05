@@ -453,11 +453,11 @@ max_diff_lines: 50000
 
 # Per-stage model selection
 models:
-  planner: claude-haiku-4-5      # fast pre-review planning pass
-  reviewer: claude-sonnet-4-6    # the finder on every round
-  reviewer_pair: claude-opus-4-7 # the second finder on paired rounds (default: the other Claude tier)
-  judge: claude-opus-4-6         # precise, single judge
-  dedup: claude-haiku-4-5        # fast LLM dedup against prior findings
+  planner: claude-haiku-5-5      # fast pre-review planning pass
+  reviewer: claude-sonnet-5-5    # the finder on every round
+  reviewer_pair: claude-opus-5-5 # the second finder on paired rounds (default: the other Claude tier)
+  judge: claude-opus-5-5         # precise, single judge
+  dedup: claude-haiku-5-5        # fast LLM dedup against prior findings
 
 # Planner stage (default: enabled). A fast pre-review pass triages the
 # change (trivial, subtle, paired) and picks the judge effort and PR type.

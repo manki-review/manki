@@ -3,7 +3,7 @@ import { parseArgs, readProviderInputsFromEnv } from './smoke';
 describe('parseArgs', () => {
   describe('--model', () => {
     it('parses a model flag', () => {
-      expect(parseArgs(['--model', 'claude-haiku-4-5'])).toMatchObject({ model: 'claude-haiku-4-5' });
+      expect(parseArgs(['--model', 'claude-haiku-5-5'])).toMatchObject({ model: 'claude-haiku-5-5' });
     });
 
     it('throws when --model is missing a value', () => {

@@ -143,7 +143,7 @@ describe('sendMessage effort option (API path)', () => {
   }
 
   it('sends adaptive thinking with the native effort level on models after the 4.5 generation', async () => {
-    const models = ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-7', 'claude-opus-4-8', 'claude-opus-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'claude-future-9'];
+    const models = ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-7', 'claude-opus-4-8', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'claude-future-9'];
     for (const model of models) {
       for (const effort of ['low', 'medium', 'high', 'max'] as const) {
         const params = await sentParams(model, effort);

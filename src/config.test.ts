@@ -37,10 +37,10 @@ describe('config', () => {
     });
 
     it('defaults models.reviewer to Sonnet and models.judge to Opus', () => {
-      expect(DEFAULT_CONFIG.models?.reviewer).toBe('claude-sonnet-4-6');
-      expect(DEFAULT_CONFIG.models?.judge).toBe('claude-opus-4-7');
-      expect(DEFAULT_CONFIG.models?.planner).toBe('claude-haiku-4-5');
-      expect(DEFAULT_CONFIG.models?.dedup).toBe('claude-haiku-4-5');
+      expect(DEFAULT_CONFIG.models?.reviewer).toBe('claude-sonnet-5-5');
+      expect(DEFAULT_CONFIG.models?.judge).toBe('claude-opus-5-5');
+      expect(DEFAULT_CONFIG.models?.planner).toBe('claude-haiku-5-5');
+      expect(DEFAULT_CONFIG.models?.dedup).toBe('claude-haiku-5-5');
     });
 
     it('has no default custom reviewers', () => {
@@ -355,7 +355,7 @@ models:
 `;
       const config = loadConfigFromContent(yaml);
       expect(config.models?.reviewer).toBe('claude-sonnet-4-6');
-      expect(config.models?.judge).toBe('claude-opus-4-7');
+      expect(config.models?.judge).toBe('claude-opus-5-5');
     });
 
     it('throws on invalid models type', () => {
@@ -445,7 +445,7 @@ models:
 `;
       const config = loadConfigFromContent(yaml);
       expect(config.models?.reviewer).toBe('claude-haiku-4-5');
-      expect(config.models?.judge).toBe('claude-opus-4-7');
+      expect(config.models?.judge).toBe('claude-opus-5-5');
     });
 
     it('accepts valid review_passes values', () => {
@@ -515,10 +515,10 @@ models:
     };
 
     it('returns default stage-specific models from defaults', () => {
-      expect(resolveModel(baseConfig, 'reviewer')).toBe('claude-sonnet-4-6');
-      expect(resolveModel(baseConfig, 'judge')).toBe('claude-opus-4-7');
-      expect(resolveModel(baseConfig, 'dedup')).toBe('claude-haiku-4-5');
-      expect(resolveModel(baseConfig, 'planner')).toBe('claude-haiku-4-5');
+      expect(resolveModel(baseConfig, 'reviewer')).toBe('claude-sonnet-5-5');
+      expect(resolveModel(baseConfig, 'judge')).toBe('claude-opus-5-5');
+      expect(resolveModel(baseConfig, 'dedup')).toBe('claude-haiku-5-5');
+      expect(resolveModel(baseConfig, 'planner')).toBe('claude-haiku-5-5');
     });
 
     it('returns overridden stage-specific model', () => {
@@ -533,9 +533,9 @@ models:
 
     it('falls back to default models when models is undefined', () => {
       const config: ReviewConfig = { ...baseConfig, models: undefined };
-      expect(resolveModel(config, 'reviewer')).toBe('claude-sonnet-4-6');
-      expect(resolveModel(config, 'judge')).toBe('claude-opus-4-7');
-      expect(resolveModel(config, 'dedup')).toBe('claude-haiku-4-5');
+      expect(resolveModel(config, 'reviewer')).toBe('claude-sonnet-5-5');
+      expect(resolveModel(config, 'judge')).toBe('claude-opus-5-5');
+      expect(resolveModel(config, 'dedup')).toBe('claude-haiku-5-5');
     });
 
     it('falls back to default model when stage key is missing', () => {
@@ -544,15 +544,15 @@ models:
         models: { reviewer: 'claude-sonnet-4-6' },
       };
       expect(resolveModel(config, 'reviewer')).toBe('claude-sonnet-4-6');
-      expect(resolveModel(config, 'judge')).toBe('claude-opus-4-7');
+      expect(resolveModel(config, 'judge')).toBe('claude-opus-5-5');
     });
 
     it('falls back to default models when models is empty object', () => {
       const config: ReviewConfig = { ...baseConfig, models: {} };
-      expect(resolveModel(config, 'reviewer')).toBe('claude-sonnet-4-6');
-      expect(resolveModel(config, 'judge')).toBe('claude-opus-4-7');
-      expect(resolveModel(config, 'dedup')).toBe('claude-haiku-4-5');
-      expect(resolveModel(config, 'planner')).toBe('claude-haiku-4-5');
+      expect(resolveModel(config, 'reviewer')).toBe('claude-sonnet-5-5');
+      expect(resolveModel(config, 'judge')).toBe('claude-opus-5-5');
+      expect(resolveModel(config, 'dedup')).toBe('claude-haiku-5-5');
+      expect(resolveModel(config, 'planner')).toBe('claude-haiku-5-5');
     });
 
     it('returns overridden planner model', () => {
@@ -568,10 +568,14 @@ models:
     const withModels = (models: ReviewConfig['models']): ReviewConfig => ({ ...DEFAULT_CONFIG, models });
 
     it('pairs the reviewer with the other Claude tier when `reviewer_pair` is unset', () => {
-      expect(resolvePairModel(DEFAULT_CONFIG)).toBe('claude-opus-4-7');
-      expect(resolvePairModel(withModels({ reviewer: 'claude-opus-4-7' }))).toBe('claude-sonnet-4-6');
-      expect(resolvePairModel(withModels({ reviewer: 'anthropic/claude-opus-4-6' }))).toBe('claude-sonnet-4-6');
-      expect(resolvePairModel(withModels({ reviewer: 'claude-haiku-4-5' }))).toBe('claude-sonnet-4-6');
+      expect(resolvePairModel(DEFAULT_CONFIG)).toBe('claude-opus-5-5');
+      expect(resolvePairModel(withModels({ reviewer: 'claude-sonnet-5-5' }))).toBe('claude-opus-5-5');
+      expect(resolvePairModel(withModels({ reviewer: 'claude-opus-5-5' }))).toBe('claude-sonnet-5-5');
+      expect(resolvePairModel(withModels({ reviewer: 'claude-haiku-5-5' }))).toBe('claude-sonnet-5-5');
+      expect(resolvePairModel(withModels({ reviewer: 'claude-sonnet-4-6' }))).toBe('claude-opus-5-5');
+      expect(resolvePairModel(withModels({ reviewer: 'claude-opus-4-7' }))).toBe('claude-sonnet-5-5');
+      expect(resolvePairModel(withModels({ reviewer: 'anthropic/claude-opus-4-6' }))).toBe('claude-sonnet-5-5');
+      expect(resolvePairModel(withModels({ reviewer: 'claude-haiku-4-5-20251001' }))).toBe('claude-sonnet-5-5');
     });
 
     it('keeps the reviewer model for other providers and honours `reviewer_pair`', () => {
@@ -587,11 +591,11 @@ reviewers:
   - name: "Protocol Compliance"
     focus: "DIP compliance"
 models:
-  reviewer: claude-sonnet-4-6
+  reviewer: claude-sonnet-5-5
   agents:
-    "Correctness & Logic": claude-sonnet-4-6
+    "Correctness & Logic": claude-sonnet-5-5
     "Protocol Compliance": gpt-5.5
-    "Security & Safety": claude-opus-4-7
+    "Security & Safety": claude-opus-5-5
 `);
       expect(config.models).toEqual({ ...DEFAULT_CONFIG.models, reviewer_pair: 'gpt-5.5' });
       expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('`models.agents` is deprecated'));
@@ -600,7 +604,7 @@ models:
     it('keeps an explicit `reviewer_pair` and seeds nothing when every override names the reviewer model', () => {
       const pinned = loadConfigFromContent('models:\n  reviewer_pair: gemini-3-pro\n  agents:\n    "Security & Safety": claude-opus-4-7\n');
       expect(pinned.models?.reviewer_pair).toBe('gemini-3-pro');
-      const same = loadConfigFromContent('models:\n  agents:\n    "Security & Safety": claude-sonnet-4-6\n');
+      const same = loadConfigFromContent('models:\n  agents:\n    "Security & Safety": claude-sonnet-5-5\n');
       expect(same.models).toEqual(DEFAULT_CONFIG.models);
     });
 

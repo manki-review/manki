@@ -6,8 +6,9 @@ import { PairedPin, ReviewConfig, StaticAnalysisConfig } from './types';
 
 export const MAX_LOCK_TTL_SECONDS = 3600;
 
-const SONNET_MODEL = 'claude-sonnet-4-6';
-const OPUS_MODEL = 'claude-opus-4-7';
+const HAIKU_MODEL = 'claude-haiku-5-5';
+const SONNET_MODEL = 'claude-sonnet-5-5';
+const OPUS_MODEL = 'claude-opus-5-5';
 
 export const DEFAULT_CONFIG: ReviewConfig = {
   auto_review: true,
@@ -17,10 +18,10 @@ export const DEFAULT_CONFIG: ReviewConfig = {
   reviewers: [],
   instructions: '',
   models: {
-    planner: 'claude-haiku-4-5',
+    planner: HAIKU_MODEL,
     reviewer: SONNET_MODEL,
     judge: OPUS_MODEL,
-    dedup: 'claude-haiku-4-5',
+    dedup: HAIKU_MODEL,
   },
   planner: {
     enabled: true,

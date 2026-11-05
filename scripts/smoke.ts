@@ -36,7 +36,7 @@ function printHelp(): void {
 
 Arguments:
   --model    Required. Any model ID recognised by parseModelSpec.
-             Examples: claude-haiku-4-5, gpt-6-luna, gpt-6.1-sol, gemini-3.5-flash-lite.
+             Examples: claude-haiku-5-5, gpt-6-luna, gpt-6.1-sol, gemini-3.5-flash-lite.
              Or use provider/model syntax: anthropic/claude-..., openai/gpt-..., gemini/gemini-...
   --effort   Optional. low | medium | high | max. Provider behaviour varies.
              OpenAI models that reject reasoning effort (gpt-4o, gpt-4.1, ...)
