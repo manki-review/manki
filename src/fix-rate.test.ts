@@ -146,7 +146,10 @@ describe('recordFixRate', () => {
     await recordFixRate(github.octokit, TEST_BOT, 'owner', 'repo', PR);
 
     expect(summaryLine()).toMatchObject({ pr: 42, partial: true });
-    expect(Object.keys(summaryLine())).not.toEqual(expect.arrayContaining(['class', 'group', 'configDigest']));
+    const line = summaryLine();
+    expect(line).not.toHaveProperty('class');
+    expect(line).not.toHaveProperty('group');
+    expect(line).not.toHaveProperty('configDigest');
     expect(github.repos.createOrUpdateFileContents).not.toHaveBeenCalled();
   });
 
