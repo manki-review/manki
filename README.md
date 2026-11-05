@@ -51,7 +51,7 @@ See [SETUP.md](SETUP.md#review-pipeline) for the full walkthrough.
 |---------|-------------|
 | `/manki review` | Trigger a full multi-agent review |
 | `/manki explain [topic]` | Ask about the PR changes |
-| `/manki dismiss [finding]` | Dismiss a finding (stored as suppression in memory) |
+| `/manki dismiss [finding]` | Dismiss a finding (stored as suppression in memory). In a Manki thread, it also resolves the thread |
 | `/manki remember <instruction>` | Teach it something for future reviews |
 | `/manki remember global: <instruction>` | Teach globally (applies to all repos) |
 | `/manki check` | Check thread resolution and auto-approve if clear |

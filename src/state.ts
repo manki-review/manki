@@ -1,9 +1,9 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { BotIdentity, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchReviewThreadNodes, FOLLOW_UP_MARKER, isApprovalSettingRefusal, isBotLogin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, postAutoApproveProgressComment } from './github';
-import { isSecurityThread, mayClearSecurityThread, PreviousFinding, REOPENED_MARKER } from './recap';
-import { FindingSeverity, isBlockingSeverity, migrateLegacySeverity, ReviewConfig, SEVERITY_TOKEN_PATTERN } from './types';
+import { BotIdentity, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchReviewThreadNodes, FOLLOW_UP_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, postAutoApproveProgressComment } from './github';
+import { isOverrideCandidate, isSecurityThread, mayClearSecurityThread, PreviousFinding, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf } from './recap';
+import { FindingSeverity, isBlockingSeverity, migrateLegacySeverity, ReviewConfig, SecurityOverride, SEVERITY_TOKEN_PATTERN } from './types';
 import { withMarkers } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -24,7 +24,11 @@ interface ReviewThread {
   resolvedByLogin?: string;
   isBlocking: boolean;
   isSecurity?: boolean;
+  /** The override recorded in one of Manki's comments on this security thread. Trusted only after an admin check. */
+  recordedOverride?: Omit<SecurityOverride, 'thread'>;
   findingTitle: string;
+  /** URL of the thread's first comment. */
+  threadUrl?: string;
 }
 
 /**
@@ -46,6 +50,7 @@ async function fetchBotReviewThreads(
       nodes: Array<{
         databaseId?: number | null;
         body: string;
+        url?: string;
         author: { login: string } | null;
       }>;
     };
@@ -55,10 +60,11 @@ async function fetchBotReviewThreads(
     resolvedBy {
       login
     }
-    comments(first: 1) {
+    comments(first: 100) {
       nodes {
         databaseId
         body
+        url
         author {
           login
         }
@@ -84,14 +90,19 @@ async function fetchBotReviewThreads(
 
       const rootCommentId = thread.comments.nodes[0]?.databaseId;
       const resolvedByLogin = thread.resolvedBy?.login;
+      const threadUrl = thread.comments.nodes[0]?.url;
+      const isSecurity = isSecurityThread(body);
+      const recordedOverride = isSecurity ? recordedSecurityOverride(bot, thread.comments.nodes) : undefined;
       return {
         id: thread.id,
         ...(rootCommentId != null && { rootCommentId }),
         isResolved: thread.isResolved,
         ...(resolvedByLogin && { resolvedByLogin }),
         isBlocking,
-        ...(isSecurityThread(body) && { isSecurity: true }),
+        ...(isSecurity && { isSecurity: true }),
+        ...(recordedOverride && { recordedOverride }),
         findingTitle,
+        ...(threadUrl && { threadUrl }),
       };
     });
 }
@@ -134,14 +145,34 @@ async function reopenAuthorResolvedThreads(octokit: Octokit, previousFindings: P
 }
 
 /**
+ * Replies once on each thread to record a security override. The reply's marker is what later rounds read the override from.
+ * Returns the overrides it could record.
+ */
+async function announceSecurityOverrides(octokit: Octokit, overrides: SecurityOverride[]): Promise<SecurityOverride[]> {
+  const announced: SecurityOverride[] = [];
+  for (const o of overrides) {
+    try {
+      await replyToReviewThread(octokit, o.thread, `Security finding dismissed by @${o.login} (repo admin).`, securityOverrideMarker(o.via, o.login));
+      announced.push(o);
+      core.info(`Recorded the security override by ${o.login} on thread ${o.thread}`);
+    } catch (error) {
+      core.warning(`Failed to record the security override on thread ${o.thread}: ${error}`);
+    }
+  }
+  return announced;
+}
+
+/**
  * Check if every blocking bot review thread is resolved. Suggestion and nitpick
  * threads posted by older versions never block, matching the verdict's bar.
  * A resolved security thread counts only when Manki resolved it, which it does after the judge marks it
- * addressed or a maintainer agrees, or when `mayClearSecurityThread` accepts the resolver.
+ * addressed or a maintainer agrees, when `mayClearSecurityThread` accepts the resolver,
+ * or when the PR author resolved it as a repo admin (`prAuthorIsAdmin`).
  */
-function areAllFindingsResolved(threads: ReviewThread[], bot: BotIdentity, prAuthorLogin?: string): boolean {
+function areAllFindingsResolved(threads: ReviewThread[], bot: BotIdentity, prAuthorLogin?: string, prAuthorIsAdmin = false): boolean {
   return threads.every(t => !t.isBlocking || (t.isResolved && (
     !t.isSecurity || isBotLogin(bot, t.resolvedByLogin) || mayClearSecurityThread(t.resolvedByLogin, bot, prAuthorLogin)
+    || !!securityOverrideOf(t, prAuthorLogin, prAuthorIsAdmin)
   )));
 }
 
@@ -227,7 +258,16 @@ async function checkAndAutoApprove(
     pull_number: prNumber,
   });
 
-  if (!areAllFindingsResolved(threads, bot, pr.user?.login)) {
+  const prAuthorLogin = pr.user?.login;
+  const prAuthorIsAdmin = !!prAuthorLogin && threads.some(t => isOverrideCandidate(t, prAuthorLogin))
+    && await isRepoAdmin(octokit, owner, repo, prAuthorLogin);
+  const overrides = threads.flatMap(t => {
+    const o = securityOverrideOf(t, prAuthorLogin, prAuthorIsAdmin);
+    return o ? [{ ...o, thread: t.id, title: t.findingTitle, threadUrl: t.threadUrl }] : [];
+  });
+  await announceSecurityOverrides(octokit, overrides.filter(o => !o.announced));
+
+  if (!areAllFindingsResolved(threads, bot, prAuthorLogin, prAuthorIsAdmin)) {
     core.info('Not all blocking findings resolved — skipping auto-approve');
     return false;
   }
@@ -268,7 +308,8 @@ async function checkAndAutoApprove(
   // A visible body so the API does not render this review as `body_length: 0`.
   // An empty review body trips the head-SHA dedupe gate (`hasBotReviewOnCommit`)
   // for any subsequent force-review tick on the same commit ([#840]).
-  const body = withMarkers('✅ **Approved.** All blocking threads are resolved.', BOT_MARKER);
+  const overrideLine = formatSecurityOverrides(overrides);
+  const body = withMarkers(`✅ **Approved.** All blocking threads are resolved.${overrideLine ? `\n\n${overrideLine}` : ''}`, BOT_MARKER);
 
   try {
     try {
@@ -309,4 +350,4 @@ async function checkAndAutoApprove(
   return true;
 }
 
-export { ReviewThread, areAllFindingsResolved, checkAndAutoApprove, fetchBotReviewThreads, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
+export { ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, fetchBotReviewThreads, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };

@@ -40,13 +40,17 @@ jest.mock('./github', () => ({
   reactToIssueComment: jest.fn().mockResolvedValue(undefined),
   reactToReviewComment: jest.fn().mockResolvedValue(undefined),
   fetchPRDiff: jest.fn().mockResolvedValue(''),
+  isRepoAdmin: jest.fn().mockResolvedValue(false),
+  hasWriteAccess: jest.fn(async (_octokit: unknown, _owner: string, _repo: string, login: string) => login !== 'reader'),
 }));
 
 jest.mock('./review', () => ({
   truncateDiff: jest.fn((s: string) => s),
+  isSecurityFinding: jest.requireActual('./review').isSecurityFinding,
 }));
 
 jest.mock('./state', () => ({
+  announceSecurityOverrides: jest.fn(async (overrides: unknown[]) => overrides),
   checkAndAutoApprove: jest.fn().mockResolvedValue(false),
   fetchBotReviewThreads: jest.fn().mockResolvedValue([]),
   resolveReviewThread: jest.fn().mockResolvedValue(undefined),
@@ -93,6 +97,12 @@ describe('parseCommand', () => {
   it('is case-insensitive for commands', () => {
     const result = parseCommand('@Manki EXPLAIN the changes');
     expect(result).toEqual<ParsedCommand>({ type: 'explain', args: 'the changes' });
+  });
+
+  it('ignores a command quoted in inline code or a code block', () => {
+    expect(parseCommand('Fixed. The `@manki dismiss` path now checks write access.').type).toBe('generic');
+    expect(parseCommand('Repro:\n```\n@manki dismiss\n```\nStill broken.').type).toBe('generic');
+    expect(parseCommand('`x` then @manki dismiss null-check')).toEqual<ParsedCommand>({ type: 'dismiss', args: 'null-check' });
   });
 
   it('handles @manki in the middle of a comment', () => {
@@ -338,6 +348,13 @@ describe('isBotMentionNonReview', () => {
 });
 
 // --- Handler tests ---
+
+/** The first comment of a Manki thread, holding a security finding when `isSecurity`. */
+function findingComment(isSecurity: boolean): string {
+  return jest.requireActual('./github').formatFindingComment({
+    severity: 'blocker', title: 'Token leaks into logs', file: 'src/file.ts', line: 10, description: 'd', reviewers: [], ...(isSecurity && { tags: ['security'] }),
+  });
+}
 
 function createMockOctokit() {
   return {
@@ -826,8 +843,11 @@ describe('handleReviewCommentReply', () => {
     ['Still open. The success path still skips `clearTimeout`.', 'MEMBER', 'someone', 'pr-author', false, false],
     ['Fixed. The guard now runs first.', 'CONTRIBUTOR', 'someone', 'pr-author', false, false],
     ['Agreed. The token never reaches a log.', 'OWNER', 'pr-author', 'pr-author', true, false],
+    ['Agreed. The token never reaches a log.', 'CONTRIBUTOR', 'someone', 'pr-author', true, false],
     ['Agreed. The token never reaches a log.', 'MEMBER', 'someone', 'pr-author', true, true],
     ['Agreed. The token never reaches a log.', 'MEMBER', 'someone', undefined, true, true],
+    ['Agreed. The token never reaches a log.', 'MEMBER', 'reader', 'pr-author', true, false],
+    ['Still open. The token still reaches the log.', 'OWNER', 'pr-author', 'pr-author', true, false],
   ])('resolves the thread after %j from a %s reply by %s, PR author %s, security %s: %s', async (reply, association, sender, prAuthor, isSecurity, resolves) => {
     setContext({
       comment: { id: 1, body: 'Done in the latest commit.', user: { type: 'User' }, in_reply_to_id: 99, author_association: association },
@@ -835,6 +855,7 @@ describe('handleReviewCommentReply', () => {
       sender: { login: sender },
     });
     const octokit = createMockOctokit();
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: findingComment(isSecurity), path: 'src/file.ts', line: 10 } });
     const client = createMockClient();
     jest.mocked(client.sendMessage).mockResolvedValue({ content: reply });
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([
@@ -845,7 +866,10 @@ describe('handleReviewCommentReply', () => {
 
     await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1);
 
-    expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenCalledWith(expect.objectContaining({ body: `${reply}\n\n<!-- manki -->` }));
+    // An agreement that cannot close a security thread says who can.
+    const staysOpen = isSecurity && !resolves && reply.startsWith('Agreed.');
+    const note = '\n\nThis is a security finding, so the thread stays open until a maintainer other than the PR author, or a repo admin, closes it.';
+    expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenCalledWith(expect.objectContaining({ body: `${reply}${staysOpen ? note : ''}\n\n<!-- manki -->` }));
     if (resolves) {
       expect(state.resolveReviewThread).toHaveBeenCalledWith(octokit, 'PRRT_this');
     } else {
@@ -1174,7 +1198,7 @@ describe('handleReviewCommentCommand', () => {
     setContext({ comment: { id: 55, body: '/manki dismiss null-check', user: { type: 'User' }, author_association: 'COLLABORATOR' } });
     const octokit = createMockOctokit();
     const command = parseCommand('/manki dismiss null-check');
-    await handleReviewCommentCommand(octokit, 'test-owner', 'test-repo', 1, 55, command);
+    await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 55, command);
     expect(ghUtils.reactToReviewComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 55, '+1');
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
       expect.objectContaining({ body: expect.stringContaining('Dismissed') }),
@@ -1186,7 +1210,7 @@ describe('handleReviewCommentCommand', () => {
     const octokit = createMockOctokit();
     const command = parseCommand('@manki remember always validate input before processing data in handlers');
     const memoryConfig = { enabled: true, repo: 'test-owner/memory' };
-    await handleReviewCommentCommand(octokit, 'test-owner', 'test-repo', 1, 56, command, memoryConfig, 'mem-token');
+    await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 56, command, memoryConfig, 'mem-token');
     expect(ghUtils.reactToReviewComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 56, 'eyes');
     expect(memory.writeLearning).toHaveBeenCalled();
   });
@@ -1196,7 +1220,7 @@ describe('handleReviewCommentCommand', () => {
     const octokit = createMockOctokit();
     const command = parseCommand('/manki forget null-check');
     const memoryConfig = { enabled: true, repo: 'test-owner/memory' };
-    await handleReviewCommentCommand(octokit, 'test-owner', 'test-repo', 1, 57, command, memoryConfig, 'mem-token');
+    await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 57, command, memoryConfig, 'mem-token');
     expect(ghUtils.reactToReviewComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 57, 'eyes');
   });
 
@@ -1204,7 +1228,7 @@ describe('handleReviewCommentCommand', () => {
     setContext({ comment: { id: 58, body: '/manki help', user: { type: 'User' }, author_association: 'COLLABORATOR' } });
     const octokit = createMockOctokit();
     const command = parseCommand('/manki help');
-    await handleReviewCommentCommand(octokit, 'test-owner', 'test-repo', 1, 58, command);
+    await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 58, command);
     expect(ghUtils.reactToReviewComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 58, '+1');
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
       expect.objectContaining({ body: expect.stringContaining('| Command | What it does |') }),
@@ -1215,7 +1239,7 @@ describe('handleReviewCommentCommand', () => {
     setContext({ comment: { id: 59, body: '/manki explain something', user: { type: 'User' }, author_association: 'COLLABORATOR' } });
     const octokit = createMockOctokit();
     const command = parseCommand('/manki explain something');
-    await handleReviewCommentCommand(octokit, 'test-owner', 'test-repo', 1, 59, command);
+    await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 59, command);
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
       expect.objectContaining({ body: expect.stringContaining('only works as a PR-level comment') }),
     );
@@ -1226,17 +1250,69 @@ describe('handleReviewCommentCommand', () => {
     setContext({ comment: { id: 60, body: '/manki check', user: { type: 'User' }, author_association: 'COLLABORATOR' } });
     const octokit = createMockOctokit();
     const command = parseCommand('/manki check');
-    await handleReviewCommentCommand(octokit, 'test-owner', 'test-repo', 1, 60, command);
+    await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 60, command);
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
       expect.objectContaining({ body: expect.stringContaining('only works as a PR-level comment') }),
     );
+  });
+
+  it.each([
+    ['a repo admin PR author', 'OWNER', 'pr-author', true, true, true],
+    ['a PR author without admin', 'OWNER', 'pr-author', false, true, false],
+    ['a maintainer other than the PR author', 'MEMBER', 'someone', false, true, true],
+    ['an org member with read access', 'MEMBER', 'reader', false, true, false],
+    ['an outside contributor', 'CONTRIBUTOR', 'someone', true, true, false],
+    ['a PR author without admin, on a plain finding', 'NONE', 'pr-author', false, false, true],
+  ])('resolves the thread a dismiss was posted in, from %s', async (_who, association, sender, isAdmin, isSecurity, resolves) => {
+    setContext({
+      comment: { id: 62, body: '@manki dismiss', user: { type: 'User' }, in_reply_to_id: 99, author_association: association },
+      pull_request: { number: 1, user: { login: 'pr-author' } },
+      sender: { login: sender },
+    });
+    const octokit = createMockOctokit();
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: findingComment(isSecurity), path: 'src/file.ts', line: 10 } });
+    jest.mocked(ghUtils.isRepoAdmin).mockResolvedValue(isAdmin);
+    jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([
+      { id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: true, ...(isSecurity && { isSecurity }), findingTitle: 'Token' },
+    ]);
+
+    await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 62, parseCommand('@manki dismiss'));
+
+    const overrides = isAdmin && isSecurity && sender === 'pr-author' ? [[octokit, [{ thread: 'PRRT_this', login: 'pr-author', via: 'dismiss' }]]] : [];
+    expect(jest.mocked(state.announceSecurityOverrides).mock.calls).toEqual(overrides);
+    expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(resolves ? [[octokit, 'PRRT_this']] : []);
+    expect(ghUtils.reactToReviewComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 62, '+1');
+  });
+
+  it('keeps an admin dismissal open when Manki cannot record it, and records it once', async () => {
+    setContext({
+      comment: { id: 63, body: '@manki dismiss', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'OWNER' },
+      pull_request: { number: 1, user: { login: 'pr-author' } },
+      sender: { login: 'pr-author' },
+    });
+    const octokit = createMockOctokit();
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: findingComment(true), path: 'src/file.ts', line: 10 } });
+    jest.mocked(ghUtils.isRepoAdmin).mockResolvedValue(true);
+    const thread = { id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: true, isSecurity: true, findingTitle: 'Token' };
+    jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([thread]);
+    jest.mocked(state.announceSecurityOverrides).mockResolvedValueOnce([]);
+
+    await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 63, parseCommand('@manki dismiss'));
+    expect(state.resolveReviewThread).not.toHaveBeenCalled();
+
+    // A thread that already carries the recorded override, say after someone reopened it, gets no second reply.
+    jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([{ ...thread, recordedOverride: { login: 'pr-author', via: 'dismiss' } }]);
+    jest.mocked(state.announceSecurityOverrides).mockClear();
+    await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 63, parseCommand('@manki dismiss'));
+    expect(state.announceSecurityOverrides).not.toHaveBeenCalled();
+    expect(state.resolveReviewThread).toHaveBeenCalledWith(octokit, 'PRRT_this');
   });
 
   it('does not use reactToIssueComment', async () => {
     setContext({ comment: { id: 61, body: '/manki dismiss test', user: { type: 'User' }, author_association: 'COLLABORATOR' } });
     const octokit = createMockOctokit();
     const command = parseCommand('/manki dismiss test');
-    await handleReviewCommentCommand(octokit, 'test-owner', 'test-repo', 1, 61, command);
+    await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 61, command);
     expect(ghUtils.reactToIssueComment).not.toHaveBeenCalled();
   });
 });

@@ -3,12 +3,12 @@ import * as github from '@actions/github';
 
 import { LLMClient } from './providers';
 import { writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
-import { BotIdentity, dynamicFence, isTrustedAssociation, reactToIssueComment, reactToReviewComment, fetchPRDiff } from './github';
+import { BotIdentity, dynamicFence, hasWriteAccess, isRepoAdmin, isTrustedAssociation, reactToIssueComment, reactToReviewComment, fetchPRDiff } from './github';
 import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
-import { mayClearSecurityThread } from './recap';
-import { checkAndAutoApprove, fetchBotReviewThreads, resolveReviewThread } from './state';
+import { isSecurityThread, mayClearSecurityThread } from './recap';
+import { announceSecurityOverrides, checkAndAutoApprove, fetchBotReviewThreads, resolveReviewThread } from './state';
 import { ReviewConfig } from './types';
 import { withMarkers } from './utils';
 import { WRITING_RULES } from './writing-rules';
@@ -66,6 +66,10 @@ ${WRITING_RULES}`;
 /** Reply outcomes that close the thread: the finding is fixed, accepted as not applying or deferred, or withdrawn. */
 const RESOLVING_REPLY_RE = /^\**(?:Fixed|Agreed|Withdrawn)\b/;
 
+const AGREED_REPLY_RE = /^\**Agreed\b/;
+
+const SECURITY_STAYS_OPEN = 'This is a security finding, so the thread stays open until a maintainer other than the PR author, or a repo admin, closes it.';
+
 const FORGET_USAGE = 'Search term too short: it needs at least 3 characters.\n\nUsage:\n- `/manki forget <text>` removes a learning.\n- `/manki forget suppression <pattern>` removes a suppression.';
 
 const MEMORY_DISABLED = 'Review memory is off for this repo. Add `memory.enabled: true` to `.manki.yml` to turn it on.';
@@ -86,18 +90,42 @@ async function fetchThreadRoot(octokit: Octokit, owner: string, repo: string, id
   return null;
 }
 
-/** Resolves the Manki thread whose first comment is `rootCommentId`. A security thread is left open unless `securityAllowed`. */
+/**
+ * Resolves the Manki thread whose first comment is `rootCommentId`. A security thread is left open unless `securityAllowed`.
+ * With `adminOverride`, the PR author clears a security thread as a repo admin, and Manki records that in the thread first.
+ */
 async function resolveThreadOf(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, rootCommentId: number, securityAllowed: boolean,
+  adminOverride?: string,
 ): Promise<void> {
   const thread = (await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber)).find(t => t.rootCommentId === rootCommentId);
   if (!thread || thread.isResolved) return;
   if (thread.isSecurity && !securityAllowed) {
-    core.info(`Left security thread ${thread.id} open, since only someone other than the PR author with write access can dismiss it`);
-    return;
+    if (!adminOverride) {
+      core.info(`Left security thread ${thread.id} open, since only a maintainer other than the PR author, or a repo admin, can dismiss it`);
+      return;
+    }
+    // The recorded override is what lets later rounds count the resolved thread, so without it the thread stays open.
+    if (thread.recordedOverride?.login !== adminOverride && (await announceSecurityOverrides(octokit, [{ thread: thread.id, login: adminOverride, via: 'dismiss' }])).length === 0) return;
   }
   await resolveReviewThread(octokit, thread.id);
   core.info(`Resolved thread ${thread.id} after the reply`);
+}
+
+/**
+ * Who may get a Manki thread resolved through a comment: someone who could resolve it by hand.
+ * On a security thread, `securityAllowed` says whether the sender may also clear it: a maintainer other than the PR author.
+ * Write access is checked through the API there, since an org member with read access also shows as `MEMBER`.
+ */
+async function resolvePermission(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, isSecurity: boolean,
+  authorAssociation: string | undefined, senderLogin: string | undefined, prAuthorLogin: string | undefined,
+): Promise<{ mayResolve: boolean; isPrAuthor: boolean; securityAllowed: boolean }> {
+  const isTrusted = isTrustedAssociation(authorAssociation);
+  const isPrAuthor = !!prAuthorLogin && senderLogin?.toLowerCase() === prAuthorLogin.toLowerCase();
+  const securityAllowed = isSecurity && isTrusted && !!senderLogin && mayClearSecurityThread(senderLogin, bot, prAuthorLogin)
+    && await hasWriteAccess(octokit, owner, repo, senderLogin);
+  return { mayResolve: isTrusted || isPrAuthor, isPrAuthor, securityAllowed };
 }
 
 /**
@@ -181,23 +209,24 @@ export async function handleReviewCommentReply(
 
     const response = await client.sendMessage(REPLY_SYSTEM_PROMPT, context + diffContext);
     const reply = highlightCode(response.content.trim(), codeTokens);
+    const isSecurity = isSecurityThread(root.comment.body ?? '');
+    const { mayResolve, securityAllowed } = await resolvePermission(
+      octokit, bot, owner, repo, isSecurity, comment.author_association, senderLogin, prAuthorLogin);
+    const staysOpen = AGREED_REPLY_RE.test(reply) && isSecurity && !securityAllowed;
 
     await octokit.rest.pulls.createReplyForReviewComment({
       owner,
       repo,
       pull_number: prNumber,
       comment_id: comment.id,
-      body: withMarkers(reply, BOT_MARKER),
+      body: withMarkers(staysOpen ? `${reply}\n\n${SECURITY_STAYS_OPEN}` : reply, BOT_MARKER),
     });
 
     core.info('Posted reply to review comment');
 
-    // Only someone who could resolve the thread by hand gets it resolved through a reply.
-    const isTrusted = isTrustedAssociation(comment.author_association);
-    const isPrAuthor = !!prAuthorLogin && senderLogin?.toLowerCase() === prAuthorLogin.toLowerCase();
-    if (RESOLVING_REPLY_RE.test(reply) && (isTrusted || isPrAuthor)) {
+    if (RESOLVING_REPLY_RE.test(reply) && mayResolve) {
       try {
-        await resolveThreadOf(octokit, bot, owner, repo, prNumber, root.id, isTrusted && mayClearSecurityThread(senderLogin, bot, prAuthorLogin));
+        await resolveThreadOf(octokit, bot, owner, repo, prNumber, root.id, securityAllowed);
       } catch (error) {
         core.warning(`Failed to resolve thread after reply: ${error}`);
       }
@@ -340,8 +369,9 @@ interface ParsedCommand {
 const BOT_MENTION_PATTERN = /(?:@manki-review|@manki|\/manki)\b/;
 const BOT_PREFIX_PATTERN = /(?:@manki-review|@manki|\/manki)\s+(explain|dismiss|help|remember|forget|check)(?:\s+(.*))?/;
 
+/** Parses the first command in `body`. A command quoted in inline code or a code block is text, not a command. */
 function parseCommand(body: string): ParsedCommand {
-  const lower = body.toLowerCase();
+  const lower = body.replace(/```[\s\S]*?(?:```|$)|`[^`\n]*`/g, ' ').toLowerCase();
   const match = lower.match(BOT_PREFIX_PATTERN);
 
   if (match) {
@@ -438,6 +468,31 @@ async function handleDismiss(
     } catch (error) {
       core.warning(`Failed to write suppression: ${error}`);
     }
+  }
+}
+
+/**
+ * Resolves the Manki thread a `dismiss` reply was posted in, for someone who could resolve it by hand.
+ * On a security thread the PR author may do so too when they are a repo admin.
+ */
+async function resolveDismissedThread(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number): Promise<void> {
+  const payload = github.context.payload;
+  const inReplyTo = payload.comment?.in_reply_to_id;
+  if (!inReplyTo) return;
+  const senderLogin = payload.sender?.login;
+  try {
+    const { data: parent } = await octokit.rest.pulls.getReviewComment({ owner, repo, comment_id: inReplyTo });
+    const root = await fetchThreadRoot(octokit, owner, repo, inReplyTo, parent);
+    if (!root || !isBotComment(root.comment.body ?? '')) return;
+    const isSecurity = isSecurityThread(root.comment.body ?? '');
+    const { mayResolve, isPrAuthor, securityAllowed } = await resolvePermission(
+      octokit, bot, owner, repo, isSecurity, payload.comment?.author_association, senderLogin, payload.pull_request?.user?.login);
+    if (!mayResolve) return;
+    const adminOverride = isSecurity && !securityAllowed && isPrAuthor && !!senderLogin
+      && await isRepoAdmin(octokit, owner, repo, senderLogin);
+    await resolveThreadOf(octokit, bot, owner, repo, prNumber, root.id, securityAllowed, adminOverride ? senderLogin : undefined);
+  } catch (error) {
+    core.warning(`Failed to resolve the dismissed thread: ${error}`);
   }
 }
 
@@ -781,6 +836,7 @@ function isBotMentionNonReview(body: string): boolean {
  */
 export async function handleReviewCommentCommand(
   octokit: Octokit,
+  bot: BotIdentity,
   owner: string,
   repo: string,
   prNumber: number,
@@ -802,6 +858,7 @@ export async function handleReviewCommentCommand(
   switch (command.type) {
     case 'dismiss':
       await handleDismiss(octokit, owner, repo, prNumber, command.args, memoryConfig, memoryToken);
+      await resolveDismissedThread(octokit, bot, owner, repo, prNumber);
       await reactToReviewComment(octokit, owner, repo, commentId, '+1');
       break;
     case 'remember':

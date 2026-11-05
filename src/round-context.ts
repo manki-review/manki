@@ -1,10 +1,10 @@
 import type { LLMUsage } from './providers';
 import { isEmptyInterRoundDiff, MAX_INTER_ROUND_DIFF_CHARS } from './judge';
-import { collectResolvedThreadIds, fingerprintFinding, RecapState } from './recap';
+import { collectResolvedThreadIds, fingerprintFinding, PreviousFinding, RecapState, securityOverridesIn } from './recap';
 import { MANKI_VERSION } from './github';
 import { parseModelSpec } from './providers';
 import { routingDigest } from './routing';
-import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OpenThread, OWN_PROPOSAL_TAG, ParsedDiff, RATCHET_SUPPRESSED_TAG, ReclassifiedPrior, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ReviewModels, ReviewResult, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundRecap, RoundRouting, RoundStaticAnalysis, RoundTrigger, RoundUsage, RoundUsageStage, SECURITY_TAG, SEVERITY_ORDER, ThreadResolutionOverrides } from './types';
+import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OpenThread, OWN_PROPOSAL_TAG, ParsedDiff, RATCHET_SUPPRESSED_TAG, ReclassifiedPrior, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ReviewModels, ReviewResult, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundRecap, RoundRouting, RoundStaticAnalysis, RoundTrigger, RoundUsage, RoundUsageStage, SECURITY_TAG, SecurityOverride, SEVERITY_ORDER, ThreadResolutionOverrides } from './types';
 
 const ALLOWED_FINGERPRINT_TAGS = new Set<string>([
   DEFENSIVE_HARDENING_TAG,
@@ -49,13 +49,16 @@ export function buildRoundRecap(recap: {
   priorRounds: unknown[];
   reclassifiedPriorCount?: number;
   reclassifiedPriors?: ReclassifiedPrior[];
+  previousFindings?: PreviousFinding[];
 }): RoundRecap {
   const count = recap.reclassifiedPriorCount ?? 0;
   const entries = recap.reclassifiedPriors ?? [];
+  const securityOverrides: SecurityOverride[] = securityOverridesIn(recap.previousFindings ?? []).map(({ thread, login, via }) => ({ thread, login, via }));
   return {
     priorRoundCount: recap.priorRounds.length,
     reclassifiedPriorCount: count,
     ...(entries.length > 0 && { reclassifiedPriors: entries }),
+    ...(securityOverrides.length > 0 && { securityOverrides }),
   };
 }
 
