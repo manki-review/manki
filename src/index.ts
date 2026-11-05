@@ -791,12 +791,13 @@ async function loadRunMemory(
 }
 
 /**
- * Returns how many rounds ran since the last round that approved, or all of them without one.
+ * Returns how many rounds ran since the last round that approved at the full bar, or all of them without one.
  * The round cap stops fix loops, so a round after an approval, such as on a rebase, starts the count again.
+ * A `BUDGET` approval deferred warnings to end a loop, so it does not reset the count.
  */
 function roundsSinceApproval(priorRounds: RoundContext[]): number {
   let count = 0;
-  for (let i = priorRounds.length - 1; i >= 0 && priorRounds[i].verdict !== 'APPROVE'; i--) count++;
+  for (let i = priorRounds.length - 1; i >= 0 && !(priorRounds[i].verdict === 'APPROVE' && priorRounds[i].meta.outcome !== 'BUDGET'); i--) count++;
   return count;
 }
 

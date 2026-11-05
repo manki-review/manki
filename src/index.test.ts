@@ -5487,7 +5487,13 @@ describe('runFullReview orchestration', () => {
         .find(([args]) => typeof args.body === 'string' && args.body.includes('Automatic review is paused'));
       expect(notice![0].body).toContain('Manki has completed 5/5 review rounds on this PR since its last approval.');
 
+      // A `BUDGET` approval ends a loop by deferring warnings, so it does not reset the count.
       rounds[2].verdict = 'APPROVE';
+      rounds[2].meta.outcome = 'BUDGET';
+      await callRunFullReview();
+      expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+
+      rounds[2].meta.outcome = 'READY';
       await callRunFullReview();
 
       expect(jest.mocked(reviewModule.runReview).mock.calls[0][1]).toMatchObject({ blockersOnly: false, finalRound: true });

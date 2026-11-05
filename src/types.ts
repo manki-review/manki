@@ -504,7 +504,7 @@ export interface ReviewConfig {
   review_passes?: number;
   convergence?: {
     /**
-     * Hard cap on the number of automatic review rounds since Manki last approved the PR. The last round
+     * Hard cap on the number of automatic review rounds since Manki last approved the PR at the full bar. The last round
      * blocks on blockers only. After it, automatic review is paused until
      * `@manki review`, which runs one round at the same bar. `0` disables the cap.
      */
