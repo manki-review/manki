@@ -744,6 +744,15 @@ export interface FullReviewOptions {
   headRepoFullName?: string;
 }
 
+/** Model spec each pipeline stage runs on. */
+export interface ReviewModels {
+  planner: string;
+  reviewer: string;
+  reviewerPair: string;
+  judge: string;
+  dedup: string;
+}
+
 /** Provenance of the event that triggered a round. */
 export interface RoundTrigger {
   /**

@@ -10,15 +10,15 @@ import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parse
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
 import { recordFixRate } from './fix-rate';
-import { parsePRDiff, filterDiff, filterRawDiff, isDiffTooLarge, isSameChange, rebuildRawDiff } from './diff';
+import { addCodeContext, parsePRDiff, filterDiff, filterRawDiff, isDiffTooLarge, isSameChange, rebuildRawDiff } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
-import { isEmptyInterRoundDiff, MAX_INTER_ROUND_DIFF_CHARS } from './judge';
+import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, RepoMemory } from './memory';
-import { collectResolvedThreadIds, fetchRecapState, fingerprintFinding, PreviousFinding } from './recap';
-import { runReview, selectTeam } from './review';
+import { fetchRecapState, PreviousFinding, RecapState } from './recap';
+import { ReviewClients, ReviewOptions, runReview, selectTeam } from './review';
+import { buildRoundContext, RoundRecordInput } from './round-context';
 import { collectStaticSignals } from './static-signals';
-import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DashboardData, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OWN_PROPOSAL_TAG, PrContext, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReclassifiedPrior, ReviewMetadata, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundRecap, RoundTrigger, RoundUsage, RoundUsageStage, ReviewConfig, SECURITY_TAG, ThreadResolutionOverrides, roundContextToFlatAliases } from './types';
-import type { LLMUsage } from './providers';
+import { DashboardData, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundTrigger, StaticSignal, roundContextToFlatAliases } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -36,7 +36,6 @@ import {
   BOT_MARKER as PROGRESS_MARKER,
   FORCE_REVIEW_MARKER,
   FORCE_CAP_MARKER,
-  MANKI_VERSION,
   isBotLogin,
   isReviewInProgress,
   isApprovedOnCommit,
@@ -48,20 +47,10 @@ import {
   checkConcurrentSubmissionLock,
   postConfigErrorComment,
 } from './github';
-import type { BotIdentity, StandingVerdict } from './github';
+import type { BotIdentity, LinkedIssue, StandingVerdict } from './github';
 import { checkAndAutoApprove, reopenAuthorResolvedThreads, resolveReviewThread } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
-
-const ALLOWED_FINGERPRINT_TAGS = new Set<string>([
-  DEFENSIVE_HARDENING_TAG,
-  OWN_PROPOSAL_TAG,
-  CONTRADICTION_TAG,
-  RATCHET_SUPPRESSED_TAG,
-  RESOLVED_THREAD_SUPPRESSED_TAG,
-  FOLLOW_UP_TAG,
-  SECURITY_TAG,
-]);
 
 export function detectTickedMarker(body: string): 'FORCE_REVIEW_MARKER' | 'FORCE_CAP_MARKER' | null {
   if (!body.includes('- [x] Force review')) return null;
@@ -452,20 +441,6 @@ async function handleCommentTrigger(forceReview?: boolean, skipCap?: boolean, by
   });
 }
 
-function _buildRoundRecap(recap: {
-  priorRounds: unknown[];
-  reclassifiedPriorCount?: number;
-  reclassifiedPriors?: ReclassifiedPrior[];
-}): RoundRecap {
-  const count = recap.reclassifiedPriorCount ?? 0;
-  const entries = recap.reclassifiedPriors ?? [];
-  return {
-    priorRoundCount: recap.priorRounds.length,
-    reclassifiedPriorCount: count,
-    ...(entries.length > 0 && { reclassifiedPriors: entries }),
-  };
-}
-
 function failureReason(error: unknown): string {
   return sanitizeLogOutput(sanitizeTokens(error instanceof Error ? error.message : String(error)));
 }
@@ -509,6 +484,665 @@ function reconcileDashboardAgents(dashboard: DashboardData, names: string[]): vo
   dashboard.agentProgress = reconciled;
 }
 
+/** The pull request commit a run reviews, and the client and identity it reads and posts with. */
+interface RunTarget {
+  octokit: Octokit;
+  bot: BotIdentity;
+  owner: string;
+  repo: string;
+  prNumber: number;
+  commitSha: string;
+  baseRef: string;
+}
+
+/** The progress comment of a run and its pending dashboard update, which the failure path also reads. */
+interface RunProgress {
+  commentId?: number;
+  flushTimer: ReturnType<typeof setTimeout> | null;
+}
+
+/** What a review round works on. Built once its inputs are collected, then passed to the stages that review, post and record. */
+interface ReviewRun extends RunTarget, RoundRecordInput {
+  commentId: number;
+  dashboard: DashboardData;
+  progress: RunProgress;
+  startTime: number;
+  parseEndTime: number;
+}
+
+interface ReviewStageResult {
+  result: ReviewResult & { outcome: RoundOutcome };
+  reviewEndTime: number;
+  judgeEndTime: number;
+}
+
+function cancelDashboardFlush(progress: RunProgress): void {
+  if (progress.flushTimer) {
+    clearTimeout(progress.flushTimer);
+    progress.flushTimer = null;
+  }
+}
+
+/**
+ * Loads `.manki.yml` from the local checkout so a PR that modifies its own
+ * config (e.g., extending `exclude_paths`) takes effect on the same PR.
+ * `process.cwd()` is the PR tree because the action runs as a local
+ * composite via `./` in the consumer workflow. Returns `undefined` after
+ * reporting a config that does not load.
+ */
+async function loadRunConfig(target: RunTarget, configPath: string, headRepoFullName?: string): Promise<ReviewConfig | undefined> {
+  const { octokit, owner, repo, prNumber } = target;
+  const cwd = path.resolve(process.cwd());
+  const configAbsPath = path.isAbsolute(configPath)
+    ? configPath
+    : path.join(cwd, configPath);
+  let resolvedConfigPath: string;
+  try {
+    resolvedConfigPath = fs.realpathSync(configAbsPath);
+  } catch {
+    resolvedConfigPath = configAbsPath;
+  }
+  if (resolvedConfigPath !== cwd && !resolvedConfigPath.startsWith(cwd + path.sep)) {
+    core.warning(`\`config_path\` resolved outside workspace — using defaults`);
+  }
+  const effectiveConfigPath = (resolvedConfigPath === cwd || resolvedConfigPath.startsWith(cwd + path.sep))
+    ? resolvedConfigPath
+    : path.join(cwd, '.manki.yml');
+  let rawConfig: ReviewConfig;
+  try {
+    rawConfig = loadConfigFromFile(effectiveConfigPath);
+  } catch (error) {
+    const reason = failureReason(error);
+    core.setFailed(reason);
+    await postConfigErrorComment(octokit, owner, repo, prNumber, reason);
+    return undefined;
+  }
+  const isFork = headRepoFullName !== undefined && headRepoFullName !== `${owner}/${repo}`;
+  return isFork ? sanitizeForkConfig(rawConfig) : rawConfig;
+}
+
+/** Whether the run stops before posting a progress comment: another run holds the PR, the commit is reviewed or stale, or nothing changed. */
+async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: RoundTrigger, forceReview?: boolean): Promise<boolean> {
+  const { octokit, bot, owner, repo, prNumber, commitSha, baseRef } = target;
+
+  // Scan for a competing in-progress marker before posting our own to shorten
+  // the race window. A residual window remains when two runs both pass this scan
+  // before either posts; tracking issue for the strict atomic fix: https://github.com/manki-review/manki/issues/798
+  if (await checkConcurrentSubmissionLock(octokit, bot, owner, repo, prNumber, config)) {
+    core.warning('Defense-in-depth lock engaged — this run will not post a review. If no review appears on the PR, re-trigger with `/manki review`.');
+    return true;
+  }
+
+  // Sibling head-SHA dedupe: serialized siblings (e.g., `pull_request_review`
+  // and `pull_request_review_comment` fan-out from one human review) can both
+  // pass the in-progress scan when the prior run's marker has already been
+  // cleared. The state-based check on the bot's posted reviews catches that.
+  // Honors `forceReview` so explicit re-review on the same SHA still proceeds.
+  if (!forceReview && await hasBotReviewOnCommit(octokit, bot, owner, repo, prNumber, commitSha)) {
+    core.warning(`Bot already posted a non-DISMISSED review on commit ${commitSha.slice(0, 7)} — bailing serialized sibling run.`);
+    await postReviewSkippedComment(octokit, owner, repo, prNumber, commitSha, 'already_reviewed');
+    return true;
+  }
+
+  // Fast-exit when the PR head has advanced past the event SHA between the
+  // event firing and this run reaching the LLM phase. Placed before any
+  // progress comment is posted so no marker cleanup is required on bail.
+  // Fail-open: a `pulls.get` failure does not disable the review.
+  try {
+    const { data: prHead } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
+    const headSha = prHead.head?.sha;
+    if (!headSha) {
+      core.warning('Head SHA lookup returned no sha, proceeding');
+    } else if (headSha !== commitSha) {
+      core.info(`Event SHA ${commitSha.slice(0, 7)} != head SHA ${headSha.slice(0, 7)} — bailing out`);
+      return true;
+    }
+  } catch (error) {
+    core.warning(`Head SHA lookup failed, proceeding: ${error instanceof Error ? error.message : error}`);
+  }
+
+  if (trigger.event === 'pull_request:synchronize' && config.auto_review) {
+    const standing = await findUnchangedVerdict(octokit, bot, owner, repo, prNumber, baseRef, commitSha, config.exclude_paths);
+    if (standing) {
+      const shortSha = standing.commitSha.slice(0, 7);
+      try {
+        // A push can dismiss approvals, so the approval is posted again on the new head.
+        if (standing.verdict === 'APPROVE') {
+          await octokit.rest.pulls.createReview({
+            owner, repo, pull_number: prNumber, commit_id: commitSha, event: 'APPROVE',
+            body: `${PROGRESS_MARKER}\n✅ **Approved.** No change to this PR since the reviewed commit \`${shortSha}\`. The previous verdict stands.`,
+          });
+        }
+        core.info(`Round SKIPPED: no change since reviewed commit ${shortSha}, ${standing.verdict} stands`);
+        return true;
+      } catch (error) {
+        core.warning(`Could not post the previous approval again, reviewing in full: ${error instanceof Error ? error.message : error}`);
+      }
+    }
+  }
+  return false;
+}
+
+/** Reads the prior rounds and threads, and reopens threads the author resolved. Returns `undefined` when `auto_review` is off for a push. */
+async function loadRecap(target: RunTarget, config: ReviewConfig, commentId: number, prAuthorLogin?: string): Promise<RecapState | undefined> {
+  const { octokit, bot, owner, repo, prNumber } = target;
+  const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, prAuthorLogin);
+
+  if (github.context.eventName === 'pull_request' && !config.auto_review) {
+    core.info('auto_review is disabled — skipping');
+    await octokit.rest.issues.deleteComment({ owner, repo, comment_id: commentId });
+    return undefined;
+  }
+
+  await reopenAuthorResolvedThreads(octokit, recap.previousFindings);
+  return recap;
+}
+
+/** Builds one LLM client per stage. Throws on a model spec or credentials that do not resolve. */
+function buildReviewClients(config: ReviewConfig, providerInputs: ProviderInputs): { clients: ReviewClients; models: ReviewModels } {
+  const models: ReviewModels = {
+    planner: resolveModel(config, 'planner'),
+    reviewer: resolveModel(config, 'reviewer'),
+    reviewerPair: resolvePairModel(config),
+    judge: resolveModel(config, 'judge'),
+    dedup: resolveModel(config, 'dedup'),
+  };
+  core.info(`Models — planner: ${models.planner}, reviewer: ${models.reviewer}, reviewer pair: ${models.reviewerPair}, judge: ${models.judge}, dedup: ${models.dedup}`);
+
+  const buildClient = (model: string) => {
+    const spec = parseModelSpec(model);
+    const auth = buildAuthForProvider(spec.provider, providerInputs);
+    return createLLMClient(spec.provider, spec.model, auth);
+  };
+  const reviewer = buildClient(models.reviewer);
+  const reviewerPair = models.reviewerPair === models.reviewer ? reviewer : buildClient(models.reviewerPair);
+  const judge = buildClient(models.judge);
+  const planner = config.planner?.enabled !== false ? buildClient(models.planner) : undefined;
+  const dedup = buildClient(models.dedup);
+  return { clients: { reviewer, reviewerPair, judge, planner, dedup }, models };
+}
+
+async function collectDiff(target: RunTarget, config: ReviewConfig) {
+  const { octokit, owner, repo, prNumber } = target;
+  const fullDiff = parsePRDiff(await fetchPRDiff(octokit, owner, repo, prNumber));
+  const { diff, excluded: excludedFiles } = filterDiff(fullDiff, config.exclude_paths);
+  return { fullDiff, diff, excludedFiles, rawDiff: rebuildRawDiff(diff) };
+}
+
+function initialDashboard(diff: ParsedDiff, config: ReviewConfig, plannerEnabled: boolean): DashboardData {
+  // Without a planner the team is the fail-safe one. With one, `runReview` reports the team after triage.
+  const previewTeam = selectTeam(diff, config);
+  const lineCount = diff.totalAdditions + diff.totalDeletions;
+  return plannerEnabled
+    ? {
+        phase: 'planning',
+        lineCount,
+        agentCount: 0,
+      }
+    : {
+        phase: 'started',
+        lineCount,
+        agentCount: previewTeam.finders.length,
+        agentProgress: previewTeam.finders.map(a => ({ name: a.name, status: 'reviewing' as const })),
+      };
+}
+
+/** Posts a verdict for a diff no reviewer reads, then replaces the previous review. */
+async function postUnreviewedRound(
+  target: RunTarget, commentId: number, dashboard: DashboardData, diff: ParsedDiff,
+  verdict: 'APPROVE' | 'COMMENT', summary: string,
+): Promise<void> {
+  const { octokit, owner, repo, prNumber, commitSha } = target;
+  const result = { verdict, summary, findings: [], highlights: [], reviewComplete: true, agentNames: [] as string[] };
+  const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
+  await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId);
+  await updateProgressComment(octokit, owner, repo, commentId, dashboard);
+}
+
+/**
+ * Eagerly install any provider CLI before the planner timer starts. The
+ * fallback `npm install -g` inside `ensureCLI` takes around 30s on a
+ * cold runner and would otherwise race the planner's own 30s timeout.
+ * Warming up once here pays the cost before any per-call deadline runs.
+ * Deduplicate by client instance so roles that share a client don't
+ * serialize redundant install retries on failure.
+ */
+async function warmUpClients(clients: ReviewClients): Promise<void> {
+  const warmupTargets = new Set<LLMClient>(
+    [clients.planner, clients.reviewer, clients.reviewerPair, clients.judge, clients.dedup].filter(
+      (c): c is LLMClient => !!c,
+    ),
+  );
+  await Promise.allSettled(
+    [...warmupTargets].map((c) =>
+      c.warmupCLI
+        ? c.warmupCLI().catch((error) =>
+            core.warning(
+              sanitizeLogOutput(
+                `Provider CLI warmup failed (${c.constructor.name}): ${error instanceof Error ? error.message : error}`,
+              ),
+            ),
+          )
+        : Promise.resolve(),
+    ),
+  );
+}
+
+async function fetchReviewRepoContext(target: RunTarget, changedPaths: string[]): Promise<string> {
+  const { octokit, owner, repo, baseRef } = target;
+  let repoContext = await fetchRepoContext(octokit, owner, repo, baseRef);
+  try {
+    const subdirContext = await fetchSubdirClaudeMd(octokit, owner, repo, baseRef, changedPaths);
+    if (subdirContext) {
+      repoContext = repoContext ? `${repoContext}\n\n---\n\n${subdirContext}` : subdirContext;
+    }
+  } catch (error) {
+    core.warning(`Failed to fetch subdirectory CLAUDE.md files: ${error}`);
+  }
+  return repoContext;
+}
+
+async function loadRunMemory(
+  config: ReviewConfig, resolvedToken: string, owner: string, repo: string,
+): Promise<{ memory: RepoMemory | null; memoryLoadStatus: MemoryLoadStatus; memoryLoadError?: string }> {
+  if (!config.memory?.enabled) {
+    return { memory: null, memoryLoadStatus: 'disabled' };
+  }
+  const memoryToken = getMemoryToken(resolvedToken);
+  if (!memoryToken) {
+    core.warning('No memory token available — skipping memory load. Set memory_repo_token or github_token.');
+    return { memory: null, memoryLoadStatus: 'no_token' };
+  }
+  const memoryOctokit = github.getOctokit(memoryToken);
+  const memoryRepo = config.memory?.repo || `${owner}/review-memory`;
+  try {
+    const memory = await loadMemory(memoryOctokit, memoryRepo, repo);
+    core.info(`Loaded memory: ${memory.learnings.length} learnings, ${memory.suppressions.length} suppressions`);
+    return { memory, memoryLoadStatus: 'loaded' };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const sanitized = sanitizeTokens(message);
+    core.warning(`Failed to load review memory: ${sanitized}`);
+    return { memory: null, memoryLoadStatus: 'failed', memoryLoadError: sanitized.length > 300 ? sanitized.slice(0, 300) + '...' : sanitized };
+  }
+}
+
+/** Replaces the progress comment with a notice that automatic review is paused. */
+async function postPauseNotice(
+  target: RunTarget, commentId: number, capReached: boolean, priorRoundCount: number, maxAutoRounds: number,
+): Promise<void> {
+  const { octokit, owner, repo, prNumber } = target;
+  core.info(capReached
+    ? `Round cap reached (${priorRoundCount} prior rounds >= max ${maxAutoRounds}) — skipping auto review`
+    : 'Last round did not converge — skipping auto review');
+  try {
+    await octokit.rest.issues.deleteComment({ owner, repo, comment_id: commentId });
+  } catch (error) {
+    core.warning(`Failed to delete progress comment: ${error}`);
+  }
+  try {
+    const reason = capReached
+      ? `Manki has completed ${priorRoundCount}/${maxAutoRounds} review rounds on this PR.`
+      : 'The last Manki round found a blocker that came back after a fix.';
+    const body = [
+      PROGRESS_MARKER,
+      `${reason} Automatic review is paused. Tick the box to run another round, or comment \`@manki review\`:`,
+      '',
+      '- [ ] Force review',
+      '',
+      FORCE_CAP_MARKER,
+    ].join('\n');
+    await octokit.rest.issues.createComment({
+      owner,
+      repo,
+      issue_number: prNumber,
+      body,
+    });
+  } catch (error) {
+    core.warning(`Failed to post round-cap notice: ${error}`);
+  }
+}
+
+/** Collects the open review threads with the code now at each, and the contents of the files the review reads. */
+async function collectOpenThreads(
+  target: RunTarget, recap: RecapState, diff: ParsedDiff,
+): Promise<{ openThreads: OpenThread[]; fileContents?: Map<string, string> }> {
+  const { octokit, owner, repo, commitSha } = target;
+  const baseOpenThreads = recap.previousFindings
+    .filter((f): f is PreviousFinding & { threadId: string } =>
+      (f.status === 'open' || f.status === 'replied') && f.threadId != null && f.threadId !== '')
+    .map(f => ({
+      threadId: f.threadId,
+      threadUrl: f.threadUrl,
+      title: f.title,
+      file: f.file,
+      line: f.line,
+      severity: f.severity,
+      description: f.description,
+      suggestedFix: f.suggestedFix,
+    }));
+
+  // Fetch full file contents for changed files so reviewers have surrounding context.
+  // Also fetch each open thread's file (if missing from changed files) so the judge
+  // can see the current code at the flagged region when deciding whether the
+  // thread is addressed.
+  const changedFilePaths = diff.files
+    .filter(f => f.changeType !== 'deleted')
+    .map(f => f.path);
+  const threadFilePaths = baseOpenThreads.map(t => t.file).filter(p => !changedFilePaths.includes(p));
+  const filePaths = [...changedFilePaths, ...threadFilePaths];
+  let fileContents: Map<string, string> | undefined;
+  try {
+    fileContents = await fetchFileContents(octokit, owner, repo, commitSha, filePaths);
+  } catch (error) {
+    core.warning(`Failed to fetch file contents: ${error}`);
+  }
+
+  const openThreads = baseOpenThreads.map(t => ({
+    ...t,
+    currentCode: extractCurrentCodeWindow(fileContents, t.file, t.line),
+  }));
+  return { openThreads, fileContents };
+}
+
+/** Fetches the diff since the last reviewed commit, the issues the PR body links, and the static analysis results. */
+async function collectRoundSignals(
+  target: RunTarget, config: ReviewConfig, recap: RecapState, diff: ParsedDiff, configPath: string, prBody?: string,
+): Promise<{ interRoundDiff?: string; linkedIssues?: LinkedIssue[]; staticSignals: StaticSignal[] }> {
+  const { octokit, owner, repo, prNumber, commitSha, baseRef } = target;
+  // Fetch inter-round diff (prior round commit -> current head) so the judge
+  // can ground per-thread resolution in actual changes since last review.
+  let interRoundDiff: string | undefined;
+  const lastPriorSha = recap.priorRounds.at(-1)?.meta.commitSha;
+  const shouldFetchDiff = !!(lastPriorSha && lastPriorSha !== commitSha);
+
+  // Read with the workflow token, which carries the `checks` and `security-events` permissions the workflow grants.
+  const workflowToken = core.getInput('github_token');
+  const staticSignalsPromise = collectStaticSignals(workflowToken ? github.getOctokit(workflowToken) : octokit, {
+    owner, repo, prNumber, headSha: commitSha, baseRef, configPath, diff,
+  });
+
+  let linkedIssues;
+  const diffPromise: Promise<string | undefined> = shouldFetchDiff && lastPriorSha
+    ? fetchInterRoundDiff(octokit, owner, repo, lastPriorSha, commitSha)
+      .then(raw => filterRawDiff(raw, config.exclude_paths))
+    : Promise.resolve(undefined);
+  const linkedIssuesPromise = prBody
+    ? fetchLinkedIssues(octokit, owner, repo, prBody)
+    : Promise.resolve(undefined);
+  const [diffResult, linkedIssuesResult] = await Promise.allSettled([diffPromise, linkedIssuesPromise]);
+
+  if (shouldFetchDiff) {
+    if (diffResult.status === 'fulfilled') {
+      interRoundDiff = diffResult.value;
+    } else {
+      core.warning(`Failed to fetch inter-round diff: ${diffResult.reason}`);
+    }
+  } else if (lastPriorSha === commitSha) {
+    // Same SHA as last round (force-push to same tree, or replay) — empty diff.
+    interRoundDiff = '';
+  }
+
+  if (prBody) {
+    if (linkedIssuesResult.status === 'fulfilled') {
+      linkedIssues = linkedIssuesResult.value;
+      if (linkedIssues && linkedIssues.length > 0) {
+        core.info(`Fetched ${linkedIssues.length} linked issue(s) from PR body`);
+      }
+    } else {
+      core.warning(`Failed to fetch linked issues: ${linkedIssuesResult.reason}`);
+    }
+  }
+
+  const staticSignals = await staticSignalsPromise;
+  return { interRoundDiff, linkedIssues, staticSignals };
+}
+
+/** Runs the review pipeline and mirrors its progress on the dashboard in the progress comment. */
+async function reviewRound(
+  run: ReviewRun, clients: ReviewClients, inputs: Omit<ReviewOptions, 'onProgress'>,
+): Promise<ReviewStageResult> {
+  const { octokit, owner, repo, commentId, dashboard, progress } = run;
+  let reviewEndTime = run.parseEndTime;
+
+  function scheduleDashboardFlush(): void {
+    if (progress.flushTimer) clearTimeout(progress.flushTimer);
+    progress.flushTimer = setTimeout(() => {
+      progress.flushTimer = null;
+      updateProgressDashboard(octokit, owner, repo, commentId, dashboard)
+        .catch(err => core.warning(`Failed to update dashboard: ${err}`));
+    }, 500);
+  }
+
+  const result = await runReview(clients, {
+    ...inputs,
+    onProgress: (event) => {
+      if (event.phase === 'planning') {
+        core.info('Planner analyzing PR content...');
+        if (event.teamAgentNames) {
+          if (event.plannerResult && event.reviewerEffort) {
+            dashboard.plannerInfo = {
+              agentCount: event.teamAgentNames.length,
+              reviewerEffort: event.reviewerEffort,
+              judgeEffort: event.plannerResult.judgeEffort,
+              prType: event.plannerResult.prType,
+            };
+          }
+          dashboard.agentCount = event.teamAgentNames.length;
+          dashboard.agentProgress = event.teamAgentNames.map(name => ({ name, status: 'reviewing' as const }));
+          dashboard.plannerDurationMs = event.plannerDurationMs;
+          if (event.heuristicFallback) dashboard.heuristicFallback = true;
+          dashboard.phase = 'started';
+          scheduleDashboardFlush();
+        }
+      } else if (event.phase === 'agent-complete') {
+        if (dashboard.agentProgress && event.agentName) {
+          const entry = dashboard.agentProgress.find(a => a.name === event.agentName);
+          if (entry) {
+            if (event.agentStatus === 'retrying') {
+              entry.status = 'retrying';
+              entry.retryCount = event.retryCount;
+            } else {
+              entry.status = event.agentStatus === 'failure' ? 'failed' : 'done';
+              entry.findingCount = event.agentFindingCount;
+              entry.durationMs = event.agentDurationMs;
+              if (event.agentStatus === 'failure' && event.retryCount) {
+                entry.retryCount = event.retryCount;
+              }
+            }
+          }
+        }
+        scheduleDashboardFlush();
+      } else if (event.phase === 'reviewed') {
+        cancelDashboardFlush(progress);
+        reviewEndTime = Date.now();
+        dashboard.phase = 'reviewed';
+        dashboard.rawFindingCount = event.rawFindingCount;
+        updateProgressDashboard(octokit, owner, repo, commentId, dashboard)
+          .catch(err => core.warning(`Failed to update dashboard: ${err}`));
+      } else if (event.phase === 'judging') {
+        cancelDashboardFlush(progress);
+        dashboard.phase = 'reviewed';
+        dashboard.rawFindingCount = event.rawFindingCount;
+        dashboard.judgeInputCount = event.judgeInputCount;
+        updateProgressDashboard(octokit, owner, repo, commentId, dashboard)
+          .catch(err => core.warning(`Failed to update dashboard: ${err}`));
+      }
+    },
+  });
+  return { result, reviewEndTime, judgeEndTime: Date.now() };
+}
+
+/** Fails the run and posts the incomplete round as a COMMENT, so the previous review stays standing. */
+async function postIncompleteRound(run: ReviewRun, result: ReviewResult): Promise<void> {
+  const { octokit, owner, repo, prNumber, commitSha, commentId, dashboard, diff } = run;
+  cancelDashboardFlush(run.progress);
+  core.setFailed(`Review incomplete: ${failureReason(result.summary)}`);
+  result.verdict = 'COMMENT';
+  await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
+  dashboard.phase = 'complete';
+  await updateProgressComment(octokit, owner, repo, commentId, dashboard);
+}
+
+/**
+ * Resolve threads the judge marked `addressed`. Other statuses
+ * (`not_addressed`, `uncertain`) are logged for audit but never trigger a
+ * resolveReviewThread mutation. Unknown thread IDs are filtered.
+ *
+ * Defense-in-depth: when the inter-round diff is known-empty (force-pushed
+ * rebase to identical tree), no thread can be addressed. The judge already
+ * synthesizes `not_addressed` for every thread in this case, but a future
+ * refactor that bypasses `runJudgeAgent` would lose that guarantee. Drop
+ * any `addressed` evaluation here as a second layer. `undefined` is the
+ * unknown sentinel (compare-API failure) and must not trigger the guard.
+ */
+async function resolveAddressedThreads(run: ReviewRun, result: ReviewResult): Promise<void> {
+  const hasPriorRounds = run.recap.priorRounds.length > 0;
+  const interRoundDiffKnownEmpty = hasPriorRounds && isEmptyInterRoundDiff(run.interRoundDiff);
+  if (result.threadEvaluations && result.threadEvaluations.length > 0) {
+    const knownThreadIds = new Set(run.openThreads.map(t => t.threadId));
+    for (const { threadId, status, reason } of result.threadEvaluations) {
+      if (!knownThreadIds.has(threadId)) {
+        core.debug(`Skipping unknown thread ${threadId} — not in openThreads allowlist`);
+        continue;
+      }
+      core.info(`Thread ${threadId}: ${status} — ${reason}`);
+      if (status !== 'addressed') continue;
+      if (interRoundDiffKnownEmpty) {
+        core.info(`Thread ${threadId}: ignoring 'addressed' verdict — inter-round diff is empty`);
+        continue;
+      }
+      try {
+        await resolveReviewThread(run.octokit, threadId);
+        core.info(`Judge resolved: "${reason}" — thread ${threadId}`);
+      } catch (error) {
+        core.debug(`Failed to resolve thread ${threadId}: ${error}`);
+      }
+    }
+  }
+}
+
+/** Posts the round's review and dismisses the previous one. Returns the new review's id. */
+async function postRound(run: ReviewRun, result: ReviewResult, context: RoundContext, reviewTimeMs: number): Promise<number> {
+  const { octokit, owner, repo, prNumber, commitSha, diff, config, recap, interRoundDiff } = run;
+  const hasPriorRounds = recap.priorRounds.length > 0;
+  const parsedInterRoundDiff = hasPriorRounds && interRoundDiff !== undefined ? parsePRDiff(interRoundDiff) : undefined;
+  const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, context, reviewTimeMs, config, {
+    interRoundDiff: parsedInterRoundDiff,
+    existingThreads: recap.previousFindings,
+  });
+  await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId);
+  return reviewId;
+}
+
+/** Marks the progress comment complete with the judge's decisions and the round's timing. */
+async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult): Promise<void> {
+  const { octokit, owner, repo, commentId, dashboard, config, models, startTime, parseEndTime } = run;
+  const { result, reviewEndTime, judgeEndTime } = stage;
+
+  // Reconcile the dashboard with the actual resolved team. Agents may fail
+  // and drop out, so reconcile unconditionally to keep agentCount and
+  // agentProgress accurate.
+  reconcileDashboardAgents(dashboard, result.agentNames);
+
+  const reviewerEffort = result.agentEffortMap?.values().next().value;
+  if (result.plannerResult && reviewerEffort) {
+    dashboard.plannerInfo = {
+      agentCount: result.agentNames.length,
+      reviewerEffort,
+      judgeEffort: result.plannerResult.judgeEffort,
+      prType: result.plannerResult.prType,
+    };
+  }
+
+  const allJudgedForDashboard = result.allJudgedFindings || result.findings;
+  const rawForLookup = result.rawFindings ?? allJudgedForDashboard;
+  const judgeDecisions = allJudgedForDashboard.map(f => {
+    const kept = f.severity !== 'ignore';
+    const originalSeverity = kept
+      ? f.severity
+      : rawForLookup.find(r => r.title === f.title && r.file === f.file && r.line === f.line)?.severity ?? f.severity;
+    return {
+      title: f.title,
+      severity: f.severity,
+      reasoning: f.judgeNotes || '',
+      confidence: f.judgeConfidence || 'medium',
+      kept,
+      originalSeverity,
+    };
+  });
+
+  const keptSeverities: Record<string, number> = {};
+  const droppedSeverities: Record<string, number> = {};
+  const keptSet = new Set(result.findings);
+  for (const f of result.findings) {
+    keptSeverities[f.severity] = (keptSeverities[f.severity] ?? 0) + 1;
+  }
+  // judgeDecisions is built in lock-step with allJudgedForDashboard, so the
+  // index aligns and d.originalSeverity carries the pre-judge severity even
+  // when the judge merged or renamed the finding before dropping it.
+  allJudgedForDashboard.forEach((f, i) => {
+    if (!keptSet.has(f)) {
+      const sev = judgeDecisions[i].originalSeverity;
+      droppedSeverities[sev] = (droppedSeverities[sev] ?? 0) + 1;
+    }
+  });
+
+  const judgeDroppedCount = allJudgedForDashboard.length - keptSet.size;
+  const completeDashboard: DashboardData = {
+    ...dashboard,
+    phase: 'complete',
+    keptCount: result.findings.length,
+    droppedCount: judgeDroppedCount,
+    keptSeverities,
+    droppedSeverities,
+    ...(result.testNitSuppressedCount != null && result.testNitSuppressedCount > 0 && { testNitSuppressedCount: result.testNitSuppressedCount }),
+    judgeDurationMs: judgeEndTime - reviewEndTime,
+  };
+
+  const timing = {
+    parseMs: parseEndTime - startTime,
+    reviewMs: reviewEndTime - parseEndTime,
+    judgeMs: judgeEndTime - reviewEndTime,
+    totalMs: judgeEndTime - startTime,
+  };
+
+  const metadata: ReviewMetadata = {
+    config: {
+      reviewerModel: models.reviewer,
+      judgeModel: models.judge,
+      triage: result.triage
+        ? `trivial=${result.triage.trivial}, subtle=${result.triage.subtle}, paired=${result.triage.paired} (${result.plannerSource ?? 'planner'}${result.sensitivePaths ? ', security-sensitive paths' : ''}${result.ciOrDependencyPaths ? ', CI or dependency paths' : ''})`
+        : 'none',
+      teamAgents: result.agentNames,
+      memoryEnabled: config.memory?.enabled ?? false,
+      memoryRepo: config.memory?.repo ?? '',
+    },
+    judgeDecisions,
+    timing,
+  };
+
+  await updateProgressComment(octokit, owner, repo, commentId, completeDashboard, metadata);
+}
+
+function setReviewOutputs(reviewId: number, context: RoundContext, result: ReviewResult): void {
+  const flatAliases = roundContextToFlatAliases(context);
+  const severityMap = context.findings.severityCounts;
+  core.setOutput('review_id', reviewId.toString());
+  core.setOutput('verdict', flatAliases.verdict);
+  core.setOutput('findings_count', flatAliases.findingsKept.toString());
+  core.setOutput('findings_json', JSON.stringify(result.findings));
+
+  // `result.findings` excludes 'ignore' severity (filtered in review.ts), so
+  // the counts here mirror `severityMap` above and the legacy `severity` alias.
+  core.setOutput('severity_counts', JSON.stringify(flatAliases.severity));
+
+  core.setOutput('judge_model', flatAliases.judgeModel);
+
+  core.info(`Review complete: ${result.verdict} with ${flatAliases.findingsKept} findings`);
+  core.info(`Severity breakdown: ${severityMap.blocker} blocker, ${severityMap.warning} warning, ${severityMap.suggestion} suggestion, ${severityMap.nitpick} nitpick`);
+}
+
 async function runFullReview(
   owner: string,
   repo: string,
@@ -518,7 +1152,7 @@ async function runFullReview(
   prContext?: PrContext,
   options: FullReviewOptions = {},
 ): Promise<void> {
-  const { prAuthorLogin, forceReview, skipCap, bypassHint, trigger = buildRoundTrigger(), headRepoFullName } = options;
+  const { prAuthorLogin, forceReview, skipCap, trigger = buildRoundTrigger(), headRepoFullName } = options;
   core.info(`Starting review for ${owner}/${repo}#${prNumber}`);
 
   const providerInputs = readProviderInputs();
@@ -529,8 +1163,9 @@ async function runFullReview(
   }
 
   const startTime = Date.now();
-  const configPathInput = core.getInput('config_path');
+  const configPath = core.getInput('config_path') || '.manki.yml';
   const { octokit, bot, identity, resolvedToken } = await getAuth();
+  const target: RunTarget = { octokit, bot, owner, repo, prNumber, commitSha, baseRef };
 
   if (identity === 'actions') {
     try {
@@ -540,260 +1175,55 @@ async function runFullReview(
     }
   }
 
-  let progressCommentId: number | undefined;
-  let dashboardFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  const progress: RunProgress = { flushTimer: null };
 
   try {
-    // Read `.manki.yml` from the local checkout so a PR that modifies its own
-    // config (e.g., extending `exclude_paths`) takes effect on the same PR.
-    // `process.cwd()` is the PR tree because the action runs as a local
-    // composite via `./` in the consumer workflow.
-    const configRelPath = configPathInput || '.manki.yml';
-    const cwd = path.resolve(process.cwd());
-    const configAbsPath = path.isAbsolute(configRelPath)
-      ? configRelPath
-      : path.join(cwd, configRelPath);
-    let resolvedConfigPath: string;
+    const config = await loadRunConfig(target, configPath, headRepoFullName);
+    if (!config) return;
+    if (await skipsRound(target, config, trigger, forceReview)) return;
+
+    const commentId = await postProgressComment(octokit, owner, repo, prNumber);
+    progress.commentId = commentId;
+
+    const recap = await loadRecap(target, config, commentId, prAuthorLogin);
+    if (!recap) return;
+
+    let built: ReturnType<typeof buildReviewClients>;
     try {
-      resolvedConfigPath = fs.realpathSync(configAbsPath);
-    } catch {
-      resolvedConfigPath = configAbsPath;
-    }
-    if (resolvedConfigPath !== cwd && !resolvedConfigPath.startsWith(cwd + path.sep)) {
-      core.warning(`\`config_path\` resolved outside workspace — using defaults`);
-    }
-    const effectiveConfigPath = (resolvedConfigPath === cwd || resolvedConfigPath.startsWith(cwd + path.sep))
-      ? resolvedConfigPath
-      : path.join(cwd, '.manki.yml');
-    let rawConfig: ReviewConfig;
-    try {
-      rawConfig = loadConfigFromFile(effectiveConfigPath);
-    } catch (error) {
-      const reason = failureReason(error);
-      core.setFailed(reason);
-      await postConfigErrorComment(octokit, owner, repo, prNumber, reason);
-      return;
-    }
-    const isFork = headRepoFullName !== undefined && headRepoFullName !== `${owner}/${repo}`;
-    const config = isFork ? sanitizeForkConfig(rawConfig) : rawConfig;
-
-    // Scan for a competing in-progress marker before posting our own to shorten
-    // the race window. A residual window remains when two runs both pass this scan
-    // before either posts; tracking issue for the strict atomic fix: https://github.com/manki-review/manki/issues/798
-    if (await checkConcurrentSubmissionLock(octokit, bot, owner, repo, prNumber, config)) {
-      core.warning('Defense-in-depth lock engaged — this run will not post a review. If no review appears on the PR, re-trigger with `/manki review`.');
-      return;
-    }
-
-    // Sibling head-SHA dedupe: serialized siblings (e.g., `pull_request_review`
-    // and `pull_request_review_comment` fan-out from one human review) can both
-    // pass the in-progress scan when the prior run's marker has already been
-    // cleared. The state-based check on the bot's posted reviews catches that.
-    // Honors `forceReview` so explicit re-review on the same SHA still proceeds.
-    if (!forceReview && await hasBotReviewOnCommit(octokit, bot, owner, repo, prNumber, commitSha)) {
-      core.warning(`Bot already posted a non-DISMISSED review on commit ${commitSha.slice(0, 7)} — bailing serialized sibling run.`);
-      await postReviewSkippedComment(octokit, owner, repo, prNumber, commitSha, 'already_reviewed');
-      return;
-    }
-
-    // Fast-exit when the PR head has advanced past the event SHA between the
-    // event firing and this run reaching the LLM phase. Placed before any
-    // progress comment is posted so no marker cleanup is required on bail.
-    // Fail-open: a `pulls.get` failure does not disable the review.
-    try {
-      const { data: prHead } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
-      const headSha = prHead.head?.sha;
-      if (!headSha) {
-        core.warning('Head SHA lookup returned no sha, proceeding');
-      } else if (headSha !== commitSha) {
-        core.info(`Event SHA ${commitSha.slice(0, 7)} != head SHA ${headSha.slice(0, 7)} — bailing out`);
-        return;
-      }
-    } catch (error) {
-      core.warning(`Head SHA lookup failed, proceeding: ${error instanceof Error ? error.message : error}`);
-    }
-
-    if (trigger.event === 'pull_request:synchronize' && config.auto_review) {
-      const standing = await findUnchangedVerdict(octokit, bot, owner, repo, prNumber, baseRef, commitSha, config.exclude_paths);
-      if (standing) {
-        const shortSha = standing.commitSha.slice(0, 7);
-        try {
-          // A push can dismiss approvals, so the approval is posted again on the new head.
-          if (standing.verdict === 'APPROVE') {
-            await octokit.rest.pulls.createReview({
-              owner, repo, pull_number: prNumber, commit_id: commitSha, event: 'APPROVE',
-              body: `${PROGRESS_MARKER}\n✅ **Approved.** No change to this PR since the reviewed commit \`${shortSha}\`. The previous verdict stands.`,
-            });
-          }
-          core.info(`Round SKIPPED: no change since reviewed commit ${shortSha}, ${standing.verdict} stands`);
-          return;
-        } catch (error) {
-          core.warning(`Could not post the previous approval again, reviewing in full: ${error instanceof Error ? error.message : error}`);
-        }
-      }
-    }
-
-    progressCommentId = await postProgressComment(octokit, owner, repo, prNumber);
-
-    const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, prAuthorLogin);
-
-    if (github.context.eventName === 'pull_request' && !config.auto_review) {
-      core.info('auto_review is disabled — skipping');
-      await octokit.rest.issues.deleteComment({ owner, repo, comment_id: progressCommentId });
-      return;
-    }
-
-    await reopenAuthorResolvedThreads(octokit, recap.previousFindings);
-
-    const plannerModel = resolveModel(config, 'planner');
-    const reviewerModel = resolveModel(config, 'reviewer');
-    const reviewerPairModel = resolvePairModel(config);
-    const judgeModel = resolveModel(config, 'judge');
-    const dedupModel = resolveModel(config, 'dedup');
-    core.info(`Models — planner: ${plannerModel}, reviewer: ${reviewerModel}, reviewer pair: ${reviewerPairModel}, judge: ${judgeModel}, dedup: ${dedupModel}`);
-
-    const buildClient = (model: string) => {
-      const spec = parseModelSpec(model);
-      const auth = buildAuthForProvider(spec.provider, providerInputs);
-      return createLLMClient(spec.provider, spec.model, auth);
-    };
-    let reviewerClient: LLMClient, reviewerPairClient: LLMClient, judgeClient: LLMClient, dedupClient: LLMClient;
-    let plannerClient: LLMClient | undefined;
-    try {
-      reviewerClient = buildClient(reviewerModel);
-      reviewerPairClient = reviewerPairModel === reviewerModel ? reviewerClient : buildClient(reviewerPairModel);
-      judgeClient = buildClient(judgeModel);
-      plannerClient = config.planner?.enabled !== false ? buildClient(plannerModel) : undefined;
-      dedupClient = buildClient(dedupModel);
+      built = buildReviewClients(config, providerInputs);
     } catch (error) {
       core.setFailed(`Invalid model config: ${error instanceof Error ? error.message : error}`);
-      await octokit.rest.issues.deleteComment({ owner, repo, comment_id: progressCommentId }).catch(() => {});
+      await octokit.rest.issues.deleteComment({ owner, repo, comment_id: commentId }).catch(() => {});
       return;
     }
+    const { clients, models } = built;
 
-    const fullDiff = parsePRDiff(await fetchPRDiff(octokit, owner, repo, prNumber));
-    const { diff, excluded: excludedFiles } = filterDiff(fullDiff, config.exclude_paths);
-    const filteredFiles = diff.files;
-    const rawDiff = rebuildRawDiff(diff);
+    const { fullDiff, diff, excludedFiles, rawDiff } = await collectDiff(target, config);
     const parseEndTime = Date.now();
-    const plannerEnabled = !!plannerClient;
-    // Without a planner the team is the fail-safe one. With one, `runReview` reports the team after triage.
-    const previewTeam = selectTeam(diff, config);
     const lineCount = diff.totalAdditions + diff.totalDeletions;
-
-    const dashboard: DashboardData = plannerEnabled
-      ? {
-          phase: 'planning',
-          lineCount,
-          agentCount: 0,
-        }
-      : {
-          phase: 'started',
-          lineCount,
-          agentCount: previewTeam.finders.length,
-          agentProgress: previewTeam.finders.map(a => ({ name: a.name, status: 'reviewing' as const })),
-        };
-    await updateProgressDashboard(octokit, owner, repo, progressCommentId, dashboard);
+    const dashboard = initialDashboard(diff, config, !!clients.planner);
+    await updateProgressDashboard(octokit, owner, repo, commentId, dashboard);
 
     if (isDiffTooLarge(diff, config.max_diff_lines)) {
       core.warning(`Diff too large (${lineCount} reviewable lines > ${config.max_diff_lines} max)`);
-      const result = {
-        verdict: 'COMMENT' as const,
-        summary: `Too large to review automatically: ${lineCount} changed lines, above the limit of ${config.max_diff_lines}.`,
-        findings: [],
-        highlights: [],
-        reviewComplete: true,
-        agentNames: [] as string[],
-      };
-      const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
-      await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId);
-      await updateProgressComment(octokit, owner, repo, progressCommentId, dashboard);
+      await postUnreviewedRound(target, commentId, dashboard, diff, 'COMMENT',
+        `Too large to review automatically: ${lineCount} changed lines, above the limit of ${config.max_diff_lines}.`);
       return;
     }
 
-    core.info(`Reviewing ${filteredFiles.length} files (${fullDiff.files.length} total, ${excludedFiles.length} filtered out)`);
+    core.info(`Reviewing ${diff.files.length} files (${fullDiff.files.length} total, ${excludedFiles.length} filtered out)`);
 
-    if (filteredFiles.length === 0) {
+    if (diff.files.length === 0) {
       core.info('No reviewable files in diff');
-      const result = {
-        verdict: 'APPROVE' as const,
-        summary: 'No reviewable files in this PR (all filtered out by config).',
-        findings: [],
-        highlights: [],
-        reviewComplete: true,
-        agentNames: [] as string[],
-      };
-      const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
-      await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId);
-      await updateProgressComment(octokit, owner, repo, progressCommentId, dashboard);
+      await postUnreviewedRound(target, commentId, dashboard, diff, 'APPROVE', 'No reviewable files in this PR (all filtered out by config).');
       return;
     }
 
-    // Eagerly install any provider CLI before the planner timer starts. The
-    // fallback `npm install -g` inside `ensureCLI` takes around 30s on a
-    // cold runner and would otherwise race the planner's own 30s timeout.
-    // Warming up once here pays the cost before any per-call deadline runs.
-    // Deduplicate by client instance so roles that share a client don't
-    // serialize redundant install retries on failure. Placed after the
-    // diff-size and empty-files guards so cold installs are skipped on paths
-    // that never invoke an LLM.
-    const warmupTargets = new Set<LLMClient>(
-      [plannerClient, reviewerClient, reviewerPairClient, judgeClient, dedupClient].filter(
-        (c): c is LLMClient => !!c,
-      ),
-    );
-    await Promise.allSettled(
-      [...warmupTargets].map((c) =>
-        c.warmupCLI
-          ? c.warmupCLI().catch((error) =>
-              core.warning(
-                sanitizeLogOutput(
-                  `Provider CLI warmup failed (${c.constructor.name}): ${error instanceof Error ? error.message : error}`,
-                ),
-              ),
-            )
-          : Promise.resolve(),
-      ),
-    );
+    // Placed after the diff-size and empty-files guards so cold installs are skipped on paths that never invoke an LLM.
+    await warmUpClients(clients);
 
-    let repoContext = await fetchRepoContext(octokit, owner, repo, baseRef);
-
-    const changedPaths = filteredFiles.map(f => f.path);
-    try {
-      const subdirContext = await fetchSubdirClaudeMd(octokit, owner, repo, baseRef, changedPaths);
-      if (subdirContext) {
-        repoContext = repoContext ? `${repoContext}\n\n---\n\n${subdirContext}` : subdirContext;
-      }
-    } catch (error) {
-      core.warning(`Failed to fetch subdirectory CLAUDE.md files: ${error}`);
-    }
-
-    let memory: RepoMemory | null = null;
-    let memoryLoadStatus: MemoryLoadStatus;
-    let memoryLoadError: string | undefined;
-    if (!config.memory?.enabled) {
-      memoryLoadStatus = 'disabled';
-    } else {
-      const memoryToken = getMemoryToken(resolvedToken);
-      if (!memoryToken) {
-        core.warning('No memory token available — skipping memory load. Set memory_repo_token or github_token.');
-        memoryLoadStatus = 'no_token';
-      } else {
-        const memoryOctokit = github.getOctokit(memoryToken);
-        const memoryRepo = config.memory?.repo || `${owner}/review-memory`;
-        try {
-          memory = await loadMemory(memoryOctokit, memoryRepo, repo);
-          core.info(`Loaded memory: ${memory.learnings.length} learnings, ${memory.suppressions.length} suppressions`);
-          memoryLoadStatus = 'loaded';
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          const sanitized = sanitizeTokens(message);
-          core.warning(`Failed to load review memory: ${sanitized}`);
-          memoryLoadStatus = 'failed';
-          memoryLoadError = sanitized.length > 300 ? sanitized.slice(0, 300) + '...' : sanitized;
-        }
-      }
-    }
+    const repoContext = await fetchReviewRepoContext(target, diff.files.map(f => f.path));
+    const { memory, memoryLoadStatus, memoryLoadError } = await loadRunMemory(config, resolvedToken, owner, repo);
 
     const priorRoundCount = recap.priorRounds.length;
     const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
@@ -801,691 +1231,65 @@ async function runFullReview(
     const notConverging = recap.priorRounds.at(-1)?.meta.outcome === 'NOT_CONVERGING';
     const paused = capReached || notConverging;
     if (paused && !skipCap) {
-      core.info(capReached
-        ? `Round cap reached (${priorRoundCount} prior rounds >= max ${maxAutoRounds}) — skipping auto review`
-        : 'Last round did not converge — skipping auto review');
-      try {
-        await octokit.rest.issues.deleteComment({ owner, repo, comment_id: progressCommentId });
-      } catch (error) {
-        core.warning(`Failed to delete progress comment: ${error}`);
-      }
-      try {
-        const reason = capReached
-          ? `Manki has completed ${priorRoundCount}/${maxAutoRounds} review rounds on this PR.`
-          : 'The last Manki round found a blocker that came back after a fix.';
-        const body = [
-          PROGRESS_MARKER,
-          `${reason} Automatic review is paused. Tick the box to run another round, or comment \`@manki review\`:`,
-          '',
-          '- [ ] Force review',
-          '',
-          FORCE_CAP_MARKER,
-        ].join('\n');
-        await octokit.rest.issues.createComment({
-          owner,
-          repo,
-          issue_number: prNumber,
-          body,
-        });
-      } catch (error) {
-        core.warning(`Failed to post round-cap notice: ${error}`);
-      }
+      await postPauseNotice(target, commentId, capReached, priorRoundCount, maxAutoRounds);
       return;
     }
 
-    const isFollowUp = recap.previousFindings.length > 0;
-    const baseOpenThreads = recap.previousFindings
-      .filter((f): f is PreviousFinding & { threadId: string } =>
-        (f.status === 'open' || f.status === 'replied') && f.threadId != null && f.threadId !== '')
-      .map(f => ({
-        threadId: f.threadId,
-        threadUrl: f.threadUrl,
-        title: f.title,
-        file: f.file,
-        line: f.line,
-        severity: f.severity,
-        description: f.description,
-        suggestedFix: f.suggestedFix,
-      }));
+    const { openThreads, fileContents } = await collectOpenThreads(target, recap, diff);
+    const { interRoundDiff, linkedIssues, staticSignals } = await collectRoundSignals(target, config, recap, diff, configPath, prContext?.body);
 
-    // Fetch full file contents for changed files so reviewers have surrounding context.
-    // Also fetch each open thread's file (if missing from changed files) so the judge
-    // can see the current code at the flagged region when deciding whether the
-    // thread is addressed.
-    const changedFilePaths = filteredFiles
-      .filter(f => f.changeType !== 'deleted')
-      .map(f => f.path);
-    const threadFilePaths = baseOpenThreads.map(t => t.file).filter(p => !changedFilePaths.includes(p));
-    const filePaths = [...changedFilePaths, ...threadFilePaths];
-    let fileContents: Map<string, string> | undefined;
-    try {
-      fileContents = await fetchFileContents(octokit, owner, repo, commitSha, filePaths);
-    } catch (error) {
-      core.warning(`Failed to fetch file contents: ${error}`);
-    }
+    const run: ReviewRun = {
+      ...target, options, trigger, config, models, plannerEnabled: !!clients.planner,
+      recap, priorRoundCount, maxAutoRounds,
+      diff, excludedFiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError,
+      commentId, dashboard, progress, startTime, parseEndTime,
+    };
 
-    const openThreads = baseOpenThreads.map(t => ({
-      ...t,
-      currentCode: extractCurrentCodeWindow(fileContents, t.file, t.line),
-    }));
-    // `null` tells `determineOutcome` the open threads are unknown, so no prior can retire.
-    const verdictOpenThreads = recap.openThreadsState === 'fetch_failed' ? null : openThreads;
-
-    // Fetch inter-round diff (prior round commit -> current head) so the judge
-    // can ground per-thread resolution in actual changes since last review.
-    let interRoundDiff: string | undefined;
-    const lastPriorSha = recap.priorRounds.at(-1)?.meta.commitSha;
-    const shouldFetchDiff = !!(lastPriorSha && lastPriorSha !== commitSha);
-    const prBody = prContext?.body;
-
-    // Read with the workflow token, which carries the `checks` and `security-events` permissions the workflow grants.
-    const workflowToken = core.getInput('github_token');
-    const staticSignalsPromise = collectStaticSignals(workflowToken ? github.getOctokit(workflowToken) : octokit, {
-      owner, repo, prNumber, headSha: commitSha, baseRef, configPath: configRelPath, diff,
+    const stage = await reviewRound(run, clients, {
+      config,
+      diff,
+      rawDiff,
+      repoContext,
+      memory,
+      fileContents,
+      prContext: prContext && staticSignals.length > 0 ? { ...prContext, staticSignals } : prContext,
+      linkedIssues,
+      isFollowUp: recap.previousFindings.length > 0,
+      // `null` tells `determineOutcome` the open threads are unknown, so no prior can retire.
+      openThreads: recap.openThreadsState === 'fetch_failed' ? null : openThreads,
+      previousFindings: recap.previousFindings,
+      priorRounds: recap.priorRounds,
+      prAuthorLogin,
+      interRoundDiff,
+      headSha: commitSha,
+      blockersOnly: paused,
+      finalRound: !paused && maxAutoRounds > 0 && priorRoundCount + 1 === maxAutoRounds,
     });
-
-    let linkedIssues;
-    const diffPromise: Promise<string | undefined> = shouldFetchDiff && lastPriorSha
-      ? fetchInterRoundDiff(octokit, owner, repo, lastPriorSha, commitSha)
-        .then(raw => filterRawDiff(raw, config.exclude_paths))
-      : Promise.resolve(undefined);
-    const linkedIssuesPromise = prBody
-      ? fetchLinkedIssues(octokit, owner, repo, prBody)
-      : Promise.resolve(undefined);
-    const [diffResult, linkedIssuesResult] = await Promise.allSettled([diffPromise, linkedIssuesPromise]);
-
-    if (shouldFetchDiff) {
-      if (diffResult.status === 'fulfilled') {
-        interRoundDiff = diffResult.value;
-      } else {
-        core.warning(`Failed to fetch inter-round diff: ${diffResult.reason}`);
-      }
-    } else if (lastPriorSha === commitSha) {
-      // Same SHA as last round (force-push to same tree, or replay) — empty diff.
-      interRoundDiff = '';
-    }
-
-    if (prBody) {
-      if (linkedIssuesResult.status === 'fulfilled') {
-        linkedIssues = linkedIssuesResult.value;
-        if (linkedIssues && linkedIssues.length > 0) {
-          core.info(`Fetched ${linkedIssues.length} linked issue(s) from PR body`);
-        }
-      } else {
-        core.warning(`Failed to fetch linked issues: ${linkedIssuesResult.reason}`);
-      }
-    }
-
-    const staticSignals = await staticSignalsPromise;
-    const reviewPrContext = prContext && staticSignals.length > 0 ? { ...prContext, staticSignals } : prContext;
-
-    let reviewEndTime = parseEndTime;
-
-    function scheduleDashboardFlush(): void {
-      if (dashboardFlushTimer) clearTimeout(dashboardFlushTimer);
-      dashboardFlushTimer = setTimeout(() => {
-        dashboardFlushTimer = null;
-        updateProgressDashboard(octokit, owner, repo, progressCommentId!, dashboard)
-          .catch(err => core.warning(`Failed to update dashboard: ${err}`));
-      }, 500);
-    }
-
-    const result = await runReview(
-      {
-        reviewer: reviewerClient,
-        reviewerPair: reviewerPairClient,
-        judge: judgeClient,
-        planner: plannerClient,
-        dedup: dedupClient,
-      },
-      {
-        config,
-        diff,
-        rawDiff,
-        repoContext,
-        memory,
-        fileContents,
-        prContext: reviewPrContext,
-        linkedIssues,
-        onProgress: (progress) => {
-          if (progress.phase === 'planning') {
-            core.info('Planner analyzing PR content...');
-            if (progress.teamAgentNames) {
-              if (progress.plannerResult && progress.reviewerEffort) {
-                dashboard.plannerInfo = {
-                  agentCount: progress.teamAgentNames.length,
-                  reviewerEffort: progress.reviewerEffort,
-                  judgeEffort: progress.plannerResult.judgeEffort,
-                  prType: progress.plannerResult.prType,
-                };
-              }
-              dashboard.agentCount = progress.teamAgentNames.length;
-              dashboard.agentProgress = progress.teamAgentNames.map(name => ({ name, status: 'reviewing' as const }));
-              dashboard.plannerDurationMs = progress.plannerDurationMs;
-              if (progress.heuristicFallback) dashboard.heuristicFallback = true;
-              dashboard.phase = 'started';
-              scheduleDashboardFlush();
-            }
-          } else if (progress.phase === 'agent-complete') {
-            if (dashboard.agentProgress && progress.agentName) {
-              const entry = dashboard.agentProgress.find(a => a.name === progress.agentName);
-              if (entry) {
-                if (progress.agentStatus === 'retrying') {
-                  entry.status = 'retrying';
-                  entry.retryCount = progress.retryCount;
-                } else {
-                  entry.status = progress.agentStatus === 'failure' ? 'failed' : 'done';
-                  entry.findingCount = progress.agentFindingCount;
-                  entry.durationMs = progress.agentDurationMs;
-                  if (progress.agentStatus === 'failure' && progress.retryCount) {
-                    entry.retryCount = progress.retryCount;
-                  }
-                }
-              }
-            }
-            scheduleDashboardFlush();
-          } else if (progress.phase === 'reviewed') {
-            if (dashboardFlushTimer) {
-              clearTimeout(dashboardFlushTimer);
-              dashboardFlushTimer = null;
-            }
-            reviewEndTime = Date.now();
-            dashboard.phase = 'reviewed';
-            dashboard.rawFindingCount = progress.rawFindingCount;
-            updateProgressDashboard(octokit, owner, repo, progressCommentId!, dashboard)
-              .catch(err => core.warning(`Failed to update dashboard: ${err}`));
-          } else if (progress.phase === 'judging') {
-            if (dashboardFlushTimer) {
-              clearTimeout(dashboardFlushTimer);
-              dashboardFlushTimer = null;
-            }
-            dashboard.phase = 'reviewed';
-            dashboard.rawFindingCount = progress.rawFindingCount;
-            dashboard.judgeInputCount = progress.judgeInputCount;
-            updateProgressDashboard(octokit, owner, repo, progressCommentId!, dashboard)
-              .catch(err => core.warning(`Failed to update dashboard: ${err}`));
-          }
-        },
-        isFollowUp,
-        openThreads: verdictOpenThreads,
-        previousFindings: recap.previousFindings,
-        priorRounds: recap.priorRounds,
-        prAuthorLogin,
-        interRoundDiff,
-        headSha: commitSha,
-        blockersOnly: paused,
-        finalRound: !paused && maxAutoRounds > 0 && priorRoundCount + 1 === maxAutoRounds,
-      },
-    );
-    const judgeEndTime = Date.now();
+    const { result } = stage;
 
     if (!result.reviewComplete) {
-      if (dashboardFlushTimer) {
-        clearTimeout(dashboardFlushTimer);
-        dashboardFlushTimer = null;
-      }
-      core.setFailed(`Review incomplete: ${failureReason(result.summary)}`);
-      result.verdict = 'COMMENT';
-      await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
-      dashboard.phase = 'complete';
-      await updateProgressComment(octokit, owner, repo, progressCommentId, dashboard);
+      await postIncompleteRound(run, result);
       return;
     }
 
-    // Enrich findings with code context from the diff for nit issues
-    for (const finding of result.findings) {
-      if (finding.file && finding.line) {
-        const diffFile = diff.files.find(f => f.path === finding.file);
-        if (diffFile) {
-          const hunk = diffFile.hunks.find(h =>
-            finding.line >= h.newStart && finding.line <= h.newStart + h.newLines - 1,
-          );
-          if (hunk) {
-            const lines = hunk.content.split('\n');
-            const findingOffset = finding.line - hunk.newStart;
-            const start = Math.max(0, findingOffset - 5);
-            const end = Math.min(lines.length, findingOffset + 10);
-            finding.codeContext = lines.slice(start, end).join('\n');
-          }
-        }
-      }
-    }
-
+    addCodeContext(result.findings, diff);
     const reviewTimeMs = Date.now() - startTime;
-    const severityMap: Record<string, number> = { blocker: 0, warning: 0, suggestion: 0, nitpick: 0 };
-    for (const f of result.findings) {
-      if (f.severity in severityMap) severityMap[f.severity]++;
-    }
-
-    // Per-agent metrics: count raw and kept findings per agent
-    const agentNames = result.agentNames;
-    const allJudged = result.allJudgedFindings ?? [];
-    const rawFindings = result.rawFindings ?? allJudged;
-    const agentModels = result.agentModels ?? new Map<string, string>();
-    const reviewerEffort = result.agentEffortMap?.values().next().value;
-    const agentMetrics = agentNames.length > 0
-      ? agentNames.map(name => {
-          const usage = result.agentUsage?.get(name);
-          const durationMs = result.agentDurationMs?.get(name);
-          const retryCount = result.agentRetryCount?.get(name);
-          const failureReason = result.agentFailureReasons?.[name];
-          const model = agentModels.get(name);
-          const effort = result.agentEffortMap?.get(name);
-          const multiPassConsistency = result.agentMultiPassConsistency?.get(name);
-          return {
-            name,
-            findingsRaw: rawFindings.filter(f => f.reviewers.includes(name)).length,
-            findingsKept: result.findings.filter(f => f.reviewers.includes(name)).length,
-            ...(durationMs != null && { durationMs }),
-            status: failureReason ? 'failed' as const : 'success' as const,
-            responseLength: result.agentResponseLengths?.get(name),
-            inputTokens: usage?.inputTokens ?? 0,
-            outputTokens: usage?.outputTokens ?? 0,
-            retryCount: retryCount ?? 0,
-            ...(failureReason && { failureReason }),
-            model,
-            ...(effort && { effort }),
-            ...(multiPassConsistency && { multiPassConsistency }),
-          };
-        })
-      : undefined;
-    const corroboration = { keptPrimaryOnly: 0, keptPairOnly: 0, keptBoth: 0 };
-    for (const f of result.findings) {
-      const agents = f.reviewers.filter(r => agentModels.has(r));
-      const pair = agents.some(r => r === result.pairAgentName);
-      const primary = agents.some(r => r !== result.pairAgentName);
-      if (primary && pair) corroboration.keptBoth++;
-      else if (primary) corroboration.keptPrimaryOnly++;
-      else if (pair) corroboration.keptPairOnly++;
-    }
-
-    // Judge calibration metrics
-    const confidenceDistribution = { high: 0, medium: 0, low: 0 };
-    for (const f of allJudged) {
-      if (f.judgeConfidence) confidenceDistribution[f.judgeConfidence]++;
-    }
-    const severityChanges = allJudged.filter(f => f.judgeNotes).length;
-    const mergedDuplicates = allJudged.length > 0
-      ? (result.rawFindingCount ?? 0)
-        + (result.toolAlertCount ?? 0)
-        - (result.suppressionCount ?? 0)
-        - (result.staticDedupCount ?? 0)
-        - (result.llmDedupCount ?? 0)
-        - allJudged.length
-      : 0;
-    const defensiveHardeningCount = allJudged.filter(f => f.tags?.includes(DEFENSIVE_HARDENING_TAG)).length;
-    const ownProposalDemotedCount = allJudged.filter(f => f.tags?.includes(OWN_PROPOSAL_TAG)).length;
-    const contradictionDemotedCount = allJudged.filter(f => f.tags?.includes(CONTRADICTION_TAG)).length;
-    const ratchetSuppressedCount = allJudged.filter(f => f.tags?.includes(RATCHET_SUPPRESSED_TAG)).length;
-    const resolvedThreadSuppressedCount = allJudged.filter(f => f.tags?.includes(RESOLVED_THREAD_SUPPRESSED_TAG)).length;
-    const crossRoundSuppressed = result.crossRoundSuppressed;
-    const crossRoundDemoted = result.crossRoundDemoted;
-    const interRoundDiffEmptyOverride = result.interRoundDiffEmptyOverride;
-    const inPrSuppressedCount = result.inPrSuppressedCount ?? 0;
-    const openThreadCount = openThreads.length;
-    const resolvedThreadIdCount = collectResolvedThreadIds(recap.previousFindings).size;
-    const hasPriorRoundsForJudge = recap.priorRounds.length > 0;
-    const interRoundDiffState: 'unknown' | 'empty' | 'changed' = !hasPriorRoundsForJudge || interRoundDiff === undefined
-      ? 'unknown'
-      : interRoundDiff.trim().length === 0
-        ? 'empty'
-        : 'changed';
-    const interRoundDiffBytes = interRoundDiff !== undefined ? interRoundDiff.length : undefined;
-    const interRoundDiffTruncated = interRoundDiff !== undefined && interRoundDiff.length > MAX_INTER_ROUND_DIFF_CHARS;
-    const interRoundDiffKnownEmptyForCounts = hasPriorRoundsForJudge && isEmptyInterRoundDiff(interRoundDiff);
-    const knownThreadIdSet = new Set(openThreads.map(t => t.threadId));
-    let addressedDropped = 0;
-    let uncertainCount = 0;
-    for (const ev of result.threadEvaluations ?? []) {
-      if (ev.status === 'uncertain') uncertainCount++;
-      if (ev.status === 'addressed' && (!knownThreadIdSet.has(ev.threadId) || interRoundDiffKnownEmptyForCounts)) {
-        addressedDropped++;
-      }
-    }
-    const notAddressedOverridden = interRoundDiffEmptyOverride?.applied ? interRoundDiffEmptyOverride.affectedThreadCount : 0;
-    const threadResolutionOverrides: ThreadResolutionOverrides | undefined =
-      (addressedDropped > 0 || notAddressedOverridden > 0 || uncertainCount > 0)
-        ? { addressedDropped, notAddressedOverridden, uncertainCount }
-        : undefined;
-    // File analysis metrics
-    const fileTypes: Record<string, number> = {};
-    for (const file of filteredFiles) {
-      const dotIdx = file.path.lastIndexOf('.');
-      const ext = dotIdx !== -1 ? file.path.slice(dotIdx) : '(none)';
-      fileTypes[ext] = (fileTypes[ext] ?? 0) + 1;
-    }
-
-    const round = priorRoundCount + 1;
-    const cap: RoundCap = {
-      priorRoundCount,
-      maxAutoRounds,
-      skipCap: !!skipCap,
-      forceReview: !!forceReview,
-      bypassReason: bypassHint ?? (forceReview ? 'force_review' : skipCap ? 'skip_cap' : 'within_cap'),
-    };
-
-    const buildStage = (usage: LLMUsage | undefined): RoundUsageStage => {
-      const inputTokens = usage?.inputTokens ?? 0;
-      const outputTokens = usage?.outputTokens ?? 0;
-      return { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens };
-    };
-    const reviewerUsage: LLMUsage | undefined = result.agentUsage && result.agentUsage.size > 0
-      ? Array.from(result.agentUsage.values()).reduce(
-          (acc, u) => ({
-            inputTokens: acc.inputTokens + u.inputTokens,
-            outputTokens: acc.outputTokens + u.outputTokens,
-            cachedTokens: acc.cachedTokens + u.cachedTokens,
-            reasoningTokens: acc.reasoningTokens + u.reasoningTokens,
-          }),
-          { inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 },
-        )
-      : undefined;
-    const stageUsages: Array<['planner' | 'reviewer' | 'judge' | 'dedup' | 'verdict', LLMUsage | undefined]> = [
-      ['planner', result.plannerUsage],
-      ['reviewer', reviewerUsage],
-      ['judge', result.judgeUsage],
-      ['dedup', result.dedupUsage],
-      ['verdict', result.verdictUsage],
-    ];
-    const perStage: NonNullable<RoundUsage['perStage']> = {};
-    let totalInput = 0;
-    let totalOutput = 0;
-    for (const [name, u] of stageUsages) {
-      if (!u) continue;
-      const stage = buildStage(u);
-      perStage[name] = stage;
-      totalInput += stage.inputTokens ?? 0;
-      totalOutput += stage.outputTokens ?? 0;
-    }
-    const usage: RoundUsage = {
-      inputTokens: totalInput,
-      outputTokens: totalOutput,
-      totalTokens: totalInput + totalOutput,
-      ...(Object.keys(perStage).length > 0 && { perStage }),
-    };
-    const findingEntries = result.findings.map(f => ({
-      fingerprint: fingerprintFinding(f.title, f.file ?? '', f.line || 0),
-      severity: f.severity,
-      ...(f.reviewers.length > 0 && { reviewers: f.reviewers }),
-      ...(f.suggestedFix && { suggestedFix: f.suggestedFix.slice(0, 300) }),
-      ...(f.title && { title: f.title.slice(0, 200) }),
-      ...(f.judgeNotes && { judgeNotes: f.judgeNotes.slice(0, 500) }),
-      ...(f.judgeConfidence && { judgeConfidence: f.judgeConfidence }),
-      ...(f.reachability && { reachability: f.reachability }),
-      ...(f.reachabilityReasoning && { reachabilityReasoning: f.reachabilityReasoning.slice(0, 500) }),
-      ...(f.tags && f.tags.length > 0 && { tags: f.tags.filter(t => ALLOWED_FINGERPRINT_TAGS.has(t)) }),
-      ...(f.originalSeverity && { originalSeverity: f.originalSeverity }),
-      ...(f.toolEvidence && { toolEvidence: f.toolEvidence.status }),
-      ...(f.toolSource && { toolSource: f.toolSource }),
-    }));
-    const context: RoundContext = {
-      meta: {
-        prNumber,
-        commitSha,
-        round,
-        timestamp: new Date().toISOString(),
-        mankiVersion: MANKI_VERSION,
-        cap,
-        trigger,
-        ...(result.outcome && { outcome: result.outcome }),
-      },
-      config: {
-        memoryEnabled: config.memory?.enabled ?? false,
-        ...(config.review_passes != null && { reviewPasses: config.review_passes }),
-      },
-      diff: {
-        lines: diff.totalAdditions + diff.totalDeletions,
-        additions: diff.totalAdditions,
-        deletions: diff.totalDeletions,
-        filesReviewed: filteredFiles.length,
-        fileTypes,
-        ...(excludedFiles.length > 0 && { excludedFiles: excludedFiles.slice(0, 100) as RoundDiffExcludedFile[] }),
-        ...(diff.binarySkipped && diff.binarySkipped.length > 0 && { binarySkipped: diff.binarySkipped.slice(0, 100) }),
-        oversizedHandled: false,
-        perFile: filteredFiles.slice(0, 200).map((f): RoundDiffPerFile => ({
-          path: f.path,
-          additions: f.additions ?? 0,
-          deletions: f.deletions ?? 0,
-          changeType: f.changeType,
-        })),
-      },
-      models: {
-        ...(plannerClient && { planner: plannerModel }),
-        reviewer: reviewerModel,
-        ...(result.pairAgentName && { reviewerPair: reviewerPairModel }),
-        judge: judgeModel,
-        dedup: dedupModel,
-      },
-      planner: (() => {
-        const source = result.plannerSource ?? (result.plannerResult ? 'planner' : 'disabled');
-        const used = source === 'planner';
-        const base = {
-          source,
-          used,
-          ...(result.plannerFallbackReason && { fallbackReason: result.plannerFallbackReason }),
-          ...result.triage,
-          ...(result.sensitivePaths != null && { sensitivePaths: result.sensitivePaths }),
-          ...(result.ciOrDependencyPaths != null && { ciOrDependencyPaths: result.ciOrDependencyPaths }),
-          ...(result.trivialOverridden && { trivialOverridden: true }),
-          teamSize: result.agentNames.length,
-          ...(reviewerEffort && { reviewerEffort }),
-        };
-        if (!result.plannerResult) return base;
-        return {
-          ...base,
-          ...(result.plannerResult.defaultedFields && { defaultedFields: result.plannerResult.defaultedFields }),
-          judgeEffort: result.plannerResult.judgeEffort,
-          prType: result.plannerResult.prType,
-          ...(dashboard.plannerDurationMs != null && { durationMs: dashboard.plannerDurationMs }),
-          ...(result.plannerResult.language && { language: result.plannerResult.language }),
-          ...(result.plannerResult.context && { context: result.plannerResult.context }),
-        };
-      })(),
-      reviewers: {
-        agents: result.agentNames,
-        ...(agentMetrics && { agentMetrics }),
-        ...corroboration,
-      },
-      judge: {
-        summary: result.summary,
-        confidenceDistribution,
-        severityChanges,
-        mergedDuplicates,
-        ...(result.toolAlertCount && { toolAlertCount: result.toolAlertCount }),
-        durationMs: judgeEndTime - reviewEndTime,
-        retryCount: result.judgeRetryCount ?? 0,
-        ...(result.verdictReason && { verdictReason: result.verdictReason }),
-        ...(defensiveHardeningCount > 0 && { defensiveHardeningCount }),
-        ...(ownProposalDemotedCount > 0 && { ownProposalDemotedCount }),
-        ...(contradictionDemotedCount > 0 && { contradictionDemotedCount }),
-        ...(ratchetSuppressedCount > 0 && { ratchetSuppressedCount }),
-        ...(resolvedThreadSuppressedCount > 0 && { resolvedThreadSuppressedCount }),
-        ...(inPrSuppressedCount > 0 && { inPrSuppressedCount }),
-        ...(crossRoundSuppressed != null && crossRoundSuppressed > 0 && { crossRoundSuppressed }),
-        ...(crossRoundDemoted != null && crossRoundDemoted > 0 && { crossRoundDemoted }),
-        ...(interRoundDiffEmptyOverride && { interRoundDiffEmptyOverride }),
-        ...(result.threadEvaluations && result.threadEvaluations.length > 0 && { threadEvaluations: result.threadEvaluations }),
-        ...(result.verdictTrace && { verdictTrace: result.verdictTrace }),
-        openThreadsState: recap.openThreadsState,
-        openThreadCount,
-        resolvedThreadIdCount,
-        interRoundDiffState,
-        ...(interRoundDiffBytes != null && { interRoundDiffBytes }),
-        interRoundDiffTruncated,
-        ...(threadResolutionOverrides && { threadResolutionOverrides }),
-      },
-      dedup: {
-        ...(result.staticDedupCount != null && { staticDropped: result.staticDedupCount }),
-        ...(result.llmDedupCount != null && { llmDropped: result.llmDedupCount }),
-        ...(mergedDuplicates > 0 && { sameRoundLlmDropped: mergedDuplicates }),
-        ...(result.duplicateMatches && result.duplicateMatches.length > 0 && { duplicateMatches: result.duplicateMatches.slice(0, 50) }),
-        ...(result.testNitSuppressedCount != null && result.testNitSuppressedCount > 0 && { testNitSuppressedCount: result.testNitSuppressedCount }),
-        ...(result.staticSignalMatches && result.staticSignalMatches.length > 0 && { staticSignalMatches: result.staticSignalMatches.slice(0, 50) }),
-        ...(result.dedupDurationMs != null && { durationMs: result.dedupDurationMs }),
-      },
-      memory: {
-        ...(result.suppressionCount != null && result.suppressionCount > 0 && { suppressionsApplied: result.suppressionCount }),
-        loadStatus: memoryLoadStatus,
-        ...(memoryLoadError && { loadError: memoryLoadError }),
-      },
-      findings: {
-        count: result.findings.length,
-        severityCounts: severityMap,
-        entries: findingEntries,
-      },
-      usage,
-      verdict: result.verdict,
-      recap: _buildRoundRecap(recap),
-    };
-    const flatAliases = roundContextToFlatAliases(context);
-
-    // Resolve threads the judge marked `addressed`. Other statuses
-    // (`not_addressed`, `uncertain`) are logged for audit but never trigger a
-    // resolveReviewThread mutation. Unknown thread IDs are filtered.
-    //
-    // Defense-in-depth: when the inter-round diff is known-empty (force-pushed
-    // rebase to identical tree), no thread can be addressed. The judge already
-    // synthesizes `not_addressed` for every thread in this case, but a future
-    // refactor that bypasses `runJudgeAgent` would lose that guarantee. Drop
-    // any `addressed` evaluation here as a second layer. `undefined` is the
-    // unknown sentinel (compare-API failure) and must not trigger the guard.
-    const hasPriorRounds = recap.priorRounds.length > 0;
-    const interRoundDiffKnownEmpty = hasPriorRounds && isEmptyInterRoundDiff(interRoundDiff);
-    if (result.threadEvaluations && result.threadEvaluations.length > 0) {
-      const knownThreadIds = new Set(openThreads.map(t => t.threadId));
-      for (const { threadId, status, reason } of result.threadEvaluations) {
-        if (!knownThreadIds.has(threadId)) {
-          core.debug(`Skipping unknown thread ${threadId} — not in openThreads allowlist`);
-          continue;
-        }
-        core.info(`Thread ${threadId}: ${status} — ${reason}`);
-        if (status !== 'addressed') continue;
-        if (interRoundDiffKnownEmpty) {
-          core.info(`Thread ${threadId}: ignoring 'addressed' verdict — inter-round diff is empty`);
-          continue;
-        }
-        try {
-          await resolveReviewThread(octokit, threadId);
-          core.info(`Judge resolved: "${reason}" — thread ${threadId}`);
-        } catch (error) {
-          core.debug(`Failed to resolve thread ${threadId}: ${error}`);
-        }
-      }
-    }
-
-    const parsedInterRoundDiff = hasPriorRounds && interRoundDiff !== undefined ? parsePRDiff(interRoundDiff) : undefined;
-    const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, context, reviewTimeMs, config, {
-      interRoundDiff: parsedInterRoundDiff,
-      existingThreads: recap.previousFindings,
-    });
-    await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId);
-
-    // Reconcile the dashboard with the actual resolved team. Agents may fail
-    // and drop out, so reconcile unconditionally to keep agentCount and
-    // agentProgress accurate.
-    reconcileDashboardAgents(dashboard, result.agentNames);
-
-    if (result.plannerResult && reviewerEffort) {
-      dashboard.plannerInfo = {
-        agentCount: result.agentNames.length,
-        reviewerEffort,
-        judgeEffort: result.plannerResult.judgeEffort,
-        prType: result.plannerResult.prType,
-      };
-    }
-
-    const allJudgedForDashboard = result.allJudgedFindings || result.findings;
-    const rawForLookup = result.rawFindings ?? allJudgedForDashboard;
-    const judgeDecisions = allJudgedForDashboard.map(f => {
-      const kept = f.severity !== 'ignore';
-      const originalSeverity = kept
-        ? f.severity
-        : rawForLookup.find(r => r.title === f.title && r.file === f.file && r.line === f.line)?.severity ?? f.severity;
-      return {
-        title: f.title,
-        severity: f.severity,
-        reasoning: f.judgeNotes || '',
-        confidence: f.judgeConfidence || 'medium',
-        kept,
-        originalSeverity,
-      };
+    const context = buildRoundContext(run, result, {
+      plannerDurationMs: dashboard.plannerDurationMs,
+      judgeDurationMs: stage.judgeEndTime - stage.reviewEndTime,
     });
 
-    const keptSeverities: Record<string, number> = {};
-    const droppedSeverities: Record<string, number> = {};
-    const keptSet = new Set(result.findings);
-    for (const f of result.findings) {
-      keptSeverities[f.severity] = (keptSeverities[f.severity] ?? 0) + 1;
-    }
-    // judgeDecisions is built in lock-step with allJudgedForDashboard, so the
-    // index aligns and d.originalSeverity carries the pre-judge severity even
-    // when the judge merged or renamed the finding before dropping it.
-    allJudgedForDashboard.forEach((f, i) => {
-      if (!keptSet.has(f)) {
-        const sev = judgeDecisions[i].originalSeverity;
-        droppedSeverities[sev] = (droppedSeverities[sev] ?? 0) + 1;
-      }
-    });
-
-    const judgeDroppedCount = allJudgedForDashboard.length - keptSet.size;
-    const completeDashboard: DashboardData = {
-      ...dashboard,
-      phase: 'complete',
-      keptCount: result.findings.length,
-      droppedCount: judgeDroppedCount,
-      keptSeverities,
-      droppedSeverities,
-      ...(result.testNitSuppressedCount != null && result.testNitSuppressedCount > 0 && { testNitSuppressedCount: result.testNitSuppressedCount }),
-      judgeDurationMs: judgeEndTime - reviewEndTime,
-    };
-
-    const timing = {
-      parseMs: parseEndTime - startTime,
-      reviewMs: reviewEndTime - parseEndTime,
-      judgeMs: judgeEndTime - reviewEndTime,
-      totalMs: judgeEndTime - startTime,
-    };
-
-    const metadata: ReviewMetadata = {
-      config: {
-        reviewerModel,
-        judgeModel,
-        triage: result.triage
-          ? `trivial=${result.triage.trivial}, subtle=${result.triage.subtle}, paired=${result.triage.paired} (${result.plannerSource ?? 'planner'}${result.sensitivePaths ? ', security-sensitive paths' : ''}${result.ciOrDependencyPaths ? ', CI or dependency paths' : ''})`
-          : 'none',
-        teamAgents: result.agentNames,
-        memoryEnabled: config.memory?.enabled ?? false,
-        memoryRepo: config.memory?.repo ?? '',
-      },
-      judgeDecisions,
-      timing,
-    };
-
-    await updateProgressComment(octokit, owner, repo, progressCommentId, completeDashboard, metadata);
-
-    core.setOutput('review_id', reviewId.toString());
-    core.setOutput('verdict', flatAliases.verdict);
-    core.setOutput('findings_count', flatAliases.findingsKept.toString());
-    core.setOutput('findings_json', JSON.stringify(result.findings));
-
-    // `result.findings` excludes 'ignore' severity (filtered in review.ts), so
-    // the counts here mirror `severityMap` above and the legacy `severity` alias.
-    core.setOutput('severity_counts', JSON.stringify(flatAliases.severity));
-
-    core.setOutput('judge_model', flatAliases.judgeModel);
-
-    core.info(`Review complete: ${result.verdict} with ${flatAliases.findingsKept} findings`);
-    core.info(`Severity breakdown: ${severityMap.blocker} blocker, ${severityMap.warning} warning, ${severityMap.suggestion} suggestion, ${severityMap.nitpick} nitpick`);
+    await resolveAddressedThreads(run, result);
+    const reviewId = await postRound(run, result, context, reviewTimeMs);
+    await completeProgressComment(run, stage);
+    setReviewOutputs(reviewId, context, result);
   } catch (error) {
-    if (dashboardFlushTimer) {
-      clearTimeout(dashboardFlushTimer);
-      dashboardFlushTimer = null;
-    }
+    cancelDashboardFlush(progress);
     const reason = failureReason(error);
     core.setFailed(`Review failed: ${reason}`);
 
-    if (progressCommentId !== undefined) {
-      await markProgressCommentFailed(octokit, owner, repo, progressCommentId, 'Review', reason);
+    if (progress.commentId !== undefined) {
+      await markProgressCommentFailed(octokit, owner, repo, progress.commentId, 'Review', reason);
     }
   }
 }
@@ -1724,4 +1528,4 @@ function _resetOctokitCache(): void {
   authCache = null;
 }
 
-export { run, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, runFullReview, main, _resetOctokitCache, _buildRoundRecap };
+export { run, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, runFullReview, main, _resetOctokitCache };
