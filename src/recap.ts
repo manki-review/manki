@@ -53,7 +53,7 @@ const REOPENED_MARKER = '<!-- manki-reopened -->';
  * Only the PR author and people with write access can resolve a thread, so with the author unknown any human resolver has write access.
  */
 function mayClearSecurityThread(resolverLogin: string | undefined, bot: BotIdentity, prAuthorLogin: string | undefined): boolean {
-  if (!resolverLogin || isBotLogin(bot, resolverLogin)) return false;
+  if (!resolverLogin || isBotLogin(bot, resolverLogin) || resolverLogin.endsWith('[bot]')) return false;
   return !prAuthorLogin || isOtherThanPrAuthor(resolverLogin, prAuthorLogin);
 }
 
