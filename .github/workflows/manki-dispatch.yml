@@ -27,7 +27,7 @@ jobs:
     cache-mode: read
     runs-on: ubuntu-latest
     steps:
-      # Manki reviews its own PRs with their own build, as `uses: ./` does in `manki.yml`.
+      # Manki reviews its own PRs with their own build of the action.
       # Only a head in this repository is built. A fork's head, or an issue, gets the default branch.
       - name: Find the commit to build
         id: head
