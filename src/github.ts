@@ -355,25 +355,26 @@ export const INDENT = '&nbsp;&nbsp;&nbsp;&nbsp;';
 
 function renderAgentLines(agents: AgentProgressEntry[]): string {
   return agents.map(a => {
+    const name = sanitizeMarkdown(a.name);
     if (a.status === 'done') {
-      return `${INDENT}✅ ${a.name}: ${countOf(a.findingCount ?? 0, 'finding')} (${formatDuration(a.durationMs ?? 0)})`;
+      return `${INDENT}✅ ${name}: ${countOf(a.findingCount ?? 0, 'finding')} (${formatDuration(a.durationMs ?? 0)})`;
     }
     if (a.status === 'failed') {
       if (a.retryCount && a.retryCount > 0) {
-        return `${INDENT}🔴 ${a.name}: failed after ${a.retryCount + 1} attempts (${formatDuration(a.durationMs ?? 0)})`;
+        return `${INDENT}🔴 ${name}: failed after ${a.retryCount + 1} attempts (${formatDuration(a.durationMs ?? 0)})`;
       }
-      return `${INDENT}🔴 ${a.name}: failed (${formatDuration(a.durationMs ?? 0)})`;
+      return `${INDENT}🔴 ${name}: failed (${formatDuration(a.durationMs ?? 0)})`;
     }
     if (a.status === 'retrying') {
       if (a.retryCount != null) {
-        return `${INDENT}⚠️ ${a.name}: retrying (${a.retryCount + 1}/${MAX_AGENT_RETRIES + 1})`;
+        return `${INDENT}⚠️ ${name}: retrying (${a.retryCount + 1}/${MAX_AGENT_RETRIES + 1})`;
       }
-      return `${INDENT}⚠️ ${a.name}: retrying`;
+      return `${INDENT}⚠️ ${name}: retrying`;
     }
     if (a.status === 'reviewing') {
-      return `${INDENT}⏳ ${a.name}`;
+      return `${INDENT}⏳ ${name}`;
     }
-    return `${INDENT}○ ${a.name}`;
+    return `${INDENT}○ ${name}`;
   }).join('\n');
 }
 
@@ -398,8 +399,15 @@ function renderSeverityBreakdown(severities: Record<string, number>): string {
     .join(' · ');
 }
 
+function reviewHeading(routing: DashboardData['routing']): string {
+  if (!routing) return 'Review';
+  const route = [routing.class, routing.group].filter((part): part is string => Boolean(part)).join(' · ');
+  return `Review (${sanitizeMarkdown(route)})`;
+}
+
 export function buildDashboard(data: DashboardData): string {
   const agents = data.agentProgress;
+  const review = reviewHeading(data.routing);
   const hasAgentProgress = !!(agents && agents.length > 0);
   const sections: string[] = [];
 
@@ -439,14 +447,14 @@ export function buildDashboard(data: DashboardData): string {
   } else if (data.phase === 'started') {
     if (hasAgentProgress) {
       const done = agents.filter(a => a.status === 'done' || a.status === 'failed' || a.status === 'retrying').length;
-      reviewLines.push(`**Review:** ${done}/${agents.length} agents complete`);
+      reviewLines.push(`**${review}:** ${done}/${agents.length} agents complete`);
       reviewLines.push(renderAgentLines(agents));
     } else {
-      reviewLines.push(`**Review**`);
+      reviewLines.push(`**${review}**`);
       reviewLines.push(`${INDENT}reviewing with ${data.agentCount} agents...`);
     }
   } else {
-    reviewLines.push(`**Review:** ${countOf(data.rawFindingCount ?? 0, 'finding')}`);
+    reviewLines.push(`**${review}:** ${countOf(data.rawFindingCount ?? 0, 'finding')}`);
     if (hasAgentProgress) {
       reviewLines.push(renderAgentLines(agents));
     }
@@ -630,7 +638,7 @@ export async function updateProgressComment(
     parts.push('**Config:**');
     parts.push(`- Models: reviewer=${metadata.config.reviewerModel}, judge=${metadata.config.judgeModel}`);
     parts.push(`- Triage: ${metadata.config.triage}`);
-    parts.push(`- Team: ${metadata.config.teamAgents.join(', ')}`);
+    parts.push(`- Team: ${metadata.config.teamAgents.map(sanitizeMarkdown).join(', ')}`);
     parts.push(`- Memory: ${metadata.config.memoryEnabled ? `enabled (${metadata.config.memoryRepo})` : 'disabled'}`);
     parts.push('');
 

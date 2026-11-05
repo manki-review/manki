@@ -1,4 +1,4 @@
-import { parseModelSpec } from './model-registry';
+import { modelDisplayName, parseModelSpec } from './model-registry';
 
 describe('parseModelSpec', () => {
   it('parses bare model with known prefix', () => {
@@ -60,5 +60,28 @@ describe('parseModelSpec', () => {
 
   it('throws on whitespace-only input', () => {
     expect(() => parseModelSpec('   ')).toThrow(/Unknown model/);
+  });
+});
+
+describe('modelDisplayName', () => {
+  it.each([
+    ['claude-sonnet-5-5', 'Claude Sonnet 5.5'],
+    ['claude-opus-5-5', 'Claude Opus 5.5'],
+    ['claude-haiku-4-5-20251001', 'Claude Haiku 4.5'],
+    ['claude-3-5-sonnet-20241022', 'Claude 3.5 Sonnet'],
+    ['anthropic/claude-opus-4-6', 'Claude Opus 4.6'],
+    ['gpt-5.5', 'GPT 5.5'],
+    ['gpt-4o-mini', 'GPT 4o Mini'],
+    ['gpt-4o-mini-2024-07-18', 'GPT 4o Mini'],
+    ['gemini-2.5-pro-preview-06-05', 'Gemini 2.5 Pro Preview'],
+    ['openai/gpt-5.5', 'GPT 5.5'],
+    ['gemini-3.8-flash', 'Gemini 3.8 Flash'],
+    ['gemini-3-pro', 'Gemini 3 Pro'],
+  ])('names %s as %s', (id, name) => {
+    expect(modelDisplayName(id)).toBe(name);
+  });
+
+  it.each(['o3', 'my-model', 'claude', 'claude-20241022', 'claude-opus-4-6/v1', 'constructor-1', 'openai/ft:gpt-4o:org'])('returns the unknown id %s as given', id => {
+    expect(modelDisplayName(id)).toBe(id);
   });
 });

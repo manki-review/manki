@@ -1475,7 +1475,7 @@ describe('selectTeam', () => {
     ]) {
       const team = selectTeam(makeDiff({ files }), makeConfig(), trivial);
       expect(team.finders).toEqual([
-        { name: TRIVIAL_VERIFIER_AGENT.name, prompt: TRIVIAL_VERIFIER_AGENT, index: 0, model: 'claude-sonnet-5-5', effort: 'medium' },
+        { name: 'Quick check · Claude Sonnet 5.5', prompt: TRIVIAL_VERIFIER_AGENT, index: 0, model: 'claude-sonnet-5-5', effort: 'medium' },
       ]);
       expect([team.routing.class, team.routing.group]).toEqual(['docs', 'trivial']);
       expect(team.trivialOverridden).toBe(false);
@@ -1484,9 +1484,9 @@ describe('selectTeam', () => {
   });
 
   describe('built-in routing', () => {
-    const S = 'claude-sonnet-5-5';
-    const O = 'claude-opus-5-5';
-    const verifier = `${TRIVIAL_VERIFIER_AGENT.name}@medium`;
+    const S = 'Claude Sonnet 5.5';
+    const O = 'Claude Opus 5.5';
+    const verifier = `Quick check · ${S}`;
     const file = (path: string, changeType: DiffFile['changeType'] = 'modified', content = '+change'): DiffFile => ({
       path, changeType, hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, content }],
     });
@@ -1496,28 +1496,28 @@ describe('selectTeam', () => {
     const t = (trivial: boolean, subtle: boolean, paired: boolean) => ({ trivial, subtle, paired });
     type Row = [string, DiffFile[], ReturnType<typeof t> | undefined, 'auto' | 'always' | 'never', string, string[]];
     const run = ([, files, triage, paired]: Row) => selectTeam(makeDiff({ files }), makeConfig({ planner: { enabled: true, paired } }), triage);
-    const readers = (team: ReturnType<typeof selectTeam>) => team.finders.map(f => `${f.name}@${f.effort}`);
+    const readers = names;
 
     // Each row gives the same finders as the selection before review classes existed.
     it.each<Row>([
-      ['code, nothing set', code, t(false, false, false), 'auto', 'internal', [`Finder (${S})@medium`]],
-      ['code, subtle', code, t(false, true, false), 'auto', 'internal', [`Finder (${S})@high`]],
-      ['code, paired', code, t(false, false, true), 'auto', 'behavior', [`Finder (${S})@medium`, `Pair finder (${O})@medium`]],
-      ['code, subtle and paired', code, t(false, true, true), 'auto', 'behavior', [`Finder (${S})@high`, `Pair finder (${O})@high`]],
-      ['code the planner called trivial', code, t(true, false, false), 'auto', 'internal', [`Finder (${S})@medium`]],
-      ['code the planner called trivial and paired', code, t(true, true, true), 'auto', 'behavior', [`Finder (${S})@high`, `Pair finder (${O})@high`]],
-      ['no triage', code, undefined, 'auto', 'behavior', [`Finder (${S})@high`, `Pair finder (${O})@high`]],
+      ['code, nothing set', code, t(false, false, false), 'auto', 'internal', [`${S} · medium`]],
+      ['code, subtle', code, t(false, true, false), 'auto', 'internal', [`${S} · high`]],
+      ['code, paired', code, t(false, false, true), 'auto', 'behavior', [`${S} · medium`, `${O} · medium`]],
+      ['code, subtle and paired', code, t(false, true, true), 'auto', 'behavior', [`${S} · high`, `${O} · high`]],
+      ['code the planner called trivial', code, t(true, false, false), 'auto', 'internal', [`${S} · medium`]],
+      ['code the planner called trivial and paired', code, t(true, true, true), 'auto', 'behavior', [`${S} · high`, `${O} · high`]],
+      ['no triage', code, undefined, 'auto', 'behavior', [`${S} · high`, `${O} · high`]],
       ['docs called trivial and paired', docs, t(true, true, true), 'auto', 'docs', [verifier]],
-      ['docs not called trivial', docs, t(false, false, false), 'auto', 'internal', [`Finder (${S})@medium`]],
+      ['docs not called trivial', docs, t(false, false, false), 'auto', 'internal', [`${S} · medium`]],
       ['docs and a deletion', [file('docs/a.md'), file('src/old.ts', 'deleted', '-code')], t(true, false, false), 'auto', 'docs', [verifier]],
       ['an unchanged rename', [{ path: 'src/b.ts', oldPath: 'src/a.ts', changeType: 'renamed', hunks: [] }], t(true, false, false), 'auto', 'docs', [verifier]],
-      ['a rename with edits', [file('src/b.ts', 'renamed')], t(true, false, false), 'auto', 'internal', [`Finder (${S})@medium`]],
-      ['code pinned never', code, t(false, true, true), 'never', 'internal', [`Finder (${S})@high`]],
-      ['code pinned always', code, t(false, false, false), 'always', 'behavior', [`Finder (${S})@medium`, `Pair finder (${O})@medium`]],
+      ['a rename with edits', [file('src/b.ts', 'renamed')], t(true, false, false), 'auto', 'internal', [`${S} · medium`]],
+      ['code pinned never', code, t(false, true, true), 'never', 'internal', [`${S} · high`]],
+      ['code pinned always', code, t(false, false, false), 'always', 'behavior', [`${S} · medium`, `${O} · medium`]],
       ['docs pinned always', docs, t(true, false, false), 'always', 'docs', [verifier]],
-      ['a security path called trivial, pinned never', [file('src/auth/session.ts')], t(true, false, false), 'never', 'security', [`Finder (${S})@medium`, `Pair finder (${O})@medium`]],
-      ['docs and a security path', [...docs, file('src/token.ts')], t(true, false, false), 'auto', 'security', [`Finder (${S})@medium`, `Pair finder (${O})@medium`]],
-      ['a workflow called trivial, pinned never', [file('.github/workflows/ci.yml')], t(true, false, false), 'never', 'supply_chain', [`Finder (${S})@medium`, `Pair finder (${O})@medium`]],
+      ['a security path called trivial, pinned never', [file('src/auth/session.ts')], t(true, false, false), 'never', 'security', [`${S} · medium`, `${O} · medium`]],
+      ['docs and a security path', [...docs, file('src/token.ts')], t(true, false, false), 'auto', 'security', [`${S} · medium`, `${O} · medium`]],
+      ['a workflow called trivial, pinned never', [file('.github/workflows/ci.yml')], t(true, false, false), 'never', 'supply_chain', [`${S} · medium`, `${O} · medium`]],
     ])('routes %s as before', (...row) => {
       const team = run(row);
       expect([team.routing.class, readers(team)]).toEqual([row[4], row[5]]);
@@ -1527,7 +1527,7 @@ describe('selectTeam', () => {
       for (const files of [tests, [...tests, ...docs], [file('src/__snapshots__/a.snap'), file('tests/fixture.json')]]) {
         for (const triage of [t(true, false, false), t(false, false, false)]) {
           const team = run(['', files, triage, 'auto', '', []]);
-          expect([team.routing.class, team.routing.group, readers(team)]).toEqual(['internal', 'solo', [`Finder (${S})@medium`]]);
+          expect([team.routing.class, team.routing.group, readers(team)]).toEqual(['internal', 'solo', [`${S} · medium`]]);
         }
       }
     });
@@ -1535,7 +1535,7 @@ describe('selectTeam', () => {
     it('gives a data contract change two finders as a floor class, where the triage decided before', () => {
       for (const path of ['db/migrations/0001_init.ts', 'schema/users.sql', 'proto/api.proto', 'src/schema.graphql', 'openapi.yaml']) {
         const team = run(['', [file(path)], t(true, false, false), 'never', '', []]);
-        expect([path, team.routing.class, team.routing.group, readers(team)]).toEqual([path, 'data_contract', 'pair', [`Finder (${S})@medium`, `Pair finder (${O})@medium`]]);
+        expect([path, team.routing.class, team.routing.group, readers(team)]).toEqual([path, 'data_contract', 'pair', [`${S} · medium`, `${O} · medium`]]);
         expect(team.trivialOverridden).toBe(true);
       }
     });
@@ -1563,25 +1563,25 @@ describe('selectTeam', () => {
       const team = selectTeam(makeDiff({ files }), makeConfig(), { trivial: true, subtle: false, paired: false });
       expect(team.trivialOverridden).toBe(true);
       expect(team.triage).toEqual({ trivial: false, subtle: false, paired: false });
-      expect(names(team)).toEqual(['Finder (claude-sonnet-5-5)']);
+      expect(names(team)).toEqual(['Claude Sonnet 5.5 · medium']);
     }
   });
 
   it('runs one finder whose effort follows `subtle` when the change is not paired', () => {
     for (const [subtle, effort] of [[true, 'high'], [false, 'medium']] as const) {
       const team = selectTeam(plainDiff, makeConfig(), { trivial: false, subtle, paired: false });
-      expect(team.finders).toEqual([expect.objectContaining({ name: 'Finder (claude-sonnet-5-5)', index: 0, effort })]);
+      expect(team.finders).toEqual([expect.objectContaining({ name: `Claude Sonnet 5.5 · ${effort}`, index: 0, effort })]);
     }
   });
 
   it('adds a second finder on the other Claude tier with the same prompt when paired', () => {
     const team = selectTeam(plainDiff, makeConfig(), { trivial: false, subtle: false, paired: true });
-    expect(names(team)).toEqual(['Finder (claude-sonnet-5-5)', 'Pair finder (claude-opus-5-5)']);
+    expect(names(team)).toEqual(['Claude Sonnet 5.5 · medium', 'Claude Opus 5.5 · medium']);
     expect(team.finders[1]).toEqual(expect.objectContaining({ index: 1, model: 'claude-opus-5-5', effort: 'medium' }));
     expect(team.finders[1].prompt).toBe(team.finders[0].prompt);
 
     const configured = selectTeam(plainDiff, makeConfig({ models: { reviewer: 'claude-opus-5-5', reviewer_pair: 'gpt-5.5' } }), { trivial: false, subtle: true, paired: true });
-    expect(names(configured)).toEqual(['Finder (claude-opus-5-5)', 'Pair finder (gpt-5.5)']);
+    expect(names(configured)).toEqual(['Claude Opus 5.5 · high', 'GPT 5.5 · high']);
   });
 
   it('defaults to two finders at high effort without a triage', () => {
@@ -1595,13 +1595,13 @@ describe('selectTeam', () => {
       const team = selectTeam(authDiff, makeConfig({ planner: { enabled: true, paired } }), { trivial: true, subtle: false, paired: false });
       expect(team.sensitivePaths).toBe(true);
       expect(team.triage).toEqual({ trivial: false, subtle: false, paired: true });
-      expect(names(team)).toEqual(['Finder (claude-sonnet-5-5)', 'Pair finder (claude-opus-5-5)']);
+      expect(names(team)).toEqual(['Claude Sonnet 5.5 · medium', 'Claude Opus 5.5 · medium']);
     }
   });
 
   it('pins `paired` with `planner.paired` on other paths', () => {
     const never = selectTeam(plainDiff, makeConfig({ planner: { enabled: true, paired: 'never' } }), { trivial: false, subtle: true, paired: true });
-    expect(names(never)).toEqual(['Finder (claude-sonnet-5-5)']);
+    expect(names(never)).toEqual(['Claude Sonnet 5.5 · high']);
     const always = selectTeam(plainDiff, makeConfig({ planner: { enabled: true, paired: 'always' } }), { trivial: false, subtle: true, paired: false });
     expect(names(always)).toHaveLength(2);
     expect(always.sensitivePaths).toBe(false);
@@ -1625,7 +1625,7 @@ describe('selectTeam', () => {
       { model: 'gemini-3-pro', effort: 'high' },
       { model: 'claude-sonnet-5-5', effort: 'medium' },
     ] };
-    const readers = (team: ReturnType<typeof selectTeam>) => team.finders.map(f => `${f.name}@${f.effort}`);
+    const readers = names;
     const quiet = { trivial: false, subtle: false, paired: false };
 
     it('runs a reader per entry of the routed group and adds its focus to that reader alone', () => {
@@ -1636,11 +1636,24 @@ describe('selectTeam', () => {
       } });
       const team = selectTeam(diffOf('src/net/peer.ts'), config, quiet);
       expect([team.routing.class, team.routing.group, team.routing.groupSource]).toEqual(['hot_path', 'deep', 'routing']);
-      expect(readers(team)).toEqual(['Finder (claude-opus-5-5)@high', 'Pair finder (gemini-3-pro)@high', 'Finder 3 (claude-sonnet-5-5)@medium']);
+      expect(readers(team)).toEqual(['Claude Opus 5.5 · high · authz, injection, secret handling', 'Gemini 3 Pro · high', 'Claude Sonnet 5.5 · medium']);
       expect(team.finders[0].prompt.focus).toContain('- This review group: authz, injection, secret handling');
       expect(team.finders[1].prompt).toEqual(buildFinderAgent([]));
-      expect(readers(selectTeam(plainDiff, config, quiet))).toEqual(['Finder (claude-sonnet-5-5)@medium']);
+      expect(readers(selectTeam(plainDiff, config, quiet))).toEqual(['Claude Sonnet 5.5 · medium']);
       expect(teamModels(config)).toEqual(expect.arrayContaining(['claude-sonnet-5-5', 'claude-opus-5-5', 'gemini-3-pro']));
+    });
+
+    it('names each reader by model, effort and a shortened focus, and numbers a repeated name', () => {
+      const focus = 'consensus rules, quorum signing and the validator set rotation';
+      const twins: ReviewGroup = { reviewers: [
+        { model: 'claude-opus-5-5', effort: 'high', focus },
+        { model: 'claude-opus-5-5', effort: 'high', focus },
+        { model: 'gpt-5.5', effort: 'auto' },
+        { model: 'gpt-5.5' },
+      ] };
+      const team = selectTeam(plainDiff, makeConfig({ review: { groups: { twins }, default_group: 'twins' } }), quiet);
+      const label = 'Claude Opus 5.5 · high · consensus rules, quorum signing and the…';
+      expect(readers(team)).toEqual([label, `${label} #2`, 'GPT 5.5 · medium', 'GPT 5.5 · medium #2']);
     });
 
     it('sends every class to the default group when groups are set without routing', () => {
@@ -1656,7 +1669,7 @@ describe('selectTeam', () => {
       for (const [path, floor, from] of [['src/auth/login.ts', 'security', 'solo'], ['package.json', 'supply_chain', 'solo'], ['db/migrations/0002.sql', 'data_contract', 'trivial']]) {
         const team = selectTeam(diffOf(path), config, { trivial: true, subtle: false, paired: false });
         expect([path, team.routing.class, team.routing.floor, team.routing.group, team.routing.groupSource, team.routing.escalatedFrom]).toEqual([path, floor, floor, 'pair', 'floor_escalation', from]);
-        expect(readers(team)).toEqual(['Finder (claude-sonnet-5-5)@medium', 'Pair finder (claude-opus-5-5)@medium']);
+        expect(readers(team)).toEqual(['Claude Sonnet 5.5 · medium', 'Claude Opus 5.5 · medium']);
       }
     });
 
@@ -1675,7 +1688,7 @@ describe('selectTeam', () => {
     it('keeps a floor PR below the floor only where `allow_weaker` names each floor class it matched', () => {
       const config = makeConfig({ review: { routing: { security: 'solo' }, allow_weaker: ['security'] } });
       const weak = selectTeam(authDiff, config, quiet);
-      expect([weak.routing.group, weak.routing.groupSource, weak.routing.weakerAllowed, readers(weak)]).toEqual(['solo', 'routing', ['security'], ['Finder (claude-sonnet-5-5)@medium']]);
+      expect([weak.routing.group, weak.routing.groupSource, weak.routing.weakerAllowed, readers(weak)]).toEqual(['solo', 'routing', ['security'], ['Claude Sonnet 5.5 · medium']]);
       const withCi = selectTeam(diffOf('src/auth/login.ts', '.github/workflows/ci.yml'), config, quiet);
       expect([withCi.routing.group, withCi.routing.groupSource, withCi.routing.weakerAllowed]).toEqual(['pair', 'floor_escalation', undefined]);
     });
@@ -1683,7 +1696,7 @@ describe('selectTeam', () => {
     it('falls back to the built-in pair group when the floor class routes to a redefined group below the floor', () => {
       const config = makeConfig({ review: { groups: { pair: { reviewers: [{ model: '@reviewer' }] } } , routing: { security: 'pair' } } });
       const team = selectTeam(authDiff, config, quiet);
-      expect([team.routing.group, team.routing.groupSource, team.routing.escalatedFrom, readers(team)]).toEqual(['pair', 'floor_escalation', 'pair', ['Finder (claude-sonnet-5-5)@medium', 'Pair finder (claude-opus-5-5)@medium']]);
+      expect([team.routing.group, team.routing.groupSource, team.routing.escalatedFrom, readers(team)]).toEqual(['pair', 'floor_escalation', 'pair', ['Claude Sonnet 5.5 · medium', 'Claude Opus 5.5 · medium']]);
     });
 
     it('widens a built-in floor class with extra paths, never narrowing its built-in rule', () => {
@@ -2801,7 +2814,7 @@ describe('runReview', () => {
 
     expect(result.outcome).toBe('INCOMPLETE');
     expect(result.reviewComplete).toBe(false);
-    expect(result.failedAgents).toEqual(['Pair finder (claude-opus-5-5)']);
+    expect(result.failedAgents).toEqual(['Claude Opus 5.5 · high']);
     expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
   });
 
@@ -3195,7 +3208,7 @@ describe('runReview', () => {
 
     const result = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context' });
     expect(result.agentNames).toBeDefined();
-    expect(result.agentNames).toEqual(['Finder (claude-sonnet-5-5)', 'Pair finder (claude-opus-5-5)']);
+    expect(result.agentNames).toEqual(['Claude Sonnet 5.5 · high', 'Claude Opus 5.5 · high']);
   });
 
   it('returns APPROVE when priorRounds agreed suggestion matches current finding (verdict ceiling)', async () => {
@@ -3529,7 +3542,7 @@ describe('runReview', () => {
         round: 1,
         commitSha: 'sha1',
         timestamp: '2024-01-01T00:00:00Z',
-        agents: ['Finder (claude-sonnet-5-5)', 'Pair finder (claude-opus-5-5)'],
+        agents: ['Claude Sonnet 5.5 · high', 'Claude Opus 5.5 · high'],
         findings: [
           { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'blocker', title: 't1', authorReply: 'none', specialist: 'Architecture & Design' },
           { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'blocker', title: 't2', authorReply: 'agree', specialist: 'Architecture & Design' },
@@ -3547,7 +3560,7 @@ describe('runReview', () => {
       },
     );
 
-    expect(result.agentNames).toEqual(['Finder (claude-sonnet-5-5)']);
+    expect(result.agentNames).toEqual(['Claude Sonnet 5.5 · high']);
     expect(plannerSpy.mock.calls[0][0]).toBe(buildPlannerSystemPrompt());
   });
 
@@ -3790,19 +3803,19 @@ describe('runReview', () => {
     const retrying = agentCompleteCalls.filter(p => p.agentStatus === 'retrying');
     expect(retrying).toHaveLength(MAX_AGENT_RETRIES);
     for (const progress of retrying) {
-      expect(progress.agentName).toBe('Pair finder (claude-opus-5-5)');
+      expect(progress.agentName).toBe('Claude Opus 5.5 · high');
       expect(progress.retryCount).toBeGreaterThanOrEqual(1);
     }
-    const pairFailure = agentCompleteCalls.filter(p => p.agentName === 'Pair finder (claude-opus-5-5)' && p.agentStatus === 'failure');
-    const pairSuccess = agentCompleteCalls.filter(p => p.agentName === 'Pair finder (claude-opus-5-5)' && p.agentStatus === 'success');
+    const pairFailure = agentCompleteCalls.filter(p => p.agentName === 'Claude Opus 5.5 · high' && p.agentStatus === 'failure');
+    const pairSuccess = agentCompleteCalls.filter(p => p.agentName === 'Claude Opus 5.5 · high' && p.agentStatus === 'success');
     expect(pairFailure).toHaveLength(1);
     expect(pairSuccess).toHaveLength(1);
     expect(pairSuccess[0].completedAgents).toBeGreaterThan(pairFailure[0].completedAgents!);
   });
 
   it.each<[string, () => ReviewClients, string[]]>([
-    ['the primary finder', () => pairedClients(jest.fn().mockRejectedValue(new Error('Permanent failure')), jest.fn().mockResolvedValue({ content: '[]' })), ['Finder (claude-sonnet-5-5)']],
-    ['the only finder', () => ({ ...pairedClients(jest.fn().mockRejectedValue(new Error('Timeout')), jest.fn()), planner: { sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify({ trivial: true, subtle: false, paired: false, judgeEffort: 'low', prType: 'docs' }) }) } as unknown as import('./providers').LLMClient }), ['Trivial Change Verifier']],
+    ['the primary finder', () => pairedClients(jest.fn().mockRejectedValue(new Error('Permanent failure')), jest.fn().mockResolvedValue({ content: '[]' })), ['Claude Sonnet 5.5 · high']],
+    ['the only finder', () => ({ ...pairedClients(jest.fn().mockRejectedValue(new Error('Timeout')), jest.fn()), planner: { sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify({ trivial: true, subtle: false, paired: false, judgeEffort: 'low', prType: 'docs' }) }) } as unknown as import('./providers').LLMClient }), ['Quick check · Claude Sonnet 5.5']],
   ])('ends INCOMPLETE when %s fails all retries', async (_label, build, failed) => {
     const clients = build();
     const result = await runReview(clients, { config: makeConfig(), diff: makeDiff({ totalAdditions: 2, totalDeletions: 0 }), rawDiff: 'raw diff', repoContext: 'repo context' });
@@ -3823,7 +3836,7 @@ describe('runReview', () => {
       .mockResolvedValue({ content: JSON.stringify([securityFinding]) });
     const clients = pairedClients(jest.fn().mockResolvedValue({ content: '[]' }), pair);
     mockedRunJudgeAgent.mockResolvedValue({
-      findings: [{ ...securityFinding, reviewers: ['Pair finder (claude-opus-5-5)'] }],
+      findings: [{ ...securityFinding, reviewers: ['Claude Opus 5.5 · high'] }],
       summary: 'One required finding from retry.',
     });
 
@@ -4797,12 +4810,12 @@ describe('runReview triage', () => {
     expect(result.plannerFallbackReason).toBeUndefined();
     expect(result.triage).toEqual({ trivial: false, subtle: false, paired: false });
     expect(result.sensitivePaths).toBe(false);
-    expect(result.agentNames).toEqual(['Finder (claude-sonnet-5-5)']);
-    expect(result.agentEffortMap).toEqual(new Map([['Finder (claude-sonnet-5-5)', 'medium']]));
-    expect(result.agentModels).toEqual(new Map([['Finder (claude-sonnet-5-5)', 'claude-sonnet-5-5']]));
+    expect(result.agentNames).toEqual(['Claude Sonnet 5.5 · medium']);
+    expect(result.agentEffortMap).toEqual(new Map([['Claude Sonnet 5.5 · medium', 'medium']]));
+    expect(result.agentModels).toEqual(new Map([['Claude Sonnet 5.5 · medium', 'claude-sonnet-5-5']]));
     expect(result.pairAgentName).toBeUndefined();
     expect(result.routing).toEqual({ class: 'internal', rank: 30, matched: ['internal'], classSource: 'triage', group: 'solo', groupSource: 'routing' });
-    expect(progress).toContainEqual(expect.objectContaining({ phase: 'planning', teamAgentNames: ['Finder (claude-sonnet-5-5)'], reviewerEffort: 'medium' }));
+    expect(progress).toContainEqual(expect.objectContaining({ phase: 'planning', teamAgentNames: ['Claude Sonnet 5.5 · medium'], reviewerEffort: 'medium', routing: expect.objectContaining({ class: 'internal', group: 'solo' }) }));
   });
 
   it.each<[string, string | undefined, string, string | undefined]>([
@@ -4813,23 +4826,23 @@ describe('runReview triage', () => {
     expect(result.plannerSource).toBe(source);
     expect(result.plannerFallbackReason).toBe(reason);
     expect(result.triage).toEqual({ trivial: false, subtle: true, paired: true });
-    expect(result.agentNames).toEqual(['Finder (claude-sonnet-5-5)', 'Pair finder (claude-opus-5-5)']);
+    expect(result.agentNames).toEqual(['Claude Sonnet 5.5 · high', 'Claude Opus 5.5 · high']);
     expect([...result.agentEffortMap!.values()]).toEqual(['high', 'high']);
-    expect(result.pairAgentName).toBe('Pair finder (claude-opus-5-5)');
+    expect(result.pairAgentName).toBe('Claude Opus 5.5 · high');
   });
 
   it('runs the trivial verifier alone, except on a security-sensitive path', async () => {
     const plannerResponse = JSON.stringify({ trivial: true, subtle: false, paired: false, judgeEffort: 'low', prType: 'docs' });
     const trivial = await runReview(makeClients(plannerResponse), { config: makeConfig(), diff: makeDiff({ files: [{ path: 'README.md', changeType: 'modified', hunks: [] }] }), rawDiff: 'raw diff', repoContext: 'repo' });
-    expect(trivial.agentNames).toEqual([TRIVIAL_VERIFIER_AGENT.name]);
+    expect(trivial.agentNames).toEqual(['Quick check · Claude Sonnet 5.5']);
     expect(trivial.trivialOverridden).toBeUndefined();
-    expect(trivial.agentEffortMap?.get(TRIVIAL_VERIFIER_AGENT.name)).toBe('medium');
+    expect(trivial.agentEffortMap?.get('Quick check · Claude Sonnet 5.5')).toBe('medium');
 
     const sensitive = await runReview(makeClients(plannerResponse), { config: makeConfig(), diff: makeDiff({ files: [{ path: 'src/token.ts', changeType: 'modified', hunks: [] }] }), rawDiff: 'raw diff', repoContext: 'repo' });
     expect(sensitive.sensitivePaths).toBe(true);
     expect(sensitive.trivialOverridden).toBe(true);
     expect(sensitive.triage).toEqual({ trivial: false, subtle: false, paired: true });
-    expect(sensitive.agentNames).toEqual(['Finder (claude-sonnet-5-5)', 'Pair finder (claude-opus-5-5)']);
+    expect(sensitive.agentNames).toEqual(['Claude Sonnet 5.5 · medium', 'Claude Opus 5.5 · medium']);
   });
 
   it('sends the pair finder the same prompt on the pair client', async () => {
@@ -4851,8 +4864,8 @@ describe('runReview triage', () => {
     const result = await runReview(clients, { config: makeConfig(), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo' });
     expect(result.outcome).toBe('INCOMPLETE');
     expect(result.verdict).toBe('COMMENT');
-    expect(result.failedAgents).toEqual(['Pair finder (claude-opus-5-5)']);
-    expect(result.summary).toContain('Pair finder (claude-opus-5-5) failed after retries');
+    expect(result.failedAgents).toEqual(['Claude Opus 5.5 · high']);
+    expect(result.summary).toContain('Claude Opus 5.5 · high failed after retries');
     expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
   });
 
@@ -4879,8 +4892,8 @@ describe('runReview triage', () => {
 
   it('records `multiPassConsistency` per agent on multi-pass rounds', async () => {
     const findings = [
-      { severity: 'warning' as const, title: 'Bug A', file: 'src/a.ts', line: 5, description: 'd', reviewers: ['Finder (claude-sonnet-5-5)'] },
-      { severity: 'warning' as const, title: 'Bug B', file: 'src/a.ts', line: 10, description: 'd', reviewers: ['Finder (claude-sonnet-5-5)'] },
+      { severity: 'warning' as const, title: 'Bug A', file: 'src/a.ts', line: 5, description: 'd', reviewers: ['Claude Sonnet 5.5 · high'] },
+      { severity: 'warning' as const, title: 'Bug B', file: 'src/a.ts', line: 10, description: 'd', reviewers: ['Claude Sonnet 5.5 · high'] },
     ];
     // Two passes per agent; both return the same two findings, so all consistent.
     const reviewerSendMessage = jest.fn().mockResolvedValue({ content: JSON.stringify(findings) });
@@ -4896,7 +4909,7 @@ describe('runReview triage', () => {
     });
     const result = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo' });
     expect(result.agentMultiPassConsistency).toBeDefined();
-    const sec = result.agentMultiPassConsistency!.get('Finder (claude-sonnet-5-5)');
+    const sec = result.agentMultiPassConsistency!.get('Claude Sonnet 5.5 · high');
     expect(sec).toEqual({ consistent: 2, totalRaw: 4 });
   });
 

@@ -1456,7 +1456,7 @@ describe('postReview body lead', () => {
     const results: ReviewResult[] = [
       ready,
       { ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', verdictReport: undefined, summary: 'It breaks.', findings: [blocker, { ...blocker, file: '', line: 0 }, { ...blocker, file: 'src/gone.ts' }] },
-      { ...ready, verdict: 'COMMENT', outcome: 'INCOMPLETE', verdictReport: undefined, summary: 'The judge failed.', failedAgents: ['Pair finder (claude-opus-4-7)'] },
+      { ...ready, verdict: 'COMMENT', outcome: 'INCOMPLETE', verdictReport: undefined, summary: 'The judge failed.', failedAgents: ['Claude Opus 4.7 · high'] },
       { ...ready, outcome: 'BUDGET' },
       { ...ready, verdict: 'REQUEST_CHANGES', outcome: 'NOT_CONVERGING', needsHuman: { cause: 'repeated', blockers: [{ file: 'src/a.ts', line: 1, title: 'Bug', fingerprint: 'k' }] } },
     ];
@@ -2218,26 +2218,26 @@ describe('buildDashboard', () => {
     expect(md).toContain('**Judge:** 8 kept · 12 dropped');
   });
 
-  it('renders per-agent detail in the complete phase when agentProgress is provided', () => {
+  it('renders per-agent detail and the review class and group in the complete phase', () => {
     const data: DashboardData = {
-      phase: 'complete', lineCount: 500, agentCount: 5,
-      rawFindingCount: 17, keptCount: 14, droppedCount: 3,
+      phase: 'complete', lineCount: 500, agentCount: 2,
+      rawFindingCount: 3, keptCount: 2, droppedCount: 1,
+      routing: { class: 'security', group: 'pair' },
       agentProgress: [
-        { name: 'Security & Safety', status: 'done', findingCount: 2, durationMs: 4000 },
-        { name: 'Architecture & Design', status: 'done', findingCount: 3, durationMs: 3000 },
-        { name: 'Correctness & Logic', status: 'done', findingCount: 5, durationMs: 6000 },
-        { name: 'Testing & Coverage', status: 'done', findingCount: 4, durationMs: 5000 },
-        { name: 'Performance & Efficiency', status: 'done', findingCount: 3, durationMs: 4000 },
+        { name: 'Claude Sonnet 5.5 · high', status: 'done', findingCount: 2, durationMs: 38000 },
+        { name: 'Claude Opus 5.5 · high', status: 'done', findingCount: 1, durationMs: 41000 },
       ],
     };
     const md = buildDashboard(data);
-    expect(md).toContain('**Review:** 17 findings');
-    expect(md).toContain(`${INDENT}✅ Security & Safety: 2 findings (4s)`);
-    expect(md).toContain(`${INDENT}✅ Architecture & Design: 3 findings (3s)`);
-    expect(md).toContain(`${INDENT}✅ Correctness & Logic: 5 findings (6s)`);
-    expect(md).toContain(`${INDENT}✅ Testing & Coverage: 4 findings (5s)`);
-    expect(md).toContain(`${INDENT}✅ Performance & Efficiency: 3 findings (4s)`);
-    expect(md).toContain('**Judge:** 14 kept · 3 dropped');
+    expect(md).toContain([
+      '**Review (security · pair):** 3 findings',
+      `${INDENT}✅ Claude Sonnet 5.5 · high: 2 findings (38s)`,
+      `${INDENT}✅ Claude Opus 5.5 · high: 1 finding (41s)`,
+    ].join('\n'));
+    expect(md).toContain('**Judge:** 2 kept · 1 dropped');
+    expect(buildDashboard({ ...data, routing: { group: 'pair' } })).toContain('**Review (pair):** 3 findings');
+    expect(buildDashboard({ ...data, phase: 'started', agentProgress: [{ name: 'Quick check · Claude Haiku 5.5', status: 'reviewing' }], routing: { class: 'docs', group: 'trivial' } }))
+      .toContain(`**Review (docs · trivial):** 0/1 agents complete\n${INDENT}⏳ Quick check · Claude Haiku 5.5`);
   });
 
   it('renders failed agent in the complete phase', () => {
@@ -2626,7 +2626,7 @@ describe('updateProgressComment', () => {
       reviewerModel: 'claude-sonnet-4-20250514',
       judgeModel: 'claude-sonnet-4-20250514',
       triage: 'trivial=false, subtle=true, paired=true (planner)',
-      teamAgents: ['Finder (claude-sonnet-4-6)', 'Pair finder (claude-opus-4-7)'],
+      teamAgents: ['Claude Sonnet 4.6 · high', 'Claude Opus 4.7 · high'],
       memoryEnabled: true,
       memoryRepo: 'owner/review-memory',
     },
@@ -2676,7 +2676,7 @@ describe('updateProgressComment', () => {
     expect(body).toContain('reviewer=claude-sonnet-4-20250514');
     expect(body).toContain('judge=claude-sonnet-4-20250514');
     expect(body).toContain('Triage: trivial=false, subtle=true, paired=true (planner)');
-    expect(body).toContain('Team: Finder (claude-sonnet-4-6), Pair finder (claude-opus-4-7)');
+    expect(body).toContain('Team: Claude Sonnet 4.6 · high, Claude Opus 4.7 · high');
     expect(body).toContain('enabled (owner/review-memory)');
   });
 

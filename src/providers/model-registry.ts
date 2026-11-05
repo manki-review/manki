@@ -40,3 +40,26 @@ export function parseModelSpec(input: string): ModelSpec {
 
   throw new Error(`Unknown model "${input}". Use a known prefix (e.g., "claude-...", "gpt-...", "o3...", "gemini-...") or "provider/model" syntax.`);
 }
+
+const FAMILY_NAMES: ReadonlyMap<string, string> = new Map([['claude', 'Claude'], ['gpt', 'GPT'], ['gemini', 'Gemini']]);
+
+/**
+ * Returns a model's display name, such as "Claude Sonnet 5.5" for `claude-sonnet-5-5` or "GPT 5.5" for `gpt-5.5`.
+ * Dash-separated version numbers join with a dot and a trailing date stamp is dropped. Any other id is returned as given.
+ */
+export function modelDisplayName(id: string): string {
+  const bare = id.trim()
+    .replace(/^(anthropic|openai|gemini)\//, '')
+    .replace(/-(?:\d{8}|\d{4}-\d{2}-\d{2})$/, '')
+    .replace(/(-preview)-\d{2}-\d{2}$/, '$1');
+  const [family, ...rest] = bare.split('-');
+  const name = FAMILY_NAMES.get(family);
+  if (!name || rest.length === 0 || rest.some(part => !/^[a-z0-9.]+$/i.test(part))) return id;
+  const words = [name];
+  for (const part of rest) {
+    const last = words[words.length - 1];
+    if (/^\d{1,2}$/.test(part) && /\d$/.test(last)) words[words.length - 1] = `${last}.${part}`;
+    else words.push(part[0].toUpperCase() + part.slice(1));
+  }
+  return words.join(' ');
+}
