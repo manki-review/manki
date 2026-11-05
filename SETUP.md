@@ -254,7 +254,7 @@ jobs:
         with:
           node-version: '24'
       - name: Manki Review
-        uses: manki-review/manki@v5
+        uses: manki-review/manki@v6
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           # memory_repo_token: ${{ secrets.REVIEW_MEMORY_TOKEN }}  # Only if memory repo is separate
@@ -266,7 +266,7 @@ Claude Code OAuth:
 
 ```yaml
       - name: Manki Review
-        uses: manki-review/manki@v5
+        uses: manki-review/manki@v6
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 ```
@@ -275,7 +275,7 @@ OpenAI API key:
 
 ```yaml
       - name: Manki Review
-        uses: manki-review/manki@v5
+        uses: manki-review/manki@v6
         with:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
 ```
@@ -287,7 +287,7 @@ OpenAI Codex CLI OAuth (requires the CLI on the runner):
         # --ignore-scripts is safe: @openai/codex@0.166.0 ships a plain JS bin with no postinstall steps. Re-verify if you bump the version pin.
         run: npm install -g --ignore-scripts '@openai/codex@0.166.0'
       - name: Manki Review
-        uses: manki-review/manki@v5
+        uses: manki-review/manki@v6
         with:
           openai_oauth_token: ${{ secrets.OPENAI_OAUTH_TOKEN }}
 ```
@@ -296,7 +296,7 @@ Gemini API key:
 
 ```yaml
       - name: Manki Review
-        uses: manki-review/manki@v5
+        uses: manki-review/manki@v6
         with:
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
 ```
@@ -308,7 +308,7 @@ Gemini CLI OAuth (requires the CLI on the runner and a Gemini Code Assist Standa
         # --ignore-scripts is safe: @google/gemini-cli@0.66.0 has no install script of its own. Re-verify if you bump the version pin.
         run: npm install -g --ignore-scripts '@google/gemini-cli@0.66.0'
       - name: Manki Review
-        uses: manki-review/manki@v5
+        uses: manki-review/manki@v6
         env:
           GOOGLE_CLOUD_PROJECT: <your-project-id>
         with:
@@ -347,28 +347,28 @@ The action exposes outputs you can chain into later workflow steps: `review_id`,
 
 Pin to a release tag or to the commit a release tag points to:
 
-- `manki-review/manki@v5` is the floating major tag. It picks up minor and patch releases automatically. Recommended for most setups.
-- `manki-review/manki@v5.1.0` is an exact release. It stays on that release until you bump it. Recommended when you want lockstep upgrades.
+- `manki-review/manki@v6` is the floating major tag. It picks up minor and patch releases automatically. Recommended for most setups.
+- `manki-review/manki@v6.0.0` is an exact release. It stays on that release until you bump it. Recommended when you want lockstep upgrades.
 - `manki-review/manki@<sha>` is a full commit SHA, for organizations that require actions pinned to one.
 
 `main` holds source only and has no built `dist/`, so `@main` or a commit SHA from `main` will not run. Each release tag points at a commit that contains the built `dist/`. For a SHA pin, take the commit of the release tag:
 
 ```sh
-git ls-remote https://github.com/manki-review/manki 'refs/tags/v5.3.0^{}'
+git ls-remote https://github.com/manki-review/manki 'refs/tags/v6.0.0^{}'
 ```
 
 Then pin it with the version as a comment, so tools that update pins can read it:
 
 ```yaml
       - name: Manki Review
-        uses: manki-review/manki@<sha>  # v5.3.0
+        uses: manki-review/manki@<sha>  # v6.0.0
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
 From v6.0.0, Manki publishes immutable releases: once a release is out, its tag can never move, so the SHA behind `v6.x.y` never changes. The floating `v6` tag keeps moving to each new release.
 
-[Workflow lockfiles](https://docs.github.com/actions/concepts/security/workflow-dependency-lockfiles) are the alternative to SHA pins. Keep `@v5` in the workflow, and run the [`gh actions-lock`](https://github.com/github/gh-actions-lock) extension to record the commit it resolves to in `.github/workflows/actions.lock`. Commit that file. Actions then runs the recorded commit, even after the tag moves, until you regenerate the lockfile. A lockfile satisfies the policy that requires actions pinned to a full commit SHA for the workflows it covers, and Dependabot regenerates the entry when it bumps the version.
+[Workflow lockfiles](https://docs.github.com/actions/concepts/security/workflow-dependency-lockfiles) are the alternative to SHA pins. Keep `@v6` in the workflow, and run the [`gh actions-lock`](https://github.com/github/gh-actions-lock) extension to record the commit it resolves to in `.github/workflows/actions.lock`. Commit that file. Actions then runs the recorded commit, even after the tag moves, until you regenerate the lockfile. A lockfile satisfies the policy that requires actions pinned to a full commit SHA for the workflows it covers, and Dependabot regenerates the entry when it bumps the version.
 
 Releases before the committed `dist/` fix (`v5.0.0`, `v5.0.1`) only work through the floating `@v5` tag.
 
@@ -376,7 +376,7 @@ Releases before the committed `dist/` fix (`v5.0.0`, `v5.0.1`) only work through
 
 ```yaml
 # Fail CI when the judge requests changes
-- uses: manki-review/manki@v5
+- uses: manki-review/manki@v6
   id: manki
   with:
     anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -500,7 +500,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Manki Review
-        uses: manki-review/manki@v5
+        uses: manki-review/manki@v6
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
