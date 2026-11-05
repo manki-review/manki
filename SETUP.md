@@ -80,7 +80,7 @@ The app requires these permissions:
 | Contents | Read | Read repository files and diffs |
 | Pull requests | Read and write | Post review comments and approvals |
 | Issues | Read and write | Post progress comments and app warnings; read linked issues for review context |
-| Actions | Read and write | [Webhook mode](#webhook-mode-opt-in-new-in-61): start the dispatch workflow and follow its runs |
+| Actions | Read and write | [Webhook mode](#webhook-mode-opt-in-new-in-61): start the dispatch workflow and follow its runs. Set on the App by its maintainers, so you only approve it |
 
 ## Step 2: Authentication Secrets
 
@@ -558,7 +558,7 @@ In the default setup, GitHub starts a workflow run in your repository for every 
 - **No run for an event Manki ignores.** A comment without a mention, a bot's push or a PR closed without merging never starts a workflow run, so the Actions tab and the PR checks show no skipped runs for them.
 - **Events run in order.** Each PR has two queues. Reviews, thread replies, `check` and `dismiss` run one at a time in the order they arrived, and several pushes during a review become one review of the newest head. `explain`, `help`, `remember`, `forget` and free questions run one at a time in a second queue beside it, so a question never waits behind a review. The service replaces the `concurrency` block.
 - **Every run uses the current version.** The service always starts the workflow on the default branch, so reviews, comment commands and thread replies all run the Manki version pinned there. In the event-driven setup, pushes, reviews and thread replies run the workflow from the PR's merge commit, so a PR that changes the workflow runs its own version for them. PR comments already run the workflow on the default branch.
-- **Missed events come back.** Every 5 minutes the service retries the deliveries GitHub failed to hand over and queues a review for any open PR whose head has no Manki review yet.
+- **Missed events come back.** Every 5 minutes the service retries the deliveries GitHub failed to hand over and queues a review for any open, non-draft PR from your repository whose head has no Manki review yet.
 
 Fork PRs work as before: a push to a PR from a fork starts no review, and a review command in a PR comment still reviews it.
 
