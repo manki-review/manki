@@ -648,11 +648,12 @@ async function loadRecap(target: RunTarget, config: ReviewConfig, commentId: num
   return recap;
 }
 
-/** Whether the round cap is reached, and whether automatic review is paused by it or by a last round that ended `NOT_CONVERGING`. */
-function pauseState(priorRounds: RoundContext[], config: ReviewConfig): { capReached: boolean; paused: boolean } {
+/** Returns the rounds since the last approval, whether they reach the round cap, and whether automatic review is paused by it or by a last round that ended `NOT_CONVERGING`. */
+function pauseState(priorRounds: RoundContext[], config: ReviewConfig): { capRounds: number; capReached: boolean; paused: boolean } {
   const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
-  const capReached = maxAutoRounds > 0 && priorRounds.length >= maxAutoRounds;
-  return { capReached, paused: capReached || priorRounds.at(-1)?.meta.outcome === 'NOT_CONVERGING' };
+  const capRounds = roundsSinceApproval(priorRounds);
+  const capReached = maxAutoRounds > 0 && capRounds >= maxAutoRounds;
+  return { capRounds, capReached, paused: capReached || priorRounds.at(-1)?.meta.outcome === 'NOT_CONVERGING' };
 }
 
 /** Builds one LLM client per stage. Throws on a model spec or credentials that do not resolve. */
@@ -789,15 +790,25 @@ async function loadRunMemory(
 }
 
 /**
+ * Returns how many rounds ran since the last round that approved, or all of them without one.
+ * The round cap stops fix loops, so a round after an approval, such as on a rebase, starts the count again.
+ */
+function roundsSinceApproval(priorRounds: RoundContext[]): number {
+  let count = 0;
+  for (let i = priorRounds.length - 1; i >= 0 && priorRounds[i].verdict !== 'APPROVE'; i--) count++;
+  return count;
+}
+
+/**
  * Replaces the progress comment with a notice that automatic review is paused. Each push during
  * the same pause updates the unticked notice from after `lastRoundAt` instead of adding another.
  */
 async function postPauseNotice(
-  target: RunTarget, commentId: number, capReached: boolean, priorRoundCount: number, maxAutoRounds: number, lastRoundAt?: string,
+  target: RunTarget, commentId: number, capReached: boolean, capRounds: number, maxAutoRounds: number, approvedBefore: boolean, lastRoundAt?: string,
 ): Promise<void> {
   const { octokit, owner, repo, prNumber } = target;
   core.info(capReached
-    ? `Round cap reached (${priorRoundCount} prior rounds >= max ${maxAutoRounds}) — skipping auto review`
+    ? `Round cap reached (${capRounds} rounds since the last approval >= max ${maxAutoRounds}) — skipping auto review`
     : 'Last round did not converge — skipping auto review');
   try {
     await octokit.rest.issues.deleteComment({ owner, repo, comment_id: commentId });
@@ -806,7 +817,7 @@ async function postPauseNotice(
   }
   try {
     const reason = capReached
-      ? `Manki has completed ${priorRoundCount}/${maxAutoRounds} review rounds on this PR.`
+      ? `Manki has completed ${capRounds}/${maxAutoRounds} review rounds on this PR${approvedBefore ? ' since its last approval' : ''}.`
       : 'The last Manki round found a blocker that came back after a fix.';
     const body = withMarkers(
       `${reason} Automatic review is paused. Tick the box to run another round, or comment \`@manki review\`:\n\n- [ ] Force review`,
@@ -1275,9 +1286,9 @@ async function runFullReview(
 
     const priorRoundCount = recap.priorRounds.length;
     const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
-    const { capReached, paused } = pauseState(recap.priorRounds, config);
+    const { capRounds, capReached, paused } = pauseState(recap.priorRounds, config);
     if (paused && !skipCap) {
-      await postPauseNotice(target, commentId, capReached, priorRoundCount, maxAutoRounds, recap.priorRounds.at(-1)?.meta.timestamp);
+      await postPauseNotice(target, commentId, capReached, capRounds, maxAutoRounds, capRounds < priorRoundCount, recap.priorRounds.at(-1)?.meta.timestamp);
       return;
     }
 
@@ -1310,7 +1321,7 @@ async function runFullReview(
       interRoundDiff,
       headSha: commitSha,
       blockersOnly: paused,
-      finalRound: !paused && maxAutoRounds > 0 && priorRoundCount + 1 === maxAutoRounds,
+      finalRound: !paused && maxAutoRounds > 0 && capRounds + 1 === maxAutoRounds,
     });
     const { result } = stage;
 

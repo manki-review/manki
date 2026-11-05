@@ -5467,6 +5467,25 @@ describe('runFullReview orchestration', () => {
       expect(capBody).not.toContain(FORCE_REVIEW_MARKER);
     });
 
+    it('counts the cap from the last approval, so rounds after it, as on rebases, start again', async () => {
+      jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(5));
+      const rounds = priorRounds(7).map(roundContextFromLegacy);
+      rounds[1].verdict = 'APPROVE';
+      jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: rounds });
+
+      await callRunFullReview();
+
+      expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+      const notice = jest.mocked(mockOctokitInstance.rest.issues.createComment).mock.calls
+        .find(([args]) => typeof args.body === 'string' && args.body.includes('Automatic review is paused'));
+      expect(notice![0].body).toContain('Manki has completed 5/5 review rounds on this PR since its last approval.');
+
+      rounds[2].verdict = 'APPROVE';
+      await callRunFullReview();
+
+      expect(jest.mocked(reviewModule.runReview).mock.calls[0][1]).toMatchObject({ blockersOnly: false, finalRound: true });
+    });
+
     it('bypasses the cap when skipCap is true', async () => {
       jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(5));
       seedPriorRounds(priorRounds(5));
