@@ -56,6 +56,7 @@ const mockContext = {
   payload: {} as Record<string, unknown>,
   repo: { owner: OWNER, repo: REPO },
   runId: 7001,
+  actor: APP_LOGIN,
   job: 'review',
   serverUrl: 'https://github.com',
 };
@@ -79,7 +80,7 @@ const MATH_TS = 'export function add(a: number, b: number): number {\n  const su
 interface FakeUser { login: string; type: string }
 interface FakeComment { id: number; body: string; user: FakeUser; created_at: string; updated_at: string }
 interface FakeReview { id: number; body: string; state: string; commit_id: string; user: FakeUser; submitted_at: string }
-interface FakeThreadComment { body: string; url: string; authorAssociation: string; author: { login: string } }
+interface FakeThreadComment { databaseId: number; body: string; url: string; authorAssociation: string; author: { login: string } }
 interface FakeThread { id: string; isResolved: boolean; resolvedBy: { login: string } | null; path: string; line: number; startLine: number | null; originalLine: number; comments: FakeThreadComment[] }
 interface FakeFailure { method: string; path: RegExp; status: number }
 
@@ -96,6 +97,8 @@ class FakeGitHub {
   /** Runs before a write is answered, which waits for it. */
   onWrite?: (write: string) => void | Promise<void>;
   headSha = HEAD_SHA;
+  /** The config file the PR carries at its head commit. */
+  headConfig?: string;
   activeRuns: number[] = [];
   private nextId = 1000;
 
@@ -123,7 +126,28 @@ class FakeGitHub {
 
     if (method === 'GET' && route === `/pulls/${PR_NUMBER}`) {
       if (headers.get('accept')?.includes('diff')) return text(PR_DIFF);
-      return json({ number: PR_NUMBER, title: 'Keep the sum in a variable', body: 'Small refactor.', draft: false, head: { sha: this.headSha, ref: 'feature', repo: { full_name: `${OWNER}/${REPO}` } }, base: { ref: 'main' }, user: { login: 'alice' } });
+      return json({ number: PR_NUMBER, title: 'Keep the sum in a variable', body: 'Small refactor.', draft: false, head: { sha: this.headSha, ref: 'feature', repo: { full_name: `${OWNER}/${REPO}` } }, base: { ref: 'main', repo: { full_name: `${OWNER}/${REPO}` } }, user: { login: 'alice', type: 'User' } });
+    }
+    if ((match = route.match(/^\/pulls\/comments\/(\d+)(\/reactions)?$/))) {
+      const id = Number(match[1]);
+      const thread = this.threads.find(t => t.comments.some(c => c.databaseId === id));
+      const comment = thread?.comments.find(c => c.databaseId === id);
+      if (!thread || !comment) return json({ message: 'Not Found' }, 404);
+      if (match[2]) return json({ id: this.nextId++, content: body.content }, 201);
+      const isBot = `${comment.author.login}[bot]` === APP_LOGIN;
+      return json({
+        id, body: comment.body, path: thread.path, line: thread.line, author_association: comment.authorAssociation,
+        user: { login: isBot ? APP_LOGIN : comment.author.login, type: isBot ? 'Bot' : 'User' },
+        in_reply_to_id: comment === thread.comments[0] ? undefined : thread.comments[0].databaseId,
+        pull_request_url: `https://api.github.com/repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}`,
+      });
+    }
+    if (method === 'POST' && (match = route.match(new RegExp(`^/pulls/${PR_NUMBER}/comments/(\\d+)/replies$`)))) {
+      const thread = this.threads.find(t => t.comments.some(c => c.databaseId === Number(match![1])));
+      if (!thread) return json({ message: 'Not Found' }, 404);
+      const reply = { databaseId: this.nextId++, body: body.body, url: `${thread.comments[0].url}-reply`, authorAssociation: 'NONE', author: { login: login.replace(/\[bot\]$/, '') } };
+      thread.comments.push(reply);
+      return json({ id: reply.databaseId }, 201);
     }
     if (method === 'GET' && route === `/issues/${PR_NUMBER}/comments`) return this.page(url, this.comments, searchParams);
     if (method === 'POST' && route === `/issues/${PR_NUMBER}/comments`) {
@@ -160,6 +184,9 @@ class FakeGitHub {
       return json({ id: this.nextId++ }, 201);
     }
     if (method === 'GET' && route.startsWith('/compare/') && headers.get('accept')?.includes('diff')) return text(PR_DIFF);
+    if (method === 'GET' && route === `/contents/${INPUTS.config_path}` && this.headConfig && searchParams.get('ref') === this.headSha) {
+      return json({ type: 'file', encoding: 'base64', size: this.headConfig.length, content: Buffer.from(this.headConfig).toString('base64') });
+    }
     if (method === 'GET' && route === `/contents/src/math.ts`) {
       return json({ type: 'file', encoding: 'base64', size: MATH_TS.length, content: Buffer.from(MATH_TS).toString('base64') });
     }
@@ -175,7 +202,7 @@ class FakeGitHub {
     const id = `PRRT_${this.threads.length + 1}`;
     const thread = {
       id, isResolved, resolvedBy: null, path, line, startLine: null, originalLine: line,
-      comments: [{ body, url: `https://github.com/${OWNER}/${REPO}/pull/${PR_NUMBER}#discussion_${id}`, authorAssociation: 'NONE', author: { login: login.replace(/\[bot\]$/, '') } }],
+      comments: [{ databaseId: this.nextId++, body, url: `https://github.com/${OWNER}/${REPO}/pull/${PR_NUMBER}#discussion_${id}`, authorAssociation: 'NONE', author: { login: login.replace(/\[bot\]$/, '') } }],
     };
     this.threads.push(thread);
     return thread;
@@ -228,7 +255,7 @@ class FakeGitHub {
     }
     if (query.includes('addPullRequestReviewThreadReply')) {
       const thread = this.threads.find(t => t.id === variables.threadId);
-      thread?.comments.push({ body: String(variables.body), url: `${thread.comments[0].url}-reply`, authorAssociation: 'NONE', author: { login: login.replace(/\[bot\]$/, '') } });
+      thread?.comments.push({ databaseId: this.nextId++, body: String(variables.body), url: `${thread.comments[0].url}-reply`, authorAssociation: 'NONE', author: { login: login.replace(/\[bot\]$/, '') } });
       return { addPullRequestReviewThreadReply: { comment: { id: 'C_reply' } } };
     }
     if (query.includes('reviewThreads(')) {
@@ -348,6 +375,7 @@ describe('runFullReview end to end', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     _resetOctokitCache();
+    mockContext.eventName = 'pull_request';
     mockContext.payload = {};
     mockGitHub = new FakeGitHub();
     mockLLM = new FakeLLM();
@@ -620,5 +648,70 @@ describe('runFullReview end to end', () => {
     expect(first.state).toBe('DISMISSED');
     expect(mockGitHub.roundContext(second)).toMatchObject({ meta: { round: 2 }, judge: { openThreadCount: 1 } });
     expect(mockGitHub.comments.filter(c => c.body.includes('<!-- manki-app-warning -->'))).toHaveLength(1);
+  });
+
+  describe('dispatched by the webhook service', () => {
+    const eventName = process.env.GITHUB_EVENT_NAME;
+    beforeEach(() => { process.env.GITHUB_EVENT_NAME = 'workflow_dispatch'; });
+    afterEach(() => {
+      if (eventName === undefined) delete process.env.GITHUB_EVENT_NAME;
+      else process.env.GITHUB_EVENT_NAME = eventName;
+    });
+
+    function dispatch(inputs: Record<string, string>): Promise<void> {
+      Object.assign(mockContext, { eventName: 'workflow_dispatch', actor: APP_LOGIN, payload: { inputs, sender: { login: APP_LOGIN, type: 'Bot' } } });
+      return main();
+    }
+
+    it('reviews a push with the config the PR carries at its head', async () => {
+      mockGitHub.headConfig = 'planner:\n  enabled: false\n';
+
+      await dispatch({ event: 'pull_request', action: 'synchronize', pr: String(PR_NUMBER), head_sha: HEAD_SHA, delivery_id: '72d3162e-cc78-11e3-81ab-4c9367dc0958' });
+
+      expect(core.setFailed).not.toHaveBeenCalled();
+      const [review] = postedReviews();
+      expect(review).toMatchObject({ state: 'APPROVED', commit_id: HEAD_SHA });
+      expect(mockGitHub.roundContext(review).meta.trigger).toEqual({ event: 'pull_request:synchronize', sender: 'alice' });
+      expect(mockLLM.calls).not.toContain('planner');
+    });
+
+    it('writes nothing for a push the PR head has moved past', async () => {
+      await dispatch({ event: 'pull_request', action: 'synchronize', pr: String(PR_NUMBER), head_sha: 'b2'.repeat(20) });
+
+      expect(core.setFailed).not.toHaveBeenCalled();
+      expect(mockGitHub.writes).toEqual([]);
+      expect(mockLLM.calls).toEqual([]);
+    });
+
+    it('runs the auto-approve check when someone resolves the last open thread', async () => {
+      Object.assign(mockLLM.replies, BLOCKER_REPLIES);
+      await reviewRound();
+      const [thread] = mockGitHub.threads;
+      Object.assign(thread, { isResolved: true, resolvedBy: { login: 'bob' } });
+      mockLLM.calls = [];
+
+      await dispatch({ event: 'pull_request_review_thread', action: 'resolved', pr: String(PR_NUMBER), delivery_id: '72d3162e-cc78-11e3-81ab-4c9367dc0959' });
+
+      expect(core.setFailed).not.toHaveBeenCalled();
+      expect(mockLLM.calls).toEqual([]);
+      expect(postedReviews().map(r => [r.state, r.commit_id])).toEqual([['DISMISSED', HEAD_SHA], ['APPROVED', HEAD_SHA]]);
+    });
+
+    it('answers a reply in a Manki thread as the person who wrote it', async () => {
+      Object.assign(mockLLM.replies, BLOCKER_REPLIES);
+      await reviewRound();
+      const [thread] = mockGitHub.threads;
+      const reply = { databaseId: 9001, body: 'The inputs are bounded by the caller.', url: `${thread.comments[0].url}-9001`, authorAssociation: 'OWNER', author: { login: 'alice' } };
+      thread.comments.push(reply);
+      mockLLM.replies.reviewer = 'Agreed. The caller bounds the inputs, so the sum cannot overflow.';
+      mockLLM.calls = [];
+
+      await dispatch({ event: 'pull_request_review_comment', action: 'created', pr: String(PR_NUMBER), comment_id: String(reply.databaseId) });
+
+      expect(core.setFailed).not.toHaveBeenCalled();
+      expect(mockLLM.calls).toEqual(['reviewer']);
+      expect(thread.comments.at(-1)?.body).toMatch(/^Agreed\. The caller bounds the inputs/);
+      expect(thread.isResolved).toBe(true);
+    });
   });
 });

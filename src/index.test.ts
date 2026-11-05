@@ -1772,6 +1772,24 @@ describe('postCleanup (via main dispatch)', () => {
     );
   });
 
+  it('marks the progress comment of a dispatched run cancelled, with the PR number from the inputs', async () => {
+    const eventName = process.env.GITHUB_EVENT_NAME;
+    process.env.GITHUB_EVENT_NAME = 'workflow_dispatch';
+    setContext({ eventName: 'workflow_dispatch', payload: { inputs: { event: 'issue_comment', action: 'created', pr: '42', comment_id: '7' } } });
+    jest.mocked(ghUtils.markOwnProgressCommentCancelled).mockResolvedValueOnce(true);
+
+    try {
+      await runPostPhase();
+    } finally {
+      if (eventName === undefined) delete process.env.GITHUB_EVENT_NAME;
+      else process.env.GITHUB_EVENT_NAME = eventName;
+    }
+
+    expect(jest.mocked(ghUtils.markOwnProgressCommentCancelled)).toHaveBeenCalledWith(
+      expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 42, 12345,
+    );
+  });
+
   it('does not save state again when running in post phase', async () => {
     setContext({ eventName: 'pull_request', payload: { pull_request: { number: 1 } } });
     jest.mocked(ghUtils.markOwnProgressCommentCancelled).mockResolvedValueOnce(false);

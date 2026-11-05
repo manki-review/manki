@@ -38,6 +38,10 @@ function htmlCodeBlocks(html: string): string[] {
     .replace(/&amp;/g, '&'));
 }
 
+function isDispatchWorkflow(workflow: Partial<Workflow>): boolean {
+  return !!workflow.on && 'workflow_dispatch' in workflow.on;
+}
+
 function findMankiSteps(node: unknown): MankiStep[] {
   if (Array.isArray(node)) return node.flatMap(findMankiSteps);
   if (!node || typeof node !== 'object') return [];
@@ -68,10 +72,23 @@ describe('documented workflow snippets', () => {
       const { if: condition, concurrency, 'timeout-minutes': timeout } = workflow.jobs.review;
       expect({ condition, concurrency, timeout }).toEqual({ condition: own.if, concurrency: own.concurrency, timeout: own['timeout-minutes'] });
     }
-    const jobs = Object.values(snippets).flat().map(block => (parseYaml(block) as Partial<Workflow>).jobs?.review).filter(job => job !== undefined);
+    const jobs = Object.values(snippets).flat().map(block => parseYaml(block) as Partial<Workflow>)
+      .filter(workflow => !isDispatchWorkflow(workflow)).map(workflow => workflow.jobs?.review).filter(job => job !== undefined);
     expect(jobs.length).toBeGreaterThan(2);
     for (const job of jobs) expect(job.if).toContain(own.if);
     expect(snippets['SETUP.md'].length).toBeGreaterThan(1);
+  });
+
+  it('includes a dispatch workflow in SETUP.md that declares the dispatch inputs, with no `if` or `concurrency`', () => {
+    const dispatch = snippets['SETUP.md'].map(block => parseYaml(block) as Workflow).filter(isDispatchWorkflow);
+    expect(dispatch).toHaveLength(1);
+    const [workflow] = dispatch;
+    expect(Object.keys(workflow.on)).toEqual(['workflow_dispatch']);
+    const { inputs: dispatchInputs } = workflow.on.workflow_dispatch as { inputs: Record<string, unknown> };
+    expect(Object.keys(dispatchInputs)).toEqual(['event', 'action', 'pr', 'head_sha', 'comment_id', 'review_id', 'delivery_id']);
+    expect((workflow as Workflow & { 'run-name': string })['run-name']).toBe('Manki ${{ inputs.event }}.${{ inputs.action }} on #${{ inputs.pr }} (${{ inputs.delivery_id }})');
+    const { if: condition, concurrency, 'timeout-minutes': timeout } = workflow.jobs.review;
+    expect({ condition, concurrency, timeout }).toEqual({ condition: undefined, concurrency: undefined, timeout: 30 });
   });
 
   it('passes only inputs that `action.yml` accepts and every required input', () => {

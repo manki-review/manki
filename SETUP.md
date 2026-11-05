@@ -546,6 +546,48 @@ Manki downloads each tool at the pinned version, checks it against its pinned di
 
 Analyzer results follow the path of the CI results above, limited to lines of the diff. Since no CI shows them to the author, every result goes to the judge as a candidate finding, and a reviewer finding on the same line is never dropped for it. A result the judge keeps is posted with the tool in its label, such as `⚠️ **Warning** (gitleaks):`. A clean run posts nothing. The `Manki context` block records each enabled analyzer under `staticAnalysis.analyzers`, with how many results it found or why it was skipped.
 
+## Webhook mode (opt-in, new in 6.1)
+
+In webhook mode the Manki service receives the GitHub events and starts a run of a dispatch-only workflow for each one. Create `.github/workflows/manki-dispatch.yml`:
+
+```yaml
+name: Manki dispatch
+run-name: 'Manki ${{ inputs.event }}.${{ inputs.action }} on #${{ inputs.pr }} (${{ inputs.delivery_id }})'
+
+on:
+  workflow_dispatch:
+    inputs:
+      event: { type: string, required: true }
+      action: { type: string, required: true }
+      pr: { type: string, required: true }
+      head_sha: { type: string, required: false }
+      comment_id: { type: string, required: false }
+      review_id: { type: string, required: false }
+      delivery_id: { type: string, required: false }
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+  actions: read
+
+jobs:
+  review:
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Manki Review
+        uses: manki-review/manki@v6
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+The job has no `if` and no `concurrency` block, since the service filters and orders the events. It needs no checkout: Manki reads the PR's `.manki.yml` at the head commit through the API. The inputs carry only the event and its ids. Manki reads the PR, comment or review itself, so a hand-made dispatch cannot pass it anything else.
+
 ## Step 4: Configure Reviews (Optional)
 
 Create `.manki.yml` in your repository root. If the file is not valid YAML or has an invalid setting, the run fails, and a review run posts the error on the PR instead of reviewing with the defaults.
