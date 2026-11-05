@@ -9,8 +9,8 @@ import { WRITING_RULES } from './writing-rules';
 const VERDICT_READER_NAME = 'Verdict reader';
 const MAX_BLOCKER_TITLE_LENGTH = 100;
 const MAX_TEST_STEPS = 8;
-// A normal verdict takes under two minutes. A runaway reply runs until the output limit.
-const VERDICT_TIMEOUT_MS = 300_000;
+// Most verdicts take under two minutes, but a legitimate one has taken almost 15.
+const VERDICT_TIMEOUT_MS = 900_000;
 
 // Every input here is identical on every round for the same tree. The reader must never learn
 // about earlier rounds, findings or the PR's own description, or it starts confirming instead of

@@ -899,6 +899,7 @@ export async function runReview(
   let judgeUsage: LLMUsage | undefined;
   let judgeDurationMs: number | undefined;
   let judgeRetryCount = 0;
+  const judgeWrap = wrapClientForUsage(clients.judge);
   try {
     core.info(`Running judge on ${findingsForJudge.length} findings...`);
     const judgeInput: JudgeInput = {
@@ -921,7 +922,6 @@ export async function runReview(
       suppressResolvedThreads,
     };
     const judgeStart = Date.now();
-    const judgeWrap = wrapClientForUsage(clients.judge);
     const judgeResult = await runJudgeAgent(judgeWrap.client, config, judgeInput);
     judgeDurationMs = Date.now() - judgeStart;
     const judgeTotals = judgeWrap.getTotals();
@@ -939,6 +939,7 @@ export async function runReview(
     core.info(`Judge complete: ${finalFindings.length} findings survived (${judgeResult.findings.length - finalFindings.length} ignored)`);
   } catch (error) {
     core.warning(`Judge failed: ${error}`);
+    logOutputTokens('Judge', judgeWrap.getTotals().usage);
     return {
       verdict: OUTCOME_VERDICT.INCOMPLETE,
       outcome: 'INCOMPLETE',
@@ -1006,6 +1007,7 @@ export async function runReview(
       verdictReport = await runVerdictReader(verdictWrap.client, buildReviewerUserMessage(rawDiff, repoContext, { fileContents: readerFiles }));
     } catch (error) {
       core.warning(`Verdict reader failed: ${error}`);
+      logOutputTokens('Verdict reader', verdictWrap.getTotals().usage);
       return {
         verdict: OUTCOME_VERDICT.INCOMPLETE,
         outcome: 'INCOMPLETE',
