@@ -1039,8 +1039,9 @@ async function postIncompleteRound(run: ReviewRun, result: ReviewResult): Promis
 }
 
 /**
- * Resolve threads the judge marked `addressed`, each with a `Fixed in <sha>.` reply. A blocker
- * thread that fails to resolve stays open, and the round no longer approves. Other statuses
+ * Resolve threads the judge marked `addressed`, each with a `Fixed in <sha>.` reply. A thread that
+ * fails to resolve stays open: `result` then records it as `uncertain`, a blocker thread among them
+ * keeps the round from approving, and the function returns true so the review is posted again. Other statuses
  * (`not_addressed`, `uncertain`) are logged for audit but never trigger a
  * resolveReviewThread mutation. Unknown thread IDs are filtered.
  *
@@ -1051,7 +1052,7 @@ async function postIncompleteRound(run: ReviewRun, result: ReviewResult): Promis
  * any `addressed` evaluation here as a second layer. `undefined` is the
  * unknown sentinel (compare-API failure) and must not trigger the guard.
  */
-async function resolveAddressedThreads(run: ReviewRun, result: ReviewResult): Promise<void> {
+async function resolveAddressedThreads(run: ReviewRun, result: ReviewResult): Promise<boolean> {
   const hasPriorRounds = run.recap.priorRounds.length > 0;
   const interRoundDiffKnownEmpty = hasPriorRounds && isEmptyInterRoundDiff(run.interRoundDiff);
   const stillOpen: OpenThread[] = [];
@@ -1084,14 +1085,14 @@ async function resolveAddressedThreads(run: ReviewRun, result: ReviewResult): Pr
       }
     }
   }
-  if (stillOpen.length > 0) {
-    // A later round reads `addressed` as a confirmed fix, so a thread that stayed open must not keep it.
-    const failed = new Set(stillOpen.map(t => t.threadId));
-    result.threadEvaluations = result.threadEvaluations?.map(e => failed.has(e.threadId)
-      ? { ...e, status: 'uncertain', reason: `Resolving the thread failed, so it stays open. ${e.reason}` }
-      : e);
-  }
+  if (stillOpen.length === 0) return false;
+  // A later round reads `addressed` as a confirmed fix, so a thread that stayed open must not keep it.
+  const failed = new Set(stillOpen.map(t => t.threadId));
+  result.threadEvaluations = result.threadEvaluations?.map(e => failed.has(e.threadId)
+    ? { ...e, status: 'uncertain', reason: `Resolving the thread failed, so it stays open. ${e.reason}` }
+    : e);
   blockOnOpenThreads(result, stillOpen);
+  return true;
 }
 
 /** Turns an approval into a request for changes when a blocker thread it counted as fixed could not be resolved. */
@@ -1367,15 +1368,21 @@ async function runFullReview(
 
     addCodeContext(result.findings, diff);
     const reviewTimeMs = Date.now() - startTime;
-    const context = buildRoundContext(run, result, {
+    const buildContext = () => buildRoundContext(run, result, {
       plannerDurationMs: dashboard.plannerDurationMs,
       judgeDurationMs: stage.judgeEndTime - stage.reviewEndTime,
     });
+    let context = buildContext();
 
     await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
-    const reviewId = await postRound(run, result, context, reviewTimeMs);
+    let reviewId = await postRound(run, result, context, reviewTimeMs);
     // Only after the review is posted, so a review that GitHub refuses as superseded resolves no thread.
-    await resolveAddressedThreads(run, result);
+    if (await resolveAddressedThreads(run, result)) {
+      // The posted review counted a thread as fixed that is still open, so a corrected review replaces it.
+      context = buildContext();
+      await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
+      reviewId = await postRound(run, result, context, reviewTimeMs);
+    }
     await completeProgressComment(run, stage);
     setReviewOutputs(reviewId, context, result);
   } catch (error) {

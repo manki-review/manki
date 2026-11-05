@@ -5136,15 +5136,18 @@ describe('runFullReview orchestration', () => {
 
     expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('Failed to resolve thread PRRT_fail, it stays open'));
     expect(mockGraphql).not.toHaveBeenCalledWith(expect.stringContaining('addPullRequestReviewThreadReply'), expect.anything());
-    expect(jest.mocked(ghUtils.postReview).mock.calls[0][5]).toMatchObject({
+    // Threads resolve only after the review posts, so the approval is replaced by a review that records the thread as open.
+    const posts = jest.mocked(ghUtils.postReview).mock.calls;
+    expect(posts).toHaveLength(2);
+    expect(posts[0][7]).toMatchObject({ verdict: 'APPROVE', judge: { threadEvaluations: [expect.objectContaining({ threadId: 'PRRT_fail', status: 'addressed' })] } });
+    expect(posts[1][7]).toMatchObject({ verdict: 'REQUEST_CHANGES', judge: { threadEvaluations: [expect.objectContaining({ threadId: 'PRRT_fail', status: 'uncertain' })] } });
+    expect(posts[1][5]).toMatchObject({
       verdict: 'REQUEST_CHANGES',
       outcome: 'ADDRESS_FIRST',
       verdictReason: 'prior_unaddressed',
       verdictTrace: { unresolvedPriors: [expect.objectContaining({ threadId: 'PRRT_fail', title: 'Bug A', file: 'src/app.ts', line: 1 })] },
-      threadEvaluations: [expect.objectContaining({ threadId: 'PRRT_fail', status: 'uncertain' })],
     });
-    const context = jest.mocked(ghUtils.postReview).mock.calls[0][7];
-    expect(context?.judge.threadEvaluations).toEqual([expect.objectContaining({ threadId: 'PRRT_fail', status: 'uncertain' })]);
+    expect(jest.mocked(ghUtils.dismissPreviousReviews)).toHaveBeenCalledTimes(2);
   });
 
   it('fails fast with setFailed when no API key is configured', async () => {
