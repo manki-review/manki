@@ -41,14 +41,6 @@ const OUTCOME_VERDICT: Record<RoundOutcome, ReviewVerdict> = {
   BUDGET: 'APPROVE',
 };
 
-interface RoundOptions {
-  /** Commit under review. A prior blocker raised on another commit was followed by a push. */
-  headSha?: string;
-  /** Blocks on blockers only whatever the round. Set for the round `@manki review` runs after a pause. */
-  blockersOnly?: boolean;
-  /** The last automatic round the round cap allows. It blocks on blockers only and ends `BUDGET` or `NOT_CONVERGING`. */
-  finalRound?: boolean;
-}
 
 export const PLANNER_TIMEOUT_MS = 60_000;
 
@@ -444,25 +436,38 @@ export function buildProvenanceFields(
   };
 }
 
+export interface ReviewOptions {
+  config: ReviewConfig;
+  diff: ParsedDiff;
+  rawDiff: string;
+  repoContext: string;
+  memory?: RepoMemory | null;
+  fileContents?: Map<string, string>;
+  prContext?: PrContext;
+  linkedIssues?: LinkedIssue[];
+  onProgress?: (progress: ReviewProgress) => void;
+  isFollowUp?: boolean;
+  openThreads?: OpenThread[] | null;
+  previousFindings?: PreviousFinding[];
+  priorRounds?: RoundContext[];
+  prAuthorLogin?: string;
+  interRoundDiff?: string;
+  /** Commit under review. A prior blocker raised on another commit was followed by a push. */
+  headSha?: string;
+  /** Blocks on blockers only whatever the round. Set for the round `@manki review` runs after a pause. */
+  blockersOnly?: boolean;
+  /** The last automatic round the round cap allows. It blocks on blockers only and ends `BUDGET` or `NOT_CONVERGING`. */
+  finalRound?: boolean;
+}
+
 export async function runReview(
   clients: ReviewClients,
-  config: ReviewConfig,
-  diff: ParsedDiff,
-  rawDiff: string,
-  repoContext: string,
-  memory?: RepoMemory | null,
-  fileContents?: Map<string, string>,
-  prContext?: PrContext,
-  linkedIssues?: LinkedIssue[],
-  onProgress?: (progress: ReviewProgress) => void,
-  isFollowUp?: boolean,
-  openThreads?: OpenThread[] | null,
-  previousFindings?: PreviousFinding[],
-  priorRounds?: RoundContext[],
-  prAuthorLogin?: string,
-  interRoundDiff?: string,
-  roundOptions: RoundOptions = {},
+  options: ReviewOptions,
 ): Promise<ReviewResult & { outcome: RoundOutcome }> {
+  const {
+    config, diff, rawDiff, repoContext, memory, fileContents, prContext, linkedIssues, onProgress,
+    isFollowUp, openThreads, previousFindings, priorRounds, prAuthorLogin, interRoundDiff,
+  } = options;
   const provenanceMap = computeProvenanceMap(priorRounds, rawDiff);
   let plannerResult: PlannerResult | null = null;
   let plannerUsage: LLMUsage | undefined;
@@ -1030,7 +1035,7 @@ export async function runReview(
   const priorFindingsFlat: FindingFingerprintEntry[] = sortedPriorRounds.flatMap(r => r.findings.entries);
   const priorRoundLookup = buildPriorRoundLookup(sortedPriorRounds);
   const changedFiles = new Set(diff.files.map(f => f.path));
-  const blockersOnly = roundOptions.blockersOnly || roundOptions.finalRound || roundNumber > FULL_BAR_ROUNDS;
+  const blockersOnly = options.blockersOnly || options.finalRound || roundNumber > FULL_BAR_ROUNDS;
   if (blockersOnly) {
     finalFindings = finalFindings.map(f => f.severity === 'warning' && !f.tags?.includes(SECURITY_TAG) ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f);
   }
@@ -1074,12 +1079,12 @@ export async function runReview(
   }
 
   let needsHuman: NeedsHuman | undefined;
-  const repeated = findRepeatedBlockers(finalFindings, priorBlockers, roundOptions.headSha);
+  const repeated = findRepeatedBlockers(finalFindings, priorBlockers, options.headSha);
   if (repeated.length > 0) {
     const openThreadIndex = new Map((openThreads ?? []).map(t => [t.threadId, t]));
     outcome = 'NOT_CONVERGING';
     needsHuman = { cause: 'repeated', blockers: repeated.map(p => priorToTraceEntry(p.entry, priorRoundLookup, openThreadIndex)) };
-  } else if (roundOptions.finalRound) {
+  } else if (options.finalRound) {
     if (outcome === 'READY') {
       outcome = 'BUDGET';
     } else {

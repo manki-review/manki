@@ -1763,13 +1763,6 @@ describe('postCleanup (via main dispatch)', () => {
 
 describe('runFullReview orchestration', () => {
   // Named indices for positional parameters of `runReview` (src/review.ts).
-  const RUN_REVIEW_IS_FOLLOW_UP_ARG = 10;
-  const RUN_REVIEW_OPEN_THREADS_ARG = 11;
-  const RUN_REVIEW_PREVIOUS_FINDINGS_ARG = 12;
-  const RUN_REVIEW_PRIOR_ROUNDS_ARG = 13;
-  const RUN_REVIEW_LINKED_ISSUES_ARG = 8;
-  const RUN_REVIEW_INTER_ROUND_DIFF_ARG = 15;
-  const RUN_REVIEW_RAW_DIFF_ARG = 3;
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -2744,8 +2737,8 @@ describe('runFullReview orchestration', () => {
 
     // runReview should receive previousFindings as the last positional arg so
     // dedup runs before the judge stage.
-    const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0];
-    expect(runReviewCall[RUN_REVIEW_PREVIOUS_FINDINGS_ARG]).toEqual(previousFindings);
+    const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0][1];
+    expect(runReviewCall.previousFindings).toEqual(previousFindings);
   });
 
   it('forwards prior rounds from recap state to runReview when memory is enabled', async () => {
@@ -2794,8 +2787,8 @@ describe('runFullReview orchestration', () => {
 
     await callRunFullReview();
 
-    const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0];
-    expect(runReviewCall[RUN_REVIEW_PRIOR_ROUNDS_ARG]).toEqual(priorRounds.map(roundContextFromLegacy));
+    const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0][1];
+    expect(runReviewCall.priorRounds).toEqual(priorRounds.map(roundContextFromLegacy));
 
     // With 1 prior round, meta.round must be 2
     const roundContextArg = jest.mocked(ghUtils.postReview).mock.calls[0][7];
@@ -3218,7 +3211,7 @@ describe('runFullReview orchestration', () => {
       expect(staticSignalsModule.collectStaticSignals).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
         headSha: 'abc123', baseRef: 'main', prNumber: 42, configPath: '.manki.yml',
       }));
-      const prContext = jest.mocked(reviewModule.runReview).mock.calls[0][7];
+      const prContext = jest.mocked(reviewModule.runReview).mock.calls[0][1].prContext;
       expect(prContext?.staticSignals).toEqual([signal]);
     });
 
@@ -3349,7 +3342,7 @@ describe('runFullReview orchestration', () => {
       seedPriorRounds(priorRounds);
       const team = ['Finder (claude-sonnet-5-5)', 'Pair finder (claude-opus-5-5)'];
 
-      jest.mocked(reviewModule.runReview).mockImplementation(async (_clients, _config, _diff, _rawDiff, _ctx, _mem, _files, _pr, _issues, onProgress) => {
+      jest.mocked(reviewModule.runReview).mockImplementation(async (_clients, { onProgress }) => {
         onProgress?.({
           phase: 'planning',
           plannerResult: { trivial: false, subtle: true, paired: true, judgeEffort: 'medium', prType: 'feat' },
@@ -3631,10 +3624,10 @@ describe('runFullReview orchestration', () => {
     await callRunFullReview();
 
     expect(jest.mocked(memoryModule.loadMemory)).not.toHaveBeenCalled();
-    const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0];
+    const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0][1];
     // Consumers read prior rounds from `RecapState.priorRounds`, which is
     // always an array (empty when recap finds no prior context blocks).
-    expect(runReviewCall[RUN_REVIEW_PRIOR_ROUNDS_ARG]).toEqual([]);
+    expect(runReviewCall.priorRounds).toEqual([]);
   });
 
   it('records the verdict reported by `runReview` and no pattern counters', async () => {
@@ -3669,7 +3662,7 @@ describe('runFullReview orchestration', () => {
 
     await callRunFullReview();
 
-    expect(jest.mocked(reviewModule.runReview).mock.calls[0][5]).toBe(memory);
+    expect(jest.mocked(reviewModule.runReview).mock.calls[0][1].memory).toBe(memory);
     const statsArg = jest.mocked(ghUtils.postReview).mock.calls[0][7];
     expect(statsArg?.judge.verdictReason).toBe('required_present');
     const reviewResultArg = jest.mocked(ghUtils.postReview).mock.calls[0][5];
@@ -3750,7 +3743,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     jest.mocked(reviewModule.runReview).mockImplementation(
-      async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
+      async (_clients, { onProgress }) => {
         if (onProgress) {
           onProgress({
             phase: 'planning',
@@ -3810,7 +3803,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     jest.mocked(reviewModule.runReview).mockImplementation(
-      async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
+      async (_clients, { onProgress }) => {
         if (onProgress) {
           onProgress({
             phase: 'planning',
@@ -3870,7 +3863,7 @@ describe('runFullReview orchestration', () => {
       const fallbackAgents = ['Security & Safety', 'Correctness & Logic', 'general'];
 
       jest.mocked(reviewModule.runReview).mockImplementation(
-        async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
+        async (_clients, { onProgress }) => {
           if (onProgress) {
             onProgress({
               phase: 'planning',
@@ -3928,7 +3921,7 @@ describe('runFullReview orchestration', () => {
     );
 
     jest.mocked(reviewModule.runReview).mockImplementation(
-      async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
+      async (_clients, { onProgress }) => {
         if (onProgress) {
           onProgress({
             phase: 'planning',
@@ -3970,7 +3963,7 @@ describe('runFullReview orchestration', () => {
 
 
     jest.mocked(reviewModule.runReview).mockImplementation(
-      async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
+      async (_clients, { onProgress }) => {
         if (onProgress) {
           onProgress({
             phase: 'planning',
@@ -4025,7 +4018,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     jest.mocked(reviewModule.runReview).mockImplementation(
-      async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
+      async (_clients, { onProgress }) => {
         if (onProgress) {
           onProgress({
             phase: 'planning',
@@ -4071,7 +4064,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     jest.mocked(reviewModule.runReview).mockImplementation(
-      async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
+      async (_clients, { onProgress }) => {
         if (onProgress) {
           onProgress({
             phase: 'planning',
@@ -4135,7 +4128,7 @@ describe('runFullReview orchestration', () => {
     const finding2 = { severity: 'nitpick' as const, title: 'Noise', file: 'src/app.ts', line: 7, description: 'desc', reviewers: ['general'] };
 
     jest.mocked(reviewModule.runReview).mockImplementation(
-      async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
+      async (_clients, { onProgress }) => {
         if (onProgress) {
           onProgress({
             phase: 'judging',
@@ -4185,9 +4178,9 @@ describe('runFullReview orchestration', () => {
     await callRunFullReview();
 
     // runReview should receive isFollowUp and openThreads as the last two args
-    const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0];
-    const isFollowUp = runReviewCall[RUN_REVIEW_IS_FOLLOW_UP_ARG];
-    const openThreads = runReviewCall[RUN_REVIEW_OPEN_THREADS_ARG];
+    const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0][1];
+    const isFollowUp = runReviewCall.isFollowUp;
+    const openThreads = runReviewCall.openThreads;
 
     expect(isFollowUp).toBe(true);
     expect(openThreads).toEqual([
@@ -4257,7 +4250,7 @@ describe('runFullReview orchestration', () => {
 
     await callRunFullReview();
 
-    expect(jest.mocked(reviewModule.runReview).mock.calls[0][RUN_REVIEW_OPEN_THREADS_ARG]).toBeNull();
+    expect(jest.mocked(reviewModule.runReview).mock.calls[0][1].openThreads).toBeNull();
   });
 
   it('forwards `description` and `suggestedFix` from `previousFindings` into `baseOpenThreads`', async () => {
@@ -4287,8 +4280,8 @@ describe('runFullReview orchestration', () => {
 
     await callRunFullReview();
 
-    const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0];
-    const openThreads = runReviewCall[RUN_REVIEW_OPEN_THREADS_ARG] as Array<{ threadId: string; description?: string; suggestedFix?: string }>;
+    const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0][1];
+    const openThreads = runReviewCall.openThreads as Array<{ threadId: string; description?: string; suggestedFix?: string }>;
     expect(openThreads).toHaveLength(1);
     expect(openThreads[0].threadId).toBe('PRRT_meta');
     expect(openThreads[0].description).toBe('Error enum lacks the rotation chainlock variant.');
@@ -4317,8 +4310,8 @@ describe('runFullReview orchestration', () => {
 
     await callRunFullReview();
 
-    const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0];
-    const openThreads = runReviewCall[RUN_REVIEW_OPEN_THREADS_ARG];
+    const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0][1];
+    const openThreads = runReviewCall.openThreads;
     expect(openThreads).toHaveLength(1);
     expect(openThreads![0].currentCode).toContain('>>> 10: line 10');
     expect(openThreads![0].currentCode).toContain('   5: line 5');
@@ -4398,7 +4391,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
     jest.mocked(reviewModule.runReview).mockImplementation(
-      async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
+      async (_clients, { onProgress }) => {
         if (onProgress) {
           onProgress({ phase: 'planning' });
           onProgress({ phase: 'planning', plannerResult: { trivial: false, subtle: false, paired: false, judgeEffort: 'low' as const, prType: 'chore' as const }, teamAgentNames: ['Security & Safety', 'Correctness & Logic', 'Architecture & Design'], reviewerEffort: 'low' });
@@ -4482,8 +4475,8 @@ describe('runFullReview orchestration', () => {
     await callRunFullReview();
 
     expect(jest.mocked(ghUtils.fetchInterRoundDiff)).toHaveBeenCalledTimes(1);
-    const runReviewArgs = jest.mocked(reviewModule.runReview).mock.calls[0];
-    const passedInterRoundDiff = runReviewArgs[RUN_REVIEW_INTER_ROUND_DIFF_ARG];
+    const runReviewArgs = jest.mocked(reviewModule.runReview).mock.calls[0][1];
+    const passedInterRoundDiff = runReviewArgs.interRoundDiff;
     expect(passedInterRoundDiff).toBe('');
 
     expect(mockGraphql).not.toHaveBeenCalledWith(
@@ -4540,8 +4533,8 @@ describe('runFullReview orchestration', () => {
     await callRunFullReview();
 
     expect(jest.mocked(ghUtils.fetchInterRoundDiff)).not.toHaveBeenCalled();
-    const runReviewArgs = jest.mocked(reviewModule.runReview).mock.calls[0];
-    const passedInterRoundDiff = runReviewArgs[RUN_REVIEW_INTER_ROUND_DIFF_ARG];
+    const runReviewArgs = jest.mocked(reviewModule.runReview).mock.calls[0][1];
+    const passedInterRoundDiff = runReviewArgs.interRoundDiff;
     expect(passedInterRoundDiff).toBe('');
   });
 
@@ -4604,9 +4597,9 @@ describe('runFullReview orchestration', () => {
     expect(jest.mocked(core.warning)).not.toHaveBeenCalledWith(
       expect.stringContaining('Failed to fetch linked issues'),
     );
-    const runReviewArgs = jest.mocked(reviewModule.runReview).mock.calls[0];
-    expect(runReviewArgs[RUN_REVIEW_INTER_ROUND_DIFF_ARG]).toBeUndefined();
-    expect(runReviewArgs[RUN_REVIEW_LINKED_ISSUES_ARG]).toEqual([
+    const runReviewArgs = jest.mocked(reviewModule.runReview).mock.calls[0][1];
+    expect(runReviewArgs.interRoundDiff).toBeUndefined();
+    expect(runReviewArgs.linkedIssues).toEqual([
       { number: 7, title: 'Linked issue', body: 'Issue body' },
     ]);
     expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)?.[10]?.interRoundDiff).toBeUndefined();
@@ -4630,11 +4623,11 @@ describe('runFullReview orchestration', () => {
     expect(jest.mocked(core.warning)).not.toHaveBeenCalledWith(
       expect.stringContaining('Failed to fetch inter-round diff'),
     );
-    const runReviewArgs = jest.mocked(reviewModule.runReview).mock.calls[0];
-    expect(runReviewArgs[RUN_REVIEW_INTER_ROUND_DIFF_ARG]).toBe(
+    const runReviewArgs = jest.mocked(reviewModule.runReview).mock.calls[0][1];
+    expect(runReviewArgs.interRoundDiff).toBe(
       'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
     );
-    expect(runReviewArgs[RUN_REVIEW_LINKED_ISSUES_ARG]).toBeUndefined();
+    expect(runReviewArgs.linkedIssues).toBeUndefined();
     expect(jest.mocked(diffModule.parsePRDiff)).toHaveBeenCalledWith(
       'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
     );
@@ -4658,9 +4651,9 @@ describe('runFullReview orchestration', () => {
     expect(jest.mocked(core.warning)).toHaveBeenCalledWith(
       expect.stringContaining('Failed to fetch linked issues'),
     );
-    const runReviewArgs = jest.mocked(reviewModule.runReview).mock.calls[0];
-    expect(runReviewArgs[RUN_REVIEW_INTER_ROUND_DIFF_ARG]).toBeUndefined();
-    expect(runReviewArgs[RUN_REVIEW_LINKED_ISSUES_ARG]).toBeUndefined();
+    const runReviewArgs = jest.mocked(reviewModule.runReview).mock.calls[0][1];
+    expect(runReviewArgs.interRoundDiff).toBeUndefined();
+    expect(runReviewArgs.linkedIssues).toBeUndefined();
   });
 
   it('fetches inter-round diff but skips linked issues fetch when PR body is empty', async () => {
@@ -4680,11 +4673,11 @@ describe('runFullReview orchestration', () => {
 
     expect(jest.mocked(ghUtils.fetchInterRoundDiff)).toHaveBeenCalledTimes(1);
     expect(jest.mocked(ghUtils.fetchLinkedIssues)).not.toHaveBeenCalled();
-    const runReviewArgs = jest.mocked(reviewModule.runReview).mock.calls[0];
-    expect(runReviewArgs[RUN_REVIEW_INTER_ROUND_DIFF_ARG]).toBe(
+    const runReviewArgs = jest.mocked(reviewModule.runReview).mock.calls[0][1];
+    expect(runReviewArgs.interRoundDiff).toBe(
       'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
     );
-    expect(runReviewArgs[RUN_REVIEW_LINKED_ISSUES_ARG]).toBeUndefined();
+    expect(runReviewArgs.linkedIssues).toBeUndefined();
   });
 
   it('fetches linked issues but skips inter-round diff fetch when no prior round exists', async () => {
@@ -4705,9 +4698,9 @@ describe('runFullReview orchestration', () => {
 
     expect(jest.mocked(ghUtils.fetchInterRoundDiff)).not.toHaveBeenCalled();
     expect(jest.mocked(ghUtils.fetchLinkedIssues)).toHaveBeenCalledTimes(1);
-    const runReviewArgs = jest.mocked(reviewModule.runReview).mock.calls[0];
-    expect(runReviewArgs[RUN_REVIEW_INTER_ROUND_DIFF_ARG]).toBeUndefined();
-    expect(runReviewArgs[RUN_REVIEW_LINKED_ISSUES_ARG]).toEqual([
+    const runReviewArgs = jest.mocked(reviewModule.runReview).mock.calls[0][1];
+    expect(runReviewArgs.interRoundDiff).toBeUndefined();
+    expect(runReviewArgs.linkedIssues).toEqual([
       { number: 11, title: 'First-round linked issue', body: 'Issue body' },
     ]);
   });
@@ -4812,9 +4805,9 @@ describe('runFullReview orchestration', () => {
       'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
       ['dist/**'],
     );
-    const runReviewArgs = jest.mocked(reviewModule.runReview).mock.calls[0];
-    expect(runReviewArgs[RUN_REVIEW_RAW_DIFF_ARG]).toBe(diffModule.rebuildRawDiff({ files: [testFile], totalAdditions: 10, totalDeletions: 5 }));
-    const passedInterRoundDiff = runReviewArgs[RUN_REVIEW_INTER_ROUND_DIFF_ARG];
+    const runReviewArgs = jest.mocked(reviewModule.runReview).mock.calls[0][1];
+    expect(runReviewArgs.rawDiff).toBe(diffModule.rebuildRawDiff({ files: [testFile], totalAdditions: 10, totalDeletions: 5 }));
+    const passedInterRoundDiff = runReviewArgs.interRoundDiff;
     expect(passedInterRoundDiff).toBe(
       'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
     );
@@ -4948,8 +4941,8 @@ describe('runFullReview orchestration', () => {
 
     await callRunFullReview();
 
-    const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0];
-    const openThreads = runReviewCall[RUN_REVIEW_OPEN_THREADS_ARG] as Array<{ threadId: string }>;
+    const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0][1];
+    const openThreads = runReviewCall.openThreads as Array<{ threadId: string }>;
     const threadIds = openThreads.map(t => t.threadId);
 
     expect(threadIds).toContain('PRRT_open');
@@ -5254,12 +5247,12 @@ describe('runFullReview orchestration', () => {
 
       await callRunFullReview();
 
-      expect(jest.mocked(reviewModule.runReview).mock.calls[0].at(-1)).toEqual({ headSha: 'abc123', blockersOnly: false, finalRound: false });
+      expect(jest.mocked(reviewModule.runReview).mock.calls[0][1]).toMatchObject({ headSha: 'abc123', blockersOnly: false, finalRound: false });
 
       seedPriorRounds(priorRounds(4));
       await callRunFullReview();
 
-      expect(jest.mocked(reviewModule.runReview).mock.calls[1].at(-1)).toEqual({ headSha: 'abc123', blockersOnly: false, finalRound: true });
+      expect(jest.mocked(reviewModule.runReview).mock.calls[1][1]).toMatchObject({ headSha: 'abc123', blockersOnly: false, finalRound: true });
     });
 
     it('pauses after a round that did not converge, and `@manki review` then runs at the blockers-only bar', async () => {
@@ -5282,7 +5275,7 @@ describe('runFullReview orchestration', () => {
         { forceReview: true, skipCap: true },
       );
 
-      expect(jest.mocked(reviewModule.runReview).mock.calls[0].at(-1)).toEqual({ headSha: 'abc123', blockersOnly: true, finalRound: false });
+      expect(jest.mocked(reviewModule.runReview).mock.calls[0][1]).toMatchObject({ headSha: 'abc123', blockersOnly: true, finalRound: false });
     });
 
     it('skips review and posts notice when prior rounds reach the cap on auto trigger', async () => {
@@ -5443,7 +5436,7 @@ describe('runFullReview orchestration', () => {
       await run();
 
       expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
-      expect(jest.mocked(reviewModule.runReview).mock.calls[0].at(-1)).toEqual(expect.objectContaining({ blockersOnly: true, finalRound: false }));
+      expect(jest.mocked(reviewModule.runReview).mock.calls[0][1]).toMatchObject({ blockersOnly: true, finalRound: false });
     });
   });
 
@@ -6697,7 +6690,7 @@ describe('runFullReview concurrent-submission lock', () => {
       { headRepoFullName: 'fork-user/test-repo' },
     );
 
-    const configArg = jest.mocked(reviewModule.runReview).mock.calls[0]?.[1] as { instructions?: string } | undefined;
+    const configArg = jest.mocked(reviewModule.runReview).mock.calls[0]?.[1].config as { instructions?: string } | undefined;
     expect(configArg?.instructions).toBe('');
   });
 
@@ -6717,7 +6710,7 @@ describe('runFullReview concurrent-submission lock', () => {
       { headRepoFullName: 'fork-user/test-repo' },
     );
 
-    const configArg = jest.mocked(reviewModule.runReview).mock.calls[0]?.[1] as { reviewers?: unknown[] } | undefined;
+    const configArg = jest.mocked(reviewModule.runReview).mock.calls[0]?.[1].config as { reviewers?: unknown[] } | undefined;
     expect(configArg?.reviewers).toEqual([]);
   });
 
@@ -6737,7 +6730,7 @@ describe('runFullReview concurrent-submission lock', () => {
       { headRepoFullName: 'test-owner/test-repo' },
     );
 
-    const configArg = jest.mocked(reviewModule.runReview).mock.calls[0]?.[1] as { instructions?: string; reviewers?: unknown[] } | undefined;
+    const configArg = jest.mocked(reviewModule.runReview).mock.calls[0]?.[1].config as { instructions?: string; reviewers?: unknown[] } | undefined;
     expect(configArg?.instructions).toBe('focus on security');
     expect(configArg?.reviewers).toEqual([{ name: 'security', focus: 'look for vulnerabilities' }]);
   });
