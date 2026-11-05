@@ -93,7 +93,8 @@ class FakeGitHub {
   failures: FakeFailure[] = [];
   /** Every request that changes something, as `METHOD route`. */
   writes: string[] = [];
-  onWrite?: (write: string) => void;
+  /** Runs before a write is answered, which waits for it. */
+  onWrite?: (write: string) => void | Promise<void>;
   headSha = HEAD_SHA;
   activeRuns: number[] = [];
   private nextId = 1000;
@@ -109,7 +110,7 @@ class FakeGitHub {
     if (pathname === '/graphql' ? String(body.query).trimStart().startsWith('mutation') : method !== 'GET') {
       const write = `${method} ${pathname}`;
       this.writes.push(write);
-      this.onWrite?.(write);
+      await this.onWrite?.(write);
     }
     const failure = this.failures.find(f => f.method === method && f.path.test(pathname));
     if (failure) return json({ message: 'Server Error' }, failure.status);
@@ -447,6 +448,26 @@ describe('runFullReview end to end', () => {
     expect(core.setFailed).not.toHaveBeenCalled();
     expect(mockGitHub.reviews).toEqual([]);
     expect(mockGitHub.comments.at(-1)?.body).toContain('**Review superseded** by the new commit `f00dfee`. No verdict was posted');
+  });
+
+  it('completes the round when the head moves once the previous review is being dismissed', async () => {
+    jest.useFakeTimers(FAKE_INTERVALS);
+    const previous = mockGitHub.addReview(`${BOT_MARKER}\nChanges requested.`, 'CHANGES_REQUESTED', 'old0000000000000000000000000000000000000', APP_LOGIN);
+    mockGitHub.onWrite = async write => {
+      if (!write.endsWith('/dismissals')) return;
+      mockGitHub.headSha = 'f00dfeed00000000000000000000000000000000';
+      jest.advanceTimersByTime(30_000);
+      // Gives the head check the watcher just started time to finish before the dismissal returns.
+      await new Promise(resolve => setTimeout(resolve, 50));
+    };
+
+    await reviewRound();
+
+    expect(core.setFailed).not.toHaveBeenCalled();
+    expect(previous.state).toBe('DISMISSED');
+    expect(postedReviews().map(r => r.state)).toEqual(['DISMISSED', 'APPROVED']);
+    expect(mockGitHub.comments.at(-1)?.body).toContain('**Review complete**');
+    expect(core.setOutput).toHaveBeenCalledWith('verdict', 'APPROVE');
   });
 
   it('keeps reviewing when a head check of the watcher fails', async () => {

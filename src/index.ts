@@ -479,6 +479,8 @@ interface RunProgress {
   commentId?: number;
   flushTimer: ReturnType<typeof setTimeout> | null;
   reviewPosted: boolean;
+  /** Stops the head watcher, so a later push no longer stops the round. */
+  stopHeadWatch: () => void;
 }
 
 /** What a review round works on. Built once its inputs are collected, then passed to the stages that review, post and record. */
@@ -705,12 +707,14 @@ function initialDashboard(diff: ParsedDiff, config: ReviewConfig, plannerEnabled
 
 /**
  * Dismisses the reviews `reviewId` replaces. Throws `SupersededError` instead when the head moved since,
- * so a review of an old commit never lifts the merge block on a new one.
+ * so a review of an old commit never lifts the merge block on a new one. Past that check the round is final,
+ * so a later push no longer stops it.
  */
 async function replacePreviousReviews(target: RunTarget, progress: RunProgress, reviewId: number): Promise<void> {
   const { octokit, owner, repo, prNumber, commitSha } = target;
   progress.reviewPosted = true;
   await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
+  progress.stopHeadWatch();
   await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId);
 }
 
@@ -1239,15 +1243,20 @@ function setReviewOutputs(reviewId: number, context: RoundContext, result: Revie
  * commit under review. A failed lookup lets the review go on. Returns the function that stops the checks.
  */
 function watchHead({ octokit, owner, repo, prNumber, commitSha }: RunTarget, controller: AbortController): () => void {
+  let stopped = false;
   const timer = setInterval(() => {
     if (controller.signal.aborted) return;
     assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha).catch((error: unknown) => {
+      if (stopped) return;
       core.info(`${error instanceof Error ? error.message : error}, stopping the review`);
       controller.abort(error);
     });
   }, HEAD_POLL_MS);
   timer.unref();
-  return () => clearInterval(timer);
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
 }
 
 async function runFullReview(
@@ -1282,10 +1291,9 @@ async function runFullReview(
     }
   }
 
-  const progress: RunProgress = { flushTimer: null, reviewPosted: false };
   const headMoved = new AbortController();
   const stop = stopWritesOn(headMoved.signal);
-  const stopWatching = watchHead(target, headMoved);
+  const progress: RunProgress = { flushTimer: null, reviewPosted: false, stopHeadWatch: watchHead(target, headMoved) };
 
   try {
     const loaded = await loadRunConfig(target, configPath, headRepoFullName);
@@ -1432,7 +1440,7 @@ async function runFullReview(
       await markProgressCommentFailed(octokit, owner, repo, progress.commentId, 'Review', reason);
     }
   } finally {
-    stopWatching();
+    progress.stopHeadWatch();
     stop.release();
   }
 }
