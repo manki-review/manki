@@ -36,9 +36,15 @@ jobs:
           PR: ${{ inputs.pr }}
         run: |
           sha="$GITHUB_SHA"
-          if [[ "$PR" =~ ^[1-9][0-9]{0,15}$ ]] && pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR") \
-            && [ "$(jq -r '.head.repo.full_name' <<<"$pr")" = "$GITHUB_REPOSITORY" ]; then
-            sha=$(jq -r '.head.sha' <<<"$pr")
+          if [[ "$PR" =~ ^[1-9][0-9]{0,15}$ ]]; then
+            if pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" 2>"$RUNNER_TEMP/pr-error"); then
+              if [ "$(jq -r '.head.repo.full_name' <<<"$pr")" = "$GITHUB_REPOSITORY" ]; then
+                sha=$(jq -r '.head.sha' <<<"$pr")
+              fi
+            elif ! grep -q 'HTTP 404' "$RUNNER_TEMP/pr-error"; then
+              cat "$RUNNER_TEMP/pr-error" >&2
+              exit 1
+            fi
           fi
           echo "Building $sha"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
