@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 
 import { AstGrepApi, isAstGrepFile, loadAstGrep, runAstGrep } from './ast-grep';
 import { loadStaticAnalysisConfig } from './config';
-import { isLineInDiff } from './diff';
+import { addedLines, isLineInDiff } from './diff';
 import { dynamicFence, fetchConfigFile, fetchFileContents } from './github';
 import { AnalyzerName, ANALYZERS, DiffFile, Finding, FindingSeverity, ParsedDiff, RoundAnalyzerRun, RoundStaticAnalysis, StaticAnalysisConfig, StaticSignal, StaticSignalSource, ToolEvidence } from './types';
 import { safeTruncate } from './utils';
@@ -350,13 +350,8 @@ async function fetchDependencyReview(octokit: Octokit, { owner, repo, baseRef, h
 function findAddedLine(file: DiffFile, name: string): number | undefined {
   // `lodash` must not match `lodash.merge` or `my-lodash`, but must match `node_modules/lodash` and `lodash@4`.
   const pattern = new RegExp(`(^|[^\\w.@-])${escapeRegExp(name)}($|[^\\w./-])`);
-  for (const hunk of file.hunks) {
-    let line = hunk.newStart;
-    for (const content of hunk.content.split('\n')) {
-      if (content.startsWith('-') || content.startsWith('\\')) continue;
-      if (content.startsWith('+') && pattern.test(content.slice(1))) return line;
-      line++;
-    }
+  for (const [line, text] of addedLines(file)) {
+    if (pattern.test(text)) return line;
   }
   return undefined;
 }
