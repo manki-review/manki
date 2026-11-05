@@ -1,6 +1,6 @@
 import { execFile } from 'child_process';
 import { createHash } from 'crypto';
-import { chmodSync, mkdtempSync, writeFileSync } from 'fs';
+import { chmodSync, mkdtempSync, realpathSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { basename, join } from 'path';
 import { promisify } from 'util';
@@ -31,9 +31,9 @@ export function installPinned(download: PinnedDownload): Promise<string> {
   return install;
 }
 
-/** Returns a new empty directory in the runner's temp directory. */
+/** Returns a new empty directory in the runner's temp directory, as a real path so tools report paths under it. */
 export function makeScratchDir(prefix: string): string {
-  return mkdtempSync(join(process.env.RUNNER_TEMP || tmpdir(), `manki-${prefix}-`));
+  return realpathSync(mkdtempSync(join(process.env.RUNNER_TEMP || tmpdir(), `manki-${prefix}-`)));
 }
 
 async function downloadAndInstall({ url, integrity }: PinnedDownload): Promise<string> {

@@ -1,3 +1,6 @@
+import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
+import { basename, join } from 'path';
+
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import * as napi from '@ast-grep/napi';
@@ -52,12 +55,14 @@ function annotation(path: string, line: number, message: string, level = 'failur
   return { path, start_line: line, end_line: line, annotation_level: level, title: 'no-unused-vars', message };
 }
 
-function makeOctokit(configByRef: Record<string, string> = {}, headFiles: Record<string, string> = {}) {
+/** `configByRef` holds `.manki.yml` per ref, and `files` any other file keyed by `ref:path`. */
+function makeOctokit(configByRef: Record<string, string> = {}, files: Record<string, string> = {}) {
   const rest = {
     repos: {
-      getContent: jest.fn(async ({ ref, path }: { ref: string; path: string }) => {
-        const content = ref === 'head-sha' && path in headFiles ? headFiles[path] : configByRef[ref];
+      getContent: jest.fn(async ({ ref, path, mediaType }: { ref: string; path: string; mediaType?: { format: string } }) => {
+        const content = path === '.manki.yml' ? configByRef[ref] : files[`${ref}:${path}`];
         if (content === undefined) throw Object.assign(new Error('Not Found'), { status: 404 });
+        if (mediaType?.format === 'raw') return { data: content };
         return { data: { content: Buffer.from(content).toString('base64'), encoding: 'base64', size: content.length } };
       }),
     },
@@ -177,16 +182,43 @@ describe('collectStaticSignals', () => {
 
 describe('collectStaticSignals with analyzers and waits', () => {
   const ONLY_ANALYZERS = 'static_analysis:\n  checks: false\n  code_scanning: false\n  dependency_review: false\n';
-  const HEAD_FILES = { 'src/app.ts': 'const a = 1;\nconst b = eval(a);\nexport { a };\n\neval(a);\n' };
+  const HEAD_FILES = { 'head-sha:src/app.ts': 'const a = 1;\nconst b = eval(a);\nexport { a };\n\neval(a);\n' };
+  const FIXTURES = join(__dirname, 'static-signals.fixtures');
   let now: number;
   let runtime: StaticAnalysisRuntime;
+  /** The files each tool found in its working directory, keyed by tool. */
+  let scanned: Record<string, Record<string, string>>;
+
+  function readTree(root: string): Record<string, string> {
+    const paths = readdirSync(root, { recursive: true }) as string[];
+    return Object.fromEntries(paths.filter(p => statSync(join(root, p)).isFile()).map(p => [p.split('\\').join('/'), readFileSync(join(root, p), 'utf-8')]));
+  }
 
   beforeEach(() => {
     jest.clearAllMocks();
     now = 0;
+    scanned = {};
     jest.spyOn(Date, 'now').mockImplementation(() => now);
-    runtime = { loadAstGrep: jest.fn(async () => napi), sleep: jest.fn(async (ms: number) => { now += ms; }) };
+    runtime = {
+      loadAstGrep: jest.fn(async () => napi),
+      installTool: jest.fn(async tool => `/tools/${tool}`),
+      runTool: jest.fn(async (binary: string, _args: string[], cwd: string) => {
+        const tool = basename(binary);
+        scanned[tool] = readTree(cwd);
+        const stdout = readFileSync(join(FIXTURES, `${tool}.json`), 'utf-8').replaceAll('<root>', cwd);
+        return { code: tool === 'osv-scanner' ? 1 : 0, stdout, stderr: '' };
+      }),
+      sleep: jest.fn(async (ms: number) => { now += ms; }),
+    };
   });
+
+  function toolArgs(tool: string): string[] {
+    return jest.mocked(runtime.runTool).mock.calls.find(([binary]) => basename(binary) === tool)![1];
+  }
+
+  function argAfter(args: string[], flag: string): string {
+    return args[args.indexOf(flag) + 1];
+  }
 
   afterEach(() => {
     jest.restoreAllMocks();
@@ -208,15 +240,120 @@ describe('collectStaticSignals with analyzers and waits', () => {
     expect(runtime.loadAstGrep).toHaveBeenCalledTimes(1);
   });
 
-  it('skips an analyzer that cannot load, records why, and keeps the other sources', async () => {
+  it('turns on every analyzer but Semgrep with `all`, skips one that cannot run, records why, and keeps the other sources', async () => {
     jest.mocked(runtime.loadAstGrep).mockRejectedValue(new Error('no pinned ast-grep build for aix-ppc64'));
+    jest.mocked(runtime.runTool).mockResolvedValue({ code: 2, stdout: '', stderr: 'scanning\nfatal: bad config\n' });
     const octokit = makeOctokit({ main: 'static_analysis:\n  analyzers: all\n' }, HEAD_FILES);
 
     const { signals, record } = await collectStaticSignals(octokit, request(), runtime);
 
     expect(signals.map(s => s.source)).toEqual(['checks', 'code_scanning', 'dependency_review', 'dependency_review']);
-    expect(record).toEqual({ analyzers: [{ analyzer: 'ast_grep', status: 'skipped', reason: 'no pinned ast-grep build for aix-ppc64' }] });
+    expect(record).toEqual({ analyzers: [
+      { analyzer: 'ast_grep', status: 'skipped', reason: 'no pinned ast-grep build for aix-ppc64' },
+      { analyzer: 'secrets', status: 'skipped', reason: 'gitleaks exited with code 2: fatal: bad config' },
+      { analyzer: 'dependencies', status: 'ran', results: 0 },
+    ] });
     expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('skipping ast_grep'));
+    expect(runtime.installTool).not.toHaveBeenCalledWith('osv-scanner');
+  });
+
+  describe('binary analyzers', () => {
+    const ANALYZER_DIFF = [
+      'diff --git a/src/app.ts b/src/app.ts',
+      '--- a/src/app.ts',
+      '+++ b/src/app.ts',
+      '@@ -1,2 +1,3 @@',
+      ' const a = 1;',
+      '+const token = "ghp_0000"; // gitleaks:allow',
+      ' export { a };',
+      'diff --git a/package-lock.json b/package-lock.json',
+      '--- a/package-lock.json',
+      '+++ b/package-lock.json',
+      '@@ -3,2 +3,3 @@',
+      '   "packages": {',
+      '+    "node_modules/lodash": { "version": "4.17.0" },',
+      '     "": {}',
+      'diff --git a/.gitleaksignore b/.gitleaksignore',
+      'new file mode 100644',
+      '--- /dev/null',
+      '+++ b/.gitleaksignore',
+      '@@ -0,0 +1 @@',
+      '+src/app.ts:github-pat:2',
+      '',
+    ].join('\n');
+    const LOCKFILE = '{\n  "lockfileVersion": 3,\n  "packages": {\n    "node_modules/lodash": { "version": "4.17.0" },\n    "": {}\n  }\n}\n';
+    const FILES = {
+      'head-sha:src/app.ts': 'const a = 1;\nconst token = "ghp_0000"; // gitleaks:allow\nexport { a };\n',
+      'head-sha:package-lock.json': LOCKFILE,
+      'head-sha:.gitleaksignore': 'src/app.ts:github-pat:2\n',
+    };
+    const analyzerRequest = () => ({ ...request(), diff: parsePRDiff(ANALYZER_DIFF) });
+
+    it('scans only the added lines for secrets with Manki\'s gitleaks config, ignoring `gitleaks:allow` and ignore files', async () => {
+      const octokit = makeOctokit({ main: `${ONLY_ANALYZERS}  analyzers:\n    secrets: true\n` }, FILES);
+
+      const { signals, record } = await collectStaticSignals(octokit, analyzerRequest(), runtime);
+
+      expect(signals).toEqual([{
+        tool: 'gitleaks', ruleId: 'github-pat', severity: 'error', file: 'src/app.ts', line: 2, source: 'secrets',
+        message: 'Uncovered a GitHub Personal Access Token, potentially leading to unauthorized repository access and sensitive content exposure.',
+      }]);
+      expect(record).toEqual({ analyzers: [{ analyzer: 'secrets', status: 'ran', results: 1 }] });
+      expect(scanned.gitleaks).toEqual({
+        'src/app.ts': '\nconst token = "ghp_0000"; // gitleaks:allow',
+        'package-lock.json': '\n\n\n    "node_modules/lodash": { "version": "4.17.0" },',
+      });
+      const args = toolArgs('gitleaks');
+      expect(args).toEqual(expect.arrayContaining(['dir', '--ignore-gitleaks-allow', '--redact']));
+      expect(argAfter(args, '--config')).toMatch(/rules[/\\]gitleaks\.toml$/);
+      expect(existsSync(argAfter(args, '--config'))).toBe(true);
+      expect(octokit.rest.repos.getContent).toHaveBeenCalledTimes(1);
+      expect(toolAlertFindings(signals)).toEqual([expect.objectContaining({ toolSource: 'gitleaks', severity: 'blocker' })]);
+    });
+
+    it('checks the changed lockfiles with OSV-Scanner and places each vulnerability on the line that adds the package', async () => {
+      const octokit = makeOctokit({ main: `${ONLY_ANALYZERS}  analyzers:\n    dependencies: true\n` }, FILES);
+
+      const { signals, record } = await collectStaticSignals(octokit, analyzerRequest(), runtime);
+
+      expect(signals).toEqual([
+        { tool: 'osv-scanner', ruleId: 'GHSA-35jh-r3h4-6jhm', severity: 'error', file: 'package-lock.json', line: 4, message: 'lodash@4.17.0: Command Injection in lodash', source: 'dependencies' },
+        { tool: 'osv-scanner', ruleId: 'GHSA-29mw-wpgm-hmr9', severity: 'warning', file: 'package-lock.json', line: 4, message: 'lodash@4.17.0: Regular Expression Denial of Service (ReDoS) in lodash', source: 'dependencies' },
+      ]);
+      expect(record).toEqual({ analyzers: [{ analyzer: 'dependencies', status: 'ran', results: 2 }] });
+      expect(scanned['osv-scanner']).toEqual({ 'package-lock.json': LOCKFILE });
+      const args = toolArgs('osv-scanner');
+      expect(argAfter(args, '-L')).toBe('package-lock.json');
+      expect(argAfter(args, '--config')).toMatch(/rules[/\\]osv-scanner\.toml$/);
+      expect(existsSync(argAfter(args, '--config'))).toBe(true);
+      expect(args).toEqual(expect.arrayContaining(['--no-resolve', '--no-call-analysis=all']));
+      expect(octokit.rest.repos.getContent).toHaveBeenCalledWith(expect.objectContaining({ ref: 'head-sha', path: 'package-lock.json', mediaType: { format: 'raw' } }));
+    });
+
+    it('runs Semgrep rules only from the base branch with Opengrep, ignoring `nosemgrep`, and skips when the rules are missing', async () => {
+      const config = `${ONLY_ANALYZERS}  analyzers:\n    semgrep:\n      rules: [.semgrep/manki.yml]\n`;
+      const baseRules = 'rules:\n  - id: no-console-log\n    languages: [typescript]\n    severity: WARNING\n    message: Avoid console.log\n    pattern: console.log(...)\n';
+      const octokit = makeOctokit({ main: config, 'head-sha': config }, {
+        ...FILES, 'main:.semgrep/manki.yml': baseRules, 'head-sha:.semgrep/manki.yml': 'rules: []\n',
+      });
+      jest.mocked(runtime.runTool).mockImplementationOnce(async (binary, args, cwd) => {
+        scanned.opengrep = readTree(cwd);
+        expect(readFileSync(argAfter(args, '--config'), 'utf-8')).toBe(baseRules);
+        return { code: 0, stdout: readFileSync(join(FIXTURES, 'opengrep.json'), 'utf-8'), stderr: '' };
+      });
+
+      const { signals, record } = await collectStaticSignals(octokit, analyzerRequest(), runtime);
+
+      expect(signals).toEqual([{ tool: 'opengrep', ruleId: 'no-console-log', severity: 'warning', file: 'src/app.ts', line: 2, message: 'Avoid console.log', source: 'semgrep' }]);
+      expect(record).toEqual({ analyzers: [{ analyzer: 'semgrep', status: 'ran', results: 1 }] });
+      expect(Object.keys(scanned.opengrep).sort()).toEqual(['package-lock.json', 'src/app.ts']);
+      expect(toolArgs('opengrep')).toEqual(expect.arrayContaining(['--disable-nosem', '--no-git-ignore']));
+
+      const noRules = makeOctokit({ main: config }, FILES);
+      expect((await collectStaticSignals(noRules, analyzerRequest(), runtime)).record).toEqual({ analyzers: [
+        { analyzer: 'semgrep', status: 'skipped', reason: 'could not read the Semgrep rules .semgrep/manki.yml on the base branch' },
+      ] });
+    });
   });
 
   it('waits for the named checks to finish before reading results, and records the ones still running at the timeout', async () => {

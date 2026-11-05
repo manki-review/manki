@@ -132,7 +132,9 @@ describe('config', () => {
         .toEqual({ ...defaults, code_scanning: false });
       expect(loadConfigFromContent('static_analysis:\n  wait_for_checks: [lint]\n  wait_timeout_seconds: 60\n  analyzers: all\n').static_analysis)
         .toEqual({ ...defaults, wait_for_checks: ['lint'], wait_timeout_seconds: 60, analyzers: 'all' });
-      expect(loadConfigFromContent('static_analysis:\n  analyzers:\n    ast_grep: true\n').static_analysis?.analyzers).toEqual({ ast_grep: true });
+      expect(loadConfigFromContent('static_analysis:\n  analyzers:\n    ast_grep: true\n    secrets: true\n    dependencies: false\n    semgrep:\n      rules: [.semgrep/manki.yml, rules/extra.yaml]\n').static_analysis?.analyzers)
+        .toEqual({ ast_grep: true, secrets: true, dependencies: false, semgrep: { rules: ['.semgrep/manki.yml', 'rules/extra.yaml'] } });
+      expect(loadConfigFromContent('static_analysis:\n  analyzers:\n    semgrep: false\n').static_analysis?.analyzers).toEqual({ semgrep: false });
     });
 
     it('rejects a non-boolean source, a bad wait, an unknown analyzer and a non-object block', () => {
@@ -146,6 +148,9 @@ describe('config', () => {
       expect(() => loadConfigFromContent('static_analysis:\n  analyzers: some\n')).toThrow(/`static_analysis.analyzers` must be `all` or an object/);
       expect(() => loadConfigFromContent('static_analysis:\n  analyzers:\n    astgrep: true\n')).toThrow(/`static_analysis.analyzers.astgrep` is not a known analyzer/);
       expect(() => loadConfigFromContent('static_analysis:\n  analyzers:\n    ast_grep: "on"\n')).toThrow(/`static_analysis.analyzers.ast_grep` must be a boolean/);
+      for (const semgrep of ['true', '{ rules: [] }', '{ rules: [p/default] }', '{ rules: [/etc/rules.yml] }', '{ rules: [../rules.yml] }', '{ rules: ["https://example.com/r.yml"] }', '{ rules: [rules.json] }']) {
+        expect(() => loadConfigFromContent(`static_analysis:\n  analyzers:\n    semgrep: ${semgrep}\n`)).toThrow(/`static_analysis.analyzers.semgrep` must be `false` or `\{ rules: \[...\] \}`/);
+      }
     });
 
     it('reads the block alone and falls back to the defaults when it is missing or invalid', () => {

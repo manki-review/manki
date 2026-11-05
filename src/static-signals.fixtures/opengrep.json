@@ -1,0 +1,58 @@
+{
+ "version": "1.33.1",
+ "results": [
+  {
+   "check_id": "no-console-log",
+   "path": "src/app.ts",
+   "start": {
+    "line": 2,
+    "col": 1,
+    "offset": 13
+   },
+   "end": {
+    "line": 2,
+    "col": 15,
+    "offset": 27
+   },
+   "extra": {
+    "message": "Avoid console.log",
+    "metadata": {},
+    "severity": "WARNING",
+    "fingerprint": "d31ce7cc4532b33680790091e2c5c4d302b1629aa72fa4f436742d729c7b171e0a3f51489af974ad5c277eedc8bad6976e9509c1ccf4e2e87da77ddb1fa7edf1_0",
+    "lines": "requires login",
+    "engine_kind": "OSS",
+    "validation_state": "NO_VALIDATOR"
+   }
+  },
+  {
+   "check_id": "ts-eval",
+   "path": "src/app.ts",
+   "start": {
+    "line": 40,
+    "col": 1,
+    "offset": 13
+   },
+   "end": {
+    "line": 40,
+    "col": 15,
+    "offset": 27
+   },
+   "extra": {
+    "message": "Do not call eval",
+    "metadata": {},
+    "severity": "ERROR",
+    "fingerprint": "d31ce7cc4532b33680790091e2c5c4d302b1629aa72fa4f436742d729c7b171e0a3f51489af974ad5c277eedc8bad6976e9509c1ccf4e2e87da77ddb1fa7edf1_0",
+    "lines": "requires login",
+    "engine_kind": "OSS",
+    "validation_state": "NO_VALIDATOR"
+   }
+  }
+ ],
+ "errors": [],
+ "paths": {
+  "scanned": [
+   "src/app.ts"
+  ]
+ },
+ "skipped_rules": []
+}

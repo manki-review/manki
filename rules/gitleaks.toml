@@ -1,0 +1,5 @@
+# Manki's gitleaks config: gitleaks' default rules, with no allowlist from the repository under review.
+title = "Manki"
+
+[extend]
+useDefault = true

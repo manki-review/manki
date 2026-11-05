@@ -245,6 +245,10 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
           for (const [key, value] of Object.entries(analyzers)) {
             if (!(ANALYZERS as readonly string[]).includes(key)) {
               errors.push(`\`static_analysis.analyzers.${key}\` is not a known analyzer. Known analyzers: ${ANALYZERS.join(', ')}`);
+            } else if (key === 'semgrep') {
+              if (value !== false && !isSemgrepSettings(value)) {
+                errors.push('`static_analysis.analyzers.semgrep` must be `false` or `{ rules: [...] }` listing `.yml` or `.yaml` rule files in the repository');
+              }
             } else if (typeof value !== 'boolean') {
               errors.push(`\`static_analysis.analyzers.${key}\` must be a boolean`);
             }
@@ -587,6 +591,13 @@ export function loadConfigFromContent(content: string, source = '.manki.yml'): R
     throw new Error(`Invalid config in ${source}: ${floorErrors.join('; ')}`);
   }
   return config;
+}
+
+function isSemgrepSettings(value: unknown): boolean {
+  const rules = (value as { rules?: unknown } | null)?.rules;
+  // Registry names such as `p/default` and URLs are refused: Manki only runs rule files it reads from the base branch.
+  return Array.isArray(rules) && rules.length > 0 && rules.every(rule => typeof rule === 'string'
+    && /\.ya?ml$/.test(rule) && !rule.startsWith('/') && !rule.includes('://') && !rule.split('/').includes('..'));
 }
 
 /**

@@ -2,6 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { AstGrepApi, isAstGrepFile, loadAstGrep, runAstGrep } from './ast-grep';
+import { installTool, isLockfile, runGitleaks, runOpengrep, runOsvScanner, runTool, ToolRunner } from './binary-analyzers';
 import { loadStaticAnalysisConfig } from './config';
 import { addedLines, isLineInDiff } from './diff';
 import { dynamicFence, fetchConfigFile, fetchFileContents } from './github';
@@ -46,13 +47,15 @@ export interface StaticSignalRequest {
 }
 
 /** What `collectStaticSignals` needs from outside the GitHub API, so tests can stand in for it. */
-export interface StaticAnalysisRuntime {
+export interface StaticAnalysisRuntime extends ToolRunner {
   loadAstGrep: () => Promise<AstGrepApi>;
   sleep: (ms: number) => Promise<void>;
 }
 
 const DEFAULT_RUNTIME: StaticAnalysisRuntime = {
   loadAstGrep,
+  installTool,
+  runTool,
   sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
 };
 
@@ -77,11 +80,35 @@ export async function collectStaticSignals(
   const settings = loadStaticAnalysisConfig(content, configPath);
   const checksStillPending = await waitForChecks(octokit, request, settings, runtime.sleep);
   const analyzers = enabledAnalyzers(settings);
+  const semgrepRules = settings.analyzers !== 'all' && settings.analyzers.semgrep ? settings.analyzers.semgrep.rules : [];
+  let headFiles: Promise<Map<string, string>> | undefined;
+  // The files are read through the API and only parsed, so no code from the PR runs.
+  const readHeadFiles = () => headFiles ??= fetchFileContents(
+    octokit, owner, repo, request.headSha,
+    diff.files.filter(f => f.changeType !== 'deleted' && (semgrepRules.length > 0 || isAstGrepFile(f.path))).map(f => f.path),
+    MAX_ANALYZED_FILE_BYTES, MAX_ANALYZED_TOTAL_BYTES,
+  );
   const sources: Array<[StaticSignalSource, () => Promise<StaticSignal[]>]> = [];
   if (settings.checks) sources.push(['checks', () => fetchCheckAnnotations(octokit, request)]);
   if (settings.code_scanning) sources.push(['code_scanning', () => fetchCodeScanningAlerts(octokit, request)]);
   if (settings.dependency_review) sources.push(['dependency_review', () => fetchDependencyReview(octokit, request)]);
-  if (analyzers.includes('ast_grep')) sources.push(['ast_grep', () => runAstGrepAnalyzer(octokit, request, runtime)]);
+  if (analyzers.includes('ast_grep')) {
+    sources.push(['ast_grep', async () => {
+      if (!diff.files.some(f => f.changeType !== 'deleted' && isAstGrepFile(f.path))) return [];
+      const [api, contents] = await Promise.all([runtime.loadAstGrep(), readHeadFiles()]);
+      return runAstGrep(api, contents);
+    }]);
+  }
+  if (analyzers.includes('secrets')) sources.push(['secrets', () => runGitleaks(diff.files, runtime)]);
+  if (analyzers.includes('dependencies')) {
+    sources.push(['dependencies', async () => {
+      const vulnerabilities = await runOsvScanner(await fetchLockfiles(octokit, request), runtime);
+      return placeVulnerabilities(vulnerabilities, diff, 'osv-scanner', 'dependencies');
+    }]);
+  }
+  if (analyzers.includes('semgrep')) {
+    sources.push(['semgrep', async () => runOpengrep(await fetchSemgrepRules(octokit, request, semgrepRules), await readHeadFiles(), runtime)]);
+  }
 
   const files = new Map(diff.files.map(f => [f.path, f]));
   const runs: RoundAnalyzerRun[] = [];
@@ -91,7 +118,7 @@ export async function collectStaticSignals(
       const onDiff = (await fetch()).filter(s => {
         const file = files.get(s.file);
         return file !== undefined && isLineInDiff(file, s.line);
-      });
+      }).map(s => analyzer ? { ...s, ruleId: cleanMessage(s.ruleId, MAX_NAME_CHARS), message: cleanMessage(s.message) } : s);
       if (analyzer) runs.push({ analyzer, status: 'ran', results: onDiff.length });
       return onDiff;
     } catch (error) {
@@ -116,7 +143,9 @@ export function isAnalyzerSignal(signal: StaticSignal): boolean {
 
 function enabledAnalyzers(settings: StaticAnalysisConfig): AnalyzerName[] {
   const { analyzers } = settings;
-  return analyzers === 'all' ? [...ANALYZERS] : ANALYZERS.filter(a => analyzers[a] === true);
+  // Semgrep runs only with the user's rules, so `all` cannot turn it on.
+  if (analyzers === 'all') return ANALYZERS.filter(a => a !== 'semgrep');
+  return ANALYZERS.filter(a => a === 'semgrep' ? !!analyzers.semgrep : analyzers[a] === true);
 }
 
 /** Polls the check runs named in `wait_for_checks` until each has finished, and returns the ones still running at the timeout. */
@@ -150,15 +179,23 @@ async function waitForChecks(
   }
 }
 
-async function runAstGrepAnalyzer(octokit: Octokit, { owner, repo, headSha, diff }: StaticSignalRequest, runtime: StaticAnalysisRuntime): Promise<StaticSignal[]> {
-  const paths = diff.files.filter(f => f.changeType !== 'deleted' && isAstGrepFile(f.path)).map(f => f.path);
-  if (paths.length === 0) return [];
-  // The files are read through the API and only parsed, so no code from the PR runs.
-  const [api, contents] = await Promise.all([
-    runtime.loadAstGrep(),
-    fetchFileContents(octokit, owner, repo, headSha, paths, MAX_ANALYZED_FILE_BYTES, MAX_ANALYZED_TOTAL_BYTES),
-  ]);
-  return runAstGrep(api, contents);
+/** Returns the changed lockfiles at the PR head. They are fetched raw, since the contents API sends no content above 1 MB. */
+async function fetchLockfiles(octokit: Octokit, { owner, repo, headSha, diff }: StaticSignalRequest): Promise<Map<string, string>> {
+  const paths = diff.files.filter(f => f.changeType !== 'deleted' && isLockfile(f.path)).map(f => f.path);
+  const contents = await Promise.all(paths.map(async path => {
+    const { data } = await octokit.rest.repos.getContent({ owner, repo, path, ref: headSha, mediaType: { format: 'raw' } });
+    return [path, data as unknown as string] as const;
+  }));
+  return new Map(contents);
+}
+
+/** Returns the Semgrep rule files from the base branch, so a PR can neither change nor add a rule. */
+async function fetchSemgrepRules(octokit: Octokit, { owner, repo, baseRef }: StaticSignalRequest, paths: string[]): Promise<string[]> {
+  return Promise.all(paths.map(async path => {
+    const content = await fetchConfigFile(octokit, owner, repo, baseRef, path);
+    if (content === null) throw new Error(`could not read the Semgrep rules ${path} on the base branch`);
+    return content;
+  }));
 }
 
 /** Renders signals as a prompt section. The tool text is fenced because the PR under review can shape it. */

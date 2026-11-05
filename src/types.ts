@@ -573,9 +573,17 @@ export interface PrContext {
 }
 
 /** Analyzers Manki runs itself on the PR's files. */
-export const ANALYZERS = ['ast_grep'] as const;
+export const ANALYZERS = ['ast_grep', 'secrets', 'dependencies', 'semgrep'] as const;
 
 export type AnalyzerName = typeof ANALYZERS[number];
+
+export interface AnalyzerSettings {
+  ast_grep?: boolean;
+  secrets?: boolean;
+  dependencies?: boolean;
+  /** Paths of Semgrep rule files, read from the base branch. Manki ships no Semgrep rules. */
+  semgrep?: false | { rules: string[] };
+}
 
 export interface StaticAnalysisConfig {
   checks: boolean;
@@ -584,8 +592,8 @@ export interface StaticAnalysisConfig {
   /** Check runs to wait for on the PR head before reading the results. */
   wait_for_checks: string[];
   wait_timeout_seconds: number;
-  /** `all` turns every analyzer on. */
-  analyzers: 'all' | Partial<Record<AnalyzerName, boolean>>;
+  /** `all` turns on every analyzer that needs no rules from the user. */
+  analyzers: 'all' | AnalyzerSettings;
 }
 
 export type StaticSignalSource = 'checks' | 'code_scanning' | 'dependency_review' | AnalyzerName;
