@@ -356,6 +356,25 @@ describe('collectStaticSignals with analyzers and waits', () => {
       expect(octokit.rest.repos.getContent).toHaveBeenCalledWith(expect.objectContaining({ ref: 'head-sha', path: 'package-lock.json', mediaType: { format: 'raw' } }));
     });
 
+    it('skips a lockfile over 10 MB and the lockfiles past 40 MB in all, and logs each one', async () => {
+      const MB = 1024 * 1024;
+      const sizes = { 'huge/package-lock.json': 11 * MB, 'a/package-lock.json': 9 * MB, 'b/package-lock.json': 9 * MB, 'c/package-lock.json': 9 * MB, 'd/package-lock.json': 9 * MB, 'e/package-lock.json': 9 * MB };
+      const diff = parsePRDiff(Object.keys(sizes).map(path => [
+        `diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, '@@ -1,1 +1,2 @@', ' {', '+  "lockfileVersion": 3',
+      ].join('\n')).join('\n') + '\n');
+      const files = Object.fromEntries(Object.entries(sizes).map(([path, size]) => [`head-sha:${path}`, 'x'.repeat(size)]));
+      const octokit = makeOctokit({ main: `${ONLY_ANALYZERS}  analyzers:\n    dependencies: true\n` }, files);
+      jest.mocked(runtime.runTool).mockImplementationOnce(async () => ({ code: 0, stdout: '{"results":[]}', stderr: '' }));
+
+      const { record } = await collectStaticSignals(octokit, { ...request(), diff, fullDiff: diff }, runtime);
+
+      expect(record).toEqual({ analyzers: [{ analyzer: 'dependencies', status: 'ran', results: 0 }] });
+      const args = toolArgs('osv-scanner');
+      expect(args.filter((_, i) => args[i - 1] === '-L')).toEqual(['0/package-lock.json', '1/package-lock.json', '2/package-lock.json', '3/package-lock.json']);
+      const skipped = jest.mocked(core.info).mock.calls.map(([m]) => m).filter(m => m.includes('over the lockfile budget'));
+      expect(skipped).toEqual([expect.stringContaining('huge/package-lock.json'), expect.stringContaining('e/package-lock.json')]);
+    });
+
     it('runs Semgrep rules only from the base branch with Opengrep, ignoring `nosemgrep`, and skips when the rules are missing', async () => {
       const config = `${ONLY_ANALYZERS}  analyzers:\n    semgrep:\n      rules: [.semgrep/manki.yml]\n`;
       const baseRules = 'rules:\n  - id: no-console-log\n    languages: [typescript]\n    severity: WARNING\n    message: Avoid console.log\n    pattern: console.log(...)\n';
