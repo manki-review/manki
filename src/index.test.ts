@@ -2871,6 +2871,7 @@ describe('runFullReview orchestration', () => {
   it.each([
     ['a message', new Error('provider down, token ghs_abc123'), 'provider down, token [REDACTED]'],
     ['an empty message', new Error(''), 'Error with no message'],
+    ['a blank string', ' ', 'A string with no message'],
     ['an empty GitHub 404', githubError(404, ''), 'GitHub returned 404 on POST /repos/test-owner/test-repo/pulls/42/reviews (request id ABCD:1234).'],
     ['a GitHub 502', githubError(502, '<html>Bad gateway</html>'), `GitHub returned 502 on POST /repos/test-owner/test-repo/pulls/42/reviews (request id ABCD:1234). ${reviewModule.RETRY_HINT}`],
   ])('fails the job, keeps previous reviews and puts the reason in the progress comment when the review throws %s', async (_case, thrown, reason) => {

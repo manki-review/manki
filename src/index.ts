@@ -472,7 +472,8 @@ function failureReason(error: unknown): string {
  * transient failure, and an Octokit error with an empty message falls back to its status and call.
  */
 function describeFailure(error: unknown): string {
-  if (!(error instanceof Error)) return String(error);
+  if (!(error instanceof Error)) return String(error).trim() || `A ${typeof error} with no message`;
+  const message = error.message.trim();
   if (error.name === 'HttpError') {
     const { status, request, response } = error as OctokitErrorFields;
     const path = request?.url?.replace(/^https?:\/\/[^/]+/, '').split('?')[0];
@@ -481,9 +482,9 @@ function describeFailure(error: unknown): string {
     const where = `${call}${requestId ? ` (request id ${requestId})` : ''}`;
     // Without a response the request never reached GitHub, so the message names the network error.
     if (response && status !== undefined && status >= 500) return `GitHub returned ${status}${where}. ${RETRY_HINT}`;
-    if (!error.message) return `GitHub returned ${status ?? 'an error'}${where}.`;
+    if (!message) return `GitHub returned ${status ?? 'an error'}${where}.`;
   }
-  return error.message || `${error.name} with no message`;
+  return message || `${error.name} with no message`;
 }
 
 function reconcileDashboardAgents(dashboard: DashboardData, names: string[]): void {
