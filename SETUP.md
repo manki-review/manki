@@ -471,10 +471,19 @@ models:
 
 # Planner stage (default: enabled). A fast pre-review pass triages the
 # change (trivial, subtle, paired) and picks the judge effort and PR type.
-# `paired` pins whether a second finder runs: auto (default), always or never.
 planner:
   enabled: true
-  paired: auto
+
+# Review groups per class of PR (default: the built-ins). Read from the base
+# branch, never from the PR. See "Review groups" below.
+# review:
+#   groups:
+#     deep:
+#       reviewers:
+#         - { model: claude-opus-5-5, effort: high }
+#         - { model: gpt-5.5, effort: high }
+#   routing:
+#     security: deep
 
 # CI results the reviewers read as evidence (default: all on). Read from the
 # base branch, never from the PR. See "Reading CI results" above.
@@ -520,12 +529,82 @@ See [`.manki.yml.example`](.manki.yml.example) for the full reference with defau
 
 Manki reviews run in these stages:
 
-1. **Planner** (pre-review) -- A fast Haiku pass answers three questions about the nature of the change, never its line count, plus the judge effort and PR type. `trivial`: could a defect hide here at all? A trivial change (docs, a rename or move, a repeated mechanical edit, dead code, fixtures) is read by a single **Trivial Change Verifier**. The planner sees only the list of changed files, never the PR title, description or diff text, and Manki believes a `trivial` answer only when every changed file is docs, snapshots or generated, deleted, or renamed without edits. A change to tests alone is not trivial: one finder reads it. `subtle`: does judging it need reasoning about behavior? That sets the finders' effort to high, otherwise medium. `paired`: could a defect reach a user if every reader missed it? That adds a second finder. A missing or unclear answer, a timeout or a disabled planner takes the side that adds review: two finders at high effort. A diff that touches a security-sensitive path (auth, tokens, secrets, crypto, sessions, permissions and similar), CI or automation (`.github/workflows/**`, `.github/actions/**`, `action.yml`), a dependency or toolchain manifest (`package.json`, lockfiles, `Cargo.toml`, `go.mod`, `pyproject.toml`, `requirements*.txt`, `Gemfile`, `*.gemspec`, `rust-toolchain*`, `.nvmrc`, `Dockerfile*`), or a data contract (`migrations/**`, `*.sql`, `*.proto`, `schema.*`, `openapi*.yml`, `openapi*.yaml`, `openapi*.json`) is never trivial and always paired, whatever the planner or `planner.paired` say. Each round is triaged fresh.
+1. **Planner** (pre-review) -- A fast Haiku pass answers three questions about the nature of the change, never its line count, plus the judge effort and PR type. `trivial`: could a defect hide here at all? A trivial change (docs, a rename or move, a repeated mechanical edit, dead code, fixtures) is read by a single **Trivial Change Verifier**. The planner sees only the list of changed files, never the PR title, description or diff text, and Manki believes a `trivial` answer only when every changed file is docs, snapshots or generated, deleted, or renamed without edits. A change to tests alone is not trivial: one finder reads it. `subtle`: does judging it need reasoning about behavior? That sets the finders' effort to high, otherwise medium. `paired`: could a defect reach a user if every reader missed it? That adds a second finder. A missing or unclear answer, a timeout or a disabled planner takes the side that adds review: two finders at high effort. A diff that touches a security-sensitive path (auth, tokens, secrets, crypto, sessions, permissions and similar), CI or automation (`.github/workflows/**`, `.github/actions/**`, `action.yml`), a dependency or toolchain manifest (`package.json`, lockfiles, `Cargo.toml`, `go.mod`, `pyproject.toml`, `requirements*.txt`, `Gemfile`, `*.gemspec`, `rust-toolchain*`, `.nvmrc`, `Dockerfile*`), or a data contract (`migrations/**`, `*.sql`, `*.proto`, `schema.*`, `openapi*.yml`, `openapi*.yaml`, `openapi*.json`) is never trivial and always paired, whatever the planner or `planner.paired` say. Each round is triaged fresh. See [Review groups](#review-groups) for how the answers and paths pick the readers.
 2. **Finders** -- One finder on `models.reviewer`, plus on paired rounds a second on `models.reviewer_pair`, read the diff in parallel with the same prompt: correctness first, then security, error paths, tests that cannot fail and contract breaks, plus any `reviewers:` entries. Without `models.reviewer_pair` the second finder runs on the other Claude tier (Sonnet with Opus), which needs no extra credential. Another provider is used only when you set it. If either finder fails after its retry, the round ends incomplete and never approves.
 3. **Dedup**: A two-tier dedup pass filters findings already posted on the PR before judge evaluation. A static matcher handles exact/near-exact matches, then an LLM dedup pass (Haiku) catches semantic duplicates.
 4. **Judge agent**: A single agent evaluates the deduplicated reviewer findings for accuracy, actionability, and severity. It filters out noise, merges any remaining overlap, and assigns a 4-tier severity to each surviving finding.
 5. **Verdict reader**: Runs only when no finding blocks. One call on the judge's model reads the whole diff cold, without the PR description or earlier rounds, and looks for a reason not to merge. `READY` approves with "What this does" and "What to test" sections. `ADDRESS_FIRST` requests changes and posts its blockers as inline comments. Output that cannot be parsed ends the round as incomplete, never as an approval.
 6. **Recap** -- Surviving findings are posted as inline PR comments with a summary review.
+
+### Review groups
+
+Each round sorts the PR into a **review class**, and the class picks a **review group**: the readers that run as finders. The class with the highest rank among those that match wins.
+
+| Class | Rank | Matches | Built-in group |
+|-------|------|---------|----------------|
+| `security` | 100 | a security-sensitive path (`@security_paths`) | `pair` |
+| `supply_chain` | 90 | CI, automation or a dependency or toolchain manifest (`@ci_dependency_paths`) | `pair` |
+| `data_contract` | 80 | migrations, `*.sql`, `*.proto`, `schema.*`, OpenAPI files (`@data_contract_paths`) | `pair` |
+| `behavior` | 50 | the planner answered `paired: true` | `pair` |
+| `internal` | 30 | the planner answered `paired: false` | `solo` |
+| `docs` | 20 | the planner answered `trivial: true` and every file is docs, snapshots or generated, deleted, or renamed without edits | `trivial` |
+
+The built-in groups are `trivial` (the Trivial Change Verifier on `models.reviewer` at medium effort), `solo` (one finder on `models.reviewer`) and `pair` (a finder on `models.reviewer` and one on `models.reviewer_pair`). Their effort is `auto`: high when the planner answers `subtle: true`, otherwise medium.
+
+`security`, `supply_chain` and `data_contract` are **floor classes**. Path rules decide them, so nothing in the PR's text can change them. A PR in a floor class always gets at least two finders on two distinct models, none at `low` effort. The floor is checked after routing: if the routed group misses it, the PR moves up to the floor class's own group, then to the built-in `pair` group. So a class of your own that outranks `security` cannot pull a PR that also touches auth into a weaker group.
+
+The `review` block changes the groups and the routing:
+
+```yaml
+review:
+  groups:
+    deep:
+      reviewers:
+        - { model: claude-opus-5-5, effort: high }
+        - { model: gpt-5.5, effort: high }
+  routing:
+    security: deep
+    data_contract: deep
+```
+
+That minimal example sends security and data contract PRs to two strong readers on two providers and keeps the built-ins for the rest. A fuller one:
+
+```yaml
+review:
+  default_group: pair
+  groups:
+    solo:
+      reviewers: [{ model: "@reviewer", effort: auto }]
+    pair:
+      reviewers:
+        - { model: "@reviewer", effort: auto }
+        - { model: "@reviewer_pair", effort: auto }
+    deep:
+      reviewers:
+        - { model: claude-opus-5-5, effort: high, focus: "authz, injection, secret handling" }
+        - { model: gemini-3-pro, effort: high }
+        - { model: claude-sonnet-5-5, effort: medium, focus: "error paths and rollback" }
+  classes:
+    security:                      # adds paths to the built-in rule, never narrows it
+      match: { paths_any: ["src/billing/**"] }
+    hot_path:
+      rank: 85
+      match: { paths_any: ["src/consensus/**", "src/net/**"] }
+  routing:
+    security: deep
+    hot_path: deep
+    internal: solo
+```
+
+- **`groups`**: each group lists its `reviewers`. A reviewer takes `model` (a model id, `provider/model`, or `@reviewer` and `@reviewer_pair`, which resolve through `models`; unset means `@reviewer`), `effort` (`low`, `medium`, `high`, `max` or `auto`, the default), an optional `focus` line added to that finder's prompt, and `role` (`finder`, the default, or `verifier` for the Trivial Change Verifier). A group with the name of a built-in replaces it.
+- **`classes`**: a new class needs a `rank` no other class has, and a `match` with `paths_any` (globs, or the `@security_paths`, `@ci_dependency_paths` and `@data_contract_paths` aliases), `triage` (`trivial`, `subtle` or `paired` set to true or false), or both. Every condition must hold. On `security`, `supply_chain` and `data_contract`, `match.paths_any` adds paths to the built-in rule. The other built-in classes cannot be changed.
+- **`routing`**: the group per class. Classes you leave out keep their built-in group. When you set `groups` but no `routing`, every class goes to `default_group`, and the floors still apply.
+- **`default_group`**: the group for a class with no route (default `pair`).
+- **`allow_weaker`**: floor classes allowed to route to a group below the floor, such as `allow_weaker: [security]`. Without it, routing a floor class to a weaker group fails the run with the reason. Every round that runs below the floor logs a warning.
+
+Manki reads the `review` block from the PR's base branch only, like `static_analysis`, so a PR cannot weaken its own review. A PR that changes the block is reviewed with the base branch's, and the change applies after merge. When the base branch's config cannot be read, Manki uses the built-ins, never the PR's copy. The models behind `@reviewer` and `@reviewer_pair` still come from the PR's `models` block.
+
+`planner.paired` still works and is deprecated in favour of `routing`: `always` turns `paired` on before the PR is classified, and `never` turns it off, which routes `behavior` changes to the `internal` class and its group.
 
 ### Severity tiers
 

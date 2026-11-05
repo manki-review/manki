@@ -320,7 +320,7 @@ export interface ReviewerAgent {
   focus: string;
 }
 
-export type EffortLevel = 'low' | 'medium' | 'high';
+export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
 
 /** The planner's three triage answers. Each takes the side that adds review when unknown. */
 export interface Triage {
@@ -347,7 +347,10 @@ export interface Finder {
 export interface GroupReviewer {
   /** A model id, `provider/model`, `@reviewer` or `@reviewer_pair`. Unset means `@reviewer`. */
   model?: string;
-  effort: EffortLevel | 'auto';
+  /** Unset means `auto`. */
+  effort?: EffortLevel | 'auto';
+  /** One more line for this finder to check, added to its prompt like a `reviewers` entry. */
+  focus?: string;
   role?: 'finder' | 'verifier';
 }
 
@@ -409,12 +412,34 @@ export type NoiseLevel = 'low' | 'medium' | 'high';
 
 export type PairedPin = 'auto' | 'always' | 'never';
 
+/** The `review` block of `.manki.yml`. Unset keys keep the built-ins. */
+export interface ReviewRoutingConfig {
+  /** Group for a class with no route, and for every class when `groups` is set without `routing`. */
+  default_group?: string;
+  /** Adds groups, or replaces a built-in group of the same name. */
+  groups?: Record<string, ReviewGroup>;
+  /** Adds classes. On a built-in path class, `match.paths_any` adds paths to the built-in rule. */
+  classes?: Record<string, { rank?: number; match?: ReviewClassMatch }>;
+  /** Group per class, over the built-in routing. */
+  routing?: Record<string, string>;
+  /** Floor classes that may route to a group below the floor. */
+  allow_weaker?: string[];
+}
+
 export interface TeamRoster {
   finders: Finder[];
   /** Review class the PR fell in, or unset when none matched and the default group ran. */
   reviewClass?: string;
   /** Review group the finders came from. */
   group: string;
+  /** Whether the class's route, the default group or the floor picked the group. */
+  groupSource: 'routing' | 'default_group' | 'floor_escalation';
+  /** Highest ranked floor class the PR matched. */
+  floor?: string;
+  /** Routed group the floor moved the PR up from. */
+  escalatedFrom?: string;
+  /** Floor classes `review.allow_weaker` let run below the floor. */
+  weakerAllowed?: string[];
   /** Triage after `planner.paired` and the floor and file rules. */
   triage: Triage;
   sensitivePaths: boolean;
@@ -445,9 +470,14 @@ export interface ReviewConfig {
   };
   planner?: {
     enabled?: boolean;
-    /** Pins the planner's `paired` answer. A floor class path, such as a security-sensitive one, still gets a pair. */
+    /**
+     * @deprecated Use `review.routing`. Pins the planner's `paired` answer. A floor class path,
+     * such as a security-sensitive one, still gets a pair.
+     */
     paired?: PairedPin;
   };
+  /** Review groups and how PR classes route to them. Always read from the base branch, so a PR cannot weaken its own review. */
+  review?: ReviewRoutingConfig;
   /** Which CI results reviewers read as evidence. Always read from the base branch, so a PR cannot turn it off. */
   static_analysis?: StaticAnalysisConfig;
   /**

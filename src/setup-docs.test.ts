@@ -2,6 +2,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { parse as parseYaml } from 'yaml';
 
+import { loadConfigFromContent } from './config';
+
 interface ActionInput {
   required?: boolean;
   default?: string;
@@ -71,5 +73,17 @@ describe('documented workflow snippets', () => {
         ];
       })));
     expect(problems).toEqual([]);
+  });
+});
+
+describe('documented `review` examples', () => {
+  it('load as valid config, in SETUP.md and uncommented from `.manki.yml.example`', () => {
+    const setupBlocks = markdownYamlBlocks(readRepoFile('SETUP.md')).filter(block => /^review:/m.test(block));
+    const example = readRepoFile('.manki.yml.example');
+    const exampleBlocks = [...example.matchAll(/^# review:\n(?:#[ ]{2,}.*\n)+/gm)].map(m => m[0].replace(/^# ?/gm, ''));
+    expect([setupBlocks.length, exampleBlocks.length]).toEqual([2, 2]);
+    for (const block of [...setupBlocks, ...exampleBlocks]) {
+      expect(loadConfigFromContent(block).review?.groups?.deep).toBeDefined();
+    }
   });
 });

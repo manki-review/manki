@@ -89,6 +89,8 @@ jest.mock('./config', () => {
     sanitizeForkConfig,
     resolveModel,
     resolvePairModel,
+    loadReviewConfig: actual.loadReviewConfig,
+    reviewFloorErrors: actual.reviewFloorErrors,
     resolveReviewerModel: jest.fn((config: ReviewConfig, ref: string | undefined) =>
       ref === '@reviewer_pair' ? resolvePairModel(config) : ref === undefined || ref === '@reviewer' ? resolveModel(config, 'reviewer') : ref),
   };
@@ -147,7 +149,7 @@ jest.mock('./review', () => ({
     agentNames: ['general'],
   }),
   teamModels: jest.requireActual('./review').teamModels,
-  selectTeam: jest.fn().mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, index: 0, model: 'claude-sonnet-5-5', effort: 'high' }], group: 'solo', triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false }),
+  selectTeam: jest.fn().mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, index: 0, model: 'claude-sonnet-5-5', effort: 'high' }], group: 'solo', groupSource: 'routing', triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false }),
 }));
 
 jest.mock('./github', () => {
@@ -160,6 +162,7 @@ jest.mock('./github', () => {
   return {
   fetchPRDiff: jest.fn().mockResolvedValue(''),
   fetchConfigFile: jest.fn().mockResolvedValue(null),
+  readConfigFile: jest.fn().mockResolvedValue(null),
   fetchRepoContext: jest.fn().mockResolvedValue(''),
   fetchSubdirClaudeMd: jest.fn().mockResolvedValue(null),
   fetchFileContents: jest.fn().mockResolvedValue(new Map()),
@@ -1801,7 +1804,7 @@ describe('runFullReview orchestration', () => {
       findings: [], highlights: [], reviewComplete: true,
       agentNames: ['general'],
     });
-    jest.mocked(reviewModule.selectTeam).mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, index: 0, model: 'claude-sonnet-5-5', effort: 'high' }], group: 'solo', triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false });
+    jest.mocked(reviewModule.selectTeam).mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, index: 0, model: 'claude-sonnet-5-5', effort: 'high' }], group: 'solo', groupSource: 'routing', triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false });
     jest.mocked(ghUtils.postProgressComment).mockResolvedValue(1);
     jest.mocked(ghUtils.postReview).mockResolvedValue(123);
     jest.mocked(ghUtils.fetchPRDiff).mockResolvedValue('');
@@ -1832,6 +1835,59 @@ describe('runFullReview orchestration', () => {
       baseArgs.commitSha, baseArgs.baseRef, baseArgs.prContext,
     );
   }
+
+  describe('`review` block from the base branch', () => {
+    const testFile = { path: 'src/auth/login.ts', changeType: 'modified' as const, hunks: [] };
+    const headConfig: ReviewConfig = {
+      auto_review: true, auto_approve: false, max_diff_lines: 5000, exclude_paths: [], reviewers: [], instructions: '',
+      memory: { enabled: false, repo: '' },
+    };
+    const reviewedConfig = () => jest.mocked(reviewModule.runReview).mock.calls[0][1].config;
+
+    beforeEach(() => {
+      jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 1, totalDeletions: 0 });
+      jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
+    });
+
+    it('ignores the PR\'s own `review` block, `allow_weaker` included, and uses the base branch\'s', async () => {
+      jest.mocked(configModule.loadConfig).mockReturnValue({ ...headConfig, review: { routing: { security: 'solo' }, allow_weaker: ['security'] } });
+
+      await callRunFullReview();
+
+      expect(jest.mocked(ghUtils.readConfigFile)).toHaveBeenCalledWith(mockOctokitInstance, 'test-owner', 'test-repo', 'main', '.manki.yml');
+      expect(reviewedConfig().review).toBeUndefined();
+      expect(jest.mocked(core.info)).toHaveBeenCalledWith(expect.stringContaining('This PR changes the `review` block. The change applies after merge'));
+    });
+
+    it('applies the base branch\'s `review` block, `allow_weaker` included', async () => {
+      jest.mocked(configModule.loadConfig).mockReturnValue(headConfig);
+      jest.mocked(ghUtils.readConfigFile).mockResolvedValueOnce('review:\n  routing:\n    security: solo\n  allow_weaker: [security]\n');
+
+      await callRunFullReview();
+
+      expect(reviewedConfig().review).toEqual({ routing: { security: 'solo' }, allow_weaker: ['security'] });
+    });
+
+    it('uses the built-ins, never the PR\'s copy, when the base branch config cannot be read', async () => {
+      jest.mocked(configModule.loadConfig).mockReturnValue({ ...headConfig, review: { routing: { internal: 'pair' } } });
+      jest.mocked(ghUtils.readConfigFile).mockRejectedValueOnce(new Error('socket hang up'));
+
+      await callRunFullReview();
+
+      expect(reviewedConfig().review).toBeUndefined();
+      expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('Could not read .manki.yml on the base branch, using the built-in review groups: socket hang up'));
+    });
+
+    it('fails the run when the base branch routes a floor class below the floor', async () => {
+      jest.mocked(configModule.loadConfig).mockReturnValue(headConfig);
+      jest.mocked(ghUtils.readConfigFile).mockResolvedValueOnce('review:\n  routing:\n    data_contract: solo\n');
+
+      await callRunFullReview();
+
+      expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(expect.stringContaining('routes the `data_contract` floor class to the `solo` group'));
+      expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+    });
+  });
 
   describe('provider CLI warmup', () => {
     const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [] };
@@ -6480,7 +6536,7 @@ describe('runFullReview concurrent-submission lock', () => {
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'APPROVE', outcome: 'READY' as const, summary: '', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
     });
-    jest.mocked(reviewModule.selectTeam).mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, index: 0, model: 'claude-sonnet-5-5', effort: 'high' }], group: 'solo', triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false });
+    jest.mocked(reviewModule.selectTeam).mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, index: 0, model: 'claude-sonnet-5-5', effort: 'high' }], group: 'solo', groupSource: 'routing', triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false });
     jest.mocked(ghUtils.postProgressComment).mockResolvedValue(1);
     jest.mocked(ghUtils.findInProgressLock).mockReturnValue(null);
     jest.mocked(ghUtils.isLockExpired).mockReturnValue(false);

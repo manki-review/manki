@@ -10,7 +10,7 @@ import { dynamicFence, LinkedIssue, titleToSlug } from './github';
 import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, llmDeduplicateFindings, PreviousFinding, titleOverlapType } from './recap';
 import { FOLLOW_UP_TAG, SECURITY_TAG, ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundPlannerSource, RoundStaticSignalMatch, EffortLevel, Finder, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, rebuildRawDiff } from './diff';
-import { BUILT_IN_CLASSES, BUILT_IN_DEFAULT_GROUP, BUILT_IN_GROUPS, BUILT_IN_ROUTING, classifyPr } from './routing';
+import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, chooseGroup, classifyPr, resolveRouting } from './routing';
 import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { runVerdictReader, verdictBlockerToFinding } from './verdict';
@@ -68,17 +68,22 @@ const FAIL_SAFE_TRIAGE: Readonly<Triage> = Object.freeze({ trivial: false, subtl
 /**
  * Builds the round's readers. The PR's class, from its paths and the triage, picks a review group,
  * and each reader in the group becomes one finder. `planner.paired` pins the `paired` answer
- * before the PR is classified. Every finder gets the same prompt.
+ * before the PR is classified, and every floor class the PR matches is checked after routing.
  */
 export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triage = FAIL_SAFE_TRIAGE): TeamRoster {
   const pin = config.planner?.paired ?? 'auto';
   const pinned: Triage = { ...triage, paired: pin === 'auto' ? triage.paired : pin === 'always' };
-  const classification = classifyPr(diff, pinned, BUILT_IN_CLASSES);
-  const group = (classification.name && BUILT_IN_ROUTING[classification.name]) || BUILT_IN_DEFAULT_GROUP;
+  const routing = resolveRouting(config.review);
+  const classification = classifyPr(diff, pinned, routing.classes);
+  const choice = chooseGroup(routing, classification, ref => resolveReviewerModel(config, ref));
   return {
-    finders: buildFinders(BUILT_IN_GROUPS[group], config, classification.triage),
+    finders: buildFinders(choice.group, config, classification.triage),
     ...(classification.name && { reviewClass: classification.name }),
-    group,
+    group: choice.name,
+    groupSource: choice.source,
+    ...(classification.floor && { floor: classification.floor }),
+    ...(choice.escalatedFrom && { escalatedFrom: choice.escalatedFrom }),
+    ...(choice.weakerAllowed && { weakerAllowed: choice.weakerAllowed }),
     triage: classification.triage,
     sensitivePaths: classification.matched.includes('security'),
     ciOrDependencyPaths: classification.matched.includes('supply_chain'),
@@ -87,19 +92,25 @@ export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triag
 }
 
 function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage): Finder[] {
-  const prompt = buildFinderAgent(config.reviewers);
+  const shared = buildFinderAgent(config.reviewers);
   return group.reviewers.map((reviewer, index) => {
     const model = resolveReviewerModel(config, reviewer.model);
-    const effort: EffortLevel = reviewer.effort === 'auto' ? (triage.subtle ? 'high' : 'medium') : reviewer.effort;
+    const effort: EffortLevel = !reviewer.effort || reviewer.effort === 'auto' ? (triage.subtle ? 'high' : 'medium') : reviewer.effort;
     if (reviewer.role === 'verifier') return { name: TRIVIAL_VERIFIER_AGENT.name, prompt: TRIVIAL_VERIFIER_AGENT, index, model, effort };
+    const prompt = reviewer.focus ? buildFinderAgent([...config.reviewers, { name: 'This review group', focus: reviewer.focus }]) : shared;
     const label = index === 0 ? 'Finder' : index === 1 ? 'Pair finder' : `Finder ${index + 1}`;
     return { name: `${label} (${model})`, prompt, index, model, effort };
   });
 }
 
-/** Returns every model a review group can run a finder on, so each gets a client before the round. */
+/**
+ * Returns every model a finder can run on this round, so each gets a client before the round:
+ * the routed groups, the default group and the floor's fallback group.
+ */
 export function teamModels(config: ReviewConfig): string[] {
-  const refs = Object.values(BUILT_IN_GROUPS).flatMap(g => g.reviewers.map(r => r.model));
+  const routing = resolveRouting(config.review);
+  const groups = [...Object.values(routing.routing), routing.defaultGroup].map(name => routing.groups[name]);
+  const refs = [...groups, BUILT_IN_GROUPS[FLOOR_FALLBACK_GROUP]].flatMap(g => g.reviewers.map(r => r.model));
   return [...new Set(refs.map(ref => resolveReviewerModel(config, ref)))];
 }
 
@@ -436,7 +447,10 @@ export async function runReview(
   const reviewerEffort = team.finders[0].effort;
   const { trivial, subtle, paired } = team.triage;
   core.info(`Triage (${plannerSource}): trivial=${trivial}, subtle=${subtle}, paired=${paired}${team.sensitivePaths ? ', security-sensitive paths' : ''}${team.ciOrDependencyPaths ? ', CI or dependency paths' : ''}${team.trivialOverridden ? ', planner trivial answer overridden by the changed files' : ''}`);
-  core.info(`Review class: ${team.reviewClass ?? 'none'}, group: ${team.group}`);
+  core.info(`Review class: ${team.reviewClass ?? 'none'}, group: ${team.group} (${team.groupSource}${team.escalatedFrom ? `, moved up from ${team.escalatedFrom} to meet the ${team.floor} floor` : ''})`);
+  if (team.weakerAllowed) {
+    core.warning(`\`review.allow_weaker\` lets this ${team.weakerAllowed.join(', ')} change run on the ${team.group} group, below the floor of two finders on two models`);
+  }
   core.info(`Review team: ${team.finders.map(f => f.name).join(', ')} at ${reviewerEffort} effort, judge: ${judgeEffort}${plannerResult ? ` (${plannerResult.prType})` : ''}`);
   if (trivial) {
     core.info(`trivial decision: prType=${plannerResult?.prType}, lines=${diff.totalAdditions + diff.totalDeletions}, files=${diff.files.length}`);

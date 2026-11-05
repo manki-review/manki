@@ -2,7 +2,8 @@ import * as core from '@actions/core';
 import * as fs from 'fs';
 import { parse as parseYaml } from 'yaml';
 
-import { PairedPin, ReviewConfig, StaticAnalysisConfig } from './types';
+import { BUILT_IN_CLASSES, BUILT_IN_GROUPS, PATH_ALIASES, floorShortfall, resolveRouting, routeClass } from './routing';
+import { PairedPin, ReviewConfig, ReviewRoutingConfig, StaticAnalysisConfig } from './types';
 
 export const MAX_LOCK_TTL_SECONDS = 3600;
 
@@ -61,6 +62,7 @@ const KNOWN_KEYS = new Set([
   'memory',
   'models',
   'planner',
+  'review',
   'static_analysis',
   'nit_handling',
   'noise_level',
@@ -75,6 +77,11 @@ const KNOWN_KEYS = new Set([
 const IGNORED_KEYS = new Set(['review_level', 'review_thresholds']);
 
 const PAIRED_PINS: readonly PairedPin[] = ['auto', 'always', 'never'];
+
+const REVIEW_KEYS = new Set(['default_group', 'groups', 'classes', 'routing', 'allow_weaker']);
+const GROUP_REVIEWER_KEYS = new Set(['model', 'effort', 'focus', 'role']);
+const REVIEWER_EFFORTS = new Set(['low', 'medium', 'high', 'max', 'auto']);
+const TRIAGE_KEYS = new Set(['trivial', 'subtle', 'paired']);
 
 const REPO_FORMAT = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
 
@@ -195,10 +202,17 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
       if ('enabled' in planner && typeof planner.enabled !== 'boolean') {
         errors.push('`planner.enabled` must be a boolean');
       }
-      if ('paired' in planner && !PAIRED_PINS.includes(planner.paired as PairedPin)) {
-        errors.push('`planner.paired` must be one of: auto, always, never');
+      if ('paired' in planner) {
+        if (!PAIRED_PINS.includes(planner.paired as PairedPin)) {
+          errors.push('`planner.paired` must be one of: auto, always, never');
+        }
+        warnings.push('`planner.paired` is deprecated. Route classes to review groups with `review.routing` instead: `always` is `behavior` and `internal` on a two-finder group, `never` is `behavior` on a one-finder group.');
       }
     }
+  }
+
+  if ('review' in config) {
+    validateReviewBlock(config.review, errors, warnings);
   }
 
   if ('static_analysis' in config) {
@@ -316,6 +330,150 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
   return { valid: errors.length === 0, errors, warnings };
 }
 
+const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+const isStringArray = (value: unknown): value is string[] => Array.isArray(value) && value.every(v => typeof v === 'string' && v !== '');
+
+function validateReviewBlock(review: unknown, errors: string[], warnings: string[]): void {
+  if (!isObject(review)) {
+    errors.push('`review` must be an object');
+    return;
+  }
+  for (const key of Object.keys(review)) {
+    if (!REVIEW_KEYS.has(key)) warnings.push(`Unknown config key: "review.${key}"`);
+  }
+
+  const groups = new Set(Object.keys(BUILT_IN_GROUPS));
+  if ('groups' in review) {
+    if (!isObject(review.groups)) {
+      errors.push('`review.groups` must be an object mapping group names to groups');
+    } else {
+      for (const [name, group] of Object.entries(review.groups)) {
+        groups.add(name);
+        const reviewers = isObject(group) ? group.reviewers : undefined;
+        if (!Array.isArray(reviewers) || reviewers.length === 0) {
+          errors.push(`\`review.groups.${name}.reviewers\` must be a non-empty array`);
+          continue;
+        }
+        reviewers.forEach((reviewer: unknown, i) => {
+          const at = `\`review.groups.${name}.reviewers[${i}]`;
+          if (!isObject(reviewer)) {
+            errors.push(`${at}\` must be an object`);
+            return;
+          }
+          for (const key of Object.keys(reviewer)) {
+            if (!GROUP_REVIEWER_KEYS.has(key)) warnings.push(`Unknown config key: "review.groups.${name}.reviewers[${i}].${key}"`);
+          }
+          if ('model' in reviewer && (typeof reviewer.model !== 'string' || reviewer.model === '')) errors.push(`${at}.model\` must be a non-empty string`);
+          if ('effort' in reviewer && !REVIEWER_EFFORTS.has(reviewer.effort as string)) errors.push(`${at}.effort\` must be one of: low, medium, high, max, auto`);
+          if ('focus' in reviewer && (typeof reviewer.focus !== 'string' || reviewer.focus === '')) errors.push(`${at}.focus\` must be a non-empty string`);
+          if ('role' in reviewer && reviewer.role !== 'finder' && reviewer.role !== 'verifier') errors.push(`${at}.role\` must be one of: finder, verifier`);
+        });
+      }
+    }
+  }
+
+  const classes = new Set(Object.keys(BUILT_IN_CLASSES));
+  if ('classes' in review) {
+    if (!isObject(review.classes)) {
+      errors.push('`review.classes` must be an object mapping class names to classes');
+    } else {
+      const ranks = new Map(Object.entries(BUILT_IN_CLASSES).map(([name, c]) => [c.rank, name]));
+      for (const [name, def] of Object.entries(review.classes)) {
+        const at = `\`review.classes.${name}`;
+        classes.add(name);
+        if (!isObject(def)) {
+          errors.push(`${at}\` must be an object`);
+          continue;
+        }
+        const builtIn = BUILT_IN_CLASSES[name];
+        const match = def.match;
+        if (builtIn) {
+          if (!builtIn.match.paths_any || 'rank' in def || 'floor' in def || !isObject(match) || Object.keys(match).some(k => k !== 'paths_any')) {
+            errors.push(builtIn.match.paths_any
+              ? `${at}\` is built in: it takes only \`match.paths_any\`, which adds paths to its built-in rule`
+              : `${at}\` is built in and cannot be changed. Route it with \`review.routing\` instead`);
+            continue;
+          }
+        } else {
+          if ('floor' in def) errors.push(`${at}.floor\` is not allowed: only the built-in security, supply_chain and data_contract classes are floors`);
+          if (typeof def.rank !== 'number' || !Number.isInteger(def.rank)) {
+            errors.push(`${at}.rank\` must be an integer`);
+          } else if (ranks.has(def.rank)) {
+            errors.push(`${at}.rank\` ${def.rank} is already the rank of \`${ranks.get(def.rank)}\`. Each class needs its own rank`);
+          } else {
+            ranks.set(def.rank, name);
+          }
+          if (!isObject(match) || Object.keys(match).length === 0) {
+            errors.push(`${at}.match\` must set \`paths_any\`, \`triage\` or both`);
+            continue;
+          }
+          for (const key of Object.keys(match)) {
+            if (key !== 'paths_any' && key !== 'triage') errors.push(`${at}.match.${key}\` is not a known condition. Use \`paths_any\` or \`triage\``);
+          }
+          if ('triage' in match) {
+            if (!isObject(match.triage) || Object.entries(match.triage).some(([k, v]) => !TRIAGE_KEYS.has(k) || typeof v !== 'boolean')) {
+              errors.push(`${at}.match.triage\` must map trivial, subtle or paired to true or false`);
+            }
+          }
+        }
+        if ('paths_any' in match) {
+          if (!isStringArray(match.paths_any) || match.paths_any.length === 0) {
+            errors.push(`${at}.match.paths_any\` must be a non-empty array of strings`);
+          } else {
+            for (const p of match.paths_any.filter(p => p.startsWith('@') && !(p in PATH_ALIASES))) {
+              errors.push(`${at}.match.paths_any\` names unknown path alias \`${p}\`. Known aliases: ${Object.keys(PATH_ALIASES).join(', ')}`);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if ('routing' in review) {
+    if (!isObject(review.routing)) {
+      errors.push('`review.routing` must be an object mapping class names to group names');
+    } else {
+      for (const [name, group] of Object.entries(review.routing)) {
+        if (!classes.has(name)) errors.push(`\`review.routing.${name}\` routes an unknown class. Define it under \`review.classes\``);
+        if (typeof group !== 'string' || !groups.has(group)) errors.push(`\`review.routing.${name}\` names unknown group \`${String(group)}\``);
+      }
+    }
+  }
+
+  if ('default_group' in review && (typeof review.default_group !== 'string' || !groups.has(review.default_group))) {
+    errors.push(`\`review.default_group\` names unknown group \`${String(review.default_group)}\``);
+  }
+
+  if ('allow_weaker' in review) {
+    const floors = Object.keys(BUILT_IN_CLASSES).filter(name => BUILT_IN_CLASSES[name].floor);
+    if (!isStringArray(review.allow_weaker) || review.allow_weaker.some(name => !floors.includes(name))) {
+      errors.push(`\`review.allow_weaker\` must be an array of floor classes: ${floors.join(', ')}`);
+    }
+  }
+}
+
+/**
+ * Returns an error for each floor class the `review` block routes to a group below the floor,
+ * unless `allow_weaker` names the class. The built-in `pair` group is accepted even when both
+ * of its finders resolve to one model, as they do on a non-Claude reviewer with no pair model.
+ */
+export function reviewFloorErrors(config: ReviewConfig): string[] {
+  if (!config.review) return [];
+  const routing = resolveRouting(config.review);
+  const errors: string[] = [];
+  for (const [name, c] of Object.entries(routing.classes)) {
+    if (!c.floor || routing.allowWeaker.includes(name)) continue;
+    const groupName = routeClass(routing, name);
+    const group = routing.groups[groupName];
+    if (group === BUILT_IN_GROUPS.pair) continue;
+    const shortfall = floorShortfall(group, ref => resolveReviewerModel(config, ref));
+    if (shortfall) {
+      errors.push(`\`review\` routes the \`${name}\` floor class to the \`${groupName}\` group, but ${shortfall}. A floor class needs two finders on two distinct models, none at \`low\` effort. Route it to a stronger group, or list it in \`review.allow_weaker\` to accept the weaker review`);
+    }
+  }
+  return errors;
+}
+
 function deepMerge(defaults: ReviewConfig, overrides: Record<string, unknown>): ReviewConfig {
   const result = { ...defaults };
 
@@ -396,7 +554,13 @@ export function loadConfigFromContent(content: string, source = '.manki.yml'): R
     throw new Error(`Invalid config in ${source}: ${validation.errors.join('; ')}`);
   }
 
-  return deepMerge(DEFAULT_CONFIG, parsed as Record<string, unknown>);
+  const config = deepMerge(DEFAULT_CONFIG, parsed as Record<string, unknown>);
+  const floorErrors = reviewFloorErrors(config);
+  if (floorErrors.length > 0) {
+    for (const error of floorErrors) core.error(error);
+    throw new Error(`Invalid config in ${source}: ${floorErrors.join('; ')}`);
+  }
+  return config;
 }
 
 /**
@@ -422,6 +586,35 @@ export function loadStaticAnalysisConfig(content: string | null, source = '.mank
     core.info(`Could not parse ${source} on the base branch, using the default \`static_analysis\`: ${e instanceof Error ? e.message : String(e)}`);
     return { ...defaults };
   }
+}
+
+export interface BaseReviewConfig {
+  review?: ReviewRoutingConfig;
+  /** `builtin` when the base branch has no `review` block, `base_unreadable` when its config could not be read. */
+  source: 'base' | 'builtin' | 'base_unreadable';
+}
+
+/**
+ * Returns the `review` block of the base branch's config file. A file that cannot be parsed gives
+ * the built-ins, never the PR's copy. Throws on a `review` block that fails validation.
+ */
+export function loadReviewConfig(content: string | null, source = '.manki.yml'): BaseReviewConfig {
+  if (!content) return { source: 'builtin' };
+  let parsed: unknown;
+  try {
+    parsed = parseYaml(content);
+  } catch (e) {
+    core.warning(`Could not parse ${source} on the base branch, using the built-in review groups: ${e instanceof Error ? e.message : String(e)}`);
+    return { source: 'base_unreadable' };
+  }
+  const block = isObject(parsed) ? parsed.review : undefined;
+  if (block === undefined) return { source: 'builtin' };
+  const validation = validateConfig({ review: block });
+  for (const warning of validation.warnings) core.warning(warning);
+  if (!validation.valid) {
+    throw new Error(`Invalid \`review\` in ${source} on the base branch: ${validation.errors.join('; ')}`);
+  }
+  return { review: block as ReviewRoutingConfig, source: 'base' };
 }
 
 export function loadConfigFromFile(filePath: string): ReviewConfig {

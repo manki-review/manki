@@ -5,7 +5,7 @@ import * as path from 'path';
 
 import { AuthResult, createAuthenticatedOctokit, getMemoryToken } from './auth';
 import { sanitizeTokens, withMarkers } from './utils';
-import { loadConfig, loadConfigFromFile, sanitizeForkConfig, resolveModel, resolvePairModel } from './config';
+import { BaseReviewConfig, loadConfig, loadConfigFromFile, loadReviewConfig, reviewFloorErrors, sanitizeForkConfig, resolveModel, resolvePairModel } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
@@ -22,6 +22,7 @@ import { DashboardData, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedD
 import {
   fetchPRDiff,
   fetchConfigFile,
+  readConfigFile,
   fetchRepoContext,
   fetchSubdirClaudeMd,
   fetchFileContents,
@@ -520,11 +521,12 @@ function cancelDashboardFlush(progress: RunProgress): void {
  * Loads `.manki.yml` from the local checkout so a PR that modifies its own
  * config (e.g., extending `exclude_paths`) takes effect on the same PR.
  * `process.cwd()` is the PR tree because the action runs as a local
- * composite via `./` in the consumer workflow. Returns `undefined` after
- * reporting a config that does not load.
+ * composite via `./` in the consumer workflow. The `review` block is the
+ * exception: it comes from the base branch, so a PR cannot weaken its own
+ * review. Returns `undefined` after reporting a config that does not load.
  */
 async function loadRunConfig(target: RunTarget, configPath: string, headRepoFullName?: string): Promise<ReviewConfig | undefined> {
-  const { octokit, owner, repo, prNumber } = target;
+  const { octokit, owner, repo, prNumber, baseRef } = target;
   const cwd = path.resolve(process.cwd());
   const configAbsPath = path.isAbsolute(configPath)
     ? configPath
@@ -541,17 +543,36 @@ async function loadRunConfig(target: RunTarget, configPath: string, headRepoFull
   const effectiveConfigPath = (resolvedConfigPath === cwd || resolvedConfigPath.startsWith(cwd + path.sep))
     ? resolvedConfigPath
     : path.join(cwd, '.manki.yml');
-  let rawConfig: ReviewConfig;
   try {
-    rawConfig = loadConfigFromFile(effectiveConfigPath);
+    const rawConfig = loadConfigFromFile(effectiveConfigPath);
+    const isFork = headRepoFullName !== undefined && headRepoFullName !== `${owner}/${repo}`;
+    const headConfig = isFork ? sanitizeForkConfig(rawConfig) : rawConfig;
+    const base = await loadBaseReviewConfig(octokit, owner, repo, baseRef, configPath);
+    if (JSON.stringify(headConfig.review) !== JSON.stringify(base.review)) {
+      core.info('This PR changes the `review` block. The change applies after merge: this round uses the base branch\'s review groups.');
+    }
+    const config = { ...headConfig, review: base.review };
+    const floorErrors = reviewFloorErrors(config);
+    if (floorErrors.length > 0) throw new Error(`Invalid config: ${floorErrors.join('; ')}`);
+    return config;
   } catch (error) {
     const reason = failureReason(error);
     core.setFailed(reason);
     await postConfigErrorComment(octokit, owner, repo, prNumber, reason);
     return undefined;
   }
-  const isFork = headRepoFullName !== undefined && headRepoFullName !== `${owner}/${repo}`;
-  return isFork ? sanitizeForkConfig(rawConfig) : rawConfig;
+}
+
+/** Reads the `review` block from the base branch. A base config that cannot be fetched gives the built-ins. */
+async function loadBaseReviewConfig(octokit: Octokit, owner: string, repo: string, baseRef: string, configPath: string): Promise<BaseReviewConfig> {
+  let content: string | null;
+  try {
+    content = await readConfigFile(octokit, owner, repo, baseRef, configPath);
+  } catch (error) {
+    core.warning(`Could not read ${configPath} on the base branch, using the built-in review groups: ${error instanceof Error ? error.message : String(error)}`);
+    return { source: 'base_unreadable' };
+  }
+  return loadReviewConfig(content, configPath);
 }
 
 /** Whether the run stops before posting a progress comment: another run holds the PR, the commit is reviewed or stale, or nothing changed. */
