@@ -11,7 +11,7 @@ import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parse
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
 import { recordFixRate } from './fix-rate';
-import { isDispatchedRun, restoreDispatchedEvent } from './dispatch';
+import { dispatchedNumber, isDispatchedRun, restoreDispatchedEvent } from './dispatch';
 import { addCodeContext, parsePRDiff, filterDiff, filterRawDiff, isDiffTooLarge, rebuildRawDiff } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
@@ -1629,7 +1629,7 @@ const POST_PHASE_STATE_KEY = 'manki_post_phase';
 async function postCleanup(): Promise<void> {
   const pr = github.context.payload.pull_request
     ?? (github.context.payload.issue?.pull_request ? github.context.payload.issue : undefined);
-  const prNumber = pr?.number;
+  const prNumber = isDispatchedRun() ? dispatchedNumber() : pr?.number;
   if (!prNumber) {
     core.info('Post-cleanup: no PR number in event payload — skipping');
     return;
@@ -1665,12 +1665,11 @@ async function main(): Promise<void> {
   const isPostPhase = core.getState(POST_PHASE_STATE_KEY) === 'true';
 
   try {
-    if (!isPostPhase) core.saveState(POST_PHASE_STATE_KEY, 'true');
-    const outcome = isDispatchedRun() ? await restoreDispatchedEvent((await getAuth()).octokit) : 'run';
     if (isPostPhase) {
       await postCleanup();
-    } else if (outcome === 'run') {
-      await run();
+    } else {
+      core.saveState(POST_PHASE_STATE_KEY, 'true');
+      if (!isDispatchedRun() || await restoreDispatchedEvent((await getAuth()).octokit) === 'run') await run();
     }
   } catch (error) {
     core.setFailed(`Manki encountered an error: ${failureReason(error)}`);

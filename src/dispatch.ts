@@ -46,6 +46,11 @@ export function isDispatchedRun(): boolean {
   return process.env.GITHUB_EVENT_NAME === 'workflow_dispatch';
 }
 
+/** The PR or issue number a dispatched run is for, read from the inputs alone so the post phase needs no API call. */
+export function dispatchedNumber(): number {
+  return readDispatchInputs(github.context.payload.inputs ?? {}).number;
+}
+
 /**
  * Replaces the `workflow_dispatch` context with the event the inputs name, read from the API.
  * Only the event kind and the ids come from the inputs, since anyone with write access can dispatch by hand.
