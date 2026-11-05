@@ -48,10 +48,12 @@ const FAMILY_NAMES: ReadonlyMap<string, string> = new Map([['claude', 'Claude'],
  * Dash-separated version numbers join with a dot and a trailing date stamp is dropped. Any other id is returned as given.
  */
 export function modelDisplayName(id: string): string {
-  const bare = id.trim().replace(/^(anthropic|openai|gemini)\//, '');
+  const bare = id.trim()
+    .replace(/^(anthropic|openai|gemini)\//, '')
+    .replace(/-(?:\d{8}|\d{4}-\d{2}-\d{2})$/, '')
+    .replace(/(-preview)-\d{2}-\d{2}$/, '$1');
   const [family, ...rest] = bare.split('-');
   const name = FAMILY_NAMES.get(family);
-  if (/^\d{8}$/.test(rest[rest.length - 1])) rest.pop();
   if (!name || rest.length === 0 || rest.some(part => !/^[a-z0-9.]+$/i.test(part))) return id;
   const words = [name];
   for (const part of rest) {
