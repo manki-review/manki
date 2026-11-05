@@ -1,4 +1,4 @@
-import { DEFAULT_CONFIG, loadConfig, loadConfigFromContent, loadConfigFromFile, loadReviewConfig, loadStaticAnalysisConfig, resolveModel, resolvePairModel, reviewFloorErrors, sanitizeForkConfig } from './config';
+import { applyBaseReviewConfig, DEFAULT_CONFIG, loadConfig, loadConfigFromContent, loadConfigFromFile, loadReviewConfig, loadStaticAnalysisConfig, resolveModel, resolvePairModel, reviewFloorErrors, sanitizeForkConfig } from './config';
 import { ReviewConfig } from './types';
 
 // Suppress @actions/core output during tests
@@ -207,12 +207,36 @@ describe('config', () => {
       expect(reviewFloorErrors({ ...config, review: { groups: { pair: { reviewers: [{ model: 'gpt-5.5' }, { model: '@reviewer_pair' }] } } } })).toHaveLength(3);
     });
 
-    it('reads the block alone from the base branch, with the built-ins when it is missing or unreadable', () => {
+    it('reads the block and models from the base branch, with the built-ins when it is missing, unreadable or invalid', () => {
+      const models = DEFAULT_CONFIG.models;
       expect(loadReviewConfig(null)).toEqual({ source: 'builtin' });
-      expect(loadReviewConfig('auto_review: true\n')).toEqual({ source: 'builtin' });
+      expect(loadReviewConfig('auto_review: true\n')).toEqual({ models, source: 'builtin' });
       expect(loadReviewConfig('review: [\n')).toEqual({ source: 'base_unreadable' });
-      expect(loadReviewConfig('review:\n  routing:\n    internal: pair\n')).toEqual({ review: { routing: { internal: 'pair' } }, source: 'base' });
-      expect(() => loadReviewConfig('review:\n  routing:\n    security: deep\n')).toThrow('Invalid `review` in .manki.yml on the base branch');
+      expect(loadReviewConfig('models:\n  reviewer: gpt-5.5\nreview:\n  routing:\n    internal: pair\n'))
+        .toEqual({ review: { routing: { internal: 'pair' } }, models: { ...models, reviewer: 'gpt-5.5' }, source: 'base' });
+      expect(loadReviewConfig('review:\n  routing:\n    security: deep\n')).toEqual({ models, source: 'base_invalid' });
+      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Invalid `review` in .manki.yml on the base branch, using the built-in review groups'));
+    });
+
+    it('fails the PR that adds a floor class routed below the floor in its own config file', () => {
+      jest.mocked(fs.existsSync).mockReturnValue(true);
+      jest.mocked(fs.readFileSync).mockReturnValue('review:\n  routing:\n    security: solo\n');
+      expect(() => loadConfigFromFile('/repo/.manki.yml')).toThrow('routes the `security` floor class to the `solo` group');
+    });
+
+    it('applies the base block, keeps two reviewer models, and falls back to the built-ins on a base floor miss', () => {
+      const head = loadConfigFromContent('models:\n  reviewer: gpt-5.5\n  reviewer_pair: gpt-5.5\nreview:\n  routing:\n    internal: pair\n');
+      const kept = applyBaseReviewConfig(head, { review: { routing: { internal: 'solo' } }, models: DEFAULT_CONFIG.models, source: 'base' });
+      expect(kept.source).toBe('base');
+      expect(kept.config.review).toEqual({ routing: { internal: 'solo' } });
+      expect(kept.config.models).toEqual(expect.objectContaining({ reviewer: 'claude-sonnet-5-5', reviewer_pair: 'claude-opus-5-5' }));
+
+      const baseOnOneModel = { ...DEFAULT_CONFIG.models, reviewer: 'gpt-5.5' };
+      expect(applyBaseReviewConfig(head, { models: baseOnOneModel, source: 'builtin' }).config.models).toEqual(head.models);
+      expect(applyBaseReviewConfig(head, { source: 'base_unreadable' }).config.models).toEqual(head.models);
+
+      const missed = applyBaseReviewConfig(loadConfigFromContent(''), { review: { routing: { security: 'solo' } }, source: 'base' });
+      expect([missed.source, missed.config.review]).toEqual(['base_invalid', undefined]);
     });
   });
 

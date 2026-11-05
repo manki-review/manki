@@ -590,13 +590,19 @@ export function loadStaticAnalysisConfig(content: string | null, source = '.mank
 
 export interface BaseReviewConfig {
   review?: ReviewRoutingConfig;
-  /** `builtin` when the base branch has no `review` block, `base_unreadable` when its config could not be read. */
-  source: 'base' | 'builtin' | 'base_unreadable';
+  /** The base branch's `models`, with defaults, when its config file parses. */
+  models?: ReviewConfig['models'];
+  /**
+   * `builtin` when the base branch has no `review` block, `base_unreadable` when its config could
+   * not be read, and `base_invalid` when its `review` block fails validation or misses a floor.
+   */
+  source: 'base' | 'builtin' | 'base_unreadable' | 'base_invalid';
 }
 
 /**
- * Returns the `review` block of the base branch's config file. A file that cannot be parsed gives
- * the built-ins, never the PR's copy. Throws on a `review` block that fails validation.
+ * Returns the `review` block and `models` of the base branch's config file. A file that cannot be
+ * parsed, or a `review` block that fails validation, gives the built-in review groups, never the
+ * PR's copy, so a broken base never blocks the PR that fixes it.
  */
 export function loadReviewConfig(content: string | null, source = '.manki.yml'): BaseReviewConfig {
   if (!content) return { source: 'builtin' };
@@ -607,14 +613,46 @@ export function loadReviewConfig(content: string | null, source = '.manki.yml'):
     core.warning(`Could not parse ${source} on the base branch, using the built-in review groups: ${e instanceof Error ? e.message : String(e)}`);
     return { source: 'base_unreadable' };
   }
-  const block = isObject(parsed) ? parsed.review : undefined;
-  if (block === undefined) return { source: 'builtin' };
-  const validation = validateConfig({ review: block });
+  const root = isObject(parsed) ? parsed : {};
+  const models = root.models !== undefined && validateConfig({ models: root.models }).valid
+    ? deepMerge(DEFAULT_CONFIG, { models: root.models }).models
+    : DEFAULT_CONFIG.models;
+  if (root.review === undefined) return { models, source: 'builtin' };
+  const validation = validateConfig({ review: root.review });
   for (const warning of validation.warnings) core.warning(warning);
   if (!validation.valid) {
-    throw new Error(`Invalid \`review\` in ${source} on the base branch: ${validation.errors.join('; ')}`);
+    core.warning(`Invalid \`review\` in ${source} on the base branch, using the built-in review groups: ${validation.errors.join('; ')}`);
+    return { models, source: 'base_invalid' };
   }
-  return { review: block as ReviewRoutingConfig, source: 'base' };
+  return { review: root.review as ReviewRoutingConfig, models, source: 'base' };
+}
+
+/**
+ * Returns the PR's config with the base branch's `review` block. When the PR's models would run both
+ * finders of a pair on one model and the base branch's give two, the reviewer models come from the
+ * base, so a PR cannot drop the second model. A base block that misses a floor gives the built-ins.
+ */
+export function applyBaseReviewConfig(head: ReviewConfig, base: BaseReviewConfig): { config: ReviewConfig; source: BaseReviewConfig['source'] } {
+  if (JSON.stringify(head.review) !== JSON.stringify(base.review)) {
+    core.info('This PR changes the `review` block. The change applies after merge: this round uses the base branch\'s review groups.');
+  }
+  let config: ReviewConfig = { ...head, review: base.review };
+  if (base.models) {
+    const baseConfig: ReviewConfig = { ...DEFAULT_CONFIG, models: base.models };
+    const onOneModel = (c: ReviewConfig) => resolvePairModel(c) === resolveModel(c, 'reviewer');
+    if (onOneModel(config) && !onOneModel(baseConfig)) {
+      const reviewer = resolveModel(baseConfig, 'reviewer');
+      const reviewerPair = resolvePairModel(baseConfig);
+      core.warning(`This PR's \`models\` run both finders on ${resolveModel(config, 'reviewer')}. This round keeps the base branch's ${reviewer} and ${reviewerPair}, so a PR cannot drop the second model.`);
+      config = { ...config, models: { ...config.models, reviewer, reviewer_pair: reviewerPair } };
+    }
+  }
+  const floorErrors = reviewFloorErrors(config);
+  if (floorErrors.length > 0) {
+    core.warning(`The base branch's \`review\` block misses a floor, using the built-in review groups: ${floorErrors.join('; ')}`);
+    return { config: { ...config, review: undefined }, source: 'base_invalid' };
+  }
+  return { config, source: base.source };
 }
 
 export function loadConfigFromFile(filePath: string): ReviewConfig {

@@ -602,7 +602,7 @@ review:
 - **`default_group`**: the group for a class with no route (default `pair`).
 - **`allow_weaker`**: floor classes allowed to route to a group below the floor, such as `allow_weaker: [security]`. Without it, routing a floor class to a weaker group fails the run with the reason. Every round that runs below the floor logs a warning.
 
-Manki reads the `review` block from the PR's base branch only, like `static_analysis`, so a PR cannot weaken its own review. A PR that changes the block is reviewed with the base branch's, and the change applies after merge. When the base branch's config cannot be read, Manki uses the built-ins, never the PR's copy. The models behind `@reviewer` and `@reviewer_pair` still come from the PR's `models` block.
+Manki reads the `review` block from the PR's base branch only, like `static_analysis`, so a PR cannot weaken its own review. A PR that changes the block is reviewed with the base branch's, and the change applies after merge. A PR whose own block misses a floor fails, so a broken block never lands. When the base branch's config cannot be read, or its block is invalid or misses a floor, Manki uses the built-ins with a warning, never the PR's copy, so the PR that fixes it still gets reviewed. The models behind `@reviewer` and `@reviewer_pair` come from the PR's `models` block, except that a PR cannot put both finders of a pair on one model when the base branch's models give two: that round keeps the base branch's reviewer models.
 
 `planner.paired` still works and is deprecated in favour of `routing`: `always` turns `paired` on before the PR is classified, and `never` turns it off, which routes `behavior` changes to the `internal` class and its group.
 

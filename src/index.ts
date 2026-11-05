@@ -5,7 +5,7 @@ import * as path from 'path';
 
 import { AuthResult, createAuthenticatedOctokit, getMemoryToken } from './auth';
 import { sanitizeTokens, withMarkers } from './utils';
-import { BaseReviewConfig, loadConfig, loadConfigFromFile, loadReviewConfig, reviewFloorErrors, sanitizeForkConfig, resolveModel, resolvePairModel } from './config';
+import { applyBaseReviewConfig, BaseReviewConfig, loadConfig, loadConfigFromFile, loadReviewConfig, sanitizeForkConfig, resolveModel, resolvePairModel } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
@@ -548,13 +548,7 @@ async function loadRunConfig(target: RunTarget, configPath: string, headRepoFull
     const isFork = headRepoFullName !== undefined && headRepoFullName !== `${owner}/${repo}`;
     const headConfig = isFork ? sanitizeForkConfig(rawConfig) : rawConfig;
     const base = await loadBaseReviewConfig(octokit, owner, repo, baseRef, configPath);
-    if (JSON.stringify(headConfig.review) !== JSON.stringify(base.review)) {
-      core.info('This PR changes the `review` block. The change applies after merge: this round uses the base branch\'s review groups.');
-    }
-    const config = { ...headConfig, review: base.review };
-    const floorErrors = reviewFloorErrors(config);
-    if (floorErrors.length > 0) throw new Error(`Invalid config: ${floorErrors.join('; ')}`);
-    return config;
+    return applyBaseReviewConfig(headConfig, base).config;
   } catch (error) {
     const reason = failureReason(error);
     core.setFailed(reason);

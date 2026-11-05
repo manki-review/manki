@@ -90,7 +90,7 @@ jest.mock('./config', () => {
     resolveModel,
     resolvePairModel,
     loadReviewConfig: actual.loadReviewConfig,
-    reviewFloorErrors: actual.reviewFloorErrors,
+    applyBaseReviewConfig: actual.applyBaseReviewConfig,
     resolveReviewerModel: jest.fn((config: ReviewConfig, ref: string | undefined) =>
       ref === '@reviewer_pair' ? resolvePairModel(config) : ref === undefined || ref === '@reviewer' ? resolveModel(config, 'reviewer') : ref),
   };
@@ -1878,14 +1878,24 @@ describe('runFullReview orchestration', () => {
       expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('Could not read .manki.yml on the base branch, using the built-in review groups: socket hang up'));
     });
 
-    it('fails the run when the base branch routes a floor class below the floor', async () => {
-      jest.mocked(configModule.loadConfig).mockReturnValue(headConfig);
+    it('uses the built-ins when the base branch routes a floor class below the floor, so the fix PR still runs', async () => {
+      jest.mocked(configModule.loadConfig).mockReturnValue({ ...headConfig, review: { routing: { data_contract: 'pair' } } });
       jest.mocked(ghUtils.readConfigFile).mockResolvedValueOnce('review:\n  routing:\n    data_contract: solo\n');
 
       await callRunFullReview();
 
-      expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(expect.stringContaining('routes the `data_contract` floor class to the `solo` group'));
-      expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+      expect(reviewedConfig().review).toBeUndefined();
+      expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('routes the `data_contract` floor class to the `solo` group'));
+      expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
+    });
+
+    it('keeps the base branch\'s two reviewer models when the PR\'s `models` would put both finders on one', async () => {
+      jest.mocked(configModule.loadConfig).mockReturnValue({ ...headConfig, models: { reviewer: 'gpt-5.5', reviewer_pair: 'gpt-5.5' } });
+      jest.mocked(ghUtils.readConfigFile).mockResolvedValueOnce('models:\n  reviewer: claude-opus-5-5\n  reviewer_pair: gpt-5.5\n');
+
+      await callRunFullReview();
+
+      expect(reviewedConfig().models).toEqual(expect.objectContaining({ reviewer: 'claude-opus-5-5', reviewer_pair: 'gpt-5.5' }));
     });
   });
 
