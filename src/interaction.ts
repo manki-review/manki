@@ -730,8 +730,10 @@ async function handleCheck(
         body: withMarkers(`${blocking.length === 1 ? '1 blocking thread is' : `${blocking.length} blocking threads are`} still open:\n${list}\n\nApproval follows once ${blocking.length === 1 ? 'it is' : 'they are'} resolved.`, BOT_MARKER),
       });
     } else {
-      const reason = await explainUnreviewedHead(octokit, bot, owner, repo, prNumber, config)
-        ?? 'No blocking threads are open, but the approval did not go through. The workflow log has the reason.';
+      const reason = await explainUnreviewedHead(octokit, bot, owner, repo, prNumber, config).catch((error: unknown) => {
+        core.warning(`Could not tell why the approval did not go through: ${error instanceof Error ? error.message : error}`);
+        return undefined;
+      }) ?? 'No blocking threads are open, but the approval did not go through. The workflow log has the reason.';
       await octokit.rest.issues.createComment({
         owner, repo,
         issue_number: prNumber,

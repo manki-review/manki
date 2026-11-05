@@ -1182,6 +1182,16 @@ describe('handleCheck (via handlePRComment)', () => {
     expect(octokit.rest.issues.createComment).toHaveBeenLastCalledWith(
       expect.objectContaining({ body: expect.stringMatching(/^A review of `abc1234` is running or queued\.\n/) }),
     );
+
+    // A lookup that fails still gets the generic reply.
+    (state.checkAndAutoApprove as jest.Mock).mockResolvedValueOnce(false);
+    (state.fetchBotReviewThreads as jest.Mock).mockResolvedValueOnce([]);
+    (state.explainUnreviewedHead as jest.Mock).mockRejectedValueOnce(new Error('API 502'));
+    await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, undefined, undefined, config);
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('API 502'));
+    expect(octokit.rest.issues.createComment).toHaveBeenLastCalledWith(
+      expect.objectContaining({ body: expect.stringContaining('No blocking threads are open, but the approval did not go through') }),
+    );
   });
 
   it('does not post comment when auto-approve succeeds', async () => {
