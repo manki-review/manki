@@ -1,8 +1,9 @@
 import * as core from '@actions/core';
 import { areAllFindingsResolved, fetchBotReviewThreads, checkAndAutoApprove, reopenAuthorResolvedThreads, BOT_MARKER, ReviewThread } from './state';
 import { PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
-import { LAST_PAGE, paginateSinglePage, TEST_BOT } from './test-utils';
-import { formatFindingComment } from './github';
+import { LAST_PAGE, makeRoundContext, paginateSinglePage, TEST_BOT } from './test-utils';
+import { formatContextBlock, formatFindingComment } from './github';
+import { DEFAULT_CONFIG } from './config';
 import { Finding } from './types';
 
 jest.mock('./github', () => ({
@@ -14,6 +15,8 @@ jest.mock('./github', () => ({
   markAutoApproveComplete: jest.fn().mockResolvedValue(undefined),
   markProgressCommentFailed: jest.fn().mockResolvedValue(undefined),
 }));
+
+const AUTO_REVIEW_OFF = { ...DEFAULT_CONFIG, auto_review: false };
 
 const SETTING_REFUSAL = 'GitHub Actions is not permitted to approve pull requests.';
 
@@ -641,7 +644,7 @@ describe('checkAndAutoApprove', () => {
       ],
     });
 
-    const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
+    const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1, AUTO_REVIEW_OFF);
 
     expect(result).toBe(false);
     expect(createReviewMock).not.toHaveBeenCalled();
@@ -665,41 +668,53 @@ describe('checkAndAutoApprove', () => {
       warningSpy.mockRestore();
     });
 
-    it('skips approval, warns, and posts one comment when latest manki review is on a stale SHA', async () => {
-      const createReviewMock = jest.fn().mockResolvedValue({});
-      const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 1 } });
-      const octokit = makeMockOctokit({
-        threads: [
-          makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix --> fix', isResolved: true }),
-        ],
-        prHeadSha: 'head-sha-aaaa',
-        createReviewFn: createReviewMock,
-        createCommentFn: createCommentMock,
-        existingReviews: [
-          { body: '<!-- manki -->', state: 'COMMENTED', commit_id: 'old-sha-bbbb', user: { login: 'manki-review[bot]', type: 'Bot' } },
-        ],
-      });
+    const staleHeadOctokit = (createCommentFn: jest.Mock, roundBodies: string[]) => makeMockOctokit({
+      threads: [
+        makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix --> fix', isResolved: true }),
+      ],
+      prHeadSha: 'head-sha-aaaa',
+      createCommentFn,
+      existingReviews: (roundBodies.length > 0 ? roundBodies : ['']).map(extra => (
+        { body: `<!-- manki -->\n${extra}`, state: 'COMMENTED', commit_id: 'old-sha-bbbb', user: { login: 'manki-review[bot]', type: 'Bot' } }
+      )),
+    });
 
-      const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
+    it.each([
+      ['no config is passed', undefined],
+      ['automatic review is on and not paused', DEFAULT_CONFIG],
+    ])('posts no withheld notice on a stale SHA when %s, since a push review covers the head', async (_label, config) => {
+      const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 1 } });
+      const octokit = staleHeadOctokit(createCommentMock, [formatContextBlock(makeRoundContext(1))]);
+
+      const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1, config);
 
       expect(result).toBe(false);
-      expect(createReviewMock).not.toHaveBeenCalled();
-      expect(warningSpy).toHaveBeenCalledWith(
-        expect.stringContaining('manki has not reviewed HEAD'),
-      );
-      expect(warningSpy).toHaveBeenCalledWith(
-        expect.stringContaining('head=head-sha-aaaa'),
-      );
+      expect(octokit.rest.pulls.createReview).not.toHaveBeenCalled();
+      expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('head=head-sha-aaaa'));
+      expect(createCommentMock).not.toHaveBeenCalled();
+    });
+
+    const notConverging = makeRoundContext(1);
+    notConverging.meta.outcome = 'NOT_CONVERGING';
+    it.each([
+      ['the last round did not converge', DEFAULT_CONFIG, [formatContextBlock(notConverging)], 'The last Manki round found a blocker that came back after a fix. Automatic review is paused. Tick **Force review** on the pause notice'],
+      ['the round cap is reached', DEFAULT_CONFIG, [1, 2, 3, 4, 5].map(n => formatContextBlock(makeRoundContext(n))), 'Manki has completed 5/5 review rounds on this PR. Automatic review is paused.'],
+      ['automatic review is off', AUTO_REVIEW_OFF, [], 'Automatic review is off for this repository (`auto_review: false`). Comment `@manki review` to review it.'],
+    ])('posts one withheld notice with the reason when %s', async (_label, config, roundBodies, reason) => {
+      const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 1 } });
+      const octokit = staleHeadOctokit(createCommentMock, roundBodies);
+
+      const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1, config);
+
+      expect(result).toBe(false);
+      expect(octokit.rest.pulls.createReview).not.toHaveBeenCalled();
       expect(createCommentMock).toHaveBeenCalledTimes(1);
-      expect(createCommentMock).toHaveBeenCalledWith(expect.objectContaining({
-        owner: 'owner',
-        repo: 'repo',
-        issue_number: 1,
-        body: expect.stringContaining('<!-- manki-stale-approve:head-sha-aaaa -->'),
-      }));
-      expect(createCommentMock).toHaveBeenCalledWith(expect.objectContaining({
-        body: expect.stringContaining('@manki review'),
-      }));
+      const { body, issue_number } = createCommentMock.mock.calls[0][0] as { body: string; issue_number: number };
+      expect(issue_number).toBe(1);
+      expect(body).toContain('**Auto-approve withheld** for `head-sh`');
+      expect(body).toContain('Its latest review was on `old-sha`.');
+      expect(body).toContain(reason);
+      expect(body).toContain('<!-- manki-stale-approve:head-sha-aaaa -->');
     });
 
     it('still approves when the latest manki review is on the current HEAD', async () => {
@@ -745,7 +760,7 @@ describe('checkAndAutoApprove', () => {
         ],
       });
 
-      const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
+      const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1, AUTO_REVIEW_OFF);
 
       expect(result).toBe(false);
       expect(createReviewMock).not.toHaveBeenCalled();
@@ -788,7 +803,7 @@ describe('checkAndAutoApprove', () => {
         ],
       });
 
-      const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
+      const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1, AUTO_REVIEW_OFF);
 
       expect(result).toBe(false);
       expect(createReviewMock).not.toHaveBeenCalled();

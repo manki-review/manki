@@ -55,7 +55,8 @@ import {
   postConfigErrorComment,
 } from './github';
 import type { BotIdentity, LinkedIssue, StandingVerdict } from './github';
-import { announceSecurityOverrides, checkAndAutoApprove, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread } from './state';
+import { announceSecurityOverrides, checkAndAutoApprove, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices } from './state';
+import type { PauseState } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -623,6 +624,7 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
             owner, repo, pull_number: prNumber, commit_id: commitSha, event: 'APPROVE',
             body: withMarkers(`✅ **Approved.** No change to this PR since the reviewed commit \`${shortSha}\`. The previous verdict stands.`, PROGRESS_MARKER),
           });
+          await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha);
         }
         core.info(`Round SKIPPED: no change since reviewed commit ${shortSha}, ${standing.verdict} stands`);
         return true;
@@ -726,12 +728,13 @@ async function postUnreviewedRound(
   target: RunTarget, commentId: number, dashboard: DashboardData, diff: ParsedDiff,
   verdict: 'APPROVE' | 'COMMENT', summary: string,
 ): Promise<void> {
-  const { octokit, owner, repo, prNumber, commitSha } = target;
+  const { octokit, bot, owner, repo, prNumber, commitSha } = target;
   await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
   const result = { verdict, summary, findings: [], highlights: [], reviewComplete: true, agentNames: [] as string[] };
   const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
   await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId);
   await updateProgressComment(octokit, owner, repo, commentId, dashboard);
+  await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha);
 }
 
 /**
@@ -812,7 +815,7 @@ async function loadRunMemory(
  * the same pause updates the unticked notice from after `lastRoundAt` instead of adding another.
  */
 async function postPauseNotice(
-  target: RunTarget, commentId: number, capReached: boolean, capRounds: number, maxAutoRounds: number, approvedBefore: boolean, lastRoundAt?: string,
+  target: RunTarget, commentId: number, { capReached, capRounds, reason }: PauseState, maxAutoRounds: number, lastRoundAt?: string,
 ): Promise<void> {
   const { octokit, owner, repo, prNumber } = target;
   core.info(capReached
@@ -824,9 +827,6 @@ async function postPauseNotice(
     core.warning(`Failed to delete progress comment: ${error}`);
   }
   try {
-    const reason = capReached
-      ? `Manki has completed ${capRounds}/${maxAutoRounds} review rounds on this PR${approvedBefore ? ' since its last approval' : ''}.`
-      : 'The last Manki round found a blocker that came back after a fix.';
     const body = withMarkers(
       `${reason} Automatic review is paused. Tick the box to run another round, or comment \`@manki review\`:\n\n- [ ] Force review`,
       PROGRESS_MARKER,
@@ -1328,9 +1328,10 @@ async function runFullReview(
 
     const priorRoundCount = recap.priorRounds.length;
     const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
-    const { capRounds, capReached, paused } = pauseState(recap.priorRounds, config);
+    const pause = pauseState(recap.priorRounds, config);
+    const { capRounds, paused } = pause;
     if (paused && !skipCap) {
-      await postPauseNotice(target, commentId, capReached, capRounds, maxAutoRounds, capRounds < priorRoundCount, recap.priorRounds.at(-1)?.meta.timestamp);
+      await postPauseNotice(target, commentId, pause, maxAutoRounds, recap.priorRounds.at(-1)?.meta.timestamp);
       return;
     }
 
@@ -1390,6 +1391,7 @@ async function runFullReview(
       reviewId = await postRound(run, result, context, reviewTimeMs);
     }
     await completeProgressComment(run, stage);
+    await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha);
     setReviewOutputs(reviewId, context, result);
   } catch (error) {
     cancelDashboardFlush(progress);

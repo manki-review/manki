@@ -1,8 +1,8 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { BotIdentity, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchReviewThreadNodes, FOLLOW_UP_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, postAutoApproveProgressComment } from './github';
-import { isOverrideCandidate, isSecurityThread, mayClearSecurityThread, PreviousFinding, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf } from './recap';
+import { BotIdentity, BOT_MARKER as PROGRESS_MARKER, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchPRComments, fetchReviewThreadNodes, FOLLOW_UP_MARKER, FORCE_CAP_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, postAutoApproveProgressComment } from './github';
+import { fetchPriorRoundContexts, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, PreviousFinding, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf } from './recap';
 import { FindingSeverity, isBlockingSeverity, migrateLegacySeverity, ReviewConfig, RoundContext, SecurityOverride, SEVERITY_TOKEN_PATTERN } from './types';
 import { withMarkers } from './utils';
 
@@ -187,19 +187,38 @@ function roundsSinceApproval(priorRounds: RoundContext[]): number {
   return count;
 }
 
+interface PauseState {
+  capRounds: number;
+  capReached: boolean;
+  paused: boolean;
+  /** Why automatic review is paused, as a sentence for the PR. Set only while `paused`. */
+  reason?: string;
+}
+
 /** Returns the rounds since the last approval, whether they reach the round cap, and whether automatic review is paused by it or by a last round that ended `NOT_CONVERGING`. */
-function pauseState(priorRounds: RoundContext[], config: ReviewConfig): { capRounds: number; capReached: boolean; paused: boolean } {
+function pauseState(priorRounds: RoundContext[], config: ReviewConfig): PauseState {
   const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
   const capRounds = roundsSinceApproval(priorRounds);
   const capReached = maxAutoRounds > 0 && capRounds >= maxAutoRounds;
-  return { capRounds, capReached, paused: capReached || priorRounds.at(-1)?.meta.outcome === 'NOT_CONVERGING' };
+  const reason = capReached
+    ? `Manki has completed ${capRounds}/${maxAutoRounds} review rounds on this PR${capRounds < priorRounds.length ? ' since its last approval' : ''}.`
+    : priorRounds.at(-1)?.meta.outcome === 'NOT_CONVERGING' ? 'The last Manki round found a blocker that came back after a fix.' : undefined;
+  return { capRounds, capReached, paused: reason !== undefined, ...(reason && { reason }) };
+}
+
+/** Returns why no automatic review will run on a new head commit, with how to start one, or `undefined` when a push review will run. */
+async function autoReviewHalt(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, config: ReviewConfig): Promise<string | undefined> {
+  if (!config.auto_review) {
+    return 'Automatic review is off for this repository (`auto_review: false`). Comment `@manki review` to review it.';
+  }
+  const { reason } = pauseState(await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber), config);
+  return reason && `${reason} Automatic review is paused. Tick **Force review** on the pause notice, or comment \`@manki review\`, to review it.`;
 }
 
 /**
- * Post a one-time explanatory comment when auto-approve is withheld because
- * manki has not actually reviewed the current HEAD. The comment is idempotent
- * per HEAD SHA via a `manki-stale-approve:<sha>` marker so repeated invocations
- * on the same HEAD do not spam the PR.
+ * Posts a one-time comment that auto-approve is withheld because Manki has not reviewed `headSha`,
+ * and no automatic review will. `halt` says why and how to start one.
+ * The `manki-stale-approve:<sha>` marker keeps it to one comment per head commit.
  */
 async function postStaleApproveSkippedComment(
   octokit: Octokit,
@@ -209,6 +228,7 @@ async function postStaleApproveSkippedComment(
   prNumber: number,
   headSha: string,
   latestReviewSha: string,
+  halt: string,
 ): Promise<void> {
   const marker = staleApproveMarker(headSha);
   try {
@@ -225,13 +245,40 @@ async function postStaleApproveSkippedComment(
     const shortHead = headSha.slice(0, 7);
     const shortLatest = latestReviewSha.slice(0, 7);
     const body = withMarkers([
-      `**Auto-approve withheld** for \`${shortHead}\` — all blocking review threads are resolved on the current HEAD, but manki has not reviewed this commit (latest manki review was on \`${shortLatest}\`).`,
+      `**Auto-approve withheld** for \`${shortHead}\`: all blocking review threads are resolved, but Manki has not reviewed this commit. Its latest review was on \`${shortLatest}\`.`,
       '',
-      'To approve, request a fresh review by commenting `@manki review` or by ticking the **Force review** checkbox on the latest progress comment.',
+      halt,
     ].join('\n'), marker);
     await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
   } catch (error) {
     core.warning(`Failed to post stale-approve-skipped comment: ${error instanceof Error ? error.message : error}`);
+  }
+}
+
+/**
+ * Deletes every auto-approve withheld notice and marks each open pause notice as resumed on `headSha`.
+ * Call it once a review posts its verdict on `headSha`, since neither notice applies after that.
+ */
+async function retireStaleNotices(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string): Promise<void> {
+  let comments: Awaited<ReturnType<typeof fetchPRComments>>;
+  try {
+    comments = await fetchPRComments(octokit, owner, repo, prNumber);
+  } catch (error) {
+    core.warning(`Failed to look up stale notices: ${error instanceof Error ? error.message : error}`);
+    return;
+  }
+  for (const c of comments) {
+    if (!isBotLogin(bot, c.user?.login) || !c.body) continue;
+    try {
+      if (c.body.includes(STALE_APPROVE_MARKER_PREFIX)) {
+        await octokit.rest.issues.deleteComment({ owner, repo, comment_id: c.id });
+      } else if (c.body.includes(FORCE_CAP_MARKER) && /- \[[ x]\] Force review/.test(c.body)) {
+        const body = withMarkers(`Automatic review was paused. Review resumed on \`${headSha.slice(0, 7)}\`.`, PROGRESS_MARKER, FORCE_CAP_MARKER);
+        await octokit.rest.issues.updateComment({ owner, repo, comment_id: c.id, body });
+      }
+    } catch (error) {
+      core.warning(`Failed to retire stale notice ${c.id}: ${error instanceof Error ? error.message : error}`);
+    }
   }
 }
 
@@ -312,7 +359,13 @@ async function checkAndAutoApprove(
     core.warning(
       `Skipping auto-approve — manki has not reviewed HEAD (head=${pr.head.sha}, stale=${staleSha})`,
     );
-    await postStaleApproveSkippedComment(octokit, bot, owner, repo, prNumber, pr.head.sha, staleSha);
+    // A push review takes about a minute to post its progress comment, so the lack of one does not mean no review is coming.
+    const halt = config && await autoReviewHalt(octokit, bot, owner, repo, prNumber, config);
+    if (halt) {
+      await postStaleApproveSkippedComment(octokit, bot, owner, repo, prNumber, pr.head.sha, staleSha, halt);
+    } else {
+      core.info(`A push review covers ${pr.head.sha.slice(0, 7)}, so no withheld notice is posted`);
+    }
     return false;
   }
 
@@ -369,4 +422,4 @@ async function checkAndAutoApprove(
   return true;
 }
 
-export { ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, fetchBotReviewThreads, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
+export { PauseState, ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, fetchBotReviewThreads, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
