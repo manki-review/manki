@@ -566,19 +566,29 @@ export interface PrContext {
   title: string;
   body: string;
   baseBranch: string;
-  /** CI and code-scanning results on lines in the diff, for the PR head commit. */
+  /** CI, code-scanning and analyzer results on lines in the diff, for the PR head commit. */
   staticSignals?: StaticSignal[];
 }
+
+/** Analyzers Manki runs itself on the PR's files. */
+export const ANALYZERS = ['ast_grep'] as const;
+
+export type AnalyzerName = typeof ANALYZERS[number];
 
 export interface StaticAnalysisConfig {
   checks: boolean;
   code_scanning: boolean;
   dependency_review: boolean;
+  /** Check runs to wait for on the PR head before reading the results. */
+  wait_for_checks: string[];
+  wait_timeout_seconds: number;
+  /** `all` turns every analyzer on. */
+  analyzers: 'all' | Partial<Record<AnalyzerName, boolean>>;
 }
 
-export type StaticSignalSource = 'checks' | 'code_scanning' | 'dependency_review';
+export type StaticSignalSource = 'checks' | 'code_scanning' | 'dependency_review' | AnalyzerName;
 
-/** One result a CI tool reported on the PR head commit, normalized across sources. */
+/** One result a CI tool or a Manki analyzer reported on the PR head commit, normalized across sources. */
 export interface StaticSignal {
   tool: string;
   ruleId: string;
@@ -774,6 +784,24 @@ export interface RoundContext {
    * so legacy context blocks parse cleanly.
    */
   recap?: RoundRecap;
+  staticAnalysis?: RoundStaticAnalysis;
+}
+
+/** What the static analysis stage did besides reading results. */
+export interface RoundStaticAnalysis {
+  /** Each enabled analyzer and how it ended. */
+  analyzers?: RoundAnalyzerRun[];
+  /** Check runs from `wait_for_checks` that had not finished when the wait timed out. */
+  checksStillPending?: string[];
+}
+
+export interface RoundAnalyzerRun {
+  analyzer: AnalyzerName;
+  status: 'ran' | 'skipped';
+  /** Results on lines in the diff. */
+  results?: number;
+  /** Why the analyzer was skipped. */
+  reason?: string;
 }
 
 export interface RoundRouting extends TeamRouting {

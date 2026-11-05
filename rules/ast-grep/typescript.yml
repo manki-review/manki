@@ -1,0 +1,92 @@
+# Manki's ast-grep rules for JavaScript and TypeScript. They also run on .js, .jsx, .mjs and .cjs files.
+id: security-eval-injection
+language: TypeScript
+severity: warning
+message: Runs a string as code. This is code injection if any part of the string comes from input.
+rule:
+  any:
+    - pattern: eval($$$ARGS)
+    - pattern: new Function($$$ARGS)
+---
+id: security-shell-injection
+language: TypeScript
+severity: warning
+message: Builds a shell command from interpolated values. Pass arguments as an array to `execFile` or `spawn` instead.
+rule:
+  any:
+    - pattern: exec($CMD $$$REST)
+    - pattern: execSync($CMD $$$REST)
+    - pattern: $CP.exec($CMD $$$REST)
+    - pattern: $CP.execSync($CMD $$$REST)
+constraints:
+  CMD:
+    any:
+      - kind: binary_expression
+      - all:
+          - kind: template_string
+          - has:
+              kind: template_substitution
+---
+id: security-xss-html-sink
+language: TypeScript
+severity: warning
+message: Writes a non-literal value as HTML. This is cross-site scripting (XSS) if the value holds input.
+rule:
+  any:
+    - pattern: $EL.innerHTML = $VALUE
+    - pattern: $EL.outerHTML = $VALUE
+    - pattern: $EL.insertAdjacentHTML($POS, $VALUE)
+    - pattern: document.write($VALUE)
+constraints:
+  VALUE:
+    not:
+      kind: string
+---
+id: security-tls-verification-disabled
+language: TypeScript
+severity: warning
+message: Turns off TLS certificate checks, so any server can impersonate the real one.
+rule:
+  any:
+    - pattern:
+        context: '({ rejectUnauthorized: false })'
+        selector: pair
+    - pattern: process.env.NODE_TLS_REJECT_UNAUTHORIZED = $VALUE
+---
+id: async-foreach-callback
+language: TypeScript
+severity: warning
+message: '`forEach` does not wait for an async callback, so its promises run unawaited and their errors are lost.'
+rule:
+  any:
+    - pattern: $LIST.forEach(async ($$$PARAMS) => $BODY)
+    - pattern: $LIST.forEach(async $PARAM => $BODY)
+    - pattern: $LIST.forEach(async function ($$$PARAMS) { $$$BODY })
+---
+id: async-promise-executor
+language: TypeScript
+severity: warning
+message: An async `Promise` executor loses any error it throws, and the promise never settles.
+rule:
+  any:
+    - pattern: new Promise(async ($$$PARAMS) => $BODY)
+    - pattern: new Promise(async $PARAM => $BODY)
+    - pattern: new Promise(async function ($$$PARAMS) { $$$BODY })
+---
+id: nan-comparison
+language: TypeScript
+severity: error
+message: A comparison with `NaN` is always false, or always true for `!==`. Use `Number.isNaN`.
+rule:
+  any:
+    - pattern: $X === NaN
+    - pattern: $X == NaN
+    - pattern: $X !== NaN
+    - pattern: $X != NaN
+---
+id: self-assignment
+language: TypeScript
+severity: warning
+message: Assigns a value to itself, which does nothing. The right side is probably a different variable.
+rule:
+  pattern: $X = $X

@@ -3,9 +3,10 @@ import * as fs from 'fs';
 import { parse as parseYaml } from 'yaml';
 
 import { BUILT_IN_CLASSES, BUILT_IN_GROUPS, PATH_ALIASES, floorShortfall, modelIdentity, resolveRouting, routeClass } from './routing';
-import { PairedPin, ReviewConfig, ReviewRoutingConfig, StaticAnalysisConfig } from './types';
+import { ANALYZERS, PairedPin, ReviewConfig, ReviewRoutingConfig, StaticAnalysisConfig } from './types';
 
 export const MAX_LOCK_TTL_SECONDS = 3600;
+const MAX_WAIT_TIMEOUT_SECONDS = 3600;
 
 const HAIKU_MODEL = 'claude-haiku-5-5';
 const SONNET_MODEL = 'claude-sonnet-5-5';
@@ -32,6 +33,9 @@ export const DEFAULT_CONFIG: ReviewConfig = {
     checks: true,
     code_scanning: true,
     dependency_review: true,
+    wait_for_checks: [],
+    wait_timeout_seconds: 300,
+    analyzers: {},
   },
   memory: {
     enabled: false,
@@ -223,6 +227,28 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
       for (const key of ['checks', 'code_scanning', 'dependency_review']) {
         if (key in staticAnalysis && typeof staticAnalysis[key] !== 'boolean') {
           errors.push(`\`static_analysis.${key}\` must be a boolean`);
+        }
+      }
+      const waitFor = staticAnalysis.wait_for_checks;
+      if (waitFor !== undefined && (!Array.isArray(waitFor) || !waitFor.every(name => typeof name === 'string' && name.trim() !== ''))) {
+        errors.push('`static_analysis.wait_for_checks` must be a list of check run names');
+      }
+      const timeout = staticAnalysis.wait_timeout_seconds;
+      if (timeout !== undefined && (typeof timeout !== 'number' || !Number.isInteger(timeout) || timeout < 1 || timeout > MAX_WAIT_TIMEOUT_SECONDS)) {
+        errors.push(`\`static_analysis.wait_timeout_seconds\` must be an integer from 1 to ${MAX_WAIT_TIMEOUT_SECONDS}`);
+      }
+      const analyzers = staticAnalysis.analyzers;
+      if (analyzers !== undefined && analyzers !== 'all') {
+        if (!analyzers || typeof analyzers !== 'object' || Array.isArray(analyzers)) {
+          errors.push('`static_analysis.analyzers` must be `all` or an object');
+        } else {
+          for (const [key, value] of Object.entries(analyzers)) {
+            if (!(ANALYZERS as readonly string[]).includes(key)) {
+              errors.push(`\`static_analysis.analyzers.${key}\` is not a known analyzer. Known analyzers: ${ANALYZERS.join(', ')}`);
+            } else if (typeof value !== 'boolean') {
+              errors.push(`\`static_analysis.analyzers.${key}\` must be a boolean`);
+            }
+          }
         }
       }
     }

@@ -3937,8 +3937,9 @@ describe('runReview post-judge suppression', () => {
     expect(result.findings).toHaveLength(1);
   });
 
-  it('drops a suggestion or nitpick a CI tool already reports on the same line, and keeps warnings, blockers and security findings', async () => {
+  it('drops a suggestion or nitpick a CI tool already reports on the same line, and keeps warnings, blockers, security findings and those an analyzer reports', async () => {
     const lint = { tool: 'lint', ruleId: 'no-unused-vars', severity: 'error' as const, file: 'src/a.ts', line: 10, message: 'x is unused', source: 'checks' as const };
+    const astGrep = { ...lint, tool: 'ast-grep', ruleId: 'self-assignment', severity: 'warning' as const, line: 11, message: 'Assigns a value to itself', source: 'ast_grep' as const };
     mockedRunJudgeAgent.mockResolvedValue({
       findings: [
         makeFinding({ severity: 'suggestion', title: 'Unused variable' }),
@@ -3957,7 +3958,7 @@ describe('runReview post-judge suppression', () => {
         diff: makeDiff({ totalAdditions: 5, totalDeletions: 0 }),
         rawDiff: 'raw',
         repoContext: 'ctx',
-        prContext: { title: 'PR', body: '', baseBranch: 'main', staticSignals: [lint] },
+        prContext: { title: 'PR', body: '', baseBranch: 'main', staticSignals: [lint, astGrep] },
       },
     );
     expect(result.findings.map(f => f.title)).toEqual(['Off-by-one in loop', 'Null dereference', 'Token in log', 'Rename']);
@@ -3966,8 +3967,8 @@ describe('runReview post-judge suppression', () => {
       { droppedTitle: 'Unused import', file: 'src/a.ts', line: 10, tool: 'lint', ruleId: 'no-unused-vars' },
     ]);
     const reviewerMessage = jest.mocked(clients.reviewer.sendMessage).mock.calls[0][1];
-    expect(reviewerMessage).toContain('## CI Results (untrusted tool output)');
-    expect(reviewerMessage).toContain('```\nsrc/a.ts:10 error lint no-unused-vars: x is unused\n```');
+    expect(reviewerMessage).toContain('## Tool Results (untrusted tool output)');
+    expect(reviewerMessage).toContain('```\nsrc/a.ts:10 error lint no-unused-vars: x is unused\nsrc/a.ts:11 warning ast-grep self-assignment: Assigns a value to itself\n```');
   });
 
   it('sends tool alerts and checked reviewer claims to the judge, and only the judge drops either', async () => {

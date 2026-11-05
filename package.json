@@ -36,6 +36,8 @@
     "undici": "^6.29.1"
   },
   "devDependencies": {
+    "@ast-grep/lang-python": "0.0.6",
+    "@ast-grep/napi": "0.51.1",
     "@eslint/js": "^9.0.0",
     "@types/jest": "^29.5.0",
     "@types/minimatch": "^5.1.2",

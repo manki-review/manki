@@ -4,7 +4,7 @@ import { collectResolvedThreadIds, fingerprintFinding, RecapState } from './reca
 import { MANKI_VERSION } from './github';
 import { parseModelSpec } from './providers';
 import { routingDigest } from './routing';
-import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OpenThread, OWN_PROPOSAL_TAG, ParsedDiff, RATCHET_SUPPRESSED_TAG, ReclassifiedPrior, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ReviewModels, ReviewResult, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundRecap, RoundRouting, RoundTrigger, RoundUsage, RoundUsageStage, SECURITY_TAG, SEVERITY_ORDER, ThreadResolutionOverrides } from './types';
+import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OpenThread, OWN_PROPOSAL_TAG, ParsedDiff, RATCHET_SUPPRESSED_TAG, ReclassifiedPrior, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ReviewModels, ReviewResult, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundRecap, RoundRouting, RoundStaticAnalysis, RoundTrigger, RoundUsage, RoundUsageStage, SECURITY_TAG, SEVERITY_ORDER, ThreadResolutionOverrides } from './types';
 
 const ALLOWED_FINGERPRINT_TAGS = new Set<string>([
   DEFENSIVE_HARDENING_TAG,
@@ -36,6 +36,7 @@ export interface RoundRecordInput {
   interRoundDiff?: string;
   memoryLoadStatus: MemoryLoadStatus;
   memoryLoadError?: string;
+  staticAnalysis?: RoundStaticAnalysis;
 }
 
 /** Durations `buildRoundContext` records that only the review stage measures. */
@@ -62,7 +63,7 @@ export function buildRoundRecap(recap: {
 export function buildRoundContext(input: RoundRecordInput, result: ReviewResult, durations: RoundDurations): RoundContext {
   const {
     prNumber, commitSha, trigger, options, config, models, plannerEnabled, recap,
-    priorRoundCount, maxAutoRounds, diff, excludedFiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError,
+    priorRoundCount, maxAutoRounds, diff, excludedFiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError, staticAnalysis,
   } = input;
   const { skipCap, forceReview, bypassHint } = options;
   const { plannerDurationMs, judgeDurationMs } = durations;
@@ -380,5 +381,6 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     usage,
     verdict: result.verdict,
     recap: buildRoundRecap(recap),
+    ...(staticAnalysis && { staticAnalysis }),
   };
 }
