@@ -80,13 +80,17 @@ jest.mock('./config', () => {
     reviewers: [],
     memory: { ...(config.memory as Record<string, unknown> ?? {}), repo: '' },
   }));
+  const resolveModel = jest.fn().mockReturnValue('claude-sonnet-4-20250514');
+  const resolvePairModel = jest.fn().mockImplementation(actual.resolvePairModel);
   return {
     DEFAULT_CONFIG: { instructions: '', reviewers: [], memory: { enabled: false, repo: '' } },
     loadConfig,
     loadConfigFromFile,
     sanitizeForkConfig,
-    resolveModel: jest.fn().mockReturnValue('claude-sonnet-4-20250514'),
-    resolvePairModel: jest.fn().mockImplementation(actual.resolvePairModel),
+    resolveModel,
+    resolvePairModel,
+    resolveReviewerModel: jest.fn((config: ReviewConfig, ref: string | undefined) =>
+      ref === '@reviewer_pair' ? resolvePairModel(config) : ref === undefined || ref === '@reviewer' ? resolveModel(config, 'reviewer') : ref),
   };
 });
 
@@ -142,7 +146,8 @@ jest.mock('./review', () => ({
     reviewComplete: true,
     agentNames: ['general'],
   }),
-  selectTeam: jest.fn().mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, pair: false, model: 'claude-sonnet-5-5', effort: 'high' }], triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false }),
+  teamModels: jest.requireActual('./review').teamModels,
+  selectTeam: jest.fn().mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, index: 0, model: 'claude-sonnet-5-5', effort: 'high' }], group: 'solo', triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false }),
 }));
 
 jest.mock('./github', () => {
@@ -1796,7 +1801,7 @@ describe('runFullReview orchestration', () => {
       findings: [], highlights: [], reviewComplete: true,
       agentNames: ['general'],
     });
-    jest.mocked(reviewModule.selectTeam).mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, pair: false, model: 'claude-sonnet-5-5', effort: 'high' }], triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false });
+    jest.mocked(reviewModule.selectTeam).mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, index: 0, model: 'claude-sonnet-5-5', effort: 'high' }], group: 'solo', triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false });
     jest.mocked(ghUtils.postProgressComment).mockResolvedValue(1);
     jest.mocked(ghUtils.postReview).mockResolvedValue(123);
     jest.mocked(ghUtils.fetchPRDiff).mockResolvedValue('');
@@ -5635,7 +5640,7 @@ describe('runFullReview orchestration', () => {
       expect(jest.mocked(core.info)).toHaveBeenCalledWith(expect.stringContaining('reviewer pair: claude-opus-5-5'));
     });
 
-    it('builds the pair client from `resolvePairModel` and fails the run when it cannot be built', async () => {
+    it('builds a client for the pair model from `resolvePairModel` and fails the run when it cannot be built', async () => {
       const pairClient = { sendMessage: jest.fn() };
       jest.mocked(createLLMClient).mockImplementation((_p: unknown, model: unknown) =>
         model === 'claude-opus-5-5' ? pairClient : { sendMessage: jest.fn() },
@@ -5652,8 +5657,8 @@ describe('runFullReview orchestration', () => {
 
       await callRunFullReview();
 
-      const clientsArg = jest.mocked(reviewModule.runReview).mock.calls[0][0] as { reviewerPair: unknown };
-      expect(clientsArg.reviewerPair).toBe(pairClient);
+      const clientsArg = jest.mocked(reviewModule.runReview).mock.calls[0][0];
+      expect(clientsArg.reviewerByModel?.get('claude-opus-5-5')).toBe(pairClient);
 
       jest.mocked(reviewModule.runReview).mockClear();
       jest.mocked(configModule.loadConfig).mockReturnValue({
@@ -6470,7 +6475,7 @@ describe('runFullReview concurrent-submission lock', () => {
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'APPROVE', outcome: 'READY' as const, summary: '', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
     });
-    jest.mocked(reviewModule.selectTeam).mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, pair: false, model: 'claude-sonnet-5-5', effort: 'high' }], triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false });
+    jest.mocked(reviewModule.selectTeam).mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, index: 0, model: 'claude-sonnet-5-5', effort: 'high' }], group: 'solo', triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false });
     jest.mocked(ghUtils.postProgressComment).mockResolvedValue(1);
     jest.mocked(ghUtils.findInProgressLock).mockReturnValue(null);
     jest.mocked(ghUtils.isLockExpired).mockReturnValue(false);

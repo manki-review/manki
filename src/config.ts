@@ -461,6 +461,13 @@ export function resolvePairModel(config: ReviewConfig): string {
   return reviewer;
 }
 
+/** Returns the model a group reviewer runs on. `@reviewer` and `@reviewer_pair` resolve through `models`, and unset means `@reviewer`. */
+export function resolveReviewerModel(config: ReviewConfig, ref: string | undefined): string {
+  if (ref === undefined || ref === '@reviewer') return resolveModel(config, 'reviewer');
+  if (ref === '@reviewer_pair') return resolvePairModel(config);
+  return ref;
+}
+
 export function loadConfig(yamlContent: string | undefined, source?: string): ReviewConfig {
   if (!yamlContent) {
     core.info('No config content provided, using defaults');

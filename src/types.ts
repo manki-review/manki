@@ -332,10 +332,38 @@ export interface Finder {
   /** Label on its findings and metrics. */
   name: string;
   prompt: ReviewerAgent;
-  /** Runs on the pair model instead of `models.reviewer`. */
-  pair: boolean;
+  /** Position in its review group. The second reader, index 1, is the pair finder. */
+  index: number;
   model: string;
   effort: EffortLevel;
+}
+
+/** One reader in a review group. `auto` effort is `high` when the triage says `subtle`, else `medium`. */
+export interface GroupReviewer {
+  /** A model id, `provider/model`, `@reviewer` or `@reviewer_pair`. Unset means `@reviewer`. */
+  model?: string;
+  effort: EffortLevel | 'auto';
+  role?: 'finder' | 'verifier';
+}
+
+export interface ReviewGroup {
+  reviewers: GroupReviewer[];
+}
+
+/** Conditions a PR must meet to fall in a review class. Every condition set must hold. */
+export interface ReviewClassMatch {
+  /** Globs or `@` path aliases, one of which some changed file must match. */
+  paths_any?: string[];
+  /** Answers the triage, after `planner.paired` and the floor and file rules, must give. */
+  triage?: Partial<Triage>;
+}
+
+export interface ReviewClass {
+  /** The matching class with the highest rank decides the group. */
+  rank: number;
+  /** A floor class always gets at least two readers on two models. */
+  floor?: boolean;
+  match: ReviewClassMatch;
 }
 
 /**
@@ -378,12 +406,16 @@ export type PairedPin = 'auto' | 'always' | 'never';
 
 export interface TeamRoster {
   finders: Finder[];
-  /** Triage after `planner.paired` and the sensitive-path rule. */
+  /** Review class the PR fell in, or unset when none matched and the default group ran. */
+  reviewClass?: string;
+  /** Review group the finders came from. */
+  group: string;
+  /** Triage after `planner.paired` and the floor and file rules. */
   triage: Triage;
   sensitivePaths: boolean;
   /** Whether the diff touches CI, automation or a dependency or toolchain manifest. */
   ciOrDependencyPaths: boolean;
-  /** The planner answered `trivial: true`, but a changed file is not one that could be trivial or the path is security sensitive. */
+  /** The planner answered `trivial: true`, but a changed file is not one that could be trivial or a floor class matched. */
   trivialOverridden: boolean;
 }
 
@@ -408,7 +440,7 @@ export interface ReviewConfig {
   };
   planner?: {
     enabled?: boolean;
-    /** Pins the planner's `paired` answer. A security-sensitive path still gets a pair. */
+    /** Pins the planner's `paired` answer. A floor class path, such as a security-sensitive one, still gets a pair. */
     paired?: PairedPin;
   };
   /** Which CI results reviewers read as evidence. Always read from the base branch, so a PR cannot turn it off. */

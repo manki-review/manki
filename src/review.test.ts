@@ -1456,17 +1456,76 @@ describe('selectTeam', () => {
     const hunk = (content: string) => [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, content }];
     for (const files of [
       [{ path: 'README.md', changeType: 'modified' as const, hunks: hunk('+text') }],
-      [{ path: 'src/a.test.ts', changeType: 'modified' as const, hunks: hunk('+test') }, { path: 'src/__snapshots__/a.test.ts.snap', changeType: 'modified' as const, hunks: hunk('+out') }],
+      [{ path: 'src/__snapshots__/a.test.ts.snap', changeType: 'modified' as const, hunks: hunk('+out') }],
       [{ path: 'docs/guide.md', changeType: 'modified' as const, hunks: hunk('+text') }, { path: 'src/old.ts', changeType: 'deleted' as const, hunks: hunk('-code') }],
       [{ path: 'src/new-name.ts', oldPath: 'src/old-name.ts', changeType: 'renamed' as const, hunks: [] }],
     ]) {
       const team = selectTeam(makeDiff({ files }), makeConfig(), trivial);
       expect(team.finders).toEqual([
-        { name: TRIVIAL_VERIFIER_AGENT.name, prompt: TRIVIAL_VERIFIER_AGENT, pair: false, model: 'claude-sonnet-5-5', effort: 'medium' },
+        { name: TRIVIAL_VERIFIER_AGENT.name, prompt: TRIVIAL_VERIFIER_AGENT, index: 0, model: 'claude-sonnet-5-5', effort: 'medium' },
       ]);
+      expect([team.reviewClass, team.group]).toEqual(['docs', 'trivial']);
       expect(team.trivialOverridden).toBe(false);
       expect(team.ciOrDependencyPaths).toBe(false);
     }
+  });
+
+  describe('built-in routing', () => {
+    const S = 'claude-sonnet-5-5';
+    const O = 'claude-opus-5-5';
+    const verifier = `${TRIVIAL_VERIFIER_AGENT.name}@medium`;
+    const file = (path: string, changeType: DiffFile['changeType'] = 'modified', content = '+change'): DiffFile => ({
+      path, changeType, hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, content }],
+    });
+    const code = [file('src/format.ts')];
+    const docs = [file('README.md')];
+    const tests = [file('src/format.test.ts'), file('src/__tests__/util.ts')];
+    const t = (trivial: boolean, subtle: boolean, paired: boolean) => ({ trivial, subtle, paired });
+    type Row = [string, DiffFile[], ReturnType<typeof t> | undefined, 'auto' | 'always' | 'never', string, string[]];
+    const run = ([, files, triage, paired]: Row) => selectTeam(makeDiff({ files }), makeConfig({ planner: { enabled: true, paired } }), triage);
+    const readers = (team: ReturnType<typeof selectTeam>) => team.finders.map(f => `${f.name}@${f.effort}`);
+
+    // Each row gives the same finders as the selection before review classes existed.
+    it.each<Row>([
+      ['code, nothing set', code, t(false, false, false), 'auto', 'internal', [`Finder (${S})@medium`]],
+      ['code, subtle', code, t(false, true, false), 'auto', 'internal', [`Finder (${S})@high`]],
+      ['code, paired', code, t(false, false, true), 'auto', 'behavior', [`Finder (${S})@medium`, `Pair finder (${O})@medium`]],
+      ['code, subtle and paired', code, t(false, true, true), 'auto', 'behavior', [`Finder (${S})@high`, `Pair finder (${O})@high`]],
+      ['code the planner called trivial', code, t(true, false, false), 'auto', 'internal', [`Finder (${S})@medium`]],
+      ['code the planner called trivial and paired', code, t(true, true, true), 'auto', 'behavior', [`Finder (${S})@high`, `Pair finder (${O})@high`]],
+      ['no triage', code, undefined, 'auto', 'behavior', [`Finder (${S})@high`, `Pair finder (${O})@high`]],
+      ['docs called trivial and paired', docs, t(true, true, true), 'auto', 'docs', [verifier]],
+      ['docs not called trivial', docs, t(false, false, false), 'auto', 'internal', [`Finder (${S})@medium`]],
+      ['docs and a deletion', [file('docs/a.md'), file('src/old.ts', 'deleted', '-code')], t(true, false, false), 'auto', 'docs', [verifier]],
+      ['an unchanged rename', [{ path: 'src/b.ts', oldPath: 'src/a.ts', changeType: 'renamed', hunks: [] }], t(true, false, false), 'auto', 'docs', [verifier]],
+      ['a rename with edits', [file('src/b.ts', 'renamed')], t(true, false, false), 'auto', 'internal', [`Finder (${S})@medium`]],
+      ['code pinned never', code, t(false, true, true), 'never', 'internal', [`Finder (${S})@high`]],
+      ['code pinned always', code, t(false, false, false), 'always', 'behavior', [`Finder (${S})@medium`, `Pair finder (${O})@medium`]],
+      ['docs pinned always', docs, t(true, false, false), 'always', 'docs', [verifier]],
+      ['a security path called trivial, pinned never', [file('src/auth/session.ts')], t(true, false, false), 'never', 'security', [`Finder (${S})@medium`, `Pair finder (${O})@medium`]],
+      ['docs and a security path', [...docs, file('src/token.ts')], t(true, false, false), 'auto', 'security', [`Finder (${S})@medium`, `Pair finder (${O})@medium`]],
+      ['a workflow called trivial, pinned never', [file('.github/workflows/ci.yml')], t(true, false, false), 'never', 'supply_chain', [`Finder (${S})@medium`, `Pair finder (${O})@medium`]],
+    ])('routes %s as before', (...row) => {
+      const team = run(row);
+      expect([team.reviewClass, readers(team)]).toEqual([row[4], row[5]]);
+    });
+
+    it('gives a tests-only change one full finder, where the trivial verifier read it before', () => {
+      for (const files of [tests, [...tests, ...docs], [file('src/__snapshots__/a.snap'), file('tests/fixture.json')]]) {
+        for (const triage of [t(true, false, false), t(false, false, false)]) {
+          const team = run(['', files, triage, 'auto', '', []]);
+          expect([team.reviewClass, team.group, readers(team)]).toEqual(['internal', 'solo', [`Finder (${S})@medium`]]);
+        }
+      }
+    });
+
+    it('gives a data contract change two finders as a floor class, where the triage decided before', () => {
+      for (const path of ['db/migrations/0001_init.ts', 'schema/users.sql', 'proto/api.proto', 'src/schema.graphql', 'openapi.yaml']) {
+        const team = run(['', [file(path)], t(true, false, false), 'never', '', []]);
+        expect([path, team.reviewClass, team.group, readers(team)]).toEqual([path, 'data_contract', 'pair', [`Finder (${S})@medium`, `Pair finder (${O})@medium`]]);
+        expect(team.trivialOverridden).toBe(true);
+      }
+    });
   });
 
   it('gives a CI, automation or dependency change two finders, even when the planner calls it trivial and the pin says never', () => {
@@ -1498,14 +1557,14 @@ describe('selectTeam', () => {
   it('runs one finder whose effort follows `subtle` when the change is not paired', () => {
     for (const [subtle, effort] of [[true, 'high'], [false, 'medium']] as const) {
       const team = selectTeam(plainDiff, makeConfig(), { trivial: false, subtle, paired: false });
-      expect(team.finders).toEqual([expect.objectContaining({ name: 'Finder (claude-sonnet-5-5)', pair: false, effort })]);
+      expect(team.finders).toEqual([expect.objectContaining({ name: 'Finder (claude-sonnet-5-5)', index: 0, effort })]);
     }
   });
 
   it('adds a second finder on the other Claude tier with the same prompt when paired', () => {
     const team = selectTeam(plainDiff, makeConfig(), { trivial: false, subtle: false, paired: true });
     expect(names(team)).toEqual(['Finder (claude-sonnet-5-5)', 'Pair finder (claude-opus-5-5)']);
-    expect(team.finders[1]).toEqual(expect.objectContaining({ pair: true, model: 'claude-opus-5-5', effort: 'medium' }));
+    expect(team.finders[1]).toEqual(expect.objectContaining({ index: 1, model: 'claude-opus-5-5', effort: 'medium' }));
     expect(team.finders[1].prompt).toBe(team.finders[0].prompt);
 
     const configured = selectTeam(plainDiff, makeConfig({ models: { reviewer: 'claude-opus-5-5', reviewer_pair: 'gpt-5.5' } }), { trivial: false, subtle: true, paired: true });
@@ -2523,9 +2582,9 @@ describe('runReview', () => {
       reviewer: {
         sendMessage: jest.fn().mockResolvedValue({ content: findingJson }),
       } as unknown as import('./providers').LLMClient,
-      reviewerPair: {
+      reviewerByModel: new Map([['claude-opus-5-5', {
         sendMessage: jest.fn().mockRejectedValue(new Error('API error')),
-      } as unknown as import('./providers').LLMClient,
+      } as unknown as import('./providers').LLMClient]]),
       judge: {
         sendMessage: jest.fn().mockResolvedValue({ content: READY_VERDICT }),
       } as unknown as import('./providers').LLMClient,
@@ -3491,7 +3550,7 @@ describe('runReview', () => {
   function pairedClients(primary: jest.Mock, pair: jest.Mock): ReviewClients {
     return {
       reviewer: { sendMessage: primary } as unknown as import('./providers').LLMClient,
-      reviewerPair: { sendMessage: pair } as unknown as import('./providers').LLMClient,
+      reviewerByModel: new Map([['claude-opus-5-5', { sendMessage: pair } as unknown as import('./providers').LLMClient]]),
       judge: {
         sendMessage: jest.fn().mockResolvedValue({ content: READY_VERDICT }),
       } as unknown as import('./providers').LLMClient,
@@ -4521,10 +4580,11 @@ describe('runReview triage', () => {
 
   it('sends the pair finder the same prompt on the pair client', async () => {
     const clients = makeClients();
-    clients.reviewerPair = { sendMessage: jest.fn().mockResolvedValue({ content: '[]' }) } as unknown as import('./providers').LLMClient;
+    const pair = { sendMessage: jest.fn().mockResolvedValue({ content: '[]' }) } as unknown as import('./providers').LLMClient;
+    clients.reviewerByModel = new Map([['claude-opus-5-5', pair]]);
     await runReview(clients, { config: makeConfig({ reviewers: [{ name: 'Protocol', focus: 'wire format' }] }), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo' });
     const primaryCall = jest.mocked(clients.reviewer.sendMessage).mock.calls;
-    const pairCall = jest.mocked(clients.reviewerPair.sendMessage).mock.calls;
+    const pairCall = jest.mocked(pair.sendMessage).mock.calls;
     expect(primaryCall).toHaveLength(1);
     expect(pairCall).toHaveLength(1);
     expect(pairCall[0]).toEqual(primaryCall[0]);
@@ -4533,7 +4593,7 @@ describe('runReview triage', () => {
 
   it('ends INCOMPLETE when the pair finder fails, even though the primary finder succeeded', async () => {
     const clients = makeClients();
-    clients.reviewerPair = { sendMessage: jest.fn().mockRejectedValue(new Error('Codex token expired')) } as unknown as import('./providers').LLMClient;
+    clients.reviewerByModel = new Map([['claude-opus-5-5', { sendMessage: jest.fn().mockRejectedValue(new Error('Codex token expired')) } as unknown as import('./providers').LLMClient]]);
     const result = await runReview(clients, { config: makeConfig(), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo' });
     expect(result.outcome).toBe('INCOMPLETE');
     expect(result.verdict).toBe('COMMENT');

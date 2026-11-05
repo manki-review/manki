@@ -15,7 +15,7 @@ import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, 
 import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, RepoMemory } from './memory';
 import { fetchRecapState, PreviousFinding, RecapState } from './recap';
-import { ReviewClients, ReviewOptions, runReview, selectTeam } from './review';
+import { ReviewClients, ReviewOptions, runReview, selectTeam, teamModels } from './review';
 import { buildRoundContext, RoundRecordInput } from './round-context';
 import { collectStaticSignals } from './static-signals';
 import { DashboardData, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundTrigger, StaticSignal, roundContextToFlatAliases } from './types';
@@ -655,11 +655,14 @@ function buildReviewClients(config: ReviewConfig, providerInputs: ProviderInputs
     return createLLMClient(spec.provider, spec.model, auth);
   };
   const reviewer = buildClient(models.reviewer);
-  const reviewerPair = models.reviewerPair === models.reviewer ? reviewer : buildClient(models.reviewerPair);
+  const reviewerByModel = new Map<string, LLMClient>([[models.reviewer, reviewer]]);
+  for (const model of teamModels(config)) {
+    if (!reviewerByModel.has(model)) reviewerByModel.set(model, buildClient(model));
+  }
   const judge = buildClient(models.judge);
   const planner = config.planner?.enabled !== false ? buildClient(models.planner) : undefined;
   const dedup = buildClient(models.dedup);
-  return { clients: { reviewer, reviewerPair, judge, planner, dedup }, models };
+  return { clients: { reviewer, reviewerByModel, judge, planner, dedup }, models };
 }
 
 async function collectDiff(target: RunTarget, config: ReviewConfig) {
@@ -709,7 +712,7 @@ async function postUnreviewedRound(
  */
 async function warmUpClients(clients: ReviewClients): Promise<void> {
   const warmupTargets = new Set<LLMClient>(
-    [clients.planner, clients.reviewer, clients.reviewerPair, clients.judge, clients.dedup].filter(
+    [clients.planner, ...(clients.reviewerByModel?.values() ?? []), clients.judge, clients.dedup].filter(
       (c): c is LLMClient => !!c,
     ),
   );
