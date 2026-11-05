@@ -1321,8 +1321,9 @@ async function runFullReview(
     });
 
     await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
-    await resolveAddressedThreads(run, result);
     const reviewId = await postRound(run, result, context, reviewTimeMs);
+    // Only after the review is posted, so a review that GitHub refuses as superseded resolves no thread.
+    await resolveAddressedThreads(run, result);
     await completeProgressComment(run, stage);
     setReviewOutputs(reviewId, context, result);
   } catch (error) {

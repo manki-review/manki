@@ -4901,7 +4901,10 @@ describe('runFullReview orchestration', () => {
     );
   });
 
-  it('resolves addressed thread when prior rounds exist and inter-round diff is non-empty', async () => {
+  it.each([
+    ['posts its review', true],
+    ['finds at posting that the head moved', false],
+  ])('resolves an addressed thread with prior rounds and a non-empty inter-round diff only when the round %s', async (_label, posted) => {
     // End-to-end happy path for the thread-resolution flow: memory enabled,
     // recap exposes a prior round with a SHA distinct from the current
     // commit, `fetchInterRoundDiff` returns a non-empty patch, and the LLM
@@ -4944,9 +4947,11 @@ describe('runFullReview orchestration', () => {
         { threadId: 'PRRT_abc', status: 'addressed', reason: 'Fixed in latest push' },
       ],
     });
+    if (!posted) jest.mocked(ghUtils.postReview).mockRejectedValueOnce(new ghUtils.SupersededError('abc123', 'def456'));
 
     await callRunFullReview();
 
+    expect(jest.mocked(ghUtils.markProgressCommentSuperseded)).toHaveBeenCalledTimes(posted ? 0 : 1);
     expect(jest.mocked(ghUtils.fetchInterRoundDiff)).toHaveBeenCalledTimes(1);
     expect(jest.mocked(diffModule.filterDiff)).toHaveBeenCalledWith(expect.anything(), ['dist/**']);
     expect(jest.mocked(diffModule.filterRawDiff)).toHaveBeenCalledWith(
@@ -4959,13 +4964,8 @@ describe('runFullReview orchestration', () => {
     expect(passedInterRoundDiff).toBe(
       'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
     );
-    expect(mockGraphql).toHaveBeenCalledWith(
-      expect.stringContaining('resolveReviewThread'),
-      { threadId: 'PRRT_abc' },
-    );
-    expect(jest.mocked(core.info)).toHaveBeenCalledWith(
-      'Judge resolved: "Fixed in latest push" — thread PRRT_abc',
-    );
+    expect(mockGraphql.mock.calls.some(([query]) => String(query).includes('resolveReviewThread'))).toBe(posted);
+    expect(jest.mocked(core.info).mock.calls.some(([m]) => m === 'Judge resolved: "Fixed in latest push" — thread PRRT_abc')).toBe(posted);
   });
 
   it('resolves only threads with status addressed', async () => {
