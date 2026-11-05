@@ -69,8 +69,8 @@
 
 # CI results the reviewers read as evidence (default: all on)
 # Manki reads what CI reported on the PR head commit and keeps the results on
-# lines of the diff. A Manki finding on the same file and line is dropped,
-# unless it is a security finding. This block is read from the base branch,
+# lines of the diff. A Manki suggestion or nitpick on the same file and line
+# is dropped. Warnings, blockers and security findings are kept. This block is read from the base branch,
 # never from the PR, so a PR cannot turn a source off. A source the workflow
 # token cannot read is skipped. See SETUP.md, "Reading CI results".
 # static_analysis:

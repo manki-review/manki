@@ -1008,7 +1008,7 @@ export interface RoundDedup {
    * never written into `RoundContext`.
    */
   testNitSuppressedCount?: number;
-  /** Findings dropped because a CI tool already reports a result on the same file and line. Capped at 50 entries. */
+  /** Suggestions and nitpicks dropped because a CI tool already reports a result on the same file and line. Capped at 50 entries. */
   staticSignalMatches?: RoundStaticSignalMatch[];
   durationMs?: number;
 }

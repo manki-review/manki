@@ -393,7 +393,7 @@ GitHub Actions concurrency is best-effort, not atomic. Two events dispatched wit
 
 ### Reading CI results
 
-Manki reads what your CI already reported on the PR head commit and gives the reviewers the results that sit on lines of the diff: check-run annotations (linters, type checkers, test reporters), open code scanning alerts, and vulnerable packages from the dependency review. The tool text reaches the reviewers fenced and marked as untrusted, and only for the lines they review. When a Manki finding sits on the same file and line as a tool result, Manki drops it because the author already sees the tool's result. Security findings are always kept. The drops are listed in the `Manki context` block.
+Manki reads what your CI already reported on the PR head commit and gives the reviewers the results that sit on lines of the diff: check-run annotations (linters, type checkers, test reporters), open code scanning alerts, and vulnerable packages from the dependency review. The tool text reaches the reviewers fenced and marked as untrusted, and only for the lines they review. When a Manki suggestion or nitpick sits on the same file and line as a tool result, Manki drops it because the author already sees the tool's result. Warnings, blockers and security findings are always kept, because they can be a different problem on the same line. The drops are listed in the `Manki context` block.
 
 Manki reads these results with the workflow token (`github_token`), so grant the permissions in the workflow, even when the Manki app posts the review:
 

@@ -11,6 +11,7 @@ type Octokit = ReturnType<typeof github.getOctokit>;
 
 const MAX_SIGNALS = 50;
 const MAX_MESSAGE_CHARS = 300;
+const MAX_NAME_CHARS = 60;
 const MAX_ANNOTATED_RUNS = 20;
 
 const SEVERITY_RANK: Record<StaticSignal['severity'], number> = { error: 0, warning: 1, note: 2 };
@@ -79,8 +80,8 @@ function logSkippedSource(source: StaticSignalSource, error: unknown): void {
   }
 }
 
-function cleanMessage(text: string | null | undefined): string {
-  return safeTruncate((text ?? '').replace(/\s+/g, ' ').trim(), MAX_MESSAGE_CHARS);
+function cleanMessage(text: string | null | undefined, maxChars = MAX_MESSAGE_CHARS): string {
+  return safeTruncate((text ?? '').replace(/\s+/g, ' ').trim(), maxChars);
 }
 
 async function fetchCheckAnnotations(octokit: Octokit, { owner, repo, headSha }: StaticSignalRequest): Promise<StaticSignal[]> {
@@ -91,15 +92,18 @@ async function fetchCheckAnnotations(octokit: Octokit, { owner, repo, headSha }:
     .slice(0, MAX_ANNOTATED_RUNS);
   const perRun = await Promise.all(annotated.map(async run => {
     const annotations = await octokit.paginate(octokit.rest.checks.listAnnotations, { owner, repo, check_run_id: run.id, per_page: 100 });
-    return annotations.map((a): StaticSignal => ({
-      tool: run.name,
-      ruleId: a.title ?? '',
-      severity: a.annotation_level === 'failure' ? 'error' : a.annotation_level === 'warning' ? 'warning' : 'note',
-      file: a.path,
-      line: a.start_line,
-      message: cleanMessage(a.message),
-      source: 'checks',
-    }));
+    return annotations.flatMap((a): StaticSignal[] => {
+      if (!a.path || !a.start_line) return [];
+      return [{
+        tool: cleanMessage(run.name, MAX_NAME_CHARS),
+        ruleId: cleanMessage(a.title, MAX_NAME_CHARS),
+        severity: a.annotation_level === 'failure' ? 'error' : a.annotation_level === 'warning' ? 'warning' : 'note',
+        file: a.path,
+        line: a.start_line,
+        message: cleanMessage(a.message),
+        source: 'checks',
+      }];
+    });
   }));
   return perRun.flat();
 }
@@ -114,8 +118,8 @@ async function fetchCodeScanningAlerts(octokit: Octokit, { owner, repo, prNumber
       ? 'error'
       : level === 'medium' || alert.rule?.severity === 'warning' ? 'warning' : 'note';
     return [{
-      tool: alert.tool?.name ?? 'code scanning',
-      ruleId: alert.rule?.id ?? '',
+      tool: cleanMessage(alert.tool?.name ?? 'code scanning', MAX_NAME_CHARS),
+      ruleId: cleanMessage(alert.rule?.id, MAX_NAME_CHARS),
       severity,
       file: location.path,
       line: location.start_line,
@@ -136,11 +140,11 @@ async function fetchDependencyReview(octokit: Octokit, { owner, repo, baseRef, h
     if (line === undefined) return [];
     return change.vulnerabilities.map((v): StaticSignal => ({
       tool: 'dependency review',
-      ruleId: v.advisory_ghsa_id,
+      ruleId: cleanMessage(v.advisory_ghsa_id, MAX_NAME_CHARS),
       severity: v.severity === 'critical' || v.severity === 'high' ? 'error' : v.severity === 'moderate' ? 'warning' : 'note',
       file: change.manifest,
       line,
-      message: cleanMessage(`${change.name}@${change.version}: ${v.advisory_summary}`),
+      message: cleanMessage(`${change.name}@${change.version}: ${v.advisory_summary ?? 'no summary'}`),
       source: 'dependency_review',
     }));
   });

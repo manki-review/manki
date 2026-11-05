@@ -1012,7 +1012,8 @@ export async function runReview(
   const staticSignals = prContext?.staticSignals ?? [];
   if (staticSignals.length > 0) {
     finalFindings = finalFindings.filter(f => {
-      if (isSecurityFinding(f.tags, f.reviewers)) return true;
+      // A tool result on the same line can be a different problem, so only low-severity findings give way to it.
+      if ((f.severity !== 'suggestion' && f.severity !== 'nitpick') || isSecurityFinding(f.tags, f.reviewers)) return true;
       const signal = staticSignals.find(s => s.file === f.file && s.line === f.line);
       if (!signal) return true;
       core.info(`Static-signal dedup: dropping ${f.severity} "${f.title}" on ${f.file}:${f.line}, ${signal.tool} already reports it`);

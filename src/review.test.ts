@@ -3689,13 +3689,15 @@ describe('runReview post-judge suppression', () => {
     expect(result.findings).toHaveLength(1);
   });
 
-  it('drops a finding a CI tool already reports on the same line, unless it is a security finding', async () => {
+  it('drops a suggestion or nitpick a CI tool already reports on the same line, and keeps warnings, blockers and security findings', async () => {
     const lint = { tool: 'lint', ruleId: 'no-unused-vars', severity: 'error' as const, file: 'src/a.ts', line: 10, message: 'x is unused', source: 'checks' as const };
     mockedRunJudgeAgent.mockResolvedValue({
       findings: [
-        makeFinding({ severity: 'warning', title: 'Unused variable' }),
-        makeFinding({ severity: 'blocker', title: 'Injection', reviewers: ['Security & Safety'] }),
-        makeFinding({ severity: 'warning', title: 'Token in log', tags: [SECURITY_TAG] }),
+        makeFinding({ severity: 'suggestion', title: 'Unused variable' }),
+        makeFinding({ severity: 'nitpick', title: 'Unused import' }),
+        makeFinding({ severity: 'warning', title: 'Off-by-one in loop' }),
+        makeFinding({ severity: 'blocker', title: 'Null dereference' }),
+        makeFinding({ severity: 'suggestion', title: 'Token in log', tags: [SECURITY_TAG] }),
         makeFinding({ severity: 'suggestion', title: 'Rename', line: 11 }),
       ],
       summary: 'ok',
@@ -3705,9 +3707,10 @@ describe('runReview post-judge suppression', () => {
       clients, makeConfig(), makeDiff({ totalAdditions: 5, totalDeletions: 0 }),
       'raw', 'ctx', undefined, undefined, { title: 'PR', body: '', baseBranch: 'main', staticSignals: [lint] },
     );
-    expect(result.findings.map(f => f.title)).toEqual(['Injection', 'Token in log', 'Rename']);
+    expect(result.findings.map(f => f.title)).toEqual(['Off-by-one in loop', 'Null dereference', 'Token in log', 'Rename']);
     expect(result.staticSignalMatches).toEqual([
       { droppedTitle: 'Unused variable', file: 'src/a.ts', line: 10, tool: 'lint', ruleId: 'no-unused-vars' },
+      { droppedTitle: 'Unused import', file: 'src/a.ts', line: 10, tool: 'lint', ruleId: 'no-unused-vars' },
     ]);
     const reviewerMessage = jest.mocked(clients.reviewer.sendMessage).mock.calls[0][1];
     expect(reviewerMessage).toContain('## CI Results (untrusted tool output)');
