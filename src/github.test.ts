@@ -4,6 +4,7 @@ import { buildDashboard, titleToSlug, formatBlockingPriorThreads, formatContextB
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { DEFAULT_CONFIG } from './config';
 import { paginateSinglePage, TEST_BOT } from './test-utils';
+import { withMarkers } from './utils';
 
 const CUSTOM_APP_BOT: BotIdentity = { logins: ['acme-reviewer[bot]'] };
 const PAT_BOT: BotIdentity = { logins: [...TEST_BOT.logins, 'review-user'] };
@@ -141,6 +142,8 @@ describe('mapVerdictToEvent', () => {
     expect(mapVerdictToEvent('REQUEST_CHANGES')).toBe('REQUEST_CHANGES');
   });
 });
+
+const TRAILING_MARKERS = `\n\n${BOT_MARKER}\n${VERSION_MARKER_PREFIX} ${MANKI_VERSION} -->`;
 
 describe('BOT_MARKER', () => {
   it('is an HTML comment', () => {
@@ -396,6 +399,7 @@ describe('postReview reviewed-commit footer', () => {
   const fullSha = 'ede627f1234567890abcdef0123456789abcdef0';
   const shortSha = fullSha.slice(0, 7);
   const expectedFooter = `Reviewed [\`${shortSha}\`](https://github.com/acme/widgets/commit/${fullSha}).`;
+  const expectedEnd = `${expectedFooter}${TRAILING_MARKERS}`;
 
   beforeEach(() => {
     mockCreateReview.mockClear();
@@ -417,7 +421,7 @@ describe('postReview reviewed-commit footer', () => {
     async verdict => {
       await postReview(mockOctokit, 'acme', 'widgets', 1, fullSha, buildResult(verdict));
       const body = mockCreateReview.mock.calls[0][0].body as string;
-      expect(body.endsWith(expectedFooter)).toBe(true);
+      expect(body.endsWith(expectedEnd)).toBe(true);
     },
   );
 
@@ -426,7 +430,7 @@ describe('postReview reviewed-commit footer', () => {
     const body = mockCreateReview.mock.calls[0][0].body as string;
     expect(body).toContain(expectedFooter);
     expect(shortSha).toBe(fullSha.slice(0, 7));
-    expect(body).toMatch(/Reviewed \[`[0-9a-f]{7}`\]\(https:\/\/github\.com\/acme\/widgets\/commit\/[0-9a-f]+\)\.$/);
+    expect(body).toMatch(/Reviewed \[`[0-9a-f]{7}`\]\(https:\/\/github\.com\/acme\/widgets\/commit\/[0-9a-f]+\)\.\n\n<!-- manki-bot -->/);
   });
 
   it('uses a custom serverUrl for GHE and strips trailing slashes', async () => {
@@ -473,7 +477,7 @@ describe('postReview reviewed-commit footer', () => {
 
     await postReview(octokit, 'acme', 'widgets', 1, fullSha, result);
     const fallbackBody = createReviewMock.mock.calls[1][0].body as string;
-    expect(fallbackBody.endsWith(expectedFooter)).toBe(true);
+    expect(fallbackBody.endsWith(expectedEnd)).toBe(true);
     expect(fallbackBody).toContain('**Inline comments could not be posted:**');
   });
 
@@ -503,7 +507,7 @@ describe('postReview reviewed-commit footer', () => {
 
     await postReview(octokit, 'acme', 'widgets', 1, fullSha, result);
     const fallbackBody = createReviewMock.mock.calls[1][0].body as string;
-    expect(fallbackBody.endsWith(expectedFooter)).toBe(true);
+    expect(fallbackBody.endsWith(expectedEnd)).toBe(true);
     expect(fallbackBody).toContain('**Findings (could not post inline):**');
   });
 
@@ -520,8 +524,8 @@ describe('postReview reviewed-commit footer', () => {
 
     await postReview(mockOctokit, 'acme', 'widgets', 1, fullSha, result);
     const body = mockCreateReview.mock.calls[0][0].body as string;
-    expect(body.endsWith(expectedFooter)).toBe(true);
-    expect(body.length).toBeLessThanOrEqual(60000 + expectedFooter.length + 4);
+    expect(body.endsWith(expectedEnd)).toBe(true);
+    expect(body.length).toBeLessThanOrEqual(60000 + expectedEnd.length + 4);
   });
 });
 
@@ -1058,7 +1062,8 @@ describe('postReview with context', () => {
     const body = mockCreateReview.mock.calls[0][0].body as string;
     expect(body).toContain('<!-- manki-stats: 3 findings (2 suggestions, 1 nitpick), 200 lines, 60s -->\n<!-- manki-context: ');
     expect(body).not.toContain('<details>');
-    expect(body).toMatch(/-->\n\nReviewed \[`abc`\]\([^)]+\)\.$/);
+    expect(body.endsWith(TRAILING_MARKERS)).toBe(true);
+    expect(body.slice(0, -TRAILING_MARKERS.length)).toMatch(/-->\n\nReviewed \[`abc`\]\([^)]+\)\.$/);
     expect(body).not.toContain('\u{1F4CA}');
     expect(body).toContain('"reviewer":"claude-sonnet-4-20250514"');
   });
@@ -1272,7 +1277,8 @@ describe('postReview body lead', () => {
   }
 
   function lead(body: string): string {
-    return body.slice(body.indexOf('-->\n', body.indexOf('manki-version')) + 4);
+    expect(body.endsWith(TRAILING_MARKERS)).toBe(true);
+    return body.slice(0, -TRAILING_MARKERS.length);
   }
 
   it('opens a READY review with the verdict line, then what the change does and how to test it', async () => {
@@ -2673,7 +2679,8 @@ describe('updateProgressComment', () => {
   it('includes REVIEW_COMPLETE_MARKER in the updated comment body', async () => {
     await updateProgressComment(mockOctokit, 'owner', 'repo', 123, baseDashboard);
     const body = mockUpdateComment.mock.calls[0][0].body as string;
-    expect(body).toContain(REVIEW_COMPLETE_MARKER);
+    expect(body.startsWith('🔴 **Review failed**')).toBe(true);
+    expect(body.endsWith(`${TRAILING_MARKERS}\n${REVIEW_COMPLETE_MARKER}`)).toBe(true);
   });
 
 });
@@ -2856,8 +2863,7 @@ describe('postProgressComment', () => {
     const id = await postProgressComment(mockOctokit, 'owner', 'repo', 1);
     expect(id).toBe(42);
     const body = createCommentMock.mock.calls[0][0].body as string;
-    expect(body).toContain(BOT_MARKER);
-    expect(body).toContain('Review started');
+    expect(body).toMatch(new RegExp(`^\\*\\*Review started\\*\\*\\n\\n${BOT_MARKER}\\n<!-- manki-version: [^>]+ -->\\n<!-- manki-run-id:[^>]* -->$`));
   });
 
   it('uses dashboard data when provided', async () => {
@@ -3317,7 +3323,7 @@ describe('postReview fallback paths', () => {
       expect(update.review_id).toBe(7);
       expect(update.body.startsWith(review.body.slice(0, review.body.lastIndexOf('\n\nReviewed [')))).toBe(true);
       expect(update.body).toContain('**Blockers that could not be posted as threads:**\n\n**Refused thread**\n[`src/a.ts:40`](https://github.com/owner/repo/blob/sha/src/a.ts#L40)');
-      expect(update.body).toMatch(/Reviewed \[`sha`\]\([^)]+\)\.$/);
+      expect(update.body).toMatch(/Reviewed \[`sha`\]\([^)]+\)\.\n\n<!-- manki-bot -->/);
     });
 
     it('truncates the existing body, never the refused findings, when the review is near the size limit', async () => {
@@ -3547,7 +3553,8 @@ describe('isReviewInProgress', () => {
     const poster = { rest: { issues: { createComment } } } as unknown as Octokit;
     await postConfigErrorComment(poster, 'owner', 'repo', 1, 'Invalid YAML in .manki.yml: bad ``` indent');
     const configErrorBody = createComment.mock.calls[0][0].body as string;
-    expect(configErrorBody).toContain(CONFIG_ERROR_MARKER);
+    expect(configErrorBody.startsWith('**Manki** could not load its config')).toBe(true);
+    expect(configErrorBody.endsWith(`\n\n${CONFIG_ERROR_MARKER}`)).toBe(true);
     expect(configErrorBody).not.toContain(BOT_MARKER);
     expect(configErrorBody).toContain('````\nInvalid YAML in .manki.yml: bad ``` indent\n````');
 
@@ -3795,18 +3802,22 @@ describe('markOwnProgressCommentCancelled', () => {
     return { octokit, updateComment, listComments };
   }
 
-  it('marks the progress comment matching the given runId as cancelled', async () => {
+  it.each([
+    ['at the top of an older comment', makeBody(77)],
+    ['at the end', withMarkers('**Review in progress**', BOT_MARKER, '<!-- manki-run-id:77 -->')],
+  ])('marks the progress comment matching the given runId as cancelled with the markers %s', async (_, original) => {
     const { octokit, updateComment } = makeOctokit([
-      { id: 10, body: makeBody(77), user: { type: 'Bot' } },
+      { id: 10, body: original, user: { type: 'Bot' } },
     ]);
 
     const result = await markOwnProgressCommentCancelled(octokit, TEST_BOT, 'owner', 'repo', 1, 77);
 
     expect(result).toBe(true);
-    expect(updateComment).toHaveBeenCalledWith(expect.objectContaining({
-      comment_id: 10,
-      body: expect.stringContaining('**Review cancelled:** a newer run replaced it.'),
-    }));
+    expect(updateComment).toHaveBeenCalledWith(expect.objectContaining({ comment_id: 10 }));
+    const body = updateComment.mock.calls[0][0].body as string;
+    expect(body.startsWith('**Review cancelled:** a newer run replaced it.')).toBe(true);
+    expect(body).toContain(original);
+    expect(body.endsWith(`\n\n${CANCELLED_MARKER}`)).toBe(true);
   });
 
   it('finds the progress comment past the first page of comments', async () => {
@@ -4472,8 +4483,11 @@ describe('findInProgressLock', () => {
     expect(findInProgressLock(comments, TEST_BOT, 42)).toBeNull();
   });
 
-  it('returns the lock when a different run posted an in-progress marker (contention)', () => {
-    const comments = [botComment(7, makeInProgressBody(999), '2026-05-22T12:00:00Z')];
+  it.each([
+    ['at the top of an older comment', makeInProgressBody(999)],
+    ['at the end', withMarkers('**Review in progress**', BOT_MARKER, '<!-- manki-run-id:999 -->')],
+  ])('returns the lock when a different run posted an in-progress marker with the markers %s (contention)', (_, body) => {
+    const comments = [botComment(7, body, '2026-05-22T12:00:00Z')];
 
     expect(findInProgressLock(comments, TEST_BOT, 42)).toEqual({ runId: 999, updatedAt: '2026-05-22T12:00:00Z', commentId: 7 });
   });

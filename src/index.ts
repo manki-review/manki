@@ -4,7 +4,7 @@ import * as github from '@actions/github';
 import * as path from 'path';
 
 import { AuthResult, createAuthenticatedOctokit, getMemoryToken } from './auth';
-import { sanitizeTokens } from './utils';
+import { sanitizeTokens, withMarkers } from './utils';
 import { loadConfig, loadConfigFromFile, sanitizeForkConfig, resolveModel, resolvePairModel } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
@@ -265,14 +265,7 @@ async function postReviewSkippedComment(
     const line = reason === 'in_progress'
       ? `**Review skipped** for \`${shortSha}\`: a review is already in progress. Retry when it completes, or force one now:`
       : `**Review skipped** for \`${shortSha}\`: this commit already has a review. Force a new one:`;
-    const body = [
-      PROGRESS_MARKER,
-      line,
-      '',
-      '- [ ] Force review',
-      '',
-      FORCE_REVIEW_MARKER,
-    ].join('\n');
+    const body = withMarkers(`${line}\n\n- [ ] Force review`, PROGRESS_MARKER, FORCE_REVIEW_MARKER);
     // Always create a fresh comment. Editing an older skip-ack in place is
     // silent on GitHub (no notification, original timeline position), so the
     // user perceives no response. Each fresh comment carries its own Force
@@ -391,7 +384,7 @@ async function handleCommentTrigger(forceReview?: boolean, skipCap?: boolean, by
     core.info(`Ignoring review request from ${senderLogin} (${authorAssociation ?? 'unknown association'})`);
     await octokit.rest.issues.createComment({
       owner, repo, issue_number: prNumber,
-      body: `${PROGRESS_MARKER}\nOnly repo contributors can trigger reviews.`,
+      body: withMarkers('Only repo contributors can trigger reviews.', PROGRESS_MARKER),
     });
     return;
   }
@@ -610,7 +603,7 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
         if (standing.verdict === 'APPROVE') {
           await octokit.rest.pulls.createReview({
             owner, repo, pull_number: prNumber, commit_id: commitSha, event: 'APPROVE',
-            body: `${PROGRESS_MARKER}\n✅ **Approved.** No change to this PR since the reviewed commit \`${shortSha}\`. The previous verdict stands.`,
+            body: withMarkers(`✅ **Approved.** No change to this PR since the reviewed commit \`${shortSha}\`. The previous verdict stands.`, PROGRESS_MARKER),
           });
         }
         core.info(`Round SKIPPED: no change since reviewed commit ${shortSha}, ${standing.verdict} stands`);
@@ -787,14 +780,11 @@ async function postPauseNotice(
     const reason = capReached
       ? `Manki has completed ${priorRoundCount}/${maxAutoRounds} review rounds on this PR.`
       : 'The last Manki round found a blocker that came back after a fix.';
-    const body = [
+    const body = withMarkers(
+      `${reason} Automatic review is paused. Tick the box to run another round, or comment \`@manki review\`:\n\n- [ ] Force review`,
       PROGRESS_MARKER,
-      `${reason} Automatic review is paused. Tick the box to run another round, or comment \`@manki review\`:`,
-      '',
-      '- [ ] Force review',
-      '',
       FORCE_CAP_MARKER,
-    ].join('\n');
+    );
     await octokit.rest.issues.createComment({
       owner,
       repo,

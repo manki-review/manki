@@ -10,7 +10,7 @@ import { findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
 import { MAX_AGENT_RETRIES } from './types';
 import { MAX_LOCK_TTL_SECONDS } from './config';
-import { safeTruncate, sanitizeTokens } from './utils';
+import { safeTruncate, sanitizeTokens, withMarkers } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -60,7 +60,7 @@ const MANKI_VERSION: string = (() => {
   }
 })();
 const VERSION_MARKER = `${VERSION_MARKER_PREFIX} ${MANKI_VERSION} -->`;
-const BOT_MARKERS = `${BOT_MARKER}\n${VERSION_MARKER}`;
+const BOT_MARKERS = [BOT_MARKER, VERSION_MARKER];
 
 const RUN_ID_MARKER_REGEX = /<!-- manki-run-id:(\d+) -->/;
 const VERSION_MARKER_REGEX = /<!-- manki-version:\s*([^\s]+)\s*-->/;
@@ -403,10 +403,11 @@ export async function postProgressComment(
   prNumber: number,
   dashboard?: DashboardData,
 ): Promise<number> {
-  const runIdMarker = buildRunIdMarker(github.context.runId);
-  const body = dashboard
-    ? `${BOT_MARKERS}\n${runIdMarker}\n${buildDashboard(dashboard)}`
-    : `${BOT_MARKERS}\n${runIdMarker}\n**Review started**`;
+  const body = withMarkers(
+    dashboard ? buildDashboard(dashboard) : '**Review started**',
+    ...BOT_MARKERS,
+    buildRunIdMarker(github.context.runId),
+  );
 
   const { data } = await octokit.rest.issues.createComment({
     owner,
@@ -429,8 +430,7 @@ export async function postAutoApproveProgressComment(
   repo: string,
   prNumber: number,
 ): Promise<number> {
-  const runIdMarker = buildRunIdMarker(github.context.runId);
-  const body = `${BOT_MARKERS}\n${runIdMarker}\n**Auto-approving:** no findings remain.`;
+  const body = withMarkers('**Auto-approving:** no findings remain.', ...BOT_MARKERS, buildRunIdMarker(github.context.runId));
   const { data } = await octokit.rest.issues.createComment({
     owner,
     repo,
@@ -451,12 +451,7 @@ export async function markAutoApproveComplete(
   repo: string,
   commentId: number,
 ): Promise<void> {
-  const body = [
-    BOT_MARKER,
-    VERSION_MARKER,
-    '✅ **Auto-approved:** all findings are resolved.',
-    REVIEW_COMPLETE_MARKER,
-  ].join('\n');
+  const body = withMarkers('✅ **Auto-approved:** all findings are resolved.', ...BOT_MARKERS, REVIEW_COMPLETE_MARKER);
   try {
     await octokit.rest.issues.updateComment({ owner, repo, comment_id: commentId, body });
   } catch (error) {
@@ -477,12 +472,11 @@ export async function markProgressCommentFailed(
   action: 'Review' | 'Auto-approve',
   reason: string,
 ): Promise<void> {
-  const body = [
-    BOT_MARKER,
-    VERSION_MARKER,
-    CANCELLED_MARKER,
+  const body = withMarkers(
     `🔴 **${action} failed:** ${sanitizeMarkdown(sanitizeTokens(String(reason))).slice(0, 300)}`,
-  ].join('\n');
+    ...BOT_MARKERS,
+    CANCELLED_MARKER,
+  );
   try {
     await octokit.rest.issues.updateComment({ owner, repo, comment_id: commentId, body });
   } catch (error) {
@@ -503,8 +497,6 @@ export async function updateProgressComment(
   metadata?: ReviewMetadata,
 ): Promise<void> {
   const parts: string[] = [
-    BOT_MARKER,
-    VERSION_MARKER,
     metadata ? '✅ **Review complete**' : '🔴 **Review failed**',
     '',
     buildDashboard({ ...dashboard, phase: 'complete' }),
@@ -541,13 +533,11 @@ export async function updateProgressComment(
     parts.push('</details>');
   }
 
-  parts.push(REVIEW_COMPLETE_MARKER);
-
   await octokit.rest.issues.updateComment({
     owner,
     repo,
     comment_id: commentId,
-    body: truncateBody(parts.join('\n')),
+    body: withMarkers(truncateBody(parts.join('\n')), ...BOT_MARKERS, REVIEW_COMPLETE_MARKER),
   });
 }
 
@@ -561,12 +551,11 @@ export async function updateProgressDashboard(
   commentId: number,
   dashboard: DashboardData,
 ): Promise<void> {
-  const runIdMarker = buildRunIdMarker(github.context.runId);
   await octokit.rest.issues.updateComment({
     owner,
     repo,
     comment_id: commentId,
-    body: `${BOT_MARKERS}\n${runIdMarker}\n${buildDashboard(dashboard)}`,
+    body: withMarkers(buildDashboard(dashboard), ...BOT_MARKERS, buildRunIdMarker(github.context.runId)),
   });
 }
 
@@ -932,7 +921,7 @@ export async function postReview(
   const lead = formatLead(result, blockingFindings);
 
   const renderBody = (ctx: RoundContext | undefined): string => {
-    let b = `${BOT_MARKERS}\n${lead}`;
+    let b = lead;
     const needsHuman = formatNeedsHuman(result);
     if (needsHuman) {
       b += `\n\n${needsHuman}`;
@@ -1000,7 +989,7 @@ export async function postReview(
         repo,
         pull_number: prNumber,
         review_id: review.id,
-        body: appendReviewedCommitFooter(`${truncateBody(review.body, room)}${section}`, reviewedCommitFooter),
+        body: appendReviewFooter(`${truncateBody(review.body, room)}${section}`, reviewedCommitFooter),
       });
     } catch (error) {
       throw new Error(`Could not post blocking findings as threads or in review #${review.id}: ${titles}. ${error instanceof Error ? error.message : error}`);
@@ -1012,7 +1001,7 @@ export async function postReview(
 /**
  * Creates the review, falling back to a body-only review when GitHub rejects the line
  * comments and to COMMENT when it refuses the event with a 422. Returns the review ID
- * and the posted body without the reviewed-commit footer.
+ * and the posted body without the reviewed-commit footer and the markers.
  */
 async function submitReview(
   octokit: Octokit,
@@ -1033,7 +1022,7 @@ async function submitReview(
       pull_number: prNumber,
       commit_id: commitSha,
       event,
-      body: appendReviewedCommitFooter(truncateBody(body), reviewedCommitFooter),
+      body: appendReviewFooter(truncateBody(body), reviewedCommitFooter),
       comments: validComments,
     });
 
@@ -1056,7 +1045,7 @@ async function submitReview(
         pull_number: prNumber,
         commit_id: commitSha,
         event,
-        body: appendReviewedCommitFooter(lineErrFallbackBody, reviewedCommitFooter),
+        body: appendReviewFooter(lineErrFallbackBody, reviewedCommitFooter),
         comments: [],
       });
 
@@ -1088,7 +1077,7 @@ async function submitReview(
       pull_number: prNumber,
       commit_id: commitSha,
       event: 'COMMENT',
-      body: appendReviewedCommitFooter(fallbackBody, reviewedCommitFooter),
+      body: appendReviewFooter(fallbackBody, reviewedCommitFooter),
       comments: [],
     });
 
@@ -1106,8 +1095,8 @@ function buildReviewedCommitFooter(owner: string, repo: string, commitSha: strin
   return `Reviewed [\`${commitSha.slice(0, 7)}\`](${repoUrl(serverUrl, owner, repo)}/commit/${commitSha}).`;
 }
 
-function appendReviewedCommitFooter(body: string, footer: string): string {
-  return `${body}\n\n${footer}`;
+function appendReviewFooter(body: string, footer: string): string {
+  return withMarkers(`${body}\n\n${footer}`, ...BOT_MARKERS);
 }
 
 function truncateBody(text: string, maxLength: number = 60000): string {
@@ -1613,8 +1602,7 @@ async function markProgressCommentCancelled(
   octokit: Octokit, owner: string, repo: string, commentId: number, originalBody: string,
 ): Promise<void> {
   if (originalBody.includes(CANCELLED_MARKER)) return;
-  const body = [
-    CANCELLED_MARKER,
+  const body = withMarkers([
     '**Review cancelled:** a newer run replaced it.',
     '',
     '<details><summary>Original progress</summary>',
@@ -1622,7 +1610,7 @@ async function markProgressCommentCancelled(
     originalBody,
     '',
     '</details>',
-  ].join('\n');
+  ].join('\n'), CANCELLED_MARKER);
   try {
     await octokit.rest.issues.updateComment({ owner, repo, comment_id: commentId, body });
   } catch (error) {
@@ -2034,7 +2022,7 @@ async function postAppWarningIfNeeded(
 
   await octokit.rest.issues.createComment({
     owner, repo, issue_number: prNumber,
-    body: `${APP_WARNING_MARKER}\nThe [Manki GitHub App](https://github.com/apps/manki-review) is not installed on this repository. Reviews are posting as \`github-actions[bot]\` instead of \`manki-review[bot]\`. Some features (memory repo access, bot identity for review dismissal) may not work correctly.\n\nInstall the app at: https://github.com/apps/manki-review`,
+    body: withMarkers('The [Manki GitHub App](https://github.com/apps/manki-review) is not installed on this repository. Reviews are posting as `github-actions[bot]` instead of `manki-review[bot]`. Some features (memory repo access, bot identity for review dismissal) may not work correctly.\n\nInstall the app at: https://github.com/apps/manki-review', APP_WARNING_MARKER),
   });
 }
 
@@ -2050,7 +2038,7 @@ async function postConfigErrorComment(
   message: string,
 ): Promise<void> {
   const fence = dynamicFence(message);
-  const body = `${CONFIG_ERROR_MARKER}\n**Manki** could not load its config, so no review ran. Fix the file and push again.\n\n${fence}\n${message}\n${fence}`;
+  const body = withMarkers(`**Manki** could not load its config, so no review ran. Fix the file and push again.\n\n${fence}\n${message}\n${fence}`, CONFIG_ERROR_MARKER);
   try {
     await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
   } catch (error) {
