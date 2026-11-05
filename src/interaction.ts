@@ -16,8 +16,11 @@ import { WRITING_RULES } from './writing-rules';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
+const FIRST_TIME_ASSOCIATIONS = ['FIRST_TIMER', 'FIRST_TIME_CONTRIBUTOR'];
+
 /**
- * Whether the commenter may start Manki from a comment: anyone with write access, or the PR author on their own PR.
+ * Whether the commenter may start Manki from a comment: anyone with write access, or the PR author on their own PR
+ * unless GitHub marks them as a first-time contributor.
  * `OWNER`, `MEMBER` and `COLLABORATOR` pass without an API call. GitHub reports an organization member whose
  * membership is private as `CONTRIBUTOR` or `NONE`, so anyone else is looked up.
  * On an edit of another user's comment, such as a Force review tick, the association describes the comment author,
@@ -28,9 +31,10 @@ export async function isLLMAccessAllowed(octokit: Octokit, owner: string, repo: 
   const senderLogin: string | undefined = sender?.login;
   const editedByOther = action === 'edited' && (!senderLogin || senderLogin !== comment?.user?.login);
   if (!editedByOther) {
-    if (isTrustedAssociation(comment?.author_association)) return true;
+    const association: string = comment?.author_association ?? '';
+    if (isTrustedAssociation(association)) return true;
     const prAuthorLogin: string | undefined = pullRequest?.user?.login ?? (issue?.pull_request ? issue.user?.login : undefined);
-    if (senderLogin && senderLogin.toLowerCase() === prAuthorLogin?.toLowerCase()) return true;
+    if (senderLogin && senderLogin.toLowerCase() === prAuthorLogin?.toLowerCase() && !FIRST_TIME_ASSOCIATIONS.includes(association)) return true;
   }
   return !!senderLogin && await hasWriteAccess(octokit, owner, repo, senderLogin);
 }

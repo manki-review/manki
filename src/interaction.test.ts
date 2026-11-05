@@ -591,6 +591,16 @@ describe('isLLMAccessAllowed', () => {
     expect(ghUtils.hasWriteAccess).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', login);
   });
 
+  it.each(['FIRST_TIMER', 'FIRST_TIME_CONTRIBUTOR'])('asks the API about a PR author marked %s', async association => {
+    setContext({
+      comment: { id: 42, body: '@manki review', user: { login: 'reader' }, author_association: association },
+      sender: { login: 'reader' },
+      pull_request: { number: 1, user: { login: 'reader' } },
+    });
+    expect(await allowed()).toBe(false);
+    expect(ghUtils.hasWriteAccess).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 'reader');
+  });
+
   it('does not count an issue author as a PR author', async () => {
     setContext({
       comment: { id: 42, body: '@manki help', user: { login: 'reader' }, author_association: 'NONE' },
