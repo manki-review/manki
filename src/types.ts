@@ -299,6 +299,8 @@ export interface ReviewResult {
   plannerSource?: RoundPlannerSource;
   /** Short tag describing the planner fallback path, when one fired. */
   plannerFallbackReason?: string;
+  /** Stages a safety filter refused that ran again on a fallback model. */
+  modelFallbacks?: RoundModelFallback[];
   /** Triage the team was built from, after the pin and the sensitive-path rule. */
   triage?: Triage;
   /** Whether the diff touches a security-sensitive path. */
@@ -481,6 +483,8 @@ export interface ReviewConfig {
     reviewer_pair?: string;
     judge?: string;
     dedup?: string;
+    /** Model a stage moves to when a safety filter refuses it. Unset means `reviewer`. */
+    fallback?: string;
   };
   planner?: {
     enabled?: boolean;
@@ -959,6 +963,18 @@ export interface RoundModels {
   reviewerPair?: string;
   judge: string;
   dedup?: string;
+  /** Stages a safety filter refused that ran again on a fallback model, in the order they ran. */
+  fallbacks?: RoundModelFallback[];
+}
+
+/** A stage call that a safety filter refused and that ran again on `fallbackModel`. */
+export interface RoundModelFallback {
+  stage: keyof NonNullable<RoundUsage['perStage']>;
+  /** Finder the filter refused, on the `reviewer` stage. */
+  agent?: string;
+  fallbackModel: string;
+  /** The provider's refusal signal, such as `refusal (cyber)` or `content_filter`. */
+  reason: string;
 }
 
 /**

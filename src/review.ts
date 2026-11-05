@@ -3,12 +3,12 @@ import { minimatch } from 'minimatch';
 
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { resolveReviewerModel } from './config';
-import { addUsage, LLMClient, LLMUsage, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
+import { addUsage, LLMClient, LLMUsage, withRefusalFallback, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
 import { runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, LinkedIssue, titleToSlug } from './github';
 import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, PreviousFinding, titleOverlapType } from './recap';
-import { FOLLOW_UP_TAG, SECURITY_TAG, ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundPlannerSource, RoundStaticSignalMatch, EffortLevel, Finder, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { FOLLOW_UP_TAG, SECURITY_TAG, ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundStaticSignalMatch, EffortLevel, Finder, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, parsePRDiff, rebuildRawDiff } from './diff';
 import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, chooseGroup, classifyPr, resolveRouting } from './routing';
 import { extractJSON } from './json';
@@ -162,6 +162,11 @@ export function intersectFindings(passes: Finding[][], threshold: number): Findi
   });
 }
 
+interface FallbackClient {
+  model: string;
+  client: LLMClient;
+}
+
 export interface ReviewClients {
   reviewer: LLMClient;
   /** Clients keyed by finder model. A finder whose model is missing runs on `reviewer`. */
@@ -169,10 +174,24 @@ export interface ReviewClients {
   judge: LLMClient;
   planner?: LLMClient;
   dedup?: LLMClient;
+  /** Where each stage moves when a safety filter refuses it. The verdict reader uses `judge`'s. */
+  fallbacks?: {
+    planner?: FallbackClient;
+    /** Keyed like `reviewerByModel`. */
+    reviewerByModel?: ReadonlyMap<string, FallbackClient>;
+    judge?: FallbackClient;
+    dedup?: FallbackClient;
+  };
 }
 
-function pickReviewerClient(clients: ReviewClients, finder: Finder): LLMClient {
-  return clients.reviewerByModel?.get(finder.model) ?? clients.reviewer;
+interface StageClient {
+  client: LLMClient;
+  fallback?: FallbackClient;
+}
+
+function pickReviewerClient(clients: ReviewClients, finder: Finder): StageClient {
+  const client = clients.reviewerByModel?.get(finder.model);
+  return client ? { client, fallback: clients.fallbacks?.reviewerByModel?.get(finder.model) } : { client: clients.reviewer };
 }
 
 export interface ReviewProgress {
@@ -435,6 +454,12 @@ export async function runReview(
     isFollowUp, openThreads, previousFindings, priorRounds, prAuthorLogin, interRoundDiff,
   } = options;
   const provenanceMap = computeProvenanceMap(priorRounds, rawDiff);
+  const modelFallbacks: RoundModelFallback[] = [];
+  const withFallback = ({ client, fallback }: StageClient, stage: RoundModelFallback['stage'], agent?: string): LLMClient =>
+    withRefusalFallback(client, fallback?.client, (error) => {
+      core.warning(`A safety filter refused the ${agent ?? stage} call (${error.reason}), sending it again on ${fallback!.model}`);
+      modelFallbacks.push({ stage, ...(agent && { agent }), fallbackModel: fallback!.model, reason: error.reason });
+    });
   let plannerResult: PlannerResult | null = null;
   let plannerUsage: LLMUsage | undefined;
   let plannerDurationMs: number | undefined;
@@ -446,7 +471,7 @@ export async function runReview(
       onProgress({ phase: 'planning' });
     }
     const plannerStart = Date.now();
-    const plannerWrap = wrapClientForUsage(clients.planner);
+    const plannerWrap = wrapClientForUsage(withFallback({ client: clients.planner, fallback: clients.fallbacks?.planner }, 'planner'));
     const outcome: PlannerOutcomeSink = {};
     plannerResult = await runPlanner(plannerWrap.client, diff, outcome);
     plannerUsage = plannerWrap.getTotals().usage;
@@ -481,6 +506,7 @@ export async function runReview(
   }
 
   const memoryContext = memory ? buildMemoryContext(memory) : '';
+  const finderClients = new Map(team.finders.map(f => [f.name, withFallback(pickReviewerClient(clients, f), 'reviewer', f.name)]));
   const finderOptions = (finder: Finder): RunReviewerAgentOptions => ({ effort: finder.effort, language: plannerResult?.language, context: plannerResult?.context });
 
   const passes = config.review_passes ?? 1;
@@ -506,7 +532,7 @@ export async function runReview(
         Array.from({ length: passes }, () => {
           const shuffledDiff = shuffleDiffFiles(diff);
           const shuffledRawDiff = rebuildRawDiff(shuffledDiff);
-          return runReviewerAgent(pickReviewerClient(clients, agent), config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent));
+          return runReviewerAgent(finderClients.get(agent.name)!, config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent));
         })
       );
 
@@ -602,7 +628,7 @@ export async function runReview(
           Array.from({ length: passes }, () => {
             const shuffledDiff = shuffleDiffFiles(diff);
             const shuffledRawDiff = rebuildRawDiff(shuffledDiff);
-            return runReviewerAgent(pickReviewerClient(clients, agent), config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent));
+            return runReviewerAgent(finderClients.get(agent.name)!, config, agent, shuffledRawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent));
           })
         );
 
@@ -671,7 +697,7 @@ export async function runReview(
     core.info(`Running ${team.finders.length} reviewer agents in parallel...`);
     const agentPromises = team.finders.map(agent => {
       const startTime = Date.now();
-      return runReviewerAgent(pickReviewerClient(clients, agent), config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent))
+      return runReviewerAgent(finderClients.get(agent.name)!, config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent))
         .then(agentResult => {
           completedCount++;
           agentResponseLengths.set(agent.name, agentResult.responseLength);
@@ -755,7 +781,7 @@ export async function runReview(
 
       const retryPromises = agentsToRetry.map(agent => {
         const startTime = Date.now();
-        return runReviewerAgent(pickReviewerClient(clients, agent), config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent))
+        return runReviewerAgent(finderClients.get(agent.name)!, config, agent, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, finderOptions(agent))
           .then(agentResult => ({ agent, agentResult, durationMs: Date.now() - startTime, error: null as unknown }))
           .catch(error => ({ agent, agentResult: null as AgentResult | null, durationMs: Date.now() - startTime, error: error as unknown }));
       });
@@ -873,7 +899,7 @@ export async function runReview(
 
     if (clients.dedup && findingsForJudge.length > 0) {
       const dedupStart = Date.now();
-      const dedupWrap = wrapClientForUsage(clients.dedup);
+      const dedupWrap = wrapClientForUsage(withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup'));
       const llmResult = await llmDeduplicateFindings(findingsForJudge, previousFindings, dedupWrap.client);
       if (llmResult.duplicates.length > 0) {
         core.info(`LLM dedup removed ${llmResult.duplicates.length} findings matching dismissed ones before judge`);
@@ -923,7 +949,7 @@ export async function runReview(
   let judgeUsage: LLMUsage | undefined;
   let judgeDurationMs: number | undefined;
   let judgeRetryCount = 0;
-  const judgeWrap = wrapClientForUsage(clients.judge);
+  const judgeWrap = wrapClientForUsage(withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'judge'));
   try {
     core.info(`Running judge on ${findingsForJudge.length} findings...`);
     const judgeInput: JudgeInput = {
@@ -1029,7 +1055,7 @@ export async function runReview(
   let verdictReport: VerdictReport | undefined;
   let verdictUsage: LLMUsage | undefined;
   if (outcome === 'READY') {
-    const verdictWrap = wrapClientForUsage(clients.judge);
+    const verdictWrap = wrapClientForUsage(withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'verdict'));
     const readerFiles = fileContents && new Map([...fileContents].filter(([path]) => changedFiles.has(path)));
     try {
       verdictReport = await runVerdictReader(verdictWrap.client, buildReviewerUserMessage(rawDiff, repoContext, { fileContents: readerFiles }));
@@ -1139,6 +1165,7 @@ export async function runReview(
     ...(judgeInterRoundDiffEmptyOverride && { interRoundDiffEmptyOverride: judgeInterRoundDiffEmptyOverride }),
     ...(testNitSuppressedCount > 0 && { testNitSuppressedCount }),
     ...(staticSignalMatches.length > 0 && { staticSignalMatches }),
+    ...(modelFallbacks.length > 0 && { modelFallbacks }),
     ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
   };
 }

@@ -6,7 +6,7 @@ See `README.md` for what manki does and `SETUP.md` for installing it in a repo. 
 
 ## Pipeline order
 
-The review stages are listed in this order: **planner, reviewer, judge, dedup**. Per-stage config keys (`models.{planner,reviewer,reviewer_pair,judge,dedup}`), logs and docs follow it, so keep new per-stage items in the same order. `reviewer_pair` is the second finder's model and sits next to `reviewer`.
+The review stages are listed in this order: **planner, reviewer, judge, dedup**. Per-stage config keys (`models.{planner,reviewer,reviewer_pair,judge,dedup}`), logs and docs follow it, so keep new per-stage items in the same order. `reviewer_pair` is the second finder's model and sits next to `reviewer`. `fallback` is not a stage and comes last.
 
 At run time, `runReview` in `src/review.ts` calls dedup before the judge:
 

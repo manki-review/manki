@@ -37,6 +37,7 @@
 #   reviewer_pair: gpt-6.1-terra   # the second finder on paired rounds (default: the other Claude tier, Sonnet with Opus)
 #   judge: claude-opus-5-5         # precise, single judge
 #   dedup: claude-haiku-5-5        # fast LLM dedup against prior findings
+#   fallback: claude-sonnet-5-5    # reruns a stage a safety filter refused (default: reviewer, or the other Claude tier for a stage already on it)
 #
 # To use OpenAI, set `openai_api_key` (or `openai_oauth_token` for Codex CLI) and override models:
 # models:

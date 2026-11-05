@@ -8,6 +8,7 @@ import * as core from '@actions/core';
 
 import { buildGeminiAuth, GEMINI_CLI_VERSION, GeminiClient, geminiThinkingConfig, resetGeminiCLIInstallPromise, resolveGeminiCredsDir } from './gemini';
 import { parseModelSpec } from './model-registry';
+import { RefusalError } from './types';
 
 // Seeding `~/.gemini/oauth_creds.json` is exercised separately in `cli-utils.test.ts`.
 // Stub it out here so the provider tests don't touch the filesystem.
@@ -196,7 +197,19 @@ describe('sendMessage effort option (API path)', () => {
 
   it.each([
     [{ candidates: [{ finishReason: 'SAFETY' }] }, 'SAFETY'],
+    [{ text: 'partial', candidates: [{ finishReason: 'SPII' }] }, 'SPII'],
     [{ promptFeedback: { blockReason: 'PROHIBITED_CONTENT' } }, 'PROHIBITED_CONTENT'],
+  ])('throws a `RefusalError` when a policy filter blocks the request (%j)', async (response, reason) => {
+    mockGenerateContent.mockResolvedValue(response);
+    const client = new GeminiClient({ auth: { kind: 'apiKey', key: 'k' }, model: 'gemini-3.1-flash-lite' });
+
+    const error = await client.sendMessage('system', 'user').then(() => null, (e: Error) => e);
+    expect(error).toBeInstanceOf(RefusalError);
+    expect((error as RefusalError).reason).toBe(reason);
+  });
+
+  it.each([
+    [{ promptFeedback: { blockReason: 'OTHER' } }, 'OTHER'],
     [{}, 'no candidates'],
     [{ candidates: [{ finishReason: 'STOP' }] }, 'STOP'],
   ])('rejects a response without text (%j)', async (response, reason) => {

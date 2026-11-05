@@ -182,6 +182,9 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
       if ('dedup' in models && typeof models.dedup !== 'string') {
         errors.push('`models.dedup` must be a string');
       }
+      if ('fallback' in models && (typeof models.fallback !== 'string' || models.fallback === '')) {
+        errors.push('`models.fallback` must be a non-empty string');
+      }
       if ('agents' in models) {
         const agents = models.agents as Record<string, unknown>;
         if (!agents || typeof agents !== 'object' || Array.isArray(agents)) {
@@ -720,14 +723,31 @@ export function resolveModel(config: ReviewConfig, stage: 'planner' | 'reviewer'
  * reviewer model, else the reviewer model itself. The tier swap needs no credential beyond the reviewer's.
  */
 export function resolvePairModel(config: ReviewConfig): string {
-  const pinned = config.models?.reviewer_pair;
-  if (pinned) return pinned;
-  const reviewer = resolveModel(config, 'reviewer');
-  const id = reviewer.replace(/^anthropic\//, '');
+  return config.models?.reviewer_pair || otherClaudeTier(resolveModel(config, 'reviewer'));
+}
+
+/**
+ * Returns the model a stage on `stageModel` moves to when a safety filter refuses it: `models.fallback`,
+ * else `models.reviewer`. A stage already on that model moves to its other Claude tier instead.
+ * Returns undefined when no other model is left.
+ */
+export function resolveFallbackModel(config: ReviewConfig, stageModel: string): string | undefined {
+  const fallback = config.models?.fallback || resolveModel(config, 'reviewer');
+  const model = sameModel(fallback, stageModel) ? otherClaudeTier(stageModel) : fallback;
+  return sameModel(model, stageModel) ? undefined : model;
+}
+
+function sameModel(a: string, b: string): boolean {
+  return a.replace(/^anthropic\//, '') === b.replace(/^anthropic\//, '');
+}
+
+/** Returns the other Claude tier of `model` (Sonnet for Opus and Haiku, Opus for Sonnet), or `model` itself for other providers. */
+function otherClaudeTier(model: string): string {
+  const id = model.replace(/^anthropic\//, '');
   if (id.startsWith('claude-opus-')) return SONNET_MODEL;
   if (id.startsWith('claude-sonnet-')) return OPUS_MODEL;
   if (id.startsWith('claude-haiku-')) return SONNET_MODEL;
-  return reviewer;
+  return model;
 }
 
 /** Returns the model a group reviewer runs on. `@reviewer` and `@reviewer_pair` resolve through `models`, and unset means `@reviewer`. */

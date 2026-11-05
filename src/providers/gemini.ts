@@ -6,7 +6,7 @@ import { FinishReason, GoogleGenAI, ThinkingConfig, ThinkingLevel } from '@googl
 import * as core from '@actions/core';
 
 import { buildExitDiagnostics, callWithTimeout, runCli, sanitizeLogOutput, seedAuthFile, warnReplyTail } from './cli-utils';
-import { GeminiAuth, LLMClient, LLMResponse, LLMUsage, readCount, SendMessageOptions, ZERO_USAGE } from './types';
+import { GeminiAuth, LLMClient, LLMResponse, LLMUsage, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
 
@@ -62,6 +62,9 @@ export function geminiThinkingConfig(model: string, effort: SendMessageOptions['
 // its optional keychain dependency has one, which the seeded `oauth_creds.json` file does not need.
 // Keep this in sync with the install step in `.github/workflows/manki.yml`.
 export const GEMINI_CLI_VERSION = '0.66.0';
+
+// `finishReason` and `promptFeedback.blockReason` values that mean a safety or policy filter declined the request.
+const POLICY_BLOCK_REASONS: ReadonlySet<string> = new Set(['SAFETY', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII', 'MODEL_ARMOR']);
 
 let cliInstallPromise: Promise<string> | null = null;
 
@@ -241,14 +244,19 @@ export class GeminiClient implements LLMClient {
     }));
 
     const finishReason = response.candidates?.[0]?.finishReason;
-    const truncated = finishReason === FinishReason.MAX_TOKENS;
     const content = response.text ?? '';
     if (finishReason && finishReason !== FinishReason.STOP) {
       core.warning(`Gemini API reply ended on finishReason ${finishReason}`);
       warnReplyTail('Gemini API', content);
     }
+    const blockReason = response.promptFeedback?.blockReason;
+    const policyBlock = [blockReason, finishReason].find(r => r !== undefined && POLICY_BLOCK_REASONS.has(r));
+    if (policyBlock) {
+      throw new RefusalError(`Gemini API declined the request: ${policyBlock}`, policyBlock);
+    }
+    const truncated = finishReason === FinishReason.MAX_TOKENS;
     if (!content && !truncated) {
-      const reason = response.promptFeedback?.blockReason ?? finishReason ?? 'no candidates';
+      const reason = blockReason ?? finishReason ?? 'no candidates';
       throw new Error(`Gemini API returned no usable content: ${reason}`);
     }
     core.debug(sanitizeLogOutput(content.slice(0, 200)));

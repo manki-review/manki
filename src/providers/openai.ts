@@ -7,7 +7,7 @@ import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/ch
 import * as core from '@actions/core';
 
 import { buildExitDiagnostics, callWithTimeout, runCli, seedAuthFile, STALE_TIMEOUT_MS, warnReplyTail } from './cli-utils';
-import { LLMClient, LLMResponse, LLMUsage, OpenAIAuth, readCount, SendMessageOptions, ZERO_USAGE } from './types';
+import { LLMClient, LLMResponse, LLMUsage, OpenAIAuth, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
 
@@ -280,6 +280,11 @@ export class OpenAIClient implements LLMClient {
     if (choice?.finish_reason === 'length' || choice?.finish_reason === 'content_filter') {
       core.warning(`OpenAI API reply ended on finish_reason ${choice.finish_reason}`);
       warnReplyTail('OpenAI API', content);
+    }
+    const refusal = choice?.message?.refusal;
+    if (choice?.finish_reason === 'content_filter' || refusal) {
+      const reason = refusal ? 'refusal' : 'content_filter';
+      throw new RefusalError(`OpenAI API declined the request: ${reason}${refusal ? `. ${sanitizeLogOutput(refusal).slice(0, 300)}` : ''}`, reason);
     }
 
     const sdkUsage = response.usage as undefined | {
