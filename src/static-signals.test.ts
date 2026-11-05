@@ -5,7 +5,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 import * as napi from '@ast-grep/napi';
 
-import { parsePRDiff } from './diff';
+import { filterDiff, parsePRDiff } from './diff';
 import * as githubModule from './github';
 import { buildReviewerUserMessage } from './review';
 import { checkFindingClaims, collectStaticSignals, StaticAnalysisRuntime, StaticSignalRequest, toolAlertFindings } from './static-signals';
@@ -47,7 +47,7 @@ const RAW_DIFF = [
 function request(): StaticSignalRequest {
   return {
     owner: 'o', repo: 'r', prNumber: 7, headSha: 'head-sha', baseRef: 'main',
-    configPath: '.manki.yml', diff: parsePRDiff(RAW_DIFF),
+    configPath: '.manki.yml', diff: parsePRDiff(RAW_DIFF), fullDiff: parsePRDiff(RAW_DIFF),
   };
 }
 
@@ -279,15 +279,28 @@ describe('collectStaticSignals with analyzers and waits', () => {
       '+++ b/.gitleaksignore',
       '@@ -0,0 +1 @@',
       '+src/app.ts:github-pat:2',
+      'diff --git a/web/yarn.lock b/web/yarn.lock',
+      '--- a/web/yarn.lock',
+      '+++ b/web/yarn.lock',
+      '@@ -1,1 +1,3 @@',
+      ' # yarn lockfile v1',
+      '+lodash@4.17.0:',
+      '+  version "4.17.0"',
       '',
     ].join('\n');
+    const YARN_LOCK = '# yarn lockfile v1\nlodash@4.17.0:\n  version "4.17.0"\n';
     const LOCKFILE = '{\n  "lockfileVersion": 3,\n  "packages": {\n    "node_modules/lodash": { "version": "4.17.0" },\n    "": {}\n  }\n}\n';
     const FILES = {
       'head-sha:src/app.ts': 'const a = 1;\nconst token = "ghp_0000"; // gitleaks:allow\nexport { a };\n',
       'head-sha:package-lock.json': LOCKFILE,
       'head-sha:.gitleaksignore': 'src/app.ts:github-pat:2\n',
+      'head-sha:web/yarn.lock': YARN_LOCK,
     };
-    const analyzerRequest = () => ({ ...request(), diff: parsePRDiff(ANALYZER_DIFF) });
+    // The default `*.lock` exclusion hides `web/yarn.lock` from the review.
+    const analyzerRequest = () => {
+      const fullDiff = parsePRDiff(ANALYZER_DIFF);
+      return { ...request(), diff: filterDiff(fullDiff, ['*.lock']).diff, fullDiff };
+    };
 
     it('scans only the added lines for secrets with Manki\'s gitleaks config, ignoring `gitleaks:allow` and ignore files', async () => {
       const octokit = makeOctokit({ main: `${ONLY_ANALYZERS}  analyzers:\n    secrets: true\n` }, FILES);
@@ -311,19 +324,30 @@ describe('collectStaticSignals with analyzers and waits', () => {
       expect(toolAlertFindings(signals)).toEqual([expect.objectContaining({ toolSource: 'gitleaks', severity: 'blocker' })]);
     });
 
-    it('checks the changed lockfiles with OSV-Scanner and places each vulnerability on the line that adds the package', async () => {
+    it('checks every changed lockfile with OSV-Scanner, even one the review excludes, and places each vulnerability on the line that adds the package', async () => {
       const octokit = makeOctokit({ main: `${ONLY_ANALYZERS}  analyzers:\n    dependencies: true\n` }, FILES);
+      jest.mocked(runtime.runTool).mockImplementationOnce(async (_binary, _args, cwd) => {
+        scanned['osv-scanner'] = readTree(cwd);
+        const { results } = JSON.parse(readFileSync(join(FIXTURES, 'osv-scanner.json'), 'utf-8').replaceAll('<root>', cwd));
+        const yarn = { ...results[0], source: { ...results[0].source, path: join(cwd, 'web', 'yarn.lock') } };
+        return { code: 1, stdout: JSON.stringify({ results: [...results, yarn] }), stderr: '' };
+      });
 
       const { signals, record } = await collectStaticSignals(octokit, analyzerRequest(), runtime);
 
-      expect(signals).toEqual([
-        { tool: 'osv-scanner', ruleId: 'GHSA-35jh-r3h4-6jhm', severity: 'error', file: 'package-lock.json', line: 4, message: 'lodash@4.17.0: Command Injection in lodash', source: 'dependencies' },
-        { tool: 'osv-scanner', ruleId: 'GHSA-29mw-wpgm-hmr9', severity: 'warning', file: 'package-lock.json', line: 4, message: 'lodash@4.17.0: Regular Expression Denial of Service (ReDoS) in lodash', source: 'dependencies' },
-      ]);
-      expect(record).toEqual({ analyzers: [{ analyzer: 'dependencies', status: 'ran', results: 2 }] });
-      expect(scanned['osv-scanner']).toEqual({ 'package-lock.json': LOCKFILE });
+      const advisories = [
+        { ruleId: 'GHSA-35jh-r3h4-6jhm', severity: 'error', message: 'lodash@4.17.0: Command Injection in lodash' },
+        { ruleId: 'GHSA-29mw-wpgm-hmr9', severity: 'warning', message: 'lodash@4.17.0: Regular Expression Denial of Service (ReDoS) in lodash' },
+      ];
+      expect(signals.map(s => ({ ...s }))).toEqual(expect.arrayContaining([
+        ...advisories.map(a => ({ tool: 'osv-scanner', ...a, file: 'package-lock.json', line: 4, source: 'dependencies' })),
+        ...advisories.map(a => ({ tool: 'osv-scanner', ...a, file: 'web/yarn.lock', line: 2, source: 'dependencies' })),
+      ]));
+      expect(signals).toHaveLength(4);
+      expect(record).toEqual({ analyzers: [{ analyzer: 'dependencies', status: 'ran', results: 4 }] });
+      expect(scanned['osv-scanner']).toEqual({ 'package-lock.json': LOCKFILE, 'web/yarn.lock': YARN_LOCK });
       const args = toolArgs('osv-scanner');
-      expect(argAfter(args, '-L')).toBe('package-lock.json');
+      expect(args.filter((_, i) => args[i - 1] === '-L')).toEqual(['package-lock.json', 'web/yarn.lock']);
       expect(argAfter(args, '--config')).toMatch(/rules[/\\]osv-scanner\.toml$/);
       expect(existsSync(argAfter(args, '--config'))).toBe(true);
       expect(args).toEqual(expect.arrayContaining(['--no-resolve', '--no-call-analysis=all']));

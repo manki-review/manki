@@ -900,7 +900,7 @@ async function collectOpenThreads(
 
 /** Fetches the diff since the last reviewed commit, the issues the PR body links, and the static analysis results. */
 async function collectRoundSignals(
-  target: RunTarget, config: ReviewConfig, recap: RecapState, diff: ParsedDiff, configPath: string, prBody?: string,
+  target: RunTarget, config: ReviewConfig, recap: RecapState, diff: ParsedDiff, fullDiff: ParsedDiff, configPath: string, prBody?: string,
 ): Promise<{ interRoundDiff?: string; linkedIssues?: LinkedIssue[]; staticSignals: StaticSignal[]; staticAnalysis?: RoundStaticAnalysis }> {
   const { octokit, owner, repo, prNumber, commitSha, baseRef } = target;
   // Fetch inter-round diff (prior round commit -> current head) so the judge
@@ -912,7 +912,7 @@ async function collectRoundSignals(
   // Read with the workflow token, which carries the `checks` and `security-events` permissions the workflow grants.
   const workflowToken = core.getInput('github_token');
   const staticSignalsPromise = collectStaticSignals(workflowToken ? github.getOctokit(workflowToken) : octokit, {
-    owner, repo, prNumber, headSha: commitSha, baseRef, configPath, diff,
+    owner, repo, prNumber, headSha: commitSha, baseRef, configPath, diff, fullDiff,
   });
 
   let linkedIssues;
@@ -1329,7 +1329,7 @@ async function runFullReview(
     }
 
     const { openThreads, fileContents } = await collectOpenThreads(target, recap, diff);
-    const { interRoundDiff, linkedIssues, staticSignals, staticAnalysis } = await collectRoundSignals(target, config, recap, diff, configPath, prContext?.body);
+    const { interRoundDiff, linkedIssues, staticSignals, staticAnalysis } = await collectRoundSignals(target, config, recap, diff, fullDiff, configPath, prContext?.body);
 
     const run: ReviewRun = {
       ...target, options, trigger, config, reviewSource, models, plannerEnabled: !!clients.planner,

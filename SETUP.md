@@ -476,7 +476,7 @@ The analyzers never run code from the PR. Manki reads the changed files through 
 
 Manki downloads each tool at the pinned version, checks it against its pinned digest (SHA-512 for the ast-grep packages from npm, SHA-256 for the release binaries), and caches it for the run. The ast-grep native module and its Python grammar load in process. ncc can only bundle the native module for the platform that builds `dist/`, so they load at run time. Builds are pinned for Linux and macOS (x64 and arm64) and Windows (x64). If a download fails, the platform has no pinned build or a tool fails, that analyzer is skipped with a warning and the review goes on.
 
-Analyzers only look at the files the review covers, so a lockfile that matches `exclude_paths` is not checked. The default `*.lock` pattern covers `yarn.lock`, `Cargo.lock`, `poetry.lock` and `Gemfile.lock`. Remove the pattern to have `dependencies` check them.
+`exclude_paths` keeps files away from the reviewers, and the analyzers follow it, with one exception. `dependencies` checks every lockfile the PR changes, including the ones the default `*.lock` pattern excludes, such as `yarn.lock` or `Cargo.lock`. A result on an excluded file has no inline thread, so it is listed in the review body.
 
 Analyzer results follow the path of the CI results above, limited to lines of the diff. Since no CI shows them to the author, every result goes to the judge as a candidate finding, and a reviewer finding on the same line is never dropped for it. A result the judge keeps is posted with the tool in its label, such as `⚠️ **Warning** (gitleaks):`. A clean run posts nothing. The `Manki context` block records each enabled analyzer under `staticAnalysis.analyzers`, with how many results it found or why it was skipped.
 

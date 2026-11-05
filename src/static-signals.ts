@@ -44,6 +44,8 @@ export interface StaticSignalRequest {
   /** Path of the Manki config file. Its `static_analysis` block is read from `baseRef`. */
   configPath: string;
   diff: ParsedDiff;
+  /** Every file the PR changes, before `exclude_paths`. `dependencies` reads it, so a lockfile the review skips is still scanned. */
+  fullDiff: ParsedDiff;
 }
 
 /** What `collectStaticSignals` needs from outside the GitHub API, so tests can stand in for it. */
@@ -72,7 +74,7 @@ export interface StaticAnalysisResult {
 export async function collectStaticSignals(
   octokit: Octokit, request: StaticSignalRequest, runtime: StaticAnalysisRuntime = DEFAULT_RUNTIME,
 ): Promise<StaticAnalysisResult> {
-  const { owner, repo, baseRef, configPath, diff } = request;
+  const { owner, repo, baseRef, configPath, diff, fullDiff } = request;
   const content = await fetchConfigFile(octokit, owner, repo, baseRef, configPath).catch((error: unknown) => {
     core.warning(`Static analysis: could not read ${configPath} on the base branch, reading every source: ${error instanceof Error ? error.message : String(error)}`);
     return null;
@@ -103,7 +105,7 @@ export async function collectStaticSignals(
   if (analyzers.includes('dependencies')) {
     sources.push(['dependencies', async () => {
       const vulnerabilities = await runOsvScanner(await fetchLockfiles(octokit, request), runtime);
-      return placeVulnerabilities(vulnerabilities, diff, 'osv-scanner', 'dependencies');
+      return placeVulnerabilities(vulnerabilities, fullDiff, 'osv-scanner', 'dependencies');
     }]);
   }
   if (analyzers.includes('semgrep')) {
@@ -111,12 +113,13 @@ export async function collectStaticSignals(
   }
 
   const files = new Map(diff.files.map(f => [f.path, f]));
+  const allFiles = new Map(fullDiff.files.map(f => [f.path, f]));
   const runs: RoundAnalyzerRun[] = [];
   const collected = await Promise.all(sources.map(async ([source, fetch]) => {
     const analyzer = analyzers.find(a => a === source);
     try {
       const onDiff = (await fetch()).filter(s => {
-        const file = files.get(s.file);
+        const file = (source === 'dependencies' ? allFiles : files).get(s.file);
         return file !== undefined && isLineInDiff(file, s.line);
       }).map(s => analyzer ? { ...s, ruleId: cleanMessage(s.ruleId, MAX_NAME_CHARS), message: cleanMessage(s.message) } : s);
       if (analyzer) runs.push({ analyzer, status: 'ran', results: onDiff.length });
@@ -180,8 +183,8 @@ async function waitForChecks(
 }
 
 /** Returns the changed lockfiles at the PR head. They are fetched raw, since the contents API sends no content above 1 MB. */
-async function fetchLockfiles(octokit: Octokit, { owner, repo, headSha, diff }: StaticSignalRequest): Promise<Map<string, string>> {
-  const paths = diff.files.filter(f => f.changeType !== 'deleted' && isLockfile(f.path)).map(f => f.path);
+async function fetchLockfiles(octokit: Octokit, { owner, repo, headSha, fullDiff }: StaticSignalRequest): Promise<Map<string, string>> {
+  const paths = fullDiff.files.filter(f => f.changeType !== 'deleted' && isLockfile(f.path)).map(f => f.path);
   const contents = await Promise.all(paths.map(async path => {
     const { data } = await octokit.rest.repos.getContent({ owner, repo, path, ref: headSha, mediaType: { format: 'raw' } });
     return [path, data as unknown as string] as const;
