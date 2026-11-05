@@ -267,6 +267,10 @@ class FakeGitHub {
       const thread = this.threads.find(t => t.id === variables.threadId);
       return { node: { comments: connection(thread?.comments ?? [], 100, after(variables.cursor)) } };
     }
+    if (query.includes('on PullRequestReviewThread')) {
+      const thread = this.threads.find(t => t.id === variables.id);
+      return { node: thread && { id: thread.id, isResolved: thread.isResolved, resolvedBy: thread.resolvedBy && { ...thread.resolvedBy, __typename: 'User' }, pullRequest: { number: PR_NUMBER, repository: { nameWithOwner: `${OWNER}/${REPO}` } } } };
+    }
     throw new Error(`Unexpected GraphQL query: ${query}`);
   }
 }
@@ -681,6 +685,20 @@ describe('runFullReview end to end', () => {
       expect(core.setFailed).not.toHaveBeenCalled();
       expect(mockGitHub.writes).toEqual([]);
       expect(mockLLM.calls).toEqual([]);
+    });
+
+    it('runs the auto-approve check when someone resolves the last open thread', async () => {
+      Object.assign(mockLLM.replies, BLOCKER_REPLIES);
+      await reviewRound();
+      const [thread] = mockGitHub.threads;
+      Object.assign(thread, { isResolved: true, resolvedBy: { login: 'bob' } });
+      mockLLM.calls = [];
+
+      await dispatch({ event: 'pull_request_review_thread', action: 'resolved', pr: String(PR_NUMBER), thread_id: thread.id });
+
+      expect(core.setFailed).not.toHaveBeenCalled();
+      expect(mockLLM.calls).toEqual([]);
+      expect(postedReviews().map(r => [r.state, r.commit_id])).toEqual([['DISMISSED', HEAD_SHA], ['APPROVED', HEAD_SHA]]);
     });
 
     it('answers a reply in a Manki thread as the person who wrote it', async () => {

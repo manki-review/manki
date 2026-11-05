@@ -223,6 +223,12 @@ async function run(): Promise<void> {
       core.info(`Ignoring pull_request_review action: ${action}`);
       return;
     }
+  } else if (eventName === 'pull_request_review_thread') {
+    // Only a dispatched run sees this event, since GitHub Actions cannot trigger on it.
+    if (action !== 'resolved' && action !== 'unresolved') {
+      core.info(`Ignoring pull_request_review_thread action: ${action}`);
+      return;
+    }
   } else {
     core.info(`Ignoring unsupported event: ${eventName}`);
     return;
@@ -260,6 +266,11 @@ async function run(): Promise<void> {
 
     case 'pull_request_review':
       core.info('Review submitted/dismissed — checking if auto-approve is warranted');
+      await handleReviewStateCheck();
+      break;
+
+    case 'pull_request_review_thread':
+      core.info(`Review thread ${action}, checking if auto-approve is warranted`);
       await handleReviewStateCheck();
       break;
   }
