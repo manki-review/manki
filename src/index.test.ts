@@ -152,6 +152,7 @@ jest.mock('./review', () => ({
     agentNames: ['general'],
   }),
   teamModels: jest.requireActual('./review').teamModels,
+  RETRY_HINT: jest.requireActual('./review').RETRY_HINT,
   stringifyFindingFingerprint: jest.requireActual('./review').stringifyFindingFingerprint,
   selectTeam: jest.fn().mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, index: 0, model: 'claude-sonnet-5-5', effort: 'high' }], routing: { matched: ['internal'], classSource: 'triage', group: 'solo', groupSource: 'routing' }, triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false }),
 }));
@@ -2860,7 +2861,19 @@ describe('runFullReview orchestration', () => {
     expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
   });
 
-  it('fails the job, keeps previous reviews and puts the reason in the progress comment when the review throws', async () => {
+  const githubError = (status: number, message: string): Error => Object.assign(new Error(message), {
+    name: 'HttpError',
+    status,
+    request: { method: 'POST', url: 'https://api.github.com/repos/test-owner/test-repo/pulls/42/reviews?per_page=1' },
+    response: { status, headers: { 'x-github-request-id': 'ABCD:1234' } },
+  });
+
+  it.each([
+    ['a message', new Error('provider down, token ghs_abc123'), 'provider down, token [REDACTED]'],
+    ['an empty message', new Error(''), 'Error with no message'],
+    ['an empty GitHub 404', githubError(404, ''), 'GitHub returned 404 on POST /repos/test-owner/test-repo/pulls/42/reviews (request id ABCD:1234).'],
+    ['a GitHub 502', githubError(502, '<html>Bad gateway</html>'), `GitHub returned 502 on POST /repos/test-owner/test-repo/pulls/42/reviews (request id ABCD:1234). ${reviewModule.RETRY_HINT}`],
+  ])('fails the job, keeps previous reviews and puts the reason in the progress comment when the review throws %s', async (_case, thrown, reason) => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
@@ -2869,13 +2882,13 @@ describe('runFullReview orchestration', () => {
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
-    jest.mocked(reviewModule.runReview).mockRejectedValueOnce(new Error('provider down, token ghs_abc123'));
+    jest.mocked(reviewModule.runReview).mockRejectedValueOnce(thrown);
 
     await callRunFullReview();
 
-    expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith('Review failed: provider down, token [REDACTED]');
+    expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(`Review failed: ${reason}`);
     expect(jest.mocked(ghUtils.markProgressCommentFailed)).toHaveBeenCalledWith(
-      expect.anything(), 'test-owner', 'test-repo', 1, 'Review', 'provider down, token [REDACTED]',
+      expect.anything(), 'test-owner', 'test-repo', 1, 'Review', reason,
     );
     expect(jest.mocked(ghUtils.updateProgressComment)).not.toHaveBeenCalled();
     expect(jest.mocked(ghUtils.postReview)).not.toHaveBeenCalled();

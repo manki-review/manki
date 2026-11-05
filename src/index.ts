@@ -17,7 +17,7 @@ import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, 
 import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, RepoMemory } from './memory';
 import { fetchRecapState, PreviousFinding, RecapState, securityOverridesIn } from './recap';
-import { ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint, teamModels } from './review';
+import { RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint, teamModels } from './review';
 import { buildRoundContext, RoundRecordInput } from './round-context';
 import { collectStaticSignals } from './static-signals';
 import { DashboardData, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, RoundTrigger, StaticSignal, roundContextToFlatAliases } from './types';
@@ -456,8 +456,34 @@ async function handleCommentTrigger(forceReview?: boolean, skipCap?: boolean, by
   });
 }
 
+/** The fields of an Octokit `RequestError`, whose `name` is `HttpError`. */
+interface OctokitErrorFields {
+  status?: number;
+  request?: { method?: string; url?: string };
+  response?: { headers?: Record<string, string | undefined> };
+}
+
 function failureReason(error: unknown): string {
-  return sanitizeLogOutput(sanitizeTokens(error instanceof Error ? error.message : String(error)));
+  return sanitizeLogOutput(sanitizeTokens(describeFailure(error)));
+}
+
+/**
+ * Describes a failure in a sentence that always names a cause. A 5xx from GitHub reads as a
+ * transient failure, and an Octokit error with an empty message falls back to its status and call.
+ */
+function describeFailure(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  if (error.name === 'HttpError') {
+    const { status, request, response } = error as OctokitErrorFields;
+    const path = request?.url?.replace(/^https?:\/\/[^/]+/, '').split('?')[0];
+    const call = request?.method && path ? ` on ${request.method} ${path}` : '';
+    const requestId = response?.headers?.['x-github-request-id'];
+    const where = `${call}${requestId ? ` (request id ${requestId})` : ''}`;
+    // Without a response the request never reached GitHub, so the message names the network error.
+    if (response && status !== undefined && status >= 500) return `GitHub returned ${status}${where}. ${RETRY_HINT}`;
+    if (!error.message) return `GitHub returned ${status ?? 'an error'}${where}.`;
+  }
+  return error.message || `${error.name} with no message`;
 }
 
 function reconcileDashboardAgents(dashboard: DashboardData, names: string[]): void {
