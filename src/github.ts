@@ -1171,7 +1171,7 @@ export function formatBlockingPriorThreads(result: { verdictReason?: VerdictReas
 
 function formatTraceEntry(p: VerdictTraceEntry): string {
   const file = sanitizeFilePath(p.file);
-  const location = !file ? '' : p.line != null ? `\`${file}:${p.line}\`: ` : `\`${file}\`: `;
+  const location = !file ? '' : p.line ? `\`${file}:${p.line}\`: ` : `\`${file}\`: `;
   const title = sanitizeMarkdown(p.title || '(untitled)');
   const safeUrl = p.threadUrl && /^https?:\/\/[^\s)]+$/.test(p.threadUrl) ? p.threadUrl : null;
   const link = safeUrl ? ` ([view thread](${safeUrl}))` : '';

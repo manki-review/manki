@@ -616,10 +616,11 @@ describe('formatBlockingPriorThreads', () => {
         unresolvedPriors: [
           { file: 'a.ts', title: 'A', fingerprint: 'a.ts:1:1:a', severity: 'blocker', line: 1 },
           { file: 'b.ts', title: 'B', fingerprint: 'b.ts:2:2:b', severity: 'warning', line: 2 },
+          { file: 'c.ts', title: 'C', fingerprint: 'c.ts:0:0:c', severity: 'blocker', line: 0 },
         ],
       },
     });
-    expect(formatBlockingPriorThreads(result)).toBe('**Still open from earlier reviews:**\n- `a.ts:1`: A\n- `b.ts:2`: B');
+    expect(formatBlockingPriorThreads(result)).toBe('**Still open from earlier reviews:**\n- `a.ts:1`: A\n- `b.ts:2`: B\n- `c.ts`: C');
   });
 
   it('omits the link when no `threadUrl` is provided', () => {
