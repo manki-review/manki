@@ -45,6 +45,17 @@ export function addUsage(a: LLMUsage, b: LLMUsage): LLMUsage {
   };
 }
 
+/**
+ * Thrown when a provider's safety or usage-policy filter declines the request. Another model can
+ * often serve the same request, so callers may retry it there. `reason` names the provider's signal.
+ */
+export class RefusalError extends Error {
+  constructor(message: string, readonly reason: string) {
+    super(message);
+    this.name = 'RefusalError';
+  }
+}
+
 export interface SendMessageOptions {
   effort?: 'low' | 'medium' | 'high' | 'max';
   /** Wall-clock limit for the call. Unset keeps the provider's default limit. */

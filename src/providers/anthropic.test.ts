@@ -6,7 +6,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
 import { AnthropicClient, buildAnthropicAuth, CLAUDE_CLI_VERSION, extractAnthropicCLIUsage, resetCLIInstallPromise, sanitizeLogOutput, STALE_TIMEOUT_MS } from './anthropic';
-import { SendMessageOptions } from './types';
+import { RefusalError, SendMessageOptions } from './types';
 
 jest.mock('child_process', () => ({
   execFile: jest.fn(),
@@ -319,7 +319,35 @@ describe('sendViaOAuth — error paths', () => {
     const error = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
     expect(error?.message.startsWith(`Claude CLI error: ${cliError}. Claude CLI invocation failed`)).toBe(true);
     expect(error?.message).not.toContain('claude setup-token');
+    expect(error).not.toBeInstanceOf(RefusalError);
     warnSpy.mockRestore();
+  });
+
+  const safeguardsText = "API Error: Opus 5.5's safeguards flagged this message (https://www.anthropic.com/legal/aup). This sometimes happens with safe, normal conversations.";
+  const refusedAssistant = JSON.stringify({
+    type: 'assistant',
+    message: { role: 'assistant', content: [{ type: 'text', text: safeguardsText }], stop_reason: 'refusal', stop_details: { type: 'refusal', category: 'reasoning_extraction', explanation: null } },
+  });
+  it.each<[string, string[], string]>([
+    ['the assistant event names the category', [refusedAssistant, JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: safeguardsText })], 'refusal (reasoning_extraction)'],
+    ['only the result event carries the stop reason', [JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: safeguardsText, stop_reason: 'refusal' })], 'refusal'],
+  ])('throws a `RefusalError` when %s', async (_case, lines, reason) => {
+    setupSpawnMock({ exitCode: 1, stderr: '', stdout: `${lines.join('\n')}\n`, rawStdout: true });
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-5-5' });
+
+    const error = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
+    expect(error).toBeInstanceOf(RefusalError);
+    expect((error as RefusalError).reason).toBe(reason);
+    expect(error?.message).toContain(`Claude CLI error: ${safeguardsText}`);
+    warnSpy.mockRestore();
+  });
+
+  it('ignores a refused attempt when the CLI run still succeeds', async () => {
+    setupSpawnMock({ stdout: `${refusedAssistant}\n${JSON.stringify({ type: 'result', subtype: 'success', result: 'answer', stop_reason: 'end_turn' })}\n`, rawStdout: true });
+    const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-5-5' });
+
+    await expect(client.sendMessage('sys', 'user')).resolves.toMatchObject({ content: 'answer' });
   });
 
   it('records <no result event> when exit-1 stream emits only text deltas with no terminal result', async () => {
@@ -1493,6 +1521,20 @@ describe('AnthropicClient API-path usage', () => {
     const client = new AnthropicClient({ auth: { kind: 'apiKey', key: 'sk-key' }, model: 'claude-opus-4-6' });
     const result = await client.sendMessage('sys', 'user');
     expect(result.truncated).toBe(expected);
+  });
+
+  it('throws a `RefusalError` on `stop_reason: "refusal"`', async () => {
+    mockFinalMessage.mockResolvedValue({
+      content: [],
+      stop_reason: 'refusal',
+      stop_details: { type: 'refusal', category: 'cyber', explanation: 'This request was declined because it could enable cyber harm.' },
+    });
+    const client = new AnthropicClient({ auth: { kind: 'apiKey', key: 'sk-key' }, model: 'claude-opus-5-5' });
+
+    const error = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
+    expect(error).toBeInstanceOf(RefusalError);
+    expect((error as RefusalError).reason).toBe('refusal (cyber)');
+    expect(error?.message).toBe('Claude API declined the request: refusal (cyber). This request was declined because it could enable cyber harm.');
   });
 
   it('returns zero usage when the SDK omits the usage block', async () => {

@@ -14,6 +14,7 @@ import {
   sanitizeLogOutput,
   STALE_TIMEOUT_MS,
 } from './openai';
+import { RefusalError } from './types';
 
 // Seeding `$CODEX_HOME/auth.json` is exercised separately in `cli-utils.test.ts`.
 // Stub it out here so the provider tests don't touch the filesystem.
@@ -288,6 +289,18 @@ describe('sendMessage (API path)', () => {
     const client = new OpenAIClient({ auth: { kind: 'apiKey', key: 'sk' }, model: 'gpt-4o' });
     const result = await client.sendMessage('sys', 'user');
     expect(result.truncated).toBe(expected);
+  });
+
+  it.each([
+    [{ message: { content: '' }, finish_reason: 'content_filter' }, 'content_filter'],
+    [{ message: { content: null, refusal: "I can't help with that." }, finish_reason: 'stop' }, 'refusal'],
+  ])('throws a `RefusalError` for a policy refusal (%j)', async (choice, reason) => {
+    mockCreate.mockResolvedValueOnce({ choices: [choice] });
+    const client = new OpenAIClient({ auth: { kind: 'apiKey', key: 'sk' }, model: 'gpt-4o' });
+
+    const error = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
+    expect(error).toBeInstanceOf(RefusalError);
+    expect((error as RefusalError).reason).toBe(reason);
   });
 
   it('returns zero usage when the SDK omits the usage block', async () => {

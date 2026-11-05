@@ -8,7 +8,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
 import { appendReplyTail, buildExitDiagnostics, callWithTimeout, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, warnReplyTail } from './cli-utils';
-import { AnthropicAuth, LLMClient, LLMResponse, LLMUsage, readCount, SendMessageOptions, ZERO_USAGE } from './types';
+import { AnthropicAuth, LLMClient, LLMResponse, LLMUsage, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
 
 // Re-export for backward compatibility with existing test imports.
 export { sanitizeLogOutput, STALE_TIMEOUT_MS };
@@ -31,13 +31,18 @@ export function buildAnthropicAuth(oauthToken: string, apiKey: string): Anthropi
  * event, so callers can both stream text and capture the exit reason
  * (`is_error`, `subtype`, error text) for diagnostics on failure.
  * `--include-partial-messages` wraps each API stream event in a `stream_event` line.
+ * `assistantRefusal` is set on every assistant message: the refusal reason, or null when it did not end on `stop_reason: "refusal"`.
  */
-function processJsonLine(line: string): { text: string; replace: boolean; resultEvent: unknown } {
+function processJsonLine(line: string): { text: string; replace: boolean; resultEvent: unknown; assistantRefusal?: string | null } {
   try {
     const event = JSON.parse(line);
     const streamed = event.type === 'stream_event' ? event.event : event;
     if (streamed?.type === 'content_block_delta' && streamed.delta?.type === 'text_delta' && streamed.delta.text) {
       return { text: streamed.delta.text, replace: false, resultEvent: null };
+    }
+    if (event.type === 'assistant') {
+      const refused = event.message?.stop_reason === 'refusal';
+      return { text: '', replace: false, resultEvent: null, assistantRefusal: refused ? refusalReason(event.message.stop_details) : null };
     }
     if (event.type === 'result') {
       const text = typeof event.result === 'string' ? event.result : '';
@@ -47,6 +52,12 @@ function processJsonLine(line: string): { text: string; replace: boolean; result
     // Non-JSON line (e.g. verbose debug output) — skip silently
   }
   return { text: '', replace: false, resultEvent: null };
+}
+
+/** Names a refusal by its `stop_details.category`, which is `null` when no named policy area applies. */
+function refusalReason(stopDetails: unknown): string {
+  const category = (stopDetails as { category?: unknown } | null | undefined)?.category;
+  return typeof category === 'string' && category ? `refusal (${category})` : 'refusal';
 }
 
 
@@ -211,11 +222,13 @@ export class AnthropicClient implements LLMClient {
     let replyTail = '';
     let jsonBuffer = '';
     let lastResultEvent: unknown = null;
+    let refusal: string | undefined;
     const consumeLine = (line: string): void => {
       if (!line.trim()) return;
       const delta = processJsonLine(line);
       if (delta.resultEvent !== null) lastResultEvent = delta.resultEvent;
       if (!delta.replace) replyTail = appendReplyTail(replyTail, delta.text);
+      if (delta.assistantRefusal !== undefined) refusal = delta.assistantRefusal ?? undefined;
       output = delta.replace ? delta.text : output + delta.text;
     };
 
@@ -247,8 +260,12 @@ export class AnthropicClient implements LLMClient {
     const resultEvent = lastResultEvent as { stop_reason?: unknown; api_error?: unknown } | null;
     // A reply that reaches `CLAUDE_CODE_MAX_OUTPUT_TOKENS` fails the CLI run with `api_error: "max_output_tokens"`.
     const truncated = resultEvent?.stop_reason === 'max_tokens' || resultEvent?.api_error === 'max_output_tokens';
+    const cliError = readResultError(lastResultEvent);
+    // Only the last assistant message counts, and only on a failed run: the CLI can recover from a refused attempt.
+    if (code === 0 && !cliError) refusal = undefined;
+    if (resultEvent?.stop_reason === 'refusal') refusal ??= 'refusal';
 
-    if (code !== 0 && !truncated) {
+    if ((code !== 0 && !truncated) || refusal) {
       const msg = buildExitDiagnostics({
         exitCode: code,
         signal,
@@ -260,12 +277,12 @@ export class AnthropicClient implements LLMClient {
         elapsedMs: Date.now() - startTime,
         resultEvent: lastResultEvent,
       });
-      const cliError = readResultError(lastResultEvent);
       const hint = cliError && AUTH_ERROR_PATTERN.test(cliError) ? ` ${OAUTH_ERROR_HINT}` : '';
       const lead = cliError ? `Claude CLI error: ${sanitizeLogOutput(cliError)}.${hint} ` : '';
       core.warning(`${lead}Claude CLI failed (${msg})`);
       warnReplyTail('Claude CLI', replyTail);
-      throw new Error(`${lead}Claude CLI invocation failed (${msg})`);
+      const message = `${lead}Claude CLI invocation failed (${msg})`;
+      throw refusal ? new RefusalError(message, refusal) : new Error(message);
     }
     if (truncated) {
       core.warning(`Claude CLI reply reached the ${THINKING_MAX_TOKENS}-token output limit (exit ${code})`);
@@ -322,6 +339,11 @@ export class AnthropicClient implements LLMClient {
     if (response.stop_reason === 'max_tokens' || response.stop_reason === 'refusal') {
       core.warning(`Anthropic API reply ended on stop_reason ${response.stop_reason}`);
       warnReplyTail('Anthropic API', content);
+    }
+    if (response.stop_reason === 'refusal') {
+      const reason = refusalReason(response.stop_details);
+      const explanation = response.stop_details?.explanation;
+      throw new RefusalError(`Claude API declined the request: ${reason}${explanation ? `. ${sanitizeLogOutput(explanation)}` : ''}`, reason);
     }
 
     const sdkUsage = (response as unknown as { usage?: Record<string, unknown> }).usage;
