@@ -552,7 +552,7 @@ In webhook mode the Manki service receives the GitHub events and starts a run of
 
 ```yaml
 name: Manki dispatch
-run-name: Manki ${{ inputs.event }}.${{ inputs.action }} on #${{ inputs.pr }}
+run-name: 'Manki ${{ inputs.event }}.${{ inputs.action }} on #${{ inputs.pr }} (${{ inputs.delivery_id }})'
 
 on:
   workflow_dispatch:
@@ -563,6 +563,7 @@ on:
       head_sha: { type: string, required: false }
       comment_id: { type: string, required: false }
       review_id: { type: string, required: false }
+      thread_id: { type: string, required: false }
       delivery_id: { type: string, required: false }
 
 permissions:
