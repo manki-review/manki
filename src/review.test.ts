@@ -3471,6 +3471,7 @@ describe('runReview', () => {
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
 
     mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'ok' });
+    const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
     const result = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context' });
 
     expect(result.agentUsage).toBeDefined();
@@ -3483,6 +3484,11 @@ describe('runReview', () => {
       expect(ms).toBe(1500);
     }
     expect(result.judgeRetryCount).toBe(0);
+    for (const name of result.agentNames) {
+      expect(infoSpy).toHaveBeenCalledWith(`${name}: 20 output tokens`);
+    }
+    expect(infoSpy).toHaveBeenCalledWith('Verdict reader: 60 output tokens');
+    infoSpy.mockRestore();
   });
 
   it('records `agentFailureReasons` when an agent fails after all retries', async () => {

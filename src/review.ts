@@ -58,6 +58,10 @@ function accumulateAgentUsage(map: Map<string, LLMUsage>, name: string, usage: L
   map.set(name, addUsage(map.get(name) ?? { ...ZERO_USAGE }, usage));
 }
 
+function logOutputTokens(stage: string, usage: LLMUsage): void {
+  core.info(`${stage}: ${usage.outputTokens} output tokens`);
+}
+
 function accumulateAgentDuration(map: Map<string, number>, name: string, durationMs: number): void {
   map.set(name, (map.get(name) ?? 0) + durationMs);
 }
@@ -427,6 +431,7 @@ export async function runReview(
     const outcome: PlannerOutcomeSink = {};
     plannerResult = await runPlanner(plannerWrap.client, diff, outcome);
     plannerUsage = plannerWrap.getTotals().usage;
+    logOutputTokens('Planner', plannerUsage);
     plannerDurationMs = Date.now() - plannerStart;
     plannerSource = plannerResult ? 'planner' : 'heuristic_fallback';
     plannerFallbackReason = outcome.fallbackReason;
@@ -784,6 +789,8 @@ export async function runReview(
     }
   }
 
+  for (const [name, usage] of agentUsage) logOutputTokens(name, usage);
+
   // Every reader counts: a round where one finder failed must not approve on the other's word.
   if (failedAgents.length > 0) {
     const summary = failedAgents.length === team.finders.length
@@ -853,6 +860,7 @@ export async function runReview(
         duplicateMatches.push({ droppedTitle: d.finding.title, matchedTitle: d.matchedTitle, matchType: d.matchType });
       }
       dedupUsage = dedupWrap.getTotals().usage;
+      logOutputTokens('LLM dedup', dedupUsage);
       dedupDurationMs = Date.now() - dedupStart;
     }
   }
@@ -918,6 +926,7 @@ export async function runReview(
     judgeDurationMs = Date.now() - judgeStart;
     const judgeTotals = judgeWrap.getTotals();
     judgeUsage = judgeTotals.usage;
+    logOutputTokens('Judge', judgeUsage);
     judgeRetryCount = Math.max(0, judgeTotals.calls - 1);
     judgeSummary = judgeResult.summary;
     allJudgedFindings = judgeResult.findings;
@@ -1009,6 +1018,7 @@ export async function runReview(
       };
     }
     verdictUsage = verdictWrap.getTotals().usage;
+    logOutputTokens('Verdict reader', verdictUsage);
     core.info(`Verdict reader: ${verdictReport.verdict}. ${verdictReport.summary}`);
     if (verdictReport.verdict === 'ADDRESS_FIRST') {
       const readerFindings = verdictReport.blockers.map(verdictBlockerToFinding).map(f => {
