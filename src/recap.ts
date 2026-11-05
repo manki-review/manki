@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { LLMClient } from './providers';
-import { BotIdentity, fetchReviewThreadNodes, GraphqlConnection, isBotLogin, paginateGraphql, titleToSlug } from './github';
+import { BotIdentity, fetchReviewThreadNodes, GraphqlConnection, isBotLogin, LOW_CONFIDENCE_NOTE, paginateGraphql, titleToSlug } from './github';
 import { findPriorThreadId } from './finding-fingerprint';
 import { matchesSuppression, Suppression } from './memory';
 import { AuthorReplyClass, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacyPrType, migrateLegacySeverity, OpenThreadsState, RoundContext, SEVERITY_TOKEN_PATTERN } from './types';
@@ -12,6 +12,31 @@ const BOT_MARKER = '<!-- manki';
 
 /** Shared prefix that identifies a severity title line in a manki comment body. */
 const FINDING_TITLE_RE = /\*\*(?:Blocker|Warning|Suggestion|Nitpick|Ignore)\*\*(?:\s*<sub>\[[^\]]*\]<\/sub>)?\s*:\s*/;
+
+/** The hidden finding data in a thread comment. Comments without it use the older `**Severity**: title` layout. */
+const FINDING_DATA_RE = /<!-- manki-finding: (.+?) -->/;
+
+function parseFindingData(body: string): { title?: string; fix?: string } | undefined {
+  const match = body.match(FINDING_DATA_RE);
+  if (!match) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(match[1]);
+    if (!parsed || typeof parsed !== 'object') return undefined;
+    const { title, fix } = parsed as { title?: unknown; fix?: unknown };
+    return {
+      ...(typeof title === 'string' && { title }),
+      ...(typeof fix === 'string' && fix.length > 0 && { fix }),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Matches the title line of a thread comment in either layout. */
+function matchTitleLine(body: string): RegExpMatchArray | null {
+  return body.match(new RegExp(FINDING_TITLE_RE.source + '(.+?)(?:\\n|$)'))
+    ?? (FINDING_DATA_RE.test(body) ? body.match(/^\S+ \*\*\w+(?:, not blocking)?:\*\* (.+?)[ \t]*(?:\n|$)/) : null);
+}
 
 /** Escape double quotes and strip triple-backtick sequences from untrusted text before LLM interpolation. */
 export function sanitize(s: string, maxLength = 200): string {
@@ -519,7 +544,7 @@ interface ReviewThread extends FindingMetadata {
  * unexpected layouts skip extraction rather than emit garbage.
  */
 function parseFindingFromComment(body: string): FindingMetadata {
-  const titleMatch = body.match(new RegExp(FINDING_TITLE_RE.source + '.+(?:\\n|$)'));
+  const titleMatch = matchTitleLine(body);
   if (!titleMatch || titleMatch.index === undefined) return {};
   const afterTitle = body.slice(titleMatch.index + titleMatch[0].length);
 
@@ -528,6 +553,7 @@ function parseFindingFromComment(body: string): FindingMetadata {
     '\n```',
     '\n<details>',
     '\n<!-- manki:',
+    '\n<!-- manki-finding:',
   ];
   let earliest = descSlice.length;
   let truncatingStop = false;
@@ -539,13 +565,14 @@ function parseFindingFromComment(body: string): FindingMetadata {
     }
   }
   descSlice = descSlice.slice(0, earliest).replace(/^[\s\n]+|[\s\n]+$/g, '');
+  if (descSlice.startsWith(LOW_CONFIDENCE_NOTE)) descSlice = descSlice.slice(LOW_CONFIDENCE_NOTE.length).replace(/^\s+/, '');
   const remainingSubs = descSlice.match(/^(?:<sub>[^\n]*<\/sub>\s*\n?)+/);
   if (remainingSubs) descSlice = descSlice.slice(remainingSubs[0].length).replace(/^\s+/, '');
   if (descSlice.length > 500) descSlice = descSlice.slice(0, 500) + '...';
   else if (truncatingStop && descSlice.length > 0) descSlice += '…(truncated)';
   const description: string | undefined = descSlice.length > 0 ? descSlice : undefined;
 
-  let suggestedFix: string | undefined;
+  let suggestedFix = parseFindingData(body)?.fix;
   const aiContextMatch = body.match(/<summary>AI context<\/summary>[\s\S]*?```json\s*([\s\S]*?)```/);
   if (aiContextMatch) {
     try {
@@ -660,8 +687,8 @@ async function fetchReviewThreads(
 
       const markerSlug = firstComment?.body?.match(new RegExp(`<!-- manki:(?:${SEVERITY_TOKEN_PATTERN}):(.+?) -->`))?.[1];
 
-      const titleMatch = firstComment?.body?.match(new RegExp(FINDING_TITLE_RE.source + '(.+?)(?:\\n|$)'));
-      const findingTitle = titleMatch?.[1]?.trim() ?? '';
+      const body = firstComment?.body ?? '';
+      const findingTitle = parseFindingData(body)?.title?.trim() || matchTitleLine(body)?.[1]?.trim() || '';
 
       const { description, suggestedFix } = isBotThread && firstComment?.body
         ? parseFindingFromComment(firstComment.body)

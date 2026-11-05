@@ -3,8 +3,9 @@ import { createRequire } from 'module';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { AgentProgressEntry, DEFENSIVE_HARDENING_TAG, DashboardData, FOLLOW_UP_TAG, Finding, FindingFingerprintEntry, FindingSeverity, OWN_PROPOSAL_TAG, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, ReviewVerdict, VALID_PR_TYPES, VerdictReason, VerdictTrace, VerdictTraceEntry, isBlockingSeverity } from './types';
+import { AgentProgressEntry, DashboardData, FOLLOW_UP_TAG, Finding, FindingFingerprintEntry, FindingSeverity, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, VALID_PR_TYPES, VerdictReason, VerdictTrace, VerdictTraceEntry, SECURITY_TAG, TestGuide, isBlockingSeverity } from './types';
 import { isLineInDiff } from './diff';
+import { codeTokensFromDiff, highlightCode } from './highlight';
 import { findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
 import { MAX_AGENT_RETRIES } from './types';
@@ -255,19 +256,19 @@ export const INDENT = '&nbsp;&nbsp;&nbsp;&nbsp;';
 function renderAgentLines(agents: AgentProgressEntry[]): string {
   return agents.map(a => {
     if (a.status === 'done') {
-      return `${INDENT}✅ ${a.name} — ${a.findingCount ?? 0} (${formatDuration(a.durationMs ?? 0)})`;
+      return `${INDENT}✅ ${a.name}: ${countOf(a.findingCount ?? 0, 'finding')} (${formatDuration(a.durationMs ?? 0)})`;
     }
     if (a.status === 'failed') {
       if (a.retryCount && a.retryCount > 0) {
-        return `${INDENT}✗ ${a.name} — failed after ${a.retryCount + 1} attempts (${formatDuration(a.durationMs ?? 0)})`;
+        return `${INDENT}🔴 ${a.name}: failed after ${a.retryCount + 1} attempts (${formatDuration(a.durationMs ?? 0)})`;
       }
-      return `${INDENT}✗ ${a.name} — failed (${formatDuration(a.durationMs ?? 0)})`;
+      return `${INDENT}🔴 ${a.name}: failed (${formatDuration(a.durationMs ?? 0)})`;
     }
     if (a.status === 'retrying') {
       if (a.retryCount != null) {
-        return `${INDENT}🔄 ${a.name} — retrying (${a.retryCount + 1}/${MAX_AGENT_RETRIES + 1})...`;
+        return `${INDENT}⚠️ ${a.name}: retrying (${a.retryCount + 1}/${MAX_AGENT_RETRIES + 1})`;
       }
-      return `${INDENT}🔄 ${a.name} — retrying...`;
+      return `${INDENT}⚠️ ${a.name}: retrying`;
     }
     if (a.status === 'reviewing') {
       return `${INDENT}⏳ ${a.name}`;
@@ -305,7 +306,7 @@ export function buildDashboard(data: DashboardData): string {
   const sections: string[] = [];
 
   if (data.phase !== 'complete') {
-    sections.push('**Manki** — Review in progress');
+    sections.push('**Review in progress**');
   }
 
   const plannerLines: string[] = [];
@@ -340,14 +341,14 @@ export function buildDashboard(data: DashboardData): string {
   } else if (data.phase === 'started') {
     if (hasAgentProgress) {
       const done = agents.filter(a => a.status === 'done' || a.status === 'failed' || a.status === 'retrying').length;
-      reviewLines.push(`**Review** — ${done}/${agents.length} agents complete`);
+      reviewLines.push(`**Review:** ${done}/${agents.length} agents complete`);
       reviewLines.push(renderAgentLines(agents));
     } else {
       reviewLines.push(`**Review**`);
       reviewLines.push(`${INDENT}reviewing with ${data.agentCount} agents...`);
     }
   } else {
-    reviewLines.push(`**Review** — ${data.rawFindingCount ?? 0} findings`);
+    reviewLines.push(`**Review:** ${countOf(data.rawFindingCount ?? 0, 'finding')}`);
     if (hasAgentProgress) {
       reviewLines.push(renderAgentLines(agents));
     }
@@ -363,7 +364,7 @@ export function buildDashboard(data: DashboardData): string {
     judgeLines.push(`${INDENT}evaluating ${data.judgeInputCount ?? data.rawFindingCount ?? 0} findings...`);
   } else {
     const judgeDur = data.judgeDurationMs != null ? ` (${formatDuration(data.judgeDurationMs)})` : '';
-    judgeLines.push(`**Judge** — ${data.keptCount ?? 0} kept · ${data.droppedCount ?? 0} dropped${judgeDur}`);
+    judgeLines.push(`**Judge:** ${data.keptCount ?? 0} kept · ${data.droppedCount ?? 0} dropped${judgeDur}`);
     if (data.keptSeverities) {
       const breakdown = renderSeverityBreakdown(data.keptSeverities);
       if (breakdown) judgeLines.push(`${INDENT}kept: ${breakdown}`);
@@ -395,7 +396,7 @@ export async function postProgressComment(
   const runIdMarker = buildRunIdMarker(github.context.runId);
   const body = dashboard
     ? `${BOT_MARKERS}\n${runIdMarker}\n${buildDashboard(dashboard)}`
-    : `${BOT_MARKERS}\n${runIdMarker}\n**Manki** — Review started`;
+    : `${BOT_MARKERS}\n${runIdMarker}\n**Review started**`;
 
   const { data } = await octokit.rest.issues.createComment({
     owner,
@@ -419,7 +420,7 @@ export async function postAutoApproveProgressComment(
   prNumber: number,
 ): Promise<number> {
   const runIdMarker = buildRunIdMarker(github.context.runId);
-  const body = `${BOT_MARKERS}\n${runIdMarker}\n**Manki** — Auto-approving (no findings remain)`;
+  const body = `${BOT_MARKERS}\n${runIdMarker}\n**Auto-approving:** no findings remain.`;
   const { data } = await octokit.rest.issues.createComment({
     owner,
     repo,
@@ -443,7 +444,7 @@ export async function markAutoApproveComplete(
   const body = [
     BOT_MARKER,
     VERSION_MARKER,
-    '**Manki** — Auto-approved (all findings resolved)',
+    '✅ **Auto-approved:** all findings are resolved.',
     REVIEW_COMPLETE_MARKER,
   ].join('\n');
   try {
@@ -470,7 +471,7 @@ export async function markProgressCommentFailed(
     BOT_MARKER,
     VERSION_MARKER,
     CANCELLED_MARKER,
-    `**Manki** — ${action} failed: ${sanitizeMarkdown(sanitizeTokens(String(reason))).slice(0, 300)}`,
+    `🔴 **${action} failed:** ${sanitizeMarkdown(sanitizeTokens(String(reason))).slice(0, 300)}`,
   ].join('\n');
   try {
     await octokit.rest.issues.updateComment({ owner, repo, comment_id: commentId, body });
@@ -494,7 +495,7 @@ export async function updateProgressComment(
   const parts: string[] = [
     BOT_MARKER,
     VERSION_MARKER,
-    `**Manki** — ${metadata ? 'Review complete' : 'Review failed'}`,
+    metadata ? '✅ **Review complete**' : '🔴 **Review failed**',
     '',
     buildDashboard({ ...dashboard, phase: 'complete' }),
   ];
@@ -515,8 +516,7 @@ export async function updateProgressComment(
     if (metadata.judgeDecisions.length > 0) {
       parts.push('**Judge decisions:**');
       for (const d of metadata.judgeDecisions) {
-        const icon = d.kept ? '\u2713 Kept' : '\u2717 Dropped';
-        parts.push(`- ${icon}: "${sanitizeMarkdown(d.title)}" (${d.severity}, ${d.confidence} confidence) — "${sanitizeMarkdown(d.reasoning)}"`);
+        parts.push(`- ${d.kept ? 'Kept' : 'Dropped'}: "${sanitizeMarkdown(d.title)}" (${d.severity}, ${d.confidence} confidence): "${sanitizeMarkdown(d.reasoning)}"`);
       }
       parts.push('');
     }
@@ -603,17 +603,18 @@ export async function dismissPreviousReviews(
   }
 }
 
+function countOf(count: number, singular: string, pluralForm = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : pluralForm}`;
+}
+
 function formatStatsOneLiner(context: RoundContext, reviewTimeMs: number): string {
   const sev = context.findings.severityCounts;
-  const parts: string[] = [];
-  if (sev.blocker) parts.push(`${sev.blocker} blocker`);
-  if (sev.warning) parts.push(`${sev.warning} warning`);
-  if (sev.suggestion) parts.push(`${sev.suggestion} suggestion`);
-  if (sev.nitpick) parts.push(`${sev.nitpick} nitpick`);
-  const breakdown = parts.length > 0 ? parts.join(', ') : 'none';
-  const total = context.findings.count;
+  const breakdown = SEVERITY_ORDER
+    .filter(s => s !== 'ignore' && (sev[s] ?? 0) > 0)
+    .map(s => countOf(sev[s], s))
+    .join(', ');
   const time = Math.round(reviewTimeMs / 1000);
-  return `\u{1F4CA} ${total} findings (${breakdown}) \u00B7 ${context.diff.lines} lines \u00B7 ${time}s`;
+  return `<!-- manki-stats: ${countOf(context.findings.count, 'finding')} (${breakdown || 'none'}), ${countOf(context.diff.lines, 'line')}, ${time}s -->`;
 }
 
 /**
@@ -694,6 +695,38 @@ function truncateContextToFitBody(
 
 const REVIEW_BODY_BUDGET = 60000;
 
+/** The icon that opens a finding comment. Apart from the verdict line, the only emoji Manki posts. */
+const SEVERITY_EMOJI: Record<FindingSeverity, string> = {
+  blocker: '🚫',
+  warning: '⚠️',
+  suggestion: '✨',
+  nitpick: '📝',
+  ignore: '⚪',
+};
+
+/** Shown under a finding the judge kept with low confidence. */
+const LOW_CONFIDENCE_NOTE = '_Manki is not sure this applies, so please check it._';
+
+/** Non-blocking findings posted as line comments per review. The rest go in the body list. */
+const MAX_NON_BLOCKING_INLINE = 5;
+
+/** Marks a thread for a warning that no longer blocks, so auto-approve skips it. */
+const FOLLOW_UP_MARKER = '<!-- manki-follow-up -->';
+
+/** Whether a warning was deferred as a follow-up. A security finding never is, whatever its tags say. */
+function isFollowUp(finding: Finding): boolean {
+  return !!finding.tags?.includes(FOLLOW_UP_TAG) && !finding.tags.includes(SECURITY_TAG);
+}
+
+function isBlockingFinding(finding: Finding): boolean {
+  return isBlockingSeverity(finding.severity) && !isFollowUp(finding);
+}
+
+function isOnChangedLine(finding: Finding, diff: ParsedDiff): boolean {
+  const diffFile = finding.file ? diff.files.find(df => df.path === finding.file) : undefined;
+  return !!diffFile && isLineInDiff(diffFile, finding.line);
+}
+
 /** Whether a finding sits on code that the inter-round diff did not touch. */
 function isOnUnchangedCode(finding: Finding, interRoundDiff: ParsedDiff): boolean {
   if (!finding.file) return false;
@@ -708,40 +741,56 @@ function inlineCode(text: string): string {
   return longestRun > 0 ? `${ticks} ${text} ${ticks}` : `${ticks}${text}${ticks}`;
 }
 
-function formatSmallerFinding(finding: Finding): string {
-  const location = finding.file
-    ? `\`${sanitizeFilePath(finding.file)}${finding.line > 0 ? `:${finding.line}` : ''}\`: `
-    : '';
-  let entry = `- ${location}${sanitizeMarkdown(finding.title)}`;
-  const fix = finding.suggestedFix?.replace(/\s+/g, ' ').trim();
-  if (fix) {
-    entry += `. Fix: ${inlineCode(safeTruncate(fix, 120))}`;
+type LineLink = (file: string, line: number) => string;
+
+function repoUrl(serverUrl: string, owner: string, repo: string): string {
+  return `${serverUrl.replace(/\/+$/, '')}/${owner}/${repo}`;
+}
+
+function buildLineLink(owner: string, repo: string, commitSha: string, serverUrl: string): LineLink {
+  return (file, line) => `${repoUrl(serverUrl, owner, repo)}/blob/${commitSha}/${file.split('/').map(encodeURIComponent).join('/')}${line > 0 ? `#L${line}` : ''}`;
+}
+
+/** Renders a fix for the body: one line of prose or code inline, anything longer as text and code blocks. */
+function formatBodyFix(fix: string, file: string): string {
+  const parts = splitFix(safeTruncate(fix, 600), file);
+  const code = parts.filter(p => p.kind === 'code');
+  if (code.length === 0) return `Fix: ${sanitizeMarkdown(parts.map(p => p.lines.join(' ')).join(' '))}`;
+  if (parts.length === 1 && code[0].lines.length === 1 && code[0].lines[0].length <= SUGGESTION_MAX_LENGTH) {
+    return `Fix: ${inlineCode(code[0].lines[0].trim())}`;
   }
-  return entry;
+  const rendered = parts.map(p => {
+    const text = p.lines.join('\n');
+    if (p.kind === 'prose') return sanitizeMarkdown(text);
+    const fence = dynamicFence(text);
+    return `${fence}${(p.lang ?? '').replace(/[^\w+#.-]/g, '')}\n${text}\n${fence}`;
+  }).join('\n');
+  return `Fix:\n${rendered}`;
+}
+
+/** Renders a finding listed in the review body: title, link to the line, what goes wrong, and the fix. */
+function formatFindingBlock(finding: Finding, linkTo: LineLink): string {
+  const lines = [`**${sanitizeMarkdown(finding.title)}**`];
+  if (finding.judgeConfidence === 'low') lines.push(LOW_CONFIDENCE_NOTE);
+  if (finding.file) {
+    const location = `${sanitizeFilePath(finding.file)}${finding.line > 0 ? `:${finding.line}` : ''}`;
+    lines.push(`[${inlineCode(location)}](${linkTo(finding.file, finding.line)})`);
+  }
+  const description = sanitizeMarkdown(finding.description.trim()).split(/(?<=[.!?])\s+/).slice(0, 2).join(' ');
+  if (description) lines.push(safeTruncate(description, 300));
+  if (finding.suggestedFix?.trim()) lines.push(formatBodyFix(finding.suggestedFix, finding.file));
+  return lines.join('\n');
 }
 
 function formatSmallerFindings(entries: string[], unpostedCount: number): string | null {
   const parts: string[] = [];
   if (entries.length > 0) {
-    parts.push(`<details>\n<summary>Suggestions and nitpicks (${entries.length})</summary>\n\n${entries.join('\n')}\n</details>`);
+    parts.push(`<details>\n<summary>${countOf(entries.length, 'smaller fix', 'smaller fixes')} in this PR</summary>\n\n${entries.join('\n\n')}\n\n</details>`);
   }
   if (unpostedCount > 0) {
-    const noun = unpostedCount === 1 ? 'smaller finding' : 'smaller findings';
-    parts.push(`${unpostedCount} ${noun} on code unchanged since the last review were not posted.`);
+    parts.push(`${countOf(unpostedCount, 'smaller fix', 'smaller fixes')} on code unchanged since the last review ${unpostedCount === 1 ? 'is' : 'are'} not listed.`);
   }
   return parts.length > 0 ? parts.join('\n\n') : null;
-}
-
-function formatUnpostedFinding(finding: Finding): string {
-  const desc = safeTruncate(sanitizeMarkdown(finding.description), 200);
-  const location = finding.line > 0 ? `${sanitizeFilePath(finding.file)}:${finding.line}` : sanitizeFilePath(finding.file);
-  return `**[${getSeverityLabel(finding.severity)}] ${sanitizeMarkdown(finding.title)}** (\`${location}\`): ${desc}`;
-}
-
-function formatFollowUps(entries: string[]): string | null {
-  if (entries.length === 0) return null;
-  const noun = entries.length === 1 ? 'smaller fix' : 'smaller fixes';
-  return `<details>\n<summary>${entries.length} ${noun} in this PR</summary>\n\n${entries.join('\n')}\n</details>`;
 }
 
 /**
@@ -785,14 +834,17 @@ function hasOpenThread(finding: Finding, existingThreads: PreviousFinding[]): bo
 }
 
 /**
- * Post the review. Blocking findings become threads, all other findings go in the body.
+ * Post the review. Blocking findings become threads. Non-blocking findings on a changed line
+ * become line comments marked "not blocking", up to `MAX_NON_BLOCKING_INLINE` and most severe
+ * first. The rest go in the body.
  *
  * A blocking finding on a changed line gets a line comment, one elsewhere in a diff file
- * gets a file-level comment, unless one of `existingThreads` still open was posted for it. When `interRoundDiff` is given, non-blocking findings on code it did not change
- * are only counted.
+ * gets a file-level comment. A finding that one of the open `existingThreads` already carries
+ * is not posted again. When `interRoundDiff` is given, non-blocking findings on code it did not
+ * change are only counted.
  *
- * When `context` is provided without `reviewTimeMs`, the stats one-liner
- * will display `0s` for review time. Pass both together to avoid this.
+ * When `context` is provided without `reviewTimeMs`, the hidden stats line
+ * records `0s` for review time. Pass both together to avoid this.
  */
 export async function postReview(
   octokit: Octokit,
@@ -807,7 +859,7 @@ export async function postReview(
   config?: ReviewConfig,
   { interRoundDiff, existingThreads = [] }: { interRoundDiff?: ParsedDiff; existingThreads?: PreviousFinding[] } = {},
 ): Promise<number> {
-  const statsHidden = config?.stats?.hidden ?? false;
+  const statsHidden = config?.stats?.hidden ?? true;
   const event = mapVerdictToEvent(result.verdict);
 
   const validComments: Array<{path: string; line: number; side: 'RIGHT'; body: string}> = [];
@@ -816,41 +868,24 @@ export async function postReview(
   const generalFindings: string[] = [];
   const smallerFindings: string[] = [];
   let unpostedCount = 0;
-  const followUps: string[] = [];
+  const nonBlocking: Finding[] = [];
+  const linkTo = buildLineLink(owner, repo, commitSha, github.context.serverUrl);
 
   for (const f of result.findings) {
-    if (f.tags?.includes(FOLLOW_UP_TAG)) {
-      followUps.push(formatSmallerFinding(f));
-      continue;
-    }
-    if (!isBlockingSeverity(f.severity)) {
-      if (interRoundDiff && isOnUnchangedCode(f, interRoundDiff)) {
+    if (!isBlockingFinding(f)) {
+      if (!isFollowUp(f) && interRoundDiff && isOnUnchangedCode(f, interRoundDiff)) {
         unpostedCount++;
+      } else if (hasOpenThread(f, existingThreads)) {
+        core.info(`Skipping "${f.title}" on ${f.file}: an open thread already carries it`);
       } else {
-        smallerFindings.push(formatSmallerFinding(f));
+        nonBlocking.push(f);
       }
       continue;
     }
 
     const diffFile = f.file ? diff?.files.find(df => df.path === f.file) : undefined;
     if (!f.file || (f.line <= 0 && !diffFile)) {
-      const safeFile = f.file ? sanitizeFilePath(f.file) : '';
-      const location = f.file ? ` — \`${safeFile}\`` : '';
-      const safeTitle = sanitizeMarkdown(f.title);
-      const fullDesc = sanitizeMarkdown(f.description);
-      const safeDesc = safeTruncate(fullDesc, 300);
-      let entry = `**[${getSeverityLabel(f.severity)}] ${safeTitle}**${location}\n  ${safeDesc}`;
-      if (f.suggestedFix) {
-        const fix = safeTruncate(f.suggestedFix, 200);
-        if (fix.includes('`') || fix.includes('\n')) {
-          // Dynamic fence: content inside code fences is literal, so no sanitization needed.
-          const fence = dynamicFence(fix);
-          entry += `\n  ${fence}\n  ${fix}\n  ${fence}`;
-        } else {
-          entry += `\n  Fix: \`${fix}\``;
-        }
-      }
-      generalFindings.push(entry);
+      generalFindings.push(formatFindingBlock(f, linkTo));
       continue;
     }
 
@@ -859,7 +894,7 @@ export async function postReview(
     if (!diff) {
       validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: commentBody });
     } else if (!diffFile) {
-      invalidComments.push(formatUnpostedFinding(f));
+      invalidComments.push(formatFindingBlock(f, linkTo));
     } else if (f.line > 0 && isLineInDiff(diffFile, f.line)) {
       validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: commentBody });
     } else if (hasOpenThread(f, existingThreads)) {
@@ -869,12 +904,28 @@ export async function postReview(
     }
   }
 
+  const inline = new Set(nonBlocking
+    .filter(f => diff && f.line > 0 && isOnChangedLine(f, diff))
+    .sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity))
+    .slice(0, MAX_NON_BLOCKING_INLINE));
+  for (const f of nonBlocking) {
+    if (inline.has(f)) {
+      validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: formatFindingComment(f) });
+    } else {
+      smallerFindings.push(formatFindingBlock(f, linkTo));
+    }
+  }
+
   const reviewedCommitFooter = buildReviewedCommitFooter(owner, repo, commitSha, github.context.serverUrl);
 
+  const blockingFindings = result.findings.filter(isBlockingFinding);
+  const lead = formatLead(result, blockingFindings);
+
   const renderBody = (ctx: RoundContext | undefined): string => {
-    let b = `${BOT_MARKERS}\n${sanitizeMarkdown(result.summary)}`;
-    if (result.partialNote) {
-      b += `\n\n> **Note:** ${sanitizeMarkdown(result.partialNote)}`;
+    let b = `${BOT_MARKERS}\n${lead}`;
+    const partial = formatPartialNote(result);
+    if (partial) {
+      b += `\n\n${partial}`;
     }
     const needsHuman = formatNeedsHuman(result);
     if (needsHuman) {
@@ -888,23 +939,19 @@ export async function postReview(
     if (readyReport) {
       b += `\n\n${readyReport}`;
     }
-    const followUpSection = formatFollowUps(followUps);
-    if (followUpSection) {
-      b += `\n\n${followUpSection}`;
-    }
-    if (ctx) {
-      b += `\n\n${formatStatsOneLiner(ctx, reviewTimeMs ?? 0)}`;
-      b += `\n\n${formatContextBlock(ctx, statsHidden)}`;
-    }
     if (generalFindings.length > 0) {
-      b += `\n\n**General findings:**\n${generalFindings.map(c => `- ${c}`).join('\n')}`;
+      b += `\n\n**Blockers not tied to a line:**\n\n${generalFindings.join('\n\n')}`;
     }
     if (invalidComments.length > 0) {
-      b += `\n\n**Findings (not on changed lines):**\n${invalidComments.map(c => `- ${c}`).join('\n')}`;
+      b += `\n\n**Blockers in files outside this diff:**\n\n${invalidComments.join('\n\n')}`;
     }
     const smaller = formatSmallerFindings(smallerFindings, unpostedCount);
     if (smaller) {
       b += `\n\n${smaller}`;
+    }
+    if (ctx) {
+      b += `\n\n${formatStatsOneLiner(ctx, reviewTimeMs ?? 0)}`;
+      b += `\n${formatContextBlock(ctx, statsHidden)}`;
     }
     return b;
   };
@@ -921,18 +968,21 @@ export async function postReview(
       core.warning(`Manki context truncated: dropped ${droppedCount} finding entries${summaryCapped ? ', judge summary capped at 2000 chars' : ''} to fit comment body`);
     }
   }
-  const body = renderBody(effectiveContext);
+  // Generated text often names code without backticks, so every posted body is highlighted before it goes out.
+  const codeTokens = diff ? codeTokensFromDiff(diff) : new Set<string>();
+  const highlight = <T extends { body: string }>(c: T): T => ({ ...c, body: highlightCode(c.body, codeTokens) });
+  const body = highlightCode(renderBody(effectiveContext), codeTokens);
 
   if (invalidComments.length > 0) {
     core.info(`Moved ${invalidComments.length} comments to review body (not postable as threads)`);
   }
   core.info(`Posting review: ${event} with ${validComments.length} line comments and ${fileComments.length} file-level comments`);
 
-  const review = await submitReview(octokit, owner, repo, prNumber, commitSha, result.verdict, body, validComments, reviewedCommitFooter);
-  const refused = await postFileLevelComments(octokit, owner, repo, prNumber, commitSha, fileComments);
+  const review = await submitReview(octokit, owner, repo, prNumber, commitSha, result.verdict, body, validComments.map(highlight), reviewedCommitFooter);
+  const refused = await postFileLevelComments(octokit, owner, repo, prNumber, commitSha, fileComments.map(highlight));
   if (refused.length > 0) {
     const titles = refused.map(f => `"${f.title}" (${f.file})`).join(', ');
-    const section = `\n\n**Findings (could not post as threads):**\n${refused.map(f => `- ${formatUnpostedFinding(f)}`).join('\n')}`;
+    const section = highlightCode(`\n\n**Blockers that could not be posted as threads:**\n\n${refused.map(f => formatFindingBlock(f, linkTo)).join('\n\n')}`, codeTokens);
     // Truncate the existing body, never the blocking findings appended to it.
     const room = REVIEW_BODY_BUDGET - section.length;
     if (room <= 0) {
@@ -1047,9 +1097,7 @@ function dynamicFence(content: string): string {
 }
 
 function buildReviewedCommitFooter(owner: string, repo: string, commitSha: string, serverUrl: string): string {
-  const shortSha = commitSha.slice(0, 7);
-  const base = serverUrl.replace(/\/+$/, '');
-  return `Reviewed commit [\`${shortSha}\`](${base}/${owner}/${repo}/commit/${commitSha})`;
+  return `Reviewed [\`${commitSha.slice(0, 7)}\`](${repoUrl(serverUrl, owner, repo)}/commit/${commitSha}).`;
 }
 
 function appendReviewedCommitFooter(body: string, footer: string): string {
@@ -1076,75 +1124,96 @@ function mapVerdictToEvent(verdict: ReviewVerdict): 'APPROVE' | 'COMMENT' | 'REQ
   }
 }
 
-const severityLabels: Record<FindingSeverity, string> = {
-  blocker: 'Blocker',
-  warning: 'Warning',
-  suggestion: 'Suggestion',
-  nitpick: 'Nitpick',
-  ignore: 'Ignore',
+function asSentence(text: string): string {
+  const trimmed = text.trim();
+  return /[.!?:]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
+/** The first line of the review body for each outcome. Its emoji is the only one in the review. */
+const VERDICT_LINES: Record<RoundOutcome, (result: ReviewResult, blockerCount: number) => string> = {
+  READY: () => '✅ **Approved.**',
+  ADDRESS_FIRST: (_result, blockerCount) => `🔴 **Changes requested:** ${countOf(blockerCount, 'blocker')}.`,
+  INCOMPLETE: result => `⚠️ **Review incomplete:** ${asSentence(sanitizeMarkdown(result.summary.trim()) || 'The review did not finish')}`,
+  NOT_CONVERGING: result => {
+    const blockers = countOf(result.needsHuman?.blockers.length ?? 0, 'blocker');
+    return result.needsHuman?.cause === 'budget'
+      ? `🛑 **Needs a human:** ${blockers} still open after the last automatic round.`
+      : `🛑 **Needs a human:** ${blockers} came back after a fix.`;
+  },
+  BUDGET: () => '✅ **Approved.**',
 };
 
-const severityEmojis: Record<FindingSeverity, string> = {
-  blocker: '🚫',
-  warning: '⚠️',
-  suggestion: '✨',
-  nitpick: '📝',
-  ignore: '⚪',
-};
+/** Returns what goes wrong in practice, from the judge summary or else the top blocker's description. */
+function formatVerdictDetail(result: ReviewResult, blocking: Finding[]): string {
+  const summary = sanitizeMarkdown(result.summary.trim());
+  if (result.outcome === 'READY' || result.outcome === 'BUDGET') return result.verdictReport ? '' : summary;
+  if (result.outcome !== 'ADDRESS_FIRST') return '';
+  // The judge writes its summary before the verdict reader runs, so it never describes the reader's blockers.
+  if (summary && result.verdictReason !== 'verdict_reader') return asSentence(summary);
+  const top = blocking.find(f => f.severity === 'blocker') ?? blocking[0];
+  return top ? sanitizeMarkdown(top.description.trim()).split(/(?<=[.!?])\s+/).slice(0, 2).join(' ') : '';
+}
 
-const confidenceDots: Record<'high' | 'medium' | 'low', string> = {
-  high: '🔴',
-  medium: '🟠',
-  low: '🟡',
-};
+/** Returns the verdict line and the sentences under it that open the review body. */
+function formatLead(result: ReviewResult, blocking: Finding[]): string {
+  if (!result.outcome) return sanitizeMarkdown(result.summary.trim());
+  const blockerCount = blocking.length || (result.verdictTrace?.unresolvedPriors.length ?? 0);
+  const line = VERDICT_LINES[result.outcome](result, blockerCount);
+  const detail = formatVerdictDetail(result, blocking);
+  return detail ? `${line}\n\n${detail}` : line;
+}
 
-function getSeverityLabel(severity: FindingSeverity): string {
-  return severityLabels[severity];
+function formatPartialNote(result: ReviewResult): string | null {
+  if (!result.partialNote) return null;
+  const failed = result.failedAgents ?? [];
+  return failed.length > 0
+    ? `This review is partial: ${sanitizeMarkdown(failed.join(', '))} failed.`
+    : sanitizeMarkdown(result.partialNote);
 }
 
 /**
- * Render a `Blocking unresolved threads` section for the PR comment body
- * when the verdict is `REQUEST_CHANGES` with reason `prior_unaddressed`.
- * The section names every entry in `verdictTrace.unresolvedPriors` with
- * file, line, original severity, and a link to the GitHub thread when
- * available, so the author sees exactly which prior thread is blocking
- * without having to read the AI-context JSON.
+ * Lists every entry in `verdictTrace.unresolvedPriors` when the outcome is blocked by
+ * `prior_unaddressed`, with its location and a link to the thread, so the author sees
+ * which earlier thread blocks without reading the context JSON.
  */
 export function formatBlockingPriorThreads(result: { verdictReason?: VerdictReason; verdictTrace?: VerdictTrace }): string | null {
   if (result.verdictReason !== 'prior_unaddressed') return null;
   const priors = result.verdictTrace?.unresolvedPriors ?? [];
   if (priors.length === 0) return null;
 
-  return `**Blocking unresolved review threads:**\n${priors.map(formatTraceEntry).join('\n')}`;
+  return `**Still open from earlier reviews:**\n${priors.map(formatTraceEntry).join('\n')}`;
 }
 
 function formatTraceEntry(p: VerdictTraceEntry): string {
   const file = sanitizeFilePath(p.file);
-  const location = !file ? '' : p.line != null ? ` — \`${file}:${p.line}\`` : ` — \`${file}\``;
-  const severity = p.severity && p.severity !== 'unknown' ? `[${getSeverityLabel(p.severity)}] ` : '';
+  const location = !file ? '' : p.line != null ? `\`${file}:${p.line}\`: ` : `\`${file}\`: `;
   const title = sanitizeMarkdown(p.title || '(untitled)');
   const safeUrl = p.threadUrl && /^https?:\/\/[^\s)]+$/.test(p.threadUrl) ? p.threadUrl : null;
   const link = safeUrl ? ` ([view thread](${safeUrl}))` : '';
-  return `- ${severity}${title}${location}${link}`;
+  return `- ${location}${title}${link}`;
 }
 
 function formatNeedsHuman(result: ReviewResult): string | null {
   if (result.outcome !== 'NOT_CONVERGING' || !result.needsHuman) return null;
-  const { cause, blockers } = result.needsHuman;
-  const why = cause === 'repeated'
-    ? 'These blockers came back after a fix was pushed, so a fix and the review disagree.'
-    : 'This was the last automatic round and these blockers are still open.';
-  return `### Needs a human\n\n${why} Automatic review is paused until someone comments \`@manki review\`.\n\n${blockers.map(formatTraceEntry).join('\n')}`;
+  return `Automatic review is paused until someone comments \`@manki review\`.\n\n${result.needsHuman.blockers.map(formatTraceEntry).join('\n')}`;
+}
+
+function formatLabelled(label: string, text: string): string {
+  const safe = sanitizeMarkdown(text.trim());
+  return `**${label}:**${safe.includes('\n') ? '\n\n' : ' '}${safe}`;
+}
+
+/** Renders the setup on its own line and the steps as a numbered list, one step per line. */
+function formatTestGuide(guide: TestGuide): string {
+  const oneLine = (text: string): string => sanitizeMarkdown(text.replace(/\s+/g, ' ').trim());
+  const steps = guide.steps.map((step, i) => `${i + 1}. ${oneLine(step.replace(/^\s*\d+[.)]\s*/, ''))}`).join('\n');
+  return guide.setup ? `**Setup:** ${oneLine(guide.setup)}\n\n${steps}` : steps;
 }
 
 function formatReadyReport(result: ReviewResult): string | null {
   if ((result.outcome !== 'READY' && result.outcome !== 'BUDGET') || !result.verdictReport) return null;
   const { whatThisDoes, whatToTest } = result.verdictReport;
-  return `### What this does\n\n${sanitizeMarkdown(whatThisDoes.trim())}\n\n### What to test\n\n${sanitizeMarkdown(whatToTest.trim())}`;
-}
-
-function getSeverityEmoji(severity: FindingSeverity): string {
-  return severityEmojis[severity];
+  return `${formatLabelled('What this does', whatThisDoes)}\n\n**What to test:**\n\n${formatTestGuide(whatToTest)}`;
 }
 
 // Sanitizes LLM-generated text (titles, descriptions, summaries) before embedding
@@ -1190,40 +1259,103 @@ export function titleToSlug(title: string): string {
   return title.replace(/[^a-zA-Z0-9]/g, '-');
 }
 
+const SUGGESTION_MAX_LINES = 3;
+const SUGGESTION_MAX_LENGTH = 120;
+const FENCE_LINE_RE = /^\s*(`{3,}|~{3,})(.*)$/;
+const PROSE_LINE_RE = /^[A-Z][A-Za-z']*(?:\s+\S+){2,}[.:]$/;
+// A comment that says where the code goes, such as `// After the guard, add:`, means the code does not apply as is.
+const PLACEMENT_COMMENT_RE = /^\s*(?:\/\/|#|--|\/\*)\s+(?:(?:in|after|before|replace|add|then|change|move|instead)\b|.*:\s*(?:\*\/)?$)/i;
+const PROSE_FILE_RE = /\.(?:md|mdx|markdown|txt|rst|adoc)$/i;
+
+interface FixPart {
+  kind: 'prose' | 'code';
+  lines: string[];
+  lang?: string;
+}
+
+function trimBlankLines(lines: string[]): string[] {
+  let start = 0;
+  let end = lines.length;
+  while (start < end && !lines[start].trim()) start++;
+  while (end > start && !lines[end - 1].trim()) end--;
+  return lines.slice(start, end);
+}
+
+/**
+ * Splits a suggested fix into prose and code. With fences, everything outside them is prose.
+ * Without, prose lines are peeled off the start and the end, except in prose files.
+ */
+function splitFix(fix: string, file: string): FixPart[] {
+  const lines = fix.split('\n');
+  if (!lines.some(l => FENCE_LINE_RE.test(l))) {
+    const isProse = (l: string): boolean => !PROSE_FILE_RE.test(file) && (PROSE_LINE_RE.test(l.trim()) || !l.trim());
+    let start = 0;
+    let end = lines.length;
+    while (start < end && isProse(lines[start])) start++;
+    while (end > start && isProse(lines[end - 1])) end--;
+    return [
+      { kind: 'prose' as const, lines: lines.slice(0, start) },
+      { kind: 'code' as const, lines: lines.slice(start, end) },
+      { kind: 'prose' as const, lines: lines.slice(end) },
+    ].map(p => ({ ...p, lines: trimBlankLines(p.lines) })).filter(p => p.lines.length > 0);
+  }
+  const parts: FixPart[] = [];
+  let fence: string | null = null;
+  let current: FixPart = { kind: 'prose', lines: [] };
+  for (const line of lines) {
+    const marker = line.match(FENCE_LINE_RE);
+    if (!marker) {
+      current.lines.push(line);
+    } else if (fence === null) {
+      parts.push(current);
+      fence = marker[1];
+      current = { kind: 'code', lines: [], lang: marker[2].trim() };
+    } else if (marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) {
+      parts.push(current);
+      fence = null;
+      current = { kind: 'prose', lines: [] };
+    } else {
+      current.lines.push(line);
+    }
+  }
+  parts.push(current);
+  return parts.map(p => ({ ...p, lines: trimBlankLines(p.lines) })).filter(p => p.lines.length > 0);
+}
+
+/**
+ * Renders a suggested fix. Only code that replaces the flagged line as is goes in a
+ * `suggestion` block, because committing it writes the block verbatim into the file.
+ * Anything else is shown as text and plain code blocks.
+ */
+function formatSuggestedFix(fix: string, file: string): string {
+  const parts = splitFix(fix, file);
+  const code = parts.filter(p => p.kind === 'code').map(p => p.lines.join('\n'));
+  const isShort = code.every(c => c.split('\n').length <= SUGGESTION_MAX_LINES && c.length <= SUGGESTION_MAX_LENGTH);
+  if (parts.length === 1 && code.length === 1 && isShort && !PLACEMENT_COMMENT_RE.test(code[0].split('\n')[0])) {
+    const fence = dynamicFence(code[0]);
+    return `${fence}suggestion\n${code[0]}\n${fence}`;
+  }
+  // Code inside a dynamic fence renders literally, so only the prose needs sanitizing.
+  const rendered = parts.map(p => {
+    const text = p.lines.join('\n');
+    if (p.kind === 'prose') return sanitizeMarkdown(text);
+    const fence = dynamicFence(text);
+    return `${fence}${(p.lang ?? '').replace(/[^\w+#.-]/g, '')}\n${text}\n${fence}`;
+  }).join('\n\n');
+  return isShort ? rendered : `<details>\n<summary>Suggested fix</summary>\n\n${rendered}\n</details>`;
+}
+
 function formatFindingComment(finding: Finding): string {
-  const severityEmoji = getSeverityEmoji(finding.severity);
-  const severityLabel = getSeverityLabel(finding.severity);
-  const safeTitle = sanitizeMarkdown(finding.title);
-  const safeDescription = sanitizeMarkdown(finding.description);
-
-  const confidenceDot = finding.judgeConfidence ? `${confidenceDots[finding.judgeConfidence]} ` : '';
-  let comment = `${confidenceDot}${severityEmoji} **${severityLabel}**: ${safeTitle}`;
-  if (finding.tags?.includes(DEFENSIVE_HARDENING_TAG) && finding.originalSeverity) {
-    comment += `\n<sub>[defensive hardening — capped from ${finding.originalSeverity}]</sub>`;
-  }
-  if (finding.tags?.includes(OWN_PROPOSAL_TAG)) {
-    if (finding.originalSeverity && finding.originalSeverity !== finding.severity) {
-      comment += `\n<sub>[own-proposal followup — capped from ${finding.originalSeverity}]</sub>`;
-    } else {
-      comment += `\n<sub>[own-proposal followup]</sub>`;
-    }
-  }
-  comment += `\n\n${safeDescription}`;
-
-  if (finding.suggestedFix) {
-    // Content inside dynamically-fenced code blocks is rendered literally by GitHub,
-    // so HTML/markdown injection is not possible here — no sanitization needed.
-    const fence = dynamicFence(finding.suggestedFix);
-    const lines = finding.suggestedFix.split('\n').length;
-    const isShort = lines <= 3 && finding.suggestedFix.length <= 120;
-    if (isShort) {
-      comment += `\n\n${fence}suggestion\n${finding.suggestedFix}\n${fence}`;
-    } else {
-      comment += `\n\n<details>\n<summary>Suggested fix</summary>\n\n${fence}suggestion\n${finding.suggestedFix}\n${fence}\n</details>`;
-    }
+  const severity = `${finding.severity[0].toUpperCase()}${finding.severity.slice(1)}`;
+  const label = isBlockingFinding(finding) ? severity : `${severity}, not blocking`;
+  let comment = `${SEVERITY_EMOJI[finding.severity]} **${label}:** ${sanitizeMarkdown(finding.title)}\n\n`;
+  if (finding.judgeConfidence === 'low') comment += `${LOW_CONFIDENCE_NOTE}\n\n`;
+  comment += sanitizeMarkdown(finding.description);
+  if (finding.suggestedFix?.trim()) {
+    comment += `\n\n${formatSuggestedFix(finding.suggestedFix, finding.file)}`;
   }
 
-  const aiContext: Record<string, unknown> = {
+  const data: Record<string, unknown> = {
     file: finding.file,
     line: finding.line,
     severity: finding.severity,
@@ -1236,9 +1368,9 @@ function formatFindingComment(finding: Finding): string {
     ...(finding.reachabilityReasoning && { reachabilityReasoning: finding.reachabilityReasoning }),
     ...(finding.originalSeverity && { originalSeverity: finding.originalSeverity }),
   };
-  comment += `\n\n<details>\n<summary>AI context</summary>\n\n\`\`\`json\n${JSON.stringify(aiContext, null, 2)}\n\`\`\`\n</details>`;
-
   comment += `\n\n<!-- manki:${finding.severity}:${titleToSlug(finding.title)} -->`;
+  if (isFollowUp(finding)) comment += `\n${FOLLOW_UP_MARKER}`;
+  comment += `\n<!-- manki-finding: ${sanitizeHtmlCommentJson(JSON.stringify(data))} -->`;
 
   return comment;
 }
@@ -1484,7 +1616,7 @@ async function markProgressCommentCancelled(
   if (originalBody.includes(CANCELLED_MARKER)) return;
   const body = [
     CANCELLED_MARKER,
-    '**Manki** — Review cancelled (superseded by newer run)',
+    '**Review cancelled:** a newer run replaced it.',
     '',
     '<details><summary>Original progress</summary>',
     '',
@@ -1905,7 +2037,7 @@ async function postAppWarningIfNeeded(
 
   await octokit.rest.issues.createComment({
     owner, repo, issue_number: prNumber,
-    body: `${APP_WARNING_MARKER}\n**Manki** — The [Manki GitHub App](https://github.com/apps/manki-review) is not installed on this repository. Reviews are posting as \`github-actions[bot]\` instead of \`manki-review[bot]\`. Some features (memory repo access, bot identity for review dismissal) may not work correctly.\n\nInstall the app at: https://github.com/apps/manki-review`,
+    body: `${APP_WARNING_MARKER}\nThe [Manki GitHub App](https://github.com/apps/manki-review) is not installed on this repository. Reviews are posting as \`github-actions[bot]\` instead of \`manki-review[bot]\`. Some features (memory repo access, bot identity for review dismissal) may not work correctly.\n\nInstall the app at: https://github.com/apps/manki-review`,
   });
 }
 
@@ -1984,5 +2116,5 @@ async function cancelActiveReviewRun(
   }
 }
 
-export { dynamicFence, formatContextBlock, formatFindingComment, formatStatsOneLiner, getSeverityEmoji, getSeverityLabel, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict };
+export { dynamicFence, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, FOLLOW_UP_MARKER, LOW_CONFIDENCE_NOTE };
 export type { InProgressLock, StandingVerdict };

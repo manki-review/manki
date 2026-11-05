@@ -38,7 +38,7 @@ const READY_VERDICT = JSON.stringify({
   blockers: [],
   summary: 'Nothing blocks a merge.',
   whatThisDoes: 'Adds a feature.',
-  whatToTest: 'Open the page, expect the feature.',
+  whatToTest: { setup: 'Sign in as an admin.', steps: ['Open the page. Expect the feature.'] },
 });
 
 const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
@@ -1994,10 +1994,26 @@ describe('runReview', () => {
     expect(result.verdictReport).toEqual(expect.objectContaining({
       verdict: 'READY',
       whatThisDoes: 'Adds a feature.',
-      whatToTest: 'Open the page, expect the feature.',
+      whatToTest: { setup: 'Sign in as an admin.', steps: ['Open the page. Expect the feature.'] },
     }));
     expect(clients.judge.sendMessage).toHaveBeenCalledTimes(1);
     expect(jest.mocked(clients.judge.sendMessage).mock.calls[0][2]).toEqual({ effort: 'high' });
+  });
+
+  it('splits a plain-string whatToTest from the verdict reader into its setup and numbered steps', async () => {
+    const clients = makeClients();
+    jest.mocked(clients.judge.sendMessage).mockResolvedValue({
+      content: JSON.stringify({
+        verdict: 'READY', blockers: [], summary: 'ok', whatThisDoes: 'Adds a cache.',
+        whatToTest: 'Setup: start the dev server. 1. Load the page. Expect one request. 2. Reload it. Expect no request.',
+      }),
+    });
+
+    const result = await runReview(clients, makeConfig(), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo context');
+    expect(result.verdictReport?.whatToTest).toEqual({
+      setup: 'start the dev server.',
+      steps: ['Load the page. Expect one request.', 'Reload it. Expect no request.'],
+    });
   });
 
   it('collects findings from reviewer agents and passes to judge', async () => {
@@ -2216,6 +2232,8 @@ describe('runReview', () => {
     ['ADDRESS_FIRST with no blocker and a blank summary', { content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: ['  '], summary: ' ', whatThisDoes: 'x', whatToTest: 'y' }) }],
     ['READY with a blank whatThisDoes', { content: JSON.stringify({ verdict: 'READY', blockers: [], summary: 'ok', whatThisDoes: ' ', whatToTest: 'y' }) }],
     ['READY with a blank whatToTest', { content: JSON.stringify({ verdict: 'READY', blockers: [], summary: 'ok', whatThisDoes: 'x', whatToTest: '' }) }],
+    ['READY with no whatToTest steps', { content: JSON.stringify({ verdict: 'READY', blockers: [], summary: 'ok', whatThisDoes: 'x', whatToTest: { setup: 'x', steps: [] } }) }],
+    ['a whatToTest whose steps are not strings', { content: JSON.stringify({ verdict: 'READY', blockers: [], summary: 'ok', whatThisDoes: 'x', whatToTest: { steps: [1] } }) }],
   ])('ends the round INCOMPLETE, never READY, when the verdict reader returns %s', async (_label, response) => {
     const clients = makeClients();
     jest.mocked(clients.judge.sendMessage).mockResolvedValue(response);
@@ -2332,7 +2350,7 @@ describe('runReview', () => {
     const result = await runReview(clients, config, diff, 'raw diff', 'repo context');
     expect(result.verdict).toBe('COMMENT');
     expect(result.reviewComplete).toBe(false);
-    expect(result.summary).toContain('all reviewer agents failed');
+    expect(result.summary).toContain('All reviewers failed');
     expect(result.failedAgents).toBeDefined();
     expect(result.failedAgents!.length).toBe(3);
     expect(sendMessage).toHaveBeenCalledTimes(3 * (MAX_AGENT_RETRIES + 1));
@@ -3971,7 +3989,7 @@ describe('runReview', () => {
     const result = await runReview(clients, config, diff, 'raw diff', 'repo context');
     expect(result.reviewComplete).toBe(false);
     expect(result.verdict).toBe('COMMENT');
-    expect(result.summary).toContain('all reviewer agents failed');
+    expect(result.summary).toContain('All reviewers failed');
     expect(result.failedAgents!.length).toBe(5);
     expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
   });

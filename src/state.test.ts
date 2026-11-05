@@ -1,6 +1,8 @@
 import * as core from '@actions/core';
 import { areAllFindingsResolved, fetchBotReviewThreads, checkAndAutoApprove, BOT_MARKER, ReviewThread } from './state';
 import { LAST_PAGE, paginateSinglePage, TEST_BOT } from './test-utils';
+import { formatFindingComment } from './github';
+import { Finding } from './types';
 
 jest.mock('./github', () => ({
   ...jest.requireActual('./github'),
@@ -114,6 +116,25 @@ describe('fetchBotReviewThreads', () => {
     expect(threads.map(t => t.id)).toEqual(nodes.map(n => n.id));
     expect(graphqlMock).toHaveBeenNthCalledWith(1, expect.any(String), expect.objectContaining({ cursor: null }));
     expect(graphqlMock).toHaveBeenNthCalledWith(2, expect.any(String), expect.objectContaining({ cursor: 'p2' }));
+  });
+
+  it('treats inline suggestion and follow-up warning threads as not blocking auto-approve', async () => {
+    const finding = (severity: Finding['severity'], title: string, tags?: string[]): Finding => ({
+      severity, title, file: 'src/a.ts', line: 3, description: 'd', reviewers: [], ...(tags && { tags }),
+    });
+    const graphqlMock = jest.fn().mockResolvedValueOnce(
+      makeGraphqlFetchResponse([
+        makeGraphqlFetchThreadNode({ id: 's', body: formatFindingComment(finding('suggestion', 'Extract helper')) }),
+        makeGraphqlFetchThreadNode({ id: 'w', body: formatFindingComment(finding('warning', 'Deferred warning', ['follow-up'])) }),
+        makeGraphqlFetchThreadNode({ id: 'b', body: formatFindingComment(finding('warning', 'Real warning')) }),
+      ]),
+    );
+
+    const threads = await fetchBotReviewThreads({ graphql: graphqlMock } as unknown as Octokit, 'owner', 'repo', 1);
+
+    expect(threads.map(t => [t.id, t.isBlocking])).toEqual([['s', false], ['w', false], ['b', true]]);
+    expect(areAllFindingsResolved(threads.filter(t => t.id !== 'b'))).toBe(true);
+    expect(areAllFindingsResolved(threads)).toBe(false);
   });
 
   it('filters out non-bot threads', async () => {
@@ -260,7 +281,7 @@ describe('checkAndAutoApprove', () => {
 
     expect(result).toBe(true);
     expect(createReviewMock).toHaveBeenCalledWith(
-      expect.objectContaining({ event: 'APPROVE', commit_id: 'sha-456' }),
+      expect.objectContaining({ event: 'APPROVE', commit_id: 'sha-456', body: expect.stringMatching(/\n\u2705 \*\*Approved\.\*\* All blocking threads are resolved\.$/) }),
     );
   });
 
@@ -369,7 +390,7 @@ describe('checkAndAutoApprove', () => {
       owner: 'owner',
       repo: 'repo',
       issue_number: 1,
-      body: expect.stringContaining('auto-approve is blocked'),
+      body: expect.stringContaining('repository settings block the approval'),
     }));
     expect(dismissPreviousReviews).not.toHaveBeenCalled();
   });
@@ -1061,7 +1082,7 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
     expect(result).toBe(true);
     expect(createCommentMock).toHaveBeenCalledWith(expect.objectContaining({
       issue_number: 1,
-      body: expect.stringContaining('auto-approve is blocked'),
+      body: expect.stringContaining('repository settings block the approval'),
     }));
     // Crucially, no `COMMENT` review was posted (which would trip the head-SHA
     // dedupe gate on subsequent force-review ticks, see [#840]).
@@ -1121,7 +1142,7 @@ describe('postAutoApproveProgressComment / markAutoApprove*', () => {
       { id: 1, body: updatedBody, user: { login: 'manki-review[bot]', type: 'Bot' }, updated_at: '2026-05-22T11:59:30Z' },
     ];
     expect(ghActual.findInProgressLock(comments, TEST_BOT, 999)).toBeNull();
-    expect(updatedBody).toContain('Auto-approved (all findings resolved)');
+    expect(updatedBody).toContain('**Auto-approved:** all findings are resolved.');
   });
 
   it('failure-transition body no longer registers as a live lock', async () => {

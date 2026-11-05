@@ -621,7 +621,7 @@ async function runFullReview(
           if (standing.verdict === 'APPROVE') {
             await octokit.rest.pulls.createReview({
               owner, repo, pull_number: prNumber, commit_id: commitSha, event: 'APPROVE',
-              body: `${PROGRESS_MARKER}\nNo change to this PR since the reviewed commit \`${shortSha}\`. The previous verdict stands.`,
+              body: `${PROGRESS_MARKER}\n✅ **Approved.** No change to this PR since the reviewed commit \`${shortSha}\`. The previous verdict stands.`,
             });
           }
           core.info(`Round SKIPPED: no change since reviewed commit ${shortSha}, ${standing.verdict} stands`);

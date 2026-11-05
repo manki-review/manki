@@ -5622,7 +5622,7 @@ describe('runFullReview orchestration', () => {
         pull_number: 42,
         commit_id: 'abc123',
         event: 'APPROVE',
-        body: expect.stringContaining('No change to this PR since the reviewed commit `old9999`. The previous verdict stands.'),
+        body: expect.stringContaining('\u2705 **Approved.** No change to this PR since the reviewed commit `old9999`. The previous verdict stands.'),
       }));
     });
 

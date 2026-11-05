@@ -85,20 +85,20 @@ describe('config', () => {
   });
 
   describe('stats config', () => {
-    it('defaults stats.hidden to false', () => {
-      expect(DEFAULT_CONFIG.stats?.hidden).toBe(false);
+    it('defaults stats.hidden to true', () => {
+      expect(DEFAULT_CONFIG.stats?.hidden).toBe(true);
       const config = loadConfigFromContent('');
-      expect(config.stats?.hidden).toBe(false);
-    });
-
-    it('merges user-provided stats.hidden over defaults', () => {
-      const config = loadConfigFromContent('stats:\n  hidden: true\n');
       expect(config.stats?.hidden).toBe(true);
     });
 
-    it('keeps stats.hidden false when stats key is present but hidden is omitted', () => {
-      const config = loadConfigFromContent('stats: {}');
+    it('merges user-provided stats.hidden over defaults', () => {
+      const config = loadConfigFromContent('stats:\n  hidden: false\n');
       expect(config.stats?.hidden).toBe(false);
+    });
+
+    it('keeps stats.hidden true when stats key is present but hidden is omitted', () => {
+      const config = loadConfigFromContent('stats: {}');
+      expect(config.stats?.hidden).toBe(true);
     });
 
     it('rejects non-boolean stats.hidden', () => {

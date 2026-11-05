@@ -1,11 +1,24 @@
 import * as core from '@actions/core';
 
-import { buildDashboard, titleToSlug, formatBlockingPriorThreads, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, getSeverityLabel, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, truncateContextToFitBody, dynamicFence, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, fetchRepoContext, getSeverityEmoji, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict } from './github';
+import { buildDashboard, titleToSlug, formatBlockingPriorThreads, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, truncateContextToFitBody, dynamicFence, fetchFileContents, fetchLinkedIssues, fetchSubdirClaudeMd, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, fetchRepoContext, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict } from './github';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { DEFAULT_CONFIG } from './config';
 import { paginateSinglePage, TEST_BOT } from './test-utils';
 
 const CUSTOM_APP_BOT: BotIdentity = { logins: ['acme-reviewer[bot]'] };
+
+const EMOJI_RE = /\p{Extended_Pictographic}/u;
+const DASH_SEPARATOR_RE = / [—–] | -- /;
+
+function findingData(comment: string): Record<string, unknown> {
+  const match = comment.match(/<!-- manki-finding: (.+?) -->/);
+  expect(match).not.toBeNull();
+  return JSON.parse(match![1]);
+}
+
+function suggestionBlocks(comment: string): string[] {
+  return [...comment.matchAll(/^(`{3,})suggestion\n([\s\S]*?)\n\1$/gm)].map(m => m[2]);
+}
 
 describe('formatFindingComment', () => {
   const baseFinding: Finding = {
@@ -17,253 +30,98 @@ describe('formatFindingComment', () => {
     reviewers: ['Security & Correctness'],
   };
 
-  it('formats a required finding with correct emoji and label', () => {
-    const comment = formatFindingComment(baseFinding);
-    expect(comment).toContain('🚫 **Blocker**');
-    expect(comment).toContain(baseFinding.title);
-    expect(comment).toContain(baseFinding.description);
+  it.each([
+    ['blocker', 'high', '\u{1F6AB} **Blocker:**'],
+    ['warning', 'medium', '\u26A0\uFE0F **Warning:**'],
+    ['suggestion', 'high', '\u2728 **Suggestion, not blocking:**'],
+    ['nitpick', undefined, '\u{1F4DD} **Nitpick, not blocking:**'],
+  ] as const)('opens a %s finding with its severity icon and label, and no other emoji', (severity, judgeConfidence, label) => {
+    const comment = formatFindingComment({ ...baseFinding, severity, judgeConfidence });
+    expect(comment.startsWith(`${label} ${baseFinding.title}\n\n${baseFinding.description}`)).toBe(true);
+    expect(comment.slice(label.length)).not.toMatch(EMOJI_RE);
+    expect(comment).not.toMatch(DASH_SEPARATOR_RE);
+    expect(comment).not.toContain('Manki is not sure');
+    expect(comment).toContain(`<!-- manki:${severity}:Null-pointer-dereference -->`);
   });
 
-  it('formats a suggestion finding with correct emoji and label', () => {
-    const finding: Finding = { ...baseFinding, severity: 'suggestion' };
-    const comment = formatFindingComment(finding);
-    expect(comment).toContain('✨ **Suggestion**');
+  it('adds a note under the label when the judge is not confident', () => {
+    const comment = formatFindingComment({ ...baseFinding, severity: 'warning', judgeConfidence: 'low' });
+    expect(comment.startsWith(`\u26A0\uFE0F **Warning:** ${baseFinding.title}\n\n_Manki is not sure this applies, so please check it._\n\n${baseFinding.description}`)).toBe(true);
+    expect(comment).not.toMatch(/\u{1F534}|\u{1F7E0}|\u{1F7E1}/u);
   });
 
-  it('formats a warning finding with correct emoji and label', () => {
-    const finding: Finding = { ...baseFinding, severity: 'warning' };
-    const comment = formatFindingComment(finding);
-    expect(comment).toContain('⚠️ **Warning**');
-  });
-
-  it('formats a nit finding with correct emoji and label', () => {
-    const finding: Finding = { ...baseFinding, severity: 'nitpick' };
-    const comment = formatFindingComment(finding);
-    expect(comment).toContain('📝 **Nitpick**');
-  });
-
-  it('formats an ignore finding with correct emoji and label', () => {
-    const finding: Finding = { ...baseFinding, severity: 'ignore' };
-    const comment = formatFindingComment(finding);
-    expect(comment).toContain('⚪ **Ignore**');
-    expect(comment).toContain('<!-- manki:ignore:');
-  });
-
-  it('shows short suggested fix inline without collapsible wrapper', () => {
-    const finding: Finding = { ...baseFinding, suggestedFix: 'if (value != null) { use(value); }' };
-    const comment = formatFindingComment(finding);
-    expect(comment).toContain('```suggestion');
-    expect(comment).toContain('if (value != null) { use(value); }');
+  it('renders a short code fix as a suggestion block', () => {
+    const comment = formatFindingComment({ ...baseFinding, suggestedFix: 'if (value != null) { use(value); }' });
+    expect(suggestionBlocks(comment)).toEqual(['if (value != null) { use(value); }']);
     expect(comment).not.toContain('<summary>Suggested fix</summary>');
   });
 
-  it('wraps long suggested fix in a collapsible details section', () => {
+  it('shows a long code fix as a collapsed plain code block', () => {
     const longFix = 'const a = 1;\nconst b = 2;\nconst c = 3;\nconst d = 4;\nconst e = 5;';
-    const finding: Finding = { ...baseFinding, suggestedFix: longFix };
-    const comment = formatFindingComment(finding);
-    expect(comment).toContain('<details>\n<summary>Suggested fix</summary>');
-    expect(comment).toContain('```suggestion');
-    expect(comment).toContain(longFix);
+    const comment = formatFindingComment({ ...baseFinding, suggestedFix: longFix });
+    expect(comment).toContain(`<details>\n<summary>Suggested fix</summary>\n\n\`\`\`\n${longFix}\n\`\`\`\n</details>`);
+    expect(suggestionBlocks(comment)).toEqual([]);
   });
 
-  it('omits suggested fix section when not present', () => {
+  it.each([
+    ['prose around a fenced block', 'Move the guard before the early return:\n\n```typescript\nif (!sha) return;\n```', 'Move the guard before the early return:', '```typescript\nif (!sha) return;\n```'],
+    ['a leading prose line', 'Use the head commit instead.\nconst sha = pr.head.sha;', 'Use the head commit instead.', '```\nconst sha = pr.head.sha;\n```'],
+    ['a comment that says where the code goes', '// After computing latestBotReview, add:\nif (!latestBotReview) return;', undefined, '```\n// After computing latestBotReview, add:\nif (!latestBotReview) return;\n```'],
+    ['prose only', 'Handle the `None` case separately.', 'Handle the `None` case separately.', undefined],
+  ])('never puts prose or a fence in a suggestion block: %s', (_label, suggestedFix, prose, code) => {
+    const comment = formatFindingComment({ ...baseFinding, suggestedFix });
+    expect(suggestionBlocks(comment)).toEqual([]);
+    if (prose) expect(comment).toContain(`\n\n${prose}`);
+    if (code) expect(comment).toContain(code);
+  });
+
+  it('suggests a prose line as is in a prose file', () => {
+    const comment = formatFindingComment({ ...baseFinding, file: 'README.md', suggestedFix: 'Run the setup script first.' });
+    expect(suggestionBlocks(comment)).toEqual(['Run the setup script first.']);
+  });
+
+  it('omits the fix when there is none', () => {
     const comment = formatFindingComment(baseFinding);
     expect(comment).not.toContain('<summary>Suggested fix</summary>');
-    expect(comment).not.toContain('```suggestion');
+    expect(comment).not.toContain('```');
   });
 
-  it('includes AI context as a collapsible JSON block', () => {
-    const comment = formatFindingComment(baseFinding);
-    expect(comment).toContain('<details>\n<summary>AI context</summary>');
-    expect(comment).toContain('```json');
-    const jsonMatch = comment.match(/```json\n([\s\S]*?)\n```/);
-    expect(jsonMatch).not.toBeNull();
-    const parsed = JSON.parse(jsonMatch![1]);
-    expect(parsed.file).toBe(baseFinding.file);
-    expect(parsed.line).toBe(baseFinding.line);
-    expect(parsed.severity).toBe(baseFinding.severity);
-    expect(parsed.title).toBe(baseFinding.title);
-    expect(parsed.flaggedBy).toEqual(baseFinding.reviewers);
-    expect(parsed.confidence).toBeUndefined();
-    expect(parsed.fix).toBeUndefined();
-  });
-
-  it('includes fix and confidence in AI context JSON when present', () => {
-    const finding: Finding = { ...baseFinding, suggestedFix: 'if (value != null) { use(value); }', judgeConfidence: 'high' };
-    const comment = formatFindingComment(finding);
-    const jsonMatch = comment.match(/```json\n([\s\S]*?)\n```/);
-    const parsed = JSON.parse(jsonMatch![1]);
-    expect(parsed.fix).toBe('if (value != null) { use(value); }');
-    expect(parsed.confidence).toBe('high');
-  });
-
-  it('omits confidence from AI context JSON when judgeConfidence is absent', () => {
-    const comment = formatFindingComment(baseFinding);
-    const jsonMatch = comment.match(/```json\n([\s\S]*?)\n```/);
-    const parsed = JSON.parse(jsonMatch![1]);
-    expect(parsed.confidence).toBeUndefined();
-  });
-
-  it('truncates long suggestedFix in AI context JSON to 200 chars', () => {
-    const longFix = 'a'.repeat(250);
-    const finding: Finding = { ...baseFinding, suggestedFix: longFix };
-    const comment = formatFindingComment(finding);
-    const jsonMatch = comment.match(/```json\n([\s\S]*?)\n```/);
-    const parsed = JSON.parse(jsonMatch![1]);
-    expect(parsed.fix.length).toBe(200);
-  });
-
-  it('includes flaggedBy in AI context JSON instead of visible attribution', () => {
-    const comment = formatFindingComment(baseFinding);
-    expect(comment).not.toContain('Flagged by');
-    const jsonMatch = comment.match(/```json\n([\s\S]*?)\n```/);
-    const parsed = JSON.parse(jsonMatch![1]);
-    expect(parsed.flaggedBy).toEqual(['Security & Correctness']);
-  });
-
-  it('includes multiple reviewers in AI context flaggedBy', () => {
-    const finding: Finding = { ...baseFinding, reviewers: ['Security', 'Testing'] };
-    const comment = formatFindingComment(finding);
-    expect(comment).not.toContain('Flagged by');
-    const jsonMatch = comment.match(/```json\n([\s\S]*?)\n```/);
-    const parsed = JSON.parse(jsonMatch![1]);
-    expect(parsed.flaggedBy).toEqual(['Security', 'Testing']);
-  });
-
-  it('includes empty flaggedBy when reviewers is empty', () => {
-    const finding: Finding = { ...baseFinding, reviewers: [] };
-    const comment = formatFindingComment(finding);
-    expect(comment).not.toContain('Flagged by');
-    const jsonMatch = comment.match(/```json\n([\s\S]*?)\n```/);
-    const parsed = JSON.parse(jsonMatch![1]);
-    expect(parsed.flaggedBy).toEqual([]);
-  });
-
-  it('includes metadata marker with severity and sanitized title', () => {
-    const comment = formatFindingComment(baseFinding);
-    expect(comment).toContain('<!-- manki:blocker:Null-pointer-dereference -->');
-  });
-
-  it('sanitizes special characters in metadata marker title', () => {
-    const finding: Finding = { ...baseFinding, title: 'Bug: foo() returns "bar"!' };
-    const comment = formatFindingComment(finding);
-    expect(comment).toContain('<!-- manki:blocker:Bug--foo---returns--bar-- -->');
-  });
-
-  it('shows judge confidence as a red dot when high', () => {
-    const finding: Finding = { ...baseFinding, judgeConfidence: 'high' };
-    const comment = formatFindingComment(finding);
-    expect(comment).toContain('🔴 🚫 **Blocker**');
-  });
-
-  it('shows judge confidence as an orange dot when medium', () => {
-    const finding: Finding = { ...baseFinding, judgeConfidence: 'medium' };
-    const comment = formatFindingComment(finding);
-    expect(comment).toContain('🟠 🚫 **Blocker**');
-  });
-
-  it('shows judge confidence as a yellow dot when low', () => {
-    const finding: Finding = { ...baseFinding, judgeConfidence: 'low' };
-    const comment = formatFindingComment(finding);
-    expect(comment).toContain('🟡 🚫 **Blocker**');
-  });
-
-  it('omits judge confidence dot when absent', () => {
-    const comment = formatFindingComment(baseFinding);
-    expect(comment).not.toContain('🔴');
-    expect(comment).not.toContain('🟠');
-    expect(comment).not.toContain('🟡');
-  });
-
-  it('renders defensive-hardening tag with original severity when tagged', () => {
+  it('keeps the finding data in a hidden comment, never in visible text', () => {
     const finding: Finding = {
       ...baseFinding,
       severity: 'nitpick',
-      tags: ['defensive-hardening'],
+      reviewers: ['Security', 'Testing'],
+      judgeConfidence: 'high',
+      suggestedFix: 'a'.repeat(250),
+      tags: ['defensive-hardening', 'own-proposal-followup'],
       originalSeverity: 'blocker',
       reachability: 'hypothetical',
       reachabilityReasoning: 'no caller passes a negative value',
     };
     const comment = formatFindingComment(finding);
-    expect(comment).toContain('[defensive hardening — capped from blocker]');
-    const jsonMatch = comment.match(/```json\n([\s\S]*?)\n```/);
-    const parsed = JSON.parse(jsonMatch![1]);
-    expect(parsed.tags).toEqual(['defensive-hardening']);
-    expect(parsed.reachability).toBe('hypothetical');
-    expect(parsed.reachabilityReasoning).toBe('no caller passes a negative value');
-    expect(parsed.originalSeverity).toBe('blocker');
-  });
-
-  it('omits defensive-hardening line when finding has no tags', () => {
-    const comment = formatFindingComment(baseFinding);
-    expect(comment).not.toContain('defensive hardening');
-    const jsonMatch = comment.match(/```json\n([\s\S]*?)\n```/);
-    const parsed = JSON.parse(jsonMatch![1]);
-    expect(parsed.tags).toBeUndefined();
-    expect(parsed.reachability).toBeUndefined();
-    expect(parsed.originalSeverity).toBeUndefined();
-  });
-
-  it('omits defensive-hardening line when tag is absent but originalSeverity is set', () => {
-    const finding: Finding = { ...baseFinding, originalSeverity: 'blocker' };
-    const comment = formatFindingComment(finding);
-    expect(comment).not.toContain('defensive hardening');
-  });
-
-  it('renders own-proposal-followup tag with originalSeverity when present', () => {
-    const finding: Finding = {
-      ...baseFinding,
+    expect(comment).not.toMatch(/AI context|<sub>|capped from|Flagged by/);
+    expect(findingData(comment)).toEqual({
+      file: 'src/main.ts',
+      line: 42,
       severity: 'nitpick',
-      tags: ['own-proposal-followup'],
-      originalSeverity: 'blocker',
-    };
-    const comment = formatFindingComment(finding);
-    expect(comment).toContain('[own-proposal followup — capped from blocker]');
-    const jsonMatch = comment.match(/```json\n([\s\S]*?)\n```/);
-    const parsed = JSON.parse(jsonMatch![1]);
-    expect(parsed.tags).toEqual(['own-proposal-followup']);
-    expect(parsed.originalSeverity).toBe('blocker');
-  });
-
-  it('renders own-proposal-followup without "capped from" when originalSeverity is absent', () => {
-    const finding: Finding = {
-      ...baseFinding,
-      severity: 'nitpick',
-      tags: ['own-proposal-followup'],
-    };
-    const comment = formatFindingComment(finding);
-    expect(comment).toContain('[own-proposal followup]');
-    expect(comment).not.toContain('capped from');
-  });
-
-  it('renders own-proposal-followup without "capped from" when originalSeverity equals severity', () => {
-    const finding: Finding = {
-      ...baseFinding,
-      severity: 'nitpick',
-      originalSeverity: 'nitpick',
-      tags: ['own-proposal-followup'],
-    };
-    const comment = formatFindingComment(finding);
-    expect(comment).toContain('[own-proposal followup]');
-    expect(comment).not.toContain('capped from');
-  });
-
-  it('renders both defensive-hardening and own-proposal-followup tags when both are present', () => {
-    const finding: Finding = {
-      ...baseFinding,
-      severity: 'nitpick',
+      confidence: 'high',
+      flaggedBy: ['Security', 'Testing'],
+      title: 'Null pointer dereference',
+      fix: 'a'.repeat(200),
       tags: ['defensive-hardening', 'own-proposal-followup'],
-      originalSeverity: 'blocker',
       reachability: 'hypothetical',
-    };
-    const comment = formatFindingComment(finding);
-    expect(comment).toContain('[defensive hardening — capped from blocker]');
-    expect(comment).toContain('[own-proposal followup — capped from blocker]');
+      reachabilityReasoning: 'no caller passes a negative value',
+      originalSeverity: 'blocker',
+    });
+    expect(findingData(formatFindingComment(baseFinding))).toEqual({
+      file: 'src/main.ts', line: 42, severity: 'blocker', flaggedBy: ['Security & Correctness'], title: 'Null pointer dereference',
+    });
   });
 
-  it('omits own-proposal-followup line when tag is absent', () => {
-    const comment = formatFindingComment(baseFinding);
-    expect(comment).not.toContain('own-proposal followup');
+  it('escapes a comment terminator in the hidden finding data', () => {
+    const comment = formatFindingComment({ ...baseFinding, title: 'Bug: x --> y' });
+    expect(comment).toContain('<!-- manki:blocker:Bug--x-----y -->');
+    expect(findingData(comment).title).toBe('Bug: x --> y');
   });
 });
 
@@ -287,13 +145,13 @@ describe('BOT_MARKER', () => {
   });
 
   it('matches legacy unversioned comments (backwards compat)', () => {
-    const legacyBody = `${BOT_MARKER}\n**Manki** — Review started`;
+    const legacyBody = `${BOT_MARKER}\n**Review started**`;
     expect(legacyBody.includes(BOT_MARKER)).toBe(true);
     expect(extractVersionFromBody(legacyBody)).toBeNull();
   });
 
   it('matches new comments with both markers', () => {
-    const newBody = `${BOT_MARKER}\n${VERSION_MARKER_PREFIX} ${MANKI_VERSION} -->\n**Manki** — Review started`;
+    const newBody = `${BOT_MARKER}\n${VERSION_MARKER_PREFIX} ${MANKI_VERSION} -->\n**Review started**`;
     expect(newBody.includes(BOT_MARKER)).toBe(true);
     expect(extractVersionFromBody(newBody)).toBe(MANKI_VERSION);
   });
@@ -377,8 +235,8 @@ describe('postReview generalFindings', () => {
     expect(call.body).not.toContain('Fix:');
   });
 
-  it('truncates long suggestedFix to 200 chars in general findings', async () => {
-    const longFix = 'x'.repeat(250);
+  it('truncates long suggestedFix to 600 chars in general findings', async () => {
+    const longFix = 'x'.repeat(700);
     const result: ReviewResult = {
       verdict: 'APPROVE',
       summary: 'Summary',
@@ -400,11 +258,11 @@ describe('postReview generalFindings', () => {
 
     await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
     const body = mockCreateReview.mock.calls[0][0].body as string;
-    expect(body).toContain('x'.repeat(200) + '...');
-    expect(body).not.toContain('x'.repeat(201));
+    expect(body).toContain('x'.repeat(597) + '...');
+    expect(body).not.toContain('x'.repeat(601));
   });
 
-  it('uses code block for suggestedFix containing backticks', async () => {
+  it('keeps backticks in a one-line suggestedFix inside a longer inline code span', async () => {
     const fixWithBackticks = 'use `foo` instead of `bar`';
     const result: ReviewResult = {
       verdict: 'APPROVE',
@@ -427,9 +285,7 @@ describe('postReview generalFindings', () => {
 
     await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
     const body = mockCreateReview.mock.calls[0][0].body as string;
-    expect(body).toContain('```');
-    expect(body).toContain(fixWithBackticks);
-    expect(body).not.toContain('Fix: `');
+    expect(body).toContain('Fix: `` use `foo` instead of `bar` ``');
   });
 
   it('uses longer fence when suggestedFix contains triple backticks', async () => {
@@ -536,7 +392,7 @@ describe('postReview reviewed-commit footer', () => {
 
   const fullSha = 'ede627f1234567890abcdef0123456789abcdef0';
   const shortSha = fullSha.slice(0, 7);
-  const expectedFooter = `Reviewed commit [\`${shortSha}\`](https://github.com/acme/widgets/commit/${fullSha})`;
+  const expectedFooter = `Reviewed [\`${shortSha}\`](https://github.com/acme/widgets/commit/${fullSha}).`;
 
   beforeEach(() => {
     mockCreateReview.mockClear();
@@ -567,13 +423,13 @@ describe('postReview reviewed-commit footer', () => {
     const body = mockCreateReview.mock.calls[0][0].body as string;
     expect(body).toContain(expectedFooter);
     expect(shortSha).toBe(fullSha.slice(0, 7));
-    expect(body).toMatch(/Reviewed commit \[`[0-9a-f]{7}`\]\(https:\/\/github\.com\/acme\/widgets\/commit\/[0-9a-f]+\)$/);
+    expect(body).toMatch(/Reviewed \[`[0-9a-f]{7}`\]\(https:\/\/github\.com\/acme\/widgets\/commit\/[0-9a-f]+\)\.$/);
   });
 
   it('uses a custom serverUrl for GHE and strips trailing slashes', async () => {
     const gheServerUrl = 'https://github.example.com/';
     const gheShortSha = fullSha.slice(0, 7);
-    const expectedGheFooter = `Reviewed commit [\`${gheShortSha}\`](https://github.example.com/acme/widgets/commit/${fullSha})`;
+    const expectedGheFooter = `Reviewed [\`${gheShortSha}\`](https://github.example.com/acme/widgets/commit/${fullSha}).`;
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const ghCtx = require('@actions/github').context;
     const originalServerUrl = ghCtx.serverUrl;
@@ -721,7 +577,7 @@ describe('formatBlockingPriorThreads', () => {
     expect(formatBlockingPriorThreads(result)).toBeNull();
   });
 
-  it('renders file, line, severity, title and a thread link when present', () => {
+  it('renders the location, title and a thread link when present', () => {
     const result = makeResult({
       verdictTrace: {
         survivingBlockers: [],
@@ -739,12 +595,10 @@ describe('formatBlockingPriorThreads', () => {
         ],
       },
     });
-    const rendered = formatBlockingPriorThreads(result);
-    expect(rendered).toContain('Blocking unresolved review threads');
-    expect(rendered).toContain('Stdout-tail sanitization test passes trivially');
-    expect(rendered).toContain('`src/handler.ts:42`');
-    expect(rendered).toContain('[Warning]');
-    expect(rendered).toContain('(https://github.com/o/r/pull/805#discussion_r1)');
+    expect(formatBlockingPriorThreads(result)).toBe(
+      '**Still open from earlier reviews:**\n'
+      + '- `src/handler.ts:42`: Stdout-tail sanitization test passes trivially ([view thread](https://github.com/o/r/pull/805#discussion_r1))',
+    );
   });
 
   it('renders multiple blocking threads', () => {
@@ -758,11 +612,7 @@ describe('formatBlockingPriorThreads', () => {
         ],
       },
     });
-    const rendered = formatBlockingPriorThreads(result);
-    expect(rendered).toContain('[Blocker] A');
-    expect(rendered).toContain('[Warning] B');
-    expect(rendered).toContain('`a.ts:1`');
-    expect(rendered).toContain('`b.ts:2`');
+    expect(formatBlockingPriorThreads(result)).toBe('**Still open from earlier reviews:**\n- `a.ts:1`: A\n- `b.ts:2`: B');
   });
 
   it('omits the link when no `threadUrl` is provided', () => {
@@ -834,16 +684,24 @@ describe('formatBlockingPriorThreads', () => {
 
     await postReview(mockOctokit, 'o', 'r', 805, 'sha', result);
     const body = mockCreateReview.mock.calls[0][0].body as string;
-    expect(body).toContain('Blocking unresolved review threads');
+    expect(body).toContain('Still open from earlier reviews');
     expect(body).toContain('Stdout-tail sanitization test passes trivially');
     expect(body).toContain('https://github.com/o/r/pull/805#discussion_r1');
   });
 });
 
 describe('formatStatsOneLiner', () => {
-  it('formats a one-liner with severity breakdown', () => {
+  it('formats a hidden one-liner with severity breakdown', () => {
     const result = formatStatsOneLiner(makeContext(), 45000);
-    expect(result).toBe('\u{1F4CA} 4 findings (1 blocker, 2 suggestion, 1 nitpick) \u00B7 120 lines \u00B7 45s');
+    expect(result).toBe('<!-- manki-stats: 4 findings (1 blocker, 2 suggestions, 1 nitpick), 120 lines, 45s -->');
+  });
+
+  it('uses the singular for a count of one', () => {
+    const ctx = makeContext({
+      findings: { count: 1, severityCounts: { blocker: 0, warning: 1, suggestion: 0, nitpick: 0 }, entries: [] },
+      diff: { ...makeContext().diff, lines: 1 },
+    });
+    expect(formatStatsOneLiner(ctx, 45000)).toBe('<!-- manki-stats: 1 finding (1 warning), 1 line, 45s -->');
   });
 
   it('omits zero-count severities', () => {
@@ -851,7 +709,7 @@ describe('formatStatsOneLiner', () => {
       findings: { count: 3, severityCounts: { blocker: 0, warning: 0, suggestion: 3, nitpick: 0 }, entries: [] },
     });
     const result = formatStatsOneLiner(ctx, 45000);
-    expect(result).toContain('(3 suggestion)');
+    expect(result).toContain('(3 suggestions)');
     expect(result).not.toContain('blocker');
     expect(result).not.toContain('nitpick');
   });
@@ -869,8 +727,7 @@ describe('formatStatsOneLiner', () => {
       findings: { count: 3, severityCounts: { blocker: 0, warning: 2, suggestion: 1, nitpick: 0 }, entries: [] },
     });
     const result = formatStatsOneLiner(ctx, 45000);
-    expect(result).toContain('2 warning');
-    expect(result).toContain('1 suggestion');
+    expect(result).toContain('2 warnings, 1 suggestion');
     expect(result).not.toContain('blocker');
     expect(result).not.toContain('nitpick');
   });
@@ -1178,7 +1035,7 @@ describe('postReview with context', () => {
     warningSpy.mockRestore();
   });
 
-  it('includes stats one-liner and Manki context block in review body', async () => {
+  it('puts the stats and the Manki context in hidden comments by default', async () => {
     const result: ReviewResult = {
       verdict: 'APPROVE',
       summary: 'All good.',
@@ -1196,11 +1053,11 @@ describe('postReview with context', () => {
 
     await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, ctx, 60000);
     const body = mockCreateReview.mock.calls[0][0].body as string;
-    expect(body).toContain('\u{1F4CA} 3 findings');
-    expect(body).toContain('200 lines');
-    expect(body).toContain('60s');
-    expect(body).toContain('<summary>Manki context</summary>');
-    expect(body).toContain('"reviewer": "claude-sonnet-4-20250514"');
+    expect(body).toContain('<!-- manki-stats: 3 findings (2 suggestions, 1 nitpick), 200 lines, 60s -->\n<!-- manki-context: ');
+    expect(body).not.toContain('<details>');
+    expect(body).toMatch(/-->\n\nReviewed \[`abc`\]\([^)]+\)\.$/);
+    expect(body).not.toContain('\u{1F4CA}');
+    expect(body).toContain('"reviewer":"claude-sonnet-4-20250514"');
   });
 
   it('omits stats section when context not provided', async () => {
@@ -1215,9 +1072,8 @@ describe('postReview with context', () => {
 
     await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
     const body = mockCreateReview.mock.calls[0][0].body as string;
-    expect(body).not.toContain('\u{1F4CA}');
+    expect(body).not.toContain('manki-stats');
     expect(body).not.toContain('Manki context');
-    expect(body).not.toContain('Review stats');
   });
 
   it('truncates findings.entries in priority order when body exceeds 60k chars', async () => {
@@ -1247,7 +1103,7 @@ describe('postReview with context', () => {
     const preTruncationBody = JSON.stringify(ctx);
     expect(preTruncationBody.length).toBeGreaterThan(60_000);
 
-    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, ctx, 1000);
+    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, ctx, 1000, { ...DEFAULT_CONFIG, stats: { hidden: false } });
     const body = mockCreateReview.mock.calls[0][0].body as string;
     expect(body.length).toBeLessThanOrEqual(60000);
 
@@ -1277,7 +1133,7 @@ describe('postReview with context', () => {
     expect(warningSpy).toHaveBeenCalledWith(expect.stringMatching(/Manki context truncated: dropped \d+ finding entries/));
   });
 
-  it('hidden mode renders HTML-comment block instead of `<details>` while preserving the stats one-liner', async () => {
+  it('hidden mode renders HTML-comment block instead of `<details>` while preserving the stats line', async () => {
     const result: ReviewResult = {
       verdict: 'APPROVE',
       summary: 'All good.',
@@ -1296,9 +1152,7 @@ describe('postReview with context', () => {
 
     await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, ctx, 60000, config);
     const body = mockCreateReview.mock.calls[0][0].body as string;
-    expect(body).toContain('\u{1F4CA} 3 findings');
-    expect(body).toContain('200 lines');
-    expect(body).toContain('60s');
+    expect(body).toContain('<!-- manki-stats: 3 findings (2 suggestions, 1 nitpick), 200 lines, 60s -->');
     expect(body).toContain('<!-- manki-context: ');
     expect(body).not.toContain('<details>');
     expect(body).not.toContain('<summary>Manki context</summary>');
@@ -1328,7 +1182,7 @@ describe('postReview with context', () => {
     });
     await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, ctx, 1000);
     const body = mockCreateReview.mock.calls[0][0].body as string;
-    const match = body.match(/```json\n([\s\S]*?)\n```/);
+    const match = body.match(/<!-- manki-context: ([\s\S]*?) -->/);
     const parsed = JSON.parse(match![1]) as RoundContext;
     expect(parsed.findings.truncated).toBeUndefined();
     expect(parsed.findings.entries).toHaveLength(1);
@@ -1357,7 +1211,7 @@ describe('postReview with context', () => {
     await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, ctx, 0);
     expect(warningSpy).toHaveBeenCalledWith(expect.stringMatching(/judge summary capped/));
     const body = mockCreateReview.mock.calls[0][0].body as string;
-    const match = body.match(/```json\n([\s\S]*?)\n```/);
+    const match = body.match(/<!-- manki-context: ([\s\S]*?) -->/);
     const parsed = JSON.parse(match![1]) as RoundContext;
     expect(parsed.findings.truncated).toBeUndefined();
     expect(parsed.judge.summary.length).toBeLessThanOrEqual(2003);
@@ -1387,13 +1241,14 @@ describe('postReview partialNote', () => {
       reviewComplete: true,
       agentNames: [],
       partialNote: '4 of 5 agents completed (Correctness & Logic failed after 2 attempts)',
+      failedAgents: ['Correctness & Logic'],
     };
 
     await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
     const body = mockCreateReview.mock.calls[0][0].body as string;
-    expect(body).toContain('4 of 5 agents completed');
-    expect(body).toContain('Correctness & Logic failed after 2 attempts');
-    expect(body).toContain('**Note:**');
+    expect(body).toContain('\n\nThis review is partial: Correctness & Logic failed.');
+    expect(body).not.toContain('agents completed');
+    expect(body).not.toContain('> ');
   });
 
   it('omits partialNote section when not provided', async () => {
@@ -1408,11 +1263,11 @@ describe('postReview partialNote', () => {
 
     await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
     const body = mockCreateReview.mock.calls[0][0].body as string;
-    expect(body).not.toContain('**Note:**');
+    expect(body).not.toContain('This review is partial');
   });
 });
 
-describe('postReview ready report', () => {
+describe('postReview body lead', () => {
   const mockCreateReview = jest.fn().mockResolvedValue({ data: { id: 1 } });
   const mockOctokit = {
     rest: {
@@ -1422,58 +1277,98 @@ describe('postReview ready report', () => {
     },
   } as unknown as Parameters<typeof postReview>[0];
 
+  const diff: ParsedDiff = {
+    files: [{ path: 'src/a.ts', changeType: 'modified', hunks: [{ oldStart: 1, oldLines: 30, newStart: 1, newLines: 30, content: '' }] }],
+    totalAdditions: 30,
+    totalDeletions: 0,
+  };
+
   const verdictReport = {
     verdict: 'READY' as const,
     blockers: [],
     summary: 'Nothing blocks.',
     whatThisDoes: 'Adds a cache in front of the API. <script>x</script>',
-    whatToTest: 'Load the page twice, expect one request.',
+    whatToTest: { steps: ['Load the page twice. Expect one request.'] },
   };
 
-  beforeEach(() => {
+  const blocker: Finding = {
+    severity: 'blocker',
+    title: 'Startup aborts for a client synced from a checkpoint',
+    file: 'src/a.ts',
+    line: 5,
+    description: 'With no filter headers, `fh_bound` is 0.',
+    reviewers: ['Correctness'],
+  };
+
+  const ready: ReviewResult = {
+    verdict: 'APPROVE',
+    outcome: 'READY',
+    verdictReport,
+    summary: 'All clear.',
+    findings: [{ severity: 'suggestion', title: 'Extract helper', file: 'src/a.ts', line: 7, description: 'Duplicated.', reviewers: [] }],
+    highlights: [],
+    reviewComplete: true,
+    agentNames: [],
+  };
+
+  async function postedBody(result: ReviewResult): Promise<{ body: string; event: string }> {
     mockCreateReview.mockClear();
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', result, diff);
+    return mockCreateReview.mock.calls[0][0] as { body: string; event: string };
+  }
+
+  function lead(body: string): string {
+    return body.slice(body.indexOf('-->\n', body.indexOf('manki-version')) + 4);
+  }
+
+  it('opens a READY review with the verdict line, then what the change does and how to test it', async () => {
+    const { body, event } = await postedBody(ready);
+    expect(event).toBe('APPROVE');
+    expect(lead(body)).toBe([
+      '\u2705 **Approved.**',
+      '',
+      '**What this does:** Adds a cache in front of the API. x',
+      '',
+      '**What to test:**',
+      '',
+      '1. Load the page twice. Expect one request.',
+      '',
+      'Reviewed [`abcdef1`](https://github.com/owner/repo/commit/abcdef1234).',
+    ].join('\n'));
   });
 
-  it('adds "What this does" and "What to test" to the body of a READY approval only', async () => {
-    const ready: ReviewResult = {
-      verdict: 'APPROVE',
-      outcome: 'READY',
-      verdictReport,
-      summary: 'All clear.',
-      findings: [],
-      highlights: [],
-      reviewComplete: true,
-      agentNames: [],
-    };
+  it('renders the testing setup on its own line and the steps as a numbered list', async () => {
+    const { body } = await postedBody({ ...ready, verdictReport: { ...verdictReport, whatToTest: { setup: 'Start the dev\nserver.', steps: ['Load the page.', '2. Reload it.'] } } });
+    expect(body).toContain('**What to test:**\n\n**Setup:** Start the dev server.\n\n1. Load the page.\n2. Reload it.');
+  });
 
-    await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', ready);
-    const { body, event } = mockCreateReview.mock.calls[0][0] as { body: string; event: string };
-    expect(event).toBe('APPROVE');
-    expect(body).toContain('### What this does\n\nAdds a cache in front of the API.');
-    expect(body).toContain('### What to test\n\nLoad the page twice, expect one request.');
-    expect(body).not.toContain('<script>');
-
-    await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', {
+  it('opens an ADDRESS_FIRST review with the blocker count, then what goes wrong in practice', async () => {
+    const { body, event } = await postedBody({
       ...ready,
       verdict: 'REQUEST_CHANGES',
       outcome: 'ADDRESS_FIRST',
-      verdictReport: { ...verdictReport, verdict: 'ADDRESS_FIRST', blockers: ['src/a.ts:1: bug'] },
+      verdictReason: 'required_present',
+      verdictReport: undefined,
+      summary: 'A client synced from a checkpoint can no longer start',
+      findings: [{ ...blocker, severity: 'warning', title: 'Retry drops the error' }, blocker],
     });
-    const refused = mockCreateReview.mock.calls[1][0] as { body: string; event: string };
-    expect(refused.event).toBe('REQUEST_CHANGES');
-    expect(refused.body).not.toContain('What this does');
-    expect(refused.body).not.toContain('What to test');
+    expect(event).toBe('REQUEST_CHANGES');
+    expect(lead(body).split('\n\n').slice(0, 2)).toEqual([
+      '\u{1F534} **Changes requested:** 2 blockers.',
+      'A client synced from a checkpoint can no longer start.',
+    ]);
+    expect(lead(body).split('\n\n').slice(0, 2).join('\n')).not.toContain(blocker.title);
+    expect(body).not.toContain('What this does');
   });
 
-  it('approves a BUDGET round with the ready report, and lists the blockers of a NOT_CONVERGING round under "Needs a human"', async () => {
-    const base: ReviewResult = { verdict: 'APPROVE', outcome: 'BUDGET', verdictReport, summary: 'All clear.', findings: [], highlights: [], reviewComplete: true, agentNames: [] };
-    await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', base);
-    const budget = mockCreateReview.mock.calls[0][0] as { body: string; event: string };
+  it('approves a BUDGET round with the ready report, and opens a NOT_CONVERGING round with "Needs a human" and its blockers', async () => {
+    const base: ReviewResult = { ...ready, outcome: 'BUDGET', findings: [] };
+    const budget = await postedBody(base);
     expect(budget.event).toBe('APPROVE');
-    expect(budget.body).toContain('### What this does');
+    expect(lead(budget.body)).toMatch(/^\u2705 \*\*Approved\.\*\*\n\n\*\*What this does:\*\*/u);
     expect(budget.body).not.toContain('Needs a human');
 
-    await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', {
+    const stuck = await postedBody({
       ...base,
       verdict: 'REQUEST_CHANGES',
       outcome: 'NOT_CONVERGING',
@@ -1485,57 +1380,91 @@ describe('postReview ready report', () => {
         ],
       },
     });
-    const stuck = mockCreateReview.mock.calls[1][0] as { body: string; event: string };
     expect(stuck.event).toBe('REQUEST_CHANGES');
-    expect(stuck.body).toContain('### Needs a human\n\nThese blockers came back after a fix was pushed, so a fix and the review disagree. Automatic review is paused until someone comments `@manki review`.');
-    expect(stuck.body).toContain('- [Blocker] Cache never invalidated — `src/a.ts:10` ([view thread](https://github.com/o/r/pull/1#t1))\n- No migration');
+    expect(lead(stuck.body)).toMatch(new RegExp([
+      '^\u{1F6D1} \\*\\*Needs a human:\\*\\* 2 blockers came back after a fix\\.',
+      'Automatic review is paused until someone comments `@manki review`\\.',
+      '- `src/a\\.ts:10`: Cache never invalidated \\(\\[view thread\\]\\(https://github\\.com/o/r/pull/1#t1\\)\\)\\n- No migration',
+    ].join('\n\n'), 'u'));
+
+    const budgetStuck = await postedBody({ ...base, verdict: 'REQUEST_CHANGES', outcome: 'NOT_CONVERGING', needsHuman: { cause: 'budget', blockers: [{ file: 'src/a.ts', line: 10, title: 'X', fingerprint: 'k' }] } });
+    expect(lead(budgetStuck.body)).toMatch(/^\u{1F6D1} \*\*Needs a human:\*\* 1 blocker still open after the last automatic round\./u);
     expect(stuck.body).not.toContain('What this does');
   });
 
-  it('lists follow-up warnings in the body instead of posting them as threads, but posts a security warning', async () => {
+  it('explains the top blocker instead of the judge summary when the verdict reader named the blockers', async () => {
+    const { body } = await postedBody({
+      ...ready,
+      verdict: 'REQUEST_CHANGES',
+      outcome: 'ADDRESS_FIRST',
+      verdictReason: 'verdict_reader',
+      verdictReport: { ...verdictReport, verdict: 'ADDRESS_FIRST', blockers: ['src/a.ts:5: bug'] },
+      summary: 'Nothing to flag.',
+      findings: [{ ...blocker, file: '', line: 0, description: 'A synced client cannot start. Storage starts above 0. Handle `None`.' }],
+    });
+    expect(lead(body)).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker\.\n\nA synced client cannot start\. Storage starts above 0\.\n\n\*\*Blockers not tied to a line:\*\*/u);
+    expect(body).not.toContain('Nothing to flag');
+  });
+
+  it('names the earlier thread when only an earlier blocker is still open', async () => {
+    const { body } = await postedBody({
+      ...ready,
+      verdict: 'REQUEST_CHANGES',
+      outcome: 'ADDRESS_FIRST',
+      verdictReason: 'prior_unaddressed',
+      verdictReport: undefined,
+      summary: '',
+      findings: [],
+      verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [{ file: 'src/a.ts', title: 'Cache never expires', fingerprint: 'f', line: 3 }] },
+    });
+    expect(lead(body)).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker\.\n\n\*\*Still open from earlier reviews:\*\*\n- `src\/a\.ts:3`: Cache never expires\n/u);
+  });
+
+  it('opens an INCOMPLETE review with the verdict line and the reason', async () => {
+    const { body } = await postedBody({ ...ready, verdict: 'COMMENT', outcome: 'INCOMPLETE', verdictReport: undefined, summary: 'The judge failed', findings: [] });
+    expect(lead(body)).toBe('\u26A0\uFE0F **Review incomplete:** The judge failed.\n\nReviewed [`abcdef1`](https://github.com/owner/repo/commit/abcdef1234).');
+  });
+
+  it('lists follow-up warnings off the diff with the smaller fixes in one section, but never a security warning', async () => {
     const followUp = (title: string, line: number, suggestedFix?: string): Finding => ({
       severity: 'warning', title, file: 'src/a.ts', line, description: 'd', reviewers: ['r'], tags: ['follow-up'], ...(suggestedFix && { suggestedFix }),
     });
-    await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', {
-      verdict: 'APPROVE',
-      outcome: 'READY',
-      verdictReport,
-      summary: 'All clear.',
+    const { body } = await postedBody({
+      ...ready,
       findings: [
-        followUp('Unbounded retry', 4, 'cap at `3`\nattempts'),
-        followUp('Log level too loud', 9),
-        { severity: 'blocker', title: 'Real bug', file: 'src/a.ts', line: 2, description: 'd', reviewers: ['r'] },
+        followUp('Unbounded retry', 40, 'cap at `3`\nattempts'),
+        { severity: 'suggestion', title: 'Extract helper', file: 'src/a.ts', line: 47, description: 'Duplicated.', reviewers: [] },
+        blocker,
         { severity: 'warning', title: 'Injected reply', file: 'src/a.ts', line: 6, description: 'd', reviewers: ['r'], tags: ['security'] },
+        { severity: 'warning', title: 'Tagged both ways', file: 'src/gone.ts', line: 41, description: 'd', reviewers: ['r'], tags: ['follow-up', 'security'] },
       ],
-      highlights: [],
-      reviewComplete: true,
-      agentNames: [],
     });
-    const { body, comments } = mockCreateReview.mock.calls[0][0] as { body: string; comments: Array<{ line: number }> };
-    expect(comments.map(c => c.line)).toEqual([2, 6]);
-    expect(body).toContain('<summary>2 smaller fixes in this PR</summary>\n\n- `src/a.ts:4`: Unbounded retry. Fix: `` cap at `3` attempts ``\n- `src/a.ts:9`: Log level too loud\n</details>');
-  });
-});
-
-describe('getSeverityLabel', () => {
-  it('returns Blocker for blocker severity', () => {
-    expect(getSeverityLabel('blocker')).toBe('Blocker');
-  });
-
-  it('returns Warning for warning severity', () => {
-    expect(getSeverityLabel('warning')).toBe('Warning');
+    const { comments } = mockCreateReview.mock.calls[0][0] as { comments: Array<{ line: number; body: string }> };
+    expect(comments.map(c => c.line)).toEqual([5, 6]);
+    expect(comments[1].body).toMatch(/^\u26A0\uFE0F \*\*Warning:\*\* Injected reply\n/u);
+    expect(body).toContain('**Blockers in files outside this diff:**\n\n**Tagged both ways**');
+    expect(body).not.toMatch(/not blocking:\*\* (?:Injected reply|Tagged both ways)|manki-follow-up/);
+    expect(body).toContain('<summary>2 smaller fixes in this PR</summary>\n\n**Unbounded retry**\n');
+    expect(body).toContain('\n\n**Extract helper**\n[`src/a.ts:47`](https://github.com/owner/repo/blob/abcdef1234/src/a.ts#L47)\nDuplicated.\n\n</details>');
+    expect(body.match(/smaller fix/g)).toHaveLength(1);
   });
 
-  it('returns Suggestion for suggestion severity', () => {
-    expect(getSeverityLabel('suggestion')).toBe('Suggestion');
-  });
-
-  it('returns Nitpick for nitpick severity', () => {
-    expect(getSeverityLabel('nitpick')).toBe('Nitpick');
-  });
-
-  it('returns Ignore for ignore severity', () => {
-    expect(getSeverityLabel('ignore')).toBe('Ignore');
+  it('writes one emoji, at the start of the verdict line, and no dash clause separators in any outcome', async () => {
+    const results: ReviewResult[] = [
+      ready,
+      { ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', verdictReport: undefined, summary: 'It breaks.', findings: [blocker, { ...blocker, file: '', line: 0 }, { ...blocker, file: 'src/gone.ts' }] },
+      { ...ready, verdict: 'COMMENT', outcome: 'INCOMPLETE', verdictReport: undefined, summary: 'The judge failed.', partialNote: 'x', failedAgents: ['Security'] },
+      { ...ready, outcome: 'BUDGET' },
+      { ...ready, verdict: 'REQUEST_CHANGES', outcome: 'NOT_CONVERGING', needsHuman: { cause: 'repeated', blockers: [{ file: 'src/a.ts', line: 1, title: 'Bug', fingerprint: 'k' }] } },
+    ];
+    for (const result of results) {
+      const { body } = await postedBody(result);
+      const verdictLine = lead(body).split('\n')[0];
+      expect(verdictLine).toMatch(/^(?:\u2705|\u{1F534}|\u26A0\uFE0F|\u{1F6D1}) \*\*/u);
+      expect(body.replace(verdictLine, '')).not.toMatch(EMOJI_RE);
+      expect(body).not.toMatch(DASH_SEPARATOR_RE);
+      expect(body).not.toMatch(/^> /m);
+    }
   });
 });
 
@@ -2171,7 +2100,7 @@ describe('buildDashboard', () => {
   it('renders the started phase with running review and pending judge', () => {
     const data: DashboardData = { phase: 'started', lineCount: 150, agentCount: 5 };
     const md = buildDashboard(data);
-    expect(md).toContain('**Manki** — Review in progress');
+    expect(md).toContain('**Review in progress**');
     expect(md).toContain('**Planner**');
     expect(md).toContain(`${INDENT}150 lines · 5 agents`);
     expect(md).toContain('**Review**');
@@ -2183,7 +2112,7 @@ describe('buildDashboard', () => {
   it('renders the planning phase with analyzing planner and pending review/judge', () => {
     const data: DashboardData = { phase: 'planning', lineCount: 83, agentCount: 0 };
     const md = buildDashboard(data);
-    expect(md).toContain('**Manki** — Review in progress');
+    expect(md).toContain('**Review in progress**');
     expect(md).toContain('**Planner**');
     expect(md).toContain(`${INDENT}analyzing...`);
     expect(md).toContain('**Review**');
@@ -2214,15 +2143,17 @@ describe('buildDashboard', () => {
       ],
     };
     const md = buildDashboard(data);
-    expect(md).toContain('**Manki** — Review in progress');
-    expect(md).toContain('**Review** — 2/5 agents complete');
-    expect(md).toContain(`${INDENT}✅ Security & Safety — 2 (4s)`);
-    expect(md).toContain(`${INDENT}✅ Architecture & Design — 0 (3s)`);
+    expect(md).toContain('**Review in progress**');
+    expect(md).toContain('**Review:** 2/5 agents complete');
+    expect(md).toContain(`${INDENT}✅ Security & Safety: 2 findings (4s)`);
+    expect(md).toContain(`${INDENT}✅ Architecture & Design: 0 findings (3s)`);
     expect(md).toContain(`${INDENT}⏳ Correctness & Logic`);
     expect(md).toContain(`${INDENT}○ Testing & Coverage`);
     expect(md).toContain(`${INDENT}○ Performance & Efficiency`);
     expect(md).toContain('**Judge**');
     expect(md).not.toContain('\uD83D\uDD0D');
+    expect(md).not.toMatch(DASH_SEPARATOR_RE);
+    expect(md.replace(/^(?:&nbsp;)*(?:\u2705|\u{1F534}|\u26A0\uFE0F|\u23F3) /gmu, '')).not.toMatch(EMOJI_RE);
   });
 
   it('renders failed agent status in agent progress', () => {
@@ -2235,15 +2166,15 @@ describe('buildDashboard', () => {
       ],
     };
     const md = buildDashboard(data);
-    expect(md).toContain(`${INDENT}✗ Security & Safety — failed (2s)`);
-    expect(md).toContain(`${INDENT}✅ Correctness & Logic — 1 (2s)`);
+    expect(md).toContain(`${INDENT}🔴 Security & Safety: failed (2s)`);
+    expect(md).toContain(`${INDENT}✅ Correctness & Logic: 1 finding (2s)`);
   });
 
   it('renders the reviewed phase with finding count and running judge', () => {
     const data: DashboardData = { phase: 'reviewed', lineCount: 300, agentCount: 3, rawFindingCount: 12 };
     const md = buildDashboard(data);
-    expect(md).toContain('**Manki** — Review in progress');
-    expect(md).toContain('**Review** — 12 findings');
+    expect(md).toContain('**Review in progress**');
+    expect(md).toContain('**Review:** 12 findings');
     expect(md).toContain('**Judge**');
     expect(md).toContain(`${INDENT}evaluating 12 findings...`);
   });
@@ -2251,7 +2182,7 @@ describe('buildDashboard', () => {
   it('renders judgeInputCount separately from rawFindingCount in reviewed phase', () => {
     const data: DashboardData = { phase: 'reviewed', lineCount: 300, agentCount: 3, rawFindingCount: 12, judgeInputCount: 10 };
     const md = buildDashboard(data);
-    expect(md).toContain('**Review** — 12 findings');
+    expect(md).toContain('**Review:** 12 findings');
     expect(md).toContain(`${INDENT}evaluating 10 findings...`);
   });
 
@@ -2265,11 +2196,11 @@ describe('buildDashboard', () => {
       ],
     };
     const md = buildDashboard(data);
-    expect(md).toContain('**Manki** — Review in progress');
-    expect(md).toContain('**Review** — 7 findings');
-    expect(md).toContain(`${INDENT}✅ Security & Safety — 3 (4s)`);
-    expect(md).toContain(`${INDENT}✅ Correctness & Logic — 4 (3s)`);
-    expect(md).toContain(`${INDENT}✅ Architecture & Design — 0 (3s)`);
+    expect(md).toContain('**Review in progress**');
+    expect(md).toContain('**Review:** 7 findings');
+    expect(md).toContain(`${INDENT}✅ Security & Safety: 3 findings (4s)`);
+    expect(md).toContain(`${INDENT}✅ Correctness & Logic: 4 findings (3s)`);
+    expect(md).toContain(`${INDENT}✅ Architecture & Design: 0 findings (3s)`);
     expect(md).toContain(`${INDENT}evaluating 7 findings...`);
   });
 
@@ -2279,9 +2210,9 @@ describe('buildDashboard', () => {
       rawFindingCount: 20, keptCount: 8, droppedCount: 12,
     };
     const md = buildDashboard(data);
-    expect(md).not.toContain('**Manki** — Review in progress');
-    expect(md).toContain('**Review** — 20 findings');
-    expect(md).toContain('**Judge** — 8 kept · 12 dropped');
+    expect(md).not.toContain('**Review in progress**');
+    expect(md).toContain('**Review:** 20 findings');
+    expect(md).toContain('**Judge:** 8 kept · 12 dropped');
   });
 
   it('renders per-agent detail in the complete phase when agentProgress is provided', () => {
@@ -2297,13 +2228,13 @@ describe('buildDashboard', () => {
       ],
     };
     const md = buildDashboard(data);
-    expect(md).toContain('**Review** — 17 findings');
-    expect(md).toContain(`${INDENT}✅ Security & Safety — 2 (4s)`);
-    expect(md).toContain(`${INDENT}✅ Architecture & Design — 3 (3s)`);
-    expect(md).toContain(`${INDENT}✅ Correctness & Logic — 5 (6s)`);
-    expect(md).toContain(`${INDENT}✅ Testing & Coverage — 4 (5s)`);
-    expect(md).toContain(`${INDENT}✅ Performance & Efficiency — 3 (4s)`);
-    expect(md).toContain('**Judge** — 14 kept · 3 dropped');
+    expect(md).toContain('**Review:** 17 findings');
+    expect(md).toContain(`${INDENT}✅ Security & Safety: 2 findings (4s)`);
+    expect(md).toContain(`${INDENT}✅ Architecture & Design: 3 findings (3s)`);
+    expect(md).toContain(`${INDENT}✅ Correctness & Logic: 5 findings (6s)`);
+    expect(md).toContain(`${INDENT}✅ Testing & Coverage: 4 findings (5s)`);
+    expect(md).toContain(`${INDENT}✅ Performance & Efficiency: 3 findings (4s)`);
+    expect(md).toContain('**Judge:** 14 kept · 3 dropped');
   });
 
   it('renders failed agent in the complete phase', () => {
@@ -2316,9 +2247,9 @@ describe('buildDashboard', () => {
       ],
     };
     const md = buildDashboard(data);
-    expect(md).toContain(`${INDENT}✅ Security & Safety — 3 (2s)`);
-    expect(md).toContain(`${INDENT}✗ Architecture & Design — failed (500ms)`);
-    expect(md).toContain('**Judge** — 2 kept · 1 dropped');
+    expect(md).toContain(`${INDENT}✅ Security & Safety: 3 findings (2s)`);
+    expect(md).toContain(`${INDENT}🔴 Architecture & Design: failed (500ms)`);
+    expect(md).toContain('**Judge:** 2 kept · 1 dropped');
   });
 
   it('formats sub-second durations in milliseconds', () => {
@@ -2413,7 +2344,7 @@ describe('buildDashboard', () => {
       droppedSeverities: { nitpick: 3, suggestion: 2, ignore: 1 },
     };
     const md = buildDashboard(data);
-    expect(md).toContain('**Judge** — 2 kept · 6 dropped');
+    expect(md).toContain('**Judge:** 2 kept · 6 dropped');
     expect(md).toContain(`${INDENT}kept: 1 blocker · 1 suggestion`);
     expect(md).toContain(`${INDENT}dropped: 2 suggestion · 3 nitpick · 1 ignore`);
   });
@@ -2459,7 +2390,7 @@ describe('buildDashboard', () => {
       rawFindingCount: 8, keptCount: 2, droppedCount: 6,
     };
     const md = buildDashboard(data);
-    expect(md).toContain('**Judge** — 2 kept · 6 dropped');
+    expect(md).toContain('**Judge:** 2 kept · 6 dropped');
     expect(md).not.toContain(`${INDENT}kept:`);
     expect(md).not.toContain(`${INDENT}dropped:`);
   });
@@ -2527,12 +2458,12 @@ describe('buildDashboard', () => {
       ],
     };
     const md = buildDashboard(data);
-    expect(md).toContain('**Review** — 18 findings');
-    expect(md).toContain(`${INDENT}✅ Security & Safety — 4 (41s)`);
-    expect(md).toContain(`${INDENT}✅ Architecture & Design — 3 (38s)`);
-    expect(md).toContain(`${INDENT}✅ Correctness & Logic — 5 (45s)`);
-    expect(md).toContain(`${INDENT}✅ Testing & Coverage — 4 (36s)`);
-    expect(md).toContain(`${INDENT}✅ Performance & Efficiency — 2 (39s)`);
+    expect(md).toContain('**Review:** 18 findings');
+    expect(md).toContain(`${INDENT}✅ Security & Safety: 4 findings (41s)`);
+    expect(md).toContain(`${INDENT}✅ Architecture & Design: 3 findings (38s)`);
+    expect(md).toContain(`${INDENT}✅ Correctness & Logic: 5 findings (45s)`);
+    expect(md).toContain(`${INDENT}✅ Testing & Coverage: 4 findings (36s)`);
+    expect(md).toContain(`${INDENT}✅ Performance & Efficiency: 2 findings (39s)`);
     expect(md).not.toContain('0 (0ms)');
   });
 
@@ -2545,7 +2476,7 @@ describe('buildDashboard', () => {
     };
     const md = buildDashboard(data);
     const plannerIdx = md.indexOf('**Planner**');
-    const reviewIdx = md.indexOf('**Review**');
+    const reviewIdx = md.indexOf('**Review:**');
     const markerIdx = md.indexOf(`${INDENT}_(planner heuristic fallback used)_`);
     expect(markerIdx).toBeGreaterThan(plannerIdx);
     expect(markerIdx).toBeLessThan(reviewIdx);
@@ -2568,7 +2499,7 @@ describe('buildDashboard', () => {
       judgeDurationMs: 8000,
     };
     const md = buildDashboard(data);
-    expect(md).toContain('**Judge** — 8 kept · 12 dropped (8s)');
+    expect(md).toContain('**Judge:** 8 kept · 12 dropped (8s)');
   });
 
   it('omits judge duration when judgeDurationMs is not set', () => {
@@ -2577,8 +2508,8 @@ describe('buildDashboard', () => {
       rawFindingCount: 20, keptCount: 8, droppedCount: 12,
     };
     const md = buildDashboard(data);
-    expect(md).toContain('**Judge** — 8 kept · 12 dropped');
-    expect(md).not.toContain('**Judge** — 8 kept · 12 dropped (');
+    expect(md).toContain('**Judge:** 8 kept · 12 dropped');
+    expect(md).not.toContain('**Judge:** 8 kept · 12 dropped (');
   });
 
   it('renders both planner and judge durations in complete phase', () => {
@@ -2591,7 +2522,7 @@ describe('buildDashboard', () => {
     };
     const md = buildDashboard(data);
     expect(md).toContain('**Planner** (3s)');
-    expect(md).toContain('**Judge** — 6 kept · 4 dropped (65s)');
+    expect(md).toContain('**Judge:** 6 kept · 4 dropped (65s)');
   });
 
   it('renders retrying agent status with retry count', () => {
@@ -2605,8 +2536,8 @@ describe('buildDashboard', () => {
     };
     const md = buildDashboard(data);
     expect(md).toContain('2/3 agents complete');
-    expect(md).toContain(`${INDENT}🔄 Security & Safety — retrying (2/2)...`);
-    expect(md).toContain(`${INDENT}✅ Architecture & Design — 2 (3s)`);
+    expect(md).toContain(`${INDENT}⚠️ Security & Safety: retrying (2/2)`);
+    expect(md).toContain(`${INDENT}✅ Architecture & Design: 2 findings (3s)`);
     expect(md).toContain(`${INDENT}⏳ Correctness & Logic`);
   });
 
@@ -2618,7 +2549,7 @@ describe('buildDashboard', () => {
       ],
     };
     const md = buildDashboard(data);
-    expect(md).toContain(`${INDENT}🔄 Security & Safety — retrying...`);
+    expect(md).toContain(`${INDENT}⚠️ Security & Safety: retrying`);
   });
 
   it('renders failed agent with retry count showing total attempts', () => {
@@ -2632,7 +2563,7 @@ describe('buildDashboard', () => {
       ],
     };
     const md = buildDashboard(data);
-    expect(md).toContain(`${INDENT}✗ Security & Safety — failed after 2 attempts (2s)`);
+    expect(md).toContain(`${INDENT}🔴 Security & Safety: failed after 2 attempts (2s)`);
   });
 
   it('done count does not decrease when a failed agent transitions to retrying', () => {
@@ -2663,7 +2594,7 @@ describe('buildDashboard', () => {
       ],
     };
     const md = buildDashboard(data);
-    expect(md).toContain(`${INDENT}✗ Security & Safety — failed (2s)`);
+    expect(md).toContain(`${INDENT}🔴 Security & Safety: failed (2s)`);
     expect(md).not.toContain('attempts');
   });
 });
@@ -2716,16 +2647,16 @@ describe('updateProgressComment', () => {
   it('renders dashboard without metadata when metadata is not provided', async () => {
     await updateProgressComment(mockOctokit, 'owner', 'repo', 123, baseDashboard);
     const body = mockUpdateComment.mock.calls[0][0].body as string;
-    expect(body).toContain('**Manki** — Review failed');
+    expect(body).toContain('🔴 **Review failed**');
     expect(body).toContain('**Planner**');
-    expect(body).toContain('**Judge**');
+    expect(body).toContain('**Judge:**');
     expect(body).not.toContain('Review metadata');
   });
 
   it('renders config section in metadata', async () => {
     await updateProgressComment(mockOctokit, 'owner', 'repo', 123, baseDashboard, baseMetadata);
     const body = mockUpdateComment.mock.calls[0][0].body as string;
-    expect(body).toContain('**Manki** — Review complete');
+    expect(body).toContain('✅ **Review complete**');
     expect(body).toContain('<summary>Review metadata</summary>');
     expect(body).toContain('**Config:**');
     expect(body).toContain('reviewer=claude-sonnet-4-20250514');
@@ -2735,13 +2666,13 @@ describe('updateProgressComment', () => {
     expect(body).toContain('enabled (owner/review-memory)');
   });
 
-  it('renders judge decisions with kept/dropped icons', async () => {
+  it('renders judge decisions as kept or dropped', async () => {
     await updateProgressComment(mockOctokit, 'owner', 'repo', 123, baseDashboard, baseMetadata);
     const body = mockUpdateComment.mock.calls[0][0].body as string;
     expect(body).toContain('**Judge decisions:**');
-    expect(body).toContain('\u2713 Kept: "Null dereference"');
+    expect(body).toContain('- Kept: "Null dereference"');
     expect(body).toContain('(blocker, high confidence)');
-    expect(body).toContain('\u2717 Dropped: "Style nitpick"');
+    expect(body).toContain('- Dropped: "Style nitpick"');
     expect(body).toContain('(ignore, medium confidence)');
   });
 
@@ -2782,7 +2713,7 @@ describe('updateProgressComment', () => {
     const dashboard: DashboardData = { ...baseDashboard, phase: 'reviewed' };
     await updateProgressComment(mockOctokit, 'owner', 'repo', 123, dashboard, baseMetadata);
     const body = mockUpdateComment.mock.calls[0][0].body as string;
-    expect(body).toContain('**Judge** — 3 kept · 7 dropped');
+    expect(body).toContain('**Judge:** 3 kept · 7 dropped');
     expect(body).not.toContain('evaluating');
   });
 
@@ -3326,8 +3257,7 @@ describe('postReview fallback paths', () => {
 
     await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result, diff);
     const body = createReviewMock.mock.calls[0][0].body as string;
-    expect(body).toContain('Findings (not on changed lines)');
-    expect(body).toContain('Issue in missing file');
+    expect(body).toContain('**Blockers in files outside this diff:**\n\n**Issue in missing file**\n[`src/missing.ts:10`](https://github.com/owner/repo/blob/sha/src/missing.ts#L10)\nDesc.');
     expect(createReviewMock.mock.calls[0][0].comments).toEqual([]);
   });
 
@@ -3432,9 +3362,9 @@ describe('postReview fallback paths', () => {
       expect(updateReview).toHaveBeenCalledTimes(1);
       const update = updateReview.mock.calls[0][0];
       expect(update.review_id).toBe(7);
-      expect(update.body.startsWith(review.body.slice(0, review.body.lastIndexOf('\n\nReviewed commit')))).toBe(true);
-      expect(update.body).toContain('**Findings (could not post as threads):**\n- **[Blocker] Refused thread** (`src/a.ts:40`)');
-      expect(update.body).toMatch(/Reviewed commit \[`sha`\]\([^)]+\)$/);
+      expect(update.body.startsWith(review.body.slice(0, review.body.lastIndexOf('\n\nReviewed [')))).toBe(true);
+      expect(update.body).toContain('**Blockers that could not be posted as threads:**\n\n**Refused thread**\n[`src/a.ts:40`](https://github.com/owner/repo/blob/sha/src/a.ts#L40)');
+      expect(update.body).toMatch(/Reviewed \[`sha`\]\([^)]+\)\.$/);
     });
 
     it('truncates the existing body, never the refused findings, when the review is near the size limit', async () => {
@@ -3446,7 +3376,7 @@ describe('postReview fallback paths', () => {
 
       const update = updateReview.mock.calls[0][0].body as string;
       expect(update).toContain('*(Review body truncated)*');
-      expect(update).toContain('**Findings (could not post as threads):**\n- **[Blocker] Refused thread** (`src/a.ts:40`): Desc.\n\nReviewed commit');
+      expect(update).toContain('**Blockers that could not be posted as threads:**\n\n**Refused thread**\n[`src/a.ts:40`](https://github.com/owner/repo/blob/sha/src/a.ts#L40)\nDesc.\n\nReviewed [');
       expect(update.length).toBeLessThanOrEqual(60000 + 200);
     });
 
@@ -3490,30 +3420,79 @@ describe('postReview non-blocking findings', () => {
     return { octokit, createReview, createReviewComment };
   }
 
-  it('lists suggestions and nitpicks in a collapsed body section instead of threads', async () => {
+  const nonBlocking = (severity: Finding['severity'], title: string, line: number, extra: Partial<Finding> = {}): Finding => ({
+    severity, title, file: 'src/a.ts', line, description: 'It goes wrong. Second sentence. Third sentence.', reviewers: [], ...extra,
+  });
+
+  it('posts non-blocking findings on changed lines inline as not blocking, and lists the rest as blocks', async () => {
     const { octokit, createReview, createReviewComment } = makeOctokit();
 
-    await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([
-      { severity: 'suggestion', title: 'Extract helper', file: 'src/a.ts', line: 5, description: 'Duplicated.', suggestedFix: 'const x =\n  helper();', reviewers: [] },
-      { severity: 'nitpick', title: 'Typo in name', file: 'src/a.ts', line: 7, description: 'Typo.', suggestedFix: 'use `name`', reviewers: [], judgeConfidence: 'high' },
-      { severity: 'suggestion', title: 'General idea', file: '', line: 0, description: 'Desc.', reviewers: [] },
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', buildResult([
+      nonBlocking('suggestion', 'Extract helper', 5, { suggestedFix: 'const x = helper();' }),
+      nonBlocking('nitpick', 'Typo in name', 7, { judgeConfidence: 'high' }),
+      nonBlocking('suggestion', 'Missing file context', 0, { file: '', suggestedFix: 'Use the shared helper.', judgeConfidence: 'low' }),
+      nonBlocking('suggestion', 'Off the diff', 40, { suggestedFix: 'if (a) {\n  b();\n}' }),
     ]), diff);
 
     const review = createReview.mock.calls[0][0];
-    expect(review.comments).toEqual([]);
     expect(createReviewComment).not.toHaveBeenCalled();
+    expect(review.comments.map((c: { line: number }) => c.line)).toEqual([5, 7]);
+    expect(review.comments[0].body).toMatch(/^\u2728 \*\*Suggestion, not blocking:\*\* Extract helper\n\nIt goes wrong\./u);
+    expect(review.comments[0].body).toContain('<!-- manki:suggestion:Extract-helper -->');
+    expect(review.comments[1].body).toMatch(/^\u{1F4DD} \*\*Nitpick, not blocking:\*\* Typo in name\n/u);
     expect(review.body).toContain([
       '<details>',
-      '<summary>Suggestions and nitpicks (3)</summary>',
+      '<summary>2 smaller fixes in this PR</summary>',
       '',
-      '- `src/a.ts:5`: Extract helper. Fix: `const x = helper();`',
-      '- `src/a.ts:7`: Typo in name. Fix: `` use `name` ``',
-      '- General idea',
+      '**Missing file context**',
+      '_Manki is not sure this applies, so please check it._',
+      'It goes wrong. Second sentence.',
+      'Fix: Use the shared helper.',
+      '',
+      '**Off the diff**',
+      '[`src/a.ts:40`](https://github.com/owner/repo/blob/abc1234/src/a.ts#L40)',
+      'It goes wrong. Second sentence.',
+      'Fix:',
+      '```',
+      'if (a) {',
+      '  b();',
+      '}',
+      '```',
+      '',
       '</details>',
     ].join('\n'));
-    expect(review.body).not.toContain('\u{1F534}');
-    expect(review.body).not.toContain('manki:nitpick');
-    expect(review.body).not.toContain('not posted');
+    expect(review.body).not.toContain('not listed');
+  });
+
+  it('posts at most five non-blocking findings inline, most severe first, and lists the sixth', async () => {
+    const { octokit, createReview } = makeOctokit();
+
+    await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([
+      nonBlocking('nitpick', 'Nit one', 1),
+      nonBlocking('suggestion', 'Suggestion one', 2),
+      nonBlocking('warning', 'Deferred warning', 3, { tags: ['follow-up'] }),
+      nonBlocking('suggestion', 'Suggestion two', 4),
+      nonBlocking('nitpick', 'Nit two', 5),
+      nonBlocking('suggestion', 'Suggestion three', 6),
+    ]), diff);
+
+    const review = createReview.mock.calls[0][0];
+    const byLine = new Map(review.comments.map((c: { line: number; body: string }) => [c.line, c.body]));
+    expect([...byLine.keys()].sort()).toEqual([1, 2, 3, 4, 6]);
+    expect(byLine.get(3)).toMatch(/^\u26A0\uFE0F \*\*Warning, not blocking:\*\* Deferred warning\n/u);
+    expect(byLine.get(3)).toContain('<!-- manki:warning:Deferred-warning -->\n<!-- manki-follow-up -->');
+    expect(review.body).toContain('<summary>1 smaller fix in this PR</summary>\n\n**Nit two**\n');
+  });
+
+  it('does not post a non-blocking finding again while its open thread carries it', async () => {
+    const { octokit, createReview } = makeOctokit();
+    const existingThreads = [{ title: 'Extract helper', file: 'src/a.ts', line: 5, severity: 'suggestion' as const, status: 'open' as const, threadId: 'T1', markerSlug: 'Extract-helper' }];
+
+    await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([nonBlocking('suggestion', 'Extract helper', 5)]), diff, undefined, undefined, undefined, { existingThreads });
+
+    const review = createReview.mock.calls[0][0];
+    expect(review.comments).toEqual([]);
+    expect(review.body).not.toContain('Extract helper');
   });
 
   it('counts non-blocking findings on code the inter-round diff did not change', async () => {
@@ -3525,37 +3504,24 @@ describe('postReview non-blocking findings', () => {
     };
 
     await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([
-      { severity: 'suggestion', title: 'On new code', file: 'src/a.ts', line: 11, description: 'Desc.', reviewers: [] },
-      { severity: 'suggestion', title: 'On old code', file: 'src/a.ts', line: 3, description: 'Desc.', reviewers: [] },
-      { severity: 'nitpick', title: 'Untouched file', file: 'src/b.ts', line: 3, description: 'Desc.', reviewers: [] },
-      { severity: 'blocker', title: 'Old blocker', file: 'src/a.ts', line: 3, description: 'Desc.', reviewers: [] },
+      nonBlocking('suggestion', 'On new code', 11),
+      nonBlocking('suggestion', 'On old code', 3),
+      nonBlocking('nitpick', 'Untouched file', 3, { file: 'src/b.ts' }),
+      nonBlocking('blocker', 'Old blocker', 3),
     ]), diff, undefined, undefined, undefined, { interRoundDiff });
 
     const review = createReview.mock.calls[0][0];
-    expect(review.body).toContain('<summary>Suggestions and nitpicks (1)</summary>');
-    expect(review.body).toContain('On new code');
+    expect(review.comments.map((c: { body: string }) => c.body.split('\n')[0])).toEqual(['\u{1F6AB} **Blocker:** Old blocker', '\u2728 **Suggestion, not blocking:** On new code']);
     expect(review.body).not.toContain('On old code');
     expect(review.body).not.toContain('Untouched file');
-    expect(review.body).toContain('2 smaller findings on code unchanged since the last review were not posted.');
-    expect(review.comments).toHaveLength(1);
-    expect(review.comments[0].body).toContain('Old blocker');
-  });
-});
-
-describe('getSeverityEmoji', () => {
-  it('returns correct emoji for each severity', () => {
-    expect(getSeverityEmoji('blocker')).toBe('\u{1F6AB}');
-    expect(getSeverityEmoji('warning')).toBe('\u26A0\uFE0F');
-    expect(getSeverityEmoji('suggestion')).toBe('\u2728');
-    expect(getSeverityEmoji('nitpick')).toBe('\u{1F4DD}');
-    expect(getSeverityEmoji('ignore')).toBe('\u26AA');
+    expect(review.body).toContain('2 smaller fixes on code unchanged since the last review are not listed.');
   });
 });
 
 describe('isReviewInProgress', () => {
   type Octokit = ReturnType<typeof import('@actions/github').getOctokit>;
 
-  function makeRunIdBody(runId: number, text = '**Manki** — Review in progress'): string {
+  function makeRunIdBody(runId: number, text = '**Review in progress**'): string {
     return `${BOT_MARKER}\n<!-- manki-run-id:${runId} -->\n${text}`;
   }
 
@@ -3647,7 +3613,7 @@ describe('isReviewInProgress', () => {
     expect(result).toBe(false);
     expect(updateComment).toHaveBeenCalledWith(expect.objectContaining({
       comment_id: 77,
-      body: expect.stringContaining('Review cancelled (superseded by newer run)'),
+      body: expect.stringContaining('**Review cancelled:** a newer run replaced it.'),
     }));
   });
 
@@ -3665,7 +3631,7 @@ describe('isReviewInProgress', () => {
 
   it('returns false when progress comment contains complete marker', async () => {
     const { octokit, getWorkflowRun } = makeMockOctokit({
-      comments: [{ body: `${BOT_MARKER}\n**Manki** — Review complete\n${REVIEW_COMPLETE_MARKER}`, user: { type: 'Bot' } }],
+      comments: [{ body: `${BOT_MARKER}\n✅ **Review complete**\n${REVIEW_COMPLETE_MARKER}`, user: { type: 'Bot' } }],
     });
 
     const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
@@ -3676,7 +3642,7 @@ describe('isReviewInProgress', () => {
 
   it('returns false and marks legacy comment (no run_id marker) as cancelled', async () => {
     const { octokit, updateComment, getWorkflowRun } = makeMockOctokit({
-      comments: [{ id: 55, body: `${BOT_MARKER}\n**Manki** — Review in progress`, user: { type: 'Bot' } }],
+      comments: [{ id: 55, body: `${BOT_MARKER}\n**Review in progress**`, user: { type: 'Bot' } }],
     });
 
     const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
@@ -3845,7 +3811,7 @@ describe('markOwnProgressCommentCancelled', () => {
   type Octokit = ReturnType<typeof import('@actions/github').getOctokit>;
 
   function makeBody(runId: number): string {
-    return `${BOT_MARKER}\n<!-- manki-run-id:${runId} -->\n**Manki** — Review in progress`;
+    return `${BOT_MARKER}\n<!-- manki-run-id:${runId} -->\n**Review in progress**`;
   }
 
   function makeOctokit(comments: Array<{ id?: number; body: string; user: { login?: string; type: string } }>, updateError?: Error) {
@@ -3876,7 +3842,7 @@ describe('markOwnProgressCommentCancelled', () => {
     expect(result).toBe(true);
     expect(updateComment).toHaveBeenCalledWith(expect.objectContaining({
       comment_id: 10,
-      body: expect.stringContaining('Review cancelled (superseded by newer run)'),
+      body: expect.stringContaining('**Review cancelled:** a newer run replaced it.'),
     }));
   });
 
@@ -4297,7 +4263,7 @@ describe('cancelActiveReviewRun', () => {
   type Octokit = ReturnType<typeof import('@actions/github').getOctokit>;
 
   function makeRunIdBody(runId: number): string {
-    return `${BOT_MARKER}\n<!-- manki-run-id:${runId} -->\n**Manki** — Review in progress`;
+    return `${BOT_MARKER}\n<!-- manki-run-id:${runId} -->\n**Review in progress**`;
   }
 
   function makeMockOctokit(opts: {
@@ -4342,7 +4308,7 @@ describe('cancelActiveReviewRun', () => {
 
   it('returns false when progress comment has no runId', async () => {
     const { octokit, cancelWorkflowRun } = makeMockOctokit({
-      comment: { id: 10, body: `${BOT_MARKER}\n**Manki** — Review in progress` },
+      comment: { id: 10, body: `${BOT_MARKER}\n**Review in progress**` },
     });
 
     const result = await cancelActiveReviewRun(octokit, TEST_BOT, 'owner', 'repo', 1);
@@ -4518,7 +4484,7 @@ describe('isBotLogin', () => {
 
 describe('findInProgressLock', () => {
   function makeInProgressBody(runId: number): string {
-    return `${BOT_MARKER}\n<!-- manki-run-id:${runId} -->\n**Manki** — Review in progress`;
+    return `${BOT_MARKER}\n<!-- manki-run-id:${runId} -->\n**Review in progress**`;
   }
 
   function makeComment(
@@ -4561,7 +4527,7 @@ describe('findInProgressLock', () => {
   });
 
   it('skips comments without a parseable run-id marker (legacy)', () => {
-    const comments = [botComment(1, `${BOT_MARKER}\n**Manki** — Review in progress`)];
+    const comments = [botComment(1, `${BOT_MARKER}\n**Review in progress**`)];
 
     expect(findInProgressLock(comments, TEST_BOT, 42)).toBeNull();
   });

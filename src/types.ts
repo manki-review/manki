@@ -211,7 +211,13 @@ export interface VerdictReport {
   blockers: string[];
   summary: string;
   whatThisDoes: string;
-  whatToTest: string;
+  whatToTest: TestGuide;
+}
+
+/** Manual checks for a pull request: what they need first, then one "Do X. Expect Y." step each. */
+export interface TestGuide {
+  setup?: string;
+  steps: string[];
 }
 
 export interface ReviewResult {

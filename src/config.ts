@@ -40,7 +40,7 @@ export const DEFAULT_CONFIG: ReviewConfig = {
     suppress_resolved_threads: true,
   },
   stats: {
-    hidden: false,
+    hidden: true,
   },
   concurrency_lock_ttl_seconds: 600,
 };
