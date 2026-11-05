@@ -1664,8 +1664,8 @@ function namedPriorThreadIds(findings: Finding[], priorBlockers: PriorBlocker[])
 
 /**
  * Returns `evaluations` with `addressed` kept only where the round confirms the fix.
- * A thread whose blocker this round names again is not fixed. A blocker thread counts as fixed
- * only when the push changed its file, so a judge reading an unchanged file cannot clear it.
+ * A thread whose blocker this round names again is not fixed. A blocker thread, or one whose severity
+ * is unknown, counts as fixed only when the push changed its file, so a judge reading an unchanged file cannot clear it.
  */
 function confirmFixes(
   evaluations: ThreadEvaluation[] | undefined,
@@ -1677,7 +1677,7 @@ function confirmFixes(
     if (e.status !== 'addressed') return e;
     if (namedThreadIds.has(e.threadId)) return { ...e, status: 'not_addressed', reason: 'This round names the same blocker again.' };
     const thread = openThreadIndex.get(e.threadId);
-    if (thread?.severity === 'blocker' && !pushChangedFiles.has(thread.file)) {
+    if ((thread?.severity === 'blocker' || thread?.severity === 'unknown') && !pushChangedFiles.has(thread.file)) {
       return { ...e, status: 'uncertain', reason: `The push did not change \`${thread.file}\`, so the fix is not confirmed.` };
     }
     return e;

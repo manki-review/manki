@@ -2321,12 +2321,15 @@ describe('runReview', () => {
     expect(confirmed.verdict).toBe('APPROVE');
     expect(confirmed.threadEvaluations).toEqual([addressed]);
 
-    for (const diff of [elsewhere, undefined]) {
+    // A thread whose severity marker cannot be read is checked like a blocker thread.
+    for (const [severity, diff] of [['blocker', elsewhere], ['blocker', undefined], ['unknown', elsewhere]] as const) {
+      openThread.severity = severity;
       const unconfirmed = await runWith(diff);
       expect(unconfirmed.outcome).toBe('ADDRESS_FIRST');
       expect(unconfirmed.verdictReason).toBe('prior_unaddressed');
       expect(unconfirmed.threadEvaluations).toEqual([expect.objectContaining({ threadId: 'T1', status: 'uncertain' })]);
     }
+    openThread.severity = 'blocker';
 
     const repeat: Finding = { severity: 'blocker', title: 'Same bug, new words', file: 'src/x.ts', line: 30, description: 'd', reviewers: ['r'], sameAs: 'src/x.ts:10:10:old-issue' };
     mockedRunJudgeAgent.mockResolvedValue({ findings: [repeat], summary: 'Still broken.', threadEvaluations: [addressed] });
