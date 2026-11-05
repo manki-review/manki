@@ -126,6 +126,11 @@
 #   checks: true             # check-run annotations, needs `checks: read`
 #   code_scanning: true      # code scanning alerts, needs `security-events: read`
 #   dependency_review: true  # vulnerable packages the PR adds
+#   analyzers:               # tools Manki runs itself (default: off), or `all`
+#     ast_grep: false        # Manki's ast-grep rules for JS, TS and Python
+#     secrets: false         # gitleaks on the added lines
+#     dependencies: false    # OSV-Scanner on the changed lockfiles, Cargo.lock included
+#     semgrep: false         # or `rules: [...]`, your Semgrep rule files
 
 # Where to post nit findings: 'issues' (separate GitHub issue) or 'comments' (inline PR comments)
 # nit_handling: issues
@@ -135,9 +140,9 @@
 # Must be an integer between 1 and 5. Default: 1 (no multi-pass).
 # review_passes: 1
 
-# Hide the structured `Manki context` block as an HTML comment instead of a `<details>` block (default: false)
+# Hide the structured `Manki context` block as an HTML comment instead of a `<details>` block (default: true)
 # stats:
-#   hidden: false
+#   hidden: true
 
 # On merge, count per severity and specialist how many posted findings were fixed,
 # dismissed or left untouched. Needs `closed` in the workflow's `pull_request` types.
@@ -147,7 +152,7 @@
 #   fix_rate: true
 
 # Review memory (requires memory_repo_token)
-# Stores learnings, suppressions, and patterns to improve reviews over time
+# Stores learnings and suppressions to improve reviews over time
 # memory:
 #   enabled: false
 #   repo: ""  # defaults to {owner}/review-memory
