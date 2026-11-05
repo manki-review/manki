@@ -1,6 +1,6 @@
 import { Finding, FindingFingerprintEntry, RoundContext } from './types';
 import { Suppression } from './memory';
-import { classifyAuthorReply, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment } from './recap';
+import { classifyAuthorReply, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment } from './recap';
 import { BOT_LOGIN, formatFindingComment, titleToSlug } from './github';
 import { LAST_PAGE, paginateSinglePage, TEST_BOT } from './test-utils';
 import { determineOutcome } from './review';
@@ -1325,9 +1325,10 @@ describe('fetchRecapState', () => {
     it('keeps a security finding blocking until someone other than the PR author dismisses it', async () => {
       const title = 'Token leaks into logs';
       const slug = titleToSlug(title);
-      type Case = { resolver?: string; reply?: { login: string; association: string }; security: boolean; blocks: boolean };
+      type Case = { resolver?: string; reply?: { login: string; association: string }; reopened?: boolean; security: boolean; blocks: boolean };
       const cases: Record<string, Case> = {
         'src/author-resolved.ts': { resolver: 'author', security: true, blocks: true },
+        'src/author-resolved-again.ts': { resolver: 'author', reopened: true, security: true, blocks: true },
         'src/author-agreed.ts': { reply: { login: 'author', association: 'OWNER' }, security: true, blocks: true },
         'src/outsider-agreed.ts': { reply: { login: 'carol', association: 'CONTRIBUTOR' }, security: true, blocks: true },
         'src/collaborator-resolved.ts': { resolver: 'alice', security: true, blocks: false },
@@ -1340,7 +1341,7 @@ describe('fetchRecapState', () => {
       const ctx = makeRoundContext(1, {
         findings: {
           count: files.length,
-          severityCounts: { blocker: 6, warning: 2, suggestion: 0, nitpick: 0 },
+          severityCounts: { blocker: 7, warning: 2, suggestion: 0, nitpick: 0 },
           entries: files.map(file => ({
             fingerprint: { file, lineStart: 10, lineEnd: 10, slug },
             severity: cases[file].security ? 'blocker' as const : 'warning' as const,
@@ -1351,7 +1352,7 @@ describe('fetchRecapState', () => {
         judge: { summary: 'ok', threadEvaluations: [{ threadId: 'T_src/judge-addressed.ts', status: 'addressed', reason: 'The token is redacted now.' }] },
       });
       const octokit = mockOctokit(files.map(file => {
-        const { resolver, reply, security } = cases[file];
+        const { resolver, reply, reopened, security } = cases[file];
         const body = formatFindingComment(makeFinding({
           severity: security ? 'blocker' : 'warning', title, file, line: 10, ...(security && { tags: ['security'] }),
         }));
@@ -1363,12 +1364,14 @@ describe('fetchRecapState', () => {
           line: 10,
           comments: { nodes: [
             { body, author: { login: BOT_LOGIN } },
+            ...(reopened ? [{ body: `<!-- manki -->\n${REOPENED_MARKER}\nReopened.`, author: { login: BOT_LOGIN } }] : []),
             ...(reply ? [{ body: 'Agreed, no change needed.', author: { login: reply.login }, authorAssociation: reply.association }] : []),
           ] },
         });
       }), [{ id: 100, body: detailsBlock(ctx), user: { login: BOT_LOGIN } }]);
 
       const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1, 'author');
+      expect(state.previousFindings.filter(f => f.reopen).map(f => f.file)).toEqual(['src/author-resolved.ts']);
       const openThreads = state.previousFindings
         .filter(f => f.status === 'open' || f.status === 'replied')
         .map(f => ({ threadId: f.threadId!, title: f.title, file: f.file, line: f.line, severity: f.severity }));

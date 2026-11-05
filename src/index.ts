@@ -49,7 +49,7 @@ import {
   postConfigErrorComment,
 } from './github';
 import type { BotIdentity, StandingVerdict } from './github';
-import { checkAndAutoApprove, resolveReviewThread } from './state';
+import { checkAndAutoApprove, reopenAuthorResolvedThreads, resolveReviewThread } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -642,6 +642,8 @@ async function runFullReview(
       await octokit.rest.issues.deleteComment({ owner, repo, comment_id: progressCommentId });
       return;
     }
+
+    await reopenAuthorResolvedThreads(octokit, recap.previousFindings);
 
     const plannerModel = resolveModel(config, 'planner');
     const reviewerModel = resolveModel(config, 'reviewer');

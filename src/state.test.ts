@@ -1,5 +1,6 @@
 import * as core from '@actions/core';
-import { areAllFindingsResolved, fetchBotReviewThreads, checkAndAutoApprove, BOT_MARKER, ReviewThread } from './state';
+import { areAllFindingsResolved, fetchBotReviewThreads, checkAndAutoApprove, reopenAuthorResolvedThreads, BOT_MARKER, ReviewThread } from './state';
+import { PreviousFinding, REOPENED_MARKER } from './recap';
 import { LAST_PAGE, paginateSinglePage, TEST_BOT } from './test-utils';
 import { formatFindingComment } from './github';
 import { Finding } from './types';
@@ -212,6 +213,40 @@ describe('fetchBotReviewThreads', () => {
     const threads = await fetchBotReviewThreads(octokit, 'owner', 'repo', 1);
 
     expect(threads).toHaveLength(0);
+  });
+});
+
+describe('reopenAuthorResolvedThreads', () => {
+  const previous = (threadId: string, reopen: boolean): PreviousFinding => ({
+    title: 'Token leaks into logs', file: 'src/a.ts', line: 3, severity: 'blocker', status: 'open', threadId, isSecurity: true, ...(reopen && { reopen }),
+  });
+
+  it('reopens each flagged thread and replies once with the marker', async () => {
+    const graphql = jest.fn().mockResolvedValue({});
+
+    await reopenAuthorResolvedThreads({ graphql } as unknown as Octokit, [previous('T_author', true), previous('T_other', false)]);
+
+    expect(graphql).toHaveBeenCalledTimes(2);
+    expect(graphql).toHaveBeenNthCalledWith(1, expect.stringContaining('unresolveReviewThread'), { threadId: 'T_author' });
+    expect(graphql).toHaveBeenNthCalledWith(2, expect.stringContaining('addPullRequestReviewThreadReply'), {
+      threadId: 'T_author',
+      body: expect.stringContaining(`${BOT_MARKER}\n${REOPENED_MARKER}\nReopened. A security finding needs a maintainer or a fix`),
+    });
+  });
+
+  it('skips the reply and keeps going when reopening fails', async () => {
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const graphql = jest.fn().mockRejectedValueOnce(new Error('forbidden')).mockResolvedValue({});
+
+    await reopenAuthorResolvedThreads({ graphql } as unknown as Octokit, [previous('T_1', true), previous('T_2', true)]);
+
+    expect(graphql.mock.calls.map(c => [String(c[0]).match(/unresolveReviewThread|addPullRequestReviewThreadReply/)?.[0], c[1].threadId])).toEqual([
+      ['unresolveReviewThread', 'T_1'],
+      ['unresolveReviewThread', 'T_2'],
+      ['addPullRequestReviewThreadReply', 'T_2'],
+    ]);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('T_1'));
+    warnSpy.mockRestore();
   });
 });
 

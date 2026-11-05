@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { BotIdentity, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchReviewThreadNodes, FOLLOW_UP_MARKER, isBotLogin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, postAutoApproveProgressComment } from './github';
-import { isOtherThanPrAuthor, isSecurityThread } from './recap';
+import { isOtherThanPrAuthor, isSecurityThread, PreviousFinding, REOPENED_MARKER } from './recap';
 import { FindingSeverity, isBlockingSeverity, migrateLegacySeverity, ReviewConfig, SEVERITY_TOKEN_PATTERN } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -96,6 +96,26 @@ async function fetchBotReviewThreads(
 
 async function resolveReviewThread(octokit: Octokit, threadId: string): Promise<void> {
   await octokit.graphql('mutation($threadId: ID!) { resolveReviewThread(input: { threadId: $threadId }) { thread { isResolved } } }', { threadId });
+}
+
+const REOPEN_REPLY = 'Reopened. A security finding needs a maintainer or a fix: the PR author cannot resolve it. '
+  + 'A reviewer with write access can resolve it, or push a fix and Manki will check it.';
+
+/** Reopens each security thread the PR author resolved and replies once to say why. */
+async function reopenAuthorResolvedThreads(octokit: Octokit, previousFindings: PreviousFinding[]): Promise<void> {
+  for (const f of previousFindings) {
+    if (!f.reopen || !f.threadId) continue;
+    try {
+      await octokit.graphql('mutation($threadId: ID!) { unresolveReviewThread(input: { threadId: $threadId }) { thread { isResolved } } }', { threadId: f.threadId });
+      await octokit.graphql(
+        'mutation($threadId: ID!, $body: String!) { addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $threadId, body: $body }) { comment { id } } }',
+        { threadId: f.threadId, body: `${BOT_MARKER}\n${REOPENED_MARKER}\n${REOPEN_REPLY}` },
+      );
+      core.info(`Reopened security thread ${f.threadId} that the PR author resolved`);
+    } catch (error) {
+      core.warning(`Failed to reopen security thread ${f.threadId}: ${error}`);
+    }
+  }
 }
 
 /**
@@ -271,4 +291,4 @@ async function checkAndAutoApprove(
   return true;
 }
 
-export { ReviewThread, areAllFindingsResolved, checkAndAutoApprove, fetchBotReviewThreads, resolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
+export { ReviewThread, areAllFindingsResolved, checkAndAutoApprove, fetchBotReviewThreads, reopenAuthorResolvedThreads, resolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };

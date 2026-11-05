@@ -45,6 +45,9 @@ function isSecurityThread(body: string): boolean {
   return isSecurityFinding(data?.tags, data?.flaggedBy ?? []);
 }
 
+/** Marks Manki's reply on a security thread it reopened after the PR author resolved it. */
+const REOPENED_MARKER = '<!-- manki-reopened -->';
+
 /** Whether `login` is someone other than the PR author. The PR author's own dismissal never clears a security finding. */
 function isOtherThanPrAuthor(login: string | undefined, prAuthorLogin: string | undefined): boolean {
   return !!login && !!prAuthorLogin && login.toLowerCase() !== prAuthorLogin.toLowerCase();
@@ -165,6 +168,8 @@ interface PreviousFinding extends FindingMetadata {
   /** `author_association` of the latest non-bot replier. */
   authorReplyAssociation?: string;
   isSecurity?: boolean;
+  /** A security thread the PR author resolved, which Manki has not reopened before. */
+  reopen?: boolean;
 }
 
 /**
@@ -389,6 +394,7 @@ async function fetchRecapState(
       authorReplyLogin: t.authorReplyLogin,
       ...(t.authorReplyAssociation && { authorReplyAssociation: t.authorReplyAssociation }),
       ...(t.isSecurity && { isSecurity: true }),
+      ...(shouldReopen(t, addressedThreadIds, prAuthorLogin) && { reopen: true }),
       description: t.description,
       suggestedFix: t.suggestedFix,
     }));
@@ -420,6 +426,12 @@ function judgeAddressedThreadIds(rounds: RoundContext[]): Set<string> {
       .filter(e => e.status === 'addressed')
       .map(e => e.threadId),
   );
+}
+
+/** Whether the PR author resolved a security thread the judge has not marked `addressed`, and Manki has not reopened it yet. */
+function shouldReopen(t: ReviewThread, addressedThreadIds: Set<string>, prAuthorLogin: string | undefined): boolean {
+  return t.isSecurity && t.isResolved && t.resolvedByHuman && !t.reopenedByManki && !addressedThreadIds.has(t.threadId)
+    && !!prAuthorLogin && t.resolvedByLogin?.toLowerCase() === prAuthorLogin.toLowerCase();
 }
 
 /**
@@ -556,6 +568,7 @@ interface ReviewThread extends FindingMetadata {
   resolvedByHuman: boolean;
   resolvedByLogin?: string;
   isSecurity: boolean;
+  reopenedByManki: boolean;
   hasHumanReply: boolean;
   findingTitle: string;
   file: string;
@@ -738,6 +751,7 @@ async function fetchReviewThreads(
         resolvedByHuman: !!thread.resolvedBy?.login && !isBotLogin(bot, thread.resolvedBy.login),
         ...(thread.resolvedBy?.login && { resolvedByLogin: thread.resolvedBy.login }),
         isSecurity: isBotThread && isSecurityThread(body),
+        reopenedByManki: thread.comments.nodes.some(c => isBotLogin(bot, c.author?.login) && c.body?.includes(REOPENED_MARKER)),
         hasHumanReply,
         findingTitle,
         description,
@@ -934,4 +948,4 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
   );
 }
 
-export { DuplicateMatch, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchRecapState, isOtherThanPrAuthor, isSecurityThread, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment };
+export { DuplicateMatch, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchRecapState, isOtherThanPrAuthor, isSecurityThread, REOPENED_MARKER, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment };
