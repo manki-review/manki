@@ -30,7 +30,7 @@ inputs:
     required: false
     default: '.manki.yml'
   memory_repo_token:
-    description: 'GitHub token with write access to the review memory repository (patterns, learnings, suppressions)'
+    description: 'GitHub token with write access to the review memory repository (learnings, suppressions, fix-rate metrics). Needed unless the manki-review App is installed on `<owner>/review-memory`, the only memory repo its token can write'
     required: false
   github_app_id:
     description: 'GitHub App ID for custom bot identity (reviews show as the app name)'

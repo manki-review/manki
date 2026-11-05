@@ -14,70 +14,30 @@ const mockGetInput = core.getInput as jest.MockedFunction<typeof core.getInput>;
 describe('getMemoryToken', () => {
   beforeEach(() => {
     mockGetInput.mockReset();
+    jest.mocked(core.warning).mockClear();
   });
 
-  it('returns memory_repo_token when set', () => {
-    mockGetInput.mockImplementation((name: string) => {
-      if (name === 'memory_repo_token') return 'memory-token-123';
-      if (name === 'github_token') return 'github-token-456';
-      return '';
-    });
+  it('prefers memory_repo_token over the App memory token', () => {
+    mockGetInput.mockImplementation((name: string) => (name === 'memory_repo_token' ? 'memory-token-123' : 'github-token-456'));
 
-    expect(getMemoryToken(null)).toBe('memory-token-123');
+    expect(getMemoryToken('app-memory-token')).toBe('memory-token-123');
+    expect(getMemoryToken(undefined)).toBe('memory-token-123');
+    expect(core.warning).not.toHaveBeenCalled();
   });
 
-  it('falls back to github_token when memory_repo_token is empty', () => {
-    mockGetInput.mockImplementation((name: string) => {
-      if (name === 'memory_repo_token') return '';
-      if (name === 'github_token') return 'github-token-456';
-      return '';
-    });
+  it('returns the App memory token when memory_repo_token is empty', () => {
+    mockGetInput.mockImplementation((name: string) => (name === 'github_token' ? 'github-token-456' : ''));
 
-    expect(getMemoryToken(null)).toBe('github-token-456');
+    expect(getMemoryToken('app-memory-token')).toBe('app-memory-token');
+    expect(core.warning).not.toHaveBeenCalled();
   });
 
-  it('returns null when both tokens are empty', () => {
-    mockGetInput.mockImplementation(() => '');
+  it('returns null with one warning instead of falling back to github_token', () => {
+    mockGetInput.mockImplementation((name: string) => (name === 'github_token' ? 'github-token-456' : ''));
 
-    expect(getMemoryToken(null)).toBeNull();
-  });
-
-  it('prefers memory_repo_token over github_token', () => {
-    mockGetInput.mockImplementation((name: string) => {
-      if (name === 'memory_repo_token') return 'memory-token';
-      if (name === 'github_token') return 'github-token';
-      return '';
-    });
-
-    expect(getMemoryToken(null)).toBe('memory-token');
-  });
-
-  it('prefers resolved app token over raw github_token', () => {
-    mockGetInput.mockImplementation((name: string) => {
-      if (name === 'github_token') return 'github-token';
-      return '';
-    });
-
-    expect(getMemoryToken('app-token-resolved')).toBe('app-token-resolved');
-  });
-
-  it('prefers memory_repo_token over resolved app token', () => {
-    mockGetInput.mockImplementation((name: string) => {
-      if (name === 'memory_repo_token') return 'explicit-memory-token';
-      if (name === 'github_token') return 'github-token';
-      return '';
-    });
-
-    expect(getMemoryToken('app-token-resolved')).toBe('explicit-memory-token');
-  });
-
-  it('falls back to github_token when resolved token is not set', () => {
-    mockGetInput.mockImplementation((name: string) => {
-      if (name === 'github_token') return 'github-token';
-      return '';
-    });
-
-    expect(getMemoryToken(null)).toBe('github-token');
+    expect(getMemoryToken(undefined)).toBeNull();
+    expect(core.warning).toHaveBeenCalledTimes(1);
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('memory_repo_token'));
   });
 });
 
@@ -115,7 +75,30 @@ describe('resolveGitHubToken', () => {
     expect(call[0]).toBe(TOKEN_URL);
     expect(call[1].headers['Authorization']).toBe('Bearer fake-oidc-token');
     expect(call[1].method).toBe('POST');
-    expect(JSON.parse(call[1].body)).toEqual({ owner: OWNER, repo: REPO });
+    expect(JSON.parse(call[1].body)).toEqual({ owner: OWNER, repo: REPO, memory: true });
+  });
+
+  it('returns the memory token next to the app token and masks both', async () => {
+    jest.spyOn(core, 'getIDToken').mockResolvedValue('fake-oidc-token');
+    mockFetch(async () => Response.json({
+      token: APP_TOKEN,
+      expires_at: '2026-03-28T12:00:00Z',
+      memory_token: 'ghs_memory',
+      memory_expires_at: '2026-03-28T12:00:00Z',
+    }));
+
+    const result = await resolveGitHubToken(GITHUB_TOKEN, TOKEN_URL, OWNER, REPO);
+
+    expect(result).toEqual<TokenResult>({ token: APP_TOKEN, memoryToken: 'ghs_memory', identity: 'app' });
+    expect(core.setSecret).toHaveBeenCalledWith(APP_TOKEN);
+    expect(core.setSecret).toHaveBeenCalledWith('ghs_memory');
+  });
+
+  it.each([['an empty', ''], ['a numeric', 42], ['a null', null]])('ignores %s memory token', async (_case, memoryToken) => {
+    jest.spyOn(core, 'getIDToken').mockResolvedValue('fake-oidc-token');
+    mockFetch(async () => Response.json({ token: APP_TOKEN, expires_at: '2026-03-28T12:00:00Z', memory_token: memoryToken }));
+
+    expect(await resolveGitHubToken(GITHUB_TOKEN, TOKEN_URL, OWNER, REPO)).toEqual<TokenResult>({ token: APP_TOKEN, identity: 'app' });
   });
 
   it('falls back to github_token when OIDC token is not available', async () => {
@@ -259,7 +242,7 @@ describe('createAuthenticatedOctokit', () => {
     expect(core.setSecret).toHaveBeenCalledWith('app-jwt-token');
     expect(core.setSecret).toHaveBeenCalledWith('installation-token-abc');
     expect(result.octokit).toBeDefined();
-    expect(result.resolvedToken).toBe('installation-token-abc');
+    expect(result.appMemoryToken).toBe('installation-token-abc');
     expect(result.identity).toBe('app');
     expect(result.bot).toEqual({ logins: ['acme-reviewer[bot]'] });
   });
@@ -298,7 +281,7 @@ describe('createAuthenticatedOctokit', () => {
     const result = await createAuthenticatedOctokit();
 
     expect(result.octokit).toBeDefined();
-    expect(result.resolvedToken).toBe('ghp_fallback');
+    expect(result.appMemoryToken).toBeUndefined();
     expect(result.identity).toBe('actions');
     expect(result.bot).toEqual({ logins: ['manki-review[bot]', 'github-actions[bot]', 'review-user'] });
     expect(mockGetOctokit).toHaveBeenCalledWith('ghp_fallback', expect.anything(), retry, throttling);
@@ -340,7 +323,10 @@ describe('createAuthenticatedOctokit', () => {
     expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('giving up after 2 retries'));
   });
 
-  it('returns resolved app token for use with getMemoryToken', async () => {
+  it.each([
+    ['the service\'s memory token', { memory_token: 'ghs_memory' }, 'ghs_memory'],
+    ['no memory token from a service that predates it', {}, null],
+  ])('passes %s to getMemoryToken, never the review token', async (_case, extra, expected) => {
     mockGetInput.mockImplementation((name: string) => {
       if (name === 'github_app_id') return '';
       if (name === 'github_app_private_key') return '';
@@ -350,18 +336,14 @@ describe('createAuthenticatedOctokit', () => {
     });
 
     jest.spyOn(core, 'getIDToken').mockResolvedValue('oidc-token');
-    mockFetch(async () => new Response(
-      JSON.stringify({ token: 'resolved-app-token', expires_at: '2026-12-31T00:00:00Z' }),
-      { status: 200, headers: { 'Content-Type': 'application/json' } },
-    ));
+    mockFetch(async () => Response.json({ token: 'resolved-app-token', expires_at: '2026-12-31T00:00:00Z', ...extra }));
     mockGetOctokit.mockReturnValue({} as ReturnType<typeof github.getOctokit>);
 
     const result = await createAuthenticatedOctokit();
 
-    expect(result.resolvedToken).toBe('resolved-app-token');
     expect(result.identity).toBe('app');
     expect(result.bot).toEqual({ logins: ['manki-review[bot]', 'github-actions[bot]'] });
-    expect(getMemoryToken(result.resolvedToken)).toBe('resolved-app-token');
+    expect(getMemoryToken(result.appMemoryToken)).toBe(expected);
   });
 
   it('uses custom manki_token_url when provided', async () => {

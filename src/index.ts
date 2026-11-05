@@ -352,7 +352,7 @@ async function handleMergedPullRequest(): Promise<void> {
     return;
   }
 
-  const { octokit, bot, resolvedToken } = await getAuth();
+  const { octokit, bot, appMemoryToken } = await getAuth();
   const { owner, repo } = github.context.repo;
   const configPath = core.getInput('config_path') || '.manki.yml';
   const configContent = await fetchConfigFile(octokit, owner, repo, pr.base.ref, configPath);
@@ -364,11 +364,11 @@ async function handleMergedPullRequest(): Promise<void> {
 
   let memory: { octokit: Octokit; repo: string } | undefined;
   if (config.memory?.enabled) {
-    const memoryToken = getMemoryToken(resolvedToken);
+    const memoryToken = getMemoryToken(appMemoryToken);
     if (memoryToken) {
       memory = { octokit: github.getOctokit(memoryToken), repo: config.memory.repo || `${owner}/review-memory` };
     } else {
-      core.warning('No memory token available, the fix rate goes to the job summary only. Set memory_repo_token or github_token.');
+      core.info('The fix rate goes to the job summary only');
     }
   }
 
@@ -798,14 +798,13 @@ async function fetchReviewRepoContext(target: RunTarget, changedPaths: string[])
 }
 
 async function loadRunMemory(
-  config: ReviewConfig, resolvedToken: string, owner: string, repo: string,
+  config: ReviewConfig, appMemoryToken: string | undefined, owner: string, repo: string,
 ): Promise<{ memory: RepoMemory | null; memoryLoadStatus: MemoryLoadStatus; memoryLoadError?: string }> {
   if (!config.memory?.enabled) {
     return { memory: null, memoryLoadStatus: 'disabled' };
   }
-  const memoryToken = getMemoryToken(resolvedToken);
+  const memoryToken = getMemoryToken(appMemoryToken);
   if (!memoryToken) {
-    core.warning('No memory token available — skipping memory load. Set memory_repo_token or github_token.');
     return { memory: null, memoryLoadStatus: 'no_token' };
   }
   const memoryOctokit = github.getOctokit(memoryToken);
@@ -1299,7 +1298,7 @@ async function runFullReview(
 
   const startTime = Date.now();
   const configPath = core.getInput('config_path') || '.manki.yml';
-  const { octokit, bot, identity, resolvedToken } = await getAuth();
+  const { octokit, bot, identity, appMemoryToken } = await getAuth();
   const target: RunTarget = { octokit, bot, owner, repo, prNumber, commitSha, baseRef };
 
   if (identity === 'actions') {
@@ -1361,7 +1360,7 @@ async function runFullReview(
     await warmUpClients(clients);
 
     const repoContext = await fetchReviewRepoContext(target, diff.files.map(f => f.path));
-    const { memory, memoryLoadStatus, memoryLoadError } = await loadRunMemory(config, resolvedToken, owner, repo);
+    const { memory, memoryLoadStatus, memoryLoadError } = await loadRunMemory(config, appMemoryToken, owner, repo);
 
     const priorRoundCount = recap.priorRounds.length;
     const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
@@ -1510,7 +1509,7 @@ async function handleInteraction(): Promise<void> {
 
   const configPathInput = core.getInput('config_path');
 
-  const { octokit, bot, resolvedToken } = await getAuth();
+  const { octokit, bot, appMemoryToken } = await getAuth();
 
   const { owner, repo } = github.context.repo;
   const prNumber = github.context.payload.issue?.number;
@@ -1529,7 +1528,7 @@ async function handleInteraction(): Promise<void> {
   const { client } = built;
 
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;
-  const memoryToken = config.memory?.enabled ? getMemoryToken(resolvedToken) ?? undefined : undefined;
+  const memoryToken = config.memory?.enabled ? getMemoryToken(appMemoryToken) ?? undefined : undefined;
 
   await handlePRComment(octokit, bot, client, owner, repo, prNumber, memoryConfig, memoryToken, config);
 }
@@ -1545,7 +1544,7 @@ async function handleIssueInteraction(): Promise<void> {
   const issueNumber = payload.issue?.number;
   if (!issueNumber) return;
 
-  const { octokit, bot, resolvedToken } = await getAuth();
+  const { octokit, bot, appMemoryToken } = await getAuth();
   const configPathInput = core.getInput('config_path');
 
   const configPath = configPathInput || '.manki.yml';
@@ -1553,7 +1552,7 @@ async function handleIssueInteraction(): Promise<void> {
   const config = loadConfig(configContent ?? undefined, configPath);
 
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;
-  const memoryToken = config.memory?.enabled ? getMemoryToken(resolvedToken) ?? undefined : undefined;
+  const memoryToken = config.memory?.enabled ? getMemoryToken(appMemoryToken) ?? undefined : undefined;
 
   await handlePRComment(octokit, bot, null, owner, repo, issueNumber, memoryConfig, memoryToken, config);
 }
@@ -1588,7 +1587,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
 
   const configPathInput = core.getInput('config_path');
 
-  const { octokit, bot, resolvedToken } = await getAuth();
+  const { octokit, bot, appMemoryToken } = await getAuth();
   const { owner, repo } = github.context.repo;
 
   const baseRef = payload.pull_request?.base?.ref ?? 'main';
@@ -1601,7 +1600,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
   const { client } = built;
 
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;
-  const memoryToken = config.memory?.enabled ? getMemoryToken(resolvedToken) ?? undefined : undefined;
+  const memoryToken = config.memory?.enabled ? getMemoryToken(appMemoryToken) ?? undefined : undefined;
 
   const command = parseCommand(body);
   if (command.type !== 'generic') {
