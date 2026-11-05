@@ -193,6 +193,7 @@ export class GeminiClient implements LLMClient {
       },
       input: fullPrompt,
       hardTimeoutMs: options?.timeoutMs,
+      signal: options?.signal,
       onStdout: (chunk) => { output += chunk; },
     }).catch((error: unknown) => {
       warnReplyTail('Gemini CLI', output);
@@ -232,7 +233,7 @@ export class GeminiClient implements LLMClient {
 
     const startTime = Date.now();
     const genAI = this.genAI;
-    const response = await callWithTimeout('Gemini API', options?.timeoutMs, (abortSignal) => genAI.models.generateContent({
+    const response = await callWithTimeout('Gemini API', options, (abortSignal) => genAI.models.generateContent({
       model: this.model,
       contents: [{ role: 'user', parts: [{ text: userMessage }] }],
       config: {

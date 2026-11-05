@@ -3,7 +3,7 @@ import { minimatch } from 'minimatch';
 
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { resolveReviewerModel } from './config';
-import { addUsage, LLMClient, LLMUsage, withRefusalFallback, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
+import { addUsage, LLMClient, LLMUsage, withRefusalFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
 import { runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, LinkedIssue, titleToSlug } from './github';
@@ -431,6 +431,8 @@ export interface ReviewOptions {
   onProgress?: (progress: ReviewProgress) => void;
   /** Awaited after the finders and after the judge. A throw stops the review there. */
   checkpoint?: () => Promise<void>;
+  /** Stops every model call of the review once it aborts. */
+  signal?: AbortSignal;
   isFollowUp?: boolean;
   openThreads?: OpenThread[] | null;
   previousFindings?: PreviousFinding[];
@@ -450,16 +452,16 @@ export async function runReview(
   options: ReviewOptions,
 ): Promise<ReviewResult & { outcome: RoundOutcome }> {
   const {
-    config, diff, rawDiff, repoContext, memory, fileContents, prContext, linkedIssues, onProgress, checkpoint,
+    config, diff, rawDiff, repoContext, memory, fileContents, prContext, linkedIssues, onProgress, checkpoint, signal,
     isFollowUp, openThreads, previousFindings, priorRounds, prAuthorLogin, interRoundDiff,
   } = options;
   const provenanceMap = computeProvenanceMap(priorRounds, rawDiff);
   const modelFallbacks: RoundModelFallback[] = [];
   const withFallback = ({ client, fallback }: StageClient, stage: RoundModelFallback['stage'], agent?: string): LLMClient =>
-    withRefusalFallback(client, fallback?.client, (error) => {
+    withSignal(withRefusalFallback(client, fallback?.client, (error) => {
       core.warning(`A safety filter refused the ${agent ?? stage} call (${error.reason}), sending it again on ${fallback!.model}`);
       modelFallbacks.push({ stage, ...(agent && { agent }), fallbackModel: fallback!.model, reason: error.reason });
-    });
+    }), signal);
   let plannerResult: PlannerResult | null = null;
   let plannerUsage: LLMUsage | undefined;
   let plannerDurationMs: number | undefined;

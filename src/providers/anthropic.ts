@@ -246,6 +246,7 @@ export class AnthropicClient implements LLMClient {
       },
       input: userMessage,
       hardTimeoutMs: options?.timeoutMs,
+      signal: options?.signal,
       onStdout: (chunk) => {
         jsonBuffer += chunk;
         const lines = jsonBuffer.split('\n');
@@ -324,7 +325,7 @@ export class AnthropicClient implements LLMClient {
     // The SDK refuses non-streaming requests whose `max_tokens` could run past its 10 minute timeout.
     const anthropic = this.anthropic;
     let replyTail = '';
-    const response = await callWithTimeout('Anthropic API', options?.timeoutMs, (signal) => {
+    const response = await callWithTimeout('Anthropic API', options, (signal) => {
       const stream = anthropic.messages.stream(params, signal ? { signal } : undefined);
       stream.on('text', (text) => { replyTail = appendReplyTail(replyTail, text); });
       return stream.finalMessage();

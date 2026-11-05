@@ -1,6 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
+import { assertWritesAllowed } from './abort';
 import { BotIdentity, BOT_MARKER as PROGRESS_MARKER, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchInterRoundDiff, fetchPRComments, fetchReviewThreadNodes, fetchStandingVerdict, FOLLOW_UP_MARKER, FORCE_CAP_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, postAutoApproveProgressComment } from './github';
 import type { StandingVerdict } from './github';
 import { isSameChange } from './diff';
@@ -134,12 +135,18 @@ async function fetchBotReviewThreads(
     });
 }
 
+/** Resolves the review thread `threadId`. Throws the abort reason once GitHub writes are stopped. */
 async function resolveReviewThread(octokit: Octokit, threadId: string): Promise<void> {
+  assertWritesAllowed();
   await octokit.graphql('mutation($threadId: ID!) { resolveReviewThread(input: { threadId: $threadId }) { thread { isResolved } } }', { threadId });
 }
 
-/** Posts `body` as a Manki reply in the review thread `threadId`. Pass any marker besides `BOT_MARKER` in `markers`. */
+/**
+ * Posts `body` as a Manki reply in the review thread `threadId`. Pass any marker besides `BOT_MARKER` in `markers`.
+ * Throws the abort reason once GitHub writes are stopped.
+ */
 async function replyToReviewThread(octokit: Octokit, threadId: string, body: string, ...markers: string[]): Promise<void> {
+  assertWritesAllowed();
   await octokit.graphql(
     'mutation($threadId: ID!, $body: String!) { addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $threadId, body: $body }) { comment { id } } }',
     { threadId, body: withMarkers(body, BOT_MARKER, ...markers) },
@@ -447,6 +454,7 @@ async function checkAndAutoApprove(
 
   try {
     try {
+      assertWritesAllowed();
       await octokit.rest.pulls.createReview({
         owner,
         repo,
@@ -475,6 +483,8 @@ async function checkAndAutoApprove(
       core.info('Posted auto-approve permission notice as issue comment');
     }
   } catch (error) {
+    // A cancelled run leaves its progress comment to the post step.
+    assertWritesAllowed();
     const rawReason = error instanceof Error ? error.message : String(error);
     await markProgressCommentFailed(octokit, owner, repo, progressCommentId, 'Auto-approve', rawReason);
     throw error;

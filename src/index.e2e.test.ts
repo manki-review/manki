@@ -1,7 +1,8 @@
 import * as core from '@actions/core';
 
 import { BOT_MARKER, CANCELLED_MARKER, FORCE_CAP_MARKER, RUN_ID_MARKER_PREFIX } from './github';
-import { _resetOctokitCache, handlePullRequest, runFullReview } from './index';
+import { _resetOctokitCache, handlePullRequest, main, runFullReview } from './index';
+import type { SendMessageOptions } from './providers';
 import { STALE_APPROVE_MARKER_PREFIX } from './state';
 import { RoundContext } from './types';
 
@@ -18,6 +19,8 @@ jest.mock('@actions/core', () => ({
   setFailed: jest.fn(),
   getInput: jest.fn(),
   getIDToken: jest.fn(),
+  getState: jest.fn(),
+  saveState: jest.fn(),
 }));
 
 // The real `@actions/github` client, with every request answered by the in-memory GitHub below.
@@ -36,7 +39,7 @@ jest.mock('@actions/github', () => {
 
 jest.mock('./providers', () => ({
   ...jest.requireActual('./providers'),
-  createLLMClient: () => ({ sendMessage: (system: string, user: string) => mockLLM.sendMessage(system, user) }),
+  createLLMClient: () => ({ sendMessage: (system: string, user: string, options?: SendMessageOptions) => mockLLM.sendMessage(system, user, options) }),
 }));
 
 const OWNER = 'acme';
@@ -88,6 +91,10 @@ class FakeGitHub {
   reviews: FakeReview[] = [];
   threads: FakeThread[] = [];
   failures: FakeFailure[] = [];
+  /** Every request that changes something, as `METHOD route`. */
+  writes: string[] = [];
+  /** Runs before a write is answered, which waits for it. */
+  onWrite?: (write: string) => void | Promise<void>;
   headSha = HEAD_SHA;
   activeRuns: number[] = [];
   private nextId = 1000;
@@ -100,6 +107,11 @@ class FakeGitHub {
     const body = init.body ? JSON.parse(String(init.body)) : {};
 
     if (`${origin}${pathname}` === TOKEN_URL) return json({ token: 'ghs_app', expires_at: '2099-01-01T00:00:00Z' });
+    if (pathname === '/graphql' ? String(body.query).trimStart().startsWith('mutation') : method !== 'GET') {
+      const write = `${method} ${pathname}`;
+      this.writes.push(write);
+      await this.onWrite?.(write);
+    }
     const failure = this.failures.find(f => f.method === method && f.path.test(pathname));
     if (failure) return json({ message: 'Server Error' }, failure.status);
     if (pathname === '/graphql') return json({ data: this.graphql(body.query, body.variables ?? {}, login) });
@@ -256,13 +268,18 @@ const BLOCKER_REPLIES: Partial<Record<Stage, string>> = {
   judge: JSON.stringify({ summary: 'One blocker.', findings: [{ id: 1, title: BLOCKER.title, severity: 'blocker', reasoning: 'Reachable from any caller.', confidence: 'high', reachability: 'reachable' }] }),
 };
 
-/** An LLM client that answers each pipeline stage with a canned reply, picked by the stage's system prompt. */
+/**
+ * An LLM client that answers each pipeline stage with a canned reply, picked by the stage's system prompt.
+ * A call to the `hold` stage runs until `hold.until` settles. Every call rejects once its signal aborts.
+ */
 class FakeLLM {
   replies: Record<Stage, string> = { ...READY_REPLIES };
   calls: Stage[] = [];
+  aborted: Stage[] = [];
+  hold?: { stage: Stage; until: Promise<void> };
   onCall?: (stage: Stage) => void;
 
-  async sendMessage(system: string, _user: string): Promise<{ content: string }> {
+  async sendMessage(system: string, _user: string, options?: SendMessageOptions): Promise<{ content: string }> {
     const stage: Stage = system.startsWith('You give the final merge-readiness verdict') ? 'verdict'
       : system.startsWith('You are a code review judge') ? 'judge'
         : system.startsWith('You are deduplicating') ? 'dedup'
@@ -270,9 +287,28 @@ class FakeLLM {
             : 'reviewer';
     this.calls.push(stage);
     this.onCall?.(stage);
+    const signal = options?.signal;
+    try {
+      if (stage === this.hold?.stage) {
+        const { until } = this.hold;
+        await new Promise<void>((resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(signal.reason));
+          until.then(resolve);
+        });
+      }
+      signal?.throwIfAborted();
+    } catch (error) {
+      this.aborted.push(stage);
+      throw error;
+    }
     return { content: this.replies[stage] };
   }
 }
+
+// Fakes only `setInterval`, so a test moves the head watcher on by hand while everything else runs in real time.
+const FAKE_INTERVALS: Parameters<typeof jest.useFakeTimers>[0] = {
+  doNotFake: ['Date', 'hrtime', 'nextTick', 'performance', 'queueMicrotask', 'setImmediate', 'clearImmediate', 'setTimeout', 'clearTimeout'],
+};
 
 let mockGitHub: FakeGitHub;
 let mockLLM: FakeLLM;
@@ -303,6 +339,12 @@ function postedReviews(login = APP_LOGIN): FakeReview[] {
 }
 
 describe('runFullReview end to end', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+    jest.mocked(core.warning).mockReset();
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
     _resetOctokitCache();
@@ -388,6 +430,100 @@ describe('runFullReview end to end', () => {
     expect(mockGitHub.reviews).toEqual([]);
     expect(mockLLM.calls).toEqual(calls);
     expect(mockGitHub.comments.at(-1)?.body).toContain('**Review superseded** by the new commit `f00dfee`');
+  });
+
+  it('aborts a model call still running once the watcher sees the head move, and posts no review', async () => {
+    jest.useFakeTimers(FAKE_INTERVALS);
+    mockLLM.hold = { stage: 'verdict', until: new Promise(() => {}) };
+    mockLLM.onCall = stage => {
+      if (stage !== 'verdict') return;
+      mockGitHub.headSha = 'f00dfeed00000000000000000000000000000000';
+      jest.advanceTimersByTime(30_000);
+    };
+
+    await reviewRound();
+
+    expect(mockLLM.aborted).toEqual(['verdict']);
+    expect(mockLLM.calls).toEqual(['planner', 'reviewer', 'judge', 'verdict']);
+    expect(core.setFailed).not.toHaveBeenCalled();
+    expect(mockGitHub.reviews).toEqual([]);
+    expect(mockGitHub.comments.at(-1)?.body).toContain('**Review superseded** by the new commit `f00dfee`. No verdict was posted');
+  });
+
+  it('completes the round when the head moves once the previous review is being dismissed', async () => {
+    jest.useFakeTimers(FAKE_INTERVALS);
+    const previous = mockGitHub.addReview(`${BOT_MARKER}\nChanges requested.`, 'CHANGES_REQUESTED', 'old0000000000000000000000000000000000000', APP_LOGIN);
+    mockGitHub.onWrite = async write => {
+      if (!write.endsWith('/dismissals')) return;
+      mockGitHub.headSha = 'f00dfeed00000000000000000000000000000000';
+      jest.advanceTimersByTime(30_000);
+      // Gives the head check the watcher just started time to finish before the dismissal returns.
+      await new Promise(resolve => setTimeout(resolve, 50));
+    };
+
+    await reviewRound();
+
+    expect(core.setFailed).not.toHaveBeenCalled();
+    expect(previous.state).toBe('DISMISSED');
+    expect(postedReviews().map(r => r.state)).toEqual(['DISMISSED', 'APPROVED']);
+    expect(mockGitHub.comments.at(-1)?.body).toContain('**Review complete**');
+    expect(core.setOutput).toHaveBeenCalledWith('verdict', 'APPROVE');
+  });
+
+  it('keeps reviewing when a head check of the watcher fails', async () => {
+    jest.useFakeTimers(FAKE_INTERVALS);
+    const pollFailed = new Promise<void>(resolve => jest.mocked(core.warning).mockImplementation(message => {
+      if (String(message).includes('Head SHA lookup failed, proceeding')) resolve();
+    })).then(() => { mockGitHub.failures = []; });
+    mockLLM.hold = { stage: 'verdict', until: pollFailed };
+    mockLLM.onCall = stage => {
+      if (stage !== 'verdict') return;
+      mockGitHub.failures.push({ method: 'GET', path: new RegExp(`/pulls/${PR_NUMBER}$`), status: 502 });
+      jest.advanceTimersByTime(30_000);
+    };
+
+    await reviewRound();
+
+    expect(mockLLM.aborted).toEqual([]);
+    expect(core.setFailed).not.toHaveBeenCalled();
+    expect(postedReviews().map(r => r.state)).toEqual(['APPROVED']);
+  });
+
+  it.each([
+    ['the verdict reader runs', 'verdict', ['verdict'], ['CHANGES_REQUESTED']],
+    ['the review is just posted', 'posted', [], ['CHANGES_REQUESTED', 'APPROVED']],
+  ] as const)('writes nothing more to GitHub once SIGTERM lands while %s', async (_label, moment, aborted, states) => {
+    const listeners = new Map<string | symbol, (signal: NodeJS.Signals) => void>();
+    jest.spyOn(process, 'on').mockImplementation(((event: string | symbol, listener: (signal: NodeJS.Signals) => void) => {
+      listeners.set(event, listener);
+      return process;
+    }) as typeof process.on);
+    const previous = mockGitHub.addReview(`${BOT_MARKER}\nChanges requested.`, 'CHANGES_REQUESTED', 'old0000000000000000000000000000000000000', APP_LOGIN);
+    mockContext.payload = {
+      action: 'opened',
+      sender: { login: 'alice', type: 'User' },
+      pull_request: { number: PR_NUMBER, title: 'Keep the sum in a variable', body: 'Small refactor.', draft: false, head: { sha: HEAD_SHA, repo: { full_name: `${OWNER}/${REPO}` } }, base: { ref: 'main' }, user: { login: 'alice' } },
+    };
+    let writesAtSignal = -1;
+    const sigterm = () => {
+      listeners.get('SIGTERM')!('SIGTERM');
+      writesAtSignal = mockGitHub.writes.length;
+    };
+    if (moment === 'verdict') {
+      mockLLM.onCall = stage => { if (stage === 'verdict') sigterm(); };
+    } else {
+      mockGitHub.onWrite = write => { if (write === `POST /repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}/reviews`) sigterm(); };
+    }
+
+    await main();
+
+    expect(writesAtSignal).toBeGreaterThan(0);
+    expect(mockGitHub.writes).toHaveLength(writesAtSignal);
+    expect(mockLLM.aborted).toEqual(aborted);
+    expect(mockGitHub.reviews.map(r => r.state)).toEqual(states);
+    expect(previous.state).toBe('CHANGES_REQUESTED');
+    expect(core.setFailed).not.toHaveBeenCalled();
+    expect(core.info).toHaveBeenCalledWith('The run was cancelled by SIGTERM, writing nothing more to GitHub');
   });
 
   it.each([

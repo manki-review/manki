@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as github from '@actions/github';
 import * as path from 'path';
 
+import { assertWritesAllowed, RunCancelledError, stopWritesOn } from './abort';
 import { AuthResult, createAuthenticatedOctokit, getMemoryToken } from './auth';
 import { sanitizeTokens, withMarkers } from './utils';
 import { applyBaseReviewConfig, BaseReviewConfig, loadConfig, loadConfigFromFile, loadReviewConfig, sanitizeForkConfig, resolveFallbackModel, resolveModel, resolvePairModel } from './config';
@@ -58,6 +59,8 @@ import { announceSecurityOverrides, checkAndAutoApprove, findUnchangedVerdict, p
 import type { PauseState } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
+
+const HEAD_POLL_MS = 30_000;
 
 export function detectTickedMarker(body: string): 'FORCE_REVIEW_MARKER' | 'FORCE_CAP_MARKER' | null {
   if (!body.includes('- [x] Force review')) return null;
@@ -471,10 +474,13 @@ interface RunTarget {
   baseRef: string;
 }
 
-/** The progress comment of a run and its pending dashboard update, which the failure path also reads. */
+/** The progress comment of a run, its pending dashboard update and whether its review is posted, which the failure path also reads. */
 interface RunProgress {
   commentId?: number;
   flushTimer: ReturnType<typeof setTimeout> | null;
+  reviewPosted: boolean;
+  /** Stops the head watcher, so a later push no longer stops the round. */
+  stopHeadWatch: () => void;
 }
 
 /** What a review round works on. Built once its inputs are collected, then passed to the stages that review, post and record. */
@@ -592,6 +598,7 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
     const standing = await findUnchangedVerdict(octokit, bot, owner, repo, prNumber, baseRef, commitSha, config.exclude_paths);
     if (standing) {
       const shortSha = standing.commitSha.slice(0, 7);
+      assertWritesAllowed();
       try {
         // A push can dismiss approvals, so the approval is posted again on the new head.
         if (standing.verdict === 'APPROVE') {
@@ -698,16 +705,29 @@ function initialDashboard(diff: ParsedDiff, config: ReviewConfig, plannerEnabled
       };
 }
 
+/**
+ * Dismisses the reviews `reviewId` replaces. Throws `SupersededError` instead when the head moved since,
+ * so a review of an old commit never lifts the merge block on a new one. Past that check the round is final,
+ * so a later push no longer stops it.
+ */
+async function replacePreviousReviews(target: RunTarget, progress: RunProgress, reviewId: number): Promise<void> {
+  const { octokit, owner, repo, prNumber, commitSha } = target;
+  progress.reviewPosted = true;
+  await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
+  progress.stopHeadWatch();
+  await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId);
+}
+
 /** Posts a verdict for a diff no reviewer reads, then replaces the previous review. */
 async function postUnreviewedRound(
-  target: RunTarget, commentId: number, dashboard: DashboardData, diff: ParsedDiff,
+  target: RunTarget, progress: RunProgress, commentId: number, dashboard: DashboardData, diff: ParsedDiff,
   verdict: 'APPROVE' | 'COMMENT', summary: string,
 ): Promise<void> {
   const { octokit, bot, owner, repo, prNumber, commitSha } = target;
   await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
   const result = { verdict, summary, findings: [], highlights: [], reviewComplete: true, agentNames: [] as string[] };
   const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
-  await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId);
+  await replacePreviousReviews(target, progress, reviewId);
   await updateProgressComment(octokit, owner, repo, commentId, dashboard);
   await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha);
 }
@@ -1106,7 +1126,7 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
     interRoundDiff: parsedInterRoundDiff,
     existingThreads: recap.previousFindings,
   });
-  await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId);
+  await replacePreviousReviews(run, run.progress, reviewId);
   return reviewId;
 }
 
@@ -1218,6 +1238,27 @@ function setReviewOutputs(reviewId: number, context: RoundContext, result: Revie
   core.info(`Severity breakdown: ${severityMap.blocker} blocker, ${severityMap.warning} warning, ${severityMap.suggestion} suggestion, ${severityMap.nitpick} nitpick`);
 }
 
+/**
+ * Checks the PR head every `HEAD_POLL_MS` and aborts `controller` with `SupersededError` once it moved past the
+ * commit under review. A failed lookup lets the review go on. Returns the function that stops the checks.
+ */
+function watchHead({ octokit, owner, repo, prNumber, commitSha }: RunTarget, controller: AbortController): () => void {
+  let stopped = false;
+  const timer = setInterval(() => {
+    if (controller.signal.aborted) return;
+    assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha).catch((error: unknown) => {
+      if (stopped) return;
+      core.info(`${error instanceof Error ? error.message : error}, stopping the review`);
+      controller.abort(error);
+    });
+  }, HEAD_POLL_MS);
+  timer.unref();
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+  };
+}
+
 async function runFullReview(
   owner: string,
   repo: string,
@@ -1250,7 +1291,9 @@ async function runFullReview(
     }
   }
 
-  const progress: RunProgress = { flushTimer: null };
+  const headMoved = new AbortController();
+  const stop = stopWritesOn(headMoved.signal);
+  const progress: RunProgress = { flushTimer: null, reviewPosted: false, stopHeadWatch: watchHead(target, headMoved) };
 
   try {
     const loaded = await loadRunConfig(target, configPath, headRepoFullName);
@@ -1282,7 +1325,7 @@ async function runFullReview(
 
     if (isDiffTooLarge(diff, config.max_diff_lines)) {
       core.warning(`Diff too large (${lineCount} reviewable lines > ${config.max_diff_lines} max)`);
-      await postUnreviewedRound(target, commentId, dashboard, diff, 'COMMENT',
+      await postUnreviewedRound(target, progress, commentId, dashboard, diff, 'COMMENT',
         `Too large to review automatically: ${lineCount} changed lines, above the limit of ${config.max_diff_lines}.`);
       return;
     }
@@ -1291,7 +1334,7 @@ async function runFullReview(
 
     if (diff.files.length === 0) {
       core.info('No reviewable files in diff');
-      await postUnreviewedRound(target, commentId, dashboard, diff, 'APPROVE', 'No reviewable files in this PR (all filtered out by config).');
+      await postUnreviewedRound(target, progress, commentId, dashboard, diff, 'APPROVE', 'No reviewable files in this PR (all filtered out by config).');
       return;
     }
 
@@ -1321,7 +1364,11 @@ async function runFullReview(
     };
 
     const stage = await reviewRound(run, clients, {
-      checkpoint: () => assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha),
+      checkpoint: async () => {
+        stop.signal.throwIfAborted();
+        await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
+      },
+      signal: stop.signal,
       config,
       diff,
       rawDiff,
@@ -1341,6 +1388,8 @@ async function runFullReview(
       blockersOnly: paused,
       finalRound: !paused && maxAutoRounds > 0 && capRounds + 1 === maxAutoRounds,
     });
+    // A model call the stop aborted can end the round incomplete, and that round must not be posted.
+    stop.signal.throwIfAborted();
     const { result } = stage;
 
     if (!result.reviewComplete) {
@@ -1369,12 +1418,18 @@ async function runFullReview(
     const pauseLifted = !pauseState([...recap.priorRounds, context], config).paused;
     await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha, pauseLifted ? startTime : undefined);
     setReviewOutputs(reviewId, context, result);
-  } catch (error) {
+  } catch (caught) {
     cancelDashboardFlush(progress);
+    // A stopped run reports the stop, whatever error it ended on.
+    const error = stop.signal.aborted ? stop.signal.reason : caught;
+    if (error instanceof RunCancelledError) {
+      core.info(`${error.message}, writing nothing more to GitHub`);
+      return;
+    }
     if (error instanceof SupersededError) {
-      core.info(`${error.message}, posting no verdict for it`);
+      core.info(`${error.message}, ${progress.reviewPosted ? 'replacing no earlier review' : 'posting no verdict for it'}`);
       if (progress.commentId !== undefined) {
-        await markProgressCommentSuperseded(octokit, owner, repo, progress.commentId, error);
+        await markProgressCommentSuperseded(octokit, owner, repo, progress.commentId, error, progress.reviewPosted);
       }
       return;
     }
@@ -1384,6 +1439,9 @@ async function runFullReview(
     if (progress.commentId !== undefined) {
       await markProgressCommentFailed(octokit, owner, repo, progress.commentId, 'Review', reason);
     }
+  } finally {
+    progress.stopHeadWatch();
+    stop.release();
   }
 }
 
@@ -1584,13 +1642,14 @@ async function postCleanup(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  process.on('SIGTERM', () => {
-    core.info('Received SIGTERM — exiting gracefully');
-  });
-
-  process.on('SIGINT', () => {
-    core.info('Received SIGINT — exiting gracefully');
-  });
+  const cancel = new AbortController();
+  const stop = stopWritesOn(cancel.signal);
+  const onSignal = (signal: NodeJS.Signals): void => {
+    core.info(`Received ${signal}, stopping before any further GitHub write`);
+    cancel.abort(new RunCancelledError(signal));
+  };
+  process.on('SIGTERM', onSignal);
+  process.on('SIGINT', onSignal);
 
   // Dispatch: the same bundle is used for `main` and `post` in action.yml.
   // `core.saveState` sets a STATE_<key> env var that only reaches the post step,
@@ -1606,6 +1665,10 @@ async function main(): Promise<void> {
     }
   } catch (error) {
     core.setFailed(`Manki encountered an error: ${failureReason(error)}`);
+  } finally {
+    process.off('SIGTERM', onSignal);
+    process.off('SIGINT', onSignal);
+    stop.release();
   }
   // Let Node exit naturally. `core.setFailed` sets `process.exitCode = 1` which
   // propagates to GitHub Actions so the `post-if: failure()` condition fires.

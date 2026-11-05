@@ -7,6 +7,7 @@ import { StringDecoder } from 'string_decoder';
 import * as core from '@actions/core';
 
 import { sanitizeTokens } from '../utils';
+import { SendMessageOptions } from './types';
 
 export const STALE_TIMEOUT_MS = 90_000;
 const HARD_TIMEOUT_MS = 1_200_000;
@@ -66,16 +67,19 @@ export function warnReplyTail(label: string, reply: string): void {
 }
 
 /**
- * Runs `call` with an abort signal that fires after `timeoutMs`, or without one when it is unset.
- * An abort from that signal is thrown as a timeout naming `label` and the limit.
+ * Runs `call` with a signal that aborts after `timeoutMs` or with `signal`, or without one when neither is set.
+ * A timeout is thrown as an error naming `label` and the limit. An abort from `signal` throws its reason.
  */
-export async function callWithTimeout<T>(label: string, timeoutMs: number | undefined, call: (signal?: AbortSignal) => Promise<T>): Promise<T> {
-  if (!timeoutMs) return call();
-  const signal = AbortSignal.timeout(timeoutMs);
+export async function callWithTimeout<T>(label: string, { timeoutMs, signal }: SendMessageOptions = {}, call: (signal?: AbortSignal) => Promise<T>): Promise<T> {
+  signal?.throwIfAborted();
+  const timeout = timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined;
+  const signals = [timeout, signal].filter((s): s is AbortSignal => s !== undefined);
+  if (signals.length === 0) return call();
   try {
-    return await call(signal);
+    return await call(AbortSignal.any(signals));
   } catch (error) {
-    if (signal.aborted) throw new Error(`${label} timed out after ${timeoutMs / 1000}s`, { cause: error });
+    signal?.throwIfAborted();
+    if (timeout?.aborted) throw new Error(`${label} timed out after ${timeoutMs! / 1000}s`, { cause: error });
     throw error;
   }
 }
@@ -269,6 +273,8 @@ export interface RunCliOptions {
   stderrResetsStale?: boolean;
   /** Kills the CLI after this long whatever its output. Defaults to `HARD_TIMEOUT_MS`. */
   hardTimeoutMs?: number;
+  /** Kills the CLI once it aborts. The run then rejects with the signal's reason. */
+  signal?: AbortSignal;
 }
 
 export interface CliExit {
@@ -287,6 +293,7 @@ export interface CliExit {
 export function runCli(opts: RunCliOptions): Promise<CliExit> {
   const { label } = opts;
   const hardTimeoutMs = opts.hardTimeoutMs ?? HARD_TIMEOUT_MS;
+  if (opts.signal?.aborted) return Promise.reject(opts.signal.reason);
   return new Promise((resolve, reject) => {
     const child = spawn(opts.cliPath, opts.args, {
       cwd: emptyCliCwd(),
@@ -297,6 +304,7 @@ export function runCli(opts: RunCliOptions): Promise<CliExit> {
     let stderr = '';
     let timedOut = false;
     let stale = false;
+    let aborted = false;
     let outputExceeded = false;
     let settled = false;
     let lastStdoutChunk = '';
@@ -314,6 +322,7 @@ export function runCli(opts: RunCliOptions): Promise<CliExit> {
       clearTimeout(timer);
       clearTimeout(staleTimer);
       killTimers.forEach(clearTimeout);
+      opts.signal?.removeEventListener('abort', onAbort);
     };
 
     const timer = setTimeout(() => {
@@ -324,7 +333,7 @@ export function runCli(opts: RunCliOptions): Promise<CliExit> {
     timer.unref();
 
     const handleStale = (): void => {
-      if (outputExceeded || timedOut) return;
+      if (outputExceeded || timedOut || aborted) return;
       stale = true;
       clearTimeout(timer);
       terminate();
@@ -336,6 +345,14 @@ export function runCli(opts: RunCliOptions): Promise<CliExit> {
       staleTimer = setTimeout(handleStale, STALE_TIMEOUT_MS);
       staleTimer.unref();
     };
+
+    const onAbort = (): void => {
+      aborted = true;
+      clearTimeout(timer);
+      clearTimeout(staleTimer);
+      terminate();
+    };
+    opts.signal?.addEventListener('abort', onAbort, { once: true });
 
     const countBytes = (n: number): boolean => {
       rawBytes += n;
@@ -358,7 +375,7 @@ export function runCli(opts: RunCliOptions): Promise<CliExit> {
     };
 
     child.stdout.on('data', (data: Buffer) => {
-      if (outputExceeded || settled || stale || timedOut) return;
+      if (outputExceeded || settled || stale || timedOut || aborted) return;
       resetStaleTimer();
       if (!countBytes(data.length)) return;
       takeStdout(stdoutDecoder.write(data));
@@ -376,6 +393,10 @@ export function runCli(opts: RunCliOptions): Promise<CliExit> {
       settled = true;
       takeStdout(stdoutDecoder.end());
       stderr += stderrDecoder.end();
+      if (aborted) {
+        reject(opts.signal?.reason);
+        return;
+      }
       if (stale) {
         const details = buildTimeoutDiagnostics(lastStdoutChunk, stderr);
         const msg = `${label} CLI stale — no output for ${STALE_TIMEOUT_MS / 1000}s${details ? `. ${details}` : ''}`;
