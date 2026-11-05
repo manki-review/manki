@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.1] - 2026-11-06
+
+### Review format
+
+- Reviewers are named by the model they run on and the effort they ran at, plus the group's `focus` when one is set, such as "Claude Sonnet 5.5 · high". The "Finder" and "Pair finder" labels are gone, and the Trivial Change Verifier shows as "Quick check" ([#983](https://github.com/manki-review/manki/pull/983)).
+- The progress comment's review header names the class and group the PR was routed to, such as "Review (security · pair)" ([#983](https://github.com/manki-review/manki/pull/983)).
+- The fix-rate `specialist` field records the new reviewer names. Per-reviewer rows from before and after this release land in separate rows of `metrics/fix-rate.jsonl` and the report ([#983](https://github.com/manki-review/manki/pull/983)).
+
+### Reliability
+
+- A used-up provider quota, subscription limit or rate limit is no longer retried or sent to the fallback model. The round ends `INCOMPLETE` at once with a plain message that names the provider limit, the reviewers it stopped and the reset time when the provider gives one ([#984](https://github.com/manki-review/manki/pull/984)).
+
+### Internal
+
+- The workflow examples in `SETUP.md`, `docs/index.html` and `CONTRIBUTING.md` pin `@v6`, and `.manki.yml.example` matches the v6 defaults: `stats.hidden` is `true`, the memory repo no longer mentions patterns, and `static_analysis.analyzers` is listed ([#980](https://github.com/manki-review/manki/pull/980)).
+
 ## [6.0.0] - 2026-11-05
 
 Manki 6 gives one clear verdict per round and stops a review loop that is not converging. Every round ends in a named outcome, a failed or partial run never approves, and the bar for blocking lives in code. One or two generalist finders replace the specialist team, and a final verdict reader checks the whole change before Manki approves. This release is tracked in [#859](https://github.com/manki-review/manki/issues/859).
