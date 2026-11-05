@@ -238,7 +238,8 @@ describe('buildReplyContext', () => {
 });
 
 describe('isBotComment', () => {
-  it('detects new manki bot marker', () => {
+  it('detects the manki bot marker at the end or at the top of an older comment', () => {
+    expect(isBotComment('some content\n\n<!-- manki -->')).toBe(true);
     expect(isBotComment('<!-- manki -->\nsome content')).toBe(true);
   });
 
@@ -771,7 +772,7 @@ describe('handleReviewCommentReply', () => {
     );
     expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenCalledWith(
       expect.objectContaining({
-        body: '<!-- manki -->\nAI response here',
+        body: 'AI response here\n\n<!-- manki -->',
         pull_number: 1,
       }),
     );
@@ -844,7 +845,7 @@ describe('handleReviewCommentReply', () => {
 
     await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1);
 
-    expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenCalledWith(expect.objectContaining({ body: `<!-- manki -->\n${reply}` }));
+    expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenCalledWith(expect.objectContaining({ body: `${reply}\n\n<!-- manki -->` }));
     if (resolves) {
       expect(state.resolveReviewThread).toHaveBeenCalledWith(octokit, 'PRRT_this');
     } else {
@@ -932,7 +933,7 @@ describe('handleDismiss (via handlePRComment)', () => {
     expect(core.info).toHaveBeenCalledWith(expect.stringContaining('non-collaborator'));
     expect(memory.writeSuppression).not.toHaveBeenCalled();
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(expect.objectContaining({
-      body: '<!-- manki -->\nDismissed: `null-check`. Only collaborators can store a dismissal in review memory, so later reviews can raise it again.',
+      body: 'Dismissed: `null-check`. Only collaborators can store a dismissal in review memory, so later reviews can raise it again.\n\n<!-- manki -->',
     }));
   });
 
@@ -958,7 +959,7 @@ describe('handleDismiss (via handlePRComment)', () => {
     const octokit = createMockOctokit();
     await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1);
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(expect.objectContaining({
-      body: '<!-- manki -->\nDismissed. Review memory is off, so later reviews can raise it again.',
+      body: 'Dismissed. Review memory is off, so later reviews can raise it again.\n\n<!-- manki -->',
     }));
   });
 });

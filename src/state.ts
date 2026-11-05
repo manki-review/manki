@@ -4,6 +4,7 @@ import * as github from '@actions/github';
 import { BotIdentity, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchReviewThreadNodes, FOLLOW_UP_MARKER, isBotLogin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, postAutoApproveProgressComment } from './github';
 import { isSecurityThread, mayClearSecurityThread, PreviousFinding, REOPENED_MARKER } from './recap';
 import { FindingSeverity, isBlockingSeverity, migrateLegacySeverity, ReviewConfig, SEVERITY_TOKEN_PATTERN } from './types';
+import { withMarkers } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 type ReviewEntry = { body?: string | null; state?: string; commit_id?: string | null; user?: { login?: string; type?: string } | null };
@@ -110,7 +111,7 @@ async function reopenAuthorResolvedThreads(octokit: Octokit, previousFindings: P
     try {
       await octokit.graphql(
         'mutation($threadId: ID!, $body: String!) { addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $threadId, body: $body }) { comment { id } } }',
-        { threadId: f.threadId, body: `${BOT_MARKER}\n${REOPENED_MARKER}\n${REOPEN_REPLY}` },
+        { threadId: f.threadId, body: withMarkers(REOPEN_REPLY, BOT_MARKER, REOPENED_MARKER) },
       );
     } catch (error) {
       core.warning(`Failed to reply on security thread ${f.threadId}, leaving it resolved: ${error}`);
@@ -166,12 +167,11 @@ async function postStaleApproveSkippedComment(
     }
     const shortHead = headSha.slice(0, 7);
     const shortLatest = latestReviewSha.slice(0, 7);
-    const body = [
-      marker,
+    const body = withMarkers([
       `**Auto-approve withheld** for \`${shortHead}\` — all blocking review threads are resolved on the current HEAD, but manki has not reviewed this commit (latest manki review was on \`${shortLatest}\`).`,
       '',
       'To approve, request a fresh review by commenting `@manki review` or by ticking the **Force review** checkbox on the latest progress comment.',
-    ].join('\n');
+    ].join('\n'), marker);
     await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
   } catch (error) {
     core.warning(`Failed to post stale-approve-skipped comment: ${error instanceof Error ? error.message : error}`);
@@ -261,7 +261,7 @@ async function checkAndAutoApprove(
   // A visible body so the API does not render this review as `body_length: 0`.
   // An empty review body trips the head-SHA dedupe gate (`hasBotReviewOnCommit`)
   // for any subsequent force-review tick on the same commit ([#840]).
-  const body = `${BOT_MARKER}\n✅ **Approved.** All blocking threads are resolved.`;
+  const body = withMarkers('✅ **Approved.** All blocking threads are resolved.', BOT_MARKER);
 
   try {
     try {
@@ -287,7 +287,7 @@ async function checkAndAutoApprove(
         owner,
         repo,
         issue_number: prNumber,
-        body: `${BOT_MARKER}\nAll blocking threads are resolved, but repository settings block the approval. Enable "Allow GitHub Actions to create and approve pull requests" in the repo settings, or approve by hand.`,
+        body: withMarkers('All blocking threads are resolved, but repository settings block the approval. Enable "Allow GitHub Actions to create and approve pull requests" in the repo settings, or approve by hand.', BOT_MARKER),
       });
       core.info('Posted auto-approve permission notice as issue comment');
     }

@@ -20,6 +20,14 @@ export function safeTruncate(text: string, maxLen: number): string {
 }
 
 /**
+ * Appends hidden HTML comment markers after `body`. Notifications preview the start of
+ * a comment as plain text, so markers at the top would show up there as blank lines.
+ */
+export function withMarkers(body: string, ...markers: string[]): string {
+  return `${body}\n\n${markers.join('\n')}`;
+}
+
+/**
  * Format a duration in milliseconds to a human-readable string.
  */
 export function formatDuration(ms: number): string {

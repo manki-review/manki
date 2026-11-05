@@ -238,7 +238,7 @@ describe('reopenAuthorResolvedThreads', () => {
 
   const mutation = (call: unknown[]) => [String(call[0]).match(/unresolveReviewThread|addPullRequestReviewThreadReply/)?.[0], (call[1] as { threadId: string }).threadId];
 
-  it('replies with the marker first, then reopens, for flagged threads only', async () => {
+  it('replies with the markers, then reopens, for flagged threads only', async () => {
     const graphql = jest.fn().mockResolvedValue({});
 
     await reopenAuthorResolvedThreads({ graphql } as unknown as Octokit, [previous('T_author', true), previous('T_other', false)]);
@@ -247,7 +247,8 @@ describe('reopenAuthorResolvedThreads', () => {
       ['addPullRequestReviewThreadReply', 'T_author'],
       ['unresolveReviewThread', 'T_author'],
     ]);
-    expect(graphql.mock.calls[0][1].body).toContain(`${BOT_MARKER}\n${REOPENED_MARKER}\nReopened. A security finding needs a maintainer or a fix`);
+    expect(graphql.mock.calls[0][1].body).toMatch(/^Reopened\. A security finding needs a maintainer or a fix/);
+    expect(graphql.mock.calls[0][1].body.endsWith(`\n\n${BOT_MARKER}\n${REOPENED_MARKER}`)).toBe(true);
   });
 
   it('skips the reopen when the reply fails, and keeps going when the reopen fails', async () => {
@@ -341,7 +342,7 @@ describe('checkAndAutoApprove', () => {
 
     expect(result).toBe(true);
     expect(createReviewMock).toHaveBeenCalledWith(
-      expect.objectContaining({ event: 'APPROVE', commit_id: 'sha-456', body: expect.stringMatching(/\n\u2705 \*\*Approved\.\*\* All blocking threads are resolved\.$/) }),
+      expect.objectContaining({ event: 'APPROVE', commit_id: 'sha-456', body: expect.stringMatching(/^\u2705 \*\*Approved\.\*\* All blocking threads are resolved\.\n\n<!-- manki -->$/) }),
     );
   });
 

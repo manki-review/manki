@@ -789,8 +789,8 @@ describe('handlePullRequest', () => {
       expect.objectContaining({ body: expect.stringContaining('Review skipped') }),
     );
     const skipBody = mockOctokitInstance.rest.issues.createComment.mock.calls[0][0].body as string;
-    expect(skipBody).toContain(FORCE_REVIEW_MARKER);
-    expect(skipBody).toContain('- [ ] Force review');
+    expect(skipBody).toMatch(/^\*\*Review skipped\*\*/);
+    expect(skipBody.endsWith(`- [ ] Force review\n\n<!-- manki-bot -->\n${FORCE_REVIEW_MARKER}`)).toBe(true);
     expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
   });
 
@@ -5310,9 +5310,8 @@ describe('runFullReview orchestration', () => {
         .find(([args]) => typeof args.body === 'string' && args.body.includes('Automatic review is paused'));
       expect(capCall).toBeDefined();
       const capBody = capCall![0].body as string;
-      expect(capBody).toContain(FORCE_CAP_MARKER);
+      expect(capBody.endsWith(`- [ ] Force review\n\n<!-- manki-bot -->\n${FORCE_CAP_MARKER}`)).toBe(true);
       expect(capBody).not.toContain(FORCE_REVIEW_MARKER);
-      expect(capBody).toContain('- [ ] Force review');
     });
 
     it('bypasses the cap when skipCap is true', async () => {

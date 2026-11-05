@@ -1,4 +1,4 @@
-import { truncate, formatDuration, safeJsonParse, safeTruncate, sanitizeTokens } from './utils';
+import { truncate, formatDuration, safeJsonParse, safeTruncate, sanitizeTokens, withMarkers } from './utils';
 
 describe('utils', () => {
   describe('truncate', () => {
@@ -117,6 +117,12 @@ describe('utils', () => {
     it('redacts multiple tokens in one string', () => {
       const result = sanitizeTokens('a=ghp_TOKEN1 b=ghs_TOKEN2');
       expect(result).toBe('a=[REDACTED] b=[REDACTED]');
+    });
+  });
+
+  describe('withMarkers', () => {
+    it('keeps the body first and puts each marker on its own line after a blank line', () => {
+      expect(withMarkers('**Done.**', '<!-- a -->', '<!-- b -->')).toBe('**Done.**\n\n<!-- a -->\n<!-- b -->');
     });
   });
 });
