@@ -525,7 +525,7 @@ function cancelDashboardFlush(progress: RunProgress): void {
  * exception: it comes from the base branch, so a PR cannot weaken its own
  * review. Returns `undefined` after reporting a config that does not load.
  */
-async function loadRunConfig(target: RunTarget, configPath: string, headRepoFullName?: string): Promise<ReviewConfig | undefined> {
+async function loadRunConfig(target: RunTarget, configPath: string, headRepoFullName?: string): Promise<{ config: ReviewConfig; reviewSource: BaseReviewConfig['source'] } | undefined> {
   const { octokit, owner, repo, prNumber, baseRef } = target;
   const cwd = path.resolve(process.cwd());
   const configAbsPath = path.isAbsolute(configPath)
@@ -551,7 +551,8 @@ async function loadRunConfig(target: RunTarget, configPath: string, headRepoFull
     const repoRelative = path.relative(cwd, configAbsPath);
     const baseConfigPath = repoRelative.startsWith('..') || path.isAbsolute(repoRelative) ? '.manki.yml' : repoRelative.split(path.sep).join('/');
     const base = await loadBaseReviewConfig(octokit, owner, repo, baseRef, baseConfigPath);
-    return applyBaseReviewConfig(headConfig, base).config;
+    const { config, source } = applyBaseReviewConfig(headConfig, base);
+    return { config, reviewSource: source };
   } catch (error) {
     const reason = failureReason(error);
     core.setFailed(reason);
@@ -1189,8 +1190,9 @@ async function runFullReview(
   const progress: RunProgress = { flushTimer: null };
 
   try {
-    const config = await loadRunConfig(target, configPath, headRepoFullName);
-    if (!config) return;
+    const loaded = await loadRunConfig(target, configPath, headRepoFullName);
+    if (!loaded) return;
+    const { config, reviewSource } = loaded;
     if (await skipsRound(target, config, trigger, forceReview)) return;
 
     const commentId = await postProgressComment(octokit, owner, repo, prNumber);
@@ -1250,7 +1252,7 @@ async function runFullReview(
     const { interRoundDiff, linkedIssues, staticSignals } = await collectRoundSignals(target, config, recap, diff, configPath, prContext?.body);
 
     const run: ReviewRun = {
-      ...target, options, trigger, config, models, plannerEnabled: !!clients.planner,
+      ...target, options, trigger, config, reviewSource, models, plannerEnabled: !!clients.planner,
       recap, priorRoundCount, maxAutoRounds,
       diff, excludedFiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError,
       commentId, dashboard, progress, startTime, parseEndTime,

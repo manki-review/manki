@@ -1465,7 +1465,7 @@ describe('selectTeam', () => {
       expect(team.finders).toEqual([
         { name: TRIVIAL_VERIFIER_AGENT.name, prompt: TRIVIAL_VERIFIER_AGENT, index: 0, model: 'claude-sonnet-5-5', effort: 'medium' },
       ]);
-      expect([team.reviewClass, team.group]).toEqual(['docs', 'trivial']);
+      expect([team.routing.class, team.routing.group]).toEqual(['docs', 'trivial']);
       expect(team.trivialOverridden).toBe(false);
       expect(team.ciOrDependencyPaths).toBe(false);
     }
@@ -1508,14 +1508,14 @@ describe('selectTeam', () => {
       ['a workflow called trivial, pinned never', [file('.github/workflows/ci.yml')], t(true, false, false), 'never', 'supply_chain', [`Finder (${S})@medium`, `Pair finder (${O})@medium`]],
     ])('routes %s as before', (...row) => {
       const team = run(row);
-      expect([team.reviewClass, readers(team)]).toEqual([row[4], row[5]]);
+      expect([team.routing.class, readers(team)]).toEqual([row[4], row[5]]);
     });
 
     it('gives a tests-only change one full finder, where the trivial verifier read it before', () => {
       for (const files of [tests, [...tests, ...docs], [file('src/__snapshots__/a.snap'), file('tests/fixture.json')]]) {
         for (const triage of [t(true, false, false), t(false, false, false)]) {
           const team = run(['', files, triage, 'auto', '', []]);
-          expect([team.reviewClass, team.group, readers(team)]).toEqual(['internal', 'solo', [`Finder (${S})@medium`]]);
+          expect([team.routing.class, team.routing.group, readers(team)]).toEqual(['internal', 'solo', [`Finder (${S})@medium`]]);
         }
       }
     });
@@ -1523,7 +1523,7 @@ describe('selectTeam', () => {
     it('gives a data contract change two finders as a floor class, where the triage decided before', () => {
       for (const path of ['db/migrations/0001_init.ts', 'schema/users.sql', 'proto/api.proto', 'src/schema.graphql', 'openapi.yaml']) {
         const team = run(['', [file(path)], t(true, false, false), 'never', '', []]);
-        expect([path, team.reviewClass, team.group, readers(team)]).toEqual([path, 'data_contract', 'pair', [`Finder (${S})@medium`, `Pair finder (${O})@medium`]]);
+        expect([path, team.routing.class, team.routing.group, readers(team)]).toEqual([path, 'data_contract', 'pair', [`Finder (${S})@medium`, `Pair finder (${O})@medium`]]);
         expect(team.trivialOverridden).toBe(true);
       }
     });
@@ -1623,7 +1623,7 @@ describe('selectTeam', () => {
         routing: { hot_path: 'deep', internal: 'solo' },
       } });
       const team = selectTeam(diffOf('src/net/peer.ts'), config, quiet);
-      expect([team.reviewClass, team.group, team.groupSource]).toEqual(['hot_path', 'deep', 'routing']);
+      expect([team.routing.class, team.routing.group, team.routing.groupSource]).toEqual(['hot_path', 'deep', 'routing']);
       expect(readers(team)).toEqual(['Finder (claude-opus-5-5)@high', 'Pair finder (gemini-3-pro)@high', 'Finder 3 (claude-sonnet-5-5)@medium']);
       expect(team.finders[0].prompt.focus).toContain('- This review group: authz, injection, secret handling');
       expect(team.finders[1].prompt).toEqual(buildFinderAgent([]));
@@ -1634,7 +1634,7 @@ describe('selectTeam', () => {
     it('sends every class to the default group when groups are set without routing', () => {
       const config = makeConfig({ review: { default_group: 'deep', groups: { deep } } });
       for (const team of [selectTeam(diffOf('README.md'), config, { trivial: true, subtle: false, paired: false }), selectTeam(authDiff, config, quiet)]) {
-        expect([team.group, team.groupSource, team.finders]).toEqual(['deep', 'default_group', expect.any(Array)]);
+        expect([team.routing.group, team.routing.groupSource, team.finders]).toEqual(['deep', 'default_group', expect.any(Array)]);
         expect(team.finders).toHaveLength(3);
       }
     });
@@ -1643,7 +1643,7 @@ describe('selectTeam', () => {
       const config = makeConfig({ review: { routing: { security: 'solo', supply_chain: 'solo', data_contract: 'trivial' } } });
       for (const [path, floor, from] of [['src/auth/login.ts', 'security', 'solo'], ['package.json', 'supply_chain', 'solo'], ['db/migrations/0002.sql', 'data_contract', 'trivial']]) {
         const team = selectTeam(diffOf(path), config, { trivial: true, subtle: false, paired: false });
-        expect([path, team.reviewClass, team.floor, team.group, team.groupSource, team.escalatedFrom]).toEqual([path, floor, floor, 'pair', 'floor_escalation', from]);
+        expect([path, team.routing.class, team.routing.floor, team.routing.group, team.routing.groupSource, team.routing.escalatedFrom]).toEqual([path, floor, floor, 'pair', 'floor_escalation', from]);
         expect(readers(team)).toEqual(['Finder (claude-sonnet-5-5)@medium', 'Pair finder (claude-opus-5-5)@medium']);
       }
     });
@@ -1655,28 +1655,29 @@ describe('selectTeam', () => {
         routing: { prose: 'trivial', security: 'deep' },
       } });
       const team = selectTeam(diffOf('docs/auth.md', 'src/session.ts'), config, quiet);
-      expect([team.reviewClass, team.floor, team.group, team.escalatedFrom]).toEqual(['prose', 'security', 'deep', 'trivial']);
-      expect(selectTeam(diffOf('docs/guide.md'), config, quiet).group).toBe('trivial');
+      expect([team.routing.class, team.routing.floor, team.routing.group, team.routing.escalatedFrom]).toEqual(['prose', 'security', 'deep', 'trivial']);
+      expect(team.routing).toEqual(expect.objectContaining({ rank: 200, matched: ['prose', 'security', 'behavior'], classSource: 'paths', groupSource: 'floor_escalation' }));
+      expect(selectTeam(diffOf('docs/guide.md'), config, quiet).routing.group).toBe('trivial');
     });
 
     it('keeps a floor PR below the floor only where `allow_weaker` names each floor class it matched', () => {
       const config = makeConfig({ review: { routing: { security: 'solo' }, allow_weaker: ['security'] } });
       const weak = selectTeam(authDiff, config, quiet);
-      expect([weak.group, weak.groupSource, weak.weakerAllowed, readers(weak)]).toEqual(['solo', 'routing', ['security'], ['Finder (claude-sonnet-5-5)@medium']]);
+      expect([weak.routing.group, weak.routing.groupSource, weak.routing.weakerAllowed, readers(weak)]).toEqual(['solo', 'routing', ['security'], ['Finder (claude-sonnet-5-5)@medium']]);
       const withCi = selectTeam(diffOf('src/auth/login.ts', '.github/workflows/ci.yml'), config, quiet);
-      expect([withCi.group, withCi.groupSource, withCi.weakerAllowed]).toEqual(['pair', 'floor_escalation', undefined]);
+      expect([withCi.routing.group, withCi.routing.groupSource, withCi.routing.weakerAllowed]).toEqual(['pair', 'floor_escalation', undefined]);
     });
 
     it('falls back to the built-in pair group when the floor class routes to a redefined group below the floor', () => {
       const config = makeConfig({ review: { groups: { pair: { reviewers: [{ model: '@reviewer' }] } } , routing: { security: 'pair' } } });
       const team = selectTeam(authDiff, config, quiet);
-      expect([team.group, team.groupSource, team.escalatedFrom, readers(team)]).toEqual(['pair', 'floor_escalation', 'pair', ['Finder (claude-sonnet-5-5)@medium', 'Pair finder (claude-opus-5-5)@medium']]);
+      expect([team.routing.group, team.routing.groupSource, team.routing.escalatedFrom, readers(team)]).toEqual(['pair', 'floor_escalation', 'pair', ['Finder (claude-sonnet-5-5)@medium', 'Pair finder (claude-opus-5-5)@medium']]);
     });
 
     it('widens a built-in floor class with extra paths, never narrowing its built-in rule', () => {
       const config = makeConfig({ review: { classes: { security: { match: { paths_any: ['src/billing/**'] } } } } });
-      expect(selectTeam(diffOf('src/billing/charge.ts'), config, quiet).reviewClass).toBe('security');
-      expect(selectTeam(authDiff, config, quiet).reviewClass).toBe('security');
+      expect(selectTeam(diffOf('src/billing/charge.ts'), config, quiet).routing.class).toBe('security');
+      expect(selectTeam(authDiff, config, quiet).routing.class).toBe('security');
     });
   });
 });
@@ -4634,6 +4635,7 @@ describe('runReview triage', () => {
     expect(result.agentEffortMap).toEqual(new Map([['Finder (claude-sonnet-5-5)', 'medium']]));
     expect(result.agentModels).toEqual(new Map([['Finder (claude-sonnet-5-5)', 'claude-sonnet-5-5']]));
     expect(result.pairAgentName).toBeUndefined();
+    expect(result.routing).toEqual({ class: 'internal', rank: 30, matched: ['internal'], classSource: 'triage', group: 'solo', groupSource: 'routing' });
     expect(progress).toContainEqual(expect.objectContaining({ phase: 'planning', teamAgentNames: ['Finder (claude-sonnet-5-5)'], reviewerEffort: 'medium' }));
   });
 

@@ -3,6 +3,7 @@ import * as core from '@actions/core';
 import { recordFixRate } from './fix-rate';
 import { fetchRecapState, PreviousFinding } from './recap';
 import { makeFindingFingerprintEntry, makeRoundContext, TEST_BOT } from './test-utils';
+import { RoundRouting } from './types';
 
 jest.mock('@actions/core', () => {
   const summary = {
@@ -51,6 +52,13 @@ function mockOctokit(existingMetrics: string | null = null) {
 
 const PR = { number: 42, headSha: 'head', mergedSha: 'merged', authorLogin: 'author' };
 
+function routing(group: string, configDigest: string): RoundRouting {
+  return {
+    class: 'security', rank: 100, matched: ['security', 'behavior'], classSource: 'paths', group, groupSource: 'routing',
+    floor: 'security', configSource: 'base', configDigest, reviewers: [],
+  };
+}
+
 function summaryLine(): Record<string, unknown> {
   return JSON.parse(jest.mocked(core.summary.addCodeBlock).mock.calls[0][0]);
 }
@@ -61,6 +69,7 @@ describe('recordFixRate', () => {
     jest.mocked(fetchRecapState).mockResolvedValue({
       priorRounds: [
         makeRoundContext(1, {
+          routing: routing('pair', 'digest-1'),
           findings: {
             count: 4,
             severityCounts: {},
@@ -73,6 +82,7 @@ describe('recordFixRate', () => {
           },
         }),
         makeRoundContext(2, {
+          routing: routing('deep', 'digest-2'),
           judge: { summary: '', threadEvaluations: [{ threadId: 'T_B', status: 'addressed', reason: 'fixed' }] },
           findings: {
             count: 2,
@@ -103,6 +113,9 @@ describe('recordFixRate', () => {
       pr: 42,
       mergedSha: 'merged',
       rounds: 2,
+      class: 'security',
+      group: 'deep',
+      configDigest: 'digest-2',
       counts: [
         { severity: 'warning', specialist: 'Security', posted: 3, fixed: 1, dismissed: 1, untouched: 1 },
         { severity: 'suggestion', specialist: 'Style', posted: 1, fixed: 1, dismissed: 0, untouched: 0 },
@@ -127,10 +140,13 @@ describe('recordFixRate', () => {
   it('writes only the job summary without a memory repo, and marks a failed compare as partial', async () => {
     const github = mockOctokit();
     github.repos.compareCommits.mockRejectedValueOnce(new Error('diff too large'));
+    const state = await fetchRecapState(github.octokit, TEST_BOT, 'owner', 'repo', PR.number);
+    jest.mocked(fetchRecapState).mockResolvedValueOnce({ ...state, priorRounds: state.priorRounds.map(r => ({ ...r, routing: undefined })) });
 
     await recordFixRate(github.octokit, TEST_BOT, 'owner', 'repo', PR);
 
     expect(summaryLine()).toMatchObject({ pr: 42, partial: true });
+    expect(Object.keys(summaryLine())).not.toEqual(expect.arrayContaining(['class', 'group', 'configDigest']));
     expect(github.repos.createOrUpdateFileContents).not.toHaveBeenCalled();
   });
 

@@ -305,7 +305,11 @@ describe('runFullReview end to end', () => {
     expect(core.setFailed).not.toHaveBeenCalled();
     const [review] = postedReviews();
     expect(review).toMatchObject({ state: 'APPROVED', commit_id: HEAD_SHA });
-    expect(mockGitHub.roundContext(review)).toMatchObject({ meta: { round: 1, outcome: 'READY' }, verdict: 'APPROVE' });
+    expect(mockGitHub.roundContext(review)).toMatchObject({
+      meta: { round: 1, outcome: 'READY' },
+      verdict: 'APPROVE',
+      routing: { class: 'internal', classSource: 'triage', group: 'solo', groupSource: 'routing', configSource: 'builtin', reviewers: [expect.objectContaining({ effort: 'high' })] },
+    });
     expect(mockLLM.calls).toEqual(['planner', 'reviewer', 'judge', 'verdict']);
     expect(core.setOutput).toHaveBeenCalledWith('verdict', 'APPROVE');
   });
