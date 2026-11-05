@@ -182,6 +182,23 @@ describe('fetchBotReviewThreads', () => {
     expect(threads[0].id).toBe('t1');
   });
 
+  it('reads the override recorded in a Manki reply on a security thread, and only from Manki', async () => {
+    const security = formatFindingComment({
+      severity: 'blocker', title: 'Token leaks into logs', file: 'src/a.ts', line: 3, description: 'd', reviewers: [], tags: ['security'],
+    });
+    const reply = (login: string, author: string) => ({ body: `${BOT_MARKER}\n${securityOverrideMarker('dismiss', login)}`, author: { login: author } });
+    const graphqlMock = jest.fn().mockResolvedValueOnce(
+      makeGraphqlFetchResponse([
+        makeGraphqlFetchThreadNode({ id: 't1', body: security, replies: [reply('jdoe_acme', 'github-actions[bot]')] }),
+        makeGraphqlFetchThreadNode({ id: 't2', body: security, replies: [reply('mallory', 'mallory')] }),
+      ]),
+    );
+
+    const threads = await fetchBotReviewThreads({ graphql: graphqlMock } as unknown as Octokit, TEST_BOT, 'owner', 'repo', 1);
+
+    expect(threads.map(t => t.recordedOverride)).toEqual([{ login: 'jdoe_acme', via: 'dismiss' }, undefined]);
+  });
+
   it('identifies threads by BOT_MARKER alone', async () => {
     const graphqlMock = jest.fn().mockResolvedValueOnce(
       makeGraphqlFetchResponse([

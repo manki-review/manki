@@ -48,7 +48,7 @@ function isSecurityThread(body: string): boolean {
 /** Marks Manki's reply on a security thread it reopened after the PR author resolved it. */
 const REOPENED_MARKER = '<!-- manki-reopened -->';
 
-const SECURITY_OVERRIDE_MARKER_RE = /<!-- manki-security-override:(resolve|dismiss):([A-Za-z0-9-]+) -->/;
+const SECURITY_OVERRIDE_MARKER_RE = /<!-- manki-security-override:(resolve|dismiss):([\w-]+) -->/;
 
 /** Marks Manki's reply on a security thread the PR author cleared as a repo admin, with how and by whom. */
 function securityOverrideMarker(via: SecurityOverride['via'], login: string): string {
