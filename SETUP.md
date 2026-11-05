@@ -565,7 +565,7 @@ Fork PRs work as before: a push to a PR from a fork starts no review, and a revi
 
 ### What the Manki App needs
 
-The Manki maintainers set up the App's webhook, the **Actions: read and write** permission and the **Workflow run** event once for every installation. The webhook receives the events of every installation, with their payloads such as PR titles, PR bodies and comment text, and the service drops the events of repositories that have not opted in. Actions write lets the App start, cancel and rerun workflow runs in the repositories it is installed on. The service uses it to start `manki-dispatch.yml` and follow those runs. The service needs Actions write to start the dispatch workflow, and the Workflow run event tells it within seconds that a run ended, so it can start the next one in that PR's queue.
+The Manki maintainers set up the App's webhook, the **Actions: read and write** permission and the **Workflow run** event once for every installation. The webhook receives the events of every installation, with their payloads such as PR titles, PR bodies and comment text, and the service drops the events of repositories that have not opted in. Actions write lets the App start, cancel and rerun workflow runs in the repositories it is installed on. The service uses it to start `manki-dispatch.yml`, and the Workflow run event tells it within seconds that a run ended, so it can start the next one in that PR's queue.
 
 A new App permission only takes effect once each installation approves it. GitHub emails the owner of every installation and shows the request on the App's installation settings, where the owner accepts it. Until then the service cannot start runs in your repositories, so keep the event-driven workflow until you have approved it.
 
@@ -609,7 +609,7 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
-The job has no `if` and no `concurrency` block, since the service filters and orders the events. It needs no checkout: Manki reads the PR's `.manki.yml` at the head commit through the API. Pass the same inputs to the Manki step as in your Step 3 workflow, such as another provider's credential or `memory_repo_token`, and keep any CLI install steps it has.
+The job has no `if` and no `concurrency` block, since the service filters and orders the events. It needs no checkout: Manki reads the PR's `.manki.yml` at the head commit through the API. The example uses `anthropic_api_key`. Pass the same inputs to the Manki step as in your Step 3 workflow, such as another provider's credential from the [workflow examples per provider](#workflow-examples-per-provider) or `memory_repo_token`, and keep any CLI install steps it has. Otherwise reviews stop once `manki.yml` is gone.
 
 Keep the file name `manki-dispatch.yml`, since the service starts the workflow by that name.
 
