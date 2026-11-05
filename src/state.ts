@@ -256,10 +256,10 @@ async function postStaleApproveSkippedComment(
 }
 
 /**
- * Deletes every auto-approve withheld notice and marks each open pause notice as resumed on `headSha`.
- * Call it once a review posts its verdict on `headSha`, since neither notice applies after that.
+ * Deletes the auto-approve withheld notice for `headSha`. Call it once a review posts its verdict on `headSha`.
+ * Pass `pauseLiftedAt` when that round lifted the pause: each open pause notice last updated before then is marked as resumed.
  */
-async function retireStaleNotices(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string): Promise<void> {
+async function retireStaleNotices(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string, pauseLiftedAt?: number): Promise<void> {
   let comments: Awaited<ReturnType<typeof fetchPRComments>>;
   try {
     comments = await fetchPRComments(octokit, owner, repo, prNumber);
@@ -267,12 +267,14 @@ async function retireStaleNotices(octokit: Octokit, bot: BotIdentity, owner: str
     core.warning(`Failed to look up stale notices: ${error instanceof Error ? error.message : error}`);
     return;
   }
+  const marker = staleApproveMarker(headSha);
   for (const c of comments) {
     if (!isBotLogin(bot, c.user?.login) || !c.body) continue;
     try {
-      if (c.body.includes(STALE_APPROVE_MARKER_PREFIX)) {
+      if (c.body.includes(marker)) {
         await octokit.rest.issues.deleteComment({ owner, repo, comment_id: c.id });
-      } else if (c.body.includes(FORCE_CAP_MARKER) && /- \[[ x]\] Force review/.test(c.body)) {
+      } else if (pauseLiftedAt !== undefined && Date.parse(c.updated_at) < pauseLiftedAt
+        && c.body.includes(FORCE_CAP_MARKER) && /- \[[ x]\] Force review/.test(c.body)) {
         const body = withMarkers(`Automatic review was paused. Review resumed on \`${headSha.slice(0, 7)}\`.`, PROGRESS_MARKER, FORCE_CAP_MARKER);
         await octokit.rest.issues.updateComment({ owner, repo, comment_id: c.id, body });
       }

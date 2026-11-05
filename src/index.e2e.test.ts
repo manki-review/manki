@@ -318,6 +318,7 @@ describe('runFullReview end to end', () => {
     const pauseNotice = `The last Manki round found a blocker that came back after a fix. Automatic review is paused. Tick the box to run another round:\n\n- [x] Force review\n\n${BOT_MARKER}\n${FORCE_CAP_MARKER}`;
     mockGitHub.addComment(pauseNotice, APP_LOGIN);
     mockGitHub.addComment(`**Auto-approve withheld** for \`a1b2c3d\`.\n\n${STALE_APPROVE_MARKER_PREFIX}${HEAD_SHA} -->`, APP_LOGIN);
+    mockGitHub.addComment(`**Auto-approve withheld** for \`0f0f0f0\`.\n\n${STALE_APPROVE_MARKER_PREFIX}${'0f'.repeat(20)} -->`, APP_LOGIN);
     mockGitHub.addComment(`Quoting it: ${STALE_APPROVE_MARKER_PREFIX}${HEAD_SHA} -->`, 'alice');
     mockGitHub.addComment(pauseNotice, 'alice');
 
@@ -326,7 +327,8 @@ describe('runFullReview end to end', () => {
     expect(core.setFailed).not.toHaveBeenCalled();
     const [review] = postedReviews();
     expect(review).toMatchObject({ state: 'APPROVED', commit_id: HEAD_SHA });
-    expect(mockGitHub.comments.filter(c => c.body.includes(STALE_APPROVE_MARKER_PREFIX)).map(c => c.user.login)).toEqual(['alice']);
+    // Only Manki's notice for the reviewed head goes. The one for another head and a quote of the marker stay.
+    expect(mockGitHub.comments.filter(c => c.body.includes(STALE_APPROVE_MARKER_PREFIX)).map(c => c.user.login)).toEqual([APP_LOGIN, 'alice']);
     expect(mockGitHub.comments.filter(c => c.body.includes(FORCE_CAP_MARKER)).map(c => c.body)).toEqual([
       `Automatic review was paused. Review resumed on \`a1b2c3d\`.\n\n${BOT_MARKER}\n${FORCE_CAP_MARKER}`,
       pauseNotice,

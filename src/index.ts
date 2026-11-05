@@ -1391,7 +1391,8 @@ async function runFullReview(
       reviewId = await postRound(run, result, context, reviewTimeMs);
     }
     await completeProgressComment(run, stage);
-    await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha);
+    const pauseLifted = !pauseState([...recap.priorRounds, context], config).paused;
+    await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha, pauseLifted ? startTime : undefined);
     setReviewOutputs(reviewId, context, result);
   } catch (error) {
     cancelDashboardFlush(progress);
