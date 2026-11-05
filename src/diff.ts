@@ -1,7 +1,7 @@
 import parseDiff from 'parse-diff';
 import { minimatch } from 'minimatch';
 
-import { DiffFile, DiffHunk, ParsedDiff, RoundDiffExcludedFile } from './types';
+import { DiffFile, DiffHunk, Finding, ParsedDiff, RoundDiffExcludedFile } from './types';
 
 /**
  * Parse a unified diff string into structured data.
@@ -159,6 +159,27 @@ export function countDiffLines(files: DiffFile[]): number {
  */
 export function isDiffTooLarge(diff: ParsedDiff, maxLines: number): boolean {
   return countDiffLines(diff.files) > maxLines;
+}
+
+/** Sets each finding's `codeContext` to the hunk lines around its line, when that line is in the diff. */
+export function addCodeContext(findings: Finding[], diff: ParsedDiff): void {
+  for (const finding of findings) {
+    if (finding.file && finding.line) {
+      const diffFile = diff.files.find(f => f.path === finding.file);
+      if (diffFile) {
+        const hunk = diffFile.hunks.find(h =>
+          finding.line >= h.newStart && finding.line <= h.newStart + h.newLines - 1,
+        );
+        if (hunk) {
+          const lines = hunk.content.split('\n');
+          const findingOffset = finding.line - hunk.newStart;
+          const start = Math.max(0, findingOffset - 5);
+          const end = Math.min(lines.length, findingOffset + 10);
+          finding.codeContext = lines.slice(start, end).join('\n');
+        }
+      }
+    }
+  }
 }
 
 function isBinaryFile(file: parseDiff.File): boolean {
