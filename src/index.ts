@@ -11,6 +11,7 @@ import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parse
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
 import { recordFixRate } from './fix-rate';
+import { isDispatchedRun, restoreDispatchedEvent } from './dispatch';
 import { addCodeContext, parsePRDiff, filterDiff, filterRawDiff, isDiffTooLarge, rebuildRawDiff } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
@@ -509,12 +510,13 @@ function cancelDashboardFlush(progress: RunProgress): void {
  * Loads `.manki.yml` from the local checkout so a PR that modifies its own
  * config (e.g., extending `exclude_paths`) takes effect on the same PR.
  * `process.cwd()` is the PR tree because the action runs as a local
- * composite via `./` in the consumer workflow. The `review` block is the
+ * composite via `./` in the consumer workflow. A dispatched run reads the
+ * file at the head commit through the API instead. The `review` block is the
  * exception: it comes from the base branch, so a PR cannot weaken its own
  * review. Returns `undefined` after reporting a config that does not load.
  */
 async function loadRunConfig(target: RunTarget, configPath: string, headRepoFullName?: string): Promise<{ config: ReviewConfig; reviewSource: BaseReviewConfig['source'] } | undefined> {
-  const { octokit, owner, repo, prNumber, baseRef } = target;
+  const { octokit, owner, repo, prNumber, commitSha, baseRef } = target;
   const cwd = path.resolve(process.cwd());
   const configAbsPath = path.isAbsolute(configPath)
     ? configPath
@@ -531,14 +533,17 @@ async function loadRunConfig(target: RunTarget, configPath: string, headRepoFull
   const effectiveConfigPath = (resolvedConfigPath === cwd || resolvedConfigPath.startsWith(cwd + path.sep))
     ? resolvedConfigPath
     : path.join(cwd, '.manki.yml');
+  // The contents API takes a repo-relative path, so `./`, absolute and outside paths are normalised first.
+  const repoRelative = path.relative(cwd, configAbsPath);
+  const repoConfigPath = repoRelative.startsWith('..') || path.isAbsolute(repoRelative) ? '.manki.yml' : repoRelative.split(path.sep).join('/');
   try {
-    const rawConfig = loadConfigFromFile(effectiveConfigPath);
+    // A dispatched run checks out the default branch or nothing, so the PR's config comes from the API.
+    const rawConfig = isDispatchedRun()
+      ? loadConfig(await readConfigFile(octokit, owner, repo, commitSha, repoConfigPath) ?? undefined, repoConfigPath)
+      : loadConfigFromFile(effectiveConfigPath);
     const isFork = headRepoFullName !== undefined && headRepoFullName !== `${owner}/${repo}`;
     const headConfig = isFork ? sanitizeForkConfig(rawConfig) : rawConfig;
-    // The contents API takes a repo-relative path, so `./`, absolute and outside paths are normalised first.
-    const repoRelative = path.relative(cwd, configAbsPath);
-    const baseConfigPath = repoRelative.startsWith('..') || path.isAbsolute(repoRelative) ? '.manki.yml' : repoRelative.split(path.sep).join('/');
-    const base = await loadBaseReviewConfig(octokit, owner, repo, baseRef, baseConfigPath);
+    const base = await loadBaseReviewConfig(octokit, owner, repo, baseRef, repoConfigPath);
     const { config, source } = applyBaseReviewConfig(headConfig, base);
     return { config, reviewSource: source };
   } catch (error) {
@@ -1660,10 +1665,11 @@ async function main(): Promise<void> {
   const isPostPhase = core.getState(POST_PHASE_STATE_KEY) === 'true';
 
   try {
+    if (!isPostPhase) core.saveState(POST_PHASE_STATE_KEY, 'true');
+    const outcome = isDispatchedRun() ? await restoreDispatchedEvent((await getAuth()).octokit) : 'run';
     if (isPostPhase) {
       await postCleanup();
-    } else {
-      core.saveState(POST_PHASE_STATE_KEY, 'true');
+    } else if (outcome === 'run') {
       await run();
     }
   } catch (error) {
