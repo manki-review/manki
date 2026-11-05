@@ -239,9 +239,12 @@ jest.mock('./github', () => {
 jest.mock('./state', () => ({
   announceSecurityOverrides: jest.fn().mockResolvedValue([]),
   checkAndAutoApprove: jest.fn().mockResolvedValue(false),
+  pauseState: jest.requireActual('./state').pauseState,
   reopenAuthorResolvedThreads: jest.fn().mockResolvedValue(undefined),
   replyToReviewThread: jest.requireActual('./state').replyToReviewThread,
   resolveReviewThread: jest.requireActual('./state').resolveReviewThread,
+  retireStaleNotices: jest.requireActual('./state').retireStaleNotices,
+  findUnchangedVerdict: jest.requireActual('./state').findUnchangedVerdict,
 }));
 
 jest.mock('./fix-rate', () => ({
@@ -5460,15 +5463,37 @@ describe('runFullReview orchestration', () => {
       jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([posted(500, '2024-12-31T00:00:00Z')]);
       await callRunFullReview();
       expect(createComment.mock.calls.filter(([args]) => String(args.body).includes('Automatic review is paused'))).toHaveLength(1);
-      jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([]);
 
-      await runFullReview(
+      // The forced round's verdict retires the ticked pause notice and the withheld notice.
+      const ticked = { ...posted(501, '2025-01-02T00:00:00Z'), body: notice![0].body!.replace('- [ ] Force review', '- [x] Force review') };
+      const withheld = { id: 502, body: '**Auto-approve withheld**\n\n<!-- manki-stale-approve:abc123 -->', user: { login: 'manki-review[bot]', type: 'Bot' }, updated_at: '2025-01-02T00:00:00Z' };
+      const otherHead = { ...withheld, id: 503, body: '**Auto-approve withheld**\n\n<!-- manki-stale-approve:def456 -->' };
+      jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([ticked, withheld, otherHead]);
+      const forcedRound = () => runFullReview(
         baseArgs.owner, baseArgs.repo, baseArgs.prNumber,
         baseArgs.commitSha, baseArgs.baseRef, baseArgs.prContext,
         { forceReview: true, skipCap: true },
       );
 
+      // A forced round that ends `NOT_CONVERGING` again keeps the pause, so its notice stays as it is.
+      jest.mocked(reviewModule.runReview).mockResolvedValueOnce({
+        verdict: 'REQUEST_CHANGES', outcome: 'NOT_CONVERGING', summary: 'Still blocked', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
+      });
+      jest.mocked(mockOctokitInstance.rest.issues.updateComment).mockClear();
+      jest.mocked(mockOctokitInstance.rest.issues.deleteComment).mockClear();
+      await forcedRound();
+      expect(jest.mocked(mockOctokitInstance.rest.issues.deleteComment).mock.calls.map(([args]) => args.comment_id)).toEqual([502]);
+      expect(mockOctokitInstance.rest.issues.updateComment).not.toHaveBeenCalledWith(expect.objectContaining({ comment_id: 501 }));
+
+      jest.mocked(reviewModule.runReview).mockClear();
+      await forcedRound();
+
       expect(jest.mocked(reviewModule.runReview).mock.calls[0][1]).toMatchObject({ headSha: 'abc123', blockersOnly: true, finalRound: false });
+      expect(mockOctokitInstance.rest.issues.deleteComment).toHaveBeenCalledWith(expect.objectContaining({ comment_id: 502 }));
+      expect(mockOctokitInstance.rest.issues.updateComment).toHaveBeenCalledWith(expect.objectContaining({
+        comment_id: 501, body: `Automatic review was paused. Review resumed on \`abc123\`.\n\n<!-- manki-bot -->\n${FORCE_CAP_MARKER}`,
+      }));
+      jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([]);
     });
 
     it('skips review and posts notice when prior rounds reach the cap on auto trigger', async () => {

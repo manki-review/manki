@@ -10,7 +10,7 @@ import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parse
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
 import { recordFixRate } from './fix-rate';
-import { addCodeContext, parsePRDiff, filterDiff, filterRawDiff, isDiffTooLarge, isSameChange, rebuildRawDiff } from './diff';
+import { addCodeContext, parsePRDiff, filterDiff, filterRawDiff, isDiffTooLarge, rebuildRawDiff } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, RepoMemory } from './memory';
@@ -45,7 +45,6 @@ import {
   titleToSlug,
   isApprovedOnCommit,
   hasBotReviewOnCommit,
-  fetchStandingVerdict,
   fetchPRComments,
   markOwnProgressCommentCancelled,
   markProgressCommentFailed,
@@ -54,8 +53,9 @@ import {
   checkConcurrentSubmissionLock,
   postConfigErrorComment,
 } from './github';
-import type { BotIdentity, LinkedIssue, StandingVerdict } from './github';
-import { announceSecurityOverrides, checkAndAutoApprove, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread } from './state';
+import type { BotIdentity, LinkedIssue } from './github';
+import { announceSecurityOverrides, checkAndAutoApprove, findUnchangedVerdict, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices } from './state';
+import type { PauseState } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -445,30 +445,6 @@ function failureReason(error: unknown): string {
   return sanitizeLogOutput(sanitizeTokens(error instanceof Error ? error.message : String(error)));
 }
 
-/**
- * Returns the standing verdict when the PR's own change at `commitSha` equals
- * the change at the reviewed commit, otherwise `undefined`. Both commits are
- * compared against `baseRef`, so a clean rebase or an empty commit matches.
- */
-async function findUnchangedVerdict(
-  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number,
-  baseRef: string, commitSha: string, excludePaths: string[],
-): Promise<StandingVerdict | undefined> {
-  const standing = await fetchStandingVerdict(octokit, bot, owner, repo, prNumber);
-  if (!standing || standing.commitSha === commitSha) return undefined;
-  try {
-    const [reviewed, current] = await Promise.all([
-      fetchInterRoundDiff(octokit, owner, repo, baseRef, standing.commitSha),
-      fetchInterRoundDiff(octokit, owner, repo, baseRef, commitSha),
-    ]);
-    if (!reviewed.trim() || !current.trim()) return undefined;
-    return isSameChange(reviewed, current, excludePaths) ? standing : undefined;
-  } catch (error) {
-    core.warning(`Could not compare with the reviewed commit, reviewing in full: ${error instanceof Error ? error.message : error}`);
-    return undefined;
-  }
-}
-
 function reconcileDashboardAgents(dashboard: DashboardData, names: string[]): void {
   const existingByName = new Map(dashboard.agentProgress?.map(a => [a.name, a]) ?? []);
   const reconciled = names.map(name => existingByName.get(name) ?? { name, status: 'done' as const });
@@ -623,6 +599,7 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
             owner, repo, pull_number: prNumber, commit_id: commitSha, event: 'APPROVE',
             body: withMarkers(`✅ **Approved.** No change to this PR since the reviewed commit \`${shortSha}\`. The previous verdict stands.`, PROGRESS_MARKER),
           });
+          await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha);
         }
         core.info(`Round SKIPPED: no change since reviewed commit ${shortSha}, ${standing.verdict} stands`);
         return true;
@@ -651,14 +628,6 @@ async function loadRecap(target: RunTarget, config: ReviewConfig, commentId: num
   await reopenAuthorResolvedThreads(octokit, recap.previousFindings, pauseState(recap.priorRounds, config).paused);
   await announceSecurityOverrides(octokit, securityOverridesIn(recap.previousFindings).filter(o => !o.announced));
   return recap;
-}
-
-/** Returns the rounds since the last approval, whether they reach the round cap, and whether automatic review is paused by it or by a last round that ended `NOT_CONVERGING`. */
-function pauseState(priorRounds: RoundContext[], config: ReviewConfig): { capRounds: number; capReached: boolean; paused: boolean } {
-  const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
-  const capRounds = roundsSinceApproval(priorRounds);
-  const capReached = maxAutoRounds > 0 && capRounds >= maxAutoRounds;
-  return { capRounds, capReached, paused: capReached || priorRounds.at(-1)?.meta.outcome === 'NOT_CONVERGING' };
 }
 
 /** Builds one LLM client per stage, plus each stage's refusal fallback. Throws on a model spec or credentials that do not resolve. */
@@ -734,12 +703,13 @@ async function postUnreviewedRound(
   target: RunTarget, commentId: number, dashboard: DashboardData, diff: ParsedDiff,
   verdict: 'APPROVE' | 'COMMENT', summary: string,
 ): Promise<void> {
-  const { octokit, owner, repo, prNumber, commitSha } = target;
+  const { octokit, bot, owner, repo, prNumber, commitSha } = target;
   await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
   const result = { verdict, summary, findings: [], highlights: [], reviewComplete: true, agentNames: [] as string[] };
   const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
   await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId);
   await updateProgressComment(octokit, owner, repo, commentId, dashboard);
+  await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha);
 }
 
 /**
@@ -816,22 +786,11 @@ async function loadRunMemory(
 }
 
 /**
- * Returns how many rounds ran since the last round that approved at the full bar, or all of them without one.
- * The round cap stops fix loops, so a round after an approval, such as on a rebase, starts the count again.
- * A `BUDGET` approval deferred warnings to end a loop, so it does not reset the count.
- */
-function roundsSinceApproval(priorRounds: RoundContext[]): number {
-  let count = 0;
-  for (let i = priorRounds.length - 1; i >= 0 && !(priorRounds[i].verdict === 'APPROVE' && priorRounds[i].meta.outcome !== 'BUDGET'); i--) count++;
-  return count;
-}
-
-/**
  * Replaces the progress comment with a notice that automatic review is paused. Each push during
  * the same pause updates the unticked notice from after `lastRoundAt` instead of adding another.
  */
 async function postPauseNotice(
-  target: RunTarget, commentId: number, capReached: boolean, capRounds: number, maxAutoRounds: number, approvedBefore: boolean, lastRoundAt?: string,
+  target: RunTarget, commentId: number, { capReached, capRounds, reason }: PauseState, maxAutoRounds: number, lastRoundAt?: string,
 ): Promise<void> {
   const { octokit, owner, repo, prNumber } = target;
   core.info(capReached
@@ -843,9 +802,6 @@ async function postPauseNotice(
     core.warning(`Failed to delete progress comment: ${error}`);
   }
   try {
-    const reason = capReached
-      ? `Manki has completed ${capRounds}/${maxAutoRounds} review rounds on this PR${approvedBefore ? ' since its last approval' : ''}.`
-      : 'The last Manki round found a blocker that came back after a fix.';
     const body = withMarkers(
       `${reason} Automatic review is paused. Tick the box to run another round, or comment \`@manki review\`:\n\n- [ ] Force review`,
       PROGRESS_MARKER,
@@ -1347,9 +1303,10 @@ async function runFullReview(
 
     const priorRoundCount = recap.priorRounds.length;
     const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
-    const { capRounds, capReached, paused } = pauseState(recap.priorRounds, config);
+    const pause = pauseState(recap.priorRounds, config);
+    const { capRounds, paused } = pause;
     if (paused && !skipCap) {
-      await postPauseNotice(target, commentId, capReached, capRounds, maxAutoRounds, capRounds < priorRoundCount, recap.priorRounds.at(-1)?.meta.timestamp);
+      await postPauseNotice(target, commentId, pause, maxAutoRounds, recap.priorRounds.at(-1)?.meta.timestamp);
       return;
     }
 
@@ -1409,6 +1366,8 @@ async function runFullReview(
       reviewId = await postRound(run, result, context, reviewTimeMs);
     }
     await completeProgressComment(run, stage);
+    const pauseLifted = !pauseState([...recap.priorRounds, context], config).paused;
+    await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha, pauseLifted ? startTime : undefined);
     setReviewOutputs(reviewId, context, result);
   } catch (error) {
     cancelDashboardFlush(progress);

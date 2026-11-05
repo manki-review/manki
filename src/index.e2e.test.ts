@@ -1,7 +1,8 @@
 import * as core from '@actions/core';
 
-import { BOT_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX } from './github';
+import { BOT_MARKER, CANCELLED_MARKER, FORCE_CAP_MARKER, RUN_ID_MARKER_PREFIX } from './github';
 import { _resetOctokitCache, handlePullRequest, runFullReview } from './index';
+import { STALE_APPROVE_MARKER_PREFIX } from './state';
 import { RoundContext } from './types';
 
 jest.mock('@actions/core', () => ({
@@ -313,12 +314,25 @@ describe('runFullReview end to end', () => {
     jest.spyOn(globalThis, 'fetch').mockImplementation((url, init) => mockGitHub.fetch(String(url), init));
   });
 
-  it('approves a clean round and records it', async () => {
+  it('approves a clean round, records it, and retires the notices the verdict makes stale', async () => {
+    const pauseNotice = `The last Manki round found a blocker that came back after a fix. Automatic review is paused. Tick the box to run another round:\n\n- [x] Force review\n\n${BOT_MARKER}\n${FORCE_CAP_MARKER}`;
+    mockGitHub.addComment(pauseNotice, APP_LOGIN);
+    mockGitHub.addComment(`**Auto-approve withheld** for \`a1b2c3d\`.\n\n${STALE_APPROVE_MARKER_PREFIX}${HEAD_SHA} -->`, APP_LOGIN);
+    mockGitHub.addComment(`**Auto-approve withheld** for \`0f0f0f0\`.\n\n${STALE_APPROVE_MARKER_PREFIX}${'0f'.repeat(20)} -->`, APP_LOGIN);
+    mockGitHub.addComment(`Quoting it: ${STALE_APPROVE_MARKER_PREFIX}${HEAD_SHA} -->`, 'alice');
+    mockGitHub.addComment(pauseNotice, 'alice');
+
     await reviewRound();
 
     expect(core.setFailed).not.toHaveBeenCalled();
     const [review] = postedReviews();
     expect(review).toMatchObject({ state: 'APPROVED', commit_id: HEAD_SHA });
+    // Only Manki's notice for the reviewed head goes. The one for another head and a quote of the marker stay.
+    expect(mockGitHub.comments.filter(c => c.body.includes(STALE_APPROVE_MARKER_PREFIX)).map(c => c.user.login)).toEqual([APP_LOGIN, 'alice']);
+    expect(mockGitHub.comments.filter(c => c.body.includes(FORCE_CAP_MARKER)).map(c => c.body)).toEqual([
+      `Automatic review was paused. Review resumed on \`a1b2c3d\`.\n\n${BOT_MARKER}\n${FORCE_CAP_MARKER}`,
+      pauseNotice,
+    ]);
     expect(mockGitHub.roundContext(review)).toMatchObject({
       meta: { round: 1, outcome: 'READY' },
       verdict: 'APPROVE',

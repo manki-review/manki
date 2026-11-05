@@ -1,12 +1,15 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { BotIdentity, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchReviewThreadNodes, FOLLOW_UP_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, postAutoApproveProgressComment } from './github';
-import { isOverrideCandidate, isSecurityThread, mayClearSecurityThread, PreviousFinding, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf } from './recap';
-import { FindingSeverity, isBlockingSeverity, migrateLegacySeverity, ReviewConfig, SecurityOverride, SEVERITY_TOKEN_PATTERN } from './types';
+import { BotIdentity, BOT_MARKER as PROGRESS_MARKER, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchInterRoundDiff, fetchPRComments, fetchReviewThreadNodes, fetchStandingVerdict, FOLLOW_UP_MARKER, FORCE_CAP_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, postAutoApproveProgressComment } from './github';
+import type { StandingVerdict } from './github';
+import { isSameChange } from './diff';
+import { fetchPriorRoundContexts, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, PreviousFinding, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf } from './recap';
+import { FindingSeverity, isBlockingSeverity, migrateLegacySeverity, ReviewConfig, RoundContext, SecurityOverride, SEVERITY_TOKEN_PATTERN } from './types';
 import { withMarkers } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
+type PullHead = { head: { sha: string }; base: { ref: string } };
 type ReviewEntry = { body?: string | null; state?: string; commit_id?: string | null; user?: { login?: string; type?: string } | null };
 
 const BOT_MARKER = '<!-- manki -->';
@@ -14,6 +17,30 @@ const STALE_APPROVE_MARKER_PREFIX = '<!-- manki-stale-approve:';
 
 function staleApproveMarker(headSha: string): string {
   return `${STALE_APPROVE_MARKER_PREFIX}${headSha} -->`;
+}
+
+/**
+ * Returns the standing verdict when the PR's own change at `commitSha` equals
+ * the change at the reviewed commit, otherwise `undefined`. Both commits are
+ * compared against `baseRef`, so a clean rebase or an empty commit matches.
+ */
+async function findUnchangedVerdict(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number,
+  baseRef: string, commitSha: string, excludePaths: string[],
+): Promise<StandingVerdict | undefined> {
+  const standing = await fetchStandingVerdict(octokit, bot, owner, repo, prNumber);
+  if (!standing || standing.commitSha === commitSha) return undefined;
+  try {
+    const [reviewed, current] = await Promise.all([
+      fetchInterRoundDiff(octokit, owner, repo, baseRef, standing.commitSha),
+      fetchInterRoundDiff(octokit, owner, repo, baseRef, commitSha),
+    ]);
+    if (!reviewed.trim() || !current.trim()) return undefined;
+    return isSameChange(reviewed, current, excludePaths) ? standing : undefined;
+  } catch (error) {
+    core.warning(`Could not compare with the reviewed commit ${standing.commitSha.slice(0, 7)}: ${error instanceof Error ? error.message : error}`);
+    return undefined;
+  }
 }
 
 interface ReviewThread {
@@ -177,10 +204,84 @@ function areAllFindingsResolved(threads: ReviewThread[], bot: BotIdentity, prAut
 }
 
 /**
- * Post a one-time explanatory comment when auto-approve is withheld because
- * manki has not actually reviewed the current HEAD. The comment is idempotent
- * per HEAD SHA via a `manki-stale-approve:<sha>` marker so repeated invocations
- * on the same HEAD do not spam the PR.
+ * Returns how many rounds ran since the last round that approved at the full bar, or all of them without one.
+ * The round cap stops fix loops, so a round after an approval, such as on a rebase, starts the count again.
+ * A `BUDGET` approval deferred warnings to end a loop, so it does not reset the count.
+ */
+function roundsSinceApproval(priorRounds: RoundContext[]): number {
+  let count = 0;
+  for (let i = priorRounds.length - 1; i >= 0 && !(priorRounds[i].verdict === 'APPROVE' && priorRounds[i].meta.outcome !== 'BUDGET'); i--) count++;
+  return count;
+}
+
+interface PauseState {
+  capRounds: number;
+  capReached: boolean;
+  paused: boolean;
+  /** Why automatic review is paused, as a sentence for the PR. Set only while `paused`. */
+  reason?: string;
+}
+
+/** Returns the rounds since the last approval, whether they reach the round cap, and whether automatic review is paused by it or by a last round that ended `NOT_CONVERGING`. */
+function pauseState(priorRounds: RoundContext[], config: ReviewConfig): PauseState {
+  const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
+  const capRounds = roundsSinceApproval(priorRounds);
+  const capReached = maxAutoRounds > 0 && capRounds >= maxAutoRounds;
+  const reason = capReached
+    ? `Manki has completed ${capRounds}/${maxAutoRounds} review rounds on this PR${capRounds < priorRounds.length ? ' since its last approval' : ''}.`
+    : priorRounds.at(-1)?.meta.outcome === 'NOT_CONVERGING' ? 'The last Manki round found a blocker that came back after a fix.' : undefined;
+  return { capRounds, capReached, paused: reason !== undefined, ...(reason && { reason }) };
+}
+
+/** Returns why no automatic review will run on a new head commit, with how to start one, or `undefined` when a push review will run. */
+async function autoReviewHalt(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, config: ReviewConfig): Promise<string | undefined> {
+  if (!config.auto_review) {
+    return 'Automatic review is off for this repository (`auto_review: false`). Comment `@manki review` to review it.';
+  }
+  const { reason } = pauseState(await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber), config);
+  return reason && `${reason} Automatic review is paused. Tick **Force review** on the pause notice, or comment \`@manki review\`, to review it.`;
+}
+
+function isBotReview(bot: BotIdentity, r: ReviewEntry): boolean {
+  return !!r.body?.includes('<!-- manki') && isBotLogin(bot, r.user?.login);
+}
+
+/**
+ * Whether a Manki review covers the head of `pr`. That is a review on the head that is not dismissed,
+ * or the standing verdict on a commit whose PR diff equals the head's, as after a rebase.
+ */
+async function reviewCoversHead(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number,
+  pr: PullHead, reviews: ReviewEntry[], config?: ReviewConfig,
+): Promise<boolean> {
+  if (reviews.some(r => isBotReview(bot, r) && r.state !== 'DISMISSED' && r.commit_id === pr.head.sha)) return true;
+  const standing = await findUnchangedVerdict(octokit, bot, owner, repo, prNumber, pr.base.ref, pr.head.sha, config?.exclude_paths ?? []);
+  if (standing) core.info(`No change since the reviewed commit ${standing.commitSha.slice(0, 7)}, so its review covers ${pr.head.sha.slice(0, 7)}`);
+  return !!standing;
+}
+
+/**
+ * Returns why auto-approve has to wait because no Manki review covers the head yet, or `undefined` when one does.
+ * A review that is running or queued for the head counts as not covering it yet.
+ */
+async function explainUnreviewedHead(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, config?: ReviewConfig): Promise<string | undefined> {
+  const { data: pr } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
+  const head = `\`${pr.head.sha.slice(0, 7)}\``;
+  if (await isReviewInProgress(octokit, bot, owner, repo, prNumber, pr.head.sha)) {
+    return `A review of ${head} is running or queued. Approval follows from its verdict.`;
+  }
+  const reviews = await octokit.paginate(octokit.rest.pulls.listReviews, { owner, repo, pull_number: prNumber, per_page: 100 });
+  if (await reviewCoversHead(octokit, bot, owner, repo, prNumber, pr, reviews, config)) return undefined;
+  const halt = config && await autoReviewHalt(octokit, bot, owner, repo, prNumber, config);
+  return halt
+    ? `Manki has not reviewed ${head}. ${halt}`
+    : `Manki has not reviewed ${head} yet. A push review should start shortly, and approval follows from its verdict.`;
+}
+
+/**
+ * Posts a one-time comment that auto-approve is withheld because Manki has not reviewed `headSha`,
+ * and no automatic review will. `halt` says why and how to start one.
+ * The `manki-stale-approve:<sha>` marker keeps it to one comment per head commit.
  */
 async function postStaleApproveSkippedComment(
   octokit: Octokit,
@@ -190,6 +291,7 @@ async function postStaleApproveSkippedComment(
   prNumber: number,
   headSha: string,
   latestReviewSha: string,
+  halt: string,
 ): Promise<void> {
   const marker = staleApproveMarker(headSha);
   try {
@@ -206,13 +308,42 @@ async function postStaleApproveSkippedComment(
     const shortHead = headSha.slice(0, 7);
     const shortLatest = latestReviewSha.slice(0, 7);
     const body = withMarkers([
-      `**Auto-approve withheld** for \`${shortHead}\` — all blocking review threads are resolved on the current HEAD, but manki has not reviewed this commit (latest manki review was on \`${shortLatest}\`).`,
+      `**Auto-approve withheld** for \`${shortHead}\`: all blocking review threads are resolved, but Manki has not reviewed this commit. Its latest review was on \`${shortLatest}\`.`,
       '',
-      'To approve, request a fresh review by commenting `@manki review` or by ticking the **Force review** checkbox on the latest progress comment.',
+      halt,
     ].join('\n'), marker);
     await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
   } catch (error) {
     core.warning(`Failed to post stale-approve-skipped comment: ${error instanceof Error ? error.message : error}`);
+  }
+}
+
+/**
+ * Deletes the auto-approve withheld notice for `headSha`. Call it once a review posts its verdict on `headSha`.
+ * Pass `pauseLiftedAt` when that round lifted the pause: each open pause notice last updated before then is marked as resumed.
+ */
+async function retireStaleNotices(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string, pauseLiftedAt?: number): Promise<void> {
+  let comments: Awaited<ReturnType<typeof fetchPRComments>>;
+  try {
+    comments = await fetchPRComments(octokit, owner, repo, prNumber);
+  } catch (error) {
+    core.warning(`Failed to look up stale notices: ${error instanceof Error ? error.message : error}`);
+    return;
+  }
+  const marker = staleApproveMarker(headSha);
+  for (const c of comments) {
+    if (!isBotLogin(bot, c.user?.login) || !c.body) continue;
+    try {
+      if (c.body.includes(marker)) {
+        await octokit.rest.issues.deleteComment({ owner, repo, comment_id: c.id });
+      } else if (pauseLiftedAt !== undefined && Date.parse(c.updated_at) < pauseLiftedAt
+        && c.body.includes(FORCE_CAP_MARKER) && /- \[[ x]\] Force review/.test(c.body)) {
+        const body = withMarkers(`Automatic review was paused. Review resumed on \`${headSha.slice(0, 7)}\`.`, PROGRESS_MARKER, FORCE_CAP_MARKER);
+        await octokit.rest.issues.updateComment({ owner, repo, comment_id: c.id, body });
+      }
+    } catch (error) {
+      core.warning(`Failed to retire stale notice ${c.id}: ${error instanceof Error ? error.message : error}`);
+    }
   }
 }
 
@@ -278,22 +409,25 @@ async function checkAndAutoApprove(
     pull_number: prNumber,
     per_page: 100,
   });
-  const isBotReview = (r: ReviewEntry) => r.body?.includes('<!-- manki') && isBotLogin(bot, r.user?.login);
-  const botReviews = reviews.filter((r: ReviewEntry) => isBotReview(r) && r.state !== 'DISMISSED');
+  const botReviews = reviews.filter((r: ReviewEntry) => isBotReview(bot, r) && r.state !== 'DISMISSED');
   const latestBotReview = botReviews[botReviews.length - 1];
 
-  // Stale-SHA gate: bail unless manki has actually submitted a non-DISMISSED
-  // review on the current HEAD commit. This single check covers every variant —
-  // stale prior review, absent commit_id, all reviews DISMISSED, or no bot
-  // review at all.
-  const hasReviewedHead = botReviews.some((r) => r.commit_id === pr.head.sha);
-  if (!hasReviewedHead) {
+  // Stale-SHA gate: bail unless a Manki review covers the current HEAD. This covers
+  // every variant: stale prior review, absent commit_id, all reviews DISMISSED, or
+  // no bot review at all.
+  if (!await reviewCoversHead(octokit, bot, owner, repo, prNumber, pr, reviews, config)) {
     const staleSha =
-      reviews.filter((r: ReviewEntry) => isBotReview(r) && r.commit_id !== pr.head.sha).slice(-1)[0]?.commit_id ?? 'unknown';
+      reviews.filter((r: ReviewEntry) => isBotReview(bot, r) && r.commit_id !== pr.head.sha).slice(-1)[0]?.commit_id ?? 'unknown';
     core.warning(
       `Skipping auto-approve — manki has not reviewed HEAD (head=${pr.head.sha}, stale=${staleSha})`,
     );
-    await postStaleApproveSkippedComment(octokit, bot, owner, repo, prNumber, pr.head.sha, staleSha);
+    // A push review takes about a minute to post its progress comment, so the lack of one does not mean no review is coming.
+    const halt = config && await autoReviewHalt(octokit, bot, owner, repo, prNumber, config);
+    if (halt) {
+      await postStaleApproveSkippedComment(octokit, bot, owner, repo, prNumber, pr.head.sha, staleSha, halt);
+    } else {
+      core.info(`A push review covers ${pr.head.sha.slice(0, 7)}, so no withheld notice is posted`);
+    }
     return false;
   }
 
@@ -350,4 +484,4 @@ async function checkAndAutoApprove(
   return true;
 }
 
-export { ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, fetchBotReviewThreads, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
+export { PauseState, ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, explainUnreviewedHead, fetchBotReviewThreads, findUnchangedVerdict, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
