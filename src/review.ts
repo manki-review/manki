@@ -9,7 +9,7 @@ import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, LinkedIssue, titleToSlug } from './github';
 import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, llmDeduplicateFindings, PreviousFinding, titleOverlapType } from './recap';
 import { FOLLOW_UP_TAG, SECURITY_TAG, ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundPlannerSource, RoundStaticSignalMatch, EffortLevel, Finder, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
-import { rebuildRawDiff } from './diff';
+import { countChangedLines, rebuildRawDiff } from './diff';
 import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { runVerdictReader, verdictBlockerToFinding } from './verdict';
@@ -226,11 +226,6 @@ export interface ReviewProgress {
   reviewerEffort?: EffortLevel;
   /** True when the planner failed or timed out, so the fail-safe triage was used. */
   heuristicFallback?: boolean;
-}
-
-function countChangedLines(file: DiffFile): { additions: number; deletions: number } {
-  const lines = file.hunks.flatMap(h => h.content.split('\n'));
-  return { additions: lines.filter(l => l.startsWith('+')).length, deletions: lines.filter(l => l.startsWith('-')).length };
 }
 
 /** Lists the changed files for the planner, fenced as untrusted data. The PR title and description are left out. */
