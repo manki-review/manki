@@ -79,7 +79,8 @@ jobs:
       - name: Publish release
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
-          if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = "true" ]; then
+          IS_DRAFT=$(gh release view "$TAG" --json isDraft --jq .isDraft)
+          if [ "$IS_DRAFT" = "true" ]; then
             gh release edit "$TAG" --draft=false --latest
           fi
         env:
