@@ -31,6 +31,8 @@ Also write two things for the pull request:
 
 ${WRITING_RULES}
 
+Keep the whole reply short. Name at most 8 blockers, keep \`summary\` under 150 words and \`whatThisDoes\` under 60 words, then end the JSON object.
+
 Respond with ONLY a JSON object (no markdown fences):
 {
   "verdict": "READY" | "ADDRESS_FIRST",

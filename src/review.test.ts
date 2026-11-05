@@ -1982,6 +1982,7 @@ describe('runReview', () => {
     }));
     expect(clients.judge.sendMessage).toHaveBeenCalledTimes(1);
     expect(jest.mocked(clients.judge.sendMessage).mock.calls[0][2]).toEqual({ effort: 'high', timeoutMs: 300_000 });
+    expect(jest.mocked(clients.judge.sendMessage).mock.calls[0][0]).toContain('Keep the whole reply short. Name at most 8 blockers');
   });
 
   it('splits a plain-string whatToTest from the verdict reader into its setup and numbered steps', async () => {
