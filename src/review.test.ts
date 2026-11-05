@@ -2459,7 +2459,7 @@ describe('runReview', () => {
     expect(result.reviewComplete).toBe(true);
     expect(result.verdictReport?.verdict).toBe('READY');
     expect(clients.judge.sendMessage).toHaveBeenCalledTimes(1);
-    expect(jest.mocked(judgeFallback.sendMessage).mock.calls[0][2]).toEqual({ effort: 'high' });
+    expect(jest.mocked(judgeFallback.sendMessage).mock.calls[0][2]).toEqual({ effort: 'high', timeoutMs: 900_000 });
     expect(result.modelFallbacks).toEqual([
       { stage: 'reviewer', agent: result.agentNames[0], fallbackModel: 'claude-opus-5-5', reason: 'refusal (reasoning_extraction)' },
       { stage: 'verdict', fallbackModel: 'claude-sonnet-5-5', reason: 'refusal (reasoning_extraction)' },
