@@ -48,8 +48,9 @@ export function withRefusalFallback(
           return await client.sendMessage(sys, user, opts);
         } catch (error) {
           if (!(error instanceof RefusalError)) throw error;
+          // Parallel calls can all be refused before the first one returns, and the stage moves only once.
+          if (!refused) onFallback(error);
           refused = true;
-          onFallback(error);
         }
       }
       return fallback.sendMessage(sys, user, opts);

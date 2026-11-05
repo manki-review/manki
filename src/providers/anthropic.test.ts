@@ -350,6 +350,23 @@ describe('sendViaOAuth — error paths', () => {
     await expect(client.sendMessage('sys', 'user')).resolves.toMatchObject({ content: 'answer' });
   });
 
+  it('throws a plain error when the run fails after recovering from a refused attempt', async () => {
+    const authError = 'Invalid API key · Please run /login';
+    const lines = [
+      refusedAssistant,
+      JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: authError }], stop_reason: 'stop_sequence', stop_details: null } }),
+      JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: authError }),
+    ];
+    setupSpawnMock({ exitCode: 1, stderr: '', stdout: `${lines.join('\n')}\n`, rawStdout: true });
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-5-5' });
+
+    const error = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
+    expect(error?.message).toContain(authError);
+    expect(error).not.toBeInstanceOf(RefusalError);
+    warnSpy.mockRestore();
+  });
+
   it('records <no result event> when exit-1 stream emits only text deltas with no terminal result', async () => {
     const streamWithoutResult = [
       JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'streamed text but no terminal event' } }),

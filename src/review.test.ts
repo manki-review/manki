@@ -4604,6 +4604,18 @@ describe('withRefusalFallback', () => {
     expect(onFallback).toHaveBeenCalledWith(refusal);
   });
 
+  it('records one fallback when parallel calls are all refused', async () => {
+    const primary = { sendMessage: jest.fn().mockRejectedValue(refusal) } as unknown as LLMClient;
+    const fallback = { sendMessage: jest.fn().mockResolvedValue({ content: 'ok' }) } as unknown as LLMClient;
+    const onFallback = jest.fn();
+    const client = withRefusalFallback(primary, fallback, onFallback);
+
+    await Promise.all([client.sendMessage('sys', 'a'), client.sendMessage('sys', 'b'), client.sendMessage('sys', 'c')]);
+    expect(primary.sendMessage).toHaveBeenCalledTimes(3);
+    expect(fallback.sendMessage).toHaveBeenCalledTimes(3);
+    expect(onFallback).toHaveBeenCalledTimes(1);
+  });
+
   it('throws any other error, and a refusal without a fallback, unchanged', async () => {
     const overloaded = new Error('overloaded');
     const fallback = { sendMessage: jest.fn() } as unknown as LLMClient;
