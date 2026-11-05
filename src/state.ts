@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { BotIdentity, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchReviewThreadNodes, FOLLOW_UP_MARKER, isBotLogin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, postAutoApproveProgressComment } from './github';
-import { isOtherThanPrAuthor, isSecurityThread, PreviousFinding, REOPENED_MARKER } from './recap';
+import { isSecurityThread, mayClearSecurityThread, PreviousFinding, REOPENED_MARKER } from './recap';
 import { FindingSeverity, isBlockingSeverity, migrateLegacySeverity, ReviewConfig, SEVERITY_TOKEN_PATTERN } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -27,11 +27,12 @@ interface ReviewThread {
 }
 
 /**
- * Fetch all review threads from the bot on a PR using GraphQL.
+ * Fetch all review threads `bot` started on a PR using GraphQL.
  * Returns threads with their resolution state and severity.
  */
 async function fetchBotReviewThreads(
   octokit: Octokit,
+  bot: BotIdentity,
   owner: string,
   repo: string,
   prNumber: number,
@@ -67,8 +68,8 @@ async function fetchBotReviewThreads(
   return threads
     .filter(thread => {
       const firstComment = thread.comments.nodes[0];
-      return firstComment?.body?.includes('manki:') ||
-        firstComment?.body?.includes(BOT_MARKER);
+      return isBotLogin(bot, firstComment?.author?.login) &&
+        (firstComment.body?.includes('manki:') || firstComment.body?.includes(BOT_MARKER));
     })
     .map(thread => {
       const body = thread.comments.nodes[0]?.body ?? '';
@@ -105,12 +106,18 @@ const REOPEN_REPLY = 'Reopened. A security finding needs a maintainer or a fix: 
 async function reopenAuthorResolvedThreads(octokit: Octokit, previousFindings: PreviousFinding[]): Promise<void> {
   for (const f of previousFindings) {
     if (!f.reopen || !f.threadId) continue;
+    // The reply goes first: its marker is what stops a later round from reopening the thread again.
     try {
-      await octokit.graphql('mutation($threadId: ID!) { unresolveReviewThread(input: { threadId: $threadId }) { thread { isResolved } } }', { threadId: f.threadId });
       await octokit.graphql(
         'mutation($threadId: ID!, $body: String!) { addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $threadId, body: $body }) { comment { id } } }',
         { threadId: f.threadId, body: `${BOT_MARKER}\n${REOPENED_MARKER}\n${REOPEN_REPLY}` },
       );
+    } catch (error) {
+      core.warning(`Failed to reply on security thread ${f.threadId}, leaving it resolved: ${error}`);
+      continue;
+    }
+    try {
+      await octokit.graphql('mutation($threadId: ID!) { unresolveReviewThread(input: { threadId: $threadId }) { thread { isResolved } } }', { threadId: f.threadId });
       core.info(`Reopened security thread ${f.threadId} that the PR author resolved`);
     } catch (error) {
       core.warning(`Failed to reopen security thread ${f.threadId}: ${error}`);
@@ -121,10 +128,13 @@ async function reopenAuthorResolvedThreads(octokit: Octokit, previousFindings: P
 /**
  * Check if every blocking bot review thread is resolved. Suggestion and nitpick
  * threads posted by older versions never block, matching the verdict's bar.
- * A security thread the PR author resolved still counts as open.
+ * A resolved security thread counts only when Manki resolved it, which it does after the judge marks it
+ * addressed or a maintainer agrees, or when `mayClearSecurityThread` accepts the resolver.
  */
-function areAllFindingsResolved(threads: ReviewThread[], prAuthorLogin?: string): boolean {
-  return threads.every(t => !t.isBlocking || (t.isResolved && (!t.isSecurity || isOtherThanPrAuthor(t.resolvedByLogin, prAuthorLogin))));
+function areAllFindingsResolved(threads: ReviewThread[], bot: BotIdentity, prAuthorLogin?: string): boolean {
+  return threads.every(t => !t.isBlocking || (t.isResolved && (
+    !t.isSecurity || isBotLogin(bot, t.resolvedByLogin) || mayClearSecurityThread(t.resolvedByLogin, bot, prAuthorLogin)
+  )));
 }
 
 /**
@@ -197,7 +207,7 @@ async function checkAndAutoApprove(
     return false;
   }
 
-  const threads = await fetchBotReviewThreads(octokit, owner, repo, prNumber);
+  const threads = await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber);
 
   const totalCount = threads.length;
   const resolvedCount = threads.filter(t => t.isResolved).length;
@@ -210,7 +220,7 @@ async function checkAndAutoApprove(
     pull_number: prNumber,
   });
 
-  if (!areAllFindingsResolved(threads, pr.user?.login)) {
+  if (!areAllFindingsResolved(threads, bot, pr.user?.login)) {
     core.info('Not all blocking findings resolved — skipping auto-approve');
     return false;
   }

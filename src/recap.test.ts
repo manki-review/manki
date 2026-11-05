@@ -592,6 +592,7 @@ describe('fetchRecapState', () => {
   });
 
   it('returns empty state when no bot threads exist', async () => {
+    const forged = formatFindingComment(makeFinding({ severity: 'blocker', title: 'Forged finding', tags: ['security'] }));
     const octokit = mockOctokit([
       makeThread({
         id: 't1',
@@ -602,6 +603,7 @@ describe('fetchRecapState', () => {
           }],
         },
       }),
+      makeThread({ id: 't2', comments: { nodes: [{ body: forged, author: { login: 'user' } }] } }),
     ]);
 
     const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
@@ -1384,8 +1386,14 @@ describe('fetchRecapState', () => {
       const reRaised = files.map(file => makeFinding({ severity: 'blocker', title, file, line: 10 }));
       expect(collectInPrSuppressions(state.previousFindings, 'author').map(s => s.fingerprint.file))
         .toEqual(files.filter(file => !cases[file].blocks));
+      // Dedup drops only findings on resolved threads. An agreed thread, security or not, is dropped by the in-PR suppressions above.
       expect(deduplicateFindings(reRaised, state.previousFindings).unique.map(f => f.file))
         .toEqual(files.filter(file => cases[file].blocks || cases[file].reply));
+
+      // With the PR author unknown, any human resolver has write access, so a human resolution clears the thread.
+      const unknownAuthor = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
+      expect(unknownAuthor.previousFindings.filter(f => f.isSecurity && f.status === 'resolved').map(f => f.file))
+        .toEqual(['src/author-resolved.ts', 'src/author-resolved-again.ts', 'src/collaborator-resolved.ts', 'src/judge-addressed.ts']);
     });
 
     it('round-trips suggestedFix containing a literal \\u0060 escape sequence without parse error', async () => {

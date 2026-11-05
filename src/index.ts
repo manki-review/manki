@@ -1632,7 +1632,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
       core.warning('Cannot handle reply — pull request number not available');
       return;
     }
-    await handleReviewCommentReply(octokit, client, owner, repo, prNumber, memoryConfig, memoryToken);
+    await handleReviewCommentReply(octokit, bot, client, owner, repo, prNumber, memoryConfig, memoryToken);
   }
 
   // Check if all review threads are now resolved (e.g. the reply resolved the last conversation)

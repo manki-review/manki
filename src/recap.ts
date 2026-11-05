@@ -48,6 +48,15 @@ function isSecurityThread(body: string): boolean {
 /** Marks Manki's reply on a security thread it reopened after the PR author resolved it. */
 const REOPENED_MARKER = '<!-- manki-reopened -->';
 
+/**
+ * Whether the person who resolved a security thread may clear it: a human other than the PR author.
+ * Only the PR author and people with write access can resolve a thread, so with the author unknown any human resolver has write access.
+ */
+function mayClearSecurityThread(resolverLogin: string | undefined, bot: BotIdentity, prAuthorLogin: string | undefined): boolean {
+  if (!resolverLogin || isBotLogin(bot, resolverLogin)) return false;
+  return !prAuthorLogin || isOtherThanPrAuthor(resolverLogin, prAuthorLogin);
+}
+
 /** Whether `login` is someone other than the PR author. The PR author's own dismissal never clears a security finding. */
 function isOtherThanPrAuthor(login: string | undefined, prAuthorLogin: string | undefined): boolean {
   return !!login && !!prAuthorLogin && login.toLowerCase() !== prAuthorLogin.toLowerCase();
@@ -385,7 +394,7 @@ async function fetchRecapState(
       line: t.line,
       lineStart: t.lineStart,
       severity: t.severity,
-      status: threadStatus(t, addressedThreadIds, prAuthorLogin),
+      status: threadStatus(t, addressedThreadIds, bot, prAuthorLogin),
       threadId: t.threadId,
       threadUrl: t.threadUrl,
       ...(t.markerSlug && { markerSlug: t.markerSlug }),
@@ -436,13 +445,15 @@ function shouldReopen(t: ReviewThread, addressedThreadIds: Set<string>, prAuthor
 
 /**
  * Returns the thread's status for the next round. A resolved security thread stays `open` or `replied`
- * unless the judge marked it `addressed` or someone other than the PR author resolved it.
+ * unless the judge marked it `addressed` or `mayClearSecurityThread` accepts the resolver.
  */
-function threadStatus(t: ReviewThread, addressedThreadIds: Set<string>, prAuthorLogin: string | undefined): PreviousFinding['status'] {
+function threadStatus(
+  t: ReviewThread, addressedThreadIds: Set<string>, bot: BotIdentity, prAuthorLogin: string | undefined,
+): PreviousFinding['status'] {
   const unresolved = t.hasHumanReply ? 'replied' : 'open';
   if (!t.isResolved) return unresolved;
   if (addressedThreadIds.has(t.threadId)) return 'resolved';
-  if (t.isSecurity) return t.resolvedByHuman && isOtherThanPrAuthor(t.resolvedByLogin, prAuthorLogin) ? 'resolved' : unresolved;
+  if (t.isSecurity) return mayClearSecurityThread(t.resolvedByLogin, bot, prAuthorLogin) ? 'resolved' : unresolved;
   return t.resolvedByHuman ? 'resolved' : 'auto-resolved';
 }
 
@@ -712,7 +723,7 @@ async function fetchReviewThreads(
 
     const threads = threadNodes.map(thread => {
       const firstComment = thread.comments.nodes[0];
-      const isBotThread = firstComment?.body?.includes(BOT_MARKER) ?? false;
+      const isBotThread = !!firstComment?.body?.includes(BOT_MARKER) && isBotLogin(bot, firstComment.author?.login);
 
       // Use the latest non-bot reply so evolving threads (e.g. initial
       // "Fixed!" followed by a retraction) classify by the author's current
@@ -948,4 +959,4 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
   );
 }
 
-export { DuplicateMatch, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchRecapState, isOtherThanPrAuthor, isSecurityThread, REOPENED_MARKER, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment };
+export { DuplicateMatch, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchRecapState, isOtherThanPrAuthor, isSecurityThread, mayClearSecurityThread, REOPENED_MARKER, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment };

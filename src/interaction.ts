@@ -87,9 +87,9 @@ async function fetchThreadRoot(octokit: Octokit, owner: string, repo: string, id
 
 /** Resolves the Manki thread whose first comment is `rootCommentId`. A security thread is left open unless `securityAllowed`. */
 async function resolveThreadOf(
-  octokit: Octokit, owner: string, repo: string, prNumber: number, rootCommentId: number, securityAllowed: boolean,
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, rootCommentId: number, securityAllowed: boolean,
 ): Promise<void> {
-  const thread = (await fetchBotReviewThreads(octokit, owner, repo, prNumber)).find(t => t.rootCommentId === rootCommentId);
+  const thread = (await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber)).find(t => t.rootCommentId === rootCommentId);
   if (!thread || thread.isResolved) return;
   if (thread.isSecurity && !securityAllowed) {
     core.info(`Left security thread ${thread.id} open, since only someone other than the PR author with write access can dismiss it`);
@@ -104,6 +104,7 @@ async function resolveThreadOf(
  */
 export async function handleReviewCommentReply(
   octokit: Octokit,
+  bot: BotIdentity,
   client: LLMClient,
   owner: string,
   repo: string,
@@ -195,7 +196,7 @@ export async function handleReviewCommentReply(
     const isPrAuthor = !!prAuthorLogin && senderLogin?.toLowerCase() === prAuthorLogin.toLowerCase();
     if (RESOLVING_REPLY_RE.test(reply) && (isTrusted || isPrAuthor)) {
       try {
-        await resolveThreadOf(octokit, owner, repo, prNumber, root.id, isTrusted && isOtherThanPrAuthor(senderLogin, prAuthorLogin));
+        await resolveThreadOf(octokit, bot, owner, repo, prNumber, root.id, isTrusted && isOtherThanPrAuthor(senderLogin, prAuthorLogin));
       } catch (error) {
         core.warning(`Failed to resolve thread after reply: ${error}`);
       }
@@ -662,7 +663,7 @@ async function handleCheck(
   const approved = await checkAndAutoApprove(octokit, bot, owner, repo, prNumber, config);
 
   if (!approved) {
-    const threads = await fetchBotReviewThreads(octokit, owner, repo, prNumber);
+    const threads = await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber);
     const blocking = threads.filter(t => t.isBlocking && !t.isResolved);
 
     if (blocking.length > 0) {
