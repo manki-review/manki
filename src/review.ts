@@ -2,14 +2,15 @@ import * as core from '@actions/core';
 import { minimatch } from 'minimatch';
 
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
-import { resolveModel, resolvePairModel } from './config';
+import { resolveReviewerModel } from './config';
 import { addUsage, LLMClient, LLMUsage, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
 import { runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, LinkedIssue, titleToSlug } from './github';
 import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, llmDeduplicateFindings, PreviousFinding, titleOverlapType } from './recap';
-import { FOLLOW_UP_TAG, SECURITY_TAG, ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, DiffFile, TeamRoster, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundPlannerSource, RoundStaticSignalMatch, EffortLevel, Finder, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { FOLLOW_UP_TAG, SECURITY_TAG, ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundPlannerSource, RoundStaticSignalMatch, EffortLevel, Finder, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, rebuildRawDiff } from './diff';
+import { BUILT_IN_CLASSES, BUILT_IN_DEFAULT_GROUP, BUILT_IN_GROUPS, BUILT_IN_ROUTING, classifyPr } from './routing';
 import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { runVerdictReader, verdictBlockerToFinding } from './verdict';
@@ -64,95 +65,42 @@ function accumulateAgentDuration(map: Map<string, number>, name: string, duratio
 /** The answers used when the planner is disabled or fails: each takes the side that adds review. */
 const FAIL_SAFE_TRIAGE: Readonly<Triage> = Object.freeze({ trivial: false, subtle: true, paired: true });
 
-// Path segment prefixes that indicate security-sensitive files. A diff touching one never gets a
-// single reader, whatever the planner answered. The rule is path-based, not prompt-based, so prompt
-// injection in the PR content cannot switch it off.
-const SECURITY_SENSITIVE_PREFIXES: readonly string[] = Object.freeze([
-  'auth', 'oauth', 'token', 'secret', 'credential', 'password', 'passwd',
-  'crypto', 'cipher', 'encrypt', 'decrypt', 'hmac', 'sign',
-  'jwt', 'session', 'cookie', 'permission', 'acl', 'rbac', 'privilege',
-  'key', 'cert', 'tls', 'ssl', 'https',
-]);
-
-// Kinds of file where the planner's `trivial: true` is believed: docs, snapshots and generated files.
-// Test paths come from `convergence.test_path_patterns`.
-const TRIVIAL_FILE_PATTERNS: readonly string[] = Object.freeze([
-  '**/*.md', '**/*.mdx', '**/*.rst', '**/*.adoc', '**/*.txt', 'docs/**', '**/LICENSE*',
-  '**/*.snap', '**/__snapshots__/**', '**/*.generated.*', 'dist/**',
-]);
-
-// CI and automation, which runs with the repository's secrets, and dependency or toolchain pins.
-// Like a security-sensitive path, a diff touching one is never trivial and always gets two finders.
-const CI_OR_DEPENDENCY_PATTERNS: readonly string[] = Object.freeze([
-  '.github/workflows/**', '.github/actions/**', '**/action.yml', '**/action.yaml',
-  '**/package.json', '**/package-lock.json', '**/npm-shrinkwrap.json', '**/pnpm-lock.yaml', '**/*.lock', '**/go.sum',
-  '**/Cargo.toml', '**/go.mod', '**/pyproject.toml', '**/requirements*.txt', '**/Gemfile', '**/*.gemspec',
-  '**/rust-toolchain*', '**/.nvmrc', '**/Dockerfile*',
-]);
-
-function hasCiOrDependencyPaths(diff: ParsedDiff): boolean {
-  return diff.files.some(f => CI_OR_DEPENDENCY_PATTERNS.some(p => minimatch(f.path, p, { dot: true })));
-}
-
 /**
- * Whether every changed file could be trivial: docs, tests, snapshots or generated, deleted, or renamed without edits.
- * The planner only sees PR-derived text, so its `trivial` answer needs this floor in code.
- */
-function couldBeTrivial(diff: ParsedDiff, config: ReviewConfig): boolean {
-  const patterns = [...TRIVIAL_FILE_PATTERNS, ...(config.convergence?.test_path_patterns ?? [])];
-  return diff.files.every(f => {
-    if (f.changeType === 'deleted') return true;
-    if (f.changeType === 'renamed') {
-      const { additions, deletions } = countChangedLines(f);
-      if (additions === 0 && deletions === 0) return true;
-    }
-    return patterns.some(p => minimatch(f.path, p, { dot: true }));
-  });
-}
-
-function hasSensitivePaths(diff: ParsedDiff): boolean {
-  return diff.files.some(f =>
-    f.path.toLowerCase().split('/').some(segment => {
-      const base = segment.replace(/\.[^.]+$/, '');
-      return SECURITY_SENSITIVE_PREFIXES.some(prefix => base.startsWith(prefix));
-    }),
-  );
-}
-
-/**
- * Builds the round's readers from the triage. A trivial change gets the trivial verifier alone.
- * Any other change gets one finder, plus a second on the pair model when `paired`.
- * Both finders get the same prompt. `planner.paired` pins the `paired` answer, and a
- * security-sensitive path, or a CI, automation or dependency file, forces `trivial: false` and `paired: true` over both.
+ * Builds the round's readers. The PR's class, from its paths and the triage, picks a review group,
+ * and each reader in the group becomes one finder. `planner.paired` pins the `paired` answer
+ * before the PR is classified. Every finder gets the same prompt.
  */
 export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triage = FAIL_SAFE_TRIAGE): TeamRoster {
   const pin = config.planner?.paired ?? 'auto';
-  const sensitivePaths = hasSensitivePaths(diff);
-  const ciOrDependencyPaths = hasCiOrDependencyPaths(diff);
-  const forced = sensitivePaths || ciOrDependencyPaths;
-  const effective: Triage = {
-    trivial: triage.trivial && !forced && couldBeTrivial(diff, config),
-    subtle: triage.subtle,
-    paired: forced || (pin === 'auto' ? triage.paired : pin === 'always'),
+  const pinned: Triage = { ...triage, paired: pin === 'auto' ? triage.paired : pin === 'always' };
+  const classification = classifyPr(diff, pinned, BUILT_IN_CLASSES);
+  const group = (classification.name && BUILT_IN_ROUTING[classification.name]) || BUILT_IN_DEFAULT_GROUP;
+  return {
+    finders: buildFinders(BUILT_IN_GROUPS[group], config, classification.triage),
+    ...(classification.name && { reviewClass: classification.name }),
+    group,
+    triage: classification.triage,
+    sensitivePaths: classification.matched.includes('security'),
+    ciOrDependencyPaths: classification.matched.includes('supply_chain'),
+    trivialOverridden: classification.trivialOverridden,
   };
-  const model = resolveModel(config, 'reviewer');
-  if (effective.trivial) {
-    return {
-      finders: [{ name: TRIVIAL_VERIFIER_AGENT.name, prompt: TRIVIAL_VERIFIER_AGENT, pair: false, model, effort: 'medium' }],
-      triage: effective,
-      sensitivePaths,
-      ciOrDependencyPaths,
-      trivialOverridden: false,
-    };
-  }
+}
+
+function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage): Finder[] {
   const prompt = buildFinderAgent(config.reviewers);
-  const effort: EffortLevel = effective.subtle ? 'high' : 'medium';
-  const finders: Finder[] = [{ name: `Finder (${model})`, prompt, pair: false, model, effort }];
-  if (effective.paired) {
-    const pairModel = resolvePairModel(config);
-    finders.push({ name: `Pair finder (${pairModel})`, prompt, pair: true, model: pairModel, effort });
-  }
-  return { finders, triage: effective, sensitivePaths, ciOrDependencyPaths, trivialOverridden: triage.trivial };
+  return group.reviewers.map((reviewer, index) => {
+    const model = resolveReviewerModel(config, reviewer.model);
+    const effort: EffortLevel = reviewer.effort === 'auto' ? (triage.subtle ? 'high' : 'medium') : reviewer.effort;
+    if (reviewer.role === 'verifier') return { name: TRIVIAL_VERIFIER_AGENT.name, prompt: TRIVIAL_VERIFIER_AGENT, index, model, effort };
+    const label = index === 0 ? 'Finder' : index === 1 ? 'Pair finder' : `Finder ${index + 1}`;
+    return { name: `${label} (${model})`, prompt, index, model, effort };
+  });
+}
+
+/** Returns every model a review group can run a finder on, so each gets a client before the round. */
+export function teamModels(config: ReviewConfig): string[] {
+  const refs = Object.values(BUILT_IN_GROUPS).flatMap(g => g.reviewers.map(r => r.model));
+  return [...new Set(refs.map(ref => resolveReviewerModel(config, ref)))];
 }
 
 export function shuffleDiffFiles(diff: ParsedDiff): ParsedDiff {
@@ -196,15 +144,15 @@ export function intersectFindings(passes: Finding[][], threshold: number): Findi
 
 export interface ReviewClients {
   reviewer: LLMClient;
-  /** Client for the second finder's model. Defaults to `reviewer`. */
-  reviewerPair?: LLMClient;
+  /** Clients keyed by finder model. A finder whose model is missing runs on `reviewer`. */
+  reviewerByModel?: ReadonlyMap<string, LLMClient>;
   judge: LLMClient;
   planner?: LLMClient;
   dedup?: LLMClient;
 }
 
 function pickReviewerClient(clients: ReviewClients, finder: Finder): LLMClient {
-  return finder.pair ? clients.reviewerPair ?? clients.reviewer : clients.reviewer;
+  return clients.reviewerByModel?.get(finder.model) ?? clients.reviewer;
 }
 
 export interface ReviewProgress {
@@ -416,7 +364,7 @@ export function buildProvenanceFields(
   team: TeamRoster,
   agentMultiPassConsistency: Map<string, { consistent: number; totalRaw: number }>,
 ): Pick<ReviewResult, 'plannerSource' | 'plannerFallbackReason' | 'triage' | 'sensitivePaths' | 'ciOrDependencyPaths' | 'trivialOverridden' | 'agentMultiPassConsistency' | 'agentEffortMap' | 'agentModels' | 'pairAgentName'> {
-  const pairAgentName = team.finders.find(f => f.pair)?.name;
+  const pairAgentName = team.finders.find(f => f.index === 1)?.name;
   return {
     plannerSource,
     ...(plannerFallbackReason && { plannerFallbackReason }),
@@ -488,6 +436,7 @@ export async function runReview(
   const reviewerEffort = team.finders[0].effort;
   const { trivial, subtle, paired } = team.triage;
   core.info(`Triage (${plannerSource}): trivial=${trivial}, subtle=${subtle}, paired=${paired}${team.sensitivePaths ? ', security-sensitive paths' : ''}${team.ciOrDependencyPaths ? ', CI or dependency paths' : ''}${team.trivialOverridden ? ', planner trivial answer overridden by the changed files' : ''}`);
+  core.info(`Review class: ${team.reviewClass ?? 'none'}, group: ${team.group}`);
   core.info(`Review team: ${team.finders.map(f => f.name).join(', ')} at ${reviewerEffort} effort, judge: ${judgeEffort}${plannerResult ? ` (${plannerResult.prType})` : ''}`);
   if (trivial) {
     core.info(`trivial decision: prType=${plannerResult?.prType}, lines=${diff.totalAdditions + diff.totalDeletions}, files=${diff.files.length}`);

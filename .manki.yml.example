@@ -62,7 +62,8 @@
 # reads it too). An unclear answer takes the side that adds review. Disabled,
 # every round gets two finders at high effort.
 # `paired` pins the third answer: auto (default), always or never. A diff that
-# touches a security-sensitive path, CI or a dependency manifest always gets two finders.
+# touches a security-sensitive path, CI, a dependency manifest or a data contract
+# (migrations, SQL, protobuf, schemas, OpenAPI) always gets two finders.
 # planner:
 #   enabled: true
 #   paired: auto
