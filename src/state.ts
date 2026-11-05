@@ -102,16 +102,18 @@ async function resolveReviewThread(octokit: Octokit, threadId: string): Promise<
 
 const REOPEN_REPLY = 'Reopened. A security finding needs a maintainer or a fix: the PR author cannot resolve it. '
   + 'A reviewer with write access can resolve it, or push a fix and Manki will check it.';
+const PAUSED_REOPEN_REPLY = 'Reopened. A security finding needs a maintainer or a fix: the PR author cannot resolve it. '
+  + 'A reviewer with write access can resolve it. Automatic review is paused, so after pushing a fix comment `@manki review` and Manki will check it.';
 
-/** Reopens each security thread the PR author resolved and replies once to say why. */
-async function reopenAuthorResolvedThreads(octokit: Octokit, previousFindings: PreviousFinding[]): Promise<void> {
+/** Reopens each security thread the PR author resolved and replies once to say why. While `paused`, the reply says a push alone is not reviewed. */
+async function reopenAuthorResolvedThreads(octokit: Octokit, previousFindings: PreviousFinding[], paused = false): Promise<void> {
   for (const f of previousFindings) {
     if (!f.reopen || !f.threadId) continue;
     // The reply goes first: its marker is what stops a later round from reopening the thread again.
     try {
       await octokit.graphql(
         'mutation($threadId: ID!, $body: String!) { addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $threadId, body: $body }) { comment { id } } }',
-        { threadId: f.threadId, body: withMarkers(REOPEN_REPLY, BOT_MARKER, REOPENED_MARKER) },
+        { threadId: f.threadId, body: withMarkers(paused ? PAUSED_REOPEN_REPLY : REOPEN_REPLY, BOT_MARKER, REOPENED_MARKER) },
       );
     } catch (error) {
       core.warning(`Failed to reply on security thread ${f.threadId}, leaving it resolved: ${error}`);

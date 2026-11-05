@@ -42,6 +42,7 @@ import {
   isApprovedOnCommit,
   hasBotReviewOnCommit,
   fetchStandingVerdict,
+  fetchPRComments,
   markOwnProgressCommentCancelled,
   markProgressCommentFailed,
   postAppWarningIfNeeded,
@@ -646,8 +647,15 @@ async function loadRecap(target: RunTarget, config: ReviewConfig, commentId: num
     return undefined;
   }
 
-  await reopenAuthorResolvedThreads(octokit, recap.previousFindings);
+  await reopenAuthorResolvedThreads(octokit, recap.previousFindings, pauseState(recap.priorRounds, config).paused);
   return recap;
+}
+
+/** Whether the round cap is reached, and whether automatic review is paused by it or by a last round that ended `NOT_CONVERGING`. */
+function pauseState(priorRounds: RoundContext[], config: ReviewConfig): { capReached: boolean; paused: boolean } {
+  const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
+  const capReached = maxAutoRounds > 0 && priorRounds.length >= maxAutoRounds;
+  return { capReached, paused: capReached || priorRounds.at(-1)?.meta.outcome === 'NOT_CONVERGING' };
 }
 
 /** Builds one LLM client per stage. Throws on a model spec or credentials that do not resolve. */
@@ -782,9 +790,12 @@ async function loadRunMemory(
   }
 }
 
-/** Replaces the progress comment with a notice that automatic review is paused. */
+/**
+ * Replaces the progress comment with a notice that automatic review is paused. Each push during
+ * the same pause updates the unticked notice from after `lastRoundAt` instead of adding another.
+ */
 async function postPauseNotice(
-  target: RunTarget, commentId: number, capReached: boolean, priorRoundCount: number, maxAutoRounds: number,
+  target: RunTarget, commentId: number, capReached: boolean, priorRoundCount: number, maxAutoRounds: number, lastRoundAt?: string,
 ): Promise<void> {
   const { octokit, owner, repo, prNumber } = target;
   core.info(capReached
@@ -804,14 +815,33 @@ async function postPauseNotice(
       PROGRESS_MARKER,
       FORCE_CAP_MARKER,
     );
-    await octokit.rest.issues.createComment({
-      owner,
-      repo,
-      issue_number: prNumber,
-      body,
-    });
+    const notice = await findPauseNotice(target, lastRoundAt);
+    if (notice) {
+      await octokit.rest.issues.updateComment({ owner, repo, comment_id: notice.id, body });
+    } else {
+      await octokit.rest.issues.createComment({
+        owner,
+        repo,
+        issue_number: prNumber,
+        body,
+      });
+    }
   } catch (error) {
     core.warning(`Failed to post round-cap notice: ${error}`);
+  }
+}
+
+/** Returns the unticked pause notice posted or updated after `lastRoundAt`. A failed lookup returns `undefined`, so a new notice is posted. */
+async function findPauseNotice(target: RunTarget, lastRoundAt: string | undefined): Promise<{ id: number } | undefined> {
+  const { octokit, bot, owner, repo, prNumber } = target;
+  const since = lastRoundAt ? Date.parse(lastRoundAt) : -Infinity;
+  try {
+    const comments = await fetchPRComments(octokit, owner, repo, prNumber);
+    return comments.find(c => isBotLogin(bot, c.user?.login) && !!c.body?.includes(FORCE_CAP_MARKER)
+      && c.body.includes('- [ ] Force review') && Date.parse(c.updated_at) > since);
+  } catch (error) {
+    core.warning(`Failed to look up an earlier pause notice: ${error}`);
+    return undefined;
   }
 }
 
@@ -1240,11 +1270,9 @@ async function runFullReview(
 
     const priorRoundCount = recap.priorRounds.length;
     const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
-    const capReached = maxAutoRounds > 0 && priorRoundCount >= maxAutoRounds;
-    const notConverging = recap.priorRounds.at(-1)?.meta.outcome === 'NOT_CONVERGING';
-    const paused = capReached || notConverging;
+    const { capReached, paused } = pauseState(recap.priorRounds, config);
     if (paused && !skipCap) {
-      await postPauseNotice(target, commentId, capReached, priorRoundCount, maxAutoRounds);
+      await postPauseNotice(target, commentId, capReached, priorRoundCount, maxAutoRounds, recap.priorRounds.at(-1)?.meta.timestamp);
       return;
     }
 
