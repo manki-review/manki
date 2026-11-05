@@ -252,5 +252,10 @@ describe('checkFindingClaims', () => {
     const unchecked = { status: 'none', note: 'Checked: the file is in the diff, the line is in the file, no CI annotation reports the claimed error.' };
     expect(checkFindingClaims(claim, { ...sources, signals: [signal({ line: 2 })] })).toEqual(unchecked);
     expect(checkFindingClaims(claim, { ...sources, signals: [signal({ tool: 'mypy', ruleId: 'arg-type', line: 9 })] })).toEqual(unchecked);
+    expect(checkFindingClaims(claim, { ...sources, signals: [signal({ tool: 'mypy', ruleId: 'arg-type', line: 3, message: 'Incompatible type' })] }))
+      .toEqual({ status: 'confirmed', note: 'mypy reports an error on line 3: Incompatible type' });
+    expect(checkFindingClaims(claim, { ...sources, signals: [signal({ tool: 'build', ruleId: 'TS18048', line: 3, message: 'b is possibly undefined' })] }))
+      .toEqual({ status: 'confirmed', note: 'build reports an error on line 3: b is possibly undefined' });
+    expect(checkFindingClaims(claim, { ...sources, signals: [signal({ tool: 'pylint', ruleId: 'E1101', line: 3 })] })).toEqual(unchecked);
   });
 });
