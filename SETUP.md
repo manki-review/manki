@@ -63,6 +63,8 @@ If you use branch protection rules and want Manki to be a required check:
 
 > **Note**: If the action finds blocking issues, it posts REQUEST_CHANGES which blocks the merge. Non-blocking suggestions still result in APPROVE.
 
+When Manki posts a new review, it dismisses its own earlier REQUEST_CHANGES review. If a ruleset turns on **Restrict who can dismiss reviews** (in its **Require a pull request before merging** rule), add the identity Manki posts as to the allowed actors: the Manki app, or GitHub Actions when Manki runs without the app. Otherwise GitHub refuses the dismissal, and the old REQUEST_CHANGES keeps blocking the merge after Manki approves.
+
 ## Step 1: Install the GitHub App
 
 Install the [Manki GitHub App](https://github.com/apps/manki-review) on the repositories you want reviewed. This gives Manki its own identity: reviews appear as `manki-review[bot]` with a distinct avatar instead of the generic `github-actions[bot]`.
@@ -234,17 +236,23 @@ permissions:
 
 jobs:
   review:
-    if: github.actor != 'manki-review[bot]'
+    if: >-
+      github.actor != 'manki-review[bot]'
+      && github.event.sender.type != 'Bot'
+      && github.event.review.user.type != 'Bot'
+      && (github.event.action != 'closed' || github.event.pull_request.merged)
+      && (github.event_name != 'issue_comment' || contains(github.event.comment.body, '@manki') || contains(github.event.comment.body, '/manki') || contains(github.event.comment.body, '- [x] Force review'))
+      && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)
     concurrency:
-      group: manki-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}', github.event_name, github.event.comment.id || github.event.review.id || github.run_id) }}
-      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+      group: manki-${{ (github.event_name == 'pull_request' || (github.event_name == 'issue_comment' && (contains(github.event.comment.body, 'manki review') || contains(github.event.comment.body, '- [x] Force review')))) && 'review' || 'reply' }}-${{ github.event.pull_request.number || github.event.issue.number }}
+      queue: max
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
-          cache: 'npm'
       - name: Manki Review
         uses: manki-review/manki@v5
         with:
@@ -337,16 +345,32 @@ The action exposes outputs you can chain into later workflow steps: `review_id`,
 
 ### Pinning the action version
 
-Both the floating major tag and the immutable exact-version tag are supported:
+Pin to a release tag or to the commit a release tag points to:
 
-- `manki-review/manki@v5` — floating major. Picks up minor and patch releases automatically. Recommended for most setups.
-- `manki-review/manki@v5.1.0` — immutable exact-version. Stays on the published release until you bump it. Recommended when you want lockstep upgrades.
+- `manki-review/manki@v5` is the floating major tag. It picks up minor and patch releases automatically. Recommended for most setups.
+- `manki-review/manki@v5.1.0` is an exact release. It stays on that release until you bump it. Recommended when you want lockstep upgrades.
+- `manki-review/manki@<sha>` is a full commit SHA, for organizations that require actions pinned to one.
 
-Pin to a release tag. `main` holds source only and has no built `dist/`, so `@main` or a commit SHA from `main` will not run.
+`main` holds source only and has no built `dist/`, so `@main` or a commit SHA from `main` will not run. Each release tag points at a commit that contains the built `dist/`. For a SHA pin, take the commit of the release tag:
 
-Both forms point at a tree that already contains the built `dist/`, so the runner can execute the action without any extra setup on the consumer side.
+```sh
+git ls-remote https://github.com/manki-review/manki 'refs/tags/v5.3.0^{}'
+```
 
-Releases prior to this fix (`v5.0.0`, `v5.0.1`) only work via the floating `@v5` tag. From the release that introduced committed `dist/` onwards, exact-version pins work as well.
+Then pin it with the version as a comment, so tools that update pins can read it:
+
+```yaml
+      - name: Manki Review
+        uses: manki-review/manki@<sha>  # v5.3.0
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+From v6.0.0, Manki publishes immutable releases: once a release is out, its tag can never move, so the SHA behind `v6.x.y` never changes. The floating `v6` tag keeps moving to each new release.
+
+[Workflow lockfiles](https://docs.github.com/actions/concepts/security/workflow-dependency-lockfiles) are the alternative to SHA pins. Keep `@v5` in the workflow, and run the [`gh actions-lock`](https://github.com/github/gh-actions-lock) extension to record the commit it resolves to in `.github/workflows/actions.lock`. Commit that file. Actions then runs the recorded commit, even after the tag moves, until you regenerate the lockfile. A lockfile satisfies the policy that requires actions pinned to a full commit SHA for the workflows it covers, and Dependabot regenerates the entry when it bumps the version.
+
+Releases before the committed `dist/` fix (`v5.0.0`, `v5.0.1`) only work through the floating `@v5` tag.
 
 ### Using outputs in downstream workflow steps
 
@@ -383,13 +407,48 @@ You can also forward `severity_counts` or `findings_json` to a metrics sink (Sla
 | `pull_request_review_comment: [created]` | Replies to review comment threads |
 | `pull_request_review: [submitted, dismissed]` | Auto-approve check when reviews change state |
 
-The self-trigger guard (`github.actor != 'manki-review[bot]'`) prevents the bot from reviewing its own comments.
+The job `if` repeats the checks Manki makes when it starts, so GitHub skips the job without starting a runner for an event Manki would ignore anyway:
+
+- anything Manki or another bot did, such as a coverage bot's PR comment,
+- a review event on a bot's review, such as a push dismissing Manki's stale review,
+- a PR closed without merging,
+- a comment that doesn't mention `@manki` or `/manki` and doesn't tick a Force review box,
+- any event of a PR from a fork (see [Pull requests from forks](#pull-requests-from-forks)).
+
+Manki keeps the same checks in its code, so a workflow with a shorter `if` still works. It just starts a runner that exits at once. A skipped job shows as a skipped `review` check, which GitHub counts as passing for a required check.
 
 ### Concurrency
 
-The `concurrency` block gives each PR one group for its pushes (`pull_request` events) with `cancel-in-progress` on, so a new push cancels the review of the commit it replaces. Every other event (`/manki` commands, thread replies and review state changes) gets a group of its own, keyed by its comment or review id, so it never cancels a push review and is never cancelled by one. This split matters because GitHub keeps at most one pending run per group and cancels the older pending run when a newer one queues: a thread reply sharing the push group would cancel a push review that was waiting to start. A cancelled run marks its progress comment as cancelled in the action's post step, so it leaves no stale "in progress" lock behind. A review that is still running when a new commit lands, for example one started by `/manki review`, checks the PR head between its stages and before it posts. When the head has moved, it posts no verdict and updates its progress comment to name the new commit. The run for the new commit does not wait for it: an in-progress review only makes a run skip when it reviews the same commit.
+The `concurrency` block gives each PR two queues. Runs in the same queue never overlap, and nothing cancels them from outside:
+
+- The review queue, `manki-review-<pr>`, takes pushes and the other `pull_request` events, review commands, and ticks of the Force review box.
+- The reply queue, `manki-reply-<pr>`, takes thread replies, review state changes, and every other command.
+
+Both use `queue: max`, so GitHub holds up to 100 waiting runs per queue and starts them in order. Without it, a group holds a single waiting run, and GitHub cancels it when a newer run queues: a thread reply would silently drop a push review that was waiting to start. `cancel-in-progress` stays off, and GitHub rejects it next to `queue: max` anyway. Earlier setups cancelled a review when a new push arrived, and that kept causing trouble: every cancel left a red check on the PR, and a cancel could land while Manki was posting. A running review now stops by itself instead. It checks the PR head while it works, and when a new commit lands it stops within about 30 seconds, posts no verdict, and marks its progress comment superseded. The next run in the queue then reviews the new head. A run that receives SIGTERM, for example when the job is cancelled, stops writing to the PR.
+
+Replies have their own queue so an answer in a thread never waits behind a full review. The queue is picked from the comment text: a comment containing `manki review` goes to the review queue. A review request phrased another way runs in the reply queue, and the in-app lock described below still stops two reviews of the same commit.
+
+`timeout-minutes: 30` ends a run that hangs, for example on a model call that never returns. GitHub's default is 6 hours, and the PR's queue would wait behind it for that long. A full review usually takes a few minutes.
 
 GitHub Actions concurrency is best-effort, not atomic. Two events dispatched within the same scheduling window can transition to in-progress before either reaches the queue check, in which case both runs proceed concurrently. As defense in depth, the action runs an in-app lock at the review pipeline entry point: it scans its own existing comments for an "in progress" marker carrying a different `manki-run-id`, and bails (with a `core.warning`) before any LLM call when one is found within the configurable TTL. Tune the TTL with the `concurrency_lock_ttl_seconds` action input (default 600 seconds). Lowering it makes the lock recover faster from crashed runs that left a stale marker behind. Raising it tolerates longer-running reviews.
+
+### Pull requests from forks
+
+GitHub gives a workflow run for a PR from a fork no secrets and no OIDC token, and only a read-only `GITHUB_TOKEN`. This holds for the `pull_request`, `pull_request_review` and `pull_request_review_comment` events. Manki would have no model credentials and no permission to post, so the run would fail. The last line of the job `if` skips these events instead. The PR shows a skipped `review` check, and Manki posts nothing.
+
+Comment events are different: GitHub runs `issue_comment` in the base repository, with its secrets. A maintainer can still ask for a review of a fork PR with a review command in a PR comment, and Manki reviews it like any other PR.
+
+### Cache access
+
+GitHub gives `issue_comment` runs read-only access to the Actions cache. They can restore the default branch's caches but can't save new ones. The workflow above uses no cache, so this changes nothing for it. If you add one, for example `cache: 'npm'` on `actions/setup-node` to speed up CLI installs, set `cache-mode: read` on the `review` job:
+
+```yaml
+jobs:
+  review:
+    cache-mode: read
+```
+
+Every Manki run is then read-only on the cache, not only the comment runs. Your CI on the default branch still writes the caches that Manki restores. Note that `cache: 'npm'` needs a lockfile (`package-lock.json`, `npm-shrinkwrap.json` or `yarn.lock`) in your repository.
 
 ### Reading CI results
 
@@ -428,8 +487,15 @@ jobs:
 
   review:
     needs: lint
-    # Run even when lint fails or is skipped, such as on comment events.
-    if: ${{ !cancelled() && github.actor != 'manki-review[bot]' }}
+    # `!cancelled()` runs the review even when lint fails or is skipped, such as on comment events.
+    if: >-
+      !cancelled()
+      && github.actor != 'manki-review[bot]'
+      && github.event.sender.type != 'Bot'
+      && github.event.review.user.type != 'Bot'
+      && (github.event.action != 'closed' || github.event.pull_request.merged)
+      && (github.event_name != 'issue_comment' || contains(github.event.comment.body, '@manki') || contains(github.event.comment.body, '/manki') || contains(github.event.comment.body, '- [x] Force review'))
+      && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -439,7 +505,7 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
-Keep the `on:`, `permissions:` and `concurrency:` settings from the workflow above.
+Keep the `on:`, `permissions:`, `concurrency:` and `timeout-minutes:` settings from the workflow above.
 
 When CI runs in a separate workflow, `needs:` cannot order the jobs. List the check runs to wait for in `static_analysis.wait_for_checks` instead. Manki polls them on the PR head every 15 seconds and reads the results once each has finished. After `wait_timeout_seconds` (default 300) it stops waiting, reads what is there, and records the checks still running in the `Manki context` block. A name is the check run's name as the PR's checks list shows it, usually the job name.
 
