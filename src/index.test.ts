@@ -124,7 +124,6 @@ jest.mock('./interaction', () => ({
   isBotMentionNonReview: jest.fn().mockReturnValue(false),
   hasBotMention: jest.fn().mockReturnValue(false),
   parseCommand: jest.fn().mockReturnValue({ type: 'generic', args: '' }),
-  isRepoUser: jest.requireActual('./interaction').isRepoUser,
   isLLMAccessAllowed: jest.requireActual('./interaction').isLLMAccessAllowed,
 }));
 
@@ -229,6 +228,7 @@ jest.mock('./github', () => {
   }),
   BOT_LOGIN: 'manki-review[bot]',
   isBotLogin: jest.requireActual('./github').isBotLogin,
+  isTrustedAssociation: jest.requireActual('./github').isTrustedAssociation,
   titleToSlug: jest.requireActual('./github').titleToSlug,
   BOT_MARKER: '<!-- manki-bot -->',
   REVIEW_COMPLETE_MARKER: '<!-- manki-review-complete -->',
@@ -607,6 +607,67 @@ describe('run', () => {
         expect.anything(), TEST_BOT, null, 'test-owner', 'test-repo', 10,
         undefined, undefined, expect.anything(),
       );
+    });
+  });
+
+  describe('commenter check', () => {
+    const workflowClient = { name: 'workflow-octokit' };
+
+    beforeEach(() => {
+      jest.mocked(core.getInput).mockImplementation((name: string) =>
+        ({ anthropic_api_key: 'test-api-key', github_token: 'ghs_workflow' })[name] ?? '');
+      jest.mocked(github.getOctokit).mockReturnValue(workflowClient as unknown as ReturnType<typeof github.getOctokit>);
+      jest.mocked(interaction.hasBotMention).mockReturnValue(true);
+      jest.mocked(interaction.isReviewRequest).mockReturnValue(true);
+    });
+
+    afterEach(() => {
+      jest.mocked(github.getOctokit).mockReset();
+    });
+
+    it('runs a review for a private org member that the API shows with write access', async () => {
+      setContext({
+        eventName: 'issue_comment',
+        payload: {
+          action: 'created',
+          sender: { login: 'private-member' },
+          comment: { body: '@manki review', id: 42, user: { login: 'private-member' }, author_association: 'CONTRIBUTOR' },
+          issue: { number: 5, pull_request: { url: 'https://...' }, user: { login: 'pr-author' } },
+        },
+      });
+
+      await run();
+
+      expect(jest.mocked(ghUtils.hasWriteAccess)).toHaveBeenCalledWith(workflowClient, 'test-owner', 'test-repo', 'private-member');
+      expect(mockPullsGet).toHaveBeenCalled();
+      expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
+    });
+
+    it.each([
+      ['issue_comment', {
+        action: 'created',
+        sender: { login: 'stranger' },
+        comment: { body: '@manki review', id: 42, user: { login: 'stranger' }, author_association: 'NONE' },
+        issue: { number: 5, pull_request: { url: 'https://...' }, user: { login: 'pr-author' } },
+      }],
+      ['pull_request_review_comment', {
+        action: 'created',
+        sender: { login: 'stranger' },
+        comment: { body: '@manki why?', id: 43, in_reply_to_id: 7, user: { login: 'stranger', type: 'User' }, author_association: 'NONE' },
+        pull_request: { number: 5, base: { ref: 'main' }, user: { login: 'pr-author' } },
+      }],
+    ])('ignores a %s from a stranger before fetching the App token', async (eventName, payload) => {
+      jest.mocked(ghUtils.hasWriteAccess).mockResolvedValueOnce(false);
+      setContext({ eventName, payload });
+
+      await run();
+
+      expect(jest.mocked(ghUtils.hasWriteAccess)).toHaveBeenCalledWith(workflowClient, 'test-owner', 'test-repo', 'stranger');
+      expect(jest.mocked(authModule.createAuthenticatedOctokit)).not.toHaveBeenCalled();
+      expect(jest.mocked(createLLMClient)).not.toHaveBeenCalled();
+      expect(jest.mocked(ghUtils.reactToIssueComment)).not.toHaveBeenCalled();
+      expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalled();
+      expect(jest.mocked(interaction.handleReviewCommentReply)).not.toHaveBeenCalled();
     });
   });
 
@@ -1039,88 +1100,6 @@ describe('handleCommentTrigger', () => {
 
     expect(jest.mocked(core.info)).toHaveBeenCalledWith('Already approved on this commit — skipping review');
     expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
-  });
-
-  it('ignores review request from NONE association non-PR-author', async () => {
-    setContext({
-      eventName: 'issue_comment',
-      payload: {
-        action: 'created',
-        issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' }, user: { login: 'pr-author' } },
-        comment: { id: 42, body: '@manki review', author_association: 'NONE' },
-        sender: { login: 'stranger' },
-      },
-    });
-
-    await handleCommentTrigger();
-
-    expect(jest.mocked(core.info)).toHaveBeenCalledWith(expect.stringContaining('Ignoring review request from stranger'));
-    expect(jest.mocked(ghUtils.reactToIssueComment)).toHaveBeenCalledWith(
-      expect.anything(), 'test-owner', 'test-repo', 42, 'eyes',
-    );
-    expect(mockOctokitInstance.rest.issues.createComment).toHaveBeenCalledWith(
-      expect.objectContaining({ body: expect.stringContaining('Only repo contributors can trigger reviews') }),
-    );
-    expect(mockOctokitInstance.rest.pulls.get).not.toHaveBeenCalled();
-  });
-
-  it('allows review request from CONTRIBUTOR', async () => {
-    setContext({
-      eventName: 'issue_comment',
-      payload: {
-        action: 'created',
-        issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' }, user: { login: 'pr-author' } },
-        comment: { id: 42, body: '@manki review', author_association: 'CONTRIBUTOR' },
-        sender: { login: 'contributor-user' },
-      },
-    });
-
-    await handleCommentTrigger();
-
-    expect(jest.mocked(core.info)).not.toHaveBeenCalledWith(expect.stringContaining('Ignoring review request'));
-    expect(mockOctokitInstance.rest.pulls.get).toHaveBeenCalled();
-    expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
-  });
-
-  it('allows review request from PR author with NONE association', async () => {
-    setContext({
-      eventName: 'issue_comment',
-      payload: {
-        action: 'created',
-        issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' }, user: { login: 'pr-author' } },
-        comment: { id: 42, body: '@manki review', author_association: 'NONE' },
-        sender: { login: 'pr-author' },
-      },
-    });
-
-    await handleCommentTrigger();
-
-    expect(jest.mocked(core.info)).not.toHaveBeenCalledWith(expect.stringContaining('Ignoring review request'));
-    expect(mockOctokitInstance.rest.pulls.get).toHaveBeenCalled();
-    expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
-  });
-
-  it('blocks force review from NONE-association non-PR-author', async () => {
-    setContext({
-      eventName: 'issue_comment',
-      payload: {
-        action: 'created',
-        issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' }, user: { login: 'pr-author' } },
-        comment: { id: 42, body: '@manki review', author_association: 'NONE' },
-        sender: { login: 'stranger' },
-      },
-    });
-
-    await handleCommentTrigger(true);
-
-    expect(jest.mocked(core.info)).toHaveBeenCalledWith(expect.stringContaining('Ignoring review request from stranger'));
-    expect(jest.mocked(ghUtils.reactToIssueComment)).toHaveBeenCalledWith(
-      expect.anything(), 'test-owner', 'test-repo', 42, 'eyes',
-    );
-    expect(mockOctokitInstance.rest.issues.createComment).toHaveBeenCalledWith(
-      expect.objectContaining({ body: expect.stringContaining('Only repo contributors can trigger reviews') }),
-    );
-    expect(mockOctokitInstance.rest.pulls.get).not.toHaveBeenCalled();
   });
 });
 
@@ -6537,12 +6516,10 @@ describe('force review checkbox', () => {
       jest.mocked(ghUtils.hasWriteAccess).mockResolvedValue(true);
     }
 
-    const refusal = expect.objectContaining({ body: expect.stringContaining('Only repo contributors can trigger reviews') });
     if (allowed) {
-      expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalledWith(refusal);
       expect(mockPullsGet).toHaveBeenCalled();
     } else {
-      expect(mockOctokitInstance.rest.issues.createComment).toHaveBeenCalledWith(refusal);
+      expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalled();
       expect(mockPullsGet).not.toHaveBeenCalled();
     }
   });

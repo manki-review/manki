@@ -16,25 +16,23 @@ import { WRITING_RULES } from './writing-rules';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
-// GitHub author_association values that indicate the user is a known repo participant.
-// Used to gate LLM-triggering commands — less strict than `isTrustedAssociation` (which guards write ops).
-export function isRepoUser(authorAssociation: string | null | undefined): boolean {
-  return ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR'].includes(authorAssociation ?? '');
-}
-
 /**
- * Returns true if the sender is allowed to trigger LLM calls.
- * Logs a diagnostic when the PR author cannot be determined from the payload.
+ * Whether the commenter may start Manki from a comment: anyone with write access, or the PR author on their own PR.
+ * `OWNER`, `MEMBER` and `COLLABORATOR` pass without an API call. GitHub reports an organization member whose
+ * membership is private as `CONTRIBUTOR` or `NONE`, so anyone else is looked up.
+ * On an edit of another user's comment, such as a Force review tick, the association describes the comment author,
+ * so only the editor's write access counts.
  */
-export function isLLMAccessAllowed(
-  authorAssociation: string | null | undefined,
-  senderLogin: string | undefined,
-  prAuthorLogin: string | undefined,
-): boolean {
-  if (!prAuthorLogin && !isRepoUser(authorAssociation)) {
-    core.info(`PR author login unavailable in payload — PR-author bypass inactive for ${senderLogin}`);
+export async function isLLMAccessAllowed(octokit: Octokit, owner: string, repo: string): Promise<boolean> {
+  const { action, comment, sender, issue, pull_request: pullRequest } = github.context.payload;
+  const senderLogin: string | undefined = sender?.login;
+  const editedByOther = action === 'edited' && (!senderLogin || senderLogin !== comment?.user?.login);
+  if (!editedByOther) {
+    if (isTrustedAssociation(comment?.author_association)) return true;
+    const prAuthorLogin: string | undefined = pullRequest?.user?.login ?? (issue?.pull_request ? issue.user?.login : undefined);
+    if (senderLogin && senderLogin.toLowerCase() === prAuthorLogin?.toLowerCase()) return true;
   }
-  return isRepoUser(authorAssociation) || !!(prAuthorLogin && senderLogin?.toLowerCase() === prAuthorLogin.toLowerCase());
+  return !!senderLogin && await hasWriteAccess(octokit, owner, repo, senderLogin);
 }
 
 interface MemoryConfig {
@@ -155,10 +153,6 @@ export async function handleReviewCommentReply(
 
   const senderLogin = github.context.payload.sender?.login;
   const prAuthorLogin = github.context.payload.pull_request?.user?.login;
-  if (!isLLMAccessAllowed(comment.author_association, senderLogin, prAuthorLogin)) {
-    core.info(`Ignoring reply from non-contributor ${senderLogin} (${comment.author_association ?? 'unknown association'})`);
-    return;
-  }
 
   // Check if this is a reply to one of our comments
   const inReplyTo = comment.in_reply_to_id;
@@ -304,20 +298,9 @@ export async function handlePRComment(
     return;
   }
 
-  const senderLogin = payload.sender?.login;
-  const prAuthorLogin = payload.issue?.user?.login;
-
   switch (command.type) {
     case 'explain': {
       await reactToIssueComment(octokit, owner, repo, commentId, 'eyes');
-      if (!isLLMAccessAllowed(comment.author_association, senderLogin, prAuthorLogin)) {
-        core.info(`Ignoring @manki command from non-contributor ${senderLogin} (${comment.author_association ?? 'unknown association'})`);
-        await octokit.rest.issues.createComment({
-          owner, repo, issue_number: issueNumber,
-          body: withMarkers('Only repo contributors can use this command.', BOT_MARKER),
-        });
-        return;
-      }
       if (!client) { core.warning('Claude client required for explain command'); return; }
       const topic = command.args.slice(0, 500).trim();
       await handleExplain(octokit, client, owner, repo, issueNumber, topic);
@@ -345,17 +328,8 @@ export async function handlePRComment(
       break;
     default: {
       await reactToIssueComment(octokit, owner, repo, commentId, 'eyes');
-      if (!isLLMAccessAllowed(comment.author_association, senderLogin, prAuthorLogin)) {
-        core.info(`Ignoring @manki command from non-contributor ${senderLogin} (${comment.author_association ?? 'unknown association'})`);
-        await octokit.rest.issues.createComment({
-          owner, repo, issue_number: issueNumber,
-          body: withMarkers('Only repo contributors can use this command.', BOT_MARKER),
-        });
-        return;
-      }
       if (!client) { core.warning('Claude client required for generic questions'); return; }
       // Strip the command prefix and truncate before forwarding to the LLM.
-      // Access is already gated by isLLMAccessAllowed above.
       const question = body.replace(/(?:@manki-review|@manki|\/manki)\s*/gi, '').trim().slice(0, 500);
       await handleGenericQuestion(octokit, client, owner, repo, issueNumber, question);
     }

@@ -243,8 +243,7 @@ jobs:
       && github.event.review.user.type != 'Bot'
       && (github.event.action != 'closed' || github.event.pull_request.merged)
       && (github.event_name != 'issue_comment' || contains(github.event.comment.body, '@manki') || contains(github.event.comment.body, '/manki') || contains(github.event.comment.body, '- [x] Force review'))
-      && (github.event_name != 'issue_comment' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) || (github.event.issue.pull_request && github.event.action == 'edited' && github.event.comment.user.login == 'manki-review[bot]'))
-      && (github.event_name != 'pull_request_review_comment' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+      && (github.event_name != 'issue_comment' || !contains(fromJSON('["FIRST_TIMER","FIRST_TIME_CONTRIBUTOR"]'), github.event.comment.author_association))
       && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)
     concurrency:
       group: manki-${{ (github.event_name == 'pull_request' || (github.event_name == 'issue_comment' && (contains(github.event.comment.body, 'manki review') || contains(github.event.comment.body, '- [x] Force review')))) && 'review' || 'reply' }}-${{ github.event.pull_request.number || github.event.issue.number }}
@@ -420,7 +419,7 @@ The job `if` repeats the checks Manki makes when it starts, so GitHub skips the 
 
 Manki keeps the checks above in its code, so a workflow with a shorter `if` still works. It just starts a runner that exits at once. A skipped job shows as a skipped `review` check, which GitHub counts as passing for a required check.
 
-The `if` also decides who can start Manki from a comment: only the repository's owners, members and collaborators, on a PR, an issue or a review thread. The two lines that check `author_association` do this, so keep them. GitHub can report an organization member who keeps the membership private as `CONTRIBUTOR` or `NONE`, and then that member's comments start no run. Such a member can make the membership public, or you can add them to the repository as a collaborator. Anyone can comment on a public repository, and a comment run holds your provider token and write access to the PR before Manki can check the commenter. The one exception is a tick of a Force review box. The tick edits Manki's own comment, so the comment author is the bot. Only people with write access can edit another user's comment, and Manki checks that the person who ticked has write access when it starts. If you run Manki under your own GitHub App, replace `manki-review[bot]` with your app's bot login in the `github.actor` check and in this exception.
+Manki itself decides who can start it from a comment, on a PR, an issue or a review thread. A comment counts when its author has write access to the repository, or is the author of the PR it is on. Manki trusts an owner, member or collaborator as the event reports them, and asks the GitHub API about anyone else, with the workflow's own `GITHUB_TOKEN`. That API call is why the check lives in Manki and not in the `if`, which cannot make one: GitHub reports an organization member who keeps the membership private as `CONTRIBUTOR` or `NONE`, and the API still shows their access. Anyone can comment on a public repository, so Manki checks the commenter before it fetches the App token, uses a provider credential or calls a model. It refuses without posting anything, and the run ends at once. The `if` only skips comments from first-time contributors, who are never members. A tick of a Force review box edits Manki's own comment, so Manki checks the person who ticked, who needs write access. If you run Manki under your own GitHub App, replace `manki-review[bot]` with your app's bot login in the `github.actor` check.
 
 ### Concurrency
 
@@ -441,7 +440,7 @@ GitHub Actions concurrency is best-effort, not atomic. Two events dispatched wit
 
 GitHub gives a workflow run for a PR from a fork no secrets and no OIDC token, and only a read-only `GITHUB_TOKEN`. This holds for the `pull_request`, `pull_request_review` and `pull_request_review_comment` events. Manki would have no model credentials and no permission to post, so the run would fail. The last line of the job `if` skips these events instead. The PR shows a skipped `review` check, and Manki posts nothing.
 
-Comment events are different: GitHub runs `issue_comment` in the base repository, with its secrets. A maintainer can still ask for a review of a fork PR with a review command in a PR comment, and Manki reviews it like any other PR. A comment from anyone else starts no run (see [Event triggers explained](#event-triggers-explained)).
+Comment events are different: GitHub runs `issue_comment` in the base repository, with its secrets. Someone with write access can still ask for a review of a fork PR with a review command in a PR comment, and Manki reviews it like any other PR. So can the PR's author, unless GitHub marks them as a first-time contributor. Manki ignores a comment from anyone else (see [Event triggers explained](#event-triggers-explained)).
 
 ### Cache access
 
@@ -500,8 +499,7 @@ jobs:
       && github.event.review.user.type != 'Bot'
       && (github.event.action != 'closed' || github.event.pull_request.merged)
       && (github.event_name != 'issue_comment' || contains(github.event.comment.body, '@manki') || contains(github.event.comment.body, '/manki') || contains(github.event.comment.body, '- [x] Force review'))
-      && (github.event_name != 'issue_comment' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) || (github.event.issue.pull_request && github.event.action == 'edited' && github.event.comment.user.login == 'manki-review[bot]'))
-      && (github.event_name != 'pull_request_review_comment' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+      && (github.event_name != 'issue_comment' || !contains(fromJSON('["FIRST_TIMER","FIRST_TIME_CONTRIBUTOR"]'), github.event.comment.author_association))
       && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     steps:

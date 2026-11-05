@@ -163,8 +163,7 @@ jobs:
       &amp;&amp; github.event.review.user.type != 'Bot'
       &amp;&amp; (github.event.action != 'closed' || github.event.pull_request.merged)
       &amp;&amp; (github.event_name != 'issue_comment' || contains(github.event.comment.body, '@manki') || contains(github.event.comment.body, '/manki') || contains(github.event.comment.body, '- [x] Force review'))
-      &amp;&amp; (github.event_name != 'issue_comment' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) || (github.event.issue.pull_request &amp;&amp; github.event.action == 'edited' &amp;&amp; github.event.comment.user.login == 'manki-review[bot]'))
-      &amp;&amp; (github.event_name != 'pull_request_review_comment' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+      &amp;&amp; (github.event_name != 'issue_comment' || !contains(fromJSON('["FIRST_TIMER","FIRST_TIME_CONTRIBUTOR"]'), github.event.comment.author_association))
       &amp;&amp; (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)
     concurrency:
       group: manki-${{ (github.event_name == 'pull_request' || (github.event_name == 'issue_comment' &amp;&amp; (contains(github.event.comment.body, 'manki review') || contains(github.event.comment.body, '- [x] Force review')))) &amp;&amp; 'review' || 'reply' }}-${{ github.event.pull_request.number || github.event.issue.number }}

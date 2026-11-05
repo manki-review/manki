@@ -39,7 +39,6 @@ import {
   postReview,
   reactToIssueComment,
   fetchLinkedIssues,
-  hasWriteAccess,
   BOT_MARKER as PROGRESS_MARKER,
   FORCE_REVIEW_MARKER,
   FORCE_CAP_MARKER,
@@ -142,6 +141,21 @@ async function getAuth(): Promise<AuthResult> {
   return authCache;
 }
 
+/** A client on the workflow's own `github_token`, which needs no call to the token service. */
+async function workflowOctokit(): Promise<Octokit> {
+  const token = core.getInput('github_token');
+  return token ? github.getOctokit(token) : (await getAuth()).octokit;
+}
+
+/** Whether the commenter may start Manki. Refuses without a comment, so a stranger cannot make Manki post. */
+async function commenterAllowed(): Promise<boolean> {
+  const { owner, repo } = github.context.repo;
+  if (await isLLMAccessAllowed(await workflowOctokit(), owner, repo)) return true;
+  const { sender, comment } = github.context.payload;
+  core.info(`Ignoring comment from ${sender?.login ?? 'unknown user'} (${comment?.author_association ?? 'unknown association'}): no write access`);
+  return false;
+}
+
 async function run(): Promise<void> {
   const eventName = github.context.eventName;
   const action = github.context.payload.action;
@@ -178,11 +192,17 @@ async function run(): Promise<void> {
       return;
     }
     const body = github.context.payload.comment?.body ?? '';
+    const mentioned = hasBotMention(body) || isReviewRequest(body);
     const marker = action === 'edited' ? detectTickedMarker(body) : null;
+    if (!mentioned && marker === null) {
+      core.info('Comment does not mention Manki — ignoring');
+      return;
+    }
+    if (!await commenterAllowed()) return;
     if (marker !== null && isBotLogin((await getAuth()).bot, github.context.payload.comment?.user?.login)) {
       tickedMarker = marker;
     }
-    if (tickedMarker === null && !hasBotMention(body) && !isReviewRequest(body)) {
+    if (tickedMarker === null && !mentioned) {
       core.info('Comment does not mention Manki — ignoring');
       return;
     }
@@ -219,6 +239,7 @@ async function run(): Promise<void> {
       core.info('Ignoring our own review comment');
       return;
     }
+    if (!await commenterAllowed()) return;
   } else if (eventName === 'pull_request_review') {
     if (action !== 'submitted' && action !== 'dismissed') {
       core.info(`Ignoring pull_request_review action: ${action}`);
@@ -399,22 +420,6 @@ async function handleCommentTrigger(forceReview?: boolean, skipCap?: boolean, by
   // Acknowledge the command unconditionally so the user knows it was received.
   if (payload.comment?.id) {
     await reactToIssueComment(octokit, owner, repo, payload.comment.id, 'eyes');
-  }
-
-  const authorAssociation = payload.comment?.author_association;
-  const senderLogin = payload.sender?.login;
-  const prAuthorLogin = payload.issue?.user?.login;
-  // On an edit, such as a Force review tick, `author_association` belongs to the comment author, not to the editor.
-  const allowed = payload.action === 'edited'
-    ? !!senderLogin && await hasWriteAccess(octokit, owner, repo, senderLogin)
-    : isLLMAccessAllowed(authorAssociation, senderLogin, prAuthorLogin);
-  if (!allowed) {
-    core.info(`Ignoring review request from ${senderLogin} (${authorAssociation ?? 'unknown association'})`);
-    await octokit.rest.issues.createComment({
-      owner, repo, issue_number: prNumber,
-      body: withMarkers('Only repo contributors can trigger reviews.', PROGRESS_MARKER),
-    });
-    return;
   }
 
   const { data: pr } = await octokit.rest.pulls.get({
@@ -960,8 +965,7 @@ async function collectRoundSignals(
   const shouldFetchDiff = !!(lastPriorSha && lastPriorSha !== commitSha);
 
   // Read with the workflow token, which carries the `checks` and `security-events` permissions the workflow grants.
-  const workflowToken = core.getInput('github_token');
-  const staticSignalsPromise = collectStaticSignals(workflowToken ? github.getOctokit(workflowToken) : octokit, {
+  const staticSignalsPromise = collectStaticSignals(await workflowOctokit(), {
     owner, repo, prNumber, headSha: commitSha, baseRef, configPath, diff, fullDiff,
   });
 
@@ -1712,7 +1716,7 @@ async function main(): Promise<void> {
       await postCleanup();
     } else {
       core.saveState(POST_PHASE_STATE_KEY, 'true');
-      if (!isDispatchedRun() || await restoreDispatchedEvent((await getAuth()).octokit) === 'run') await run();
+      if (!isDispatchedRun() || await restoreDispatchedEvent(await workflowOctokit()) === 'run') await run();
     }
   } catch (error) {
     core.setFailed(`Manki encountered an error: ${failureReason(error)}`);
