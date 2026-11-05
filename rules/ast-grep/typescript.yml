@@ -19,9 +19,12 @@ rule:
     - pattern: $CP.exec($CMD $$$REST)
     - pattern: $CP.execSync($CMD $$$REST)
 constraints:
-  # Only a `child_process` binding, so a regex `exec` is never taken for a shell command.
+  # Only a `child_process` module, by a usual binding name or an inline `require`, so a regex `exec` is never taken
+  # for a shell command.
   CP:
-    regex: ^(cp|childProcess|child_process)$
+    any:
+      - regex: ^(cp|child|childProcess|child_process|proc|childProc)$
+      - regex: ^require\(\s*['"`](node:)?child_process['"`]\s*\)$
   CMD:
     any:
       - kind: binary_expression
