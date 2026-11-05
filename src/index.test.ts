@@ -5141,7 +5141,10 @@ describe('runFullReview orchestration', () => {
       outcome: 'ADDRESS_FIRST',
       verdictReason: 'prior_unaddressed',
       verdictTrace: { unresolvedPriors: [expect.objectContaining({ threadId: 'PRRT_fail', title: 'Bug A', file: 'src/app.ts', line: 1 })] },
+      threadEvaluations: [expect.objectContaining({ threadId: 'PRRT_fail', status: 'uncertain' })],
     });
+    const context = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+    expect(context?.judge.threadEvaluations).toEqual([expect.objectContaining({ threadId: 'PRRT_fail', status: 'uncertain' })]);
   });
 
   it('fails fast with setFailed when no API key is configured', async () => {
