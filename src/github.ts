@@ -3,7 +3,7 @@ import { createRequire } from 'module';
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { AgentProgressEntry, DashboardData, FOLLOW_UP_TAG, Finding, FindingFingerprintEntry, FindingSeverity, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, VALID_PR_TYPES, VerdictReason, VerdictTrace, VerdictTraceEntry, SECURITY_TAG, TestGuide, isBlockingSeverity } from './types';
+import { AgentProgressEntry, DashboardData, FOLLOW_UP_TAG, Finding, FindingFingerprintEntry, FindingSeverity, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, VALID_PR_TYPES, VerdictTraceEntry, SECURITY_TAG, TestGuide, isBlockingSeverity } from './types';
 import { isLineInDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { findPriorThreadId } from './finding-fingerprint';
