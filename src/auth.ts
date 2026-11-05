@@ -23,10 +23,15 @@ function createOctokit(token: string): Octokit {
   return github.getOctokit(token, { throttle: { onRateLimit, onSecondaryRateLimit: onRateLimit } }, retry, throttling);
 }
 
+/** An App token for review memory. `repo` is the only memory repo it can write, when it is narrowed to one. */
+export interface AppMemoryToken {
+  token: string;
+  repo?: string;
+}
+
 export interface AuthResult {
   octokit: Octokit;
-  /** The App's token for review memory, when the App can write the memory repo. */
-  appMemoryToken?: string;
+  appMemory?: AppMemoryToken;
   identity: 'app' | 'actions';
   bot: BotIdentity;
 }
@@ -131,7 +136,7 @@ export async function createAuthenticatedOctokit(): Promise<AuthResult> {
     core.info('Using GitHub App authentication for custom bot identity');
     const { token, slug } = await getInstallationToken(appId, privateKey);
     // A custom App's own token keeps the access its installation grants, so it still writes the memory repo.
-    return { octokit: createOctokit(token), appMemoryToken: token, identity: 'app', bot: { logins: [`${slug}[bot]`] } };
+    return { octokit: createOctokit(token), appMemory: { token }, identity: 'app', bot: { logins: [`${slug}[bot]`] } };
   }
 
   if (!githubToken) {
@@ -144,21 +149,22 @@ export async function createAuthenticatedOctokit(): Promise<AuthResult> {
 
   const octokit = createOctokit(token);
   const bot = identity === 'actions' ? await resolveTokenUserBot(octokit, token) : MANKI_BOT;
-  return { octokit, appMemoryToken: memoryToken, identity, bot };
+  const appMemory = memoryToken ? { token: memoryToken, repo: `${owner}/review-memory` } : undefined;
+  return { octokit, appMemory, identity, bot };
 }
 
 /**
- * Returns the token for review memory: `memory_repo_token`, else the App's memory token, else `null` with a warning.
- * The token service's review token is never used, since it can only read the reviewed repo.
+ * Returns the token for `memoryRepo`: `memory_repo_token`, else the App's memory token when it covers `memoryRepo`,
+ * else `null` with a warning. The token service's review token is never used, since it can only read the reviewed repo.
  */
-export function getMemoryToken(appMemoryToken: string | undefined): string | null {
+export function getMemoryToken(appMemory: AppMemoryToken | undefined, memoryRepo: string): string | null {
   const memoryRepoToken = core.getInput('memory_repo_token');
   if (memoryRepoToken) return memoryRepoToken;
-  if (appMemoryToken) return appMemoryToken;
+  if (appMemory && (!appMemory.repo || appMemory.repo.toLowerCase() === memoryRepo.toLowerCase())) return appMemory.token;
   core.warning(
-    'No token for review memory, so memory is skipped. Set `memory_repo_token`, or install the manki-review App on '
-    + 'your `review-memory` repo. The App token covers only a repo named `review-memory`, and a token service that '
-    + 'predates memory tokens issues none.',
+    `No token for the review memory repo \`${memoryRepo}\`, so memory is skipped. Set \`memory_repo_token\`, or install `
+    + 'the manki-review App on `<owner>/review-memory` and use that repo for memory. The App token covers only that '
+    + 'repo, and a token service that predates memory tokens issues none.',
   );
   return null;
 }

@@ -60,6 +60,14 @@ describe('cliEnv', () => {
       CLAUDE_CODE_OAUTH_TOKEN: 'claude-oauth',
       GITHUB_APP_PRIVATE_KEY: 'pem',
       AWS_SECRET: 'aws',
+      DB_PASSWORD: 'db',
+      LDAP_PASSWD: 'ldap',
+      GPG_PASSPHRASE: 'gpg',
+      DEPLOY_PAT: 'ghp_deploy',
+      GOOGLE_APPLICATION_CREDENTIALS: '/tmp/gcp.json',
+      DOCKER_CREDENTIAL: 'docker',
+      NPM_CONFIG__AUTH: 'npm-auth',
+      SSH_AUTH_SOCK: '/tmp/ssh-agent.sock',
       npm_config_token: 'npm',
       INPUT_GITHUB_TOKEN: 'ghs_input',
       INPUT_MODEL: 'claude-opus-4-6',
@@ -70,6 +78,7 @@ describe('cliEnv', () => {
       HOME: '/home/runner',
       GITHUB_REPOSITORY: 'manki-review/manki',
       CLAUDE_CODE_MAX_OUTPUT_TOKENS: '32768',
+      SSH_AUTH_SOCK: '/tmp/ssh-agent.sock',
     });
   });
 });

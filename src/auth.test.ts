@@ -12,31 +12,41 @@ jest.mock('@actions/github');
 const mockGetInput = core.getInput as jest.MockedFunction<typeof core.getInput>;
 
 describe('getMemoryToken', () => {
+  const MEMORY_REPO = 'owner/review-memory';
+  const SERVICE_MEMORY = { token: 'app-memory-token', repo: MEMORY_REPO };
+
   beforeEach(() => {
     mockGetInput.mockReset();
     jest.mocked(core.warning).mockClear();
   });
 
-  it('prefers memory_repo_token over the App memory token', () => {
+  it('prefers memory_repo_token over the App memory token, for any memory repo', () => {
     mockGetInput.mockImplementation((name: string) => (name === 'memory_repo_token' ? 'memory-token-123' : 'github-token-456'));
 
-    expect(getMemoryToken('app-memory-token')).toBe('memory-token-123');
-    expect(getMemoryToken(undefined)).toBe('memory-token-123');
+    expect(getMemoryToken(SERVICE_MEMORY, MEMORY_REPO)).toBe('memory-token-123');
+    expect(getMemoryToken(SERVICE_MEMORY, 'acme/team-memory')).toBe('memory-token-123');
+    expect(getMemoryToken(undefined, MEMORY_REPO)).toBe('memory-token-123');
     expect(core.warning).not.toHaveBeenCalled();
   });
 
-  it('returns the App memory token when memory_repo_token is empty', () => {
+  it('returns the App memory token for the repo it covers, and an unnarrowed one for any repo', () => {
     mockGetInput.mockImplementation((name: string) => (name === 'github_token' ? 'github-token-456' : ''));
 
-    expect(getMemoryToken('app-memory-token')).toBe('app-memory-token');
+    expect(getMemoryToken(SERVICE_MEMORY, MEMORY_REPO)).toBe('app-memory-token');
+    expect(getMemoryToken(SERVICE_MEMORY, 'Owner/Review-Memory')).toBe('app-memory-token');
+    expect(getMemoryToken({ token: 'custom-app-token' }, 'acme/team-memory')).toBe('custom-app-token');
     expect(core.warning).not.toHaveBeenCalled();
   });
 
-  it('returns null with one warning instead of falling back to github_token', () => {
+  it.each([
+    ['no App memory token', undefined, MEMORY_REPO],
+    ['an App memory token for another repo', SERVICE_MEMORY, 'acme/team-memory'],
+  ])('returns null with one warning for %s instead of falling back to github_token', (_case, appMemory, memoryRepo) => {
     mockGetInput.mockImplementation((name: string) => (name === 'github_token' ? 'github-token-456' : ''));
 
-    expect(getMemoryToken(undefined)).toBeNull();
+    expect(getMemoryToken(appMemory, memoryRepo)).toBeNull();
     expect(core.warning).toHaveBeenCalledTimes(1);
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining(`\`${memoryRepo}\``));
     expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('memory_repo_token'));
   });
 });
@@ -242,7 +252,7 @@ describe('createAuthenticatedOctokit', () => {
     expect(core.setSecret).toHaveBeenCalledWith('app-jwt-token');
     expect(core.setSecret).toHaveBeenCalledWith('installation-token-abc');
     expect(result.octokit).toBeDefined();
-    expect(result.appMemoryToken).toBe('installation-token-abc');
+    expect(result.appMemory).toEqual({ token: 'installation-token-abc' });
     expect(result.identity).toBe('app');
     expect(result.bot).toEqual({ logins: ['acme-reviewer[bot]'] });
   });
@@ -281,7 +291,7 @@ describe('createAuthenticatedOctokit', () => {
     const result = await createAuthenticatedOctokit();
 
     expect(result.octokit).toBeDefined();
-    expect(result.appMemoryToken).toBeUndefined();
+    expect(result.appMemory).toBeUndefined();
     expect(result.identity).toBe('actions');
     expect(result.bot).toEqual({ logins: ['manki-review[bot]', 'github-actions[bot]', 'review-user'] });
     expect(mockGetOctokit).toHaveBeenCalledWith('ghp_fallback', expect.anything(), retry, throttling);
@@ -343,7 +353,7 @@ describe('createAuthenticatedOctokit', () => {
 
     expect(result.identity).toBe('app');
     expect(result.bot).toEqual({ logins: ['manki-review[bot]', 'github-actions[bot]'] });
-    expect(getMemoryToken(result.appMemoryToken)).toBe(expected);
+    expect(getMemoryToken(result.appMemory, `${OWNER}/review-memory`)).toBe(expected);
   });
 
   it('uses custom manki_token_url when provided', async () => {
