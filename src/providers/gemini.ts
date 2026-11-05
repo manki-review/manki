@@ -189,6 +189,7 @@ export class GeminiClient implements LLMClient {
         ...(oauthToken ? { GOOGLE_GENAI_USE_GCA: 'true' } : {}),
       },
       input: fullPrompt,
+      hardTimeoutMs: options?.timeoutMs,
       onStdout: (chunk) => { output += chunk; },
     });
 
@@ -230,6 +231,7 @@ export class GeminiClient implements LLMClient {
         systemInstruction: systemPrompt,
         maxOutputTokens: thinks ? 32768 : 16384,
         ...(thinkingConfig && { thinkingConfig }),
+        ...(options?.timeoutMs && { abortSignal: AbortSignal.timeout(options.timeoutMs) }),
       },
     });
 

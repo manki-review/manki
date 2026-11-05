@@ -9,6 +9,8 @@ import { WRITING_RULES } from './writing-rules';
 const VERDICT_READER_NAME = 'Verdict reader';
 const MAX_BLOCKER_TITLE_LENGTH = 100;
 const MAX_TEST_STEPS = 8;
+// A normal verdict takes under two minutes. A runaway reply runs until the output limit.
+const VERDICT_TIMEOUT_MS = 300_000;
 
 // Every input here is identical on every round for the same tree. The reader must never learn
 // about earlier rounds, findings or the PR's own description, or it starts confirming instead of
@@ -103,7 +105,7 @@ function parseVerdictReport(responseText: string): VerdictReport {
 /** Runs the verdict reader once on `userMessage`. Throws when the call fails or its output is truncated or unparseable. */
 export async function runVerdictReader(client: LLMClient, userMessage: string): Promise<VerdictReport> {
   return sendWithParseRetry(
-    () => client.sendMessage(VERDICT_READER_SYSTEM_PROMPT, userMessage, { effort: 'high' }),
+    () => client.sendMessage(VERDICT_READER_SYSTEM_PROMPT, userMessage, { effort: 'high', timeoutMs: VERDICT_TIMEOUT_MS }),
     (response) => {
       if (response.truncated) {
         throw new Error(`verdict truncated at the output token limit (length ${response.content.length})`);

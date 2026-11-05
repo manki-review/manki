@@ -1981,7 +1981,7 @@ describe('runReview', () => {
       whatToTest: { setup: 'Sign in as an admin.', steps: ['Open the page. Expect the feature.'] },
     }));
     expect(clients.judge.sendMessage).toHaveBeenCalledTimes(1);
-    expect(jest.mocked(clients.judge.sendMessage).mock.calls[0][2]).toEqual({ effort: 'high' });
+    expect(jest.mocked(clients.judge.sendMessage).mock.calls[0][2]).toEqual({ effort: 'high', timeoutMs: 300_000 });
   });
 
   it('splits a plain-string whatToTest from the verdict reader into its setup and numbered steps', async () => {
@@ -3935,7 +3935,7 @@ describe('runPlanner', () => {
     const client = makeClient(JSON.stringify({ trivial: false, subtle: false, paired: true, judgeEffort: 'low', prType: 'feat' }));
     const result = await runPlanner(client, makeDiff({ totalAdditions: 100, totalDeletions: 20 }));
     expect(result).toEqual({ trivial: false, subtle: false, paired: true, judgeEffort: 'low', prType: 'feat' });
-    expect(client.sendMessage).toHaveBeenCalledWith(buildPlannerSystemPrompt(), expect.any(String), { effort: 'high' });
+    expect(client.sendMessage).toHaveBeenCalledWith(buildPlannerSystemPrompt(), expect.any(String), { effort: 'high', timeoutMs: PLANNER_TIMEOUT_MS });
   });
 
   it('takes the side that adds review for each missing or invalid answer, independently', async () => {

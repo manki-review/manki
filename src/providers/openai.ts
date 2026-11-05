@@ -214,6 +214,7 @@ export class OpenAIClient implements LLMClient {
       args,
       env: { ...safeCodexEnv, CODEX_HOME: codexHome },
       input: fullPrompt,
+      hardTimeoutMs: options?.timeoutMs,
       onStdout: (chunk) => { output += chunk; },
       stderrResetsStale: true,
     });
@@ -266,7 +267,8 @@ export class OpenAIClient implements LLMClient {
     }
 
     const startTime = Date.now();
-    const response = await this.openai.chat.completions.create(params as ChatCompletionCreateParamsNonStreaming);
+    const timeoutMs = options?.timeoutMs;
+    const response = await this.openai.chat.completions.create(params as ChatCompletionCreateParamsNonStreaming, timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : undefined);
     const choice = response.choices?.[0];
     const content = choice?.message?.content ?? '';
     core.debug(sanitizeLogOutput(content.slice(0, 200)));

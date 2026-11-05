@@ -238,6 +238,8 @@ export interface RunCliOptions {
   onStdout: (chunk: string) => void;
   /** Whether stderr output also resets the stale timer. */
   stderrResetsStale?: boolean;
+  /** Kills the CLI after this long whatever its output. Defaults to `HARD_TIMEOUT_MS`. */
+  hardTimeoutMs?: number;
 }
 
 export interface CliExit {
@@ -255,6 +257,7 @@ export interface CliExit {
  */
 export function runCli(opts: RunCliOptions): Promise<CliExit> {
   const { label } = opts;
+  const hardTimeoutMs = opts.hardTimeoutMs ?? HARD_TIMEOUT_MS;
   return new Promise((resolve, reject) => {
     const child = spawn(opts.cliPath, opts.args, {
       cwd: emptyCliCwd(),
@@ -288,7 +291,7 @@ export function runCli(opts: RunCliOptions): Promise<CliExit> {
       timedOut = true;
       clearTimeout(staleTimer);
       terminate();
-    }, HARD_TIMEOUT_MS);
+    }, hardTimeoutMs);
     timer.unref();
 
     const handleStale = (): void => {
@@ -353,7 +356,7 @@ export function runCli(opts: RunCliOptions): Promise<CliExit> {
       }
       if (timedOut) {
         const details = buildTimeoutDiagnostics(lastStdoutChunk, stderr);
-        const msg = `${label} CLI timed out after ${HARD_TIMEOUT_MS / 1000}s${details ? `. ${details}` : ''}`;
+        const msg = `${label} CLI timed out after ${hardTimeoutMs / 1000}s${details ? `. ${details}` : ''}`;
         core.warning(msg);
         reject(new Error(msg));
         return;

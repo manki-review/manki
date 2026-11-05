@@ -212,6 +212,7 @@ export class AnthropicClient implements LLMClient {
         CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(THINKING_MAX_TOKENS),
       },
       input: fullPrompt,
+      hardTimeoutMs: options?.timeoutMs,
       onStdout: (chunk) => {
         jsonBuffer += chunk;
         const lines = jsonBuffer.split('\n');
@@ -277,7 +278,8 @@ export class AnthropicClient implements LLMClient {
 
     const startTime = Date.now();
     // The SDK refuses non-streaming requests whose `max_tokens` could run past its 10 minute timeout.
-    const response = await this.anthropic.messages.stream(params).finalMessage();
+    const timeoutMs = options?.timeoutMs;
+    const response = await this.anthropic.messages.stream(params, timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : undefined).finalMessage();
 
     const textBlocks = response.content.filter((b) => b.type === 'text');
     const content = textBlocks.map((b) => 'text' in b ? b.text : '').join('\n');

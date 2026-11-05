@@ -293,7 +293,7 @@ export async function runPlanner(
   try {
     const userMessage = buildPlannerSummary(diff);
     const response = await Promise.race([
-      client.sendMessage(buildPlannerSystemPrompt(), userMessage, { effort: 'high' }),
+      client.sendMessage(buildPlannerSystemPrompt(), userMessage, { effort: 'high', timeoutMs: PLANNER_TIMEOUT_MS }),
       timeoutPromise,
     ]);
     clearTimeout(timeoutId!);

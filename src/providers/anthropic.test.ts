@@ -166,6 +166,15 @@ describe('sendMessage effort option (API path)', () => {
     }
   });
 
+  it('bounds the API call with an abort signal only when `timeoutMs` is set', async () => {
+    const client = new AnthropicClient({ auth: { kind: 'apiKey', key: 'sk-key' }, model: 'claude-opus-5-5' });
+    await client.sendMessage('system', 'user', { timeoutMs: 300_000 });
+    await client.sendMessage('system', 'user');
+
+    expect(mockStream.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal);
+    expect(mockStream.mock.calls[1][1]).toBeUndefined();
+  });
+
   it('omits thinking on the 4.5 generation when effort is low', async () => {
     const params = await sentParams('claude-sonnet-4-5', 'low');
     expect(params.thinking).toBeUndefined();
@@ -556,7 +565,10 @@ describe('sendViaOAuth — error paths', () => {
     }
   });
 
-  it('rejects with plain 1200s timeout when stderr is empty', async () => {
+  it.each<[number | undefined, number]>([
+    [undefined, 1200],
+    [300_000, 300],
+  ])('rejects with plain timeout when stderr is empty (timeoutMs %s)', async (timeoutMs, limitSeconds) => {
     jest.useFakeTimers();
     try {
       const proc = {
@@ -581,20 +593,22 @@ describe('sendViaOAuth — error paths', () => {
       mockSpawn.mockReturnValue(proc as unknown as ReturnType<typeof spawn>);
       const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' });
 
-      const promise = client.sendMessage('sys', 'user');
+      const promise = client.sendMessage('sys', 'user', { timeoutMs });
 
       await jest.advanceTimersByTimeAsync(0);
 
-      // Keep stdout alive to prevent the stale checker from firing
-      for (let i = 0; i < 14; i++) {
+      // Keep stdout alive to prevent the stale checker from firing, stopping one step before the limit.
+      for (let i = 0; i < Math.ceil(limitSeconds / 80) - 1; i++) {
         await jest.advanceTimersByTimeAsync(80_000);
         stdoutCb!(Buffer.from(`keepalive-${i}`));
       }
+      expect(proc.kill).not.toHaveBeenCalled();
 
       await jest.advanceTimersByTimeAsync(80_000);
+      expect(proc.kill).toHaveBeenCalledWith('SIGTERM');
       closeCb!(null, 'SIGTERM');
 
-      await expect(promise).rejects.toThrow('Claude CLI timed out after 1200s');
+      await expect(promise).rejects.toThrow(`Claude CLI timed out after ${limitSeconds}s`);
     } finally {
       jest.useRealTimers();
     }

@@ -1155,7 +1155,7 @@ describe('runJudgeAgent', () => {
     expect(mockSendMessage).toHaveBeenCalledWith(
       expect.any(String),
       expect.any(String),
-      { effort: 'high' },
+      { effort: 'high', timeoutMs: 300_000 },
     );
   });
 

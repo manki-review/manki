@@ -213,6 +213,8 @@ const IN_PR_SUPPRESSION_LINE_TOLERANCE = 5;
 /** Cap on inter-round diff size embedded in the judge user message, to keep prompts bounded on large rebases. */
 export const MAX_INTER_ROUND_DIFF_CHARS = 20000;
 
+const JUDGE_TIMEOUT_MS = 300_000;
+
 /**
  * Whether the inter-round diff is known to be empty, meaning prior rounds exist
  * but the tree is unchanged (force-pushed rebase, branch reset, identical
@@ -981,7 +983,7 @@ export async function runJudgeAgent(
 
   const effort = input.effort ?? 'high';
   let judgeResult = await sendWithParseRetry(
-    () => client.sendMessage(systemPrompt, userMessage, { effort }),
+    () => client.sendMessage(systemPrompt, userMessage, { effort, timeoutMs: JUDGE_TIMEOUT_MS }),
     (reply) => {
       const parsed = parseJudgeResponse(reply.content);
       if (parsed.findings.length === 0 && findings.length > 0) {
@@ -1005,7 +1007,7 @@ export async function runJudgeAgent(
       const retryUserMessage = `${reminder}\n\nOriginal message:\n${userMessage}`;
       let retryResult: JudgeResult | undefined;
       try {
-        const retryResponse = await client.sendMessage(systemPrompt, retryUserMessage, { effort });
+        const retryResponse = await client.sendMessage(systemPrompt, retryUserMessage, { effort, timeoutMs: JUDGE_TIMEOUT_MS });
         retryResult = parseJudgeResponse(retryResponse.content);
       } catch (err) {
         core.warning(`Judge retry failed (${err}); synthesizing 'uncertain' for ${missing.length} missing thread(s).`);
