@@ -48,6 +48,9 @@ function isSecurityThread(body: string): boolean {
 /** Marks Manki's reply on a security thread it reopened after the PR author resolved it. */
 const REOPENED_MARKER = '<!-- manki-reopened -->';
 
+/** A reply that opens with a `dismiss` command. */
+const DISMISS_COMMAND_RE = /^\s*(?:@manki-review|@manki|\/manki)\s+dismiss\b/i;
+
 const SECURITY_OVERRIDE_MARKER_RE = /<!-- manki-security-override:(resolve|dismiss):([\w-]+) -->/;
 
 /** Marks Manki's reply on a security thread the PR author cleared as a repo admin, with how and by whom. */
@@ -203,6 +206,7 @@ function hasSignalWithoutNegation(tokens: string[], signal: string): boolean {
  */
 function classifyAuthorReply(text: string | undefined): AuthorReplyClass {
   if (!text) return 'none';
+  if (DISMISS_COMMAND_RE.test(text)) return 'agree';
   const tokens = tokenize(text.toLowerCase());
   if (AGREE_SIGNALS.some(s => hasSignalWithoutNegation(tokens, s))) return 'agree';
   if (DISAGREE_SIGNALS.some(s => hasSignalWithoutNegation(tokens, s))) return 'disagree';

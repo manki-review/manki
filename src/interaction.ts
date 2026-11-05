@@ -369,8 +369,9 @@ interface ParsedCommand {
 const BOT_MENTION_PATTERN = /(?:@manki-review|@manki|\/manki)\b/;
 const BOT_PREFIX_PATTERN = /(?:@manki-review|@manki|\/manki)\s+(explain|dismiss|help|remember|forget|check)(?:\s+(.*))?/;
 
+/** Parses the first command in `body`. A command quoted in inline code or a code block is text, not a command. */
 function parseCommand(body: string): ParsedCommand {
-  const lower = body.toLowerCase();
+  const lower = body.replace(/```[\s\S]*?(?:```|$)|`[^`\n]*`/g, ' ').toLowerCase();
   const match = lower.match(BOT_PREFIX_PATTERN);
 
   if (match) {

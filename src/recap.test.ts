@@ -328,6 +328,12 @@ describe('classifyAuthorReply', () => {
     expect(classifyAuthorReply('Partially handled')).toBe('partial');
   });
 
+  it('classifies a reply that opens with a dismiss command as agree', () => {
+    expect(classifyAuthorReply('@manki dismiss')).toBe('agree');
+    expect(classifyAuthorReply('/manki dismiss the token is test data')).toBe('agree');
+    expect(classifyAuthorReply('Please do not @manki dismiss this.')).not.toBe('agree');
+  });
+
   it('returns none for undefined or empty text', () => {
     expect(classifyAuthorReply(undefined)).toBe('none');
     expect(classifyAuthorReply('')).toBe('none');
@@ -1327,7 +1333,7 @@ describe('fetchRecapState', () => {
     it('keeps a security finding blocking until someone other than the PR author dismisses it', async () => {
       const title = 'Token leaks into logs';
       const slug = titleToSlug(title);
-      type Case = { resolver?: string; reply?: { login: string; association: string }; reopened?: boolean; dismissed?: boolean; security: boolean; blocks: boolean };
+      type Case = { resolver?: string; reply?: { login: string; association: string; text?: string }; reopened?: boolean; dismissed?: boolean; security: boolean; blocks: boolean };
       const cases: Record<string, Case> = {
         'src/author-resolved.ts': { resolver: 'author', security: true, blocks: true },
         // A recorded override counts only once the PR author passes the admin check, since a Manki reply can echo any text.
@@ -1338,6 +1344,7 @@ describe('fetchRecapState', () => {
         'src/outsider-agreed.ts': { reply: { login: 'carol', association: 'CONTRIBUTOR' }, security: true, blocks: true },
         'src/collaborator-resolved.ts': { resolver: 'alice', security: true, blocks: false },
         'src/collaborator-agreed.ts': { reply: { login: 'bob', association: 'MEMBER' }, security: true, blocks: false },
+        'src/collaborator-dismissed.ts': { resolver: BOT_LOGIN, reply: { login: 'bob', association: 'MEMBER', text: '@manki dismiss' }, security: true, blocks: false },
         // `MEMBER` covers an org member with read access, so write access comes from the API.
         'src/reader-agreed.ts': { reply: { login: 'dave', association: 'MEMBER' }, security: true, blocks: true },
         'src/judge-addressed.ts': { resolver: 'author', security: true, blocks: false },
@@ -1348,7 +1355,7 @@ describe('fetchRecapState', () => {
       const ctx = makeRoundContext(1, {
         findings: {
           count: files.length,
-          severityCounts: { blocker: 10, warning: 2, suggestion: 0, nitpick: 0 },
+          severityCounts: { blocker: 11, warning: 2, suggestion: 0, nitpick: 0 },
           entries: files.map(file => ({
             fingerprint: { file, lineStart: 10, lineEnd: 10, slug },
             severity: cases[file].security ? 'blocker' as const : 'warning' as const,
@@ -1373,7 +1380,7 @@ describe('fetchRecapState', () => {
             { body, author: { login: BOT_LOGIN } },
             ...(reopened ? [{ body: `<!-- manki -->\n${REOPENED_MARKER}\nReopened.`, author: { login: BOT_LOGIN } }] : []),
             ...(dismissed ? [{ body: `Dismissed.\n<!-- manki -->\n${securityOverrideMarker('dismiss', 'author')}`, author: { login: BOT_LOGIN } }] : []),
-            ...(reply ? [{ body: 'Agreed, no change needed.', author: { login: reply.login }, authorAssociation: reply.association }] : []),
+            ...(reply ? [{ body: reply.text ?? 'Agreed, no change needed.', author: { login: reply.login }, authorAssociation: reply.association }] : []),
           ] },
         });
       }), [{ id: 100, body: detailsBlock(ctx), user: { login: BOT_LOGIN } }]);
@@ -1407,7 +1414,7 @@ describe('fetchRecapState', () => {
 
       // A reply from someone with write access agrees a security thread away under the same fallback.
       expect(collectInPrSuppressions(unknownAuthor.previousFindings).filter(s => s.reason === 'agree-reply').map(s => s.fingerprint.file))
-        .toEqual(['src/author-agreed.ts', 'src/collaborator-agreed.ts']);
+        .toEqual(['src/author-agreed.ts', 'src/collaborator-agreed.ts', 'src/collaborator-dismissed.ts']);
 
       // A repo admin author clears their own resolved threads. Nothing is reopened, and the override waits for Manki's reply.
       // Permissions are cached per client, so the admin check needs a fresh one.

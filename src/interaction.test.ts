@@ -99,6 +99,12 @@ describe('parseCommand', () => {
     expect(result).toEqual<ParsedCommand>({ type: 'explain', args: 'the changes' });
   });
 
+  it('ignores a command quoted in inline code or a code block', () => {
+    expect(parseCommand('Fixed. The `@manki dismiss` path now checks write access.').type).toBe('generic');
+    expect(parseCommand('Repro:\n```\n@manki dismiss\n```\nStill broken.').type).toBe('generic');
+    expect(parseCommand('`x` then @manki dismiss null-check')).toEqual<ParsedCommand>({ type: 'dismiss', args: 'null-check' });
+  });
+
   it('handles @manki in the middle of a comment', () => {
     const result = parseCommand('Hey @manki explain this function please');
     expect(result).toEqual<ParsedCommand>({ type: 'explain', args: 'this function please' });
