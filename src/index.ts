@@ -10,7 +10,7 @@ import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parse
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
 import { recordFixRate } from './fix-rate';
-import { addCodeContext, parsePRDiff, filterDiff, filterRawDiff, isDiffTooLarge, isSameChange, rebuildRawDiff } from './diff';
+import { addCodeContext, parsePRDiff, filterDiff, filterRawDiff, isDiffTooLarge, rebuildRawDiff } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, RepoMemory } from './memory';
@@ -45,7 +45,6 @@ import {
   titleToSlug,
   isApprovedOnCommit,
   hasBotReviewOnCommit,
-  fetchStandingVerdict,
   fetchPRComments,
   markOwnProgressCommentCancelled,
   markProgressCommentFailed,
@@ -54,8 +53,8 @@ import {
   checkConcurrentSubmissionLock,
   postConfigErrorComment,
 } from './github';
-import type { BotIdentity, LinkedIssue, StandingVerdict } from './github';
-import { announceSecurityOverrides, checkAndAutoApprove, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices } from './state';
+import type { BotIdentity, LinkedIssue } from './github';
+import { announceSecurityOverrides, checkAndAutoApprove, findUnchangedVerdict, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices } from './state';
 import type { PauseState } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -444,30 +443,6 @@ async function handleCommentTrigger(forceReview?: boolean, skipCap?: boolean, by
 
 function failureReason(error: unknown): string {
   return sanitizeLogOutput(sanitizeTokens(error instanceof Error ? error.message : String(error)));
-}
-
-/**
- * Returns the standing verdict when the PR's own change at `commitSha` equals
- * the change at the reviewed commit, otherwise `undefined`. Both commits are
- * compared against `baseRef`, so a clean rebase or an empty commit matches.
- */
-async function findUnchangedVerdict(
-  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number,
-  baseRef: string, commitSha: string, excludePaths: string[],
-): Promise<StandingVerdict | undefined> {
-  const standing = await fetchStandingVerdict(octokit, bot, owner, repo, prNumber);
-  if (!standing || standing.commitSha === commitSha) return undefined;
-  try {
-    const [reviewed, current] = await Promise.all([
-      fetchInterRoundDiff(octokit, owner, repo, baseRef, standing.commitSha),
-      fetchInterRoundDiff(octokit, owner, repo, baseRef, commitSha),
-    ]);
-    if (!reviewed.trim() || !current.trim()) return undefined;
-    return isSameChange(reviewed, current, excludePaths) ? standing : undefined;
-  } catch (error) {
-    core.warning(`Could not compare with the reviewed commit, reviewing in full: ${error instanceof Error ? error.message : error}`);
-    return undefined;
-  }
 }
 
 function reconcileDashboardAgents(dashboard: DashboardData, names: string[]): void {

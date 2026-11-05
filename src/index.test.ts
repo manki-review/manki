@@ -244,6 +244,7 @@ jest.mock('./state', () => ({
   replyToReviewThread: jest.requireActual('./state').replyToReviewThread,
   resolveReviewThread: jest.requireActual('./state').resolveReviewThread,
   retireStaleNotices: jest.requireActual('./state').retireStaleNotices,
+  findUnchangedVerdict: jest.requireActual('./state').findUnchangedVerdict,
 }));
 
 jest.mock('./fix-rate', () => ({

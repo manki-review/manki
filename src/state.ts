@@ -1,7 +1,9 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { BotIdentity, BOT_MARKER as PROGRESS_MARKER, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchPRComments, fetchReviewThreadNodes, FOLLOW_UP_MARKER, FORCE_CAP_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, postAutoApproveProgressComment } from './github';
+import { BotIdentity, BOT_MARKER as PROGRESS_MARKER, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchInterRoundDiff, fetchPRComments, fetchReviewThreadNodes, fetchStandingVerdict, FOLLOW_UP_MARKER, FORCE_CAP_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, postAutoApproveProgressComment } from './github';
+import type { StandingVerdict } from './github';
+import { isSameChange } from './diff';
 import { fetchPriorRoundContexts, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, PreviousFinding, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf } from './recap';
 import { FindingSeverity, isBlockingSeverity, migrateLegacySeverity, ReviewConfig, RoundContext, SecurityOverride, SEVERITY_TOKEN_PATTERN } from './types';
 import { withMarkers } from './utils';
@@ -14,6 +16,30 @@ const STALE_APPROVE_MARKER_PREFIX = '<!-- manki-stale-approve:';
 
 function staleApproveMarker(headSha: string): string {
   return `${STALE_APPROVE_MARKER_PREFIX}${headSha} -->`;
+}
+
+/**
+ * Returns the standing verdict when the PR's own change at `commitSha` equals
+ * the change at the reviewed commit, otherwise `undefined`. Both commits are
+ * compared against `baseRef`, so a clean rebase or an empty commit matches.
+ */
+async function findUnchangedVerdict(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number,
+  baseRef: string, commitSha: string, excludePaths: string[],
+): Promise<StandingVerdict | undefined> {
+  const standing = await fetchStandingVerdict(octokit, bot, owner, repo, prNumber);
+  if (!standing || standing.commitSha === commitSha) return undefined;
+  try {
+    const [reviewed, current] = await Promise.all([
+      fetchInterRoundDiff(octokit, owner, repo, baseRef, standing.commitSha),
+      fetchInterRoundDiff(octokit, owner, repo, baseRef, commitSha),
+    ]);
+    if (!reviewed.trim() || !current.trim()) return undefined;
+    return isSameChange(reviewed, current, excludePaths) ? standing : undefined;
+  } catch (error) {
+    core.warning(`Could not compare with the reviewed commit, reviewing in full: ${error instanceof Error ? error.message : error}`);
+    return undefined;
+  }
 }
 
 interface ReviewThread {
@@ -424,4 +450,4 @@ async function checkAndAutoApprove(
   return true;
 }
 
-export { PauseState, ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, fetchBotReviewThreads, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
+export { PauseState, ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, fetchBotReviewThreads, findUnchangedVerdict, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
