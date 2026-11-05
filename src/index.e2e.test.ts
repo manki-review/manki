@@ -146,6 +146,7 @@ class FakeGitHub {
       this.addThread(body.path, 0, body.body, login);
       return json({ id: this.nextId++ }, 201);
     }
+    if (method === 'GET' && route.startsWith('/compare/') && headers.get('accept')?.includes('diff')) return text(PR_DIFF);
     if (method === 'GET' && route === `/contents/src/math.ts`) {
       return json({ type: 'file', encoding: 'base64', size: MATH_TS.length, content: Buffer.from(MATH_TS).toString('base64') });
     }
@@ -211,6 +212,11 @@ class FakeGitHub {
         thread.resolvedBy = thread.isResolved ? { login: login.replace(/\[bot\]$/, '') } : null;
       }
       return { resolveReviewThread: { thread: { isResolved: thread?.isResolved } }, unresolveReviewThread: { thread: { isResolved: thread?.isResolved } } };
+    }
+    if (query.includes('addPullRequestReviewThreadReply')) {
+      const thread = this.threads.find(t => t.id === variables.threadId);
+      thread?.comments.push({ body: String(variables.body), url: `${thread.comments[0].url}-reply`, authorAssociation: 'NONE', author: { login: login.replace(/\[bot\]$/, '') } });
+      return { addPullRequestReviewThreadReply: { comment: { id: 'C_reply' } } };
     }
     if (query.includes('reviewThreads(')) {
       const page = connection(this.threads, 100, after(variables.cursor));
@@ -278,7 +284,7 @@ const INPUTS: Record<string, string> = {
 };
 
 function reviewRound(trigger = 'pull_request:opened', force = false): Promise<void> {
-  return runFullReview(OWNER, REPO, PR_NUMBER, HEAD_SHA, 'main', { title: 'Keep the sum in a variable', body: 'Small refactor.', baseBranch: 'main' }, {
+  return runFullReview(OWNER, REPO, PR_NUMBER, mockGitHub.headSha, 'main', { title: 'Keep the sum in a variable', body: 'Small refactor.', baseBranch: 'main' }, {
     prAuthorLogin: 'alice',
     headRepoFullName: `${OWNER}/${REPO}`,
     trigger: { event: trigger, sender: 'alice' },
@@ -413,6 +419,42 @@ describe('runFullReview end to end', () => {
     await forcedRound();
     expect(postedReviews()).toHaveLength(2);
     expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('another Manki run (id=6999)'));
+  });
+
+  it('keeps a blocker in its open thread across a rebase, then resolves it once a round confirms the fix', async () => {
+    Object.assign(mockLLM.replies, BLOCKER_REPLIES);
+    await reviewRound();
+    expect(mockGitHub.threads).toHaveLength(1);
+
+    // A rebase with the thread open and unanswered: the judge names the same blocker in new words.
+    mockGitHub.headSha = 'b2'.repeat(20);
+    const reworded = { ...BLOCKER, title: 'Adding two numbers can overflow' };
+    Object.assign(mockLLM.replies, {
+      reviewer: JSON.stringify([reworded]),
+      judge: JSON.stringify({
+        summary: 'The range check is still missing.',
+        findings: [{ id: 1, title: reworded.title, severity: 'blocker', reasoning: 'Still reachable.', confidence: 'high', reachability: 'reachable', sameAs: 'B1' }],
+        threadEvaluations: [{ threadId: 'PRRT_1', status: 'not_addressed', reason: 'No range check yet.' }],
+      }),
+    });
+    await reviewRound();
+
+    const rebased = postedReviews()[1];
+    expect(rebased.state).toBe('CHANGES_REQUESTED');
+    expect(mockGitHub.roundContext(rebased).meta.outcome).toBe('ADDRESS_FIRST');
+    expect(rebased.body).toContain('**Still open from earlier reviews:**\n- `src/math.ts:2`: Sum is never range checked ([view thread](https://github.com/acme/widgets/pull/42#discussion_PRRT_1))');
+    expect(mockGitHub.threads).toHaveLength(1);
+
+    mockGitHub.headSha = 'c3'.repeat(20);
+    Object.assign(mockLLM.replies, READY_REPLIES, {
+      judge: JSON.stringify({ summary: 'The range check is in place.', findings: [], threadEvaluations: [{ threadId: 'PRRT_1', status: 'addressed', reason: 'The sum is checked now.' }] }),
+    });
+    await reviewRound();
+
+    expect(postedReviews()[2].state).toBe('APPROVED');
+    const [thread] = mockGitHub.threads;
+    expect(thread.isResolved).toBe(true);
+    expect(thread.comments.at(-1)?.body).toMatch(/^Fixed in c3c3c3c\./);
   });
 
   it('recognises its own comments, reviews and threads when it posts with the Actions token', async () => {

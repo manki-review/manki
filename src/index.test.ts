@@ -235,6 +235,7 @@ jest.mock('./github', () => {
 jest.mock('./state', () => ({
   checkAndAutoApprove: jest.fn().mockResolvedValue(false),
   reopenAuthorResolvedThreads: jest.fn().mockResolvedValue(undefined),
+  replyToReviewThread: jest.requireActual('./state').replyToReviewThread,
   resolveReviewThread: jest.requireActual('./state').resolveReviewThread,
 }));
 
@@ -4966,6 +4967,8 @@ describe('runFullReview orchestration', () => {
     );
     expect(mockGraphql.mock.calls.some(([query]) => String(query).includes('resolveReviewThread'))).toBe(posted);
     expect(jest.mocked(core.info).mock.calls.some(([m]) => m === 'Judge resolved: "Fixed in latest push" — thread PRRT_abc')).toBe(posted);
+    expect(mockGraphql.mock.calls.some(([query, vars]) => String(query).includes('addPullRequestReviewThreadReply')
+      && (vars as { body?: string }).body === 'Fixed in abc123.\n\n<!-- manki -->')).toBe(posted);
   });
 
   it('resolves only threads with status addressed', async () => {

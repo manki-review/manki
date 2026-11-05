@@ -3344,6 +3344,27 @@ describe('postReview fallback paths', () => {
       expect(posted).toEqual(['Resolved-thread', 'Far-line-thread', 'Other-file']);
     });
 
+    it('points a blocker linked to an open thread at that thread instead of posting a new one', async () => {
+      const createReviewComment = jest.fn().mockResolvedValue({ data: { id: 1 } });
+      const { octokit, createReview } = makeOctokit(createReviewComment);
+      const existingThreads = [{
+        title: 'Floor class runs on one model', file: 'src/a.ts', line: 2, severity: 'blocker' as const, status: 'open' as const,
+        threadId: 'T1', threadUrl: 'https://github.com/owner/repo/pull/1#discussion_r1', markerSlug: 'Floor-class-runs-on-one-model',
+      }];
+      const named = (line: number): Finding => ({ ...offLineBlocker, title: 'Floor class weakened by the PR', line, threadId: 'T1' });
+
+      for (const line of [2, 40]) {
+        await postReview(octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([named(line)]), outcome: 'ADDRESS_FIRST' }, diff, undefined, undefined, undefined, { existingThreads });
+      }
+
+      expect(createReviewComment).not.toHaveBeenCalled();
+      for (const [review] of createReview.mock.calls) {
+        expect(review.comments).toEqual([]);
+        expect(review.body).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker\./u);
+        expect(review.body).toContain('**Still open from earlier reviews:**\n- `src/a.ts:2`: Floor class runs on one model ([view thread](https://github.com/owner/repo/pull/1#discussion_r1))');
+      }
+    });
+
     it.each([
       ['a 422', 422],
       ['a 5xx', 502],

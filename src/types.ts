@@ -165,6 +165,8 @@ export interface Finding {
   reviewerSeverity?: FindingSeverity;
   /** Fingerprint key of the prior-round blocker that names the same defect. */
   sameAs?: string;
+  /** ID of the still open thread where an earlier round raised this blocker. The review points at that thread instead of opening a new one. */
+  threadId?: string;
   /** Tool that reported the finding, when it comes from a CI or code-scanning result instead of a reviewer. */
   toolSource?: string;
   /** What the deterministic claim checks and CI results say about the finding. */

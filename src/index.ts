@@ -54,7 +54,7 @@ import {
   postConfigErrorComment,
 } from './github';
 import type { BotIdentity, LinkedIssue, StandingVerdict } from './github';
-import { checkAndAutoApprove, reopenAuthorResolvedThreads, resolveReviewThread } from './state';
+import { checkAndAutoApprove, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -1026,7 +1026,7 @@ async function postIncompleteRound(run: ReviewRun, result: ReviewResult): Promis
 }
 
 /**
- * Resolve threads the judge marked `addressed`. Other statuses
+ * Resolve threads the judge marked `addressed`, each with a `Fixed in <sha>.` reply. Other statuses
  * (`not_addressed`, `uncertain`) are logged for audit but never trigger a
  * resolveReviewThread mutation. Unknown thread IDs are filtered.
  *
@@ -1058,6 +1058,12 @@ async function resolveAddressedThreads(run: ReviewRun, result: ReviewResult): Pr
         core.info(`Judge resolved: "${reason}" — thread ${threadId}`);
       } catch (error) {
         core.debug(`Failed to resolve thread ${threadId}: ${error}`);
+        continue;
+      }
+      try {
+        await replyToReviewThread(run.octokit, threadId, `Fixed in ${run.commitSha.slice(0, 7)}.`);
+      } catch (error) {
+        core.warning(`Failed to reply on resolved thread ${threadId}: ${error}`);
       }
     }
   }

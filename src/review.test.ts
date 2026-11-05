@@ -30,6 +30,7 @@ import { Finding, RoundContext, OpenThread, ReviewerAgent, ReviewConfig, ReviewG
 import { fingerprintEntriesFromLegacy, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, roundContextFromLegacy } from './test-utils';
 import { runJudgeAgent, computeProvenanceMap } from './judge';
 import { applySuppressions } from './memory';
+import { PreviousFinding } from './recap';
 import { WRITING_RULES } from './writing-rules';
 import { LLMClient, LLMResponse, wrapClientForUsage } from './providers';
 
@@ -787,13 +788,24 @@ describe('determineOutcome', () => {
       expect(result.verdictReason).toBe('prior_unaddressed');
     });
 
-    it('keeps `prior_unaddressed` for a blocker prior even when the judge marks it `addressed` (LLM verdict cannot retire blockers)', () => {
+    it('retires a blocker prior on an open thread when the judge marks it `addressed`, and only then', () => {
       const priors = [makePriorWarning({ severity: 'blocker', title: 'Null deref', threadId: 'T_BLOCKER' })];
       const open = [makeOpenThread({ threadId: 'T_BLOCKER', severity: 'blocker', title: 'Null deref' })];
-      const evaluations: ThreadEvaluation[] = [{ threadId: 'T_BLOCKER', status: 'addressed', reason: 'fix landed' }];
-      const result = determineOutcome([nitpick], fingerprintEntriesFromLegacy(priors), open, undefined, evaluations);
-      expect(result.outcome).toBe('ADDRESS_FIRST');
-      expect(result.verdictReason).toBe('prior_unaddressed');
+      const evaluate = (status: ThreadEvaluation['status']) => determineOutcome(
+        [nitpick], fingerprintEntriesFromLegacy(priors), open, undefined, [{ threadId: 'T_BLOCKER', status, reason: 'r' }],
+      );
+      expect(evaluate('addressed').outcome).toBe('READY');
+      expect(evaluate('uncertain').verdictReason).toBe('prior_unaddressed');
+      expect(evaluate('not_addressed').verdictReason).toBe('prior_unaddressed');
+    });
+
+    it('lists a thread once when two priors point at it', () => {
+      const priors = [
+        makePriorWarning({ severity: 'blocker', threadId: 'T1' }),
+        makePriorWarning({ severity: 'blocker', threadId: 'T1', title: 'Same bug, new words', fingerprint: { file: 'src/x.ts', lineStart: 30, lineEnd: 30, slug: 'same-bug' } }),
+      ];
+      const result = determineOutcome([nitpick], fingerprintEntriesFromLegacy(priors), [makeOpenThread({ severity: 'blocker' })]);
+      expect(result.verdictTrace.unresolvedPriors.map(p => p.title)).toEqual(['Old issue']);
     });
 
     it('collapses multi-round priors by threadId, keeping the most recent round (round 2 agree wins over round 1 none)', () => {
@@ -2223,12 +2235,13 @@ describe('runReview', () => {
     ]);
   });
 
-  it('ends NOT_CONVERGING when a blocker raised before a fix push comes back', async () => {
+  it('ends NOT_CONVERGING only when a blocker comes back after a fix was claimed', async () => {
     const prior = buildPriorRound(1, [makePriorWarningFinding({ severity: 'blocker' })]);
     const repeat: Finding = { severity: 'blocker', title: 'Same bug, new words', file: 'src/x.ts', line: 30, description: 'd', reviewers: ['r'], sameAs: 'src/x.ts:10:10:old-issue' };
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
     const openThread = makePriorOpenThread({ severity: 'blocker', threadUrl: 'https://github.com/o/r/pull/1#t1' });
-    const runOn = (clients: ReviewClients, headSha: string, openThreads = [openThread]) => runReview(
+    const thread = (status: PreviousFinding['status']): PreviousFinding => ({ title: 'Old issue', file: 'src/x.ts', line: 10, severity: 'blocker', status, threadId: 'T1' });
+    const runOn = (clients: ReviewClients, headSha: string, openThreads = [openThread], previousFindings = [thread('open')]) => runReview(
       clients, {
         config: makeConfig(),
         diff,
@@ -2236,36 +2249,90 @@ describe('runReview', () => {
         repoContext: 'repo context',
         isFollowUp: true,
         openThreads,
-        previousFindings: [],
+        previousFindings,
         priorRounds: [prior],
         headSha,
       },
     );
 
+    // A rebase with the thread still open and unanswered: the blocker is still open, and points at its thread.
     mockedRunJudgeAgent.mockResolvedValue({ findings: [repeat], summary: 'Still broken.' });
-    const pushed = await runOn(makeClients(), 'sha2');
-    expect(pushed.outcome).toBe('NOT_CONVERGING');
-    expect(pushed.verdict).toBe('REQUEST_CHANGES');
-    expect(pushed.needsHuman).toEqual({
+    const rebased = await runOn(makeClients(), 'sha2');
+    expect(rebased.outcome).toBe('ADDRESS_FIRST');
+    expect(rebased.needsHuman).toBeUndefined();
+    expect(rebased.findings).toEqual([expect.objectContaining({ title: 'Same bug, new words', threadId: 'T1' })]);
+
+    const replied = await runOn(makeClients(), 'sha2', [openThread], [thread('replied')]);
+    expect(replied.outcome).toBe('NOT_CONVERGING');
+    expect(replied.verdict).toBe('REQUEST_CHANGES');
+    expect(replied.needsHuman).toEqual({
       cause: 'repeated',
       blockers: [expect.objectContaining({ title: 'Old issue', file: 'src/x.ts', line: 10, round: 1, threadUrl: 'https://github.com/o/r/pull/1#t1' })],
     });
 
-    const samePush = await runOn(makeClients(), 'sha1');
+    // A resolved thread is a fix claim too. Its blocker is posted again, since no open thread carries it.
+    const resolved = await runOn(makeClients(), 'sha2', [], [thread('resolved')]);
+    expect(resolved.outcome).toBe('NOT_CONVERGING');
+    expect(resolved.findings[0].threadId).toBeUndefined();
+
+    const samePush = await runOn(makeClients(), 'sha1', [openThread], [thread('replied')]);
     expect(samePush.outcome).toBe('ADDRESS_FIRST');
     expect(samePush.needsHuman).toBeUndefined();
 
     mockedRunJudgeAgent.mockResolvedValue({ findings: [{ ...repeat, sameAs: undefined }], summary: 'New bug.' });
-    expect((await runOn(makeClients(), 'sha2')).outcome).toBe('ADDRESS_FIRST');
+    const unrelated = await runOn(makeClients(), 'sha2', [openThread], [thread('replied')]);
+    expect(unrelated.outcome).toBe('ADDRESS_FIRST');
+    expect(unrelated.findings[0].threadId).toBeUndefined();
 
     mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'Clean.' });
     const refusing = makeClients();
     jest.mocked(refusing.judge.sendMessage).mockResolvedValue({
       content: JSON.stringify({ verdict: 'ADDRESS_FIRST', blockers: ['src/x.ts:12: Old issue is still there.'], summary: 'One defect.', whatThisDoes: 'x', whatToTest: 'y' }),
     });
-    const readerRepeat = await runOn(refusing, 'sha2', []);
+    const readerRepeat = await runOn(refusing, 'sha2', [], [thread('resolved')]);
     expect(readerRepeat.outcome).toBe('NOT_CONVERGING');
     expect(readerRepeat.needsHuman?.blockers.map(b => b.title)).toEqual(['Old issue']);
+  });
+
+  it('clears an open blocker thread only when the round confirms the fix on a file the push changed', async () => {
+    const prior = buildPriorRound(1, [makePriorWarningFinding({ severity: 'blocker' })]);
+    const openThread = makePriorOpenThread({ severity: 'blocker' });
+    const addressed: ThreadEvaluation = { threadId: 'T1', status: 'addressed', reason: 'The check is in place.' };
+    const runWith = (interRoundDiff: string | undefined) => runReview(
+      makeClients(), {
+        config: makeConfig(),
+        diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }),
+        rawDiff: 'raw diff',
+        repoContext: 'repo context',
+        isFollowUp: true,
+        openThreads: [openThread],
+        previousFindings: [],
+        priorRounds: [prior],
+        interRoundDiff,
+        headSha: 'sha2',
+      },
+    );
+    const touching = 'diff --git a/src/x.ts b/src/x.ts\n--- a/src/x.ts\n+++ b/src/x.ts\n@@ -10 +10 @@\n-old\n+new\n';
+    const elsewhere = touching.replace(/src\/x\.ts/g, 'src/y.ts');
+
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'Fixed.', threadEvaluations: [addressed] });
+    const confirmed = await runWith(touching);
+    expect(confirmed.outcome).toBe('READY');
+    expect(confirmed.verdict).toBe('APPROVE');
+    expect(confirmed.threadEvaluations).toEqual([addressed]);
+
+    for (const diff of [elsewhere, undefined]) {
+      const unconfirmed = await runWith(diff);
+      expect(unconfirmed.outcome).toBe('ADDRESS_FIRST');
+      expect(unconfirmed.verdictReason).toBe('prior_unaddressed');
+      expect(unconfirmed.threadEvaluations).toEqual([expect.objectContaining({ threadId: 'T1', status: 'uncertain' })]);
+    }
+
+    const repeat: Finding = { severity: 'blocker', title: 'Same bug, new words', file: 'src/x.ts', line: 30, description: 'd', reviewers: ['r'], sameAs: 'src/x.ts:10:10:old-issue' };
+    mockedRunJudgeAgent.mockResolvedValue({ findings: [repeat], summary: 'Still broken.', threadEvaluations: [addressed] });
+    const namedAgain = await runWith(touching);
+    expect(namedAgain.outcome).toBe('ADDRESS_FIRST');
+    expect(namedAgain.threadEvaluations).toEqual([expect.objectContaining({ threadId: 'T1', status: 'not_addressed' })]);
   });
 
   it('ends the last automatic round BUDGET when nothing blocks, otherwise NOT_CONVERGING', async () => {
