@@ -19,11 +19,19 @@ permissions:
 
 jobs:
   review:
-    # Bot login defined in src/github.ts as BOT_LOGIN — keep in sync
-    if: github.actor != 'manki-review[bot]'
+    # Mirrors the entry checks in `run()` in `src/index.ts`. The bot login is `BOT_LOGIN` in `src/github.ts`.
+    if: >-
+      github.actor != 'manki-review[bot]'
+      && github.event.sender.type != 'Bot'
+      && github.event.review.user.type != 'Bot'
+      && (github.event.action != 'closed' || github.event.pull_request.merged)
+      && (github.event_name != 'issue_comment' || contains(github.event.comment.body, '@manki') || contains(github.event.comment.body, '/manki') || contains(github.event.comment.body, '- [x] Force review'))
+      && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)
     concurrency:
-      group: manki-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}', github.event_name, github.event.comment.id || github.event.review.id || github.run_id) }}
-      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+      group: manki-${{ (github.event_name == 'pull_request' || (github.event_name == 'issue_comment' && (contains(github.event.comment.body, 'manki review') || contains(github.event.comment.body, '- [x] Force review')))) && 'review' || 'reply' }}-${{ github.event.pull_request.number || github.event.issue.number }}
+      queue: max
+    timeout-minutes: 30
+    cache-mode: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

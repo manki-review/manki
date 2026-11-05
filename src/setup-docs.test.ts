@@ -14,6 +14,11 @@ interface MankiStep {
   with?: Record<string, unknown>;
 }
 
+interface Workflow {
+  on: Record<string, unknown>;
+  jobs: Record<string, Record<string, unknown>>;
+}
+
 const ROOT = path.join(__dirname, '..');
 
 function readRepoFile(name: string): string {
@@ -53,13 +58,19 @@ describe('documented workflow snippets', () => {
     'docs/index.html': htmlCodeBlocks(readRepoFile('docs/index.html')).filter(usesManki),
   };
 
-  it('includes the full workflow from SETUP.md Step 3 and docs/index.html', () => {
+  it('includes the full workflow from SETUP.md Step 3 and docs/index.html, with the job settings of our own workflow', () => {
+    const own = (parseYaml(readRepoFile('.github/workflows/manki.yml')) as Workflow).jobs.review;
     const step3 = setup.slice(setup.indexOf('## Step 3: Add the Workflow'));
     for (const block of [markdownYamlBlocks(step3)[0], snippets['docs/index.html'][0]]) {
-      const workflow = parseYaml(block) as { on: Record<string, unknown> };
+      const workflow = parseYaml(block) as Workflow;
       expect(Object.keys(workflow.on)).toContain('pull_request');
       expect(findMankiSteps(workflow)).toHaveLength(1);
+      const { if: condition, concurrency, 'timeout-minutes': timeout } = workflow.jobs.review;
+      expect({ condition, concurrency, timeout }).toEqual({ condition: own.if, concurrency: own.concurrency, timeout: own['timeout-minutes'] });
     }
+    const jobs = Object.values(snippets).flat().map(block => (parseYaml(block) as Partial<Workflow>).jobs?.review).filter(job => job !== undefined);
+    expect(jobs.length).toBeGreaterThan(2);
+    for (const job of jobs) expect(job.if).toContain(own.if);
     expect(snippets['SETUP.md'].length).toBeGreaterThan(1);
   });
 
