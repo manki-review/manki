@@ -248,7 +248,15 @@ describe('reopenAuthorResolvedThreads', () => {
       ['unresolveReviewThread', 'T_author'],
     ]);
     expect(graphql.mock.calls[0][1].body).toMatch(/^Reopened\. A security finding needs a maintainer or a fix/);
+    expect(graphql.mock.calls[0][1].body).toContain('push a fix and Manki will check it');
     expect(graphql.mock.calls[0][1].body.endsWith(`\n\n${BOT_MARKER}\n${REOPENED_MARKER}`)).toBe(true);
+
+    // While automatic review is paused a push is not reviewed, so the reply asks for `@manki review`.
+    graphql.mockClear();
+    await reopenAuthorResolvedThreads({ graphql } as unknown as Octokit, [previous('T_author', true)], true);
+    const pausedReply = graphql.mock.calls[0][1].body;
+    expect(pausedReply).toContain('Automatic review is paused, so after pushing a fix comment `@manki review` and Manki will check it.');
+    expect(pausedReply).not.toContain('push a fix and Manki will check it');
   });
 
   it('skips the reopen when the reply fails, and keeps going when the reopen fails', async () => {

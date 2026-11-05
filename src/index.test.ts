@@ -5416,6 +5416,21 @@ describe('runFullReview orchestration', () => {
         .find(([args]) => typeof args.body === 'string' && args.body.includes('Automatic review is paused'));
       expect(notice![0].body).toContain('came back after a fix');
       expect(notice![0].body).toContain(FORCE_CAP_MARKER);
+      expect(jest.mocked(stateModule.reopenAuthorResolvedThreads)).toHaveBeenCalledWith(expect.anything(), [], true);
+
+      // A later push during the same pause updates that notice. A notice from before the last round is left alone.
+      const posted = (id: number, updatedAt: string) => ({ id, body: notice![0].body, user: { login: 'manki-review[bot]', type: 'Bot' }, updated_at: updatedAt });
+      const createComment = jest.mocked(mockOctokitInstance.rest.issues.createComment);
+      jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([posted(501, '2025-01-02T00:00:00Z'), posted(500, '2024-12-31T00:00:00Z')]);
+      createComment.mockClear();
+      await callRunFullReview();
+      expect(mockOctokitInstance.rest.issues.updateComment).toHaveBeenCalledWith(expect.objectContaining({ comment_id: 501, body: notice![0].body }));
+      expect(createComment.mock.calls.some(([args]) => String(args.body).includes('Automatic review is paused'))).toBe(false);
+
+      jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([posted(500, '2024-12-31T00:00:00Z')]);
+      await callRunFullReview();
+      expect(createComment.mock.calls.filter(([args]) => String(args.body).includes('Automatic review is paused'))).toHaveLength(1);
+      jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([]);
 
       await runFullReview(
         baseArgs.owner, baseArgs.repo, baseArgs.prNumber,
