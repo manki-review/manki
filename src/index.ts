@@ -6,7 +6,7 @@ import * as path from 'path';
 import { assertWritesAllowed, RunCancelledError, stopWritesOn } from './abort';
 import { AuthResult, createAuthenticatedOctokit, getMemoryToken } from './auth';
 import { sanitizeTokens, withMarkers } from './utils';
-import { applyBaseReviewConfig, BaseReviewConfig, loadConfig, loadConfigFromFile, loadReviewConfig, sanitizeForkConfig, resolveFallbackModel, resolveModel, resolvePairModel } from './config';
+import { applyBaseReviewConfig, BaseReviewConfig, loadConfig, loadConfigFromFile, loadReviewConfig, sanitizeForkConfig, resolveFallbackModel, resolveMemoryRepo, resolveModel, resolvePairModel } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { extractCurrentCodeWindow } from './code-window';
@@ -366,7 +366,7 @@ async function handleMergedPullRequest(): Promise<void> {
   if (config.memory?.enabled) {
     const memoryToken = getMemoryToken(appMemoryToken);
     if (memoryToken) {
-      memory = { octokit: github.getOctokit(memoryToken), repo: config.memory.repo || `${owner}/review-memory` };
+      memory = { octokit: github.getOctokit(memoryToken), repo: resolveMemoryRepo(config.memory, owner) };
     } else {
       core.info('The fix rate goes to the job summary only');
     }
@@ -808,7 +808,7 @@ async function loadRunMemory(
     return { memory: null, memoryLoadStatus: 'no_token' };
   }
   const memoryOctokit = github.getOctokit(memoryToken);
-  const memoryRepo = config.memory?.repo || `${owner}/review-memory`;
+  const memoryRepo = resolveMemoryRepo(config.memory, owner);
   try {
     const memory = await loadMemory(memoryOctokit, memoryRepo, repo);
     core.info(`Loaded memory: ${memory.learnings.length} learnings, ${memory.suppressions.length} suppressions`);

@@ -93,6 +93,7 @@ jest.mock('./config', () => {
     loadReviewConfig: actual.loadReviewConfig,
     applyBaseReviewConfig: actual.applyBaseReviewConfig,
     resolveFallbackModel: jest.fn().mockImplementation(actual.resolveFallbackModel),
+    resolveMemoryRepo: actual.resolveMemoryRepo,
     resolveReviewerModel: jest.fn((config: ReviewConfig, ref: string | undefined) =>
       ref === '@reviewer_pair' ? resolvePairModel(config) : ref === undefined || ref === '@reviewer' ? resolveModel(config, 'reviewer') : ref),
   };
