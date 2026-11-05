@@ -702,6 +702,7 @@ function initialDashboard(diff: ParsedDiff, config: ReviewConfig, plannerEnabled
         lineCount,
         agentCount: previewTeam.finders.length,
         agentProgress: previewTeam.finders.map(a => ({ name: a.name, status: 'reviewing' as const })),
+        routing: previewTeam.routing,
       };
 }
 
@@ -984,6 +985,7 @@ async function reviewRound(
           }
           dashboard.agentCount = event.teamAgentNames.length;
           dashboard.agentProgress = event.teamAgentNames.map(name => ({ name, status: 'reviewing' as const }));
+          dashboard.routing = event.routing;
           dashboard.plannerDurationMs = event.plannerDurationMs;
           if (event.heuristicFallback) dashboard.heuristicFallback = true;
           dashboard.phase = 'started';
@@ -1187,6 +1189,7 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult)
   const completeDashboard: DashboardData = {
     ...dashboard,
     phase: 'complete',
+    ...(result.routing && { routing: result.routing }),
     keptCount: result.findings.length,
     droppedCount: judgeDroppedCount,
     keptSeverities,

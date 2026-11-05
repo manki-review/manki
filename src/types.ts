@@ -340,7 +340,7 @@ export interface Triage {
 
 /** Who reads the diff in a round. Every non-trivial finder gets the same prompt. */
 export interface Finder {
-  /** Label on its findings and metrics. */
+  /** Display name, unique in its round, such as "Claude Sonnet 5.5 · high". Labels its findings, metrics and progress line. */
   name: string;
   prompt: ReviewerAgent;
   /** Position in its review group. The second reader, index 1, is the pair finder. */
@@ -740,6 +740,8 @@ export interface DashboardData {
   judgeDurationMs?: number;
   /** True when team selection fell back to the heuristic because the planner failed or timed out. Surfaces a one-line marker in the rendered summary so the broader team set is self-explanatory. */
   heuristicFallback?: boolean;
+  /** The review class and group the round's readers came from, shown in the review header. */
+  routing?: Pick<TeamRouting, 'class' | 'group'>;
 }
 
 export interface JudgeDecision {

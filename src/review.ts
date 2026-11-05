@@ -3,12 +3,12 @@ import { minimatch } from 'minimatch';
 
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { resolveReviewerModel } from './config';
-import { addUsage, LLMClient, LLMUsage, withRefusalFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
+import { addUsage, LLMClient, LLMUsage, modelDisplayName, withRefusalFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
 import { runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, LinkedIssue, titleToSlug } from './github';
 import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, PreviousFinding, titleOverlapType } from './recap';
-import { FOLLOW_UP_TAG, SECURITY_TAG, ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundStaticSignalMatch, EffortLevel, Finder, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { FOLLOW_UP_TAG, SECURITY_TAG, ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundStaticSignalMatch, EffortLevel, Finder, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, parsePRDiff, rebuildRawDiff } from './diff';
 import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, chooseGroup, classifyPr, resolveRouting } from './routing';
 import { extractJSON } from './json';
@@ -53,6 +53,8 @@ class PlannerTimeoutError extends Error {
 }
 
 const SUSPICIOUS_FAST_THRESHOLD_MS = 15_000;
+
+const FOCUS_LABEL_LENGTH = 40;
 
 function accumulateAgentUsage(map: Map<string, LLMUsage>, name: string, usage: LLMUsage): void {
   map.set(name, addUsage(map.get(name) ?? { ...ZERO_USAGE }, usage));
@@ -100,15 +102,30 @@ export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triag
   };
 }
 
+/** Cuts a group's `focus` to about `FOCUS_LABEL_LENGTH` characters at a word boundary for a reader's name. */
+function shortFocus(focus: string): string {
+  const text = focus.replace(/\s+/g, ' ').trim();
+  if (text.length <= FOCUS_LABEL_LENGTH) return text;
+  const cut = text.slice(0, FOCUS_LABEL_LENGTH + 1);
+  const end = cut.lastIndexOf(' ');
+  return `${cut.slice(0, end > 0 ? end : FOCUS_LABEL_LENGTH).replace(/[\s,;:.]+$/, '')}…`;
+}
+
 function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage): Finder[] {
   const shared = buildFinderAgent(config.reviewers);
+  const names = new Set<string>();
   return group.reviewers.map((reviewer, index) => {
     const model = resolveReviewerModel(config, reviewer.model);
     const effort: EffortLevel = !reviewer.effort || reviewer.effort === 'auto' ? (triage.subtle ? 'high' : 'medium') : reviewer.effort;
-    if (reviewer.role === 'verifier') return { name: TRIVIAL_VERIFIER_AGENT.name, prompt: TRIVIAL_VERIFIER_AGENT, index, model, effort };
-    const prompt = reviewer.focus ? buildFinderAgent([...config.reviewers, { name: 'This review group', focus: reviewer.focus }]) : shared;
-    const label = index === 0 ? 'Finder' : index === 1 ? 'Pair finder' : `Finder ${index + 1}`;
-    return { name: `${label} (${model})`, prompt, index, model, effort };
+    const verifier = reviewer.role === 'verifier';
+    const prompt = verifier ? TRIVIAL_VERIFIER_AGENT
+      : reviewer.focus ? buildFinderAgent([...config.reviewers, { name: 'This review group', focus: reviewer.focus }]) : shared;
+    const label = verifier ? `Quick check · ${modelDisplayName(model)}`
+      : [modelDisplayName(model), effort, ...(reviewer.focus ? [shortFocus(reviewer.focus)] : [])].join(' · ');
+    let name = label;
+    for (let n = 2; names.has(name); n++) name = `${label} #${n}`;
+    names.add(name);
+    return { name, prompt, index, model, effort };
   });
 }
 
@@ -211,6 +228,8 @@ export interface ReviewProgress {
   teamAgentNames?: string[];
   /** Effort those agents run at. Emitted with `teamAgentNames`. */
   reviewerEffort?: EffortLevel;
+  /** Review class and group those agents came from. Emitted with `teamAgentNames`. */
+  routing?: TeamRouting;
   /** True when the planner failed or timed out, so the fail-safe triage was used. */
   heuristicFallback?: boolean;
 }
@@ -501,6 +520,7 @@ export async function runReview(
       phase: 'planning',
       teamAgentNames: team.finders.map(f => f.name),
       reviewerEffort,
+      routing,
       ...(plannerResult && { plannerResult }),
       ...(plannerSource === 'heuristic_fallback' && { heuristicFallback: true }),
       ...(plannerDurationMs !== undefined && { plannerDurationMs }),

@@ -2530,11 +2530,11 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
-    const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/auth.ts', line: 5, description: 'd', reviewers: ['Finder (claude-sonnet-5-5)'] };
+    const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/auth.ts', line: 5, description: 'd', reviewers: ['Claude Sonnet 5.5 · medium'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Issues found',
       findings: [finding], highlights: [], reviewComplete: true,
-      agentNames: ['Finder (claude-sonnet-5-5)', 'Pair finder (claude-opus-5-5)'],
+      agentNames: ['Claude Sonnet 5.5 · medium', 'Claude Opus 5.5 · medium'],
       allJudgedFindings: [finding], rawFindings: [finding],
       plannerResult: {
         trivial: true,
@@ -2549,8 +2549,8 @@ describe('runFullReview orchestration', () => {
       plannerSource: 'planner',
       triage: { trivial: false, subtle: false, paired: true },
       sensitivePaths: true,
-      agentEffortMap: new Map([['Finder (claude-sonnet-5-5)', 'medium'], ['Pair finder (claude-opus-5-5)', 'medium']]),
-      pairAgentName: 'Pair finder (claude-opus-5-5)',
+      agentEffortMap: new Map([['Claude Sonnet 5.5 · medium', 'medium'], ['Claude Opus 5.5 · medium', 'medium']]),
+      pairAgentName: 'Claude Opus 5.5 · medium',
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
 
@@ -2659,8 +2659,8 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
-    const primaryName = 'Finder (claude-sonnet-5-5)';
-    const pairName = 'Pair finder (claude-opus-5-5)';
+    const primaryName = 'Claude Sonnet 5.5 · high';
+    const pairName = 'Claude Opus 5.5 · high';
     const pairOnly = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: [pairName] };
     const primaryOnly = { severity: 'suggestion' as const, title: 'Style', file: 'src/app.ts', line: 8, description: 'd', reviewers: [primaryName] };
     const both = { severity: 'warning' as const, title: 'Race', file: 'src/app.ts', line: 9, description: 'd', reviewers: [primaryName, pairName] };
@@ -2681,6 +2681,7 @@ describe('runFullReview orchestration', () => {
 
     await callRunFullReview();
 
+    expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[4].routing).toEqual(expect.objectContaining({ class: 'behavior', group: 'pair' }));
     const ctx = jest.mocked(ghUtils.postReview).mock.calls[0][7];
     expect(ctx!.reviewers.agentMetrics?.map(m => [m.name, m.model])).toEqual([
       [primaryName, 'claude-sonnet-5-5'],
@@ -2710,7 +2711,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
     jest.mocked(ghUtils.readConfigFile).mockResolvedValueOnce('review:\n  groups:\n    deep:\n      reviewers: [{ model: claude-opus-5-5 }, { model: gemini-3-pro }, { model: claude-sonnet-5-5 }]\n  routing:\n    security: deep\n');
 
-    const [a, b, c] = ['Finder (claude-opus-5-5)', 'Pair finder (gemini-3-pro)', 'Finder 3 (claude-sonnet-5-5)'];
+    const [a, b, c] = ['Claude Opus 5.5 · high', 'Gemini 3 Pro · high', 'Claude Sonnet 5.5 · medium'];
     const finding = (title: string, reviewers: string[]) => ({ severity: 'warning' as const, title, file: 'src/net/peer.ts', line: 2, description: 'd', reviewers });
     const findings = [finding('One', [a]), finding('Two', [c]), finding('Three', [a, b]), finding('Four', [a, b, c]), finding('Five', [c])];
     jest.mocked(reviewModule.runReview).mockResolvedValue({
@@ -3499,7 +3500,7 @@ describe('runFullReview orchestration', () => {
         agents: ['Security & Safety', 'Architecture & Design', 'Correctness & Logic', 'Testing & Coverage'],
       }];
       seedPriorRounds(priorRounds);
-      const team = ['Finder (claude-sonnet-5-5)', 'Pair finder (claude-opus-5-5)'];
+      const team = ['Claude Sonnet 5.5 · medium', 'Claude Opus 5.5 · medium'];
 
       jest.mocked(reviewModule.runReview).mockImplementation(async (_clients, { onProgress }) => {
         onProgress?.({
