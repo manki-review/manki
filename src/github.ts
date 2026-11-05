@@ -912,7 +912,7 @@ function hasOpenThread(finding: Finding, existingThreads: PreviousFinding[]): bo
  *
  * A blocking finding on a changed line gets a line comment, one elsewhere in a diff file
  * gets a file-level comment. A finding that one of the open `existingThreads` already carries
- * is not posted again. A blocker whose `threadId` names one of them is listed in the body with
+ * is not posted again. A blocker whose `threadId` names one of them is listed in the body under
  * a link to that thread. When `interRoundDiff` is given, non-blocking findings on code it did not
  * change are only counted.
  *
@@ -960,7 +960,10 @@ export async function postReview(
     const openThread = f.threadId ? existingThreads.find(t => t.threadId === f.threadId) : undefined;
     if (openThread) {
       core.info(`Skipping "${f.title}" on ${f.file}: the open thread ${f.threadId} already carries it`);
-      if (!result.needsHuman?.blockers.some(b => b.threadId === f.threadId)) stillOpen.push(formatTraceEntry(openThread));
+      if (!result.needsHuman?.blockers.some(b => b.threadId === f.threadId)) {
+        // The finding shows under the link, so a wrong `sameAs` link still shows the defect. The indent keeps it in the list item.
+        stillOpen.push(`${formatTraceEntry(openThread)}\n\n${`This round names it as:\n\n${formatFindingBlock(f, linkTo)}`.replace(/^(?=.)/gm, '  ')}`);
+      }
       continue;
     }
 

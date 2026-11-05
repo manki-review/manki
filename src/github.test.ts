@@ -3361,8 +3361,9 @@ describe('postReview fallback paths', () => {
       for (const [review] of createReview.mock.calls) {
         expect(review.comments).toEqual([]);
         expect(review.body).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker\./u);
-        expect(review.body).toContain('**Still open from earlier reviews:**\n- `src/a.ts:2`: Floor class runs on one model ([view thread](https://github.com/owner/repo/pull/1#discussion_r1))');
+        expect(review.body).toContain('**Still open from earlier reviews:**\n- `src/a.ts:2`: Floor class runs on one model ([view thread](https://github.com/owner/repo/pull/1#discussion_r1))\n\n  This round names it as:\n\n  **Floor class weakened by the PR**\n  [`src/a.ts:');
       }
+      expect(createReview.mock.calls[1][0].body).toContain('  [`src/a.ts:40`](https://github.com/owner/repo/blob/sha/src/a.ts#L40)\n  Desc.');
     });
 
     it.each([
