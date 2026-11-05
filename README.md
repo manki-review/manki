@@ -74,11 +74,11 @@ instructions: |
   This is a Rust project. Focus on ownership and error handling.
 
 models:
-  planner: claude-haiku-4-5
-  reviewer: claude-sonnet-4-6
-  reviewer_pair: claude-opus-4-7   # second finder on paired rounds
-  judge: claude-opus-4-6
-  dedup: claude-haiku-4-5
+  planner: claude-haiku-5-5
+  reviewer: claude-sonnet-5-5
+  reviewer_pair: claude-opus-5-5   # second finder on paired rounds
+  judge: claude-opus-5-5
+  dedup: claude-haiku-5-5
 ```
 
 See [`.manki.yml.example`](.manki.yml.example) for all options, or [SETUP.md](SETUP.md) for the full guide.

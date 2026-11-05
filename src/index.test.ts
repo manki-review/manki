@@ -141,7 +141,7 @@ jest.mock('./review', () => ({
     reviewComplete: true,
     agentNames: ['general'],
   }),
-  selectTeam: jest.fn().mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, pair: false, model: 'claude-sonnet-4-6', effort: 'high' }], triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false }),
+  selectTeam: jest.fn().mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, pair: false, model: 'claude-sonnet-5-5', effort: 'high' }], triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false }),
 }));
 
 jest.mock('./github', () => {
@@ -1800,7 +1800,7 @@ describe('runFullReview orchestration', () => {
       findings: [], highlights: [], reviewComplete: true,
       agentNames: ['general'],
     });
-    jest.mocked(reviewModule.selectTeam).mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, pair: false, model: 'claude-sonnet-4-6', effort: 'high' }], triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false });
+    jest.mocked(reviewModule.selectTeam).mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, pair: false, model: 'claude-sonnet-5-5', effort: 'high' }], triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false });
     jest.mocked(ghUtils.postProgressComment).mockResolvedValue(1);
     jest.mocked(ghUtils.postReview).mockResolvedValue(123);
     jest.mocked(ghUtils.fetchPRDiff).mockResolvedValue('');
@@ -2426,11 +2426,11 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
-    const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/auth.ts', line: 5, description: 'd', reviewers: ['Finder (claude-sonnet-4-6)'] };
+    const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/auth.ts', line: 5, description: 'd', reviewers: ['Finder (claude-sonnet-5-5)'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Issues found',
       findings: [finding], highlights: [], reviewComplete: true,
-      agentNames: ['Finder (claude-sonnet-4-6)', 'Pair finder (claude-opus-4-7)'],
+      agentNames: ['Finder (claude-sonnet-5-5)', 'Pair finder (claude-opus-5-5)'],
       allJudgedFindings: [finding], rawFindings: [finding],
       plannerResult: {
         trivial: true,
@@ -2445,8 +2445,8 @@ describe('runFullReview orchestration', () => {
       plannerSource: 'planner',
       triage: { trivial: false, subtle: false, paired: true },
       sensitivePaths: true,
-      agentEffortMap: new Map([['Finder (claude-sonnet-4-6)', 'medium'], ['Pair finder (claude-opus-4-7)', 'medium']]),
-      pairAgentName: 'Pair finder (claude-opus-4-7)',
+      agentEffortMap: new Map([['Finder (claude-sonnet-5-5)', 'medium'], ['Pair finder (claude-opus-5-5)', 'medium']]),
+      pairAgentName: 'Pair finder (claude-opus-5-5)',
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
 
@@ -2532,7 +2532,7 @@ describe('runFullReview orchestration', () => {
       agentNames: ['Security & Safety'],
       allJudgedFindings: [finding], rawFindings: [finding],
       agentEffortMap: new Map([['Security & Safety', 'high']]),
-      agentModels: new Map([['Security & Safety', 'claude-sonnet-4-6']]),
+      agentModels: new Map([['Security & Safety', 'claude-sonnet-5-5']]),
       agentMultiPassConsistency: new Map([['Security & Safety', { consistent: 2, totalRaw: 5 }]]),
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
@@ -2545,7 +2545,7 @@ describe('runFullReview orchestration', () => {
         name: 'Security & Safety',
         effort: 'high',
         multiPassConsistency: { consistent: 2, totalRaw: 5 },
-        model: 'claude-sonnet-4-6',
+        model: 'claude-sonnet-5-5',
       }),
     ]);
   });
@@ -2555,8 +2555,8 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
-    const primaryName = 'Finder (claude-sonnet-4-6)';
-    const pairName = 'Pair finder (claude-opus-4-7)';
+    const primaryName = 'Finder (claude-sonnet-5-5)';
+    const pairName = 'Pair finder (claude-opus-5-5)';
     const pairOnly = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: [pairName] };
     const primaryOnly = { severity: 'suggestion' as const, title: 'Style', file: 'src/app.ts', line: 8, description: 'd', reviewers: [primaryName] };
     const both = { severity: 'warning' as const, title: 'Race', file: 'src/app.ts', line: 9, description: 'd', reviewers: [primaryName, pairName] };
@@ -2567,7 +2567,7 @@ describe('runFullReview orchestration', () => {
       findings, highlights: [], reviewComplete: true,
       agentNames: [primaryName, pairName],
       allJudgedFindings: findings, rawFindings: findings,
-      agentModels: new Map([[primaryName, 'claude-sonnet-4-6'], [pairName, 'claude-opus-4-7']]),
+      agentModels: new Map([[primaryName, 'claude-sonnet-5-5'], [pairName, 'claude-opus-5-5']]),
       pairAgentName: pairName,
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
@@ -2576,12 +2576,12 @@ describe('runFullReview orchestration', () => {
 
     const ctx = jest.mocked(ghUtils.postReview).mock.calls[0][7];
     expect(ctx!.reviewers.agentMetrics?.map(m => [m.name, m.model])).toEqual([
-      [primaryName, 'claude-sonnet-4-6'],
-      [pairName, 'claude-opus-4-7'],
+      [primaryName, 'claude-sonnet-5-5'],
+      [pairName, 'claude-opus-5-5'],
     ]);
     expect(ctx!.reviewers).toEqual(expect.objectContaining({ keptPrimaryOnly: 1, keptPairOnly: 1, keptBoth: 1 }));
     expect(ctx!.findings.entries.find(e => e.title === 'Race')?.reviewers).toEqual([primaryName, pairName]);
-    expect(ctx!.models.reviewerPair).toBe('claude-opus-4-7');
+    expect(ctx!.models.reviewerPair).toBe('claude-opus-5-5');
   });
 
   it('builds `perStage` with only present stages when planner and dedup are absent', async () => {
@@ -3343,7 +3343,7 @@ describe('runFullReview orchestration', () => {
         agents: ['Security & Safety', 'Architecture & Design', 'Correctness & Logic', 'Testing & Coverage'],
       }];
       seedPriorRounds(priorRounds);
-      const team = ['Finder (claude-sonnet-4-6)', 'Pair finder (claude-opus-4-7)'];
+      const team = ['Finder (claude-sonnet-5-5)', 'Pair finder (claude-opus-5-5)'];
 
       jest.mocked(reviewModule.runReview).mockImplementation(async (_clients, _config, _diff, _rawDiff, _ctx, _mem, _files, _pr, _issues, onProgress) => {
         onProgress?.({
@@ -5059,7 +5059,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(configModule.resolveModel).mockImplementation((_cfg, stage: string) => {
       if (stage === 'planner') return 'claude-sonnet-4-20250514';
       if (stage === 'reviewer') return 'gpt-4o';
-      if (stage === 'judge') return 'claude-opus-4-7';
+      if (stage === 'judge') return 'claude-opus-5-5';
       return 'claude-sonnet-4-20250514'; // dedup
     });
     jest.mocked(parseModelSpec).mockImplementation((m: string) =>
@@ -5077,7 +5077,7 @@ describe('runFullReview orchestration', () => {
       );
       // Judge stage routed to Anthropic with apiKey auth.
       expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
-        'anthropic', 'claude-opus-4-7', { kind: 'apiKey', key: 'sk-anthropic' },
+        'anthropic', 'claude-opus-5-5', { kind: 'apiKey', key: 'sk-anthropic' },
       );
       // Planner stage routed to Anthropic.
       expect(jest.mocked(createLLMClient)).toHaveBeenCalledWith(
@@ -5614,7 +5614,7 @@ describe('runFullReview orchestration', () => {
       exclude_paths: [],
       reviewers: [], instructions: '',
       memory: { enabled: false, repo: '' },
-      models: { reviewer: 'claude-sonnet-4-6' },
+      models: { reviewer: 'claude-sonnet-5-5' },
     };
 
     it('logs the pair model next to the other stage models', async () => {
@@ -5622,13 +5622,13 @@ describe('runFullReview orchestration', () => {
 
       await callRunFullReview();
 
-      expect(jest.mocked(core.info)).toHaveBeenCalledWith(expect.stringContaining('reviewer pair: claude-opus-4-7'));
+      expect(jest.mocked(core.info)).toHaveBeenCalledWith(expect.stringContaining('reviewer pair: claude-opus-5-5'));
     });
 
     it('builds the pair client from `resolvePairModel` and fails the run when it cannot be built', async () => {
       const pairClient = { sendMessage: jest.fn() };
       jest.mocked(createLLMClient).mockImplementation((_p: unknown, model: unknown) =>
-        model === 'claude-opus-4-7' ? pairClient : { sendMessage: jest.fn() },
+        model === 'claude-opus-5-5' ? pairClient : { sendMessage: jest.fn() },
       );
       jest.mocked(configModule.loadConfig).mockReturnValue(baseConfig);
       const testFile = {
@@ -5648,7 +5648,7 @@ describe('runFullReview orchestration', () => {
       jest.mocked(reviewModule.runReview).mockClear();
       jest.mocked(configModule.loadConfig).mockReturnValue({
         ...baseConfig,
-        models: { reviewer: 'claude-sonnet-4-6', reviewer_pair: 'bogus-pair' },
+        models: { reviewer: 'claude-sonnet-5-5', reviewer_pair: 'bogus-pair' },
       });
       jest.mocked(parseModelSpec).mockImplementation((m: string) => {
         if (m === 'bogus-pair') throw new Error('Unknown model "bogus-pair"');
@@ -6460,7 +6460,7 @@ describe('runFullReview concurrent-submission lock', () => {
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'APPROVE', outcome: 'READY' as const, summary: '', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
     });
-    jest.mocked(reviewModule.selectTeam).mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, pair: false, model: 'claude-sonnet-4-6', effort: 'high' }], triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false });
+    jest.mocked(reviewModule.selectTeam).mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, pair: false, model: 'claude-sonnet-5-5', effort: 'high' }], triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false });
     jest.mocked(ghUtils.postProgressComment).mockResolvedValue(1);
     jest.mocked(ghUtils.findInProgressLock).mockReturnValue(null);
     jest.mocked(ghUtils.isLockExpired).mockReturnValue(false);

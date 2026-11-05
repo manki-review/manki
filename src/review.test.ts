@@ -1462,7 +1462,7 @@ describe('selectTeam', () => {
     ]) {
       const team = selectTeam(makeDiff({ files }), makeConfig(), trivial);
       expect(team.finders).toEqual([
-        { name: TRIVIAL_VERIFIER_AGENT.name, prompt: TRIVIAL_VERIFIER_AGENT, pair: false, model: 'claude-sonnet-4-6', effort: 'medium' },
+        { name: TRIVIAL_VERIFIER_AGENT.name, prompt: TRIVIAL_VERIFIER_AGENT, pair: false, model: 'claude-sonnet-5-5', effort: 'medium' },
       ]);
       expect(team.trivialOverridden).toBe(false);
       expect(team.ciOrDependencyPaths).toBe(false);
@@ -1491,25 +1491,25 @@ describe('selectTeam', () => {
       const team = selectTeam(makeDiff({ files }), makeConfig(), { trivial: true, subtle: false, paired: false });
       expect(team.trivialOverridden).toBe(true);
       expect(team.triage).toEqual({ trivial: false, subtle: false, paired: false });
-      expect(names(team)).toEqual(['Finder (claude-sonnet-4-6)']);
+      expect(names(team)).toEqual(['Finder (claude-sonnet-5-5)']);
     }
   });
 
   it('runs one finder whose effort follows `subtle` when the change is not paired', () => {
     for (const [subtle, effort] of [[true, 'high'], [false, 'medium']] as const) {
       const team = selectTeam(plainDiff, makeConfig(), { trivial: false, subtle, paired: false });
-      expect(team.finders).toEqual([expect.objectContaining({ name: 'Finder (claude-sonnet-4-6)', pair: false, effort })]);
+      expect(team.finders).toEqual([expect.objectContaining({ name: 'Finder (claude-sonnet-5-5)', pair: false, effort })]);
     }
   });
 
   it('adds a second finder on the other Claude tier with the same prompt when paired', () => {
     const team = selectTeam(plainDiff, makeConfig(), { trivial: false, subtle: false, paired: true });
-    expect(names(team)).toEqual(['Finder (claude-sonnet-4-6)', 'Pair finder (claude-opus-4-7)']);
-    expect(team.finders[1]).toEqual(expect.objectContaining({ pair: true, model: 'claude-opus-4-7', effort: 'medium' }));
+    expect(names(team)).toEqual(['Finder (claude-sonnet-5-5)', 'Pair finder (claude-opus-5-5)']);
+    expect(team.finders[1]).toEqual(expect.objectContaining({ pair: true, model: 'claude-opus-5-5', effort: 'medium' }));
     expect(team.finders[1].prompt).toBe(team.finders[0].prompt);
 
-    const configured = selectTeam(plainDiff, makeConfig({ models: { reviewer: 'claude-opus-4-7', reviewer_pair: 'gpt-5.5' } }), { trivial: false, subtle: true, paired: true });
-    expect(names(configured)).toEqual(['Finder (claude-opus-4-7)', 'Pair finder (gpt-5.5)']);
+    const configured = selectTeam(plainDiff, makeConfig({ models: { reviewer: 'claude-opus-5-5', reviewer_pair: 'gpt-5.5' } }), { trivial: false, subtle: true, paired: true });
+    expect(names(configured)).toEqual(['Finder (claude-opus-5-5)', 'Pair finder (gpt-5.5)']);
   });
 
   it('defaults to two finders at high effort without a triage', () => {
@@ -1523,13 +1523,13 @@ describe('selectTeam', () => {
       const team = selectTeam(authDiff, makeConfig({ planner: { enabled: true, paired } }), { trivial: true, subtle: false, paired: false });
       expect(team.sensitivePaths).toBe(true);
       expect(team.triage).toEqual({ trivial: false, subtle: false, paired: true });
-      expect(names(team)).toEqual(['Finder (claude-sonnet-4-6)', 'Pair finder (claude-opus-4-7)']);
+      expect(names(team)).toEqual(['Finder (claude-sonnet-5-5)', 'Pair finder (claude-opus-5-5)']);
     }
   });
 
   it('pins `paired` with `planner.paired` on other paths', () => {
     const never = selectTeam(plainDiff, makeConfig({ planner: { enabled: true, paired: 'never' } }), { trivial: false, subtle: true, paired: true });
-    expect(names(never)).toEqual(['Finder (claude-sonnet-4-6)']);
+    expect(names(never)).toEqual(['Finder (claude-sonnet-5-5)']);
     const always = selectTeam(plainDiff, makeConfig({ planner: { enabled: true, paired: 'always' } }), { trivial: false, subtle: true, paired: false });
     expect(names(always)).toHaveLength(2);
     expect(always.sensitivePaths).toBe(false);
@@ -2490,7 +2490,7 @@ describe('runReview', () => {
 
     expect(result.outcome).toBe('INCOMPLETE');
     expect(result.reviewComplete).toBe(false);
-    expect(result.failedAgents).toEqual(['Pair finder (claude-opus-4-7)']);
+    expect(result.failedAgents).toEqual(['Pair finder (claude-opus-5-5)']);
     expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
   });
 
@@ -2852,7 +2852,7 @@ describe('runReview', () => {
 
     const result = await runReview(clients, config, diff, 'raw diff', 'repo context');
     expect(result.agentNames).toBeDefined();
-    expect(result.agentNames).toEqual(['Finder (claude-sonnet-4-6)', 'Pair finder (claude-opus-4-7)']);
+    expect(result.agentNames).toEqual(['Finder (claude-sonnet-5-5)', 'Pair finder (claude-opus-5-5)']);
   });
 
   it('returns APPROVE when priorRounds agreed suggestion matches current finding (verdict ceiling)', async () => {
@@ -3193,7 +3193,7 @@ describe('runReview', () => {
         round: 1,
         commitSha: 'sha1',
         timestamp: '2024-01-01T00:00:00Z',
-        agents: ['Finder (claude-sonnet-4-6)', 'Pair finder (claude-opus-4-7)'],
+        agents: ['Finder (claude-sonnet-5-5)', 'Pair finder (claude-opus-5-5)'],
         findings: [
           { fingerprint: { file: 'a.ts', lineStart: 1, lineEnd: 1, slug: 's1' }, severity: 'blocker', title: 't1', authorReply: 'none', specialist: 'Architecture & Design' },
           { fingerprint: { file: 'a.ts', lineStart: 2, lineEnd: 2, slug: 's2' }, severity: 'blocker', title: 't2', authorReply: 'agree', specialist: 'Architecture & Design' },
@@ -3207,7 +3207,7 @@ describe('runReview', () => {
       priorRounds.map(roundContextFromLegacy),
     );
 
-    expect(result.agentNames).toEqual(['Finder (claude-sonnet-4-6)']);
+    expect(result.agentNames).toEqual(['Finder (claude-sonnet-5-5)']);
     expect(plannerSpy.mock.calls[0][0]).toBe(buildPlannerSystemPrompt());
   });
 
@@ -3444,18 +3444,18 @@ describe('runReview', () => {
     const retrying = agentCompleteCalls.filter(p => p.agentStatus === 'retrying');
     expect(retrying).toHaveLength(MAX_AGENT_RETRIES);
     for (const progress of retrying) {
-      expect(progress.agentName).toBe('Pair finder (claude-opus-4-7)');
+      expect(progress.agentName).toBe('Pair finder (claude-opus-5-5)');
       expect(progress.retryCount).toBeGreaterThanOrEqual(1);
     }
-    const pairFailure = agentCompleteCalls.filter(p => p.agentName === 'Pair finder (claude-opus-4-7)' && p.agentStatus === 'failure');
-    const pairSuccess = agentCompleteCalls.filter(p => p.agentName === 'Pair finder (claude-opus-4-7)' && p.agentStatus === 'success');
+    const pairFailure = agentCompleteCalls.filter(p => p.agentName === 'Pair finder (claude-opus-5-5)' && p.agentStatus === 'failure');
+    const pairSuccess = agentCompleteCalls.filter(p => p.agentName === 'Pair finder (claude-opus-5-5)' && p.agentStatus === 'success');
     expect(pairFailure).toHaveLength(1);
     expect(pairSuccess).toHaveLength(1);
     expect(pairSuccess[0].completedAgents).toBeGreaterThan(pairFailure[0].completedAgents!);
   });
 
   it.each<[string, () => ReviewClients, string[]]>([
-    ['the primary finder', () => pairedClients(jest.fn().mockRejectedValue(new Error('Permanent failure')), jest.fn().mockResolvedValue({ content: '[]' })), ['Finder (claude-sonnet-4-6)']],
+    ['the primary finder', () => pairedClients(jest.fn().mockRejectedValue(new Error('Permanent failure')), jest.fn().mockResolvedValue({ content: '[]' })), ['Finder (claude-sonnet-5-5)']],
     ['the only finder', () => ({ ...pairedClients(jest.fn().mockRejectedValue(new Error('Timeout')), jest.fn()), planner: { sendMessage: jest.fn().mockResolvedValue({ content: JSON.stringify({ trivial: true, subtle: false, paired: false, judgeEffort: 'low', prType: 'docs' }) }) } as unknown as import('./providers').LLMClient }), ['Trivial Change Verifier']],
   ])('ends INCOMPLETE when %s fails all retries', async (_label, build, failed) => {
     const clients = build();
@@ -3477,7 +3477,7 @@ describe('runReview', () => {
       .mockResolvedValue({ content: JSON.stringify([securityFinding]) });
     const clients = pairedClients(jest.fn().mockResolvedValue({ content: '[]' }), pair);
     mockedRunJudgeAgent.mockResolvedValue({
-      findings: [{ ...securityFinding, reviewers: ['Pair finder (claude-opus-4-7)'] }],
+      findings: [{ ...securityFinding, reviewers: ['Pair finder (claude-opus-5-5)'] }],
       summary: 'One required finding from retry.',
     });
 
@@ -4336,11 +4336,11 @@ describe('runReview triage', () => {
     expect(result.plannerFallbackReason).toBeUndefined();
     expect(result.triage).toEqual({ trivial: false, subtle: false, paired: false });
     expect(result.sensitivePaths).toBe(false);
-    expect(result.agentNames).toEqual(['Finder (claude-sonnet-4-6)']);
-    expect(result.agentEffortMap).toEqual(new Map([['Finder (claude-sonnet-4-6)', 'medium']]));
-    expect(result.agentModels).toEqual(new Map([['Finder (claude-sonnet-4-6)', 'claude-sonnet-4-6']]));
+    expect(result.agentNames).toEqual(['Finder (claude-sonnet-5-5)']);
+    expect(result.agentEffortMap).toEqual(new Map([['Finder (claude-sonnet-5-5)', 'medium']]));
+    expect(result.agentModels).toEqual(new Map([['Finder (claude-sonnet-5-5)', 'claude-sonnet-5-5']]));
     expect(result.pairAgentName).toBeUndefined();
-    expect(progress).toContainEqual(expect.objectContaining({ phase: 'planning', teamAgentNames: ['Finder (claude-sonnet-4-6)'], reviewerEffort: 'medium' }));
+    expect(progress).toContainEqual(expect.objectContaining({ phase: 'planning', teamAgentNames: ['Finder (claude-sonnet-5-5)'], reviewerEffort: 'medium' }));
   });
 
   it.each<[string, string | undefined, string, string | undefined]>([
@@ -4351,9 +4351,9 @@ describe('runReview triage', () => {
     expect(result.plannerSource).toBe(source);
     expect(result.plannerFallbackReason).toBe(reason);
     expect(result.triage).toEqual({ trivial: false, subtle: true, paired: true });
-    expect(result.agentNames).toEqual(['Finder (claude-sonnet-4-6)', 'Pair finder (claude-opus-4-7)']);
+    expect(result.agentNames).toEqual(['Finder (claude-sonnet-5-5)', 'Pair finder (claude-opus-5-5)']);
     expect([...result.agentEffortMap!.values()]).toEqual(['high', 'high']);
-    expect(result.pairAgentName).toBe('Pair finder (claude-opus-4-7)');
+    expect(result.pairAgentName).toBe('Pair finder (claude-opus-5-5)');
   });
 
   it('runs the trivial verifier alone, except on a security-sensitive path', async () => {
@@ -4367,7 +4367,7 @@ describe('runReview triage', () => {
     expect(sensitive.sensitivePaths).toBe(true);
     expect(sensitive.trivialOverridden).toBe(true);
     expect(sensitive.triage).toEqual({ trivial: false, subtle: false, paired: true });
-    expect(sensitive.agentNames).toEqual(['Finder (claude-sonnet-4-6)', 'Pair finder (claude-opus-4-7)']);
+    expect(sensitive.agentNames).toEqual(['Finder (claude-sonnet-5-5)', 'Pair finder (claude-opus-5-5)']);
   });
 
   it('sends the pair finder the same prompt on the pair client', async () => {
@@ -4388,8 +4388,8 @@ describe('runReview triage', () => {
     const result = await runReview(clients, makeConfig(), makeDiff({ totalAdditions: 10, totalDeletions: 5 }), 'raw diff', 'repo');
     expect(result.outcome).toBe('INCOMPLETE');
     expect(result.verdict).toBe('COMMENT');
-    expect(result.failedAgents).toEqual(['Pair finder (claude-opus-4-7)']);
-    expect(result.summary).toContain('Pair finder (claude-opus-4-7) failed after retries');
+    expect(result.failedAgents).toEqual(['Pair finder (claude-opus-5-5)']);
+    expect(result.summary).toContain('Pair finder (claude-opus-5-5) failed after retries');
     expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
   });
 
@@ -4416,8 +4416,8 @@ describe('runReview triage', () => {
 
   it('records `multiPassConsistency` per agent on multi-pass rounds', async () => {
     const findings = [
-      { severity: 'warning' as const, title: 'Bug A', file: 'src/a.ts', line: 5, description: 'd', reviewers: ['Finder (claude-sonnet-4-6)'] },
-      { severity: 'warning' as const, title: 'Bug B', file: 'src/a.ts', line: 10, description: 'd', reviewers: ['Finder (claude-sonnet-4-6)'] },
+      { severity: 'warning' as const, title: 'Bug A', file: 'src/a.ts', line: 5, description: 'd', reviewers: ['Finder (claude-sonnet-5-5)'] },
+      { severity: 'warning' as const, title: 'Bug B', file: 'src/a.ts', line: 10, description: 'd', reviewers: ['Finder (claude-sonnet-5-5)'] },
     ];
     // Two passes per agent; both return the same two findings, so all consistent.
     const reviewerSendMessage = jest.fn().mockResolvedValue({ content: JSON.stringify(findings) });
@@ -4433,7 +4433,7 @@ describe('runReview triage', () => {
     });
     const result = await runReview(clients, config, diff, 'raw diff', 'repo');
     expect(result.agentMultiPassConsistency).toBeDefined();
-    const sec = result.agentMultiPassConsistency!.get('Finder (claude-sonnet-4-6)');
+    const sec = result.agentMultiPassConsistency!.get('Finder (claude-sonnet-5-5)');
     expect(sec).toEqual({ consistent: 2, totalRaw: 4 });
   });
 
