@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { buildExitDiagnostics, buildTimeoutDiagnostics, extractCliErrorSnippet, sanitizeLogOutput, seedAuthFile } from './cli-utils';
+import { buildExitDiagnostics, buildTimeoutDiagnostics, callWithTimeout, extractCliErrorSnippet, sanitizeLogOutput, seedAuthFile } from './cli-utils';
 
 function encode(json: unknown): string {
   return Buffer.from(JSON.stringify(json), 'utf8').toString('base64');
@@ -39,6 +39,26 @@ describe('sanitizeLogOutput', () => {
   it('redacts workflow commands case-insensitively on the command letter', () => {
     // The regex uses /i so ::Error:: and ::ERROR:: are both matched
     expect(sanitizeLogOutput('::Error::msg')).toBe('[redacted-workflow-cmd]');
+  });
+});
+
+describe('callWithTimeout', () => {
+  const untilAborted = (signal?: AbortSignal) => new Promise<string>((_, reject) => {
+    signal?.addEventListener('abort', () => reject(new Error('Request was aborted.')));
+  });
+
+  it('names the label and the limit when its signal aborts the call', async () => {
+    const error = await callWithTimeout('Anthropic API', 20, untilAborted).then(() => null, (e: Error) => e);
+    expect(error?.message).toBe('Anthropic API timed out after 0.02s');
+    expect((error?.cause as Error).message).toBe('Request was aborted.');
+  });
+
+  it('passes no signal without a limit and rethrows other errors unchanged', async () => {
+    const call = jest.fn().mockResolvedValue('ok');
+    await expect(callWithTimeout('OpenAI API', undefined, call)).resolves.toBe('ok');
+    expect(call).toHaveBeenCalledWith();
+    const overloaded = new Error('overloaded');
+    await expect(callWithTimeout('OpenAI API', 60_000, () => Promise.reject(overloaded))).rejects.toBe(overloaded);
   });
 });
 

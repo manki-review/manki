@@ -6,10 +6,13 @@ import { StringDecoder } from 'string_decoder';
 
 import * as core from '@actions/core';
 
+import { sanitizeTokens } from '../utils';
+
 export const STALE_TIMEOUT_MS = 90_000;
 const HARD_TIMEOUT_MS = 1_200_000;
 const KILL_GRACE_MS = 5000;
 const MAX_OUTPUT_BYTES = 50 * 1024 * 1024;
+const REPLY_TAIL_CHARS = 2000;
 
 /** Strip GitHub Actions workflow commands to prevent injection when logging CLI output. */
 export function sanitizeLogOutput(text: string): string {
@@ -49,6 +52,32 @@ function findLastErrorLine(text: string, maxLen = 16_384): string | null {
     }
   }
   return null;
+}
+
+/** Appends `text` to the reply tail kept for `warnReplyTail`, dropping all but its last characters. */
+export function appendReplyTail(tail: string, text: string): string {
+  return (tail + text).slice(-REPLY_TAIL_CHARS);
+}
+
+/** Logs the end of a reply that failed, was refused or reached the output limit, so the log shows what the model was writing. */
+export function warnReplyTail(label: string, reply: string): void {
+  const tail = reply.trim().slice(-REPLY_TAIL_CHARS);
+  if (tail) core.warning(`${label} reply ended with: ${sanitizeLogOutput(sanitizeTokens(tail))}`);
+}
+
+/**
+ * Runs `call` with an abort signal that fires after `timeoutMs`, or without one when it is unset.
+ * An abort from that signal is thrown as a timeout naming `label` and the limit.
+ */
+export async function callWithTimeout<T>(label: string, timeoutMs: number | undefined, call: (signal?: AbortSignal) => Promise<T>): Promise<T> {
+  if (!timeoutMs) return call();
+  const signal = AbortSignal.timeout(timeoutMs);
+  try {
+    return await call(signal);
+  } catch (error) {
+    if (signal.aborted) throw new Error(`${label} timed out after ${timeoutMs / 1000}s`, { cause: error });
+    throw error;
+  }
 }
 
 /** Build diagnostic snippets for timeout/stale error messages. */

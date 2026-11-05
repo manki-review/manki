@@ -1,5 +1,5 @@
 import { spawn } from 'child_process';
-import { readdirSync } from 'fs';
+import { existsSync, readdirSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import Anthropic from '@anthropic-ai/sdk';
@@ -129,7 +129,7 @@ describe('sendMessage effort option (API path)', () => {
     mockFinalMessage = jest.fn().mockResolvedValue({
       content: [{ type: 'text', text: 'response' }],
     });
-    mockStream = jest.fn(() => ({ finalMessage: mockFinalMessage }));
+    mockStream = jest.fn(() => ({ finalMessage: mockFinalMessage, on: jest.fn() }));
     (Anthropic as unknown as jest.Mock).mockImplementation(() => ({
       messages: { stream: mockStream },
     }));
@@ -392,6 +392,28 @@ describe('sendViaOAuth — error paths', () => {
     expect(readdirSync(cwd)).toEqual([]);
   });
 
+  it('sends the system prompt as the CLI system prompt and only the user message on stdin', async () => {
+    setupSpawnMock({ stdout: 'ok' });
+    const spawnProc = mockSpawn.getMockImplementation()!;
+    let systemPromptFile = '';
+    let stdinWrite: jest.Mock | undefined;
+    mockSpawn.mockImplementationOnce((...args: Parameters<typeof spawnProc>) => {
+      const promptArgs = args[1] as string[];
+      systemPromptFile = readFileSync(promptArgs[promptArgs.indexOf('--system-prompt-file') + 1], 'utf-8');
+      const proc = spawnProc(...args);
+      stdinWrite = (proc.stdin as unknown as { write: jest.Mock }).write;
+      return proc;
+    });
+    const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-5-5' });
+
+    await client.sendMessage('You give the final verdict.', 'the diff');
+
+    const spawnArgs = mockSpawn.mock.calls[0][1] as string[];
+    expect(systemPromptFile).toBe('You give the final verdict.');
+    expect(existsSync(spawnArgs[spawnArgs.indexOf('--system-prompt-file') + 1])).toBe(false);
+    expect(stdinWrite!.mock.calls.map(c => String(c[0])).join('')).toBe('the diff');
+  });
+
   it('extracts text from content_block_delta events', async () => {
     const streamOutput = [
       JSON.stringify({ type: 'message_start', message: {} }),
@@ -438,17 +460,23 @@ describe('sendViaOAuth — error paths', () => {
 
   it('returns an empty truncated reply when the CLI run fails at the output limit', async () => {
     const cliError = "API Error: Claude's response exceeded the 32768 output token maximum. To configure this behavior, set the CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable.";
-    setupSpawnMock({
-      exitCode: 1,
-      stdout: `${JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: cliError, api_error: 'max_output_tokens', usage: { output_tokens: 32768 } })}\n`,
-      rawStdout: true,
-    });
+    const delta = (text: string) => JSON.stringify({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } } });
+    const lines = [
+      delta('x'.repeat(3000)),
+      delta('Let me walk through every file, token ghp_abcdefghijklmnop, then'),
+      JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: cliError, api_error: 'max_output_tokens', usage: { output_tokens: 32768 } }),
+    ];
+    setupSpawnMock({ exitCode: 1, stdout: `${lines.join('\n')}\n`, rawStdout: true });
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-5-5' });
 
     const result = await client.sendMessage('sys', 'user');
     expect(result).toMatchObject({ content: '', truncated: true, usage: { outputTokens: 32768 } });
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('32768-token output limit'));
+    const tailWarning = warnSpy.mock.calls.map(c => String(c[0])).find(w => w.startsWith('Claude CLI reply ended with: '));
+    expect(tailWarning).toBeDefined();
+    expect(tailWarning!.endsWith('Let me walk through every file, token [REDACTED], then')).toBe(true);
+    expect(tailWarning!.length).toBeLessThanOrEqual('Claude CLI reply ended with: '.length + 2000);
     warnSpy.mockRestore();
   });
 
@@ -1440,7 +1468,7 @@ describe('AnthropicClient API-path usage', () => {
   beforeEach(() => {
     mockFinalMessage = jest.fn();
     (Anthropic as unknown as jest.Mock).mockImplementation(() => ({
-      messages: { stream: () => ({ finalMessage: mockFinalMessage }) },
+      messages: { stream: () => ({ finalMessage: mockFinalMessage, on: jest.fn() }) },
     }));
   });
 

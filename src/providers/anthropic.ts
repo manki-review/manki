@@ -1,10 +1,13 @@
 import { execFile } from 'child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { promisify } from 'util';
 
 import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
-import { sanitizeLogOutput, STALE_TIMEOUT_MS, buildExitDiagnostics, runCli } from './cli-utils';
+import { appendReplyTail, buildExitDiagnostics, callWithTimeout, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, warnReplyTail } from './cli-utils';
 import { AnthropicAuth, LLMClient, LLMResponse, LLMUsage, readCount, SendMessageOptions, ZERO_USAGE } from './types';
 
 // Re-export for backward compatibility with existing test imports.
@@ -27,12 +30,14 @@ export function buildAnthropicAuth(oauthToken: string, apiKey: string): Anthropi
  * delta (if any) plus the full parsed event when it is a terminal `result`
  * event, so callers can both stream text and capture the exit reason
  * (`is_error`, `subtype`, error text) for diagnostics on failure.
+ * `--include-partial-messages` wraps each API stream event in a `stream_event` line.
  */
 function processJsonLine(line: string): { text: string; replace: boolean; resultEvent: unknown } {
   try {
     const event = JSON.parse(line);
-    if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta' && event.delta.text) {
-      return { text: event.delta.text, replace: false, resultEvent: null };
+    const streamed = event.type === 'stream_event' ? event.event : event;
+    if (streamed?.type === 'content_block_delta' && streamed.delta?.type === 'text_delta' && streamed.delta.text) {
+      return { text: streamed.delta.text, replace: false, resultEvent: null };
     }
     if (event.type === 'result') {
       const text = typeof event.result === 'string' ? event.result : '';
@@ -165,8 +170,19 @@ export class AnthropicClient implements LLMClient {
   }
 
   private async sendViaOAuth(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
-    const fullPrompt = `${systemPrompt}\n\n---\n\n${userMessage}`;
     const cliPath = await this.ensureCLI();
+    // A file keeps a long system prompt clear of the per-argument size limit.
+    const promptDir = mkdtempSync(join(tmpdir(), 'manki-prompt-'));
+    try {
+      const systemPromptPath = join(promptDir, 'system.md');
+      writeFileSync(systemPromptPath, systemPrompt, { mode: 0o600 });
+      return await this.runOAuthCli(cliPath, systemPromptPath, systemPrompt.length + userMessage.length, userMessage, options);
+    } finally {
+      rmSync(promptDir, { recursive: true, force: true });
+    }
+  }
+
+  private async runOAuthCli(cliPath: string, systemPromptPath: string, promptChars: number, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
     const oauthToken = this.auth.kind === 'oauth' ? this.auth.token : undefined;
     const startTime = Date.now();
     const model = this.model;
@@ -182,6 +198,8 @@ export class AnthropicClient implements LLMClient {
       // No MCP servers and no settings files: only the environment configures the CLI.
       '--strict-mcp-config',
       '--setting-sources', '',
+      // Replaces Claude Code's own agentic system prompt, which otherwise frames every stage.
+      '--system-prompt-file', systemPromptPath,
       '--model', this.model,
     ];
 
@@ -190,12 +208,14 @@ export class AnthropicClient implements LLMClient {
     }
 
     let output = '';
+    let replyTail = '';
     let jsonBuffer = '';
     let lastResultEvent: unknown = null;
     const consumeLine = (line: string): void => {
       if (!line.trim()) return;
       const delta = processJsonLine(line);
       if (delta.resultEvent !== null) lastResultEvent = delta.resultEvent;
+      if (!delta.replace) replyTail = appendReplyTail(replyTail, delta.text);
       output = delta.replace ? delta.text : output + delta.text;
     };
 
@@ -211,7 +231,7 @@ export class AnthropicClient implements LLMClient {
         // The CLI defaults to the model's own limit, which lets a runaway reply run for many minutes.
         CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(THINKING_MAX_TOKENS),
       },
-      input: fullPrompt,
+      input: userMessage,
       hardTimeoutMs: options?.timeoutMs,
       onStdout: (chunk) => {
         jsonBuffer += chunk;
@@ -219,6 +239,9 @@ export class AnthropicClient implements LLMClient {
         jsonBuffer = lines.pop() ?? '';
         lines.forEach(consumeLine);
       },
+    }).catch((error: unknown) => {
+      warnReplyTail('Claude CLI', replyTail);
+      throw error;
     });
     consumeLine(jsonBuffer);
     const resultEvent = lastResultEvent as { stop_reason?: unknown; api_error?: unknown } | null;
@@ -233,7 +256,7 @@ export class AnthropicClient implements LLMClient {
         lastStdoutChunk,
         model,
         effort: options?.effort,
-        promptChars: fullPrompt.length,
+        promptChars,
         elapsedMs: Date.now() - startTime,
         resultEvent: lastResultEvent,
       });
@@ -241,9 +264,13 @@ export class AnthropicClient implements LLMClient {
       const hint = cliError && AUTH_ERROR_PATTERN.test(cliError) ? ` ${OAUTH_ERROR_HINT}` : '';
       const lead = cliError ? `Claude CLI error: ${sanitizeLogOutput(cliError)}.${hint} ` : '';
       core.warning(`${lead}Claude CLI failed (${msg})`);
+      warnReplyTail('Claude CLI', replyTail);
       throw new Error(`${lead}Claude CLI invocation failed (${msg})`);
     }
-    if (code !== 0) core.warning(`Claude CLI reply reached the ${THINKING_MAX_TOKENS}-token output limit (exit ${code})`);
+    if (truncated) {
+      core.warning(`Claude CLI reply reached the ${THINKING_MAX_TOKENS}-token output limit (exit ${code})`);
+      warnReplyTail('Claude CLI', replyTail);
+    }
     const content = code === 0 ? output.trim() : '';
     core.debug(sanitizeLogOutput(content.slice(0, 200)));
     return {
@@ -278,12 +305,24 @@ export class AnthropicClient implements LLMClient {
 
     const startTime = Date.now();
     // The SDK refuses non-streaming requests whose `max_tokens` could run past its 10 minute timeout.
-    const timeoutMs = options?.timeoutMs;
-    const response = await this.anthropic.messages.stream(params, timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : undefined).finalMessage();
+    const anthropic = this.anthropic;
+    let replyTail = '';
+    const response = await callWithTimeout('Anthropic API', options?.timeoutMs, (signal) => {
+      const stream = anthropic.messages.stream(params, signal ? { signal } : undefined);
+      stream.on('text', (text) => { replyTail = appendReplyTail(replyTail, text); });
+      return stream.finalMessage();
+    }).catch((error: unknown) => {
+      warnReplyTail('Anthropic API', replyTail);
+      throw error;
+    });
 
     const textBlocks = response.content.filter((b) => b.type === 'text');
     const content = textBlocks.map((b) => 'text' in b ? b.text : '').join('\n');
     core.debug(sanitizeLogOutput(content.slice(0, 200)));
+    if (response.stop_reason === 'max_tokens' || response.stop_reason === 'refusal') {
+      core.warning(`Anthropic API reply ended on stop_reason ${response.stop_reason}`);
+      warnReplyTail('Anthropic API', content);
+    }
 
     const sdkUsage = (response as unknown as { usage?: Record<string, unknown> }).usage;
     const usage: LLMUsage = sdkUsage ? readAnthropicUsage(sdkUsage) : { ...ZERO_USAGE };
