@@ -937,74 +937,81 @@ async function runFullReview(
         judge: judgeClient,
         planner: plannerClient,
         dedup: dedupClient,
-      }, config, diff, rawDiff, repoContext,
-      memory, fileContents, reviewPrContext, linkedIssues,
-      (progress) => {
-        if (progress.phase === 'planning') {
-          core.info('Planner analyzing PR content...');
-          if (progress.teamAgentNames) {
-            if (progress.plannerResult && progress.reviewerEffort) {
-              dashboard.plannerInfo = {
-                agentCount: progress.teamAgentNames.length,
-                reviewerEffort: progress.reviewerEffort,
-                judgeEffort: progress.plannerResult.judgeEffort,
-                prType: progress.plannerResult.prType,
-              };
+      },
+      {
+        config,
+        diff,
+        rawDiff,
+        repoContext,
+        memory,
+        fileContents,
+        prContext: reviewPrContext,
+        linkedIssues,
+        onProgress: (progress) => {
+          if (progress.phase === 'planning') {
+            core.info('Planner analyzing PR content...');
+            if (progress.teamAgentNames) {
+              if (progress.plannerResult && progress.reviewerEffort) {
+                dashboard.plannerInfo = {
+                  agentCount: progress.teamAgentNames.length,
+                  reviewerEffort: progress.reviewerEffort,
+                  judgeEffort: progress.plannerResult.judgeEffort,
+                  prType: progress.plannerResult.prType,
+                };
+              }
+              dashboard.agentCount = progress.teamAgentNames.length;
+              dashboard.agentProgress = progress.teamAgentNames.map(name => ({ name, status: 'reviewing' as const }));
+              dashboard.plannerDurationMs = progress.plannerDurationMs;
+              if (progress.heuristicFallback) dashboard.heuristicFallback = true;
+              dashboard.phase = 'started';
+              scheduleDashboardFlush();
             }
-            dashboard.agentCount = progress.teamAgentNames.length;
-            dashboard.agentProgress = progress.teamAgentNames.map(name => ({ name, status: 'reviewing' as const }));
-            dashboard.plannerDurationMs = progress.plannerDurationMs;
-            if (progress.heuristicFallback) dashboard.heuristicFallback = true;
-            dashboard.phase = 'started';
-            scheduleDashboardFlush();
-          }
-        } else if (progress.phase === 'agent-complete') {
-          if (dashboard.agentProgress && progress.agentName) {
-            const entry = dashboard.agentProgress.find(a => a.name === progress.agentName);
-            if (entry) {
-              if (progress.agentStatus === 'retrying') {
-                entry.status = 'retrying';
-                entry.retryCount = progress.retryCount;
-              } else {
-                entry.status = progress.agentStatus === 'failure' ? 'failed' : 'done';
-                entry.findingCount = progress.agentFindingCount;
-                entry.durationMs = progress.agentDurationMs;
-                if (progress.agentStatus === 'failure' && progress.retryCount) {
+          } else if (progress.phase === 'agent-complete') {
+            if (dashboard.agentProgress && progress.agentName) {
+              const entry = dashboard.agentProgress.find(a => a.name === progress.agentName);
+              if (entry) {
+                if (progress.agentStatus === 'retrying') {
+                  entry.status = 'retrying';
                   entry.retryCount = progress.retryCount;
+                } else {
+                  entry.status = progress.agentStatus === 'failure' ? 'failed' : 'done';
+                  entry.findingCount = progress.agentFindingCount;
+                  entry.durationMs = progress.agentDurationMs;
+                  if (progress.agentStatus === 'failure' && progress.retryCount) {
+                    entry.retryCount = progress.retryCount;
+                  }
                 }
               }
             }
+            scheduleDashboardFlush();
+          } else if (progress.phase === 'reviewed') {
+            if (dashboardFlushTimer) {
+              clearTimeout(dashboardFlushTimer);
+              dashboardFlushTimer = null;
+            }
+            reviewEndTime = Date.now();
+            dashboard.phase = 'reviewed';
+            dashboard.rawFindingCount = progress.rawFindingCount;
+            updateProgressDashboard(octokit, owner, repo, progressCommentId!, dashboard)
+              .catch(err => core.warning(`Failed to update dashboard: ${err}`));
+          } else if (progress.phase === 'judging') {
+            if (dashboardFlushTimer) {
+              clearTimeout(dashboardFlushTimer);
+              dashboardFlushTimer = null;
+            }
+            dashboard.phase = 'reviewed';
+            dashboard.rawFindingCount = progress.rawFindingCount;
+            dashboard.judgeInputCount = progress.judgeInputCount;
+            updateProgressDashboard(octokit, owner, repo, progressCommentId!, dashboard)
+              .catch(err => core.warning(`Failed to update dashboard: ${err}`));
           }
-          scheduleDashboardFlush();
-        } else if (progress.phase === 'reviewed') {
-          if (dashboardFlushTimer) {
-            clearTimeout(dashboardFlushTimer);
-            dashboardFlushTimer = null;
-          }
-          reviewEndTime = Date.now();
-          dashboard.phase = 'reviewed';
-          dashboard.rawFindingCount = progress.rawFindingCount;
-          updateProgressDashboard(octokit, owner, repo, progressCommentId!, dashboard)
-            .catch(err => core.warning(`Failed to update dashboard: ${err}`));
-        } else if (progress.phase === 'judging') {
-          if (dashboardFlushTimer) {
-            clearTimeout(dashboardFlushTimer);
-            dashboardFlushTimer = null;
-          }
-          dashboard.phase = 'reviewed';
-          dashboard.rawFindingCount = progress.rawFindingCount;
-          dashboard.judgeInputCount = progress.judgeInputCount;
-          updateProgressDashboard(octokit, owner, repo, progressCommentId!, dashboard)
-            .catch(err => core.warning(`Failed to update dashboard: ${err}`));
-        }
-      },
-      isFollowUp,
-      verdictOpenThreads,
-      recap.previousFindings,
-      recap.priorRounds,
-      prAuthorLogin,
-      interRoundDiff,
-      {
+        },
+        isFollowUp,
+        openThreads: verdictOpenThreads,
+        previousFindings: recap.previousFindings,
+        priorRounds: recap.priorRounds,
+        prAuthorLogin,
+        interRoundDiff,
         headSha: commitSha,
         blockersOnly: paused,
         finalRound: !paused && maxAutoRounds > 0 && priorRoundCount + 1 === maxAutoRounds,
