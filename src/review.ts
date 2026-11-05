@@ -15,7 +15,7 @@ import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { runVerdictReader, verdictBlockerToFinding } from './verdict';
 import { WRITING_RULES } from './writing-rules';
-import { checkFindingClaims, formatStaticSignals, toolAlertFindings } from './static-signals';
+import { checkFindingClaims, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
 
 const DISMISSED_LINE_TOLERANCE = 5;
 
@@ -999,7 +999,7 @@ export async function runReview(
     finalFindings = finalFindings.filter(f => {
       // A tool result on the same line can be a different problem, so only low-severity findings give way to it.
       if (f.toolSource || (f.severity !== 'suggestion' && f.severity !== 'nitpick') || isSecurityFinding(f.tags, f.reviewers)) return true;
-      const signal = staticSignals.find(s => s.file === f.file && s.line === f.line);
+      const signal = staticSignals.find(s => s.file === f.file && s.line === f.line && !isAnalyzerSignal(s));
       if (!signal) return true;
       core.info(`Static-signal dedup: dropping ${f.severity} "${f.title}" on ${f.file}:${f.line}, ${signal.tool} already reports it`);
       staticSignalMatches.push({ droppedTitle: f.title, file: f.file, line: f.line, tool: signal.tool, ruleId: signal.ruleId });

@@ -240,7 +240,7 @@ jest.mock('./fix-rate', () => ({
 }));
 
 jest.mock('./static-signals', () => ({
-  collectStaticSignals: jest.fn().mockResolvedValue([]),
+  collectStaticSignals: jest.fn().mockResolvedValue({ signals: [] }),
 }));
 
 import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, main, _resetOctokitCache, detectTickedMarker } from './index';
@@ -3347,9 +3347,10 @@ describe('runFullReview orchestration', () => {
       ]);
     });
 
-    it('passes the CI results for the head commit to the review, read against the base branch', async () => {
+    it('passes the CI results for the head commit to the review, read against the base branch, and records the analyzers that ran', async () => {
       const signal = { tool: 'lint', ruleId: 'no-unused-vars', severity: 'error' as const, file: 'src/app.ts', line: 3, message: 'unused', source: 'checks' as const };
-      jest.mocked(staticSignalsModule.collectStaticSignals).mockResolvedValueOnce([signal]);
+      const record = { analyzers: [{ analyzer: 'ast_grep' as const, status: 'ran' as const, results: 0 }], checksStillPending: ['lint'] };
+      jest.mocked(staticSignalsModule.collectStaticSignals).mockResolvedValueOnce({ signals: [signal], record });
 
       await callRunFullReview();
 
@@ -3358,6 +3359,7 @@ describe('runFullReview orchestration', () => {
       }));
       const prContext = jest.mocked(reviewModule.runReview).mock.calls[0][1].prContext;
       expect(prContext?.staticSignals).toEqual([signal]);
+      expect(jest.mocked(ghUtils.postReview).mock.calls[0][7]!.staticAnalysis).toEqual(record);
     });
 
     it('omits `dedup.duplicateMatches` and `testNitSuppressedCount` when zero', async () => {
@@ -3374,6 +3376,7 @@ describe('runFullReview orchestration', () => {
       expect(rc!.dedup.testNitSuppressedCount).toBeUndefined();
       expect(rc!.dedup.sameRoundLlmDropped).toBeUndefined();
       expect(rc!.dedup.staticSignalMatches).toBeUndefined();
+      expect(rc!.staticAnalysis).toBeUndefined();
     });
 
     it('populates `diff.excludedFiles`, `binarySkipped`, `perFile`, and `oversizedHandled: false`', async () => {

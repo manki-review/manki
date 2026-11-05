@@ -124,19 +124,31 @@ describe('config', () => {
   });
 
   describe('static_analysis config', () => {
-    it('turns every source on by default and merges a partial block', () => {
-      expect(loadConfigFromContent('').static_analysis).toEqual({ checks: true, code_scanning: true, dependency_review: true });
+    const defaults = { checks: true, code_scanning: true, dependency_review: true, wait_for_checks: [], wait_timeout_seconds: 300, analyzers: {} };
+
+    it('turns every CI source on and every analyzer off by default, and merges a partial block', () => {
+      expect(loadConfigFromContent('').static_analysis).toEqual(defaults);
       expect(loadConfigFromContent('static_analysis:\n  code_scanning: false\n').static_analysis)
-        .toEqual({ checks: true, code_scanning: false, dependency_review: true });
+        .toEqual({ ...defaults, code_scanning: false });
+      expect(loadConfigFromContent('static_analysis:\n  wait_for_checks: [lint]\n  wait_timeout_seconds: 60\n  analyzers: all\n').static_analysis)
+        .toEqual({ ...defaults, wait_for_checks: ['lint'], wait_timeout_seconds: 60, analyzers: 'all' });
+      expect(loadConfigFromContent('static_analysis:\n  analyzers:\n    ast_grep: true\n').static_analysis?.analyzers).toEqual({ ast_grep: true });
     });
 
-    it('rejects a non-boolean source and a non-object block', () => {
+    it('rejects a non-boolean source, a bad wait, an unknown analyzer and a non-object block', () => {
       expect(() => loadConfigFromContent('static_analysis:\n  checks: "yes"\n')).toThrow(/static_analysis\.checks/);
       expect(() => loadConfigFromContent('static_analysis: true\n')).toThrow(/`static_analysis` must be an object/);
+      expect(() => loadConfigFromContent('static_analysis:\n  wait_for_checks: lint\n')).toThrow(/wait_for_checks/);
+      expect(() => loadConfigFromContent('static_analysis:\n  wait_for_checks: [""]\n')).toThrow(/wait_for_checks/);
+      for (const timeout of ['0', '1.5', '3601', '"300"']) {
+        expect(() => loadConfigFromContent(`static_analysis:\n  wait_timeout_seconds: ${timeout}\n`)).toThrow(/wait_timeout_seconds/);
+      }
+      expect(() => loadConfigFromContent('static_analysis:\n  analyzers: some\n')).toThrow(/`static_analysis.analyzers` must be `all` or an object/);
+      expect(() => loadConfigFromContent('static_analysis:\n  analyzers:\n    astgrep: true\n')).toThrow(/`static_analysis.analyzers.astgrep` is not a known analyzer/);
+      expect(() => loadConfigFromContent('static_analysis:\n  analyzers:\n    ast_grep: "on"\n')).toThrow(/`static_analysis.analyzers.ast_grep` must be a boolean/);
     });
 
     it('reads the block alone and falls back to the defaults when it is missing or invalid', () => {
-      const defaults = { checks: true, code_scanning: true, dependency_review: true };
       expect(loadStaticAnalysisConfig('static_analysis:\n  checks: false\n')).toEqual({ ...defaults, checks: false });
       expect(loadStaticAnalysisConfig('unknown_key: 1\nstatic_analysis:\n  dependency_review: false\n'))
         .toEqual({ ...defaults, dependency_review: false });

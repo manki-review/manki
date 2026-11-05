@@ -441,6 +441,34 @@ jobs:
 
 Keep the `on:`, `permissions:` and `concurrency:` settings from the workflow above.
 
+When CI runs in a separate workflow, `needs:` cannot order the jobs. List the check runs to wait for in `static_analysis.wait_for_checks` instead. Manki polls them on the PR head every 15 seconds and reads the results once each has finished. After `wait_timeout_seconds` (default 300) it stops waiting, reads what is there, and records the checks still running in the `Manki context` block. A name is the check run's name as the PR's checks list shows it, usually the job name.
+
+```yaml
+static_analysis:
+  wait_for_checks: [lint, CodeQL]
+  wait_timeout_seconds: 300
+```
+
+### Running Manki's analyzers
+
+For a repository without CI checks, Manki can run analyzers itself. They are off by default. Turn them on in `.manki.yml` on the base branch:
+
+```yaml
+static_analysis:
+  analyzers:
+    ast_grep: true
+```
+
+`analyzers: all` turns every analyzer on, including ones later releases add.
+
+| Analyzer | What it checks |
+|----------|----------------|
+| `ast_grep` | [ast-grep](https://ast-grep.github.io) with Manki's own rules in [`rules/ast-grep`](rules/ast-grep) (MIT licensed): code and shell injection, HTML sinks, disabled TLS checks and unsafe deserialization, plus error-prone patterns such as an async `forEach` callback, a comparison with `NaN` or a mutable default argument. Runs on the changed JavaScript, TypeScript and Python files. |
+
+The analyzers never run code from the PR. Manki reads the changed files through the API at the head commit and parses them. It never uses rules or config from the PR. It downloads the ast-grep native module and its Python grammar from npm at a pinned version, checks each against its pinned SHA-512 digest, and loads them in process. ncc can only bundle the native module for the platform that builds `dist/`, so they load at run time on Linux and macOS (x64 and arm64) and Windows (x64). If the download fails or the platform has no pinned build, the analyzer is skipped with a warning and the review goes on.
+
+Analyzer results follow the path of the CI results above, limited to lines of the diff. Since no CI shows them to the author, every result goes to the judge as a candidate finding, and a reviewer finding on the same line is never dropped for it. A result the judge keeps is posted with the analyzer in its label, such as `⚠️ **Warning** (ast-grep):`. A clean run posts nothing. The `Manki context` block records each enabled analyzer under `staticAnalysis.analyzers`, with how many results it found or why it was skipped.
+
 ## Step 4: Configure Reviews (Optional)
 
 Create `.manki.yml` in your repository root. If the file is not valid YAML or has an invalid setting, the run fails, and a review run posts the error on the PR instead of reviewing with the defaults.
@@ -485,12 +513,17 @@ planner:
 #   routing:
 #     security: deep
 
-# CI results the reviewers read as evidence (default: all on). Read from the
-# base branch, never from the PR. See "Reading CI results" above.
+# CI results the reviewers read as evidence (default: all on), and Manki's
+# own analyzers (default: off). Read from the base branch, never from the PR.
+# See "Reading CI results" and "Running Manki's analyzers" above.
 static_analysis:
   checks: true             # check-run annotations, needs `checks: read`
   code_scanning: true      # code scanning alerts, needs `security-events: read`
   dependency_review: true  # vulnerable packages the PR adds
+  wait_for_checks: []      # check runs to wait for, such as [lint, CodeQL]
+  wait_timeout_seconds: 300
+  analyzers:               # analyzers Manki runs itself (default: off), or `all`
+    ast_grep: false
 
 # Multi-pass verification (integer 1-5, default: 1). Runs each reviewer N
 # times with shuffled file ordering; only consistent findings are kept.

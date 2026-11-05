@@ -1,0 +1,112 @@
+# Manki's ast-grep rules for Python.
+id: security-python-eval-injection
+language: Python
+severity: warning
+message: Runs a string as code. This is code injection if any part of the string comes from input.
+rule:
+  any:
+    - pattern: eval($$$ARGS)
+    - pattern: exec($$$ARGS)
+---
+id: security-python-shell-injection
+language: Python
+severity: warning
+message: Runs a command through the shell. This is shell injection if the command holds input. Pass a list of arguments without `shell=True`.
+rule:
+  any:
+    - pattern: os.system($$$ARGS)
+    - pattern: os.popen($$$ARGS)
+    - kind: call
+      has:
+        field: arguments
+        has:
+          kind: keyword_argument
+          all:
+            - has: { field: name, regex: ^shell$ }
+            - has: { field: value, kind: 'true' }
+---
+id: security-python-unsafe-deserialization
+language: Python
+severity: warning
+message: Deserializing untrusted data with this call can run arbitrary code. Use `json`, or `yaml.safe_load`.
+rule:
+  any:
+    - pattern: pickle.load($$$ARGS)
+    - pattern: pickle.loads($$$ARGS)
+    - pattern: marshal.loads($$$ARGS)
+    - pattern: yaml.unsafe_load($$$ARGS)
+    - pattern: yaml.unsafe_load_all($$$ARGS)
+    - pattern: yaml.full_load($$$ARGS)
+    - pattern: yaml.full_load_all($$$ARGS)
+    # `yaml.load` is only safe with a loader that builds no Python objects.
+    - all:
+        - any:
+            - pattern: yaml.load($$$ARGS)
+            - pattern: yaml.load_all($$$ARGS)
+        - not:
+            has:
+              field: arguments
+              has:
+                stopBy: end
+                kind: identifier
+                regex: ^C?(Safe|Base)Loader$
+---
+id: security-python-tls-verification-disabled
+language: Python
+severity: warning
+message: Turns off TLS certificate checks, so any server can impersonate the real one.
+rule:
+  kind: call
+  has:
+    field: arguments
+    has:
+      kind: keyword_argument
+      all:
+        - has: { field: name, regex: ^verify$ }
+        - has: { field: value, kind: 'false' }
+---
+id: python-mutable-default-argument
+language: Python
+severity: warning
+message: A mutable default is created once and shared by every call, so changes leak between calls. Default to `None`.
+rule:
+  any:
+    - kind: default_parameter
+    - kind: typed_default_parameter
+  has:
+    field: value
+    any:
+      - kind: list
+      - kind: dictionary
+      - kind: set
+---
+id: python-assert-on-tuple
+language: Python
+severity: error
+message: Asserting a non-empty tuple always passes. Drop the parentheses around the condition and message.
+rule:
+  pattern: assert ($A, $$$REST)
+---
+id: python-none-equality
+language: Python
+severity: info
+message: Compare with `None` using `is` or `is not`, because `==` can be overridden.
+rule:
+  any:
+    - pattern: $X == None
+    - pattern: $X != None
+---
+id: python-bare-except
+language: Python
+severity: info
+message: A bare `except:` also catches `KeyboardInterrupt` and `SystemExit`. Catch `Exception` or a narrower type.
+rule:
+  kind: except_clause
+  not:
+    has:
+      stopBy: neighbor
+      not:
+        any:
+          - kind: block
+          - kind: comment
+      pattern: $TYPE

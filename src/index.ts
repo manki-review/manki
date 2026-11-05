@@ -18,7 +18,7 @@ import { fetchRecapState, PreviousFinding, RecapState } from './recap';
 import { ReviewClients, ReviewOptions, runReview, selectTeam, teamModels } from './review';
 import { buildRoundContext, RoundRecordInput } from './round-context';
 import { collectStaticSignals } from './static-signals';
-import { DashboardData, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundTrigger, StaticSignal, roundContextToFlatAliases } from './types';
+import { DashboardData, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, RoundTrigger, StaticSignal, roundContextToFlatAliases } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -860,7 +860,7 @@ async function collectOpenThreads(
 /** Fetches the diff since the last reviewed commit, the issues the PR body links, and the static analysis results. */
 async function collectRoundSignals(
   target: RunTarget, config: ReviewConfig, recap: RecapState, diff: ParsedDiff, configPath: string, prBody?: string,
-): Promise<{ interRoundDiff?: string; linkedIssues?: LinkedIssue[]; staticSignals: StaticSignal[] }> {
+): Promise<{ interRoundDiff?: string; linkedIssues?: LinkedIssue[]; staticSignals: StaticSignal[]; staticAnalysis?: RoundStaticAnalysis }> {
   const { octokit, owner, repo, prNumber, commitSha, baseRef } = target;
   // Fetch inter-round diff (prior round commit -> current head) so the judge
   // can ground per-thread resolution in actual changes since last review.
@@ -906,8 +906,8 @@ async function collectRoundSignals(
     }
   }
 
-  const staticSignals = await staticSignalsPromise;
-  return { interRoundDiff, linkedIssues, staticSignals };
+  const { signals: staticSignals, record: staticAnalysis } = await staticSignalsPromise;
+  return { interRoundDiff, linkedIssues, staticSignals, staticAnalysis };
 }
 
 /** Runs the review pipeline and mirrors its progress on the dashboard in the progress comment. */
@@ -1249,12 +1249,12 @@ async function runFullReview(
     }
 
     const { openThreads, fileContents } = await collectOpenThreads(target, recap, diff);
-    const { interRoundDiff, linkedIssues, staticSignals } = await collectRoundSignals(target, config, recap, diff, configPath, prContext?.body);
+    const { interRoundDiff, linkedIssues, staticSignals, staticAnalysis } = await collectRoundSignals(target, config, recap, diff, configPath, prContext?.body);
 
     const run: ReviewRun = {
       ...target, options, trigger, config, reviewSource, models, plannerEnabled: !!clients.planner,
       recap, priorRoundCount, maxAutoRounds,
-      diff, excludedFiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError,
+      diff, excludedFiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError, staticAnalysis,
       commentId, dashboard, progress, startTime, parseEndTime,
     };
 
