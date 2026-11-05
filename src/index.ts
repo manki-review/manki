@@ -1243,6 +1243,7 @@ async function runFullReview(
           ...(result.plannerFallbackReason && { fallbackReason: result.plannerFallbackReason }),
           ...result.triage,
           ...(result.sensitivePaths != null && { sensitivePaths: result.sensitivePaths }),
+          ...(result.trivialOverridden && { trivialOverridden: true }),
           teamSize: result.agentNames.length,
           ...(reviewerEffort && { reviewerEffort }),
         };

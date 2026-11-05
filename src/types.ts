@@ -280,6 +280,8 @@ export interface ReviewResult {
   triage?: Triage;
   /** Whether the diff touches a security-sensitive path. */
   sensitivePaths?: boolean;
+  /** Set when code overrode the planner's `trivial: true`. */
+  trivialOverridden?: boolean;
   /** Model each agent ran on. Keyed by agent name. */
   agentModels?: Map<string, string>;
   /** Name of the second finder, when one ran. */
@@ -361,6 +363,8 @@ export interface TeamRoster {
   /** Triage after `planner.paired` and the sensitive-path rule. */
   triage: Triage;
   sensitivePaths: boolean;
+  /** The planner answered `trivial: true`, but a changed file is not one that could be trivial or the path is security sensitive. */
+  trivialOverridden: boolean;
 }
 
 export interface ReviewConfig {
@@ -803,6 +807,8 @@ export interface RoundPlanner {
   paired?: boolean;
   /** Whether the diff touches a security-sensitive path, which forces `trivial: false` and `paired: true`. */
   sensitivePaths?: boolean;
+  /** Set when the planner answered `trivial: true` and code overrode it, because a changed file is not docs, tests, config or generated, or the path is security sensitive. */
+  trivialOverridden?: boolean;
   /** Planner answers that were missing or invalid and took the side that adds review. */
   defaultedFields?: string[];
   /** Number of agents that read the diff. */

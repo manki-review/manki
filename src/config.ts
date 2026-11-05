@@ -117,10 +117,11 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
     }
   }
 
-  for (const key of ['review_level', 'review_thresholds']) {
-    if (key in config) {
-      warnings.push(`\`${key}\` is deprecated and ignored. The planner decides how many finders read each PR, from the nature of the change. Use \`planner.paired\` to pin whether a second finder runs.`);
-    }
+  if ('review_level' in config) {
+    warnings.push('`review_level` is deprecated and ignored. The planner triage now sets how many finders read each PR, from the nature of the change. To pin whether a second finder runs, use `planner.paired`.');
+  }
+  if ('review_thresholds' in config) {
+    warnings.push('`review_thresholds` is deprecated and ignored. Line counts no longer size the review: the planner triage sets how many finders read each PR, from the nature of the change.');
   }
 
   if ('reviewers' in config) {

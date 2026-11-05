@@ -298,6 +298,9 @@ memory:
         expect(core.warning).toHaveBeenCalledWith(expect.stringContaining(`\`${key}\` is deprecated and ignored`));
       }
       expect(core.warning).not.toHaveBeenCalledWith(expect.stringContaining('Unknown config key'));
+      const thresholds = jest.mocked(core.warning).mock.calls.map(c => String(c[0])).find(m => m.startsWith('`review_thresholds`'));
+      expect(thresholds).toContain('the planner triage sets how many finders read each PR');
+      expect(thresholds).not.toContain('planner.paired');
     });
 
     it('ignores unknown keys during merge', () => {
