@@ -721,9 +721,10 @@ describe('handleReviewCommentReply', () => {
     ['**Agreed.** Deferring it to the follow-up is fine.', 'NONE', 'pr-author', 'pr-author', false, true],
     ['Withdrawn. The caller already checks for null.', 'OWNER', 'someone', 'pr-author', false, true],
     ['Still open. The success path still skips `clearTimeout`.', 'MEMBER', 'someone', 'pr-author', false, false],
-    ['Fixed. The guard now runs first.', 'CONTRIBUTOR', 'someone', 'pr-author', false, false],
+    ['Fixed. The guard now runs first.', 'CONTRIBUTOR', 'reader', 'pr-author', false, false],
+    ['Fixed. The guard now runs first.', 'NONE', 'someone', 'pr-author', false, true],
     ['Agreed. The token never reaches a log.', 'OWNER', 'pr-author', 'pr-author', true, false],
-    ['Agreed. The token never reaches a log.', 'CONTRIBUTOR', 'someone', 'pr-author', true, false],
+    ['Agreed. The token never reaches a log.', 'CONTRIBUTOR', 'reader', 'pr-author', true, false],
     ['Agreed. The token never reaches a log.', 'MEMBER', 'someone', 'pr-author', true, true],
     ['Agreed. The token never reaches a log.', 'MEMBER', 'someone', undefined, true, true],
     ['Agreed. The token never reaches a log.', 'MEMBER', 'reader', 'pr-author', true, false],
@@ -841,8 +842,11 @@ describe('handleDismiss (via handlePRComment)', () => {
     }));
   });
 
-  it('stores suppression for trusted collaborator with memory enabled', async () => {
-    setContext({ comment: { id: 42, body: '@manki dismiss null-check-warning', user: { type: 'User' }, author_association: 'OWNER' } });
+  it.each([
+    ['a trusted collaborator', 'OWNER', undefined],
+    ['a private org member with write access', 'NONE', 'member'],
+  ])('stores suppression for %s with memory enabled', async (_who, association, sender) => {
+    setContext({ comment: { id: 42, body: '@manki dismiss null-check-warning', user: { type: 'User' }, author_association: association }, sender: sender && { login: sender } });
     const octokit = createMockOctokit();
     await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, { enabled: true, repo: 'test-owner/memory' }, 'mem-token');
     expect(memory.writeSuppression).toHaveBeenCalled();
@@ -1160,7 +1164,8 @@ describe('handleReviewCommentCommand', () => {
     ['a PR author without admin', 'OWNER', 'pr-author', false, true, false],
     ['a maintainer other than the PR author', 'MEMBER', 'someone', false, true, true],
     ['an org member with read access', 'MEMBER', 'reader', false, true, false],
-    ['an outside contributor', 'CONTRIBUTOR', 'someone', true, true, false],
+    ['an outside contributor', 'CONTRIBUTOR', 'reader', true, true, false],
+    ['a private org member with write access', 'NONE', 'someone', false, true, true],
     ['a PR author without admin, on a plain finding', 'NONE', 'pr-author', false, false, true],
   ])('resolves the thread a dismiss was posted in, from %s', async (_who, association, sender, isAdmin, isSecurity, resolves) => {
     setContext({
