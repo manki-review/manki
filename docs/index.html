@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Manki — Multi-stage AI Code Review for GitHub</title>
-  <meta name="description" content="Self-hosted, multi-agent AI code review that runs as a GitHub Action. A planner picks the team, agents review in parallel, dedup removes repeats, and a judge filters the noise.">
+  <meta name="description" content="Self-hosted, multi-agent AI code review that runs as a GitHub Action. A planner triages the change, one or two finders on different models review it, dedup removes repeats, and a judge filters the noise.">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -16,7 +16,7 @@
       <img src="assets/manki.png" alt="Manki" class="hero-logo" width="140">
       <p class="hero-name">Manki</p>
       <h1>Multi-stage, multi-agent AI code review for GitHub&nbsp;&mdash; self-hosted, provider-neutral.</h1>
-      <p class="subhead">A planner picks the team, agents review in parallel, dedup removes repeats, and a judge filters the noise.</p>
+      <p class="subhead">A planner triages the change, one or two finders on different models review it, dedup removes repeats, and a judge filters the noise.</p>
       <div class="cta-group">
         <a href="https://github.com/manki-review/manki" class="btn-primary">Star on GitHub</a>
         <a href="#install" class="btn-secondary">Get started</a>
@@ -52,12 +52,12 @@
       <div class="pipeline">
         <div class="pipeline-stage">
           <h4>Planner</h4>
-          <p>Picks team size and effort based on the PR</p>
+          <p>Triages the change: how many finders, at what effort</p>
         </div>
         <div class="pipeline-arrow" aria-hidden="true">&rarr;</div>
         <div class="pipeline-stage">
           <h4>Reviewer</h4>
-          <p>Parallel specialist agents produce findings</p>
+          <p>One or two finders on different models produce findings</p>
         </div>
         <div class="pipeline-arrow" aria-hidden="true">&rarr;</div>
         <div class="pipeline-stage">
@@ -84,7 +84,7 @@
         </div>
         <div class="why-item">
           <h4>Multi-stage</h4>
-          <p>Planner + parallel reviewers + dedup + judge. Not a single LLM call &mdash; a coordinated review team.</p>
+          <p>Planner + parallel finders + dedup + judge. Not a single LLM call &mdash; a coordinated review team.</p>
         </div>
         <div class="why-item">
           <h4>Review memory</h4>
@@ -227,8 +227,8 @@ jobs:
           <div class="faq-answer">Add manki to your workflow, disable the old tool. Manki uses standard GitHub PR comments, no migration needed.</div>
         </details>
         <details>
-          <summary>Can I customize the review team?</summary>
-          <div class="faq-answer">Yes. Configure specialist agents in <code>.manki.yml</code> &mdash; name, focus area, and how many run per review.</div>
+          <summary>Can I customize the review?</summary>
+          <div class="faq-answer">Yes. Add extra checks for the finders under <code>reviewers:</code> in <code>.manki.yml</code>, pick the models for each stage including the second finder, and pin whether a second finder runs with <code>planner.paired</code>.</div>
         </details>
       </div>
     </div>

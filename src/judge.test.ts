@@ -34,8 +34,6 @@ const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
   exclude_paths: [],
   max_diff_lines: 50000,
   reviewers: [],
-  review_level: 'auto',
-  review_thresholds: { small: 200, medium: 1000 },
   instructions: '',
   memory: { enabled: false, repo: '' },
   ...overrides,
@@ -206,23 +204,16 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('Style preference that does not affect correctness');
   });
 
-  it('contains Reviewer Consensus section with dynamic thresholds', () => {
-    const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
-    expect(prompt).toContain('## Reviewer Consensus');
-    expect(prompt).toContain('This review used 5 specialist agents');
-    expect(prompt).toContain('3+ of 5');
-    expect(prompt).toContain('2+ of 5');
-    expect(prompt).toContain('1 of 5');
-  });
+  it('weighs two-finder agreement as evidence that never raises severity, and omits it for one reader', () => {
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 2);
+    expect(prompt).toContain('## Finder Agreement');
+    expect(prompt).toContain('**Both finders reported the defect**');
+    expect(prompt).toContain('Drop it only when you can say concretely why both are wrong.');
+    expect(prompt).toContain("The other finder's silence is not evidence against it.");
+    expect(prompt).toContain("Agreement never raises or protects a finding's severity.");
+    expect(prompt).not.toContain('specialist');
 
-  it('adapts majority threshold to team size', () => {
-    const prompt3 = buildJudgeSystemPrompt(makeConfig(), 3);
-    expect(prompt3).toContain('2+ of 3');
-    expect(prompt3).toContain('This review used 3 specialist agents');
-
-    const prompt7 = buildJudgeSystemPrompt(makeConfig(), 7);
-    expect(prompt7).toContain('4+ of 7');
-    expect(prompt7).toContain('This review used 7 specialist agents');
+    expect(buildJudgeSystemPrompt(makeConfig(), 1)).not.toContain('## Finder Agreement');
   });
 
   it('contains Acceptance Criteria section', () => {

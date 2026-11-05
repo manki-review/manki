@@ -508,7 +508,7 @@ export async function updateProgressComment(
 
     parts.push('**Config:**');
     parts.push(`- Models: reviewer=${metadata.config.reviewerModel}, judge=${metadata.config.judgeModel}`);
-    parts.push(`- Review level: ${metadata.config.reviewLevel} (${metadata.config.reviewLevelReason})`);
+    parts.push(`- Triage: ${metadata.config.triage}`);
     parts.push(`- Team: ${metadata.config.teamAgents.join(', ')}`);
     parts.push(`- Memory: ${metadata.config.memoryEnabled ? `enabled (${metadata.config.memoryRepo})` : 'disabled'}`);
     parts.push('');
@@ -923,10 +923,6 @@ export async function postReview(
 
   const renderBody = (ctx: RoundContext | undefined): string => {
     let b = `${BOT_MARKERS}\n${lead}`;
-    const partial = formatPartialNote(result);
-    if (partial) {
-      b += `\n\n${partial}`;
-    }
     const needsHuman = formatNeedsHuman(result);
     if (needsHuman) {
       b += `\n\n${needsHuman}`;
@@ -1161,14 +1157,6 @@ function formatLead(result: ReviewResult, blocking: Finding[]): string {
   const line = VERDICT_LINES[result.outcome](result, blockerCount);
   const detail = formatVerdictDetail(result, blocking);
   return detail ? `${line}\n\n${detail}` : line;
-}
-
-function formatPartialNote(result: ReviewResult): string | null {
-  if (!result.partialNote) return null;
-  const failed = result.failedAgents ?? [];
-  return failed.length > 0
-    ? `This review is partial: ${sanitizeMarkdown(failed.join(', '))} failed.`
-    : sanitizeMarkdown(result.partialNote);
 }
 
 /**

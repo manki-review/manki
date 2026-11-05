@@ -302,7 +302,6 @@ export function buildJudgeSystemPrompt(
   openThreadsCount: number = 0,
 ): string {
   const hasOpenThreads = openThreadsCount > 0;
-  const majorityThreshold = Math.max(1, Math.ceil(agentCount / 2));
   const summaryInstruction = isFollowUp
     ? `Write one or two sentences on where the change stands now: whether the earlier problems are fixed, and what still goes wrong in practice. The review already shows each finding's title, so do not repeat a title word for word. Do not re-describe the PR and do not praise the change. Never start with "The author" or "Since last review". If you can swap the project name and the summary still works, it is too generic. Good examples:
 - "Both earlier problems are fixed. The new retry loop drops the error reason, so operators see '3 attempts failed' with no cause."
@@ -321,7 +320,7 @@ Bad examples (do NOT write like this):
 - "Clean refactor with one concern about error handling."
 - "Findings 1 and 4 identify the same real bug, which all 3 reviewers caught."
 - "This PR modifies the review pipeline to..."`;
-  let prompt = `You are a code review judge. You evaluate findings from multiple specialist reviewers for accuracy, actionability, and severity.
+  let prompt = `You are a code review judge. You evaluate findings from code reviewers for accuracy, actionability, and severity.
 
 ## Severity Assessment
 
@@ -443,16 +442,15 @@ For each finding, evaluate:
 - Use \`ignore\` for false positives, intentional patterns and the cases the rules above drop. Never use it just to reduce the finding count.
 - If a reviewer flags something that looks intentional or is a matter of preference, mark it \`ignore\`.
 
-## Reviewer Consensus
+${agentCount >= 2 ? `## Finder Agreement
 
-This review used ${agentCount} specialist agents. Independent agreement is evidence that a finding is real:
-- **Majority or more flagged it** (${majorityThreshold}+ of ${agentCount}): strong evidence. Drop it only when you can say concretely why they are all wrong.
-- **More than one flagged it** (2+ of ${agentCount}): moderate evidence.
-- **Only one flagged it** (1 of ${agentCount}): ordinary. The others not mentioning it is not evidence against it.
+Two finders read this diff independently, with the same instructions. Each finding names the finder that raised it.
+- **Both finders reported the defect** (one finding from each, which you mark as duplicates): strong evidence that it is real. Drop it only when you can say concretely why both are wrong.
+- **One finder reported it**: ordinary. The other finder's silence is not evidence against it.
 
 Agreement never raises or protects a finding's severity. Grade it by the rules above.
 
-## Acceptance Criteria
+` : ''}## Acceptance Criteria
 
 If the PR description or linked issues contain acceptance criteria (checkbox items like "- [ ] criterion"):
 - Check if each criterion is addressed by the changes in this PR

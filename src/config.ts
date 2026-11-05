@@ -2,8 +2,7 @@ import * as core from '@actions/core';
 import * as fs from 'fs';
 import { parse as parseYaml } from 'yaml';
 
-import { buildAgentPool } from './agents';
-import { ReviewerAgent, ReviewConfig } from './types';
+import { PairedPin, ReviewConfig } from './types';
 
 export const MAX_LOCK_TTL_SECONDS = 3600;
 
@@ -17,8 +16,6 @@ export const DEFAULT_CONFIG: ReviewConfig = {
   max_diff_lines: 50000,
   reviewers: [],
   instructions: '',
-  review_level: 'auto',
-  review_thresholds: { small: 200, medium: 1000 },
   models: {
     planner: 'claude-haiku-4-5',
     reviewer: SONNET_MODEL,
@@ -27,6 +24,7 @@ export const DEFAULT_CONFIG: ReviewConfig = {
   },
   planner: {
     enabled: true,
+    paired: 'auto',
   },
   memory: {
     enabled: false,
@@ -66,6 +64,11 @@ const KNOWN_KEYS = new Set([
   'concurrency_lock_ttl_seconds',
 ]);
 
+// Accepted so older configs keep loading, then dropped.
+const IGNORED_KEYS = new Set(['review_level', 'review_thresholds']);
+
+const PAIRED_PINS: readonly PairedPin[] = ['auto', 'always', 'never'];
+
 const REPO_FORMAT = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
 
 interface ConfigValidationResult {
@@ -77,20 +80,6 @@ interface ConfigValidationResult {
 function validateConfig(config: Record<string, unknown>): ConfigValidationResult {
   const errors: string[] = [];
   const warnings: string[] = [];
-
-  const customReviewers = Array.isArray(config.reviewers)
-    ? (config.reviewers as Array<Record<string, unknown>>)
-        .filter(r => r && typeof r === 'object' && typeof r.name === 'string' && typeof r.focus === 'string')
-        .map(r => ({ name: r.name as string, focus: r.focus as string }))
-    : [];
-  const knownAgentNames = new Set(buildAgentPool(customReviewers as ReviewerAgent[]).map(a => a.name));
-  const declaredReviewerNames = new Set(
-    Array.isArray(config.reviewers)
-      ? (config.reviewers as Array<Record<string, unknown>>)
-          .filter(r => r && typeof r === 'object' && typeof r.name === 'string' && (r.name as string).length > 0)
-          .map(r => r.name as string)
-      : [],
-  );
 
   for (const key of Object.keys(config)) {
     if (!KNOWN_KEYS.has(key)) {
@@ -129,30 +118,10 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
   }
 
   if ('review_level' in config) {
-    const valid = ['auto', 'small', 'medium', 'large'];
-    if (typeof config.review_level !== 'string' || !valid.includes(config.review_level)) {
-      errors.push('`review_level` must be one of: auto, small, medium, large');
-    }
+    warnings.push('`review_level` is deprecated and ignored. The planner triage now sets how many finders read each PR, from the nature of the change. To pin whether a second finder runs, use `planner.paired`.');
   }
-
   if ('review_thresholds' in config) {
-    const thresholds = config.review_thresholds as Record<string, unknown>;
-    if (!thresholds || typeof thresholds !== 'object' || Array.isArray(thresholds)) {
-      errors.push('`review_thresholds` must be an object');
-    } else {
-      if ('small' in thresholds && (typeof thresholds.small !== 'number' || thresholds.small <= 0)) {
-        errors.push('`review_thresholds.small` must be a positive number');
-      }
-      if ('medium' in thresholds && (typeof thresholds.medium !== 'number' || thresholds.medium <= 0)) {
-        errors.push('`review_thresholds.medium` must be a positive number');
-      }
-      if (
-        typeof thresholds.small === 'number' && typeof thresholds.medium === 'number' &&
-        thresholds.small >= thresholds.medium
-      ) {
-        errors.push('`review_thresholds.small` must be less than `review_thresholds.medium`');
-      }
-    }
+    warnings.push('`review_thresholds` is deprecated and ignored. Line counts no longer size the review: the planner triage sets how many finders read each PR, from the nature of the change.');
   }
 
   if ('reviewers' in config) {
@@ -203,17 +172,9 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
           for (const [agentName, modelValue] of Object.entries(agents)) {
             if (typeof modelValue !== 'string' || modelValue === '') {
               errors.push(`\`models.agents.${agentName}\` must be a non-empty string`);
-              continue;
-            }
-            if (!knownAgentNames.has(agentName)) {
-              if (declaredReviewerNames.has(agentName)) {
-                errors.push(`Agent "${agentName}" in \`models.agents\` matches a reviewer declared under \`reviewers:\` but that entry is invalid. Check its \`name\` and \`focus\` fields.`);
-              } else {
-                const known = Array.from(knownAgentNames).map(n => `"${n}"`).join(', ');
-                errors.push(`Unknown agent name "${agentName}" in \`models.agents\`. Known agents: ${known}`);
-              }
             }
           }
+          warnings.push('`models.agents` is deprecated. Manki no longer runs specialist agents. Unless `models.reviewer_pair` is set, its first model that differs from `models.reviewer` becomes the second finder\'s model.');
         }
       }
     }
@@ -226,6 +187,9 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
     } else {
       if ('enabled' in planner && typeof planner.enabled !== 'boolean') {
         errors.push('`planner.enabled` must be a boolean');
+      }
+      if ('paired' in planner && !PAIRED_PINS.includes(planner.paired as PairedPin)) {
+        errors.push('`planner.paired` must be one of: auto, always, never');
       }
     }
   }
@@ -336,27 +300,23 @@ function deepMerge(defaults: ReviewConfig, overrides: Record<string, unknown>): 
   const result = { ...defaults };
 
   for (const key of Object.keys(overrides)) {
-    if (!KNOWN_KEYS.has(key)) continue;
+    if (!KNOWN_KEYS.has(key) || IGNORED_KEYS.has(key)) continue;
 
     const value = overrides[key];
 
     if (key === 'memory' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
       result.memory = { ...defaults.memory, ...(value as Record<string, unknown>) } as ReviewConfig['memory'];
     } else if (key === 'models' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
-      const incoming = value as Record<string, unknown>;
-      const incomingAgents = incoming.agents as Record<string, string> | undefined;
-      const existingAgents = defaults.models?.agents;
-      const merged = { ...defaults.models, ...incoming } as ReviewConfig['models'];
-      if (merged) {
-        merged.agents = (existingAgents || incomingAgents)
-          ? { ...(existingAgents ?? {}), ...(incomingAgents ?? {}) }
-          : undefined;
+      const { agents, ...incoming } = value as Record<string, unknown>;
+      const models = { ...defaults.models, ...incoming } as NonNullable<ReviewConfig['models']>;
+      if (!models.reviewer_pair && agents && typeof agents === 'object') {
+        const reviewer = models.reviewer || defaults.models?.reviewer;
+        const pair = Object.values(agents).find(m => typeof m === 'string' && m !== '' && m !== reviewer);
+        if (pair) models.reviewer_pair = pair;
       }
-      result.models = merged;
+      result.models = models;
     } else if (key === 'planner' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
       result.planner = { ...defaults.planner, ...(value as Record<string, unknown>) } as ReviewConfig['planner'];
-    } else if (key === 'review_thresholds' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
-      result.review_thresholds = { ...defaults.review_thresholds, ...(value as Record<string, unknown>) } as ReviewConfig['review_thresholds'];
     } else if (key === 'convergence' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
       result.convergence = { ...defaults.convergence, ...(value as Record<string, unknown>) } as ReviewConfig['convergence'];
     } else if (key === 'stats' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
@@ -414,13 +374,7 @@ export function loadConfigFromContent(content: string, source = '.manki.yml'): R
     throw new Error(`Invalid config in ${source}: ${validation.errors.join('; ')}`);
   }
 
-  const merged = deepMerge(DEFAULT_CONFIG, parsed as Record<string, unknown>);
-
-  if (merged.review_thresholds.small >= merged.review_thresholds.medium) {
-    throw new Error(`Invalid config in ${source}: \`review_thresholds.small\` must be less than \`review_thresholds.medium\``);
-  }
-
-  return merged;
+  return deepMerge(DEFAULT_CONFIG, parsed as Record<string, unknown>);
 }
 
 export function loadConfigFromFile(filePath: string): ReviewConfig {
@@ -458,20 +412,6 @@ export function resolvePairModel(config: ReviewConfig): string {
   if (id.startsWith('claude-sonnet-')) return OPUS_MODEL;
   if (id.startsWith('claude-haiku-')) return SONNET_MODEL;
   return reviewer;
-}
-
-/**
- * Resolves the model for a specific reviewer agent. Resolution order:
- * `models.agents[agentName]` → `models[stage]` → built-in default for `stage`.
- */
-export function resolveAgentModel(
-  config: ReviewConfig,
-  agentName: string,
-  stage: 'planner' | 'reviewer' | 'judge' | 'dedup',
-): string {
-  const override = config.models?.agents?.[agentName];
-  if (override) return override;
-  return resolveModel(config, stage);
 }
 
 export function loadConfig(yamlContent: string | undefined, source?: string): ReviewConfig {

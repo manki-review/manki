@@ -534,7 +534,7 @@ function makeContext(overrides: Partial<RoundContext> = {}): RoundContext {
     config: { reviewLevel: 'medium', memoryEnabled: false },
     diff: { lines: 120, additions: 80, deletions: 40, filesReviewed: 5, fileTypes: { '.ts': 5 } },
     models: { reviewer: 'claude-sonnet-4-20250514', judge: 'claude-opus-4-20250514' },
-    planner: { source: 'disabled', used: false, coreAgentInjections: [] },
+    planner: { source: 'disabled', used: false },
     reviewers: { agents: ['Security & Safety', 'Correctness'] },
     judge: { summary: 'All checks done.' },
     dedup: {},
@@ -1218,55 +1218,6 @@ describe('postReview with context', () => {
   });
 });
 
-describe('postReview partialNote', () => {
-  const mockCreateReview = jest.fn().mockResolvedValue({ data: { id: 1 } });
-  const mockOctokit = {
-    rest: {
-      pulls: {
-        createReview: mockCreateReview,
-      },
-    },
-  } as unknown as Parameters<typeof postReview>[0];
-
-  beforeEach(() => {
-    mockCreateReview.mockClear();
-  });
-
-  it('includes partialNote in review body when agents failed after retries', async () => {
-    const result: ReviewResult = {
-      verdict: 'APPROVE',
-      summary: 'Looks good overall.',
-      findings: [],
-      highlights: [],
-      reviewComplete: true,
-      agentNames: [],
-      partialNote: '4 of 5 agents completed (Correctness & Logic failed after 2 attempts)',
-      failedAgents: ['Correctness & Logic'],
-    };
-
-    await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
-    const body = mockCreateReview.mock.calls[0][0].body as string;
-    expect(body).toContain('\n\nThis review is partial: Correctness & Logic failed.');
-    expect(body).not.toContain('agents completed');
-    expect(body).not.toContain('> ');
-  });
-
-  it('omits partialNote section when not provided', async () => {
-    const result: ReviewResult = {
-      verdict: 'APPROVE',
-      summary: 'All clear.',
-      findings: [],
-      highlights: [],
-      reviewComplete: true,
-      agentNames: [],
-    };
-
-    await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
-    const body = mockCreateReview.mock.calls[0][0].body as string;
-    expect(body).not.toContain('This review is partial');
-  });
-});
-
 describe('postReview body lead', () => {
   const mockCreateReview = jest.fn().mockResolvedValue({ data: { id: 1 } });
   const mockOctokit = {
@@ -1453,7 +1404,7 @@ describe('postReview body lead', () => {
     const results: ReviewResult[] = [
       ready,
       { ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', verdictReport: undefined, summary: 'It breaks.', findings: [blocker, { ...blocker, file: '', line: 0 }, { ...blocker, file: 'src/gone.ts' }] },
-      { ...ready, verdict: 'COMMENT', outcome: 'INCOMPLETE', verdictReport: undefined, summary: 'The judge failed.', partialNote: 'x', failedAgents: ['Security'] },
+      { ...ready, verdict: 'COMMENT', outcome: 'INCOMPLETE', verdictReport: undefined, summary: 'The judge failed.', failedAgents: ['Pair finder (claude-opus-4-7)'] },
       { ...ready, outcome: 'BUDGET' },
       { ...ready, verdict: 'REQUEST_CHANGES', outcome: 'NOT_CONVERGING', needsHuman: { cause: 'repeated', blockers: [{ file: 'src/a.ts', line: 1, title: 'Bug', fingerprint: 'k' }] } },
     ];
@@ -2622,9 +2573,8 @@ describe('updateProgressComment', () => {
     config: {
       reviewerModel: 'claude-sonnet-4-20250514',
       judgeModel: 'claude-sonnet-4-20250514',
-      reviewLevel: 'medium',
-      reviewLevelReason: 'auto, 200 lines',
-      teamAgents: ['Security & Safety', 'Correctness & Logic', 'Architecture & Design'],
+      triage: 'trivial=false, subtle=true, paired=true (planner)',
+      teamAgents: ['Finder (claude-sonnet-4-6)', 'Pair finder (claude-opus-4-7)'],
       memoryEnabled: true,
       memoryRepo: 'owner/review-memory',
     },
@@ -2661,8 +2611,8 @@ describe('updateProgressComment', () => {
     expect(body).toContain('**Config:**');
     expect(body).toContain('reviewer=claude-sonnet-4-20250514');
     expect(body).toContain('judge=claude-sonnet-4-20250514');
-    expect(body).toContain('Review level: medium (auto, 200 lines)');
-    expect(body).toContain('Security & Safety, Correctness & Logic, Architecture & Design');
+    expect(body).toContain('Triage: trivial=false, subtle=true, paired=true (planner)');
+    expect(body).toContain('Team: Finder (claude-sonnet-4-6), Pair finder (claude-opus-4-7)');
     expect(body).toContain('enabled (owner/review-memory)');
   });
 

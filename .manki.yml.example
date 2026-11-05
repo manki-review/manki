@@ -19,16 +19,9 @@
 # Maximum diff lines before skipping review (default: 50000)
 # max_diff_lines: 50000
 
-# Team sizing: auto (default), small (3 agents), medium (5), large (7)
-# review_level: auto
-# review_thresholds:
-#   small: 200   # diffs under this many lines get a small team
-#   medium: 1000  # diffs under this many lines get a medium team
-
-# Custom reviewer agents (added to the built-in 7-agent pool)
-# The built-in pool covers: Security, Architecture, Correctness, Testing,
-# Performance, Maintainability, Dependencies. Custom reviewers get a scoring
-# boost during team selection.
+# Extra checks for the finders. Each entry becomes one more line in the
+# finder prompt, after correctness, security, error paths, tests that cannot
+# fail and contract breaks. Both finders get the same prompt.
 # reviewers:
 #   - name: "Protocol Compliance"
 #     focus: "DIP compliance, consensus rules, protocol-specific invariants"
@@ -40,14 +33,10 @@
 # Per-stage model selection
 # models:
 #   planner: claude-haiku-4-5      # fast pre-review planning pass
-#   reviewer: claude-sonnet-4-6    # fast, parallel reviewers
+#   reviewer: claude-sonnet-4-6    # the finder on every round
+#   reviewer_pair: gpt-6.1-terra   # the second finder on paired rounds (default: the other Claude tier, Sonnet with Opus)
 #   judge: claude-sonnet-4-6        # precise, single judge
 #   dedup: claude-haiku-4-5        # fast LLM dedup against prior findings
-#   # Per-agent model overrides. Keys must match a known reviewer name
-#   # (built-in agent or one declared under `reviewers:` above).
-#   # Resolution order per agent: agents[name] -> models.reviewer -> default.
-#   agents:
-#     "Security & Safety": claude-opus-4-7
 #
 # To use OpenAI, set `openai_api_key` (or `openai_oauth_token` for Codex CLI) and override models:
 # models:
@@ -67,12 +56,16 @@
 # You can also use explicit `provider/model` syntax (e.g. `anthropic/claude-haiku-4-5`).
 
 # Planner stage (default: enabled)
-# When enabled and review_level is "auto", a fast pre-review pass chooses the
-# team size (1/2/3, by the nature of the change), reviewer/judge effort, and PR
-# type. teamSize=1 routes changes where a defect could not hide (deletions,
-# renames, docs, tests, config, CI) to a single Trivial Change Verifier. Disable to always use the heuristic team selector.
+# A fast pre-review pass answers three questions about the nature of the change:
+# trivial (a single Trivial Change Verifier reads it), subtle (finders run at
+# high effort instead of medium) and paired (a second finder on another model
+# reads it too). An unclear answer takes the side that adds review. Disabled,
+# every round gets two finders at high effort.
+# `paired` pins the third answer: auto (default), always or never. A diff that
+# touches a security-sensitive path, CI or a dependency manifest always gets two finders.
 # planner:
 #   enabled: true
+#   paired: auto
 
 # Where to post nit findings: 'issues' (separate GitHub issue) or 'comments' (inline PR comments)
 # nit_handling: issues

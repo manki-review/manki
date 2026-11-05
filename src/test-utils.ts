@@ -30,7 +30,7 @@ export function makeRoundContext(round: number, overrides: Partial<RoundContext>
     config: { reviewLevel: 'medium', memoryEnabled: false },
     diff: { lines: 0, additions: 0, deletions: 0, filesReviewed: 0, fileTypes: {} },
     models: { reviewer: 'r', judge: 'j' },
-    planner: { source: 'disabled', used: false, coreAgentInjections: [] },
+    planner: { source: 'disabled', used: false },
     reviewers: { agents: [] },
     judge: { summary: '' },
     dedup: {},

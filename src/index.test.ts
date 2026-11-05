@@ -86,7 +86,6 @@ jest.mock('./config', () => {
     loadConfigFromFile,
     sanitizeForkConfig,
     resolveModel: jest.fn().mockReturnValue('claude-sonnet-4-20250514'),
-    resolveAgentModel: jest.fn().mockImplementation(actual.resolveAgentModel),
     resolvePairModel: jest.fn().mockImplementation(actual.resolvePairModel),
   };
 });
@@ -142,7 +141,7 @@ jest.mock('./review', () => ({
     reviewComplete: true,
     agentNames: ['general'],
   }),
-  selectTeam: jest.fn().mockReturnValue({ level: 'standard', agents: [{ name: 'general' }] }),
+  selectTeam: jest.fn().mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, pair: false, model: 'claude-sonnet-4-6', effort: 'high' }], triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false }),
 }));
 
 jest.mock('./github', () => {
@@ -1782,8 +1781,7 @@ describe('runFullReview orchestration', () => {
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
       exclude_paths: [],
       reviewers: [],
-      instructions: '', review_level: 'auto',
-      review_thresholds: { small: 200, medium: 800 },
+      instructions: '',
       memory: { enabled: false, repo: '' },
     });
     jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
@@ -1797,7 +1795,7 @@ describe('runFullReview orchestration', () => {
       findings: [], highlights: [], reviewComplete: true,
       agentNames: ['general'],
     });
-    jest.mocked(reviewModule.selectTeam).mockReturnValue({ level: 'standard' as 'small', agents: [{ name: 'general', focus: '' }], lineCount: 0 });
+    jest.mocked(reviewModule.selectTeam).mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, pair: false, model: 'claude-sonnet-4-6', effort: 'high' }], triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false });
     jest.mocked(ghUtils.postProgressComment).mockResolvedValue(1);
     jest.mocked(ghUtils.postReview).mockResolvedValue(123);
     jest.mocked(ghUtils.fetchPRDiff).mockResolvedValue('');
@@ -1976,8 +1974,7 @@ describe('runFullReview orchestration', () => {
      
       reviewers: [],
       instructions: '',
-      review_level: 'auto',
-      review_thresholds: { small: 200, medium: 800 },
+     
       memory: { enabled: false, repo: '' },
     });
 
@@ -2419,29 +2416,32 @@ describe('runFullReview orchestration', () => {
     expect(ctx!.judge.retryCount).toBe(0);
   });
 
-  it('builds `RoundPlanner` provenance with `source`, `language`, `context`, `agents`, and reinjections', async () => {
+  it('builds `RoundPlanner` provenance with `source`, triage, team size and the sensitive-path flag', async () => {
     const testFile = { path: 'src/auth.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
-    const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/auth.ts', line: 5, description: 'd', reviewers: ['Security & Safety'] };
+    const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/auth.ts', line: 5, description: 'd', reviewers: ['Finder (claude-sonnet-4-6)'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Issues found',
       findings: [finding], highlights: [], reviewComplete: true,
-      agentNames: ['Security & Safety'],
+      agentNames: ['Finder (claude-sonnet-4-6)', 'Pair finder (claude-opus-4-7)'],
       allJudgedFindings: [finding], rawFindings: [finding],
       plannerResult: {
-        teamSize: 1,
-        reviewerEffort: 'medium',
+        trivial: true,
+        subtle: false,
+        paired: false,
         judgeEffort: 'high',
         prType: 'feat',
-        agents: [{ name: 'Architecture & Design', effort: 'low' }],
         language: 'typescript',
         context: 'GitHub Actions bot',
+        defaultedFields: ['subtle'],
       },
       plannerSource: 'planner',
-      coreAgentInjections: ['Security & Safety'],
-      agentEffortMap: new Map([['Security & Safety', 'medium']]),
+      triage: { trivial: false, subtle: false, paired: true },
+      sensitivePaths: true,
+      agentEffortMap: new Map([['Finder (claude-sonnet-4-6)', 'medium'], ['Pair finder (claude-opus-4-7)', 'medium']]),
+      pairAgentName: 'Pair finder (claude-opus-4-7)',
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
 
@@ -2451,15 +2451,19 @@ describe('runFullReview orchestration', () => {
     expect(ctx!.planner).toEqual(expect.objectContaining({
       source: 'planner',
       used: true,
-      teamSize: 1,
+      trivial: false,
+      subtle: false,
+      paired: true,
+      sensitivePaths: true,
+      defaultedFields: ['subtle'],
+      teamSize: 2,
       reviewerEffort: 'medium',
       judgeEffort: 'high',
       prType: 'feat',
       language: 'typescript',
       context: 'GitHub Actions bot',
-      agents: [{ name: 'Architecture & Design', effort: 'low' }],
-      coreAgentInjections: ['Security & Safety'],
     }));
+    expect(ctx!.models.reviewerPair).toBeDefined();
   });
 
   it('builds `RoundPlanner` with `source: "heuristic_fallback"` and `fallbackReason` when the planner failed', async () => {
@@ -2484,8 +2488,8 @@ describe('runFullReview orchestration', () => {
     expect(ctx!.planner).toEqual({
       source: 'heuristic_fallback',
       used: false,
-      coreAgentInjections: [],
       fallbackReason: 'timeout',
+      teamSize: 1,
     });
   });
 
@@ -2523,6 +2527,7 @@ describe('runFullReview orchestration', () => {
       agentNames: ['Security & Safety'],
       allJudgedFindings: [finding], rawFindings: [finding],
       agentEffortMap: new Map([['Security & Safety', 'high']]),
+      agentModels: new Map([['Security & Safety', 'claude-sonnet-4-6']]),
       agentMultiPassConsistency: new Map([['Security & Safety', { consistent: 2, totalRaw: 5 }]]),
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
@@ -2540,114 +2545,38 @@ describe('runFullReview orchestration', () => {
     ]);
   });
 
-  it('uses `models.agents` override for `RoundAgentMetric.model` when configured', async () => {
+  it('records the model each finder ran on and counts kept findings by finder role', async () => {
     const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
-    jest.mocked(configModule.loadConfig).mockReturnValue({
-      auto_review: true, auto_approve: false, max_diff_lines: 5000,
-      exclude_paths: [],
-      reviewers: [],
-      instructions: '', review_level: 'auto',
-      review_thresholds: { small: 200, medium: 800 },
-      memory: { enabled: false, repo: '' },
-      models: {
-        reviewer: 'claude-sonnet-4-6',
-        agents: { 'Security & Safety': 'claude-opus-4-7' },
-      },
-    });
 
-    const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['Security & Safety'] };
-    jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Issues found',
-      findings: [finding], highlights: [], reviewComplete: true,
-      agentNames: ['Security & Safety'],
-      allJudgedFindings: [finding], rawFindings: [finding],
-    });
-    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
-
-    await callRunFullReview();
-
-    const ctx = jest.mocked(ghUtils.postReview).mock.calls[0][7];
-    expect(ctx!.reviewers.agentMetrics).toEqual([
-      expect.objectContaining({
-        name: 'Security & Safety',
-        model: 'claude-opus-4-7',
-      }),
-    ]);
-  });
-
-  it('falls back to `reviewerModel` for agents not listed in `models.agents`', async () => {
-    const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
-    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
-    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
-    jest.mocked(configModule.loadConfig).mockReturnValue({
-      auto_review: true, auto_approve: false, max_diff_lines: 5000,
-      exclude_paths: [],
-      reviewers: [],
-      instructions: '', review_level: 'auto',
-      review_thresholds: { small: 200, medium: 800 },
-      memory: { enabled: false, repo: '' },
-      models: {
-        reviewer: 'claude-sonnet-4-6',
-        agents: { 'Security & Safety': 'claude-opus-4-7' },
-      },
-    });
-
-    jest.mocked(configModule.resolveModel).mockReturnValueOnce('claude-haiku-4-5').mockReturnValueOnce('claude-sonnet-4-6');
-
-    const security = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['Security & Safety'] };
-    const correctness = { severity: 'suggestion' as const, title: 'Style', file: 'src/app.ts', line: 8, description: 'd', reviewers: ['Correctness & Logic'] };
-    const both = { severity: 'warning' as const, title: 'Race', file: 'src/app.ts', line: 9, description: 'd', reviewers: ['Correctness & Logic', 'Security & Safety'] };
+    const primaryName = 'Finder (claude-sonnet-4-6)';
+    const pairName = 'Pair finder (claude-opus-4-7)';
+    const pairOnly = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: [pairName] };
+    const primaryOnly = { severity: 'suggestion' as const, title: 'Style', file: 'src/app.ts', line: 8, description: 'd', reviewers: [primaryName] };
+    const both = { severity: 'warning' as const, title: 'Race', file: 'src/app.ts', line: 9, description: 'd', reviewers: [primaryName, pairName] };
     const reader = { severity: 'blocker' as const, title: 'Leak', file: 'src/app.ts', line: 3, description: 'd', reviewers: ['Verdict reader'] };
-    const findings = [security, correctness, both, reader];
+    const findings = [pairOnly, primaryOnly, both, reader];
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Issues found',
       findings, highlights: [], reviewComplete: true,
-      agentNames: ['Security & Safety', 'Correctness & Logic'],
+      agentNames: [primaryName, pairName],
       allJudgedFindings: findings, rawFindings: findings,
+      agentModels: new Map([[primaryName, 'claude-sonnet-4-6'], [pairName, 'claude-opus-4-7']]),
+      pairAgentName: pairName,
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
 
     await callRunFullReview();
 
     const ctx = jest.mocked(ghUtils.postReview).mock.calls[0][7];
-    const securityMetric = ctx!.reviewers.agentMetrics?.find((m: { name: string }) => m.name === 'Security & Safety');
-    const correctnessMetric = ctx!.reviewers.agentMetrics?.find((m: { name: string }) => m.name === 'Correctness & Logic');
-    expect(securityMetric?.model).toBe('claude-opus-4-7');
-    expect(correctnessMetric?.model).toBe('claude-sonnet-4-6');
+    expect(ctx!.reviewers.agentMetrics?.map(m => [m.name, m.model])).toEqual([
+      [primaryName, 'claude-sonnet-4-6'],
+      [pairName, 'claude-opus-4-7'],
+    ]);
     expect(ctx!.reviewers).toEqual(expect.objectContaining({ keptPrimaryOnly: 1, keptPairOnly: 1, keptBoth: 1 }));
-    expect(ctx!.findings.entries.find(e => e.title === 'Race')?.reviewers).toEqual(['Correctness & Logic', 'Security & Safety']);
-  });
-
-  it('uses built-in default model for `RoundAgentMetric.model` when `config.models` is absent', async () => {
-    const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
-    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
-    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
-    jest.mocked(configModule.loadConfig).mockReturnValue({
-      auto_review: true, auto_approve: false, max_diff_lines: 5000,
-      exclude_paths: [],
-      reviewers: [],
-      instructions: '', review_level: 'auto',
-      review_thresholds: { small: 200, medium: 800 },
-      memory: { enabled: false, repo: '' },
-      models: undefined,
-    });
-
-    const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['Security & Safety'] };
-    jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Issues found',
-      findings: [finding], highlights: [], reviewComplete: true,
-      agentNames: ['Security & Safety'],
-      allJudgedFindings: [finding], rawFindings: [finding],
-    });
-    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
-
-    await callRunFullReview();
-
-    const ctx = jest.mocked(ghUtils.postReview).mock.calls[0][7];
-    const metric = ctx!.reviewers.agentMetrics?.[0];
-    expect(metric?.model).toBe('claude-sonnet-4-6');
+    expect(ctx!.findings.entries.find(e => e.title === 'Race')?.reviewers).toEqual([primaryName, pairName]);
+    expect(ctx!.models.reviewerPair).toBe('claude-opus-4-7');
   });
 
   it('builds `perStage` with only present stages when planner and dedup are absent', async () => {
@@ -2826,8 +2755,7 @@ describe('runFullReview orchestration', () => {
 
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, exclude_paths: [], max_diff_lines: 10000,
-      reviewers: [], instructions: '', review_level: 'auto',
-      review_thresholds: { small: 200, medium: 800 },
+      reviewers: [], instructions: '',
       memory: { enabled: true, repo: 'owner/memory' },
     });
     jest.mocked(authModule.getMemoryToken).mockReturnValue('token123');
@@ -3014,8 +2942,7 @@ describe('runFullReview orchestration', () => {
       jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [roundTestFile], excluded: [] });
       jest.mocked(configModule.loadConfig).mockReturnValue({
         auto_review: true, auto_approve: false, exclude_paths: [], max_diff_lines: 10000,
-        reviewers: [], instructions: '', review_level: 'auto',
-        review_thresholds: { small: 200, medium: 800 },
+        reviewers: [], instructions: '',
         memory: { enabled: true, repo: 'owner/memory' },
       });
       jest.mocked(authModule.getMemoryToken).mockReturnValue('token123');
@@ -3137,8 +3064,7 @@ describe('runFullReview orchestration', () => {
     it('records `cap.bypassReason: within_cap` when the cap is not configured', async () => {
       jest.mocked(configModule.loadConfig).mockReturnValue({
         auto_review: true, auto_approve: false, max_diff_lines: 5000, exclude_paths: [],
-        reviewers: [], instructions: '', review_level: 'auto',
-        review_thresholds: { small: 200, medium: 800 },
+        reviewers: [], instructions: '',
         memory: { enabled: false, repo: '' },
       });
 
@@ -3157,8 +3083,7 @@ describe('runFullReview orchestration', () => {
     it('records `cap.priorRoundCount` as the count BEFORE the current round (public `5/5` reads as 5)', async () => {
       jest.mocked(configModule.loadConfig).mockReturnValue({
         auto_review: true, auto_approve: false, max_diff_lines: 5000, exclude_paths: [],
-        reviewers: [], instructions: '', review_level: 'auto',
-        review_thresholds: { small: 200, medium: 800 },
+        reviewers: [], instructions: '',
         memory: { enabled: false, repo: '' },
         convergence: { max_auto_rounds: 5 },
       });
@@ -3184,8 +3109,7 @@ describe('runFullReview orchestration', () => {
     it('records `cap.bypassReason: force_review` when the force-review tickbox admitted the round', async () => {
       jest.mocked(configModule.loadConfig).mockReturnValue({
         auto_review: true, auto_approve: false, max_diff_lines: 5000, exclude_paths: [],
-        reviewers: [], instructions: '', review_level: 'auto',
-        review_thresholds: { small: 200, medium: 800 },
+        reviewers: [], instructions: '',
         memory: { enabled: false, repo: '' },
         convergence: { max_auto_rounds: 5 },
       });
@@ -3202,8 +3126,7 @@ describe('runFullReview orchestration', () => {
     it('records `cap.bypassReason: manual_review_command` when `@manki review` admits the round past the cap', async () => {
       jest.mocked(configModule.loadConfig).mockReturnValue({
         auto_review: true, auto_approve: false, max_diff_lines: 5000, exclude_paths: [],
-        reviewers: [], instructions: '', review_level: 'auto',
-        review_thresholds: { small: 200, medium: 800 },
+        reviewers: [], instructions: '',
         memory: { enabled: false, repo: '' },
         convergence: { max_auto_rounds: 1 },
       });
@@ -3383,13 +3306,12 @@ describe('runFullReview orchestration', () => {
       });
       jest.mocked(configModule.loadConfig).mockReturnValue({
         auto_review: true, auto_approve: false, exclude_paths: [], max_diff_lines: 10000,
-        reviewers: [], instructions: '', review_level: 'auto',
-        review_thresholds: { small: 200, medium: 800 },
+        reviewers: [], instructions: '',
         memory: { enabled: true, repo: 'owner/memory' },
       });
     });
 
-    it('builds the dashboard team from the planner picks alone, without prior-round agents', async () => {
+    it('builds the dashboard team from the planning event alone, without prior-round agents', async () => {
       const priorRounds: LegacyHandoverRoundFixture[] = [{
         round: 1,
         commitSha: 'abc',
@@ -3398,124 +3320,52 @@ describe('runFullReview orchestration', () => {
         agents: ['Security & Safety', 'Architecture & Design', 'Correctness & Logic', 'Testing & Coverage'],
       }];
       seedPriorRounds(priorRounds);
+      const team = ['Finder (claude-sonnet-4-6)', 'Pair finder (claude-opus-4-7)'];
 
-      // Trigger the planning-phase progress callback so the dashboard selectTeam runs.
       jest.mocked(reviewModule.runReview).mockImplementation(async (_clients, _config, _diff, _rawDiff, _ctx, _mem, _files, _pr, _issues, onProgress) => {
         onProgress?.({
           phase: 'planning',
-          rawFindingCount: 0,
-          plannerResult: {
-            teamSize: 3,
-            reviewerEffort: 'medium',
-            judgeEffort: 'medium',
-            prType: 'feat',
-            agents: [
-              { name: 'Security & Safety', effort: 'high' },
-              { name: 'Architecture & Design', effort: 'medium' },
-              { name: 'Correctness & Logic', effort: 'medium' },
-            ],
-          },
-          plannerDurationMs: 100,
-        });
-        return {
-          verdict: 'APPROVE', outcome: 'READY', summary: 'ok',
-          findings: [], highlights: [], reviewComplete: true,
-          agentNames: ['Security & Safety', 'Architecture & Design', 'Correctness & Logic', 'Testing & Coverage'],
-        };
-      });
-
-      await callRunFullReview();
-
-      const calls = jest.mocked(reviewModule.selectTeam).mock.calls;
-      // Identify the planning-phase call by the exact agent picks the planner emitted.
-      const planningCall = calls.find(c =>
-        Array.isArray(c[4]) && c[4].length === 3 && c[4][0]?.name === 'Security & Safety',
-      );
-      expect(planningCall).toBeDefined();
-      expect(planningCall!.slice(3)).toEqual([3, expect.any(Array), true]);
-    });
-
-    it('reconciles planner-path dashboard with prior-round agents after runReview', async () => {
-      // Planner path: review_level is 'auto' (set by beforeEach) and prior rounds exist.
-      const priorRounds: LegacyHandoverRoundFixture[] = [{
-        round: 1,
-        commitSha: 'abc',
-        timestamp: '2025-01-01T00:00:00Z',
-        findings: [],
-        agents: ['Security & Safety', 'Architecture & Design'],
-      }];
-      seedPriorRounds(priorRounds);
-
-      const resolvedNames = ['Security & Safety', 'Architecture & Design', 'Correctness & Logic'];
-      // Override selectTeam so the planning-phase callback seeds the dashboard with the
-      // actual resolved agent names; this lets agent-complete metrics be preserved through
-      // the reconcileDashboardAgents call.
-      jest.mocked(reviewModule.selectTeam).mockReturnValue({
-        level: 'standard' as 'small',
-        agents: resolvedNames.map(n => ({ name: n, focus: '' })),
-        lineCount: 0,
-      });
-      jest.mocked(reviewModule.runReview).mockImplementation(async (_clients, _config, _diff, _rawDiff, _ctx, _mem, _files, _pr, _issues, onProgress) => {
-        onProgress?.({
-          phase: 'planning',
-          rawFindingCount: 0,
-          plannerResult: {
-            teamSize: 3,
-            reviewerEffort: 'medium',
-            judgeEffort: 'medium',
-            prType: 'feat',
-            agents: [
-              { name: 'Security & Safety', effort: 'high' },
-              { name: 'Architecture & Design', effort: 'medium' },
-              { name: 'Correctness & Logic', effort: 'medium' },
-            ],
-          },
+          plannerResult: { trivial: false, subtle: true, paired: true, judgeEffort: 'medium', prType: 'feat' },
+          teamAgentNames: team,
+          reviewerEffort: 'high',
           plannerDurationMs: 100,
         });
         onProgress?.({
           phase: 'agent-complete',
-          agentName: 'Security & Safety',
+          agentName: team[0],
           agentFindingCount: 3,
           agentDurationMs: 1200,
           agentStatus: 'success',
           rawFindingCount: 3,
           completedAgents: 1,
-          totalAgents: 3,
+          totalAgents: 2,
         });
         return {
           verdict: 'APPROVE', outcome: 'READY', summary: 'ok',
           findings: [], highlights: [], reviewComplete: true,
-          agentNames: resolvedNames,
-          plannerResult: {
-            teamSize: 3,
-            reviewerEffort: 'medium',
-            judgeEffort: 'medium',
-            prType: 'feat',
-            agents: [],
-          },
+          agentNames: team,
         };
       });
 
       await callRunFullReview();
 
       const progressCommentCalls = jest.mocked(ghUtils.updateProgressComment).mock.calls;
-      expect(progressCommentCalls.length).toBeGreaterThan(0);
       const finalDashboard = progressCommentCalls[progressCommentCalls.length - 1][4];
-      expect(finalDashboard.agentCount).toBe(3);
-      expect(finalDashboard.agentProgress?.map((a: { name: string }) => a.name)).toEqual(resolvedNames);
-      // Verify reconcileDashboardAgents preserves metrics from prior agent-complete callbacks.
-      const secEntry = finalDashboard.agentProgress?.find((a: { name: string }) => a.name === 'Security & Safety');
-      expect(secEntry?.findingCount).toBe(3);
-      expect(secEntry?.durationMs).toBe(1200);
+      expect(finalDashboard.agentCount).toBe(2);
+      expect(finalDashboard.agentProgress?.map((a: { name: string }) => a.name)).toEqual(team);
+      expect(finalDashboard.plannerInfo).toEqual({ agentCount: 2, reviewerEffort: 'high', judgeEffort: 'medium', prType: 'feat' });
+      // Metrics from the agent-complete callback survive the reconcile after runReview.
+      const entry = finalDashboard.agentProgress?.find((a: { name: string }) => a.name === team[0]);
+      expect(entry?.findingCount).toBe(3);
+      expect(entry?.durationMs).toBe(1200);
     });
 
     it('reconciles non-planner dashboard with the resolved team after runReview', async () => {
-      // Non-planner path: review_level is explicitly 'small', not 'auto'.
       jest.mocked(configModule.loadConfig).mockReturnValue({
         auto_review: true, auto_approve: false, exclude_paths: [], max_diff_lines: 10000,
-        reviewers: [], instructions: '', review_level: 'small',
-        review_thresholds: { small: 200, medium: 800 },
+        reviewers: [], instructions: '',
         memory: { enabled: true, repo: 'owner/memory' },
+        planner: { enabled: false },
       });
 
       const priorRounds: LegacyHandoverRoundFixture[] = [{
@@ -3763,8 +3613,7 @@ describe('runFullReview orchestration', () => {
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
       exclude_paths: [],
       reviewers: [],
-      instructions: '', review_level: 'auto',
-      review_thresholds: { small: 200, medium: 800 },
+      instructions: '',
       memory: { enabled: true, repo: 'owner/memory' },
     });
     jest.mocked(authModule.getMemoryToken).mockReturnValue('token123');
@@ -3867,7 +3716,9 @@ describe('runFullReview orchestration', () => {
         if (onProgress) {
           onProgress({
             phase: 'planning',
-            plannerResult: { teamSize: 1, reviewerEffort: 'low', judgeEffort: 'low', prType: 'chore' },
+            plannerResult: { trivial: false, subtle: false, paired: false, judgeEffort: 'low' as const, prType: 'chore' as const },
+            teamAgentNames: ['general'],
+            reviewerEffort: 'low',
           });
           onProgress({
             phase: 'agent-complete',
@@ -3925,7 +3776,9 @@ describe('runFullReview orchestration', () => {
         if (onProgress) {
           onProgress({
             phase: 'planning',
-            plannerResult: { teamSize: 1, reviewerEffort: 'low', judgeEffort: 'low', prType: 'chore' },
+            plannerResult: { trivial: false, subtle: false, paired: false, judgeEffort: 'low' as const, prType: 'chore' as const },
+            teamAgentNames: ['general'],
+            reviewerEffort: 'low',
           });
           onProgress({
             phase: 'agent-complete',
@@ -4077,11 +3930,6 @@ describe('runFullReview orchestration', () => {
     });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
-    jest.mocked(reviewModule.selectTeam).mockReturnValue({
-      level: 'small',
-      agents: [{ name: 'general', focus: '' }, { name: 'Security & Safety', focus: '' }],
-      lineCount: 0,
-    });
 
     jest.mocked(reviewModule.runReview).mockImplementation(
       async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
@@ -4089,7 +3937,9 @@ describe('runFullReview orchestration', () => {
           onProgress({
             phase: 'planning',
             rawFindingCount: 0,
-            plannerResult: { teamSize: 2, reviewerEffort: 'medium', judgeEffort: 'low', prType: 'feat' },
+            plannerResult: { trivial: false, subtle: false, paired: true, judgeEffort: 'low', prType: 'feat' },
+            teamAgentNames: ['general', 'Security & Safety'],
+            reviewerEffort: 'medium',
             plannerDurationMs: 400,
           });
         }
@@ -4141,7 +3991,9 @@ describe('runFullReview orchestration', () => {
         if (onProgress) {
           onProgress({
             phase: 'planning',
-            plannerResult: { teamSize: 1, reviewerEffort: 'low', judgeEffort: 'low', prType: 'chore' },
+            plannerResult: { trivial: false, subtle: false, paired: false, judgeEffort: 'low' as const, prType: 'chore' as const },
+            teamAgentNames: ['general'],
+            reviewerEffort: 'low',
           });
           onProgress({
             phase: 'judging',
@@ -4185,7 +4037,9 @@ describe('runFullReview orchestration', () => {
         if (onProgress) {
           onProgress({
             phase: 'planning',
-            plannerResult: { teamSize: 1, reviewerEffort: 'low', judgeEffort: 'low', prType: 'chore' },
+            plannerResult: { trivial: false, subtle: false, paired: false, judgeEffort: 'low' as const, prType: 'chore' as const },
+            teamAgentNames: ['general'],
+            reviewerEffort: 'low',
           });
           onProgress({
             phase: 'reviewed',
@@ -4225,8 +4079,7 @@ describe('runFullReview orchestration', () => {
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
       exclude_paths: [],
       reviewers: [],
-      instructions: '', review_level: 'auto',
-      review_thresholds: { small: 200, medium: 800 },
+      instructions: '',
       memory: { enabled: true, repo: 'owner/memory' },
     });
     jest.mocked(authModule.getMemoryToken).mockReturnValue('token123');
@@ -4510,7 +4363,7 @@ describe('runFullReview orchestration', () => {
       async (_clients, _config, _diff, _rawDiff, _repoContext, _memory, _fileContents, _prContext, _linkedIssues, onProgress) => {
         if (onProgress) {
           onProgress({ phase: 'planning' });
-          onProgress({ phase: 'planning', plannerResult: { teamSize: 3 as const, reviewerEffort: 'low' as const, judgeEffort: 'low' as const, prType: 'chore' } });
+          onProgress({ phase: 'planning', plannerResult: { trivial: false, subtle: false, paired: false, judgeEffort: 'low' as const, prType: 'chore' as const }, teamAgentNames: ['Security & Safety', 'Correctness & Logic', 'Architecture & Design'], reviewerEffort: 'low' });
         }
         jest.advanceTimersByTime(600);
         await Promise.resolve();
@@ -4518,7 +4371,7 @@ describe('runFullReview orchestration', () => {
           verdict: 'APPROVE', outcome: 'READY', summary: 'ok', findings: [],
           highlights: [], reviewComplete: true,
           agentNames: ['Security & Safety', 'Correctness & Logic', 'Architecture & Design'],
-          plannerResult: { teamSize: 3 as const, reviewerEffort: 'low' as const, judgeEffort: 'low' as const, prType: 'chore' },
+          plannerResult: { trivial: false, subtle: false, paired: false, judgeEffort: 'low' as const, prType: 'chore' as const },
         };
       },
     );
@@ -4561,8 +4414,7 @@ describe('runFullReview orchestration', () => {
     // the current commit.
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, exclude_paths: [], max_diff_lines: 10000,
-      reviewers: [], instructions: '', review_level: 'auto',
-      review_thresholds: { small: 200, medium: 800 },
+      reviewers: [], instructions: '',
       memory: { enabled: true, repo: 'owner/memory' },
     });
     jest.mocked(authModule.getMemoryToken).mockReturnValue('token123');
@@ -4626,8 +4478,7 @@ describe('runFullReview orchestration', () => {
 
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, exclude_paths: [], max_diff_lines: 10000,
-      reviewers: [], instructions: '', review_level: 'auto',
-      review_thresholds: { small: 200, medium: 800 },
+      reviewers: [], instructions: '',
       memory: { enabled: true, repo: 'owner/memory' },
     });
     jest.mocked(authModule.getMemoryToken).mockReturnValue('token123');
@@ -4679,8 +4530,7 @@ describe('runFullReview orchestration', () => {
     });
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, exclude_paths: [], max_diff_lines: 10000,
-      reviewers: [], instructions: '', review_level: 'auto',
-      review_thresholds: { small: 200, medium: 800 },
+      reviewers: [], instructions: '',
       memory: { enabled: true, repo: 'owner/memory' },
     });
     jest.mocked(authModule.getMemoryToken).mockReturnValue('token123');
@@ -4840,8 +4690,7 @@ describe('runFullReview orchestration', () => {
 
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, exclude_paths: [], max_diff_lines: 10000,
-      reviewers: [], instructions: '', review_level: 'auto',
-      review_thresholds: { small: 200, medium: 800 },
+      reviewers: [], instructions: '',
       memory: { enabled: true, repo: 'owner/memory' },
     });
     jest.mocked(authModule.getMemoryToken).mockReturnValue('token123');
@@ -4893,8 +4742,7 @@ describe('runFullReview orchestration', () => {
 
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, exclude_paths: ['dist/**'], max_diff_lines: 10000,
-      reviewers: [], instructions: '', review_level: 'auto',
-      review_thresholds: { small: 200, medium: 800 },
+      reviewers: [], instructions: '',
       memory: { enabled: true, repo: 'owner/memory' },
     });
     jest.mocked(authModule.getMemoryToken).mockReturnValue('token123');
@@ -5327,8 +5175,7 @@ describe('runFullReview orchestration', () => {
       return {
         auto_review: true, auto_approve: false, max_diff_lines: 5000,
         exclude_paths: [],
-        reviewers: [], instructions: '', review_level: 'auto',
-        review_thresholds: { small: 200, medium: 800 },
+        reviewers: [], instructions: '',
         memory: { enabled: true, repo: 'owner/memory' },
         convergence: {
           max_auto_rounds: maxAutoRounds,
@@ -5701,8 +5548,7 @@ describe('runFullReview orchestration', () => {
     it('does not count a skipped push toward the round cap', async () => {
       jest.mocked(configModule.loadConfig).mockReturnValue({
         auto_review: true, auto_approve: false, max_diff_lines: 5000,
-        exclude_paths: [], reviewers: [], instructions: '', review_level: 'auto',
-        review_thresholds: { small: 200, medium: 800 },
+        exclude_paths: [], reviewers: [], instructions: '',
         memory: { enabled: false, repo: '' },
         convergence: { max_auto_rounds: 2, test_path_patterns: [], suppress_resolved_threads: true },
       });
@@ -5739,99 +5585,21 @@ describe('runFullReview orchestration', () => {
     expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
   });
 
-  describe('per-agent model overrides', () => {
-    function configWithAgents(agents: Record<string, string>): ReviewConfig {
-      return {
-        auto_review: true, auto_approve: false, max_diff_lines: 5000,
-        exclude_paths: [],
-        reviewers: [], instructions: '', review_level: 'auto',
-        review_thresholds: { small: 200, medium: 800 },
-        memory: { enabled: false, repo: '' },
-        models: { reviewer: 'claude-sonnet-4-6', agents },
-      };
-    }
+  describe('reviewer pair model', () => {
+    const baseConfig: ReviewConfig = {
+      auto_review: true, auto_approve: false, max_diff_lines: 5000,
+      exclude_paths: [],
+      reviewers: [], instructions: '',
+      memory: { enabled: false, repo: '' },
+      models: { reviewer: 'claude-sonnet-4-6' },
+    };
 
-    it('logs per-agent model overrides when configured', async () => {
-      jest.mocked(configModule.loadConfig).mockReturnValue(
-        configWithAgents({ 'Security & Safety': 'claude-opus-4-7' }),
-      );
+    it('logs the pair model next to the other stage models', async () => {
+      jest.mocked(configModule.loadConfig).mockReturnValue(baseConfig);
 
       await callRunFullReview();
 
-      expect(jest.mocked(core.info)).toHaveBeenCalledWith(
-        expect.stringContaining('Per-agent model overrides — Security & Safety=claude-opus-4-7'),
-      );
-    });
-
-    it('does not log per-agent overrides when models.agents is absent or empty', async () => {
-      jest.mocked(configModule.loadConfig).mockReturnValue(configWithAgents({}));
-
-      await callRunFullReview();
-
-      const infoCalls = jest.mocked(core.info).mock.calls.map(c => c[0]);
-      expect(infoCalls.some((m: string) => m?.includes('Per-agent model overrides'))).toBe(false);
-    });
-
-    it('eagerly constructs per-agent clients and surfaces failures via setFailed', async () => {
-      jest.mocked(configModule.loadConfig).mockReturnValue(
-        configWithAgents({ 'Security & Safety': 'bogus-model' }),
-      );
-      jest.mocked(parseModelSpec).mockImplementation((m: string) => {
-        if (m === 'bogus-model') throw new Error('Unsupported provider for "bogus-model"');
-        return { provider: 'anthropic', model: m };
-      });
-
-      await callRunFullReview();
-
-      expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(
-        expect.stringContaining('Unsupported provider'),
-      );
-      expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
-    });
-
-    it('passes a reviewerForAgent callback that returns the override client for overridden agents', async () => {
-      const overrideClient = { sendMessage: jest.fn() };
-      jest.mocked(createLLMClient).mockImplementation((_p: unknown, model: unknown) =>
-        model === 'claude-opus-4-7' ? overrideClient : { sendMessage: jest.fn() },
-      );
-      jest.mocked(configModule.loadConfig).mockReturnValue(
-        configWithAgents({ 'Security & Safety': 'claude-opus-4-7' }),
-      );
-      const testFile = {
-        path: 'src/app.ts', changeType: 'modified' as const,
-        hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: '' }],
-      };
-      jest.mocked(diffModule.parsePRDiff).mockReturnValue({
-        files: [testFile], totalAdditions: 10, totalDeletions: 5,
-      });
-      jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
-
-      await callRunFullReview();
-
-      const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0];
-      expect(runReviewCall).toBeDefined();
-      const clientsArg = runReviewCall[0] as { reviewerForAgent: (n: string) => unknown };
-      expect(clientsArg.reviewerForAgent('Security & Safety')).toBe(overrideClient);
-    });
-
-    it('reviewerForAgent falls back to the default reviewer client when no override is configured', async () => {
-      const defaultClient = { sendMessage: jest.fn(), tag: 'default' };
-      jest.mocked(createLLMClient).mockReturnValue(defaultClient);
-      jest.mocked(configModule.loadConfig).mockReturnValue(configWithAgents({}));
-      const testFile = {
-        path: 'src/app.ts', changeType: 'modified' as const,
-        hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: '' }],
-      };
-      jest.mocked(diffModule.parsePRDiff).mockReturnValue({
-        files: [testFile], totalAdditions: 10, totalDeletions: 5,
-      });
-      jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
-
-      await callRunFullReview();
-
-      const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0];
-      const clientsArg = runReviewCall[0] as { reviewerForAgent: (n: string) => unknown; reviewer: unknown };
-      expect(clientsArg.reviewerForAgent('Architecture & Design')).toBe(clientsArg.reviewer);
+      expect(jest.mocked(core.info)).toHaveBeenCalledWith(expect.stringContaining('reviewer pair: claude-opus-4-7'));
     });
 
     it('builds the pair client from `resolvePairModel` and fails the run when it cannot be built', async () => {
@@ -5839,7 +5607,7 @@ describe('runFullReview orchestration', () => {
       jest.mocked(createLLMClient).mockImplementation((_p: unknown, model: unknown) =>
         model === 'claude-opus-4-7' ? pairClient : { sendMessage: jest.fn() },
       );
-      jest.mocked(configModule.loadConfig).mockReturnValue(configWithAgents({}));
+      jest.mocked(configModule.loadConfig).mockReturnValue(baseConfig);
       const testFile = {
         path: 'src/app.ts', changeType: 'modified' as const,
         hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: '' }],
@@ -5856,7 +5624,7 @@ describe('runFullReview orchestration', () => {
 
       jest.mocked(reviewModule.runReview).mockClear();
       jest.mocked(configModule.loadConfig).mockReturnValue({
-        ...configWithAgents({}),
+        ...baseConfig,
         models: { reviewer: 'claude-sonnet-4-6', reviewer_pair: 'bogus-pair' },
       });
       jest.mocked(parseModelSpec).mockImplementation((m: string) => {
@@ -5869,30 +5637,6 @@ describe('runFullReview orchestration', () => {
       expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(expect.stringContaining('Unknown model "bogus-pair"'));
       expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
     });
-
-    it('reviewerForAgent caches per-agent clients across repeated invocations', async () => {
-      jest.mocked(configModule.loadConfig).mockReturnValue(
-        configWithAgents({ 'Security & Safety': 'claude-opus-4-7' }),
-      );
-      const testFile = {
-        path: 'src/app.ts', changeType: 'modified' as const,
-        hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: '' }],
-      };
-      jest.mocked(diffModule.parsePRDiff).mockReturnValue({
-        files: [testFile], totalAdditions: 10, totalDeletions: 5,
-      });
-      jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
-
-      await callRunFullReview();
-
-      const callsBefore = jest.mocked(createLLMClient).mock.calls.length;
-      const runReviewCall = jest.mocked(reviewModule.runReview).mock.calls[0];
-      const clientsArg = runReviewCall[0] as { reviewerForAgent: (n: string) => unknown };
-      const a = clientsArg.reviewerForAgent('Security & Safety');
-      const b = clientsArg.reviewerForAgent('Security & Safety');
-      expect(a).toBe(b);
-      expect(jest.mocked(createLLMClient).mock.calls.length).toBe(callsBefore);
-    });
   });
 });
 
@@ -5904,8 +5648,7 @@ describe('handleInteraction', () => {
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
       exclude_paths: [],
       reviewers: [],
-      instructions: '', review_level: 'auto',
-      review_thresholds: { small: 200, medium: 800 },
+      instructions: '',
       memory: { enabled: false, repo: '' },
     });
   });
@@ -6149,8 +5892,7 @@ describe('handleIssueInteraction', () => {
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
       exclude_paths: [],
       reviewers: [],
-      instructions: '', review_level: 'auto',
-      review_thresholds: { small: 200, medium: 800 },
+      instructions: '',
       memory: { enabled: false, repo: '' },
     });
   });
@@ -6250,8 +5992,7 @@ describe('handleReviewStateCheck', () => {
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
       exclude_paths: [],
       reviewers: [],
-      instructions: '', review_level: 'auto',
-      review_thresholds: { small: 200, medium: 800 },
+      instructions: '',
       memory: { enabled: false, repo: '' },
     });
 
@@ -6275,8 +6016,7 @@ describe('handleReviewStateCheck', () => {
       auto_review: true, auto_approve: true, max_diff_lines: 5000,
       exclude_paths: [],
       reviewers: [],
-      instructions: '', review_level: 'auto',
-      review_thresholds: { small: 200, medium: 800 },
+      instructions: '',
       memory: { enabled: false, repo: '' },
     });
     jest.mocked(stateModule.checkAndAutoApprove).mockResolvedValue(true);
@@ -6307,8 +6047,7 @@ describe('handleReviewCommentInteraction auto-approve', () => {
       auto_review: true, auto_approve: true, max_diff_lines: 5000,
       exclude_paths: [],
       reviewers: [],
-      instructions: '', review_level: 'auto',
-      review_thresholds: { small: 200, medium: 800 },
+      instructions: '',
       memory: { enabled: false, repo: '' },
     });
 
@@ -6584,8 +6323,7 @@ describe('force review checkbox', () => {
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
       exclude_paths: [],
-      reviewers: [], instructions: '', review_level: 'auto',
-      review_thresholds: { small: 200, medium: 800 },
+      reviewers: [], instructions: '',
       memory: { enabled: true, repo: 'owner/memory' },
       convergence: { max_auto_rounds: 5, test_path_patterns: ['**/*.test.*'], suppress_resolved_threads: true },
     });
@@ -6629,8 +6367,7 @@ describe('force review checkbox', () => {
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
       exclude_paths: [],
-      reviewers: [], instructions: '', review_level: 'auto',
-      review_thresholds: { small: 200, medium: 800 },
+      reviewers: [], instructions: '',
       memory: { enabled: true, repo: 'owner/memory' },
       convergence: { max_auto_rounds: 5, test_path_patterns: ['**/*.test.*'], suppress_resolved_threads: true },
     });
@@ -6688,8 +6425,7 @@ describe('runFullReview concurrent-submission lock', () => {
     );
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
-      exclude_paths: [], reviewers: [], instructions: '', review_level: 'auto',
-      review_thresholds: { small: 200, medium: 800 },
+      exclude_paths: [], reviewers: [], instructions: '',
       memory: { enabled: false, repo: '' },
     });
     const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [] };
@@ -6701,7 +6437,7 @@ describe('runFullReview concurrent-submission lock', () => {
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'APPROVE', outcome: 'READY' as const, summary: '', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
     });
-    jest.mocked(reviewModule.selectTeam).mockReturnValue({ level: 'standard' as 'small', agents: [{ name: 'general', focus: '' }], lineCount: 0 });
+    jest.mocked(reviewModule.selectTeam).mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, pair: false, model: 'claude-sonnet-4-6', effort: 'high' }], triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false });
     jest.mocked(ghUtils.postProgressComment).mockResolvedValue(1);
     jest.mocked(ghUtils.findInProgressLock).mockReturnValue(null);
     jest.mocked(ghUtils.isLockExpired).mockReturnValue(false);
@@ -6817,8 +6553,7 @@ describe('runFullReview concurrent-submission lock', () => {
   it('reads TTL from config when action input is absent', async () => {
     jest.mocked(configModule.loadConfig).mockReturnValue({
       auto_review: true, auto_approve: false, max_diff_lines: 5000,
-      exclude_paths: [], reviewers: [], instructions: '', review_level: 'auto',
-      review_thresholds: { small: 200, medium: 800 },
+      exclude_paths: [], reviewers: [], instructions: '',
       memory: { enabled: false, repo: '' },
       concurrency_lock_ttl_seconds: 300,
     });

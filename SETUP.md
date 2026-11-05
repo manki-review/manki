@@ -97,7 +97,7 @@ The table lists action input names (lowercase, passed in `with:`). The correspon
 
 #### Effort mapping
 
-The `low | medium | high | max` knobs map per provider as follows. Manki passes effort tiers per stage and per agent based on planner decisions and config.
+The `low | medium | high | max` knobs map per provider as follows. Manki passes effort tiers per stage based on planner decisions and config.
 
 | Effort | Anthropic | OpenAI reasoning models | Other OpenAI models | Gemini |
 |--------|-----------|-------------------------|---------------------|--------|
@@ -409,24 +409,20 @@ exclude_paths:
 # Maximum diff size before skipping (default: 50000 lines)
 max_diff_lines: 50000
 
-# Team sizing: auto (default), small (3 agents), medium (5), large (7)
-review_level: auto
-review_thresholds:
-  small: 200   # diffs under this many lines get a small team
-  medium: 1000  # diffs under this many lines get a medium team
-
 # Per-stage model selection
 models:
   planner: claude-haiku-4-5      # fast pre-review planning pass
-  reviewer: claude-sonnet-4-6    # fast, parallel reviewers
+  reviewer: claude-sonnet-4-6    # the finder on every round
+  reviewer_pair: claude-opus-4-7 # the second finder on paired rounds (default: the other Claude tier)
   judge: claude-opus-4-6         # precise, single judge
   dedup: claude-haiku-4-5        # fast LLM dedup against prior findings
 
-# Planner stage (default: enabled). When review_level is "auto", a fast
-# pre-review pass chooses team size (1/2/3), reviewer/judge effort, and
-# PR type. teamSize=1 routes trivial changes to a Trivial Change Verifier.
+# Planner stage (default: enabled). A fast pre-review pass triages the
+# change (trivial, subtle, paired) and picks the judge effort and PR type.
+# `paired` pins whether a second finder runs: auto (default), always or never.
 planner:
   enabled: true
+  paired: auto
 
 # Multi-pass verification (integer 1-5, default: 1). Runs each reviewer N
 # times with shuffled file ordering; only consistent findings are kept.
@@ -437,7 +433,7 @@ planner:
 # stats:
 #   hidden: true
 
-# On merge, count per severity and specialist how many posted findings were
+# On merge, count per severity and reviewer how many posted findings were
 # fixed, dismissed or left untouched. Written to the job summary, and appended
 # to `<repo>/metrics/fix-rate.jsonl` in the memory repo when memory is enabled.
 # Default: on when `memory.enabled` is true, off otherwise.
@@ -448,7 +444,7 @@ planner:
 instructions: |
   This is a Rust project. Focus on ownership and error handling.
 
-# Custom reviewer agents (added to the built-in pool)
+# Extra checks, added as focus lines to the finder prompt
 reviewers:
   - name: "Protocol Compliance"
     focus: "DIP compliance, consensus rules"
@@ -465,8 +461,8 @@ See [`.manki.yml.example`](.manki.yml.example) for the full reference with defau
 
 Manki reviews run in these stages:
 
-1. **Planner** (pre-review, `review_level: auto` only) -- A fast Haiku pass analyzes the diff and picks team size, reviewer/judge effort, and PR type. The size follows the nature of the change, not its line count: 1 agent when a defect could not hide (deletions, renames, moved code, docs, tests, config, CI), 2 for ordinary code changes, 3 for changes touching concurrency, security, auth, persistence, wire formats or public API. Each round picks its team fresh. teamSize=1 routes to a single **Trivial Change Verifier** agent, joined by Security & Safety when the diff touches security-sensitive paths. Falls back to the heuristic team selector if the planner fails or is disabled.
-2. **Reviewer agents** -- The chosen team of specialist agents (security, architecture, correctness, etc.) review the diff in parallel. Each produces raw findings.
+1. **Planner** (pre-review) -- A fast Haiku pass answers three questions about the nature of the change, never its line count, plus the judge effort and PR type. `trivial`: could a defect hide here at all? A trivial change (docs, a rename or move, a repeated mechanical edit, dead code, fixtures) is read by a single **Trivial Change Verifier**. The planner sees only the list of changed files, never the PR title, description or diff text, and Manki believes a `trivial` answer only when every changed file is docs, tests, snapshots or generated, deleted, or renamed without edits. `subtle`: does judging it need reasoning about behavior? That sets the finders' effort to high, otherwise medium. `paired`: could a defect reach a user if every reader missed it? That adds a second finder. A missing or unclear answer, a timeout or a disabled planner takes the side that adds review: two finders at high effort. A diff that touches a security-sensitive path (auth, tokens, secrets, crypto, sessions, permissions and similar), CI or automation (`.github/workflows/**`, `.github/actions/**`, `action.yml`), or a dependency or toolchain manifest (`package.json`, lockfiles, `Cargo.toml`, `go.mod`, `pyproject.toml`, `requirements*.txt`, `Gemfile`, `*.gemspec`, `rust-toolchain*`, `.nvmrc`, `Dockerfile*`) is never trivial and always paired, whatever the planner or `planner.paired` say. Each round is triaged fresh.
+2. **Finders** -- One finder on `models.reviewer`, plus on paired rounds a second on `models.reviewer_pair`, read the diff in parallel with the same prompt: correctness first, then security, error paths, tests that cannot fail and contract breaks, plus any `reviewers:` entries. Without `models.reviewer_pair` the second finder runs on the other Claude tier (Sonnet with Opus), which needs no extra credential. Another provider is used only when you set it. If either finder fails after its retry, the round ends incomplete and never approves.
 3. **Dedup**: A two-tier dedup pass filters findings already posted on the PR before judge evaluation. A static matcher handles exact/near-exact matches, then an LLM dedup pass (Haiku) catches semantic duplicates.
 4. **Judge agent**: A single agent evaluates the deduplicated reviewer findings for accuracy, actionability, and severity. It filters out noise, merges any remaining overlap, and assigns a 4-tier severity to each surviving finding.
 5. **Verdict reader**: Runs only when no finding blocks. One call on the judge's model reads the whole diff cold, without the PR description or earlier rounds, and looks for a reason not to merge. `READY` approves with "What this does" and "What to test" sections. `ADDRESS_FIRST` requests changes and posts its blockers as inline comments. Output that cannot be parsed ends the round as incomplete, never as an approval.
@@ -484,11 +480,15 @@ The judge assigns one of five severity levels to each finding:
 | `nit` | Minor style or preference issue | Listed in a collapsed section of the review body, PR can still be approved |
 | `ignore` | False positive or irrelevant | Dropped silently |
 
-Rounds 1 and 2 block on `required` and `warning` findings. From round 3 only `required` findings block. A `warning` raised then is listed under "smaller fixes in this PR" in the review body instead of becoming a thread, so the round can approve. A blocker from the verdict reader blocks at every round, and so does a security finding: one the judge tags `security`, or one from the Security & Safety reviewer kept at `warning` or above.
+Rounds 1 and 2 block on `required` and `warning` findings. From round 3 only `required` findings block. A `warning` raised then is listed under "smaller fixes in this PR" in the review body instead of becoming a thread, so the round can approve. A blocker from the verdict reader blocks at every round, and so does a security finding: one the judge tags `security` and keeps at `warning` or above, whichever finder raised it.
 
 When a blocker comes back after the author pushed a fix for it, the review keeps requesting changes, lists the blocker under "Needs a human", and pauses automatic review. The last automatic round, round `convergence.max_auto_rounds` (default 5), blocks on blockers only: it approves with the remaining warnings as smaller fixes, or stops the same way when a blocker is still open. After a pause, commenting `@manki review` runs one more round that blocks on blockers only.
 
-Use the `models` config section to choose different Claude models for the reviewer and judge stages (e.g., a faster model for reviewers and a more precise model for the judge).
+Use the `models` config section to choose different models for the finders and the judge (e.g., a faster model for the finders and a more precise model for the judge).
+
+The judge treats two finders reporting the same defect as strong evidence that it is real, and one finder's silence as no evidence against the other's finding. Agreement never raises a finding's severity.
+
+`review_level`, `review_thresholds` and `models.agents` from earlier releases still load, with a warning. The first two are ignored. The first model in `models.agents` that differs from `models.reviewer` becomes `models.reviewer_pair` when that is not set.
 
 ## Step 5: Set Up Review Memory (Optional)
 
@@ -545,7 +545,7 @@ Make sure the `REVIEW_MEMORY_TOKEN` secret is set (see Step 2).
 - **Suppressions** -- Created by `/manki dismiss`. Non-blocking findings matching a suppression pattern are filtered out (blocking findings are never suppressed).
 - **Patterns** -- Automatically tracked from recurring findings. After 5 occurrences a pattern is escalated for visibility.
 - **Global conventions** -- A `_global/conventions.md` file applied to all repos using the memory system.
-- **Fix rate** -- On each merge, one JSON line per PR is appended to `<repo-name>/metrics/fix-rate.jsonl` with the posted, fixed, dismissed and untouched findings per severity and specialist. A finding counts as fixed when the judge marked its thread addressed or the code at its lines changed before the merge. Turn it off with `metrics.fix_rate: false`.
+- **Fix rate** -- On each merge, one JSON line per PR is appended to `<repo-name>/metrics/fix-rate.jsonl` with the posted, fixed, dismissed and untouched findings per severity and first reviewer (the `specialist` field). A finding counts as fixed when the judge marked its thread addressed or the code at its lines changed before the merge. Turn it off with `metrics.fix_rate: false`.
 
 ## Verification
 
@@ -600,7 +600,7 @@ Each review run posts fresh inline comments. The recap phase deduplicates agains
 
 ## Quick Reference: All Secrets
 
-Provide credentials for the providers you actually use. The model ID in `.manki.yml` picks the provider per agent (`claude-*` → Anthropic, `gpt-*` and `o1`/`o3`/`o4`/... → OpenAI, `gemini-*` → Gemini), or use `provider/model` syntax to be explicit. The action fails fast with a clear error if a configured provider's credentials are missing.
+Provide credentials for the providers you actually use. The model ID in `.manki.yml` picks the provider per stage (`claude-*` → Anthropic, `gpt-*` and `o1`/`o3`/`o4`/... → OpenAI, `gemini-*` → Gemini), or use `provider/model` syntax to be explicit. The action fails fast with a clear error if a configured provider's credentials are missing.
 
 ### Provider credentials
 

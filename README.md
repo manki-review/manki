@@ -11,7 +11,7 @@
 
 <p align="center"><strong>Your tokens, your rules.</strong> Self-hosted AI code review that runs on your own GitHub runners and learns from your team.</p>
 
-Manki assembles a dynamic review team sized to your PR's content and complexity. Dedup drops repeats from prior reviews, a judge filters noise and classifies what remains, and manki learns your team's conventions over time.
+Manki sizes each review to the nature of the change: one reader for a change where no defect could hide, two readers on different models for one that could reach your users. Dedup drops repeats from prior reviews, a judge filters noise and classifies what remains, and manki learns your team's conventions over time.
 
 <p align="center">
   <img src="assets/review-example.png" alt="Example manki review comment" width="800" />
@@ -19,10 +19,10 @@ Manki assembles a dynamic review team sized to your PR's content and complexity.
 
 ## Why Manki
 
-- **Multi-stage pipeline** — a planner picks the team, agents review in parallel, dedup catches repeats from prior reviews, a judge filters noise and classifies findings by severity
-- **Adaptive team sizing** — 1, 3, 5, or 7 reviewers chosen per PR based on content and complexity
+- **Multi-stage pipeline** — a planner triages the change, finders review in parallel, dedup catches repeats from prior reviews, a judge filters noise and classifies findings by severity
+- **Two models where it matters** — changes that could reach a user get a second finder on another model with the same prompt, so the two readers miss different things
 - **Smart verdicts** — blocks PRs on real issues, approves over style nitpicks; auto-approves when all blocking threads resolve
-- **Multi-provider** — Anthropic, OpenAI, and Gemini, mix-and-match per agent via `.manki.yml`
+- **Multi-provider** — Anthropic, OpenAI, and Gemini, mix-and-match per stage via `.manki.yml`
 - **Self-learning memory** — `/manki remember` teaches conventions, `/manki dismiss` suppresses false positives, patterns stick across PRs
 - **Conversational** — reply to any review comment to discuss, or use `@manki explain`/`forget` inline
 - **Self-hosted GitHub Action** — your API key, your compute, no SaaS intermediary
@@ -37,7 +37,7 @@ Full setup guide with memory and troubleshooting: **[SETUP.md](SETUP.md)**
 
 ## How it works
 
-Manki wakes up when a PR is opened. A fast planner (Haiku) picks the team size and effort, reviewers work in parallel, dedup drops findings that match repeats from prior reviews, and the judge evaluates and classifies what remains. Results land as inline comments plus a summary and verdict. When all blocking threads resolve, manki approves.
+Manki wakes up when a PR is opened. A fast planner (Haiku) triages the change and sets the effort, one or two finders review it in parallel, dedup drops findings that match repeats from prior reviews, and the judge evaluates and classifies what remains. Results land as inline comments plus a summary and verdict. When all blocking threads resolve, manki approves.
 
 <p align="center">
   <img src="assets/pipeline.svg" alt="Manki review pipeline: Planner → Reviewers → Dedup → Judge → Review Posted" />
@@ -69,7 +69,6 @@ Create `.manki.yml` in your repo root:
 auto_review: true
 auto_approve: true
 exclude_paths: ["*.lock"]
-review_level: auto      # auto | small | medium | large
 
 instructions: |
   This is a Rust project. Focus on ownership and error handling.
@@ -77,6 +76,7 @@ instructions: |
 models:
   planner: claude-haiku-4-5
   reviewer: claude-sonnet-4-6
+  reviewer_pair: claude-opus-4-7   # second finder on paired rounds
   judge: claude-opus-4-6
   dedup: claude-haiku-4-5
 ```
