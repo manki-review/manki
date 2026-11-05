@@ -27,6 +27,9 @@ import {
   fetchSubdirClaudeMd,
   fetchFileContents,
   fetchInterRoundDiff,
+  fetchHeadSha,
+  assertHeadUnchanged,
+  SupersededError,
   postProgressComment,
   updateProgressComment,
   updateProgressDashboard,
@@ -45,6 +48,7 @@ import {
   fetchPRComments,
   markOwnProgressCommentCancelled,
   markProgressCommentFailed,
+  markProgressCommentSuperseded,
   postAppWarningIfNeeded,
   checkConcurrentSubmissionLock,
   postConfigErrorComment,
@@ -296,7 +300,7 @@ async function handlePullRequest(): Promise<void> {
   }
 
   const { octokit, bot } = await getAuth();
-  if (await isReviewInProgress(octokit, bot, owner, repo, prNumber)) {
+  if (await isReviewInProgress(octokit, bot, owner, repo, prNumber, commitSha)) {
     await postReviewSkippedComment(octokit, owner, repo, prNumber, commitSha, 'in_progress');
     return;
   }
@@ -398,7 +402,7 @@ async function handleCommentTrigger(forceReview?: boolean, skipCap?: boolean, by
   });
 
   if (!forceReview) {
-    if (await isReviewInProgress(octokit, bot, owner, repo, prNumber)) {
+    if (await isReviewInProgress(octokit, bot, owner, repo, prNumber, pr.head.sha)) {
       await postReviewSkippedComment(octokit, owner, repo, prNumber, pr.head.sha, 'in_progress');
       core.info('Review already in progress — skipping');
       return;
@@ -581,7 +585,7 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
   // Scan for a competing in-progress marker before posting our own to shorten
   // the race window. A residual window remains when two runs both pass this scan
   // before either posts; tracking issue for the strict atomic fix: https://github.com/manki-review/manki/issues/798
-  if (await checkConcurrentSubmissionLock(octokit, bot, owner, repo, prNumber, config)) {
+  if (await checkConcurrentSubmissionLock(octokit, bot, owner, repo, prNumber, config, commitSha)) {
     core.warning('Defense-in-depth lock engaged — this run will not post a review. If no review appears on the PR, re-trigger with `/manki review`.');
     return true;
   }
@@ -601,17 +605,10 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
   // event firing and this run reaching the LLM phase. Placed before any
   // progress comment is posted so no marker cleanup is required on bail.
   // Fail-open: a `pulls.get` failure does not disable the review.
-  try {
-    const { data: prHead } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
-    const headSha = prHead.head?.sha;
-    if (!headSha) {
-      core.warning('Head SHA lookup returned no sha, proceeding');
-    } else if (headSha !== commitSha) {
-      core.info(`Event SHA ${commitSha.slice(0, 7)} != head SHA ${headSha.slice(0, 7)} — bailing out`);
-      return true;
-    }
-  } catch (error) {
-    core.warning(`Head SHA lookup failed, proceeding: ${error instanceof Error ? error.message : error}`);
+  const headSha = await fetchHeadSha(octokit, owner, repo, prNumber);
+  if (headSha && headSha !== commitSha) {
+    core.info(`Event SHA ${commitSha.slice(0, 7)} != head SHA ${headSha.slice(0, 7)} — bailing out`);
+    return true;
   }
 
   if (trigger.event === 'pull_request:synchronize' && config.auto_review) {
@@ -716,6 +713,7 @@ async function postUnreviewedRound(
   verdict: 'APPROVE' | 'COMMENT', summary: string,
 ): Promise<void> {
   const { octokit, owner, repo, prNumber, commitSha } = target;
+  await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
   const result = { verdict, summary, findings: [], highlights: [], reviewComplete: true, agentNames: [] as string[] };
   const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
   await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId);
@@ -944,14 +942,14 @@ async function collectRoundSignals(
 async function reviewRound(
   run: ReviewRun, clients: ReviewClients, inputs: Omit<ReviewOptions, 'onProgress'>,
 ): Promise<ReviewStageResult> {
-  const { octokit, owner, repo, commentId, dashboard, progress } = run;
+  const { octokit, owner, repo, commitSha, commentId, dashboard, progress } = run;
   let reviewEndTime = run.parseEndTime;
 
   function scheduleDashboardFlush(): void {
     if (progress.flushTimer) clearTimeout(progress.flushTimer);
     progress.flushTimer = setTimeout(() => {
       progress.flushTimer = null;
-      updateProgressDashboard(octokit, owner, repo, commentId, dashboard)
+      updateProgressDashboard(octokit, owner, repo, commentId, dashboard, commitSha)
         .catch(err => core.warning(`Failed to update dashboard: ${err}`));
     }, 500);
   }
@@ -1000,14 +998,14 @@ async function reviewRound(
         reviewEndTime = Date.now();
         dashboard.phase = 'reviewed';
         dashboard.rawFindingCount = event.rawFindingCount;
-        updateProgressDashboard(octokit, owner, repo, commentId, dashboard)
+        updateProgressDashboard(octokit, owner, repo, commentId, dashboard, commitSha)
           .catch(err => core.warning(`Failed to update dashboard: ${err}`));
       } else if (event.phase === 'judging') {
         cancelDashboardFlush(progress);
         dashboard.phase = 'reviewed';
         dashboard.rawFindingCount = event.rawFindingCount;
         dashboard.judgeInputCount = event.judgeInputCount;
-        updateProgressDashboard(octokit, owner, repo, commentId, dashboard)
+        updateProgressDashboard(octokit, owner, repo, commentId, dashboard, commitSha)
           .catch(err => core.warning(`Failed to update dashboard: ${err}`));
       }
     },
@@ -1018,6 +1016,7 @@ async function reviewRound(
 /** Fails the run and posts the incomplete round as a COMMENT, so the previous review stays standing. */
 async function postIncompleteRound(run: ReviewRun, result: ReviewResult): Promise<void> {
   const { octokit, owner, repo, prNumber, commitSha, commentId, dashboard, diff } = run;
+  await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
   cancelDashboardFlush(run.progress);
   core.setFailed(`Review incomplete: ${failureReason(result.summary)}`);
   result.verdict = 'COMMENT';
@@ -1225,7 +1224,7 @@ async function runFullReview(
     const { config, reviewSource } = loaded;
     if (await skipsRound(target, config, trigger, forceReview)) return;
 
-    const commentId = await postProgressComment(octokit, owner, repo, prNumber);
+    const commentId = await postProgressComment(octokit, owner, repo, prNumber, commitSha);
     progress.commentId = commentId;
 
     const recap = await loadRecap(target, config, commentId, prAuthorLogin);
@@ -1245,7 +1244,7 @@ async function runFullReview(
     const parseEndTime = Date.now();
     const lineCount = diff.totalAdditions + diff.totalDeletions;
     const dashboard = initialDashboard(diff, config, !!clients.planner);
-    await updateProgressDashboard(octokit, owner, repo, commentId, dashboard);
+    await updateProgressDashboard(octokit, owner, repo, commentId, dashboard, commitSha);
 
     if (isDiffTooLarge(diff, config.max_diff_lines)) {
       core.warning(`Diff too large (${lineCount} reviewable lines > ${config.max_diff_lines} max)`);
@@ -1287,6 +1286,7 @@ async function runFullReview(
     };
 
     const stage = await reviewRound(run, clients, {
+      checkpoint: () => assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha),
       config,
       diff,
       rawDiff,
@@ -1320,12 +1320,21 @@ async function runFullReview(
       judgeDurationMs: stage.judgeEndTime - stage.reviewEndTime,
     });
 
-    await resolveAddressedThreads(run, result);
+    await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
     const reviewId = await postRound(run, result, context, reviewTimeMs);
+    // Only after the review is posted, so a review that GitHub refuses as superseded resolves no thread.
+    await resolveAddressedThreads(run, result);
     await completeProgressComment(run, stage);
     setReviewOutputs(reviewId, context, result);
   } catch (error) {
     cancelDashboardFlush(progress);
+    if (error instanceof SupersededError) {
+      core.info(`${error.message}, posting no verdict for it`);
+      if (progress.commentId !== undefined) {
+        await markProgressCommentSuperseded(octokit, owner, repo, progress.commentId, error);
+      }
+      return;
+    }
     const reason = failureReason(error);
     core.setFailed(`Review failed: ${reason}`);
 

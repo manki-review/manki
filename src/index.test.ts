@@ -168,6 +168,9 @@ jest.mock('./github', () => {
   fetchSubdirClaudeMd: jest.fn().mockResolvedValue(null),
   fetchFileContents: jest.fn().mockResolvedValue(new Map()),
   fetchInterRoundDiff: jest.fn().mockResolvedValue(''),
+  fetchHeadSha: jest.requireActual('./github').fetchHeadSha,
+  assertHeadUnchanged: jest.requireActual('./github').assertHeadUnchanged,
+  SupersededError: jest.requireActual('./github').SupersededError,
   postProgressComment: jest.fn().mockResolvedValue(1),
   updateProgressComment: jest.fn().mockResolvedValue(undefined),
   updateProgressDashboard: jest.fn().mockResolvedValue(undefined),
@@ -181,8 +184,8 @@ jest.mock('./github', () => {
   fetchStandingVerdict: jest.fn().mockResolvedValue(undefined),
   markOwnProgressCommentCancelled: jest.fn().mockResolvedValue(false),
   markProgressCommentFailed: jest.fn().mockResolvedValue(undefined),
+  markProgressCommentSuperseded: jest.fn().mockResolvedValue(undefined),
   postAppWarningIfNeeded: jest.fn().mockResolvedValue(undefined),
-  cancelActiveReviewRun: jest.fn().mockResolvedValue(false),
   fetchPRComments: fetchPRCommentsMock,
   findInProgressLock: findInProgressLockMock,
   isLockExpired: isLockExpiredMock,
@@ -902,7 +905,6 @@ describe('handleCommentTrigger', () => {
     expect(jest.mocked(ghUtils.reactToIssueComment)).toHaveBeenCalledWith(
       expect.anything(), 'test-owner', 'test-repo', 42, 'eyes',
     );
-    expect(jest.mocked(ghUtils.cancelActiveReviewRun)).not.toHaveBeenCalled();
     expect(mockOctokitInstance.rest.issues.createComment).toHaveBeenCalledWith(
       expect.objectContaining({ body: expect.stringContaining('Review skipped') }),
     );
@@ -983,7 +985,6 @@ describe('handleCommentTrigger', () => {
     await handleCommentTrigger(true);
 
     expect(jest.mocked(ghUtils.isReviewInProgress)).not.toHaveBeenCalled(); // entire block skipped
-    expect(jest.mocked(ghUtils.cancelActiveReviewRun)).not.toHaveBeenCalled();
     expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalledWith(
       expect.objectContaining({ body: expect.stringContaining('Review skipped') }),
     );
@@ -1004,7 +1005,6 @@ describe('handleCommentTrigger', () => {
 
     await handleCommentTrigger();
 
-    expect(jest.mocked(ghUtils.cancelActiveReviewRun)).not.toHaveBeenCalled();
     expect(jest.mocked(ghUtils.isApprovedOnCommit)).toHaveBeenCalledWith(
       expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 1, expect.any(String),
     );
@@ -4901,7 +4901,10 @@ describe('runFullReview orchestration', () => {
     );
   });
 
-  it('resolves addressed thread when prior rounds exist and inter-round diff is non-empty', async () => {
+  it.each([
+    ['posts its review', true],
+    ['finds at posting that the head moved', false],
+  ])('resolves an addressed thread with prior rounds and a non-empty inter-round diff only when the round %s', async (_label, posted) => {
     // End-to-end happy path for the thread-resolution flow: memory enabled,
     // recap exposes a prior round with a SHA distinct from the current
     // commit, `fetchInterRoundDiff` returns a non-empty patch, and the LLM
@@ -4944,9 +4947,11 @@ describe('runFullReview orchestration', () => {
         { threadId: 'PRRT_abc', status: 'addressed', reason: 'Fixed in latest push' },
       ],
     });
+    if (!posted) jest.mocked(ghUtils.postReview).mockRejectedValueOnce(new ghUtils.SupersededError('abc123', 'def456'));
 
     await callRunFullReview();
 
+    expect(jest.mocked(ghUtils.markProgressCommentSuperseded)).toHaveBeenCalledTimes(posted ? 0 : 1);
     expect(jest.mocked(ghUtils.fetchInterRoundDiff)).toHaveBeenCalledTimes(1);
     expect(jest.mocked(diffModule.filterDiff)).toHaveBeenCalledWith(expect.anything(), ['dist/**']);
     expect(jest.mocked(diffModule.filterRawDiff)).toHaveBeenCalledWith(
@@ -4959,13 +4964,8 @@ describe('runFullReview orchestration', () => {
     expect(passedInterRoundDiff).toBe(
       'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
     );
-    expect(mockGraphql).toHaveBeenCalledWith(
-      expect.stringContaining('resolveReviewThread'),
-      { threadId: 'PRRT_abc' },
-    );
-    expect(jest.mocked(core.info)).toHaveBeenCalledWith(
-      'Judge resolved: "Fixed in latest push" — thread PRRT_abc',
-    );
+    expect(mockGraphql.mock.calls.some(([query]) => String(query).includes('resolveReviewThread'))).toBe(posted);
+    expect(jest.mocked(core.info).mock.calls.some(([m]) => m === 'Judge resolved: "Fixed in latest push" — thread PRRT_abc')).toBe(posted);
   });
 
   it('resolves only threads with status addressed', async () => {
@@ -6939,6 +6939,46 @@ describe('runFullReview concurrent-submission lock', () => {
       expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
       const infos = jest.mocked(core.info).mock.calls.map(c => String(c[0]));
       expect(infos.some(m => m.includes('abc123') && m.includes('def456') && m.includes('bailing'))).toBe(true);
+    });
+
+    const movedHead = { data: { title: 'Test PR', body: 'body', head: { sha: 'def456' }, base: { ref: 'main' } } };
+    const readyResult = {
+      verdict: 'APPROVE' as const, outcome: 'READY' as const, summary: 'Looks good',
+      findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
+    };
+
+    it.each([
+      ['before the review is posted', false],
+      ['between the review stages', true],
+    ])('posts no verdict and marks the progress comment superseded when the head moves %s', async (_label, atCheckpoint) => {
+      jest.mocked(reviewModule.runReview).mockImplementationOnce(async (_clients, options) => {
+        mockPullsGet.mockResolvedValueOnce(movedHead);
+        if (atCheckpoint) await options.checkpoint?.();
+        return readyResult;
+      });
+
+      await callRunFullReview();
+
+      expect(jest.mocked(ghUtils.postReview)).not.toHaveBeenCalled();
+      expect(jest.mocked(ghUtils.dismissPreviousReviews)).not.toHaveBeenCalled();
+      expect(jest.mocked(ghUtils.updateProgressComment)).not.toHaveBeenCalled();
+      expect(jest.mocked(ghUtils.markProgressCommentSuperseded)).toHaveBeenCalledWith(
+        expect.anything(), 'test-owner', 'test-repo', 1, expect.objectContaining({ reviewedSha: 'abc123', headSha: 'def456' }),
+      );
+      expect(core.setFailed).not.toHaveBeenCalled();
+      expect(jest.mocked(core.info).mock.calls.map(c => String(c[0]))).toContain('The PR head moved from abc123 to def456, posting no verdict for it');
+    });
+
+    it('posts the verdict when the head is unchanged at every check', async () => {
+      jest.mocked(reviewModule.runReview).mockImplementationOnce(async (_clients, options) => {
+        await options.checkpoint?.();
+        return readyResult;
+      });
+
+      await callRunFullReview();
+
+      expect(jest.mocked(ghUtils.postReview)).toHaveBeenCalled();
+      expect(jest.mocked(ghUtils.markProgressCommentSuperseded)).not.toHaveBeenCalled();
     });
 
     it('proceeds (fail-open) when the head-SHA lookup throws', async () => {

@@ -236,8 +236,8 @@ jobs:
   review:
     if: github.actor != 'manki-review[bot]'
     concurrency:
-      group: manki-${{ (github.event_name == 'issue_comment' && github.event.comment.id) || format('pr-{0}', github.event.pull_request.number || github.event.issue.number) }}
-      cancel-in-progress: false
+      group: manki-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}', github.event_name, github.event.comment.id || github.event.review.id || github.run_id) }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -387,7 +387,7 @@ The self-trigger guard (`github.actor != 'manki-review[bot]'`) prevents the bot 
 
 ### Concurrency
 
-The `concurrency` block keeps at most one Manki run active per PR across every PR-scoped event (`pull_request`, `pull_request_review`, `pull_request_review_comment`), serializing the vast majority of concurrent triggers so they do not race and submit conflicting reviews on the same commit. When a new PR-scoped event arrives while a run is in flight, GitHub queues it (at most one queued event per group, newer queued events replace older ones), the in-flight run completes, then the most recent queued event runs. `cancel-in-progress` is `false`, so no run is cancelled and the PR check list does not collect red crosses from superseded runs. The `issue_comment`-gated `comment.id` branch keeps distinct `/manki` invocations in separate groups so they do not serialize against each other, while `pull_request_review_comment` events fall through to the shared `pr-{N}` group alongside the other PR-scoped events.
+The `concurrency` block gives each PR one group for its pushes (`pull_request` events) with `cancel-in-progress` on, so a new push cancels the review of the commit it replaces. Every other event (`/manki` commands, thread replies and review state changes) gets a group of its own, keyed by its comment or review id, so it never cancels a push review and is never cancelled by one. This split matters because GitHub keeps at most one pending run per group and cancels the older pending run when a newer one queues: a thread reply sharing the push group would cancel a push review that was waiting to start. A cancelled run marks its progress comment as cancelled in the action's post step, so it leaves no stale "in progress" lock behind. A review that is still running when a new commit lands, for example one started by `/manki review`, checks the PR head between its stages and before it posts. When the head has moved, it posts no verdict and updates its progress comment to name the new commit. The run for the new commit does not wait for it: an in-progress review only makes a run skip when it reviews the same commit.
 
 GitHub Actions concurrency is best-effort, not atomic. Two events dispatched within the same scheduling window can transition to in-progress before either reaches the queue check, in which case both runs proceed concurrently. As defense in depth, the action runs an in-app lock at the review pipeline entry point: it scans its own existing comments for an "in progress" marker carrying a different `manki-run-id`, and bails (with a `core.warning`) before any LLM call when one is found within the configurable TTL. Tune the TTL with the `concurrency_lock_ttl_seconds` action input (default 600 seconds). Lowering it makes the lock recover faster from crashed runs that left a stale marker behind. Raising it tolerates longer-running reviews.
 

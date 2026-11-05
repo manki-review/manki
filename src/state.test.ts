@@ -15,6 +15,8 @@ jest.mock('./github', () => ({
   markProgressCommentFailed: jest.fn().mockResolvedValue(undefined),
 }));
 
+const SETTING_REFUSAL = 'GitHub Actions is not permitted to approve pull requests.';
+
 const makeThread = (overrides: Partial<ReviewThread> = {}): ReviewThread => ({
   id: 'thread-1',
   isResolved: false,
@@ -456,7 +458,7 @@ describe('checkAndAutoApprove', () => {
     // A COMMENT-review fallback would register as a bot review on the head SHA
     // and break the force-review tickbox loop ([#840]). The fallback must
     // surface the missing permission via an issue comment instead.
-    const createReviewMock = jest.fn().mockRejectedValueOnce(new Error('APPROVE not allowed'));
+    const createReviewMock = jest.fn().mockRejectedValueOnce(new Error(SETTING_REFUSAL));
     const createCommentMock = jest.fn().mockResolvedValue({});
 
     const octokit = makeMockOctokit({
@@ -1148,21 +1150,25 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
     expect(ghMock.markAutoApproveComplete).not.toHaveBeenCalled();
   });
 
-  it('transitions the marker to a failure state when APPROVE and the issue-comment fallback both fail', async () => {
-    const createReviewMock = jest.fn().mockRejectedValueOnce(new Error('APPROVE forbidden'));
+  it.each([
+    ['the issue-comment fallback also fails', SETTING_REFUSAL, 'comment also forbidden'],
+    ['GitHub refuses it for a reason other than the repo setting', 'Review cannot be submitted', 'Review cannot be submitted'],
+  ])('transitions the marker to a failure state when APPROVE fails and %s', async (_label, refusal, reason) => {
+    const createReviewMock = jest.fn().mockRejectedValueOnce(new Error(refusal));
     const createCommentMock = jest.fn().mockRejectedValueOnce(new Error('comment also forbidden'));
     const octokit = makeMockOctokit({ createReviewFn: createReviewMock, createCommentFn: createCommentMock });
 
-    await expect(checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1)).rejects.toThrow('comment also forbidden');
+    await expect(checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1)).rejects.toThrow(reason);
     expect(ghMock.markProgressCommentFailed).toHaveBeenCalledWith(
-      octokit, 'owner', 'repo', 7777, 'Auto-approve', 'comment also forbidden',
+      octokit, 'owner', 'repo', 7777, 'Auto-approve', reason,
     );
+    expect(createCommentMock).toHaveBeenCalledTimes(refusal === SETTING_REFUSAL ? 1 : 0);
     expect(ghMock.markAutoApproveComplete).not.toHaveBeenCalled();
     expect(ghMock.dismissPreviousReviews).not.toHaveBeenCalled();
   });
 
   it('still transitions to complete when APPROVE fails but the issue-comment fallback succeeds', async () => {
-    const createReviewMock = jest.fn().mockRejectedValueOnce(new Error('APPROVE forbidden'));
+    const createReviewMock = jest.fn().mockRejectedValueOnce(new Error(SETTING_REFUSAL));
     const createCommentMock = jest.fn().mockResolvedValueOnce({});
     const octokit = makeMockOctokit({ createReviewFn: createReviewMock, createCommentFn: createCommentMock });
 

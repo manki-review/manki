@@ -410,6 +410,8 @@ export interface ReviewOptions {
   prContext?: PrContext;
   linkedIssues?: LinkedIssue[];
   onProgress?: (progress: ReviewProgress) => void;
+  /** Awaited after the finders and after the judge. A throw stops the review there. */
+  checkpoint?: () => Promise<void>;
   isFollowUp?: boolean;
   openThreads?: OpenThread[] | null;
   previousFindings?: PreviousFinding[];
@@ -429,7 +431,7 @@ export async function runReview(
   options: ReviewOptions,
 ): Promise<ReviewResult & { outcome: RoundOutcome }> {
   const {
-    config, diff, rawDiff, repoContext, memory, fileContents, prContext, linkedIssues, onProgress,
+    config, diff, rawDiff, repoContext, memory, fileContents, prContext, linkedIssues, onProgress, checkpoint,
     isFollowUp, openThreads, previousFindings, priorRounds, prAuthorLogin, interRoundDiff,
   } = options;
   const provenanceMap = computeProvenanceMap(priorRounds, rawDiff);
@@ -831,6 +833,7 @@ export async function runReview(
     };
   }
 
+  await checkpoint?.();
   if (onProgress) {
     onProgress({ phase: 'reviewed', rawFindingCount: allFindings.length });
   }
@@ -972,6 +975,7 @@ export async function runReview(
       ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
     };
   }
+  await checkpoint?.();
 
   // Mechanism B: drop low-severity findings on test files starting at round 2.
   // Test scaffolding nits are the most common runaway-feedback driver in late

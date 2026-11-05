@@ -15,16 +15,15 @@ permissions:
   pull-requests: write
   issues: write
   id-token: write
-  # Required for cancelActiveReviewRun to cancel superseded review runs
-  actions: write
+  actions: read
 
 jobs:
   review:
     # Bot login defined in src/github.ts as BOT_LOGIN — keep in sync
     if: github.actor != 'manki-review[bot]'
     concurrency:
-      group: manki-${{ (github.event_name == 'issue_comment' && github.event.comment.id) || format('pr-{0}', github.event.pull_request.number || github.event.issue.number) }}
-      cancel-in-progress: false
+      group: manki-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}', github.event_name, github.event.comment.id || github.event.review.id || github.run_id) }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

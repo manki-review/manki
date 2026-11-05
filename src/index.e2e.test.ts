@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 
-import { BOT_MARKER, RUN_ID_MARKER_PREFIX } from './github';
-import { _resetOctokitCache, runFullReview } from './index';
+import { BOT_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX } from './github';
+import { _resetOctokitCache, handlePullRequest, runFullReview } from './index';
 import { RoundContext } from './types';
 
 jest.mock('@actions/core', () => ({
@@ -49,7 +49,7 @@ const TOKEN_LOGINS: Record<string, string> = { ghs_app: APP_LOGIN, ghs_workflow:
 
 const mockContext = {
   eventName: 'pull_request',
-  payload: {},
+  payload: {} as Record<string, unknown>,
   repo: { owner: OWNER, repo: REPO },
   runId: 7001,
   job: 'review',
@@ -87,6 +87,8 @@ class FakeGitHub {
   reviews: FakeReview[] = [];
   threads: FakeThread[] = [];
   failures: FakeFailure[] = [];
+  headSha = HEAD_SHA;
+  activeRuns: number[] = [];
   private nextId = 1000;
 
   fetch = async (url: string, init: RequestInit = {}): Promise<Response> => {
@@ -108,7 +110,7 @@ class FakeGitHub {
 
     if (method === 'GET' && route === `/pulls/${PR_NUMBER}`) {
       if (headers.get('accept')?.includes('diff')) return text(PR_DIFF);
-      return json({ number: PR_NUMBER, title: 'Keep the sum in a variable', body: 'Small refactor.', draft: false, head: { sha: HEAD_SHA, ref: 'feature', repo: { full_name: `${OWNER}/${REPO}` } }, base: { ref: 'main' }, user: { login: 'alice' } });
+      return json({ number: PR_NUMBER, title: 'Keep the sum in a variable', body: 'Small refactor.', draft: false, head: { sha: this.headSha, ref: 'feature', repo: { full_name: `${OWNER}/${REPO}` } }, base: { ref: 'main' }, user: { login: 'alice' } });
     }
     if (method === 'GET' && route === `/issues/${PR_NUMBER}/comments`) return this.page(url, this.comments, searchParams);
     if (method === 'POST' && route === `/issues/${PR_NUMBER}/comments`) {
@@ -146,6 +148,9 @@ class FakeGitHub {
     }
     if (method === 'GET' && route === `/contents/src/math.ts`) {
       return json({ type: 'file', encoding: 'base64', size: MATH_TS.length, content: Buffer.from(MATH_TS).toString('base64') });
+    }
+    if (method === 'GET' && (match = route.match(/^\/actions\/runs\/(\d+)$/))) {
+      return json({ id: Number(match[1]), status: this.activeRuns.includes(Number(match[1])) ? 'in_progress' : 'completed', conclusion: null });
     }
     if (method === 'GET' && route === '') return json({ full_name: `${OWNER}/${REPO}`, description: null });
     return json({ message: 'Not Found' }, 404);
@@ -248,6 +253,7 @@ const BLOCKER_REPLIES: Partial<Record<Stage, string>> = {
 class FakeLLM {
   replies: Record<Stage, string> = { ...READY_REPLIES };
   calls: Stage[] = [];
+  onCall?: (stage: Stage) => void;
 
   async sendMessage(system: string, _user: string): Promise<{ content: string }> {
     const stage: Stage = system.startsWith('You give the final merge-readiness verdict') ? 'verdict'
@@ -256,6 +262,7 @@ class FakeLLM {
           : system.includes('"judgeEffort"') ? 'planner'
             : 'reviewer';
     this.calls.push(stage);
+    this.onCall?.(stage);
     return { content: this.replies[stage] };
   }
 }
@@ -292,6 +299,7 @@ describe('runFullReview end to end', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     _resetOctokitCache();
+    mockContext.payload = {};
     mockGitHub = new FakeGitHub();
     mockLLM = new FakeLLM();
     jest.mocked(core.getInput).mockImplementation((name: string) => INPUTS[name] ?? '');
@@ -344,6 +352,45 @@ describe('runFullReview end to end', () => {
     expect(mockGitHub.reviews).toEqual([previous]);
     expect(previous.state).toBe('CHANGES_REQUESTED');
     expect(mockGitHub.comments.at(-1)?.body).toContain('Review failed');
+  });
+
+  it.each([
+    ['the finders run', 'reviewer', ['planner', 'reviewer']],
+    ['the verdict reader runs', 'verdict', ['planner', 'reviewer', 'judge', 'verdict']],
+  ] as const)('posts no verdict and marks the progress comment superseded when a push lands while %s', async (_label, pushDuring, calls) => {
+    mockLLM.onCall = stage => {
+      if (stage === pushDuring) mockGitHub.headSha = 'f00dfeed00000000000000000000000000000000';
+    };
+
+    await reviewRound();
+
+    expect(core.setFailed).not.toHaveBeenCalled();
+    expect(mockGitHub.reviews).toEqual([]);
+    expect(mockLLM.calls).toEqual(calls);
+    expect(mockGitHub.comments.at(-1)?.body).toContain('**Review superseded** by the new commit `f00dfee`');
+  });
+
+  it.each([
+    ['an older commit, so the push run reviews the new head', 'deadbeef00000000000000000000000000000000', ['APPROVED']],
+    ['the same commit, so the push run skips', HEAD_SHA, []],
+  ])('handles a push while a `/manki review` run reviews %s', async (_label, reviewedSha, states) => {
+    const oldProgress = `${BOT_MARKER}\n${RUN_ID_MARKER_PREFIX}6999 -->\n<!-- manki-commit:${reviewedSha} -->\n**Review started**`;
+    mockGitHub.addComment(oldProgress, APP_LOGIN, new Date().toISOString());
+    mockGitHub.activeRuns.push(6999);
+    mockContext.payload = {
+      action: 'synchronize',
+      sender: { login: 'alice', type: 'User' },
+      pull_request: { number: PR_NUMBER, title: 'Keep the sum in a variable', body: 'Small refactor.', draft: false, head: { sha: HEAD_SHA, repo: { full_name: `${OWNER}/${REPO}` } }, base: { ref: 'main' }, user: { login: 'alice' } },
+    };
+
+    await handlePullRequest();
+
+    expect(postedReviews().map(r => [r.state, r.commit_id])).toEqual(states.map(state => [state, HEAD_SHA]));
+    const skipped = mockGitHub.comments.some(c => c.body.includes('**Review skipped**'));
+    expect(skipped).toBe(states.length === 0);
+    // The older run's comment is its own: the push run neither takes it as its lock nor rewrites it.
+    expect(mockGitHub.comments.find(c => c.body.includes(`${RUN_ID_MARKER_PREFIX}6999 -->`))?.body).toBe(oldProgress);
+    expect(mockGitHub.comments.some(c => c.body.includes(CANCELLED_MARKER))).toBe(false);
   });
 
   it('reads past the first 100 comments and review threads', async () => {
