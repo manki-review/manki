@@ -12,6 +12,7 @@ export function run(input: string, el: HTMLElement, list: string[], x: number, y
   document.write(input); // expect: security-xss-html-sink
   const agent = { rejectUnauthorized: false }; // expect: security-tls-verification-disabled
   process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'; // expect: security-tls-verification-disabled
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = input; // expect: security-tls-verification-disabled
   list.forEach(async (item) => { await fetch(item); }); // expect: async-foreach-callback
   list.forEach(async function (item) { await fetch(item); }); // expect: async-foreach-callback
   const p = new Promise(async (resolve) => resolve(await fetch(input))); // expect: async-promise-executor
