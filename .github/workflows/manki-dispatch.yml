@@ -1,0 +1,91 @@
+name: Manki dispatch
+run-name: 'Manki ${{ inputs.event }}.${{ inputs.action }} on #${{ inputs.pr }} (${{ inputs.delivery_id }})'
+
+# Webhook mode for Manki itself. The service only dispatches this workflow once `manki.yml` is gone from the default branch.
+on:
+  workflow_dispatch:
+    inputs:
+      event: { type: string, required: true }
+      action: { type: string, required: true }
+      pr: { type: string, required: true }
+      head_sha: { type: string, required: false }
+      comment_id: { type: string, required: false }
+      review_id: { type: string, required: false }
+      delivery_id: { type: string, required: false }
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  id-token: write
+  actions: read
+
+jobs:
+  review:
+    timeout-minutes: 30
+    # A dispatched run counts as the default branch, so a cache it saved would reach every branch.
+    cache-mode: read
+    runs-on: ubuntu-latest
+    steps:
+      # Manki reviews its own PRs with their own build, as `uses: ./` does in `manki.yml`.
+      # Only a head in this repository is built. A fork's head, or an issue, gets the default branch.
+      - name: Find the commit to build
+        id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr }}
+        run: |
+          sha="$GITHUB_SHA"
+          if [[ "$PR" =~ ^[1-9][0-9]{0,15}$ ]]; then
+            if pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" 2>"$RUNNER_TEMP/pr-error"); then
+              if [ "$(jq -r '.head.repo.full_name' <<<"$pr")" = "$GITHUB_REPOSITORY" ]; then
+                sha=$(jq -r '.head.sha' <<<"$pr")
+              fi
+            elif ! grep -q 'HTTP 404' "$RUNNER_TEMP/pr-error"; then
+              cat "$RUNNER_TEMP/pr-error" >&2
+              exit 1
+            fi
+          fi
+          echo "Building $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.head.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build
+      - name: Install Claude Code CLI
+        if: env.CLAUDE_CODE_OAUTH_TOKEN != ''
+        # The pin mirrors the runtime fallback in `src/providers/anthropic.ts`.
+        # If you update `CLAUDE_CLI_VERSION` in `src/providers/anthropic.ts`, update the version here too.
+        run: npm install -g '@anthropic-ai/claude-code@2.1.318'
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      - name: Install Codex CLI
+        if: env.OPENAI_OAUTH_TOKEN != ''
+        # Pin and `--ignore-scripts` mirror the runtime fallback in `src/providers/openai.ts`.
+        # If you update `CODEX_CLI_VERSION` in `src/providers/openai.ts`, update the version here too.
+        run: npm install -g --ignore-scripts '@openai/codex@0.166.0'
+        env:
+          OPENAI_OAUTH_TOKEN: ${{ secrets.OPENAI_OAUTH_TOKEN }}
+      - name: Install Gemini CLI
+        if: env.GEMINI_OAUTH_TOKEN != ''
+        # Pin and `--ignore-scripts` mirror the runtime fallback in `src/providers/gemini.ts`.
+        # If you update `GEMINI_CLI_VERSION` in `src/providers/gemini.ts`, update the version here too.
+        run: npm install -g --ignore-scripts '@google/gemini-cli@0.66.0'
+        env:
+          GEMINI_OAUTH_TOKEN: ${{ secrets.GEMINI_OAUTH_TOKEN }}
+      - name: Manki Review
+        uses: ./  # Use local action for self-testing
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          openai_oauth_token: ${{ secrets.OPENAI_OAUTH_TOKEN }}
+          openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+          gemini_oauth_token: ${{ secrets.GEMINI_OAUTH_TOKEN }}
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          memory_repo_token: ${{ secrets.REVIEW_MEMORY_TOKEN }}
