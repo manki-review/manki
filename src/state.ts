@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { BotIdentity, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchReviewThreadNodes, FOLLOW_UP_MARKER, isBotLogin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, postAutoApproveProgressComment } from './github';
+import { BotIdentity, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchReviewThreadNodes, FOLLOW_UP_MARKER, isApprovalSettingRefusal, isBotLogin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, postAutoApproveProgressComment } from './github';
 import { isSecurityThread, mayClearSecurityThread, PreviousFinding, REOPENED_MARKER } from './recap';
 import { FindingSeverity, isBlockingSeverity, migrateLegacySeverity, ReviewConfig, SEVERITY_TOKEN_PATTERN } from './types';
 import { withMarkers } from './utils';
@@ -277,7 +277,8 @@ async function checkAndAutoApprove(
       });
       core.info('Auto-approved PR');
       await dismissPreviousReviews(octokit, owner, repo, prNumber);
-    } catch {
+    } catch (error) {
+      if (!isApprovalSettingRefusal(error)) throw error;
       // Do not fall back to a `COMMENT` review here. A `COMMENT` placeholder
       // with this body would still register as a bot review on the head SHA
       // and break the force-review tickbox loop ([#840]). Surface the missing

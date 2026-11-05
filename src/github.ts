@@ -1052,8 +1052,10 @@ export async function postReview(
   return review.id;
 }
 
-/** The refusal GitHub returns when the repo setting stops the workflow token from approving. */
-const APPROVAL_SETTING_REFUSAL = /not permitted to approve pull requests/i;
+/** Whether `error` is GitHub's refusal when the repo setting stops the workflow token from approving. */
+export function isApprovalSettingRefusal(error: unknown): boolean {
+  return /not permitted to (create or )?approve pull requests/i.test(error instanceof Error ? error.message : String(error));
+}
 
 /**
  * Creates the review, falling back to a body-only review when GitHub rejects the line
@@ -1119,7 +1121,7 @@ async function submitReview(
     }
 
     await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
-    const hint = APPROVAL_SETTING_REFUSAL.test(errorMessage)
+    const hint = isApprovalSettingRefusal(error)
       ? ' Ensure "Allow GitHub Actions to create and approve pull requests" is enabled in repo settings.'
       : '';
     core.warning(`GitHub refused the ${event} review (${status}: ${errorMessage}).${hint} Falling back to COMMENT.`);

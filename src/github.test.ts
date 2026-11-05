@@ -3120,6 +3120,7 @@ describe('postReview fallback paths', () => {
 
   it.each([
     ['the repo setting', 'GitHub Actions is not permitted to approve pull requests.', true],
+    ['the repo setting, in its create-or-approve wording', 'GitHub Actions is not permitted to create or approve pull requests.', true],
     ['another reason', 'Review cannot be submitted', false],
   ])('falls back to COMMENT with the real error logged when GitHub refuses APPROVE for %s', async (_label, message, blamesSetting) => {
     const warningSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
