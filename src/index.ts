@@ -28,6 +28,8 @@ import {
   fetchFileContents,
   fetchInterRoundDiff,
   fetchHeadSha,
+  assertHeadUnchanged,
+  SupersededError,
   postProgressComment,
   updateProgressComment,
   updateProgressDashboard,
@@ -46,6 +48,7 @@ import {
   fetchPRComments,
   markOwnProgressCommentCancelled,
   markProgressCommentFailed,
+  markProgressCommentSuperseded,
   postAppWarningIfNeeded,
   checkConcurrentSubmissionLock,
   postConfigErrorComment,
@@ -710,6 +713,7 @@ async function postUnreviewedRound(
   verdict: 'APPROVE' | 'COMMENT', summary: string,
 ): Promise<void> {
   const { octokit, owner, repo, prNumber, commitSha } = target;
+  await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
   const result = { verdict, summary, findings: [], highlights: [], reviewComplete: true, agentNames: [] as string[] };
   const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
   await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId);
@@ -1012,6 +1016,7 @@ async function reviewRound(
 /** Fails the run and posts the incomplete round as a COMMENT, so the previous review stays standing. */
 async function postIncompleteRound(run: ReviewRun, result: ReviewResult): Promise<void> {
   const { octokit, owner, repo, prNumber, commitSha, commentId, dashboard, diff } = run;
+  await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
   cancelDashboardFlush(run.progress);
   core.setFailed(`Review incomplete: ${failureReason(result.summary)}`);
   result.verdict = 'COMMENT';
@@ -1281,6 +1286,7 @@ async function runFullReview(
     };
 
     const stage = await reviewRound(run, clients, {
+      checkpoint: () => assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha),
       config,
       diff,
       rawDiff,
@@ -1314,12 +1320,20 @@ async function runFullReview(
       judgeDurationMs: stage.judgeEndTime - stage.reviewEndTime,
     });
 
+    await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
     await resolveAddressedThreads(run, result);
     const reviewId = await postRound(run, result, context, reviewTimeMs);
     await completeProgressComment(run, stage);
     setReviewOutputs(reviewId, context, result);
   } catch (error) {
     cancelDashboardFlush(progress);
+    if (error instanceof SupersededError) {
+      core.info(`${error.message}, posting no verdict for it`);
+      if (progress.commentId !== undefined) {
+        await markProgressCommentSuperseded(octokit, owner, repo, progress.commentId, error);
+      }
+      return;
+    }
     const reason = failureReason(error);
     core.setFailed(`Review failed: ${reason}`);
 

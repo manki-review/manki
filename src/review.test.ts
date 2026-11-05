@@ -2046,7 +2046,10 @@ describe('runReview', () => {
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
 
-    const result = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context' });
+    const checkpoint = jest.fn().mockResolvedValue(undefined);
+
+    const result = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context', checkpoint });
+    expect(checkpoint).toHaveBeenCalledTimes(2);
     expect(result.verdict).toBe('APPROVE');
     expect(result.outcome).toBe('READY');
     expect(result.verdictReason).toBe('only_nit_or_suggestion');
@@ -2461,6 +2464,25 @@ describe('runReview', () => {
       expect(result.agentFailureReasons?.[name]).toContain(reason);
     }
     expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['after the finders', 1, false],
+    ['after the judge, before the verdict reader', 2, true],
+  ])('stops %s when `checkpoint` throws', async (_label, failingCall, judgeRuns) => {
+    const clients = makeClients();
+    const stop = new Error('head moved');
+    const checkpoint: jest.Mock = jest.fn(async () => {
+      if (checkpoint.mock.calls.length === failingCall) throw stop;
+    });
+    const onProgress = jest.fn();
+
+    await expect(runReview(clients, { config: makeConfig(), diff: makeDiff(), rawDiff: 'raw diff', repoContext: 'repo context', onProgress, checkpoint })).rejects.toBe(stop);
+
+    expect(checkpoint).toHaveBeenCalledTimes(failingCall);
+    expect(mockedRunJudgeAgent).toHaveBeenCalledTimes(judgeRuns ? 1 : 0);
+    expect(clients.judge.sendMessage).not.toHaveBeenCalled();
+    expect(onProgress.mock.calls.some(([p]: [import('./review').ReviewProgress]) => p.phase === 'reviewed')).toBe(judgeRuns);
   });
 
   it('fires onProgress callback per agent and for judging phase', async () => {

@@ -116,6 +116,20 @@ export async function fetchHeadSha(octokit: Octokit, owner: string, repo: string
   }
 }
 
+/** Thrown when the PR head moved past the commit under review, so the review must post no verdict. */
+export class SupersededError extends Error {
+  constructor(readonly reviewedSha: string, readonly headSha: string) {
+    super(`The PR head moved from ${reviewedSha.slice(0, 7)} to ${headSha.slice(0, 7)}`);
+    this.name = 'SupersededError';
+  }
+}
+
+/** Throws `SupersededError` when the PR head is no longer `commitSha`. A failed lookup lets the review go on. */
+export async function assertHeadUnchanged(octokit: Octokit, owner: string, repo: string, prNumber: number, commitSha: string): Promise<void> {
+  const headSha = await fetchHeadSha(octokit, owner, repo, prNumber);
+  if (headSha && headSha !== commitSha) throw new SupersededError(commitSha, headSha);
+}
+
 /**
  * Fetch the unified diff between two commits via GitHub's compare API, which
  * diffs `head` against its merge base with `base`. Used to ground the judge's
@@ -498,6 +512,29 @@ export async function markProgressCommentFailed(
     await octokit.rest.issues.updateComment({ owner, repo, comment_id: commentId, body });
   } catch (error) {
     core.warning(`Failed to mark ${action.toLowerCase()} comment as failed: ${error instanceof Error ? error.message : error}`);
+  }
+}
+
+/**
+ * Transition a progress comment to a terminal state that says a push to `headSha` superseded
+ * the review of `reviewedSha`. Uses `CANCELLED_MARKER` so `findInProgressLock` no longer treats it as a live lock.
+ */
+export async function markProgressCommentSuperseded(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  commentId: number,
+  { reviewedSha, headSha }: SupersededError,
+): Promise<void> {
+  const body = withMarkers(
+    `**Review superseded** by the new commit \`${headSha.slice(0, 7)}\`. No verdict was posted for \`${reviewedSha.slice(0, 7)}\`.`,
+    ...BOT_MARKERS,
+    CANCELLED_MARKER,
+  );
+  try {
+    await octokit.rest.issues.updateComment({ owner, repo, comment_id: commentId, body });
+  } catch (error) {
+    core.warning(`Failed to mark review comment as superseded: ${error instanceof Error ? error.message : error}`);
   }
 }
 
@@ -1015,9 +1052,13 @@ export async function postReview(
   return review.id;
 }
 
+/** The refusal GitHub returns when the repo setting stops the workflow token from approving. */
+const APPROVAL_SETTING_REFUSAL = /not permitted to approve pull requests/i;
+
 /**
  * Creates the review, falling back to a body-only review when GitHub rejects the line
- * comments and to COMMENT when it refuses the event with a 422. Returns the review ID
+ * comments and to COMMENT when it refuses the event with a 422. A refusal on a commit that
+ * is no longer the PR head throws `SupersededError` instead. Returns the review ID
  * and the posted body without the reviewed-commit footer and the markers.
  */
 async function submitReview(
@@ -1077,10 +1118,11 @@ async function submitReview(
       throw error;
     }
 
-    const hint = event === 'APPROVE'
-      ? 'Ensure "Allow GitHub Actions to create and approve pull requests" is enabled in repo settings.'
-      : 'The token may lack permission to request changes.';
-    core.warning(`Failed to post ${event} review. ${hint} Falling back to COMMENT.`);
+    await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
+    const hint = APPROVAL_SETTING_REFUSAL.test(errorMessage)
+      ? ' Ensure "Allow GitHub Actions to create and approve pull requests" is enabled in repo settings.'
+      : '';
+    core.warning(`GitHub refused the ${event} review (${status}: ${errorMessage}).${hint} Falling back to COMMENT.`);
 
     const findingSummary = validComments.map(c => {
       const firstLine = c.body.split('\n')[0];
@@ -2063,60 +2105,5 @@ async function postConfigErrorComment(
   }
 }
 
-/**
- * Cancel the in-progress review run for a PR, if one exists.
- * Returns true if a run was successfully cancelled, false otherwise.
- *
- * Requires actions: write permission on the workflow token.
- */
-async function cancelActiveReviewRun(
-  octokit: Octokit,
-  bot: BotIdentity,
-  owner: string,
-  repo: string,
-  prNumber: number,
-): Promise<boolean> {
-  let progress: ProgressComment | null;
-  try {
-    const comments = await fetchPRComments(octokit, owner, repo, prNumber);
-    progress = findProgressComment(comments, bot);
-  } catch {
-    return false;
-  }
-  if (!progress) return false;
-
-  const runId = progress.runId;
-  if (!runId) return false;
-
-  if (runId === github.context.runId) {
-    core.warning('Skipping self-cancellation');
-    return false;
-  }
-
-  let runData: { status?: string | null };
-  try {
-    const { data } = await octokit.rest.actions.getWorkflowRun({ owner, repo, run_id: runId });
-    runData = data;
-  } catch (error) {
-    core.warning(`Failed to query run ${runId}: ${error instanceof Error ? error.message : error}`);
-    return false;
-  }
-  if (!ACTIVE_RUN_STATUSES.has(runData.status ?? '')) {
-    core.info(`Run ${runId} is already ${runData.status} — skipping cancel`);
-    return false;
-  }
-  try {
-    await octokit.rest.actions.cancelWorkflowRun({ owner, repo, run_id: runId });
-    // cancelWorkflowRun transitions the run to 'cancelling' — the old run may
-    // still complete in-flight API calls before stopping.
-    core.info(`Cancelled in-progress review run ${runId}`);
-    await markProgressCommentCancelled(octokit, owner, repo, progress.id, progress.body);
-    return true;
-  } catch (error) {
-    core.warning(`Failed to cancel run ${runId}: ${error instanceof Error ? error.message : error}`);
-    return false;
-  }
-}
-
-export { dynamicFence, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, isBotLogin, isTrustedAssociation, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, cancelActiveReviewRun, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, FOLLOW_UP_MARKER, LOW_CONFIDENCE_NOTE };
+export { dynamicFence, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, isBotLogin, isTrustedAssociation, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, FOLLOW_UP_MARKER, LOW_CONFIDENCE_NOTE };
 export type { InProgressLock, StandingVerdict };

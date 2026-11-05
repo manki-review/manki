@@ -87,6 +87,7 @@ class FakeGitHub {
   reviews: FakeReview[] = [];
   threads: FakeThread[] = [];
   failures: FakeFailure[] = [];
+  headSha = HEAD_SHA;
   private nextId = 1000;
 
   fetch = async (url: string, init: RequestInit = {}): Promise<Response> => {
@@ -108,7 +109,7 @@ class FakeGitHub {
 
     if (method === 'GET' && route === `/pulls/${PR_NUMBER}`) {
       if (headers.get('accept')?.includes('diff')) return text(PR_DIFF);
-      return json({ number: PR_NUMBER, title: 'Keep the sum in a variable', body: 'Small refactor.', draft: false, head: { sha: HEAD_SHA, ref: 'feature', repo: { full_name: `${OWNER}/${REPO}` } }, base: { ref: 'main' }, user: { login: 'alice' } });
+      return json({ number: PR_NUMBER, title: 'Keep the sum in a variable', body: 'Small refactor.', draft: false, head: { sha: this.headSha, ref: 'feature', repo: { full_name: `${OWNER}/${REPO}` } }, base: { ref: 'main' }, user: { login: 'alice' } });
     }
     if (method === 'GET' && route === `/issues/${PR_NUMBER}/comments`) return this.page(url, this.comments, searchParams);
     if (method === 'POST' && route === `/issues/${PR_NUMBER}/comments`) {
@@ -248,6 +249,7 @@ const BLOCKER_REPLIES: Partial<Record<Stage, string>> = {
 class FakeLLM {
   replies: Record<Stage, string> = { ...READY_REPLIES };
   calls: Stage[] = [];
+  onCall?: (stage: Stage) => void;
 
   async sendMessage(system: string, _user: string): Promise<{ content: string }> {
     const stage: Stage = system.startsWith('You give the final merge-readiness verdict') ? 'verdict'
@@ -256,6 +258,7 @@ class FakeLLM {
           : system.includes('"judgeEffort"') ? 'planner'
             : 'reviewer';
     this.calls.push(stage);
+    this.onCall?.(stage);
     return { content: this.replies[stage] };
   }
 }
@@ -344,6 +347,22 @@ describe('runFullReview end to end', () => {
     expect(mockGitHub.reviews).toEqual([previous]);
     expect(previous.state).toBe('CHANGES_REQUESTED');
     expect(mockGitHub.comments.at(-1)?.body).toContain('Review failed');
+  });
+
+  it.each([
+    ['the finders run', 'reviewer', ['planner', 'reviewer']],
+    ['the verdict reader runs', 'verdict', ['planner', 'reviewer', 'judge', 'verdict']],
+  ] as const)('posts no verdict and marks the progress comment superseded when a push lands while %s', async (_label, pushDuring, calls) => {
+    mockLLM.onCall = stage => {
+      if (stage === pushDuring) mockGitHub.headSha = 'f00dfeed00000000000000000000000000000000';
+    };
+
+    await reviewRound();
+
+    expect(core.setFailed).not.toHaveBeenCalled();
+    expect(mockGitHub.reviews).toEqual([]);
+    expect(mockLLM.calls).toEqual(calls);
+    expect(mockGitHub.comments.at(-1)?.body).toContain('**Review superseded** by the new commit `f00dfee`');
   });
 
   it('reads past the first 100 comments and review threads', async () => {
