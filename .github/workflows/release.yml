@@ -18,7 +18,7 @@ jobs:
     steps:
       # Check out the tag as it stands now, not the pushed commit, so a rerun after the
       # tag was rewritten to the build commit sees `dist/` and skips the rebuild.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.ref }}
           fetch-depth: 0
@@ -28,19 +28,19 @@ jobs:
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
           MAJOR=$(echo "$TAG" | grep -oE '^v[0-9]+')
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "major=$MAJOR" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "major=$MAJOR" >> "$GITHUB_OUTPUT"
 
       - name: Check whether tag already has built dist/
         id: check
         run: |
           if git ls-tree -r HEAD --name-only | grep -q '^dist/'; then
-            echo "has_dist=true" >> $GITHUB_OUTPUT
+            echo "has_dist=true" >> "$GITHUB_OUTPUT"
           else
-            echo "has_dist=false" >> $GITHUB_OUTPUT
+            echo "has_dist=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         if: steps.check.outputs.has_dist == 'false'
         with:
           node-version: '24'
@@ -63,6 +63,29 @@ jobs:
           git tag -fa "$TAG" -m "$TAG"
           git push origin "refs/tags/$TAG" --force
 
+      # Immutable releases lock the tag and assets on publish, so the release starts as a
+      # draft and is published only once the tag points at the build commit.
+      - name: Create draft release
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists"
+          else
+            gh release create "$TAG" --draft --verify-tag --title "$TAG" --generate-notes
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Publish release
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = "true" ]; then
+            gh release edit "$TAG" --draft=false --latest
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      # `vX` carries no release, so it stays movable under immutable releases.
       - name: Update floating major tag
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
@@ -71,16 +94,3 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -fa "$MAJOR" "$TAG^{commit}" -m "Update $MAJOR tag to $TAG"
           git push origin "refs/tags/$MAJOR" --force
-
-      - name: Create GitHub Release
-        run: |
-          TAG="${{ steps.tag.outputs.tag }}"
-          if gh release view "$TAG" &>/dev/null; then
-            echo "Release $TAG already exists — updating"
-            gh release edit "$TAG" --title "$TAG" --latest
-          else
-            echo "Creating release $TAG"
-            gh release create "$TAG" --generate-notes
-          fi
-        env:
-          GH_TOKEN: ${{ github.token }}
