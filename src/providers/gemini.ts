@@ -51,7 +51,7 @@ export function geminiThinkingConfig(model: string, effort: SendMessageOptions['
 
 // Pinned like the Codex CLI and installed without lifecycle scripts. The package has none, and only
 // its optional keychain dependency has one, which the seeded `oauth_creds.json` file does not need.
-// Keep this in sync with the install step in `.github/workflows/manki.yml`.
+// Keep this in sync with the install step in `.github/workflows/manki-dispatch.yml`.
 export const GEMINI_CLI_VERSION = '0.66.0';
 
 // `finishReason` and `promptFeedback.blockReason` values that mean a safety or policy filter declined the request.
