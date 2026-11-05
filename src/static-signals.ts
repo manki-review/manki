@@ -21,6 +21,8 @@ const ERROR_LINE_WINDOW = 3;
 const SECURITY_RULE = /\b(?:security|injection|xss|csrf|ssrf|cwe|cve|secrets?|traversal|format-string|vulnerab\w*)\b/i;
 const STYLE_RULE = /\b(?:prettier|[a-z]*(?:fmt|style)|stylistic|format(?:ting|ter)?|whitespace|indent(?:ation)?|spacing|quotes|semi|trailing[-_ ]?(?:spaces|comma)|max[-_ ]?len|line[-_ ]?length|eol[-_ ]?last|camel[-_ ]?case|naming[-_ ]?convention)\b/i;
 const TYPE_ERROR_CLAIM = /\b(?:type error|type mismatch|(?:compile|compiler|compilation|build) error|(?:does not|doesn't|won't|fails to) compile|not assignable|TS\d{4})\b/i;
+const TYPE_CHECKER_RULE = /^(?:TS|E)\d{4}$/;
+const TYPE_CHECKER_TOOL = /\b(?:tsc|type-?check(?:er|ing)?|mypy|pyright|pyre|flow|rustc|cargo (?:check|build)|go (?:vet|build)|javac|kotlinc|scalac|swiftc|compile|compiler)\b/i;
 const BACKTICKED = /`([^`\n]+)`/g;
 const SYMBOL = /^[A-Za-z_$][\w$]*(?:(?:\.|::|->)[A-Za-z_$][\w$]*)*(?:\(\))?$/;
 
@@ -109,10 +111,9 @@ export function toolAlertFindings(signals: StaticSignal[]): Finding[] {
 }
 
 function isTriagedSignal(signal: StaticSignal): boolean {
+  if (signal.source === 'dependency_review' || SECURITY_RULE.test(signal.tool) || SECURITY_RULE.test(signal.ruleId)) return true;
   // The rule id names the problem. A job name such as `lint-format` says nothing about each result it reports.
-  const name = signal.ruleId || signal.tool;
-  if (signal.source === 'dependency_review' || SECURITY_RULE.test(name)) return true;
-  if (STYLE_RULE.test(name)) return false;
+  if (STYLE_RULE.test(signal.ruleId || signal.tool)) return false;
   return signal.source === 'code_scanning' || signal.severity === 'error';
 }
 
@@ -126,7 +127,7 @@ export interface ClaimSources {
 /**
  * Checks the concrete parts of a reviewer finding without running the PR's code. Only a file outside the diff or a line
  * past the end of the file contradicts it. A backticked symbol missing from the file and the diff is only noted, since it
- * can live elsewhere. An error-level check annotation near the line confirms a claimed type or compile error.
+ * can live elsewhere. An error from a type checker or compiler near the line confirms a claimed type or compile error.
  */
 export function checkFindingClaims(finding: Finding, sources: ClaimSources): ToolEvidence {
   const { diff, rawDiff, fileContents, signals } = sources;
@@ -148,13 +149,18 @@ export function checkFindingClaims(finding: Finding, sources: ClaimSources): Too
     checked.push(found ? `\`${symbol}\` occurs` : `\`${symbol}\` not found in ${content !== undefined ? `${finding.file} or ` : ''}the diff`);
   }
   if (TYPE_ERROR_CLAIM.test(`${finding.title} ${finding.description}`)) {
-    const annotation = signals.find(s => s.source === 'checks' && s.severity === 'error' && s.file === finding.file && Math.abs(s.line - finding.line) <= ERROR_LINE_WINDOW);
+    const annotation = signals.find(s => s.source === 'checks' && s.severity === 'error' && isTypeChecker(s) && s.file === finding.file && Math.abs(s.line - finding.line) <= ERROR_LINE_WINDOW);
     if (annotation) {
       return { status: 'confirmed', note: `${annotation.tool} reports an error on line ${annotation.line}: ${annotation.message}` };
     }
     checked.push('no CI annotation reports the claimed error');
   }
   return { status: 'none', note: `Checked: ${checked.join(', ')}.` };
+}
+
+/** Whether a check annotation comes from a type checker or compiler. A lint error near the line says nothing about types. */
+function isTypeChecker(signal: StaticSignal): boolean {
+  return TYPE_CHECKER_RULE.test(signal.ruleId) || TYPE_CHECKER_TOOL.test(signal.tool);
 }
 
 /** Returns the identifiers named in backticks. Plain lowercase words such as `null` are skipped, since prose uses them too. */
