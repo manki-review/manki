@@ -557,14 +557,14 @@ In the default setup, GitHub starts a workflow run in your repository for every 
 
 - **No run for an event Manki ignores.** A comment without a mention, a bot's push or a PR closed without merging never starts a workflow run, so the Actions tab and the PR checks show no skipped runs for them.
 - **Events run in order.** Each PR has two queues. Reviews, thread replies, `check` and `dismiss` run one at a time in the order they arrived, and several pushes during a review become one review of the newest head. `explain`, `help`, `remember`, `forget` and free questions run one at a time in a second queue beside it, so a question never waits behind a review. The service replaces the `concurrency` block.
-- **Every run uses the current version.** The service always starts the workflow on the default branch, so reviews, comment commands and thread replies all run the Manki version pinned there. In the event-driven setup, the events of a PR run the workflow from the PR's merge commit, so a PR that changes the workflow runs its own version.
+- **Every run uses the current version.** The service always starts the workflow on the default branch, so reviews, comment commands and thread replies all run the Manki version pinned there. In the event-driven setup, pushes, reviews and thread replies run the workflow from the PR's merge commit, so a PR that changes the workflow runs its own version for them. PR comments already run the workflow on the default branch.
 - **Missed events come back.** Every 5 minutes the service retries the deliveries GitHub failed to hand over and queues a review for any open PR whose head has no Manki review yet.
 
 Fork PRs work as before: a push to a PR from a fork starts no review, and a review command in a PR comment still reviews it.
 
 ### What the Manki App needs
 
-The Manki maintainers set up the App's webhook, the **Actions: read and write** permission and the **Workflow run** event once for every installation. The service needs Actions write to start the dispatch workflow, and the Workflow run event tells it within seconds that a run ended, so it can start the next one in that PR's queue.
+The Manki maintainers set up the App's webhook, the **Actions: read and write** permission and the **Workflow run** event once for every installation. The webhook receives the events of every installation, and the service drops the events of repositories that have not opted in. The service needs Actions write to start the dispatch workflow, and the Workflow run event tells it within seconds that a run ended, so it can start the next one in that PR's queue.
 
 A new App permission only takes effect once each installation approves it. GitHub emails the owner of every installation and shows the request on the App's installation settings, where the owner accepts it. Until then the service cannot start runs in your repositories, so keep the event-driven workflow until you have approved it.
 
