@@ -148,19 +148,26 @@ export async function fetchConfigFile(
   ref: string,
   configPath: string,
 ): Promise<string | null> {
+  return readConfigFile(octokit, owner, repo, ref, configPath).catch(() => null);
+}
+
+/** Returns a config file's content at `ref`, or null when it does not exist. Throws when it cannot be read. */
+export async function readConfigFile(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  ref: string,
+  configPath: string,
+): Promise<string | null> {
   try {
-    const { data } = await octokit.rest.repos.getContent({
-      owner,
-      repo,
-      path: configPath,
-      ref,
-    });
+    const { data } = await octokit.rest.repos.getContent({ owner, repo, path: configPath, ref });
     if ('content' in data && data.encoding === 'base64') {
       return Buffer.from(data.content, 'base64').toString('utf-8');
     }
     return null;
-  } catch {
-    return null;
+  } catch (error) {
+    if ((error as { status?: number }).status === 404) return null;
+    throw error;
   }
 }
 
@@ -295,7 +302,7 @@ function validPrTypeOrNull(prType: string): string | null {
   return VALID_PR_TYPES.has(prType) ? prType : null;
 }
 
-const VALID_EFFORTS = new Set(['low', 'medium', 'high']);
+const VALID_EFFORTS = new Set(['low', 'medium', 'high', 'max']);
 
 function sanitizeEffort(v: string): string {
   return VALID_EFFORTS.has(v) ? v : 'unknown';

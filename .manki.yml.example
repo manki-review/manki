@@ -61,12 +61,59 @@
 # high effort instead of medium) and paired (a second finder on another model
 # reads it too). An unclear answer takes the side that adds review. Disabled,
 # every round gets two finders at high effort.
-# `paired` pins the third answer: auto (default), always or never. A diff that
-# touches a security-sensitive path, CI, a dependency manifest or a data contract
+# `paired` pins the third answer: auto (default), always or never. It is
+# deprecated in favour of `review.routing`. A diff that touches a
+# security-sensitive path, CI, a dependency manifest or a data contract
 # (migrations, SQL, protobuf, schemas, OpenAPI) always gets two finders.
 # planner:
 #   enabled: true
-#   paired: auto
+
+# Review groups per class of PR. Read from the base branch only, so a PR cannot
+# weaken its own review. Each PR falls in the highest ranked matching class:
+# security (100), supply_chain (90), data_contract (80), behavior (50, planner
+# said paired), internal (30) or docs (20, planner said trivial). The first
+# three are floors: at least two finders on two distinct models, none at `low`
+# effort, unless `allow_weaker` names the class. Built-in groups: trivial (the
+# Trivial Change Verifier), solo (one finder) and pair (two finders). See
+# SETUP.md, "Review groups".
+#
+# Minimal: two strong readers on security and data contract PRs only.
+# review:
+#   groups:
+#     deep:
+#       reviewers:
+#         - { model: claude-opus-5-5, effort: high }
+#         - { model: gpt-5.5, effort: high }
+#   routing:
+#     security: deep
+#     data_contract: deep
+#
+# Typical:
+# review:
+#   default_group: pair            # group for a class with no route
+#   groups:
+#     solo:
+#       reviewers: [{ model: "@reviewer", effort: auto }]
+#     pair:
+#       reviewers:
+#         - { model: "@reviewer", effort: auto }        # `@reviewer` and `@reviewer_pair` resolve through `models`
+#         - { model: "@reviewer_pair", effort: auto }   # effort: low, medium, high, max or auto
+#     deep:
+#       reviewers:
+#         - { model: claude-opus-5-5, effort: high, focus: "authz, injection, secret handling" }
+#         - { model: gemini-3-pro, effort: high }
+#         - { model: claude-sonnet-5-5, effort: medium, focus: "error paths and rollback" }
+#   classes:
+#     security:                      # adds paths to the built-in rule, never narrows it
+#       match: { paths_any: ["src/billing/**"] }
+#     hot_path:
+#       rank: 85
+#       match: { paths_any: ["src/consensus/**", "src/net/**"] }
+#   routing:
+#     security: deep
+#     hot_path: deep
+#     internal: solo
+#   allow_weaker: []                 # floor classes allowed below the floor
 
 # CI results the reviewers read as evidence (default: all on)
 # Manki reads what CI reported on the PR head commit and keeps the results on

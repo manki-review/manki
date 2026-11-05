@@ -1,4 +1,4 @@
-import { DEFAULT_CONFIG, loadConfig, loadConfigFromContent, loadConfigFromFile, loadStaticAnalysisConfig, resolveModel, resolvePairModel, sanitizeForkConfig } from './config';
+import { applyBaseReviewConfig, DEFAULT_CONFIG, loadConfig, loadConfigFromContent, loadConfigFromFile, loadReviewConfig, loadStaticAnalysisConfig, resolveModel, resolvePairModel, reviewFloorErrors, sanitizeForkConfig } from './config';
 import { ReviewConfig } from './types';
 
 // Suppress @actions/core output during tests
@@ -144,6 +144,105 @@ describe('config', () => {
       expect(loadStaticAnalysisConfig('static_analysis:\n  checks: "no"\n')).toEqual(defaults);
       expect(loadStaticAnalysisConfig('static_analysis: [\n')).toEqual(defaults);
       expect(core.warning).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('review config', () => {
+    const deep = 'review:\n  groups:\n    deep:\n      reviewers:\n        - { model: claude-opus-5-5, effort: high }\n        - { model: gpt-5.5, effort: high }\n';
+
+    it('loads groups, classes and routing as written and leaves the built-ins when unset', () => {
+      expect(loadConfigFromContent('').review).toBeUndefined();
+      const config = loadConfigFromContent(`${deep}  classes:\n    security:\n      match: { paths_any: ["src/billing/**"] }\n    hot_path:\n      rank: 85\n      match: { paths_any: ["src/net/**"], triage: { subtle: true } }\n  routing:\n    security: deep\n    hot_path: deep\n    internal: solo\n  default_group: pair\n`);
+      expect(config.review).toEqual({
+        groups: { deep: { reviewers: [{ model: 'claude-opus-5-5', effort: 'high' }, { model: 'gpt-5.5', effort: 'high' }] } },
+        classes: { security: { match: { paths_any: ['src/billing/**'] } }, hot_path: { rank: 85, match: { paths_any: ['src/net/**'], triage: { subtle: true } } } },
+        routing: { security: 'deep', hot_path: 'deep', internal: 'solo' },
+        default_group: 'pair',
+      });
+      expect(core.warning).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a non-object block', 'review: true\n', '`review` must be an object'],
+      ['an empty group', 'review:\n  groups:\n    empty: { reviewers: [] }\n', '`review.groups.empty.reviewers` must be a non-empty array'],
+      ['an unknown effort', 'review:\n  groups:\n    g: { reviewers: [{ effort: extreme }] }\n', '`review.groups.g.reviewers[0].effort` must be one of'],
+      ['an unknown role', 'review:\n  groups:\n    g: { reviewers: [{ role: judge }] }\n', '`review.groups.g.reviewers[0].role` must be one of'],
+      ['a route to an unknown group', 'review:\n  routing:\n    security: deep\n', '`review.routing.security` names unknown group `deep`'],
+      ['a route for an unknown class', 'review:\n  routing:\n    hot_path: pair\n', '`review.routing.hot_path` routes an unknown class'],
+      ['an unknown default group', 'review:\n  default_group: deep\n', '`review.default_group` names unknown group `deep`'],
+      ['a rank another class has', 'review:\n  classes:\n    hot: { rank: 50, match: { paths_any: ["src/**"] } }\n', '`review.classes.hot.rank` 50 is already the rank of `behavior`'],
+      ['a class without a rank', 'review:\n  classes:\n    hot: { match: { paths_any: ["src/**"] } }\n', '`review.classes.hot.rank` must be an integer'],
+      ['a class without conditions', 'review:\n  classes:\n    hot: { rank: 60 }\n', '`review.classes.hot.match` must set'],
+      ['an unknown condition', 'review:\n  classes:\n    hot: { rank: 60, match: { min_files: 3 } }\n', '`review.classes.hot.match.min_files` is not a known condition'],
+      ['a user floor class', 'review:\n  classes:\n    hot: { rank: 60, floor: true, match: { paths_any: ["src/**"] } }\n', '`review.classes.hot.floor` is not allowed'],
+      ['an unknown path alias', 'review:\n  classes:\n    hot: { rank: 60, match: { paths_any: ["@hot_paths"] } }\n', 'unknown path alias `@hot_paths`'],
+      ['a new rank on a built-in class', 'review:\n  classes:\n    security: { rank: 10, match: { paths_any: ["src/**"] } }\n', '`review.classes.security` is built in: it takes only `match.paths_any`'],
+      ['a change to a triage class', 'review:\n  classes:\n    docs: { match: { paths_any: ["docs/**"] } }\n', '`review.classes.docs` is built in and cannot be changed'],
+      ['allow_weaker on a class that is no floor', 'review:\n  allow_weaker: [behavior]\n', '`review.allow_weaker` must be an array of floor classes'],
+    ])('rejects %s', (_label, yaml, message) => {
+      expect(() => loadConfigFromContent(yaml)).toThrow(message);
+    });
+
+    it('fails a floor class routed to a group below the floor unless `allow_weaker` names it', () => {
+      const solo = 'review:\n  routing:\n    security: solo\n';
+      expect(() => loadConfigFromContent(solo)).toThrow('routes the `security` floor class to the `solo` group, but it has fewer than two finders');
+      expect(loadConfigFromContent(`${solo}  allow_weaker: [security]\n`).review?.allow_weaker).toEqual(['security']);
+
+      for (const floor of ['supply_chain', 'data_contract']) {
+        expect(() => loadConfigFromContent(`review:\n  routing:\n    ${floor}: trivial\n`)).toThrow(`the \`${floor}\` floor class`);
+      }
+      for (const twin of ['[{ model: gpt-5.5 }, { model: gpt-5.5 }]', '[{ model: claude-sonnet-5-5 }, { model: anthropic/claude-sonnet-5-5 }]']) {
+        const sameModel = `review:\n  groups:\n    twin:\n      reviewers: ${twin}\n  routing:\n    security: twin\n`;
+        expect(() => loadConfigFromContent(sameModel)).toThrow('its finders run on fewer than two distinct models');
+      }
+      const low = 'review:\n  groups:\n    cheap:\n      reviewers: [{ model: gpt-5.5, effort: low }, { model: claude-opus-5-5 }]\n  routing:\n    data_contract: cheap\n';
+      expect(() => loadConfigFromContent(low)).toThrow('a reader runs at `low` effort');
+      // Groups without routing send every class, floors included, to the default group.
+      expect(() => loadConfigFromContent(`${deep}  default_group: solo\n`)).toThrow('the `security` floor class to the `solo` group');
+      expect(loadConfigFromContent(`${deep}  default_group: deep\n`).review?.default_group).toBe('deep');
+    });
+
+    it('accepts the built-in `pair` group for a floor even when both finders resolve to one model', () => {
+      const config = loadConfigFromContent('models:\n  reviewer: gpt-5.5\nreview:\n  routing:\n    internal: pair\n');
+      expect(resolvePairModel(config)).toBe('gpt-5.5');
+      expect(reviewFloorErrors(config)).toEqual([]);
+      expect(reviewFloorErrors({ ...config, review: { groups: { pair: { reviewers: [{ model: 'gpt-5.5' }, { model: '@reviewer_pair' }] } } } })).toHaveLength(3);
+    });
+
+    it('reads the block and models from the base branch, with the built-ins when it is missing, unreadable or invalid', () => {
+      const models = DEFAULT_CONFIG.models;
+      expect(loadReviewConfig(null)).toEqual({ models, source: 'builtin' });
+      expect(loadReviewConfig('auto_review: true\n')).toEqual({ models, source: 'builtin' });
+      expect(loadReviewConfig('review: [\n')).toEqual({ source: 'base_unreadable' });
+      expect(loadReviewConfig('models:\n  reviewer: gpt-5.5\nreview:\n  routing:\n    internal: pair\n'))
+        .toEqual({ review: { routing: { internal: 'pair' } }, models: { ...models, reviewer: 'gpt-5.5' }, source: 'base' });
+      expect(loadReviewConfig('review:\n  routing:\n    security: deep\n')).toEqual({ models, source: 'base_invalid' });
+      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Invalid `review` in .manki.yml on the base branch, using the built-in review groups'));
+    });
+
+    it('fails the PR that adds a floor class routed below the floor in its own config file', () => {
+      jest.mocked(fs.existsSync).mockReturnValue(true);
+      jest.mocked(fs.readFileSync).mockReturnValue('review:\n  routing:\n    security: solo\n');
+      expect(() => loadConfigFromFile('/repo/.manki.yml')).toThrow('routes the `security` floor class to the `solo` group');
+    });
+
+    it('applies the base block, keeps two reviewer models, and falls back to the built-ins on a base floor miss', () => {
+      const head = loadConfigFromContent('models:\n  reviewer: gpt-5.5\n  reviewer_pair: gpt-5.5\nreview:\n  routing:\n    internal: pair\n');
+      const kept = applyBaseReviewConfig(head, { review: { routing: { internal: 'solo' } }, models: DEFAULT_CONFIG.models, source: 'base' });
+      expect(kept.source).toBe('base');
+      expect(kept.config.review).toEqual({ routing: { internal: 'solo' } });
+      expect(kept.config.models).toEqual(expect.objectContaining({ reviewer: 'claude-sonnet-5-5', reviewer_pair: 'claude-opus-5-5' }));
+
+      const spelledTwice = loadConfigFromContent('models:\n  reviewer: claude-sonnet-5-5\n  reviewer_pair: anthropic/claude-sonnet-5-5\n');
+      expect(applyBaseReviewConfig(spelledTwice, { models: DEFAULT_CONFIG.models, source: 'builtin' }).config.models)
+        .toEqual(expect.objectContaining({ reviewer: 'claude-sonnet-5-5', reviewer_pair: 'claude-opus-5-5' }));
+
+      const baseOnOneModel = { ...DEFAULT_CONFIG.models, reviewer: 'gpt-5.5' };
+      expect(applyBaseReviewConfig(head, { models: baseOnOneModel, source: 'builtin' }).config.models).toEqual(head.models);
+      expect(applyBaseReviewConfig(head, { source: 'base_unreadable' }).config.models).toEqual(head.models);
+
+      const missed = applyBaseReviewConfig(loadConfigFromContent(''), { review: { routing: { security: 'solo' } }, source: 'base' });
+      expect([missed.source, missed.config.review]).toEqual(['base_invalid', undefined]);
     });
   });
 
@@ -642,6 +741,7 @@ models:
       }
       expect(() => loadConfig('planner:\n  paired: sometimes\n')).toThrow('Invalid config');
       expect(core.error).toHaveBeenCalledWith('`planner.paired` must be one of: auto, always, never');
+      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('`planner.paired` is deprecated. Route classes to review groups with `review.routing` instead'));
     });
   });
 

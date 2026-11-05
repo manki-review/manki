@@ -7,6 +7,7 @@ import {
   buildReviewerUserMessage,
   buildPlannerSystemPrompt,
   selectTeam,
+  teamModels,
   titlesMatch,
   truncateDiff,
   shuffleDiffFiles,
@@ -25,7 +26,7 @@ import { DEFAULT_CONFIG } from './config';
 import { filterRawDiff } from './diff';
 import * as core from '@actions/core';
 import { LinkedIssue, titleToSlug } from './github';
-import { Finding, RoundContext, OpenThread, ReviewerAgent, ReviewConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG } from './types';
+import { Finding, RoundContext, OpenThread, ReviewerAgent, ReviewConfig, ReviewGroup, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG } from './types';
 import { fingerprintEntriesFromLegacy, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, roundContextFromLegacy } from './test-utils';
 import { runJudgeAgent, computeProvenanceMap } from './judge';
 import { applySuppressions } from './memory';
@@ -1602,6 +1603,81 @@ describe('selectTeam', () => {
     expect(team.finders[0].prompt.focus).toContain('This repository also asks you to check:\n- Protocol Compliance: DIP compliance');
     expect(buildReviewerSystemPrompt(team.finders[0].prompt, makeConfig({ reviewers })))
       .toBe(buildReviewerSystemPrompt(team.finders[1].prompt, makeConfig({ reviewers })));
+  });
+
+  describe('configured routing', () => {
+    const file = (path: string): DiffFile => ({ path, changeType: 'modified', hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, content: '+change' }] });
+    const diffOf = (...paths: string[]) => makeDiff({ files: paths.map(file) });
+    const deep: ReviewGroup = { reviewers: [
+      { model: 'claude-opus-5-5', effort: 'high', focus: 'authz, injection, secret handling' },
+      { model: 'gemini-3-pro', effort: 'high' },
+      { model: 'claude-sonnet-5-5', effort: 'medium' },
+    ] };
+    const readers = (team: ReturnType<typeof selectTeam>) => team.finders.map(f => `${f.name}@${f.effort}`);
+    const quiet = { trivial: false, subtle: false, paired: false };
+
+    it('runs a reader per entry of the routed group and adds its focus to that reader alone', () => {
+      const config = makeConfig({ review: {
+        groups: { deep },
+        classes: { hot_path: { rank: 85, match: { paths_any: ['src/net/**'] } } },
+        routing: { hot_path: 'deep', internal: 'solo' },
+      } });
+      const team = selectTeam(diffOf('src/net/peer.ts'), config, quiet);
+      expect([team.reviewClass, team.group, team.groupSource]).toEqual(['hot_path', 'deep', 'routing']);
+      expect(readers(team)).toEqual(['Finder (claude-opus-5-5)@high', 'Pair finder (gemini-3-pro)@high', 'Finder 3 (claude-sonnet-5-5)@medium']);
+      expect(team.finders[0].prompt.focus).toContain('- This review group: authz, injection, secret handling');
+      expect(team.finders[1].prompt).toEqual(buildFinderAgent([]));
+      expect(readers(selectTeam(plainDiff, config, quiet))).toEqual(['Finder (claude-sonnet-5-5)@medium']);
+      expect(teamModels(config)).toEqual(expect.arrayContaining(['claude-sonnet-5-5', 'claude-opus-5-5', 'gemini-3-pro']));
+    });
+
+    it('sends every class to the default group when groups are set without routing', () => {
+      const config = makeConfig({ review: { default_group: 'deep', groups: { deep } } });
+      for (const team of [selectTeam(diffOf('README.md'), config, { trivial: true, subtle: false, paired: false }), selectTeam(authDiff, config, quiet)]) {
+        expect([team.group, team.groupSource, team.finders]).toEqual(['deep', 'default_group', expect.any(Array)]);
+        expect(team.finders).toHaveLength(3);
+      }
+    });
+
+    it('moves a security, supply chain or data contract PR routed lower up to a group of two models', () => {
+      const config = makeConfig({ review: { routing: { security: 'solo', supply_chain: 'solo', data_contract: 'trivial' } } });
+      for (const [path, floor, from] of [['src/auth/login.ts', 'security', 'solo'], ['package.json', 'supply_chain', 'solo'], ['db/migrations/0002.sql', 'data_contract', 'trivial']]) {
+        const team = selectTeam(diffOf(path), config, { trivial: true, subtle: false, paired: false });
+        expect([path, team.reviewClass, team.floor, team.group, team.groupSource, team.escalatedFrom]).toEqual([path, floor, floor, 'pair', 'floor_escalation', from]);
+        expect(readers(team)).toEqual(['Finder (claude-sonnet-5-5)@medium', 'Pair finder (claude-opus-5-5)@medium']);
+      }
+    });
+
+    it('checks the floor after routing, so a higher ranked class cannot pull a floor PR into a weak group', () => {
+      const config = makeConfig({ review: {
+        groups: { deep },
+        classes: { prose: { rank: 200, match: { paths_any: ['docs/**'] } } },
+        routing: { prose: 'trivial', security: 'deep' },
+      } });
+      const team = selectTeam(diffOf('docs/auth.md', 'src/session.ts'), config, quiet);
+      expect([team.reviewClass, team.floor, team.group, team.escalatedFrom]).toEqual(['prose', 'security', 'deep', 'trivial']);
+      expect(selectTeam(diffOf('docs/guide.md'), config, quiet).group).toBe('trivial');
+    });
+
+    it('keeps a floor PR below the floor only where `allow_weaker` names each floor class it matched', () => {
+      const config = makeConfig({ review: { routing: { security: 'solo' }, allow_weaker: ['security'] } });
+      const weak = selectTeam(authDiff, config, quiet);
+      expect([weak.group, weak.groupSource, weak.weakerAllowed, readers(weak)]).toEqual(['solo', 'routing', ['security'], ['Finder (claude-sonnet-5-5)@medium']]);
+      const withCi = selectTeam(diffOf('src/auth/login.ts', '.github/workflows/ci.yml'), config, quiet);
+      expect([withCi.group, withCi.groupSource, withCi.weakerAllowed]).toEqual(['pair', 'floor_escalation', undefined]);
+    });
+
+    it('falls back to the built-in pair group when the floor class routes to a redefined group below the floor', () => {
+      const config = makeConfig({ review: { groups: { pair: { reviewers: [{ model: '@reviewer' }] } } , routing: { security: 'pair' } } });
+      const team = selectTeam(authDiff, config, quiet);
+      expect([team.group, team.groupSource, team.escalatedFrom, readers(team)]).toEqual(['pair', 'floor_escalation', 'pair', ['Finder (claude-sonnet-5-5)@medium', 'Pair finder (claude-opus-5-5)@medium']]);
+    });
+
+    it('widens a built-in floor class with extra paths, never narrowing its built-in rule', () => {
+      const config = makeConfig({ review: { classes: { security: { match: { paths_any: ['src/billing/**'] } } } } });
+      expect(selectTeam(diffOf('src/billing/charge.ts'), config, quiet).reviewClass).toBe('security');
+      expect(selectTeam(authDiff, config, quiet).reviewClass).toBe('security');
+    });
   });
 });
 

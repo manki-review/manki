@@ -1,7 +1,8 @@
 import { minimatch } from 'minimatch';
 
 import { countChangedLines } from './diff';
-import { DiffFile, ParsedDiff, ReviewClass, ReviewClassMatch, ReviewGroup, Triage } from './types';
+import { parseModelSpec } from './providers';
+import { DiffFile, ParsedDiff, ReviewClass, ReviewClassMatch, ReviewGroup, ReviewRoutingConfig, Triage } from './types';
 
 // Path segment prefixes that indicate security-sensitive files. The rule is path-based, not
 // prompt-based, so prompt injection in the PR content cannot switch it off.
@@ -34,7 +35,7 @@ const DOCS_FILE_PATTERNS: readonly string[] = Object.freeze([
 const globAlias = (patterns: readonly string[]) => (path: string) => patterns.some(p => minimatch(path, p, { dot: true }));
 
 /** Path aliases a class's `paths_any` can name next to plain globs. */
-const PATH_ALIASES: Readonly<Record<string, (path: string) => boolean>> = Object.freeze({
+export const PATH_ALIASES: Readonly<Record<string, (path: string) => boolean>> = Object.freeze({
   '@security_paths': (path: string) => path.toLowerCase().split('/').some(segment => {
     const base = segment.replace(/\.[^.]+$/, '');
     return SECURITY_SENSITIVE_PREFIXES.some(prefix => base.startsWith(prefix));
@@ -68,6 +69,9 @@ export const BUILT_IN_ROUTING: Readonly<Record<string, string>> = Object.freeze(
 });
 
 export const BUILT_IN_DEFAULT_GROUP = 'pair';
+
+/** Built-in group a PR moves up to when no routed group meets its floor. */
+export const FLOOR_FALLBACK_GROUP = 'pair';
 
 export interface PrClassification {
   /** Highest ranked matching class, unset when none matched. */
@@ -128,4 +132,95 @@ export function classifyPr(diff: ParsedDiff, triage: Triage, classes: Readonly<R
     triage: effective,
     trivialOverridden: triage.trivial && !effective.trivial,
   };
+}
+
+/** The classes, groups and routes a round chooses from: the built-ins with the `review` block over them. */
+export interface ResolvedRouting {
+  classes: Record<string, ReviewClass>;
+  groups: Record<string, ReviewGroup>;
+  routing: Record<string, string>;
+  defaultGroup: string;
+  allowWeaker: string[];
+}
+
+export function resolveRouting(review: ReviewRoutingConfig | undefined): ResolvedRouting {
+  const classes: Record<string, ReviewClass> = { ...BUILT_IN_CLASSES };
+  for (const [name, def] of Object.entries(review?.classes ?? {})) {
+    const builtIn = BUILT_IN_CLASSES[name];
+    classes[name] = builtIn
+      ? { ...builtIn, match: { ...builtIn.match, paths_any: [...(builtIn.match.paths_any ?? []), ...(def.match?.paths_any ?? [])] } }
+      : { rank: def.rank ?? 0, match: def.match ?? {} };
+  }
+  // Groups without routing send every class to the default group.
+  const routing = review?.groups && !review.routing ? {} : { ...BUILT_IN_ROUTING, ...review?.routing };
+  return {
+    classes,
+    groups: { ...BUILT_IN_GROUPS, ...review?.groups },
+    routing,
+    defaultGroup: review?.default_group ?? BUILT_IN_DEFAULT_GROUP,
+    allowWeaker: review?.allow_weaker ?? [],
+  };
+}
+
+/** Returns the group a class routes to. */
+export function routeClass(routing: ResolvedRouting, reviewClass: string | undefined): string {
+  return (reviewClass && routing.routing[reviewClass]) || routing.defaultGroup;
+}
+
+/** Returns one identity per model however it is written, so `claude-x` and `anthropic/claude-x` match. An unknown spec stays as written. */
+export function modelIdentity(model: string): string {
+  try {
+    const spec = parseModelSpec(model);
+    return `${spec.provider}/${spec.model}`;
+  } catch {
+    return model.trim();
+  }
+}
+
+/**
+ * Returns why a group misses the floor a floor class needs, or undefined when it meets it.
+ * The floor is two finders on two distinct models, and no reader at `low` effort.
+ */
+export function floorShortfall(group: ReviewGroup, resolveModel: (ref: string | undefined) => string): string | undefined {
+  const finders = group.reviewers.filter(r => r.role !== 'verifier');
+  if (finders.length < 2) return 'it has fewer than two finders';
+  if (new Set(finders.map(r => modelIdentity(resolveModel(r.model)))).size < 2) return 'its finders run on fewer than two distinct models';
+  if (group.reviewers.some(r => r.effort === 'low')) return 'a reader runs at `low` effort';
+  return undefined;
+}
+
+export interface GroupChoice {
+  name: string;
+  group: ReviewGroup;
+  source: 'routing' | 'default_group' | 'floor_escalation';
+  /** The routed group the floor moved the PR up from. */
+  escalatedFrom?: string;
+  /** Floor classes whose `allow_weaker` let the PR stay in a group below the floor. */
+  weakerAllowed?: string[];
+}
+
+/**
+ * Picks the group for a classified PR, then checks the floor of every floor class it matched.
+ * A group below a floor moves up to that floor class's group, then to the built-in `pair` group.
+ * It stays only when each floor it misses is in `allow_weaker` and routes to this group.
+ */
+export function chooseGroup(routing: ResolvedRouting, classification: PrClassification, resolveModel: (ref: string | undefined) => string): GroupChoice {
+  const routed = classification.name ? routing.routing[classification.name] : undefined;
+  const name = routed ?? routing.defaultGroup;
+  const source = routed ? 'routing' : 'default_group';
+  const floors = classification.matched.filter(c => routing.classes[c].floor);
+  const missed = (groupName: string) => floors.filter(f => floorShortfall(routing.groups[groupName], resolveModel)
+    && !(routing.allowWeaker.includes(f) && routeClass(routing, f) === groupName));
+  const accepted = (groupName: string) => missed(groupName).length === 0;
+  const weaker = (groupName: string) => floorShortfall(routing.groups[groupName], resolveModel) ? floors : [];
+  if (accepted(name)) {
+    const weakerAllowed = weaker(name);
+    return { name, group: routing.groups[name], source, ...(weakerAllowed.length > 0 && { weakerAllowed }) };
+  }
+  const target = floors.map(f => routeClass(routing, f)).find(accepted);
+  if (target) {
+    const weakerAllowed = weaker(target);
+    return { name: target, group: routing.groups[target], source: 'floor_escalation', escalatedFrom: name, ...(weakerAllowed.length > 0 && { weakerAllowed }) };
+  }
+  return { name: FLOOR_FALLBACK_GROUP, group: BUILT_IN_GROUPS[FLOOR_FALLBACK_GROUP], source: 'floor_escalation', escalatedFrom: name };
 }
