@@ -76,6 +76,9 @@ function usesBudgetThinking(model: string): boolean {
   return BUDGET_THINKING_MODELS.some((id) => model === id || model.startsWith(`${id}-`));
 }
 
+const MAX_TOKENS = 16384;
+const THINKING_MAX_TOKENS = 32768;
+
 let cliInstallPromise: Promise<string> | null = null;
 
 export function resetCLIInstallPromise(): void {
@@ -205,6 +208,8 @@ export class AnthropicClient implements LLMClient {
         // CLAUDE_CODE_OAUTH_TOKEN is added conditionally. Secrets should be managed via GitHub Actions secret masking.
         ...process.env,
         ...(oauthToken ? { CLAUDE_CODE_OAUTH_TOKEN: oauthToken } : {}),
+        // The CLI defaults to the model's own limit, which lets a runaway reply run for many minutes.
+        CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(THINKING_MAX_TOKENS),
       },
       input: fullPrompt,
       onStdout: (chunk) => {
@@ -215,8 +220,11 @@ export class AnthropicClient implements LLMClient {
       },
     });
     consumeLine(jsonBuffer);
+    const resultEvent = lastResultEvent as { stop_reason?: unknown; api_error?: unknown } | null;
+    // A reply that reaches `CLAUDE_CODE_MAX_OUTPUT_TOKENS` fails the CLI run with `api_error: "max_output_tokens"`.
+    const truncated = resultEvent?.stop_reason === 'max_tokens' || resultEvent?.api_error === 'max_output_tokens';
 
-    if (code !== 0) {
+    if (code !== 0 && !truncated) {
       const msg = buildExitDiagnostics({
         exitCode: code,
         signal,
@@ -234,13 +242,14 @@ export class AnthropicClient implements LLMClient {
       core.warning(`${lead}Claude CLI failed (${msg})`);
       throw new Error(`${lead}Claude CLI invocation failed (${msg})`);
     }
-    const content = output.trim();
+    if (code !== 0) core.warning(`Claude CLI reply reached the ${THINKING_MAX_TOKENS}-token output limit (exit ${code})`);
+    const content = code === 0 ? output.trim() : '';
     core.debug(sanitizeLogOutput(content.slice(0, 200)));
     return {
       content,
       usage: extractAnthropicCLIUsage(lastResultEvent),
       latencyMs: Date.now() - startTime,
-      truncated: (lastResultEvent as { stop_reason?: unknown } | null)?.stop_reason === 'max_tokens',
+      truncated,
     };
   }
 
@@ -254,7 +263,7 @@ export class AnthropicClient implements LLMClient {
 
     const params: Anthropic.MessageStreamParams = {
       model: this.model,
-      max_tokens: useThinking ? 32768 : 16384,
+      max_tokens: useThinking ? THINKING_MAX_TOKENS : MAX_TOKENS,
       system: systemPrompt,
       messages: [{ role: 'user', content: userMessage }],
     };

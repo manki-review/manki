@@ -349,14 +349,17 @@ describe('sendViaOAuth — error paths', () => {
     expect(result.content).toBe('hello world');
   });
 
-  it('sets CLAUDE_CODE_OAUTH_TOKEN in spawn env', async () => {
+  it('sets CLAUDE_CODE_OAUTH_TOKEN and caps output at the API path\'s limit in spawn env', async () => {
+    process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = '128000';
     setupSpawnMock({ stdout: 'ok' });
     const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'my-oauth-token' }, model: 'claude-opus-4-6' });
 
     await client.sendMessage('sys', 'user');
+    delete process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS;
 
     const spawnOpts = mockSpawn.mock.calls[0][2] as { env: Record<string, string> };
     expect(spawnOpts.env.CLAUDE_CODE_OAUTH_TOKEN).toBe('my-oauth-token');
+    expect(spawnOpts.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe('32768');
   });
 
   it('passes the output and isolation flags and runs the CLI in an empty temp directory', async () => {
@@ -422,6 +425,22 @@ describe('sendViaOAuth — error paths', () => {
 
     const result = await client.sendMessage('sys', 'user');
     expect(result.truncated).toBe(expected);
+  });
+
+  it('returns an empty truncated reply when the CLI run fails at the output limit', async () => {
+    const cliError = "API Error: Claude's response exceeded the 32768 output token maximum. To configure this behavior, set the CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable.";
+    setupSpawnMock({
+      exitCode: 1,
+      stdout: `${JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: cliError, api_error: 'max_output_tokens', usage: { output_tokens: 32768 } })}\n`,
+      rawStdout: true,
+    });
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-5-5' });
+
+    const result = await client.sendMessage('sys', 'user');
+    expect(result).toMatchObject({ content: '', truncated: true, usage: { outputTokens: 32768 } });
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('32768-token output limit'));
+    warnSpy.mockRestore();
   });
 
   it('silently skips non-JSON lines (e.g. verbose debug output)', async () => {
