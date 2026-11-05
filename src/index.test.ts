@@ -6485,8 +6485,9 @@ describe('force review checkbox', () => {
   });
 
   it.each([
-    ['the PR author without write access', 'pr-author', true],
-    ['an editor without write access who is not the PR author', 'stranger', false],
+    ['the PR author with write access', 'pr-author', true],
+    ['the PR author without write access', 'pr-author', false],
+    ['an editor without write access', 'stranger', false],
   ])('authorizes a force review tick by the editor: %s', async (_name, editor, allowed) => {
     const forceBody = `<!-- manki-bot -->\n**Review skipped**\n\n- [x] Force review\n\n${FORCE_REVIEW_MARKER}`;
     setContext({
@@ -6499,7 +6500,7 @@ describe('force review checkbox', () => {
       },
     });
 
-    jest.mocked(ghUtils.hasWriteAccess).mockResolvedValue(false);
+    jest.mocked(ghUtils.hasWriteAccess).mockResolvedValue(allowed);
     try {
       await run();
     } finally {

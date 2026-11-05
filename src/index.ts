@@ -393,7 +393,7 @@ async function handleCommentTrigger(forceReview?: boolean, skipCap?: boolean, by
   const prAuthorLogin = payload.issue?.user?.login;
   // On an edit, such as a Force review tick, `author_association` belongs to the comment author, not to the editor.
   const allowed = payload.action === 'edited'
-    ? isLLMAccessAllowed(undefined, senderLogin, prAuthorLogin) || (!!senderLogin && await hasWriteAccess(octokit, owner, repo, senderLogin))
+    ? !!senderLogin && await hasWriteAccess(octokit, owner, repo, senderLogin)
     : isLLMAccessAllowed(authorAssociation, senderLogin, prAuthorLogin);
   if (!allowed) {
     core.info(`Ignoring review request from ${senderLogin} (${authorAssociation ?? 'unknown association'})`);
