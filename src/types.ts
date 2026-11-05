@@ -590,6 +590,16 @@ export interface StaticAnalysisConfig {
 
 export type StaticSignalSource = 'checks' | 'code_scanning' | 'dependency_review' | AnalyzerName;
 
+/** A vulnerable package a dependency scanner reports for a manifest or lockfile. */
+export interface PackageVulnerability {
+  manifest: string;
+  name: string;
+  version: string;
+  id: string;
+  severity: StaticSignal['severity'];
+  summary?: string;
+}
+
 /** One result a CI tool or a Manki analyzer reported on the PR head commit, normalized across sources. */
 export interface StaticSignal {
   tool: string;

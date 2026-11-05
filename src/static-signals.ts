@@ -5,7 +5,7 @@ import { AstGrepApi, isAstGrepFile, loadAstGrep, runAstGrep } from './ast-grep';
 import { loadStaticAnalysisConfig } from './config';
 import { addedLines, isLineInDiff } from './diff';
 import { dynamicFence, fetchConfigFile, fetchFileContents } from './github';
-import { AnalyzerName, ANALYZERS, DiffFile, Finding, FindingSeverity, ParsedDiff, RoundAnalyzerRun, RoundStaticAnalysis, StaticAnalysisConfig, StaticSignal, StaticSignalSource, ToolEvidence } from './types';
+import { AnalyzerName, ANALYZERS, DiffFile, Finding, FindingSeverity, PackageVulnerability, ParsedDiff, RoundAnalyzerRun, RoundStaticAnalysis, StaticAnalysisConfig, StaticSignal, StaticSignalSource, ToolEvidence } from './types';
 import { safeTruncate } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -328,22 +328,33 @@ async function fetchCodeScanningAlerts(octokit: Octokit, { owner, repo, prNumber
 
 async function fetchDependencyReview(octokit: Octokit, { owner, repo, baseRef, headSha, diff }: StaticSignalRequest): Promise<StaticSignal[]> {
   const { data: changes } = await octokit.rest.dependencyGraph.diffRange({ owner, repo, basehead: `${baseRef}...${headSha}` });
+  const vulnerabilities = changes.flatMap(change => change.change_type !== 'added' ? [] : (change.vulnerabilities ?? []).map((v): PackageVulnerability => ({
+    manifest: change.manifest,
+    name: change.name,
+    version: change.version,
+    id: v.advisory_ghsa_id,
+    severity: v.severity === 'critical' || v.severity === 'high' ? 'error' : v.severity === 'moderate' ? 'warning' : 'note',
+    summary: v.advisory_summary ?? undefined,
+  })));
+  return placeVulnerabilities(vulnerabilities, diff, 'dependency review', 'dependency_review');
+}
+
+function placeVulnerabilities(vulnerabilities: PackageVulnerability[], diff: ParsedDiff, tool: string, source: StaticSignalSource): StaticSignal[] {
   const files = new Map(diff.files.map(f => [f.path, f]));
-  return changes.flatMap((change): StaticSignal[] => {
-    const file = files.get(change.manifest);
-    if (change.change_type !== 'added' || !file || !change.vulnerabilities?.length) return [];
-    // The API reports a manifest but no line, so the result is placed on the added line naming the package.
-    const line = findAddedLine(file, change.name);
+  return vulnerabilities.flatMap((v): StaticSignal[] => {
+    const file = files.get(v.manifest);
+    // Scanners report a manifest but no line, so the result is placed on the added line naming the package.
+    const line = file && findAddedLine(file, v.name);
     if (line === undefined) return [];
-    return change.vulnerabilities.map((v): StaticSignal => ({
-      tool: 'dependency review',
-      ruleId: cleanMessage(v.advisory_ghsa_id, MAX_NAME_CHARS),
-      severity: v.severity === 'critical' || v.severity === 'high' ? 'error' : v.severity === 'moderate' ? 'warning' : 'note',
-      file: change.manifest,
+    return [{
+      tool,
+      ruleId: cleanMessage(v.id, MAX_NAME_CHARS),
+      severity: v.severity,
+      file: v.manifest,
       line,
-      message: cleanMessage(`${change.name}@${change.version}: ${v.advisory_summary ?? 'no summary'}`),
-      source: 'dependency_review',
-    }));
+      message: cleanMessage(`${v.name}@${v.version}: ${v.summary ?? 'no summary'}`),
+      source,
+    }];
   });
 }
 
