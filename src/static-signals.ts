@@ -22,6 +22,8 @@ const ERROR_LINE_WINDOW = 3;
 const CHECK_POLL_MS = 15_000;
 const MAX_ANALYZED_FILE_BYTES = 1024 * 1024;
 const MAX_ANALYZED_TOTAL_BYTES = 8 * 1024 * 1024;
+const MAX_LOCKFILE_BYTES = 10 * 1024 * 1024;
+const MAX_LOCKFILES_TOTAL_BYTES = 40 * 1024 * 1024;
 
 const SECURITY_RULE = /\b(?:security|injection|xss|csrf|ssrf|cwe|cve|secrets?|traversal|format-string|vulnerab\w*)\b/i;
 const STYLE_RULE = /\b(?:prettier|[a-z]*(?:fmt|style)|stylistic|format(?:ting|ter)?|whitespace|indent(?:ation)?|spacing|quotes|semi|trailing[-_ ]?(?:spaces|comma)|max[-_ ]?len|line[-_ ]?length|eol[-_ ]?last|camel[-_ ]?case|naming[-_ ]?convention)\b/i;
@@ -83,11 +85,11 @@ export async function collectStaticSignals(
   const checksStillPending = await waitForChecks(octokit, request, settings, runtime.sleep);
   const analyzers = enabledAnalyzers(settings);
   const semgrepRules = settings.analyzers !== 'all' && settings.analyzers.semgrep ? settings.analyzers.semgrep.rules : [];
-  let headFiles: Promise<Map<string, string>> | undefined;
-  // The files are read through the API and only parsed, so no code from the PR runs.
-  const readHeadFiles = () => headFiles ??= fetchFileContents(
+  // The files are read through the API and only parsed, so no code from the PR runs. Each analyzer reads its own files
+  // within its own budget, so turning one on never shrinks what another one scans.
+  const readHeadFiles = (keep: (path: string) => boolean) => fetchFileContents(
     octokit, owner, repo, request.headSha,
-    diff.files.filter(f => f.changeType !== 'deleted' && (semgrepRules.length > 0 || isAstGrepFile(f.path))).map(f => f.path),
+    diff.files.filter(f => f.changeType !== 'deleted' && keep(f.path)).map(f => f.path),
     MAX_ANALYZED_FILE_BYTES, MAX_ANALYZED_TOTAL_BYTES,
   );
   const sources: Array<[StaticSignalSource, () => Promise<StaticSignal[]>]> = [];
@@ -97,11 +99,12 @@ export async function collectStaticSignals(
   if (analyzers.includes('ast_grep')) {
     sources.push(['ast_grep', async () => {
       if (!diff.files.some(f => f.changeType !== 'deleted' && isAstGrepFile(f.path))) return [];
-      const [api, contents] = await Promise.all([runtime.loadAstGrep(), readHeadFiles()]);
+      const [api, contents] = await Promise.all([runtime.loadAstGrep(), readHeadFiles(isAstGrepFile)]);
       return runAstGrep(api, contents);
     }]);
   }
-  if (analyzers.includes('secrets')) sources.push(['secrets', () => runGitleaks(diff.files, runtime)]);
+  // A PR can change its own `exclude_paths`, so secrets are looked for in every changed file.
+  if (analyzers.includes('secrets')) sources.push(['secrets', () => runGitleaks(fullDiff.files, runtime)]);
   if (analyzers.includes('dependencies')) {
     sources.push(['dependencies', async () => {
       const vulnerabilities = await runOsvScanner(await fetchLockfiles(octokit, request), runtime);
@@ -109,7 +112,7 @@ export async function collectStaticSignals(
     }]);
   }
   if (analyzers.includes('semgrep')) {
-    sources.push(['semgrep', async () => runOpengrep(await fetchSemgrepRules(octokit, request, semgrepRules), await readHeadFiles(), runtime)]);
+    sources.push(['semgrep', async () => runOpengrep(await fetchSemgrepRules(octokit, request, semgrepRules), await readHeadFiles(() => true), runtime)]);
   }
 
   const files = new Map(diff.files.map(f => [f.path, f]));
@@ -119,7 +122,7 @@ export async function collectStaticSignals(
     const analyzer = analyzers.find(a => a === source);
     try {
       const onDiff = (await fetch()).filter(s => {
-        const file = (source === 'dependencies' ? allFiles : files).get(s.file);
+        const file = (source === 'dependencies' || source === 'secrets' ? allFiles : files).get(s.file);
         return file !== undefined && isLineInDiff(file, s.line);
       }).map(s => analyzer ? { ...s, ruleId: cleanMessage(s.ruleId, MAX_NAME_CHARS), message: cleanMessage(s.message) } : s);
       if (analyzer) runs.push({ analyzer, status: 'ran', results: onDiff.length });
@@ -182,14 +185,24 @@ async function waitForChecks(
   }
 }
 
-/** Returns the changed lockfiles at the PR head. They are fetched raw, since the contents API sends no content above 1 MB. */
+/**
+ * Returns the changed lockfiles at the PR head, within `MAX_LOCKFILE_BYTES` each and `MAX_LOCKFILES_TOTAL_BYTES` in all.
+ * They are fetched raw, since the contents API sends no content above 1 MB.
+ */
 async function fetchLockfiles(octokit: Octokit, { owner, repo, headSha, fullDiff }: StaticSignalRequest): Promise<Map<string, string>> {
-  const paths = fullDiff.files.filter(f => f.changeType !== 'deleted' && isLockfile(f.path)).map(f => f.path);
-  const contents = await Promise.all(paths.map(async path => {
+  const lockfiles = new Map<string, string>();
+  let total = 0;
+  for (const { path } of fullDiff.files.filter(f => f.changeType !== 'deleted' && isLockfile(f.path))) {
     const { data } = await octokit.rest.repos.getContent({ owner, repo, path, ref: headSha, mediaType: { format: 'raw' } });
-    return [path, data as unknown as string] as const;
-  }));
-  return new Map(contents);
+    const content = data as unknown as string;
+    if (content.length > MAX_LOCKFILE_BYTES || total + content.length > MAX_LOCKFILES_TOTAL_BYTES) {
+      core.info(`Static analysis: dependencies skips ${path}, ${content.length} bytes is over the lockfile budget`);
+      continue;
+    }
+    lockfiles.set(path, content);
+    total += content.length;
+  }
+  return lockfiles;
 }
 
 /** Returns the Semgrep rule files from the base branch, so a PR can neither change nor add a rule. */

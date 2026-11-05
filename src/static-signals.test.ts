@@ -273,15 +273,15 @@ describe('collectStaticSignals with analyzers and waits', () => {
       '   "packages": {',
       '+    "node_modules/lodash": { "version": "4.17.0" },',
       '     "": {}',
-      'diff --git a/.gitleaksignore b/.gitleaksignore',
+      'diff --git a/.GitleaksIgnore b/.GitleaksIgnore',
       'new file mode 100644',
       '--- /dev/null',
-      '+++ b/.gitleaksignore',
+      '+++ b/.GitleaksIgnore',
       '@@ -0,0 +1 @@',
       '+src/app.ts:github-pat:2',
-      'diff --git a/web/yarn.lock b/web/yarn.lock',
-      '--- a/web/yarn.lock',
-      '+++ b/web/yarn.lock',
+      'diff --git a/web:v2/yarn.lock b/web:v2/yarn.lock',
+      '--- a/web:v2/yarn.lock',
+      '+++ b/web:v2/yarn.lock',
       '@@ -1,1 +1,3 @@',
       ' # yarn lockfile v1',
       '+lodash@4.17.0:',
@@ -293,16 +293,16 @@ describe('collectStaticSignals with analyzers and waits', () => {
     const FILES = {
       'head-sha:src/app.ts': 'const a = 1;\nconst token = "ghp_0000"; // gitleaks:allow\nexport { a };\n',
       'head-sha:package-lock.json': LOCKFILE,
-      'head-sha:.gitleaksignore': 'src/app.ts:github-pat:2\n',
-      'head-sha:web/yarn.lock': YARN_LOCK,
+      'head-sha:.GitleaksIgnore': 'src/app.ts:github-pat:2\n',
+      'head-sha:web:v2/yarn.lock': YARN_LOCK,
     };
-    // The default `*.lock` exclusion hides `web/yarn.lock` from the review.
+    // The default `*.lock` exclusion hides `web:v2/yarn.lock` from the review.
     const analyzerRequest = () => {
       const fullDiff = parsePRDiff(ANALYZER_DIFF);
       return { ...request(), diff: filterDiff(fullDiff, ['*.lock']).diff, fullDiff };
     };
 
-    it('scans only the added lines for secrets with Manki\'s gitleaks config, ignoring `gitleaks:allow` and ignore files', async () => {
+    it('scans only the added lines of every changed file for secrets with Manki\'s gitleaks config, ignoring `gitleaks:allow` and ignore files in any case', async () => {
       const octokit = makeOctokit({ main: `${ONLY_ANALYZERS}  analyzers:\n    secrets: true\n` }, FILES);
 
       const { signals, record } = await collectStaticSignals(octokit, analyzerRequest(), runtime);
@@ -315,6 +315,7 @@ describe('collectStaticSignals with analyzers and waits', () => {
       expect(scanned.gitleaks).toEqual({
         'src/app.ts': '\nconst token = "ghp_0000"; // gitleaks:allow',
         'package-lock.json': '\n\n\n    "node_modules/lodash": { "version": "4.17.0" },',
+        'web:v2/yarn.lock': '\nlodash@4.17.0:\n  version "4.17.0"',
       });
       const args = toolArgs('gitleaks');
       expect(args).toEqual(expect.arrayContaining(['dir', '--ignore-gitleaks-allow', '--redact']));
@@ -329,7 +330,7 @@ describe('collectStaticSignals with analyzers and waits', () => {
       jest.mocked(runtime.runTool).mockImplementationOnce(async (_binary, _args, cwd) => {
         scanned['osv-scanner'] = readTree(cwd);
         const { results } = JSON.parse(readFileSync(join(FIXTURES, 'osv-scanner.json'), 'utf-8').replaceAll('<root>', cwd));
-        const yarn = { ...results[0], source: { ...results[0].source, path: join(cwd, 'web', 'yarn.lock') } };
+        const yarn = { ...results[0], source: { ...results[0].source, path: join(cwd, '1', 'yarn.lock') } };
         return { code: 1, stdout: JSON.stringify({ results: [...results, yarn] }), stderr: '' };
       });
 
@@ -341,13 +342,14 @@ describe('collectStaticSignals with analyzers and waits', () => {
       ];
       expect(signals.map(s => ({ ...s }))).toEqual(expect.arrayContaining([
         ...advisories.map(a => ({ tool: 'osv-scanner', ...a, file: 'package-lock.json', line: 4, source: 'dependencies' })),
-        ...advisories.map(a => ({ tool: 'osv-scanner', ...a, file: 'web/yarn.lock', line: 2, source: 'dependencies' })),
+        ...advisories.map(a => ({ tool: 'osv-scanner', ...a, file: 'web:v2/yarn.lock', line: 2, source: 'dependencies' })),
       ]));
       expect(signals).toHaveLength(4);
       expect(record).toEqual({ analyzers: [{ analyzer: 'dependencies', status: 'ran', results: 4 }] });
-      expect(scanned['osv-scanner']).toEqual({ 'package-lock.json': LOCKFILE, 'web/yarn.lock': YARN_LOCK });
+      // Each lockfile goes to OSV-Scanner under a path without the colon it would read as a parser name.
+      expect(scanned['osv-scanner']).toEqual({ '0/package-lock.json': LOCKFILE, '1/yarn.lock': YARN_LOCK });
       const args = toolArgs('osv-scanner');
-      expect(args.filter((_, i) => args[i - 1] === '-L')).toEqual(['package-lock.json', 'web/yarn.lock']);
+      expect(args.filter((_, i) => args[i - 1] === '-L')).toEqual(['0/package-lock.json', '1/yarn.lock']);
       expect(argAfter(args, '--config')).toMatch(/rules[/\\]osv-scanner\.toml$/);
       expect(existsSync(argAfter(args, '--config'))).toBe(true);
       expect(args).toEqual(expect.arrayContaining(['--no-resolve', '--no-call-analysis=all']));

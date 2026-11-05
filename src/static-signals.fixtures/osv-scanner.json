@@ -2,7 +2,7 @@
  "results": [
   {
    "source": {
-    "path": "<root>/package-lock.json",
+    "path": "<root>/0/package-lock.json",
     "type": "lockfile"
    },
    "packages": [

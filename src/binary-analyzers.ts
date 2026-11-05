@@ -26,6 +26,7 @@ const TOOL_TIMEOUT_MS = 300_000;
 const MAX_TOOL_OUTPUT_BYTES = 64 * 1024 * 1024;
 
 // A tool reads these as its own config or ignore list, so a PR could add one to hide a result. They are never scanned.
+// The names are compared in lower case, because macOS and Windows runners open `.GitleaksIgnore` as `.gitleaksignore`.
 const TOOL_CONFIG_FILES = new Set(['.gitleaks.toml', '.gitleaksignore', '.semgrepignore', '.gitignore', 'osv-scanner.toml']);
 
 const LOCKFILES = new Set([
@@ -126,11 +127,15 @@ export async function runGitleaks(files: DiffFile[], tools: ToolRunner): Promise
 export async function runOsvScanner(lockfiles: Map<string, string>, tools: ToolRunner): Promise<PackageVulnerability[]> {
   if (lockfiles.size === 0) return [];
   const binary = await tools.installTool('osv-scanner');
-  const root = writeScanTree(lockfiles);
+  // OSV-Scanner reads a `-L` value with a colon as `parser:path`, so each lockfile is written as `<index>/<name>`,
+  // which has none, and mapped back to its repository path.
+  const paths = [...lockfiles.keys()];
+  const root = writeScanTree(new Map(paths.map((path, i) => [`${i}/${basename(path)}`, lockfiles.get(path)!])));
+  const repoLockfile = (toolPath: string) => paths[Number(repoPath(root, toolPath).split('/')[0])];
   // Exit code 1 means vulnerabilities were found, and 128 that a lockfile lists no packages.
   const output = await runChecked(tools, 'osv-scanner', binary, [
     'scan', 'source', '--config', join(RULES_DIR, 'osv-scanner.toml'), '--format', 'json', '--no-resolve',
-    '--no-call-analysis=all', '--verbosity', 'error', ...[...lockfiles.keys()].flatMap(path => ['-L', path]),
+    '--no-call-analysis=all', '--verbosity', 'error', ...paths.flatMap((path, i) => ['-L', `${i}/${basename(path)}`]),
   ], root, [0, 1, 128]);
   if (!output.trim()) return [];
   const { results } = JSON.parse(output) as OsvOutput;
@@ -141,7 +146,7 @@ export async function runOsvScanner(lockfiles: Map<string, string>, tools: ToolR
       const id = [...group.ids, ...(group.aliases ?? [])].find(a => a.startsWith('GHSA-')) ?? group.ids[0];
       const score = Number.parseFloat(group.max_severity ?? '');
       return {
-        manifest: repoPath(root, result.source.path), name: pkg.name, version: pkg.version, id,
+        manifest: repoLockfile(result.source.path), name: pkg.name, version: pkg.version, id,
         severity: score >= 7 ? 'error' : score >= 4 || Number.isNaN(score) ? 'warning' : 'note',
         summary: group.ids.map(i => summaries.get(i)).find(Boolean),
       };
@@ -192,7 +197,7 @@ function writeScanTree(files: Map<string, string>): string {
   const root = makeScratchDir('scan');
   for (const [path, content] of files) {
     const target = resolve(root, path);
-    if (TOOL_CONFIG_FILES.has(basename(path)) || !target.startsWith(root + sep)) continue;
+    if (TOOL_CONFIG_FILES.has(basename(path).toLowerCase()) || !target.startsWith(root + sep)) continue;
     mkdirSync(dirname(target), { recursive: true });
     writeFileSync(target, content);
   }
