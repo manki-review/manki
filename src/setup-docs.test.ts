@@ -60,6 +60,9 @@ describe('documented workflow snippets', () => {
 
   it('includes the full workflow from SETUP.md Step 3 and docs/index.html, with the job settings of our own workflow', () => {
     const own = (parseYaml(readRepoFile('.github/workflows/manki.yml')) as Workflow).jobs.review;
+    for (const event of ['issue_comment', 'pull_request_review_comment']) {
+      expect(own.if).toContain(`(github.event_name != '${event}' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)`);
+    }
     const step3 = setup.slice(setup.indexOf('## Step 3: Add the Workflow'));
     for (const block of [markdownYamlBlocks(step3)[0], snippets['docs/index.html'][0]]) {
       const workflow = parseYaml(block) as Workflow;
