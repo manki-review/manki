@@ -5,19 +5,18 @@ type Octokit = ReturnType<typeof github.getOctokit>;
 
 type DispatchedEvent = 'pull_request' | 'issue_comment' | 'pull_request_review' | 'pull_request_review_comment' | 'pull_request_review_thread';
 
-type ObjectInput = 'comment_id' | 'review_id' | 'thread_id';
+type ObjectInput = 'comment_id' | 'review_id';
 
-/** The id input each event needs to find its comment, review or thread. */
+/** The id input each event needs to find its comment or review. */
 const OBJECT_INPUTS: Record<DispatchedEvent, ObjectInput | undefined> = {
   pull_request: undefined,
   issue_comment: 'comment_id',
   pull_request_review: 'review_id',
   pull_request_review_comment: 'comment_id',
-  pull_request_review_thread: 'thread_id',
+  pull_request_review_thread: undefined,
 };
 
 const NUMBER = /^[1-9][0-9]{0,15}$/;
-const THREAD_ID = /^PRRT_[A-Za-z0-9_-]{1,64}$/;
 const SHA = /^[0-9a-f]{40}$/;
 const ACTION = /^[a-z_]{1,32}$/;
 const DELIVERY_ID = /^[A-Za-z0-9-]{1,64}$/;
@@ -42,7 +41,7 @@ interface FetchedEvent {
   headSha?: string;
 }
 
-/** What a dispatched run does next: run the handlers, or stop because the head moved on or the comment, review or thread is gone. */
+/** What a dispatched run does next: run the handlers, or stop because the head moved on or the comment or review is gone. */
 export type DispatchOutcome = 'run' | 'superseded' | 'gone';
 
 /** Whether the run was started by `workflow_dispatch`. The original event name stays in the environment after the payload is rebuilt. */
@@ -68,7 +67,7 @@ export async function restoreDispatchedEvent(octokit: Octokit): Promise<Dispatch
   try {
     event = await fetchEvent(octokit, inputs);
   } catch (error) {
-    if (!isMissing(error)) throw error;
+    if ((error as { status?: number }).status !== 404) throw error;
     core.info(`The dispatched ${inputs.event} on #${inputs.number} no longer exists, nothing to do`);
     return 'gone';
   }
@@ -111,8 +110,8 @@ function readDispatchInputs(raw: Record<string, unknown>): DispatchInputs {
 
   const objectInput = OBJECT_INPUTS[event as DispatchedEvent];
   let objectId: string | undefined;
-  for (const name of ['comment_id', 'review_id', 'thread_id'] as const) {
-    const value = name === 'thread_id' ? matching(name, THREAD_ID, 'a review thread node id such as `PRRT_kwDO`') : matching(name, NUMBER, 'a numeric id');
+  for (const name of ['comment_id', 'review_id'] as const) {
+    const value = matching(name, NUMBER, 'a numeric id');
     if (name === objectInput) {
       if (!value) throw new Error(`Dispatch input \`${name}\` is required for \`${event}\``);
       objectId = value;
@@ -166,44 +165,12 @@ async function fetchEvent(octokit: Octokit, inputs: DispatchInputs): Promise<Fet
       return { objects: { comment, pull_request }, sender: userOf(comment.user) };
     }
     case 'pull_request_review_thread': {
-      const thread = await fetchThread(octokit, inputs.objectId!);
-      if (thread.pullRequest.number !== number || thread.pullRequest.repository.nameWithOwner.toLowerCase() !== `${owner}/${repo}`.toLowerCase()) {
-        throw new Error(`Review thread does not belong to #${number}`);
-      }
+      // The thread itself is not needed: the auto-approve check reads every thread of the PR.
+      // The service drops threads a bot resolved, so the event counts as the PR author's.
       const pull_request = await fetchPullRequest(octokit, owner, repo, number);
-      // The API names who resolved a thread, but not who reopened it.
-      const resolver = inputs.action === 'resolved' && thread.resolvedBy ? senderOf(thread.resolvedBy) : undefined;
-      return { objects: { thread: { node_id: thread.id, is_resolved: thread.isResolved }, pull_request }, sender: resolver ?? userOf(pull_request.user) };
+      return { objects: { pull_request }, sender: userOf(pull_request.user) };
     }
   }
-}
-
-interface GraphqlActor {
-  login: string;
-  __typename: string;
-}
-
-interface ReviewThreadNode {
-  id: string;
-  isResolved: boolean;
-  resolvedBy: GraphqlActor | null;
-  pullRequest: { number: number; repository: { nameWithOwner: string } };
-}
-
-/** Reads a review thread by node id. Throws an error that `isMissing` accepts when the id names no review thread. */
-async function fetchThread(octokit: Octokit, id: string): Promise<ReviewThreadNode> {
-  const { node } = await octokit.graphql<{ node: Partial<ReviewThreadNode> | null }>(
-    'query($id: ID!) { node(id: $id) { ... on PullRequestReviewThread { id isResolved resolvedBy { login __typename } pullRequest { number repository { nameWithOwner } } } } }',
-    { id },
-  );
-  if (!node?.pullRequest) throw Object.assign(new Error('Review thread not found'), { status: 404 });
-  return node as ReviewThreadNode;
-}
-
-/** Whether an API error means the object is gone: a REST 404, or a GraphQL node id that resolves to nothing. */
-function isMissing(error: unknown): boolean {
-  const { status, errors } = error as { status?: number; errors?: { type?: string }[] };
-  return status === 404 || !!errors?.some(e => e.type === 'NOT_FOUND');
 }
 
 async function fetchPullRequest(octokit: Octokit, owner: string, repo: string, number: number) {
@@ -222,16 +189,14 @@ function assertPartOf(url: string | undefined, path: string, what: string, numbe
 
 /** Who last edited a comment, such as the person who ticked a Force review box on Manki's comment. */
 async function lastEditor(octokit: Octokit, nodeId: string): Promise<Sender | undefined> {
-  const { node } = await octokit.graphql<{ node: { editor: GraphqlActor | null } | null }>(
+  const { node } = await octokit.graphql<{ node: { editor: { login: string; __typename: string } | null } | null }>(
     'query($id: ID!) { node(id: $id) { ... on IssueComment { editor { login __typename } } } }',
     { id: nodeId },
   );
-  return node?.editor ? senderOf(node.editor) : undefined;
-}
-
-function senderOf(actor: GraphqlActor): Sender {
+  const editor = node?.editor;
+  if (!editor) return undefined;
   // GraphQL names a bot `<slug>`, while webhook payloads and REST use `<slug>[bot]`.
-  return actor.__typename === 'Bot' ? { login: `${actor.login}[bot]`, type: 'Bot' } : { login: actor.login, type: 'User' };
+  return editor.__typename === 'Bot' ? { login: `${editor.login}[bot]`, type: 'Bot' } : { login: editor.login, type: 'User' };
 }
 
 function userOf(user: { login: string; type: string } | null | undefined): Sender {

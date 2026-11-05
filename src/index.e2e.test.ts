@@ -267,10 +267,6 @@ class FakeGitHub {
       const thread = this.threads.find(t => t.id === variables.threadId);
       return { node: { comments: connection(thread?.comments ?? [], 100, after(variables.cursor)) } };
     }
-    if (query.includes('on PullRequestReviewThread')) {
-      const thread = this.threads.find(t => t.id === variables.id);
-      return { node: thread && { id: thread.id, isResolved: thread.isResolved, resolvedBy: thread.resolvedBy && { ...thread.resolvedBy, __typename: 'User' }, pullRequest: { number: PR_NUMBER, repository: { nameWithOwner: `${OWNER}/${REPO}` } } } };
-    }
     throw new Error(`Unexpected GraphQL query: ${query}`);
   }
 }
@@ -694,7 +690,7 @@ describe('runFullReview end to end', () => {
       Object.assign(thread, { isResolved: true, resolvedBy: { login: 'bob' } });
       mockLLM.calls = [];
 
-      await dispatch({ event: 'pull_request_review_thread', action: 'resolved', pr: String(PR_NUMBER), thread_id: thread.id });
+      await dispatch({ event: 'pull_request_review_thread', action: 'resolved', pr: String(PR_NUMBER), delivery_id: '72d3162e-cc78-11e3-81ab-4c9367dc0959' });
 
       expect(core.setFailed).not.toHaveBeenCalled();
       expect(mockLLM.calls).toEqual([]);

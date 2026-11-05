@@ -563,7 +563,6 @@ on:
       head_sha: { type: string, required: false }
       comment_id: { type: string, required: false }
       review_id: { type: string, required: false }
-      thread_id: { type: string, required: false }
       delivery_id: { type: string, required: false }
 
 permissions:

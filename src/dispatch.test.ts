@@ -22,7 +22,6 @@ const ISSUE_COMMENT = { id: 11, node_id: 'IC_11', body: '@manki explain', user: 
 const REVIEW = { id: 12, commit_id: HEAD, user: BOB, pull_request_url: `${API}/pulls/7` };
 const REVIEW_COMMENT = { id: 13, body: 'Agreed', user: BOB, in_reply_to_id: 10, pull_request_url: `${API}/pulls/7` };
 const REPOSITORY = { name: 'widgets', owner: { login: 'acme' } };
-const THREAD = { id: 'PRRT_kwDOAbc123', isResolved: true, resolvedBy: { login: 'dave', __typename: 'User' }, pullRequest: { number: 7, repository: { nameWithOwner: 'acme/widgets' } } };
 
 function mockOctokit() {
   return {
@@ -37,8 +36,7 @@ function mockOctokit() {
         getComment: jest.fn().mockResolvedValue({ data: ISSUE_COMMENT }),
       },
     },
-    // One node answers both queries: the last editor of a comment and a review thread.
-    graphql: jest.fn().mockResolvedValue({ node: { editor: { login: 'carol', __typename: 'User' }, ...THREAD } }),
+    graphql: jest.fn().mockResolvedValue({ node: { editor: { login: 'carol', __typename: 'User' } } }),
   };
 }
 
@@ -68,10 +66,8 @@ describe('restoreDispatchedEvent', () => {
       { review: REVIEW, pull_request: PR }, BOB],
     ['a thread reply, as its author', { event: 'pull_request_review_comment', action: 'created', pr: '7', comment_id: '13' },
       { comment: REVIEW_COMMENT, pull_request: PR }, BOB],
-    ['a resolved thread, as its resolver', { event: 'pull_request_review_thread', action: 'resolved', pr: '7', thread_id: THREAD.id },
-      { thread: { node_id: THREAD.id, is_resolved: true }, pull_request: PR }, { login: 'dave', type: 'User' }],
-    ['a reopened thread, as the PR author', { event: 'pull_request_review_thread', action: 'unresolved', pr: '7', thread_id: THREAD.id },
-      { thread: { node_id: THREAD.id, is_resolved: true }, pull_request: PR }, ALICE],
+    ['a resolved thread, as the PR author', { event: 'pull_request_review_thread', action: 'resolved', pr: '7', delivery_id: 'f1e2d3c4-0000-4000-8000-000000000002' },
+      { pull_request: PR }, ALICE],
   ])('rebuilds %s', async (_label, inputs, objects, sender) => {
     expect(await dispatch(inputs)).toBe('run');
 
@@ -104,14 +100,6 @@ describe('restoreDispatchedEvent', () => {
     expect(github.context.eventName).toBe('workflow_dispatch');
   });
 
-  it('stops when the thread id names no review thread', async () => {
-    octokit.graphql.mockRejectedValueOnce(Object.assign(new Error('Could not resolve to a node'), { errors: [{ type: 'NOT_FOUND' }] }));
-    expect(await dispatch({ event: 'pull_request_review_thread', action: 'resolved', pr: '7', thread_id: THREAD.id })).toBe('gone');
-
-    octokit.graphql.mockResolvedValueOnce({ node: { id: THREAD.id } });
-    expect(await dispatch({ event: 'pull_request_review_thread', action: 'resolved', pr: '7', thread_id: THREAD.id })).toBe('gone');
-  });
-
   it('rethrows an API failure other than a missing object', async () => {
     octokit.rest.pulls.get.mockRejectedValue(Object.assign(new Error('Server Error'), { status: 502 }));
 
@@ -125,10 +113,6 @@ describe('restoreDispatchedEvent', () => {
       { event: 'pull_request_review_comment', action: 'created', pr: '7', comment_id: '13' }, 'Review comment 13 does not belong to #7'],
     ['a review of another PR', () => octokit.rest.pulls.getReview.mockResolvedValue({ data: { ...REVIEW, pull_request_url: `${API}/pulls/70` } }),
       { event: 'pull_request_review', action: 'submitted', pr: '7', review_id: '12' }, 'Review 12 does not belong to #7'],
-    ['a thread on another PR', () => octokit.graphql.mockResolvedValue({ node: { ...THREAD, pullRequest: { number: 8, repository: { nameWithOwner: 'acme/widgets' } } } }),
-      { event: 'pull_request_review_thread', action: 'resolved', pr: '7', thread_id: THREAD.id }, 'Review thread does not belong to #7'],
-    ['a thread in another repo', () => octokit.graphql.mockResolvedValue({ node: { ...THREAD, pullRequest: { number: 7, repository: { nameWithOwner: 'evil/widgets' } } } }),
-      { event: 'pull_request_review_thread', action: 'resolved', pr: '7', thread_id: THREAD.id }, 'Review thread does not belong to #7'],
     ['a PR based in another repo', () => octokit.rest.pulls.get.mockResolvedValue({ data: { ...PR, base: { ref: 'main', repo: { full_name: 'evil/widgets' } } } }),
       { event: 'pull_request', action: 'opened', pr: '7', head_sha: HEAD }, 'PR #7 does not belong to acme/widgets'],
   ])('refuses %s', async (_label, arrange, inputs, message) => {
@@ -149,9 +133,7 @@ describe('restoreDispatchedEvent', () => {
     ['a comment event without a comment id', { event: 'issue_comment', action: 'created', pr: '7' }, '`comment_id` is required'],
     ['a review id on a comment event', { event: 'issue_comment', action: 'created', pr: '7', comment_id: '11', review_id: '12' }, '`review_id` does not apply'],
     ['a comment id on a push', { event: 'pull_request', action: 'opened', pr: '7', head_sha: HEAD, comment_id: '11' }, '`comment_id` does not apply'],
-    ['a thread event without a thread id', { event: 'pull_request_review_thread', action: 'resolved', pr: '7' }, '`thread_id` is required'],
-    ['a thread id that is not a node id', { event: 'pull_request_review_thread', action: 'resolved', pr: '7', thread_id: 'PRRT_x y' }, '`thread_id` must be'],
-    ['a thread id on a review event', { event: 'pull_request_review', action: 'submitted', pr: '7', review_id: '12', thread_id: THREAD.id }, '`thread_id` does not apply'],
+    ['a comment id on a thread event', { event: 'pull_request_review_thread', action: 'resolved', pr: '7', comment_id: '13' }, '`comment_id` does not apply'],
     ['a delivery id with spaces', { event: 'pull_request', action: 'opened', pr: '7', head_sha: HEAD, delivery_id: 'a b' }, '`delivery_id` must be'],
   ])('fails on %s without echoing the value', async (_label, inputs, message) => {
     const failure = dispatch(inputs);
