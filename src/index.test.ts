@@ -168,6 +168,7 @@ jest.mock('./github', () => {
   fetchSubdirClaudeMd: jest.fn().mockResolvedValue(null),
   fetchFileContents: jest.fn().mockResolvedValue(new Map()),
   fetchInterRoundDiff: jest.fn().mockResolvedValue(''),
+  fetchHeadSha: jest.requireActual('./github').fetchHeadSha,
   postProgressComment: jest.fn().mockResolvedValue(1),
   updateProgressComment: jest.fn().mockResolvedValue(undefined),
   updateProgressDashboard: jest.fn().mockResolvedValue(undefined),

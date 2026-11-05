@@ -27,6 +27,7 @@ import {
   fetchSubdirClaudeMd,
   fetchFileContents,
   fetchInterRoundDiff,
+  fetchHeadSha,
   postProgressComment,
   updateProgressComment,
   updateProgressDashboard,
@@ -601,17 +602,10 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
   // event firing and this run reaching the LLM phase. Placed before any
   // progress comment is posted so no marker cleanup is required on bail.
   // Fail-open: a `pulls.get` failure does not disable the review.
-  try {
-    const { data: prHead } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
-    const headSha = prHead.head?.sha;
-    if (!headSha) {
-      core.warning('Head SHA lookup returned no sha, proceeding');
-    } else if (headSha !== commitSha) {
-      core.info(`Event SHA ${commitSha.slice(0, 7)} != head SHA ${headSha.slice(0, 7)} — bailing out`);
-      return true;
-    }
-  } catch (error) {
-    core.warning(`Head SHA lookup failed, proceeding: ${error instanceof Error ? error.message : error}`);
+  const headSha = await fetchHeadSha(octokit, owner, repo, prNumber);
+  if (headSha && headSha !== commitSha) {
+    core.info(`Event SHA ${commitSha.slice(0, 7)} != head SHA ${headSha.slice(0, 7)} — bailing out`);
+    return true;
   }
 
   if (trigger.event === 'pull_request:synchronize' && config.auto_review) {

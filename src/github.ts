@@ -104,6 +104,18 @@ export async function fetchPRDiff(octokit: Octokit, owner: string, repo: string,
   return data as unknown as string;
 }
 
+/** Returns the PR's current head SHA, or `undefined` when the lookup fails or returns none. */
+export async function fetchHeadSha(octokit: Octokit, owner: string, repo: string, prNumber: number): Promise<string | undefined> {
+  try {
+    const { data } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
+    if (!data.head?.sha) core.warning('Head SHA lookup returned no sha, proceeding');
+    return data.head?.sha || undefined;
+  } catch (error) {
+    core.warning(`Head SHA lookup failed, proceeding: ${error instanceof Error ? error.message : error}`);
+    return undefined;
+  }
+}
+
 /**
  * Fetch the unified diff between two commits via GitHub's compare API, which
  * diffs `head` against its merge base with `base`. Used to ground the judge's
