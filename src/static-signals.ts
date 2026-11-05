@@ -18,7 +18,7 @@ const MAX_CLAIMED_SYMBOLS = 5;
 /** How far a check annotation may sit from a finding's line and still confirm the error the finding claims. */
 const ERROR_LINE_WINDOW = 3;
 
-const SECURITY_RULE = /\b(?:security|injection|xss|csrf|ssrf|cwe|cve|secrets?|traversal|vulnerab\w*)\b/i;
+const SECURITY_RULE = /\b(?:security|injection|xss|csrf|ssrf|cwe|cve|secrets?|traversal|format-string|vulnerab\w*)\b/i;
 const STYLE_RULE = /\b(?:prettier|[a-z]*(?:fmt|style)|stylistic|format(?:ting|ter)?|whitespace|indent(?:ation)?|spacing|quotes|semi|trailing[-_ ]?(?:spaces|comma)|max[-_ ]?len|line[-_ ]?length|eol[-_ ]?last|camel[-_ ]?case|naming[-_ ]?convention)\b/i;
 const TYPE_ERROR_CLAIM = /\b(?:type error|type mismatch|(?:compile|compiler|compilation|build) error|(?:does not|doesn't|won't|fails to) compile|not assignable|TS\d{4})\b/i;
 const BACKTICKED = /`([^`\n]+)`/g;
@@ -109,7 +109,8 @@ export function toolAlertFindings(signals: StaticSignal[]): Finding[] {
 }
 
 function isTriagedSignal(signal: StaticSignal): boolean {
-  const name = `${signal.tool} ${signal.ruleId}`;
+  // The rule id names the problem. A job name such as `lint-format` says nothing about each result it reports.
+  const name = signal.ruleId || signal.tool;
   if (signal.source === 'dependency_review' || SECURITY_RULE.test(name)) return true;
   if (STYLE_RULE.test(name)) return false;
   return signal.source === 'code_scanning' || signal.severity === 'error';
@@ -123,9 +124,9 @@ export interface ClaimSources {
 }
 
 /**
- * Checks the concrete parts of a reviewer finding without running the PR's code: the file is in the diff, the line is
- * in the file, and each backticked symbol in the title or description occurs in the file or the diff. An error-level
- * check annotation near the line confirms a claimed type or compile error. A check without the data to run is skipped.
+ * Checks the concrete parts of a reviewer finding without running the PR's code. Only a file outside the diff or a line
+ * past the end of the file contradicts it. A backticked symbol missing from the file and the diff is only noted, since it
+ * can live elsewhere. An error-level check annotation near the line confirms a claimed type or compile error.
  */
 export function checkFindingClaims(finding: Finding, sources: ClaimSources): ToolEvidence {
   const { diff, rawDiff, fileContents, signals } = sources;
@@ -143,11 +144,8 @@ export function checkFindingClaims(finding: Finding, sources: ClaimSources): Too
   }
   for (const symbol of claimedSymbols(`${finding.title}\n${finding.description}`)) {
     const pattern = new RegExp(`(?<![\\w$])${escapeRegExp(symbol)}(?![\\w$])`);
-    if (pattern.test(rawDiff) || (content !== undefined && pattern.test(content))) {
-      checked.push(`\`${symbol}\` occurs`);
-    } else if (content !== undefined) {
-      return { status: 'contradicted', note: `\`${symbol}\` occurs neither in ${finding.file} nor in the diff.` };
-    }
+    const found = pattern.test(rawDiff) || (content !== undefined && pattern.test(content));
+    checked.push(found ? `\`${symbol}\` occurs` : `\`${symbol}\` not found in ${content !== undefined ? `${finding.file} or ` : ''}the diff`);
   }
   if (TYPE_ERROR_CLAIM.test(`${finding.title} ${finding.description}`)) {
     const annotation = signals.find(s => s.source === 'checks' && s.severity === 'error' && s.file === finding.file && Math.abs(s.line - finding.line) <= ERROR_LINE_WINDOW);

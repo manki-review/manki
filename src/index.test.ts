@@ -3541,7 +3541,7 @@ describe('runFullReview orchestration', () => {
         reachabilityReasoning: 'Caller serializes via mutex',
         tags: ['defensive-hardening', 'own-proposal-followup', 'follow-up', 'security'],
         originalSeverity: 'warning' as const,
-        toolEvidence: { status: 'contradicted' as const, note: '`lock` occurs neither in src/app.ts nor in the diff.' },
+        toolEvidence: { status: 'contradicted' as const, note: 'src/gone.ts is not changed in this diff.' },
       }, {
         severity: 'warning' as const,
         title: 'js/sql-injection: Query built from user input',

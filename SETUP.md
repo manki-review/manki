@@ -397,13 +397,13 @@ Manki reads what your CI already reported on the PR head commit and gives the re
 
 Some tool results also go to the judge as candidate findings, next to the reviewers' findings:
 
-- A vulnerable package, or a result whose tool or rule id names a security class (such as `security`, `injection`, `xss` or `secret`), always does.
-- A style or formatting result never does, because the linter already shows it. Manki recognises these by tool or rule id, such as `prettier`, `rustfmt`, `@stylistic/*`, `indent` or `max-len`.
+- A vulnerable package, or a result whose rule id names a security class (such as `security`, `injection`, `xss`, `format-string` or `secret`), always does.
+- A style or formatting result never does, because the linter already shows it. Manki recognises these by rule id, such as `prettier/prettier`, `@stylistic/*`, `indent` or `max-len`. A result without a rule id is judged by its tool name, such as `rustfmt`.
 - Any other code scanning alert does, and a check annotation only at the `failure` level.
 
 The judge keeps a real defect at the grade it earns and refutes a false positive with a reason. A refuted result is never posted. A kept one is posted with the tool in its label, such as `⚠️ **Warning** (CodeQL):`.
 
-Before the judge runs, Manki also checks each reviewer finding against the code, without running it: the file is in the diff, the line is in the file, and each symbol the finding names in backticks occurs in the file or the diff. A claimed type or compile error is confirmed by a failing check annotation near the line. The judge sees the result as confirmed, contradicted or unchecked. Only the judge can drop a contradicted finding, and a tool that says nothing never lowers or drops a finding. Each finding in the `Manki context` block records `toolEvidence` as `confirmed`, `contradicted` or `none`.
+Before the judge runs, Manki also checks each reviewer finding against the code, without running it: the file is in the diff, the line is in the file, and whether each symbol the finding names in backticks occurs in the file or the diff. Only a file outside the diff or a line past the end of the file contradicts a finding. A missing symbol is only noted, since it can live elsewhere. A claimed type or compile error is confirmed by a failing check annotation near the line. The judge sees the result as confirmed, contradicted or unchecked. Only the judge can drop a contradicted finding, and a tool that says nothing never lowers or drops a finding. Each finding in the `Manki context` block records `toolEvidence` as `confirmed`, `contradicted` or `none`.
 
 Manki reads these results with the workflow token (`github_token`), so grant the permissions in the workflow, even when the Manki app posts the review:
 

@@ -188,6 +188,8 @@ describe('toolAlertFindings', () => {
       signal({ ruleId: 'prettier/prettier', message: 'Insert `;`' }),
       signal({ tool: 'rustfmt', ruleId: '', message: 'Diff in src/app.ts' }),
       signal({ tool: 'eslint', ruleId: '@stylistic/indent', message: 'Expected indentation of 2 spaces' }),
+      signal({ tool: 'lint-format', ruleId: 'no-undef', line: 4, message: 'c is not defined' }),
+      signal({ tool: 'CodeQL', ruleId: 'js/tainted-format-string', severity: 'note', line: 4, message: 'Format string from user input', source: 'code_scanning' }),
       signal({ tool: 'CodeQL', ruleId: 'js/sql-injection', severity: 'warning', message: 'Query built from user input', source: 'code_scanning' }),
       signal({ tool: 'CodeQL', ruleId: 'js/redos', severity: 'warning', line: 3, message: '', source: 'code_scanning' }),
       signal({ tool: 'tsc', ruleId: '', line: 3, message: '' }),
@@ -199,6 +201,8 @@ describe('toolAlertFindings', () => {
       'no-undef: b is not defined',
       'B602 shell injection: subprocess with shell=True',
       'GHSA-1234: lodash@4.17.0: prototype pollution',
+      'no-undef: c is not defined',
+      'js/tainted-format-string: Format string from user input',
       'js/redos',
       'tsc result',
     ]);
@@ -208,7 +212,7 @@ describe('toolAlertFindings', () => {
       description: 'Query built from user input', reviewers: ['CodeQL'], toolSource: 'CodeQL',
       toolEvidence: { status: 'confirmed', note: 'CodeQL reports this result.' },
     });
-    expect(findings.map(f => f.severity)).toEqual(['warning', 'suggestion', 'blocker', 'suggestion', 'suggestion', 'warning', 'blocker']);
+    expect(findings.map(f => f.severity)).toEqual(['warning', 'suggestion', 'blocker', 'suggestion', 'suggestion', 'blocker', 'suggestion', 'warning', 'blocker']);
   });
 });
 
@@ -226,16 +230,13 @@ describe('checkFindingClaims', () => {
     expect(checkFindingClaims(finding({ line: 40 }), sources)).toEqual({ status: 'contradicted', note: 'src/app.ts has 3 lines, but the finding points at line 40.' });
   });
 
-  it('contradicts a backticked symbol that occurs neither in the file nor in the diff, and skips plain words', () => {
+  it('leaves a backticked symbol missing from the file and the diff unchecked, and skips plain words', () => {
     expect(checkFindingClaims(finding({ description: 'Calls `parseConfig()` with `null`.' }), sources))
-      .toEqual({ status: 'contradicted', note: '`parseConfig` occurs neither in src/app.ts nor in the diff.' });
+      .toEqual({ status: 'none', note: 'Checked: the file is in the diff, the line is in the file, `parseConfig` not found in src/app.ts or the diff.' });
+    expect(checkFindingClaims(finding({ description: 'Calls `parseConfig()`.' }), { ...sources, fileContents: undefined }))
+      .toEqual({ status: 'none', note: 'Checked: the file is in the diff, `parseConfig` not found in the diff.' });
     expect(checkFindingClaims(finding({ title: 'Shadowed `config.lodash`', description: 'Returns `null` early.' }), sources))
       .toEqual({ status: 'none', note: 'Checked: the file is in the diff, the line is in the file, `lodash` occurs.' });
-  });
-
-  it('cannot contradict a symbol without the file contents', () => {
-    expect(checkFindingClaims(finding({ description: 'Calls `parseConfig()`.' }), { ...sources, fileContents: undefined }))
-      .toEqual({ status: 'none', note: 'Checked: the file is in the diff.' });
   });
 
   it('confirms a claimed type error from an error annotation near the line, and stays silent without one', () => {
