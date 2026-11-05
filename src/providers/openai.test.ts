@@ -14,7 +14,7 @@ import {
   sanitizeLogOutput,
   STALE_TIMEOUT_MS,
 } from './openai';
-import { RefusalError } from './types';
+import { QuotaError, RefusalError } from './types';
 
 // Seeding `$CODEX_HOME/auth.json` is exercised separately in `cli-utils.test.ts`.
 // Stub it out here so the provider tests don't touch the filesystem.
@@ -321,6 +321,18 @@ describe('sendMessage (API path)', () => {
     await expect(sendViaAPI.call(client, 'sys', 'user')).rejects.toThrow('OpenAI client not initialized');
   });
 
+  it.each<[string, object, object]>([
+    ['a used-up quota', { status: 429, code: 'insufficient_quota', message: '429 You exceeded your current quota, please check your plan and billing details.' }, { limit: 'OpenAI API quota exhausted', resetsAt: undefined }],
+    ['a rate limit', { status: 429, code: 'rate_limit_exceeded', message: '429 Rate limit reached for gpt-5.5. Please try again in 20s. Visit the docs.' }, { limit: 'OpenAI API rate limit reached', resetsAt: 'in 20s' }],
+  ])('throws a `QuotaError` on %s', async (_case, fields, expected) => {
+    mockCreate.mockRejectedValueOnce(Object.assign(new Error(), fields));
+    const client = new OpenAIClient({ auth: { kind: 'apiKey', key: 'sk' }, model: 'gpt-5.5' });
+
+    const error = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
+    expect(error).toBeInstanceOf(QuotaError);
+    expect(error).toMatchObject({ ...expected, credential: 'key' });
+  });
+
   it('propagates SDK errors from chat.completions.create to the caller', async () => {
     mockCreate.mockRejectedValueOnce(new Error('rate limited'));
     const client = new OpenAIClient({ auth: { kind: 'apiKey', key: 'sk' }, model: 'gpt-4o' });
@@ -613,6 +625,21 @@ describe('sendViaOAuth (Codex CLI path)', () => {
     await expect(client.sendMessage('sys', 'user', { effort: 'high' })).rejects.toThrow(
       /Codex CLI invocation failed.*model=o3.*effort=high.*promptChars=\d+.*elapsedMs=\d+.*stderrChars=\d+/s,
     );
+  });
+
+  it('throws a `QuotaError` on a ChatGPT usage limit, reading only the `ERROR:` line', async () => {
+    const stderr = "user\nreview this: rate limit reached\nERROR: You've hit your usage limit. Upgrade your plan or add credits to continue, or try again at 20 Aug 2026, 16:29.\n";
+    setupSpawnMock('', { exitCode: 1, stderr });
+    jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-5.5' });
+
+    const error = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
+    expect(error).toBeInstanceOf(QuotaError);
+    expect(error).toMatchObject({ limit: 'ChatGPT subscription limit reached', resetsAt: 'at 20 Aug 2026, 16:29', credential: 'token' });
+
+    setupSpawnMock('', { exitCode: 1, stderr: 'user\nreview this: rate limit reached\nERROR: stream disconnected\n' });
+    const other = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
+    expect(other).not.toBeInstanceOf(QuotaError);
   });
 
   it('surfaces stdout tail and <empty stderr> marker when exit-1 has no stderr', async () => {

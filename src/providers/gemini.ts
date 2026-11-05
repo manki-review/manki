@@ -5,8 +5,8 @@ import { promisify } from 'util';
 import { FinishReason, GoogleGenAI, ThinkingConfig, ThinkingLevel } from '@google/genai';
 import * as core from '@actions/core';
 
-import { buildExitDiagnostics, callWithTimeout, runCli, sanitizeLogOutput, seedAuthFile, warnReplyTail } from './cli-utils';
-import { GeminiAuth, LLMClient, LLMResponse, LLMUsage, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
+import { buildExitDiagnostics, callWithTimeout, matchQuotaText, runCli, sanitizeLogOutput, seedAuthFile, warnReplyTail } from './cli-utils';
+import { GeminiAuth, LLMClient, LLMResponse, LLMUsage, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
 
@@ -65,6 +65,14 @@ export const GEMINI_CLI_VERSION = '0.66.0';
 
 // `finishReason` and `promptFeedback.blockReason` values that mean a safety or policy filter declined the request.
 const POLICY_BLOCK_REASONS: ReadonlySet<string> = new Set(['SAFETY', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII', 'MODEL_ARMOR']);
+
+/** Maps an SDK 429 or `RESOURCE_EXHAUSTED` error, which a used-up quota or rate limit returns, to a `QuotaError`. */
+function geminiQuotaError(error: unknown): QuotaError | undefined {
+  const { status, message } = (error ?? {}) as { status?: unknown; message?: unknown };
+  const text = sanitizeLogOutput(String(message ?? '')).slice(0, 1000);
+  if (status !== 429 && !/\bRESOURCE_EXHAUSTED\b/.test(text)) return undefined;
+  return new QuotaError(`Gemini API quota exhausted: ${text.slice(0, 500)}`, 'Gemini API quota exhausted', matchQuotaText(text)?.resetsAt, 'key');
+}
 
 let cliInstallPromise: Promise<string> | null = null;
 
@@ -201,6 +209,12 @@ export class GeminiClient implements LLMClient {
     });
 
     if (code !== 0) {
+      const quota = matchQuotaText(stderr);
+      if (quota && !quota.overloaded) {
+        const message = `Gemini quota exhausted: ${sanitizeLogOutput(stderr.slice(-500)).trim()}`;
+        core.warning(message);
+        throw new QuotaError(message, 'Gemini quota exhausted', quota.resetsAt, 'token');
+      }
       const msg = buildExitDiagnostics({
         exitCode: code,
         signal,
@@ -242,7 +256,7 @@ export class GeminiClient implements LLMClient {
         ...(thinkingConfig && { thinkingConfig }),
         ...(abortSignal && { abortSignal }),
       },
-    }));
+    })).catch((error: unknown) => { throw geminiQuotaError(error) ?? error; });
 
     const finishReason = response.candidates?.[0]?.finishReason;
     const content = response.text ?? '';

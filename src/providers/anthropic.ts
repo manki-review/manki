@@ -7,8 +7,8 @@ import { promisify } from 'util';
 import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
-import { appendReplyTail, buildExitDiagnostics, callWithTimeout, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, warnReplyTail } from './cli-utils';
-import { AnthropicAuth, LLMClient, LLMResponse, LLMUsage, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
+import { appendReplyTail, buildExitDiagnostics, callWithTimeout, matchQuotaText, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, warnReplyTail } from './cli-utils';
+import { AnthropicAuth, LLMClient, LLMResponse, LLMUsage, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
 
 // Re-export for backward compatibility with existing test imports.
 export { sanitizeLogOutput, STALE_TIMEOUT_MS };
@@ -111,6 +111,15 @@ function readResultError(resultEvent: unknown): string | null {
   if (!resultEvent || typeof resultEvent !== 'object') return null;
   const event = resultEvent as { is_error?: unknown; result?: unknown };
   return event.is_error === true && typeof event.result === 'string' && event.result ? event.result : null;
+}
+
+/** Maps an SDK error for a used-up rate limit (429, `rate_limit_error`) or an overload (529, `overloaded_error`) to a `QuotaError`. */
+function anthropicQuotaError(error: unknown): QuotaError | undefined {
+  const { status, type, message } = (error ?? {}) as { status?: unknown; type?: unknown; message?: unknown };
+  const text = `Anthropic API error: ${sanitizeLogOutput(String(message ?? '')).slice(0, 500)}`;
+  if (status === 429 || type === 'rate_limit_error') return new QuotaError(text, 'Anthropic API rate limit reached', undefined, 'key');
+  if (status === 529 || type === 'overloaded_error') return new QuotaError(text, 'Anthropic API is overloaded');
+  return undefined;
 }
 
 export interface AnthropicClientOptions {
@@ -266,6 +275,15 @@ export class AnthropicClient implements LLMClient {
     if (code === 0 && !cliError) refusal = undefined;
     if (resultEvent?.stop_reason === 'refusal') refusal ??= 'refusal';
 
+    // The CLI can report a used-up subscription limit on a run that exits 0.
+    const limitText = cliError ?? (code !== 0 ? stderr : '');
+    const quota = matchQuotaText(limitText);
+    if (quota) {
+      const limit = quota.overloaded ? 'Claude is overloaded' : 'Claude subscription limit reached';
+      const message = `${limit}: ${sanitizeLogOutput(limitText.slice(-500)).trim()}`;
+      core.warning(message);
+      throw new QuotaError(message, limit, quota.resetsAt, quota.overloaded ? undefined : 'token');
+    }
     if ((code !== 0 && !truncated) || refusal) {
       const msg = buildExitDiagnostics({
         exitCode: code,
@@ -331,7 +349,7 @@ export class AnthropicClient implements LLMClient {
       return stream.finalMessage();
     }).catch((error: unknown) => {
       warnReplyTail('Anthropic API', replyTail);
-      throw error;
+      throw anthropicQuotaError(error) ?? error;
     });
 
     const textBlocks = response.content.filter((b) => b.type === 'text');

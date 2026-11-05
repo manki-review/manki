@@ -8,7 +8,7 @@ import * as core from '@actions/core';
 
 import { buildGeminiAuth, GEMINI_CLI_VERSION, GeminiClient, geminiThinkingConfig, resetGeminiCLIInstallPromise, resolveGeminiCredsDir } from './gemini';
 import { parseModelSpec } from './model-registry';
-import { RefusalError } from './types';
+import { QuotaError, RefusalError } from './types';
 
 // Seeding `~/.gemini/oauth_creds.json` is exercised separately in `cli-utils.test.ts`.
 // Stub it out here so the provider tests don't touch the filesystem.
@@ -225,6 +225,18 @@ describe('sendMessage effort option (API path)', () => {
 
     const result = await client.sendMessage('system', 'user');
     expect(result).toMatchObject({ content: '', truncated: true });
+  });
+
+  it.each<[string, object]>([
+    ['a 429', { status: 429, message: 'got status: 429 Too Many Requests' }],
+    ['a `RESOURCE_EXHAUSTED` body', { message: '{"error":{"code":429,"message":"You exceeded your current quota. Please retry in 23.5s.","status":"RESOURCE_EXHAUSTED"}}' }],
+  ])('throws a `QuotaError` on %s', async (_case, fields) => {
+    mockGenerateContent.mockRejectedValue(Object.assign(new Error(), fields));
+    const client = new GeminiClient({ auth: { kind: 'apiKey', key: 'k' }, model: 'gemini-3.8-flash' });
+
+    const error = await client.sendMessage('system', 'user').then(() => null, (e: Error) => e);
+    expect(error).toBeInstanceOf(QuotaError);
+    expect(error).toMatchObject({ limit: 'Gemini API quota exhausted', credential: 'key' });
   });
 
   it('propagates SDK errors from generateContent', async () => {
@@ -512,6 +524,17 @@ describe('GeminiClient OAuth path', () => {
     const allWarnings = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
     expect(allWarnings).toContain('[redacted-workflow-cmd]');
     expect(allWarnings).not.toContain('::error::leaked');
+    warnSpy.mockRestore();
+  });
+
+  it('throws a `QuotaError` when the Gemini CLI reports a used-up quota', async () => {
+    setupOAuthSpawnMock({ stderr: 'TerminalQuotaError: You have exhausted your capacity on this model. Your quota will reset after 2s.\n', exitCode: 1 });
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const client = new GeminiClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gemini-3.8-flash' });
+
+    const error = await client.sendMessage('sys', 'user').then(() => null, (e: Error) => e);
+    expect(error).toBeInstanceOf(QuotaError);
+    expect(error).toMatchObject({ limit: 'Gemini quota exhausted', resetsAt: 'after 2s', credential: 'token' });
     warnSpy.mockRestore();
   });
 

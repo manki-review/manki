@@ -6,8 +6,8 @@ import OpenAI from 'openai';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import * as core from '@actions/core';
 
-import { buildExitDiagnostics, callWithTimeout, runCli, seedAuthFile, STALE_TIMEOUT_MS, warnReplyTail } from './cli-utils';
-import { LLMClient, LLMResponse, LLMUsage, OpenAIAuth, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
+import { buildExitDiagnostics, callWithTimeout, extractCliErrorSnippet, matchQuotaText, runCli, seedAuthFile, STALE_TIMEOUT_MS, warnReplyTail } from './cli-utils';
+import { LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
 
@@ -86,6 +86,15 @@ export function resolveReasoningEffort(
   const ceiling = maxReasoningEffort(model);
   if (!ceiling) return undefined;
   return effort === 'max' ? ceiling : effort;
+}
+
+/** Maps an SDK 429, a used-up quota (`insufficient_quota`) or a rate limit, to a `QuotaError`. */
+function openAIQuotaError(error: unknown): QuotaError | undefined {
+  const { status, code, message } = (error ?? {}) as { status?: unknown; code?: unknown; message?: unknown };
+  if (status !== 429 && code !== 'insufficient_quota' && code !== 'rate_limit_exceeded') return undefined;
+  const text = sanitizeLogOutput(String(message ?? '')).slice(0, 500);
+  const limit = code === 'insufficient_quota' ? 'OpenAI API quota exhausted' : 'OpenAI API rate limit reached';
+  return new QuotaError(`${limit}: ${text}`, limit, matchQuotaText(text)?.resetsAt, 'key');
 }
 
 let cliInstallPromise: Promise<string> | null = null;
@@ -224,6 +233,14 @@ export class OpenAIClient implements LLMClient {
     });
 
     if (code !== 0) {
+      // Codex echoes the prompt to stderr, so only its `ERROR:` line is read for a limit.
+      const errorLine = extractCliErrorSnippet(stderr);
+      const quota = matchQuotaText(errorLine);
+      if (quota && !quota.overloaded) {
+        const message = `ChatGPT subscription limit reached: ${errorLine}`;
+        core.warning(message);
+        throw new QuotaError(message, 'ChatGPT subscription limit reached', quota.resetsAt, 'token');
+      }
       const msg = buildExitDiagnostics({
         exitCode: code,
         signal,
@@ -274,7 +291,8 @@ export class OpenAIClient implements LLMClient {
     const startTime = Date.now();
     const openai = this.openai;
     const response = await callWithTimeout('OpenAI API', options, (signal) =>
-      openai.chat.completions.create(params as ChatCompletionCreateParamsNonStreaming, signal ? { signal } : undefined));
+      openai.chat.completions.create(params as ChatCompletionCreateParamsNonStreaming, signal ? { signal } : undefined))
+      .catch((error: unknown) => { throw openAIQuotaError(error) ?? error; });
     const choice = response.choices?.[0];
     const content = choice?.message?.content ?? '';
     core.debug(sanitizeLogOutput(content.slice(0, 200)));
