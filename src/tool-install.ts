@@ -42,6 +42,7 @@ async function downloadAndExtract({ url, integrity }: PinnedDownload): Promise<s
   const dir = mkdtempSync(join(process.env.RUNNER_TEMP || tmpdir(), 'manki-tool-'));
   const archive = join(dir, 'download.tgz');
   writeFileSync(archive, data);
-  await execFileAsync('tar', ['-xzf', archive, '-C', dir]);
+  // A relative name keeps a Windows drive letter away from GNU tar, which reads `C:` as a remote host.
+  await execFileAsync('tar', ['-xzf', 'download.tgz'], { cwd: dir });
   return dir;
 }
