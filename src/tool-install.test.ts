@@ -1,10 +1,10 @@
 import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
+import { accessSync, constants, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { installTarball } from './tool-install';
+import { installPinned } from './tool-install';
 
 function tarball(): Buffer {
   const dir = mkdtempSync(join(tmpdir(), 'manki-tool-test-'));
@@ -14,7 +14,7 @@ function tarball(): Buffer {
   return readFileSync(join(dir, 'tool.tgz'));
 }
 
-describe('installTarball', () => {
+describe('installPinned', () => {
   const data = tarball();
   const integrity = `sha512-${createHash('sha512').update(data).digest('base64')}`;
   let fetchMock: jest.SpyInstance;
@@ -30,18 +30,28 @@ describe('installTarball', () => {
   it('unpacks a download that matches its digest, and downloads each URL once per run', async () => {
     const download = { url: 'https://example.test/tool-1.tgz', integrity };
 
-    const [first, second] = await Promise.all([installTarball(download), installTarball(download)]);
+    const [first, second] = await Promise.all([installPinned(download), installPinned(download)]);
 
     expect(readFileSync(join(first, 'package', 'tool.txt'), 'utf-8')).toBe('pinned tool');
     expect(second).toBe(first);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('saves a download that is not an archive as an executable under its own name', async () => {
+    const binary = Buffer.from('#!/bin/sh\n');
+    fetchMock.mockImplementation(async () => new Response(binary));
+
+    const dir = await installPinned({ url: 'https://example.test/v1/tool_linux_amd64', integrity: `sha256-${createHash('sha256').update(binary).digest('base64')}` });
+
+    expect(readFileSync(join(dir, 'tool_linux_amd64'))).toEqual(binary);
+    expect(() => accessSync(join(dir, 'tool_linux_amd64'), constants.X_OK)).not.toThrow();
+  });
+
   it('rejects a download whose digest differs, and a failed download', async () => {
     const tampered = `sha512-${createHash('sha512').update('other').digest('base64')}`;
-    await expect(installTarball({ url: 'https://example.test/tool-2.tgz', integrity: tampered })).rejects.toThrow(/does not match its pinned sha512 digest/);
+    await expect(installPinned({ url: 'https://example.test/tool-2.tgz', integrity: tampered })).rejects.toThrow(/does not match its pinned sha512 digest/);
 
     fetchMock.mockImplementation(async () => new Response('gone', { status: 404 }));
-    await expect(installTarball({ url: 'https://example.test/tool-3.tgz', integrity })).rejects.toThrow(/HTTP 404/);
+    await expect(installPinned({ url: 'https://example.test/tool-3.tgz', integrity })).rejects.toThrow(/HTTP 404/);
   });
 });
