@@ -80,14 +80,19 @@ export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triag
   const routing = resolveRouting(config.review);
   const classification = classifyPr(diff, pinned, routing.classes);
   const choice = chooseGroup(routing, classification, ref => resolveReviewerModel(config, ref));
+  const reviewClass = classification.name ? routing.classes[classification.name] : undefined;
   return {
     finders: buildFinders(choice.group, config, classification.triage),
-    ...(classification.name && { reviewClass: classification.name }),
-    group: choice.name,
-    groupSource: choice.source,
-    ...(classification.floor && { floor: classification.floor }),
-    ...(choice.escalatedFrom && { escalatedFrom: choice.escalatedFrom }),
-    ...(choice.weakerAllowed && { weakerAllowed: choice.weakerAllowed }),
+    routing: {
+      ...(classification.name && { class: classification.name, rank: reviewClass!.rank }),
+      matched: classification.matched,
+      classSource: !reviewClass ? 'default' : reviewClass.match.paths_any ? 'paths' : 'triage',
+      group: choice.name,
+      groupSource: choice.source,
+      ...(classification.floor && { floor: classification.floor }),
+      ...(choice.escalatedFrom && { escalatedFrom: choice.escalatedFrom }),
+      ...(choice.weakerAllowed && { weakerAllowed: choice.weakerAllowed }),
+    },
     triage: classification.triage,
     sensitivePaths: classification.matched.includes('security'),
     ciOrDependencyPaths: classification.matched.includes('supply_chain'),
@@ -378,7 +383,7 @@ export function buildProvenanceFields(
   plannerFallbackReason: string | undefined,
   team: TeamRoster,
   agentMultiPassConsistency: Map<string, { consistent: number; totalRaw: number }>,
-): Pick<ReviewResult, 'plannerSource' | 'plannerFallbackReason' | 'triage' | 'sensitivePaths' | 'ciOrDependencyPaths' | 'trivialOverridden' | 'agentMultiPassConsistency' | 'agentEffortMap' | 'agentModels' | 'pairAgentName'> {
+): Pick<ReviewResult, 'plannerSource' | 'plannerFallbackReason' | 'triage' | 'sensitivePaths' | 'ciOrDependencyPaths' | 'trivialOverridden' | 'agentMultiPassConsistency' | 'agentEffortMap' | 'agentModels' | 'pairAgentName' | 'routing'> {
   const pairAgentName = team.finders.find(f => f.index === 1)?.name;
   return {
     plannerSource,
@@ -391,6 +396,7 @@ export function buildProvenanceFields(
     agentEffortMap: new Map(team.finders.map(f => [f.name, f.effort])),
     agentModels: new Map(team.finders.map(f => [f.name, f.model])),
     ...(pairAgentName && { pairAgentName }),
+    routing: team.routing,
   };
 }
 
@@ -452,9 +458,10 @@ export async function runReview(
   const reviewerEffort = team.finders[0].effort;
   const { trivial, subtle, paired } = team.triage;
   core.info(`Triage (${plannerSource}): trivial=${trivial}, subtle=${subtle}, paired=${paired}${team.sensitivePaths ? ', security-sensitive paths' : ''}${team.ciOrDependencyPaths ? ', CI or dependency paths' : ''}${team.trivialOverridden ? ', planner trivial answer overridden by the changed files' : ''}`);
-  core.info(`Review class: ${team.reviewClass ?? 'none'}, group: ${team.group} (${team.groupSource}${team.escalatedFrom ? `, moved up from ${team.escalatedFrom} to meet the ${team.floor} floor` : ''})`);
-  if (team.weakerAllowed) {
-    core.warning(`\`review.allow_weaker\` lets this ${team.weakerAllowed.join(', ')} change run on the ${team.group} group, below the floor of two finders on two models`);
+  const { routing } = team;
+  core.info(`Review class: ${routing.class ?? 'none'}, group: ${routing.group} (${routing.groupSource}${routing.escalatedFrom ? `, moved up from ${routing.escalatedFrom} to meet the ${routing.floor} floor` : ''})`);
+  if (routing.weakerAllowed) {
+    core.warning(`\`review.allow_weaker\` lets this ${routing.weakerAllowed.join(', ')} change run on the ${routing.group} group, below the floor of two finders on two models`);
   }
   core.info(`Review team: ${team.finders.map(f => f.name).join(', ')} at ${reviewerEffort} effort, judge: ${judgeEffort}${plannerResult ? ` (${plannerResult.prType})` : ''}`);
   if (trivial) {

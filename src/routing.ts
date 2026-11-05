@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { minimatch } from 'minimatch';
 
 import { countChangedLines } from './diff';
@@ -223,4 +224,18 @@ export function chooseGroup(routing: ResolvedRouting, classification: PrClassifi
     return { name: target, group: routing.groups[target], source: 'floor_escalation', escalatedFrom: name, ...(weakerAllowed.length > 0 && { weakerAllowed }) };
   }
   return { name: FLOOR_FALLBACK_GROUP, group: BUILT_IN_GROUPS[FLOOR_FALLBACK_GROUP], source: 'floor_escalation', escalatedFrom: name };
+}
+
+/** Returns the SHA-256 of the classes, groups and routes a round chooses from. Key order in the config does not change it. */
+export function routingDigest(review: ReviewRoutingConfig | undefined): string {
+  return createHash('sha256').update(canonicalJson(resolveRouting(review))).digest('hex');
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
 }

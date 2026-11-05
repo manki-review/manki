@@ -188,7 +188,7 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
               errors.push(`\`models.agents.${agentName}\` must be a non-empty string`);
             }
           }
-          warnings.push('`models.agents` is deprecated. Manki no longer runs specialist agents. Unless `models.reviewer_pair` is set, its first model that differs from `models.reviewer` becomes the second finder\'s model.');
+          warnings.push('`models.agents` is deprecated and will be removed in the next major release. Manki no longer runs specialist agents. Unless `models.reviewer_pair` is set, its first model that differs from `models.reviewer` becomes the second finder\'s model, which `@reviewer_pair` in a review group names.');
         }
       }
     }

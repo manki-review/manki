@@ -150,7 +150,7 @@ jest.mock('./review', () => ({
     agentNames: ['general'],
   }),
   teamModels: jest.requireActual('./review').teamModels,
-  selectTeam: jest.fn().mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, index: 0, model: 'claude-sonnet-5-5', effort: 'high' }], group: 'solo', groupSource: 'routing', triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false }),
+  selectTeam: jest.fn().mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, index: 0, model: 'claude-sonnet-5-5', effort: 'high' }], routing: { matched: ['internal'], classSource: 'triage', group: 'solo', groupSource: 'routing' }, triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false }),
 }));
 
 jest.mock('./github', () => {
@@ -253,6 +253,7 @@ import * as ghUtils from './github';
 import * as diffModule from './diff';
 import * as configModule from './config';
 import * as reviewModule from './review';
+import { routingDigest } from './routing';
 import * as recapModule from './recap';
 import type { RecapState } from './recap';
 import * as memoryModule from './memory';
@@ -1805,7 +1806,7 @@ describe('runFullReview orchestration', () => {
       findings: [], highlights: [], reviewComplete: true,
       agentNames: ['general'],
     });
-    jest.mocked(reviewModule.selectTeam).mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, index: 0, model: 'claude-sonnet-5-5', effort: 'high' }], group: 'solo', groupSource: 'routing', triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false });
+    jest.mocked(reviewModule.selectTeam).mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, index: 0, model: 'claude-sonnet-5-5', effort: 'high' }], routing: { matched: ['internal'], classSource: 'triage', group: 'solo', groupSource: 'routing' }, triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false });
     jest.mocked(ghUtils.postProgressComment).mockResolvedValue(1);
     jest.mocked(ghUtils.postReview).mockResolvedValue(123);
     jest.mocked(ghUtils.fetchPRDiff).mockResolvedValue('');
@@ -2662,7 +2663,9 @@ describe('runFullReview orchestration', () => {
       agentNames: [primaryName, pairName],
       allJudgedFindings: findings, rawFindings: findings,
       agentModels: new Map([[primaryName, 'claude-sonnet-5-5'], [pairName, 'claude-opus-5-5']]),
+      agentEffortMap: new Map([[primaryName, 'high'], [pairName, 'high']]),
       pairAgentName: pairName,
+      routing: { class: 'behavior', rank: 50, matched: ['behavior'], classSource: 'triage', group: 'pair', groupSource: 'routing' },
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
 
@@ -2673,9 +2676,51 @@ describe('runFullReview orchestration', () => {
       [primaryName, 'claude-sonnet-5-5'],
       [pairName, 'claude-opus-5-5'],
     ]);
-    expect(ctx!.reviewers).toEqual(expect.objectContaining({ keptPrimaryOnly: 1, keptPairOnly: 1, keptBoth: 1 }));
+    expect(ctx!.reviewers).toEqual(expect.objectContaining({
+      keptPrimaryOnly: 1, keptPairOnly: 1, keptBoth: 1,
+      keptOnlyBy: { [primaryName]: 1, [pairName]: 1 }, keptByMany: 1,
+    }));
+    expect(ctx!.routing).toEqual({
+      class: 'behavior', rank: 50, matched: ['behavior'], classSource: 'triage', group: 'pair', groupSource: 'routing',
+      configSource: 'builtin',
+      configDigest: routingDigest(undefined),
+      reviewers: [
+        { name: primaryName, model: 'claude-sonnet-5-5', provider: 'anthropic', effort: 'high' },
+        { name: pairName, model: 'claude-opus-5-5', provider: 'anthropic', effort: 'high' },
+      ],
+    });
     expect(ctx!.findings.entries.find(e => e.title === 'Race')?.reviewers).toEqual([primaryName, pairName]);
     expect(ctx!.models.reviewerPair).toBe('claude-opus-5-5');
+  });
+
+  it('counts kept findings per finder in a group of three, without the two-finder fields', async () => {
+    const testFile = { path: 'src/net/peer.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
+    jest.mocked(ghUtils.readConfigFile).mockResolvedValueOnce('review:\n  groups:\n    deep:\n      reviewers: [{ model: claude-opus-5-5 }, { model: gemini-3-pro }, { model: claude-sonnet-5-5 }]\n  routing:\n    security: deep\n');
+
+    const [a, b, c] = ['Finder (claude-opus-5-5)', 'Pair finder (gemini-3-pro)', 'Finder 3 (claude-sonnet-5-5)'];
+    const finding = (title: string, reviewers: string[]) => ({ severity: 'warning' as const, title, file: 'src/net/peer.ts', line: 2, description: 'd', reviewers });
+    const findings = [finding('One', [a]), finding('Two', [c]), finding('Three', [a, b]), finding('Four', [a, b, c]), finding('Five', [c])];
+    jest.mocked(reviewModule.runReview).mockResolvedValue({
+      verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Issues found',
+      findings, highlights: [], reviewComplete: true,
+      agentNames: [a, b, c],
+      allJudgedFindings: findings, rawFindings: findings,
+      agentModels: new Map([[a, 'claude-opus-5-5'], [b, 'gemini-3-pro'], [c, 'claude-sonnet-5-5']]),
+      pairAgentName: b,
+      routing: { class: 'security', rank: 100, matched: ['security', 'behavior'], classSource: 'paths', group: 'deep', groupSource: 'routing', floor: 'security' },
+    });
+    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
+
+    await callRunFullReview();
+
+    const ctx = jest.mocked(ghUtils.postReview).mock.calls[0][7];
+    expect(ctx!.reviewers).toEqual(expect.objectContaining({ keptOnlyBy: { [a]: 1, [c]: 2 }, keptByMany: 2 }));
+    expect(ctx!.reviewers).not.toHaveProperty('keptPrimaryOnly');
+    expect(ctx!.routing).toEqual(expect.objectContaining({ class: 'security', group: 'deep', configSource: 'base' }));
+    expect(ctx!.routing!.configDigest).toMatch(/^[0-9a-f]{64}$/);
+    expect(ctx!.routing!.configDigest).not.toBe(routingDigest(undefined));
   });
 
   it('builds `perStage` with only present stages when planner and dedup are absent', async () => {
@@ -6572,7 +6617,7 @@ describe('runFullReview concurrent-submission lock', () => {
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'APPROVE', outcome: 'READY' as const, summary: '', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
     });
-    jest.mocked(reviewModule.selectTeam).mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, index: 0, model: 'claude-sonnet-5-5', effort: 'high' }], group: 'solo', groupSource: 'routing', triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false });
+    jest.mocked(reviewModule.selectTeam).mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, index: 0, model: 'claude-sonnet-5-5', effort: 'high' }], routing: { matched: ['internal'], classSource: 'triage', group: 'solo', groupSource: 'routing' }, triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false });
     jest.mocked(ghUtils.postProgressComment).mockResolvedValue(1);
     jest.mocked(ghUtils.findInProgressLock).mockReturnValue(null);
     jest.mocked(ghUtils.isLockExpired).mockReturnValue(false);

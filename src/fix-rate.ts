@@ -45,7 +45,8 @@ interface PostedFinding {
  * Records how many posted findings of a merged pull request were fixed, dismissed or left
  * untouched, per severity and specialist (`counts`) and per severity, judge confidence and tool
  * evidence (`calibration`). Writes one JSON line to the job summary, and appends it to
- * `<repo>/metrics/fix-rate.jsonl` in the memory repo when `memory` is given.
+ * `<repo>/metrics/fix-rate.jsonl` in the memory repo when `memory` is given. The line carries
+ * the class, group and config digest of the last round that recorded them.
  */
 export async function recordFixRate(
   octokit: Octokit,
@@ -88,10 +89,12 @@ export async function recordFixRate(
     tally<CalibrationKey>(calibration, { severity: entry.severity, confidence: entry.judgeConfidence ?? 'unknown', toolEvidence: entry.toolEvidence ?? 'unknown' }, outcome);
   }
 
+  const routing = [...priorRounds].reverse().find(r => r.routing)?.routing;
   const line = JSON.stringify({
     pr: pr.number,
     mergedSha: pr.mergedSha,
     rounds: priorRounds.length,
+    ...(routing && { class: routing.class ?? null, group: routing.group, configDigest: routing.configDigest }),
     counts: [...counts.values()],
     calibration: [...calibration.values()],
     ...(partial && { partial: true }),

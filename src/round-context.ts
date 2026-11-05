@@ -2,7 +2,9 @@ import type { LLMUsage } from './providers';
 import { isEmptyInterRoundDiff, MAX_INTER_ROUND_DIFF_CHARS } from './judge';
 import { collectResolvedThreadIds, fingerprintFinding, RecapState } from './recap';
 import { MANKI_VERSION } from './github';
-import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OpenThread, OWN_PROPOSAL_TAG, ParsedDiff, RATCHET_SUPPRESSED_TAG, ReclassifiedPrior, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ReviewModels, ReviewResult, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundRecap, RoundTrigger, RoundUsage, RoundUsageStage, SECURITY_TAG, SEVERITY_ORDER, ThreadResolutionOverrides } from './types';
+import { parseModelSpec } from './providers';
+import { routingDigest } from './routing';
+import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OpenThread, OWN_PROPOSAL_TAG, ParsedDiff, RATCHET_SUPPRESSED_TAG, ReclassifiedPrior, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ReviewModels, ReviewResult, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundRecap, RoundRouting, RoundTrigger, RoundUsage, RoundUsageStage, SECURITY_TAG, SEVERITY_ORDER, ThreadResolutionOverrides } from './types';
 
 const ALLOWED_FINGERPRINT_TAGS = new Set<string>([
   DEFENSIVE_HARDENING_TAG,
@@ -21,6 +23,8 @@ export interface RoundRecordInput {
   trigger: RoundTrigger;
   options: FullReviewOptions;
   config: ReviewConfig;
+  /** Where the round's `review` block came from. */
+  reviewSource: RoundRouting['configSource'];
   models: ReviewModels;
   plannerEnabled: boolean;
   recap: RecapState;
@@ -100,15 +104,25 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
         };
       })
     : undefined;
-  const corroboration = { keptPrimaryOnly: 0, keptPairOnly: 0, keptBoth: 0 };
+  const keptOnlyBy: Record<string, number> = {};
+  let keptByMany = 0;
   for (const f of result.findings) {
-    const agents = f.reviewers.filter(r => agentModels.has(r));
-    const pair = agents.some(r => r === result.pairAgentName);
-    const primary = agents.some(r => r !== result.pairAgentName);
-    if (primary && pair) corroboration.keptBoth++;
-    else if (primary) corroboration.keptPrimaryOnly++;
-    else if (pair) corroboration.keptPairOnly++;
+    const finders = [...new Set(f.reviewers.filter(r => agentModels.has(r)))];
+    if (finders.length === 1) keptOnlyBy[finders[0]] = (keptOnlyBy[finders[0]] ?? 0) + 1;
+    else if (finders.length > 1) keptByMany++;
   }
+  const pairName = result.pairAgentName;
+  const keptPairOnly = pairName ? keptOnlyBy[pairName] ?? 0 : 0;
+  // The two-finder fields stay for rounds with exactly two finders, so earlier rounds compare.
+  const corroboration = {
+    keptOnlyBy,
+    keptByMany,
+    ...(agentModels.size === 2 && pairName && {
+      keptPrimaryOnly: Object.values(keptOnlyBy).reduce((sum, n) => sum + n, 0) - keptPairOnly,
+      keptPairOnly,
+      keptBoth: keptByMany,
+    }),
+  };
 
   // Judge calibration metrics
   const confidenceDistribution = { high: 0, medium: 0, low: 0 };
@@ -304,6 +318,17 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
       ...(agentMetrics && { agentMetrics }),
       ...corroboration,
     },
+    ...(result.routing && {
+      routing: {
+        ...result.routing,
+        configSource: input.reviewSource,
+        configDigest: routingDigest(input.config.review),
+        reviewers: [...agentModels].map(([name, model]) => {
+          const effort = result.agentEffortMap?.get(name);
+          return { name, model, provider: parseModelSpec(model).provider, ...(effort && { effort }) };
+        }),
+      },
+    }),
     judge: {
       summary: result.summary,
       confidenceDistribution,

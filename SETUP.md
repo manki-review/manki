@@ -602,6 +602,8 @@ review:
 - **`default_group`**: the group for a class with no route (default `pair`).
 - **`allow_weaker`**: floor classes allowed to route to a group below the floor, such as `allow_weaker: [security]`. Without it, routing a floor class to a weaker group fails the run with the reason. Every round that runs below the floor logs a warning.
 
+Each review's `Manki context` block records a `routing` object: the class, its rank and source, every matched class, the group and why it was picked, any floor and escalation, where the `review` block came from, a `configDigest` of the classes, groups and routes, and each reader's model, provider and effort. `reviewers.keptOnlyBy` counts the kept findings only one finder raised, per finder, and `keptByMany` those two or more raised.
+
 Manki reads the `review` block from the PR's base branch only, like `static_analysis`, so a PR cannot weaken its own review. A PR that changes the block is reviewed with the base branch's, and the change applies after merge. A PR whose own block misses a floor fails, so a broken block never lands. When the base branch's config cannot be read, or its block is invalid or misses a floor, Manki uses the built-ins with a warning, never the PR's copy, so the PR that fixes it still gets reviewed. The models behind `@reviewer` and `@reviewer_pair` come from the PR's `models` block, except that a PR cannot put both finders of a pair on one model when the base branch's models give two: that round keeps the base branch's reviewer models.
 
 `planner.paired` still works and is deprecated in favour of `routing`: `always` turns `paired` on before the PR is classified, and `never` turns it off, which routes `behavior` changes to the `internal` class and its group.
@@ -628,7 +630,7 @@ Use the `models` config section to choose different models for the finders and t
 
 The judge treats two finders reporting the same defect as strong evidence that it is real, and one finder's silence as no evidence against the other's finding. Agreement never raises a finding's severity.
 
-`review_level`, `review_thresholds` and `models.agents` from earlier releases still load, with a warning. The first two are ignored. The first model in `models.agents` that differs from `models.reviewer` becomes `models.reviewer_pair` when that is not set.
+`review_level`, `review_thresholds` and `models.agents` from earlier releases still load, with a warning. The first two are ignored. The first model in `models.agents` that differs from `models.reviewer` becomes `models.reviewer_pair` when that is not set. `models.agents` will be removed in the next major release: set `models.reviewer_pair`, or name models in a review group.
 
 ## Step 5: Set Up Review Memory (Optional)
 
@@ -685,7 +687,7 @@ Make sure the `REVIEW_MEMORY_TOKEN` secret is set (see Step 2).
 - **Suppressions** -- Created by `/manki dismiss`. Non-blocking findings matching a suppression pattern are filtered out (blocking findings are never suppressed).
 - **Patterns** -- Automatically tracked from recurring findings. After 5 occurrences a pattern is escalated for visibility.
 - **Global conventions** -- A `_global/conventions.md` file applied to all repos using the memory system.
-- **Fix rate** -- On each merge, one JSON line per PR is appended to `<repo-name>/metrics/fix-rate.jsonl` with the posted, fixed, dismissed and untouched findings per severity and first reviewer (the `counts` field), and per severity, judge confidence and tool evidence (the `calibration` field). A finding counts as fixed when the judge marked its thread addressed or the code at its lines changed before the merge. Turn it off with `metrics.fix_rate: false`. To read the totals, run `npm run fix-rate-report -- <path to fix-rate.jsonl> [more paths]` in a manki checkout, which prints one markdown table per dimension.
+- **Fix rate** -- On each merge, one JSON line per PR is appended to `<repo-name>/metrics/fix-rate.jsonl` with the posted, fixed, dismissed and untouched findings per severity and first reviewer (the `counts` field), and per severity, judge confidence and tool evidence (the `calibration` field), plus the `class`, `group` and `configDigest` of the PR's last review round, so fix rates compare per class and group. A finding counts as fixed when the judge marked its thread addressed or the code at its lines changed before the merge. Turn it off with `metrics.fix_rate: false`. To read the totals, run `npm run fix-rate-report -- <path to fix-rate.jsonl> [more paths]` in a manki checkout, which prints one markdown table per dimension.
 
 ## Verification
 

@@ -309,6 +309,8 @@ export interface ReviewResult {
   agentModels?: Map<string, string>;
   /** Name of the second finder, when one ran. */
   pairAgentName?: string;
+  /** How the round's review group was picked. */
+  routing?: TeamRouting;
   /** Per-agent multi-pass intersection stats. Keyed by agent name. */
   agentMultiPassConsistency?: Map<string, { consistent: number; totalRaw: number }>;
   /** Per-agent effort level actually used at run time. Keyed by agent name. */
@@ -426,10 +428,15 @@ export interface ReviewRoutingConfig {
   allow_weaker?: string[];
 }
 
-export interface TeamRoster {
-  finders: Finder[];
+/** How a round's review group was picked. */
+export interface TeamRouting {
   /** Review class the PR fell in, or unset when none matched and the default group ran. */
-  reviewClass?: string;
+  class?: string;
+  rank?: number;
+  /** Every class the PR matched, highest rank first. */
+  matched: string[];
+  /** Whether a path rule or the triage put the PR in its class, or `default` when no class matched. */
+  classSource: 'paths' | 'triage' | 'default';
   /** Review group the finders came from. */
   group: string;
   /** Whether the class's route, the default group or the floor picked the group. */
@@ -440,6 +447,11 @@ export interface TeamRoster {
   escalatedFrom?: string;
   /** Floor classes `review.allow_weaker` let run below the floor. */
   weakerAllowed?: string[];
+}
+
+export interface TeamRoster {
+  finders: Finder[];
+  routing: TeamRouting;
   /** Triage after `planner.paired` and the floor and file rules. */
   triage: Triage;
   sensitivePaths: boolean;
@@ -754,12 +766,22 @@ export interface RoundContext {
   findings: RoundFindings;
   usage: RoundUsage;
   verdict: ReviewVerdict;
+  /** Which class the PR fell in and which group reviewed it. Optional so older context blocks keep parsing. */
+  routing?: RoundRouting;
   /**
    * Recap-stage attribution: which priors were loaded, how many flipped
    * `authorReplyClass` during refresh, and the flips themselves. Optional
    * so legacy context blocks parse cleanly.
    */
   recap?: RoundRecap;
+}
+
+export interface RoundRouting extends TeamRouting {
+  /** Where the `review` block came from: the base branch, or the built-ins because the base has none, could not be read, or failed validation. */
+  configSource: 'base' | 'builtin' | 'base_unreadable' | 'base_invalid';
+  /** SHA-256 of the review classes, groups and routes the round chose from, so rounds under different definitions stay apart. */
+  configDigest: string;
+  reviewers: Array<{ name: string; model: string; provider: string; effort?: EffortLevel }>;
 }
 
 /** Identity, provenance, and versioning for a single completed review round. */
@@ -955,6 +977,10 @@ export interface RoundReviewers {
   keptPairOnly?: number;
   /** Kept findings raised by the second finder and an agent on `models.reviewer`. */
   keptBoth?: number;
+  /** Kept findings raised by one finder alone, keyed by finder name. Finders with none are left out. */
+  keptOnlyBy?: Record<string, number>;
+  /** Kept findings raised by two or more finders. */
+  keptByMany?: number;
 }
 
 export interface RoundAgentMetric {
