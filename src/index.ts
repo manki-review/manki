@@ -15,7 +15,7 @@ import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, 
 import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, RepoMemory } from './memory';
 import { fetchRecapState, PreviousFinding, RecapState } from './recap';
-import { ReviewClients, ReviewOptions, runReview, selectTeam, teamModels } from './review';
+import { ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint, teamModels } from './review';
 import { buildRoundContext, RoundRecordInput } from './round-context';
 import { collectStaticSignals } from './static-signals';
 import { DashboardData, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, RoundTrigger, StaticSignal, roundContextToFlatAliases } from './types';
@@ -42,6 +42,7 @@ import {
   FORCE_CAP_MARKER,
   isBotLogin,
   isReviewInProgress,
+  titleToSlug,
   isApprovedOnCommit,
   hasBotReviewOnCommit,
   fetchStandingVerdict,
@@ -1037,7 +1038,8 @@ async function postIncompleteRound(run: ReviewRun, result: ReviewResult): Promis
 }
 
 /**
- * Resolve threads the judge marked `addressed`, each with a `Fixed in <sha>.` reply. Other statuses
+ * Resolve threads the judge marked `addressed`, each with a `Fixed in <sha>.` reply. A blocker
+ * thread that fails to resolve stays open, and the round no longer approves. Other statuses
  * (`not_addressed`, `uncertain`) are logged for audit but never trigger a
  * resolveReviewThread mutation. Unknown thread IDs are filtered.
  *
@@ -1051,10 +1053,12 @@ async function postIncompleteRound(run: ReviewRun, result: ReviewResult): Promis
 async function resolveAddressedThreads(run: ReviewRun, result: ReviewResult): Promise<void> {
   const hasPriorRounds = run.recap.priorRounds.length > 0;
   const interRoundDiffKnownEmpty = hasPriorRounds && isEmptyInterRoundDiff(run.interRoundDiff);
+  const stillOpen: OpenThread[] = [];
   if (result.threadEvaluations && result.threadEvaluations.length > 0) {
-    const knownThreadIds = new Set(run.openThreads.map(t => t.threadId));
+    const knownThreads = new Map(run.openThreads.map(t => [t.threadId, t]));
     for (const { threadId, status, reason } of result.threadEvaluations) {
-      if (!knownThreadIds.has(threadId)) {
+      const thread = knownThreads.get(threadId);
+      if (!thread) {
         core.debug(`Skipping unknown thread ${threadId} — not in openThreads allowlist`);
         continue;
       }
@@ -1068,7 +1072,8 @@ async function resolveAddressedThreads(run: ReviewRun, result: ReviewResult): Pr
         await resolveReviewThread(run.octokit, threadId);
         core.info(`Judge resolved: "${reason}" — thread ${threadId}`);
       } catch (error) {
-        core.debug(`Failed to resolve thread ${threadId}: ${error}`);
+        core.warning(`Failed to resolve thread ${threadId}, it stays open: ${error}`);
+        stillOpen.push(thread);
         continue;
       }
       try {
@@ -1078,6 +1083,28 @@ async function resolveAddressedThreads(run: ReviewRun, result: ReviewResult): Pr
       }
     }
   }
+  blockOnOpenThreads(result, stillOpen);
+}
+
+/** Turns an approval into a request for changes when a blocker thread it counted as fixed could not be resolved. */
+function blockOnOpenThreads(result: ReviewResult, threads: OpenThread[]): void {
+  const blocking = threads.filter(t => t.severity === 'blocker' || t.severity === 'unknown');
+  if (blocking.length === 0 || result.verdict !== 'APPROVE') return;
+  result.verdict = 'REQUEST_CHANGES';
+  result.outcome = 'ADDRESS_FIRST';
+  result.verdictReason = 'prior_unaddressed';
+  result.verdictTrace = {
+    survivingBlockers: [],
+    novelWarnings: [],
+    unresolvedPriors: blocking.map(t => ({
+      file: t.file,
+      title: t.title,
+      fingerprint: stringifyFindingFingerprint({ file: t.file, lineStart: t.line, lineEnd: t.line, slug: titleToSlug(t.title) }),
+      threadId: t.threadId,
+      ...(t.line && { line: t.line }),
+      ...(t.threadUrl && { threadUrl: t.threadUrl }),
+    })),
+  };
 }
 
 /** Posts the round's review and dismisses the previous one. Returns the new review's id. */

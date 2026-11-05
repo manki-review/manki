@@ -150,6 +150,7 @@ jest.mock('./review', () => ({
     agentNames: ['general'],
   }),
   teamModels: jest.requireActual('./review').teamModels,
+  stringifyFindingFingerprint: jest.requireActual('./review').stringifyFindingFingerprint,
   selectTeam: jest.fn().mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, index: 0, model: 'claude-sonnet-5-5', effort: 'high' }], routing: { matched: ['internal'], classSource: 'triage', group: 'solo', groupSource: 'routing' }, triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false }),
 }));
 
@@ -223,6 +224,7 @@ jest.mock('./github', () => {
   }),
   BOT_LOGIN: 'manki-review[bot]',
   isBotLogin: jest.requireActual('./github').isBotLogin,
+  titleToSlug: jest.requireActual('./github').titleToSlug,
   BOT_MARKER: '<!-- manki-bot -->',
   REVIEW_COMPLETE_MARKER: '<!-- manki-review-complete -->',
   FORCE_REVIEW_MARKER: '<!-- manki-force-review -->',
@@ -5101,7 +5103,7 @@ describe('runFullReview orchestration', () => {
     expect(threadIds).not.toContain('PRRT_resolved');
   });
 
-  it('logs debug message when thread resolution fails', async () => {
+  it('keeps a blocker thread that fails to resolve open, and requests changes on it instead of approving', async () => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
@@ -5132,9 +5134,14 @@ describe('runFullReview orchestration', () => {
 
     await callRunFullReview();
 
-    expect(jest.mocked(core.debug)).toHaveBeenCalledWith(
-      expect.stringContaining('Failed to resolve thread PRRT_fail'),
-    );
+    expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('Failed to resolve thread PRRT_fail, it stays open'));
+    expect(mockGraphql).not.toHaveBeenCalledWith(expect.stringContaining('addPullRequestReviewThreadReply'), expect.anything());
+    expect(jest.mocked(ghUtils.postReview).mock.calls[0][5]).toMatchObject({
+      verdict: 'REQUEST_CHANGES',
+      outcome: 'ADDRESS_FIRST',
+      verdictReason: 'prior_unaddressed',
+      verdictTrace: { unresolvedPriors: [expect.objectContaining({ threadId: 'PRRT_fail', title: 'Bug A', file: 'src/app.ts', line: 1 })] },
+    });
   });
 
   it('fails fast with setFailed when no API key is configured', async () => {
