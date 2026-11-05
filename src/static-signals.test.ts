@@ -4,7 +4,8 @@ import * as github from '@actions/github';
 import { parsePRDiff } from './diff';
 import * as githubModule from './github';
 import { buildReviewerUserMessage } from './review';
-import { collectStaticSignals, StaticSignalRequest } from './static-signals';
+import { checkFindingClaims, collectStaticSignals, StaticSignalRequest, toolAlertFindings } from './static-signals';
+import { Finding, StaticSignal } from './types';
 import { paginateSinglePage } from './test-utils';
 
 jest.mock('@actions/core', () => ({
@@ -168,5 +169,76 @@ describe('collectStaticSignals', () => {
     } finally {
       fetchSpy.mockRestore();
     }
+  });
+});
+
+function signal(overrides: Partial<StaticSignal>): StaticSignal {
+  return { tool: 'lint', ruleId: 'no-undef', severity: 'error', file: 'src/app.ts', line: 2, message: 'b is not defined', source: 'checks', ...overrides };
+}
+
+describe('toolAlertFindings', () => {
+  it('turns security, code-scanning and error-level results into labelled candidates, and never style results', () => {
+    const findings = toolAlertFindings([
+      signal({ tool: 'CodeQL', ruleId: 'js/sql-injection', severity: 'warning', message: 'Query built from user input', source: 'code_scanning' }),
+      signal({ tool: 'CodeQL', ruleId: 'js/unused-local-variable', severity: 'note', message: 'Unused variable', source: 'code_scanning' }),
+      signal({}),
+      signal({ ruleId: 'no-console', severity: 'warning', message: 'Unexpected console statement' }),
+      signal({ tool: 'bandit', ruleId: 'B602 shell injection', severity: 'note', message: 'subprocess with shell=True' }),
+      signal({ tool: 'dependency review', ruleId: 'GHSA-1234', severity: 'note', file: 'package.json', line: 7, message: 'lodash@4.17.0: prototype pollution', source: 'dependency_review' }),
+      signal({ ruleId: 'prettier/prettier', message: 'Insert `;`' }),
+      signal({ tool: 'rustfmt', ruleId: '', message: 'Diff in src/app.ts' }),
+      signal({ tool: 'eslint', ruleId: '@stylistic/indent', message: 'Expected indentation of 2 spaces' }),
+      signal({ tool: 'CodeQL', ruleId: 'js/sql-injection', severity: 'warning', message: 'Query built from user input', source: 'code_scanning' }),
+    ]);
+
+    expect(findings.map(f => f.title)).toEqual([
+      'js/sql-injection: Query built from user input',
+      'js/unused-local-variable: Unused variable',
+      'no-undef: b is not defined',
+      'B602 shell injection: subprocess with shell=True',
+      'GHSA-1234: lodash@4.17.0: prototype pollution',
+    ]);
+    expect(findings[0]).toEqual({
+      severity: 'warning', title: 'js/sql-injection: Query built from user input', file: 'src/app.ts', line: 2,
+      description: 'Query built from user input', reviewers: ['CodeQL'], toolSource: 'CodeQL',
+      toolEvidence: { status: 'confirmed', note: 'CodeQL reports this result.' },
+    });
+    expect(findings.map(f => f.severity)).toEqual(['warning', 'suggestion', 'blocker', 'suggestion', 'suggestion']);
+  });
+});
+
+describe('checkFindingClaims', () => {
+  const diff = parsePRDiff(RAW_DIFF);
+  const fileContents = new Map([['src/app.ts', 'const a = 1;\nconst b = 2;\nexport { a };\n']]);
+  const sources = { diff, rawDiff: RAW_DIFF, fileContents, signals: [] as StaticSignal[] };
+
+  function finding(overrides: Partial<Finding>): Finding {
+    return { severity: 'warning', title: 'Wrong constant', file: 'src/app.ts', line: 2, description: 'The value is off by one.', reviewers: ['finder'], ...overrides };
+  }
+
+  it('contradicts a finding on a file outside the diff or a line past the end of the file', () => {
+    expect(checkFindingClaims(finding({ file: 'src/other.ts' }), sources)).toEqual({ status: 'contradicted', note: 'src/other.ts is not changed in this diff.' });
+    expect(checkFindingClaims(finding({ line: 40 }), sources)).toEqual({ status: 'contradicted', note: 'src/app.ts has 3 lines, but the finding points at line 40.' });
+  });
+
+  it('contradicts a backticked symbol that occurs neither in the file nor in the diff, and skips plain words', () => {
+    expect(checkFindingClaims(finding({ description: 'Calls `parseConfig()` with `null`.' }), sources))
+      .toEqual({ status: 'contradicted', note: '`parseConfig` occurs neither in src/app.ts nor in the diff.' });
+    expect(checkFindingClaims(finding({ title: 'Shadowed `config.lodash`', description: 'Returns `null` early.' }), sources))
+      .toEqual({ status: 'none', note: 'Checked: the file is in the diff, the line is in the file, `lodash` occurs.' });
+  });
+
+  it('cannot contradict a symbol without the file contents', () => {
+    expect(checkFindingClaims(finding({ description: 'Calls `parseConfig()`.' }), { ...sources, fileContents: undefined }))
+      .toEqual({ status: 'none', note: 'Checked: the file is in the diff.' });
+  });
+
+  it('confirms a claimed type error from an error annotation near the line, and stays silent without one', () => {
+    const claim = finding({ title: 'Type error on `b`', description: 'A string is not assignable to number.' });
+    const tsc = signal({ tool: 'tsc', ruleId: 'TS2322', line: 3, message: 'Type string is not assignable to type number.' });
+    expect(checkFindingClaims(claim, { ...sources, signals: [signal({ severity: 'warning', line: 2 }), tsc] }))
+      .toEqual({ status: 'confirmed', note: 'tsc reports an error on line 3: Type string is not assignable to type number.' });
+    expect(checkFindingClaims(claim, { ...sources, signals: [signal({ line: 9 })] }))
+      .toEqual({ status: 'none', note: 'Checked: the file is in the diff, the line is in the file, no CI annotation reports the claimed error.' });
   });
 });

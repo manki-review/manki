@@ -395,6 +395,16 @@ GitHub Actions concurrency is best-effort, not atomic. Two events dispatched wit
 
 Manki reads what your CI already reported on the PR head commit and gives the reviewers the results that sit on lines of the diff: check-run annotations (linters, type checkers, test reporters), open code scanning alerts, and vulnerable packages from the dependency review. The tool text reaches the reviewers fenced and marked as untrusted, and only for the lines they review. When a Manki suggestion or nitpick sits on the same file and line as a tool result, Manki drops it because the author already sees the tool's result. Warnings, blockers and security findings are always kept, because they can be a different problem on the same line. The drops are listed in the `Manki context` block.
 
+Some tool results also go to the judge as candidate findings, next to the reviewers' findings:
+
+- A vulnerable package, or a result whose tool or rule id names a security class (such as `security`, `injection`, `xss` or `secret`), always does.
+- A style or formatting result never does, because the linter already shows it. Manki recognises these by tool or rule id, such as `prettier`, `rustfmt`, `@stylistic/*`, `indent` or `max-len`.
+- Any other code scanning alert does, and a check annotation only at the `failure` level.
+
+The judge keeps a real defect at the grade it earns and refutes a false positive with a reason. A refuted result is never posted. A kept one is posted with the tool in its label, such as `⚠️ **Warning** (CodeQL):`.
+
+Before the judge runs, Manki also checks each reviewer finding against the code, without running it: the file is in the diff, the line is in the file, and each symbol the finding names in backticks occurs in the file or the diff. A claimed type or compile error is confirmed by a failing check annotation near the line. The judge sees the result as confirmed, contradicted or unchecked. Only the judge can drop a contradicted finding, and a tool that says nothing never lowers or drops a finding. Each finding in the `Manki context` block records `toolEvidence` as `confirmed`, `contradicted` or `none`.
+
 Manki reads these results with the workflow token (`github_token`), so grant the permissions in the workflow, even when the Manki app posts the review:
 
 | Permission | Source |

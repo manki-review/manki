@@ -3716,6 +3716,43 @@ describe('runReview post-judge suppression', () => {
     expect(reviewerMessage).toContain('## CI Results (untrusted tool output)');
     expect(reviewerMessage).toContain('```\nsrc/a.ts:10 error lint no-unused-vars: x is unused\n```');
   });
+
+  it('sends tool alerts and checked reviewer claims to the judge, and only the judge drops either', async () => {
+    const codeql = { tool: 'CodeQL', ruleId: 'js/sql-injection', severity: 'warning' as const, file: 'src/a.ts', line: 10, message: 'Query built from user input', source: 'code_scanning' as const };
+    const regex = { ...codeql, ruleId: 'js/redos', line: 11, message: 'Inefficient regular expression' };
+    const prettier = { ...codeql, tool: 'lint', ruleId: 'prettier/prettier', severity: 'error' as const, message: 'Insert `;`', source: 'checks' as const };
+    const diff = makeDiff({ files: [{ path: 'src/a.ts', changeType: 'modified', hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 12, content: '' }] }], totalAdditions: 12 });
+    const clients = makeClients();
+    jest.mocked(clients.reviewer.sendMessage).mockResolvedValueOnce({ content: JSON.stringify([
+      { severity: 'warning', title: 'Unchecked result', file: 'src/a.ts', line: 10, description: 'The query result is never checked.' },
+      { severity: 'warning', title: 'Stale cache', file: 'src/gone.ts', line: 3, description: 'The cache is never cleared.' },
+    ]) });
+    const judgeGrades: Record<string, Finding['severity']> = { 'js/redos: Inefficient regular expression': 'ignore' };
+    mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({
+      findings: input.findings.map(f => ({ ...f, severity: judgeGrades[f.title] ?? (f.toolSource ? 'suggestion' : f.severity) })),
+      summary: 'ok',
+    }));
+
+    const result = await runReview(
+      clients, makeConfig(), diff, 'raw', 'ctx', undefined, undefined,
+      { title: 'PR', body: '', baseBranch: 'main', staticSignals: [codeql, regex, prettier] },
+    );
+
+    const judged = mockedRunJudgeAgent.mock.calls[0][2].findings;
+    expect(judged.map(f => [f.title, f.toolSource, f.toolEvidence?.status])).toEqual([
+      ['js/sql-injection: Query built from user input', 'CodeQL', 'confirmed'],
+      ['js/redos: Inefficient regular expression', 'CodeQL', 'confirmed'],
+      ['Unchecked result', undefined, 'none'],
+      ['Stale cache', undefined, 'contradicted'],
+    ]);
+    // The kept alert sits on the same line as its own signal and stays, the refuted one is never posted.
+    expect(result.findings.map(f => [f.title, f.severity])).toEqual([
+      ['js/sql-injection: Query built from user input', 'suggestion'],
+      ['Unchecked result', 'warning'],
+      ['Stale cache', 'warning'],
+    ]);
+    expect(result.toolAlertCount).toBe(2);
+  });
 });
 
 describe('runPlanner', () => {

@@ -216,6 +216,14 @@ describe('buildJudgeSystemPrompt', () => {
     expect(buildJudgeSystemPrompt(makeConfig(), 1)).not.toContain('## Finder Agreement');
   });
 
+  it('lets tool evidence confirm or contradict a finding, and never treats a tool\'s silence as evidence', () => {
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 1);
+    expect(prompt).toContain('## Tool Alerts and Claim Checks');
+    expect(prompt).toContain('Mark a false positive `ignore` and give the reason in `reasoning`, so it is never posted.');
+    expect(prompt).toContain('Mark it `ignore` only when the contradiction refutes the finding.');
+    expect(prompt).toContain('Never lower or drop a finding because no tool reported it.');
+  });
+
   it('contains Acceptance Criteria section', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     expect(prompt).toContain('## Acceptance Criteria');
@@ -318,6 +326,19 @@ describe('buildJudgeUserMessage', () => {
     expect(msg).toContain('Finding 1: Null pointer');
     expect(msg).toContain('src/app.ts:42');
     expect(msg).toContain('TestReviewer');
+  });
+
+  it('names the tool of a tool alert and gives each reviewer finding its claim-check note', () => {
+    const msg = buildJudgeUserMessage([
+      makeFinding({ title: 'js/sql-injection: Query built from user input', reviewers: ['CodeQL'], toolSource: 'CodeQL', toolEvidence: { status: 'confirmed', note: 'CodeQL reports this result.' } }),
+      makeFinding({ title: 'Stale cache', toolEvidence: { status: 'contradicted', note: '`clearCache` occurs neither in src/a.ts nor in the diff.' } }),
+      makeFinding({ title: 'Off by one', toolEvidence: { status: 'none', note: 'Checked: the file is in the diff.' } }),
+    ], new Map(), '');
+
+    expect(msg).toContain('### Finding 1: js/sql-injection: Query built from user input\n- **Original severity**: suggestion\n- **File**: src/index.ts:10\n- **Source**: tool alert from CodeQL, not a reviewer\n- **Description**');
+    expect(msg).not.toContain('CodeQL reports this result.');
+    expect(msg).toContain("- **Tool evidence**: contradicted. 'clearCache' occurs neither in src/a.ts nor in the diff.");
+    expect(msg).toContain('- **Tool evidence**: unchecked. Checked: the file is in the diff.');
   });
 
   it('includes code context when available', () => {

@@ -14,7 +14,7 @@ import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { runVerdictReader, verdictBlockerToFinding } from './verdict';
 import { WRITING_RULES } from './writing-rules';
-import { formatStaticSignals } from './static-signals';
+import { checkFindingClaims, formatStaticSignals, toolAlertFindings } from './static-signals';
 
 const DISMISSED_LINE_TOLERANCE = 5;
 
@@ -858,10 +858,17 @@ export async function runReview(
     onProgress({ phase: 'reviewed', rawFindingCount: allFindings.length });
   }
 
-  let findingsForJudge = allFindings;
+  const staticSignals = prContext?.staticSignals ?? [];
+  const claimSources = { diff, rawDiff, fileContents, signals: staticSignals };
+  // Tool alerts go first, so a reviewer finding that repeats one folds into the alert and keeps its source label.
+  const toolAlerts = toolAlertFindings(staticSignals);
+  let findingsForJudge = [
+    ...toolAlerts,
+    ...allFindings.map(f => ({ ...f, toolEvidence: checkFindingClaims(f, claimSources) })),
+  ];
   let suppressionCount = 0;
   if (memory?.suppressions && memory.suppressions.length > 0) {
-    const { kept, suppressed } = applySuppressions(allFindings, memory.suppressions);
+    const { kept, suppressed } = applySuppressions(findingsForJudge, memory.suppressions);
     if (suppressed.length > 0) {
       core.info(`Suppressed ${suppressed.length} findings before judge evaluation`);
     }
@@ -1009,11 +1016,10 @@ export async function runReview(
     }
   }
   const staticSignalMatches: RoundStaticSignalMatch[] = [];
-  const staticSignals = prContext?.staticSignals ?? [];
   if (staticSignals.length > 0) {
     finalFindings = finalFindings.filter(f => {
       // A tool result on the same line can be a different problem, so only low-severity findings give way to it.
-      if ((f.severity !== 'suggestion' && f.severity !== 'nitpick') || isSecurityFinding(f.tags, f.reviewers)) return true;
+      if (f.toolSource || (f.severity !== 'suggestion' && f.severity !== 'nitpick') || isSecurityFinding(f.tags, f.reviewers)) return true;
       const signal = staticSignals.find(s => s.file === f.file && s.line === f.line);
       if (!signal) return true;
       core.info(`Static-signal dedup: dropping ${f.severity} "${f.title}" on ${f.file}:${f.line}, ${signal.tool} already reports it`);
@@ -1110,6 +1116,7 @@ export async function runReview(
     highlights: [],
     reviewComplete: true,
     rawFindingCount: allFindings.length,
+    ...(toolAlerts.length > 0 && { toolAlertCount: toolAlerts.length }),
     agentNames: team.finders.map(a => a.name),
     allJudgedFindings,
     rawFindings: allFindings,

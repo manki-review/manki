@@ -32,12 +32,14 @@ describe('formatFindingComment', () => {
   };
 
   it.each([
-    ['blocker', 'high', '\u{1F6AB} **Blocker:**'],
-    ['warning', 'medium', '\u26A0\uFE0F **Warning:**'],
-    ['suggestion', 'high', '\u2728 **Suggestion, not blocking:**'],
-    ['nitpick', undefined, '\u{1F4DD} **Nitpick, not blocking:**'],
-  ] as const)('opens a %s finding with its severity icon and label, and no other emoji', (severity, judgeConfidence, label) => {
-    const comment = formatFindingComment({ ...baseFinding, severity, judgeConfidence });
+    ['blocker', 'high', '\u{1F6AB} **Blocker:**', undefined],
+    ['warning', 'medium', '\u26A0\uFE0F **Warning:**', undefined],
+    ['suggestion', 'high', '\u2728 **Suggestion, not blocking:**', undefined],
+    ['nitpick', undefined, '\u{1F4DD} **Nitpick, not blocking:**', undefined],
+    ['warning', 'high', '\u26A0\uFE0F **Warning** (CodeQL):', 'CodeQL'],
+    ['suggestion', 'high', '\u2728 **Suggestion, not blocking** (eslint):', 'eslint'],
+  ] as const)('opens a %s finding with its severity icon and label, and no other emoji', (severity, judgeConfidence, label, toolSource) => {
+    const comment = formatFindingComment({ ...baseFinding, severity, judgeConfidence, toolSource });
     expect(comment.startsWith(`${label} ${baseFinding.title}\n\n${baseFinding.description}`)).toBe(true);
     expect(comment.slice(label.length)).not.toMatch(EMOJI_RE);
     expect(comment).not.toMatch(DASH_SEPARATOR_RE);

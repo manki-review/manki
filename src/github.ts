@@ -780,7 +780,7 @@ function formatBodyFix(fix: string, file: string): string {
 
 /** Renders a finding listed in the review body: title, link to the line, what goes wrong, and the fix. */
 function formatFindingBlock(finding: Finding, linkTo: LineLink): string {
-  const lines = [`**${sanitizeMarkdown(finding.title)}**`];
+  const lines = [`**${sanitizeMarkdown(finding.title)}**${finding.toolSource ? ` (${sanitizeMarkdown(finding.toolSource)})` : ''}`];
   if (finding.judgeConfidence === 'low') lines.push(LOW_CONFIDENCE_NOTE);
   if (finding.file) {
     const location = `${sanitizeFilePath(finding.file)}${finding.line > 0 ? `:${finding.line}` : ''}`;
@@ -1346,7 +1346,8 @@ function formatSuggestedFix(fix: string, file: string): string {
 function formatFindingComment(finding: Finding): string {
   const severity = `${finding.severity[0].toUpperCase()}${finding.severity.slice(1)}`;
   const label = isBlockingFinding(finding) ? severity : `${severity}, not blocking`;
-  let comment = `${SEVERITY_EMOJI[finding.severity]} **${label}:** ${sanitizeMarkdown(finding.title)}\n\n`;
+  const heading = finding.toolSource ? `**${label}** (${sanitizeMarkdown(finding.toolSource)}):` : `**${label}:**`;
+  let comment = `${SEVERITY_EMOJI[finding.severity]} ${heading} ${sanitizeMarkdown(finding.title)}\n\n`;
   if (finding.judgeConfidence === 'low') comment += `${LOW_CONFIDENCE_NOTE}\n\n`;
   comment += sanitizeMarkdown(finding.description);
   if (finding.suggestedFix?.trim()) {

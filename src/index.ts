@@ -1100,6 +1100,7 @@ async function runFullReview(
     const severityChanges = allJudged.filter(f => f.judgeNotes).length;
     const mergedDuplicates = allJudged.length > 0
       ? (result.rawFindingCount ?? 0)
+        + (result.toolAlertCount ?? 0)
         - (result.suppressionCount ?? 0)
         - (result.staticDedupCount ?? 0)
         - (result.llmDedupCount ?? 0)
@@ -1207,6 +1208,8 @@ async function runFullReview(
       ...(f.reachabilityReasoning && { reachabilityReasoning: f.reachabilityReasoning.slice(0, 500) }),
       ...(f.tags && f.tags.length > 0 && { tags: f.tags.filter(t => ALLOWED_FINGERPRINT_TAGS.has(t)) }),
       ...(f.originalSeverity && { originalSeverity: f.originalSeverity }),
+      ...(f.toolEvidence && { toolEvidence: f.toolEvidence.status }),
+      ...(f.toolSource && { toolSource: f.toolSource }),
     }));
     const context: RoundContext = {
       meta: {
@@ -1281,6 +1284,7 @@ async function runFullReview(
         confidenceDistribution,
         severityChanges,
         mergedDuplicates,
+        ...(result.toolAlertCount && { toolAlertCount: result.toolAlertCount }),
         durationMs: judgeEndTime - reviewEndTime,
         retryCount: result.judgeRetryCount ?? 0,
         ...(result.verdictReason && { verdictReason: result.verdictReason }),
