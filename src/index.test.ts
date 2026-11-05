@@ -239,6 +239,7 @@ jest.mock('./github', () => {
 jest.mock('./state', () => ({
   announceSecurityOverrides: jest.fn().mockResolvedValue([]),
   checkAndAutoApprove: jest.fn().mockResolvedValue(false),
+  pauseState: jest.requireActual('./state').pauseState,
   reopenAuthorResolvedThreads: jest.fn().mockResolvedValue(undefined),
   replyToReviewThread: jest.requireActual('./state').replyToReviewThread,
   resolveReviewThread: jest.requireActual('./state').resolveReviewThread,

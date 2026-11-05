@@ -55,7 +55,7 @@ import {
   postConfigErrorComment,
 } from './github';
 import type { BotIdentity, LinkedIssue, StandingVerdict } from './github';
-import { announceSecurityOverrides, checkAndAutoApprove, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread } from './state';
+import { announceSecurityOverrides, checkAndAutoApprove, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -653,14 +653,6 @@ async function loadRecap(target: RunTarget, config: ReviewConfig, commentId: num
   return recap;
 }
 
-/** Returns the rounds since the last approval, whether they reach the round cap, and whether automatic review is paused by it or by a last round that ended `NOT_CONVERGING`. */
-function pauseState(priorRounds: RoundContext[], config: ReviewConfig): { capRounds: number; capReached: boolean; paused: boolean } {
-  const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
-  const capRounds = roundsSinceApproval(priorRounds);
-  const capReached = maxAutoRounds > 0 && capRounds >= maxAutoRounds;
-  return { capRounds, capReached, paused: capReached || priorRounds.at(-1)?.meta.outcome === 'NOT_CONVERGING' };
-}
-
 /** Builds one LLM client per stage, plus each stage's refusal fallback. Throws on a model spec or credentials that do not resolve. */
 function buildReviewClients(config: ReviewConfig, providerInputs: ProviderInputs): { clients: ReviewClients; models: ReviewModels } {
   const models: ReviewModels = {
@@ -813,17 +805,6 @@ async function loadRunMemory(
     core.warning(`Failed to load review memory: ${sanitized}`);
     return { memory: null, memoryLoadStatus: 'failed', memoryLoadError: sanitized.length > 300 ? sanitized.slice(0, 300) + '...' : sanitized };
   }
-}
-
-/**
- * Returns how many rounds ran since the last round that approved at the full bar, or all of them without one.
- * The round cap stops fix loops, so a round after an approval, such as on a rebase, starts the count again.
- * A `BUDGET` approval deferred warnings to end a loop, so it does not reset the count.
- */
-function roundsSinceApproval(priorRounds: RoundContext[]): number {
-  let count = 0;
-  for (let i = priorRounds.length - 1; i >= 0 && !(priorRounds[i].verdict === 'APPROVE' && priorRounds[i].meta.outcome !== 'BUDGET'); i--) count++;
-  return count;
 }
 
 /**

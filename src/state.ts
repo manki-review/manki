@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 
 import { BotIdentity, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchReviewThreadNodes, FOLLOW_UP_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, postAutoApproveProgressComment } from './github';
 import { isOverrideCandidate, isSecurityThread, mayClearSecurityThread, PreviousFinding, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf } from './recap';
-import { FindingSeverity, isBlockingSeverity, migrateLegacySeverity, ReviewConfig, SecurityOverride, SEVERITY_TOKEN_PATTERN } from './types';
+import { FindingSeverity, isBlockingSeverity, migrateLegacySeverity, ReviewConfig, RoundContext, SecurityOverride, SEVERITY_TOKEN_PATTERN } from './types';
 import { withMarkers } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -174,6 +174,25 @@ function areAllFindingsResolved(threads: ReviewThread[], bot: BotIdentity, prAut
     !t.isSecurity || isBotLogin(bot, t.resolvedByLogin) || mayClearSecurityThread(t.resolvedByLogin, bot, prAuthorLogin)
     || !!securityOverrideOf(t, prAuthorLogin, prAuthorIsAdmin)
   )));
+}
+
+/**
+ * Returns how many rounds ran since the last round that approved at the full bar, or all of them without one.
+ * The round cap stops fix loops, so a round after an approval, such as on a rebase, starts the count again.
+ * A `BUDGET` approval deferred warnings to end a loop, so it does not reset the count.
+ */
+function roundsSinceApproval(priorRounds: RoundContext[]): number {
+  let count = 0;
+  for (let i = priorRounds.length - 1; i >= 0 && !(priorRounds[i].verdict === 'APPROVE' && priorRounds[i].meta.outcome !== 'BUDGET'); i--) count++;
+  return count;
+}
+
+/** Returns the rounds since the last approval, whether they reach the round cap, and whether automatic review is paused by it or by a last round that ended `NOT_CONVERGING`. */
+function pauseState(priorRounds: RoundContext[], config: ReviewConfig): { capRounds: number; capReached: boolean; paused: boolean } {
+  const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
+  const capRounds = roundsSinceApproval(priorRounds);
+  const capReached = maxAutoRounds > 0 && capRounds >= maxAutoRounds;
+  return { capRounds, capReached, paused: capReached || priorRounds.at(-1)?.meta.outcome === 'NOT_CONVERGING' };
 }
 
 /**
@@ -350,4 +369,4 @@ async function checkAndAutoApprove(
   return true;
 }
 
-export { ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, fetchBotReviewThreads, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
+export { ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, fetchBotReviewThreads, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
