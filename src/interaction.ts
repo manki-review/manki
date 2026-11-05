@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 
 import { LLMClient } from './providers';
 import { writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
-import { BotIdentity, dynamicFence, reactToIssueComment, reactToReviewComment, fetchPRDiff } from './github';
+import { BotIdentity, dynamicFence, isTrustedAssociation, reactToIssueComment, reactToReviewComment, fetchPRDiff } from './github';
 import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -14,7 +14,7 @@ import { WRITING_RULES } from './writing-rules';
 type Octokit = ReturnType<typeof github.getOctokit>;
 
 // GitHub author_association values that indicate the user is a known repo participant.
-// Used to gate LLM-triggering commands — less strict than isTrusted (which guards write ops).
+// Used to gate LLM-triggering commands — less strict than `isTrustedAssociation` (which guards write ops).
 export function isRepoUser(authorAssociation: string | null | undefined): boolean {
   return ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR'].includes(authorAssociation ?? '');
 }
@@ -184,7 +184,7 @@ export async function handleReviewCommentReply(
     core.info('Posted reply to review comment');
 
     // Only someone who could resolve the thread by hand gets it resolved through a reply.
-    const isTrusted = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(comment.author_association ?? '');
+    const isTrusted = isTrustedAssociation(comment.author_association);
     const isPrAuthor = !!prAuthorLogin && senderLogin?.toLowerCase() === prAuthorLogin.toLowerCase();
     if (RESOLVING_REPLY_RE.test(reply) && (isTrusted || isPrAuthor)) {
       try {
@@ -199,7 +199,7 @@ export async function handleReviewCommentReply(
       const simpleAcks = ['ok', 'done', 'fixed', 'thanks', 'will do', 'got it'];
       const isSubstantive = replyBody.length > 50 && !simpleAcks.includes(replyBody.toLowerCase());
 
-      const isTrusted = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(comment.author_association ?? '');
+      const isTrusted = isTrustedAssociation(comment.author_association);
       if (isSubstantive && isTrusted) {
         try {
           const memoryOctokit = github.getOctokit(memoryToken);
@@ -394,7 +394,7 @@ async function handleDismiss(
   }
 
   const authorAssociation = github.context.payload.comment?.author_association;
-  const isTrusted = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(authorAssociation ?? '');
+  const isTrusted = isTrustedAssociation(authorAssociation);
 
   if (!isTrusted) {
     core.info('Dismiss from non-collaborator — acknowledging but not persisting suppression');
@@ -456,7 +456,7 @@ async function handleRemember(
   memoryToken?: string,
 ): Promise<void> {
   const authorAssociation = github.context.payload.comment?.author_association;
-  const isTrusted = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(authorAssociation ?? '');
+  const isTrusted = isTrustedAssociation(authorAssociation);
 
   if (!isTrusted) {
     await octokit.rest.issues.createComment({
@@ -534,7 +534,7 @@ async function handleForget(
   memoryToken?: string,
 ): Promise<void> {
   const authorAssociation = github.context.payload.comment?.author_association;
-  const isTrusted = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(authorAssociation ?? '');
+  const isTrusted = isTrustedAssociation(authorAssociation);
 
   if (!isTrusted) {
     await octokit.rest.issues.createComment({
@@ -632,7 +632,7 @@ async function handleCheck(
   config?: ReviewConfig,
 ): Promise<void> {
   const authorAssociation = github.context.payload.comment?.author_association;
-  const isTrusted = ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(authorAssociation ?? '');
+  const isTrusted = isTrustedAssociation(authorAssociation);
 
   if (!isTrusted) {
     await octokit.rest.issues.createComment({

@@ -35,6 +35,7 @@ jest.mock('./memory', () => ({
 
 jest.mock('./github', () => ({
   dynamicFence: jest.requireActual('./github').dynamicFence,
+  isTrustedAssociation: jest.requireActual('./github').isTrustedAssociation,
   reactToIssueComment: jest.fn().mockResolvedValue(undefined),
   reactToReviewComment: jest.fn().mockResolvedValue(undefined),
   fetchPRDiff: jest.fn().mockResolvedValue(''),
