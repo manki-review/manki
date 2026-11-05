@@ -189,6 +189,7 @@ describe('toolAlertFindings', () => {
       signal({ tool: 'rustfmt', ruleId: '', message: 'Diff in src/app.ts' }),
       signal({ tool: 'eslint', ruleId: '@stylistic/indent', message: 'Expected indentation of 2 spaces' }),
       signal({ tool: 'lint-format', ruleId: 'no-undef', line: 4, message: 'c is not defined' }),
+      signal({ tool: 'security-scan', ruleId: 'CKV_AWS_20', severity: 'warning', line: 5, message: 'S3 bucket is public' }),
       signal({ tool: 'CodeQL', ruleId: 'js/tainted-format-string', severity: 'note', line: 4, message: 'Format string from user input', source: 'code_scanning' }),
       signal({ tool: 'CodeQL', ruleId: 'js/sql-injection', severity: 'warning', message: 'Query built from user input', source: 'code_scanning' }),
       signal({ tool: 'CodeQL', ruleId: 'js/redos', severity: 'warning', line: 3, message: '', source: 'code_scanning' }),
@@ -202,6 +203,7 @@ describe('toolAlertFindings', () => {
       'B602 shell injection: subprocess with shell=True',
       'GHSA-1234: lodash@4.17.0: prototype pollution',
       'no-undef: c is not defined',
+      'CKV_AWS_20: S3 bucket is public',
       'js/tainted-format-string: Format string from user input',
       'js/redos',
       'tsc result',
@@ -212,7 +214,7 @@ describe('toolAlertFindings', () => {
       description: 'Query built from user input', reviewers: ['CodeQL'], toolSource: 'CodeQL',
       toolEvidence: { status: 'confirmed', note: 'CodeQL reports this result.' },
     });
-    expect(findings.map(f => f.severity)).toEqual(['warning', 'suggestion', 'blocker', 'suggestion', 'suggestion', 'blocker', 'suggestion', 'warning', 'blocker']);
+    expect(findings.map(f => f.severity)).toEqual(['warning', 'suggestion', 'blocker', 'suggestion', 'suggestion', 'blocker', 'warning', 'suggestion', 'warning', 'blocker']);
   });
 });
 
@@ -239,12 +241,16 @@ describe('checkFindingClaims', () => {
       .toEqual({ status: 'none', note: 'Checked: the file is in the diff, the line is in the file, `lodash` occurs.' });
   });
 
-  it('confirms a claimed type error from an error annotation near the line, and stays silent without one', () => {
+  it('confirms a claimed type error only from a type checker or compiler near the line, never from a lint error', () => {
     const claim = finding({ title: 'Type error on `b`', description: 'A string is not assignable to number.' });
     const tsc = signal({ tool: 'tsc', ruleId: 'TS2322', line: 3, message: 'Type string is not assignable to type number.' });
     expect(checkFindingClaims(claim, { ...sources, signals: [signal({ severity: 'warning', line: 2 }), tsc] }))
       .toEqual({ status: 'confirmed', note: 'tsc reports an error on line 3: Type string is not assignable to type number.' });
-    expect(checkFindingClaims(claim, { ...sources, signals: [signal({ line: 9 })] }))
-      .toEqual({ status: 'none', note: 'Checked: the file is in the diff, the line is in the file, no CI annotation reports the claimed error.' });
+    const rustc = signal({ tool: 'build', ruleId: 'E0308', line: 1, message: 'mismatched types' });
+    expect(checkFindingClaims(claim, { ...sources, signals: [rustc] }))
+      .toEqual({ status: 'confirmed', note: 'build reports an error on line 1: mismatched types' });
+    const unchecked = { status: 'none', note: 'Checked: the file is in the diff, the line is in the file, no CI annotation reports the claimed error.' };
+    expect(checkFindingClaims(claim, { ...sources, signals: [signal({ line: 2 })] })).toEqual(unchecked);
+    expect(checkFindingClaims(claim, { ...sources, signals: [signal({ tool: 'mypy', ruleId: 'arg-type', line: 9 })] })).toEqual(unchecked);
   });
 });
