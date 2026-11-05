@@ -25,7 +25,7 @@ import { DEFAULT_CONFIG } from './config';
 import { filterRawDiff } from './diff';
 import * as core from '@actions/core';
 import { LinkedIssue, titleToSlug } from './github';
-import { Finding, RoundContext, OpenThread, ReviewerAgent, ReviewConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES } from './types';
+import { Finding, RoundContext, OpenThread, ReviewerAgent, ReviewConfig, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG } from './types';
 import { fingerprintEntriesFromLegacy, LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, roundContextFromLegacy } from './test-utils';
 import { runJudgeAgent, computeProvenanceMap } from './judge';
 import { applySuppressions } from './memory';
@@ -3695,6 +3695,7 @@ describe('runReview post-judge suppression', () => {
       findings: [
         makeFinding({ severity: 'warning', title: 'Unused variable' }),
         makeFinding({ severity: 'blocker', title: 'Injection', reviewers: ['Security & Safety'] }),
+        makeFinding({ severity: 'warning', title: 'Token in log', tags: [SECURITY_TAG] }),
         makeFinding({ severity: 'suggestion', title: 'Rename', line: 11 }),
       ],
       summary: 'ok',
@@ -3704,7 +3705,7 @@ describe('runReview post-judge suppression', () => {
       clients, makeConfig(), makeDiff({ totalAdditions: 5, totalDeletions: 0 }),
       'raw', 'ctx', undefined, undefined, { title: 'PR', body: '', baseBranch: 'main', staticSignals: [lint] },
     );
-    expect(result.findings.map(f => f.title)).toEqual(['Injection', 'Rename']);
+    expect(result.findings.map(f => f.title)).toEqual(['Injection', 'Token in log', 'Rename']);
     expect(result.staticSignalMatches).toEqual([
       { droppedTitle: 'Unused variable', file: 'src/a.ts', line: 10, tool: 'lint', ruleId: 'no-unused-vars' },
     ]);

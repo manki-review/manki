@@ -32,7 +32,11 @@ export interface StaticSignalRequest {
  */
 export async function collectStaticSignals(octokit: Octokit, request: StaticSignalRequest): Promise<StaticSignal[]> {
   const { owner, repo, baseRef, configPath, diff } = request;
-  const settings = loadStaticAnalysisConfig(await fetchConfigFile(octokit, owner, repo, baseRef, configPath), configPath);
+  const content = await fetchConfigFile(octokit, owner, repo, baseRef, configPath).catch((error: unknown) => {
+    core.warning(`Static analysis: could not read ${configPath} on the base branch, reading every source: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  });
+  const settings = loadStaticAnalysisConfig(content, configPath);
   const sources: Array<[StaticSignalSource, () => Promise<StaticSignal[]>]> = [];
   if (settings.checks) sources.push(['checks', () => fetchCheckAnnotations(octokit, request)]);
   if (settings.code_scanning) sources.push(['code_scanning', () => fetchCodeScanningAlerts(octokit, request)]);
@@ -126,7 +130,7 @@ async function fetchDependencyReview(octokit: Octokit, { owner, repo, baseRef, h
   const files = new Map(diff.files.map(f => [f.path, f]));
   return changes.flatMap((change): StaticSignal[] => {
     const file = files.get(change.manifest);
-    if (change.change_type !== 'added' || !file || change.vulnerabilities.length === 0) return [];
+    if (change.change_type !== 'added' || !file || !change.vulnerabilities?.length) return [];
     // The API reports a manifest but no line, so the result is placed on the added line naming the package.
     const line = findAddedLine(file, change.name);
     if (line === undefined) return [];
@@ -142,12 +146,15 @@ async function fetchDependencyReview(octokit: Octokit, { owner, repo, baseRef, h
   });
 }
 
-function findAddedLine(file: DiffFile, text: string): number | undefined {
+function findAddedLine(file: DiffFile, name: string): number | undefined {
+  // `lodash` must not match `lodash.merge` or `my-lodash`, but must match `node_modules/lodash` and `lodash@4`.
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`(^|[^\\w.@-])${escaped}($|[^\\w./-])`);
   for (const hunk of file.hunks) {
     let line = hunk.newStart;
     for (const content of hunk.content.split('\n')) {
       if (content.startsWith('-') || content.startsWith('\\')) continue;
-      if (content.startsWith('+') && content.includes(text)) return line;
+      if (content.startsWith('+') && pattern.test(content.slice(1))) return line;
       line++;
     }
   }
