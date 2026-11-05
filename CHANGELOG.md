@@ -7,17 +7,138 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
+## [6.0.0] - 2026-11-05
 
-- `dist/` is no longer committed to `main`. The `Release` workflow builds it when a `vX.Y.Z` tag is pushed and moves the tag to the build commit. Pin to a release tag such as `@v5`. `@main` and commit SHAs from `main` no longer run. Closes [#825](https://github.com/manki-review/manki/issues/825).
+Manki 6 gives one clear verdict per round and stops a review loop that is not converging. Every round ends in a named outcome, a failed or partial run never approves, and the bar for blocking lives in code. One or two generalist finders replace the specialist team, and a final verdict reader checks the whole change before Manki approves. This release is tracked in [#859](https://github.com/manki-review/manki/issues/859).
 
-### Changed
+### Breaking changes and migration
 
-- `claude_code_oauth_token` is no longer deprecated and no longer logs a warning on every run. `SETUP.md` documents it as a regular subscription option, with a note to use `anthropic_api_key` for secrets shared across many repositories or an organization. Closes [#860](https://github.com/manki-review/manki/issues/860)
+To upgrade from v5:
 
-### Fixed
+1. Pin the action to `manki-review/manki@v6`, or to the commit SHA of a `v6.x.y` release tag.
+2. Replace `.github/workflows/manki.yml` with the snippet in `SETUP.md`. It carries the new `permissions`, the per-PR `concurrency` queues, the job-level `if` and `timeout-minutes: 30`.
+3. Review the optional settings below: `models`, the `review` block, `static_analysis`, `metrics.fix_rate` and `stats.hidden`.
 
-- A blocker the judge marks as `hypothetical` (not reachable from any visible caller) now keeps its blocker severity. Only warnings and suggestions are still capped at nitpick with the `defensive-hardening` tag. Closes [#867](https://github.com/manki-review/manki/issues/867)
+- Pin Manki to a release tag such as `manki-review/manki@v6`. `dist/` is no longer committed to `main`. The `Release` workflow builds it when a `vX.Y.Z` tag is pushed and moves the tag to the build commit, so `@main` and commit SHAs from `main` no longer run ([#842](https://github.com/manki-review/manki/pull/842)).
+- The default Claude models are now `claude-haiku-5-5` for the planner and dedup, `claude-sonnet-5-5` for the reviewer, and `claude-opus-5-5` for the judge and the verdict reader. A repo that does not set `models` moves to these models and their cost. A repo that pins 4.x models keeps them ([#945](https://github.com/manki-review/manki/pull/945)).
+- The specialist team is gone. Each round runs one generalist finder, or two finders on different models when the planner marks the change as paired, or the Trivial Change Verifier alone for a trivial change. Each `reviewers:` entry is now one extra focus line in the finder prompt instead of its own agent ([#934](https://github.com/manki-review/manki/pull/934)).
+- `review_level` and `review_thresholds` are deprecated and ignored, with a warning. The planner now sizes the review from the nature of the change, not its line count ([#934](https://github.com/manki-review/manki/pull/934)).
+- `models.agents` is deprecated and will be removed in the next major release. It still loads with a warning, and unless `models.reviewer_pair` is set, its first model that differs from `models.reviewer` becomes the second finder's model ([#934](https://github.com/manki-review/manki/pull/934), [#960](https://github.com/manki-review/manki/pull/960)).
+- A failed or partial run never approves. A provider failure, an unparseable or truncated reply, a failed judge or a failed GitHub call ends the round `INCOMPLETE`. Manki posts a COMMENT with the reason, leaves the previous review standing and fails the job ([#893](https://github.com/manki-review/manki/pull/893), [#890](https://github.com/manki-review/manki/pull/890), [#897](https://github.com/manki-review/manki/pull/897), [#898](https://github.com/manki-review/manki/pull/898), [#915](https://github.com/manki-review/manki/pull/915)).
+- A finder that still fails after its retry makes the round `INCOMPLETE`. The quorum path that let a round continue with the remaining agents is removed ([#934](https://github.com/manki-review/manki/pull/934)).
+- Before Manki approves, a final verdict reader reads the whole diff once and can request changes on its own. A PR with no blocking findings therefore costs one more model call ([#915](https://github.com/manki-review/manki/pull/915)).
+- From round 3 only blockers block. Warnings still standing become follow-ups listed in the review body, so a round with only warnings left can approve. Security findings are the exception and block at every round ([#922](https://github.com/manki-review/manki/pull/922), [#931](https://github.com/manki-review/manki/pull/931)).
+- A blocker that comes back after a real fix claim ends the round `NOT_CONVERGING`. A fix claim is a resolved thread, a reply in the thread, or a fix Manki confirmed. A rebase with the thread still open and unanswered is not one, and the round stays `ADDRESS_FIRST`. On `NOT_CONVERGING` Manki keeps REQUEST_CHANGES, lists the blocker under "Needs a human" and pauses automatic review until someone comments `@manki review` ([#924](https://github.com/manki-review/manki/pull/924), [#965](https://github.com/manki-review/manki/pull/965)).
+- Only blockers and warnings become review threads that hold up approval. Suggestions and nitpicks are posted inline as "not blocking" (at most five per review) or listed in a collapsed body section, and auto-approve ignores them, including old open suggestion and nitpick threads ([#917](https://github.com/manki-review/manki/pull/917), [#925](https://github.com/manki-review/manki/pull/925)).
+- The PR author can no longer clear a security finding alone, unless the author is a repo admin. Agreeing with it or resolving its thread does not retire it. A maintainer other than the author has to resolve it or agree, or the judge has to find it addressed. If the author resolves the thread anyway, Manki reopens it once and explains why ([#942](https://github.com/manki-review/manki/pull/942), [#968](https://github.com/manki-review/manki/pull/968)).
+- A `.manki.yml` with a YAML or schema error now fails the run and posts the error on the PR. Before, Manki reviewed with the defaults, which include `auto_approve: true` ([#909](https://github.com/manki-review/manki/pull/909)).
+- The `review` and `static_analysis` blocks are read from the base branch only. A PR that changes them is reviewed with the base branch's copy, and the change applies after merge ([#938](https://github.com/manki-review/manki/pull/938), [#954](https://github.com/manki-review/manki/pull/954)).
+- `stats.hidden` now defaults to `true`. The `Manki context` block sits in an HTML comment, and the visible stats line becomes a hidden `manki-stats` comment. Set `stats.hidden: false` to keep the visible block ([#925](https://github.com/manki-review/manki/pull/925)).
+- Repeated findings are no longer escalated to blockers. Manki stops reading and writing `patterns.yml` in the memory repo, and existing files can be deleted ([#914](https://github.com/manki-review/manki/pull/914)).
+- `noise_level` no longer changes the judge prompt. It still shapes the reviewer prompts, so existing configs keep working ([#907](https://github.com/manki-review/manki/pull/907)).
+- The Claude CLI ignores user, project and local settings files and loads no MCP servers. Configure it only through its environment, such as `CLAUDE_CODE_OAUTH_TOKEN` ([#911](https://github.com/manki-review/manki/pull/911)).
+- Personal Google accounts can no longer use `gemini_oauth_token`, because Google ended Login with Google for the Gemini CLI on consumer tiers. Switch to `gemini_api_key` ([#919](https://github.com/manki-review/manki/pull/919)).
+- API-key users of Anthropic now run on API version `2026-10-21`, and the key is sent as `Authorization: Bearer`. This only matters if you put a proxy in front of the API through `ANTHROPIC_BASE_URL` ([#916](https://github.com/manki-review/manki/pull/916)).
+- Recommended workflow changes, all in the `SETUP.md` snippet:
+  - Action required: use the new `concurrency` block. Each PR gets two queues with `queue: max` and no `cancel-in-progress`: `manki-review-<pr>` for pushes and review commands, and `manki-reply-<pr>` for thread replies and other commands. Runs in a queue start in order and are never cancelled from outside. A running review stops on its own when a new commit lands ([#977](https://github.com/manki-review/manki/pull/977), [#978](https://github.com/manki-review/manki/pull/978)).
+  - Add the job-level `if`, so GitHub skips events Manki ignores, such as bot comments, dismissals of Manki's own reviews and every fork PR event, before a runner starts. Add `timeout-minutes: 30` in place of the 6 hour default ([#977](https://github.com/manki-review/manki/pull/977)).
+  - Drop `cache: 'npm'` from `actions/setup-node`. It fails the job in a repository without a lockfile, and the snippet runs no npm install that would use it ([#977](https://github.com/manki-review/manki/pull/977)).
+  - The workflow needs only `actions: read` instead of `actions: write` ([#967](https://github.com/manki-review/manki/pull/967)). Add `checks: read` and `security-events: read` so Manki can read CI and code scanning results ([#938](https://github.com/manki-review/manki/pull/938)).
+  - Add `closed` to the `pull_request` types to get the merge-time fix rate ([#932](https://github.com/manki-review/manki/pull/932)).
+  - Pin the Claude, Codex and Gemini CLI installs to the versions in `SETUP.md`, and install Gemini with `--ignore-scripts` ([#894](https://github.com/manki-review/manki/pull/894), [#911](https://github.com/manki-review/manki/pull/911), [#918](https://github.com/manki-review/manki/pull/918)).
+  - `github_token` no longer needs to be passed, since it defaults to the workflow token ([#909](https://github.com/manki-review/manki/pull/909)).
+  - To pin by commit SHA, take the commit a release tag points to, or keep `@v6` and record it in a workflow lockfile. From v6.0.0 releases are immutable, so the SHA behind `v6.x.y` never changes ([#976](https://github.com/manki-review/manki/pull/976), [#977](https://github.com/manki-review/manki/pull/977)).
+  - If a ruleset restricts who may dismiss reviews, allow the Manki app, or GitHub Actions when Manki runs without the app. Otherwise the old REQUEST_CHANGES keeps blocking the merge after Manki approves ([#977](https://github.com/manki-review/manki/pull/977), [#978](https://github.com/manki-review/manki/pull/978)).
+
+### Review loop and verdicts
+
+- Each round ends in one outcome: `READY` posts APPROVE, `ADDRESS_FIRST` and `NOT_CONVERGING` post REQUEST_CHANGES, `INCOMPLETE` posts COMMENT, and `BUDGET` posts APPROVE on the last automatic round when nothing blocks. The outcome is stored in the round context ([#915](https://github.com/manki-review/manki/pull/915), [#924](https://github.com/manki-review/manki/pull/924)).
+- The last round `max_auto_rounds` allows blocks on blockers only. It ends `BUDGET` with an approval and the remaining warnings listed, or `NOT_CONVERGING` with a "Needs a human" list. A PR no longer sits at a stale REQUEST_CHANGES after the round cap ([#924](https://github.com/manki-review/manki/pull/924)).
+- A push that leaves the PR's own change as it was, such as a clean rebase or an empty commit, keeps the previous verdict and runs no model. A previous approval is posted again on the new head, so a ruleset that dismisses approvals on push gets it back ([#921](https://github.com/manki-review/manki/pull/921)).
+- Reviewers see the same filtered full PR diff every round, with no round number or earlier findings. Only the judge sees the history. This replaces the inter-round delta and follow-up planner context from 5.3.0 ([#908](https://github.com/manki-review/manki/pull/908), [#913](https://github.com/manki-review/manki/pull/913)).
+- The judge re-grades every finding against a fixed rubric and no longer sees the reviewer's severity. Missing test coverage, unverifiable claims, untouched code and commit messages no longer block ([#907](https://github.com/manki-review/manki/pull/907), [#957](https://github.com/manki-review/manki/pull/957)).
+- The judge now gets the full PR diff, so it can check a finding against the actual change ([#901](https://github.com/manki-review/manki/pull/901)).
+- A judged severity can no longer land on the wrong finding when the model reorders its output, and a finding the judge leaves out stays visible ([#906](https://github.com/manki-review/manki/pull/906)).
+- A blocker the judge marks `hypothetical` keeps its blocker severity. Only warnings and suggestions are still capped at nitpick ([#891](https://github.com/manki-review/manki/pull/891)).
+- Resolving a Manki thread, or replying that you agree, now clears the matching earlier finding from the verdict. A finding reported only in the review body stops blocking once the PR no longer touches its file ([#912](https://github.com/manki-review/manki/pull/912)).
+- When the judge finds that a fix addressed an open thread, the review no longer requests changes for it ([#910](https://github.com/manki-review/manki/pull/910)).
+- Manki no longer closes its own threads just because the code moved. Threads the judge did not confirm fixed stay open, and findings that match them are no longer suppressed ([#920](https://github.com/manki-review/manki/pull/920)).
+- A paused PR gets its pause notice once, and later pushes update it instead of posting another. The reply on a reopened security thread of a paused PR says to comment `@manki review` after pushing the fix ([#966](https://github.com/manki-review/manki/pull/966)).
+- A blocker that matches an earlier blocker with an open thread gets no duplicate thread. The review links it under "Still open from earlier reviews" instead ([#965](https://github.com/manki-review/manki/pull/965)).
+- A round that confirms a blocker fixed resolves Manki's thread with a `Fixed in <sha>.` reply and no longer blocks on it. A fix counts as confirmed only when the push changed the thread's file and the round does not name the blocker again ([#965](https://github.com/manki-review/manki/pull/965)).
+- The round cap counts only the rounds since Manki last approved the PR, so rebases after an approval no longer use it up and pause an approved PR ([#965](https://github.com/manki-review/manki/pull/965)).
+- The "Auto-approve withheld" notice appears only when no automatic review will run on the head, because review is paused or `auto_review` is off, and it says which. Withheld and pause notices are cleaned up once a round posts its verdict ([#969](https://github.com/manki-review/manki/pull/969)).
+- A rebase-only push can auto-approve once its threads are resolved, and the `check` command explains why a commit is not approved yet ([#969](https://github.com/manki-review/manki/pull/969)).
+- Manki never posts a verdict on a superseded commit. It checks the PR head between stages and before posting, and when the head moved it posts no review, resolves no threads and marks the progress comment as superseded by the new commit ([#967](https://github.com/manki-review/manki/pull/967)).
+- A review in progress only holds back runs for the same commit, so a push during a `@manki review` run of the older commit gets its own review instead of "Review skipped" ([#967](https://github.com/manki-review/manki/pull/967)).
+
+### Review format
+
+- A review opens with a short verdict line: Approved, Changes requested, Review incomplete or Needs a human. A request for changes says what goes wrong in practice, and an approval says what the change does and what to test as numbered steps ([#925](https://github.com/manki-review/manki/pull/925), [#915](https://github.com/manki-review/manki/pull/915)).
+- Finding comments open with the severity label, and a low-confidence finding says Manki is not sure it applies. Identifiers and paths from the diff are always shown as code, and a `suggestion` block only ever holds code that applies as is ([#925](https://github.com/manki-review/manki/pull/925)).
+- Thread replies start with Fixed, Agreed, Withdrawn or Still open and stay within three sentences. On Fixed, Agreed or Withdrawn from the PR author or a collaborator, Manki resolves the thread ([#929](https://github.com/manki-review/manki/pull/929)).
+- Review text from the judge, verdict reader and reviewers follows shared writing rules: plain words, the practical consequence first, no praise or filler ([#929](https://github.com/manki-review/manki/pull/929)).
+- Hidden markers sit at the end of every comment, so notifications and previews start with the actual message ([#961](https://github.com/manki-review/manki/pull/961)).
+- The progress comment drops its dash separators and decorative emoji and shows one status symbol per agent ([#925](https://github.com/manki-review/manki/pull/925)).
+- File-level threads in the "Still open from earlier reviews" list show the path without `:0` ([#963](https://github.com/manki-review/manki/pull/963)).
+
+### Security
+
+- Security findings block at every round. The judge treats a reachable defect on attacker-controlled input, such as prompt injection, auth bypass or token exposure, as a blocker, or refutes it when the attacker gains nothing new ([#931](https://github.com/manki-review/manki/pull/931)).
+- Provider CLIs run in an empty temp directory instead of the PR checkout. A PR can no longer add hooks, MCP servers, settings or context files that run during the review ([#911](https://github.com/manki-review/manki/pull/911)).
+- A security-sensitive path always gets two finders, whatever the planner or the config say ([#934](https://github.com/manki-review/manki/pull/934)).
+- A repo admin who authored the PR can clear a security finding on it, by resolving the thread or commenting `@manki dismiss` in it. Manki replies once in the thread, and every override is recorded in the round context and in the approval that relies on it ([#968](https://github.com/manki-review/manki/pull/968)).
+- `@manki dismiss` in a Manki thread resolves it. Clearing a security finding this way needs write access, checked through the API ([#968](https://github.com/manki-review/manki/pull/968)).
+- A Manki command quoted in inline code or a code block is treated as text and no longer runs ([#968](https://github.com/manki-review/manki/pull/968)).
+- Stateless GitHub App tokens are now redacted in full from error text Manki posts, along with `ghu_` and `ghr_` tokens ([#905](https://github.com/manki-review/manki/pull/905)).
+
+### Static analysis
+
+- Manki reads check-run annotations, open code scanning alerts and vulnerable packages from the dependency review on the PR head, and gives reviewers the results on changed lines. A suggestion or nitpick that repeats a tool result on the same line is dropped. Configure the sources with `static_analysis` ([#938](https://github.com/manki-review/manki/pull/938)).
+- Tool results on changed lines also reach the judge as candidate findings, and a kept one is posted with the tool in its label. Each reviewer finding is checked against the code first, and the judge sees whether a tool confirmed or contradicted it ([#943](https://github.com/manki-review/manki/pull/943), [#946](https://github.com/manki-review/manki/pull/946)).
+- New opt-in `static_analysis.analyzers` runs `ast-grep` with Manki's own rules on changed JavaScript, TypeScript and Python files, for repos without CI checks. Turn it on with `ast_grep: true` or `analyzers: all`. No PR code runs ([#959](https://github.com/manki-review/manki/pull/959)).
+- New `static_analysis.wait_for_checks` and `wait_timeout_seconds` let Manki wait for named CI checks in another workflow before it reads their results ([#959](https://github.com/manki-review/manki/pull/959)).
+- Three more opt-in analyzers: `secrets` runs gitleaks on the added lines, `dependencies` runs OSV-Scanner on every changed lockfile, and `semgrep: { rules: [...] }` runs your own Semgrep-compatible rule files from the base branch with Opengrep. The binaries are pinned and checksum-verified, they use Manki's own config, and they never run PR code or see a token. All are off by default, and `analyzers: all` turns on `secrets` and `dependencies` but not `semgrep` ([#962](https://github.com/manki-review/manki/pull/962)).
+- A changed lockfile is scanned even when `exclude_paths` hides it from the reviewers, such as `yarn.lock` under the default `*.lock`. Its results are listed in the review body ([#962](https://github.com/manki-review/manki/pull/962)).
+
+### Reviewer groups and models
+
+- New `review` block in `.manki.yml` with `groups`, `classes`, `routing`, `default_group` and `allow_weaker`. Each PR is sorted into a review class from its paths and the planner triage, and the class picks the group of finders that reads it. Without the block the built-in groups apply ([#952](https://github.com/manki-review/manki/pull/952), [#954](https://github.com/manki-review/manki/pull/954)).
+- Security, supply chain and data contract changes are floor classes. They always get two finders on two models, and a group that would read them weaker fails the run unless `allow_weaker` names the class ([#952](https://github.com/manki-review/manki/pull/952), [#954](https://github.com/manki-review/manki/pull/954)).
+- A tests-only change is no longer trivial and gets a full finder instead of the Trivial Change Verifier ([#952](https://github.com/manki-review/manki/pull/952)).
+- New `models.reviewer_pair` sets the second finder's model. Without it, the second finder runs on the other Claude tier, so Sonnet pairs with Opus ([#933](https://github.com/manki-review/manki/pull/933), [#934](https://github.com/manki-review/manki/pull/934)).
+- New `planner.paired` (`auto`, `always` or `never`) pins whether a second finder runs. It is already deprecated in favour of `review.routing` and logs a warning, but it still works ([#934](https://github.com/manki-review/manki/pull/934), [#954](https://github.com/manki-review/manki/pull/954)).
+- Reviewer `effort` accepts `max` ([#954](https://github.com/manki-review/manki/pull/954)).
+- GPT-5 and later models now honour the effort tiers, and `max` reaches `xhigh` or `max` where the model allows it. The Codex CLI is pinned to 0.166.0 ([#918](https://github.com/manki-review/manki/pull/918)).
+- Gemini runs on `@google/genai`, and Gemini 3 models get the effort tier as `thinkingLevel` ([#919](https://github.com/manki-review/manki/pull/919)).
+- The Anthropic API path sends adaptive thinking to Opus 4.6 and later, which reject the budget form. Before, every API-key run with the default judge failed ([#892](https://github.com/manki-review/manki/pull/892)).
+- `claude_code_oauth_token` is no longer deprecated and no longer logs a warning on every run. The Claude Code CLI is pinned, so a future default of `--bare` cannot break it ([#888](https://github.com/manki-review/manki/pull/888), [#894](https://github.com/manki-review/manki/pull/894)).
+- On merge, Manki records how many of its posted findings were fixed, dismissed or left untouched, in the job summary and in `metrics/fix-rate.jsonl` when memory is on. Turn it off with `metrics.fix_rate: false`. A new `npm run fix-rate-report` script turns these files into tables ([#932](https://github.com/manki-review/manki/pull/932), [#957](https://github.com/manki-review/manki/pull/957), [#960](https://github.com/manki-review/manki/pull/960), [#964](https://github.com/manki-review/manki/pull/964)).
+- The `Manki context` block records the finder models, which finders raised each kept finding, and a `routing` object with the class, group and a digest of the review config ([#933](https://github.com/manki-review/manki/pull/933), [#960](https://github.com/manki-review/manki/pull/960)).
+
+### Reliability
+
+- Claude CLI output is capped at 32768 tokens, so a runaway reply ends as a truncated reply that the stage retries once. Each stage has its own time budget: the judge stops after 300 s and the verdict reader after 900 s, instead of 1,200 s ([#958](https://github.com/manki-review/manki/pull/958)).
+- The judge and the verdict reader are asked once more when a reply does not parse, so one malformed reply no longer costs the round ([#928](https://github.com/manki-review/manki/pull/928)).
+- JSON is read from the shape each stage expects, so a bracket in prose before the JSON no longer breaks parsing ([#927](https://github.com/manki-review/manki/pull/927)).
+- Transient GitHub errors and rate limits are retried. A persistent error fails the run instead of turning REQUEST_CHANGES into a COMMENT ([#898](https://github.com/manki-review/manki/pull/898)).
+- Long PRs with more than 100 comments or threads, or more than 30 reviews, keep their round state, lock and auto-approve behaviour ([#926](https://github.com/manki-review/manki/pull/926)).
+- Runs on the workflow token, a custom GitHub App or a personal access token now recognise their own comments and reviews, so round state, the concurrency lock and the round cap work across rounds. With a personal access token, use a dedicated account ([#923](https://github.com/manki-review/manki/pull/923), [#941](https://github.com/manki-review/manki/pull/941)).
+- Excluded and generated files no longer reach any prompt, and an oversized diff gives every file a fair share of the budget instead of cutting from the top ([#904](https://github.com/manki-review/manki/pull/904)).
+- A draft marked ready for review is now reviewed ([#909](https://github.com/manki-review/manki/pull/909)).
+- Replies and `@manki` commands on a Manki thread are no longer dropped with a "Review skipped" comment ([#889](https://github.com/manki-review/manki/pull/889)).
+- A stage the provider refuses is retried once on a fallback model: `models.fallback` if set, else the reviewer model, or the other Claude tier when the stage already runs on it. A second refusal ends the round `INCOMPLETE`, and each fallback is recorded in the round context ([#955](https://github.com/manki-review/manki/pull/955)).
+- A running review checks the PR head every 30 seconds and stops within about 30 s when a new commit lands, aborting the model call in flight. After a cancel signal it makes no GitHub writes, so a cancelled run never posts or dismisses a review ([#978](https://github.com/manki-review/manki/pull/978)).
+- A progress comment from an old run that GitHub deleted under its retention rules counts as finished and no longer blocks reviews. A failed dismissal of an earlier review is logged as a warning ([#978](https://github.com/manki-review/manki/pull/978)).
+- When GitHub refuses an approval, Manki logs GitHub's real error and names the repo setting only when the error does. Before, it always blamed the "Allow GitHub Actions to create and approve pull requests" setting ([#967](https://github.com/manki-review/manki/pull/967)).
+
+### Internal
+
+- `runFullReview` is split into named stages, `runReview` takes one options object, and a new end-to-end test runs a round against a fake GitHub ([#947](https://github.com/manki-review/manki/pull/947), [#948](https://github.com/manki-review/manki/pull/948), [#949](https://github.com/manki-review/manki/pull/949)).
+- The release workflow runs on current actions and publishes with immutable releases in mind. It builds `dist/`, publishes the release, and only then moves the floating `vX` tag ([#976](https://github.com/manki-review/manki/pull/976)).
+- Feature and fix PRs no longer edit `CHANGELOG.md`, and CI enforces it. The release PR writes the entries ([#900](https://github.com/manki-review/manki/pull/900)).
+- `@anthropic-ai/sdk` moves to 1.4, `npm audit` findings are fixed and the workflows use the Node 24 actions ([#916](https://github.com/manki-review/manki/pull/916), [#896](https://github.com/manki-review/manki/pull/896)).
+- `AGENTS.md` has a current architecture map, and a test fix restored `main` CI ([#895](https://github.com/manki-review/manki/pull/895), [#902](https://github.com/manki-review/manki/pull/902)).
 
 ## [5.3.0] - 2026-05-25
 
