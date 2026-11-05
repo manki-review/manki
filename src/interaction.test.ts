@@ -41,6 +41,7 @@ jest.mock('./github', () => ({
   reactToReviewComment: jest.fn().mockResolvedValue(undefined),
   fetchPRDiff: jest.fn().mockResolvedValue(''),
   isRepoAdmin: jest.fn().mockResolvedValue(false),
+  hasWriteAccess: jest.fn(async (_octokit: unknown, _owner: string, _repo: string, login: string) => login !== 'reader'),
 }));
 
 jest.mock('./review', () => ({
@@ -839,6 +840,7 @@ describe('handleReviewCommentReply', () => {
     ['Agreed. The token never reaches a log.', 'CONTRIBUTOR', 'someone', 'pr-author', true, false],
     ['Agreed. The token never reaches a log.', 'MEMBER', 'someone', 'pr-author', true, true],
     ['Agreed. The token never reaches a log.', 'MEMBER', 'someone', undefined, true, true],
+    ['Agreed. The token never reaches a log.', 'MEMBER', 'reader', 'pr-author', true, false],
     ['Still open. The token still reaches the log.', 'OWNER', 'pr-author', 'pr-author', true, false],
   ])('resolves the thread after %j from a %s reply by %s, PR author %s, security %s: %s', async (reply, association, sender, prAuthor, isSecurity, resolves) => {
     setContext({
@@ -1252,6 +1254,7 @@ describe('handleReviewCommentCommand', () => {
     ['a repo admin PR author', 'OWNER', 'pr-author', true, true, true],
     ['a PR author without admin', 'OWNER', 'pr-author', false, true, false],
     ['a maintainer other than the PR author', 'MEMBER', 'someone', false, true, true],
+    ['an org member with read access', 'MEMBER', 'reader', false, true, false],
     ['an outside contributor', 'CONTRIBUTOR', 'someone', true, true, false],
     ['a PR author without admin, on a plain finding', 'NONE', 'pr-author', false, false, true],
   ])('resolves the thread a dismiss was posted in, from %s', async (_who, association, sender, isAdmin, isSecurity, resolves) => {

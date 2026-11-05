@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 
 import { LLMClient } from './providers';
 import { writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
-import { BotIdentity, dynamicFence, isRepoAdmin, isTrustedAssociation, reactToIssueComment, reactToReviewComment, fetchPRDiff } from './github';
+import { BotIdentity, dynamicFence, hasWriteAccess, isRepoAdmin, isTrustedAssociation, reactToIssueComment, reactToReviewComment, fetchPRDiff } from './github';
 import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -114,14 +114,18 @@ async function resolveThreadOf(
 
 /**
  * Who may get a Manki thread resolved through a comment: someone who could resolve it by hand.
- * `securityAllowed` says whether that also covers a security thread, which needs a maintainer other than the PR author.
+ * On a security thread, `securityAllowed` says whether the sender may also clear it: a maintainer other than the PR author.
+ * Write access is checked through the API there, since an org member with read access also shows as `MEMBER`.
  */
-function resolvePermission(
-  bot: BotIdentity, authorAssociation: string | undefined, senderLogin: string | undefined, prAuthorLogin: string | undefined,
-): { mayResolve: boolean; isPrAuthor: boolean; securityAllowed: boolean } {
+async function resolvePermission(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, isSecurity: boolean,
+  authorAssociation: string | undefined, senderLogin: string | undefined, prAuthorLogin: string | undefined,
+): Promise<{ mayResolve: boolean; isPrAuthor: boolean; securityAllowed: boolean }> {
   const isTrusted = isTrustedAssociation(authorAssociation);
   const isPrAuthor = !!prAuthorLogin && senderLogin?.toLowerCase() === prAuthorLogin.toLowerCase();
-  return { mayResolve: isTrusted || isPrAuthor, isPrAuthor, securityAllowed: isTrusted && mayClearSecurityThread(senderLogin, bot, prAuthorLogin) };
+  const securityAllowed = isSecurity && isTrusted && !!senderLogin && mayClearSecurityThread(senderLogin, bot, prAuthorLogin)
+    && await hasWriteAccess(octokit, owner, repo, senderLogin);
+  return { mayResolve: isTrusted || isPrAuthor, isPrAuthor, securityAllowed };
 }
 
 /**
@@ -205,8 +209,10 @@ export async function handleReviewCommentReply(
 
     const response = await client.sendMessage(REPLY_SYSTEM_PROMPT, context + diffContext);
     const reply = highlightCode(response.content.trim(), codeTokens);
-    const { mayResolve, securityAllowed } = resolvePermission(bot, comment.author_association, senderLogin, prAuthorLogin);
-    const staysOpen = AGREED_REPLY_RE.test(reply) && !securityAllowed && isSecurityThread(root.comment.body ?? '');
+    const isSecurity = isSecurityThread(root.comment.body ?? '');
+    const { mayResolve, securityAllowed } = await resolvePermission(
+      octokit, bot, owner, repo, isSecurity, comment.author_association, senderLogin, prAuthorLogin);
+    const staysOpen = AGREED_REPLY_RE.test(reply) && isSecurity && !securityAllowed;
 
     await octokit.rest.pulls.createReplyForReviewComment({
       owner,
@@ -473,13 +479,15 @@ async function resolveDismissedThread(octokit: Octokit, bot: BotIdentity, owner:
   const inReplyTo = payload.comment?.in_reply_to_id;
   if (!inReplyTo) return;
   const senderLogin = payload.sender?.login;
-  const { mayResolve, isPrAuthor, securityAllowed } = resolvePermission(bot, payload.comment?.author_association, senderLogin, payload.pull_request?.user?.login);
-  if (!mayResolve) return;
   try {
     const { data: parent } = await octokit.rest.pulls.getReviewComment({ owner, repo, comment_id: inReplyTo });
     const root = await fetchThreadRoot(octokit, owner, repo, inReplyTo, parent);
     if (!root || !isBotComment(root.comment.body ?? '')) return;
-    const adminOverride = !securityAllowed && isPrAuthor && !!senderLogin && isSecurityThread(root.comment.body ?? '')
+    const isSecurity = isSecurityThread(root.comment.body ?? '');
+    const { mayResolve, isPrAuthor, securityAllowed } = await resolvePermission(
+      octokit, bot, owner, repo, isSecurity, payload.comment?.author_association, senderLogin, payload.pull_request?.user?.login);
+    if (!mayResolve) return;
+    const adminOverride = isSecurity && !securityAllowed && isPrAuthor && !!senderLogin
       && await isRepoAdmin(octokit, owner, repo, senderLogin);
     await resolveThreadOf(octokit, bot, owner, repo, prNumber, root.id, securityAllowed, adminOverride ? senderLogin : undefined);
   } catch (error) {

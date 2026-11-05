@@ -45,17 +45,18 @@ function isTrustedAssociation(authorAssociation: string | null | undefined): boo
   return ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(authorAssociation ?? '');
 }
 
-const adminLookups = new WeakMap<Octokit, Map<string, Promise<boolean>>>();
+const permissionLookups = new WeakMap<Octokit, Map<string, Promise<string>>>();
 
 /**
- * Whether `login` has admin permission on the repo. `author_association` cannot tell, since an org owner shows as `MEMBER`.
- * Each client caches its answers, so a run asks once per login. A failed lookup counts as no.
+ * Returns the repo permission of `login`: `admin`, `write`, `read` or `none`. `author_association` cannot tell,
+ * since an org owner and an org member with read access both show as `MEMBER`.
+ * Each client caches its answers, so a run asks once per login. A failed lookup counts as `none`.
  */
-function isRepoAdmin(octokit: Octokit, owner: string, repo: string, login: string): Promise<boolean> {
-  let lookups = adminLookups.get(octokit);
+function repoPermission(octokit: Octokit, owner: string, repo: string, login: string): Promise<string> {
+  let lookups = permissionLookups.get(octokit);
   if (!lookups) {
     lookups = new Map();
-    adminLookups.set(octokit, lookups);
+    permissionLookups.set(octokit, lookups);
   }
   const key = `${owner}/${repo}/${login.toLowerCase()}`;
   let lookup = lookups.get(key);
@@ -63,15 +64,24 @@ function isRepoAdmin(octokit: Octokit, owner: string, repo: string, login: strin
     lookup = (async () => {
       try {
         const { data } = await octokit.rest.repos.getCollaboratorPermissionLevel({ owner, repo, username: login });
-        return data.permission === 'admin';
+        return data.permission;
       } catch (error) {
-        core.warning(`Could not read the repo permission of ${login}, treating them as no admin: ${error}`);
-        return false;
+        core.warning(`Could not read the repo permission of ${login}, treating it as none: ${error}`);
+        return 'none';
       }
     })();
     lookups.set(key, lookup);
   }
   return lookup;
+}
+
+async function isRepoAdmin(octokit: Octokit, owner: string, repo: string, login: string): Promise<boolean> {
+  return await repoPermission(octokit, owner, repo, login) === 'admin';
+}
+
+/** Whether `login` can push to the repo. A `maintain` role reads as `write`. */
+async function hasWriteAccess(octokit: Octokit, owner: string, repo: string, login: string): Promise<boolean> {
+  return ['admin', 'write'].includes(await repoPermission(octokit, owner, repo, login));
 }
 
 const BOT_MARKER = '<!-- manki-bot -->';
@@ -2205,5 +2215,5 @@ async function postConfigErrorComment(
   }
 }
 
-export { dynamicFence, formatContextBlock, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, isBotLogin, isRepoAdmin, isTrustedAssociation, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, FOLLOW_UP_MARKER, LOW_CONFIDENCE_NOTE };
+export { dynamicFence, formatContextBlock, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, isTrustedAssociation, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, FOLLOW_UP_MARKER, LOW_CONFIDENCE_NOTE };
 export type { InProgressLock, StandingVerdict };

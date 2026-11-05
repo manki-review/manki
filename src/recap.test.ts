@@ -1338,6 +1338,8 @@ describe('fetchRecapState', () => {
         'src/outsider-agreed.ts': { reply: { login: 'carol', association: 'CONTRIBUTOR' }, security: true, blocks: true },
         'src/collaborator-resolved.ts': { resolver: 'alice', security: true, blocks: false },
         'src/collaborator-agreed.ts': { reply: { login: 'bob', association: 'MEMBER' }, security: true, blocks: false },
+        // `MEMBER` covers an org member with read access, so write access comes from the API.
+        'src/reader-agreed.ts': { reply: { login: 'dave', association: 'MEMBER' }, security: true, blocks: true },
         'src/judge-addressed.ts': { resolver: 'author', security: true, blocks: false },
         'src/plain-author-resolved.ts': { resolver: 'author', security: false, blocks: false },
         'src/plain-author-agreed.ts': { reply: { login: 'author', association: 'NONE' }, security: false, blocks: false },
@@ -1346,7 +1348,7 @@ describe('fetchRecapState', () => {
       const ctx = makeRoundContext(1, {
         findings: {
           count: files.length,
-          severityCounts: { blocker: 9, warning: 2, suggestion: 0, nitpick: 0 },
+          severityCounts: { blocker: 10, warning: 2, suggestion: 0, nitpick: 0 },
           entries: files.map(file => ({
             fingerprint: { file, lineStart: 10, lineEnd: 10, slug },
             severity: cases[file].security ? 'blocker' as const : 'warning' as const,
@@ -1375,6 +1377,9 @@ describe('fetchRecapState', () => {
           ] },
         });
       }), [{ id: 100, body: detailsBlock(ctx), user: { login: BOT_LOGIN } }]);
+      const permissions: Record<string, string> = { author: 'write', bob: 'write', dave: 'read' };
+      const permission = jest.fn(async ({ username }: { username: string }) => ({ data: { permission: permissions[username] ?? 'none' } }));
+      Object.assign(octokit.rest, { repos: { getCollaboratorPermissionLevel: permission } });
 
       const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1, 'author');
       expect(state.previousFindings.filter(f => f.reopen).map(f => f.file)).toEqual(['src/author-resolved.ts']);
@@ -1400,15 +1405,14 @@ describe('fetchRecapState', () => {
       expect(unknownAuthor.previousFindings.filter(f => f.isSecurity && f.status === 'resolved').map(f => f.file))
         .toEqual(['src/author-resolved.ts', 'src/author-resolved-again.ts', 'src/collaborator-resolved.ts', 'src/judge-addressed.ts']);
 
-      // A PR author with write access but no admin keeps the rule above.
-      const permission = jest.fn().mockResolvedValue({ data: { permission: 'write' } });
-      const writer = Object.assign(Object.create(octokit), { rest: { ...octokit.rest, repos: { getCollaboratorPermissionLevel: permission } } });
-      expect((await fetchRecapState(writer, TEST_BOT, 'owner', 'repo', 1, 'author')).previousFindings.filter(f => f.reopen).map(f => f.file))
-        .toEqual(['src/author-resolved.ts']);
+      // A reply from someone with write access agrees a security thread away under the same fallback.
+      expect(collectInPrSuppressions(unknownAuthor.previousFindings).filter(s => s.reason === 'agree-reply').map(s => s.fingerprint.file))
+        .toEqual(['src/author-agreed.ts', 'src/collaborator-agreed.ts']);
 
       // A repo admin author clears their own resolved threads. Nothing is reopened, and the override waits for Manki's reply.
-      permission.mockResolvedValue({ data: { permission: 'admin' } });
-      const admin = Object.assign(Object.create(octokit), { rest: { ...octokit.rest, repos: { getCollaboratorPermissionLevel: permission } } });
+      // Permissions are cached per client, so the admin check needs a fresh one.
+      permissions.author = 'admin';
+      const admin = Object.create(octokit);
       const adminState = await fetchRecapState(admin, TEST_BOT, 'owner', 'repo', 1, 'author');
       expect(adminState.previousFindings.filter(f => f.reopen)).toEqual([]);
       expect(adminState.previousFindings.filter(f => f.securityOverride).map(f => [f.file, f.securityOverride])).toEqual([
@@ -1422,13 +1426,11 @@ describe('fetchRecapState', () => {
         .filter(e => determineOutcome([], [e], adminOpen, collectResolvedThreadIds(adminState.previousFindings)).outcome === 'ADDRESS_FIRST')
         .map(e => e.fingerprint.file))
         .toEqual(files.filter(file => cases[file].blocks && !['src/author-resolved.ts', 'src/admin-dismissed.ts', 'src/author-resolved-again.ts'].includes(file)));
-      // The lookup is cached per client, so the second read does not ask GitHub again.
+      // A second read on the same client does not ask GitHub again.
+      const lookups = permission.mock.calls.length;
       await fetchRecapState(admin, TEST_BOT, 'owner', 'repo', 1, 'author');
-      expect(permission).toHaveBeenCalledTimes(2);
+      expect(permission).toHaveBeenCalledTimes(lookups);
       expect(permission).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', username: 'author' });
-      // A reply from someone with write access agrees a security thread away under the same fallback.
-      expect(collectInPrSuppressions(unknownAuthor.previousFindings).filter(s => s.reason === 'agree-reply').map(s => s.fingerprint.file))
-        .toEqual(['src/author-agreed.ts', 'src/collaborator-agreed.ts']);
     });
 
     it('round-trips suggestedFix containing a literal \\u0060 escape sequence without parse error', async () => {
