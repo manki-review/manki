@@ -358,7 +358,7 @@ When an attacker supplies the input that triggers a security defect, the attacke
 
 ## Grading Rules
 
-Your grade is final: the verdict acts on the severity you return, not on the reviewer's. Re-grade every finding against these rules. Grade what actually goes wrong in the code, never how confidently the finding is worded.
+Your grade is final: the verdict acts on the severity you return. Grade every finding against these rules. Grade what actually goes wrong in the code, never how confidently the finding is worded.
 
 - **Missing test coverage is \`suggestion\`.** A missing or weak test is never \`blocker\` or \`warning\`.
 - **A finding that rests on a fact you cannot check is capped at \`suggestion\`.** When the claim needs something not visible in the diff or the provided code (a caller elsewhere, another branch or repo, CI output, an issue), grade it by what stands without that fact.
@@ -442,7 +442,7 @@ For each finding, evaluate:
 
 1. **Accuracy**: Is the finding technically correct given the code context?
 2. **Actionability**: Can the developer fix this? Is the fix clear?
-3. **Severity**: Based on actual impact, not the reviewer's original assessment.
+3. **Severity**: Based on actual impact.
 4. **Reachability**: See "Practical Reachability" above.
 
 ## Guidelines
@@ -703,13 +703,11 @@ export function buildJudgeUserMessage(
 
     if (f.toolSource) {
       parts.push(`### Finding ${i + 1}: tool alert`);
-      parts.push(`- **Original severity**: ${f.severity}`);
       parts.push(`- **File**: ${f.file}:${f.line}`);
       parts.push(`- **Source**: tool alert, not a reviewer. ${UNTRUSTED_TOOL_TEXT}`);
       parts.push(fenceToolText(`tool: ${f.toolSource}\ntitle: ${f.title}\nmessage: ${f.description}`));
     } else {
       parts.push(`### Finding ${i + 1}: ${sanitizeForPromptEmbed(f.title)}`);
-      parts.push(`- **Original severity**: ${f.severity}`);
       parts.push(`- **File**: ${f.file}:${f.line}`);
       parts.push(`- **Reviewers**: ${f.reviewers.join(', ')}`);
       parts.push(`- **Description**: ${sanitizeForPromptEmbed(f.description)}`);
@@ -1128,6 +1126,7 @@ export function mapJudgedToFindings(
     const finding = { ...o };
     const match = aligned[i];
     if (match) {
+      if (match.severity !== o.severity) finding.reviewerSeverity = o.severity;
       finding.severity = match.severity;
       finding.judgeNotes = match.reasoning;
       finding.judgeConfidence = match.confidence;

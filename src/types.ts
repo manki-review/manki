@@ -161,6 +161,8 @@ export interface Finding {
   reachabilityReasoning?: string;
   tags?: string[];
   originalSeverity?: FindingSeverity;
+  /** Severity the reviewer gave, when the judge graded the finding differently. The judge never sees it. */
+  reviewerSeverity?: FindingSeverity;
   /** Fingerprint key of the prior-round blocker that names the same defect. */
   sameAs?: string;
   /** Tool that reported the finding, when it comes from a CI or code-scanning result instead of a reviewer. */
@@ -928,6 +930,8 @@ export interface RoundJudge {
   summary: string;
   confidenceDistribution?: { high: number; medium: number; low: number };
   severityChanges?: number;
+  /** Findings the judge graded above (`up`) or below (`down`) the reviewer's severity. */
+  regrades?: { up: number; down: number };
   mergedDuplicates?: number;
   /** Tool results the judge triaged as candidate findings. */
   toolAlertCount?: number;
@@ -1126,6 +1130,8 @@ export interface FindingFingerprintEntry {
   tags?: string[];
   /** Pre-demotion severity, when the judge demoted the finding. Mirrors `Finding.originalSeverity`. */
   originalSeverity?: FindingSeverity;
+  /** Reviewer severity, when the judge graded the finding differently. Mirrors `Finding.reviewerSeverity`. */
+  reviewerSeverity?: FindingSeverity;
   /** Whether a tool confirmed or contradicted the finding, or was silent. Mirrors `Finding.toolEvidence.status`. */
   toolEvidence?: ToolEvidenceStatus;
   /** Tool that reported the finding. Mirrors `Finding.toolSource`. */
