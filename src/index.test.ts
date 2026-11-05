@@ -150,6 +150,7 @@ jest.mock('./review', () => ({
     agentNames: ['general'],
   }),
   teamModels: jest.requireActual('./review').teamModels,
+  stringifyFindingFingerprint: jest.requireActual('./review').stringifyFindingFingerprint,
   selectTeam: jest.fn().mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, index: 0, model: 'claude-sonnet-5-5', effort: 'high' }], routing: { matched: ['internal'], classSource: 'triage', group: 'solo', groupSource: 'routing' }, triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false }),
 }));
 
@@ -223,6 +224,7 @@ jest.mock('./github', () => {
   }),
   BOT_LOGIN: 'manki-review[bot]',
   isBotLogin: jest.requireActual('./github').isBotLogin,
+  titleToSlug: jest.requireActual('./github').titleToSlug,
   BOT_MARKER: '<!-- manki-bot -->',
   REVIEW_COMPLETE_MARKER: '<!-- manki-review-complete -->',
   FORCE_REVIEW_MARKER: '<!-- manki-force-review -->',
@@ -235,6 +237,7 @@ jest.mock('./github', () => {
 jest.mock('./state', () => ({
   checkAndAutoApprove: jest.fn().mockResolvedValue(false),
   reopenAuthorResolvedThreads: jest.fn().mockResolvedValue(undefined),
+  replyToReviewThread: jest.requireActual('./state').replyToReviewThread,
   resolveReviewThread: jest.requireActual('./state').resolveReviewThread,
 }));
 
@@ -4966,6 +4969,8 @@ describe('runFullReview orchestration', () => {
     );
     expect(mockGraphql.mock.calls.some(([query]) => String(query).includes('resolveReviewThread'))).toBe(posted);
     expect(jest.mocked(core.info).mock.calls.some(([m]) => m === 'Judge resolved: "Fixed in latest push" — thread PRRT_abc')).toBe(posted);
+    expect(mockGraphql.mock.calls.some(([query, vars]) => String(query).includes('addPullRequestReviewThreadReply')
+      && (vars as { body?: string }).body === 'Fixed in abc123.\n\n<!-- manki -->')).toBe(posted);
   });
 
   it('resolves only threads with status addressed', async () => {
@@ -5098,7 +5103,7 @@ describe('runFullReview orchestration', () => {
     expect(threadIds).not.toContain('PRRT_resolved');
   });
 
-  it('logs debug message when thread resolution fails', async () => {
+  it('keeps a blocker thread that fails to resolve open, and requests changes on it instead of approving', async () => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
@@ -5129,9 +5134,20 @@ describe('runFullReview orchestration', () => {
 
     await callRunFullReview();
 
-    expect(jest.mocked(core.debug)).toHaveBeenCalledWith(
-      expect.stringContaining('Failed to resolve thread PRRT_fail'),
-    );
+    expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('Failed to resolve thread PRRT_fail, it stays open'));
+    expect(mockGraphql).not.toHaveBeenCalledWith(expect.stringContaining('addPullRequestReviewThreadReply'), expect.anything());
+    // Threads resolve only after the review posts, so the approval is replaced by a review that records the thread as open.
+    const posts = jest.mocked(ghUtils.postReview).mock.calls;
+    expect(posts).toHaveLength(2);
+    expect(posts[0][7]).toMatchObject({ verdict: 'APPROVE', judge: { threadEvaluations: [expect.objectContaining({ threadId: 'PRRT_fail', status: 'addressed' })] } });
+    expect(posts[1][7]).toMatchObject({ verdict: 'REQUEST_CHANGES', judge: { threadEvaluations: [expect.objectContaining({ threadId: 'PRRT_fail', status: 'uncertain' })] } });
+    expect(posts[1][5]).toMatchObject({
+      verdict: 'REQUEST_CHANGES',
+      outcome: 'ADDRESS_FIRST',
+      verdictReason: 'prior_unaddressed',
+      verdictTrace: { unresolvedPriors: [expect.objectContaining({ threadId: 'PRRT_fail', title: 'Bug A', file: 'src/app.ts', line: 1 })] },
+    });
+    expect(jest.mocked(ghUtils.dismissPreviousReviews)).toHaveBeenCalledTimes(2);
   });
 
   it('fails fast with setFailed when no API key is configured', async () => {
@@ -5462,6 +5478,31 @@ describe('runFullReview orchestration', () => {
       const capBody = capCall![0].body as string;
       expect(capBody.endsWith(`- [ ] Force review\n\n<!-- manki-bot -->\n${FORCE_CAP_MARKER}`)).toBe(true);
       expect(capBody).not.toContain(FORCE_REVIEW_MARKER);
+    });
+
+    it('counts the cap from the last approval, so rounds after it, as on rebases, start again', async () => {
+      jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(5));
+      const rounds = priorRounds(7).map(roundContextFromLegacy);
+      rounds[1].verdict = 'APPROVE';
+      jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: rounds });
+
+      await callRunFullReview();
+
+      expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+      const notice = jest.mocked(mockOctokitInstance.rest.issues.createComment).mock.calls
+        .find(([args]) => typeof args.body === 'string' && args.body.includes('Automatic review is paused'));
+      expect(notice![0].body).toContain('Manki has completed 5/5 review rounds on this PR since its last approval.');
+
+      // A `BUDGET` approval ends a loop by deferring warnings, so it does not reset the count.
+      rounds[2].verdict = 'APPROVE';
+      rounds[2].meta.outcome = 'BUDGET';
+      await callRunFullReview();
+      expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+
+      rounds[2].meta.outcome = 'READY';
+      await callRunFullReview();
+
+      expect(jest.mocked(reviewModule.runReview).mock.calls[0][1]).toMatchObject({ blockersOnly: false, finalRound: true });
     });
 
     it('bypasses the cap when skipCap is true', async () => {

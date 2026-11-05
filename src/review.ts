@@ -7,9 +7,9 @@ import { addUsage, LLMClient, LLMUsage, wrapClientForUsage, ZERO_USAGE, sanitize
 import { runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, LinkedIssue, titleToSlug } from './github';
-import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, llmDeduplicateFindings, PreviousFinding, titleOverlapType } from './recap';
+import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, PreviousFinding, titleOverlapType } from './recap';
 import { FOLLOW_UP_TAG, SECURITY_TAG, ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundPlannerSource, RoundStaticSignalMatch, EffortLevel, Finder, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
-import { countChangedLines, rebuildRawDiff } from './diff';
+import { countChangedLines, parsePRDiff, rebuildRawDiff } from './diff';
 import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, chooseGroup, classifyPr, resolveRouting } from './routing';
 import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
@@ -1018,10 +1018,13 @@ export async function runReview(
   if (blockersOnly) {
     finalFindings = finalFindings.map(f => f.severity === 'warning' && !f.tags?.includes(SECURITY_TAG) ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f);
   }
-  const decided = determineOutcome(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, judgeThreadEvaluations, priorRoundLookup, changedFiles, blockersOnly);
+  const priorBlockers = collectPriorBlockers(sortedPriorRounds);
+  const pushChangedFiles = new Set(interRoundDiff ? parsePRDiff(interRoundDiff).files.map(f => f.path) : []);
+  const openThreadIndex = new Map((openThreads ?? []).map(t => [t.threadId, t]));
+  let threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
+  const decided = determineOutcome(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, threadEvaluations, priorRoundLookup, changedFiles, blockersOnly);
   let outcome: RoundOutcome = decided.outcome;
   let { verdictReason, verdictTrace } = decided;
-  const priorBlockers = collectPriorBlockers(sortedPriorRounds);
 
   let verdictReport: VerdictReport | undefined;
   let verdictUsage: LLMUsage | undefined;
@@ -1053,16 +1056,22 @@ export async function runReview(
         return sameAs ? { ...f, sameAs } : f;
       });
       finalFindings = [...finalFindings, ...readerFindings];
+      threadEvaluations = confirmFixes(threadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
       outcome = 'ADDRESS_FIRST';
       verdictReason = 'verdict_reader';
       verdictTrace = { survivingBlockers: readerFindings.map(findingToTraceEntry), novelWarnings: [], unresolvedPriors: [] };
     }
   }
 
+  finalFindings = finalFindings.map(f => {
+    const threadId = f.severity === 'blocker' ? priorBlockerNamedBy(f, priorBlockers)?.entry.threadId : undefined;
+    return threadId && openThreadIndex.has(threadId) ? { ...f, threadId } : f;
+  });
+
   let needsHuman: NeedsHuman | undefined;
-  const repeated = findRepeatedBlockers(finalFindings, priorBlockers, options.headSha);
+  const fixClaimed = fixClaimedThreadIds(previousFindings, openThreads, sortedPriorRounds);
+  const repeated = findRepeatedBlockers(finalFindings, priorBlockers, options.headSha, fixClaimed);
   if (repeated.length > 0) {
-    const openThreadIndex = new Map((openThreads ?? []).map(t => [t.threadId, t]));
     outcome = 'NOT_CONVERGING';
     needsHuman = { cause: 'repeated', blockers: repeated.map(p => priorToTraceEntry(p.entry, priorRoundLookup, openThreadIndex)) };
   } else if (options.finalRound) {
@@ -1105,7 +1114,7 @@ export async function runReview(
     agentNames: team.finders.map(a => a.name),
     allJudgedFindings,
     rawFindings: allFindings,
-    threadEvaluations: judgeThreadEvaluations,
+    threadEvaluations,
     plannerResult: plannerResult ?? undefined,
     staticDedupCount,
     llmDedupCount,
@@ -1449,17 +1458,16 @@ function isPriorLikelyUnresolved(
   // Order matters. `openThreadsUnknown` must short-circuit before
   // `resolvedThreadIds` because both signals come from the same recap scan,
   // so a failed live fetch cannot fall back to cached "resolved" state.
-  // Judge-addressed acts as an override for warning priors when the GitHub
-  // thread is still open: the author landed the fix in the inter-round diff
-  // without explicitly resolving the thread. The judge's `addressed` verdict
-  // is accepted because `buildJudgeUserMessage` sanitizes untrusted PR/issue
-  // prose before it reaches the judge, and the adversarial fixture corpus
+  // Judge-addressed retires a prior whose GitHub thread is still open: the
+  // author landed the fix without resolving the thread, and Manki resolves it
+  // in the same round. The judge's `addressed` verdict is accepted because
+  // `buildJudgeUserMessage` sanitizes untrusted PR/issue prose before it
+  // reaches the judge, and the adversarial fixture corpus
   // (05_injection_attempt_unfixed) gates regressions in the judge's resistance
-  // to injected text. Blocker priors are never retired by LLM signal alone;
-  // they require GitHub thread resolution or explicit author agreement.
+  // to injected text. `runReview` keeps `addressed` on a blocker thread only
+  // when the push changed its file.
   if (p.threadId && openThreadIds.has(p.threadId)) {
-    if (p.severity !== 'blocker' && isPriorAddressedByJudge(p, threadEvaluationsByThreadId)) return false;
-    return true;
+    return !isPriorAddressedByJudge(p, threadEvaluationsByThreadId);
   }
   if (openThreadsUnknown) return true;
   if (p.threadId && resolvedThreadIds?.has(p.threadId)) return false;
@@ -1515,10 +1523,8 @@ export function buildPriorRoundLookup(sortedPriorRounds: RoundContext[]): Map<st
  * through `sanitizeForPromptEmbed` and tags each section as evidence-not-
  * directive; (b) the adversarial `05_injection_attempt_unfixed` fixture in
  * the corpus gates regressions in the judge's resistance to injected text;
- * (c) `applyCrossRoundSuppression` only lets `addressed` ratchet prior
- * `suggestion`/`nitpick` findings, never `blocker`/`warning`, so a flipped
- * judge verdict on a higher-severity prior still requires GitHub thread
- * resolution or an explicit `authorReply: 'agree'` to retire.
+ * (c) `runReview` drops `addressed` on a blocker thread whose file the push
+ * did not change, before it calls this function.
  *
  * Multi-round priors are collapsed to one entry per fingerprint, keeping the
  * most recent round's `authorReply` and `threadId`. Callers must pass
@@ -1600,7 +1606,15 @@ export function determineOutcome(
   if (unresolvedPriors.length > 0) {
     const trace = emptyTrace();
     const openThreadIndex = new Map((openThreads ?? []).map(t => [t.threadId, t]));
-    trace.unresolvedPriors = unresolvedPriors.map(p => priorToTraceEntry(p, priorRoundLookup, openThreadIndex));
+    // A blocker named again on an open thread is recorded with that thread's ID, so one thread can carry several priors.
+    const seenThreadIds = new Set<string>();
+    const distinctPriors = unresolvedPriors.filter(p => {
+      if (!p.threadId) return true;
+      if (seenThreadIds.has(p.threadId)) return false;
+      seenThreadIds.add(p.threadId);
+      return true;
+    });
+    trace.unresolvedPriors = distinctPriors.map(p => priorToTraceEntry(p, priorRoundLookup, openThreadIndex));
     return { outcome: 'ADDRESS_FIRST', verdictReason: 'prior_unaddressed', verdictTrace: trace };
   }
 
@@ -1608,13 +1622,66 @@ export function determineOutcome(
 }
 
 /**
- * Returns the prior blockers that a blocker in `findings` names again after a push.
- * A prior blocker last raised on `headSha` saw no push since, so it is left out.
+ * Returns the prior blockers that a blocker in `findings` names again after someone claimed a fix.
+ * A claim is a thread ID in `fixClaimed`. A prior blocker last raised on `headSha` saw no push since, so it is left out.
+ * A blocker named again while its thread is still open and unanswered is still open, not repeated.
  */
-function findRepeatedBlockers(findings: Finding[], priorBlockers: PriorBlocker[], headSha: string | undefined): PriorBlocker[] {
+function findRepeatedBlockers(findings: Finding[], priorBlockers: PriorBlocker[], headSha: string | undefined, fixClaimed: Set<string>): PriorBlocker[] {
   if (!headSha) return [];
   const named = new Set(findings.filter(f => f.severity === 'blocker' && f.sameAs).map(f => f.sameAs));
-  return priorBlockers.filter(p => p.commitSha !== headSha && named.has(stringifyFindingFingerprint(p.entry.fingerprint)));
+  return priorBlockers.filter(p => p.commitSha !== headSha && !!p.entry.threadId && fixClaimed.has(p.entry.threadId)
+    && named.has(stringifyFindingFingerprint(p.entry.fingerprint)));
+}
+
+/**
+ * Returns the IDs of the threads where someone claimed a fix: the thread was resolved, a human replied in it,
+ * or an earlier round confirmed the fix. With `openThreads` unknown, a thread missing from it proves nothing.
+ */
+function fixClaimedThreadIds(previousFindings: PreviousFinding[] | undefined, openThreads: OpenThread[] | null | undefined, priorRounds: RoundContext[]): Set<string> {
+  const claimed = judgeAddressedThreadIds(priorRounds);
+  const openThreadIds = new Set((openThreads ?? []).map(t => t.threadId));
+  for (const f of previousFindings ?? []) {
+    if (f.threadId && (f.status !== 'open' || f.reopen)) claimed.add(f.threadId);
+  }
+  if (openThreads) {
+    for (const p of priorRounds.flatMap(r => r.findings.entries)) {
+      if (p.threadId && !openThreadIds.has(p.threadId)) claimed.add(p.threadId);
+    }
+  }
+  return claimed;
+}
+
+/** Returns the prior blocker that `finding` names through `sameAs`. */
+function priorBlockerNamedBy(finding: Finding, priorBlockers: PriorBlocker[]): PriorBlocker | undefined {
+  return finding.sameAs ? priorBlockers.find(p => stringifyFindingFingerprint(p.entry.fingerprint) === finding.sameAs) : undefined;
+}
+
+/** Returns the thread IDs of the prior blockers that a blocker in `findings` names again. */
+function namedPriorThreadIds(findings: Finding[], priorBlockers: PriorBlocker[]): Set<string> {
+  const ids = findings.filter(f => f.severity === 'blocker').map(f => priorBlockerNamedBy(f, priorBlockers)?.entry.threadId);
+  return new Set(ids.filter((id): id is string => !!id));
+}
+
+/**
+ * Returns `evaluations` with `addressed` kept only where the round confirms the fix.
+ * A thread whose blocker this round names again is not fixed. A blocker thread, or one whose severity
+ * is unknown, counts as fixed only when the push changed its file, so a judge reading an unchanged file cannot clear it.
+ */
+function confirmFixes(
+  evaluations: ThreadEvaluation[] | undefined,
+  openThreadIndex: Map<string, OpenThread>,
+  namedThreadIds: Set<string>,
+  pushChangedFiles: ReadonlySet<string>,
+): ThreadEvaluation[] | undefined {
+  return evaluations?.map(e => {
+    if (e.status !== 'addressed') return e;
+    if (namedThreadIds.has(e.threadId)) return { ...e, status: 'not_addressed', reason: 'This round names the same blocker again.' };
+    const thread = openThreadIndex.get(e.threadId);
+    if ((thread?.severity === 'blocker' || thread?.severity === 'unknown') && !pushChangedFiles.has(thread.file)) {
+      return { ...e, status: 'uncertain', reason: `The push did not change \`${thread.file}\`, so the fix is not confirmed.` };
+    }
+    return e;
+  });
 }
 
 /**

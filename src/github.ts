@@ -912,7 +912,8 @@ function hasOpenThread(finding: Finding, existingThreads: PreviousFinding[]): bo
  *
  * A blocking finding on a changed line gets a line comment, one elsewhere in a diff file
  * gets a file-level comment. A finding that one of the open `existingThreads` already carries
- * is not posted again. When `interRoundDiff` is given, non-blocking findings on code it did not
+ * is not posted again. A blocker whose `threadId` names one of them is listed in the body under
+ * a link to that thread. When `interRoundDiff` is given, non-blocking findings on code it did not
  * change are only counted.
  *
  * When `context` is provided without `reviewTimeMs`, the hidden stats line
@@ -939,6 +940,7 @@ export async function postReview(
   const invalidComments: string[] = [];
   const generalFindings: string[] = [];
   const smallerFindings: string[] = [];
+  const stillOpen: string[] = [];
   let unpostedCount = 0;
   const nonBlocking: Finding[] = [];
   const linkTo = buildLineLink(owner, repo, commitSha, github.context.serverUrl);
@@ -951,6 +953,16 @@ export async function postReview(
         core.info(`Skipping "${f.title}" on ${f.file}: an open thread already carries it`);
       } else {
         nonBlocking.push(f);
+      }
+      continue;
+    }
+
+    const openThread = f.threadId ? existingThreads.find(t => t.threadId === f.threadId) : undefined;
+    if (openThread) {
+      core.info(`Skipping "${f.title}" on ${f.file}: the open thread ${f.threadId} already carries it`);
+      if (!result.needsHuman?.blockers.some(b => b.threadId === f.threadId)) {
+        // The finding shows under the link, so a wrong `sameAs` link still shows the defect. The indent keeps it in the list item.
+        stillOpen.push(`${formatTraceEntry(openThread)}\n\n${`This round names it as:\n\n${formatFindingBlock(f, linkTo)}`.replace(/^(?=.)/gm, '  ')}`);
       }
       continue;
     }
@@ -1002,6 +1014,9 @@ export async function postReview(
     const blockingThreads = formatBlockingPriorThreads(result);
     if (blockingThreads) {
       b += `\n\n${blockingThreads}`;
+    }
+    if (stillOpen.length > 0) {
+      b += `\n\n${STILL_OPEN_HEADING}\n${stillOpen.join('\n')}`;
     }
     const readyReport = formatReadyReport(result);
     if (readyReport) {
@@ -1248,10 +1263,12 @@ export function formatBlockingPriorThreads(result: { verdictReason?: VerdictReas
   const priors = result.verdictTrace?.unresolvedPriors ?? [];
   if (priors.length === 0) return null;
 
-  return `**Still open from earlier reviews:**\n${priors.map(formatTraceEntry).join('\n')}`;
+  return `${STILL_OPEN_HEADING}\n${priors.map(formatTraceEntry).join('\n')}`;
 }
 
-function formatTraceEntry(p: VerdictTraceEntry): string {
+const STILL_OPEN_HEADING = '**Still open from earlier reviews:**';
+
+function formatTraceEntry(p: Pick<VerdictTraceEntry, 'file' | 'title' | 'line' | 'threadUrl'>): string {
   const file = sanitizeFilePath(p.file);
   const location = !file ? '' : p.line ? `\`${file}:${p.line}\`: ` : `\`${file}\`: `;
   const title = sanitizeMarkdown(p.title || '(untitled)');

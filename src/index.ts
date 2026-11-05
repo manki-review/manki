@@ -15,7 +15,7 @@ import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, 
 import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, RepoMemory } from './memory';
 import { fetchRecapState, PreviousFinding, RecapState } from './recap';
-import { ReviewClients, ReviewOptions, runReview, selectTeam, teamModels } from './review';
+import { ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint, teamModels } from './review';
 import { buildRoundContext, RoundRecordInput } from './round-context';
 import { collectStaticSignals } from './static-signals';
 import { DashboardData, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, RoundTrigger, StaticSignal, roundContextToFlatAliases } from './types';
@@ -42,6 +42,7 @@ import {
   FORCE_CAP_MARKER,
   isBotLogin,
   isReviewInProgress,
+  titleToSlug,
   isApprovedOnCommit,
   hasBotReviewOnCommit,
   fetchStandingVerdict,
@@ -54,7 +55,7 @@ import {
   postConfigErrorComment,
 } from './github';
 import type { BotIdentity, LinkedIssue, StandingVerdict } from './github';
-import { checkAndAutoApprove, reopenAuthorResolvedThreads, resolveReviewThread } from './state';
+import { checkAndAutoApprove, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -648,11 +649,12 @@ async function loadRecap(target: RunTarget, config: ReviewConfig, commentId: num
   return recap;
 }
 
-/** Whether the round cap is reached, and whether automatic review is paused by it or by a last round that ended `NOT_CONVERGING`. */
-function pauseState(priorRounds: RoundContext[], config: ReviewConfig): { capReached: boolean; paused: boolean } {
+/** Returns the rounds since the last approval, whether they reach the round cap, and whether automatic review is paused by it or by a last round that ended `NOT_CONVERGING`. */
+function pauseState(priorRounds: RoundContext[], config: ReviewConfig): { capRounds: number; capReached: boolean; paused: boolean } {
   const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
-  const capReached = maxAutoRounds > 0 && priorRounds.length >= maxAutoRounds;
-  return { capReached, paused: capReached || priorRounds.at(-1)?.meta.outcome === 'NOT_CONVERGING' };
+  const capRounds = roundsSinceApproval(priorRounds);
+  const capReached = maxAutoRounds > 0 && capRounds >= maxAutoRounds;
+  return { capRounds, capReached, paused: capReached || priorRounds.at(-1)?.meta.outcome === 'NOT_CONVERGING' };
 }
 
 /** Builds one LLM client per stage. Throws on a model spec or credentials that do not resolve. */
@@ -789,15 +791,26 @@ async function loadRunMemory(
 }
 
 /**
+ * Returns how many rounds ran since the last round that approved at the full bar, or all of them without one.
+ * The round cap stops fix loops, so a round after an approval, such as on a rebase, starts the count again.
+ * A `BUDGET` approval deferred warnings to end a loop, so it does not reset the count.
+ */
+function roundsSinceApproval(priorRounds: RoundContext[]): number {
+  let count = 0;
+  for (let i = priorRounds.length - 1; i >= 0 && !(priorRounds[i].verdict === 'APPROVE' && priorRounds[i].meta.outcome !== 'BUDGET'); i--) count++;
+  return count;
+}
+
+/**
  * Replaces the progress comment with a notice that automatic review is paused. Each push during
  * the same pause updates the unticked notice from after `lastRoundAt` instead of adding another.
  */
 async function postPauseNotice(
-  target: RunTarget, commentId: number, capReached: boolean, priorRoundCount: number, maxAutoRounds: number, lastRoundAt?: string,
+  target: RunTarget, commentId: number, capReached: boolean, capRounds: number, maxAutoRounds: number, approvedBefore: boolean, lastRoundAt?: string,
 ): Promise<void> {
   const { octokit, owner, repo, prNumber } = target;
   core.info(capReached
-    ? `Round cap reached (${priorRoundCount} prior rounds >= max ${maxAutoRounds}) — skipping auto review`
+    ? `Round cap reached (${capRounds} rounds since the last approval >= max ${maxAutoRounds}) — skipping auto review`
     : 'Last round did not converge — skipping auto review');
   try {
     await octokit.rest.issues.deleteComment({ owner, repo, comment_id: commentId });
@@ -806,7 +819,7 @@ async function postPauseNotice(
   }
   try {
     const reason = capReached
-      ? `Manki has completed ${priorRoundCount}/${maxAutoRounds} review rounds on this PR.`
+      ? `Manki has completed ${capRounds}/${maxAutoRounds} review rounds on this PR${approvedBefore ? ' since its last approval' : ''}.`
       : 'The last Manki round found a blocker that came back after a fix.';
     const body = withMarkers(
       `${reason} Automatic review is paused. Tick the box to run another round, or comment \`@manki review\`:\n\n- [ ] Force review`,
@@ -1026,7 +1039,9 @@ async function postIncompleteRound(run: ReviewRun, result: ReviewResult): Promis
 }
 
 /**
- * Resolve threads the judge marked `addressed`. Other statuses
+ * Resolve threads the judge marked `addressed`, each with a `Fixed in <sha>.` reply. A thread that
+ * fails to resolve stays open: `result` then records it as `uncertain`, a blocker thread among them
+ * keeps the round from approving, and the function returns true so the review is posted again. Other statuses
  * (`not_addressed`, `uncertain`) are logged for audit but never trigger a
  * resolveReviewThread mutation. Unknown thread IDs are filtered.
  *
@@ -1037,13 +1052,15 @@ async function postIncompleteRound(run: ReviewRun, result: ReviewResult): Promis
  * any `addressed` evaluation here as a second layer. `undefined` is the
  * unknown sentinel (compare-API failure) and must not trigger the guard.
  */
-async function resolveAddressedThreads(run: ReviewRun, result: ReviewResult): Promise<void> {
+async function resolveAddressedThreads(run: ReviewRun, result: ReviewResult): Promise<boolean> {
   const hasPriorRounds = run.recap.priorRounds.length > 0;
   const interRoundDiffKnownEmpty = hasPriorRounds && isEmptyInterRoundDiff(run.interRoundDiff);
+  const stillOpen: OpenThread[] = [];
   if (result.threadEvaluations && result.threadEvaluations.length > 0) {
-    const knownThreadIds = new Set(run.openThreads.map(t => t.threadId));
+    const knownThreads = new Map(run.openThreads.map(t => [t.threadId, t]));
     for (const { threadId, status, reason } of result.threadEvaluations) {
-      if (!knownThreadIds.has(threadId)) {
+      const thread = knownThreads.get(threadId);
+      if (!thread) {
         core.debug(`Skipping unknown thread ${threadId} — not in openThreads allowlist`);
         continue;
       }
@@ -1057,10 +1074,46 @@ async function resolveAddressedThreads(run: ReviewRun, result: ReviewResult): Pr
         await resolveReviewThread(run.octokit, threadId);
         core.info(`Judge resolved: "${reason}" — thread ${threadId}`);
       } catch (error) {
-        core.debug(`Failed to resolve thread ${threadId}: ${error}`);
+        core.warning(`Failed to resolve thread ${threadId}, it stays open: ${error}`);
+        stillOpen.push(thread);
+        continue;
+      }
+      try {
+        await replyToReviewThread(run.octokit, threadId, `Fixed in ${run.commitSha.slice(0, 7)}.`);
+      } catch (error) {
+        core.warning(`Failed to reply on resolved thread ${threadId}: ${error}`);
       }
     }
   }
+  if (stillOpen.length === 0) return false;
+  // A later round reads `addressed` as a confirmed fix, so a thread that stayed open must not keep it.
+  const failed = new Set(stillOpen.map(t => t.threadId));
+  result.threadEvaluations = result.threadEvaluations?.map(e => failed.has(e.threadId)
+    ? { ...e, status: 'uncertain', reason: `Resolving the thread failed, so it stays open. ${e.reason}` }
+    : e);
+  blockOnOpenThreads(result, stillOpen);
+  return true;
+}
+
+/** Turns an approval into a request for changes when a blocker thread it counted as fixed could not be resolved. */
+function blockOnOpenThreads(result: ReviewResult, threads: OpenThread[]): void {
+  const blocking = threads.filter(t => t.severity === 'blocker' || t.severity === 'unknown');
+  if (blocking.length === 0 || result.verdict !== 'APPROVE') return;
+  result.verdict = 'REQUEST_CHANGES';
+  result.outcome = 'ADDRESS_FIRST';
+  result.verdictReason = 'prior_unaddressed';
+  result.verdictTrace = {
+    survivingBlockers: [],
+    novelWarnings: [],
+    unresolvedPriors: blocking.map(t => ({
+      file: t.file,
+      title: t.title,
+      fingerprint: stringifyFindingFingerprint({ file: t.file, lineStart: t.line, lineEnd: t.line, slug: titleToSlug(t.title) }),
+      threadId: t.threadId,
+      ...(t.line && { line: t.line }),
+      ...(t.threadUrl && { threadUrl: t.threadUrl }),
+    })),
+  };
 }
 
 /** Posts the round's review and dismisses the previous one. Returns the new review's id. */
@@ -1269,9 +1322,9 @@ async function runFullReview(
 
     const priorRoundCount = recap.priorRounds.length;
     const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
-    const { capReached, paused } = pauseState(recap.priorRounds, config);
+    const { capRounds, capReached, paused } = pauseState(recap.priorRounds, config);
     if (paused && !skipCap) {
-      await postPauseNotice(target, commentId, capReached, priorRoundCount, maxAutoRounds, recap.priorRounds.at(-1)?.meta.timestamp);
+      await postPauseNotice(target, commentId, capReached, capRounds, maxAutoRounds, capRounds < priorRoundCount, recap.priorRounds.at(-1)?.meta.timestamp);
       return;
     }
 
@@ -1304,7 +1357,7 @@ async function runFullReview(
       interRoundDiff,
       headSha: commitSha,
       blockersOnly: paused,
-      finalRound: !paused && maxAutoRounds > 0 && priorRoundCount + 1 === maxAutoRounds,
+      finalRound: !paused && maxAutoRounds > 0 && capRounds + 1 === maxAutoRounds,
     });
     const { result } = stage;
 
@@ -1315,15 +1368,21 @@ async function runFullReview(
 
     addCodeContext(result.findings, diff);
     const reviewTimeMs = Date.now() - startTime;
-    const context = buildRoundContext(run, result, {
+    const buildContext = () => buildRoundContext(run, result, {
       plannerDurationMs: dashboard.plannerDurationMs,
       judgeDurationMs: stage.judgeEndTime - stage.reviewEndTime,
     });
+    let context = buildContext();
 
     await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
-    const reviewId = await postRound(run, result, context, reviewTimeMs);
+    let reviewId = await postRound(run, result, context, reviewTimeMs);
     // Only after the review is posted, so a review that GitHub refuses as superseded resolves no thread.
-    await resolveAddressedThreads(run, result);
+    if (await resolveAddressedThreads(run, result)) {
+      // The posted review counted a thread as fixed that is still open, so a corrected review replaces it.
+      context = buildContext();
+      await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
+      reviewId = await postRound(run, result, context, reviewTimeMs);
+    }
     await completeProgressComment(run, stage);
     setReviewOutputs(reviewId, context, result);
   } catch (error) {

@@ -165,6 +165,8 @@ export interface Finding {
   reviewerSeverity?: FindingSeverity;
   /** Fingerprint key of the prior-round blocker that names the same defect. */
   sameAs?: string;
+  /** ID of the still open thread where an earlier round raised this blocker. The review points at that thread instead of opening a new one. */
+  threadId?: string;
   /** Tool that reported the finding, when it comes from a CI or code-scanning result instead of a reviewer. */
   toolSource?: string;
   /** What the deterministic claim checks and CI results say about the finding. */
@@ -502,7 +504,7 @@ export interface ReviewConfig {
   review_passes?: number;
   convergence?: {
     /**
-     * Hard cap on the number of automatic review rounds per PR. The last round
+     * Hard cap on the number of automatic review rounds since Manki last approved the PR at the full bar. The last round
      * blocks on blockers only. After it, automatic review is paused until
      * `@manki review`, which runs one round at the same bar. `0` disables the cap.
      */
