@@ -44,6 +44,8 @@ export function formatDuration(ms: number): string {
 // A shorter value would also redact ordinary words.
 const MIN_SECRET_LENGTH = 8;
 const registeredSecrets = new Set<string>();
+// The `-----BEGIN ... KEY-----` lines of a private key carry nothing secret.
+const PEM_ARMOR = /^-----[A-Z0-9 ]+-----$/;
 
 /** Masks `value` in the log and adds it to the values `redactSecrets` removes. A value under 8 characters is ignored. */
 export function registerSecret(value: string): void {
@@ -65,7 +67,8 @@ function secretForms(): string[] {
   const inputs = Object.entries(process.env).flatMap(([name, value]) => (/^INPUT_/i.test(name) && SECRET_NAME.test(name) && value ? [value] : []));
   const forms = [...registeredSecrets, ...inputs].flatMap((secret) => {
     const value = secret.trim();
-    return [value, ...value.split(/\r?\n/).map((line) => line.trim()), ...base64Forms(value)];
+    const lines = value.split(/\r?\n/).map((line) => line.trim()).filter((line) => !PEM_ARMOR.test(line));
+    return [value, ...lines, ...base64Forms(value)];
   });
   return [...new Set(forms)].filter((form) => form.length >= MIN_SECRET_LENGTH).sort((a, b) => b.length - a.length);
 }

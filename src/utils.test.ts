@@ -109,9 +109,10 @@ describe('utils', () => {
       expect(redactSecrets('a short reply')).toBe('a short reply');
     });
 
-    it('redacts each line of a multi-line value', () => {
-      registerSecret('-----BEGIN KEY-----\nMIIEpAIBAAKCAQEAsecretline\n-----END KEY-----');
+    it('redacts each line of a multi-line value, but not the armor lines of a private key', () => {
+      registerSecret('-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEAsecretline\n-----END RSA PRIVATE KEY-----');
       expect(redactSecrets('the line MIIEpAIBAAKCAQEAsecretline leaked')).toBe('the line [REDACTED] leaked');
+      expect(redactSecrets('-----BEGIN RSA PRIVATE KEY-----')).toBe('-----BEGIN RSA PRIVATE KEY-----');
     });
 
     // Only the characters that also encode `x-access-token:`, the prefix or the token's last partial group are kept.
