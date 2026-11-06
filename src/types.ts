@@ -204,6 +204,21 @@ export interface Finding {
   notChecked?: boolean;
   /** Set on a suspicion the reviewer was still checking when it wrapped up, instead of a finished finding. */
   lead?: OpenLead;
+  /** How the judge's attempt to refute the finding with tools came out. Set on blockers and open leads only. */
+  refutation?: Refutation;
+}
+
+export type RefutationOutcome = 'disproved' | 'confirmed' | 'unsettled';
+
+/** The outcome of the judge's attempt to refute a blocker or an open lead. */
+export interface Refutation {
+  outcome: RefutationOutcome;
+  /** What decided it, in one or two sentences. */
+  reason: string;
+  /** The `file:line` locations the judge cites: the failure for `confirmed`, the reason it cannot happen for `disproved`. */
+  proof?: string[];
+  /** SHA-256 of the finding's file at the commit checked. A later round reuses the outcome while the file is unchanged. */
+  codeDigest: string;
 }
 
 export type FindingOrigin = 'new' | 'reviewed';
@@ -833,6 +848,8 @@ export interface DashboardData {
   routing?: Pick<TeamRouting, 'class' | 'group'>;
   /** Open leads below blocker that the reviewers did not finish checking. They are listed, never posted. */
   unfinishedChecks?: Pick<Finding, 'title' | 'file' | 'line'>[];
+  /** Blockers and open leads the judge disproved with tools, with the reason. They are dropped. */
+  disproved?: (Pick<Finding, 'title' | 'file' | 'line'> & { reason: string })[];
 }
 
 export interface JudgeDecision {
@@ -1218,6 +1235,7 @@ export interface RoundJudgeDrop {
   reviewerSeverity?: FindingSeverity;
   judgeConfidence?: 'high' | 'medium' | 'low';
   judgeNotes?: string;
+  refutation?: Refutation;
 }
 
 export interface RoundAgentMetric {
@@ -1471,6 +1489,8 @@ export interface FindingFingerprintEntry {
   evidence?: FindingEvidence;
   /** Mirrors `Finding.notChecked`. */
   notChecked?: boolean;
+  /** Mirrors `Finding.refutation`. */
+  refutation?: Refutation;
 }
 
 /** What a reply-handler run, Manki answering in a thread or to a command, records in its comment. */

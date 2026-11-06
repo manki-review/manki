@@ -236,6 +236,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(f.reviewerSeverity && { reviewerSeverity: f.reviewerSeverity }),
     ...(f.judgeConfidence && { judgeConfidence: f.judgeConfidence }),
     ...(f.judgeNotes && { judgeNotes: f.judgeNotes }),
+    ...(f.refutation && { refutation: f.refutation }),
   }));
   const findingEntries = result.findings.map(f => ({
     fingerprint: fingerprintFinding(f.title, f.file ?? '', f.line || 0),
@@ -256,6 +257,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(f.effort && { effort: f.effort }),
     ...(f.evidence && { evidence: f.evidence }),
     ...(f.notChecked && { notChecked: true }),
+    ...(f.refutation && { refutation: f.refutation }),
   }));
   return {
     meta: {

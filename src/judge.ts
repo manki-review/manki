@@ -17,6 +17,7 @@ import { sanitize, titleOverlapType } from './recap';
 import { parseProof, stringifyFindingFingerprint, truncateDiff, validateSeverity } from './review';
 import { WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
+import { refuteBlockers } from './refute';
 import { criticalAreaOf, resolveRouting } from './routing';
 import { CONTRADICTION_TAG, DiffFile, DuplicateMatchType, Finding, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, ParsedDiff, PrContext, ThreadEvaluation, ToolEvidenceStatus } from './types';
 
@@ -254,6 +255,8 @@ export interface JudgeInput {
   suppressResolvedThreads?: boolean;
   /** The related repos the round's finders could read with their tools. */
   relatedRepos?: RelatedRepo[];
+  /** The checked-out PR head. With it, and a client with `repoTools`, the judge tries to refute each blocker and open lead. */
+  workspace?: string;
 }
 
 export interface JudgedFinding {
@@ -1032,7 +1035,7 @@ export async function runJudgeAgent(
   inPrSuppressedCount?: number;
   interRoundDiffEmptyOverride?: InterRoundDiffEmptyOverride;
 }> {
-  const { findings, diff, rawDiff, memory, prContext, linkedIssues, agentCount, isFollowUp, openThreads, priorRounds, inPrSuppressions, interRoundDiff, resolvedThreadIds, suppressResolvedThreads, relatedRepos } = input;
+  const { findings, diff, rawDiff, memory, prContext, linkedIssues, agentCount, isFollowUp, openThreads, priorRounds, inPrSuppressions, interRoundDiff, resolvedThreadIds, suppressResolvedThreads, relatedRepos, workspace } = input;
   const provenanceMap = input.provenanceMap ?? (rawDiff ? computeProvenanceMap(priorRounds, rawDiff) : []);
 
   const hasOpenThreads = (openThreads?.length ?? 0) > 0;
@@ -1145,9 +1148,10 @@ export async function runJudgeAgent(
   const mapped = deduplicateFindings(mapJudgedToFindings(findings, judgeResult.findings, provenanceMap, collectPriorBlockers(priorRounds)));
   const suppression = applyCrossRoundSuppression(mapped, priorRounds, crossRoundOptions);
   const { findings: suppressed, count: inPrCount } = applyInPrSuppression(suppression.findings, inPrSuppressions);
+  const checked = workspace && client.repoTools ? await refuteBlockers(client, suppressed, { workspace, priorRounds, effort }) : suppressed;
 
   return {
-    findings: suppressed,
+    findings: checked,
     summary: judgeResult.summary,
     threadEvaluations,
     ...(suppression.suppressedCount > 0 && { crossRoundSuppressed: suppression.suppressedCount }),

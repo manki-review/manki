@@ -501,7 +501,7 @@ export interface ReviewOptions {
   headSha?: string;
   /** The last automatic round the round cap allows. It ends `NOT_CONVERGING` unless it is `READY`. */
   finalRound?: boolean;
-  /** The checked-out PR head, which finders on a client with `repoTools` read with read-only tools. */
+  /** The checked-out PR head, which finders and the judge on a client with `repoTools` read with read-only tools. */
   workspace?: string;
 }
 
@@ -1059,6 +1059,7 @@ export async function runReview(
       resolvedThreadIds,
       suppressResolvedThreads,
       ...(related && { relatedRepos: related.repos }),
+      workspace,
     };
     const judgeStart = Date.now();
     const judgeResult = await runJudgeAgent(judgeWrap.client, config, judgeInput);
