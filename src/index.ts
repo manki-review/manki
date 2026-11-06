@@ -898,6 +898,11 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
           await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha);
         }
         core.info(`Round SKIPPED: no change since reviewed commit ${shortSha}, ${standing.verdict} stands`);
+        if (settings) {
+          await showRunStatus(octokit, bot, owner, repo, prNumber, settings, {
+            head: commitSha, draft: !!draft, status: 'up to date', text: summary, lastReviewed: standing.commitSha,
+          });
+        }
         await completeReviewCheck(await startReviewCheck(octokit, owner, repo, commitSha), outcomeReport(STANDING_OUTCOMES[standing.verdict], summary, held));
         return true;
       } catch (error) {

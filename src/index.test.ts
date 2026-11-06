@@ -6232,6 +6232,22 @@ describe('runFullReview orchestration', () => {
       }));
     });
 
+    it('shows the new head as up to date in the settings block', async () => {
+      seedPush('REQUEST_CHANGES', REBASED_DIFF);
+
+      await runFullReview(
+        baseArgs.owner, baseArgs.repo, baseArgs.prNumber, baseArgs.commitSha, baseArgs.baseRef, baseArgs.prContext,
+        { settings: settingsState() },
+      );
+
+      expectNoRound();
+      expect(ghUtils.showSettings).toHaveBeenCalledWith(
+        expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42,
+        { lastReviewed: 'old9999999', head: 'abc123', status: 'up to date', boxes: new Set(['pause', 'full']), ticked: new Set() },
+        expect.stringContaining('The previous verdict stands.'),
+      );
+    });
+
     it('holds the previous APPROVE when the PR conflicts with its base, without running a round', async () => {
       seedPush('APPROVE', REVIEWED_DIFF);
       jest.mocked(stateModule.holdApproval).mockResolvedValueOnce('conflict');
