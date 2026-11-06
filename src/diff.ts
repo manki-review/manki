@@ -185,6 +185,44 @@ export function isDiffTooLarge(diff: ParsedDiff, maxLines: number): boolean {
   return countDiffLines(diff.files) > maxLines;
 }
 
+// Lines around a new line that count as new code, as many as a diff hunk shows around a change.
+const NEW_CODE_WINDOW = 3;
+
+/**
+ * Returns, per file, the lines `current` adds that `prior` did not add. Lines are compared by text,
+ * so a rebase or a shift in line numbers does not turn reviewed code into new code.
+ */
+function newlyAddedLines(current: ParsedDiff, prior: ParsedDiff): Map<string, number[]> {
+  const fresh = new Map<string, number[]>();
+  for (const file of current.files) {
+    const priorFile = prior.files.find(f => f.path === file.path || f.path === file.oldPath);
+    const priorCounts = new Map<string, number>();
+    for (const text of priorFile ? addedLines(priorFile).values() : []) priorCounts.set(text, (priorCounts.get(text) ?? 0) + 1);
+    const lines: number[] = [];
+    for (const [line, text] of addedLines(file)) {
+      const left = priorCounts.get(text) ?? 0;
+      if (left > 0) priorCounts.set(text, left - 1);
+      else lines.push(line);
+    }
+    if (lines.length > 0) fresh.set(file.path, lines);
+  }
+  return fresh;
+}
+
+/**
+ * Sets each finding's `origin`: `new` when it sits within a few lines of code the PR added since
+ * the change `prior` recorded, `reviewed` otherwise. Without `prior`, every finding is new.
+ */
+export function tagFindingOrigins(findings: Finding[], diff: ParsedDiff, prior: ParsedDiff | undefined): void {
+  const fresh = prior && newlyAddedLines(diff, prior);
+  for (const finding of findings) {
+    const lines = fresh?.get(finding.file) ?? [];
+    const isNew = !fresh || !finding.file
+      || (finding.line > 0 ? lines.some(line => Math.abs(line - finding.line) <= NEW_CODE_WINDOW) : lines.length > 0);
+    finding.origin = isNew ? 'new' : 'reviewed';
+  }
+}
+
 /** Sets each finding's `codeContext` to the hunk lines around its line, when that line is in the diff. */
 export function addCodeContext(findings: Finding[], diff: ParsedDiff): void {
   for (const finding of findings) {

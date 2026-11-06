@@ -168,7 +168,11 @@ export interface Finding {
   toolEvidence?: ToolEvidence;
   /** Earlier finding this one resembles, whose fix the judge of an earlier round confirmed. */
   resemblesFixed?: { title: string; file: string; line: number };
+  /** Whether the finding sits on code the PR changed since the last reviewed round, or on code an earlier round reviewed. */
+  origin?: FindingOrigin;
 }
+
+export type FindingOrigin = 'new' | 'reviewed';
 
 /** `none` means no tool spoke to the claim. Silence is never evidence against a finding. */
 export type ToolEvidenceStatus = 'confirmed' | 'contradicted' | 'none';
@@ -1125,7 +1129,7 @@ export interface RoundJudge {
   crossRoundSuppressed?: number;
   crossRoundDemoted?: number;
   /**
-   * Count of findings demoted to `nitpick` because they implement a prior-round
+   * Count of findings dropped because they object to code that applies a prior-round
    * `suggestedFix` (tagged `OWN_PROPOSAL_TAG`).
    */
   ownProposalDemotedCount?: number;
@@ -1316,6 +1320,8 @@ export interface FindingFingerprintEntry {
   toolEvidence?: ToolEvidenceStatus;
   /** Tool that reported the finding. Mirrors `Finding.toolSource`. */
   toolSource?: string;
+  /** New code or code an earlier round reviewed. Mirrors `Finding.origin`. */
+  origin?: FindingOrigin;
 }
 
 export interface RoundUsage {

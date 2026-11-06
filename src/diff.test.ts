@@ -8,9 +8,10 @@ import {
   isDiffTooLarge,
   isSameChange,
   rebuildRawDiff,
+  tagFindingOrigins,
 } from './diff';
 import { DEFAULT_CONFIG } from './config';
-import { DiffFile, ParsedDiff } from './types';
+import { DiffFile, Finding, ParsedDiff } from './types';
 
 // -- Test fixtures --
 
@@ -358,6 +359,35 @@ describe('isSameChange', () => {
     expect(isSameChange(MULTI_FILE_DIFF, MULTI_FILE_DIFF.replace(' line2', ' line2 from base'), [])).toBe(false);
     expect(isSameChange(MULTI_FILE_DIFF, GENERATED_FIRST_DIFF, [])).toBe(false);
     expect(isSameChange(MULTI_FILE_DIFF, `${BINARY_FILE_DIFF}${MULTI_FILE_DIFF}`, [])).toBe(false);
+  });
+});
+
+describe('tagFindingOrigins', () => {
+  const change = (path: string, start: number, lines: string[], oldPath?: string): string =>
+    `diff --git a/${oldPath ?? path} b/${path}\n--- a/${oldPath ?? path}\n+++ b/${path}\n@@ -${start},1 +${start},${lines.length + 1} @@\n ctx\n${lines.map(l => `+${l}`).join('\n')}\n`;
+  const finding = (file: string, line: number): Finding => ({ severity: 'suggestion', title: 't', file, line, description: 'd', reviewers: [] });
+  const tag = (findings: Finding[], current: string, prior?: string) => {
+    tagFindingOrigins(findings, parsePRDiff(current), prior === undefined ? undefined : parsePRDiff(prior));
+    return findings.map(f => f.origin);
+  };
+
+  it('tags every finding new without an earlier change, as on a first or full review', () => {
+    expect(tag([finding('src/a.ts', 11), finding('src/b.ts', 1), finding('', 0)], change('src/a.ts', 10, ['x']))).toEqual(['new', 'new', 'new']);
+  });
+
+  it('compares added lines by text, so a rebase that moves them keeps them reviewed', () => {
+    const prior = change('src/a.ts', 10, ['one', 'two', 'three']);
+    const rebased = change('src/a.ts', 40, ['one', 'two', 'three']);
+    expect(tag([finding('src/a.ts', 42), finding('src/b.ts', 3)], rebased, prior)).toEqual(['reviewed', 'reviewed']);
+  });
+
+  it('tags a finding new within three lines of a line added since, and on a renamed file by its old path', () => {
+    const prior = `${change('src/a.ts', 10, ['one', 'two'])}${change('src/old.ts', 1, ['kept'])}`;
+    const current = `${change('src/a.ts', 10, ['one', 'two', 'fresh', 'two'])}${change('src/new.ts', 1, ['kept'], 'src/old.ts')}`;
+    // `fresh` is line 13 and the second `two` line 14, a duplicate the prior change added once.
+    expect(tag([
+      finding('src/a.ts', 16), finding('src/a.ts', 18), finding('src/a.ts', 10), finding('src/a.ts', 0), finding('src/new.ts', 2), finding('src/new.ts', 0),
+    ], current, prior)).toEqual(['new', 'reviewed', 'new', 'new', 'reviewed', 'reviewed']);
   });
 });
 

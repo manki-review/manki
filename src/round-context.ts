@@ -34,6 +34,8 @@ export interface RoundRecordInput {
   excludedFiles: RoundDiffExcludedFile[];
   openThreads: OpenThread[];
   interRoundDiff?: string;
+  /** The PR's change at the last reviewed round, when it could be fetched. */
+  priorChange?: ParsedDiff;
   memoryLoadStatus: MemoryLoadStatus;
   memoryLoadError?: string;
   staticAnalysis?: RoundStaticAnalysis;
@@ -269,6 +271,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(f.reviewerSeverity && { reviewerSeverity: f.reviewerSeverity }),
     ...(f.toolEvidence && { toolEvidence: f.toolEvidence.status }),
     ...(f.toolSource && { toolSource: f.toolSource }),
+    ...(f.origin && { origin: f.origin }),
   }));
   return {
     meta: {
