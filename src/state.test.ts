@@ -338,6 +338,7 @@ describe('checkAndAutoApprove', () => {
     prHeadSha?: string;
     createReviewFn?: jest.Mock;
     createCommentFn?: jest.Mock;
+    checks?: { create: jest.Mock; update: jest.Mock };
     existingReviews?: Array<{ body?: string; state?: string; commit_id?: string; user?: { login?: string; type?: string } }>;
     existingComments?: Array<{ body?: string; user?: { login?: string } }>;
     permission?: string;
@@ -371,6 +372,7 @@ describe('checkAndAutoApprove', () => {
           getCollaboratorPermissionLevel: jest.fn().mockResolvedValue({ data: { permission: overrides.permission ?? 'write' } }),
           compareCommits: jest.fn(async ({ head }: { head: string }) => ({ data: overrides.diffs?.[head] ?? '' })),
         },
+        checks: overrides.checks,
       },
     } as unknown as Octokit;
   }
@@ -533,6 +535,25 @@ describe('checkAndAutoApprove', () => {
     expect(createReviewMock).toHaveBeenCalledWith(
       expect.objectContaining({ event: 'APPROVE' }),
     );
+  });
+
+  it('reports the approval as a passing `Manki` check on the head in webhook mode', async () => {
+    const checks = { create: jest.fn().mockResolvedValue({ data: { id: 901 } }), update: jest.fn().mockResolvedValue({}) };
+    const octokit = makeMockOctokit({ threads: [], checks });
+    const eventName = process.env.GITHUB_EVENT_NAME;
+    process.env.GITHUB_EVENT_NAME = 'workflow_dispatch';
+    try {
+      expect(await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1)).toBe(true);
+    } finally {
+      if (eventName === undefined) delete process.env.GITHUB_EVENT_NAME;
+      else process.env.GITHUB_EVENT_NAME = eventName;
+    }
+
+    expect(checks.create).toHaveBeenCalledWith(expect.objectContaining({ name: 'Manki', head_sha: 'abc123', status: 'in_progress' }));
+    expect(checks.update).toHaveBeenCalledWith(expect.objectContaining({
+      check_run_id: 901, status: 'completed', conclusion: 'success',
+      output: { title: 'Approved', summary: 'All blocking threads are resolved.' },
+    }));
   });
 
   it('posts an issue comment (not a COMMENT review) when APPROVE fails', async () => {

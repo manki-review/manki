@@ -9,6 +9,7 @@ import { sanitizeTokens, withMarkers } from './utils';
 import { applyBaseReviewConfig, BaseReviewConfig, loadConfig, loadConfigFromFile, loadReviewConfig, sanitizeForkConfig, resolveFallbackModel, resolveMemoryRepo, resolveModel, resolvePairModel } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
+import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, outcomeReport, ReviewCheck, startReviewCheck } from './check-run';
 import { extractCurrentCodeWindow } from './code-window';
 import { recordFixRate } from './fix-rate';
 import { dispatchedNumber, isDispatchedRun, restoreDispatchedEvent } from './dispatch';
@@ -55,13 +56,16 @@ import {
   checkConcurrentSubmissionLock,
   postConfigErrorComment,
 } from './github';
-import type { BotIdentity, LinkedIssue } from './github';
+import type { BotIdentity, LinkedIssue, StandingVerdict } from './github';
 import { announceSecurityOverrides, checkAndAutoApprove, findUnchangedVerdict, holdApprovalOnConflict, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
 import type { PauseState } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
 const HEAD_POLL_MS = 30_000;
+
+/** The outcome a standing review reports on a no-op push. A COMMENT never stands, so it runs a full round instead. */
+const STANDING_OUTCOMES: Record<StandingVerdict['verdict'], RoundOutcome> = { APPROVE: 'READY', REQUEST_CHANGES: 'ADDRESS_FIRST' };
 
 export function detectTickedMarker(body: string): 'FORCE_REVIEW_MARKER' | 'FORCE_CAP_MARKER' | null {
   if (!body.includes('- [x] Force review')) return null;
@@ -687,15 +691,19 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
       const shortSha = standing.commitSha.slice(0, 7);
       assertWritesAllowed();
       try {
+        const approved = standing.verdict === 'APPROVE';
+        const held = approved && await holdApprovalOnConflict(octokit, bot, owner, repo, prNumber, commitSha);
+        const summary = `No change to this PR since the reviewed commit \`${shortSha}\`. The previous verdict stands.`;
         // A push can dismiss approvals, so the approval is posted again on the new head.
-        if (standing.verdict === 'APPROVE' && !await holdApprovalOnConflict(octokit, bot, owner, repo, prNumber, commitSha)) {
+        if (approved && !held) {
           await octokit.rest.pulls.createReview({
             owner, repo, pull_number: prNumber, commit_id: commitSha, event: 'APPROVE',
-            body: withMarkers(`✅ **Approved.** No change to this PR since the reviewed commit \`${shortSha}\`. The previous verdict stands.`, PROGRESS_MARKER),
+            body: withMarkers(`✅ **Approved.** ${summary}`, PROGRESS_MARKER),
           });
           await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha);
         }
         core.info(`Round SKIPPED: no change since reviewed commit ${shortSha}, ${standing.verdict} stands`);
+        await completeReviewCheck(await startReviewCheck(octokit, owner, repo, commitSha), outcomeReport(STANDING_OUTCOMES[standing.verdict], summary, held));
         return true;
       } catch (error) {
         core.warning(`Could not post the previous approval again, reviewing in full: ${error instanceof Error ? error.message : error}`);
@@ -806,18 +814,20 @@ async function replacePreviousReviews(target: RunTarget, progress: RunProgress, 
   await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId);
 }
 
-/** Posts a verdict for a diff no reviewer reads, replaces the previous review and marks the progress comment complete. */
+/** Posts a verdict for a diff no reviewer reads, replaces the previous review and marks the progress comment complete. Returns the report for the PR check. */
 async function postUnreviewedRound(
   target: RunTarget, progress: RunProgress, commentId: number, dashboard: DashboardData, diff: ParsedDiff,
   verdict: 'APPROVE' | 'COMMENT', summary: string, metadata: ReviewMetadata,
-): Promise<void> {
+): Promise<CheckReport> {
   const { octokit, bot, owner, repo, prNumber, commitSha } = target;
   await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
   const result = { verdict, summary, findings: [], highlights: [], reviewComplete: true, agentNames: [] as string[] };
-  const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
+  const { id: reviewId, approvalHeld } = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
   await replacePreviousReviews(target, progress, reviewId);
   await updateProgressComment(octokit, owner, repo, commentId, dashboard, metadata);
   await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha);
+  // A diff no reviewer read must not pass a required check, so it waits for a person.
+  return verdict === 'APPROVE' ? outcomeReport('READY', summary, approvalHeld) : { conclusion: 'action_required', title: 'Not reviewed', summary };
 }
 
 /**
@@ -898,7 +908,7 @@ async function loadRunMemory(
  */
 async function postPauseNotice(
   target: RunTarget, commentId: number, { capReached, capRounds, reason }: PauseState, maxAutoRounds: number, lastRoundAt?: string,
-): Promise<void> {
+): Promise<CheckReport> {
   const { octokit, owner, repo, prNumber } = target;
   core.info(capReached
     ? `Round cap reached (${capRounds} rounds since the last approval >= max ${maxAutoRounds}) — skipping auto review`
@@ -928,6 +938,7 @@ async function postPauseNotice(
   } catch (error) {
     core.warning(`Failed to post round-cap notice: ${error}`);
   }
+  return { conclusion: 'action_required', title: 'Automatic review paused', summary: `${reason} Automatic review is paused until someone asks for another round.` };
 }
 
 /** Returns the unticked pause notice posted or updated after `lastRoundAt`. A failed lookup returns `undefined`, so a new notice is posted. */
@@ -1114,8 +1125,8 @@ async function reviewRound(
   return { result, reviewEndTime, judgeEndTime: Date.now() };
 }
 
-/** Fails the run and posts the incomplete round as a COMMENT, so the previous review stays standing. */
-async function postIncompleteRound(run: ReviewRun, result: ReviewResult): Promise<void> {
+/** Fails the run and posts the incomplete round as a COMMENT, so the previous review stays standing. Returns the report for the PR check. */
+async function postIncompleteRound(run: ReviewRun, result: ReviewResult): Promise<CheckReport> {
   const { octokit, owner, repo, prNumber, commitSha, commentId, dashboard, diff } = run;
   await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
   cancelDashboardFlush(run.progress);
@@ -1124,6 +1135,7 @@ async function postIncompleteRound(run: ReviewRun, result: ReviewResult): Promis
   await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
   dashboard.phase = 'complete';
   await updateProgressComment(octokit, owner, repo, commentId, dashboard, undefined, commitSha);
+  return outcomeReport('INCOMPLETE', result.summary);
 }
 
 /**
@@ -1223,17 +1235,17 @@ function blockOnOpenThreads(result: ReviewResult, threads: OpenThread[]): void {
   };
 }
 
-/** Posts the round's review and dismisses the previous one. Returns the new review's id. */
-async function postRound(run: ReviewRun, result: ReviewResult, context: RoundContext, reviewTimeMs: number): Promise<number> {
+/** Posts the round's review and dismisses the previous one. Returns the new review's id, and whether its approval was held. */
+async function postRound(run: ReviewRun, result: ReviewResult, context: RoundContext, reviewTimeMs: number): Promise<{ id: number; approvalHeld: boolean }> {
   const { octokit, owner, repo, prNumber, commitSha, diff, config, recap, interRoundDiff } = run;
   const hasPriorRounds = recap.priorRounds.length > 0;
   const parsedInterRoundDiff = hasPriorRounds && interRoundDiff !== undefined ? parsePRDiff(interRoundDiff) : undefined;
-  const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, context, reviewTimeMs, config, {
+  const posted = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, context, reviewTimeMs, config, {
     interRoundDiff: parsedInterRoundDiff,
     existingThreads: recap.previousFindings,
   });
-  await replacePreviousReviews(run, run.progress, reviewId);
-  return reviewId;
+  await replacePreviousReviews(run, run.progress, posted.id);
+  return posted;
 }
 
 function metadataConfig(config: ReviewConfig, models: ReviewModels, triage: string, teamAgents: string[]): ReviewMetadata['config'] {
@@ -1406,6 +1418,9 @@ async function runFullReview(
   const headMoved = new AbortController();
   const stop = stopWritesOn(headMoved.signal);
   const progress: RunProgress = { flushTimer: null, reviewPosted: false, stopHeadWatch: watchHead(target, headMoved) };
+  let check: ReviewCheck | undefined;
+  // Stays unset when the run is cancelled, so the post step reports the check cancelled.
+  let checkReport: CheckReport | undefined;
 
   try {
     const loaded = await loadRunConfig(target, configPath, headRepoFullName);
@@ -1418,12 +1433,15 @@ async function runFullReview(
 
     const recap = await loadRecap(target, config, commentId, prAuthorLogin);
     if (!recap) return;
+    check = await startReviewCheck(octokit, owner, repo, commitSha);
 
     let built: ReturnType<typeof buildReviewClients>;
     try {
       built = buildReviewClients(config, providerInputs);
     } catch (error) {
-      core.setFailed(`Invalid model config: ${error instanceof Error ? error.message : error}`);
+      const reason = `Invalid model config: ${error instanceof Error ? error.message : error}`;
+      core.setFailed(reason);
+      checkReport = failedReport(reason);
       await octokit.rest.issues.deleteComment({ owner, repo, comment_id: commentId }).catch(() => {});
       return;
     }
@@ -1442,7 +1460,7 @@ async function runFullReview(
 
     if (isDiffTooLarge(diff, config.max_diff_lines)) {
       core.warning(`Diff too large (${lineCount} reviewable lines > ${config.max_diff_lines} max)`);
-      await postUnreviewedRound(target, progress, commentId, dashboard, diff, 'COMMENT',
+      checkReport = await postUnreviewedRound(target, progress, commentId, dashboard, diff, 'COMMENT',
         `Too large to review automatically: ${lineCount} changed lines, above the limit of ${config.max_diff_lines}.`, unreviewedMetadata());
       return;
     }
@@ -1451,7 +1469,7 @@ async function runFullReview(
 
     if (diff.files.length === 0) {
       core.info('No reviewable files in diff');
-      await postUnreviewedRound(target, progress, commentId, dashboard, diff, 'APPROVE', 'No reviewable files in this PR (all filtered out by config).',
+      checkReport = await postUnreviewedRound(target, progress, commentId, dashboard, diff, 'APPROVE', 'No reviewable files in this PR (all filtered out by config).',
         unreviewedMetadata());
       return;
     }
@@ -1467,7 +1485,7 @@ async function runFullReview(
     const pause = pauseState(recap.priorRounds, config);
     const { capRounds, paused } = pause;
     if (paused && !skipCap) {
-      await postPauseNotice(target, commentId, pause, maxAutoRounds, recap.priorRounds.at(-1)?.meta.timestamp);
+      checkReport = await postPauseNotice(target, commentId, pause, maxAutoRounds, recap.priorRounds.at(-1)?.meta.timestamp);
       return;
     }
 
@@ -1511,7 +1529,7 @@ async function runFullReview(
     const { result } = stage;
 
     if (!result.reviewComplete) {
-      await postIncompleteRound(run, result);
+      checkReport = await postIncompleteRound(run, result);
       return;
     }
 
@@ -1526,9 +1544,9 @@ async function runFullReview(
     // Resolved before posting, so a thread that stays open settles the verdict of the one review the round posts.
     const resolved = await resolveAddressedThreads(run, result);
     const context = buildContext();
-    let reviewId: number;
+    let posted: Awaited<ReturnType<typeof postRound>>;
     try {
-      reviewId = await postRound(run, result, context, reviewTimeMs);
+      posted = await postRound(run, result, context, reviewTimeMs);
     } catch (error) {
       // A thread is resolved only by a review that replaces the previous one.
       await reopenThreads(octokit, resolved);
@@ -1538,7 +1556,8 @@ async function runFullReview(
     await completeProgressComment(run, stage);
     const pauseLifted = !pauseState([...recap.priorRounds, context], config).paused;
     await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha, pauseLifted ? startTime : undefined);
-    setReviewOutputs(reviewId, context, result);
+    setReviewOutputs(posted.id, context, result);
+    checkReport = outcomeReport(result.outcome, result.summary, posted.approvalHeld);
   } catch (caught) {
     cancelDashboardFlush(progress);
     // A stopped run reports the stop, whatever error it ended on.
@@ -1549,6 +1568,7 @@ async function runFullReview(
     }
     if (error instanceof SupersededError) {
       core.info(`${error.message}, ${progress.reviewPosted ? 'replacing no earlier review' : 'posting no verdict for it'}`);
+      checkReport = { conclusion: 'cancelled', title: 'Superseded', summary: error.message };
       if (progress.commentId !== undefined) {
         await markProgressCommentSuperseded(octokit, owner, repo, progress.commentId, error, progress.reviewPosted);
       }
@@ -1556,6 +1576,7 @@ async function runFullReview(
     }
     const reason = failureReason(error);
     core.setFailed(`Review failed: ${reason}`);
+    checkReport = failedReport(reason);
 
     if (progress.commentId !== undefined) {
       await markProgressCommentFailed(octokit, owner, repo, progress.commentId, 'Review', reason, commitSha);
@@ -1563,6 +1584,7 @@ async function runFullReview(
   } finally {
     progress.stopHeadWatch();
     stop.release();
+    if (checkReport) await completeReviewCheck(check, checkReport);
   }
 }
 
@@ -1751,6 +1773,7 @@ async function postCleanup(): Promise<void> {
   const runId = github.context.runId;
   try {
     const { octokit, bot } = await getAuth();
+    await cancelOpenReviewCheck(octokit, owner, repo);
     const marked = await markOwnProgressCommentCancelled(octokit, bot, owner, repo, prNumber, runId);
     if (marked) {
       core.info(`Post-cleanup: marked progress comment for run ${runId} as cancelled`);
