@@ -819,11 +819,12 @@ export function sanitizeForkConfig(config: ReviewConfig): ReviewConfig {
 
 /**
  * Returns which of `config`'s skip rules the PR matches, such as `label "dependencies"`, or `undefined` when none does.
- * A branch rule matches only a head branch in the repo itself.
+ * A label or branch rule matches only a head branch in the repo itself.
  */
 export function matchSkipRule(config: ReviewConfig, facts: SkipFacts): string | undefined {
   const lower = (values: string[]) => values.map(v => v.toLowerCase());
-  const label = facts.labels.find(l => lower(config.skip_labels ?? []).includes(l.toLowerCase()));
+  // A fork's author can push after a skip label is added, so only labels on the repo's own branches count.
+  const label = !facts.fromFork && facts.labels.find(l => lower(config.skip_labels ?? []).includes(l.toLowerCase()));
   if (label) return `label "${label}"`;
   // A writer can push to a bot's PR, so the event's sender must match too.
   const skippedAuthor = (login: string | undefined) => !!login && lower(config.skip_authors ?? []).includes(login.toLowerCase());

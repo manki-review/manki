@@ -267,11 +267,12 @@ describe('config', () => {
       expect(() => loadConfigFromContent('skip_branches: ["", "main"]\n')).toThrow('`skip_branches` must be an array of non-empty strings');
     });
 
-    it('matches a PR by label and author case-insensitively, and by head branch glob only outside forks', () => {
+    it('matches a PR by label and author case-insensitively and by head branch glob, labels and branches only outside forks', () => {
       const config = { ...DEFAULT_CONFIG, skip_labels: ['Dependencies'], skip_authors: ['Dependabot[bot]'], skip_branches: ['renovate/**'] };
       const pr = { labels: [], author: 'someone', branch: 'feature/x', fromFork: false };
       expect(matchSkipRule(config, pr)).toBeUndefined();
       expect(matchSkipRule(config, { ...pr, labels: ['bug', 'dependencies'] })).toBe('label "dependencies"');
+      expect(matchSkipRule(config, { ...pr, labels: ['dependencies'], fromFork: true })).toBeUndefined();
       expect(matchSkipRule(config, { ...pr, author: 'dependabot[bot]' })).toBe('author dependabot[bot]');
       expect(matchSkipRule(config, { ...pr, author: 'dependabot[bot]', sender: 'dependabot[bot]' })).toBe('author dependabot[bot]');
       expect(matchSkipRule(config, { ...pr, author: 'dependabot[bot]', sender: 'alice' })).toBeUndefined();
