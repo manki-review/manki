@@ -5738,7 +5738,7 @@ describe('runFullReview orchestration', () => {
 
     it('skips review and posts notice when prior rounds reach the cap on auto trigger', async () => {
       jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(5));
-      const thread = (title: string, severity: 'blocker' | 'warning' | 'suggestion', status: 'open' | 'replied' | 'resolved', n: number) => ({
+      const thread = (title: string, severity: 'blocker' | 'warning' | 'suggestion' | 'unknown', status: 'open' | 'replied' | 'resolved', n: number) => ({
         title, file: 'src/app.ts', line: n, severity, status, threadId: `T_${n}`, threadUrl: `https://github.com/test-owner/test-repo/pull/42#discussion_r${n}`,
       });
       seedPriorRounds(priorRounds(5), [
@@ -5747,6 +5747,7 @@ describe('runFullReview orchestration', () => {
         thread('Fixed already', 'blocker', 'resolved', 3),
         thread('Name could be clearer', 'suggestion', 'open', 4),
         { ...thread('Token logged', 'blocker', 'resolved', 5), reopen: true },
+        thread('Posted before severity markers', 'unknown', 'open', 6),
       ]);
 
       await callRunFullReview();
@@ -5772,6 +5773,7 @@ describe('runFullReview orchestration', () => {
         `- \`src/app.ts:1\`: Null check missing ${link(1)}`,
         `- \`src/app.ts:2\`: Retry never stops ${link(2)}`,
         `- \`src/app.ts:5\`: Token logged ${link(5)}`,
+        `- \`src/app.ts:6\`: Posted before severity markers ${link(6)}`,
         '',
         'Tick the box to run another round, or comment `@manki review`:',
         '',
