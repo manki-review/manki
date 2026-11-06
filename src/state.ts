@@ -143,6 +143,7 @@ async function resolveReviewThread(octokit: Octokit, threadId: string): Promise<
 }
 
 async function unresolveReviewThread(octokit: Octokit, threadId: string): Promise<void> {
+  assertWritesAllowed();
   await octokit.graphql('mutation($threadId: ID!) { unresolveReviewThread(input: { threadId: $threadId }) { thread { isResolved } } }', { threadId });
 }
 

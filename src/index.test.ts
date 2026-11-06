@@ -276,6 +276,7 @@ import type { PreviousFinding, RecapState } from './recap';
 import * as memoryModule from './memory';
 import * as stateModule from './state';
 import * as authModule from './auth';
+import { RunCancelledError, stopWritesOn } from './abort';
 import * as fixRateModule from './fix-rate';
 import * as staticSignalsModule from './static-signals';
 import { LegacyHandoverRoundFixture, roundContextFromLegacy, TEST_BOT } from './test-utils';
@@ -4929,9 +4930,11 @@ describe('runFullReview orchestration', () => {
   });
 
   it.each([
-    ['posts its review', true],
-    ['finds at posting that the head moved', false],
-  ])('resolves an addressed thread with prior rounds and a non-empty inter-round diff, and keeps it resolved only when the round %s', async (_label, posted) => {
+    ['posts its review', 'posted'],
+    ['finds at posting that the head moved', 'superseded'],
+    ['is cancelled while it posts', 'cancelled'],
+  ] as const)('resolves an addressed thread with prior rounds and a non-empty inter-round diff, and keeps it resolved only when the round %s', async (_label, outcome) => {
+    const posted = outcome === 'posted';
     // End-to-end happy path for the thread-resolution flow: memory enabled,
     // recap exposes a prior round with a SHA distinct from the current
     // commit, `fetchInterRoundDiff` returns a non-empty patch, and the LLM
@@ -4974,11 +4977,18 @@ describe('runFullReview orchestration', () => {
         { threadId: 'PRRT_abc', status: 'addressed', reason: 'Fixed in latest push' },
       ],
     });
-    if (!posted) jest.mocked(ghUtils.postReview).mockRejectedValueOnce(new ghUtils.SupersededError('abc123', 'def456'));
+    if (outcome === 'superseded') jest.mocked(ghUtils.postReview).mockRejectedValueOnce(new ghUtils.SupersededError('abc123', 'def456'));
+    if (outcome === 'cancelled') {
+      jest.mocked(ghUtils.postReview).mockImplementationOnce(async () => {
+        const cancelled = new RunCancelledError('SIGTERM');
+        stopWritesOn(AbortSignal.abort(cancelled));
+        throw cancelled;
+      });
+    }
 
     await callRunFullReview();
 
-    expect(jest.mocked(ghUtils.markProgressCommentSuperseded)).toHaveBeenCalledTimes(posted ? 0 : 1);
+    expect(jest.mocked(ghUtils.markProgressCommentSuperseded)).toHaveBeenCalledTimes(outcome === 'superseded' ? 1 : 0);
     expect(jest.mocked(ghUtils.fetchInterRoundDiff)).toHaveBeenCalledTimes(1);
     expect(jest.mocked(diffModule.filterDiff)).toHaveBeenCalledWith(expect.anything(), ['dist/**']);
     expect(jest.mocked(diffModule.filterRawDiff)).toHaveBeenCalledWith(
@@ -4991,9 +5001,9 @@ describe('runFullReview orchestration', () => {
     expect(passedInterRoundDiff).toBe(
       'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
     );
-    // A round that does not post reopens the thread it resolved.
+    // A round that does not post reopens the thread it resolved, unless the run is cancelled and writes nothing more.
     expect(mockGraphql.mock.calls.filter(([query]) => String(query).includes('resolveReviewThread')).map(([query, vars]) => [String(query).includes('unresolveReviewThread'), vars]))
-      .toEqual([[false, { threadId: 'PRRT_abc' }], ...(posted ? [] : [[true, { threadId: 'PRRT_abc' }]])]);
+      .toEqual([[false, { threadId: 'PRRT_abc' }], ...(outcome === 'superseded' ? [[true, { threadId: 'PRRT_abc' }]] : [])]);
     expect(mockGraphql.mock.calls.some(([query, vars]) => String(query).includes('addPullRequestReviewThreadReply')
       && (vars as { body?: string }).body === 'Fixed in abc123.\n\n<!-- manki -->')).toBe(posted);
   });
