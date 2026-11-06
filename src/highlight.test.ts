@@ -53,4 +53,10 @@ describe('highlightCode', () => {
     ].join('\n');
     expect(highlightCode(text, tokens)).toBe(text);
   });
+
+  it('wraps tokens in a summary in code tags, since GitHub does not parse Markdown there', () => {
+    const link = '<a href="https://example.com/src/github.ts"><code>src/github.ts:3</code></a>';
+    expect(highlightCode(`<summary><b>createReview skips <code>excludePaths</code></b><br><sub>${link}</sub></summary>\nThen createReview.`, tokens))
+      .toBe(`<summary><b><code>createReview</code> skips <code>excludePaths</code></b><br><sub>${link}</sub></summary>\nThen \`createReview\`.`);
+  });
 });

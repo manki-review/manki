@@ -919,7 +919,7 @@ function formatRecordTrailer(context: RoundContext, reviewTimeMs: number, room: 
   return `${stats}${slim}`;
 }
 
-/** The icon that opens a finding comment. Apart from the verdict line, the only emoji Manki posts. */
+/** The icon that opens a finding comment or a finding listed in the review body. */
 const SEVERITY_EMOJI: Record<FindingSeverity, string> = {
   blocker: '🚫',
   warning: '⚠️',
@@ -954,14 +954,15 @@ function inlineCode(text: string): string {
   return longestRun > 0 ? `${ticks} ${text} ${ticks}` : `${ticks}${text}${ticks}`;
 }
 
-type LineLink = (file: string, line: number) => string;
+/** Returns the URL of `line` in `file` at the reviewed commit, or of the lines `line` to `end` when `end` is past `line`. */
+type LineLink = (file: string, line: number, end?: number) => string;
 
 function repoUrl(serverUrl: string, owner: string, repo: string): string {
   return `${serverUrl.replace(/\/+$/, '')}/${owner}/${repo}`;
 }
 
 function buildLineLink(owner: string, repo: string, commitSha: string, serverUrl: string): LineLink {
-  return (file, line) => `${repoUrl(serverUrl, owner, repo)}/blob/${commitSha}/${file.split('/').map(encodeURIComponent).join('/')}${line > 0 ? `#L${line}` : ''}`;
+  return (file, line, end = line) => `${repoUrl(serverUrl, owner, repo)}/blob/${commitSha}/${file.split('/').map(encodeURIComponent).join('/')}${line > 0 ? `#L${line}${end > line ? `-L${end}` : ''}` : ''}`;
 }
 
 /** Renders a fix for the body: one line of prose or code inline, anything longer as text and code blocks. */
@@ -999,32 +1000,68 @@ function splitLead(text: string, maxSentences: number, maxLength: number): { lea
   return { lead: safeTruncate(lead, maxLength), rest: trimmed };
 }
 
-/** Renders a finding listed in the review body: title, link to the line, what goes wrong, and the fix. */
-function formatFindingBlock(finding: Finding, linkTo: LineLink): string {
-  const lines = [formatFindingHeader(finding), `**${sanitizeMarkdown(finding.title)}**`];
-  if (finding.judgeConfidence === 'low') lines.push(LOW_CONFIDENCE_NOTE);
-  if (finding.file) {
-    const location = `${sanitizeFilePath(finding.file)}${finding.line > 0 ? `:${finding.line}` : ''}`;
-    lines.push(`[${inlineCode(location)}](${linkTo(finding.file, finding.line)})`);
-  }
+function findingLocation(finding: Finding): string {
+  return `${sanitizeFilePath(finding.file)}${finding.line > 0 ? `:${finding.line}` : ''}`;
+}
+
+/** Returns what goes wrong and the fix, as listed under a finding in the review body. */
+function formatFindingDetail(finding: Finding): string[] {
+  const lines = finding.judgeConfidence === 'low' ? [LOW_CONFIDENCE_NOTE] : [];
   const description = splitLead(sanitizeMarkdown(finding.description), 2, 300).lead;
   if (description) lines.push(description);
   if (finding.suggestedFix?.trim()) lines.push(formatBodyFix(finding.suggestedFix, finding.file));
-  return lines.join('\n');
+  return lines;
+}
+
+/** Renders a finding listed in the review body: title, link to the line, what goes wrong, and the fix. */
+function formatFindingBlock(finding: Finding, linkTo: LineLink): string {
+  const lines = [formatFindingHeader(finding), `**${sanitizeMarkdown(finding.title)}**`];
+  if (finding.file) lines.push(`[${inlineCode(findingLocation(finding))}](${linkTo(finding.file, finding.line)})`);
+  return [...lines, ...formatFindingDetail(finding)].join('\n');
+}
+
+/**
+ * Renders inline Markdown as HTML on one line, for a `<summary>`, which GitHub does not parse as Markdown.
+ * Keeps code spans and bold.
+ */
+function inlineHtml(markdown: string): string {
+  return markdown
+    .replace(/\s+/g, ' ')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+    .replace(/(`+)\s?(.+?)\s?\1|\*\*(.+?)\*\*/g, (_, _ticks, code, bold) => (code !== undefined ? `<code>${code}</code>` : `<b>${bold}</b>`));
+}
+
+/** Lines shown on each side of the flagged line in a finding's code preview. */
+const PREVIEW_CONTEXT = 2;
+
+/**
+ * Renders a finding listed in the review body as a closed fold. Its summary holds the title, the header line and
+ * the location. Inside are what goes wrong, the fix, and a permalink to the flagged lines, which GitHub shows as code.
+ * `lineCounts` keeps the permalink inside the file, since GitHub shows a range past the end as a bare link.
+ */
+function formatFindingFold(finding: Finding, linkTo: LineLink, lineCounts: ReadonlyMap<string, number>): string {
+  const location = finding.file ? ` · <a href="${linkTo(finding.file, finding.line)}"><code>${inlineHtml(findingLocation(finding))}</code></a>` : '';
+  const summary = `<summary>${SEVERITY_EMOJI[finding.severity]} <b>${inlineHtml(sanitizeMarkdown(finding.title))}</b><br><sub>${inlineHtml(formatFindingHeader(finding))}${location}</sub></summary>`;
+  const last = lineCounts.get(finding.file);
+  const preview = finding.file && finding.line > 0 && (last === undefined || finding.line <= last)
+    ? [linkTo(finding.file, Math.max(1, finding.line - PREVIEW_CONTEXT), Math.min(last ?? finding.line, finding.line + PREVIEW_CONTEXT))]
+    : [];
+  return `<details>\n${summary}\n\n${[...formatFindingDetail(finding), ...preview].join('\n\n')}\n\n</details>`;
+}
+
+/** Returns one list of the review body: a heading, an optional intro, then one fold per finding. */
+function formatFindingSection(heading: string, folds: string[], intro?: string): string | null {
+  if (folds.length === 0) return null;
+  return [`#### ${heading}`, ...(intro ? [`<sub>${intro}</sub>`] : []), ...folds].join('\n\n');
 }
 
 function formatSmallerFindings(entries: string[], nitpicks: string[], previouslyMissed: string[]): string | null {
-  const parts: string[] = [];
-  if (entries.length > 0) {
-    parts.push(`<details>\n<summary>${countOf(entries.length, 'smaller fix', 'smaller fixes')} in this PR</summary>\n\n${entries.join('\n\n')}\n\n</details>`);
-  }
-  if (nitpicks.length > 0) {
-    parts.push(`<details>\n<summary>${countOf(nitpicks.length, 'nitpick', 'nitpicks')}</summary>\n\n${nitpicks.join('\n\n')}\n\n</details>`);
-  }
-  if (previouslyMissed.length > 0) {
-    parts.push(`<details>\n<summary>Previously missed: ${countOf(previouslyMissed.length, 'smaller fix', 'smaller fixes')}</summary>\n\nThese sit on code an earlier review already covered. None of them blocks.\n\n${previouslyMissed.join('\n\n')}\n\n</details>`);
-  }
-  return parts.length > 0 ? parts.join('\n\n') : null;
+  const sections = [
+    formatFindingSection(`🔧 ${countOf(entries.length, 'smaller fix', 'smaller fixes')} in this PR`, entries),
+    formatFindingSection(`🔶 Previously missed: ${countOf(previouslyMissed.length, 'smaller fix', 'smaller fixes')}`, previouslyMissed, 'These sit on code an earlier review already covered. None of them blocks.'),
+    formatFindingSection(`📝 ${countOf(nitpicks.length, 'nitpick', 'nitpicks')}`, nitpicks),
+  ].filter(section => section !== null);
+  return sections.length > 0 ? sections.join('\n\n') : null;
 }
 
 /**
@@ -1108,13 +1145,15 @@ export async function postReview(
   const previouslyMissed: string[] = [];
   const nonBlocking: Finding[] = [];
   const linkTo = buildLineLink(owner, repo, commitSha, github.context.serverUrl);
+  const listedFiles = new Set(result.findings.filter(f => !isBlockingFinding(f) && f.file && f.line > 0).map(f => f.file));
+  const lineCounts = await fetchLineCounts(octokit, owner, repo, commitSha, [...listedFiles]);
 
   for (const f of result.findings) {
     if (!isBlockingFinding(f)) {
       if (hasOpenThread(f, existingThreads)) {
         core.info(`Skipping "${f.title}" on ${f.file}: an open thread already carries it`);
       } else if (f.origin === 'reviewed') {
-        previouslyMissed.push(formatFindingBlock(f, linkTo));
+        previouslyMissed.push(formatFindingFold(f, linkTo, lineCounts));
       } else {
         nonBlocking.push(f);
       }
@@ -1160,7 +1199,7 @@ export async function postReview(
     if (inline.has(f)) {
       validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: formatFindingComment(f) });
     } else {
-      (f.severity === 'nitpick' ? nitpicks : smallerFindings).push(formatFindingBlock(f, linkTo));
+      (f.severity === 'nitpick' ? nitpicks : smallerFindings).push(formatFindingFold(f, linkTo, lineCounts));
     }
   }
 
@@ -1173,7 +1212,12 @@ export async function postReview(
   const heldLine = hold && approvalHoldLine(hold);
 
   const renderBody = (): string => {
-    let b = heldLine ? `${heldLine}\n\n${lead}` : lead;
+    let head = heldLine ? `${heldLine}\n\n${lead}` : lead;
+    const readyReport = formatReadyReport(result);
+    if (readyReport) {
+      head += `\n\n${readyReport}`;
+    }
+    let b = '';
     const needsHuman = formatNeedsHuman(result);
     if (needsHuman) {
       b += `\n\n${needsHuman}`;
@@ -1200,11 +1244,7 @@ export async function postReview(
     if (overrides) {
       b += `\n\n${overrides}`;
     }
-    const readyReport = formatReadyReport(result);
-    if (readyReport) {
-      b += `\n\n${readyReport}`;
-    }
-    return b;
+    return b && readyReport ? `${head}\n\n---${b}` : `${head}${b}`;
   };
 
   // Generated text often names code without backticks, so every posted body is highlighted before it goes out.
@@ -1792,6 +1832,16 @@ export async function fetchFileContents(
 
   core.info(`Fetched ${fileContents.size}/${files.length} file contents (${totalSize} bytes)`);
   return fileContents;
+}
+
+/** The largest file the contents API returns with its content. */
+const MAX_CONTENT_API_BYTES = 1024 * 1024;
+
+/** Returns the number of lines in each of `files` at `ref`, leaving out any file that can't be read. */
+async function fetchLineCounts(octokit: Octokit, owner: string, repo: string, ref: string, files: string[]): Promise<Map<string, number>> {
+  if (files.length === 0) return new Map();
+  const contents = await fetchFileContents(octokit, owner, repo, ref, files, MAX_CONTENT_API_BYTES, Infinity);
+  return new Map([...contents].map(([path, text]) => [path, text.split('\n').length - (text.endsWith('\n') ? 1 : 0)]));
 }
 
 export interface LinkedIssue {
