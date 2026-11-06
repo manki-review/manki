@@ -860,6 +860,8 @@ export interface RoundMeta {
   trigger?: RoundTrigger;
   /** How the round ended. Optional so older context blocks keep parsing. */
   outcome?: RoundOutcome;
+  /** Set when the record was too large for the review even compressed, and its per-file and per-finding diagnostics were left out. */
+  diagnosticsOmitted?: boolean;
 }
 
 /** Round-cap accounting captured at the moment a round was admitted. */

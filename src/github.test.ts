@@ -1,4 +1,5 @@
 import * as core from '@actions/core';
+import { randomBytes } from 'crypto';
 
 import { buildDashboard, titleToSlug, formatBlockingPriorThreads, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded } from './github';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
@@ -873,6 +874,35 @@ describe('postReview with context', () => {
     const records = extractReviewRecords(body);
     expect(records).toHaveLength(1);
     expect(JSON.parse(records[0])).toEqual(ctx);
+  });
+
+  it('posts a record too large even compressed without its bulky diagnostics, and fails only when the rest is too large too', async () => {
+    const result: ReviewResult = {
+      verdict: 'COMMENT', summary: 'Many findings.', findings: [],
+      highlights: [], reviewComplete: true, agentNames: [],
+    };
+    const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
+    const noise = () => randomBytes(100).toString('hex');
+    const entries: FindingFingerprintEntry[] = [{ fingerprint: { file: 'src/a.ts', lineStart: 1, lineEnd: 1, slug: 'kept' }, severity: 'warning' }];
+    const ctx = makeContext({
+      findings: { count: 1, severityCounts: { warning: 1 }, entries },
+      reviewers: { agents: ['Correctness'], rawFindings: Array.from({ length: 600 }, (_, i) => ({ title: noise(), file: `src/${i}.ts`, line: i, severity: 'nitpick' as const, reviewers: ['Correctness'], description: noise() })) },
+    });
+
+    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, ctx, 1000);
+    const body = mockCreateReview.mock.calls[0][0].body as string;
+    expect(body).toContain('Many findings.');
+    const [record] = extractReviewRecords(body).map(r => JSON.parse(r) as RoundContext);
+    expect(record.meta.diagnosticsOmitted).toBe(true);
+    expect(record.reviewers.rawFindings).toBeUndefined();
+    expect(record.findings.entries).toEqual(entries);
+    expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('without per-file and per-finding diagnostics'));
+
+    const huge = makeContext({
+      findings: { count: 600, severityCounts: { nitpick: 600 }, entries: Array.from({ length: 600 }, (_, i) => ({ fingerprint: { file: `src/${i}.ts`, lineStart: i, lineEnd: i, slug: noise() }, severity: 'nitpick' as const, title: noise() })) },
+    });
+    await expect(postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, huge, 1000)).rejects.toThrow('even without its diagnostics');
+    infoSpy.mockRestore();
   });
 
   it('shows 0s for review time when reviewTimeMs is omitted', async () => {

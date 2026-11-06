@@ -23,6 +23,26 @@ export function formatReviewRecord(context: RoundContext, room: number = Infinit
   return `<!-- manki-context-gzip: ${gzipSync(json).toString('base64')} -->`;
 }
 
+/**
+ * Returns `context` without its per-file and per-finding diagnostics, keeping what later rounds read:
+ * the findings, thread evaluations, verdict and counts.
+ */
+export function omitBulkyDiagnostics(context: RoundContext): RoundContext {
+  const { perFile: _perFile, excludedFiles: _excludedFiles, binarySkipped: _binarySkipped, ...diff } = context.diff;
+  const { rawFindings: _rawFindings, ...reviewers } = context.reviewers;
+  const { dropped: _dropped, ...judge } = context.judge;
+  const { duplicateMatches: _duplicateMatches, staticSignalMatches: _staticSignalMatches, ...dedup } = context.dedup;
+  return {
+    ...context,
+    meta: { ...context.meta, diagnosticsOmitted: true },
+    diff,
+    reviewers,
+    judge,
+    dedup,
+    ...(context.recap && { recap: { ...context.recap, reclassifiedPriors: undefined } }),
+  };
+}
+
 /** Whether `body` carries a round record in any format Manki has written. */
 export function hasReviewRecord(body: string): boolean {
   return body.includes('<!-- manki-context') || body.includes('<summary>Manki context</summary>');
