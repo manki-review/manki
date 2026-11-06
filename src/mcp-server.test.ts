@@ -91,6 +91,15 @@ describe('Manki tool server', () => {
     expect((await call(fileClient, 'grep', { text: 'unwrap', glob: '*.rs' })).text).toBe('src/b.rs:2:     v.unwrap()');
     expect((await call(fileClient, 'grep', { text: 'console.log', path: 'vendor' })).text).toBe('No matches.\n[1 binary files or files over 1024 KB were not searched]');
     expect((await call(fileClient, 'glob', { pattern: '**/*.ts' })).text).toBe('src/a.ts\nvendor/huge.ts');
+    expect((await call(fileClient, 'glob', { pattern: '**/*.{ts,rs}' })).text).toBe('src/a.ts\nsrc/b.rs\nvendor/huge.ts');
+  });
+
+  it('refuses a glob that expands into a huge pattern', async () => {
+    const refusal = { text: 'the glob expands into more than 100 patterns, nests braces or uses a brace range', isError: true };
+    expect(await call(fileClient, 'glob', { pattern: '{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}' })).toEqual(refusal);
+    expect(await call(fileClient, 'glob', { pattern: 'src/{1..99999}' })).toEqual(refusal);
+    expect(await call(fileClient, 'grep', { text: 'x', glob: '{a,{b,c}}' })).toEqual(refusal);
+    expect(await call(fileClient, 'grep', { text: 'x', glob: 'a'.repeat(201) })).toEqual({ text: 'the glob is longer than 200 characters', isError: true });
   });
 
   it('lists the commits of a file, or only those that changed its lines', async () => {

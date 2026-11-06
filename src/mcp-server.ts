@@ -5,7 +5,7 @@ import { promisify } from 'util';
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { minimatch } from 'minimatch';
+import { Minimatch } from 'minimatch';
 import { z } from 'zod';
 
 import { AST_GREP_FAMILIES, AstGrepApi, languageOf, loadAstGrep } from './ast-grep';
@@ -189,6 +189,22 @@ export async function readRepoFile(root: string, { path, offset = 1, limit = MAX
   return capOutput((shown.join('\n') || `${path} has no line ${offset}.`) + more);
 }
 
+const MAX_GLOB_CHARS = 200;
+const MAX_GLOB_ALTERNATIVES = 100;
+
+/**
+ * Compiles a glob once for a whole search. Refuses a long glob, nested braces, a brace range such as `{1..9}`, and braces
+ * that expand into more than `MAX_GLOB_ALTERNATIVES` patterns, since each of them can make a huge regular expression.
+ */
+function compileGlob(pattern: string): Minimatch {
+  if (pattern.length > MAX_GLOB_CHARS) throw new Error(`the glob is longer than ${MAX_GLOB_CHARS} characters`);
+  const alternatives = (pattern.match(/\{[^{}]*\}/g) ?? []).reduce((n, group) => n * group.split(',').length, 1);
+  if (/\{[^}]*\{|\{[^}]*\.\.[^}]*\}/.test(pattern) || alternatives > MAX_GLOB_ALTERNATIVES) {
+    throw new Error(`the glob expands into more than ${MAX_GLOB_ALTERNATIVES} patterns, nests braces or uses a brace range`);
+  }
+  return new Minimatch(pattern, { dot: true, matchBase: !pattern.includes('/') });
+}
+
 export interface GrepArgs {
   text: string;
   path?: string;
@@ -201,12 +217,13 @@ export interface GrepArgs {
 export async function grepRepo(root: string, { text, path = '.', glob, ignoreCase = false, maxResults = 100 }: GrepArgs): Promise<string> {
   const realRoot = realpathSync(root);
   const { files, cut } = listFiles(realRoot, resolveInRoot(root, path));
+  const filter = glob === undefined ? undefined : compileGlob(glob);
   const needle = ignoreCase ? text.toLowerCase() : text;
   const limit = Math.min(maxResults, MAX_MATCHES);
   const matches: string[] = [];
   let skipped = 0;
   for (const file of files) {
-    if (glob && !minimatch(file, glob, { dot: true, matchBase: !glob.includes('/') })) continue;
+    if (filter && !filter.match(file)) continue;
     const content = readText(join(realRoot, file));
     if (content === undefined) {
       skipped++;
@@ -233,8 +250,9 @@ export interface GlobArgs {
 
 /** Returns the files under `path` whose path relative to the repository root matches the glob `pattern`. */
 export async function globRepo(root: string, { pattern, path = '.' }: GlobArgs): Promise<string> {
+  const glob = compileGlob(pattern);
   const { files, cut } = listFiles(realpathSync(root), resolveInRoot(root, path));
-  const matched = files.filter(file => minimatch(file, pattern, { dot: true, matchBase: !pattern.includes('/') }));
+  const matched = files.filter(file => glob.match(file));
   const shown = matched.slice(0, MAX_GLOB_RESULTS);
   const notes = [
     ...(matched.length > shown.length ? [`[${matched.length - shown.length} more files]`] : []),
