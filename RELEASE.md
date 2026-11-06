@@ -20,13 +20,18 @@ npm run check-changelog-version
 2. Bump `version` in `package.json` to `X.Y.Z`.
 3. Refresh `package-lock.json` (`npm install` will do it).
 4. Open the release PR. CI runs `check-changelog-version` automatically.
-5. Once merged, tag `vX.Y.Z` on `main` and push the tag once. The `Release` workflow (`.github/workflows/release.yml`) builds `dist/`, commits it on top of the tagged commit and moves `vX.Y.Z` to that build commit. It then creates the GitHub Release as a draft, publishes it, and finally moves the major tag (`vX`) to the same commit. `main` never carries `dist/`.
+5. Once merged, push the merged release commit on `main` to a release branch: `git push origin <sha>:refs/heads/release/vX.Y.Z`. The `Release` workflow (`.github/workflows/release.yml`) checks that the commit is on `main`, that it is the commit that bumps the version, and that `package.json` and `CHANGELOG.md` say `X.Y.Z`. It then builds `dist/`, commits it on top of the release commit and pushes that build commit to `release/vX.Y.Z`. It never writes tags. `main` never carries `dist/`.
+6. An org admin runs `scripts/publish-release.sh vX.Y.Z` from a clone of the repo, with Node 24 and `gh` signed in. Run it with `--dry-run` first to print the commands that write tags or the release without running them. The script waits for the build commit and repeats the workflow's checks on the release commit. It then rebuilds `dist/` from the release commit and refuses unless the build commit is exactly the release commit plus that fresh `dist/`. It creates the annotated tag `vX.Y.Z` on the build commit, pushes it, publishes the GitHub Release with the `CHANGELOG.md` section as its notes, and moves the major tag (`vX`) to the same commit. It leaves `vX` alone when a newer `vX` release exists. Keep the release branch, because the script reads the build commit from it.
+
+## Tag ruleset
+
+An org ruleset on `refs/tags/v*` restricts creating, updating and deleting release tags, and only org admins can bypass it. GitHub can't exempt GitHub Actions from a ruleset, which is why the workflow builds on a branch and an admin writes the tags.
 
 ## Immutable releases
 
-Immutable releases are enabled in the repository settings. Once a release is published, its tag can't be moved or deleted and its assets can't change. Deleting the release doesn't free the tag name either. This is why the workflow only publishes after `vX.Y.Z` points at the build commit. A release asset, if one is ever added, has to be uploaded to the draft before the publish step. If a published release turns out broken, cut a new patch version. Never re-push `vX.Y.Z`. The major tag `vX` has no release of its own, so the workflow can keep moving it.
+Immutable releases are enabled in the repository settings. Once a release is published, its tag can't be moved or deleted and its assets can't change. Deleting the release doesn't free the tag name either. This is why the script only publishes after `vX.Y.Z` points at the build commit. A release asset, if one is ever added, has to be attached in the script's `gh release create` call, because the release is published as it is created. If a published release turns out broken, cut a new patch version. Never re-push `vX.Y.Z`. The major tag `vX` has no release of its own, so the script can keep moving it.
 
-If the workflow fails before publishing, rerun it. A rerun sees `dist/` on the tag and skips the rebuild, and reuses an existing draft.
+If the workflow fails, rerun it. A rerun sees `dist/` on the release branch and skips the rebuild. The script is safe to rerun too: it skips every step that is already done, publishes an existing draft, and refuses to move a `vX.Y.Z` tag that points anywhere but the build commit.
 
 ## Why all three files in one commit
 
