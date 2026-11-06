@@ -1,4 +1,6 @@
 import { execFileSync } from 'child_process';
+import { createServer } from 'http';
+import { AddressInfo } from 'net';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -59,5 +61,22 @@ describe('fetchWorkspace', () => {
       expect(text).not.toContain(TOKEN);
       expect(text).not.toContain(encoded);
     }
+  });
+
+  it('sends the token as a basic auth header with the fetch', async () => {
+    const headers: (string | undefined)[] = [];
+    const server = createServer((request, response) => {
+      headers.push(request.headers.authorization);
+      response.writeHead(404).end();
+    });
+    await new Promise<void>(done => server.listen(0, '127.0.0.1', done));
+    const { port } = server.address() as AddressInfo;
+    try {
+      await expect(fetchWorkspace(`http://127.0.0.1:${port}/acme/widgets.git`, 'a'.repeat(40), TOKEN)).rejects.toThrow();
+    } finally {
+      server.close();
+    }
+    expect(headers.length).toBeGreaterThan(0);
+    expect(new Set(headers)).toEqual(new Set([`basic ${Buffer.from(`x-access-token:${TOKEN}`).toString('base64')}`]));
   });
 });
