@@ -100,8 +100,14 @@ describe('estimateCostUsd', () => {
     expect(estimateCostUsd('claude-haiku-4-5-20251001', usage(1_000_000, 0))).toBeCloseTo(1);
   });
 
+  it('prices OpenAI and Gemini models, with the OpenAI long-context tier above 272,000 input tokens', () => {
+    expect(estimateCostUsd('gpt-6.1-sol', usage(272_000, 1_000_000, 100_000))).toBeCloseTo(0.172 * 2 + 0.1 * 0.1 + 10);
+    expect(estimateCostUsd('gpt-6.1-sol', usage(1_000_000, 1_000_000, 500_000))).toBeCloseTo(0.5 * 4 + 0.5 * 0.2 + 15);
+    expect(estimateCostUsd('gemini-3.8-flash', usage(1_000_000, 1_000_000, 200_000))).toBeCloseTo(0.8 * 0.75 + 0.2 * 0.075 + 3.75);
+  });
+
   it('returns null for a model without a known price', () => {
-    expect(estimateCostUsd('gpt-5', usage(1000, 1000))).toBeNull();
+    expect(estimateCostUsd('gpt-5.6', usage(1000, 1000))).toBeNull();
     expect(estimateCostUsd('claude-unknown-9', usage(1000, 1000))).toBeNull();
   });
 });

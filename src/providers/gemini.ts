@@ -264,7 +264,7 @@ export class GeminiClient implements LLMClient {
     const usage: LLMUsage = usageMetadata
       ? {
           inputTokens: readCount(usageMetadata.promptTokenCount),
-          outputTokens: readCount(usageMetadata.candidatesTokenCount),
+          outputTokens: readCount(usageMetadata.candidatesTokenCount) + readCount(usageMetadata.thoughtsTokenCount),
           cacheReadTokens: readCount(usageMetadata.cachedContentTokenCount),
           cacheWriteTokens: 0,
           reasoningTokens: readCount(usageMetadata.thoughtsTokenCount),

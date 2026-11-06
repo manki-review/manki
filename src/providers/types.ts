@@ -1,6 +1,6 @@
 export type ProviderName = 'anthropic' | 'openai' | 'gemini';
 
-/** Token counts of one or more calls. `inputTokens` includes the cache reads and writes. */
+/** Token counts of one or more calls. `inputTokens` includes the cache reads and writes, `outputTokens` the reasoning. */
 export interface LLMUsage {
   inputTokens: number;
   outputTokens: number;
