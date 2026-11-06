@@ -64,6 +64,7 @@ describe('relatedRepoLoader', () => {
       ['sparse-checkout', 'set', '--no-cone', '/src/consensus', '/doc/*.md'],
       ['fetch', '-q', '--depth', '1', '--filter=blob:none', '--no-tags', 'origin', 'v23.0.0'],
       ['checkout', '-q', '--force', '--detach', 'FETCH_HEAD'],
+      ['repack', '-a', '-d', '-q'],
     ]);
     expect(calls.filter(c => c.cwd === dipsDir).map(c => c.args)).toEqual([
       ['init', '-q'],
@@ -71,14 +72,15 @@ describe('relatedRepoLoader', () => {
       ['sparse-checkout', 'disable'],
       ['fetch', '-q', '--depth', '1', '--filter=blob:none', '--no-tags', 'origin', 'HEAD'],
       ['checkout', '-q', '--force', '--detach', 'FETCH_HEAD'],
+      ['repack', '-a', '-d', '-q'],
     ]);
     expect(existsSync(dashDir)).toBe(true);
 
     expect(await load('reference')).toEqual(references);
-    expect(run).toHaveBeenCalledTimes(10);
+    expect(run).toHaveBeenCalledTimes(12);
 
     expect(await load('consumer')).toEqual([{ ...PLATFORM, dir: join(cacheDir, 'dashpay', 'platform') }]);
-    expect(run).toHaveBeenCalledTimes(15);
+    expect(run).toHaveBeenCalledTimes(18);
     expect(core.warning).not.toHaveBeenCalled();
   });
 
@@ -106,6 +108,7 @@ describe('relatedRepoLoader', () => {
       ['sparse-checkout', 'set', '--no-cone', '/src/consensus', '/doc/*.md'],
       ['fetch', '-q', '--depth', '1', '--filter=blob:none', '--no-tags', 'origin', 'v23.0.0'],
       ['checkout', '-q', '--force', '--detach', 'FETCH_HEAD'],
+      ['repack', '-a', '-d', '-q'],
     ]);
     expect(readFileSync(join(dashDir, '.git', 'objects', 'pack', 'pack-1.pack'), 'utf-8')).toBe('objects');
     expect(existsSync(join(dashDir, '.git', 'objects', 'info'))).toBe(false);
@@ -120,7 +123,7 @@ describe('relatedRepoLoader', () => {
     const fetched = await relatedRepoLoader([DASH], { cacheDir, run: fakeGit({ 'dashpay/dash': { fsck: 'error: index CRC mismatch for object 0931' } }) })('reference');
 
     expect(fetched).toHaveLength(1);
-    expect(calls.map(c => c.args[0] === '-c' ? 'fsck' : c.args[0])).toEqual(['init', 'remote', 'fsck', 'init', 'remote', 'sparse-checkout', 'fetch', 'checkout']);
+    expect(calls.map(c => c.args[0] === '-c' ? 'fsck' : c.args[0])).toEqual(['init', 'remote', 'fsck', 'init', 'remote', 'sparse-checkout', 'fetch', 'checkout', 'repack']);
     expect(existsSync(join(dashDir, '.git', 'objects', 'pack'))).toBe(false);
     expect(core.info).toHaveBeenCalledWith(`Discarding the cached objects of ${dashDir}: error: index CRC mismatch for object 0931`);
   });
@@ -133,7 +136,7 @@ describe('relatedRepoLoader', () => {
 
       await relatedRepoLoader([DASH], { cacheDir, run: fakeGit() })('reference');
 
-      expect(calls.map(c => c.args[0])).toEqual(['init', 'remote', 'sparse-checkout', 'fetch', 'checkout']);
+      expect(calls.map(c => c.args[0])).toEqual(['init', 'remote', 'sparse-checkout', 'fetch', 'checkout', 'repack']);
       expect(lstatSync(join(cacheDir, 'dashpay')).isSymbolicLink()).toBe(false);
       expect(existsSync(join(outside, 'dash', 'stale.txt'))).toBe(true);
 
@@ -145,7 +148,7 @@ describe('relatedRepoLoader', () => {
 
       await relatedRepoLoader([DIPS], { cacheDir, run: fakeGit() })('reference');
 
-      expect(calls.map(c => c.args[0])).toEqual(['init', 'remote', 'sparse-checkout', 'fetch', 'checkout']);
+      expect(calls.map(c => c.args[0])).toEqual(['init', 'remote', 'sparse-checkout', 'fetch', 'checkout', 'repack']);
       expect(existsSync(join(dipsDir, '.git', 'objects', 'pack'))).toBe(false);
       expect(readFileSync(join(outside, 'dash', '.git', 'objects', 'pack', 'pack-1.pack'), 'utf-8')).toBe('objects');
     } finally {
@@ -178,8 +181,11 @@ describe('relatedRepoLoader', () => {
     }
   });
 
-  it('skips a repo it cannot fetch with a warning, removes its directory, and returns the others', async () => {
-    const run = fakeGit({ 'dashpay/dips': { fetch: "fatal: could not read Username for 'https://github.com': terminal prompts disabled" } });
+  it('skips a repo it cannot fetch with a warning, removes its directory, and returns the others, also when their repack fails', async () => {
+    const run = fakeGit({
+      'dashpay/dips': { fetch: "fatal: could not read Username for 'https://github.com': terminal prompts disabled" },
+      'dashpay/dash': { repack: 'fatal: out of memory' },
+    });
 
     const references = await relatedRepoLoader([DASH, DIPS], { cacheDir, run })('reference');
 
@@ -189,6 +195,8 @@ describe('relatedRepoLoader', () => {
     );
     expect(existsSync(join(cacheDir, 'dashpay', 'dips'))).toBe(false);
     expect(calls.filter(c => c.cwd.endsWith('dips')).map(c => c.args[0])).not.toContain('checkout');
+    expect(core.info).toHaveBeenCalledWith(`Could not repack ${join(cacheDir, 'dashpay', 'dash')}: fatal: out of memory`);
+    expect(core.warning).toHaveBeenCalledTimes(1);
   });
 
   it('gives each repo one time limit across its git commands, and skips it once that runs out', async () => {

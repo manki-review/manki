@@ -907,7 +907,7 @@ The clones go to `manki-related-repos` in the runner's temp directory. To reuse 
           restore-keys: manki-related-repos-
 ```
 
-Of a restored clone Manki keeps only the object store, and only once `git fsck` finds it intact, so a tampered cache entry cannot change how git runs. The fetch then downloads only the objects it does not have yet. A run without write access to the cache, such as one started by a comment, still restores it (see [Cache access](#cache-access)).
+Of a restored clone Manki keeps only the object store, and only once `git fsck` finds it intact, so a tampered cache entry cannot change how git runs. The fetch then downloads nothing when the cache already holds the commit. For a new commit it downloads the commit's trees and only the files the cache does not hold yet, and Manki repacks the store so it keeps one copy of each object. A run without write access to the cache, such as one started by a comment, still restores it (see [Cache access](#cache-access)).
 
 ### Severity tiers
 

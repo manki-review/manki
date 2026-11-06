@@ -87,6 +87,8 @@ async function checkoutRelatedRepo(repo: RelatedRepo, cacheDir: string, timeoutM
     await git(...(repo.paths ? ['sparse-checkout', 'set', '--no-cone', ...repo.paths.map(sparsePattern)] : ['sparse-checkout', 'disable']));
     await git('fetch', '-q', '--depth', '1', '--filter=blob:none', '--no-tags', 'origin', repo.ref ?? 'HEAD');
     await git('checkout', '-q', '--force', '--detach', 'FETCH_HEAD');
+    // With no refs to negotiate from, the fetch sends every tree of a new commit again. Repacking keeps one copy in the cache.
+    await git('repack', '-a', '-d', '-q').catch(error => core.info(`Could not repack ${dir}: ${error instanceof Error ? error.message : String(error)}`));
     core.info(`Fetched related repo ${repo.repo}${repo.ref ? ` at ${repo.ref}` : ''}`);
     return { ...repo, dir };
   } catch (error) {
