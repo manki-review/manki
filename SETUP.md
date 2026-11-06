@@ -883,7 +883,7 @@ Manki reads the `review` block from the PR's base branch only, like `static_anal
 
 - **`repo`**: the repository as `owner/name`.
 - **`kind`**: `reference` for a repository this one implements or ports, such as a protocol's reference implementation or its specifications. `consumer` for a repository that depends on this one, where a change to a public API or a wire or data format can break it.
-- **`ref`** (optional): the branch, tag or full commit hash to read. The default is the repository's default branch.
+- **`ref`** (optional): the branch, tag or full commit hash to read. The default is the repository's default branch. Write a branch or tag whose name looks like a short commit hash, such as `20240115`, as `refs/heads/20240115` or `refs/tags/20240115`.
 - **`paths`** (optional): up to 20 paths or globs inside the repository, such as `src/` or `packages/rs-*`. Only these are fetched. The default is the whole repository.
 
 ```yaml

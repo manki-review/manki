@@ -414,7 +414,7 @@ function validateRelatedRepos(value: unknown, errors: string[], warnings: string
     if (ref !== undefined && (typeof ref !== 'string' || !RELATED_REPO_REF.test(ref))) {
       errors.push(`${at}.ref\` must be a branch, tag or commit name`);
     } else if (typeof ref === 'string' && ABBREVIATED_COMMIT.test(ref)) {
-      errors.push(`${at}.ref\` looks like an abbreviated commit, use the full hash`);
+      errors.push(`${at}.ref\` looks like an abbreviated commit. Use the full hash, or \`refs/tags/${ref}\` or \`refs/heads/${ref}\` for a tag or branch of that name`);
     }
     if (paths !== undefined) {
       if (!isStringArray(paths) || paths.length === 0 || paths.length > MAX_RELATED_REPO_PATHS) {
