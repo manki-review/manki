@@ -389,6 +389,23 @@ describe('tagFindingOrigins', () => {
       finding('src/a.ts', 16), finding('src/a.ts', 18), finding('src/a.ts', 10), finding('src/a.ts', 0), finding('src/new.ts', 2), finding('src/new.ts', 0),
     ], current, prior)).toEqual(['new', 'reviewed', 'new', 'new', 'reviewed', 'reviewed']);
   });
+
+  it('tags a finding new near code removed since, whether the PR removed a base line or dropped a line it added before', () => {
+    const removal = (path: string, start: number, removed: string, kept: string[]): string =>
+      `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -${start},${kept.length + 2} +${start},${kept.length + 1} @@\n ctx\n-${removed}\n${kept.map(l => ` ${l}`).join('\n')}\n`;
+    const prior = change('src/a.ts', 10, ['guard', 'body']);
+    // The PR now also removes `if (!user) return;` from the base, which sits at line 11 of the new file.
+    const removesBaseLine = `${change('src/a.ts', 10, ['guard', 'body'])}${removal('src/b.ts', 10, 'if (!user) return;', ['use(user);'])}`;
+    expect(tag([finding('src/b.ts', 11), finding('src/b.ts', 20)], removesBaseLine, prior)).toEqual(['new', 'reviewed']);
+
+    // The PR dropped its own `guard` line. Only the diff between the two commits says where it was.
+    const droppedOwnLine = change('src/a.ts', 10, ['body']);
+    const interRound = removal('src/a.ts', 10, 'guard', ['body']);
+    const findings = [finding('src/a.ts', 11)];
+    tagFindingOrigins(findings, parsePRDiff(droppedOwnLine), parsePRDiff(prior), parsePRDiff(interRound));
+    expect(findings[0].origin).toBe('new');
+    expect(tag([finding('src/a.ts', 11)], droppedOwnLine, prior)).toEqual(['reviewed']);
+  });
 });
 
 describe('rebuildRawDiff', () => {

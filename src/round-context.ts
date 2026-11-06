@@ -34,8 +34,6 @@ export interface RoundRecordInput {
   excludedFiles: RoundDiffExcludedFile[];
   openThreads: OpenThread[];
   interRoundDiff?: string;
-  /** The PR's change at the last reviewed round, when it could be fetched. */
-  priorChange?: ParsedDiff;
   memoryLoadStatus: MemoryLoadStatus;
   memoryLoadError?: string;
   staticAnalysis?: RoundStaticAnalysis;

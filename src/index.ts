@@ -1498,7 +1498,7 @@ async function runFullReview(
     const run: ReviewRun = {
       ...target, options, trigger, config, reviewSource, models, plannerEnabled: !!clients.planner,
       recap, priorRoundCount, maxAutoRounds,
-      diff, excludedFiles, openThreads, interRoundDiff, priorChange, memoryLoadStatus, memoryLoadError, staticAnalysis,
+      diff, excludedFiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError, staticAnalysis,
       commentId, dashboard, progress, startTime, parseEndTime,
     };
 
@@ -1536,7 +1536,7 @@ async function runFullReview(
     }
 
     addCodeContext(result.findings, diff);
-    tagFindingOrigins(result.findings, diff, priorChange);
+    tagFindingOrigins(result.findings, diff, priorChange, interRoundDiff ? parsePRDiff(interRoundDiff) : undefined);
     const reviewTimeMs = Date.now() - startTime;
     const buildContext = () => buildRoundContext(run, result, {
       plannerDurationMs: dashboard.plannerDurationMs,

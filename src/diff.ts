@@ -188,21 +188,55 @@ export function isDiffTooLarge(diff: ParsedDiff, maxLines: number): boolean {
 // Lines around a new line that count as new code, as many as a diff hunk shows around a change.
 const NEW_CODE_WINDOW = 3;
 
+/** Returns the text of each line the diff removes, with the line in the new file where the removal sits. */
+function removedLines(file: DiffFile): Array<[number, string]> {
+  const removed: Array<[number, string]> = [];
+  for (const hunk of file.hunks) {
+    let line = hunk.newStart;
+    for (const content of hunk.content.split('\n')) {
+      if (content.startsWith('\\')) continue;
+      if (content.startsWith('-')) removed.push([line, content.slice(1)]);
+      else line++;
+    }
+  }
+  return removed;
+}
+
+function countTexts(texts: Iterable<string>): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const text of texts) counts.set(text, (counts.get(text) ?? 0) + 1);
+  return counts;
+}
+
+/** Takes one `text` from `counts`, and returns whether there was one to take. */
+function takeText(counts: Map<string, number>, text: string): boolean {
+  const left = counts.get(text) ?? 0;
+  if (left > 0) counts.set(text, left - 1);
+  return left > 0;
+}
+
 /**
- * Returns, per file, the lines `current` adds that `prior` did not add. Lines are compared by text,
- * so a rebase or a shift in line numbers does not turn reviewed code into new code.
+ * Returns, per file, the lines of the new file where `current` changed the code since `prior`: a line it
+ * adds that `prior` did not add, and the spot of a line it removes that `prior` did not remove. Lines are
+ * compared by text, so a rebase or a shift in line numbers does not turn reviewed code into new code.
+ * A line `prior` added and `current` no longer has is found in `interRound`, the diff between the two commits.
  */
-function newlyAddedLines(current: ParsedDiff, prior: ParsedDiff): Map<string, number[]> {
+function changedSincePrior(current: ParsedDiff, prior: ParsedDiff, interRound: ParsedDiff | undefined): Map<string, number[]> {
   const fresh = new Map<string, number[]>();
   for (const file of current.files) {
     const priorFile = prior.files.find(f => f.path === file.path || f.path === file.oldPath);
-    const priorCounts = new Map<string, number>();
-    for (const text of priorFile ? addedLines(priorFile).values() : []) priorCounts.set(text, (priorCounts.get(text) ?? 0) + 1);
+    const priorAdded = countTexts(priorFile ? addedLines(priorFile).values() : []);
+    const priorRemoved = countTexts(priorFile ? removedLines(priorFile).map(([, text]) => text) : []);
     const lines: number[] = [];
     for (const [line, text] of addedLines(file)) {
-      const left = priorCounts.get(text) ?? 0;
-      if (left > 0) priorCounts.set(text, left - 1);
-      else lines.push(line);
+      if (!takeText(priorAdded, text)) lines.push(line);
+    }
+    for (const [line, text] of removedLines(file)) {
+      if (!takeText(priorRemoved, text)) lines.push(line);
+    }
+    const interRoundFile = interRound?.files.find(f => f.path === file.path);
+    for (const [line, text] of interRoundFile ? removedLines(interRoundFile) : []) {
+      if (takeText(priorAdded, text)) lines.push(line);
     }
     if (lines.length > 0) fresh.set(file.path, lines);
   }
@@ -210,11 +244,11 @@ function newlyAddedLines(current: ParsedDiff, prior: ParsedDiff): Map<string, nu
 }
 
 /**
- * Sets each finding's `origin`: `new` when it sits within a few lines of code the PR added since
+ * Sets each finding's `origin`: `new` when it sits within a few lines of code the PR changed since
  * the change `prior` recorded, `reviewed` otherwise. Without `prior`, every finding is new.
  */
-export function tagFindingOrigins(findings: Finding[], diff: ParsedDiff, prior: ParsedDiff | undefined): void {
-  const fresh = prior && newlyAddedLines(diff, prior);
+export function tagFindingOrigins(findings: Finding[], diff: ParsedDiff, prior: ParsedDiff | undefined, interRound?: ParsedDiff): void {
+  const fresh = prior && changedSincePrior(diff, prior, interRound);
   for (const finding of findings) {
     const lines = fresh?.get(finding.file) ?? [];
     const isNew = !fresh || !finding.file
