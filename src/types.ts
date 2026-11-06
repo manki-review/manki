@@ -811,7 +811,10 @@ export interface RoundContext {
    */
   recap?: RoundRecap;
   staticAnalysis?: RoundStaticAnalysis;
-  /** Lengths of what the round posted, in characters. */
+  /**
+   * Lengths of what the round composed, in characters. The record goes out with the review, so a comment
+   * GitHub refuses afterwards, or a body rewritten to carry it, is not reflected.
+   */
   output?: RoundOutput;
 }
 
