@@ -190,6 +190,7 @@ jest.mock('./github', () => {
   markOwnProgressCommentCancelled: jest.fn().mockResolvedValue(false),
   markProgressCommentFailed: jest.fn().mockResolvedValue(undefined),
   markProgressCommentSuperseded: jest.fn().mockResolvedValue(undefined),
+  isFailedProgressOn: jest.requireActual('./github').isFailedProgressOn,
   postAppWarningIfNeeded: jest.fn().mockResolvedValue(undefined),
   fetchPRComments: fetchPRCommentsMock,
   findInProgressLock: findInProgressLockMock,
@@ -1081,28 +1082,10 @@ describe('handleCommentTrigger', () => {
 
     await handleCommentTrigger();
 
-    expect(jest.mocked(ghUtils.isApprovedOnCommit)).toHaveBeenCalledWith(
+    expect(jest.mocked(ghUtils.hasBotReviewOnCommit)).toHaveBeenCalledWith(
       expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 1, expect.any(String),
     );
     expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
-  });
-
-  it('skips review when already approved on this commit', async () => {
-    jest.mocked(ghUtils.isApprovedOnCommit).mockResolvedValueOnce(true);
-
-    setContext({
-      eventName: 'issue_comment',
-      payload: {
-        action: 'created',
-        issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } },
-        comment: { id: 42, body: '@manki-review review', author_association: 'COLLABORATOR' },
-      },
-    });
-
-    await handleCommentTrigger();
-
-    expect(jest.mocked(core.info)).toHaveBeenCalledWith('Already approved on this commit — skipping review');
-    expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
   });
 });
 
@@ -1128,12 +1111,6 @@ describe('isApprovedOnCommit guard', () => {
     },
   };
 
-  const commentPayload = {
-    action: 'created',
-    issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } },
-    comment: { id: 42, body: '@manki review', author_association: 'COLLABORATOR' },
-  };
-
   it('skips review when already approved on commit', async () => {
     jest.mocked(ghUtils.isApprovedOnCommit).mockResolvedValueOnce(true);
 
@@ -1152,27 +1129,6 @@ describe('isApprovedOnCommit guard', () => {
 
     expect(jest.mocked(core.info)).not.toHaveBeenCalledWith('Already approved on this commit — skipping review');
     expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
-  });
-
-  it('skips review via handleCommentTrigger when already approved on commit', async () => {
-    jest.mocked(ghUtils.isApprovedOnCommit).mockResolvedValueOnce(true);
-
-    setContext({ eventName: 'issue_comment', payload: commentPayload });
-    await handleCommentTrigger();
-
-    expect(jest.mocked(core.info)).toHaveBeenCalledWith('Already approved on this commit — skipping review');
-    expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
-    expect(jest.mocked(ghUtils.reactToIssueComment)).toHaveBeenCalledWith(
-      expect.anything(), 'test-owner', 'test-repo', 42, 'eyes',
-    );
-  });
-
-  it('force review bypasses the approved-on-commit check', async () => {
-    setContext({ eventName: 'issue_comment', payload: commentPayload });
-    await handleCommentTrigger(true);
-
-    expect(jest.mocked(core.info)).not.toHaveBeenCalledWith('Already approved on this commit — skipping review');
-    expect(jest.mocked(ghUtils.isApprovedOnCommit)).not.toHaveBeenCalled();
   });
 });
 
@@ -2873,7 +2829,7 @@ describe('runFullReview orchestration', () => {
 
     expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(`Review failed: ${reason}`);
     expect(jest.mocked(ghUtils.markProgressCommentFailed)).toHaveBeenCalledWith(
-      expect.anything(), 'test-owner', 'test-repo', 1, 'Review', reason,
+      expect.anything(), 'test-owner', 'test-repo', 1, 'Review', reason, 'abc123',
     );
     expect(jest.mocked(ghUtils.updateProgressComment)).not.toHaveBeenCalled();
     expect(jest.mocked(ghUtils.postReview)).not.toHaveBeenCalled();
@@ -3194,7 +3150,7 @@ describe('runFullReview orchestration', () => {
       });
       jest.mocked(interaction.isReviewRequest).mockReturnValue(true);
 
-      await callRunFullReviewWith(true, true, 'manual_review_command');
+      await callRunFullReviewWith(false, true, 'manual_review_command');
 
       const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7];
       expect(rc!.meta.trigger?.event).toBe('issue_comment:created:@manki review');
@@ -3306,11 +3262,11 @@ describe('runFullReview orchestration', () => {
         { round: 1, commitSha: 's1', timestamp: '2025-01-01T00:00:00Z', findings: [] },
       ]);
 
-      await callRunFullReviewWith(true, true, 'manual_review_command');
+      await callRunFullReviewWith(false, true, 'manual_review_command');
 
       const rc = jest.mocked(ghUtils.postReview).mock.calls[0][7];
       expect(rc!.meta.cap?.bypassReason).toBe('manual_review_command');
-      expect(rc!.meta.cap?.forceReview).toBe(true);
+      expect(rc!.meta.cap?.forceReview).toBe(false);
       expect(rc!.meta.cap?.skipCap).toBe(true);
     });
   });
@@ -5843,7 +5799,7 @@ describe('runFullReview orchestration', () => {
       await runFullReview(
         baseArgs.owner, baseArgs.repo, baseArgs.prNumber,
         baseArgs.commitSha, baseArgs.baseRef, baseArgs.prContext,
-        { forceReview: true, bypassHint, trigger: { event, sender: 'alice' } },
+        { forceReview: bypassHint === 'force_review', skipCap: bypassHint === 'manual_review_command', bypassHint, trigger: { event, sender: 'alice' } },
       );
 
       expect(jest.mocked(ghUtils.fetchStandingVerdict)).not.toHaveBeenCalled();

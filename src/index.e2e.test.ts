@@ -78,7 +78,7 @@ const PR_DIFF = [
 const MATH_TS = 'export function add(a: number, b: number): number {\n  const sum = a + b;\n  return sum;\n}\n';
 
 interface FakeUser { login: string; type: string }
-interface FakeComment { id: number; body: string; user: FakeUser; created_at: string; updated_at: string }
+interface FakeComment { id: number; body: string; user: FakeUser; created_at: string; updated_at: string; reactions?: { eyes: number } }
 interface FakeReview { id: number; body: string; state: string; commit_id: string; user: FakeUser; submitted_at: string }
 interface FakeThreadComment { databaseId: number; body: string; url: string; authorAssociation: string; author: { login: string } }
 interface FakeThread { id: string; isResolved: boolean; resolvedBy: { login: string } | null; path: string; line: number; startLine: number | null; originalLine: number; comments: FakeThreadComment[] }
@@ -161,6 +161,13 @@ class FakeGitHub {
       this.comments.push(comment);
       return json(comment, 201);
     }
+    if ((match = route.match(/^\/issues\/comments\/(\d+)\/reactions$/))) {
+      const comment = this.comments.find(c => c.id === Number(match![1]));
+      if (!comment) return json({ message: 'Not Found' }, 404);
+      if (method === 'GET') return json(comment.reactions ? [{ content: 'eyes', user }] : []);
+      comment.reactions = { eyes: 1 };
+      return json({ id: this.nextId++, content: body.content }, 201);
+    }
     if ((match = route.match(/^\/issues\/comments\/(\d+)$/))) {
       const index = this.comments.findIndex(c => c.id === Number(match![1]));
       if (index === -1) return json({ message: 'Not Found' }, 404);
@@ -200,6 +207,7 @@ class FakeGitHub {
       return json({ id: Number(match[1]), status: this.activeRuns.includes(Number(match[1])) ? 'in_progress' : 'completed', conclusion: null });
     }
     if (method === 'GET' && route === '') return json({ full_name: `${OWNER}/${REPO}`, description: null });
+    if (method === 'GET' && route === '/collaborators/alice/permission') return json({ permission: 'write' });
     return json({ message: 'Not Found' }, 404);
   };
 
@@ -358,13 +366,46 @@ function reviewRound(trigger = 'pull_request:opened', force = false): Promise<vo
     prAuthorLogin: 'alice',
     headRepoFullName: `${OWNER}/${REPO}`,
     trigger: { event: trigger, sender: 'alice' },
-    ...(force && { forceReview: true, skipCap: true, bypassHint: 'manual_review_command' as const }),
+    ...(force && { forceReview: true, bypassHint: 'force_review' as const }),
   });
 }
 
-/** Runs a second round on the same commit, as `@manki review` does. */
+/** Runs a second round on the same commit, as a Force review tick does. */
 function forcedRound(): Promise<void> {
-  return reviewRound('issue_comment:created:@manki review', true);
+  return reviewRound('issue_comment:edited:tick:FORCE_REVIEW_MARKER', true);
+}
+
+/** Runs Manki on a review command that alice comments on the PR. */
+function reviewCommand(): Promise<void> {
+  Object.assign(mockContext, {
+    eventName: 'issue_comment',
+    payload: {
+      action: 'created',
+      sender: { login: 'alice', type: 'User' },
+      issue: { number: PR_NUMBER, pull_request: { url: `https://api.github.com/repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}` } },
+      comment: { id: 9100, body: '@manki review', author_association: 'OWNER', user: { login: 'alice', type: 'User' } },
+    },
+  });
+  return main();
+}
+
+/** Runs Manki on alice ticking the Force review box of `notice`. */
+function tickForceReview(notice: FakeComment): Promise<void> {
+  notice.body = notice.body.replace('- [ ] Force review', '- [x] Force review');
+  Object.assign(mockContext, {
+    eventName: 'issue_comment',
+    payload: {
+      action: 'edited',
+      sender: { login: 'alice', type: 'User' },
+      issue: { number: PR_NUMBER, pull_request: { url: `https://api.github.com/repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}` } },
+      comment: { id: notice.id, body: notice.body, author_association: 'NONE', user: { login: APP_LOGIN, type: 'Bot' } },
+    },
+  });
+  return main();
+}
+
+function skipNotices(): FakeComment[] {
+  return mockGitHub.comments.filter(c => c.body.startsWith('**Review skipped**'));
 }
 
 function postedReviews(login = APP_LOGIN): FakeReview[] {
@@ -418,7 +459,7 @@ describe('runFullReview end to end', () => {
     expect(core.setOutput).toHaveBeenCalledWith('verdict', 'APPROVE');
   });
 
-  it('ends INCOMPLETE and never approves when a reviewer reply does not parse', async () => {
+  it('ends INCOMPLETE and never approves when a reviewer reply does not parse, and a later run still reviews the commit', async () => {
     mockLLM.replies.reviewer = 'I could not finish the review.';
 
     await reviewRound();
@@ -426,6 +467,16 @@ describe('runFullReview end to end', () => {
     expect(core.setFailed).toHaveBeenCalledWith(expect.stringContaining('Review incomplete'));
     expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED']);
     expect(mockLLM.calls).not.toContain('judge');
+    const progress = mockGitHub.comments.find(c => c.body.startsWith('🔴 **Review failed**'));
+    expect(progress).toBeDefined();
+
+    mockLLM.replies.reviewer = READY_REPLIES.reviewer;
+    await reviewRound('pull_request:ready_for_review');
+
+    expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED', 'APPROVED']);
+    expect(skipNotices()).toEqual([]);
+    expect(progress?.body).toMatch(/^\*\*Review superseded\*\* by a later review of `a1b2c3d`, which posted its verdict\./);
+    expect(mockGitHub.comments.filter(c => c.body.startsWith('✅ **Review complete**'))).toHaveLength(1);
   });
 
   it('ends INCOMPLETE and never approves when the judge reply does not parse', async () => {
@@ -447,7 +498,67 @@ describe('runFullReview end to end', () => {
     expect(core.setFailed).toHaveBeenCalledWith(expect.stringContaining('Review failed'));
     expect(mockGitHub.reviews).toEqual([previous]);
     expect(previous.state).toBe('CHANGES_REQUESTED');
-    expect(mockGitHub.comments.at(-1)?.body).toContain('Review failed');
+    const progress = mockGitHub.comments.at(-1);
+    expect(progress?.body).toContain('Review failed');
+
+    // A failed review of another commit stays as it is.
+    mockGitHub.addComment(`🔴 **Review failed:** boom\n\n${BOT_MARKER}\n${CANCELLED_MARKER}\n<!-- manki-commit:${'0f'.repeat(20)} -->`, APP_LOGIN);
+    const other = mockGitHub.comments.at(-1);
+    mockGitHub.failures = [];
+    await reviewRound();
+
+    expect(postedReviews().map(r => r.state)).toEqual(['DISMISSED', 'APPROVED']);
+    expect(progress?.body).toMatch(/^\*\*Review superseded\*\* by a later review of `a1b2c3d`/);
+    expect(other?.body).toMatch(/^🔴 \*\*Review failed:\*\* boom/);
+  });
+
+  describe('review command', () => {
+    it('reviews a commit only once, and replies with one Force review notice to a command on a reviewed commit', async () => {
+      await reviewCommand();
+      expect(postedReviews().map(r => [r.state, r.commit_id])).toEqual([['APPROVED', HEAD_SHA]]);
+      expect(skipNotices()).toEqual([]);
+
+      await reviewCommand();
+      await reviewCommand();
+
+      expect(postedReviews()).toHaveLength(1);
+      const [notice] = skipNotices();
+      expect(skipNotices()).toHaveLength(1);
+      expect(notice.body).toContain('this commit already has a review. Force a new one:\n\n- [ ] Force review');
+
+      await tickForceReview(notice);
+
+      expect(core.setFailed).not.toHaveBeenCalled();
+      expect(postedReviews().map(r => [r.state, r.commit_id])).toEqual([['APPROVED', HEAD_SHA], ['APPROVED', HEAD_SHA]]);
+
+      // Manki answered the tick, so a later command on the commit posts a fresh notice, also after the box is unticked again.
+      notice.body = notice.body.replace('- [x] Force review', '- [ ] Force review');
+      await reviewCommand();
+      expect(postedReviews()).toHaveLength(2);
+      expect(skipNotices()).toHaveLength(2);
+    });
+
+    it('reviews a commit whose only review is incomplete', async () => {
+      mockLLM.replies.reviewer = 'I could not finish the review.';
+      await reviewRound();
+      expect(postedReviews().map(r => r.state)).toEqual(['COMMENTED']);
+
+      mockLLM.replies.reviewer = READY_REPLIES.reviewer;
+      await reviewCommand();
+
+      expect(postedReviews().map(r => [r.state, r.commit_id])).toEqual([['COMMENTED', HEAD_SHA], ['APPROVED', HEAD_SHA]]);
+      expect(skipNotices()).toEqual([]);
+    });
+
+    it('reviews the head the PR has when it runs, after a push', async () => {
+      await reviewRound();
+      mockGitHub.headSha = 'b2'.repeat(20);
+
+      await reviewCommand();
+
+      expect(postedReviews().map(r => r.commit_id)).toEqual([HEAD_SHA, 'b2'.repeat(20)]);
+      expect(skipNotices()).toEqual([]);
+    });
   });
 
   it.each([

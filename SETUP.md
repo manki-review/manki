@@ -845,7 +845,7 @@ A PR author who is a repo admin may clear a security finding on their own PR, so
 
 Each round checks the open Manki threads against the push. When it confirms a fix in a file the push changed, it resolves the thread with a short "Fixed in" reply and the thread stops blocking. A blocker that a round names again while its thread is still open stays in that thread instead of getting a new one.
 
-When a blocker comes back after a fix was claimed for it (its thread was resolved, someone replied in it, or Manki confirmed the fix), the review keeps requesting changes, lists the blocker under "Needs a human", and pauses automatic review. A blocker named again after a rebase, with its thread still open and unanswered, just stays open. The last automatic round, round `convergence.max_auto_rounds` (default 5) counted from Manki's last full-bar approval, blocks on blockers only: it approves with the remaining warnings as smaller fixes, or stops the same way when a blocker is still open. Rounds after an approval, such as on rebases, start the count again. The last round's own approval does not. After a pause, commenting `@manki review` runs one more round that blocks on blockers only.
+When a blocker comes back after a fix was claimed for it (its thread was resolved, someone replied in it, or Manki confirmed the fix), the review keeps requesting changes, lists the blocker under "Needs a human", and pauses automatic review. A blocker named again after a rebase, with its thread still open and unanswered, just stays open. The last automatic round, round `convergence.max_auto_rounds` (default 5) counted from Manki's last full-bar approval, blocks on blockers only: it approves with the remaining warnings as smaller fixes, or stops the same way when a blocker is still open. Rounds after an approval, such as on rebases, start the count again. The last round's own approval does not. After a pause, commenting `@manki review` on a commit Manki has not reviewed yet runs one more round that blocks on blockers only.
 
 Use the `models` config section to choose different models for the finders and the judge (e.g., a faster model for the finders and a more precise model for the judge).
 
@@ -920,7 +920,7 @@ After setup, create a test PR to verify everything works:
 4. Check the Actions tab for the review run
 5. The PR should receive inline review comments and an APPROVE/REQUEST_CHANGES review
 
-You can also trigger a review manually by commenting `/manki review` on any PR.
+You can also trigger a review manually by commenting `/manki review` on any PR. Manki reviews each commit once. The command reviews the PR's current head when Manki has no complete review of it yet, and an incomplete or failed review does not count. On a head Manki already reviewed, it posts no review and replies with one notice that carries a Force review box. Only ticking that box reviews the same commit again.
 
 ## Security
 
