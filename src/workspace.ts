@@ -42,6 +42,7 @@ export async function fetchWorkspace(url: string, sha: string, token?: string): 
   const auth: Record<string, string> = token ? { 'http.extraHeader': `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}` } : {};
   await git(['init', '-q']);
   await git(['fetch', '-q', '--no-tags', `--depth=${WORKSPACE_DEPTH}`, url, sha], gitEnv(auth));
-  await git(['checkout', '-q', '--detach', sha]);
+  // Symlinks are checked out as plain files holding their target, so none of them points out of the workspace.
+  await git(['-c', 'core.symlinks=false', 'checkout', '-q', '--detach', sha]);
   return dir;
 }

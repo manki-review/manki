@@ -17,6 +17,8 @@ export interface LLMResponse {
   model?: string;
   /** Whether the provider reports that the output stopped at its token limit. Unset when the provider does not expose a stop reason. */
   truncated?: boolean;
+  /** The tools the model called while it answered, in order. Unset when it called none. */
+  toolSteps?: ToolStep[];
 }
 
 /**
@@ -62,6 +64,14 @@ export class RefusalError extends Error {
   }
 }
 
+/** Thrown when a call with `repoTools` used all its turns before it gave a final answer. */
+export class TurnLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TurnLimitError';
+  }
+}
+
 /**
  * Thrown when a provider refuses a request because a quota, rate limit or capacity limit is used up.
  * Sending it again before `resetsAt` fails the same way, so callers neither retry it nor move it to
@@ -99,7 +109,7 @@ export interface LLMCall extends LLMUsage {
   durationMs: number;
   /** Estimate at public API prices, `null` when the model has no known price or the provider reported no usage. */
   costUsd: number | null;
-  /** Tool steps the call took. Left out until reviewers have tools. */
+  /** Tool steps the call took. Unset when it took none. */
   toolSteps?: ToolStep[];
 }
 
@@ -115,12 +125,22 @@ export interface UsageSummary extends LLMUsage {
   unpricedCalls: number;
 }
 
+/** Read-only tools on a checked-out repository, for a call to use while it answers. */
+export interface RepoTools {
+  /** The repository the tools read. Nothing outside it is readable. */
+  root: string;
+  /** How many model turns the call may take, tool calls included. */
+  maxTurns: number;
+}
+
 export interface SendMessageOptions {
   effort?: 'low' | 'medium' | 'high' | 'max';
   /** Wall-clock limit for the call. Unset keeps the provider's default limit. */
   timeoutMs?: number;
   /** Stops the call once it aborts. The call then rejects with the signal's reason. */
   signal?: AbortSignal;
+  /** Gives the call read-only tools on a repository. A client without `repoTools` ignores it. */
+  repoTools?: RepoTools;
 }
 
 export interface LLMClient {
@@ -132,6 +152,8 @@ export interface LLMClient {
    * leave it undefined.
    */
   warmupCLI?(): Promise<void>;
+  /** Whether `sendMessage` gives the model the tools `SendMessageOptions.repoTools` asks for. */
+  readonly repoTools?: boolean;
 }
 
 export type AnthropicAuth =

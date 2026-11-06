@@ -28,6 +28,7 @@ export function wrapClientForUsage(client: LLMClient): {
       }
     },
     ...(client.warmupCLI ? { warmupCLI: client.warmupCLI.bind(client) } : {}),
+    ...(client.repoTools ? { repoTools: true } : {}),
   };
   return { client: wrapped, getTotals: () => Object.freeze({ ...totals, usage: Object.freeze({ ...totals.usage }) }) };
 }
@@ -58,6 +59,7 @@ export function withRefusalFallback(
       return fallback.sendMessage(sys, user, opts);
     },
     ...(client.warmupCLI ? { warmupCLI: client.warmupCLI.bind(client) } : {}),
+    ...(client.repoTools ? { repoTools: true } : {}),
   };
 }
 
@@ -67,6 +69,7 @@ export function withSignal(client: LLMClient, signal: AbortSignal | undefined): 
   return {
     sendMessage: (sys, user, opts) => client.sendMessage(sys, user, { ...opts, signal }),
     ...(client.warmupCLI ? { warmupCLI: client.warmupCLI.bind(client) } : {}),
+    ...(client.repoTools ? { repoTools: true } : {}),
   };
 }
 
@@ -84,6 +87,7 @@ export function recordCalls(client: LLMClient, label: { stage: string; agent?: s
         calls.push({
           ...base,
           ...(response.model && { model: response.model }),
+          ...(response.toolSteps && { toolSteps: response.toolSteps }),
           durationMs: response.latencyMs ?? Date.now() - start,
           ...usage,
           // Some paths report zeros when the provider sent no counts, and no real call uses no tokens.
@@ -103,6 +107,7 @@ export function recordCalls(client: LLMClient, label: { stage: string; agent?: s
       }
     },
     ...(client.warmupCLI ? { warmupCLI: client.warmupCLI.bind(client) } : {}),
+    ...(client.repoTools ? { repoTools: true } : {}),
   };
 }
 

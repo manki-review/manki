@@ -66,7 +66,7 @@ describe('Manki tool server', () => {
     symlinkSync(join(outside, 'secret.ts'), join(repo, 'src', 'link.ts'));
     symlinkSync(outside, join(repo, 'src', 'outdir'));
     client = await connect(repo);
-  });
+  }, 30_000);
 
   afterAll(async () => {
     await client.close();

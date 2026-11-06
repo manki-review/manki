@@ -18,4 +18,4 @@ export type {
   SendMessageOptions,
   UsageSummary,
 } from './types';
-export { addUsage, QuotaError, RefusalError, ZERO_USAGE } from './types';
+export { addUsage, QuotaError, RefusalError, TurnLimitError, ZERO_USAGE } from './types';

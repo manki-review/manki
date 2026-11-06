@@ -1,0 +1,41 @@
+name: Reviewer tools canary
+
+# Runs a Claude reviewer with Manki's repository tools on this checkout and a prompt that tries every way out of it,
+# and fails when any read outside the checkout succeeds or a planted secret shows up.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7  # first-party GitHub action
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7  # first-party GitHub action
+        with:
+          node-version: '24'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build
+      - name: Install the Claude CLI version Manki pins
+        run: |
+          version=$(sed -n "s/^export const CLAUDE_CLI_VERSION = '\(.*\)';$/\1/p" src/providers/anthropic.ts)
+          if [ -z "$version" ]; then echo "::error file=src/providers/anthropic.ts::CLAUDE_CLI_VERSION not found"; exit 1; fi
+          npm install -g "@anthropic-ai/claude-code@$version"
+      - name: Try to read outside the checkout
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        # Exit 2 means no credential, as on a pull request from a fork, which gets no secrets.
+        run: |
+          status=0
+          npx tsx scripts/reviewer-tools-canary.ts || status=$?
+          if [ "$status" = 2 ]; then echo "::notice::No CLAUDE_CODE_OAUTH_TOKEN, so the canary was skipped."; exit 0; fi
+          exit "$status"

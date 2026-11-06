@@ -4300,14 +4300,14 @@ describe('withRefusalFallback', () => {
 describe('recordCalls', () => {
   const usage = { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 200, cacheWriteTokens: 300, reasoningTokens: 0 };
 
-  it('records each call with its model, effort, attempt, tokens and cost, refused, failed and fallback calls included', async () => {
+  it('records each call with its model, effort, attempt, tokens, cost and tool steps, refused, failed and fallback calls included', async () => {
     const primary = { sendMessage: jest.fn()
       .mockResolvedValueOnce({ content: 'ok', usage, latencyMs: 40, model: 'claude-opus-5-5' })
       .mockRejectedValueOnce(new Error('timed out'))
       .mockResolvedValueOnce({ content: 'ok', latencyMs: 5, model: 'claude-opus-5-5' })
       .mockResolvedValueOnce({ content: 'ok', usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 }, latencyMs: 5, model: 'claude-opus-5-5' }) } as unknown as LLMClient;
     const refusing = { sendMessage: jest.fn().mockRejectedValue(new RefusalError('declined', 'refusal (cyber)')) } as unknown as LLMClient;
-    const fallback = { sendMessage: jest.fn().mockResolvedValue({ content: 'ok', usage, latencyMs: 60, model: 'gpt-5' }) } as unknown as LLMClient;
+    const fallback = { sendMessage: jest.fn().mockResolvedValue({ content: 'ok', usage, latencyMs: 60, model: 'gpt-5', toolSteps: [{ tool: 'Read', durationMs: 3 }] }), repoTools: true } as unknown as LLMClient;
     const calls: LLMCall[] = [];
     const finder = { stage: 'reviewer', agent: 'Finder' };
 
@@ -4325,8 +4325,9 @@ describe('recordCalls', () => {
       { stage: 'judge', attempt: 3, model: 'claude-opus-5-5', durationMs: 5, ...none, costUsd: null },
       { stage: 'judge', attempt: 4, model: 'claude-opus-5-5', durationMs: 5, ...none, costUsd: null },
       { ...finder, attempt: 1, failed: true, error: 'declined', durationMs: expect.any(Number), ...none, costUsd: null },
-      { ...finder, fallback: true, attempt: 2, model: 'gpt-5', durationMs: 60, ...usage, costUsd: null },
+      { ...finder, fallback: true, attempt: 2, model: 'gpt-5', toolSteps: [{ tool: 'Read', durationMs: 3 }], durationMs: 60, ...usage, costUsd: null },
     ]);
+    expect([recordCalls(fallback, finder, []).repoTools, judge.repoTools]).toEqual([true, undefined]);
     expect(summarizeCalls(calls)).toEqual({
       calls: 6, failedCalls: 2, unpricedCalls: 3,
       inputTokens: 2000, outputTokens: 200, cacheReadTokens: 400, cacheWriteTokens: 600, reasoningTokens: 0, totalTokens: 2200,

@@ -8,7 +8,8 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
 import { appendReplyTail, buildExitDiagnostics, callWithTimeout, cliEnv, matchQuotaText, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, warnReplyTail } from './cli-utils';
-import { AnthropicAuth, LLMClient, LLMResponse, LLMUsage, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
+import { MCP_SERVER_COMMAND } from '../mcp-server';
+import { AnthropicAuth, LLMClient, LLMResponse, LLMUsage, QuotaError, readCount, RefusalError, RepoTools, SendMessageOptions, ToolStep, TurnLimitError, ZERO_USAGE } from './types';
 
 // Re-export for backward compatibility with existing test imports.
 export { sanitizeLogOutput, STALE_TIMEOUT_MS };
@@ -33,16 +34,23 @@ export function buildAnthropicAuth(oauthToken: string, apiKey: string): Anthropi
  * `--include-partial-messages` wraps each API stream event in a `stream_event` line.
  * `assistantRefusal` is set on every assistant message: the refusal reason, or null when it did not end on `stop_reason: "refusal"`.
  */
-function processJsonLine(line: string): { text: string; replace: boolean; resultEvent: unknown; assistantRefusal?: string | null } {
+function processJsonLine(line: string): {
+  text: string; replace: boolean; resultEvent: unknown; assistantRefusal?: string | null; toolUses?: { id: string; tool: string }[]; toolResults?: string[];
+} {
   try {
     const event = JSON.parse(line);
     const streamed = event.type === 'stream_event' ? event.event : event;
     if (streamed?.type === 'content_block_delta' && streamed.delta?.type === 'text_delta' && streamed.delta.text) {
       return { text: streamed.delta.text, replace: false, resultEvent: null };
     }
+    const blocks: { type?: unknown; id?: unknown; name?: unknown; tool_use_id?: unknown }[] = Array.isArray(event.message?.content) ? event.message.content : [];
     if (event.type === 'assistant') {
       const refused = event.message?.stop_reason === 'refusal';
-      return { text: '', replace: false, resultEvent: null, assistantRefusal: refused ? refusalReason(event.message.stop_details) : null };
+      const toolUses = blocks.filter(b => b.type === 'tool_use').map(b => ({ id: String(b.id), tool: String(b.name) }));
+      return { text: '', replace: false, resultEvent: null, assistantRefusal: refused ? refusalReason(event.message.stop_details) : null, toolUses };
+    }
+    if (event.type === 'user') {
+      return { text: '', replace: false, resultEvent: null, toolResults: blocks.filter(b => b.type === 'tool_result').map(b => String(b.tool_use_id)) };
     }
     if (event.type === 'result') {
       const text = typeof event.result === 'string' ? event.result : '';
@@ -124,6 +132,78 @@ function anthropicQuotaError(error: unknown): QuotaError | undefined {
   return undefined;
 }
 
+// The names Claude Code gives the tools of Manki's tool server.
+const MANKI_TOOLS = ['mcp__manki__git_history', 'mcp__manki__ast_grep'];
+
+/** How the Claude CLI starts Manki's tool server. */
+export interface ToolServerCommand {
+  command: string;
+  args: string[];
+}
+
+/** Starts the tool server from the script this process runs, which is the action's `dist/index.js`. */
+function toolServerCommand(root: string): ToolServerCommand {
+  return { command: process.execPath, args: [process.argv[1], MCP_SERVER_COMMAND, root] };
+}
+
+/**
+ * Writes the MCP config that starts Manki's tool server into `dir` and returns its path. The server gets the CLI's
+ * environment without the Claude credential, which it does not need.
+ */
+export function writeToolServerConfig(dir: string, { command, args }: ToolServerCommand): string {
+  const path = join(dir, 'mcp.json');
+  const config = { mcpServers: { manki: { type: 'stdio', command, args, env: { CLAUDE_CODE_OAUTH_TOKEN: '' } } } };
+  writeFileSync(path, JSON.stringify(config), { mode: 0o600 });
+  return path;
+}
+
+/** Tells the model which tools it has and how to use them. */
+export function repoToolsPrompt({ root, maxTurns }: RepoTools): string {
+  return `## Tools
+
+The PR's head commit is checked out at \`${root}\`. Read, Grep and Glob read files under that directory, \`git_history\` lists the commits behind a file or a range of its lines, and \`ast_grep\` finds code by syntax. Nothing outside \`${root}\` is readable.
+
+Use the tools to check claims about the changed code, such as how a changed function is called or whether a case is handled elsewhere, not to explore. You have at most ${maxTurns} turns, tool calls included. Your last message must be the JSON your instructions ask for, with nothing after it.`;
+}
+
+/**
+ * Returns the Claude CLI arguments for one call. Without `repoTools` the CLI gets no tools at all. With them it gets
+ * Read, Grep and Glob confined to `repoTools.root`, Manki's tool server from `mcpConfigPath`, and no other tool.
+ */
+export function claudeCliArgs(model: string, systemPromptPath: string, { effort, repoTools }: SendMessageOptions = {}, mcpConfigPath?: string): string[] {
+  // -p enables pipe mode — reads prompt from stdin when no argument follows
+  const args = [
+    '-p',
+    '--verbose',
+    '--output-format', 'stream-json',
+    '--include-partial-messages',
+    // No MCP servers and no settings files beyond `--mcp-config`: only the environment configures the CLI.
+    '--strict-mcp-config',
+    '--setting-sources', '',
+    // Replaces Claude Code's own agentic system prompt, which otherwise frames every stage.
+    '--system-prompt-file', systemPromptPath,
+    '--model', model,
+  ];
+  if (repoTools && mcpConfigPath) {
+    args.push(
+      // `--restricted` confines the file tools to the working directories, which are an empty directory and `--add-dir`,
+      // whatever the permission rules say. `dontAsk` refuses every call nothing allowed.
+      '--restricted',
+      '--permission-mode', 'dontAsk',
+      '--tools', 'Read,Grep,Glob',
+      '--add-dir', repoTools.root,
+      '--mcp-config', mcpConfigPath,
+      '--allowedTools', MANKI_TOOLS.join(','),
+      '--max-turns', String(repoTools.maxTurns),
+    );
+  } else {
+    // Without tools the reply is a single turn. With them, the CLI's `result` keeps only the last message.
+    args.push('--tools', '');
+  }
+  if (effort) args.push('--effort', effort);
+  return args;
+}
+
 export interface AnthropicClientOptions {
   auth: AnthropicAuth;
   model: string;
@@ -149,6 +229,10 @@ export class AnthropicClient implements LLMClient {
       return this.sendViaOAuth(systemPrompt, userMessage, options);
     }
     return this.sendViaAPI(systemPrompt, userMessage, options);
+  }
+
+  get repoTools(): boolean {
+    return this.auth.kind === 'oauth';
   }
 
   async warmupCLI(): Promise<void> {
@@ -197,46 +281,37 @@ export class AnthropicClient implements LLMClient {
     const promptDir = mkdtempSync(join(tmpdir(), 'manki-prompt-'));
     try {
       const systemPromptPath = join(promptDir, 'system.md');
-      writeFileSync(systemPromptPath, systemPrompt, { mode: 0o600 });
-      return await this.runOAuthCli(cliPath, systemPromptPath, systemPrompt.length + userMessage.length, userMessage, options);
+      const repoTools = options?.repoTools;
+      const fullPrompt = repoTools ? `${systemPrompt}\n\n${repoToolsPrompt(repoTools)}` : systemPrompt;
+      writeFileSync(systemPromptPath, fullPrompt, { mode: 0o600 });
+      const mcpConfigPath = repoTools && writeToolServerConfig(promptDir, toolServerCommand(repoTools.root));
+      const args = claudeCliArgs(this.model, systemPromptPath, options, mcpConfigPath);
+      return await this.runOAuthCli(cliPath, args, fullPrompt.length + userMessage.length, userMessage, options);
     } finally {
       rmSync(promptDir, { recursive: true, force: true });
     }
   }
 
-  private async runOAuthCli(cliPath: string, systemPromptPath: string, promptChars: number, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
+  private async runOAuthCli(cliPath: string, args: string[], promptChars: number, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
     const oauthToken = this.auth.kind === 'oauth' ? this.auth.token : undefined;
     const startTime = Date.now();
     const model = this.model;
-
-    // -p enables pipe mode — reads prompt from stdin when no argument follows
-    const args = [
-      '-p',
-      '--verbose',
-      '--output-format', 'stream-json',
-      '--include-partial-messages',
-      // Without tools the reply is a single turn. With them, a reviewer could write its JSON in one turn and end on a prose summary, and the CLI's `result` keeps only that last message.
-      '--tools', '',
-      // No MCP servers and no settings files: only the environment configures the CLI.
-      '--strict-mcp-config',
-      '--setting-sources', '',
-      // Replaces Claude Code's own agentic system prompt, which otherwise frames every stage.
-      '--system-prompt-file', systemPromptPath,
-      '--model', this.model,
-    ];
-
-    if (options?.effort) {
-      args.push('--effort', options.effort);
-    }
 
     let output = '';
     let replyTail = '';
     let jsonBuffer = '';
     let lastResultEvent: unknown = null;
     let refusal: string | undefined;
+    const toolSteps: ToolStep[] = [];
+    const toolStarts = new Map<string, { tool: string; start: number }>();
     const consumeLine = (line: string): void => {
       if (!line.trim()) return;
       const delta = processJsonLine(line);
+      for (const { id, tool } of delta.toolUses ?? []) toolStarts.set(id, { tool, start: Date.now() });
+      for (const id of delta.toolResults ?? []) {
+        const started = toolStarts.get(id);
+        if (started) toolSteps.push({ tool: started.tool, durationMs: Date.now() - started.start });
+      }
       if (delta.resultEvent !== null) lastResultEvent = delta.resultEvent;
       if (!delta.replace) replyTail = appendReplyTail(replyTail, delta.text);
       if (delta.assistantRefusal !== undefined) refusal = delta.assistantRefusal ?? undefined;
@@ -283,6 +358,11 @@ export class AnthropicClient implements LLMClient {
       core.warning(message);
       throw new QuotaError(message, limit, quota.resetsAt, quota.overloaded ? undefined : 'token');
     }
+    if ((lastResultEvent as { subtype?: unknown } | null)?.subtype === 'error_max_turns') {
+      const message = `Claude CLI used all ${options?.repoTools?.maxTurns ?? 'its'} turns before it answered`;
+      core.warning(message);
+      throw new TurnLimitError(message);
+    }
     if ((code !== 0 && !truncated) || refusal) {
       const msg = buildExitDiagnostics({
         exitCode: code,
@@ -314,6 +394,7 @@ export class AnthropicClient implements LLMClient {
       latencyMs: Date.now() - startTime,
       model: this.model,
       truncated,
+      ...(toolSteps.length > 0 && { toolSteps }),
     };
   }
 
