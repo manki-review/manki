@@ -110,15 +110,21 @@ export async function installTool(tool: BinaryTool): Promise<string> {
   return join(await installPinned(build), build.binary);
 }
 
-/** Runs a tool without the action's environment, so it never sees a token. Resolves with the exit code instead of throwing. */
-export function runTool(binary: string, args: string[], cwd: string): Promise<ToolResult> {
+/**
+ * Runs a tool without the action's environment, so it never sees a token. `env` adds variables, and `timeoutMs`
+ * shortens the time limit. Resolves with the exit code instead of throwing, and with -1 when the tool cannot start or is killed.
+ */
+export function runTool(
+  binary: string, args: string[], cwd: string, { env: extraEnv = {}, timeoutMs = TOOL_TIMEOUT_MS }: { env?: NodeJS.ProcessEnv; timeoutMs?: number } = {},
+): Promise<ToolResult> {
   const env: NodeJS.ProcessEnv = { HOME: makeScratchDir('home') };
   for (const key of SYSTEM_ENV) {
     if (process.env[key] !== undefined) env[key] = process.env[key];
   }
   env.USERPROFILE = env.HOME;
+  Object.assign(env, extraEnv);
   return new Promise(resolvePromise => {
-    execFile(binary, args, { cwd, env, timeout: TOOL_TIMEOUT_MS, maxBuffer: MAX_TOOL_OUTPUT_BYTES }, (error, stdout, stderr) => {
+    execFile(binary, args, { cwd, env, timeout: timeoutMs, maxBuffer: MAX_TOOL_OUTPUT_BYTES }, (error, stdout, stderr) => {
       const code = !error ? 0 : typeof error.code === 'number' ? error.code : -1;
       resolvePromise({ code, stdout, stderr: stderr || error?.message || '' });
     });

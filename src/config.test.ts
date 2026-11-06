@@ -136,6 +136,63 @@ describe('config', () => {
     });
   });
 
+  describe('related_repos config', () => {
+    const repos = [
+      { repo: 'dashpay/dash', kind: 'reference', ref: 'v23.0.0', paths: ['src/', './doc/*.md'] },
+      { repo: 'dashpay/dips', kind: 'reference' },
+      { repo: 'dashpay/platform', kind: 'consumer', paths: ['packages/rs-*'] },
+    ];
+    const yaml = 'related_repos:\n  - { repo: dashpay/dash, kind: reference, ref: v23.0.0, paths: [src/, ./doc/*.md] }\n  - { repo: dashpay/dips, kind: reference }\n  - { repo: dashpay/platform, kind: consumer, paths: ["packages/rs-*"] }\n';
+
+    it('loads the entries as written, and none by default', () => {
+      expect(loadConfigFromContent('').related_repos).toEqual([]);
+      expect(loadConfigFromContent(yaml).related_repos).toEqual(repos);
+      const commit = '0123456789abcdef0123456789abcdef01234567';
+      expect(loadConfigFromContent(`related_repos:\n  - { repo: dashpay/dash, kind: reference, ref: ${commit} }\n`).related_repos?.[0].ref).toBe(commit);
+      expect(loadConfigFromContent('related_repos:\n  - { repo: dashpay/dash, kind: reference, ref: refs/tags/20240115 }\n').related_repos?.[0].ref).toBe('refs/tags/20240115');
+      expect(core.warning).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a non-list block', 'related_repos: dashpay/dash\n', '`related_repos` must be a list of repos'],
+      ['a non-object entry', 'related_repos: [dashpay/dash]\n', '`related_repos[0]` must be an object'],
+      ['a repo without an owner', 'related_repos: [{ repo: dash, kind: reference }]\n', '`related_repos[0].repo` must be in "owner/name" format'],
+      ['a repo outside the cache directory', 'related_repos: [{ repo: ../.., kind: reference }]\n', '`related_repos[0].repo` must be in "owner/name" format'],
+      ['a repo listed twice', 'related_repos: [{ repo: dashpay/dash, kind: reference }, { repo: DashPay/Dash, kind: consumer }]\n', '`related_repos[1].repo` lists DashPay/Dash a second time'],
+      ['a missing kind', 'related_repos: [{ repo: dashpay/dash }]\n', '`related_repos[0].kind` must be one of: reference, consumer'],
+      ['an unknown kind', 'related_repos: [{ repo: dashpay/dash, kind: upstream }]\n', '`related_repos[0].kind` must be one of: reference, consumer'],
+      ['a ref that reads as an option', 'related_repos: [{ repo: dashpay/dash, kind: reference, ref: --upload-pack=x }]\n', '`related_repos[0].ref` must be a branch, tag or commit name'],
+      ['an abbreviated commit', 'related_repos: [{ repo: dashpay/dash, kind: reference, ref: 0123abcd }]\n', '`related_repos[0].ref` looks like an abbreviated commit. Use the full hash, or `refs/tags/0123abcd` or `refs/heads/0123abcd`'],
+      ['a ref with `..`', 'related_repos: [{ repo: dashpay/dash, kind: reference, ref: a..b }]\n', '`related_repos[0].ref` must be a branch, tag or commit name'],
+      ['empty paths', 'related_repos: [{ repo: dashpay/dash, kind: reference, paths: [] }]\n', '`related_repos[0].paths` must be a list of 1 to 20 paths'],
+      ['an absolute path', 'related_repos: [{ repo: dashpay/dash, kind: reference, paths: [/etc] }]\n', '`related_repos[0].paths` has `/etc`'],
+      ['a path out of the repo', 'related_repos: [{ repo: dashpay/dash, kind: reference, paths: [src/../..] }]\n', '`related_repos[0].paths` has `src/../..`'],
+      ['a negated path', 'related_repos: [{ repo: dashpay/dash, kind: reference, paths: ["!src"] }]\n', '`related_repos[0].paths` has `!src`'],
+      ['a path with a line break', 'related_repos: [{ repo: dashpay/dash, kind: reference, paths: ["src\\n/etc"] }]\n', '`related_repos[0].paths` has `src\n/etc`'],
+    ])('rejects %s', (_label, content, message) => {
+      expect(() => loadConfigFromContent(content)).toThrow(message);
+    });
+
+    it('rejects more than ten repos, and warns about an unknown key', () => {
+      const many = Array.from({ length: 11 }, (_, i) => `  - { repo: o/r${i}, kind: consumer }`).join('\n');
+      expect(() => loadConfigFromContent(`related_repos:\n${many}\n`)).toThrow('`related_repos` lists 11 repos, at most 10 are allowed');
+      loadConfigFromContent('related_repos: [{ repo: dashpay/dash, kind: reference, token: x }]\n');
+      expect(core.warning).toHaveBeenCalledWith('Unknown config key: "related_repos[0].token"');
+    });
+
+    it('reads the entries from the base branch only, and none when the base block is invalid', () => {
+      expect(loadReviewConfig(yaml).relatedRepos).toEqual(repos);
+      expect(loadReviewConfig(`${yaml}review:\n  routing:\n    security: deep\n`).relatedRepos).toEqual(repos);
+      expect(loadReviewConfig('related_repos: [{ repo: dashpay/dash, kind: upstream }]\n').relatedRepos).toBeUndefined();
+      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Invalid `related_repos` in .manki.yml on the base branch, reading no related repos'));
+
+      const head = loadConfigFromContent('related_repos: [{ repo: attacker/repo, kind: reference }]\n');
+      expect(applyBaseReviewConfig(head, loadReviewConfig(yaml)).config.related_repos).toEqual(repos);
+      expect(applyBaseReviewConfig(head, { source: 'base_unreadable' }).config.related_repos).toEqual([]);
+      expect(core.info).toHaveBeenCalledWith(expect.stringContaining('This PR changes `related_repos`'));
+    });
+  });
+
   describe('review config', () => {
     const deep = 'review:\n  groups:\n    deep:\n      reviewers:\n        - { model: claude-opus-5-5, effort: high }\n        - { model: gpt-5.5, effort: high }\n';
 

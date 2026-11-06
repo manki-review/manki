@@ -531,6 +531,8 @@ export interface ReviewConfig {
   review?: ReviewRoutingConfig;
   /** Which CI results reviewers read as evidence. Always read from the base branch, so a PR cannot turn it off. */
   static_analysis?: StaticAnalysisConfig;
+  /** Public repos the review may read as context. Always read from the base branch, so a PR cannot make Manki fetch another repo. */
+  related_repos?: RelatedRepo[];
   /**
    * @deprecated Removed in v5.1.0. All surviving findings post inline as PR
    * review comments. The field is still parsed so old configs don't fail,
@@ -613,6 +615,19 @@ export interface AnalyzerSettings {
   actionlint?: boolean;
   zizmor?: boolean;
   shellcheck?: boolean;
+}
+
+/** `reference`: a repo this one implements or ports, such as a protocol. `consumer`: a repo that depends on this one. */
+export type RelatedRepoKind = 'reference' | 'consumer';
+
+export interface RelatedRepo {
+  /** `owner/name` of a public repo on github.com. */
+  repo: string;
+  kind: RelatedRepoKind;
+  /** Branch, tag or full commit hash to read. Defaults to the repo's default branch. */
+  ref?: string;
+  /** Paths or globs to fetch, relative to the repo root. Defaults to the whole repo. */
+  paths?: string[];
 }
 
 export interface StaticAnalysisConfig {
