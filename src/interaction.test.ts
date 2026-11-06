@@ -783,6 +783,11 @@ describe('handleReviewCommentReply', () => {
     const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls[0][0].body as string;
     expect(body.startsWith('**Unverified.** `src/file.ts:10` still logs the token. I could not point to lines that show the problem still happens, so a maintainer should decide and resolve this thread.\n\n')).toBe(true);
     expect(state.resolveReviewThread).not.toHaveBeenCalled();
+
+    // Repeating the line the thread sits on is no new proof either.
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: findingComment(false), path: 'src/file.ts', line: 10 } });
+    await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1);
+    expect((jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls[1][0].body as string).startsWith('**Unverified.**')).toBe(true);
   });
 
   it('checks the point with 10 tool steps on the PR head, fetched only for a Manki thread and a client with tools', async () => {

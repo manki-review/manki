@@ -174,12 +174,12 @@ async function askWithRecord(
 }
 
 /**
- * Turns a "Kept." reply that cites no code location the finding did not already cite into "Unverified.", since only
- * new lines can show the finding still stands.
+ * Turns a "Kept." reply that cites no code location beyond what the finding cites and the `flagged` line it sits on
+ * into "Unverified.", since only new lines can show the finding still stands.
  */
-function requireNewProof(reply: string, finding: string): string {
+function requireNewProof(reply: string, finding: string, flagged?: string): string {
   if (!KEPT_REPLY_RE.test(reply)) return reply;
-  const cited = new Set(finding.match(CODE_LOCATION_RE) ?? []);
+  const cited = new Set([...(finding.match(CODE_LOCATION_RE) ?? []), ...(flagged ? [flagged] : [])]);
   if ((reply.match(CODE_LOCATION_RE) ?? []).some(location => !cited.has(location))) return reply;
   return `${reply.replace(KEPT_REPLY_RE, '$1Unverified.$2')} ${UNPROVEN_KEPT}`;
 }
@@ -281,7 +281,8 @@ export async function handleReviewCommentReply(
     const tools = workspace ? { repoTools: { root: workspace, steps: REPLY_STEPS }, timeoutMs: REPLY_TOOLS_TIMEOUT_MS } : undefined;
     const response = await askWithRecord(client, 'thread-reply', prNumber, REPLY_SYSTEM_PROMPT, context + diffContext, tools);
     const findingBody = root.comment.body ?? '';
-    const reply = requireNewProof(highlightCode(response.content.trim(), codeTokens), findingBody);
+    const flagged = root.comment.path && root.comment.line ? `${root.comment.path}:${root.comment.line}` : undefined;
+    const reply = requireNewProof(highlightCode(response.content.trim(), codeTokens), findingBody, flagged);
     const isSecurity = isSecurityThread(findingBody);
     const { mayResolve, securityAllowed } = await resolvePermission(
       octokit, bot, owner, repo, isSecurity, senderLogin, prAuthorLogin);
