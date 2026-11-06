@@ -4,7 +4,7 @@ import * as github from '@actions/github';
 import * as path from 'path';
 
 import { assertWritesAllowed, RunCancelledError, stopWritesOn } from './abort';
-import { AppMemoryToken, AuthResult, createAuthenticatedOctokit, getMemoryToken } from './auth';
+import { AppMemory, AuthResult, createAuthenticatedOctokit, getMemoryToken } from './auth';
 import { sanitizeTokens, withMarkers } from './utils';
 import { applyBaseReviewConfig, BaseReviewConfig, loadConfig, loadConfigFromFile, loadReviewConfig, sanitizeForkConfig, resolveFallbackModel, resolveMemoryRepo, resolveModel, resolvePairModel } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
@@ -387,7 +387,7 @@ async function handleMergedPullRequest(): Promise<void> {
   let memory: { octokit: Octokit; repo: string } | undefined;
   if (config.memory?.enabled) {
     const memoryRepo = resolveMemoryRepo(config.memory, owner);
-    const memoryToken = getMemoryToken(appMemory, memoryRepo);
+    const memoryToken = await getMemoryToken(appMemory, memoryRepo);
     if (memoryToken) {
       memory = { octokit: github.getOctokit(memoryToken), repo: memoryRepo };
     } else {
@@ -836,13 +836,13 @@ async function fetchReviewRepoContext(target: RunTarget, changedPaths: string[])
 }
 
 async function loadRunMemory(
-  config: ReviewConfig, appMemory: AppMemoryToken | undefined, owner: string, repo: string,
+  config: ReviewConfig, appMemory: AppMemory | undefined, owner: string, repo: string,
 ): Promise<{ memory: RepoMemory | null; memoryLoadStatus: MemoryLoadStatus; memoryLoadError?: string }> {
   if (!config.memory?.enabled) {
     return { memory: null, memoryLoadStatus: 'disabled' };
   }
   const memoryRepo = resolveMemoryRepo(config.memory, owner);
-  const memoryToken = getMemoryToken(appMemory, memoryRepo);
+  const memoryToken = await getMemoryToken(appMemory, memoryRepo);
   if (!memoryToken) {
     return { memory: null, memoryLoadStatus: 'no_token' };
   }
@@ -1587,7 +1587,7 @@ async function handleInteraction(): Promise<void> {
   const { client } = built;
 
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;
-  const memoryToken = config.memory?.enabled ? getMemoryToken(appMemory, resolveMemoryRepo(config.memory, owner)) ?? undefined : undefined;
+  const memoryToken = config.memory?.enabled ? (await getMemoryToken(appMemory, resolveMemoryRepo(config.memory, owner))) ?? undefined : undefined;
 
   await handlePRComment(octokit, bot, client, owner, repo, prNumber, memoryConfig, memoryToken, config);
 }
@@ -1611,7 +1611,7 @@ async function handleIssueInteraction(): Promise<void> {
   const config = loadConfig(configContent ?? undefined, configPath);
 
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;
-  const memoryToken = config.memory?.enabled ? getMemoryToken(appMemory, resolveMemoryRepo(config.memory, owner)) ?? undefined : undefined;
+  const memoryToken = config.memory?.enabled ? (await getMemoryToken(appMemory, resolveMemoryRepo(config.memory, owner))) ?? undefined : undefined;
 
   await handlePRComment(octokit, bot, null, owner, repo, issueNumber, memoryConfig, memoryToken, config);
 }
@@ -1659,7 +1659,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
   const { client } = built;
 
   const memoryConfig = config.memory?.enabled ? config.memory : undefined;
-  const memoryToken = config.memory?.enabled ? getMemoryToken(appMemory, resolveMemoryRepo(config.memory, owner)) ?? undefined : undefined;
+  const memoryToken = config.memory?.enabled ? (await getMemoryToken(appMemory, resolveMemoryRepo(config.memory, owner))) ?? undefined : undefined;
 
   const command = parseCommand(body);
   if (command.type !== 'generic') {

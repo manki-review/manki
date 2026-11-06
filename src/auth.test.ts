@@ -4,7 +4,7 @@ import { createAppAuth } from '@octokit/auth-app';
 import { retry } from '@octokit/plugin-retry';
 import { throttling } from '@octokit/plugin-throttling';
 
-import { createAuthenticatedOctokit, getMemoryToken, resolveGitHubToken, TokenResult } from './auth';
+import { AppMemory, createAuthenticatedOctokit, getMemoryToken, resolveGitHubToken, TokenResult } from './auth';
 
 jest.mock('@actions/core');
 jest.mock('@actions/github');
@@ -13,38 +13,36 @@ const mockGetInput = core.getInput as jest.MockedFunction<typeof core.getInput>;
 
 describe('getMemoryToken', () => {
   const MEMORY_REPO = 'owner/review-memory';
-  const SERVICE_MEMORY = { token: 'app-memory-token', repo: MEMORY_REPO };
+  const SERVICE_MEMORY: AppMemory = { tokenFor: async (repo) => (repo === MEMORY_REPO ? 'app-memory-token' : null) };
 
   beforeEach(() => {
     mockGetInput.mockReset();
     jest.mocked(core.warning).mockClear();
   });
 
-  it('prefers memory_repo_token over the App memory token, for any memory repo', () => {
+  it('prefers memory_repo_token over the App memory token, for any memory repo', async () => {
     mockGetInput.mockImplementation((name: string) => (name === 'memory_repo_token' ? 'memory-token-123' : 'github-token-456'));
 
-    expect(getMemoryToken(SERVICE_MEMORY, MEMORY_REPO)).toBe('memory-token-123');
-    expect(getMemoryToken(SERVICE_MEMORY, 'acme/team-memory')).toBe('memory-token-123');
-    expect(getMemoryToken(undefined, MEMORY_REPO)).toBe('memory-token-123');
+    expect(await getMemoryToken(SERVICE_MEMORY, MEMORY_REPO)).toBe('memory-token-123');
+    expect(await getMemoryToken(SERVICE_MEMORY, 'acme/team-memory')).toBe('memory-token-123');
+    expect(await getMemoryToken(undefined, MEMORY_REPO)).toBe('memory-token-123');
     expect(core.warning).not.toHaveBeenCalled();
   });
 
-  it('returns the App memory token for the repo it covers, and an unnarrowed one for any repo', () => {
+  it('returns the App memory token for the repo it covers', async () => {
     mockGetInput.mockImplementation((name: string) => (name === 'github_token' ? 'github-token-456' : ''));
 
-    expect(getMemoryToken(SERVICE_MEMORY, MEMORY_REPO)).toBe('app-memory-token');
-    expect(getMemoryToken(SERVICE_MEMORY, 'Owner/Review-Memory')).toBe('app-memory-token');
-    expect(getMemoryToken({ token: 'custom-app-token' }, 'acme/team-memory')).toBe('custom-app-token');
+    expect(await getMemoryToken(SERVICE_MEMORY, MEMORY_REPO)).toBe('app-memory-token');
     expect(core.warning).not.toHaveBeenCalled();
   });
 
   it.each([
     ['no App memory token', undefined, MEMORY_REPO],
     ['an App memory token for another repo', SERVICE_MEMORY, 'acme/team-memory'],
-  ])('returns null with one warning for %s instead of falling back to github_token', (_case, appMemory, memoryRepo) => {
+  ])('returns null with one warning for %s instead of falling back to github_token', async (_case, appMemory, memoryRepo) => {
     mockGetInput.mockImplementation((name: string) => (name === 'github_token' ? 'github-token-456' : ''));
 
-    expect(getMemoryToken(appMemory, memoryRepo)).toBeNull();
+    expect(await getMemoryToken(appMemory, memoryRepo)).toBeNull();
     expect(core.warning).toHaveBeenCalledTimes(1);
     expect(core.warning).toHaveBeenCalledWith(expect.stringContaining(`\`${memoryRepo}\``));
     expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('memory_repo_token'));
@@ -219,7 +217,7 @@ describe('createAuthenticatedOctokit', () => {
     });
   });
 
-  it('uses GitHub App auth when appId and privateKey are provided', async () => {
+  it('uses GitHub App auth scoped to the reviewed repo when appId and privateKey are provided', async () => {
     mockGetInput.mockImplementation((name: string) => {
       if (name === 'github_app_id') return '12345';
       if (name === 'github_app_private_key') return 'fake-private-key';
@@ -230,7 +228,9 @@ describe('createAuthenticatedOctokit', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const mockAuth: any = jest.fn()
       .mockResolvedValueOnce({ token: 'app-jwt-token' })
-      .mockResolvedValueOnce({ token: 'installation-token-abc' });
+      .mockResolvedValueOnce({ token: 'installation-token-abc' })
+      .mockResolvedValueOnce({ token: 'memory-token-def' })
+      .mockRejectedValueOnce(new Error('Not installed on that repo'));
     mockAuth.hook = jest.fn();
     mockCreateAppAuth.mockReturnValue(mockAuth);
 
@@ -248,13 +248,26 @@ describe('createAuthenticatedOctokit', () => {
 
     expect(mockCreateAppAuth).toHaveBeenCalledWith({ appId: 12345, privateKey: 'fake-private-key' });
     expect(mockAuth).toHaveBeenCalledWith({ type: 'app' });
-    expect(mockAuth).toHaveBeenCalledWith({ type: 'installation', installationId: 999 });
+    expect(mockAuth).toHaveBeenCalledWith({ type: 'installation', installationId: 999, repositoryNames: ['test-repo'] });
     expect(core.setSecret).toHaveBeenCalledWith('app-jwt-token');
     expect(core.setSecret).toHaveBeenCalledWith('installation-token-abc');
     expect(result.octokit).toBeDefined();
-    expect(result.appMemory).toEqual({ token: 'installation-token-abc' });
     expect(result.identity).toBe('app');
     expect(result.bot).toEqual({ logins: ['acme-reviewer[bot]'] });
+
+    // The memory token is minted per memory repo, with only `contents: write`, and never reuses the review token.
+    expect(await getMemoryToken(result.appMemory, 'test-owner/team-memory')).toBe('memory-token-def');
+    expect(mockAuth).toHaveBeenLastCalledWith({
+      type: 'installation', installationId: 999, repositoryNames: ['team-memory'], permissions: { contents: 'write' },
+    });
+    expect(core.setSecret).toHaveBeenCalledWith('memory-token-def');
+
+    jest.mocked(core.warning).mockClear();
+    expect(await getMemoryToken(result.appMemory, 'test-owner/not-installed')).toBeNull();
+    expect(await getMemoryToken(result.appMemory, 'other-owner/review-memory')).toBeNull();
+    expect(mockAuth).toHaveBeenCalledTimes(4);
+    expect(core.warning).toHaveBeenCalledTimes(2);
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('`test-owner/not-installed`'));
   });
 
   it('throws when github_app_id is not a number', async () => {
@@ -353,7 +366,9 @@ describe('createAuthenticatedOctokit', () => {
 
     expect(result.identity).toBe('app');
     expect(result.bot).toEqual({ logins: ['manki-review[bot]', 'github-actions[bot]'] });
-    expect(getMemoryToken(result.appMemory, `${OWNER}/review-memory`)).toBe(expected);
+    expect(await getMemoryToken(result.appMemory, `${OWNER}/review-memory`)).toBe(expected);
+    expect(await getMemoryToken(result.appMemory, 'Test-Owner/Review-Memory')).toBe(expected);
+    expect(await getMemoryToken(result.appMemory, `${OWNER}/team-memory`)).toBeNull();
   });
 
   it('uses custom manki_token_url when provided', async () => {

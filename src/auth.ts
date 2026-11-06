@@ -23,15 +23,17 @@ function createOctokit(token: string): Octokit {
   return github.getOctokit(token, { throttle: { onRateLimit, onSecondaryRateLimit: onRateLimit } }, retry, throttling);
 }
 
-/** An App token for review memory. `repo` is the only memory repo it can write, when it is narrowed to one. */
-export interface AppMemoryToken {
-  token: string;
-  repo?: string;
+/** Review memory access through a GitHub App. */
+export interface AppMemory {
+  /** Returns a token that writes `memoryRepo`, or `null` when the App cannot write it. */
+  tokenFor(memoryRepo: string): Promise<string | null>;
 }
+
+type AppAuth = ReturnType<typeof createAppAuth>;
 
 export interface AuthResult {
   octokit: Octokit;
-  appMemory?: AppMemoryToken;
+  appMemory?: AppMemory;
   identity: 'app' | 'actions';
   bot: BotIdentity;
 }
@@ -134,9 +136,8 @@ export async function createAuthenticatedOctokit(): Promise<AuthResult> {
 
   if (appId && privateKey) {
     core.info('Using GitHub App authentication for custom bot identity');
-    const { token, slug } = await getInstallationToken(appId, privateKey);
-    // A custom App's own token keeps the access its installation grants, so it still writes the memory repo.
-    return { octokit: createOctokit(token), appMemory: { token }, identity: 'app', bot: { logins: [`${slug}[bot]`] } };
+    const { token, slug, appMemory } = await getInstallationToken(appId, privateKey);
+    return { octokit: createOctokit(token), appMemory, identity: 'app', bot: { logins: [`${slug}[bot]`] } };
   }
 
   if (!githubToken) {
@@ -149,30 +150,51 @@ export async function createAuthenticatedOctokit(): Promise<AuthResult> {
 
   const octokit = createOctokit(token);
   const bot = identity === 'actions' ? await resolveTokenUserBot(octokit, token) : MANKI_BOT;
-  const appMemory = memoryToken ? { token: memoryToken, repo: `${owner}/review-memory` } : undefined;
+  const serviceMemoryRepo = `${owner}/review-memory`.toLowerCase();
+  const appMemory: AppMemory | undefined = memoryToken
+    ? { tokenFor: async (memoryRepo) => (memoryRepo.toLowerCase() === serviceMemoryRepo ? memoryToken : null) }
+    : undefined;
   return { octokit, appMemory, identity, bot };
 }
 
 /**
  * Returns the token for `memoryRepo`: `memory_repo_token`, else the App's memory token when it covers `memoryRepo`,
- * else `null` with a warning. The token service's review token is never used, since it can only read the reviewed repo.
+ * else `null` with a warning. The review token is never used, since it covers only the reviewed repo.
  */
-export function getMemoryToken(appMemory: AppMemoryToken | undefined, memoryRepo: string): string | null {
+export async function getMemoryToken(appMemory: AppMemory | undefined, memoryRepo: string): Promise<string | null> {
   const memoryRepoToken = core.getInput('memory_repo_token');
   if (memoryRepoToken) return memoryRepoToken;
-  if (appMemory && (!appMemory.repo || appMemory.repo.toLowerCase() === memoryRepo.toLowerCase())) return appMemory.token;
+  const appToken = await appMemory?.tokenFor(memoryRepo);
+  if (appToken) return appToken;
   core.warning(
-    `No token for the review memory repo \`${memoryRepo}\`, so memory is skipped. Set \`memory_repo_token\`, or install `
-    + 'the manki-review App on `<owner>/review-memory` and use that repo for memory. The App token covers only that '
-    + 'repo, and a token service that predates memory tokens issues none.',
+    `No token for the review memory repo \`${memoryRepo}\`, so memory is skipped. Set \`memory_repo_token\`, or use a `
+    + 'memory repo the App can write. The manki-review App writes only `<owner>/review-memory`, and a token service '
+    + 'that predates memory tokens issues none. A custom App writes only repos of the reviewed owner that it is installed on.',
   );
   return null;
+}
+
+/** Mints a token that writes only the contents of `memoryRepo`, which must belong to `owner`'s installation. */
+async function mintMemoryToken(auth: AppAuth, installationId: number, owner: string, memoryRepo: string): Promise<string | null> {
+  const [memoryOwner, name] = memoryRepo.split('/');
+  if (memoryOwner.toLowerCase() !== owner.toLowerCase() || !name) {
+    core.info(`The App installation on \`${owner}\` cannot write \`${memoryRepo}\``);
+    return null;
+  }
+  try {
+    const { token } = await auth({ type: 'installation', installationId, repositoryNames: [name], permissions: { contents: 'write' } });
+    core.setSecret(token);
+    return token;
+  } catch (error) {
+    core.info(`Could not mint a memory token for \`${memoryRepo}\`: ${error}`);
+    return null;
+  }
 }
 
 async function getInstallationToken(
   appId: string,
   privateKey: string,
-): Promise<{ token: string; slug: string }> {
+): Promise<{ token: string; slug: string; appMemory: AppMemory }> {
   const appIdNum = parseInt(appId, 10);
   if (isNaN(appIdNum)) {
     throw new Error(`Invalid github_app_id: "${appId}" is not a number`);
@@ -199,14 +221,17 @@ async function getInstallationToken(
       repo,
     });
 
+    // Without `repositoryNames` the token would cover every repo of the installation.
     const installationAuth = await auth({
       type: 'installation',
       installationId: installation.id,
+      repositoryNames: [repo],
     });
 
     core.setSecret(installationAuth.token);
     core.info(`Authenticated as GitHub App ${app.slug}[bot] (installation ${installation.id})`);
-    return { token: installationAuth.token, slug: app.slug };
+    const appMemory: AppMemory = { tokenFor: (memoryRepo) => mintMemoryToken(auth, installation.id, owner, memoryRepo) };
+    return { token: installationAuth.token, slug: app.slug, appMemory };
   } catch (error) {
     throw new Error(`GitHub App authentication failed: ${error}. Check that the app is installed on this repo and credentials are correct.`);
   }
