@@ -14,17 +14,18 @@ describe('configuration reference', () => {
   const documented = SETTINGS.map(s => s.key);
 
   it('documents every config key, and no key the config does not accept', () => {
-    const expected = [
+    const accepted = new Set([
       ...KNOWN_KEYS,
       ...leafPaths(DEFAULT_CONFIG),
       ...[...REVIEW_KEYS].map(k => `review.${k}`),
       ...[...GROUP_REVIEWER_KEYS].map(k => `review.groups.<name>.reviewers[].${k}`),
       ...[...RELATED_REPO_KEYS].map(k => `related_repos[].${k}`),
       ...ANALYZERS.map(a => `static_analysis.analyzers.${a}`),
-    ];
-    expect(expected.filter(key => !documented.includes(key))).toEqual([]);
-    const topLevel = (key: string) => key.split(/[.[]/)[0];
-    expect(documented.filter(key => !KNOWN_KEYS.has(topLevel(key)))).toEqual([]);
+      // Nested keys `validateConfig` checks one by one, which no exported set lists.
+      'models.reviewer_pair', 'models.fallback', 'models.agents', 'metrics.fix_rate', 'reviewers[].name', 'reviewers[].focus',
+    ]);
+    expect([...accepted].filter(key => !documented.includes(key))).toEqual([]);
+    expect(documented.filter(key => !accepted.has(key))).toEqual([]);
     expect(documented.filter((key, i) => documented.indexOf(key) !== i)).toEqual([]);
   });
 
