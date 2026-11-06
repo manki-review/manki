@@ -1136,8 +1136,9 @@ describe('fetchRecapState', () => {
       expect(state).not.toHaveProperty('lastApprovalAt');
     });
 
-    it('parses a single details-wrapper context block', async () => {
+    it('parses a single details-wrapper context block, and reads a legacy `BUDGET` outcome as `READY`', async () => {
       const ctx = makeRoundContext(1);
+      (ctx.meta as { outcome?: string }).outcome = 'BUDGET';
       const octokit = mockOctokit([], [
         { id: 100, body: `Header\n\n${detailsBlock(ctx)}\n`, user: { login: BOT_LOGIN } },
       ]);
@@ -1145,6 +1146,7 @@ describe('fetchRecapState', () => {
       expect(state.priorRounds).toHaveLength(1);
       expect(state.priorRounds[0].meta.round).toBe(1);
       expect(state.priorRounds[0].meta.mankiVersion).toBe('4.7.0');
+      expect(state.priorRounds[0].meta.outcome).toBe('READY');
     });
 
     it('parses HTML-comment context blocks, and finds the last auto-approval', async () => {

@@ -1370,12 +1370,8 @@ describe('postReview body lead', () => {
     expect(body).not.toContain('What this does');
   });
 
-  it('approves a BUDGET round with the ready report, and opens a NOT_CONVERGING round with "Needs a human" and its blockers', async () => {
-    const base: ReviewResult = { ...ready, outcome: 'BUDGET', findings: [] };
-    const budget = await postedBody(base);
-    expect(budget.event).toBe('APPROVE');
-    expect(lead(budget.body)).toMatch(/^\u2705 \*\*Approved\.\*\*\n\n\*\*What this does:\*\*/u);
-    expect(budget.body).not.toContain('Needs a human');
+  it('opens a NOT_CONVERGING round with "Needs a human" and its blockers', async () => {
+    const base: ReviewResult = { ...ready, findings: [] };
 
     const stuck = await postedBody({
       ...base,
@@ -1490,7 +1486,6 @@ describe('postReview body lead', () => {
       ready,
       { ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', verdictReport: undefined, summary: 'It breaks.', findings: [blocker, { ...blocker, file: '', line: 0 }, { ...blocker, file: 'src/gone.ts' }] },
       { ...ready, verdict: 'COMMENT', outcome: 'INCOMPLETE', verdictReport: undefined, summary: 'The judge failed.', failedAgents: ['Claude Opus 4.7 · high'] },
-      { ...ready, outcome: 'BUDGET' },
       { ...ready, verdict: 'REQUEST_CHANGES', outcome: 'NOT_CONVERGING', needsHuman: { cause: 'repeated', blockers: [{ file: 'src/a.ts', line: 1, title: 'Bug', fingerprint: 'k' }] } },
     ];
     for (const result of results) {

@@ -1442,13 +1442,12 @@ const VERDICT_LINES: Record<RoundOutcome, (result: ReviewResult, blockerCount: n
       ? `🛑 **Needs a human:** ${blockers} still open after the last automatic round.`
       : `🛑 **Needs a human:** ${blockers} came back after a fix.`;
   },
-  BUDGET: () => APPROVED_LINE,
 };
 
 /** Returns what goes wrong in practice, from the judge summary or else the top blocker's description. */
 function formatVerdictDetail(result: ReviewResult, blocking: Finding[]): string {
   const summary = sanitizeMarkdown(result.summary.trim());
-  if (result.outcome === 'READY' || result.outcome === 'BUDGET') return result.verdictReport ? '' : summary;
+  if (result.outcome === 'READY') return result.verdictReport ? '' : summary;
   if (result.outcome !== 'ADDRESS_FIRST') return '';
   // The judge writes its summary before the verdict reader runs, so it never describes the reader's blockers.
   if (summary && result.verdictReason !== 'verdict_reader') return asSentence(summary);
@@ -1533,7 +1532,7 @@ function formatTestGuide(guide: TestGuide): string {
 }
 
 function formatReadyReport(result: ReviewResult): string | null {
-  if ((result.outcome !== 'READY' && result.outcome !== 'BUDGET') || !result.verdictReport) return null;
+  if (result.outcome !== 'READY' || !result.verdictReport) return null;
   const { whatThisDoes, whatToTest } = result.verdictReport;
   return `${formatLabelled('What this does', whatThisDoes)}\n\n**What to test:**\n\n${formatTestGuide(whatToTest)}`;
 }

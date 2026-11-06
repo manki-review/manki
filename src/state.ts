@@ -237,11 +237,11 @@ function isNewChange(change: ReviewedChange, previous: RoundContext | undefined)
 }
 
 /**
- * Whether the PR was approved at or after `round`: by the round itself at the full bar, or by auto-approve at `lastApprovalAt` or later. A `BUDGET` approval deferred warnings to end a loop, so it does not count.
+ * Whether the PR was approved at or after `round`: by the round itself, or by auto-approve at `lastApprovalAt` or later.
  * An approval held on a conflict is recorded as an approval, so it counts.
  */
 function approvedSince(round: RoundContext, lastApprovalAt: string | undefined): boolean {
-  return (round.verdict === 'APPROVE' && round.meta.outcome !== 'BUDGET')
+  return round.verdict === 'APPROVE'
     || (lastApprovalAt !== undefined && Date.parse(round.meta.timestamp) <= Date.parse(lastApprovalAt));
 }
 

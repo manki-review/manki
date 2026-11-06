@@ -39,7 +39,6 @@ const OUTCOME_VERDICT: Record<RoundOutcome, ReviewVerdict> = {
   ADDRESS_FIRST: 'REQUEST_CHANGES',
   INCOMPLETE: 'COMMENT',
   NOT_CONVERGING: 'REQUEST_CHANGES',
-  BUDGET: 'APPROVE',
 };
 
 export const RETRY_HINT = 'Retry with @manki review.';
@@ -494,7 +493,7 @@ export interface ReviewOptions {
   headSha?: string;
   /** Blocks on blockers only whatever the round. Set for the round `@manki review` runs after a pause. */
   blockersOnly?: boolean;
-  /** The last automatic round the round cap allows. It blocks on blockers only and ends `BUDGET` or `NOT_CONVERGING`. */
+  /** The last automatic round the round cap allows. It blocks on blockers only, and ends `NOT_CONVERGING` unless it is `READY`. */
   finalRound?: boolean;
 }
 
@@ -1166,13 +1165,9 @@ export async function runReview(
   if (repeated.length > 0) {
     outcome = 'NOT_CONVERGING';
     needsHuman = { cause: 'repeated', blockers: repeated.map(p => priorToTraceEntry(p.entry, priorRoundLookup, openThreadIndex)) };
-  } else if (options.finalRound) {
-    if (outcome === 'READY') {
-      outcome = 'BUDGET';
-    } else {
-      outcome = 'NOT_CONVERGING';
-      needsHuman = { cause: 'budget', blockers: [...verdictTrace.survivingBlockers, ...verdictTrace.novelWarnings, ...verdictTrace.unresolvedPriors] };
-    }
+  } else if (options.finalRound && outcome !== 'READY') {
+    outcome = 'NOT_CONVERGING';
+    needsHuman = { cause: 'budget', blockers: [...verdictTrace.survivingBlockers, ...verdictTrace.novelWarnings, ...verdictTrace.unresolvedPriors] };
   }
   const verdict = OUTCOME_VERDICT[outcome];
 
