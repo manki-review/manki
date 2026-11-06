@@ -255,7 +255,7 @@ export async function writeSuppression(
   existing.push(suppression);
 
   const content = stringifyYaml(existing);
-  await writeFile(octokit, owner, repo, path, content, `Add suppression: ${suppression.pattern}`);
+  await writeFile(octokit, owner, repo, path, () => ({ content, message: `Add suppression: ${suppression.pattern}` }));
 }
 
 /**
@@ -275,7 +275,7 @@ export async function writeLearning(
   existing.push(learning);
 
   const content = stringifyYaml(existing);
-  await writeFile(octokit, owner, repo, path, content, `Add learning: ${learning.content.slice(0, 50)}`);
+  await writeFile(octokit, owner, repo, path, () => ({ content, message: `Add learning: ${learning.content.slice(0, 50)}` }));
 }
 
 /** Appends `line` to `<targetRepo>/<file>` in the memory repo, creating the file when it is missing. */
@@ -288,7 +288,7 @@ export async function appendMemoryLine(
   message: string,
 ): Promise<void> {
   const [owner, repo] = memoryRepo.split('/');
-  await writeFile(octokit, owner, repo, `${targetRepo}/${file}`, current => `${current ?? ''}${line}\n`, message);
+  await writeFile(octokit, owner, repo, `${targetRepo}/${file}`, current => ({ content: `${current ?? ''}${line}\n`, message }));
 }
 
 /**
@@ -313,7 +313,7 @@ export async function removeLearning(
 
   const [removed] = existing.splice(index, 1);
   const content = stringifyYaml(existing);
-  await writeFile(octokit, owner, repo, path, content, `Remove learning: ${removed.content.slice(0, 50)}`);
+  await writeFile(octokit, owner, repo, path, () => ({ content, message: `Remove learning: ${removed.content.slice(0, 50)}` }));
 
   return { removed, remaining: existing.length };
 }
@@ -340,7 +340,7 @@ export async function removeSuppression(
 
   const [removed] = existing.splice(index, 1);
   const content = stringifyYaml(existing);
-  await writeFile(octokit, owner, repo, path, content, `Remove suppression: ${removed.pattern.slice(0, 50)}`);
+  await writeFile(octokit, owner, repo, path, () => ({ content, message: `Remove suppression: ${removed.pattern.slice(0, 50)}` }));
 
   return { removed, remaining: existing.length };
 }
@@ -371,33 +371,38 @@ async function fetchStoredFile(
 
 const DEFAULT_MAX_RETRIES = 3;
 
+interface FileUpdate {
+  content: string;
+  message: string;
+}
+
 /**
- * Writes `content` to `path`. An updater function is called with the file's current text on every
- * attempt, so a retry after a write conflict builds on the latest version.
+ * Writes the result of `update` to `path`. `update` gets the file's current text on every attempt,
+ * so a retry after a write conflict builds on the latest version. It returns `null` to skip the write.
  */
 async function writeFile(
   octokit: Octokit,
   owner: string,
   repo: string,
   path: string,
-  content: string | ((current: string | null) => string),
-  message: string,
+  update: (current: string | null) => FileUpdate | null,
   maxRetries: number = DEFAULT_MAX_RETRIES,
 ): Promise<void> {
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     const { sha, text } = await fetchStoredFile(octokit, owner, repo, path);
-    if (typeof content !== 'string' && sha && text === null) {
+    if (sha && text === null) {
       throw new Error(`Cannot read ${path} to update it`);
     }
-    const body = typeof content === 'string' ? content : content(text);
+    const next = update(text);
+    if (!next) return;
 
     try {
       await octokit.rest.repos.createOrUpdateFileContents({
         owner,
         repo,
         path,
-        message,
-        content: Buffer.from(body).toString('base64'),
+        message: next.message,
+        content: Buffer.from(next.content).toString('base64'),
         sha,
       });
       return;
