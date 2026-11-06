@@ -216,8 +216,8 @@ export class GeminiClient implements LLMClient {
     core.debug(sanitizeLogOutput(content.slice(0, 200)));
     return {
       content,
-      usage: { ...ZERO_USAGE },
       latencyMs: Date.now() - startTime,
+      model: this.model,
     };
   }
 
@@ -263,12 +263,13 @@ export class GeminiClient implements LLMClient {
     const usage: LLMUsage = usageMetadata
       ? {
           inputTokens: readCount(usageMetadata.promptTokenCount),
-          outputTokens: readCount(usageMetadata.candidatesTokenCount),
-          cachedTokens: readCount(usageMetadata.cachedContentTokenCount),
+          outputTokens: readCount(usageMetadata.candidatesTokenCount) + readCount(usageMetadata.thoughtsTokenCount),
+          cacheReadTokens: readCount(usageMetadata.cachedContentTokenCount),
+          cacheWriteTokens: 0,
           reasoningTokens: readCount(usageMetadata.thoughtsTokenCount),
         }
       : { ...ZERO_USAGE };
 
-    return { content, usage, latencyMs: Date.now() - startTime, truncated };
+    return { content, usage, latencyMs: Date.now() - startTime, model: this.model, truncated };
   }
 }

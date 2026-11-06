@@ -76,11 +76,13 @@ export function extractAnthropicCLIUsage(resultEvent: unknown): LLMUsage {
 
 /** Maps an Anthropic `usage` block to `LLMUsage`. Input counts cache writes and reads, which `input_tokens` leaves out. */
 function readAnthropicUsage(u: Record<string, unknown>): LLMUsage {
-  const cachedTokens = readCount(u.cache_read_input_tokens);
+  const cacheReadTokens = readCount(u.cache_read_input_tokens);
+  const cacheWriteTokens = readCount(u.cache_creation_input_tokens);
   return {
-    inputTokens: readCount(u.input_tokens) + readCount(u.cache_creation_input_tokens) + cachedTokens,
+    inputTokens: readCount(u.input_tokens) + cacheWriteTokens + cacheReadTokens,
     outputTokens: readCount(u.output_tokens),
-    cachedTokens,
+    cacheReadTokens,
+    cacheWriteTokens,
     reasoningTokens: 0,
   };
 }
@@ -310,6 +312,7 @@ export class AnthropicClient implements LLMClient {
       content,
       usage: extractAnthropicCLIUsage(lastResultEvent),
       latencyMs: Date.now() - startTime,
+      model: this.model,
       truncated,
     };
   }
@@ -365,6 +368,6 @@ export class AnthropicClient implements LLMClient {
     const sdkUsage = (response as unknown as { usage?: Record<string, unknown> }).usage;
     const usage: LLMUsage = sdkUsage ? readAnthropicUsage(sdkUsage) : { ...ZERO_USAGE };
 
-    return { content, usage, latencyMs: Date.now() - startTime, truncated: response.stop_reason === 'max_tokens' };
+    return { content, usage, latencyMs: Date.now() - startTime, model: this.model, truncated: response.stop_reason === 'max_tokens' };
   }
 }

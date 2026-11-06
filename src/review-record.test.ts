@@ -1,6 +1,6 @@
 import { gzipSync } from 'zlib';
 
-import { extractReviewRecords, formatReviewRecord, hasReviewRecord } from './review-record';
+import { extractReplyRecords, extractReviewRecords, formatReplyRecord, formatReviewRecord, hasReviewRecord } from './review-record';
 import { makeRoundContext } from './test-utils';
 import { RoundContext } from './types';
 import { registerSecret } from './utils';
@@ -97,5 +97,14 @@ describe('extractReviewRecords', () => {
       expect(errors).toHaveLength(1);
     }
     expect(hasReviewRecord(broken)).toBe(true);
+  });
+});
+
+describe('extractReplyRecords', () => {
+  it('reads only the last reply record, not one quoted in the answer above it', () => {
+    const record = (kind: 'question' | 'explain') => ({ kind, prNumber: 1, timestamp: 't', mankiVersion: '7.0.0', usage: { calls: 1 } });
+    const body = `Answer quoting ${formatReplyRecord(record('explain'))} as text.\n\n<!-- manki -->\n${formatReplyRecord(record('question'))}`;
+    expect(extractReplyRecords(body).map(r => JSON.parse(r))).toEqual([record('question')]);
+    expect(extractReplyRecords('An answer without a record.')).toEqual([]);
   });
 });

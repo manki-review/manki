@@ -3,7 +3,7 @@ import { minimatch } from 'minimatch';
 
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { resolveReviewerModel } from './config';
-import { addUsage, LLMClient, LLMUsage, modelDisplayName, QuotaError, withRefusalFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
+import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, withRefusalFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
 import { runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, LinkedIssue, titleToSlug } from './github';
@@ -501,11 +501,15 @@ export async function runReview(
   } = options;
   const provenanceMap = computeProvenanceMap(priorRounds, rawDiff);
   const modelFallbacks: RoundModelFallback[] = [];
-  const withFallback = ({ client, fallback }: StageClient, stage: RoundModelFallback['stage'], agent?: string): LLMClient =>
-    withSignal(withRefusalFallback(client, fallback?.client, (error) => {
+  const llmCalls: LLMCall[] = [];
+  const withFallback = ({ client, fallback }: StageClient, stage: RoundModelFallback['stage'], agent?: string): LLMClient => {
+    const label = { stage, ...(agent && { agent }) };
+    const recordedFallback = fallback && recordCalls(fallback.client, { ...label, fallback: true }, llmCalls);
+    return withSignal(withRefusalFallback(recordCalls(client, label, llmCalls), recordedFallback, (error) => {
       core.warning(`A safety filter refused the ${agent ?? stage} call (${error.reason}), sending it again on ${fallback!.model}`);
       modelFallbacks.push({ stage, ...(agent && { agent }), fallbackModel: fallback!.model, reason: error.reason });
     }), signal);
+  };
   let plannerResult: PlannerResult | null = null;
   let plannerUsage: LLMUsage | undefined;
   let plannerDurationMs: number | undefined;
@@ -911,6 +915,7 @@ export async function runReview(
       agentNames: team.finders.map(a => a.name),
       failedAgents,
       ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
+      llmCalls,
       ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
     };
   }
@@ -1057,6 +1062,7 @@ export async function runReview(
       highlights: [],
       reviewComplete: false,
       agentNames: team.finders.map(a => a.name),
+      llmCalls,
       ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
     };
   }
@@ -1126,6 +1132,7 @@ export async function runReview(
         highlights: [],
         reviewComplete: false,
         agentNames: team.finders.map(a => a.name),
+        llmCalls,
         ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
       };
     }
@@ -1200,24 +1207,20 @@ export async function runReview(
     suppressionCount,
     ...(inPrSuppressedCount > 0 && { inPrSuppressedCount }),
     agentResponseLengths,
-    agentUsage,
     agentDurationMs,
     agentRetryCount,
     ...(agentFailureReasons.size > 0 && { agentFailureReasons: Object.fromEntries(agentFailureReasons) }),
-    ...(plannerUsage && { plannerUsage }),
     ...(plannerDurationMs != null && { plannerDurationMs }),
-    ...(judgeUsage && { judgeUsage }),
     ...(judgeDurationMs != null && { judgeDurationMs }),
     judgeRetryCount,
-    ...(dedupUsage && { dedupUsage }),
     ...(dedupDurationMs != null && { dedupDurationMs }),
-    ...(verdictUsage && { verdictUsage }),
     crossRoundSuppressed: judgeCrossRoundSuppressed,
     crossRoundDemoted: judgeCrossRoundDemoted,
     ...(judgeInterRoundDiffEmptyOverride && { interRoundDiffEmptyOverride: judgeInterRoundDiffEmptyOverride }),
     ...(testNitSuppressedCount > 0 && { testNitSuppressedCount }),
     ...(staticSignalMatches.length > 0 && { staticSignalMatches }),
     ...(modelFallbacks.length > 0 && { modelFallbacks }),
+    llmCalls,
     ...buildProvenanceFields(plannerSource, plannerFallbackReason, team, agentMultiPassConsistency),
   };
 }

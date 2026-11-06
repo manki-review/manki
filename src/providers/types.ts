@@ -1,9 +1,11 @@
 export type ProviderName = 'anthropic' | 'openai' | 'gemini';
 
+/** Token counts of one or more calls. `inputTokens` includes the cache reads and writes, `outputTokens` the reasoning. */
 export interface LLMUsage {
   inputTokens: number;
   outputTokens: number;
-  cachedTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
   reasoningTokens: number;
 }
 
@@ -11,6 +13,8 @@ export interface LLMResponse {
   content: string;
   usage?: LLMUsage;
   latencyMs?: number;
+  /** Model that answered. */
+  model?: string;
   /** Whether the provider reports that the output stopped at its token limit. Unset when the provider does not expose a stop reason. */
   truncated?: boolean;
 }
@@ -32,7 +36,8 @@ export function readCount(value: unknown): number {
 export const ZERO_USAGE: LLMUsage = Object.freeze({
   inputTokens: 0,
   outputTokens: 0,
-  cachedTokens: 0,
+  cacheReadTokens: 0,
+  cacheWriteTokens: 0,
   reasoningTokens: 0,
 });
 
@@ -40,7 +45,8 @@ export function addUsage(a: LLMUsage, b: LLMUsage): LLMUsage {
   return {
     inputTokens: a.inputTokens + b.inputTokens,
     outputTokens: a.outputTokens + b.outputTokens,
-    cachedTokens: a.cachedTokens + b.cachedTokens,
+    cacheReadTokens: a.cacheReadTokens + b.cacheReadTokens,
+    cacheWriteTokens: a.cacheWriteTokens + b.cacheWriteTokens,
     reasoningTokens: a.reasoningTokens + b.reasoningTokens,
   };
 }
@@ -67,6 +73,46 @@ export class QuotaError extends Error {
     super(message);
     this.name = 'QuotaError';
   }
+}
+
+/** A tool step an LLM call took. */
+export interface ToolStep {
+  tool: string;
+  durationMs?: number;
+}
+
+/** One LLM call, as the round and reply records keep it. Token counts follow `LLMUsage`. */
+export interface LLMCall extends LLMUsage {
+  /** Pipeline stage that made the call: `planner`, `reviewer`, `judge`, `dedup`, `verdict` or `reply`. */
+  stage: string;
+  /** Finder that made the call, on the `reviewer` stage. */
+  agent?: string;
+  /** Model that answered. Unknown for a call that failed. */
+  model?: string;
+  effort?: SendMessageOptions['effort'];
+  /** Set when a fallback model answered after a safety filter refused the stage's own model. */
+  fallback?: boolean;
+  /** Position among the calls of the same stage and agent, so above 1 means a retry or another pass. */
+  attempt: number;
+  failed?: boolean;
+  error?: string;
+  durationMs: number;
+  /** Estimate at public API prices, `null` when the model has no known price or the provider reported no usage. */
+  costUsd: number | null;
+  /** Tool steps the call took. Left out until reviewers have tools. */
+  toolSteps?: ToolStep[];
+}
+
+/** Totals over a set of `LLMCall`s. */
+export interface UsageSummary extends LLMUsage {
+  calls: number;
+  failedCalls: number;
+  totalTokens: number;
+  durationMs: number;
+  /** Estimate at public API prices, over the calls whose model has a known price. */
+  estimatedCostUsd: number;
+  /** Successful calls left out of `estimatedCostUsd`: their model has no known price, or their provider reported no usage. */
+  unpricedCalls: number;
 }
 
 export interface SendMessageOptions {

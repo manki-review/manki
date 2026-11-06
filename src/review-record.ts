@@ -1,10 +1,11 @@
 import { gunzipSync, gzipSync } from 'zlib';
 
-import type { RoundContext } from './types';
+import type { ReplyRecord, RoundContext } from './types';
 import { redactSecretsDeep, sanitizeHtmlCommentJson, sanitizeTokens } from './utils';
 
 const PLAIN_RE = /<!-- manki-context: ([\s\S]+?) -->/g;
 const GZIP_RE = /<!-- manki-context-gzip: ([A-Za-z0-9+/=]+) -->/g;
+const REPLY_RE = /<!-- manki-reply-record: ([\s\S]+?) -->/g;
 /** The visible block releases before v7 wrote, read so their round history still loads. */
 const DETAILS_RE = /<details>\s*<summary>Manki context<\/summary>\s*```json\s*([\s\S]*?)```\s*<\/details>/g;
 /** Larger than any real record, so a crafted compressed one can't exhaust memory. */
@@ -18,11 +19,26 @@ export function formatReviewRecord(context: RoundContext, room: number = Infinit
   const ctx = context.judge.threadEvaluations?.length === 0
     ? { ...context, judge: { ...context.judge, threadEvaluations: undefined } }
     : context;
-  // Redacted here because nothing that scans posted text can see inside a compressed record.
-  const json = sanitizeTokens(JSON.stringify(redactSecretsDeep(ctx)));
+  const json = recordJson(ctx);
   const plain = `<!-- manki-context: ${sanitizeHtmlCommentJson(json)} -->`;
   if (plain.length <= room) return plain;
   return `<!-- manki-context-gzip: ${gzipSync(json).toString('base64')} -->`;
+}
+
+/** Returns a reply-handler run's record as a hidden HTML comment. */
+export function formatReplyRecord(record: ReplyRecord): string {
+  return `<!-- manki-reply-record: ${sanitizeHtmlCommentJson(recordJson(record))} -->`;
+}
+
+/** Returns the JSON text of the reply record in a comment body. Manki writes it last, so an earlier one is quoted text. */
+export function extractReplyRecords(body: string): string[] {
+  const last = [...body.matchAll(REPLY_RE)].at(-1);
+  return last ? [last[1]] : [];
+}
+
+/** Serializes a record with secrets and tokens redacted, since nothing that scans posted text can see inside a compressed one. */
+function recordJson(record: object): string {
+  return sanitizeTokens(JSON.stringify(redactSecretsDeep(record)));
 }
 
 /**

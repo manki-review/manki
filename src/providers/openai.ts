@@ -245,8 +245,8 @@ export class OpenAIClient implements LLMClient {
     core.debug(sanitizeLogOutput(content.slice(0, 200)));
     return {
       content,
-      usage: { ...ZERO_USAGE },
       latencyMs: Date.now() - startTime,
+      model: this.model,
     };
   }
 
@@ -302,11 +302,12 @@ export class OpenAIClient implements LLMClient {
       ? {
           inputTokens: readCount(sdkUsage.prompt_tokens),
           outputTokens: readCount(sdkUsage.completion_tokens),
-          cachedTokens: readCount(sdkUsage.prompt_tokens_details?.cached_tokens),
+          cacheReadTokens: readCount(sdkUsage.prompt_tokens_details?.cached_tokens),
+          cacheWriteTokens: 0,
           reasoningTokens: readCount(sdkUsage.completion_tokens_details?.reasoning_tokens),
         }
       : { ...ZERO_USAGE };
 
-    return { content, usage, latencyMs: Date.now() - startTime, truncated: choice?.finish_reason === 'length' };
+    return { content, usage, latencyMs: Date.now() - startTime, model: this.model, truncated: choice?.finish_reason === 'length' };
   }
 }
