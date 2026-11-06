@@ -20,6 +20,7 @@ interface IssueComment {
   body?: string | null;
   user?: { login?: string | null; type?: string } | null;
   updated_at: string;
+  reactions?: { eyes?: number };
 }
 
 const BOT_LOGIN = 'manki-review[bot]';

@@ -78,7 +78,7 @@ const PR_DIFF = [
 const MATH_TS = 'export function add(a: number, b: number): number {\n  const sum = a + b;\n  return sum;\n}\n';
 
 interface FakeUser { login: string; type: string }
-interface FakeComment { id: number; body: string; user: FakeUser; created_at: string; updated_at: string }
+interface FakeComment { id: number; body: string; user: FakeUser; created_at: string; updated_at: string; reactions?: { eyes: number } }
 interface FakeReview { id: number; body: string; state: string; commit_id: string; user: FakeUser; submitted_at: string }
 interface FakeThreadComment { databaseId: number; body: string; url: string; authorAssociation: string; author: { login: string } }
 interface FakeThread { id: string; isResolved: boolean; resolvedBy: { login: string } | null; path: string; line: number; startLine: number | null; originalLine: number; comments: FakeThreadComment[] }
@@ -160,6 +160,13 @@ class FakeGitHub {
       const comment = { id: this.nextId++, body: body.body, user, created_at: now, updated_at: now };
       this.comments.push(comment);
       return json(comment, 201);
+    }
+    if ((match = route.match(/^\/issues\/comments\/(\d+)\/reactions$/))) {
+      const comment = this.comments.find(c => c.id === Number(match![1]));
+      if (!comment) return json({ message: 'Not Found' }, 404);
+      if (method === 'GET') return json(comment.reactions ? [{ content: 'eyes', user }] : []);
+      comment.reactions = { eyes: 1 };
+      return json({ id: this.nextId++, content: body.content }, 201);
     }
     if ((match = route.match(/^\/issues\/comments\/(\d+)$/))) {
       const index = this.comments.findIndex(c => c.id === Number(match![1]));
@@ -524,7 +531,8 @@ describe('runFullReview end to end', () => {
       expect(core.setFailed).not.toHaveBeenCalled();
       expect(postedReviews().map(r => [r.state, r.commit_id])).toEqual([['APPROVED', HEAD_SHA], ['APPROVED', HEAD_SHA]]);
 
-      // The ticked notice is done with, so a later command on the commit posts a fresh one.
+      // Manki answered the tick, so a later command on the commit posts a fresh notice, also after the box is unticked again.
+      notice.body = notice.body.replace('- [x] Force review', '- [ ] Force review');
       await reviewCommand();
       expect(postedReviews()).toHaveLength(2);
       expect(skipNotices()).toHaveLength(2);

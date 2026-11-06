@@ -310,10 +310,11 @@ async function postReviewSkippedComment(
       ? `**Review skipped** for \`${shortSha}\`: a review is already in progress. Retry when it completes, or force one now:`
       : `**Review skipped** for \`${shortSha}\`: this commit already has a review. Force a new one:`;
     const text = `${line}\n\n- [ ] Force review`;
-    // A commit keeps one unticked already-reviewed notice. A ticked one is never reused: its eyes reaction would make Manki ignore the next tick.
+    // A commit keeps one unticked already-reviewed notice. One that carries an eyes reaction, from a tick Manki answered, is never
+    // reused, since Manki ignores a later tick on it.
     if (reason === 'already_reviewed') {
       const comments = await fetchPRComments(octokit, owner, repo, prNumber);
-      if (comments.some(c => isBotLogin(bot, c.user?.login) && c.body?.startsWith(text))) {
+      if (comments.some(c => isBotLogin(bot, c.user?.login) && c.body?.startsWith(text) && !c.reactions?.eyes)) {
         core.info(`An unticked already-reviewed notice for ${shortSha} is on the PR, posting no other`);
         return;
       }
