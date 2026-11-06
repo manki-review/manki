@@ -4112,7 +4112,7 @@ describe('runPlanner', () => {
     }
   });
 
-  it('warns about SETUP.md ENOENT row on timeout', async () => {
+  it('points to the ENOENT troubleshooting row on timeout', async () => {
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     jest.useFakeTimers();
     try {
@@ -4128,7 +4128,7 @@ describe('runPlanner', () => {
 
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Planner timed out'));
       expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('spawn claude ENOENT'));
-      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('SETUP.md'));
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('docs/getting-started.md'));
     } finally {
       jest.useRealTimers();
       warnSpy.mockRestore();

@@ -25,6 +25,26 @@ function readRepoFile(name: string): string {
   return fs.readFileSync(path.join(ROOT, name), 'utf-8');
 }
 
+function withoutFencedBlocks(markdown: string): string {
+  return markdown.replace(/^```[\s\S]*?^```$/gm, '');
+}
+
+function withoutCodeBlocks(markdown: string): string {
+  return withoutFencedBlocks(markdown).replace(/`[^`\n]*`/g, '');
+}
+
+/** Returns the anchors GitHub gives the headings of `markdown`. */
+function headingAnchors(markdown: string): Set<string> {
+  const anchors = new Set<string>();
+  for (const [, heading] of withoutFencedBlocks(markdown).replace(/`/g, '').matchAll(/^#{1,6} (.+)$/gm)) {
+    const slug = heading.trim().toLowerCase().replace(/[^\p{L}\p{N} _-]/gu, '').replace(/ /g, '-');
+    let anchor = slug;
+    for (let n = 1; anchors.has(anchor); n++) anchor = `${slug}-${n}`;
+    anchors.add(anchor);
+  }
+  return anchors;
+}
+
 function markdownYamlBlocks(markdown: string): string[] {
   return [...markdown.matchAll(/^```yaml\n([\s\S]*?)^```$/gm)].map(m => m[1]);
 }
@@ -55,14 +75,15 @@ describe('documented workflow snippets', () => {
   const requiredInputs = Object.entries(inputs)
     .filter(([, input]) => input.required === true && input.default === undefined)
     .map(([name]) => name);
-  const setup = readRepoFile('SETUP.md');
+  const setup = readRepoFile('docs/getting-started.md');
   const usesManki = (block: string) => block.includes('manki-review/manki@');
   const snippets = {
-    'SETUP.md': markdownYamlBlocks(setup).filter(usesManki),
+    'docs/getting-started.md': markdownYamlBlocks(setup).filter(usesManki),
+    'docs/how-reviews-work.md': markdownYamlBlocks(readRepoFile('docs/how-reviews-work.md')).filter(usesManki),
     'docs/index.html': htmlCodeBlocks(readRepoFile('docs/index.html')).filter(usesManki),
   };
 
-  it('includes the full workflow from SETUP.md Step 3 and docs/index.html, with the job settings of `docs/examples/manki.yml`', () => {
+  it('includes the full workflow from Step 3 of `docs/getting-started.md` and docs/index.html, with the job settings of `docs/examples/manki.yml`', () => {
     const own = (parseYaml(readRepoFile('docs/examples/manki.yml')) as Workflow).jobs.review;
     expect(own.if).toContain(`(github.event_name != 'issue_comment' || !contains(fromJSON('["FIRST_TIMER","FIRST_TIME_CONTRIBUTOR"]'), github.event.comment.author_association))`);
     expect(own.if).not.toContain('COLLABORATOR');
@@ -78,11 +99,11 @@ describe('documented workflow snippets', () => {
       .filter(workflow => !isDispatchWorkflow(workflow)).map(workflow => workflow.jobs?.review).filter(job => job !== undefined);
     expect(jobs.length).toBeGreaterThan(2);
     for (const job of jobs) expect(job.if).toContain(own.if);
-    expect(snippets['SETUP.md'].length).toBeGreaterThan(1);
+    expect(snippets['docs/getting-started.md'].length).toBeGreaterThan(1);
   });
 
-  it('includes a dispatch workflow in SETUP.md that declares the dispatch inputs, with no `if` or `concurrency`, as our own does', () => {
-    const dispatch = snippets['SETUP.md'].map(block => parseYaml(block) as Workflow).filter(isDispatchWorkflow);
+  it('includes a dispatch workflow in `docs/getting-started.md` that declares the dispatch inputs, with no `if` or `concurrency`, as our own does', () => {
+    const dispatch = snippets['docs/getting-started.md'].map(block => parseYaml(block) as Workflow).filter(isDispatchWorkflow);
     expect(dispatch).toHaveLength(1);
     const own = parseYaml(readRepoFile('.github/workflows/manki-dispatch.yml')) as Workflow;
     for (const workflow of [dispatch[0], own]) {
@@ -110,13 +131,29 @@ describe('documented workflow snippets', () => {
 });
 
 describe('documented `review` examples', () => {
-  it('load as valid config, in SETUP.md and uncommented from `.manki.yml.example`', () => {
-    const setupBlocks = markdownYamlBlocks(readRepoFile('SETUP.md')).filter(block => /^review:/m.test(block));
+  it('load as valid config, in `docs/how-reviews-work.md` and uncommented from `.manki.yml.example`', () => {
+    const setupBlocks = markdownYamlBlocks(readRepoFile('docs/how-reviews-work.md')).filter(block => /^review:/m.test(block));
     const example = readRepoFile('.manki.yml.example');
     const exampleBlocks = [...example.matchAll(/^# review:\n(?:#[ ]{2,}.*\n)+/gm)].map(m => m[0].replace(/^# ?/gm, ''));
     expect([setupBlocks.length, exampleBlocks.length]).toEqual([3, 2]);
     const reviews = [...setupBlocks, ...exampleBlocks].map(block => loadConfigFromContent(block).review);
     expect(reviews.filter(review => review?.groups?.deep)).toHaveLength(4);
     expect(reviews.filter(review => review?.outside_input && review.examples && Object.values(review.classes ?? {}).some(c => c.critical))).toHaveLength(2);
+  });
+});
+
+describe('documentation links', () => {
+  it('point to files and headings that exist, in the README and every page under `docs/`', () => {
+    const pages = ['README.md', 'SETUP.md', ...fs.readdirSync(path.join(ROOT, 'docs')).filter(f => f.endsWith('.md')).map(f => `docs/${f}`)];
+    expect(pages).toEqual(expect.arrayContaining(['docs/getting-started.md', 'docs/how-reviews-work.md', 'docs/configuration.md', 'docs/memory.md', 'docs/security.md']));
+    const broken = pages.flatMap(page => [...withoutCodeBlocks(readRepoFile(page)).matchAll(/\]\(([^)\s]+)\)/g)].flatMap(([, target]) => {
+      if (/^[a-z]+:/i.test(target)) return [];
+      const [file, anchor] = target.split('#');
+      const resolved = file ? path.join(path.dirname(page), file) : page;
+      if (!fs.existsSync(path.join(ROOT, resolved))) return [`${page}: ${target} (no file)`];
+      if (anchor === undefined || !resolved.endsWith('.md')) return [];
+      return headingAnchors(readRepoFile(resolved)).has(anchor) ? [] : [`${page}: ${target} (no heading)`];
+    }));
+    expect(broken).toEqual([]);
   });
 });

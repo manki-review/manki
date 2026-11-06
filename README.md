@@ -30,10 +30,10 @@ Manki sizes each review to the nature of the change: one reader for a change whe
 ## Quick start
 
 1. **Install the app** — [github.com/apps/manki-review](https://github.com/apps/manki-review)
-2. **Add a provider secret** — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY` (OAuth subscription paths are also supported, see [SETUP.md](SETUP.md#choosing-a-provider))
-3. **Add the workflow** — copy the YAML from the [Setup Guide](SETUP.md#step-3-add-the-workflow)
+2. **Add a provider secret** — `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY` (OAuth subscription paths are also supported, see [Getting started](docs/getting-started.md#choosing-a-provider))
+3. **Add the workflow** — copy the YAML from [Getting started](docs/getting-started.md#step-3-add-the-workflow)
 
-Full setup guide with memory and troubleshooting: **[SETUP.md](SETUP.md)**
+Full setup guide with troubleshooting: **[Getting started](docs/getting-started.md)**. More in [How reviews work](docs/how-reviews-work.md), [Configuration](docs/configuration.md), [Review memory](docs/memory.md) and the [Security model](docs/security.md).
 
 ## How it works
 
@@ -43,7 +43,7 @@ Manki wakes up when a PR is opened. A fast planner (Haiku) triages the change an
   <img src="assets/pipeline.svg" alt="Manki review pipeline: Planner → Reviewers → Dedup → Judge → Review Posted" />
 </p>
 
-See [SETUP.md](SETUP.md#review-pipeline) for the full walkthrough.
+See [How reviews work](docs/how-reviews-work.md#review-pipeline) for the full walkthrough.
 
 ## Talk to Manki
 
@@ -81,11 +81,11 @@ models:
   dedup: claude-haiku-5-5
 ```
 
-See [`.manki.yml.example`](.manki.yml.example) for all options, or [SETUP.md](SETUP.md) for the full guide.
+See [`.manki.yml.example`](.manki.yml.example) for all options, or [Configuration](docs/configuration.md) for the full guide.
 
 ## Security
 
-Secrets are masked, PR content is sanitized before posting, and only people with write access to the repo can start Manki from a comment or change its memory. See [SETUP.md](SETUP.md#security) for the full security model.
+Secrets are masked, PR content is sanitized before posting, and only people with write access to the repo can start Manki from a comment or change its memory. See the [Security model](docs/security.md).
 
 ## License
 

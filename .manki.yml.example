@@ -95,7 +95,7 @@
 # three are floors: at least two finders on two distinct models, none at `low`
 # effort, unless `allow_weaker` names the class. Built-in groups: trivial (the
 # Trivial Change Verifier), solo (one finder) and pair (two finders). See
-# SETUP.md, "Review groups".
+# docs/how-reviews-work.md, "Review groups".
 #
 # Minimal: two strong readers on security and data contract PRs only.
 # review:
@@ -150,7 +150,7 @@
 # lines of the diff. A Manki suggestion or nitpick on the same file and line
 # is dropped. Warnings, blockers and security findings are kept. This block is read from the base branch,
 # never from the PR, so a PR cannot turn a source off. A source the workflow
-# token cannot read is skipped. See SETUP.md, "Reading CI results".
+# token cannot read is skipped. See docs/how-reviews-work.md, "Reading CI results".
 # static_analysis:
 #   checks: true             # check-run annotations, needs `checks: read`
 #   code_scanning: true      # code scanning alerts, needs `security-events: read`
@@ -164,7 +164,7 @@
 # Public github.com repos the review may read as context (default: none).
 # `reference`: a repo this one implements or ports. `consumer`: a repo that
 # depends on this one. `ref` (branch, tag or full commit hash) and `paths` are optional.
-# Read from the base branch, never from the PR. See SETUP.md, "Related repositories".
+# Read from the base branch, never from the PR. See docs/how-reviews-work.md, "Related repositories".
 # related_repos:
 #   - { repo: dashpay/dash, kind: reference, paths: [src/] }
 #   - { repo: dashpay/platform, kind: consumer, ref: master, paths: ["packages/rs-*"] }
