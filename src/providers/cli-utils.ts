@@ -347,9 +347,23 @@ export function cliEnv(provider: CliProvider, vars: NodeJS.ProcessEnv = {}, cred
   const result = Object.fromEntries([...needed, ...Object.entries(vars)].filter(([name]) => credentials.has(name) || !SECRET_NAME.test(name)));
   for (const name of modeCredentials) {
     const value = result[name];
-    if (value) registerSecret(value);
+    if (!value) continue;
+    registerSecret(value);
+    if (name === 'GOOGLE_APPLICATION_CREDENTIALS') registerServiceAccountKey(value);
   }
   return result;
+}
+
+/** Registers the private key of the Google service account file at `path`, leaving its public fields such as `client_email` unredacted. */
+function registerServiceAccountKey(path: string): void {
+  try {
+    const file = safeJsonParse(readFileSync(path, 'utf8')) as { private_key?: unknown; private_key_id?: unknown } | null;
+    for (const value of [file?.private_key, file?.private_key_id]) {
+      if (typeof value === 'string') registerSecret(value);
+    }
+  } catch (error) {
+    core.warning(`Could not read ${path} to redact its private key: ${error}`);
+  }
 }
 
 export interface RunCliOptions {

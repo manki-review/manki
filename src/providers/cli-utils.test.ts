@@ -149,6 +149,11 @@ describe('cliEnv', () => {
     expect(cliEnv('claude', {}, undefined, on)).toEqual(on);
     expect(cliEnv('claude', {}, undefined, { ...credentials, CLAUDE_CODE_USE_BEDROCK: '0', CLAUDE_CODE_USE_VERTEX: 'false' })).toEqual({ CLAUDE_CODE_USE_BEDROCK: '0', CLAUDE_CODE_USE_VERTEX: 'false' });
     expect(redactSecrets('aws-secret-access-key gateway-auth-token')).toBe('[REDACTED] [REDACTED]');
+    const keyFile = join(mkdtempSync(join(tmpdir(), 'manki-gcp-')), 'key.json');
+    writeFileSync(keyFile, JSON.stringify({ private_key_id: 'key-id-0123456789', private_key: '-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQ\n-----END PRIVATE KEY-----\n', client_email: 'reviewer@project.iam.gserviceaccount.com' }));
+    cliEnv('claude', {}, undefined, { CLAUDE_CODE_USE_VERTEX: '1', GOOGLE_APPLICATION_CREDENTIALS: keyFile });
+    expect(redactSecrets('key-id-0123456789 MIIEvgIBADANBgkqhkiG9w0BAQ reviewer@project.iam.gserviceaccount.com'))
+      .toBe('[REDACTED] [REDACTED] reviewer@project.iam.gserviceaccount.com');
     for (const provider of ['codex', 'gemini'] as const) {
       expect(Object.keys(cliEnv(provider, {}, undefined, on))).not.toEqual(expect.arrayContaining(['AWS_SECRET_ACCESS_KEY']));
       expect(cliEnv(provider, {}, undefined, on)).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
