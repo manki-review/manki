@@ -825,7 +825,9 @@ export function matchSkipRule(config: ReviewConfig, facts: SkipFacts): string | 
   const lower = (values: string[]) => values.map(v => v.toLowerCase());
   const label = facts.labels.find(l => lower(config.skip_labels ?? []).includes(l.toLowerCase()));
   if (label) return `label "${label}"`;
-  if (facts.author && lower(config.skip_authors ?? []).includes(facts.author.toLowerCase())) return `author ${facts.author}`;
+  // A writer can push to a bot's PR, so the event's sender must match too.
+  const skippedAuthor = (login: string | undefined) => !!login && lower(config.skip_authors ?? []).includes(login.toLowerCase());
+  if (skippedAuthor(facts.author) && (facts.sender === undefined || skippedAuthor(facts.sender))) return `author ${facts.author}`;
   // Only writers can push a branch to the repo itself, while a fork's author names its branch freely.
   const branch = !facts.fromFork && (config.skip_branches ?? []).find(pattern => minimatch(facts.branch, pattern));
   if (branch) return `branch ${facts.branch}`;

@@ -273,6 +273,8 @@ describe('config', () => {
       expect(matchSkipRule(config, pr)).toBeUndefined();
       expect(matchSkipRule(config, { ...pr, labels: ['bug', 'dependencies'] })).toBe('label "dependencies"');
       expect(matchSkipRule(config, { ...pr, author: 'dependabot[bot]' })).toBe('author dependabot[bot]');
+      expect(matchSkipRule(config, { ...pr, author: 'dependabot[bot]', sender: 'dependabot[bot]' })).toBe('author dependabot[bot]');
+      expect(matchSkipRule(config, { ...pr, author: 'dependabot[bot]', sender: 'alice' })).toBeUndefined();
       expect(matchSkipRule(config, { ...pr, branch: 'renovate/npm-yaml-2.x' })).toBe('branch renovate/npm-yaml-2.x');
       expect(matchSkipRule(config, { ...pr, branch: 'renovate/npm-yaml-2.x', fromFork: true })).toBeUndefined();
       expect(matchSkipRule(DEFAULT_CONFIG, { labels: ['dependencies'], author: 'dependabot[bot]', branch: 'renovate/x', fromFork: false })).toBeUndefined();

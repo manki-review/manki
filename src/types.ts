@@ -880,6 +880,8 @@ export interface RoundCap {
 export interface SkipFacts {
   labels: string[];
   author?: string;
+  /** Who caused the event, such as who pushed on `synchronize`. */
+  sender?: string;
   branch: string;
   /** Whether the head branch lives in a fork, where anyone can pick its name. */
   fromFork: boolean;

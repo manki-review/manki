@@ -410,6 +410,7 @@ async function handlePullRequest(): Promise<void> {
     skipFacts: {
       labels: (pr.labels ?? []).map((l: { name?: string }) => l.name ?? '').filter(Boolean),
       author: pr.user?.login,
+      sender: github.context.payload.sender?.login,
       branch: pr.head.ref ?? '',
       fromFork: pr.head.repo?.full_name !== `${owner}/${repo}`,
     },

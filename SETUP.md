@@ -757,7 +757,7 @@ See [`.manki.yml.example`](.manki.yml.example) for the full reference with defau
 
 `skip_labels`, `skip_authors` and `skip_branches` name PRs that get no automatic review, such as dependency bumps from a bot. Manki reads them from `.manki.yml` on the base branch only, so a PR that edits them cannot skip itself. A PR that matches any rule gets no review, no comment and no approval. In webhook mode its `Manki` check completes as skipped. A `@manki review` comment still reviews it.
 
-A skipped check passes a required status check, so a branch protection rule that requires `Manki` lets a skipped PR merge without a review. Use rules that only trusted actors can meet. GitHub sets the author, so `skip_authors` for bot accounts is the safest. A label needs triage access to add. A branch rule matches only branches pushed to the repo itself, never a fork's branch, whose author can name it freely, but anyone with write access can still pick a matching name.
+A skipped check passes a required status check, so a branch protection rule that requires `Manki` lets a skipped PR merge without a review. Use rules that only trusted actors can meet. GitHub sets the author, so `skip_authors` for bot accounts is the safest. It skips an event only when its sender is a listed author too, so a person who pushes to a bot's PR still gets a review. A label needs triage access to add. A branch rule matches only branches pushed to the repo itself, never a fork's branch, whose author can name it freely, but anyone with write access can still pick a matching name.
 
 ### Review pipeline
 
