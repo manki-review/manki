@@ -923,10 +923,10 @@ const TOO_BIG_MARKER = '<!-- manki-too-big -->';
 /**
  * Replaces the progress comment with a request to split a PR too big to review, and dismisses Manki's earlier
  * approvals, since no reviewer read the new code. Posts no review, so a request for changes stays. `offerForce`
- * adds a Force review box. Each push edits the last unanswered notice instead of adding another.
+ * adds a Force review box. Each push since the last round edits the unanswered notice instead of adding another.
  */
-async function postTooBigNotice(target: RunTarget, commentId: number, text: string, offerForce: boolean): Promise<CheckReport> {
-  const { octokit, bot, owner, repo, prNumber } = target;
+async function postTooBigNotice(target: RunTarget, commentId: number, text: string, offerForce: boolean, lastRoundAt?: string): Promise<CheckReport> {
+  const { octokit, owner, repo, prNumber } = target;
   try {
     await octokit.rest.issues.deleteComment({ owner, repo, comment_id: commentId });
   } catch (error) {
@@ -937,8 +937,7 @@ async function postTooBigNotice(target: RunTarget, commentId: number, text: stri
     const body = offerForce
       ? withMarkers(`${text}\n\n- [ ] Force review`, PROGRESS_MARKER, FORCE_REVIEW_MARKER, TOO_BIG_MARKER)
       : withMarkers(text, PROGRESS_MARKER, TOO_BIG_MARKER);
-    const comments = await fetchPRComments(octokit, owner, repo, prNumber);
-    const earlier = comments.find(c => isBotLogin(bot, c.user?.login) && !!c.body?.includes(TOO_BIG_MARKER) && !c.body.includes('- [x] Force review'));
+    const earlier = await findOpenNotice(target, TOO_BIG_MARKER, lastRoundAt);
     if (earlier) {
       await octokit.rest.issues.updateComment({ owner, repo, comment_id: earlier.id, body });
     } else {
@@ -975,7 +974,7 @@ async function postPauseNotice(
       PROGRESS_MARKER,
       FORCE_CAP_MARKER,
     );
-    const notice = await findPauseNotice(target, lastRoundAt);
+    const notice = await findOpenNotice(target, FORCE_CAP_MARKER, lastRoundAt);
     if (notice) {
       await octokit.rest.issues.updateComment({ owner, repo, comment_id: notice.id, body });
     } else {
@@ -992,16 +991,19 @@ async function postPauseNotice(
   return { conclusion: 'action_required', title: 'Automatic review paused', summary: `${reason} Automatic review is paused until someone asks for another round.` };
 }
 
-/** Returns the unticked pause notice posted or updated after `lastRoundAt`. A failed lookup returns `undefined`, so a new notice is posted. */
-async function findPauseNotice(target: RunTarget, lastRoundAt: string | undefined): Promise<{ id: number } | undefined> {
+/**
+ * Returns Manki's latest notice with `marker` and no ticked box, posted or updated after `lastRoundAt`.
+ * A failed lookup returns `undefined`, so a new notice is posted.
+ */
+async function findOpenNotice(target: RunTarget, marker: string, lastRoundAt: string | undefined): Promise<{ id: number } | undefined> {
   const { octokit, bot, owner, repo, prNumber } = target;
   const since = lastRoundAt ? Date.parse(lastRoundAt) : -Infinity;
   try {
     const comments = await fetchPRComments(octokit, owner, repo, prNumber);
-    return comments.find(c => isBotLogin(bot, c.user?.login) && !!c.body?.includes(FORCE_CAP_MARKER)
-      && c.body.includes('- [ ] Force review') && Date.parse(c.updated_at) > since);
+    return comments.find(c => isBotLogin(bot, c.user?.login) && !!c.body?.includes(marker)
+      && !c.body.includes('- [x] Force review') && Date.parse(c.updated_at) > since);
   } catch (error) {
-    core.warning(`Failed to look up an earlier pause notice: ${error}`);
+    core.warning(`Failed to look up an earlier notice: ${error}`);
     return undefined;
   }
 }
@@ -1549,12 +1551,12 @@ async function runFullReview(
     const shortSha = commitSha.slice(0, 7);
     if (lineCount > config.max_diff_lines) {
       core.warning(`Diff too large (${lineCount} reviewable lines > ${config.max_diff_lines} max)`);
-      checkReport = await postTooBigNotice(target, commentId, `**Too big to review** at \`${shortSha}\`: this PR has ${lineCount} reviewable lines, above the limit of ${config.max_diff_lines} that Manki reviews. Split it into smaller PRs to get a review.`, false);
+      checkReport = await postTooBigNotice(target, commentId, `**Too big to review** at \`${shortSha}\`: this PR has ${lineCount} reviewable lines, above the limit of ${config.max_diff_lines} that Manki reviews. Split it into smaller PRs to get a review.`, false, recap.priorRounds.at(-1)?.meta.timestamp);
       return;
     }
     if (lineCount > autoLimit && !forceReview && !skipCap) {
       core.info(`No automatic review: ${lineCount} reviewable lines > ${autoLimit}`);
-      checkReport = await postTooBigNotice(target, commentId, `**Too big for automatic review** at \`${shortSha}\`: this PR has ${lineCount} reviewable lines, above the limit of ${autoLimit} for automatic review. Split it into smaller PRs, or tick the box to review it in full:`, true);
+      checkReport = await postTooBigNotice(target, commentId, `**Too big for automatic review** at \`${shortSha}\`: this PR has ${lineCount} reviewable lines, above the limit of ${autoLimit} for automatic review. Split it into smaller PRs, or tick the box to review it in full:`, true, recap.priorRounds.at(-1)?.meta.timestamp);
       return;
     }
 

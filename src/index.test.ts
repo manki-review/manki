@@ -2290,8 +2290,8 @@ describe('runFullReview orchestration', () => {
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [file], totalAdditions: 9_000, totalDeletions: 0 });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [file], excluded: [] });
     jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([
-      { id: 71, body: '**Too big for automatic review** ...\n\n- [ ] Force review\n\n<!-- manki -->\n<!-- manki-force-review -->\n<!-- manki-too-big -->', user: { login: 'manki-review[bot]' } },
-      { id: 70, body: '**Too big for automatic review** ...\n\n- [x] Force review\n\n<!-- manki -->\n<!-- manki-force-review -->\n<!-- manki-too-big -->', user: { login: 'manki-review[bot]' } },
+      { id: 71, body: '**Too big for automatic review** ...\n\n- [ ] Force review\n\n<!-- manki -->\n<!-- manki-force-review -->\n<!-- manki-too-big -->', user: { login: 'manki-review[bot]' }, updated_at: '2026-11-07T10:00:00Z' },
+      { id: 70, body: '**Too big for automatic review** ...\n\n- [x] Force review\n\n<!-- manki -->\n<!-- manki-force-review -->\n<!-- manki-too-big -->', user: { login: 'manki-review[bot]' }, updated_at: '2026-11-07T09:00:00Z' },
     ] as Awaited<ReturnType<typeof ghUtils.fetchPRComments>>);
 
     await callRunFullReview();

@@ -1290,6 +1290,7 @@ async function runReviewerAgent(
   const slices = sliceDiff(parsePRDiff(rawDiff), config.slice_lines ?? DEFAULT_CONFIG.slice_lines!);
   if (slices.length <= 1) return runReviewerOnSlice(client, config, finder, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, options);
   core.info(`${finder.name} reads the diff in ${slices.length} slices`);
+  const startedAt = Date.now();
   const results = await mapWithConcurrency(slices, MAX_PARALLEL_SLICES, slice => {
     const paths = new Set(slice.files.map(f => f.path));
     const sliceContents = fileContents && new Map([...fileContents].filter(([path]) => paths.has(path)));
@@ -1299,7 +1300,7 @@ async function runReviewerAgent(
     findings: results.flatMap(r => r.findings),
     responseLength: results.reduce((sum, r) => sum + r.responseLength, 0),
     usage: results.reduce((sum, r) => addUsage(sum, r.usage), { ...ZERO_USAGE }),
-    latencyMs: Math.max(...results.map(r => r.latencyMs)),
+    latencyMs: Date.now() - startedAt,
   };
 }
 
