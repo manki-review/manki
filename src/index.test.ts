@@ -1005,6 +1005,9 @@ describe('handleCommentTrigger', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     _resetOctokitCache();
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'anthropic_api_key' ? 'test-api-key' : '',
+    );
   });
 
   it('skips when comment is on an issue, not a PR', async () => {
@@ -1152,6 +1155,9 @@ describe('isApprovedOnCommit guard', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     _resetOctokitCache();
+    jest.mocked(core.getInput).mockImplementation((name: string) =>
+      name === 'anthropic_api_key' ? 'test-api-key' : '',
+    );
     mockPullsGet.mockResolvedValue({
       data: { title: 'Test PR', body: '', head: { sha: 'abc' }, base: { ref: 'main' } },
     });
