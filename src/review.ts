@@ -11,14 +11,14 @@ import { dynamicFence, LinkedIssue, titleToSlug } from './github';
 import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, PreviousFinding, titleOverlapType } from './recap';
 import { FOLLOW_UP_TAG, SECURITY_TAG, ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
-import { relatedReposCacheDir, warnRelatedRepoFailures } from './related-repos';
+import { fetchedRelatedRepos, relatedReposCacheDir, warnRelatedRepoFailures } from './related-repos';
 import { makeScratchDir } from './tool-install';
 import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, chooseGroup, classifyPr, resolveRouting } from './routing';
 import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { runVerdictReader, verdictBlockerToFinding } from './verdict';
 import { WRITING_RULES } from './writing-rules';
-import { checkFindingClaims, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
+import { checkFindingClaims, ClaimSources, formatStaticSignals, isAnalyzerSignal, toolAlertFindings } from './static-signals';
 
 const DISMISSED_LINE_TOLERANCE = 5;
 
@@ -946,7 +946,10 @@ export async function runReview(
   }
 
   const staticSignals = prContext?.staticSignals ?? [];
-  const claimSources = { diff, rawDiff, fileContents, signals: staticSignals };
+  const claimSources: ClaimSources = {
+    diff, rawDiff, fileContents, signals: staticSignals,
+    ...(related && { related: { names: related.repos.map(r => r.repo), checkouts: fetchedRelatedRepos(related.stateDir) } }),
+  };
   let finderFindings: Finding[] = allFindings.map(f => ({ ...f, toolEvidence: checkFindingClaims(f, claimSources) }));
   let suppressionCount = 0;
   if (memory?.suppressions && memory.suppressions.length > 0) {

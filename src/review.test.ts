@@ -1,4 +1,5 @@
-import { writeFileSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { join } from 'path';
 
 import {
@@ -1711,20 +1712,25 @@ describe('runReview', () => {
     mockedApplySuppressions.mockReturnValue({ kept: [], suppressed: [] });
   });
 
-  it('offers the finders and the judge the related repos only when the finders have tools, and warns about each one they could not fetch', async () => {
+  it('offers the finders and the judge the related repos only when the finders have tools, checks their citations, and warns about each one they could not fetch', async () => {
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const checkout = mkdtempSync(join(tmpdir(), 'manki-related-checkout-'));
+    writeFileSync(join(checkout, 'lib.rs'), 'pub fn api() {}\n');
     const clients = makeClients();
     Object.assign(clients.reviewer, { repoTools: true });
+    const cited = { severity: 'warning', title: 'Breaks a consumer', file: 'src/a.ts', line: 1, description: 'Called at `o/s:lib.rs:1` and `o/r:x.rs:3`.' };
     jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (_system, _user, options) => {
       const stateDir = options?.repoTools?.related?.stateDir;
       if (stateDir) {
         writeFileSync(join(stateDir, 'o%2Fr.lock'), String(process.pid));
         writeFileSync(join(stateDir, 'o%2Fr.failed'), 'fatal: repository not found');
+        writeFileSync(join(stateDir, 'o%2Fs.lock'), String(process.pid));
+        writeFileSync(join(stateDir, 'o%2Fs.done'), checkout);
       }
-      return { content: '[]' };
+      return { content: JSON.stringify([cited]) };
     });
-    const related_repos = [{ repo: 'o/r', kind: 'consumer' as const }];
-    const options = { diff: makeDiff(), rawDiff: 'raw diff', repoContext: 'repo context' };
+    const related_repos = [{ repo: 'o/r', kind: 'consumer' as const }, { repo: 'o/s', kind: 'reference' as const }];
+    const options = { diff: makeDiff({ files: [{ path: 'src/a.ts', changeType: 'modified', hunks: [] }] }), rawDiff: 'raw diff', repoContext: 'repo context' };
     try {
       await runReview(clients, { ...options, config: makeConfig({ related_repos }), workspace: '/work/pr-head' });
       await runReview(clients, { ...options, config: makeConfig({ related_repos }) });
@@ -1743,8 +1749,12 @@ describe('runReview', () => {
       // The judge gets the related repo rules only for a round whose finders could read them.
       expect(mockedRunJudgeAgent.mock.calls.map(call => call[2].relatedRepos)).toEqual([related_repos, undefined, undefined, undefined]);
       expect(warnSpy).toHaveBeenCalledWith('Could not fetch related repo o/r, which must be public on github.com: fatal: repository not found');
+      const notes = mockedRunJudgeAgent.mock.calls.map(call => call[2].findings[0]?.toolEvidence?.note);
+      expect(notes[0]).toContain('`o/s:lib.rs:1` is in the fetched checkout, `o/r:x.rs:3` is unchecked: o/r was not fetched this round');
+      expect(notes[1]).not.toContain('o/s:lib.rs:1');
     } finally {
       warnSpy.mockRestore();
+      rmSync(checkout, { recursive: true, force: true });
     }
   });
 

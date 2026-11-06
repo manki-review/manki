@@ -151,7 +151,7 @@ describe('buildJudgeSystemPrompt', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig({ instructions: 'Use strict TypeScript.' }), 5, false, 0, related_repos);
     const rules = prompt.slice(prompt.indexOf('## Related Repos'), prompt.indexOf('## Project Instructions'));
     expect(rules).toContain('References, which this repository implements or ports: `dashpay/dash`, `dashpay/dips`. Consumers, which depend on this repository: `dashpay/platform`.');
-    expect(rules).toContain('the cap for a fact you cannot check does not apply to it');
+    expect(rules).toContain('A citation listed there as in the fetched checkout is evidence the reviewer read, so the cap for a fact you cannot check does not apply to it. Any other citation is a fact you cannot check.');
     expect(rules).toContain('**A divergence from a reference** is graded by the blocker tests');
     expect(rules).toContain('It is a `blocker` only when the PR description says the change does not break anything.');
     expect(buildJudgeSystemPrompt(makeConfig(), 5, false, 0, [related_repos[2]])).toContain('References, which this repository implements or ports: none.');

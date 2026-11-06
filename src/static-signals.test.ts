@@ -1,4 +1,5 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { basename, join } from 'path';
 
 import * as core from '@actions/core';
@@ -710,5 +711,35 @@ describe('checkFindingClaims', () => {
     expect(checkFindingClaims(claim, { ...sources, signals: [signal({ tool: 'build', ruleId: 'TS18048', line: 3, message: 'b is possibly undefined' })] }))
       .toEqual({ status: 'confirmed', note: 'build reports an error on line 3: b is possibly undefined' });
     expect(checkFindingClaims(claim, { ...sources, signals: [signal({ tool: 'pylint', ruleId: 'E1101', line: 3 })] })).toEqual(unchecked);
+  });
+
+  it('checks each cited line of a related repo in its fetched checkout, and nowhere outside it', () => {
+    const base = mkdtempSync(join(tmpdir(), 'manki-citations-'));
+    try {
+      const checkout = join(base, 'o', 'r');
+      mkdirSync(join(checkout, 'src'), { recursive: true });
+      writeFileSync(join(checkout, 'src', 'lib.rs'), 'pub fn a() {}\npub fn b() {}\n');
+      writeFileSync(join(base, 'outside.rs'), `${'x\n'.repeat(50)}`);
+      symlinkSync(join(base, 'outside.rs'), join(checkout, 'link.rs'));
+      const related = { names: ['o/r', 'o/s'], checkouts: new Map([['o/r', checkout]]) };
+      const description = [
+        'Used at `o/r:src/lib.rs:2` and o/r:src/lib.rs:1-2, again at `o/r:src/lib.rs:2`.',
+        'Also o/r:src/lib.rs:2-9, o/r:src/gone.rs:1, o/r:src:1, o/r:link.rs:40, o/r:../outside.rs:40, o/s:x.rs:1 and other/repo:a.rs:1.',
+      ].join(' ');
+      expect(checkFindingClaims(finding({ description }), { ...sources, related })).toEqual({ status: 'none', note: `Checked: ${[
+        'the file is in the diff', 'the line is in the file',
+        '`o/r:src/lib.rs:2` is in the fetched checkout',
+        '`o/r:src/lib.rs:1-2` is in the fetched checkout',
+        '`o/r:src/lib.rs:2-9` is not in the fetched checkout: src/lib.rs has 2 lines',
+        '`o/r:src/gone.rs:1` is not in the fetched checkout: src/gone.rs is not a file there',
+        '`o/r:src:1` is not in the fetched checkout: src is not a file there',
+        '`o/r:link.rs:40` is not in the fetched checkout: link.rs is not a file there',
+        '`o/r:../outside.rs:40` is not in the fetched checkout: ../outside.rs is not a file there',
+        '`o/s:x.rs:1` is unchecked: o/s was not fetched this round',
+      ].join(', ')}.` });
+      expect(checkFindingClaims(finding({ description }), sources).note).toBe('Checked: the file is in the diff, the line is in the file.');
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
   });
 });

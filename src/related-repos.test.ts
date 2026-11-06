@@ -4,7 +4,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, 
 import { devNull, tmpdir } from 'os';
 import { join } from 'path';
 
-import { relatedRepoLoader, RelatedRepoLoaderOptions, relatedReposCacheDir, warnRelatedRepoFailures } from './related-repos';
+import { fetchedRelatedRepos, relatedRepoLoader, RelatedRepoLoaderOptions, relatedReposCacheDir, warnRelatedRepoFailures } from './related-repos';
 import { RelatedRepo } from './types';
 import { gitEnv } from './workspace';
 
@@ -238,6 +238,7 @@ describe('relatedRepoLoader', () => {
     expect(calls.filter(c => c.cwd.endsWith('dips')).map(c => c.args[0])).toEqual(['init', 'remote', 'sparse-checkout', 'fetch']);
     expect(log).toHaveBeenCalledWith(`Could not repack ${join(cacheDir, 'dashpay', 'dash')}: fatal: out of memory`);
     expect(readdirSync(stateDir).sort()).toEqual(['dashpay%2Fdash.done', 'dashpay%2Fdash.lock', 'dashpay%2Fdips.failed', 'dashpay%2Fdips.lock']);
+    expect(fetchedRelatedRepos(stateDir)).toEqual(new Map([['dashpay/dash', join(cacheDir, 'dashpay', 'dash')]]));
 
     warnRelatedRepoFailures(stateDir);
     expect(core.warning).toHaveBeenCalledTimes(1);
