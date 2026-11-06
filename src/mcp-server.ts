@@ -161,6 +161,7 @@ export async function astGrepSearch(root: string, api: AstGrepApi, { pattern, la
 }
 
 const MAX_READ_LINES = 2000;
+const READ_NOTE_ROOM = 100;
 const MAX_GLOB_RESULTS = 500;
 
 /** Reads `absolute` as text, or returns `undefined` for a file over `MAX_FILE_BYTES` or one that looks binary. */
@@ -183,8 +184,17 @@ export async function readRepoFile(root: string, { path, offset = 1, limit = MAX
   const text = readText(target.absolute);
   if (text === undefined) throw new Error(`${path} is binary or over ${MAX_FILE_BYTES / 1024} KB`);
   const lines = text.split('\n');
-  const end = Math.min(lines.length, offset - 1 + Math.min(limit, MAX_READ_LINES));
-  const shown = lines.slice(offset - 1, end).map((line, i) => `${offset + i}\t${line}`);
+  const last = Math.min(lines.length, offset - 1 + Math.min(limit, MAX_READ_LINES));
+  const shown: string[] = [];
+  let chars = 0;
+  let end = offset - 1;
+  // Stops before the output cap, so the note that names the next offset is never the part that gets cut.
+  for (; end < last; end++) {
+    const line = `${end + 1}\t${lines[end]}`;
+    if (shown.length > 0 && chars + line.length + 1 > MAX_OUTPUT_CHARS - READ_NOTE_ROOM) break;
+    shown.push(line);
+    chars += line.length + 1;
+  }
   const more = end < lines.length ? `\n[${lines.length - end} more lines, read on with offset ${end + 1}]` : '';
   return capOutput((shown.join('\n') || `${path} has no line ${offset}.`) + more);
 }

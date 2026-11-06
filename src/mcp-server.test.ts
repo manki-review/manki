@@ -64,6 +64,8 @@ describe('Manki tool server', () => {
     }
     mkdirSync(join(repo, 'vendor'));
     writeFileSync(join(repo, 'vendor', 'huge.ts'), `console.log(1);\n${'// filler\n'.repeat(110_000)}`);
+    mkdirSync(join(repo, 'docs'));
+    writeFileSync(join(repo, 'docs', 'long.txt'), `${'filler line\n'.repeat(3000)}`);
     symlinkSync(join(outside, 'secret.ts'), join(repo, 'src', 'link.ts'));
     symlinkSync(outside, join(repo, 'src', 'outdir'));
     client = await connect(repo);
@@ -87,6 +89,11 @@ describe('Manki tool server', () => {
   it('reads, searches and lists files', async () => {
     expect(await call(fileClient, 'read_file', { path: 'src/a.ts' })).toEqual({ text: '1\tconst x = 2;\n2\tconsole.log(x);\n3\t', isError: false });
     expect((await call(fileClient, 'read_file', { path: 'src/a.ts', offset: 2, limit: 1 })).text).toBe('2\tconsole.log(x);\n[1 more lines, read on with offset 3]');
+    // A read longer than the output cap stops early and still says where to read on.
+    const long = (await call(fileClient, 'read_file', { path: 'docs/long.txt' })).text;
+    expect(long.length).toBeLessThanOrEqual(20_000);
+    const [, lastShown, next] = long.match(/\n(\d+)\tfiller line\n\[\d+ more lines, read on with offset (\d+)\]$/)!;
+    expect(Number(next)).toBe(Number(lastShown) + 1);
     expect((await call(fileClient, 'grep', { text: 'CONSOLE.LOG', ignoreCase: true, path: 'src' })).text).toBe('src/a.ts:2: console.log(x);');
     expect((await call(fileClient, 'grep', { text: 'unwrap', glob: '*.rs' })).text).toBe('src/b.rs:2:     v.unwrap()');
     expect((await call(fileClient, 'grep', { text: 'console.log', path: 'vendor' })).text).toBe('No matches.\n[1 binary files or files over 1024 KB were not searched]');
