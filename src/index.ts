@@ -6,7 +6,7 @@ import * as path from 'path';
 import { assertWritesAllowed, RunCancelledError, stopWritesOn } from './abort';
 import { AppMemory, AuthResult, createAuthenticatedOctokit, getMemoryToken } from './auth';
 import { sanitizeTokens, withMarkers } from './utils';
-import { applyBaseReviewConfig, BaseReviewConfig, loadConfig, loadConfigFromFile, loadReviewConfig, sanitizeForkConfig, resolveFallbackModel, resolveMemoryRepo, resolveModel, resolvePairModel } from './config';
+import { applyBaseReviewConfig, BaseReviewConfig, loadConfig, loadConfigFromFile, loadReviewConfig, matchSkipRule, sanitizeForkConfig, resolveFallbackModel, resolveMemoryRepo, resolveModel, resolvePairModel } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, outcomeReport, ReviewCheck, startReviewCheck } from './check-run';
@@ -407,6 +407,11 @@ async function handlePullRequest(): Promise<void> {
 
   await runFullReview(owner, repo, prNumber, commitSha, pr.base.ref, prContext, {
     prAuthorLogin: pr.user?.login,
+    skipFacts: {
+      labels: (pr.labels ?? []).map((l: { name?: string }) => l.name ?? '').filter(Boolean),
+      author: pr.user?.login,
+      branch: pr.head.ref ?? '',
+    },
     headRepoFullName: pr.head.repo?.full_name,
     trigger: buildRoundTrigger(),
   });
@@ -1418,6 +1423,13 @@ async function runFullReview(
     const loaded = await loadRunConfig(target, configPath, headRepoFullName);
     if (!loaded) return;
     const { config, reviewSource } = loaded;
+    const skipRule = !forceReview && options.skipFacts ? matchSkipRule(config, options.skipFacts) : undefined;
+    if (skipRule) {
+      core.info(`Skipping review: the PR matches the skip rule for ${skipRule}`);
+      check = await startReviewCheck(octokit, owner, repo, commitSha);
+      checkReport = { conclusion: 'skipped', title: 'Review skipped', summary: `This PR matches the skip rule for ${skipRule} in \`${configPath}\` on the base branch.` };
+      return;
+    }
     if (await skipsRound(target, config, trigger, forceReview)) return;
 
     const commentId = await postProgressComment(octokit, owner, repo, prNumber, commitSha);

@@ -1,4 +1,4 @@
-import { applyBaseReviewConfig, DEFAULT_CONFIG, loadConfig, loadConfigFromContent, loadConfigFromFile, loadReviewConfig, loadStaticAnalysisConfig, resolveFallbackModel, resolveMemoryRepo, resolveModel, resolvePairModel, reviewFloorErrors, sanitizeForkConfig } from './config';
+import { applyBaseReviewConfig, DEFAULT_CONFIG, loadConfig, loadConfigFromContent, loadConfigFromFile, loadReviewConfig, loadStaticAnalysisConfig, matchSkipRule, resolveFallbackModel, resolveMemoryRepo, resolveModel, resolvePairModel, reviewFloorErrors, sanitizeForkConfig } from './config';
 import { ReviewConfig } from './types';
 
 // Suppress @actions/core output during tests
@@ -249,6 +249,32 @@ describe('config', () => {
 
       const missed = applyBaseReviewConfig(loadConfigFromContent(''), { review: { routing: { security: 'solo' } }, source: 'base' });
       expect([missed.source, missed.config.review]).toEqual(['base_invalid', undefined]);
+    });
+
+    it('takes the skip rules from the base branch only, and none from a base whose rules are invalid', () => {
+      expect(DEFAULT_CONFIG).toEqual(expect.objectContaining({ skip_labels: [], skip_authors: [], skip_branches: [] }));
+      const base = loadReviewConfig('skip_authors: ["dependabot[bot]"]\nskip_branches: ["renovate/**"]\n');
+      expect(base.skip).toEqual({ skip_labels: [], skip_authors: ['dependabot[bot]'], skip_branches: ['renovate/**'] });
+
+      const head = loadConfigFromContent('skip_labels: ["wip"]\nskip_authors: ["me"]\n');
+      expect(head.skip_labels).toEqual(['wip']);
+      const { config } = applyBaseReviewConfig(head, base);
+      expect([config.skip_labels, config.skip_authors, config.skip_branches]).toEqual([[], ['dependabot[bot]'], ['renovate/**']]);
+      expect(applyBaseReviewConfig(head, { source: 'base_unreadable' }).config).toEqual(expect.objectContaining({ skip_labels: [], skip_authors: [], skip_branches: [] }));
+
+      expect(loadReviewConfig('skip_labels: "deps"\n').skip).toBeUndefined();
+      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Invalid skip rules in .manki.yml on the base branch, skipping no PR'));
+      expect(() => loadConfigFromContent('skip_branches: ["", "main"]\n')).toThrow('`skip_branches` must be an array of non-empty strings');
+    });
+
+    it('matches a PR by label and author case-insensitively, and by head branch glob', () => {
+      const config = { ...DEFAULT_CONFIG, skip_labels: ['Dependencies'], skip_authors: ['Dependabot[bot]'], skip_branches: ['renovate/**'] };
+      const pr = { labels: [], author: 'someone', branch: 'feature/x' };
+      expect(matchSkipRule(config, pr)).toBeUndefined();
+      expect(matchSkipRule(config, { ...pr, labels: ['bug', 'dependencies'] })).toBe('label "dependencies"');
+      expect(matchSkipRule(config, { ...pr, author: 'dependabot[bot]' })).toBe('author dependabot[bot]');
+      expect(matchSkipRule(config, { ...pr, branch: 'renovate/npm-yaml-2.x' })).toBe('branch renovate/npm-yaml-2.x');
+      expect(matchSkipRule(DEFAULT_CONFIG, { labels: ['dependencies'], author: 'dependabot[bot]', branch: 'renovate/x' })).toBeUndefined();
     });
   });
 

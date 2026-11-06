@@ -670,6 +670,13 @@ exclude_paths:
   - "dist/**"
   - "*.generated.*"
 
+# PRs that get no automatic review (default: none). Read from the base branch
+# only, so a PR cannot skip itself. Labels and authors compare case-insensitively,
+# branches are glob patterns on the head branch. See "Skipping PRs" below.
+# skip_labels: ["dependencies"]
+# skip_authors: ["dependabot[bot]", "renovate[bot]"]
+# skip_branches: ["dependabot/**"]
+
 # Maximum diff size before skipping (default: 50000 lines)
 max_diff_lines: 50000
 
@@ -744,6 +751,12 @@ memory:
 ```
 
 See [`.manki.yml.example`](.manki.yml.example) for the full reference with defaults.
+
+### Skipping PRs
+
+`skip_labels`, `skip_authors` and `skip_branches` name PRs that get no automatic review, such as dependency bumps from a bot. Manki reads them from `.manki.yml` on the base branch only, so a PR that edits them cannot skip itself. A PR that matches any rule gets no review, no comment and no approval. In webhook mode its `Manki` check completes as skipped. A `@manki review` comment still reviews it.
+
+A skipped check passes a required status check, so a branch protection rule that requires `Manki` lets a skipped PR merge without a review. Use a rule that only trusted actors can trigger, such as `skip_authors` for bot accounts, rather than a label any contributor can add.
 
 ### Review pipeline
 

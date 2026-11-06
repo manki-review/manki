@@ -7,7 +7,7 @@ import type { RoundOutcome } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
-type CheckConclusion = 'success' | 'failure' | 'neutral' | 'cancelled' | 'action_required';
+type CheckConclusion = 'success' | 'failure' | 'neutral' | 'cancelled' | 'skipped' | 'action_required';
 
 /** How a `Manki` check run ends, and the title and summary it shows on the PR. */
 export interface CheckReport {
