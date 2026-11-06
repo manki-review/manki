@@ -301,20 +301,29 @@ function emptyCliCwd(): string {
   return emptyCwd;
 }
 
-// Besides `SYSTEM_ENV`, a CLI needs a home, the locale, the CA bundles a proxy may need, and the Gemini Cloud project.
+// Besides `SYSTEM_ENV`, a CLI needs a home, the locale and the CA bundles a proxy may need.
 // Upper case, because Windows names some of them in mixed case, such as `Path`.
 const CLI_ENV = new Set([
-  ...SYSTEM_ENV, 'HOME', 'LANG', 'RUNNER_TEMP', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS', 'GOOGLE_CLOUD_PROJECT',
+  ...SYSTEM_ENV, 'HOME', 'LANG', 'RUNNER_TEMP', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS',
   'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'PATHEXT', 'COMSPEC',
 ].map((name) => name.toUpperCase()));
 const CLI_ENV_PREFIX = /^(?:LC|XDG)_/i;
 
+export type CliProvider = 'claude' | 'codex' | 'gemini';
+
+// The configuration each CLI documents, such as base URLs, regions, projects and the Bedrock and Vertex switches.
+const PROVIDER_ENV: Record<CliProvider, RegExp> = {
+  claude: /^(?:ANTHROPIC_|CLAUDE_CODE_|VERTEX_REGION_|CLOUD_ML_REGION$|AWS_(?:REGION|DEFAULT_REGION|PROFILE|CONFIG_FILE|SHARED_CREDENTIALS_FILE)$)/i,
+  codex: /^(?:OPENAI_|CODEX_)/i,
+  gemini: /^(?:GEMINI_|GOOGLE_|VERTEX_)/i,
+};
+
 /**
- * Returns the environment for a provider CLI: the variables of `env` the CLI needs to run, plus the provider's own
- * `vars`. Nothing named like a secret, such as `*_TOKEN` or `*_KEY`, passes, except the variable named `credential`.
+ * Returns the environment for the `provider` CLI: the variables of `env` any CLI needs to run, the provider's own
+ * configuration, and `vars`. Nothing named like a secret, such as `*_TOKEN` or `*_KEY`, passes, except `credential`.
  */
-export function cliEnv(vars: NodeJS.ProcessEnv = {}, credential?: string, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const needed = Object.entries(env).filter(([name]) => CLI_ENV.has(name.toUpperCase()) || CLI_ENV_PREFIX.test(name));
+export function cliEnv(provider: CliProvider, vars: NodeJS.ProcessEnv = {}, credential?: string, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const needed = Object.entries(env).filter(([name]) => CLI_ENV.has(name.toUpperCase()) || CLI_ENV_PREFIX.test(name) || PROVIDER_ENV[provider].test(name));
   return Object.fromEntries([...needed, ...Object.entries(vars)].filter(([name]) => name === credential || !SECRET_NAME.test(name)));
 }
 

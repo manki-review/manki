@@ -172,7 +172,7 @@ export class GeminiClient implements LLMClient {
       label: 'Gemini',
       cliPath,
       args,
-      env: cliEnv({
+      env: cliEnv('gemini', {
         // GOOGLE_GENAI_USE_GCA=true selects the LOGIN_WITH_GOOGLE auth type in
         // non-interactive mode. The CLI then loads its credentials from the
         // `oauth_creds.json` file seeded above (which carries a refresh_token,

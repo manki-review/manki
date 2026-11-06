@@ -54,7 +54,6 @@ describe('cliEnv', () => {
       RUNNER_TEMP: '/home/runner/work/_temp',
       HTTPS_PROXY: 'http://proxy:3128',
       NODE_EXTRA_CA_CERTS: '/etc/ssl/proxy.pem',
-      GOOGLE_CLOUD_PROJECT: 'manki-project',
       DEPLOY_PEM: '-----BEGIN PRIVATE KEY-----',
       DATABASE_URL: 'postgres://admin:hunter2@db/prod',
       GITHUB_REPOSITORY: 'manki-review/manki',
@@ -63,13 +62,11 @@ describe('cliEnv', () => {
       ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'oidc-request',
       ACTIONS_RUNTIME_TOKEN: 'runtime',
       GITHUB_TOKEN: 'ghs_workflow',
-      ANTHROPIC_API_KEY: 'sk-ant',
-      CLAUDE_CODE_OAUTH_TOKEN: 'claude-oauth',
       INPUT_GITHUB_TOKEN: 'ghs_input',
       INPUT_MODEL: 'claude-opus-4-6',
       XDG_SESSION_TOKEN: 'xdg-secret',
     };
-    expect(cliEnv({}, undefined, env)).toEqual({
+    expect(cliEnv('codex', {}, undefined, env)).toEqual({
       PATH: '/usr/bin',
       HOME: '/home/runner',
       LANG: 'C.UTF-8',
@@ -78,18 +75,51 @@ describe('cliEnv', () => {
       RUNNER_TEMP: '/home/runner/work/_temp',
       HTTPS_PROXY: 'http://proxy:3128',
       NODE_EXTRA_CA_CERTS: '/etc/ssl/proxy.pem',
-      GOOGLE_CLOUD_PROJECT: 'manki-project',
     });
   });
 
   it('keeps the Windows variables a CLI needs whatever their case', () => {
     const env = { Path: 'C:\\Windows', SystemRoot: 'C:\\Windows', USERPROFILE: 'C:\\Users\\runner', APPDATA: 'C:\\Users\\runner\\AppData', ComSpec: 'cmd.exe', DEPLOY_PEM: 'pem' };
-    expect(cliEnv({}, undefined, env)).toEqual({ Path: 'C:\\Windows', SystemRoot: 'C:\\Windows', USERPROFILE: 'C:\\Users\\runner', APPDATA: 'C:\\Users\\runner\\AppData', ComSpec: 'cmd.exe' });
+    expect(cliEnv('codex', {}, undefined, env)).toEqual({ Path: 'C:\\Windows', SystemRoot: 'C:\\Windows', USERPROFILE: 'C:\\Users\\runner', APPDATA: 'C:\\Users\\runner\\AppData', ComSpec: 'cmd.exe' });
+  });
+
+  it('gives each provider only its own configuration, and none of its keys or tokens', () => {
+    const env = {
+      ANTHROPIC_BASE_URL: 'https://gateway.example',
+      ANTHROPIC_AUTH_TOKEN: 'gateway-token',
+      ANTHROPIC_API_KEY: 'sk-ant',
+      CLAUDE_CODE_USE_BEDROCK: '1',
+      CLAUDE_CODE_CLIENT_KEY_PASSPHRASE: 'mtls',
+      AWS_REGION: 'us-east-1',
+      AWS_PROFILE: 'bedrock',
+      AWS_SECRET_ACCESS_KEY: 'aws-secret',
+      AWS_SESSION_TOKEN: 'aws-session',
+      CLOUD_ML_REGION: 'us-east5',
+      VERTEX_REGION_CLAUDE_4_5_SONNET: 'europe-west1',
+      OPENAI_BASE_URL: 'https://openai.example',
+      OPENAI_API_KEY: 'sk-openai',
+      CODEX_CA_CERTIFICATE: '/etc/ssl/codex.pem',
+      CODEX_API_KEY: 'codex-key',
+      GEMINI_MODEL: 'gemini-3',
+      GEMINI_API_KEY: 'gemini-key',
+      GOOGLE_CLOUD_PROJECT: 'manki-project',
+      GOOGLE_APPLICATION_CREDENTIALS: '/tmp/gcp.json',
+    };
+    expect(cliEnv('claude', {}, undefined, env)).toEqual({
+      ANTHROPIC_BASE_URL: 'https://gateway.example',
+      CLAUDE_CODE_USE_BEDROCK: '1',
+      AWS_REGION: 'us-east-1',
+      AWS_PROFILE: 'bedrock',
+      CLOUD_ML_REGION: 'us-east5',
+      VERTEX_REGION_CLAUDE_4_5_SONNET: 'europe-west1',
+    });
+    expect(cliEnv('codex', {}, undefined, env)).toEqual({ OPENAI_BASE_URL: 'https://openai.example', CODEX_CA_CERTIFICATE: '/etc/ssl/codex.pem' });
+    expect(cliEnv('gemini', {}, undefined, env)).toEqual({ GEMINI_MODEL: 'gemini-3', GOOGLE_CLOUD_PROJECT: 'manki-project', VERTEX_REGION_CLAUDE_4_5_SONNET: 'europe-west1' });
   });
 
   it('adds the provider variables, and of those named like a secret only the credential', () => {
     const vars = { CLAUDE_CODE_OAUTH_TOKEN: 'claude-oauth', CLAUDE_CODE_MAX_OUTPUT_TOKENS: '32768', GITHUB_TOKEN: 'ghs_workflow' };
-    expect(cliEnv(vars, 'CLAUDE_CODE_OAUTH_TOKEN', { PATH: '/usr/bin', ANTHROPIC_API_KEY: 'sk-ant' })).toEqual({
+    expect(cliEnv('claude', vars, 'CLAUDE_CODE_OAUTH_TOKEN', { PATH: '/usr/bin', ANTHROPIC_API_KEY: 'sk-ant' })).toEqual({
       PATH: '/usr/bin',
       CLAUDE_CODE_OAUTH_TOKEN: 'claude-oauth',
       CLAUDE_CODE_MAX_OUTPUT_TOKENS: '32768',
