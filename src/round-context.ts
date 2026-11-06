@@ -208,10 +208,10 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
         (acc, u) => ({
           inputTokens: acc.inputTokens + u.inputTokens,
           outputTokens: acc.outputTokens + u.outputTokens,
-          cachedTokens: acc.cachedTokens + u.cachedTokens,
+          cacheReadTokens: acc.cacheReadTokens + u.cacheReadTokens,
           reasoningTokens: acc.reasoningTokens + u.reasoningTokens,
         }),
-        { inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 },
+        { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, reasoningTokens: 0 },
       )
     : undefined;
   const stageUsages: Array<['planner' | 'reviewer' | 'judge' | 'dedup' | 'verdict', LLMUsage | undefined]> = [

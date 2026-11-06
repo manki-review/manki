@@ -275,7 +275,7 @@ describe('sendMessage (API path)', () => {
     expect(result.usage).toEqual({
       inputTokens: 200,
       outputTokens: 60,
-      cachedTokens: 40,
+      cacheReadTokens: 40,
       reasoningTokens: 15,
     });
     expect(result.latencyMs).toBeGreaterThanOrEqual(0);
@@ -308,7 +308,7 @@ describe('sendMessage (API path)', () => {
     mockCreate.mockResolvedValueOnce({ choices: [{ message: { content: 'response text' } }] });
     const client = new OpenAIClient({ auth: { kind: 'apiKey', key: 'sk' }, model: 'gpt-4o' });
     const result = await client.sendMessage('sys', 'user');
-    expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 });
+    expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, reasoningTokens: 0 });
   });
 
   it('throws when client is not initialized (oauth path called via API method)', async () => {
@@ -617,7 +617,7 @@ describe('sendViaOAuth (Codex CLI path)', () => {
 
     const result = await client.sendMessage('sys', 'user');
     expect(result.content).toBe('hello world');
-    expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 });
+    expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, reasoningTokens: 0 });
     expect(result.latencyMs).toBeGreaterThanOrEqual(0);
   });
 

@@ -302,7 +302,7 @@ export class OpenAIClient implements LLMClient {
       ? {
           inputTokens: readCount(sdkUsage.prompt_tokens),
           outputTokens: readCount(sdkUsage.completion_tokens),
-          cachedTokens: readCount(sdkUsage.prompt_tokens_details?.cached_tokens),
+          cacheReadTokens: readCount(sdkUsage.prompt_tokens_details?.cached_tokens),
           reasoningTokens: readCount(sdkUsage.completion_tokens_details?.reasoning_tokens),
         }
       : { ...ZERO_USAGE };

@@ -174,7 +174,7 @@ describe('sendMessage effort option (API path)', () => {
     });
     const client = new GeminiClient({ auth: { kind: 'apiKey', key: 'k' }, model: 'gemini-3.1-pro-preview' });
     const result = await client.sendMessage('system', 'user', { effort: 'high' });
-    expect(result.usage).toEqual({ inputTokens: 350, outputTokens: 90, cachedTokens: 25, reasoningTokens: 70 });
+    expect(result.usage).toEqual({ inputTokens: 350, outputTokens: 90, cacheReadTokens: 25, reasoningTokens: 70 });
     expect(result.latencyMs).toBeGreaterThanOrEqual(0);
   });
 
@@ -193,7 +193,7 @@ describe('sendMessage effort option (API path)', () => {
     mockGenerateContent.mockResolvedValueOnce({ text: 'response' });
     const client = new GeminiClient({ auth: { kind: 'apiKey', key: 'k' }, model: 'gemini-3.1-flash-lite' });
     const result = await client.sendMessage('system', 'user');
-    expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 });
+    expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, reasoningTokens: 0 });
   });
 
   it.each([
@@ -360,7 +360,7 @@ describe('GeminiClient OAuth path', () => {
 
     const result = await client.sendMessage('system', 'user');
     expect(result.content).toBe('hello there');
-    expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0, cachedTokens: 0, reasoningTokens: 0 });
+    expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, reasoningTokens: 0 });
     expect(result.latencyMs).toBeGreaterThanOrEqual(0);
   });
 

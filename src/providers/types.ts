@@ -3,7 +3,7 @@ export type ProviderName = 'anthropic' | 'openai' | 'gemini';
 export interface LLMUsage {
   inputTokens: number;
   outputTokens: number;
-  cachedTokens: number;
+  cacheReadTokens: number;
   reasoningTokens: number;
 }
 
@@ -32,7 +32,7 @@ export function readCount(value: unknown): number {
 export const ZERO_USAGE: LLMUsage = Object.freeze({
   inputTokens: 0,
   outputTokens: 0,
-  cachedTokens: 0,
+  cacheReadTokens: 0,
   reasoningTokens: 0,
 });
 
@@ -40,7 +40,7 @@ export function addUsage(a: LLMUsage, b: LLMUsage): LLMUsage {
   return {
     inputTokens: a.inputTokens + b.inputTokens,
     outputTokens: a.outputTokens + b.outputTokens,
-    cachedTokens: a.cachedTokens + b.cachedTokens,
+    cacheReadTokens: a.cacheReadTokens + b.cacheReadTokens,
     reasoningTokens: a.reasoningTokens + b.reasoningTokens,
   };
 }

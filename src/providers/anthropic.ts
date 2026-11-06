@@ -76,11 +76,11 @@ export function extractAnthropicCLIUsage(resultEvent: unknown): LLMUsage {
 
 /** Maps an Anthropic `usage` block to `LLMUsage`. Input counts cache writes and reads, which `input_tokens` leaves out. */
 function readAnthropicUsage(u: Record<string, unknown>): LLMUsage {
-  const cachedTokens = readCount(u.cache_read_input_tokens);
+  const cacheReadTokens = readCount(u.cache_read_input_tokens);
   return {
-    inputTokens: readCount(u.input_tokens) + readCount(u.cache_creation_input_tokens) + cachedTokens,
+    inputTokens: readCount(u.input_tokens) + readCount(u.cache_creation_input_tokens) + cacheReadTokens,
     outputTokens: readCount(u.output_tokens),
-    cachedTokens,
+    cacheReadTokens,
     reasoningTokens: 0,
   };
 }

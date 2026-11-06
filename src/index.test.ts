@@ -2622,20 +2622,20 @@ describe('runFullReview orchestration', () => {
       agentNames: ['security', 'general'],
       allJudgedFindings: [security], rawFindings: [security],
       agentUsage: new Map([
-        ['security', { inputTokens: 100, outputTokens: 20, cachedTokens: 5, reasoningTokens: 0 }],
-        ['general',  { inputTokens: 80,  outputTokens: 10, cachedTokens: 0, reasoningTokens: 0 }],
+        ['security', { inputTokens: 100, outputTokens: 20, cacheReadTokens: 5, reasoningTokens: 0 }],
+        ['general',  { inputTokens: 80,  outputTokens: 10, cacheReadTokens: 0, reasoningTokens: 0 }],
       ]),
       agentDurationMs: new Map([['security', 1500], ['general', 1200]]),
       agentRetryCount: new Map([['security', 0], ['general', 1]]),
       agentFailureReasons: { general: 'CLI timed out' },
-      plannerUsage: { inputTokens: 30, outputTokens: 5, cachedTokens: 0, reasoningTokens: 0 },
+      plannerUsage: { inputTokens: 30, outputTokens: 5, cacheReadTokens: 0, reasoningTokens: 0 },
       plannerDurationMs: 500,
-      judgeUsage: { inputTokens: 200, outputTokens: 50, cachedTokens: 10, reasoningTokens: 25 },
+      judgeUsage: { inputTokens: 200, outputTokens: 50, cacheReadTokens: 10, reasoningTokens: 25 },
       judgeDurationMs: 800,
       judgeRetryCount: 2,
-      dedupUsage: { inputTokens: 40, outputTokens: 8, cachedTokens: 0, reasoningTokens: 0 },
+      dedupUsage: { inputTokens: 40, outputTokens: 8, cacheReadTokens: 0, reasoningTokens: 0 },
       dedupDurationMs: 200,
-      verdictUsage: { inputTokens: 60, outputTokens: 12, cachedTokens: 0, reasoningTokens: 0 },
+      verdictUsage: { inputTokens: 60, outputTokens: 12, cacheReadTokens: 0, reasoningTokens: 0 },
       outcome: 'ADDRESS_FIRST',
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [security], duplicates: [] });
@@ -2926,9 +2926,9 @@ describe('runFullReview orchestration', () => {
       agentNames: ['security'],
       allJudgedFindings: [finding], rawFindings: [finding],
       agentUsage: new Map([
-        ['security', { inputTokens: 50, outputTokens: 10, cachedTokens: 0, reasoningTokens: 0 }],
+        ['security', { inputTokens: 50, outputTokens: 10, cacheReadTokens: 0, reasoningTokens: 0 }],
       ]),
-      judgeUsage: { inputTokens: 100, outputTokens: 25, cachedTokens: 0, reasoningTokens: 0 },
+      judgeUsage: { inputTokens: 100, outputTokens: 25, cacheReadTokens: 0, reasoningTokens: 0 },
       judgeDurationMs: 400,
       judgeRetryCount: 0,
     });
