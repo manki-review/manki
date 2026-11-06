@@ -6930,7 +6930,7 @@ describe('force review checkbox', () => {
     expect(mockPullsGet).toHaveBeenCalled();
   });
 
-  it('in-progress tickbox still blocked by cap when rounds at limit (skipCap=false)', async () => {
+  it('in-progress tickbox runs a blockers-only round while the cap pauses automatic review', async () => {
     jest.mocked(core.getInput).mockImplementation((name: string) =>
       name === 'anthropic_api_key' ? 'test-api-key' : '',
     );
@@ -6967,9 +6967,8 @@ describe('force review checkbox', () => {
 
     await run();
 
-    // cap fires because skipCap=false — forceReview only bypasses in-progress check, not cap
-    expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
-    expect(mockOctokitInstance.rest.issues.createComment).toHaveBeenCalledWith(
+    expect(jest.mocked(reviewModule.runReview).mock.calls[0][1]).toMatchObject({ blockersOnly: true, finalRound: false });
+    expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalledWith(
       expect.objectContaining({ body: expect.stringContaining('Automatic review is paused') }),
     );
   });
