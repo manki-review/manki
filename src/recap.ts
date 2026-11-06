@@ -248,7 +248,8 @@ interface PreviousFinding extends FindingMetadata {
  * Build suppression entries from the current PR's review threads. Returns one
  * entry per manki-authored thread that is either resolved or whose latest
  * author reply is classified `agree`. Threads without a parseable title
- * (missing severity marker) are skipped.
+ * (missing severity marker) are skipped, and so are `fixed` threads, since a
+ * finding at a fixed spot is left to the judge.
  *
  * `agree-reply` suppressions only fire when the reply author matches
  * `prAuthorLogin`. This prevents an arbitrary third-party commenter from
@@ -264,7 +265,7 @@ function collectInPrSuppressions(
   const suppressions: InPrSuppression[] = [];
   for (const pf of previousFindings) {
     if (!pf.title || pf.title.length < 3) continue;
-    if (!pf.line) continue;
+    if (!pf.line || pf.fixed) continue;
     const reason = inPrSuppressionReasonFor(pf, prAuthorLogin);
     if (!reason) continue;
     const lineStart = pf.lineStart ?? pf.line;

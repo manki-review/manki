@@ -1328,7 +1328,7 @@ describe('fetchRecapState', () => {
       const { unique } = deduplicateFindings(newFindings, state.previousFindings);
       expect(unique.map(f => f.file)).toEqual([files.bot, files.judge, files.unknown]);
       expect(unique[1].resemblesFixed).toEqual({ title, file: files.judge, line: 10 });
-      expect(collectInPrSuppressions(state.previousFindings).map(s => s.fingerprint.file)).toEqual([files.human, files.judge]);
+      expect(collectInPrSuppressions(state.previousFindings).map(s => s.fingerprint.file)).toEqual([files.human]);
       const resolvedThreadIds = collectResolvedThreadIds(state.previousFindings);
       expect(resolvedThreadIds).toEqual(new Set(['T_HUMAN', 'T_JUDGE']));
       const ratcheted = applyCrossRoundSuppression(newFindings, state.priorRounds, { resolvedThreadIds, suppressResolvedThreads: true });
@@ -1411,7 +1411,7 @@ describe('fetchRecapState', () => {
 
       const reRaised = files.map(file => makeFinding({ severity: 'blocker', title, file, line: 10 }));
       expect(collectInPrSuppressions(state.previousFindings, 'author').map(s => s.fingerprint.file))
-        .toEqual(files.filter(file => !cases[file].blocks));
+        .toEqual(files.filter(file => !cases[file].blocks && file !== 'src/judge-addressed.ts'));
       // Dedup drops only findings on resolved threads that were not confirmed fixed. An agreed thread, security or not, is dropped by the in-PR suppressions above.
       expect(deduplicateFindings(reRaised, state.previousFindings).unique.map(f => f.file))
         .toEqual(files.filter(file => cases[file].blocks || cases[file].reply || file === 'src/judge-addressed.ts'));
@@ -1927,6 +1927,7 @@ describe('collectInPrSuppressions', () => {
       lineEnd: 10,
       slug: titleToSlug('Missing null check'),
     });
+    expect(collectInPrSuppressions([makePrevious({ title: 'Missing null check', file: 'src/a.ts', line: 10, status: 'resolved', fixed: true })])).toEqual([]);
   });
 
   // Note: `fetchReviewThreads` always classifies a thread with at least one
