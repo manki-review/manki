@@ -1203,6 +1203,24 @@ describe('selectTeam', () => {
       expect(team.finders.map(f => f.steps)).toEqual(row[5].map(() => steps));
     });
 
+    it('runs two finders on every group one effort level higher on a deeper review', () => {
+      const deeper = (files: DiffFile[], triage: ReturnType<typeof t>) => selectTeam(makeDiff({ files }), makeConfig(), triage, true);
+
+      const solo = deeper(code, t(false, false, false));
+      expect(readers(solo)).toEqual([`${S} · high`, `${O} · high`]);
+      expect(solo.routing).toMatchObject({ class: 'internal', group: 'pair', groupSource: 'deeper_review', escalatedFrom: 'solo', deeper: true });
+      expect(solo.finders.map(f => f.steps)).toEqual([30, 30]);
+
+      expect(readers(deeper(docs, t(true, false, true)))).toEqual([`${S} · high`, `${O} · high`]);
+
+      const pair = deeper(code, t(false, true, true));
+      expect(readers(pair)).toEqual([`${S} · max`, `${O} · max`]);
+      expect(pair.routing).toMatchObject({ group: 'pair', groupSource: 'routing', deeper: true });
+      expect(pair.routing.escalatedFrom).toBeUndefined();
+
+      expect(run(['', code, t(false, false, false), 'auto', '', []]).routing.deeper).toBeUndefined();
+    });
+
     it('gives a tests-only change one full finder, where the trivial verifier read it before', () => {
       for (const files of [tests, [...tests, ...docs], [file('src/__snapshots__/a.snap'), file('tests/fixture.json')]]) {
         for (const triage of [t(true, false, false), t(false, false, false)]) {

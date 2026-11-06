@@ -24,8 +24,8 @@ import { buildRoundContext, RoundRecordInput } from './round-context';
 import { collectStaticSignals } from './static-signals';
 import { runStepHook, STEP_HOOK_COMMAND } from './tool-steps';
 import { fetchWorkspace } from './workspace';
-import { isSettingsBox, SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
-import { DashboardData, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, RoundTrigger, RunMode, SettingsState, StaticSignal, roundContextToFlatAliases } from './types';
+import { SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
+import { DashboardData, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, RoundTrigger, SettingsState, StaticSignal, roundContextToFlatAliases } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -362,25 +362,23 @@ async function loadSettings(owner: string, repo: string, prNumber: number): Prom
   return state?.settings ? { ...state, settings: state.settings } : undefined;
 }
 
-/** The boxes that apply to a PR: Pause and Full review always, Review this draft on a draft, and `extra`. */
+/** The boxes that apply to a PR: Pause, Full review and Deeper review always, Review this draft on a draft, and `extra`. */
 function settingsBoxes(draft: boolean, extra: SettingsBox[] = []): Set<SettingsBox> {
-  return new Set<SettingsBox>(['pause', 'full', ...(draft ? ['draft' as const] : []), ...extra]);
+  return new Set<SettingsBox>(['pause', 'full', 'deeper', ...(draft ? ['draft' as const] : []), ...extra]);
 }
 
 /** The boxes the coordinator state ticks: Pause while paused, and each box whose run is still queued. */
 function tickedBoxes(settings: SettingsState): Set<SettingsBox> {
-  const queued = [...settings.queuedModes].filter((mode): mode is RunMode & SettingsBox => isSettingsBox(mode));
-  return new Set<SettingsBox>([...(settings.settings.paused ? ['pause' as const] : []), ...queued]);
+  return new Set<SettingsBox>([...(settings.settings.paused ? ['pause' as const] : []), ...settings.queuedModes]);
 }
 
 /**
- * How a run reviews. A box a writer ticked (Force review, Full review or Review this draft) reviews even a draft or
- * an already reviewed or paused PR, and `full` counts every finding as new.
+ * How a run reviews. Any box a writer ticked reviews even a draft or an already reviewed or paused PR.
+ * `full` counts every finding as new, and `deeper` runs two finders on every group, each one effort level higher.
  */
-function reviewModes(settings: SettingsState | undefined): { forced: boolean; fullReview: boolean } {
+function reviewModes(settings: SettingsState | undefined): { forced: boolean; fullReview: boolean; deeper: boolean } {
   const modes = settings?.runModes;
-  const fullReview = !!modes?.has('full');
-  return { forced: fullReview || !!modes?.has('force') || !!modes?.has('draft'), fullReview };
+  return { forced: !!modes && modes.size > 0, fullReview: !!modes?.has('full'), deeper: !!modes?.has('deeper') };
 }
 
 /**
@@ -466,7 +464,7 @@ async function handlePullRequest(): Promise<void> {
 
   const draft = !!pr.draft;
   const settings = await loadSettings(owner, repo, prNumber);
-  const { forced, fullReview } = reviewModes(settings);
+  const { forced, fullReview, deeper } = reviewModes(settings);
   const { octokit, bot } = await getAuth();
   if (draft && !forced && !(await reviewsDrafts(octokit, owner, repo, pr.base.ref))) {
     core.info('Skipping draft PR (`drafts: skip`)');
@@ -522,6 +520,7 @@ async function handlePullRequest(): Promise<void> {
     settings,
     draft,
     fullReview,
+    deeper,
   });
 }
 
@@ -578,7 +577,7 @@ async function handleCommentTrigger(
 
   const { octokit, bot } = await getAuth();
   const settings = await loadSettings(owner, repo, prNumber);
-  const { forced, fullReview } = reviewModes(settings);
+  const { forced, fullReview, deeper } = reviewModes(settings);
   if (settingsTick && !forced) {
     core.info('The settings box tick queued no review for this run, nothing to do');
     return;
@@ -634,6 +633,7 @@ async function handleCommentTrigger(
     settings,
     draft,
     fullReview,
+    deeper,
   });
 }
 
@@ -985,9 +985,9 @@ async function collectDiff(target: RunTarget, config: ReviewConfig) {
   return { fullDiff, diff, excludedFiles, rawDiff: rebuildRawDiff(diff) };
 }
 
-function initialDashboard(diff: ParsedDiff, config: ReviewConfig, plannerEnabled: boolean): DashboardData {
+function initialDashboard(diff: ParsedDiff, config: ReviewConfig, plannerEnabled: boolean, deeper?: boolean): DashboardData {
   // Without a planner the team is the fail-safe one. With one, `runReview` reports the team after triage.
-  const previewTeam = selectTeam(diff, config);
+  const previewTeam = selectTeam(diff, config, undefined, deeper);
   const lineCount = diff.totalAdditions + diff.totalDeletions;
   return plannerEnabled
     ? {
@@ -1095,31 +1095,47 @@ async function loadRunMemory(
 const TOO_BIG_MARKER = '<!-- manki-too-big -->';
 
 /**
- * Replaces the progress comment with a request to split a PR too big to review, and dismisses Manki's earlier
- * approvals, since no reviewer read the new code. Posts no review, so a request for changes stays. `offerForce`
- * adds a Force review box. Each push since the last round edits the unanswered notice instead of adding another.
+ * Replaces the run's progress comment with notice `body`. The open notice with `marker` from after `lastRoundAt` is
+ * edited instead of adding another. With a settings block and no such notice, the progress comment becomes the notice, so it keeps the block.
  */
-async function postTooBigNotice(target: RunTarget, commentId: number, text: string, offerForce: boolean, lastRoundAt?: string): Promise<CheckReport> {
+async function replaceWithNotice(target: RunTarget, progress: RunProgress, marker: string, body: string, lastRoundAt?: string): Promise<void> {
   const { octokit, owner, repo, prNumber } = target;
-  try {
-    await octokit.rest.issues.deleteComment({ owner, repo, comment_id: commentId });
-  } catch (error) {
-    core.warning(`Failed to delete progress comment: ${error}`);
+  const notice = await findOpenNotice(target, marker, lastRoundAt);
+  const keepId = progress.settings && !notice ? progress.commentId : undefined;
+  if (progress.commentId !== undefined && keepId === undefined) {
+    try {
+      await octokit.rest.issues.deleteComment({ owner, repo, comment_id: progress.commentId });
+    } catch (error) {
+      core.warning(`Failed to delete progress comment: ${error}`);
+    }
   }
-  await dismissPreviousReviews(octokit, owner, repo, prNumber, undefined, 'APPROVED');
   try {
-    const body = offerForce
-      ? withMarkers(`${text}\n\n- [ ] Force review`, PROGRESS_MARKER, FORCE_REVIEW_MARKER, TOO_BIG_MARKER)
-      : withMarkers(text, PROGRESS_MARKER, TOO_BIG_MARKER);
-    const earlier = await findOpenNotice(target, TOO_BIG_MARKER, lastRoundAt);
-    if (earlier) {
-      await octokit.rest.issues.updateComment({ owner, repo, comment_id: earlier.id, body });
+    const id = notice?.id ?? keepId;
+    if (id !== undefined) {
+      await octokit.rest.issues.updateComment({ owner, repo, comment_id: id, body });
     } else {
       await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
     }
   } catch (error) {
-    core.warning(`Failed to post the too-big notice: ${error instanceof Error ? error.message : error}`);
+    core.warning(`Failed to post the notice: ${error instanceof Error ? error.message : error}`);
   }
+}
+
+/**
+ * Replaces the progress comment with a request to split a PR too big to review, and dismisses Manki's earlier
+ * approvals, since no reviewer read the new code. Posts no review, so a request for changes stays. `offerForce`
+ * adds a Force review box, in the settings block when there is one.
+ */
+async function postTooBigNotice(target: RunTarget, progress: RunProgress, text: string, offerForce: boolean, lastRoundAt?: string): Promise<CheckReport> {
+  const { octokit, owner, repo, prNumber } = target;
+  await dismissPreviousReviews(octokit, owner, repo, prNumber, undefined, 'APPROVED');
+  const settings = progressSettings(target, progress, offerForce ? 'too big for automatic review' : 'too big to review', { boxes: offerForce ? ['force'] : [] });
+  const body = settings
+    ? withSettingsBlock(withMarkers(text, PROGRESS_MARKER, REVIEW_COMPLETE_MARKER, TOO_BIG_MARKER), settings)
+    : offerForce
+      ? withMarkers(`${text}\n\n- [ ] Force review`, PROGRESS_MARKER, FORCE_REVIEW_MARKER, TOO_BIG_MARKER)
+      : withMarkers(text, PROGRESS_MARKER, REVIEW_COMPLETE_MARKER, TOO_BIG_MARKER);
+  await replaceWithNotice(target, progress, TOO_BIG_MARKER, body, lastRoundAt);
   // A diff no reviewer read must not pass a required check, so it waits for a person.
   return { conclusion: 'action_required', title: 'Not reviewed', summary: text };
 }
@@ -1133,44 +1149,19 @@ async function postPauseNotice(
   target: RunTarget, progress: RunProgress, { capReached, capRounds, reason }: PauseState, maxAutoRounds: number,
   previousFindings: PreviousFinding[], lastRoundAt?: string,
 ): Promise<CheckReport> {
-  const { octokit, owner, repo, prNumber } = target;
   core.info(capReached
     ? `Round cap reached (${capRounds} rounds with new changes since the last approval >= max ${maxAutoRounds}) — skipping auto review`
     : 'Last round did not converge — skipping auto review');
   const settings = progressSettings(target, progress, 'automatic review paused', { boxes: ['force'] });
-  const notice = await findOpenNotice(target, settings ? PAUSE_NOTICE_MARKER : FORCE_CAP_MARKER, lastRoundAt);
-  // With a settings block and no earlier notice, the progress comment becomes the notice, so it keeps the block.
-  if (progress.commentId !== undefined && (notice || !settings)) {
-    try {
-      await octokit.rest.issues.deleteComment({ owner, repo, comment_id: progress.commentId });
-    } catch (error) {
-      core.warning(`Failed to delete progress comment: ${error}`);
-    }
-  }
-  try {
-    const blockers = formatOpenBlockers(previousFindings);
-    const body = settings
-      ? withSettingsBlock(withMarkers(`${reason} Automatic review is paused.${blockers ? `\n\n${blockers}` : ''}`, PROGRESS_MARKER, REVIEW_COMPLETE_MARKER, PAUSE_NOTICE_MARKER), settings)
-      : withMarkers(
-        `${reason} Automatic review is paused.${blockers ? `\n\n${blockers}\n\n` : ' '}Tick the box to run another round, or comment \`@manki review\`:\n\n- [ ] Force review`,
-        PROGRESS_MARKER,
-        FORCE_CAP_MARKER,
-      );
-    if (notice) {
-      await octokit.rest.issues.updateComment({ owner, repo, comment_id: notice.id, body });
-    } else if (settings && progress.commentId !== undefined) {
-      await octokit.rest.issues.updateComment({ owner, repo, comment_id: progress.commentId, body });
-    } else {
-      await octokit.rest.issues.createComment({
-        owner,
-        repo,
-        issue_number: prNumber,
-        body,
-      });
-    }
-  } catch (error) {
-    core.warning(`Failed to post round-cap notice: ${error}`);
-  }
+  const blockers = formatOpenBlockers(previousFindings);
+  const body = settings
+    ? withSettingsBlock(withMarkers(`${reason} Automatic review is paused.${blockers ? `\n\n${blockers}` : ''}`, PROGRESS_MARKER, REVIEW_COMPLETE_MARKER, PAUSE_NOTICE_MARKER), settings)
+    : withMarkers(
+      `${reason} Automatic review is paused.${blockers ? `\n\n${blockers}\n\n` : ' '}Tick the box to run another round, or comment \`@manki review\`:\n\n- [ ] Force review`,
+      PROGRESS_MARKER,
+      FORCE_CAP_MARKER,
+    );
+  await replaceWithNotice(target, progress, settings ? PAUSE_NOTICE_MARKER : FORCE_CAP_MARKER, body, lastRoundAt);
   return { conclusion: 'action_required', title: 'Automatic review paused', summary: `${reason} Automatic review is paused until someone asks for another round.` };
 }
 
@@ -1723,7 +1714,7 @@ async function runFullReview(
     const { fullDiff, diff, excludedFiles, rawDiff } = await collectDiff(target, config);
     const parseEndTime = Date.now();
     const lineCount = diff.totalAdditions + diff.totalDeletions;
-    const dashboard = initialDashboard(diff, config, !!clients.planner);
+    const dashboard = initialDashboard(diff, config, !!clients.planner, options.deeper);
     await updateProgressDashboard(octokit, owner, repo, commentId, dashboard, commitSha, runningSettings(target, progress));
     const unreviewedMetadata = (): ReviewMetadata => ({
       config: metadataConfig(config, models, 'none', []),
@@ -1735,12 +1726,12 @@ async function runFullReview(
     const shortSha = commitSha.slice(0, 7);
     if (lineCount > config.max_diff_lines) {
       core.warning(`Diff too large (${lineCount} reviewable lines > ${config.max_diff_lines} max)`);
-      checkReport = await postTooBigNotice(target, commentId, `**Too big to review** at \`${shortSha}\`: this PR has ${lineCount} reviewable lines, above the limit of ${config.max_diff_lines} that Manki reviews. Split it into smaller PRs to get a review.`, false, recap.priorRounds.at(-1)?.meta.timestamp);
+      checkReport = await postTooBigNotice(target, progress, `**Too big to review** at \`${shortSha}\`: this PR has ${lineCount} reviewable lines, above the limit of ${config.max_diff_lines} that Manki reviews. Split it into smaller PRs to get a review.`, false, recap.priorRounds.at(-1)?.meta.timestamp);
       return;
     }
     if (lineCount > autoLimit && !forceReview && !skipCap) {
       core.info(`No automatic review: ${lineCount} reviewable lines > ${autoLimit}`);
-      checkReport = await postTooBigNotice(target, commentId, `**Too big for automatic review** at \`${shortSha}\`: this PR has ${lineCount} reviewable lines, above the limit of ${autoLimit} for automatic review. Split it into smaller PRs, or tick the box to review it in full:`, true, recap.priorRounds.at(-1)?.meta.timestamp);
+      checkReport = await postTooBigNotice(target, progress, `**Too big for automatic review** at \`${shortSha}\`: this PR has ${lineCount} reviewable lines, above the limit of ${autoLimit} for automatic review. Split it into smaller PRs, or tick Force review to review it in full.`, true, recap.priorRounds.at(-1)?.meta.timestamp);
       return;
     }
 
@@ -1806,6 +1797,7 @@ async function runFullReview(
       headSha: commitSha,
       finalRound: !paused && countsTowardCap && maxAutoRounds > 0 && capRounds + 1 === maxAutoRounds,
       workspace,
+      deeper: options.deeper,
     });
     // A model call the stop aborted can end the round incomplete, and that round must not be posted.
     stop.signal.throwIfAborted();

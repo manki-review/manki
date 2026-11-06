@@ -1,12 +1,13 @@
 /** Ends the settings block of Manki's newest progress comment. The Worker reads the boxes above it. */
 export const SETTINGS_MARKER = '<!-- manki-settings -->';
 
-export type SettingsBox = 'pause' | 'full' | 'cancel' | 'draft' | 'force';
+export type SettingsBox = 'pause' | 'full' | 'deeper' | 'cancel' | 'draft' | 'force';
 
 /** The label of each box, in the order the block lists them. */
 const BOX_LABELS: Record<SettingsBox, string> = {
   pause: 'Pause automatic reviews',
   full: 'Full review',
+  deeper: 'Deeper review',
   cancel: 'Cancel this review',
   draft: 'Review this draft',
   force: 'Force review',
@@ -27,7 +28,7 @@ export interface SettingsView {
 const BLOCK_RE = /(?:^|\n+)---\n(?:Last reviewed `([0-9a-f]+)`|Not reviewed yet) · head `([0-9a-f]+)` · ([^\n]*)\n((?:- \[[ xX]\] [^\n]*\n)*)<!-- manki-settings -->((?:\n<!-- [^\n]* -->)*)\s*$/;
 const BOX_LINE_RE = /^- \[([ xX])\] [^\n]*<!-- manki-box:(\w+) -->$/gm;
 
-export function isSettingsBox(name: string): name is SettingsBox {
+function isSettingsBox(name: string): name is SettingsBox {
   return Object.hasOwn(BOX_LABELS, name);
 }
 

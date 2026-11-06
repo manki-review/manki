@@ -4,7 +4,7 @@ const view: SettingsView = {
   lastReviewed: 'abc1234def',
   head: 'def5678abc',
   status: 'review running',
-  boxes: new Set(['force', 'pause', 'full', 'cancel']),
+  boxes: new Set(['force', 'pause', 'deeper', 'full', 'cancel']),
   ticked: new Set(['pause', 'draft']),
 };
 
@@ -15,6 +15,7 @@ describe('settings block', () => {
       'Last reviewed `abc1234` · head `def5678` · review running',
       '- [x] Pause automatic reviews <!-- manki-box:pause -->',
       '- [ ] Full review <!-- manki-box:full -->',
+      '- [ ] Deeper review <!-- manki-box:deeper -->',
       '- [ ] Cancel this review <!-- manki-box:cancel -->',
       '- [ ] Force review <!-- manki-box:force -->',
       SETTINGS_MARKER,
@@ -27,7 +28,7 @@ describe('settings block', () => {
     const body = withSettingsBlock('**Review started**\n\n<!-- manki-bot -->', view);
     expect(parseSettingsBlock(body)).toEqual({
       lastReviewed: 'abc1234', head: 'def5678', status: 'review running',
-      boxes: new Set(['pause', 'full', 'cancel', 'force']), ticked: new Set(['pause']),
+      boxes: new Set(['pause', 'full', 'deeper', 'cancel', 'force']), ticked: new Set(['pause']),
     });
     const answered = `${body}\n<!-- manki-answered:42 -->`;
     expect(parseSettingsBlock(answered)?.status).toBe('review running');
