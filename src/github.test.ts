@@ -2073,6 +2073,16 @@ describe('buildDashboard', () => {
     expect(md).not.toContain('before the judge');
     expect(buildDashboard({ ...data, rawFindingCount: 1, keptCount: 0, droppedCount: 0, suppressionCount: 0, llmDedupCount: 1 }))
       .toContain(`**Judge:** 0 kept · 0 dropped\n${INDENT}before the judge: 1 dropped as a repeat of an earlier resolved finding`);
+    expect(md).not.toContain('Not finished checking');
+  });
+
+  it('lists the open leads the reviewers did not finish checking once the review is complete', () => {
+    const leads = Array.from({ length: 12 }, (_, i) => ({ title: `Lead <b>${i}</b>`, file: 'src/`a`.ts', line: i + 1 }));
+    const md = buildDashboard({ phase: 'complete', lineCount: 10, agentCount: 1, unfinishedChecks: leads });
+
+    expect(md).toContain(`\n\n**Not finished checking:** 12 leads\n${INDENT}Lead 0 (\`src/'a'.ts:1\`)\n`);
+    expect(md).toContain(`${INDENT}Lead 9 (\`src/'a'.ts:10\`)\n${INDENT}and 2 more`);
+    expect(buildDashboard({ phase: 'reviewed', lineCount: 10, agentCount: 1, unfinishedChecks: leads })).not.toContain('Not finished checking');
   });
 
   it('renders per-agent detail and the review class and group in the complete phase', () => {

@@ -47,6 +47,7 @@ const makeFinding = (overrides: Partial<Finding> = {}): Finding => ({
   line: 10,
   description: 'Variable x is unused.',
   reviewers: ['TestReviewer'],
+  evidence: { checks: [], proof: ['src/index.ts:10'] },
   ...overrides,
 });
 
@@ -407,6 +408,19 @@ describe('buildJudgeUserMessage', () => {
     // An outdated thread has no line, so the note names only the file.
     const outdated = buildJudgeUserMessage([makeFinding({ resemblesFixed: { title: 'Neutral check', file: 'src/check.ts', line: 0 } })], new Map(), '');
     expect(outdated).toContain('"Neutral check" at src/check.ts, which an earlier round confirmed fixed.');
+  });
+
+  it('shows what the reviewer cited, and marks a check it did not finish', () => {
+    const msg = buildJudgeUserMessage([
+      makeFinding({ title: 'Cited', evidence: { checks: ['read src/a.ts:3', 'grep `close(`: no match'], proof: ['src/a.ts:3'], emptySearch: 'grep `close(`: no match' } }),
+      makeFinding({ title: 'Bare', evidence: { checks: [], proof: [], emptySearch: '' }, notChecked: true }),
+      makeFinding({ title: 'Lead', evidence: undefined, notChecked: true, lead: { checked: 'read src/c.ts:9', left: 'find the writers' } }),
+    ], new Map(), '');
+
+    expect(msg).toContain("### Finding 1: Cited\n- **File**: src/index.ts:10\n- **Reviewers**: TestReviewer\n- **Description**: Variable x is unused.\n- **Evidence**: read src/a.ts:3 | grep 'close(': no match\n- **Proving lines**: src/a.ts:3\n- **Empty search**: grep 'close(': no match\n");
+    expect(msg).toContain('- **Proving lines**: none cited\n- **Empty search**: none cited, though the finding says something is missing\n- **Not checked yet**: the reviewer ran out of tool steps before it finished checking.');
+    expect(msg).toContain('- **Open lead**: checked read src/c.ts:9. Left: find the writers.');
+    expect(msg.match(/Not checked yet/g)).toHaveLength(1);
   });
 
   it('fences tool text as untrusted and gives each reviewer finding its claim-check note', () => {
@@ -924,6 +938,15 @@ describe('parseJudgeResponse', () => {
     expect(result.findings[0].severity).toBe('blocker');
     expect(result.findings[0].reasoning).toBe('This is a real bug.');
     expect(result.findings[0].confidence).toBe('high');
+  });
+
+  it('reads the proving lines the judge cites', () => {
+    const json = JSON.stringify({ findings: [
+      { id: 1, title: 'A', severity: 'blocker', reasoning: '', confidence: 'high', proof: ['src/a.ts:4', 'somewhere'] },
+      { id: 2, title: 'B', severity: 'blocker', reasoning: '', confidence: 'high', proof: 'src/a.ts:4' },
+    ] });
+
+    expect(parseJudgeResponse(json).findings.map(f => f.proof)).toEqual([['src/a.ts:4'], undefined]);
   });
 
   it('parses finding ids and drops unusable ones', () => {
@@ -3018,6 +3041,53 @@ describe('applyInPrSuppression', () => {
 });
 
 describe('mapJudgedToFindings', () => {
+  it('posts a blocker as a warning when nothing cites its proving lines, or when it rests on an absence no search backs', () => {
+    const blocker = (title: string, evidence?: Finding['evidence'], extra: Partial<Finding> = {}) => makeFinding({ title, severity: 'blocker', evidence, ...extra });
+    const originals = [
+      blocker('Reviewer proof', { checks: [], proof: ['src/a.ts:1'] }),
+      blocker('No proof anywhere', undefined),
+      blocker('Judge proof', { checks: ['read it'], proof: [] }),
+      blocker('Missing without a search', { checks: [], proof: ['src/a.ts:1'], emptySearch: '' }),
+      blocker('Missing with a search', { checks: [], proof: ['src/a.ts:1'], emptySearch: 'grep x: no match' }),
+      blocker('Tool alert', undefined, { toolSource: 'clippy' }),
+      makeFinding({ title: 'Warning without proof', severity: 'warning', evidence: undefined }),
+    ];
+    const judged: JudgedFinding[] = originals.map((f, i) => ({
+      id: i + 1, title: f.title, severity: f.severity, reasoning: 'Real.', confidence: 'high',
+      ...(f.title === 'Judge proof' && { proof: ['src/index.ts:12'] }),
+    }));
+
+    const result = mapJudgedToFindings(originals, judged);
+
+    expect(result.map(f => [f.title, f.severity])).toEqual([
+      ['Reviewer proof', 'blocker'],
+      ['No proof anywhere', 'warning'],
+      ['Judge proof', 'blocker'],
+      ['Missing without a search', 'warning'],
+      ['Missing with a search', 'blocker'],
+      ['Tool alert', 'blocker'],
+      ['Warning without proof', 'warning'],
+    ]);
+    expect(result[1].judgeNotes).toBe('Real.\nPosted as a warning, since it cites no lines that prove the failure.');
+    expect(result[2].evidence).toEqual({ checks: ['read it'], proof: ['src/index.ts:12'] });
+  });
+
+  it('gives the kept finding the proving lines of a duplicate folded into it', () => {
+    const originals = [
+      makeFinding({ title: 'Overflow in sum', severity: 'blocker', evidence: undefined }),
+      makeFinding({ title: 'Sum overflows', severity: 'blocker', evidence: { checks: ['read src/math.ts:2'], proof: ['src/math.ts:2'] } }),
+    ];
+    const judged: JudgedFinding[] = [
+      { id: 1, title: 'Overflow in sum', severity: 'blocker', reasoning: 'Real.', confidence: 'high' },
+      { id: 2, title: 'Sum overflows', severity: 'blocker', reasoning: 'Same.', confidence: 'high', duplicateOf: 1 },
+    ];
+
+    const [kept, ...rest] = mapJudgedToFindings(originals, judged);
+
+    expect(rest).toEqual([]);
+    expect([kept.severity, kept.evidence]).toEqual(['blocker', { checks: ['read src/math.ts:2'], proof: ['src/math.ts:2'] }]);
+  });
+
   it('maps reordered entries by id instead of position or title', () => {
     const originals = [
       makeFinding({ title: 'Missing null check in parser', file: 'parser.ts' }),

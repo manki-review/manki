@@ -198,9 +198,34 @@ export interface Finding {
   category?: FindingCategory;
   /** How big the fix is, set by the judge. */
   effort?: FindingEffort;
+  /** What the reviewer, and for proving lines also the judge, cited to back the finding. */
+  evidence?: FindingEvidence;
+  /** The reviewer ran out of tool steps before it finished checking the finding. */
+  notChecked?: boolean;
+  /** Set on a suspicion the reviewer was still checking when it wrapped up, instead of a finished finding. */
+  lead?: OpenLead;
 }
 
 export type FindingOrigin = 'new' | 'reviewed';
+
+/** What was cited to back a finding. */
+export interface FindingEvidence {
+  /** What the reviewer read or searched and what it showed, one short line each. */
+  checks: string[];
+  /** The `file:line` or `file:start-end` locations that show the failure. A blocker without them is posted as a warning at most. */
+  proof: string[];
+  /**
+   * Set when the finding says something is missing or handled nowhere: the search that came back empty, or an empty
+   * string when the reviewer cited none. Such a claim never blocks on its own.
+   */
+  emptySearch?: string;
+}
+
+/** What a reviewer had checked of a suspicion when it wrapped up, and what was left. */
+export interface OpenLead {
+  checked: string;
+  left: string;
+}
 
 /** `none` means no tool spoke to the claim. Silence is never evidence against a finding. */
 export type ToolEvidenceStatus = 'confirmed' | 'contradicted' | 'none';
@@ -288,6 +313,8 @@ export interface ReviewResult {
   agentNames: string[];
   allJudgedFindings?: Finding[];
   rawFindings?: Finding[];
+  /** Open leads below blocker, which are listed in the progress comment and never posted. */
+  openLeads?: Finding[];
   threadEvaluations?: ThreadEvaluation[];
   plannerResult?: PlannerResult;
   failedAgents?: string[];
@@ -803,6 +830,8 @@ export interface DashboardData {
   heuristicFallback?: boolean;
   /** The review class and group the round's readers came from, shown in the review header. */
   routing?: Pick<TeamRouting, 'class' | 'group'>;
+  /** Open leads below blocker that the reviewers did not finish checking. They are listed, never posted. */
+  unfinishedChecks?: Pick<Finding, 'title' | 'file' | 'line'>[];
 }
 
 export interface JudgeDecision {
@@ -1154,6 +1183,9 @@ export interface RoundRawFinding {
   reviewers: string[];
   description: string;
   suggestedFix?: string;
+  evidence?: FindingEvidence;
+  notChecked?: boolean;
+  lead?: OpenLead;
 }
 
 /** A finding the judge dropped, with the judge's reasoning. */
@@ -1414,6 +1446,10 @@ export interface FindingFingerprintEntry {
   category?: FindingCategory;
   /** Mirrors `Finding.effort`. */
   effort?: FindingEffort;
+  /** Mirrors `Finding.evidence`. */
+  evidence?: FindingEvidence;
+  /** Mirrors `Finding.notChecked`. */
+  notChecked?: boolean;
 }
 
 /** What a reply-handler run, Manki answering in a thread or to a command, records in its comment. */

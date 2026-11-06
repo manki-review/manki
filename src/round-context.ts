@@ -224,6 +224,9 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     reviewers: f.reviewers,
     description: f.description,
     ...(f.suggestedFix && { suggestedFix: f.suggestedFix }),
+    ...(f.evidence && { evidence: f.evidence }),
+    ...(f.notChecked && { notChecked: true }),
+    ...(f.lead && { lead: f.lead }),
   }));
   const judgeDrops: RoundJudgeDrop[] = allJudged.filter(f => f.severity === 'ignore').map(f => ({
     title: f.title,
@@ -251,6 +254,8 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(f.origin && { origin: f.origin }),
     ...(f.category && { category: f.category }),
     ...(f.effort && { effort: f.effort }),
+    ...(f.evidence && { evidence: f.evidence }),
+    ...(f.notChecked && { notChecked: true }),
   }));
   return {
     meta: {
