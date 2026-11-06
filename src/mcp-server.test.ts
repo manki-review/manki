@@ -9,7 +9,7 @@ import rust from '@ast-grep/lang-rust';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
-import { createMcpServer, McpServerOptions } from './mcp-server';
+import { createMcpServer, McpServerOptions, runMcpServer } from './mcp-server';
 
 // The grammars are registered once per process, so every test file registers the same ones.
 napi.registerDynamicLanguage({ python, rust });
@@ -167,6 +167,24 @@ describe('Manki tool server', () => {
     expect(results[1].text).toContain('change x');
     const refusal = { text: 'Manki: all 5 tool steps are used, so this call did not run. Call no more tools and give your final answer now.', isError: true };
     expect(results.slice(4)).toEqual([expect.objectContaining({ isError: false }), refusal, refusal]);
+  });
+
+  it('exits with an error on a bad step budget or a root that is not a directory', async () => {
+    const exit = jest.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+    const stderr = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await runMcpServer([repo, '--file-tools', '--steps', 'many']);
+      await runMcpServer([join(repo, 'src', 'a.ts')]);
+
+      expect(stderr.mock.calls.map(([text]) => String(text))).toEqual([
+        'Manki tool server: --steps needs a positive whole number\n',
+        `Manki tool server: ${join(repo, 'src', 'a.ts')} is not a directory\n`,
+      ]);
+      expect(exit.mock.calls).toEqual([[1], [1]]);
+    } finally {
+      exit.mockRestore();
+      stderr.mockRestore();
+    }
   });
 
   it('says when the history is cut at the shallow boundary', async () => {

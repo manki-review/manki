@@ -44,16 +44,16 @@ export function stepHookOutput(check: StepCheck): string {
 }
 
 /**
- * Runs as the Claude CLI's PreToolUse hook: takes a step in `dir` and refuses the call or adds the wrap-up note.
- * A hook that fails lets the call run, and the CLI's turn limit still ends the call.
+ * Runs as the Claude CLI's PreToolUse hook: reads the hook input to its end, takes a step in `dir`, and writes the
+ * output that refuses the call or adds the wrap-up note. A hook that fails lets the call run, and the CLI's turn limit
+ * still ends the call.
  */
-export async function runStepHook(dir: string | undefined, steps: string | undefined): Promise<void> {
-  process.stdin.resume();
-  await once(process.stdin, 'end');
+export async function runStepHook(
+  dir: string | undefined, steps: string | undefined, input: NodeJS.ReadableStream = process.stdin, output: NodeJS.WritableStream = process.stdout,
+): Promise<void> {
+  input.resume();
+  await once(input, 'end');
   const budget = Number(steps);
-  if (!dir || !Number.isInteger(budget) || budget <= 0) {
-    process.stderr.write(`Manki step hook: needs a directory and a step budget, got ${dir} and ${steps}\n`);
-    process.exit(1);
-  }
-  process.stdout.write(stepHookOutput(stepCheck(claimStep(dir), budget)));
+  if (!dir || !Number.isInteger(budget) || budget <= 0) throw new Error(`Manki step hook needs a directory and a step budget, got ${dir} and ${steps}`);
+  output.write(stepHookOutput(stepCheck(claimStep(dir), budget)));
 }
