@@ -96,9 +96,9 @@ export async function collectStaticSignals(
   const semgrepRules = settings.analyzers !== 'all' && settings.analyzers.semgrep ? settings.analyzers.semgrep.rules : [];
   // The files are read through the API and only parsed, so no code from the PR runs. Each analyzer reads its own files
   // within its own budget, so turning one on never shrinks what another one scans.
-  const readHeadFiles = (keep: (path: string) => boolean) => fetchFileContents(
+  const readHeadFiles = (keep: (path: string) => boolean, from = diff) => fetchFileContents(
     octokit, owner, repo, request.headSha,
-    diff.files.filter(f => f.changeType !== 'deleted' && keep(f.path)).map(f => f.path),
+    from.files.filter(f => f.changeType !== 'deleted' && keep(f.path)).map(f => f.path),
     MAX_ANALYZED_FILE_BYTES, MAX_ANALYZED_TOTAL_BYTES,
   );
   // A source returns `undefined` when it has no file to check, and is then left out of the record.
@@ -127,10 +127,11 @@ export async function collectStaticSignals(
   let ciSetup: Promise<string> | undefined;
   let workflows: Promise<Map<string, string>> | undefined;
   for (const analyzer of DEFAULT_ANALYZERS.filter(a => analyzers.includes(a))) {
+    // Like `secrets`, these check every changed file, since a PR can add its own `exclude_paths` to hide a workflow.
     const isTarget = analyzer === 'shellcheck' ? isShellCandidate : isWorkflowFile;
-    if (!diff.files.some(f => f.changeType !== 'deleted' && isTarget(f.path))) continue;
+    if (!fullDiff.files.some(f => f.changeType !== 'deleted' && isTarget(f.path))) continue;
     sources.push([analyzer, async () => {
-      const files = analyzer === 'shellcheck' ? shellScripts(await readHeadFiles(isTarget)) : await (workflows ??= readHeadFiles(isTarget));
+      const files = analyzer === 'shellcheck' ? shellScripts(await readHeadFiles(isTarget, fullDiff)) : await (workflows ??= readHeadFiles(isTarget, fullDiff));
       if (files.size === 0) return undefined;
       ciSetup ??= readCiSetup(octokit, request);
       if (new RegExp(`\\b${analyzer}\\b`, 'i').test(await ciSetup)) throw new AnalyzerSkipped(`CI already runs ${analyzer}`);
@@ -149,7 +150,7 @@ export async function collectStaticSignals(
       if (results === undefined) return [];
       const onlyAdded = (DEFAULT_ANALYZERS as readonly string[]).includes(source);
       const onDiff = results.filter(s => {
-        const file = (source === 'dependencies' || source === 'secrets' ? allFiles : files).get(s.file);
+        const file = (source === 'dependencies' || source === 'secrets' || onlyAdded ? allFiles : files).get(s.file);
         return file !== undefined && (onlyAdded ? addedLines(file).has(s.line) : isLineInDiff(file, s.line));
       }).map(s => analyzer ? { ...s, ruleId: cleanMessage(s.ruleId, MAX_NAME_CHARS), message: cleanMessage(s.message) } : s);
       if (analyzer) runs.push({ analyzer, status: 'ran', results: onDiff.length });
@@ -200,13 +201,12 @@ function shellScripts(files: Map<string, string>): Map<string, string> {
 }
 
 /**
- * Returns the text that shows which tools CI runs, which the PR cannot change: the names of the PR head's check runs from
- * apps other than GitHub Actions, and the base branch's workflows without comment lines, so a `# shellcheck disable=...`
- * directive does not count.
+ * Returns the text that shows which tools CI runs, from what the PR cannot change: the check run names on the base branch's
+ * head commit, and the base branch's workflows without comment lines, so a `# shellcheck disable=...` directive does not count.
  */
-async function readCiSetup(octokit: Octokit, { owner, repo, baseRef, headSha }: StaticSignalRequest): Promise<string> {
+async function readCiSetup(octokit: Octokit, { owner, repo, baseRef }: StaticSignalRequest): Promise<string> {
   const [runs, workflows] = await Promise.all([
-    octokit.paginate(octokit.rest.checks.listForRef, { owner, repo, ref: headSha, per_page: 100 }).catch((error: unknown) => {
+    octokit.paginate(octokit.rest.checks.listForRef, { owner, repo, ref: baseRef, per_page: 100 }).catch((error: unknown) => {
       logSkippedSource('checks', error);
       return [];
     }),
@@ -216,8 +216,7 @@ async function readCiSetup(octokit: Octokit, { owner, repo, baseRef, headSha }: 
     }),
   ]);
   const workflowLines = [...workflows.values()].flatMap(content => content.split('\n').filter(line => !line.trim().startsWith('#')));
-  // A PR can add a GitHub Actions job named after a tool, so only the base branch's workflows speak for GitHub Actions.
-  return [...runs.filter(r => r.app?.slug !== 'github-actions').map(r => r.name), ...workflowLines].join('\n');
+  return [...runs.map(r => r.name), ...workflowLines].join('\n');
 }
 
 async function readBaseWorkflows(octokit: Octokit, owner: string, repo: string, ref: string): Promise<Map<string, string>> {
