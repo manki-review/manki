@@ -5,6 +5,7 @@ import { promisify } from 'util';
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { Minimatch } from 'minimatch';
 import { z } from 'zod';
 
 import { AST_GREP_FAMILIES, AstGrepApi, languageOf, loadAstGrep } from './ast-grep';
@@ -15,6 +16,9 @@ const execFileAsync = promisify(execFile);
 
 /** The argument of `dist/index.js` that starts the tool server instead of a review. */
 export const MCP_SERVER_COMMAND = 'mcp-server';
+
+/** The argument after the root that makes the tool server also offer `read_file`, `grep` and `glob`. */
+export const FILE_TOOLS_FLAG = '--file-tools';
 
 const GIT_TIMEOUT_MS = 30_000;
 const GIT_MAX_BUFFER = 1024 * 1024;
@@ -156,6 +160,118 @@ export async function astGrepSearch(root: string, api: AstGrepApi, { pattern, la
   return capOutput([matches.join('\n') || 'No matches.', ...notes].join('\n'));
 }
 
+const MAX_READ_LINES = 2000;
+const READ_NOTE_ROOM = 100;
+const MAX_GLOB_RESULTS = 500;
+
+/** Reads `absolute` as text, or returns `undefined` for a file over `MAX_FILE_BYTES` or one that looks binary. */
+function readText(absolute: string): string | undefined {
+  if (statSync(absolute).size > MAX_FILE_BYTES) return undefined;
+  const text = readFileSync(absolute, 'utf-8');
+  return text.slice(0, 8000).includes('\0') ? undefined : text;
+}
+
+export interface ReadFileArgs {
+  path: string;
+  offset?: number;
+  limit?: number;
+}
+
+/** Returns lines `offset` to `offset + limit - 1` of the file, each prefixed with its number and a tab. */
+export async function readRepoFile(root: string, { path, offset = 1, limit = MAX_READ_LINES }: ReadFileArgs): Promise<string> {
+  const target = resolveInRoot(root, path);
+  if (!statSync(target.absolute).isFile()) throw new Error(`${path} is not a file`);
+  const text = readText(target.absolute);
+  if (text === undefined) throw new Error(`${path} is binary or over ${MAX_FILE_BYTES / 1024} KB`);
+  const lines = text.split('\n');
+  const last = Math.min(lines.length, offset - 1 + Math.min(limit, MAX_READ_LINES));
+  const shown: string[] = [];
+  let chars = 0;
+  let end = offset - 1;
+  // Stops before the output cap, so the note that names the next offset is never the part that gets cut.
+  for (; end < last; end++) {
+    const line = `${end + 1}\t${lines[end]}`;
+    if (shown.length > 0 && chars + line.length + 1 > MAX_OUTPUT_CHARS - READ_NOTE_ROOM) break;
+    shown.push(line);
+    chars += line.length + 1;
+  }
+  const more = end < lines.length ? `\n[${lines.length - end} more lines, read on with offset ${end + 1}]` : '';
+  return capOutput((shown.join('\n') || `${path} has no line ${offset}.`) + more);
+}
+
+const MAX_GLOB_CHARS = 200;
+const MAX_GLOB_ALTERNATIVES = 100;
+
+/**
+ * Compiles a glob once for a whole search. Refuses a long glob, nested braces, a brace range such as `{1..9}`, and braces
+ * that expand into more than `MAX_GLOB_ALTERNATIVES` patterns, since each of them can make a huge regular expression.
+ */
+function compileGlob(pattern: string): Minimatch {
+  if (pattern.length > MAX_GLOB_CHARS) throw new Error(`the glob is longer than ${MAX_GLOB_CHARS} characters`);
+  const alternatives = (pattern.match(/\{[^{}]*\}/g) ?? []).reduce((n, group) => n * group.split(',').length, 1);
+  if (/\{[^}]*\{|\{[^}]*\.\.[^}]*\}/.test(pattern) || alternatives > MAX_GLOB_ALTERNATIVES) {
+    throw new Error(`the glob expands into more than ${MAX_GLOB_ALTERNATIVES} patterns, nests braces or uses a brace range`);
+  }
+  // Extglobs such as `+(a|aa)+(a|aa)b` compile to nested quantifiers that backtrack for ages on a long file name.
+  return new Minimatch(pattern, { dot: true, matchBase: !pattern.includes('/'), noext: true });
+}
+
+export interface GrepArgs {
+  text: string;
+  path?: string;
+  glob?: string;
+  ignoreCase?: boolean;
+  maxResults?: number;
+}
+
+/** Returns each line under `path` that contains `text`, as `file:line: line`. Matches plain text, not a regular expression. */
+export async function grepRepo(root: string, { text, path = '.', glob, ignoreCase = false, maxResults = 100 }: GrepArgs): Promise<string> {
+  const realRoot = realpathSync(root);
+  const { files, cut } = listFiles(realRoot, resolveInRoot(root, path));
+  const filter = glob === undefined ? undefined : compileGlob(glob);
+  const needle = ignoreCase ? text.toLowerCase() : text;
+  const limit = Math.min(maxResults, MAX_MATCHES);
+  const matches: string[] = [];
+  let skipped = 0;
+  for (const file of files) {
+    if (filter && !filter.match(file)) continue;
+    const content = readText(join(realRoot, file));
+    if (content === undefined) {
+      skipped++;
+      continue;
+    }
+    const lines = content.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (!(ignoreCase ? lines[i].toLowerCase() : lines[i]).includes(needle)) continue;
+      matches.push(`${file}:${i + 1}: ${lines[i].slice(0, 200)}`);
+      if (matches.length >= limit) return capOutput(`${matches.join('\n')}\n[stopped at ${limit} matches]`);
+    }
+  }
+  const notes = [
+    ...(cut ? [`[the search stopped after ${MAX_FILES} files, so later files were not searched]`] : []),
+    ...(skipped > 0 ? [`[${skipped} binary files or files over ${MAX_FILE_BYTES / 1024} KB were not searched]`] : []),
+  ];
+  return capOutput([matches.join('\n') || 'No matches.', ...notes].join('\n'));
+}
+
+export interface GlobArgs {
+  pattern: string;
+  path?: string;
+}
+
+/** Returns the files under `path` whose path relative to the repository root matches the glob `pattern`. */
+export async function globRepo(root: string, { pattern, path = '.' }: GlobArgs): Promise<string> {
+  const glob = compileGlob(pattern);
+  const { files, cut } = listFiles(realpathSync(root), resolveInRoot(root, path));
+  const matched = files.filter(file => glob.match(file));
+  const shown = matched.slice(0, MAX_GLOB_RESULTS);
+  const notes = [
+    ...(matched.length > shown.length ? [`[${matched.length - shown.length} more files]`] : []),
+    ...(cut ? [`[the listing stopped after ${MAX_FILES} files]`] : []),
+  ];
+  return capOutput([shown.join('\n') || 'No files.', ...notes].join('\n'));
+}
+
 /** Runs `tool` and turns its text, or the message of its error, into an MCP tool result. */
 async function toolResult(tool: () => Promise<string>): Promise<{ content: { type: 'text'; text: string }[]; isError?: boolean }> {
   try {
@@ -165,9 +281,48 @@ async function toolResult(tool: () => Promise<string>): Promise<{ content: { typ
   }
 }
 
+export interface McpServerOptions {
+  /** Also offer `read_file`, `grep` and `glob`, for a CLI without file tools of its own. */
+  fileTools?: boolean;
+  loadApi?: () => Promise<AstGrepApi>;
+}
+
+// Read-only and closed-world, so a CLI that asks before a tool with side effects runs these without asking.
+const READ_ONLY = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
+
 /** Returns Manki's tool server for the repository at `root`. Every tool reads only inside `root` and runs no shell. */
-export function createMcpServer(root: string, loadApi: () => Promise<AstGrepApi> = loadAstGrep): McpServer {
+export function createMcpServer(root: string, { fileTools = false, loadApi = loadAstGrep }: McpServerOptions = {}): McpServer {
   const server = new McpServer({ name: 'manki', version: MANKI_VERSION });
+  if (fileTools) {
+    server.registerTool('read_file', {
+      description: 'Reads a text file of the repository, numbering each line.',
+      inputSchema: {
+        path: z.string().describe('File, relative to the repository root.'),
+        offset: z.number().int().positive().optional().describe('First line to read. Defaults to 1.'),
+        limit: z.number().int().positive().max(MAX_READ_LINES).optional().describe(`At most this many lines. Defaults to ${MAX_READ_LINES}.`),
+      },
+      annotations: READ_ONLY,
+    }, (args) => toolResult(() => readRepoFile(root, args)));
+    server.registerTool('grep', {
+      description: 'Finds the lines of the repository that contain a piece of text, and lists each as file:line. Matches plain text, not a regular expression.',
+      inputSchema: {
+        text: z.string().min(1).describe('Text to find.'),
+        path: z.string().optional().describe('File or directory to search, relative to the repository root. Defaults to the whole repository.'),
+        glob: z.string().optional().describe('Only search files whose path matches this glob, such as `*.rs` or `src/**/*.ts`.'),
+        ignoreCase: z.boolean().optional().describe('Ignore case. Defaults to false.'),
+        maxResults: z.number().int().positive().max(MAX_MATCHES).optional().describe('At most this many matches. Defaults to 100.'),
+      },
+      annotations: READ_ONLY,
+    }, (args) => toolResult(() => grepRepo(root, args)));
+    server.registerTool('glob', {
+      description: 'Lists the files of the repository whose path matches a glob, such as `**/*.rs` or `src/net/*`.',
+      inputSchema: {
+        pattern: z.string().min(1).describe('Glob over paths relative to the repository root.'),
+        path: z.string().optional().describe('Directory to list, relative to the repository root. Defaults to the whole repository.'),
+      },
+      annotations: READ_ONLY,
+    }, (args) => toolResult(() => globRepo(root, args)));
+  }
   server.registerTool('git_history', {
     description: 'Lists the commits that changed a file or directory of the repository, newest first. With startLine, it follows only those lines and shows how each commit changed them.',
     inputSchema: {
@@ -176,6 +331,7 @@ export function createMcpServer(root: string, loadApi: () => Promise<AstGrepApi>
       endLine: z.number().int().positive().optional().describe('Last line to follow. Defaults to startLine.'),
       maxCommits: z.number().int().positive().max(MAX_COMMITS).optional().describe(`At most this many commits. Defaults to 20.`),
     },
+    annotations: READ_ONLY,
   }, (args) => toolResult(() => gitHistory(root, args)));
   server.registerTool('ast_grep', {
     description: 'Finds code by syntax with an ast-grep pattern, such as `$A.unwrap()` or `fn $NAME($$$) -> Result<$T, $E>`, and lists each match as file:line.',
@@ -185,18 +341,19 @@ export function createMcpServer(root: string, loadApi: () => Promise<AstGrepApi>
       path: z.string().optional().describe('File or directory to search, relative to the repository root. Defaults to the whole repository.'),
       maxResults: z.number().int().positive().max(MAX_MATCHES).optional().describe('At most this many matches. Defaults to 50.'),
     },
+    annotations: READ_ONLY,
   }, (args) => toolResult(async () => astGrepSearch(root, await loadApi(), args)));
   return server;
 }
 
 /**
- * Serves Manki's tools for the repository at `root` over stdin and stdout until the client disconnects. Exits with an
- * error on stderr when `root` is not a directory or the server cannot start.
+ * Serves Manki's tools for the repository at `root` over stdin and stdout until the client disconnects, with the file
+ * tools when `fileTools` is set. Exits with an error on stderr when `root` is not a directory or the server cannot start.
  */
-export async function runMcpServer(root: string | undefined): Promise<void> {
+export async function runMcpServer(root: string | undefined, fileTools = false): Promise<void> {
   try {
     if (!root || !statSync(root).isDirectory()) throw new Error(`${root ?? 'no root'} is not a directory`);
-    await createMcpServer(root).connect(new StdioServerTransport());
+    await createMcpServer(root, { fileTools }).connect(new StdioServerTransport());
   } catch (error) {
     process.stderr.write(`Manki tool server: ${error instanceof Error ? error.message : String(error)}\n`);
     process.exit(1);

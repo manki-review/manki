@@ -19,9 +19,9 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 /** Connects a client to Manki's tool server for `root`, through the MCP protocol. */
-async function connect(root: string): Promise<Client> {
+async function connect(root: string, fileTools = false): Promise<Client> {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  await createMcpServer(root, async () => napi).connect(serverTransport);
+  await createMcpServer(root, { fileTools, loadApi: async () => napi }).connect(serverTransport);
   const client = new Client({ name: 'test', version: '0' });
   await client.connect(clientTransport);
   return client;
@@ -37,6 +37,7 @@ describe('Manki tool server', () => {
   let repo: string;
   let outside: string;
   let client: Client;
+  let fileClient: Client;
 
   beforeAll(async () => {
     base = mkdtempSync(join(tmpdir(), 'manki-mcp-test-'));
@@ -63,19 +64,51 @@ describe('Manki tool server', () => {
     }
     mkdirSync(join(repo, 'vendor'));
     writeFileSync(join(repo, 'vendor', 'huge.ts'), `console.log(1);\n${'// filler\n'.repeat(110_000)}`);
+    mkdirSync(join(repo, 'docs'));
+    writeFileSync(join(repo, 'docs', 'long.txt'), `${'filler line\n'.repeat(3000)}`);
     symlinkSync(join(outside, 'secret.ts'), join(repo, 'src', 'link.ts'));
     symlinkSync(outside, join(repo, 'src', 'outdir'));
     client = await connect(repo);
+    fileClient = await connect(repo, true);
   }, 30_000);
 
   afterAll(async () => {
     await client.close();
+    await fileClient.close();
     rmSync(base, { recursive: true, force: true });
   });
 
-  it('offers only the git history and ast-grep tools', async () => {
+  it('offers only the git history and ast-grep tools, and the file tools when asked, all marked read-only', async () => {
     const { tools } = await client.listTools();
     expect(tools.map(t => t.name).sort()).toEqual(['ast_grep', 'git_history']);
+    const { tools: withFiles } = await fileClient.listTools();
+    expect(withFiles.map(t => t.name).sort()).toEqual(['ast_grep', 'git_history', 'glob', 'grep', 'read_file']);
+    expect(withFiles.every(t => t.annotations?.readOnlyHint === true && t.annotations?.openWorldHint === false)).toBe(true);
+  });
+
+  it('reads, searches and lists files', async () => {
+    expect(await call(fileClient, 'read_file', { path: 'src/a.ts' })).toEqual({ text: '1\tconst x = 2;\n2\tconsole.log(x);\n3\t', isError: false });
+    expect((await call(fileClient, 'read_file', { path: 'src/a.ts', offset: 2, limit: 1 })).text).toBe('2\tconsole.log(x);\n[1 more lines, read on with offset 3]');
+    // A read longer than the output cap stops early and still says where to read on.
+    const long = (await call(fileClient, 'read_file', { path: 'docs/long.txt' })).text;
+    expect(long.length).toBeLessThanOrEqual(20_000);
+    const [, lastShown, next] = long.match(/\n(\d+)\tfiller line\n\[\d+ more lines, read on with offset (\d+)\]$/)!;
+    expect(Number(next)).toBe(Number(lastShown) + 1);
+    expect((await call(fileClient, 'grep', { text: 'CONSOLE.LOG', ignoreCase: true, path: 'src' })).text).toBe('src/a.ts:2: console.log(x);');
+    expect((await call(fileClient, 'grep', { text: 'unwrap', glob: '*.rs' })).text).toBe('src/b.rs:2:     v.unwrap()');
+    expect((await call(fileClient, 'grep', { text: 'console.log', path: 'vendor' })).text).toBe('No matches.\n[1 binary files or files over 1024 KB were not searched]');
+    expect((await call(fileClient, 'glob', { pattern: '**/*.ts' })).text).toBe('src/a.ts\nvendor/huge.ts');
+    expect((await call(fileClient, 'glob', { pattern: '**/*.{ts,rs}' })).text).toBe('src/a.ts\nsrc/b.rs\nvendor/huge.ts');
+  });
+
+  it('refuses a glob that expands into a huge pattern', async () => {
+    const refusal = { text: 'the glob expands into more than 100 patterns, nests braces or uses a brace range', isError: true };
+    expect(await call(fileClient, 'glob', { pattern: '{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}' })).toEqual(refusal);
+    expect(await call(fileClient, 'glob', { pattern: 'src/{1..99999}' })).toEqual(refusal);
+    expect(await call(fileClient, 'grep', { text: 'x', glob: '{a,{b,c}}' })).toEqual(refusal);
+    expect(await call(fileClient, 'grep', { text: 'x', glob: 'a'.repeat(201) })).toEqual({ text: 'the glob is longer than 200 characters', isError: true });
+    // An extglob matches literally, so it cannot backtrack.
+    expect((await call(fileClient, 'glob', { pattern: 'src/+(a|b).ts' })).text).toBe('No files.');
   });
 
   it('lists the commits of a file, or only those that changed its lines', async () => {
@@ -112,8 +145,12 @@ describe('Manki tool server', () => {
     ['.git', () => '.git/config', 'is in .git'],
     ['a missing path', () => 'nope.ts', 'does not exist'],
   ])('refuses %s in every tool', async (_, path, message) => {
-    for (const [tool, args] of [['git_history', { path: path() }], ['ast_grep', { pattern: 'console.log($A)', path: path() }]] as const) {
-      const result = await call(client, tool, args);
+    const calls = [
+      ['git_history', { path: path() }], ['ast_grep', { pattern: 'console.log($A)', path: path() }],
+      ['read_file', { path: path() }], ['grep', { text: 'secret', path: path() }], ['glob', { pattern: '**', path: path() }],
+    ] as const;
+    for (const [tool, args] of calls) {
+      const result = await call(fileClient, tool, args);
       expect(result.isError).toBe(true);
       expect(result.text).toContain(message);
     }

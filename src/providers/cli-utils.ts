@@ -7,7 +7,8 @@ import { StringDecoder } from 'string_decoder';
 import * as core from '@actions/core';
 
 import { registerSecret, safeJsonParse, sanitizeTokens, SECRET_NAME, SYSTEM_ENV } from '../utils';
-import { SendMessageOptions } from './types';
+import { FILE_TOOLS_FLAG, MCP_SERVER_COMMAND } from '../mcp-server';
+import { RepoTools, SendMessageOptions } from './types';
 
 export const STALE_TIMEOUT_MS = 90_000;
 const HARD_TIMEOUT_MS = 1_200_000;
@@ -378,6 +379,29 @@ function registerGoogleCredentials(path: string): void {
   } catch (error) {
     core.warning(`Could not read ${path} to redact its secrets: ${error}`);
   }
+}
+
+/** How a CLI starts Manki's tool server. */
+export interface ToolServerCommand {
+  command: string;
+  args: string[];
+}
+
+/**
+ * Starts the tool server for `root` from the script this process runs, which is the action's `dist/index.js`.
+ * With `fileTools` the server also offers `read_file`, `grep` and `glob`, for a CLI without its own.
+ */
+export function toolServerCommand(root: string, fileTools = false): ToolServerCommand {
+  return { command: process.execPath, args: [process.argv[1], MCP_SERVER_COMMAND, root, ...(fileTools ? [FILE_TOOLS_FLAG] : [])] };
+}
+
+/** Tells the model which tools it has, with `fileTools` naming the ones that read files, and how to use them. */
+export function repoToolsPrompt({ root, maxTurns }: RepoTools, fileTools: string): string {
+  return `## Tools
+
+The PR's head commit is checked out at \`${root}\`. ${fileTools} read files under that directory, \`git_history\` lists the commits behind a file or a range of its lines, and \`ast_grep\` finds code by syntax. Nothing outside \`${root}\` is readable.
+
+Use the tools to check claims about the changed code, such as how a changed function is called or whether a case is handled elsewhere, not to explore. You have at most ${maxTurns} turns, tool calls included. Your last message must be the JSON your instructions ask for, with nothing after it.`;
 }
 
 export interface RunCliOptions {

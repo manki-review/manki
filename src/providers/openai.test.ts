@@ -409,6 +409,37 @@ describe('sendViaOAuth (Codex CLI path)', () => {
     expect(readdirSync(cwd)).toEqual([]);
   });
 
+  it('gives Codex Manki\'s tool server with the file tools, and tells it about them, only when asked', async () => {
+    setupSpawnMock('[]\n');
+    const savedRunnerTemp = process.env.RUNNER_TEMP;
+    process.env.RUNNER_TEMP = '/runner/temp';
+    try {
+      const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gpt-5.5' });
+      expect(client.repoTools).toBe(true);
+      expect(new OpenAIClient({ auth: { kind: 'apiKey', key: 'sk' }, model: 'gpt-5.5' }).repoTools).toBe(false);
+
+      await client.sendMessage('Review the diff.', 'the diff', { repoTools: { root: '/work/repo', maxTurns: 15 } });
+      await client.sendMessage('Review the diff.', 'the diff');
+    } finally {
+      if (savedRunnerTemp === undefined) delete process.env.RUNNER_TEMP;
+      else process.env.RUNNER_TEMP = savedRunnerTemp;
+    }
+
+    const [withTools, without] = mockSpawn.mock.calls.map(call => call[1] as string[]);
+    expect(withTools.join(' ')).toContain([
+      `-c mcp_servers.manki.command=${JSON.stringify(process.execPath)}`,
+      `-c mcp_servers.manki.args=${JSON.stringify([process.argv[1], 'mcp-server', '/work/repo', '--file-tools'])}`,
+      '-c mcp_servers.manki.default_tools_approval_mode="approve"',
+      '-c mcp_servers.manki.env.RUNNER_TEMP="/runner/temp" -',
+    ].join(' '));
+    expect(withTools).toContain('features.shell_tool=false');
+    expect(without.join(' ')).not.toContain('mcp_servers');
+    const proc = mockSpawn.mock.results[0].value as { stdin: { write: jest.Mock } };
+    const stdin = proc.stdin.write.mock.calls.map(c => String(c[0])).join('');
+    expect(stdin).toMatch(/^Review the diff\.\n\n## Tools\n\nThe PR's head commit is checked out at `\/work\/repo`\. `read_file`, `grep` and `glob` read files/);
+    expect(stdin).toContain('\n\n---\n\nthe diff');
+  });
+
   it('passes model_reasoning_effort override when effort is set on o-series model', async () => {
     setupSpawnMock('ok\n');
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'o3' });
