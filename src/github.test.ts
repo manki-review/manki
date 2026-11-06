@@ -2007,7 +2007,8 @@ describe('fetchRepoContext instruction files', () => {
           get: jest.fn().mockRejectedValue(new Error('Not found')),
           getContent: jest.fn(async ({ path }: { path: string }) => {
             const content = fileContents[path];
-            if (content === undefined) throw new Error(`Not found: ${path}`);
+            if (content === undefined) throw Object.assign(new Error(`Not found: ${path}`), { status: 404 });
+            if (content === 'FAIL') throw Object.assign(new Error('Server error'), { status: 500 });
             return {
               data: {
                 content: Buffer.from(content).toString('base64'),
@@ -2111,18 +2112,21 @@ describe('fetchRepoContext instruction files', () => {
     expect(result).toContain('Style guidelines');
   });
 
-  it('skips CLAUDE.md files that fail to fetch', async () => {
-    const octokit = mockOctokit(baseTree, {
+  it('skips CLAUDE.md files that fail to fetch, warning on errors other than not found', async () => {
+    const warningSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const octokit = mockOctokit([...baseTree, { path: 'test/CLAUDE.md', type: 'blob' }], {
       'src/CLAUDE.md': 'Source rules',
-      // lib/CLAUDE.md is missing — will throw
+      'test/CLAUDE.md': 'FAIL',
     });
 
     const result = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', [
       'src/index.ts',
       'lib/utils.ts',
+      'test/a.test.ts',
     ]);
-    expect(result).toContain('## src/CLAUDE.md');
-    expect(result).not.toContain('lib/CLAUDE.md');
+    expect(result).toBe('## src/CLAUDE.md\n\nSource rules');
+    expect(warningSpy.mock.calls.map(([message]) => message)).toEqual([expect.stringContaining('test/CLAUDE.md')]);
+    warningSpy.mockRestore();
   });
 
   it('ignores root-level changed files with no subdirectory CLAUDE.md', async () => {
@@ -2181,8 +2185,8 @@ describe('fetchRepoContext instruction files', () => {
     expect(result).toBe('## src/AGENTS.md\n\nShared rules');
   });
 
-  it('lists the nearest files first and leaves out the farthest over the size cap', async () => {
-    const big = (label: string) => `${label} ${'x'.repeat(12_000)}`;
+  it('lists the nearest files first, cuts the file that crosses the size cap and leaves out farther ones', async () => {
+    const big = (label: string, size = 12_000) => `${label} ${'x'.repeat(size)}`;
     const octokit = mockOctokit(agentsTree, {
       'src/auth/CLAUDE.md': big('auth'),
       'src/AGENTS.md': big('src'),
@@ -2191,8 +2195,14 @@ describe('fetchRepoContext instruction files', () => {
     });
 
     const result = await fetchRepoContext(octokit, 'owner', 'repo', 'abc123', ['src/auth/login.ts']);
-    expect(result.match(/^## .+$/gm)).toEqual(['## src/auth/CLAUDE.md', '## src/AGENTS.md']);
+    expect(result.match(/^## .+$/gm)).toEqual(['## src/auth/CLAUDE.md', '## src/AGENTS.md', '## AGENTS.md']);
+    expect(result).not.toContain(big('root agents'));
     expect(result).not.toContain('root claude');
+
+    const oversized = mockOctokit(agentsTree, { 'src/AGENTS.md': big('src', 40_000) });
+    const cut = await fetchRepoContext(oversized, 'owner', 'repo', 'abc123', ['src/index.ts']);
+    expect(cut.startsWith('## src/AGENTS.md\n\nsrc x')).toBe(true);
+    expect(cut.length).toBeLessThanOrEqual(30_003);
   });
 });
 

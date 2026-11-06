@@ -349,7 +349,7 @@ const MAX_INSTRUCTIONS_CHARS = 30_000;
 /**
  * Returns the repo description and the `AGENTS.md` and `CLAUDE.md` files at the root and nearest
  * above each changed file, nearest first. Files with the same content after `@file` resolution
- * appear once, and the farthest files past `MAX_INSTRUCTIONS_CHARS` are left out.
+ * appear once. The file that crosses `MAX_INSTRUCTIONS_CHARS` is cut, and farther files are left out.
  */
 export async function fetchRepoContext(
   octokit: Octokit,
@@ -359,26 +359,22 @@ export async function fetchRepoContext(
   changedPaths: string[],
 ): Promise<string> {
   const paths = [...await findNearestInstructionFiles(octokit, owner, repo, ref, changedPaths), ...ROOT_INSTRUCTION_FILES];
-  const contents = await Promise.all(paths.map(path => fetchInstructionFile(octokit, owner, repo, ref, path)));
 
   const parts: string[] = [];
   const seen = new Set<string>();
-  const left: string[] = [];
   let total = 0;
-  paths.forEach((path, i) => {
-    const content = contents[i];
-    if (content === null || !content.trim() || seen.has(content.trim())) return;
+  for (const path of paths) {
+    const content = await fetchInstructionFile(octokit, owner, repo, ref, path);
+    if (content === null || !content.trim() || seen.has(content.trim())) continue;
     seen.add(content.trim());
     const part = `## ${path}\n\n${content}`;
-    if (left.length > 0 || total + part.length > MAX_INSTRUCTIONS_CHARS) {
-      left.push(path);
-      return;
+    if (total + part.length > MAX_INSTRUCTIONS_CHARS) {
+      parts.push(safeTruncate(part, MAX_INSTRUCTIONS_CHARS - total));
+      core.info(`Repo instructions reached ${MAX_INSTRUCTIONS_CHARS} characters: cut ${path} and skipped any farther files`);
+      break;
     }
     parts.push(part);
     total += part.length;
-  });
-  if (left.length > 0) {
-    core.info(`Repo instructions exceed ${MAX_INSTRUCTIONS_CHARS} characters, left out: ${left.join(', ')}`);
   }
 
   try {
@@ -453,7 +449,10 @@ async function fetchInstructionFile(
     const content = Buffer.from(data.content, 'base64').toString('utf-8');
     const dir = path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
     return await resolveReferences(octokit, owner, repo, ref, content, dir);
-  } catch {
+  } catch (error) {
+    if ((error as { status?: number }).status !== 404) {
+      core.warning(`Could not read instruction file ${path}: ${error}`);
+    }
     return null;
   }
 }
