@@ -519,14 +519,16 @@ export interface TeamRouting {
   classSource: 'paths' | 'triage' | 'default';
   /** Review group the finders came from. */
   group: string;
-  /** Whether the class's route, the default group or the floor picked the group. */
-  groupSource: 'routing' | 'default_group' | 'floor_escalation';
+  /** Whether the class's route, the default group, the floor or a deeper review picked the group. */
+  groupSource: 'routing' | 'default_group' | 'floor_escalation' | 'deeper_review';
   /** Highest ranked floor class the PR matched. */
   floor?: string;
-  /** Routed group the floor moved the PR up from. */
+  /** Routed group the floor, or a deeper review, moved the PR up from. */
   escalatedFrom?: string;
   /** Floor classes `review.allow_weaker` let run below the floor. */
   weakerAllowed?: string[];
+  /** A Deeper review ran: two finders on every group, each one effort level higher. */
+  deeper?: true;
 }
 
 export interface TeamRoster {
@@ -1032,6 +1034,8 @@ export interface FullReviewOptions {
   settings?: SettingsState;
   /** Reviews the whole PR as new, so every finding counts as new code. */
   fullReview?: boolean;
+  /** A Deeper review: two finders on every group, each one effort level higher. */
+  deeper?: boolean;
 }
 
 /** A one-off mode a settings box queued for a run. */

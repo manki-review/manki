@@ -13,7 +13,7 @@ import { FOLLOW_UP_TAG, SECURITY_TAG, ReviewConfig, ReviewerAgent, Finding, Find
 import { countChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
 import { fetchedRelatedRepos, relatedReposCacheDir, warnRelatedRepoFailures } from './related-repos';
 import { makeScratchDir } from './tool-install';
-import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, chooseGroup, classifyPr, resolveRouting } from './routing';
+import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, GroupChoice, chooseGroup, classifyPr, resolveRouting } from './routing';
 import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { runVerdictReader, verdictBlockerToFinding } from './verdict';
@@ -104,20 +104,26 @@ function quotaRoundSummary(quotaErrors: ReadonlyMap<string, QuotaError>, failedA
 /** The answers used when the planner is disabled or fails: each takes the side that adds review. */
 const FAIL_SAFE_TRIAGE: Readonly<Triage> = Object.freeze({ trivial: false, subtle: true, paired: true });
 
+const DEEPER_EFFORT: Record<EffortLevel, EffortLevel> = { low: 'medium', medium: 'high', high: 'max', max: 'max' };
+
 /**
  * Builds the round's readers. The PR's class, from its paths and the triage, picks a review group,
  * and each reader in the group becomes one finder. `planner.paired` pins the `paired` answer
  * before the PR is classified, and every floor class the PR matches is checked after routing.
+ * A `deeper` review moves a group with fewer than two finders up to the built-in `pair` group.
  */
-export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triage = FAIL_SAFE_TRIAGE): TeamRoster {
+export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triage = FAIL_SAFE_TRIAGE, deeper = false): TeamRoster {
   const pin = config.planner?.paired ?? 'auto';
   const pinned: Triage = { ...triage, paired: pin === 'auto' ? triage.paired : pin === 'always' };
   const routing = resolveRouting(config.review);
   const classification = classifyPr(diff, pinned, routing.classes);
-  const choice = chooseGroup(routing, classification, ref => resolveReviewerModel(config, ref));
+  let choice: GroupChoice = chooseGroup(routing, classification, ref => resolveReviewerModel(config, ref));
+  if (deeper && choice.group.reviewers.filter(r => r.role !== 'verifier').length < 2) {
+    choice = { name: FLOOR_FALLBACK_GROUP, group: BUILT_IN_GROUPS[FLOOR_FALLBACK_GROUP], source: 'deeper_review', escalatedFrom: choice.name };
+  }
   const reviewClass = classification.name ? routing.classes[classification.name] : undefined;
   return {
-    finders: buildFinders(choice.group, config, classification.triage, classification.floor !== undefined),
+    finders: buildFinders(choice.group, config, classification.triage, classification.floor !== undefined, deeper),
     routing: {
       ...(classification.name && { class: classification.name, rank: reviewClass!.rank }),
       matched: classification.matched,
@@ -127,6 +133,7 @@ export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triag
       ...(classification.floor && { floor: classification.floor }),
       ...(choice.escalatedFrom && { escalatedFrom: choice.escalatedFrom }),
       ...(choice.weakerAllowed && { weakerAllowed: choice.weakerAllowed }),
+      ...(deeper && { deeper: true }),
     },
     triage: classification.triage,
     sensitivePaths: classification.matched.includes('security'),
@@ -144,14 +151,18 @@ function shortFocus(focus: string): string {
   return `${cut.slice(0, end > 0 ? end : FOCUS_LABEL_LENGTH).replace(/[\s,;:.]+$/, '')}…`;
 }
 
-/** Builds one finder per reader of `group`. A group with two finders, or a PR in a floor class, gets the most tool steps. */
-function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, floor: boolean): Finder[] {
+/**
+ * Builds one finder per reader of `group`. A group with two finders, or a PR in a floor class, gets the most tool steps.
+ * A `deeper` review runs each finder one effort level higher.
+ */
+function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, floor: boolean, deeper: boolean): Finder[] {
   const shared = buildFinderAgent(config.reviewers);
   const names = new Set<string>();
   const risky = floor || group.reviewers.filter(r => r.role !== 'verifier').length >= 2;
   return group.reviewers.map((reviewer, index) => {
     const model = resolveReviewerModel(config, reviewer.model);
-    const effort: EffortLevel = !reviewer.effort || reviewer.effort === 'auto' ? (triage.subtle ? 'high' : 'medium') : reviewer.effort;
+    const base: EffortLevel = !reviewer.effort || reviewer.effort === 'auto' ? (triage.subtle ? 'high' : 'medium') : reviewer.effort;
+    const effort = deeper ? DEEPER_EFFORT[base] : base;
     const verifier = reviewer.role === 'verifier';
     const prompt = verifier ? TRIVIAL_VERIFIER_AGENT
       : reviewer.focus ? buildFinderAgent([...config.reviewers, { name: 'This review group', focus: reviewer.focus }]) : shared;
@@ -503,6 +514,8 @@ export interface ReviewOptions {
   finalRound?: boolean;
   /** The checked-out PR head, which finders and the judge on a client with `repoTools` read with read-only tools. */
   workspace?: string;
+  /** A Deeper review: two finders on every group, each one effort level higher. */
+  deeper?: boolean;
 }
 
 export async function runReview(
@@ -544,13 +557,14 @@ export async function runReview(
     plannerSource = plannerResult ? 'planner' : 'heuristic_fallback';
     plannerFallbackReason = outcome.fallbackReason;
   }
-  const team = selectTeam(diff, config, plannerResult ?? undefined);
+  const team = selectTeam(diff, config, plannerResult ?? undefined, options.deeper);
   const judgeEffort = plannerResult?.judgeEffort ?? 'high';
   const reviewerEffort = team.finders[0].effort;
   const { trivial, subtle, paired } = team.triage;
   core.info(`Triage (${plannerSource}): trivial=${trivial}, subtle=${subtle}, paired=${paired}${team.sensitivePaths ? ', security-sensitive paths' : ''}${team.ciOrDependencyPaths ? ', CI or dependency paths' : ''}${team.trivialOverridden ? ', planner trivial answer overridden by the changed files' : ''}`);
   const { routing } = team;
-  core.info(`Review class: ${routing.class ?? 'none'}, group: ${routing.group} (${routing.groupSource}${routing.escalatedFrom ? `, moved up from ${routing.escalatedFrom} to meet the ${routing.floor} floor` : ''})`);
+  const movedUp = routing.groupSource === 'deeper_review' ? 'for a deeper review' : `to meet the ${routing.floor} floor`;
+  core.info(`Review class: ${routing.class ?? 'none'}, group: ${routing.group} (${routing.groupSource}${routing.escalatedFrom ? `, moved up from ${routing.escalatedFrom} ${movedUp}` : ''})`);
   if (routing.weakerAllowed) {
     core.warning(`\`review.allow_weaker\` lets this ${routing.weakerAllowed.join(', ')} change run on the ${routing.group} group, below the floor of two finders on two models`);
   }

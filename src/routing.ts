@@ -3,7 +3,7 @@ import { minimatch } from 'minimatch';
 
 import { countChangedLines } from './diff';
 import { parseModelSpec } from './providers';
-import { DiffFile, ParsedDiff, ReviewClass, ReviewClassMatch, ReviewGroup, ReviewRoutingConfig, Triage } from './types';
+import { DiffFile, ParsedDiff, ReviewClass, ReviewClassMatch, ReviewGroup, ReviewRoutingConfig, TeamRouting, Triage } from './types';
 
 // Path segment prefixes that indicate security-sensitive files. The rule is path-based, not
 // prompt-based, so prompt injection in the PR content cannot switch it off.
@@ -200,8 +200,8 @@ export function floorShortfall(group: ReviewGroup, resolveModel: (ref: string | 
 export interface GroupChoice {
   name: string;
   group: ReviewGroup;
-  source: 'routing' | 'default_group' | 'floor_escalation';
-  /** The routed group the floor moved the PR up from. */
+  source: TeamRouting['groupSource'];
+  /** The routed group the floor, or a deeper review, moved the PR up from. */
   escalatedFrom?: string;
   /** Floor classes whose `allow_weaker` let the PR stay in a group below the floor. */
   weakerAllowed?: string[];
