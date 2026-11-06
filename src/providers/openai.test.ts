@@ -390,7 +390,7 @@ describe('sendViaOAuth (Codex CLI path)', () => {
     mockSpawn.mockReturnValue(proc as unknown as ReturnType<typeof spawn>);
   }
 
-  it('runs `codex exec` with the model in an empty temp directory', async () => {
+  it('runs `codex exec` with the model, no shell, image reader or web search in an empty temp directory', async () => {
     setupSpawnMock('hello\n');
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'o3' });
 
@@ -402,6 +402,7 @@ describe('sendViaOAuth (Codex CLI path)', () => {
     const modelIdx = spawnArgs.indexOf('--model');
     expect(modelIdx).toBeGreaterThan(-1);
     expect(spawnArgs[modelIdx + 1]).toBe('o3');
+    expect(spawnArgs.join(' ')).toContain('-c features.shell_tool=false -c features.view_image=false -c web_search=disabled');
     const { cwd } = mockSpawn.mock.calls[0][2] as { cwd: string };
     expect(cwd.startsWith(join(tmpdir(), 'manki-cli-'))).toBe(true);
     expect(readdirSync(cwd)).toEqual([]);
