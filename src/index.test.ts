@@ -1941,7 +1941,6 @@ describe('runFullReview orchestration', () => {
     it.each([
       ['ADDRESS_FIRST', 'REQUEST_CHANGES', 'failure', 'Changes requested'],
       ['NOT_CONVERGING', 'REQUEST_CHANGES', 'failure', 'Needs a human'],
-      ['BUDGET', 'APPROVE', 'neutral', 'Round limit reached'],
     ] as const)('completes the check for a %s round as %s', async (outcome, verdict, conclusion, title) => {
       jest.mocked(reviewModule.runReview).mockResolvedValueOnce({
         verdict, outcome, summary: 'Round summary', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
@@ -5755,12 +5754,7 @@ describe('runFullReview orchestration', () => {
         .find(([args]) => typeof args.body === 'string' && args.body.includes('Automatic review is paused'));
       expect(notice![0].body).toContain('Manki has reviewed new changes in 5/5 rounds on this PR since its last approval. Automatic review is paused. Tick the box');
 
-      // A `BUDGET` approval ends a loop by deferring warnings, so it does not reset the count.
       rounds[2].verdict = 'APPROVE';
-      rounds[2].meta.outcome = 'BUDGET';
-      await callRunFullReview();
-      expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
-
       rounds[2].meta.outcome = 'READY';
       await callRunFullReview();
 

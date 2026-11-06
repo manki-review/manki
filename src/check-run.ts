@@ -32,7 +32,6 @@ const OUTCOME_REPORTS: Record<RoundOutcome, Omit<CheckReport, 'summary'>> = {
   ADDRESS_FIRST: { conclusion: 'failure', title: 'Changes requested' },
   NOT_CONVERGING: { conclusion: 'failure', title: 'Needs a human' },
   INCOMPLETE: { conclusion: 'failure', title: 'Review incomplete' },
-  BUDGET: { conclusion: 'neutral', title: 'Round limit reached' },
 };
 
 /** Returns the check report for a round that ended with `outcome`. A held approval reports neutral, whatever the outcome. */

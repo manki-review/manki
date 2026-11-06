@@ -2351,7 +2351,7 @@ describe('runReview', () => {
     expect(namedAgain.threadEvaluations).toEqual([expect.objectContaining({ threadId: 'T1', status: 'not_addressed' })]);
   });
 
-  it('ends the last automatic round BUDGET when nothing blocks, otherwise NOT_CONVERGING', async () => {
+  it('ends the last automatic round READY when nothing blocks, otherwise NOT_CONVERGING', async () => {
     const warning: Finding = { severity: 'warning', title: 'Unbounded retry', file: 'src/a.ts', line: 4, description: 'd', reviewers: ['r'] };
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
     const runFinal = (clients: ReviewClients) => runReview(
@@ -2370,11 +2370,12 @@ describe('runReview', () => {
     );
 
     mockedRunJudgeAgent.mockResolvedValue({ findings: [warning], summary: 'One warning.' });
-    const budget = await runFinal(makeClients());
-    expect(budget.outcome).toBe('BUDGET');
-    expect(budget.verdict).toBe('APPROVE');
-    expect(budget.findings).toEqual([expect.objectContaining({ title: 'Unbounded retry', tags: ['follow-up'] })]);
-    expect(budget.verdictReport?.whatThisDoes).toBe('Adds a feature.');
+    const clean = await runFinal(makeClients());
+    expect(clean.outcome).toBe('READY');
+    expect(clean.verdict).toBe('APPROVE');
+    expect(clean.needsHuman).toBeUndefined();
+    expect(clean.findings).toEqual([expect.objectContaining({ title: 'Unbounded retry', tags: ['follow-up'] })]);
+    expect(clean.verdictReport?.whatThisDoes).toBe('Adds a feature.');
 
     mockedRunJudgeAgent.mockResolvedValue({ findings: [{ ...warning, tags: ['security'] }], summary: 'One security warning.' });
     const secure = await runFinal(makeClients());

@@ -210,7 +210,7 @@ export interface InPrSuppression {
 export type ReviewVerdict = 'APPROVE' | 'COMMENT' | 'REQUEST_CHANGES';
 
 /** How a review round ended. Each outcome posts one review event, see `OUTCOME_VERDICT` in `review.ts`. */
-export type RoundOutcome = 'READY' | 'ADDRESS_FIRST' | 'INCOMPLETE' | 'NOT_CONVERGING' | 'BUDGET';
+export type RoundOutcome = 'READY' | 'ADDRESS_FIRST' | 'INCOMPLETE' | 'NOT_CONVERGING';
 
 /** Blockers a human has to settle, posted with a `NOT_CONVERGING` outcome. */
 export interface NeedsHuman {
