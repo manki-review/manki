@@ -1219,7 +1219,7 @@ export async function runReview(
     findings: finalFindings,
     highlights: [],
     reviewComplete: true,
-    rawFindingCount: allFindings.length,
+    rawFindingCount: allFindings.length - openLeads.length,
     ...(toolAlerts.length > 0 && { toolAlertCount: toolAlerts.length }),
     agentNames: team.finders.map(a => a.name),
     allJudgedFindings,

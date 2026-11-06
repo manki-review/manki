@@ -516,6 +516,9 @@ describe('runFullReview end to end', () => {
     const progress = mockGitHub.comments.find(c => c.body.startsWith('✅ **Review complete**'))!.body;
     expect(progress).toContain('**Not finished checking:** 1 lead\n&nbsp;&nbsp;&nbsp;&nbsp;Cache may go stale (`src/math.ts:2`)');
     expect(progress).toContain('Dropped: "Sum may overflow" (ignore, high confidence)');
+    // The listed lead never reached the judge, so it is no duplicate the judge merged.
+    const record = mockGitHub.roundContext(postedReviews()[0]);
+    expect([record.judge.mergedDuplicates, record.reviewers.rawFindings?.map(f => f.lead !== undefined)]).toEqual([0, [true, true]]);
     expect(postedReviews().map(r => r.state)).toEqual(['APPROVED']);
   });
 

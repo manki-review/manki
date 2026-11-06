@@ -307,6 +307,7 @@ export interface ReviewResult {
   findings: Finding[];
   highlights: string[];
   reviewComplete: boolean;
+  /** Findings the finders reported, without the open leads that are only listed. */
   rawFindingCount?: number;
   /** Tool results sent to the judge as candidate findings, on top of `rawFindingCount`. */
   toolAlertCount?: number;
