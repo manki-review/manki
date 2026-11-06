@@ -187,8 +187,8 @@ export class OpenAIClient implements LLMClient {
     // `codex exec` runs a non-interactive completion, reading the prompt from stdin
     // when invoked with `-` as the prompt argument. `--model` selects the model.
     // `runCli` runs it in an empty directory, which is not a git repository.
-    // Its read-only sandbox still lets commands read every file, such as the auth files, so the shell is off.
-    const args = ['exec', '--skip-git-repo-check', '--model', this.model, '-c', 'features.shell_tool=false', '-c', 'web_search=disabled'];
+    // Its read-only sandbox still lets tools read every file, such as the auth files, so the shell and image reader are off.
+    const args = ['exec', '--skip-git-repo-check', '--model', this.model, '-c', 'features.shell_tool=false', '-c', 'features.view_image=false', '-c', 'web_search=disabled'];
 
     const reasoningEffort = options?.effort && resolveReasoningEffort(this.model, options.effort);
     if (reasoningEffort) {
