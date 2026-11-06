@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
-import { BotIdentity, BOT_MARKER as PROGRESS_MARKER, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchInterRoundDiff, fetchPRComments, fetchReviewThreadNodes, fetchStandingVerdict, FOLLOW_UP_MARKER, FORCE_CAP_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, postAutoApproveProgressComment } from './github';
+import { approvalHeldLine, BotIdentity, BOT_MARKER as PROGRESS_MARKER, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchConflictingBase, fetchInterRoundDiff, fetchPRComments, fetchReviewThreadNodes, fetchStandingVerdict, FOLLOW_UP_MARKER, FORCE_CAP_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, postAutoApproveProgressComment } from './github';
 import type { StandingVerdict } from './github';
 import { isSameChange } from './diff';
 import { fetchPriorRoundContexts, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, PreviousFinding, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf } from './recap';
@@ -15,6 +15,7 @@ type ReviewEntry = { body?: string | null; state?: string; commit_id?: string | 
 
 const BOT_MARKER = '<!-- manki -->';
 const STALE_APPROVE_MARKER_PREFIX = '<!-- manki-stale-approve:';
+const APPROVAL_HELD_MARKER_PREFIX = '<!-- manki-approval-held:';
 
 function staleApproveMarker(headSha: string): string {
   return `${STALE_APPROVE_MARKER_PREFIX}${headSha} -->`;
@@ -329,7 +330,26 @@ async function postStaleApproveSkippedComment(
 }
 
 /**
- * Deletes the auto-approve withheld notice for `headSha`. Call it once a review posts its verdict on `headSha`.
+ * Returns true when the PR conflicts with its base, after posting a one-time notice for `headSha`
+ * that the approval is held. An approval would cover code that changes once the conflict is resolved.
+ */
+async function holdApprovalOnConflict(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string,
+): Promise<boolean> {
+  const conflictingBase = await fetchConflictingBase(octokit, owner, repo, prNumber);
+  if (!conflictingBase) return false;
+  core.info(`PR conflicts with ${conflictingBase}, so it is not approved`);
+  assertWritesAllowed();
+  try {
+    await postNoticeOnce(octokit, bot, owner, repo, prNumber, `${APPROVAL_HELD_MARKER_PREFIX}${headSha} -->`, approvalHeldLine(conflictingBase));
+  } catch (error) {
+    core.warning(`Failed to post the approval-held notice: ${error instanceof Error ? error.message : error}`);
+  }
+  return true;
+}
+
+/**
+ * Deletes the auto-approve withheld notice for `headSha` and every approval-held notice. Call it once a review posts its verdict on `headSha`.
  * Pass `pauseLiftedAt` when that round lifted the pause: each open pause notice last updated before then is marked as resumed.
  */
 async function retireStaleNotices(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string, pauseLiftedAt?: number): Promise<void> {
@@ -344,7 +364,7 @@ async function retireStaleNotices(octokit: Octokit, bot: BotIdentity, owner: str
   for (const c of comments) {
     if (!isBotLogin(bot, c.user?.login) || !c.body) continue;
     try {
-      if (c.body.includes(marker)) {
+      if (c.body.includes(marker) || c.body.includes(APPROVAL_HELD_MARKER_PREFIX)) {
         await octokit.rest.issues.deleteComment({ owner, repo, comment_id: c.id });
       } else if (pauseLiftedAt !== undefined && Date.parse(c.updated_at) < pauseLiftedAt
         && c.body.includes(FORCE_CAP_MARKER) && /- \[[ x]\] Force review/.test(c.body)) {
@@ -446,6 +466,8 @@ async function checkAndAutoApprove(
     return true;
   }
 
+  if (await holdApprovalOnConflict(octokit, bot, owner, repo, prNumber, pr.head.sha)) return false;
+
   const progressCommentId = await postAutoApproveProgressComment(octokit, owner, repo, prNumber);
 
   core.info('All findings resolved — auto-approving');
@@ -497,4 +519,4 @@ async function checkAndAutoApprove(
   return true;
 }
 
-export { PauseState, ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, explainUnreviewedHead, fetchBotReviewThreads, findUnchangedVerdict, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
+export { PauseState, ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, explainUnreviewedHead, fetchBotReviewThreads, findUnchangedVerdict, holdApprovalOnConflict, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };

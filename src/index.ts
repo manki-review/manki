@@ -56,7 +56,7 @@ import {
   postConfigErrorComment,
 } from './github';
 import type { BotIdentity, LinkedIssue } from './github';
-import { announceSecurityOverrides, checkAndAutoApprove, findUnchangedVerdict, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices } from './state';
+import { announceSecurityOverrides, checkAndAutoApprove, findUnchangedVerdict, holdApprovalOnConflict, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices } from './state';
 import type { PauseState } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -655,7 +655,7 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
       assertWritesAllowed();
       try {
         // A push can dismiss approvals, so the approval is posted again on the new head.
-        if (standing.verdict === 'APPROVE') {
+        if (standing.verdict === 'APPROVE' && !await holdApprovalOnConflict(octokit, bot, owner, repo, prNumber, commitSha)) {
           await octokit.rest.pulls.createReview({
             owner, repo, pull_number: prNumber, commit_id: commitSha, event: 'APPROVE',
             body: withMarkers(`✅ **Approved.** No change to this PR since the reviewed commit \`${shortSha}\`. The previous verdict stands.`, PROGRESS_MARKER),

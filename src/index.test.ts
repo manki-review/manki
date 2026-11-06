@@ -242,6 +242,7 @@ jest.mock('./github', () => {
 jest.mock('./state', () => ({
   announceSecurityOverrides: jest.fn().mockResolvedValue([]),
   checkAndAutoApprove: jest.fn().mockResolvedValue(false),
+  holdApprovalOnConflict: jest.fn().mockResolvedValue(false),
   pauseState: jest.requireActual('./state').pauseState,
   reopenAuthorResolvedThreads: jest.fn().mockResolvedValue(undefined),
   replyToReviewThread: jest.requireActual('./state').replyToReviewThread,
@@ -5755,6 +5756,17 @@ describe('runFullReview orchestration', () => {
         event: 'APPROVE',
         body: expect.stringContaining('\u2705 **Approved.** No change to this PR since the reviewed commit `old9999`. The previous verdict stands.'),
       }));
+    });
+
+    it('holds the previous APPROVE when the PR conflicts with its base, without running a round', async () => {
+      seedPush('APPROVE', REVIEWED_DIFF);
+      jest.mocked(stateModule.holdApprovalOnConflict).mockResolvedValueOnce(true);
+
+      await callRunFullReview();
+
+      expectNoRound();
+      expect(jest.mocked(stateModule.holdApprovalOnConflict)).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, 'abc123');
+      expect(mockCreateReview).not.toHaveBeenCalled();
     });
 
     it('leaves a previous REQUEST_CHANGES standing without posting another review', async () => {

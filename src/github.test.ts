@@ -1244,10 +1244,12 @@ describe('postReview with context', () => {
 
 describe('postReview body lead', () => {
   const mockCreateReview = jest.fn().mockResolvedValue({ data: { id: 1 } });
+  const mockGet = jest.fn().mockResolvedValue({ data: { mergeable: true, mergeable_state: 'clean', base: { ref: 'main' } } });
   const mockOctokit = {
     rest: {
       pulls: {
         createReview: mockCreateReview,
+        get: mockGet,
       },
     },
   } as unknown as Parameters<typeof postReview>[0];
@@ -1311,6 +1313,39 @@ describe('postReview body lead', () => {
       '',
       'Reviewed [`abcdef1`](https://github.com/owner/repo/commit/abcdef1234).',
     ].join('\n'));
+  });
+
+  it.each([
+    ['mergeable is false', { mergeable: false, mergeable_state: 'dirty' }],
+    ['the merge state is dirty', { mergeable: null, mergeable_state: 'dirty' }],
+  ])('holds the approval of a READY round as a COMMENT with the full body when %s', async (_label, state) => {
+    const approved = await postedBody(ready);
+    mockGet.mockResolvedValueOnce({ data: { ...state, base: { ref: 'main' } } });
+    const { body, event } = await postedBody(ready);
+    expect(event).toBe('COMMENT');
+    expect(body).toBe(`**Approval held:** this PR conflicts with \`main\`. Rebase it, and Manki reviews the result.\n\n${approved.body}`);
+  });
+
+  it('approves when GitHub still reports mergeable as unknown after the retries', async () => {
+    jest.useFakeTimers();
+    try {
+      mockGet.mockClear();
+      mockGet.mockResolvedValue({ data: { mergeable: null, mergeable_state: 'unknown', base: { ref: 'main' } } });
+      const posted = postedBody(ready);
+      await jest.advanceTimersByTimeAsync(10_000);
+      expect((await posted).event).toBe('APPROVE');
+      expect(mockGet).toHaveBeenCalledTimes(3);
+    } finally {
+      mockGet.mockResolvedValue({ data: { mergeable: true, mergeable_state: 'clean', base: { ref: 'main' } } });
+      jest.useRealTimers();
+    }
+  });
+
+  it('requests changes without looking up whether the PR conflicts', async () => {
+    mockGet.mockClear();
+    const { event } = await postedBody({ ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', verdictReport: undefined, findings: [blocker] });
+    expect(event).toBe('REQUEST_CHANGES');
+    expect(mockGet).not.toHaveBeenCalled();
   });
 
   it('renders the testing setup on its own line and the steps as a numbered list', async () => {
