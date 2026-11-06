@@ -1283,6 +1283,7 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
   const { octokit, owner, repo, prNumber, commitSha, diff, recap } = run;
   const posted = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, context, reviewTimeMs, {
     existingThreads: recap.previousFindings,
+    draft: run.options.draft,
   });
   await replacePreviousReviews(run, run.progress, posted.id);
   return posted;

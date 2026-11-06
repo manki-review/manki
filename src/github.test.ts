@@ -1051,6 +1051,14 @@ describe('postReview body lead', () => {
     expect(body).toBe(`**Approval held:** this PR conflicts with \`main\`. Rebase it, and Manki reviews the result.\n\n${approved.body}`);
   });
 
+  it('holds the approval of a draft as a COMMENT when the PR cannot be read, and approves another PR then', async () => {
+    mockGet.mockRejectedValueOnce(new Error('API down'));
+    const held = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { draft: true });
+    expect([mockCreateReview.mock.calls.at(-1)![0].event, held.approvalHeld]).toEqual(['COMMENT', 'draft']);
+    mockGet.mockRejectedValueOnce(new Error('API down'));
+    expect((await postedBody(ready)).event).toBe('APPROVE');
+  });
+
   it('holds the approval of a READY round as a COMMENT when the PR is a draft at posting time, conflicting or not', async () => {
     const approved = await postedBody(ready);
     mockGet.mockResolvedValueOnce({ data: { draft: true, mergeable: false, mergeable_state: 'dirty', base: { ref: 'main' } } });

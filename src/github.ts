@@ -190,9 +190,10 @@ export type ApprovalHold = { reason: 'draft' } | { reason: 'conflict'; baseRef: 
 
 /**
  * Returns why an approval must be held, read from the PR as it is now, or `undefined` when it may be posted.
- * Retries while GitHub has not computed whether the PR conflicts with its base.
+ * Retries while GitHub has not computed whether the PR conflicts with its base. When the PR can't be read,
+ * `draftWhenUnread` decides whether it counts as a draft.
  */
-export async function fetchApprovalHold(octokit: Octokit, owner: string, repo: string, prNumber: number): Promise<ApprovalHold | undefined> {
+export async function fetchApprovalHold(octokit: Octokit, owner: string, repo: string, prNumber: number, draftWhenUnread = false): Promise<ApprovalHold | undefined> {
   for (let attempt = 1; attempt <= MERGEABLE_ATTEMPTS; attempt++) {
     if (attempt > 1) await new Promise(resolve => setTimeout(resolve, MERGEABLE_RETRY_MS));
     try {
@@ -202,7 +203,7 @@ export async function fetchApprovalHold(octokit: Octokit, owner: string, repo: s
       if (data.mergeable !== null) return undefined;
     } catch (error) {
       core.warning(`Mergeable lookup failed, proceeding: ${error instanceof Error ? error.message : error}`);
-      return undefined;
+      return draftWhenUnread ? { reason: 'draft' } : undefined;
     }
   }
   core.info(`GitHub has not computed whether PR #${prNumber} conflicts with its base, proceeding`);
@@ -1081,6 +1082,7 @@ function hasOpenThread(finding: Finding, existingThreads: PreviousFinding[]): bo
  * records `0s` for review time. Pass both together to avoid this.
  * Once GitHub writes are stopped, throws the abort reason and posts nothing.
  * Returns the review's id, and why an approval was held as a COMMENT: the PR is a draft, or it conflicts with its base, as it is when posting.
+ * `draft` is the PR's draft state at the event, used when the PR can't be read.
  */
 export async function postReview(
   octokit: Octokit,
@@ -1092,7 +1094,7 @@ export async function postReview(
   diff?: ParsedDiff,
   context?: RoundContext,
   reviewTimeMs?: number,
-  { existingThreads = [] }: { existingThreads?: PreviousFinding[] } = {},
+  { existingThreads = [], draft = false }: { existingThreads?: PreviousFinding[]; draft?: boolean } = {},
 ): Promise<{ id: number; approvalHeld: ApprovalHeld }> {
   const event = mapVerdictToEvent(result.verdict);
 
@@ -1166,7 +1168,7 @@ export async function postReview(
 
   const blockingFindings = result.findings.filter(isBlockingFinding);
   const lead = formatLead(result, blockingFindings);
-  const hold = event === 'APPROVE' ? await fetchApprovalHold(octokit, owner, repo, prNumber) : undefined;
+  const hold = event === 'APPROVE' ? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) : undefined;
   const approvalHeld: ApprovalHeld = hold?.reason ?? false;
   const heldLine = hold && approvalHoldLine(hold);
 

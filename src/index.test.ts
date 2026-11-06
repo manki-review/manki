@@ -2005,8 +2005,9 @@ describe('runFullReview orchestration', () => {
       jest.mocked(configModule.loadConfig).mockReturnValueOnce({ ...jest.mocked(configModule.loadConfig)(undefined), convergence: { max_auto_rounds: 1 } });
       await asDispatchedRun(() => runFullReview(baseArgs.owner, baseArgs.repo, baseArgs.prNumber, baseArgs.commitSha, baseArgs.baseRef, baseArgs.prContext, { draft: true }));
 
-      const [, , , , , , , context] = jest.mocked(ghUtils.postReview).mock.calls[0];
+      const [, , , , , , , context, , options] = jest.mocked(ghUtils.postReview).mock.calls[0];
       expect(context!.meta.draft).toBe(true);
+      expect(options).toEqual(expect.objectContaining({ draft: true }));
       expect(jest.mocked(reviewModule.runReview).mock.calls[0][1]).toEqual(expect.objectContaining({ finalRound: false }));
     });
 
