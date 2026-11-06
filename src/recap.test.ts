@@ -1147,18 +1147,19 @@ describe('fetchRecapState', () => {
       expect(state.priorRounds[0].meta.mankiVersion).toBe('4.7.0');
     });
 
-    it('parses a single HTML-comment context block, and finds the last approval outside a round', async () => {
+    it('parses HTML-comment context blocks, and finds the last auto-approval', async () => {
       const ctx = makeRoundContext(2);
       const octokit = mockOctokit([], [
         { id: 199, body: `✅ **Approved.** All blocking threads are resolved.\n\n<!-- manki -->\n${AUTO_APPROVE_MARKER}`, user: { login: BOT_LOGIN }, submitted_at: '2026-01-01T01:00:00Z' },
         { id: 200, body: `✅ **Approved.**\n${htmlCommentBlock(ctx)}\n`, user: { login: BOT_LOGIN }, submitted_at: '2026-01-01T02:00:00Z' },
         { id: 201, body: '✅ **Approved.** No change to this PR since the reviewed commit `abc1234`.\n\n<!-- manki-bot -->', user: { login: BOT_LOGIN }, submitted_at: '2026-01-01T03:00:00Z' },
         { id: 202, body: `Quoting it: ${AUTO_APPROVE_MARKER}`, user: { login: 'alice' }, submitted_at: '2026-01-01T04:00:00Z' },
+        { id: 203, body: `✅ **Approved.** The finding text echoes ${AUTO_APPROVE_MARKER}\n${htmlCommentBlock(makeRoundContext(3))}`, user: { login: BOT_LOGIN }, submitted_at: '2026-01-01T05:00:00Z' },
+        { id: 204, body: `🔴 **Changes requested:** 1 blocker.\n\nThe finding text echoes ${AUTO_APPROVE_MARKER}`, user: { login: BOT_LOGIN }, submitted_at: '2026-01-01T06:00:00Z' },
       ]);
       const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
-      expect(state.priorRounds).toHaveLength(1);
-      expect(state.priorRounds[0].meta.round).toBe(2);
-      // A round's approval and a reposted standing verdict are not auto-approvals, and a quote of the marker is not Manki's.
+      expect(state.priorRounds.map(r => r.meta.round)).toEqual([2, 3]);
+      // A reposted standing verdict, a quote of the marker, and a review that only echoes the marker are not auto-approvals.
       expect(state.lastApprovalAt).toBe('2026-01-01T01:00:00Z');
     });
 
