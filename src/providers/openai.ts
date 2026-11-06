@@ -207,7 +207,7 @@ export class OpenAIClient implements LLMClient {
       label: 'Codex',
       cliPath,
       args,
-      env: { ...cliEnv(), CODEX_HOME: codexHome },
+      env: cliEnv('codex', { CODEX_HOME: codexHome }),
       input: fullPrompt,
       hardTimeoutMs: options?.timeoutMs,
       signal: options?.signal,

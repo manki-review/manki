@@ -6,7 +6,7 @@ import { StringDecoder } from 'string_decoder';
 
 import * as core from '@actions/core';
 
-import { registerSecret, safeJsonParse, sanitizeTokens, SECRET_NAME } from '../utils';
+import { registerSecret, safeJsonParse, sanitizeTokens, SECRET_NAME, SYSTEM_ENV } from '../utils';
 import { SendMessageOptions } from './types';
 
 export const STALE_TIMEOUT_MS = 90_000;
@@ -301,17 +301,35 @@ function emptyCliCwd(): string {
   return emptyCwd;
 }
 
-// The OIDC endpoint lets a CLI mint an identity token, which the token service trades for an App token.
-const CLI_BLOCKED_ENV = new Set(['ACTIONS_ID_TOKEN_REQUEST_URL', 'ACTIONS_RESULTS_URL']);
+// Besides `SYSTEM_ENV`, a CLI needs a home, the locale and the CA bundles a proxy may need.
+// Upper case, because Windows names some of them in mixed case, such as `Path`.
+const CLI_ENV = new Set([
+  ...SYSTEM_ENV, 'ALL_PROXY', 'NODE_USE_ENV_PROXY', 'HOME', 'LANG', 'RUNNER_TEMP', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS',
+  'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'PATHEXT', 'COMSPEC',
+].map((name) => name.toUpperCase()));
+const CLI_ENV_PREFIX = /^(?:LC|XDG)_/i;
+
+export type CliProvider = 'claude' | 'codex' | 'gemini';
+
+// The configuration each CLI documents, such as base URLs, regions, projects and the Bedrock and Vertex switches.
+const PROVIDER_ENV: Record<CliProvider, RegExp> = {
+  claude: new RegExp([
+    '^(?:ANTHROPIC_|CLAUDE_CODE_|DISABLE_|VERTEX_REGION_)',
+    '^(?:CLAUDE_CONFIG_DIR|API_TIMEOUT_MS|MAX_THINKING_TOKENS|MCP_TIMEOUT|MCP_TOOL_TIMEOUT|CLOUD_ML_REGION)$',
+    // Bedrock reads the standard AWS SDK credential chain. Its secret-named keys stay out.
+    '^AWS_(?:REGION|DEFAULT_REGION|PROFILE|CONFIG_FILE|SHARED_CREDENTIALS_FILE|ROLE_ARN|ROLE_SESSION_NAME|WEB_IDENTITY_TOKEN_FILE|CONTAINER_CREDENTIALS_(?:RELATIVE|FULL)_URI)$',
+  ].join('|'), 'i'),
+  codex: /^(?:OPENAI_|CODEX_)/i,
+  gemini: /^(?:GEMINI_|GOOGLE_|VERTEX_)/i,
+};
 
 /**
- * Returns `env` without what a provider CLI must not see: action inputs (`INPUT_*`), the OIDC endpoint and every
- * variable named like a secret, such as `*_TOKEN`, `*_KEY` or `*_PASSWORD`. A provider adds its own credential back.
+ * Returns the environment for the `provider` CLI: the variables of `env` any CLI needs to run, the provider's own
+ * configuration, and `vars`. Nothing named like a secret, such as `*_TOKEN` or `*_KEY`, passes, except `credential`.
  */
-export function cliEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  return Object.fromEntries(
-    Object.entries(env).filter(([name]) => !CLI_BLOCKED_ENV.has(name) && !/^INPUT_/i.test(name) && !SECRET_NAME.test(name)),
-  );
+export function cliEnv(provider: CliProvider, vars: NodeJS.ProcessEnv = {}, credential?: string, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const needed = Object.entries(env).filter(([name]) => CLI_ENV.has(name.toUpperCase()) || CLI_ENV_PREFIX.test(name) || PROVIDER_ENV[provider].test(name));
+  return Object.fromEntries([...needed, ...Object.entries(vars)].filter(([name]) => name === credential || !SECRET_NAME.test(name)));
 }
 
 export interface RunCliOptions {

@@ -5,6 +5,7 @@ import { basename, dirname, join, relative, resolve, sep } from 'path';
 import { addedLines } from './diff';
 import { installPinned, makeScratchDir, PinnedDownload } from './tool-install';
 import { DiffFile, PackageVulnerability, StaticSignal } from './types';
+import { SYSTEM_ENV } from './utils';
 
 export type BinaryTool = 'gitleaks' | 'osv-scanner' | 'opengrep' | 'actionlint' | 'zizmor' | 'shellcheck';
 
@@ -112,7 +113,7 @@ export async function installTool(tool: BinaryTool): Promise<string> {
 /** Runs a tool without the action's environment, so it never sees a token. Resolves with the exit code instead of throwing. */
 export function runTool(binary: string, args: string[], cwd: string): Promise<ToolResult> {
   const env: NodeJS.ProcessEnv = { HOME: makeScratchDir('home') };
-  for (const key of ['PATH', 'SystemRoot', 'TEMP', 'TMP', 'TMPDIR', 'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'https_proxy', 'http_proxy', 'no_proxy']) {
+  for (const key of SYSTEM_ENV) {
     if (process.env[key] !== undefined) env[key] = process.env[key];
   }
   env.USERPROFILE = env.HOME;

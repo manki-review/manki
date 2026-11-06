@@ -96,6 +96,9 @@ export function safeJsonParse(text: string): unknown | null {
   }
 }
 
+/** Variables a child process needs to run and to reach the network through a proxy. None of them names a credential. */
+export const SYSTEM_ENV = ['PATH', 'SystemRoot', 'TEMP', 'TMP', 'TMPDIR', 'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'https_proxy', 'http_proxy', 'no_proxy'];
+
 /** Matches a variable name that holds a credential, such as `*_TOKEN`, `*_KEY` or `*_PASSWORD`. */
 export const SECRET_NAME = /(?:^|_)(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD|PASSPHRASE|PAT|CREDENTIALS?|AUTH)$/i;
 
