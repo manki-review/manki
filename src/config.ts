@@ -469,8 +469,16 @@ function validateReviewBlock(review: unknown, errors: string[], warnings: string
   if ('outside_input' in review && (typeof review.outside_input !== 'string' || !review.outside_input.trim())) {
     errors.push('`review.outside_input` must be a non-empty string');
   }
-  if ('examples' in review && (!isStringArray(review.examples) || review.examples.length === 0)) {
-    errors.push('`review.examples` must be a non-empty array of strings');
+  if ('examples' in review) {
+    const examples = review.examples;
+    if (!isObject(examples) || Object.keys(examples).length === 0) {
+      errors.push('`review.examples` must set `blocker`, `not_blocker` or both');
+    } else {
+      for (const [side, list] of Object.entries(examples)) {
+        if (side !== 'blocker' && side !== 'not_blocker') errors.push(`\`review.examples.${side}\` is not a known side. Use \`blocker\` or \`not_blocker\``);
+        else if (!isStringArray(list) || list.length === 0) errors.push(`\`review.examples.${side}\` must be a non-empty array of strings`);
+      }
+    }
   }
 
   if ('routing' in review) {

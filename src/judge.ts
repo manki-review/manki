@@ -546,6 +546,7 @@ function buildRepositoryRules(config: ReviewConfig): string {
   const { outside_input: outsideInput, examples } = config.review ?? {};
   const hasCriticalAreas = Object.values(resolveRouting(config.review).classes).some(c => c.critical);
   if (!hasCriticalAreas && !outsideInput && !examples) return '';
+  const exampleList = (label: string, list: string[] | undefined) => (list ? ['', label, ...list.map(e => `- ${e.trim()}`)] : []);
   const parts = ['## Repository Rules', '', 'The repository\'s maintainers set these rules. They add to the rules above and never lower a security defect.'];
   if (hasCriticalAreas) {
     parts.push('', '**Critical areas:** a finding marked **Critical area** sits in a path where any wrong result is severe damage. Grade a wrong result there by the Severe row of the table, even in a rare internal edge case. The other tests still apply.');
@@ -554,7 +555,7 @@ function buildRepositoryRules(config: ReviewConfig): string {
     parts.push('', `**Outside input in this repository:** ${outsideInput.trim()}`);
   }
   if (examples) {
-    parts.push('', '**Repository examples:**', ...examples.map(e => `- ${e.trim()}`));
+    parts.push('', '**Repository examples:**', ...exampleList('Blockers:', examples.blocker), ...exampleList('Not blockers:', examples.not_blocker));
   }
   return parts.join('\n');
 }

@@ -431,8 +431,8 @@ export interface ReviewRoutingConfig {
   allow_weaker?: string[];
   /** What counts as outside input in this repository, for the judge. */
   outside_input?: string;
-  /** Worked examples of how this repository's findings are graded, for the judge. */
-  examples?: string[];
+  /** Worked examples of this repository's findings that are and are not blockers, for the judge. */
+  examples?: { blocker?: string[]; not_blocker?: string[] };
 }
 
 /** How a round's review group was picked. */

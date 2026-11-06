@@ -123,14 +123,18 @@ describe('buildJudgeSystemPrompt', () => {
     const review: ReviewConfig['review'] = {
       classes: { consensus: { rank: 60, critical: true, match: { paths_any: ['src/consensus/**'] } } },
       outside_input: 'Messages from network peers and RPC callers.',
-      examples: ['A panic on a peer message is a `blocker`.', 'A slow RPC call is a `suggestion`.'],
+      examples: { blocker: ['A panic on a peer message.'], not_blocker: ['A slow RPC call is a `suggestion`.'] },
     };
     const prompt = buildJudgeSystemPrompt(makeConfig({ review, instructions: 'Use strict TypeScript.' }), 5);
     const rules = prompt.slice(prompt.indexOf('## Repository Rules'), prompt.indexOf('## Project Instructions'));
     expect(rules).toContain('never lower a security defect');
     expect(rules).toContain('a finding marked **Critical area** sits in a path where any wrong result is severe damage. Grade a wrong result there by the Severe row of the table, even in a rare internal edge case.');
     expect(rules).toContain('**Outside input in this repository:** Messages from network peers and RPC callers.');
-    expect(rules).toContain('**Repository examples:**\n- A panic on a peer message is a `blocker`.\n- A slow RPC call is a `suggestion`.');
+    expect(rules).toContain('**Repository examples:**\n\nBlockers:\n- A panic on a peer message.\n\nNot blockers:\n- A slow RPC call is a `suggestion`.');
+
+    const oneSide = buildJudgeSystemPrompt(makeConfig({ review: { examples: { not_blocker: ['A slow RPC call.'] } } }), 5);
+    expect(oneSide).toContain('**Repository examples:**\n\nNot blockers:\n- A slow RPC call.');
+    expect(oneSide.slice(oneSide.indexOf('## Repository Rules'))).not.toContain('Blockers:');
 
     const onlyInput = buildJudgeSystemPrompt(makeConfig({ review: { outside_input: 'Peer messages.' } }), 5);
     expect(onlyInput).toContain('**Outside input in this repository:** Peer messages.');

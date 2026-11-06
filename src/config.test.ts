@@ -169,7 +169,7 @@ describe('config', () => {
 
     it('loads groups, classes and routing as written and leaves the built-ins when unset', () => {
       expect(loadConfigFromContent('').review).toBeUndefined();
-      const config = loadConfigFromContent(`${deep}  classes:\n    security:\n      match: { paths_any: ["src/billing/**"] }\n    hot_path:\n      rank: 85\n      match: { paths_any: ["src/net/**"], triage: { subtle: true } }\n    consensus:\n      rank: 60\n      critical: true\n      match: { paths_any: ["src/consensus/**"] }\n  routing:\n    security: deep\n    hot_path: deep\n    internal: solo\n  default_group: pair\n  outside_input: Messages from network peers.\n  examples:\n    - A panic on a peer message is a blocker.\n`);
+      const config = loadConfigFromContent(`${deep}  classes:\n    security:\n      match: { paths_any: ["src/billing/**"] }\n    hot_path:\n      rank: 85\n      match: { paths_any: ["src/net/**"], triage: { subtle: true } }\n    consensus:\n      rank: 60\n      critical: true\n      match: { paths_any: ["src/consensus/**"] }\n  routing:\n    security: deep\n    hot_path: deep\n    internal: solo\n  default_group: pair\n  outside_input: Messages from network peers.\n  examples:\n    blocker:\n      - A panic on a peer message.\n    not_blocker:\n      - A slow RPC call.\n`);
       expect(config.review).toEqual({
         groups: { deep: { reviewers: [{ model: 'claude-opus-5-5', effort: 'high' }, { model: 'gpt-5.5', effort: 'high' }] } },
         classes: {
@@ -180,7 +180,7 @@ describe('config', () => {
         routing: { security: 'deep', hot_path: 'deep', internal: 'solo' },
         default_group: 'pair',
         outside_input: 'Messages from network peers.',
-        examples: ['A panic on a peer message is a blocker.'],
+        examples: { blocker: ['A panic on a peer message.'], not_blocker: ['A slow RPC call.'] },
       });
       expect(core.warning).not.toHaveBeenCalled();
     });
@@ -208,8 +208,11 @@ describe('config', () => {
       ['a critical flag that is no boolean', 'review:\n  classes:\n    hot: { rank: 60, critical: "yes", match: { paths_any: ["src/**"] } }\n', '`review.classes.hot.critical` must be a boolean'],
       ['an empty outside_input', 'review:\n  outside_input: "  "\n', '`review.outside_input` must be a non-empty string'],
       ['outside_input that is no string', 'review:\n  outside_input: [peers]\n', '`review.outside_input` must be a non-empty string'],
-      ['empty examples', 'review:\n  examples: []\n', '`review.examples` must be a non-empty array of strings'],
-      ['examples that are no strings', 'review:\n  examples: [{ text: x }]\n', '`review.examples` must be a non-empty array of strings'],
+      ['examples as a plain list', 'review:\n  examples: [A panic.]\n', '`review.examples` must set `blocker`, `not_blocker` or both'],
+      ['empty examples', 'review:\n  examples: {}\n', '`review.examples` must set `blocker`, `not_blocker` or both'],
+      ['an unknown example side', 'review:\n  examples:\n    warning: [A slow call.]\n', '`review.examples.warning` is not a known side'],
+      ['an empty example side', 'review:\n  examples:\n    blocker: []\n', '`review.examples.blocker` must be a non-empty array of strings'],
+      ['examples that are no strings', 'review:\n  examples:\n    not_blocker: [{ text: x }]\n', '`review.examples.not_blocker` must be a non-empty array of strings'],
     ])('rejects %s', (_label, yaml, message) => {
       expect(() => loadConfigFromContent(yaml)).toThrow(message);
     });
