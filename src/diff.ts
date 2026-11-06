@@ -220,7 +220,8 @@ function takeText(counts: Map<string, number>, text: string): boolean {
  * adds or removes that `prior` did not, a line `prior` added or removed that `current` no longer does, and a
  * line of the PR that moved. Lines are compared by text, so a rebase or a shift in line numbers does not turn
  * reviewed code into new code. `interRound`, the diff between the two commits, says where a moved line, or a
- * line `current` no longer touches, sits. A rebase shows only base branch changes there.
+ * line `current` no longer touches, sits. A line there counts as moved only where `current` adds it, so a
+ * base branch line a rebase brings in never does.
  */
 function changedSincePrior(current: ParsedDiff, prior: ParsedDiff, interRound: ParsedDiff | undefined): Map<string, number[]> {
   const fresh = new Map<string, number[]>();
@@ -231,7 +232,6 @@ function changedSincePrior(current: ParsedDiff, prior: ParsedDiff, interRound: P
     const priorAdded = countTexts(priorFile ? addedLines(priorFile).values() : []);
     const priorRemoved = countTexts(priorFile ? removedLines(priorFile).map(([, text]) => text) : []);
     const added = file ? addedLines(file) : new Map<number, string>();
-    const currentAdded = new Set(added.values());
     const lines: number[] = [];
     for (const [line, text] of added) {
       if (!takeText(priorAdded, text)) lines.push(line);
@@ -245,7 +245,7 @@ function changedSincePrior(current: ParsedDiff, prior: ParsedDiff, interRound: P
         if (takeText(priorAdded, text)) lines.push(line);
       }
       for (const [line, text] of addedLines(interRoundFile)) {
-        if (takeText(priorRemoved, text) || currentAdded.has(text)) lines.push(line);
+        if (takeText(priorRemoved, text) || added.get(line) === text) lines.push(line);
       }
     }
     if (lines.length > 0) fresh.set(path, lines);

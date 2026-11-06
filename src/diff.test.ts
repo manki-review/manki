@@ -419,6 +419,12 @@ describe('tagFindingOrigins', () => {
     const movedFindings = [finding('src/a.ts', 12), finding('src/a.ts', 20)];
     tagFindingOrigins(movedFindings, parsePRDiff(moved), parsePRDiff(prior), parsePRDiff(movedInterRound));
     expect(movedFindings.map(f => f.origin)).toEqual(['new', 'reviewed']);
+
+    // A rebase brings in a base line `}` that the PR also adds elsewhere. It sits on a line the PR does not add, so it stays reviewed.
+    const rebaseInterRound = `diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,1 +1,2 @@\n ctx\n+}\n`;
+    const rebaseFindings = [finding('src/a.ts', 2)];
+    tagFindingOrigins(rebaseFindings, parsePRDiff(change('src/a.ts', 10, ['guard', 'body', '}'])), parsePRDiff(change('src/a.ts', 10, ['guard', 'body', '}'])), parsePRDiff(rebaseInterRound));
+    expect(rebaseFindings[0].origin).toBe('reviewed');
   });
 });
 
