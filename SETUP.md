@@ -1027,6 +1027,8 @@ After setup, create a test PR to verify everything works:
 
 You can also trigger a review manually by commenting `/manki review` on any PR. Manki reviews each commit once. The command reviews the PR's current head when Manki has no complete review of it yet, and an incomplete or failed review does not count. On a head Manki already reviewed, it posts no review and replies with one notice that carries a Force review box. Only ticking that box reviews the same commit again.
 
+In webhook mode, once the token service handles them, Manki's newest progress comment ends with a settings block instead. It holds a status line, such as "Last reviewed `abc1234` · head `def5678` · review running" or "up to date", and the boxes that apply to the PR: Pause automatic reviews, Full review, Cancel this review while a review runs, Review this draft on a draft, and Force review while automatic review is paused. Pause stays ticked until someone unticks it. The other boxes start one run each. Full review counts every finding as new code. The block moves to the newest progress comment, and older comments lose it. A skipped, paused or draft PR then gets no separate notice: the status line says so, and the block offers the box that reviews it. Until the token service sends the PR's settings, Manki posts the separate notices as before.
+
 ## Security
 
 Manki handles untrusted PR content and cross-repo tokens. The security model rests on these guarantees:

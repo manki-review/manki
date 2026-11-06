@@ -1007,7 +1007,27 @@ export interface FullReviewOptions {
   bypassHint?: 'force_review' | 'skip_cap' | 'manual_review_command';
   trigger?: RoundTrigger;
   headRepoFullName?: string;
+  /** The PR's coordinator state, set once the Worker handles the settings boxes. Without it, notices are separate comments. */
+  settings?: SettingsState;
+  /** Reviews the whole PR as new, so every finding counts as new code. */
+  fullReview?: boolean;
 }
+
+/** A one-off mode a settings box queued for a run. */
+export type RunMode = 'full' | 'deeper' | 'draft' | 'force';
+
+/** What the PR coordinator says about a PR. */
+export interface PrState {
+  /** The PR's sticky settings. Only a Worker that handles the settings boxes sends them. */
+  settings?: { paused: boolean };
+  /** The modes of this run. */
+  runModes: ReadonlySet<RunMode>;
+  /** The modes of the work still queued for the PR. */
+  queuedModes: ReadonlySet<RunMode>;
+}
+
+/** The coordinator state of a PR whose Worker handles the settings boxes. */
+export type SettingsState = PrState & { settings: { paused: boolean } };
 
 /** Model spec each pipeline stage runs on. */
 export interface ReviewModels {

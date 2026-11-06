@@ -4,6 +4,7 @@ import { createAppAuth } from '@octokit/auth-app';
 import { retry } from '@octokit/plugin-retry';
 import { throttling } from '@octokit/plugin-throttling';
 import { ACTIONS_BOT_LOGIN, BOT_LOGIN, BotIdentity } from './github';
+import type { PrState, RunMode } from './types';
 import { redactSecretsDeep, registerSecret } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -147,6 +148,43 @@ export async function resolveGitHubToken(
   } catch (error) {
     core.info(`App token resolution failed: ${error} — using github-actions[bot] identity`);
     return { token: githubToken, identity: 'actions' };
+  }
+}
+
+const RUN_MODES: ReadonlySet<string> = new Set<RunMode>(['full', 'deeper', 'draft', 'force']);
+
+function modesOf(items: unknown, keep: (item: Record<string, unknown>) => boolean): Set<RunMode> {
+  const modes = new Set<RunMode>();
+  if (!Array.isArray(items)) return modes;
+  for (const item of items) {
+    if (!item || typeof item !== 'object' || !keep(item) || !Array.isArray(item.modes)) continue;
+    for (const mode of item.modes) if (typeof mode === 'string' && RUN_MODES.has(mode)) modes.add(mode as RunMode);
+  }
+  return modes;
+}
+
+/**
+ * Reads the coordinator's state of PR `prNumber` from the token service, with the modes of run `runId`.
+ * Returns `null` when the run has no OIDC token or the service has no state to give.
+ */
+export async function fetchPrState(owner: string, repo: string, prNumber: number, runId: number): Promise<PrState | null> {
+  try {
+    const response = await postToTokenService(new URL('state', tokenServiceUrl()).href, { owner, repo, pr: prNumber });
+    if (!response) return null;
+    if (!response.ok) {
+      core.info(`The token service has no PR state for #${prNumber} (${response.status})`);
+      return null;
+    }
+    const data = await response.json() as Record<string, unknown> | null;
+    const settings = data?.settings as Record<string, unknown> | undefined;
+    return {
+      ...(settings && typeof settings.paused === 'boolean' && { settings: { paused: settings.paused } }),
+      runModes: modesOf(data?.active, item => item.run_id === runId),
+      queuedModes: modesOf(data?.queue, () => true),
+    };
+  } catch (error) {
+    core.warning(`Could not read the PR state from the token service: ${error}`);
+    return null;
   }
 }
 

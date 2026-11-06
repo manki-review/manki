@@ -13,6 +13,7 @@ import { MAX_AGENT_RETRIES, SEVERITY_ORDER } from './types';
 import { MAX_LOCK_TTL_SECONDS } from './config';
 import { safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { formatReviewRecord, omitBulkyDiagnostics } from './review-record';
+import { parseSettingsBlock, SETTINGS_MARKER, SettingsView, stripSettingsBlock, withSettingsBlock } from './settings';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -91,6 +92,8 @@ const BOT_MARKER = '<!-- manki-bot -->';
 const REVIEW_COMPLETE_MARKER = '<!-- manki-review-complete -->';
 const FORCE_REVIEW_MARKER = '<!-- manki-force-review -->';
 const FORCE_CAP_MARKER = '<!-- manki-force-cap -->';
+/** Marks a pause notice whose Force review box sits in the settings block. */
+const PAUSE_NOTICE_MARKER = '<!-- manki-paused -->';
 /** Marks the approval auto-approve posts. It stays in the body after GitHub dismisses the review. */
 const AUTO_APPROVE_MARKER = '<!-- manki-auto-approve -->';
 const RUN_ID_MARKER_PREFIX = '<!-- manki-run-id:';
@@ -647,13 +650,14 @@ export async function postProgressComment(
   prNumber: number,
   commitSha: string,
   dashboard?: DashboardData,
+  settings?: SettingsView,
 ): Promise<number> {
-  const body = withMarkers(
+  const body = withSettingsBlock(withMarkers(
     dashboard ? buildDashboard(dashboard) : '**Review started**',
     ...BOT_MARKERS,
     buildRunIdMarker(github.context.runId),
     buildCommitMarker(commitSha),
-  );
+  ), settings);
 
   const { data } = await octokit.rest.issues.createComment({
     owner,
@@ -662,6 +666,25 @@ export async function postProgressComment(
     body,
   });
   return data.id;
+}
+
+/**
+ * Edits progress comment `commentId` to `body`, ending it with the settings block for `settings` when given.
+ * The block keeps the boxes ticked on the live comment, since a writer can tick one while the run edits it.
+ */
+async function editProgressComment(
+  octokit: Octokit, owner: string, repo: string, commentId: number, body: string, settings?: SettingsView,
+): Promise<void> {
+  if (settings) {
+    try {
+      const { data } = await octokit.rest.issues.getComment({ owner, repo, comment_id: commentId });
+      const live = parseSettingsBlock(data.body ?? '');
+      if (live) settings = { ...settings, ticked: live.ticked };
+    } catch (error) {
+      core.warning(`Failed to read the ticked settings boxes, rendering them from the PR state: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+  await octokit.rest.issues.updateComment({ owner, repo, comment_id: commentId, body: withSettingsBlock(body, settings) });
 }
 
 /**
@@ -719,6 +742,7 @@ export async function markProgressCommentFailed(
   action: 'Review' | 'Auto-approve',
   reason: string,
   commitSha?: string,
+  settings?: SettingsView,
 ): Promise<void> {
   const body = withMarkers(
     `🔴 **${action} failed:** ${sanitizeMarkdown(sanitizeTokens(String(reason))).slice(0, 300)}`,
@@ -727,7 +751,7 @@ export async function markProgressCommentFailed(
     ...(commitSha ? [buildCommitMarker(commitSha)] : []),
   );
   try {
-    await octokit.rest.issues.updateComment({ owner, repo, comment_id: commentId, body });
+    await editProgressComment(octokit, owner, repo, commentId, body, settings);
   } catch (error) {
     core.warning(`Failed to mark ${action.toLowerCase()} comment as failed: ${error instanceof Error ? error.message : error}`);
   }
@@ -779,6 +803,7 @@ export async function updateProgressComment(
   dashboard: DashboardData,
   metadata?: ReviewMetadata,
   commitSha?: string,
+  settings?: SettingsView,
 ): Promise<void> {
   const parts: string[] = [
     metadata ? '✅ **Review complete**' : REVIEW_FAILED_LINE,
@@ -818,12 +843,11 @@ export async function updateProgressComment(
   }
 
   assertWritesAllowed();
-  await octokit.rest.issues.updateComment({
-    owner,
-    repo,
-    comment_id: commentId,
-    body: withMarkers(truncateBody(parts.join('\n')), ...BOT_MARKERS, REVIEW_COMPLETE_MARKER, ...(commitSha ? [buildCommitMarker(commitSha)] : [])),
-  });
+  await editProgressComment(
+    octokit, owner, repo, commentId,
+    withMarkers(truncateBody(parts.join('\n')), ...BOT_MARKERS, REVIEW_COMPLETE_MARKER, ...(commitSha ? [buildCommitMarker(commitSha)] : [])),
+    settings,
+  );
 }
 
 /** Whether `body` is a progress comment for `commitSha` whose review failed or ended incomplete. */
@@ -841,13 +865,13 @@ export async function updateProgressDashboard(
   commentId: number,
   dashboard: DashboardData,
   commitSha: string,
+  settings?: SettingsView,
 ): Promise<void> {
-  await octokit.rest.issues.updateComment({
-    owner,
-    repo,
-    comment_id: commentId,
-    body: withMarkers(buildDashboard(dashboard), ...BOT_MARKERS, buildRunIdMarker(github.context.runId), buildCommitMarker(commitSha)),
-  });
+  await editProgressComment(
+    octokit, owner, repo, commentId,
+    withMarkers(buildDashboard(dashboard), ...BOT_MARKERS, buildRunIdMarker(github.context.runId), buildCommitMarker(commitSha)),
+    settings,
+  );
 }
 
 /**
@@ -1915,15 +1939,18 @@ async function markProgressCommentCancelled(
   octokit: Octokit, owner: string, repo: string, commentId: number, originalBody: string,
 ): Promise<void> {
   if (originalBody.includes(CANCELLED_MARKER)) return;
-  const body = withMarkers([
+  const settings = parseSettingsBlock(originalBody);
+  const boxes = new Set(settings?.boxes);
+  boxes.delete('cancel');
+  const body = withSettingsBlock(withMarkers([
     '**Review cancelled:** a newer run replaced it.',
     '',
     '<details><summary>Original progress</summary>',
     '',
-    originalBody,
+    stripSettingsBlock(originalBody),
     '',
     '</details>',
-  ].join('\n'), CANCELLED_MARKER);
+  ].join('\n'), CANCELLED_MARKER), settings && { ...settings, status: 'review cancelled', boxes });
   try {
     await octokit.rest.issues.updateComment({ owner, repo, comment_id: commentId, body });
   } catch (error) {
@@ -1992,6 +2019,54 @@ async function fetchPRComments(
     owner, repo, issue_number: prNumber, per_page: 100,
   });
   return [...data].sort((a, b) => (a.updated_at < b.updated_at ? 1 : a.updated_at > b.updated_at ? -1 : 0));
+}
+
+/** Returns Manki's newest comment that ends with a settings block. `comments` come newest first. */
+function findSettingsComment(comments: IssueComment[], bot: BotIdentity): (IssueComment & { body: string }) | undefined {
+  return comments.find((c): c is IssueComment & { body: string } => isBotUser(bot, c.user) && !!c.body && parseSettingsBlock(c.body) !== undefined);
+}
+
+/** Returns the settings block of Manki's newest comment that has one. `comments` come newest first. */
+function latestSettings(comments: IssueComment[], bot: BotIdentity): SettingsView | undefined {
+  const current = findSettingsComment(comments, bot);
+  return current && parseSettingsBlock(current.body);
+}
+
+/**
+ * Shows `settings` in the block of Manki's newest comment that has one. The block keeps its ticked boxes and,
+ * unless `settings` names one, its last reviewed commit. Without such a comment, posts `text` with the block.
+ */
+async function showSettings(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, settings: SettingsView, text: string,
+): Promise<void> {
+  try {
+    const current = findSettingsComment(await fetchPRComments(octokit, owner, repo, prNumber), bot);
+    const live = current && parseSettingsBlock(current.body);
+    if (current && live) {
+      const view = { ...settings, lastReviewed: settings.lastReviewed ?? live.lastReviewed, ticked: live.ticked };
+      await octokit.rest.issues.updateComment({ owner, repo, comment_id: current.id, body: withSettingsBlock(stripSettingsBlock(current.body), view) });
+    } else {
+      // The complete marker keeps the comment from reading as a run in progress.
+      const body = withSettingsBlock(withMarkers(text, ...BOT_MARKERS, REVIEW_COMPLETE_MARKER), settings);
+      await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+    }
+  } catch (error) {
+    core.warning(`Failed to show the review status in the settings block: ${error instanceof Error ? error.message : error}`);
+  }
+}
+
+/** Removes the settings block from each of Manki's `comments` except `keepId`, so only the newest progress comment has one. */
+async function retireSettingsBlocks(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, comments: IssueComment[], keepId: number,
+): Promise<void> {
+  for (const c of comments) {
+    if (c.id === keepId || !isBotUser(bot, c.user) || !c.body?.includes(SETTINGS_MARKER)) continue;
+    try {
+      await octokit.rest.issues.updateComment({ owner, repo, comment_id: c.id, body: stripSettingsBlock(c.body) });
+    } catch (error) {
+      core.warning(`Failed to remove the settings block from comment ${c.id}: ${error instanceof Error ? error.message : error}`);
+    }
+  }
 }
 
 /**
@@ -2372,5 +2447,5 @@ async function postConfigErrorComment(
   }
 }
 
-export { APPROVED_LINE, dynamicFence, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, isTrustedAssociation, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgressOn, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE };
+export { APPROVED_LINE, dynamicFence, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, isTrustedAssociation, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgressOn, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, showSettings };
 export type { InProgressLock, StandingVerdict };
