@@ -5705,6 +5705,7 @@ describe('runFullReview orchestration', () => {
         thread('Name could be clearer', 'suggestion', 'open', 4),
         { ...thread('Token logged', 'blocker', 'resolved', 5), reopen: true },
         thread('Posted before severity markers', 'unknown', 'open', 6),
+        { ...thread('Token in error message', 'warning', 'open', 7), isSecurity: true },
       ]);
 
       await callRunFullReview();
@@ -5728,9 +5729,9 @@ describe('runFullReview orchestration', () => {
         '',
         '**Still open from earlier reviews:**',
         `- \`src/app.ts:1\`: Null check missing ${link(1)}`,
-        `- \`src/app.ts:2\`: Retry never stops ${link(2)}`,
         `- \`src/app.ts:5\`: Token logged ${link(5)}`,
         `- \`src/app.ts:6\`: Posted before severity markers ${link(6)}`,
+        `- \`src/app.ts:7\`: Token in error message ${link(7)}`,
         '',
         'Tick the box to run another round, or comment `@manki review`:',
         '',

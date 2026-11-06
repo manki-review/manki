@@ -146,7 +146,7 @@ describe('fetchBotReviewThreads', () => {
     expect(graphqlMock).toHaveBeenNthCalledWith(2, expect.any(String), expect.objectContaining({ cursor: 'p2' }));
   });
 
-  it('treats inline suggestion and follow-up warning threads as not blocking auto-approve', async () => {
+  it('treats suggestion, follow-up and plain warning threads as not blocking auto-approve', async () => {
     const finding = (severity: Finding['severity'], title: string, tags?: string[]): Finding => ({
       severity, title, file: 'src/a.ts', line: 3, description: 'd', reviewers: [], ...(tags && { tags }),
     });
@@ -154,14 +154,17 @@ describe('fetchBotReviewThreads', () => {
       makeGraphqlFetchResponse([
         makeGraphqlFetchThreadNode({ id: 's', body: formatFindingComment(finding('suggestion', 'Extract helper')) }),
         makeGraphqlFetchThreadNode({ id: 'w', body: formatFindingComment(finding('warning', 'Deferred warning', ['follow-up'])) }),
-        makeGraphqlFetchThreadNode({ id: 'b', body: formatFindingComment(finding('warning', 'Real warning')) }),
+        makeGraphqlFetchThreadNode({ id: 'p', body: formatFindingComment(finding('warning', 'Plain warning')) }),
+        makeGraphqlFetchThreadNode({ id: 'x', body: formatFindingComment(finding('warning', 'Token in log', ['security'])) }),
+        makeGraphqlFetchThreadNode({ id: 'b', body: formatFindingComment(finding('blocker', 'Real bug')) }),
       ]),
     );
 
     const threads = await fetchBotReviewThreads({ graphql: graphqlMock } as unknown as Octokit, TEST_BOT, 'owner', 'repo', 1);
 
-    expect(threads.map(t => [t.id, t.isBlocking])).toEqual([['s', false], ['w', false], ['b', true]]);
-    expect(areAllFindingsResolved(threads.filter(t => t.id !== 'b'), TEST_BOT)).toBe(true);
+    expect(threads.map(t => [t.id, t.isBlocking])).toEqual([['s', false], ['w', false], ['p', false], ['x', true], ['b', true]]);
+    expect(areAllFindingsResolved(threads.filter(t => t.id !== 'x' && t.id !== 'b'), TEST_BOT)).toBe(true);
+    expect(areAllFindingsResolved(threads.filter(t => t.id !== 'b'), TEST_BOT)).toBe(false);
     expect(areAllFindingsResolved(threads, TEST_BOT)).toBe(false);
   });
 
@@ -217,22 +220,24 @@ describe('fetchBotReviewThreads', () => {
     expect(threads[0].findingTitle).toBe('Unknown');
   });
 
-  it('parses warning as blocking and nit and ignore as non-blocking', async () => {
+  it('parses blocker as blocking and plain warning, nit and ignore as non-blocking', async () => {
     const graphqlMock = jest.fn().mockResolvedValueOnce(
       makeGraphqlFetchResponse([
         makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:nitpick:style-issue --> nit' }),
         makeGraphqlFetchThreadNode({ id: 't2', body: '<!-- manki:ignore:false-positive --> ignore' }),
         makeGraphqlFetchThreadNode({ id: 't3', body: '<!-- manki:warning:race --> warning' }),
+        makeGraphqlFetchThreadNode({ id: 't4', body: '<!-- manki:blocker:crash --> blocker' }),
       ]),
     );
 
     const octokit = { graphql: graphqlMock } as unknown as Octokit;
     const threads = await fetchBotReviewThreads(octokit, TEST_BOT, 'owner', 'repo', 1);
 
-    expect(threads).toHaveLength(3);
+    expect(threads).toHaveLength(4);
     expect(threads[0]).toEqual({ id: 't1', isResolved: false, isBlocking: false, findingTitle: 'style issue' });
     expect(threads[1]).toEqual({ id: 't2', isResolved: false, isBlocking: false, findingTitle: 'false positive' });
-    expect(threads[2]).toEqual({ id: 't3', isResolved: false, isBlocking: true, findingTitle: 'race' });
+    expect(threads[2]).toEqual({ id: 't3', isResolved: false, isBlocking: false, findingTitle: 'race' });
+    expect(threads[3]).toEqual({ id: 't4', isResolved: false, isBlocking: true, findingTitle: 'crash' });
   });
 
   it('migrates legacy severity markers (`required`, `nit`) on read', async () => {
@@ -490,11 +495,12 @@ describe('checkAndAutoApprove', () => {
     expect(result).toBe(false);
   });
 
-  it('does not approve while a warning thread is unresolved', async () => {
+  it('does not approve while a blocker thread is unresolved', async () => {
     const createReviewMock = jest.fn().mockResolvedValue({});
     const octokit = makeMockOctokit({
       threads: [
-        makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:warning:race --> race', isResolved: false }),
+        makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:warning:retry --> retry', isResolved: false }),
+        makeGraphqlFetchThreadNode({ id: 't2', body: '<!-- manki:blocker:race --> race', isResolved: false }),
       ],
       createReviewFn: createReviewMock,
     });

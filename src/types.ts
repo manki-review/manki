@@ -20,9 +20,14 @@ export function migrateLegacySeverity(severity: string): FindingSeverity | strin
   return severity;
 }
 
-/** Whether a finding of this severity blocks the PR, so it is posted as a review thread. */
+/** Whether a finding of this severity is posted as a review thread, unless it is a follow-up. */
 export function isBlockingSeverity(severity: FindingSeverity): boolean {
   return severity === 'blocker' || severity === 'warning';
+}
+
+/** Whether an open thread of this severity blocks the PR. A warning thread blocks only when it is a security finding. */
+export function isBlockingThread(severity: FindingSeverity, isSecurity: boolean): boolean {
+  return severity === 'blocker' || (severity === 'warning' && isSecurity);
 }
 
 /** Regex source matching all current and legacy severity tokens. */

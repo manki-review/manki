@@ -1,4 +1,4 @@
-import { isBlockingSeverity, migrateLegacyPrType, migrateLegacySeverity, RoundContext, roundContextToFlatAliases } from './types';
+import { isBlockingSeverity, isBlockingThread, migrateLegacyPrType, migrateLegacySeverity, RoundContext, roundContextToFlatAliases } from './types';
 
 describe('migrateLegacySeverity', () => {
   it('maps `required` to `blocker`', () => {
@@ -25,15 +25,17 @@ describe('migrateLegacySeverity', () => {
   });
 });
 
-describe('isBlockingSeverity', () => {
+describe('isBlockingSeverity and isBlockingThread', () => {
   it.each([
-    ['blocker', true],
-    ['warning', true],
-    ['suggestion', false],
-    ['nitpick', false],
-    ['ignore', false],
-  ] as const)('treats `%s` as blocking: %s', (severity, blocking) => {
-    expect(isBlockingSeverity(severity)).toBe(blocking);
+    ['blocker', true, true, true],
+    ['warning', true, false, true],
+    ['suggestion', false, false, false],
+    ['nitpick', false, false, false],
+    ['ignore', false, false, false],
+  ] as const)('posts `%s` as a thread: %s, blocks as a plain thread: %s, as a security thread: %s', (severity, posted, plain, security) => {
+    expect(isBlockingSeverity(severity)).toBe(posted);
+    expect(isBlockingThread(severity, false)).toBe(plain);
+    expect(isBlockingThread(severity, true)).toBe(security);
   });
 });
 

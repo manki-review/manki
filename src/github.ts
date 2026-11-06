@@ -4,7 +4,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
-import { AgentProgressEntry, DashboardData, FOLLOW_UP_TAG, Finding, FindingFingerprintEntry, FindingSeverity, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, VALID_PR_TYPES, VerdictTraceEntry, SECURITY_TAG, TestGuide, isBlockingSeverity } from './types';
+import { AgentProgressEntry, DashboardData, FOLLOW_UP_TAG, Finding, FindingFingerprintEntry, FindingSeverity, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, VALID_PR_TYPES, VerdictTraceEntry, SECURITY_TAG, TestGuide, isBlockingSeverity, isBlockingThread } from './types';
 import { isLineInDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { findPriorThreadId } from './finding-fingerprint';
@@ -1486,7 +1486,7 @@ const STILL_OPEN_HEADING = '**Still open from earlier reviews:**';
 /** Returns the blocking threads still open, one linked line each, or null when there are none. A thread without a severity marker blocks. */
 export function formatOpenBlockers(threads: PreviousFinding[]): string | null {
   const open = threads.filter(t => (t.status === 'open' || t.status === 'replied' || t.reopen)
-    && (t.severity === 'unknown' || isBlockingSeverity(t.severity)));
+    && (t.severity === 'unknown' || isBlockingThread(t.severity, !!t.isSecurity)));
   return open.length > 0 ? `${STILL_OPEN_HEADING}\n${open.map(formatTraceEntry).join('\n')}` : null;
 }
 
