@@ -55,12 +55,14 @@ function annotation(path: string, line: number, message: string, level = 'failur
   return { path, start_line: line, end_line: line, annotation_level: level, title: 'no-unused-vars', message };
 }
 
-/** `configByRef` holds `.manki.yml` per ref, and `files` any other file keyed by `ref:path`. */
+/** `configByRef` holds `.manki.yml` per ref, and `files` any other file keyed by `ref:path`. A directory lists the files under it. */
 function makeOctokit(configByRef: Record<string, string> = {}, files: Record<string, string> = {}) {
   const rest = {
     repos: {
       getContent: jest.fn(async ({ ref, path, mediaType }: { ref: string; path: string; mediaType?: { format: string } }) => {
         const content = path === '.manki.yml' ? configByRef[ref] : files[`${ref}:${path}`];
+        const children = Object.keys(files).filter(key => key.startsWith(`${ref}:${path}/`)).map(key => key.slice(ref.length + 1));
+        if (content === undefined && children.length > 0) return { data: children.map(child => ({ type: 'file', path: child, name: basename(child) })) };
         if (content === undefined) throw Object.assign(new Error('Not Found'), { status: 404 });
         if (mediaType?.format === 'raw') return { data: content };
         return { data: { content: Buffer.from(content).toString('base64'), encoding: 'base64', size: content.length } };
@@ -398,6 +400,116 @@ describe('collectStaticSignals with analyzers and waits', () => {
       expect((await collectStaticSignals(noRules, analyzerRequest(), runtime)).record).toEqual({ analyzers: [
         { analyzer: 'semgrep', status: 'skipped', reason: 'could not read the Semgrep rules .semgrep/manki.yml on the base branch' },
       ] });
+    });
+  });
+
+  describe('workflow and shell analyzers', () => {
+    const WORKFLOW = 'name: CI\non:\n  pull_request_target:\njobs:\n  build:\n    runs-on: [self-hosted, gpu]\n    steps:\n      - uses: actions/checkout@v4\n      - run: echo "${{ github.event.pull_request.title }}"\n';
+    const DIFF = [
+      'diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml',
+      '--- a/.github/workflows/ci.yml',
+      '+++ b/.github/workflows/ci.yml',
+      '@@ -6,3 +6,4 @@',
+      '     runs-on: [self-hosted, gpu]',
+      '     steps:',
+      '       - uses: actions/checkout@v4',
+      '+      - run: echo "${{ github.event.pull_request.title }}"',
+      'diff --git a/scripts/deploy b/scripts/deploy',
+      'new file mode 100755',
+      '--- /dev/null',
+      '+++ b/scripts/deploy',
+      '@@ -0,0 +1,3 @@',
+      '+#!/usr/bin/env bash',
+      '+set -e',
+      '+rm -rf $DIR/*',
+      'diff --git a/scripts/clean.sh b/scripts/clean.sh',
+      'new file mode 100644',
+      '--- /dev/null',
+      '+++ b/scripts/clean.sh',
+      '@@ -0,0 +1,2 @@',
+      '+#!/bin/sh',
+      '+echo "done"',
+      'diff --git a/Makefile b/Makefile',
+      '--- a/Makefile',
+      '+++ b/Makefile',
+      '@@ -1,1 +1,2 @@',
+      ' all:',
+      '+\techo $(DIR)',
+      '',
+    ].join('\n');
+    const FILES = {
+      'head-sha:.github/workflows/ci.yml': WORKFLOW,
+      'head-sha:scripts/deploy': '#!/usr/bin/env bash\nset -e\nrm -rf $DIR/*\n',
+      'head-sha:scripts/clean.sh': '#!/bin/sh\necho "done"\n',
+      'head-sha:Makefile': 'all:\n\techo $(DIR)\n',
+    };
+    const workflowRequest = () => ({ ...request(), diff: parsePRDiff(DIFF), fullDiff: parsePRDiff(DIFF) });
+
+    it('runs actionlint and zizmor on changed workflows and shellcheck on changed shell scripts by default, and keeps results on added lines only', async () => {
+      const actionlintConfig = 'self-hosted-runner:\n  labels: [gpu]\n';
+      const octokit = makeOctokit({ main: ONLY_ANALYZERS }, {
+        ...FILES, 'main:.github/actionlint.yml': actionlintConfig, 'head-sha:.github/actionlint.yml': 'paths: {}\n',
+      });
+      jest.mocked(runtime.runTool).mockImplementation(async (binary, args, cwd) => {
+        const tool = basename(binary);
+        scanned[tool] = readTree(cwd);
+        if (tool === 'actionlint') expect(readFileSync(argAfter(args, '-config-file'), 'utf-8')).toBe(actionlintConfig);
+        return { code: tool === 'zizmor' ? 0 : 1, stdout: readFileSync(join(FIXTURES, `${tool}.json`), 'utf-8'), stderr: '' };
+      });
+
+      const { signals, record } = await collectStaticSignals(octokit, workflowRequest(), runtime);
+
+      expect(signals).toEqual([
+        expect.objectContaining({ tool: 'actionlint', ruleId: 'expression', severity: 'error', file: '.github/workflows/ci.yml', line: 9, source: 'actionlint' }),
+        {
+          tool: 'zizmor', ruleId: 'template-injection', severity: 'error', file: '.github/workflows/ci.yml', line: 9, source: 'zizmor',
+          message: 'code injection via template expansion: may expand into attacker-controllable code',
+        },
+        { tool: 'shellcheck', ruleId: 'SC2115', severity: 'warning', file: 'scripts/deploy', line: 3, message: 'Use "${var:?}" to ensure this never expands to /* .', source: 'shellcheck' },
+        { tool: 'shellcheck', ruleId: 'SC2086', severity: 'note', file: 'scripts/deploy', line: 3, message: 'Double quote to prevent globbing and word splitting.', source: 'shellcheck' },
+      ]);
+      expect(record).toEqual({ analyzers: [
+        { analyzer: 'actionlint', status: 'ran', results: 1 },
+        { analyzer: 'zizmor', status: 'ran', results: 1 },
+        { analyzer: 'shellcheck', status: 'ran', results: 2 },
+      ] });
+      expect(scanned.actionlint).toEqual({ '.github/workflows/ci.yml': WORKFLOW });
+      expect(scanned.zizmor).toEqual({ '.github/workflows/ci.yml': WORKFLOW });
+      expect(scanned.shellcheck).toEqual({ 'scripts/deploy': FILES['head-sha:scripts/deploy'], 'scripts/clean.sh': FILES['head-sha:scripts/clean.sh'] });
+      expect(toolArgs('actionlint')).toEqual(expect.arrayContaining(['-shellcheck=', '-pyflakes=', './.github/workflows/ci.yml']));
+      expect(toolArgs('zizmor')).toEqual(expect.arrayContaining(['--offline', '--no-config', '--no-ignores', './.github/workflows/ci.yml']));
+      expect(toolArgs('shellcheck')).toEqual(expect.arrayContaining(['--norc', './scripts/deploy', './scripts/clean.sh']));
+      expect(octokit.rest.repos.getContent.mock.calls.filter(([{ path }]) => path === '.github/workflows/ci.yml')).toHaveLength(1);
+      expect(toolAlertFindings(signals).map(f => f.toolSource)).toEqual(['actionlint', 'zizmor', 'shellcheck', 'shellcheck']);
+
+      jest.mocked(runtime.runTool).mockImplementation(async binary => ({ code: 0, stdout: basename(binary) === 'shellcheck' ? '{"comments":[]}' : '[]', stderr: '' }));
+      const clean = await collectStaticSignals(octokit, workflowRequest(), runtime);
+      expect(clean.signals).toEqual([]);
+      expect(clean.record?.analyzers?.map(r => r.results)).toEqual([0, 0, 0]);
+    });
+
+    it('skips a tool that CI already runs, one turned off on the base branch, and shellcheck when no changed file is a shell script', async () => {
+      const lint = 'jobs:\n  lint:\n    steps:\n      - uses: rhysd/actionlint@v1\n      - run: |\n          # shellcheck disable=SC2086\n          make lint\n';
+      const octokit = makeOctokit({ main: ONLY_ANALYZERS }, { ...FILES, 'main:.github/workflows/lint.yml': lint });
+      octokit.rest.checks.listForRef.mockResolvedValue({ data: [{ id: 5, name: 'Zizmor audit', status: 'completed', output: { annotations_count: 0 } }] });
+
+      expect((await collectStaticSignals(octokit, workflowRequest(), runtime)).record).toEqual({ analyzers: [
+        { analyzer: 'actionlint', status: 'skipped', reason: 'CI already runs actionlint' },
+        { analyzer: 'zizmor', status: 'skipped', reason: 'CI already runs zizmor' },
+        { analyzer: 'shellcheck', status: 'ran', results: 2 },
+      ] });
+      expect(runtime.installTool).not.toHaveBeenCalledWith('actionlint');
+      expect(core.warning).not.toHaveBeenCalled();
+      expect(octokit.rest.checks.listForRef).toHaveBeenCalledWith(expect.objectContaining({ ref: 'head-sha' }));
+
+      jest.mocked(runtime.installTool).mockClear();
+      const off = makeOctokit({ main: `${ONLY_ANALYZERS}  analyzers:\n    actionlint: false\n    zizmor: false\n    shellcheck: false\n` }, FILES);
+      expect(await collectStaticSignals(off, workflowRequest(), runtime)).toEqual({ signals: [] });
+      expect(runtime.installTool).not.toHaveBeenCalled();
+
+      const makefileOnly = parsePRDiff(DIFF.slice(DIFF.indexOf('diff --git a/Makefile')));
+      expect(await collectStaticSignals(makeOctokit({ main: ONLY_ANALYZERS }, FILES), { ...request(), diff: makefileOnly, fullDiff: makefileOnly }, runtime)).toEqual({ signals: [] });
+      expect(runtime.installTool).not.toHaveBeenCalled();
     });
   });
 

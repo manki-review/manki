@@ -1,0 +1,47 @@
+{
+ "comments": [
+  {
+   "file": "./scripts/deploy",
+   "line": 3,
+   "endLine": 3,
+   "column": 8,
+   "endColumn": 14,
+   "level": "warning",
+   "code": 2115,
+   "message": "Use \"${var:?}\" to ensure this never expands to /* .",
+   "fix": null
+  },
+  {
+   "file": "./scripts/deploy",
+   "line": 3,
+   "endLine": 3,
+   "column": 8,
+   "endColumn": 12,
+   "level": "info",
+   "code": 2086,
+   "message": "Double quote to prevent globbing and word splitting.",
+   "fix": {
+    "replacements": [
+     {
+      "column": 8,
+      "endColumn": 8,
+      "endLine": 3,
+      "insertionPoint": "afterEnd",
+      "line": 3,
+      "precedence": 7,
+      "replacement": "\""
+     },
+     {
+      "column": 12,
+      "endColumn": 12,
+      "endLine": 3,
+      "insertionPoint": "beforeStart",
+      "line": 3,
+      "precedence": 7,
+      "replacement": "\""
+     }
+    ]
+   }
+  }
+ ]
+}
