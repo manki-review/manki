@@ -1,0 +1,19 @@
+{
+  "name": "severe-on-internal-value",
+  "case": "severe-on-internal-value",
+  "allowed": [
+    "blocker"
+  ],
+  "finding": {
+    "title": "`push` writes one slot past the ring buffer",
+    "file": "src/ring.rs",
+    "line": 15,
+    "description": "`slot` is taken modulo `self.buf.len() + 1`, so it reaches `self.buf.len()` once the head reaches the last slot. `get_unchecked_mut(slot)` then writes past the end of the buffer, which is undefined behaviour and corrupts the memory after it.",
+    "severity": "blocker",
+    "reviewers": [
+      "Correctness"
+    ],
+    "suggestedFix": "let slot = (self.head + 1) % self.buf.len();"
+  },
+  "prDiff": "diff --git a/src/ring.rs b/src/ring.rs\nindex 1111111..2222222 100644\n--- a/src/ring.rs\n+++ b/src/ring.rs\n@@ -12,2 +12,7 @@\n impl Ring {\n     pub fn push(&mut self, item: u64) {\n+        // `head` wraps to 0 only after a write lands on the last slot.\n+        let slot = (self.head + 1) % (self.buf.len() + 1);\n+        unsafe { *self.buf.get_unchecked_mut(slot) = item };\n+        self.head = slot;\n+    }\n"
+}

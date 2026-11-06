@@ -1598,8 +1598,6 @@ function formatFindingComment(finding: Finding): string {
     title: finding.title,
     ...(finding.suggestedFix && { fix: finding.suggestedFix.slice(0, 200) }),
     ...(finding.tags && finding.tags.length > 0 && { tags: finding.tags }),
-    ...(finding.reachability && { reachability: finding.reachability }),
-    ...(finding.reachabilityReasoning && { reachabilityReasoning: finding.reachabilityReasoning }),
     ...(finding.originalSeverity && { originalSeverity: finding.originalSeverity }),
   };
   comment += `\n\n<!-- manki:${finding.severity}:${titleToSlug(finding.title)} -->`;

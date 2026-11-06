@@ -322,7 +322,7 @@ const READY_REPLIES: Record<Stage, string> = {
 const BLOCKER = { severity: 'blocker', title: 'Sum is never range checked', file: 'src/math.ts', line: 2, description: 'Large inputs overflow silently.', suggestedFix: 'Check the range before adding.' };
 const BLOCKER_REPLIES: Partial<Record<Stage, string>> = {
   reviewer: JSON.stringify([BLOCKER]),
-  judge: JSON.stringify({ summary: 'One blocker.', findings: [{ id: 1, title: BLOCKER.title, severity: 'blocker', reasoning: 'Reachable from any caller.', confidence: 'high', reachability: 'reachable' }] }),
+  judge: JSON.stringify({ summary: 'One blocker.', findings: [{ id: 1, title: BLOCKER.title, severity: 'blocker', reasoning: 'Reachable from any caller.', confidence: 'high' }] }),
 };
 
 /**
@@ -744,7 +744,7 @@ describe('runFullReview end to end', () => {
       reviewer: JSON.stringify([reworded]),
       judge: JSON.stringify({
         summary: 'The range check is still missing.',
-        findings: [{ id: 1, title: reworded.title, severity: 'blocker', reasoning: 'Still reachable.', confidence: 'high', reachability: 'reachable', sameAs: 'B1' }],
+        findings: [{ id: 1, title: reworded.title, severity: 'blocker', reasoning: 'Still reachable.', confidence: 'high', sameAs: 'B1' }],
         threadEvaluations: [{ threadId: 'PRRT_1', status: 'not_addressed', reason: 'No range check yet.' }],
       }),
     });
@@ -775,7 +775,7 @@ describe('runFullReview end to end', () => {
     const finding = { ...BLOCKER, severity };
     Object.assign(mockLLM.replies, {
       reviewer: JSON.stringify([finding]),
-      judge: JSON.stringify({ summary: 'One finding.', findings: [{ id: 1, title: finding.title, severity, reasoning: 'Reachable.', confidence: 'high', reachability: 'reachable' }] }),
+      judge: JSON.stringify({ summary: 'One finding.', findings: [{ id: 1, title: finding.title, severity, reasoning: 'Reachable.', confidence: 'high' }] }),
     });
     await reviewRound();
     expect(mockGitHub.threads).toHaveLength(1);

@@ -2526,40 +2526,6 @@ describe('runFullReview orchestration', () => {
     expect(statsArg!.judge.mergedDuplicates).toBe(1);
   });
 
-  it('counts defensive-hardening findings in judgeMetrics', async () => {
-    const testFiles = [
-      { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] },
-    ];
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
-    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
-      files: testFiles, totalAdditions: 20, totalDeletions: 5,
-    });
-    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: testFiles, excluded: [] });
-
-    const findings = [
-      { severity: 'nitpick' as const, title: 'Guard', file: 'src/app.ts', line: 5, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const, tags: ['defensive-hardening'], originalSeverity: 'blocker' as const, reachability: 'hypothetical' as const },
-      { severity: 'blocker' as const, title: 'Real', file: 'src/app.ts', line: 6, description: 'desc', reviewers: ['security'], judgeConfidence: 'high' as const, reachability: 'reachable' as const },
-    ];
-    const allJudged = [...findings];
-
-    jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Issues found',
-      findings,
-      highlights: [],
-      reviewComplete: true,
-      rawFindingCount: 2,
-      agentNames: ['security'],
-      allJudgedFindings: allJudged,
-      rawFindings: [...findings],
-    });
-    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
-
-    await callRunFullReview();
-
-    const statsArg = jest.mocked(ghUtils.postReview).mock.calls[0][7];
-    expect(statsArg!.judge.defensiveHardeningCount).toBe(1);
-  });
-
   it('surfaces crossRoundSuppressed and crossRoundDemoted counts in judgeMetrics', async () => {
     const testFiles = [
       { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] },
@@ -3916,9 +3882,7 @@ describe('runFullReview orchestration', () => {
         reviewers: ['Concurrency'],
         judgeNotes: 'Reachable only under shutdown',
         judgeConfidence: 'medium' as const,
-        reachability: 'hypothetical' as const,
-        reachabilityReasoning: 'Caller serializes via mutex',
-        tags: ['defensive-hardening', 'own-proposal-followup', 'follow-up', 'security'],
+        tags: ['own-proposal-followup', 'follow-up', 'security'],
         originalSeverity: 'warning' as const,
         toolEvidence: { status: 'contradicted' as const, note: 'src/gone.ts is not changed in this diff.' },
       }, {
@@ -3941,9 +3905,7 @@ describe('runFullReview orchestration', () => {
     const entry = rc!.findings.entries[0];
     expect(entry.judgeNotes).toBe('Reachable only under shutdown');
     expect(entry.judgeConfidence).toBe('medium');
-    expect(entry.reachability).toBe('hypothetical');
-    expect(entry.reachabilityReasoning).toBe('Caller serializes via mutex');
-    expect(entry.tags).toEqual(['defensive-hardening', 'own-proposal-followup', 'follow-up', 'security']);
+    expect(entry.tags).toEqual(['own-proposal-followup', 'follow-up', 'security']);
     expect(entry.originalSeverity).toBe('warning');
   });
 
@@ -3979,7 +3941,6 @@ describe('runFullReview orchestration', () => {
         tagged('D', 'contradicts-prior-round', 'nitpick'),
         tagged('E', 'own-proposal-followup', 'nitpick'),
         tagged('F', 'own-proposal-followup', 'nitpick'),
-        tagged('G', 'defensive-hardening', 'nitpick'),
       ],
       highlights: [], reviewComplete: true, agentNames: ['A'],
       interRoundDiffEmptyOverride: { applied: true, affectedThreadCount: 3 },
@@ -3992,7 +3953,6 @@ describe('runFullReview orchestration', () => {
     expect(rc!.judge.resolvedThreadSuppressedCount).toBe(1);
     expect(rc!.judge.contradictionDemotedCount).toBe(1);
     expect(rc!.judge.ownProposalDemotedCount).toBe(2);
-    expect(rc!.judge.defensiveHardeningCount).toBe(1);
     expect(rc!.judge.interRoundDiffEmptyOverride).toEqual({ applied: true, affectedThreadCount: 3 });
   });
 

@@ -126,7 +126,6 @@ function fullyPopulatedContext(): RoundContext {
       mergedDuplicates: 2,
       durationMs: 4500,
       verdictReason: 'novel_suggestion',
-      defensiveHardeningCount: 0,
       inPrSuppressedCount: 1,
       crossRoundSuppressed: 0,
       crossRoundDemoted: 1,
@@ -208,15 +207,12 @@ describe('RoundContext', () => {
       severity: 'nitpick',
       judgeNotes: 'Reachable only under shutdown',
       judgeConfidence: 'medium',
-      reachability: 'hypothetical',
-      reachabilityReasoning: 'Caller serializes access via mutex',
-      tags: ['defensive-hardening'],
+      tags: ['own-proposal-followup'],
       originalSeverity: 'warning',
     };
     expect(entry.judgeNotes).toMatch(/shutdown/);
     expect(entry.judgeConfidence).toBe('medium');
-    expect(entry.reachability).toBe('hypothetical');
-    expect(entry.tags).toEqual(['defensive-hardening']);
+    expect(entry.tags).toEqual(['own-proposal-followup']);
     expect(entry.originalSeverity).toBe('warning');
   });
 
@@ -227,7 +223,6 @@ describe('RoundContext', () => {
     };
     expect(entry.judgeNotes).toBeUndefined();
     expect(entry.judgeConfidence).toBeUndefined();
-    expect(entry.reachability).toBeUndefined();
     expect(entry.tags).toBeUndefined();
     expect(entry.originalSeverity).toBeUndefined();
   });

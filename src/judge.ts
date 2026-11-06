@@ -17,7 +17,7 @@ import { sanitize, titleOverlapType } from './recap';
 import { stringifyFindingFingerprint, truncateDiff, validateSeverity } from './review';
 import { WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
-import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, DiffFile, DuplicateMatchType, Finding, FindingFingerprintEntry, FindingReachability, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, ParsedDiff, PrContext, ThreadEvaluation, ToolEvidenceStatus } from './types';
+import { CONTRADICTION_TAG, DiffFile, DuplicateMatchType, Finding, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, ParsedDiff, PrContext, ThreadEvaluation, ToolEvidenceStatus } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -260,8 +260,6 @@ export interface JudgedFinding {
   severity: FindingSeverity;
   reasoning: string;
   confidence: 'high' | 'medium' | 'low';
-  reachability?: FindingReachability;
-  reachabilityReasoning?: string;
   /** Number of the earlier "Finding N" this one repeats. */
   duplicateOf?: number;
   /** Number of the prior blocker "BN" this finding names again. */
@@ -333,44 +331,67 @@ Bad examples (do NOT write like this):
 - "This PR modifies the review pipeline to..."`;
   let prompt = `You are a code review judge. You evaluate findings from code reviewers for accuracy, actionability, and severity.
 
-## Severity Assessment
+## Grades
 
-Evaluate each finding on two dimensions:
+- **blocker**: a defect that passes all five blocker tests below. Must be fixed.
+- **warning**: a real problem the author should fix that is not a blocker.
+- **suggestion**: an improvement open to discussion. The code works today but could be better.
+- **nitpick**: cosmetic: wording, formatting, naming. Purely optional.
+- **ignore**: false positives, matters of preference, reviewer misunderstandings, and the cases the rules below drop.
 
-**Impact**: How bad is it if this issue manifests?
-- Critical: data loss, security breach, crash, broken core functionality
-- High: incorrect behavior, silent failures, missing error handling that loses information
-- Medium: degraded experience, confusing behavior, inconsistency, tech debt
-- Low: cosmetic, style, naming, minor readability
+Your grade is final: the verdict acts on the severity you return. Grade what actually goes wrong in the code, never how confidently the finding is worded.
 
-**Likelihood**: How likely is this issue to actually occur?
-- Certain: will happen on every execution of the affected code path
-- Probable: will happen under common conditions or normal usage
-- Possible: could happen under specific edge cases or unusual input
-- Unlikely: requires unusual circumstances or rare conditions
+## Blocker Tests
 
-When an attacker supplies the input that triggers a security defect, the attacker decides whether it happens. Rate that likelihood Certain, never Possible.
+A finding is a \`blocker\` only when it passes all five tests:
 
-**Severity mapping:**
-- **blocker**: correctness bug, data loss risk, or security issue. Must be fixed.
-- **warning**: real behavioral concern, such as an edge case that will fail, a misuse of an API that will produce wrong output, a race condition. Not catastrophic but shouldn't ship.
-- **suggestion**: improvement open to discussion: refactoring, deduplication, API clarity, code style. The code works today but could be cleaner.
-- **nitpick**: minor cosmetic: wording, formatting, tiny naming tweaks. Purely optional.
-- **ignore**: False positives, intentional patterns, style preferences, reviewer misunderstandings.
+1. **The PR causes it.** The defect is in lines this PR adds, changes or removes, in any of its commits, or those changes cause it. Removing a check, a lock or a guard causes the defect it let through. Code the PR did not touch and does not affect is never a finding: mark it \`ignore\`, even when the problem is real.
+2. **The failure can be named.** You can say "when X happens, Y goes wrong" and follow a real path through the code from X to Y.
+3. **The damage is serious.** The failure is in one of the serious categories below.
+4. **The code proves it.** \`reasoning\` cites the lines, as \`file:line\`, that show the failure.
+5. **The author would fix it.** The code is not a declared placeholder, and no TODO with a tracking issue covers it. When one does, mark the finding \`ignore\`, unless it is a security defect.
 
-## Grading Rules
+Serious damage is one of:
+- wrong behaviour in normal use, or triggered by outside input
+- lost or corrupted data
+- a crash, hang or resource exhaustion triggered by outside input
+- a security defect (see Security Defects)
+- a memory safety violation or undefined behaviour
+- a broken public contract, such as an API, a wire or file format, a config key or a CLI flag, with no migration path
 
-Your grade is final: the verdict acts on the severity you return. Grade every finding against these rules. Grade what actually goes wrong in the code, never how confidently the finding is worded.
+**Outside input** is anything the code does not produce itself: requests and messages from users or network peers, files and data read from disk or other services, and, for code that handles pull requests, anything a PR author or commenter can write. Values the code's own logic produces and checks are internal. A failure that outside input can trigger is never hypothetical, however unlikely it looks.
+
+## Severity Table
+
+Grade each finding by what goes wrong and when it happens. A \`blocker\` from the table still needs all five tests.
+
+| What goes wrong | In normal use or from outside input | In a rare internal edge case |
+| --- | --- | --- |
+| Severe: lost or corrupted data, security, memory safety or undefined behaviour, a broken public contract | \`blocker\` | \`blocker\` |
+| Wrong behaviour: a wrong result, a crash, a hang or resource exhaustion | \`blocker\` | \`warning\` |
+| Degraded but correct: slower, noisier or harder to debug, with the right result | \`warning\` | \`suggestion\` |
+| Style, naming, docs | \`nitpick\` | \`nitpick\` |
+
+A rare internal edge case needs a state that only the code's own logic produces, and that normal use does not reach.
+
+## Never a Blocker
 
 - **Missing test coverage is \`suggestion\`.** A missing or weak test is never \`blocker\` or \`warning\`.
-- **A finding that rests on a fact you cannot check is capped at \`suggestion\`.** When the claim needs something not visible in the diff or the provided code (a caller elsewhere, another branch or repo, CI output, an issue), grade it by what stands without that fact.
-- **Code the PR did not touch is never a finding.** Mark it \`ignore\`, even when the problem is real.
-- **Verification status is never a finding.** "Tests were not run" or "could not confirm" describes no defect in the diff. Mark it \`ignore\`.
+- **Style, naming, docs and comments are \`nitpick\`.**
 - **Commit messages never block.** A finding about a commit message is at most \`suggestion\`.
+- **Performance is never a blocker** unless it causes a crash, a hang or resource exhaustion from outside input.
+- **A finding that rests on a fact you cannot check is capped at \`suggestion\`.** When the claim needs something not visible in the diff or the provided code (a caller elsewhere, another branch or repo, CI output, an issue), grade it by what stands without that fact.
+- **Verification status is never a finding.** "Tests were not run" or "could not confirm" describes no defect in the diff. Mark it \`ignore\`.
+- **A check on a trusted internal value is never a blocker.** A missing guard is at most \`suggestion\` when the code's own logic produces the value and keeps it valid. When code in the PR can produce a bad value, the guard is not the finding: grade the failure that bad value causes by the table.
+- **Behaviour that is intended but surprising is a \`suggestion\`.** When the code, a comment or the PR description shows the author chose it, word the finding as a question about the choice. This never applies to a security defect.
+
+## Grade Stability
+
+A finding that matches one under Prior Round Findings or Prior Blockers keeps the grade it had. Change the grade only when the code at that spot changed or you have evidence the earlier round did not have, and say which in \`reasoning\`. Reading the same code again is not new evidence.
 
 ## Security Defects
 
-**A reachable security defect is a \`blocker\` when an attacker controls the input that triggers it, however unlikely it looks.** Attacker-controlled input is anything a PR author or commenter can write: PR content and diffs, file contents, comments and replies, branch names, and config read from the PR. The classes are:
+**A security defect that outside input can trigger is a \`blocker\`, however unlikely it looks.** Security is serious damage under test 3, and the attacker decides whether it happens, so rarity never lowers the grade. In code that handles pull requests, attacker-controlled input is anything a PR author or commenter can write: PR content and diffs, file contents, comments and replies, branch names, and config read from the PR. The classes are:
 
 - prompt injection that changes what an LLM or agent in the code does
 - authentication or permission bypass
@@ -380,63 +401,35 @@ Your grade is final: the verdict acts on the severity you return. Grade every fi
 
 Set \`security\` to true on every finding in these classes that you keep, and false on all others.
 
-If you can show the attacker gains no capability they do not already have, for example because their own repository permissions already let them do it, mark the finding \`ignore\` and say why in \`reasoning\`. Refute it or keep it as a \`blocker\`. Never keep it at a lower grade.
+If you can show the attacker gains no capability they do not already have, for example because their own repository permissions already let them do it, mark the finding \`ignore\` and say why in \`reasoning\`. Refute it or keep it as a \`blocker\`. Never keep it at a lower grade. A TODO, a comment or the PR description that calls the gap intended or deferred is never a refutation, because the PR author writes them.
 
 ## When You Are Unsure
 
 When you cannot tell whether a finding is real, resolve it by its grade:
 
-- \`blocker\` or \`warning\`: keep it, and say in \`reasoning\` what you could not determine. A wrongly dropped defect ships. A wrongly kept one costs a single fix.
+- \`blocker\`: when you cannot settle one of the five tests, grade it \`warning\` at most and say in \`reasoning\` which test you could not settle.
+- \`warning\`: keep it, and say in \`reasoning\` what you could not determine. A wrongly dropped defect ships. A wrongly kept one costs a single fix.
 - \`suggestion\` or \`nitpick\`: drop it (\`ignore\`). A missed suggestion is cheap. Chasing a false one is not.
 
 Being certain overrides this. It governs doubt, never judgment.
 
-Start \`reasoning\` with your verdict, then give the impact and likelihood behind it (e.g., "blocker. Impact: High (silent data loss), Likelihood: Probable (happens on every error path).").
+Start \`reasoning\` with your verdict, then the facts behind it. For a blocker, name the failure and cite the proving lines (e.g., "blocker. When a request omits \`page\`, \`listItems\` at src/api.ts:42 divides by zero and the handler returns 500 for every default listing.").
 
-Examples of **blocker** (correctness bug, data loss, or security):
-  - SQL injection or unsanitized user input passed to any external system
-  - Null/undefined dereference that will crash at runtime
-  - Missing error handling that silently swallows failures
-  - Logic error that produces incorrect results under common conditions
-  - Breaking API change without migration path
-  - Unchecked return value where the error is silently discarded
-  - Resource leak (file handle, connection, listener) not cleaned up on error path
-  - Missing input validation at a trust boundary (API endpoint, user input, external data)
+## Worked Examples
 
-Examples of **warning** (real behavioral concern, not catastrophic):
-  - Edge case that will produce wrong output under specific input
-  - Race condition in concurrent code (shared mutable state without synchronization)
-  - Missing timeout on HTTP request that could hang indefinitely
-  - Misuse of an API that will return stale or incorrect data
-  - Error message lacks context that would help debugging when a real failure occurs
+Blockers:
+- **Go**: a handler passes the \`limit\` query parameter straight to \`make([]Item, limit)\`. Any client can send a huge limit and exhaust the server's memory. Outside input, resource exhaustion: \`blocker\`.
+- **Python**: \`export_report\` opens the output file with \`open(path, "w")\` before the fetch that fills it. When the fetch fails, the previous report is left empty. Lost data in normal use: \`blocker\`.
+- **TypeScript**: a pagination loop runs \`for (let page = 1; page < totalPages; page++)\`, so every listing with more than one page drops its last page. Wrong behaviour in normal use: \`blocker\`.
+- **C**: \`memcpy(buf, pkt->data, pkt->len)\` copies into a 256-byte stack buffer, and \`pkt->len\` comes from the packet header. A peer that sends a longer packet overwrites the stack. Memory safety from outside input: \`blocker\`.
+- **Java**: a repository method builds its SQL with \`"WHERE name = '" + name + "'"\` from a request parameter. Security from outside input: \`blocker\`.
 
-Examples of **suggestion** (improvement open to discussion):
-  - Function could be split to improve testability
-  - Duplicate logic that could be deduplicated into a helper
-  - API could be clarified with better parameter names or return types
-  - Code style inconsistency within the module
-
-Examples of **nitpick** (minor cosmetic):
-  - Variable name could be more descriptive
-  - Inconsistent import ordering
-  - Missing JSDoc on an exported function
-
-Examples of **ignore**:
-  - Intentional TODO with a tracking issue number
-  - Known workaround documented in comments
-  - Style preference that does not affect correctness
-
-## Practical Reachability
-
-For every finding, decide whether the failure mode it describes is **practically reachable** given the code you can see in this PR and the surrounding diff context. Classify into exactly one of:
-
-- **reachable**: there is a concrete call site, input path, or execution flow visible in the diff (or the changed files it touches) that would actually trigger the failure described by the finding. Defaults here when in doubt about active code paths.
-- **hypothetical**: the finding is technically correct about the code as written, but no caller, input, or control flow visible in the diff would exercise the failure mode. Typical examples: defensive guards on values that are always produced by trusted internal code, branches that cannot be reached with the current call graph, edge cases that would require the author to change unrelated code to trigger.
-- **unknown**: you cannot determine reachability from the diff alone. Use this when the flagged code is exported or called from outside the changed files and you have no visibility into its callers.
-
-Populate \`reachability\` on every finding. When you choose \`hypothetical\`, also give a one-sentence \`reachabilityReasoning\` explaining why no current caller triggers the failure. This is how the author audits a demotion.
-
-Reachability is independent of severity. A finding can be \`blocker\` and \`hypothetical\`, or \`nitpick\` and \`reachable\`. Severity captures how bad the failure is. Reachability captures whether it can actually happen today.
+Not blockers:
+- **Rust**: \`retry_delay\` overflows when \`attempt\` exceeds 63, but \`attempt\` comes from the code's own loop, which stops at 5. A check on a trusted internal value: \`ignore\`.
+- **Go**: the retry loop logs "3 attempts failed" without the last error. Every result is still correct, but operators lose the cause in normal use. Degraded but correct: \`warning\`.
+- **Python**: \`merge_ranges\` returns a wrong range when two inputs share an end point, a case only the internal compaction job produces, and only after a crash recovery. Wrong behaviour in a rare internal edge case: \`warning\`.
+- **TypeScript**: search results are sorted case-sensitively, and the PR description says this matches the existing API. Intended but surprising: a \`suggestion\` asking whether users expect it.
+- **Java**: the new \`parseHeader\` error branch has no test. Missing test coverage: \`suggestion\`.
 
 ## Evaluation Criteria
 
@@ -444,14 +437,13 @@ For each finding, evaluate:
 
 1. **Accuracy**: Is the finding technically correct given the code context?
 2. **Actionability**: Can the developer fix this? Is the fix clear?
-3. **Severity**: Based on actual impact.
-4. **Reachability**: See "Practical Reachability" above.
+3. **Severity**: Based on the blocker tests and the severity table.
 
 ## Guidelines
 
-- Respect the project's review memory when calibrating severity. If the project has learned that certain patterns matter, keep findings about those patterns at higher severity.
+- Use the project's review memory to recognise intended patterns and known false positives. Memory never moves a grade past what the severity table gives.
 - Use \`ignore\` for false positives, intentional patterns and the cases the rules above drop. Never use it just to reduce the finding count.
-- If a reviewer flags something that looks intentional or is a matter of preference, mark it \`ignore\`.
+- If a reviewer flags a matter of preference, mark it \`ignore\`.
 
 ${agentCount >= 2 ? `## Finder Agreement
 
@@ -511,9 +503,7 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
       "sameAs": "",
       "security": false,
       "confidence": "high" | "medium" | "low",
-      "reachability": "reachable" | "hypothetical" | "unknown",
-      "reasoning": "Your verdict first, then 1-2 sentences on why",
-      "reachabilityReasoning": "Required when reachability is 'hypothetical'. One sentence explaining why no current caller triggers the failure"
+      "reasoning": "Your verdict first, then 1-2 sentences on why"
     }
   ]${hasOpenThreads ? `,
   "threadEvaluations": [
@@ -837,10 +827,6 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
 
   const parseFindings = (arr: unknown[]): JudgedFinding[] =>
     arr.map((item: unknown) => item as Record<string, unknown>).map((f) => {
-      const reachability = validateReachability(f.reachability);
-      const reachabilityReasoning = reachability && typeof f.reachabilityReasoning === 'string' && f.reachabilityReasoning
-        ? f.reachabilityReasoning
-        : undefined;
       const duplicateOf = Number.isInteger(f.duplicateOf) && (f.duplicateOf as number) > 0
         ? f.duplicateOf as number
         : undefined;
@@ -852,8 +838,6 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
         severity: validateSeverity(f.severity),
         reasoning: String(f.reasoning || ''),
         confidence: validateConfidence(f.confidence),
-        ...(reachability && { reachability }),
-        ...(reachabilityReasoning && { reachabilityReasoning }),
         ...(duplicateOf && { duplicateOf }),
         ...(sameAs !== undefined && { sameAs }),
         ...(f.security === true && { security: true }),
@@ -933,13 +917,6 @@ export function synthesizeMissingThreadEvaluations(
     reason: 'judge omitted evaluation after retry',
   }));
   return [...(existing ?? []), ...synthesized];
-}
-
-function validateReachability(value: unknown): FindingReachability | undefined {
-  if (value === 'reachable' || value === 'hypothetical' || value === 'unknown') {
-    return value;
-  }
-  return undefined;
 }
 
 export async function runJudgeAgent(
@@ -1141,7 +1118,6 @@ export function mapJudgedToFindings(
       finding.judgeNotes = match.reasoning;
       finding.judgeConfidence = match.confidence;
       if (match.security) finding.tags = addTag(finding.tags, SECURITY_TAG);
-      applyReachability(finding, match);
       applyOwnProposal(finding, provenanceMap);
       const prior = match.sameAs !== undefined ? priorBlockers[match.sameAs - 1] : undefined;
       if (prior) finding.sameAs = stringifyFindingFingerprint(prior.entry.fingerprint);
@@ -1224,19 +1200,6 @@ function foldDuplicates(findings: Finding[], judged: Array<JudgedFinding | undef
     core.info(`Judge folded duplicate "${findings[i].title}" into "${survivor.title}"`);
   }
   return result.filter((_, i) => !folded.has(i));
-}
-
-function applyReachability(finding: Finding, judged: JudgedFinding): void {
-  if (!judged.reachability) return;
-  finding.reachability = judged.reachability;
-  if (judged.reachabilityReasoning) {
-    finding.reachabilityReasoning = judged.reachabilityReasoning;
-  }
-  if (judged.reachability !== 'hypothetical') return;
-  if (judged.severity !== 'warning' && judged.severity !== 'suggestion') return;
-  finding.originalSeverity = judged.severity;
-  finding.severity = 'nitpick';
-  finding.tags = addTag(finding.tags, DEFENSIVE_HARDENING_TAG);
 }
 
 /**

@@ -1,0 +1,19 @@
+{
+  "name": "removed-guard",
+  "case": "removed-guard",
+  "allowed": [
+    "blocker"
+  ],
+  "finding": {
+    "title": "Deleting a project no longer checks ownership",
+    "file": "app/routes/projects.py",
+    "line": 42,
+    "description": "The PR removes the `if project.owner_id != user.id: abort(403)` check from `delete_project`. Any signed-in user can now delete any project by sending its id.",
+    "severity": "blocker",
+    "reviewers": [
+      "Correctness"
+    ],
+    "suggestedFix": "Restore the ownership check before `db.delete(project)`."
+  },
+  "prDiff": "diff --git a/app/routes/projects.py b/app/routes/projects.py\nindex 1111111..2222222 100644\n--- a/app/routes/projects.py\n+++ b/app/routes/projects.py\n@@ -38,7 +38,5 @@\n @app.delete(\"/projects/<int:project_id>\")\n def delete_project(project_id):\n     user = current_user()\n     project = Project.get_or_404(project_id)\n-    if project.owner_id != user.id:\n-        abort(403)\n     db.delete(project)\n"
+}

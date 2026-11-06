@@ -1,0 +1,19 @@
+{
+  "name": "passes-all-tests",
+  "case": "passes-all-tests",
+  "allowed": [
+    "blocker"
+  ],
+  "finding": {
+    "title": "Pagination drops the last page",
+    "file": "src/listing.ts",
+    "line": 14,
+    "description": "The loop runs `page < totalPages`, so `fetchAll` never requests the last page. Every listing with more than one page loses its last page of items.",
+    "severity": "blocker",
+    "reviewers": [
+      "Correctness"
+    ],
+    "suggestedFix": "for (let page = 2; page <= totalPages; page++) {"
+  },
+  "prDiff": "diff --git a/src/listing.ts b/src/listing.ts\nindex 1111111..2222222 100644\n--- a/src/listing.ts\n+++ b/src/listing.ts\n@@ -10,3 +10,9 @@\n export async function fetchAll(client: Client, query: Query): Promise<Item[]> {\n   const first = await client.list(query, 1);\n   const items = [...first.items];\n+  const totalPages = first.totalPages;\n+  for (let page = 2; page < totalPages; page++) {\n+    const next = await client.list(query, page);\n+    items.push(...next.items);\n+  }\n+  return items;\n"
+}

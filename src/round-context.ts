@@ -4,10 +4,9 @@ import { collectResolvedThreadIds, fingerprintFinding, PreviousFinding, RecapSta
 import { MANKI_VERSION } from './github';
 import { parseModelSpec } from './providers';
 import { routingDigest } from './routing';
-import { CONTRADICTION_TAG, DEFENSIVE_HARDENING_TAG, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OpenThread, OWN_PROPOSAL_TAG, ParsedDiff, RATCHET_SUPPRESSED_TAG, ReclassifiedPrior, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ReviewModels, ReviewResult, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundRecap, RoundRouting, RoundStaticAnalysis, RoundTrigger, RoundUsage, RoundUsageStage, SECURITY_TAG, SecurityOverride, SEVERITY_ORDER, ThreadResolutionOverrides } from './types';
+import { CONTRADICTION_TAG, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OpenThread, OWN_PROPOSAL_TAG, ParsedDiff, RATCHET_SUPPRESSED_TAG, ReclassifiedPrior, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ReviewModels, ReviewResult, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundRecap, RoundRouting, RoundStaticAnalysis, RoundTrigger, RoundUsage, RoundUsageStage, SECURITY_TAG, SecurityOverride, SEVERITY_ORDER, ThreadResolutionOverrides } from './types';
 
 const ALLOWED_FINGERPRINT_TAGS = new Set<string>([
-  DEFENSIVE_HARDENING_TAG,
   OWN_PROPOSAL_TAG,
   CONTRADICTION_TAG,
   RATCHET_SUPPRESSED_TAG,
@@ -148,7 +147,6 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
       - (result.llmDedupCount ?? 0)
       - allJudged.length
     : 0;
-  const defensiveHardeningCount = allJudged.filter(f => f.tags?.includes(DEFENSIVE_HARDENING_TAG)).length;
   const ownProposalDemotedCount = allJudged.filter(f => f.tags?.includes(OWN_PROPOSAL_TAG)).length;
   const contradictionDemotedCount = allJudged.filter(f => f.tags?.includes(CONTRADICTION_TAG)).length;
   const ratchetSuppressedCount = allJudged.filter(f => f.tags?.includes(RATCHET_SUPPRESSED_TAG)).length;
@@ -247,8 +245,6 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(f.title && { title: f.title.slice(0, 200) }),
     ...(f.judgeNotes && { judgeNotes: f.judgeNotes.slice(0, 500) }),
     ...(f.judgeConfidence && { judgeConfidence: f.judgeConfidence }),
-    ...(f.reachability && { reachability: f.reachability }),
-    ...(f.reachabilityReasoning && { reachabilityReasoning: f.reachabilityReasoning.slice(0, 500) }),
     ...(f.tags && f.tags.length > 0 && { tags: f.tags.filter(t => ALLOWED_FINGERPRINT_TAGS.has(t)) }),
     ...(f.originalSeverity && { originalSeverity: f.originalSeverity }),
     ...(f.reviewerSeverity && { reviewerSeverity: f.reviewerSeverity }),
@@ -345,7 +341,6 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
       durationMs: judgeDurationMs,
       retryCount: result.judgeRetryCount ?? 0,
       ...(result.verdictReason && { verdictReason: result.verdictReason }),
-      ...(defensiveHardeningCount > 0 && { defensiveHardeningCount }),
       ...(ownProposalDemotedCount > 0 && { ownProposalDemotedCount }),
       ...(contradictionDemotedCount > 0 && { contradictionDemotedCount }),
       ...(ratchetSuppressedCount > 0 && { ratchetSuppressedCount }),

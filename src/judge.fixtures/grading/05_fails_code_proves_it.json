@@ -1,0 +1,21 @@
+{
+  "name": "fails-code-proves-it",
+  "case": "fails-code-proves-it",
+  "allowed": [
+    "warning",
+    "suggestion",
+    "nitpick",
+    "ignore"
+  ],
+  "finding": {
+    "title": "`start_server` crashes when the config file is missing",
+    "file": "app/server.py",
+    "line": 42,
+    "description": "`load_config` may return `None` when the file is missing, and then `config[\"port\"]` raises `TypeError` and the server fails to start.",
+    "severity": "blocker",
+    "reviewers": [
+      "Correctness"
+    ]
+  },
+  "prDiff": "diff --git a/app/server.py b/app/server.py\nindex 1111111..2222222 100644\n--- a/app/server.py\n+++ b/app/server.py\n@@ -40,1 +40,5 @@\n def start_server(path):\n+    config = load_config(path)\n+    port = config[\"port\"]\n+    return bind(port)\n+\n"
+}
