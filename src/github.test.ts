@@ -1020,12 +1020,11 @@ describe('postReview body lead', () => {
     ].join('\n'));
   });
 
-  it('lists the findings before what the change does, which keeps its first two sentences', async () => {
+  it('puts what the change does under the verdict, with its first two sentences, and a rule before the findings', async () => {
     const offDiff: Finding = { severity: 'suggestion', title: 'Rename cache', file: 'src/b.ts', line: 3, description: 'Unclear.', reviewers: [] };
     const { body } = await postedBody({ ...ready, verdictReport: { ...verdictReport, whatThisDoes: 'Adds a cache. It halves requests. It also logs hits.' }, findings: [offDiff] });
-    expect(body.indexOf('<summary>1 smaller fix in this PR</summary>')).toBeGreaterThan(0);
-    expect(body.indexOf('<summary>1 smaller fix in this PR</summary>')).toBeLessThan(body.indexOf('**What this does:**'));
-    expect(body).toContain('**What this does:** Adds a cache. It halves requests.\n\n<details>\n<summary>What to test</summary>');
+    expect(body).toMatch(/^\u2705 \*\*Approved\.\*\*\n\n\*\*What this does:\*\* Adds a cache\. It halves requests\.\n\n<details>\n<summary>What to test<\/summary>/u);
+    expect(body).toContain('\n\n</details>\n\n---\n\n#### \u{1F527} 1 smaller fix in this PR\n\n<details>\n<summary>');
   });
 
   it('records the length of the body and of each comment it posts', async () => {
@@ -1216,8 +1215,20 @@ describe('postReview body lead', () => {
     const { comments } = mockCreateReview.mock.calls[0][0] as { comments: Array<{ line: number; body: string }> };
     expect(comments.map(c => c.line)).toEqual([5]);
     expect(body).not.toContain('Blockers in files outside this diff');
-    expect(body).toContain('<summary>3 smaller fixes in this PR</summary>\n\n**Warning, not blocking**\n**Unbounded retry**\n');
-    expect(body).toContain('\n\n**Suggestion, not blocking**\n**Extract helper**\n[`src/a.ts:47`](https://github.com/owner/repo/blob/abcdef1234/src/a.ts#L47)\nDuplicated.\n\n**Warning, not blocking**\n**Tagged both ways**\n[`src/gone.ts:41`](https://github.com/owner/repo/blob/abcdef1234/src/gone.ts#L41)\nd\n\n</details>');
+    expect(body).toContain('#### \u{1F527} 3 smaller fixes in this PR\n\n<details>\n<summary>\u26A0\uFE0F <b>Unbounded retry</b><br><sub><b>Warning, not blocking</b>');
+    expect(body).toContain([
+      '<details>',
+      '<summary>\u2728 <b>Extract helper</b><br><sub><b>Suggestion, not blocking</b> · <a href="https://github.com/owner/repo/blob/abcdef1234/src/a.ts#L47"><code>src/a.ts:47</code></a></sub></summary>',
+      '',
+      'Duplicated.',
+      '',
+      'https://github.com/owner/repo/blob/abcdef1234/src/a.ts#L45-L47',
+      '',
+      '</details>',
+      '',
+      '<details>',
+      '<summary>\u26A0\uFE0F <b>Tagged both ways</b><br><sub><b>Warning, not blocking</b> · <a href="https://github.com/owner/repo/blob/abcdef1234/src/gone.ts#L41"><code>src/gone.ts:41</code></a></sub></summary>',
+    ].join('\n'));
     expect(body.match(/smaller fix/g)).toHaveLength(1);
   });
 
@@ -3330,13 +3341,17 @@ describe('postReview non-blocking findings', () => {
     return { verdict: 'APPROVE', summary: 'Summary', findings, highlights: [], reviewComplete: true, agentNames: [] };
   }
 
-  function makeOctokit() {
+  function makeOctokit(files: Record<string, string> = {}) {
     const createReview = jest.fn().mockResolvedValue({ data: { id: 1 } });
     const createReviewComment = jest.fn();
+    const getContent = jest.fn(async ({ path }: { path: string }) => {
+      if (!(path in files)) throw Object.assign(new Error('Not Found'), { status: 404 });
+      return { data: { content: Buffer.from(files[path]).toString('base64'), encoding: 'base64', size: files[path].length } };
+    });
     const octokit = {
-      rest: { pulls: { createReview, createReviewComment } },
+      rest: { pulls: { createReview, createReviewComment }, repos: { getContent } },
     } as unknown as Parameters<typeof postReview>[0];
-    return { octokit, createReview, createReviewComment };
+    return { octokit, createReview, createReviewComment, getContent };
   }
 
   const nonBlocking = (severity: Finding['severity'], title: string, line: number, extra: Partial<Finding> = {}): Finding => ({
@@ -3358,21 +3373,26 @@ describe('postReview non-blocking findings', () => {
     expect(review.comments.map((c: { line: number }) => c.line)).toEqual([5]);
     expect(review.comments[0].body).toMatch(/^\u2728 \*\*Suggestion, not blocking\*\*\n\n\*\*Extract helper\*\*\n\nIt goes wrong\./u);
     expect(review.comments[0].body).toContain('<!-- manki:suggestion:Extract-helper -->');
-    expect(review.body).toContain('<details>\n<summary>1 nitpick</summary>\n\n**Nitpick, not blocking**\n**Typo in name**\n[`src/a.ts:7`]');
+    expect(review.body).toContain('#### \u{1F4DD} 1 nitpick\n\n<details>\n<summary>\u{1F4DD} <b>Typo in name</b>');
     expect(review.body).toContain([
-      '<details>',
-      '<summary>2 smaller fixes in this PR</summary>',
+      '#### \u{1F527} 2 smaller fixes in this PR',
       '',
-      '**Suggestion, not blocking**',
-      '**Missing file context**',
+      '<details>',
+      '<summary>\u2728 <b>Missing file context</b><br><sub><b>Suggestion, not blocking</b></sub></summary>',
+      '',
       '_Manki is not sure this applies, so please check it._',
+      '',
       'It goes wrong. Second sentence.',
+      '',
       'Fix: Use the shared helper.',
       '',
-      '**Suggestion, not blocking**',
-      '**Off the diff**',
-      '[`src/a.ts:40`](https://github.com/owner/repo/blob/abc1234/src/a.ts#L40)',
+      '</details>',
+      '',
+      '<details>',
+      '<summary>\u2728 <b>Off the diff</b><br><sub><b>Suggestion, not blocking</b> · <a href="https://github.com/owner/repo/blob/abc1234/src/a.ts#L40"><code>src/a.ts:40</code></a></sub></summary>',
+      '',
       'It goes wrong. Second sentence.',
+      '',
       'Fix:',
       '```',
       'if (a) {',
@@ -3380,8 +3400,11 @@ describe('postReview non-blocking findings', () => {
       '}',
       '```',
       '',
+      'https://github.com/owner/repo/blob/abc1234/src/a.ts#L38-L40',
+      '',
       '</details>',
     ].join('\n'));
+    expect(review.body.indexOf('smaller fixes in this PR')).toBeLessThan(review.body.indexOf('1 nitpick'));
     expect(review.body).not.toContain('not listed');
   });
 
@@ -3404,8 +3427,26 @@ describe('postReview non-blocking findings', () => {
     expect([...byLine.keys()].sort()).toEqual([2, 3, 4, 6, 8]);
     expect(byLine.get(3)).toMatch(/^\u26A0\uFE0F \*\*Warning, not blocking\*\*\n\n\*\*Deferred warning\*\*\n/u);
     expect(byLine.get(3)).toContain('<!-- manki:warning:Deferred-warning -->');
-    expect(review.body).toContain('<summary>1 smaller fix in this PR</summary>\n\n**Suggestion, not blocking**\n**Suggestion five**\n');
-    expect(review.body).toContain('<summary>2 nitpicks</summary>\n\n**Nitpick, not blocking**\n**Nit one**\n');
+    expect(review.body).toContain('#### \u{1F527} 1 smaller fix in this PR\n\n<details>\n<summary>\u2728 <b>Suggestion five</b>');
+    expect(review.body).toContain('#### \u{1F4DD} 2 nitpicks\n\n<details>\n<summary>\u{1F4DD} <b>Nit one</b>');
+  });
+
+  it('previews the flagged line with two lines each side at the reviewed commit, kept inside the file', async () => {
+    const { octokit, createReview, getContent } = makeOctokit({ 'src/a.ts': 'x\n'.repeat(41), 'src/c.ts': 'x\n'.repeat(10) });
+
+    await postReview(octokit, 'owner', 'repo', 1, 'abc1234', buildResult([
+      nonBlocking('suggestion', 'Near the end of `Vec<u8>` & co', 40),
+      nonBlocking('suggestion', 'Past the end', 50),
+      nonBlocking('suggestion', 'At the top', 1, { file: 'src/c.ts' }),
+    ]), diff);
+
+    const { body } = createReview.mock.calls[0][0];
+    expect(getContent).toHaveBeenCalledWith(expect.objectContaining({ path: 'src/a.ts', ref: 'abc1234' }));
+    expect(body).toContain('<summary>\u2728 <b>Near the end of <code>Vec&lt;u8&gt;</code> &amp; co</b>');
+    expect(body).toContain('\n\nhttps://github.com/owner/repo/blob/abc1234/src/a.ts#L38-L41\n\n</details>');
+    expect(body).toContain('\n\nhttps://github.com/owner/repo/blob/abc1234/src/c.ts#L1-L3\n\n</details>');
+    expect(body).not.toContain('#L48-L');
+    expect(body).toContain('<b>Past the end</b>');
   });
 
   it('does not post a non-blocking finding again while its open thread carries it', async () => {
@@ -3431,8 +3472,8 @@ describe('postReview non-blocking findings', () => {
 
     const review = createReview.mock.calls[0][0];
     expect(review.comments.map((c: { body: string }) => c.body.split('\n')[2])).toEqual(['**Old blocker**', '**On new code**']);
-    expect(review.body).toContain('<summary>Previously missed: 2 smaller fixes</summary>\n\nThese sit on code an earlier review already covered. None of them blocks.\n\n**Suggestion, not blocking**\n**On old code**\n');
-    expect(review.body).toContain('**Untouched file**\n[`src/b.ts:3`]');
+    expect(review.body).toContain('#### \u{1F536} Previously missed: 2 smaller fixes\n\n<sub>These sit on code an earlier review already covered. None of them blocks.</sub>\n\n<details>\n<summary>\u2728 <b>On old code</b>');
+    expect(review.body).toContain('<b>Untouched file</b><br><sub><b>Nitpick, not blocking</b> · <a href="https://github.com/owner/repo/blob/sha/src/b.ts#L3"><code>src/b.ts:3</code></a>');
     expect(review.body).not.toMatch(/not listed|smaller fix(es)? in this PR/);
   });
 });

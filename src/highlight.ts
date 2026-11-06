@@ -2,7 +2,10 @@ import { ParsedDiff } from './types';
 
 const TOKEN_RE = /[A-Za-z_$][\w$]*(?:[./][A-Za-z_$][\w$-]*)*/g;
 // Text that already renders as code or must not change: fences, inline code, HTML comments and tags, links and URLs.
-const PROTECTED_RE = /(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n\1[ \t]*(?=\n|$)|(`+)[\s\S]*?\2|<!--[\s\S]*?-->|<\/?[A-Za-z][^>\n]*>|!?\[[^\]\n]*\]\([^)\n]*\)|https?:\/\/[^\s)]+/g;
+// A `<summary>` comes first, since GitHub renders its content as HTML only and it gets `<code>` instead of backticks.
+const PROTECTED_RE = /<summary>[^\n]*?<\/summary>|(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n\1[ \t]*(?=\n|$)|(`+)[\s\S]*?\2|<!--[\s\S]*?-->|<\/?[A-Za-z][^>\n]*>|!?\[[^\]\n]*\]\([^)\n]*\)|https?:\/\/[^\s)]+/g;
+// Inside a `<summary>`: existing code and the tags, which hold attributes such as link targets.
+const SUMMARY_PROTECTED_RE = /<code>[\s\S]*?<\/code>|<[^>]*>/g;
 
 /** Whether a token looks like code rather than a word: snake_case, camelCase, PascalCase with an inner capital, or dotted. */
 function isCodeLike(token: string): boolean {
@@ -33,11 +36,17 @@ export function codeTokensFromDiff(diff: ParsedDiff): Set<string> {
 /** Wraps every whole token of `text` found in `tokens` in backticks, outside existing code, links and HTML. */
 export function highlightCode(text: string, tokens: ReadonlySet<string>): string {
   if (tokens.size === 0) return text;
-  const wrap = (plain: string): string => plain.replace(TOKEN_RE, token => (tokens.has(token) ? `\`${token}\`` : token));
+  const markdown = (plain: string): string => plain.replace(TOKEN_RE, token => (tokens.has(token) ? `\`${token}\`` : token));
+  const html = (plain: string): string => plain.replace(TOKEN_RE, token => (tokens.has(token) ? `<code>${token}</code>` : token));
+  return wrapOutside(text, PROTECTED_RE, markdown, kept => (kept.startsWith('<summary>') ? wrapOutside(kept, SUMMARY_PROTECTED_RE, html, tag => tag) : kept));
+}
+
+/** Applies `wrap` to the text between the matches of `protectedRe`, and `keep` to each match. */
+function wrapOutside(text: string, protectedRe: RegExp, wrap: (plain: string) => string, keep: (match: string) => string): string {
   let out = '';
   let last = 0;
-  for (const match of text.matchAll(PROTECTED_RE)) {
-    out += wrap(text.slice(last, match.index)) + match[0];
+  for (const match of text.matchAll(protectedRe)) {
+    out += wrap(text.slice(last, match.index)) + keep(match[0]);
     last = match.index + match[0].length;
   }
   return out + wrap(text.slice(last));
