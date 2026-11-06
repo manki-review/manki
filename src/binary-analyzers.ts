@@ -221,7 +221,7 @@ export async function runActionlint(workflows: Map<string, string>, config: stri
   const output = await runChecked(tools, 'actionlint', binary, [
     '-format', '{{json .}}', '-no-color', '-shellcheck=', '-pyflakes=', ...configArgs, ...scanArgs(workflows),
   ], root, [0, 1]);
-  const errors = JSON.parse(output) as Array<{ message: string; filepath: string; line: number; kind: string }>;
+  const errors = (JSON.parse(output.trim() || '[]') ?? []) as Array<{ message: string; filepath: string; line: number; kind: string }>;
   return errors.map(e => ({
     tool: 'actionlint', ruleId: e.kind, severity: 'error', file: repoPath(root, e.filepath), line: e.line, message: e.message, source: 'actionlint',
   }));

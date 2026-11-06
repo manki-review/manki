@@ -409,6 +409,12 @@ describe('collectStaticSignals with analyzers and waits', () => {
       'diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml',
       '--- a/.github/workflows/ci.yml',
       '+++ b/.github/workflows/ci.yml',
+      '@@ -1,4 +1,4 @@',
+      ' name: CI',
+      ' on:',
+      '-  push:',
+      '+  pull_request_target:',
+      ' jobs:',
       '@@ -6,3 +6,4 @@',
       '     runs-on: [self-hosted, gpu]',
       '     steps:',
@@ -446,6 +452,7 @@ describe('collectStaticSignals with analyzers and waits', () => {
     const workflowRequest = () => ({ ...request(), diff: parsePRDiff(DIFF), fullDiff: parsePRDiff(DIFF) });
 
     it('runs actionlint and zizmor on changed workflows and shellcheck on changed shell scripts by default, and keeps results on added lines only', async () => {
+      // zizmor puts `dangerous-triggers` on the trigger key and `on:` only in a hidden location, so the added trigger keeps it.
       const actionlintConfig = 'self-hosted-runner:\n  labels: [gpu]\n';
       const octokit = makeOctokit({ main: ONLY_ANALYZERS }, {
         ...FILES, 'main:.github/actionlint.yml': actionlintConfig, 'head-sha:.github/actionlint.yml': 'paths: {}\n',
@@ -462,6 +469,10 @@ describe('collectStaticSignals with analyzers and waits', () => {
       expect(signals).toEqual([
         expect.objectContaining({ tool: 'actionlint', ruleId: 'expression', severity: 'error', file: '.github/workflows/ci.yml', line: 9, source: 'actionlint' }),
         {
+          tool: 'zizmor', ruleId: 'dangerous-triggers', severity: 'error', file: '.github/workflows/ci.yml', line: 3, source: 'zizmor',
+          message: 'use of fundamentally insecure workflow trigger: pull_request_target is almost always used insecurely',
+        },
+        {
           tool: 'zizmor', ruleId: 'template-injection', severity: 'error', file: '.github/workflows/ci.yml', line: 9, source: 'zizmor',
           message: 'code injection via template expansion: may expand into attacker-controllable code',
         },
@@ -470,7 +481,7 @@ describe('collectStaticSignals with analyzers and waits', () => {
       ]);
       expect(record).toEqual({ analyzers: [
         { analyzer: 'actionlint', status: 'ran', results: 1 },
-        { analyzer: 'zizmor', status: 'ran', results: 1 },
+        { analyzer: 'zizmor', status: 'ran', results: 2 },
         { analyzer: 'shellcheck', status: 'ran', results: 2 },
       ] });
       expect(scanned.actionlint).toEqual({ '.github/workflows/ci.yml': WORKFLOW });
@@ -480,7 +491,7 @@ describe('collectStaticSignals with analyzers and waits', () => {
       expect(toolArgs('zizmor')).toEqual(expect.arrayContaining(['--offline', '--no-config', '--no-ignores', './.github/workflows/ci.yml']));
       expect(toolArgs('shellcheck')).toEqual(expect.arrayContaining(['--norc', './scripts/deploy', './scripts/clean.sh']));
       expect(octokit.rest.repos.getContent.mock.calls.filter(([{ path }]) => path === '.github/workflows/ci.yml')).toHaveLength(1);
-      expect(toolAlertFindings(signals).map(f => f.toolSource)).toEqual(['actionlint', 'zizmor', 'shellcheck', 'shellcheck']);
+      expect(toolAlertFindings(signals).map(f => f.toolSource)).toEqual(['actionlint', 'zizmor', 'zizmor', 'shellcheck', 'shellcheck']);
 
       jest.mocked(runtime.runTool).mockImplementation(async binary => ({ code: 0, stdout: basename(binary) === 'shellcheck' ? '{"comments":[]}' : '[]', stderr: '' }));
       const clean = await collectStaticSignals(octokit, workflowRequest(), runtime);
