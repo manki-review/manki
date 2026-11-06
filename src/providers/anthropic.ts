@@ -245,12 +245,11 @@ export class AnthropicClient implements LLMClient {
       label: 'Claude',
       cliPath,
       args,
-      env: {
-        ...cliEnv(),
+      env: cliEnv({
         ...(oauthToken ? { CLAUDE_CODE_OAUTH_TOKEN: oauthToken } : {}),
         // The CLI defaults to the model's own limit, which lets a runaway reply run for many minutes.
         CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(THINKING_MAX_TOKENS),
-      },
+      }, 'CLAUDE_CODE_OAUTH_TOKEN'),
       input: userMessage,
       hardTimeoutMs: options?.timeoutMs,
       signal: options?.signal,

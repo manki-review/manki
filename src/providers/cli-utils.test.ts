@@ -44,42 +44,50 @@ describe('sanitizeLogOutput', () => {
 });
 
 describe('cliEnv', () => {
-  it('drops inputs, the OIDC endpoint and every token, key or secret, and keeps the rest', () => {
+  it('keeps only the variables a CLI needs, so a secret under any name stays out', () => {
     const env = {
       PATH: '/usr/bin',
       HOME: '/home/runner',
+      LANG: 'C.UTF-8',
+      LC_ALL: 'C.UTF-8',
+      XDG_CONFIG_HOME: '/home/runner/.config',
+      RUNNER_TEMP: '/home/runner/work/_temp',
+      HTTPS_PROXY: 'http://proxy:3128',
+      NODE_EXTRA_CA_CERTS: '/etc/ssl/proxy.pem',
+      GOOGLE_CLOUD_PROJECT: 'manki-project',
+      DEPLOY_PEM: '-----BEGIN PRIVATE KEY-----',
+      DATABASE_URL: 'postgres://admin:hunter2@db/prod',
       GITHUB_REPOSITORY: 'manki-review/manki',
-      CLAUDE_CODE_MAX_OUTPUT_TOKENS: '32768',
+      SSH_AUTH_SOCK: '/tmp/ssh-agent.sock',
       ACTIONS_ID_TOKEN_REQUEST_URL: 'https://pipelines.actions.githubusercontent.com/oidc',
       ACTIONS_ID_TOKEN_REQUEST_TOKEN: 'oidc-request',
       ACTIONS_RUNTIME_TOKEN: 'runtime',
-      ACTIONS_RESULTS_URL: 'https://results.actions.githubusercontent.com/',
       GITHUB_TOKEN: 'ghs_workflow',
-      GH_TOKEN: 'ghs_cli',
-      REVIEW_MEMORY_TOKEN: 'ghp_memory',
       ANTHROPIC_API_KEY: 'sk-ant',
       CLAUDE_CODE_OAUTH_TOKEN: 'claude-oauth',
-      GITHUB_APP_PRIVATE_KEY: 'pem',
-      AWS_SECRET: 'aws',
-      DB_PASSWORD: 'db',
-      LDAP_PASSWD: 'ldap',
-      GPG_PASSPHRASE: 'gpg',
-      DEPLOY_PAT: 'ghp_deploy',
-      GOOGLE_APPLICATION_CREDENTIALS: '/tmp/gcp.json',
-      DOCKER_CREDENTIAL: 'docker',
-      NPM_CONFIG__AUTH: 'npm-auth',
-      SSH_AUTH_SOCK: '/tmp/ssh-agent.sock',
-      npm_config_token: 'npm',
       INPUT_GITHUB_TOKEN: 'ghs_input',
       INPUT_MODEL: 'claude-opus-4-6',
-      input_config_path: '.manki.yml',
+      XDG_SESSION_TOKEN: 'xdg-secret',
     };
-    expect(cliEnv(env)).toEqual({
+    expect(cliEnv({}, undefined, env)).toEqual({
       PATH: '/usr/bin',
       HOME: '/home/runner',
-      GITHUB_REPOSITORY: 'manki-review/manki',
+      LANG: 'C.UTF-8',
+      LC_ALL: 'C.UTF-8',
+      XDG_CONFIG_HOME: '/home/runner/.config',
+      RUNNER_TEMP: '/home/runner/work/_temp',
+      HTTPS_PROXY: 'http://proxy:3128',
+      NODE_EXTRA_CA_CERTS: '/etc/ssl/proxy.pem',
+      GOOGLE_CLOUD_PROJECT: 'manki-project',
+    });
+  });
+
+  it('adds the provider variables, and of those named like a secret only the credential', () => {
+    const vars = { CLAUDE_CODE_OAUTH_TOKEN: 'claude-oauth', CLAUDE_CODE_MAX_OUTPUT_TOKENS: '32768', GITHUB_TOKEN: 'ghs_workflow' };
+    expect(cliEnv(vars, 'CLAUDE_CODE_OAUTH_TOKEN', { PATH: '/usr/bin', ANTHROPIC_API_KEY: 'sk-ant' })).toEqual({
+      PATH: '/usr/bin',
+      CLAUDE_CODE_OAUTH_TOKEN: 'claude-oauth',
       CLAUDE_CODE_MAX_OUTPUT_TOKENS: '32768',
-      SSH_AUTH_SOCK: '/tmp/ssh-agent.sock',
     });
   });
 });

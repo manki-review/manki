@@ -6,7 +6,7 @@ import { StringDecoder } from 'string_decoder';
 
 import * as core from '@actions/core';
 
-import { registerSecret, safeJsonParse, sanitizeTokens, SECRET_NAME } from '../utils';
+import { registerSecret, safeJsonParse, sanitizeTokens, SECRET_NAME, SYSTEM_ENV } from '../utils';
 import { SendMessageOptions } from './types';
 
 export const STALE_TIMEOUT_MS = 90_000;
@@ -301,17 +301,17 @@ function emptyCliCwd(): string {
   return emptyCwd;
 }
 
-// The OIDC endpoint lets a CLI mint an identity token, which the token service trades for an App token.
-const CLI_BLOCKED_ENV = new Set(['ACTIONS_ID_TOKEN_REQUEST_URL', 'ACTIONS_RESULTS_URL']);
+// Besides `SYSTEM_ENV`, a CLI needs a home, the locale, the CA bundles a proxy may need, and the Gemini Cloud project.
+const CLI_ENV = new Set([...SYSTEM_ENV, 'HOME', 'LANG', 'RUNNER_TEMP', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS', 'GOOGLE_CLOUD_PROJECT']);
+const CLI_ENV_PREFIX = /^(?:LC|XDG)_/;
 
 /**
- * Returns `env` without what a provider CLI must not see: action inputs (`INPUT_*`), the OIDC endpoint and every
- * variable named like a secret, such as `*_TOKEN`, `*_KEY` or `*_PASSWORD`. A provider adds its own credential back.
+ * Returns the environment for a provider CLI: the variables of `env` the CLI needs to run, plus the provider's own
+ * `vars`. Nothing named like a secret, such as `*_TOKEN` or `*_KEY`, passes, except the variable named `credential`.
  */
-export function cliEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  return Object.fromEntries(
-    Object.entries(env).filter(([name]) => !CLI_BLOCKED_ENV.has(name) && !/^INPUT_/i.test(name) && !SECRET_NAME.test(name)),
-  );
+export function cliEnv(vars: NodeJS.ProcessEnv = {}, credential?: string, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const needed = Object.entries(env).filter(([name]) => CLI_ENV.has(name) || CLI_ENV_PREFIX.test(name));
+  return Object.fromEntries([...needed, ...Object.entries(vars)].filter(([name]) => name === credential || !SECRET_NAME.test(name)));
 }
 
 export interface RunCliOptions {
