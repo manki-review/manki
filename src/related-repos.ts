@@ -106,6 +106,12 @@ function isHolderAlive(lock: string): boolean {
   }
 }
 
+/** Returns the checkout directory of each related repo a tool server of the round in `stateDir` fetched, by `owner/name`. */
+export function fetchedRelatedRepos(stateDir: string): Map<string, string> {
+  const done = readdirSync(stateDir).filter(f => f.endsWith('.done'));
+  return new Map(done.map(f => [decodeURIComponent(f.slice(0, -'.done'.length)), readFileSync(join(stateDir, f), 'utf-8')]));
+}
+
 /** Warns about each related repo a tool server of the round in `stateDir` could not fetch or never finished fetching. */
 export function warnRelatedRepoFailures(stateDir: string): void {
   const files = new Set(readdirSync(stateDir));

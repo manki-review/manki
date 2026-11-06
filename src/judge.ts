@@ -567,7 +567,7 @@ function buildRelatedRepoRules(repos: RelatedRepo[]): string {
 
 Reviewers can read these repos with their tools. References, which this repository implements or ports: ${names('reference')}. Consumers, which depend on this repository: ${names('consumer')}.
 
-A finding cites their code as \`owner/name:path:line\`. Such a citation is evidence the reviewer read, so the cap for a fact you cannot check does not apply to it.
+A finding cites their code as \`owner/name:path:line\`. Its tool evidence says whether each cited line is in the checkout the reviewers read. A citation listed there as in the fetched checkout is evidence the reviewer read, so the cap for a fact you cannot check does not apply to it. Any other citation is a fact you cannot check.
 
 - **A divergence from a reference** is graded by the blocker tests and the severity table, like any other finding.
 - **A change that breaks a consumer** is a \`warning\` that lists the consumer's call sites and says it breaks once the consumer upgrades. It is a \`blocker\` only when the PR description says the change does not break anything. This replaces the broken public contract row of the table for a consumer.`;

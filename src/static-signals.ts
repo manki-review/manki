@@ -1,11 +1,13 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
+import { readFileSync, statSync } from 'fs';
 
 import { AstGrepApi, isAstGrepFile, isRustFile, loadAstGrep, runAstGrep } from './ast-grep';
 import { installTool, isLockfile, runActionlint, runGitleaks, runOpengrep, runOsvScanner, runShellcheck, runTool, runZizmor, ToolRunner } from './binary-analyzers';
 import { loadStaticAnalysisConfig } from './config';
 import { addedLines, isLineInDiff } from './diff';
 import { dynamicFence, fetchConfigFile, fetchFileContents } from './github';
+import { resolveInRoot } from './mcp-server';
 import { AnalyzerName, ANALYZERS, DiffFile, Finding, FindingSeverity, PackageVulnerability, ParsedDiff, RoundAnalyzerRun, RoundStaticAnalysis, StaticAnalysisConfig, StaticSignal, StaticSignalSource, ToolEvidence } from './types';
 import { safeTruncate } from './utils';
 
@@ -19,6 +21,9 @@ const MAX_TITLE_CHARS = 120;
 const MAX_CLAIMED_SYMBOLS = 5;
 /** How far a check annotation may sit from a finding's line and still confirm the error the finding claims. */
 const ERROR_LINE_WINDOW = 3;
+const MAX_CITATIONS = 10;
+// `owner/name:path:line` or `owner/name:path:start-end`, the form reviewers cite a related repo's code in.
+const RELATED_CITATION = /(?<![\w./-])([\w.-]+\/[\w.-]+):([^\s:`'"()<>]+):(\d+)(?:-(\d+))?/g;
 const CHECK_POLL_MS = 15_000;
 const MAX_ANALYZED_FILE_BYTES = 1024 * 1024;
 const MAX_ANALYZED_TOTAL_BYTES = 8 * 1024 * 1024;
@@ -379,6 +384,8 @@ export interface ClaimSources {
   rawDiff: string;
   fileContents?: Map<string, string>;
   signals: StaticSignal[];
+  /** The round's related repos: every configured `owner/name`, and the checkout of each one a tool server fetched. */
+  related?: { names: string[]; checkouts: Map<string, string> };
 }
 
 /**
@@ -387,7 +394,7 @@ export interface ClaimSources {
  * can live elsewhere. An error from a type checker or compiler near the line confirms a claimed type or compile error.
  */
 export function checkFindingClaims(finding: Finding, sources: ClaimSources): ToolEvidence {
-  const { diff, rawDiff, fileContents, signals } = sources;
+  const { diff, rawDiff, fileContents, signals, related } = sources;
   if (!diff.files.some(f => f.path === finding.file)) {
     return { status: 'contradicted', note: `${finding.file} is not changed in this diff.` };
   }
@@ -405,6 +412,7 @@ export function checkFindingClaims(finding: Finding, sources: ClaimSources): Too
     const found = pattern.test(rawDiff) || (content !== undefined && pattern.test(content));
     checked.push(found ? `\`${symbol}\` occurs` : `\`${symbol}\` not found in ${content !== undefined ? `${finding.file} or ` : ''}the diff`);
   }
+  if (related) checked.push(...checkRelatedCitations(`${finding.title}\n${finding.description}`, related));
   if (TYPE_ERROR_CLAIM.test(`${finding.title} ${finding.description}`)) {
     const annotation = signals.find(s => s.source === 'checks' && s.severity === 'error' && isTypeChecker(s) && s.file === finding.file && Math.abs(s.line - finding.line) <= ERROR_LINE_WINDOW);
     if (annotation) {
@@ -413,6 +421,33 @@ export function checkFindingClaims(finding: Finding, sources: ClaimSources): Too
     checked.push('no CI annotation reports the claimed error');
   }
   return { status: 'none', note: `Checked: ${checked.join(', ')}.` };
+}
+
+/**
+ * Returns, for each cited line of a configured related repo, whether it is in the checkout the reviewers read. Only a
+ * citation found there lets the judge treat it as evidence.
+ */
+function checkRelatedCitations(text: string, { names, checkouts }: NonNullable<ClaimSources['related']>): string[] {
+  const citations = [...text.matchAll(RELATED_CITATION)].filter(([, repo]) => names.includes(repo));
+  return [...new Map(citations.map(c => [c[0], c])).values()].slice(0, MAX_CITATIONS).map(([citation, repo, path, start, end]) => {
+    const dir = checkouts.get(repo);
+    if (!dir) return `\`${citation}\` is unchecked: ${repo} was not fetched this round`;
+    const missing = citedLineMissing(dir, path, Math.max(Number(start), Number(end ?? start)));
+    return missing ? `\`${citation}\` is not in the fetched checkout: ${missing}` : `\`${citation}\` is in the fetched checkout`;
+  });
+}
+
+/** Returns why line `line` of `path` is not in the checkout at `dir`, or `undefined` when it is. */
+function citedLineMissing(dir: string, path: string, line: number): string | undefined {
+  let absolute: string;
+  try {
+    ({ absolute } = resolveInRoot(dir, path));
+  } catch {
+    return `${path} is not a file there`;
+  }
+  if (!statSync(absolute).isFile()) return `${path} is not a file there`;
+  const lineCount = readFileSync(absolute, 'utf-8').replace(/\n$/, '').split('\n').length;
+  return line > lineCount ? `${path} has ${lineCount} lines` : undefined;
 }
 
 /** Whether a check annotation comes from a type checker or compiler. A lint error near the line says nothing about types. */
