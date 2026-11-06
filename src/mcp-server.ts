@@ -16,6 +16,9 @@ const execFileAsync = promisify(execFile);
 /** The argument of `dist/index.js` that starts the tool server instead of a review. */
 export const MCP_SERVER_COMMAND = 'mcp-server';
 
+/** The argument after the root that makes the tool server also offer `read_file`, `grep` and `glob`. */
+export const FILE_TOOLS_FLAG = '--file-tools';
+
 const GIT_TIMEOUT_MS = 30_000;
 const GIT_MAX_BUFFER = 1024 * 1024;
 const MAX_OUTPUT_CHARS = 20_000;
