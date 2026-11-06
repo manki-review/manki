@@ -732,7 +732,7 @@ reviewers:
   - name: "Protocol Compliance"
     focus: "DIP compliance, consensus rules"
 
-# Review memory (requires REVIEW_MEMORY_TOKEN secret)
+# Review memory (uses the App's memory token, or a REVIEW_MEMORY_TOKEN secret without the App)
 memory:
   enabled: true
   repo: "<owner>/review-memory"
@@ -902,7 +902,7 @@ memory:
   repo: "<owner>/review-memory"
 ```
 
-Make sure the `REVIEW_MEMORY_TOKEN` secret is set (see Step 2).
+With the manki-review App, Manki writes memory with the App's memory token, so no secret is needed. Without the App, set the `REVIEW_MEMORY_TOKEN` secret (see Step 2). A `memory_repo_token` that is set always wins over the App's token, so leave it unset when you use the App.
 
 ### How memory works
 
