@@ -1175,7 +1175,7 @@ async function resolveAddressedThreads(run: ReviewRun, result: ReviewResult): Pr
         continue;
       }
       try {
-        await resolveReviewThread(run.octokit, threadId);
+        await resolveReviewThread(run.octokit, threadId, 'ADDRESSED');
         core.info(`Judge resolved: "${reason}" — thread ${threadId}`);
       } catch (error) {
         core.warning(`Failed to resolve thread ${threadId}, it stays open: ${error}`);

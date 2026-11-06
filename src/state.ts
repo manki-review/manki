@@ -137,10 +137,16 @@ async function fetchBotReviewThreads(
     });
 }
 
-/** Resolves the review thread `threadId`. Throws the abort reason once GitHub writes are stopped. */
-async function resolveReviewThread(octokit: Octokit, threadId: string): Promise<void> {
+/** Why a thread closed, as GitHub shows it on the resolved thread. */
+type ResolutionReason = 'ADDRESSED' | 'INVALID' | 'WONT_FIX';
+
+/** Resolves the review thread `threadId` with `resolutionReason`. Throws the abort reason once GitHub writes are stopped. */
+async function resolveReviewThread(octokit: Octokit, threadId: string, resolutionReason: ResolutionReason): Promise<void> {
   assertWritesAllowed();
-  await octokit.graphql('mutation($threadId: ID!) { resolveReviewThread(input: { threadId: $threadId }) { thread { isResolved } } }', { threadId });
+  await octokit.graphql(
+    'mutation($threadId: ID!, $resolutionReason: PullRequestReviewThreadResolutionReason) { resolveReviewThread(input: { threadId: $threadId, resolutionReason: $resolutionReason }) { thread { isResolved } } }',
+    { threadId, resolutionReason },
+  );
 }
 
 async function unresolveReviewThread(octokit: Octokit, threadId: string): Promise<void> {
@@ -529,4 +535,4 @@ async function checkAndAutoApprove(
   return true;
 }
 
-export { PauseState, ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, explainUnreviewedHead, fetchBotReviewThreads, findUnchangedVerdict, holdApprovalOnConflict, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
+export { PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, explainUnreviewedHead, fetchBotReviewThreads, findUnchangedVerdict, holdApprovalOnConflict, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };

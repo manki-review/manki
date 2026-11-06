@@ -701,24 +701,24 @@ describe('handleReviewCommentReply', () => {
     const userMessage = (client.sendMessage as jest.Mock).mock.calls[0][1] as string;
     expect(userMessage).toContain('## Original Review Comment\n\n**Retry leaks a timer**');
     expect(userMessage).toContain('## Your Earlier Reply\n\nStill open. The retry path still leaks.');
-    expect(state.resolveReviewThread).toHaveBeenCalledWith(octokit, 'PRRT_root');
+    expect(state.resolveReviewThread).toHaveBeenCalledWith(octokit, 'PRRT_root', 'WONT_FIX');
   });
 
   it.each([
-    ['Fixed. The guard now runs first.', 'MEMBER', 'someone', 'pr-author', false, true],
-    ['**Agreed.** Deferring it to the follow-up is fine.', 'NONE', 'pr-author', 'pr-author', false, true],
-    ['Withdrawn. The caller already checks for null.', 'OWNER', 'someone', 'pr-author', false, true],
-    ['Still open. The success path still skips `clearTimeout`.', 'MEMBER', 'someone', 'pr-author', false, false],
-    ['Unverified. I can\'t verify from the code that the API sorts the list. A maintainer should confirm it.', 'OWNER', 'pr-author', 'pr-author', false, false],
-    ['Fixed. The guard now runs first.', 'CONTRIBUTOR', 'reader', 'pr-author', false, false],
-    ['Fixed. The guard now runs first.', 'NONE', 'someone', 'pr-author', false, true],
-    ['Agreed. The token never reaches a log.', 'OWNER', 'pr-author', 'pr-author', true, false],
-    ['Agreed. The token never reaches a log.', 'CONTRIBUTOR', 'reader', 'pr-author', true, false],
-    ['Agreed. The token never reaches a log.', 'MEMBER', 'someone', 'pr-author', true, true],
-    ['Agreed. The token never reaches a log.', 'MEMBER', 'someone', undefined, true, true],
-    ['Agreed. The token never reaches a log.', 'MEMBER', 'reader', 'pr-author', true, false],
-    ['Still open. The token still reaches the log.', 'OWNER', 'pr-author', 'pr-author', true, false],
-  ])('resolves the thread after %j from a %s reply by %s, PR author %s, security %s: %s', async (reply, association, sender, prAuthor, isSecurity, resolves) => {
+    ['Fixed. The guard now runs first.', 'MEMBER', 'someone', 'pr-author', false, 'ADDRESSED'],
+    ['**Agreed.** Deferring it to the follow-up is fine.', 'NONE', 'pr-author', 'pr-author', false, 'WONT_FIX'],
+    ['Withdrawn. The caller already checks for null.', 'OWNER', 'someone', 'pr-author', false, 'INVALID'],
+    ['Still open. The success path still skips `clearTimeout`.', 'MEMBER', 'someone', 'pr-author', false, undefined],
+    ['Unverified. I can\'t verify from the code that the API sorts the list. A maintainer should confirm it.', 'OWNER', 'pr-author', 'pr-author', false, undefined],
+    ['Fixed. The guard now runs first.', 'CONTRIBUTOR', 'reader', 'pr-author', false, undefined],
+    ['Fixed. The guard now runs first.', 'NONE', 'someone', 'pr-author', false, 'ADDRESSED'],
+    ['Agreed. The token never reaches a log.', 'OWNER', 'pr-author', 'pr-author', true, undefined],
+    ['Agreed. The token never reaches a log.', 'CONTRIBUTOR', 'reader', 'pr-author', true, undefined],
+    ['Agreed. The token never reaches a log.', 'MEMBER', 'someone', 'pr-author', true, 'WONT_FIX'],
+    ['Agreed. The token never reaches a log.', 'MEMBER', 'someone', undefined, true, 'WONT_FIX'],
+    ['Agreed. The token never reaches a log.', 'MEMBER', 'reader', 'pr-author', true, undefined],
+    ['Still open. The token still reaches the log.', 'OWNER', 'pr-author', 'pr-author', true, undefined],
+  ])('resolves the thread after %j from a %s reply by %s, PR author %s, security %s, with reason %s', async (reply, association, sender, prAuthor, isSecurity, reason) => {
     setContext({
       comment: { id: 1, body: 'Done in the latest commit.', user: { type: 'User' }, in_reply_to_id: 99, author_association: association },
       pull_request: { number: 1, ...(prAuthor && { user: { login: prAuthor } }) },
@@ -737,14 +737,10 @@ describe('handleReviewCommentReply', () => {
     await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1);
 
     // An agreement that cannot close a security thread says who can.
-    const staysOpen = isSecurity && !resolves && reply.startsWith('Agreed.');
+    const staysOpen = isSecurity && !reason && reply.startsWith('Agreed.');
     const note = '\n\nThis is a security finding, so the thread stays open until a maintainer other than the PR author, or a repo admin, closes it.';
     expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenCalledWith(expect.objectContaining({ body: `${reply}${staysOpen ? note : ''}\n\n<!-- manki -->` }));
-    if (resolves) {
-      expect(state.resolveReviewThread).toHaveBeenCalledWith(octokit, 'PRRT_this');
-    } else {
-      expect(state.resolveReviewThread).not.toHaveBeenCalled();
-    }
+    expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(reason ? [[octokit, 'PRRT_this', reason]] : []);
   });
 
   it('includes scoped PR diff context in the Claude prompt', async () => {
@@ -1173,7 +1169,7 @@ describe('handleReviewCommentCommand', () => {
 
     const overrides = isAdmin && isSecurity && sender === 'pr-author' ? [[octokit, [{ thread: 'PRRT_this', login: 'pr-author', via: 'dismiss' }]]] : [];
     expect(jest.mocked(state.announceSecurityOverrides).mock.calls).toEqual(overrides);
-    expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(resolves ? [[octokit, 'PRRT_this']] : []);
+    expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(resolves ? [[octokit, 'PRRT_this', 'WONT_FIX']] : []);
     expect(ghUtils.reactToReviewComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 62, '+1');
   });
 
@@ -1198,7 +1194,7 @@ describe('handleReviewCommentCommand', () => {
     jest.mocked(state.announceSecurityOverrides).mockClear();
     await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 63, parseCommand('@manki dismiss'));
     expect(state.announceSecurityOverrides).not.toHaveBeenCalled();
-    expect(state.resolveReviewThread).toHaveBeenCalledWith(octokit, 'PRRT_this');
+    expect(state.resolveReviewThread).toHaveBeenCalledWith(octokit, 'PRRT_this', 'WONT_FIX');
   });
 
   it('does not use reactToIssueComment', async () => {

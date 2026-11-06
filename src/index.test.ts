@@ -5137,7 +5137,7 @@ describe('runFullReview orchestration', () => {
 
     expect(mockGraphql).not.toHaveBeenCalledWith(
       expect.stringContaining('resolveReviewThread'),
-      { threadId: 'PRRT_override' },
+      { threadId: 'PRRT_override', resolutionReason: 'ADDRESSED' },
     );
     expect(jest.mocked(core.info)).toHaveBeenCalledWith(
       expect.stringContaining("ignoring 'addressed' verdict — inter-round diff is empty"),
@@ -5218,7 +5218,7 @@ describe('runFullReview orchestration', () => {
     );
     // A round that does not post reopens the thread it resolved, unless the run is cancelled and writes nothing more.
     expect(mockGraphql.mock.calls.filter(([query]) => String(query).includes('resolveReviewThread')).map(([query, vars]) => [String(query).includes('unresolveReviewThread'), vars]))
-      .toEqual([[false, { threadId: 'PRRT_abc' }], ...(outcome === 'superseded' ? [[true, { threadId: 'PRRT_abc' }]] : [])]);
+      .toEqual([[false, { threadId: 'PRRT_abc', resolutionReason: 'ADDRESSED' }], ...(outcome === 'superseded' ? [[true, { threadId: 'PRRT_abc' }]] : [])]);
     expect(mockGraphql.mock.calls.some(([query, vars]) => String(query).includes('addPullRequestReviewThreadReply')
       && (vars as { body?: string }).body === 'Fixed in abc123.\n\n<!-- manki -->')).toBe(posted);
   });
@@ -5258,15 +5258,15 @@ describe('runFullReview orchestration', () => {
 
     expect(mockGraphql).toHaveBeenCalledWith(
       expect.stringContaining('resolveReviewThread'),
-      { threadId: 'PRRT_abc' },
+      { threadId: 'PRRT_abc', resolutionReason: 'ADDRESSED' },
     );
     expect(mockGraphql).not.toHaveBeenCalledWith(
       expect.stringContaining('resolveReviewThread'),
-      { threadId: 'PRRT_def' },
+      { threadId: 'PRRT_def', resolutionReason: 'ADDRESSED' },
     );
     expect(mockGraphql).not.toHaveBeenCalledWith(
       expect.stringContaining('resolveReviewThread'),
-      { threadId: 'PRRT_ghi' },
+      { threadId: 'PRRT_ghi', resolutionReason: 'ADDRESSED' },
     );
     expect(jest.mocked(core.info)).toHaveBeenCalledWith(
       'Judge resolved: "Fixed in new diff" — thread PRRT_abc',
@@ -5311,11 +5311,11 @@ describe('runFullReview orchestration', () => {
 
     expect(mockGraphql).toHaveBeenCalledWith(
       expect.stringContaining('resolveReviewThread'),
-      { threadId: 'PRRT_known' },
+      { threadId: 'PRRT_known', resolutionReason: 'ADDRESSED' },
     );
     expect(mockGraphql).not.toHaveBeenCalledWith(
       expect.stringContaining('resolveReviewThread'),
-      { threadId: 'PRRT_unknown' },
+      { threadId: 'PRRT_unknown', resolutionReason: 'ADDRESSED' },
     );
     expect(jest.mocked(core.debug)).toHaveBeenCalledWith(
       expect.stringContaining('Skipping unknown thread PRRT_unknown'),
