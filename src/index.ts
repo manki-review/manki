@@ -677,7 +677,7 @@ async function loadBaseReviewConfig(octokit: Octokit, owner: string, repo: strin
 }
 
 /** Whether the run stops before posting a progress comment: another run holds the PR, the commit is reviewed or stale, or nothing changed. */
-async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: RoundTrigger, forceReview?: boolean): Promise<boolean> {
+async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: RoundTrigger, forceReview?: boolean, draft?: boolean): Promise<boolean> {
   const { octokit, bot, owner, repo, prNumber, commitSha, baseRef } = target;
 
   // Scan for a competing in-progress marker before posting our own to shorten
@@ -716,7 +716,7 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
       assertWritesAllowed();
       try {
         const approved = standing.verdict === 'APPROVE';
-        const held = approved && await holdApproval(octokit, bot, owner, repo, prNumber, commitSha);
+        const held = approved && await holdApproval(octokit, bot, owner, repo, prNumber, commitSha, draft);
         const summary = `No change to this PR since the reviewed commit \`${shortSha}\`. The previous verdict stands.`;
         // A push can dismiss approvals, so the approval is posted again on the new head.
         if (approved && !held) {
@@ -1474,7 +1474,7 @@ async function runFullReview(
       checkReport = { conclusion: 'skipped', title: 'Review skipped', summary: `This PR matches the skip rule for ${skipRule} in \`${configPath}\` on the base branch.` };
       return;
     }
-    if (await skipsRound(target, config, trigger, forceReview)) return;
+    if (await skipsRound(target, config, trigger, forceReview, options.draft)) return;
 
     const commentId = await postProgressComment(octokit, owner, repo, prNumber, commitSha);
     progress.commentId = commentId;

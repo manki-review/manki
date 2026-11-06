@@ -403,7 +403,7 @@ describe('checkAndAutoApprove', () => {
     );
   });
 
-  it('holds an approval on a draft with one notice per head', async () => {
+  it('holds an approval on a draft with one notice per head, and on the event draft state when the PR cannot be read', async () => {
     const createCommentMock = jest.fn().mockResolvedValue({});
     const octokit = makeMockOctokit({ draft: true, mergeable: true, createCommentFn: createCommentMock });
 
@@ -412,6 +412,10 @@ describe('checkAndAutoApprove', () => {
       '**Approval held:** this PR is a draft. Mark it ready for review, and Manki reviews it again.\n\n<!-- manki-approval-held:sha-9 -->',
     ]);
     expect(await holdApproval(makeMockOctokit({ mergeable: true }), TEST_BOT, 'owner', 'repo', 1, 'sha-9')).toBe(false);
+    const unreadable = makeMockOctokit({ mergeable: true });
+    jest.mocked(unreadable.rest.pulls.get).mockRejectedValue(new Error('API down'));
+    expect(await holdApproval(unreadable, TEST_BOT, 'owner', 'repo', 1, 'sha-9', true)).toBe('draft');
+    expect(await holdApproval(unreadable, TEST_BOT, 'owner', 'repo', 1, 'sha-9')).toBe(false);
   });
 
   it('never approves a draft, however its threads stand', async () => {

@@ -372,12 +372,12 @@ async function postStaleApproveSkippedComment(
 
 /**
  * Returns why the PR's approval must be held now, a draft or a conflict with its base, and posts one
- * notice per head saying so. Returns `false` when it may be approved.
+ * notice per head saying so. Returns `false` when it may be approved. `draftWhenUnread` decides when the PR can't be read.
  */
 async function holdApproval(
-  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string,
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string, draftWhenUnread = false,
 ): Promise<ApprovalHeld> {
-  const hold = await fetchApprovalHold(octokit, owner, repo, prNumber);
+  const hold = await fetchApprovalHold(octokit, owner, repo, prNumber, draftWhenUnread);
   if (!hold) return false;
   core.info(`${hold.reason === 'conflict' ? `PR conflicts with ${hold.baseRef}` : 'The PR is a draft'}, so it is not approved`);
   assertWritesAllowed();

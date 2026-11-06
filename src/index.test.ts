@@ -6055,7 +6055,7 @@ describe('runFullReview orchestration', () => {
       await callRunFullReview();
 
       expectNoRound();
-      expect(jest.mocked(stateModule.holdApproval)).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, 'abc123');
+      expect(jest.mocked(stateModule.holdApproval)).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, 'abc123', undefined);
       expect(mockCreateReview).not.toHaveBeenCalled();
     });
 
