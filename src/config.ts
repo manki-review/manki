@@ -65,7 +65,7 @@ const LIMIT_KEYS = ['max_diff_lines', 'auto_review_max_lines', 'slice_lines'] as
 /** Smaller slices would multiply the model calls a review makes. */
 const MIN_SLICE_LINES = 200;
 
-const KNOWN_KEYS = new Set([
+export const KNOWN_KEYS: ReadonlySet<string> = new Set([
   'auto_review',
   'auto_approve',
   'exclude_paths',
@@ -100,14 +100,14 @@ const IGNORED_KEYS = new Set(['review_level', 'review_thresholds', 'stats']);
 
 const PAIRED_PINS: readonly PairedPin[] = ['auto', 'always', 'never'];
 
-const REVIEW_KEYS = new Set(['default_group', 'groups', 'classes', 'routing', 'allow_weaker', 'outside_input', 'examples']);
-const GROUP_REVIEWER_KEYS = new Set(['model', 'effort', 'focus', 'role']);
+export const REVIEW_KEYS: ReadonlySet<string> = new Set(['default_group', 'groups', 'classes', 'routing', 'allow_weaker', 'outside_input', 'examples']);
+export const GROUP_REVIEWER_KEYS: ReadonlySet<string> = new Set(['model', 'effort', 'focus', 'role']);
 const REVIEWER_EFFORTS = new Set(['low', 'medium', 'high', 'max', 'auto']);
 const TRIAGE_KEYS = new Set(['trivial', 'subtle', 'paired']);
 
 const REPO_FORMAT = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
 
-const RELATED_REPO_KEYS = new Set(['repo', 'kind', 'ref', 'paths']);
+export const RELATED_REPO_KEYS: ReadonlySet<string> = new Set(['repo', 'kind', 'ref', 'paths']);
 const RELATED_REPO_KINDS = new Set(['reference', 'consumer']);
 const MAX_RELATED_REPOS = 10;
 const MAX_RELATED_REPO_PATHS = 20;
