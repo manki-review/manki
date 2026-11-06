@@ -1,3 +1,5 @@
+import * as core from '@actions/core';
+
 /**
  * Truncate a string to a maximum length, appending "..." if truncated.
  */
@@ -39,6 +41,50 @@ export function formatDuration(ms: number): string {
   return `${minutes}m ${remainingSeconds}s`;
 }
 
+// A shorter value would also redact ordinary words.
+const MIN_SECRET_LENGTH = 8;
+const registeredSecrets = new Set<string>();
+// The `-----BEGIN ... KEY-----` lines of a private key carry nothing secret.
+const PEM_ARMOR = /^-----[A-Z0-9 ]+-----$/;
+
+/** Masks `value` in the log and adds it to the values `redactSecrets` removes. A value under 8 characters is ignored. */
+export function registerSecret(value: string): void {
+  if (value.length < MIN_SECRET_LENGTH) return;
+  core.setSecret(value);
+  registeredSecrets.add(value);
+}
+
+/**
+ * Replaces Manki's own secret values in `text` with `[REDACTED]`: the values passed to `registerSecret` and the action
+ * inputs named like a secret. Each line of a multi-line value and the base64 encodings of each value are replaced too.
+ */
+export function redactSecrets(text: string): string {
+  return secretForms().reduce((result, form) => result.replaceAll(form, '[REDACTED]'), text);
+}
+
+/** Returns every form of a secret value that `redactSecrets` replaces, longest first. */
+function secretForms(): string[] {
+  const inputs = Object.entries(process.env).flatMap(([name, value]) => (/^INPUT_/i.test(name) && SECRET_NAME.test(name) && value ? [value] : []));
+  const forms = [...registeredSecrets, ...inputs].flatMap((secret) => {
+    const value = secret.trim();
+    const lines = value.split(/\r?\n/).map((line) => line.trim()).filter((line) => !PEM_ARMOR.test(line));
+    return [value, ...lines, ...base64Forms(value)];
+  });
+  return [...new Set(forms)].filter((form) => form.length >= MIN_SECRET_LENGTH).sort((a, b) => b.length - a.length);
+}
+
+/**
+ * Returns the base64 text that encodes `value` wherever it starts in a longer encoded string, such as the
+ * `x-access-token:<token>` header a checkout writes. Characters that also depend on the bytes around `value` are left out.
+ */
+function base64Forms(value: string): string[] {
+  const bytes = Buffer.from(value);
+  return [0, 1, 2].map((offset) => {
+    const encoded = Buffer.concat([Buffer.alloc(offset), bytes]).toString('base64');
+    return encoded.slice(Math.ceil((offset * 4) / 3), Math.floor((offset + bytes.length) / 3) * 4);
+  });
+}
+
 /**
  * Safely parse JSON, returning null on failure.
  */
@@ -49,6 +95,9 @@ export function safeJsonParse(text: string): unknown | null {
     return null;
   }
 }
+
+/** Matches a variable name that holds a credential, such as `*_TOKEN`, `*_KEY` or `*_PASSWORD`. */
+export const SECRET_NAME = /(?:^|_)(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD|PASSPHRASE|PAT|CREDENTIALS?|AUTH)$/i;
 
 /**
  * Redact GitHub token literals from a string so they cannot leak into logs

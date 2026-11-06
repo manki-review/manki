@@ -2,7 +2,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { buildExitDiagnostics, buildTimeoutDiagnostics, callWithTimeout, cliEnv, extractCliErrorSnippet, matchQuotaText, sanitizeLogOutput, seedAuthFile } from './cli-utils';
+import { buildExitDiagnostics, buildTimeoutDiagnostics, callWithTimeout, cliEnv, extractCliErrorSnippet, matchQuotaText, registerAuthFileSecrets, sanitizeLogOutput, seedAuthFile } from './cli-utils';
+import { redactSecrets } from '../utils';
 
 function encode(json: unknown): string {
   return Buffer.from(JSON.stringify(json), 'utf8').toString('base64');
@@ -370,7 +371,7 @@ describe('seedAuthFile', () => {
     rmSync(tmpRoot, { recursive: true, force: true });
   });
 
-  const validBlob = { tokens: { access_token: 'a', refresh_token: 'r' } };
+  const validBlob = { tokens: { access_token: 'access-token-value', refresh_token: 'refresh-token-value', id_token: 'id-token-value' } };
   const opts = (overrides: Partial<Parameters<typeof seedAuthFile>[0]> = {}) => ({
     secret: encode(validBlob),
     inputName: 'openai_oauth_token',
@@ -380,11 +381,12 @@ describe('seedAuthFile', () => {
     ...overrides,
   });
 
-  it('writes the decoded JSON when the target file is absent', () => {
+  it('writes the decoded JSON when the target file is absent, and redacts its tokens from posted text', () => {
     const target = join(tmpRoot, 'sub', 'auth.json');
     seedAuthFile(opts());
     expect(existsSync(target)).toBe(true);
     expect(JSON.parse(readFileSync(target, 'utf8'))).toEqual(validBlob);
+    expect(redactSecrets('access-token-value refresh-token-value id-token-value')).toBe('[REDACTED] [REDACTED] [REDACTED]');
   });
 
   it('writes the file with mode 0600 and creates the parent dir', () => {
@@ -402,13 +404,19 @@ describe('seedAuthFile', () => {
     expect(dirMode).toBe(0o700);
   });
 
-  it('preserves an existing file (does not overwrite refreshed tokens)', () => {
+  it('preserves an existing file (does not overwrite refreshed tokens), and redacts the refreshed tokens', () => {
     const target = join(tmpRoot, 'sub', 'auth.json');
     seedAuthFile(opts());
-    const refreshed = JSON.stringify({ tokens: { access_token: 'NEW', refresh_token: 'NEW_R' } });
+    const refreshed = JSON.stringify({ tokens: { access_token: 'refreshed-access', refresh_token: 'refreshed-refresh' } });
     writeFileSync(target, refreshed);
     seedAuthFile(opts()); // second call must be a no-op
     expect(readFileSync(target, 'utf8')).toBe(refreshed);
+    expect(redactSecrets('refreshed-access refreshed-refresh')).toBe('[REDACTED] [REDACTED]');
+
+    writeFileSync(target, JSON.stringify({ tokens: { access_token: 'refreshed-during-run' } }));
+    registerAuthFileSecrets(target);
+    expect(redactSecrets('refreshed-during-run')).toBe('[REDACTED]');
+    expect(() => registerAuthFileSecrets(tmpRoot)).not.toThrow();
   });
 
   it('rejects an empty secret', () => {

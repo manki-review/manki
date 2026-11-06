@@ -15,6 +15,7 @@ import { QuotaError, RefusalError } from './types';
 jest.mock('./cli-utils', () => ({
   ...jest.requireActual('./cli-utils'),
   seedAuthFile: jest.fn(),
+  registerAuthFileSecrets: jest.fn(),
 }));
 
 jest.mock('child_process', () => ({
@@ -429,8 +430,8 @@ describe('GeminiClient OAuth path', () => {
     }
   });
 
-  it('seeds `$HOME/.gemini/oauth_creds.json` from the OAuth secret before invoking the CLI', async () => {
-    const { seedAuthFile } = jest.requireMock('./cli-utils') as { seedAuthFile: jest.Mock };
+  it('seeds `$HOME/.gemini/oauth_creds.json` from the OAuth secret before invoking the CLI, and registers its tokens again after', async () => {
+    const { seedAuthFile, registerAuthFileSecrets } = jest.requireMock('./cli-utils') as { seedAuthFile: jest.Mock; registerAuthFileSecrets: jest.Mock };
     seedAuthFile.mockClear();
     setupOAuthSpawnMock({ stdout: 'ok' });
     const savedHome = process.env.HOME;
@@ -447,6 +448,7 @@ describe('GeminiClient OAuth path', () => {
         requiredFields: ['access_token', 'refresh_token'],
         bootstrapHint: expect.stringContaining('gemini'),
       });
+      expect(registerAuthFileSecrets).toHaveBeenCalledWith('/tmp/manki-gemini-home-fixture/.gemini/oauth_creds.json');
     } finally {
       if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
     }

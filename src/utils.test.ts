@@ -1,4 +1,8 @@
-import { truncate, formatDuration, safeJsonParse, safeTruncate, sanitizeTokens, withMarkers } from './utils';
+import * as core from '@actions/core';
+
+import { truncate, formatDuration, redactSecrets, registerSecret, safeJsonParse, safeTruncate, sanitizeTokens, withMarkers } from './utils';
+
+jest.mock('@actions/core');
 
 describe('utils', () => {
   describe('truncate', () => {
@@ -81,6 +85,45 @@ describe('utils', () => {
       expect(safeJsonParse('not json')).toBeNull();
       expect(safeJsonParse('{broken')).toBeNull();
       expect(safeJsonParse('')).toBeNull();
+    });
+  });
+
+  describe('redactSecrets', () => {
+    afterEach(() => {
+      delete process.env.INPUT_OPENAI_API_KEY;
+      delete process.env.INPUT_CONFIG_PATH;
+      delete process.env.INPUT_GEMINI_API_KEY;
+    });
+
+    it('redacts registered values and secret action inputs, and masks registered values in the log', () => {
+      registerSecret('minted-app-token-1');
+      process.env.INPUT_OPENAI_API_KEY = 'sk-openai-input-key';
+      process.env.INPUT_CONFIG_PATH = '.github/manki-config.yml';
+
+      expect(redactSecrets('a minted-app-token-1 b sk-openai-input-key c .github/manki-config.yml')).toBe('a [REDACTED] b [REDACTED] c .github/manki-config.yml');
+      expect(core.setSecret).toHaveBeenCalledWith('minted-app-token-1');
+    });
+
+    it('leaves values too short to tell from ordinary words', () => {
+      process.env.INPUT_GEMINI_API_KEY = 'short';
+      expect(redactSecrets('a short reply')).toBe('a short reply');
+    });
+
+    it('redacts each line of a multi-line value, but not the armor lines of a private key', () => {
+      registerSecret('-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEAsecretline\n-----END RSA PRIVATE KEY-----');
+      expect(redactSecrets('the line MIIEpAIBAAKCAQEAsecretline leaked')).toBe('the line [REDACTED] leaked');
+      expect(redactSecrets('-----BEGIN RSA PRIVATE KEY-----')).toBe('-----BEGIN RSA PRIVATE KEY-----');
+    });
+
+    // Only the characters that also encode `x-access-token:`, the prefix or the token's last partial group are kept.
+    it.each([
+      ['', 'eC1hY2Nlc3MtdG9rZW46[REDACTED]ZW4='],
+      ['a', 'eC1hY2Nlc3MtdG9rZW46YW[REDACTED]'],
+      ['ab', 'eC1hY2Nlc3MtdG9rZW46YWJ[REDACTED]bg=='],
+    ])('redacts a value inside base64 text after the prefix %p', (prefix, expected) => {
+      registerSecret('ghs_checkoutHeaderToken');
+      const header = Buffer.from(`x-access-token:${prefix}ghs_checkoutHeaderToken`).toString('base64');
+      expect(redactSecrets(`AUTHORIZATION: basic ${header}`)).toBe(`AUTHORIZATION: basic ${expected}`);
     });
   });
 

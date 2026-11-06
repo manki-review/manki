@@ -21,6 +21,7 @@ import { QuotaError, RefusalError } from './types';
 jest.mock('./cli-utils', () => ({
   ...jest.requireActual('./cli-utils'),
   seedAuthFile: jest.fn(),
+  registerAuthFileSecrets: jest.fn(),
 }));
 
 jest.mock('child_process', () => ({
@@ -494,8 +495,8 @@ describe('sendViaOAuth (Codex CLI path)', () => {
     }
   });
 
-  it('seeds `$CODEX_HOME/auth.json` from the OAuth secret before invoking the CLI', async () => {
-    const { seedAuthFile } = jest.requireMock('./cli-utils') as { seedAuthFile: jest.Mock };
+  it('seeds `$CODEX_HOME/auth.json` from the OAuth secret before invoking the CLI, and registers its tokens again after', async () => {
+    const { seedAuthFile, registerAuthFileSecrets } = jest.requireMock('./cli-utils') as { seedAuthFile: jest.Mock; registerAuthFileSecrets: jest.Mock };
     seedAuthFile.mockClear();
     setupSpawnMock('ok\n');
     const savedCodexHome = process.env.CODEX_HOME;
@@ -512,6 +513,7 @@ describe('sendViaOAuth (Codex CLI path)', () => {
         requiredFields: ['tokens.access_token', 'tokens.refresh_token'],
         bootstrapHint: expect.stringContaining('codex login'),
       });
+      expect(registerAuthFileSecrets).toHaveBeenCalledWith('/tmp/manki-codex-seed-fixture/auth.json');
     } finally {
       if (savedCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = savedCodexHome;

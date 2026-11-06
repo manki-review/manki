@@ -1,12 +1,12 @@
 import { spawn } from 'child_process';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { StringDecoder } from 'string_decoder';
 
 import * as core from '@actions/core';
 
-import { sanitizeTokens } from '../utils';
+import { registerSecret, safeJsonParse, sanitizeTokens, SECRET_NAME } from '../utils';
 import { SendMessageOptions } from './types';
 
 export const STALE_TIMEOUT_MS = 90_000;
@@ -253,9 +253,9 @@ export function seedAuthFile(opts: SeedAuthFileOptions): void {
   try {
     writeFileSync(opts.targetPath, decoded, { mode: 0o600, flag: 'wx' });
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'EEXIST') return;
-    throw err;
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
   }
+  registerAuthFileSecrets(opts.targetPath);
 }
 
 function hasNestedString(obj: Record<string, unknown>, dottedPath: string): boolean {
@@ -266,6 +266,24 @@ function hasNestedString(obj: Record<string, unknown>, dottedPath: string): bool
     current = (current as Record<string, unknown>)[part];
   }
   return typeof current === 'string' && current.length > 0;
+}
+
+function registerJsonSecrets(json: unknown): void {
+  if (typeof json === 'string') registerSecret(json);
+  else if (json && typeof json === 'object') Object.values(json).forEach(registerJsonSecrets);
+}
+
+/**
+ * Registers every string in the JSON auth file at `path` as a secret, since none of its fields is safe to post.
+ * Run it again after a CLI call, because the CLI can replace the tokens when it refreshes them.
+ */
+export function registerAuthFileSecrets(path: string): void {
+  if (!existsSync(path)) return;
+  try {
+    registerJsonSecrets(safeJsonParse(readFileSync(path, 'utf8')));
+  } catch (error) {
+    core.warning(`Could not read ${path} to redact its tokens: ${error}`);
+  }
 }
 
 let emptyCwd: string | undefined;
@@ -285,7 +303,6 @@ function emptyCliCwd(): string {
 
 // The OIDC endpoint lets a CLI mint an identity token, which the token service trades for an App token.
 const CLI_BLOCKED_ENV = new Set(['ACTIONS_ID_TOKEN_REQUEST_URL', 'ACTIONS_RESULTS_URL']);
-const CLI_SECRET_ENV = /(?:^|_)(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD|PASSPHRASE|PAT|CREDENTIALS?|AUTH)$/i;
 
 /**
  * Returns `env` without what a provider CLI must not see: action inputs (`INPUT_*`), the OIDC endpoint and every
@@ -293,7 +310,7 @@ const CLI_SECRET_ENV = /(?:^|_)(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD|PASSPHRASE|PA
  */
 export function cliEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   return Object.fromEntries(
-    Object.entries(env).filter(([name]) => !CLI_BLOCKED_ENV.has(name) && !/^INPUT_/i.test(name) && !CLI_SECRET_ENV.test(name)),
+    Object.entries(env).filter(([name]) => !CLI_BLOCKED_ENV.has(name) && !/^INPUT_/i.test(name) && !SECRET_NAME.test(name)),
   );
 }
 
