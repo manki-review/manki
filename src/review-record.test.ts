@@ -32,6 +32,11 @@ describe('formatReviewRecord', () => {
     expect(empty.judge.threadEvaluations).toBeUndefined();
   });
 
+  it('reads back a record whose text holds line and paragraph separators', () => {
+    const ctx = makeRoundContext(1, { judge: { summary: 'one\u2028two\u2029three' } });
+    expect(extractReviewRecords(formatReviewRecord(ctx)).records.map(r => JSON.parse(r))).toEqual([ctx]);
+  });
+
   it.each(['-->', '--!>'])('escapes %s inside the JSON and reads it back unchanged', closer => {
     const ctx = makeRoundContext(1, { judge: { summary: `one ${closer} two ${closer}` } });
     const record = formatReviewRecord(ctx);

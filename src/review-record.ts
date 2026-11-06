@@ -3,7 +3,7 @@ import { gunzipSync, gzipSync } from 'zlib';
 import type { RoundContext } from './types';
 import { redactSecrets, sanitizeHtmlCommentJson, sanitizeTokens } from './utils';
 
-const PLAIN_RE = /<!-- manki-context: (.+?) -->/g;
+const PLAIN_RE = /<!-- manki-context: ([\s\S]+?) -->/g;
 const GZIP_RE = /<!-- manki-context-gzip: ([A-Za-z0-9+/=]+) -->/g;
 /** The visible block releases before v7 wrote, read so their round history still loads. */
 const DETAILS_RE = /<details>\s*<summary>Manki context<\/summary>\s*```json\s*([\s\S]*?)```\s*<\/details>/g;

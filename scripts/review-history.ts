@@ -16,7 +16,7 @@ import { extractReviewRecords, hasReviewRecord } from '../src/review-record';
 interface ReviewLike {
   id: number;
   body?: string | null;
-  user?: { login: string } | null;
+  user?: { login: string; type?: string } | null;
   commit_id?: string | null;
   submitted_at?: string | null;
 }
@@ -31,11 +31,14 @@ interface HistoryLine {
   record: unknown;
 }
 
-/** Returns one line per round record in `reviews`. A record that can't be decoded or parsed is reported on stderr and skipped. */
+/**
+ * Returns one line per round record in the reviews a bot posted, so text a person pasted is not taken
+ * for a round. A record that can't be decoded or parsed is reported on stderr and skipped.
+ */
 export function historyLines(repo: string, pr: number, reviews: ReviewLike[]): HistoryLine[] {
   const lines: HistoryLine[] = [];
   for (const review of reviews) {
-    if (!review.body || !hasReviewRecord(review.body)) continue;
+    if (review.user?.type !== 'Bot' || !review.body || !hasReviewRecord(review.body)) continue;
     const { records, errors } = extractReviewRecords(review.body);
     for (const error of errors) {
       console.error(`Skipping an undecodable record in review ${review.id} on ${repo}#${pr}: ${error}`);
