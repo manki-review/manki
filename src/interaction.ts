@@ -9,7 +9,7 @@ import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { isSecurityThread, mayClearSecurityThread } from './recap';
-import { announceSecurityOverrides, checkAndAutoApprove, explainUnreviewedHead, fetchBotReviewThreads, resolveReviewThread } from './state';
+import { ResolutionReason, announceSecurityOverrides, checkAndAutoApprove, explainUnreviewedHead, fetchBotReviewThreads, resolveReviewThread } from './state';
 import { ReviewConfig } from './types';
 import { withMarkers } from './utils';
 import { WRITING_RULES } from './writing-rules';
@@ -75,7 +75,9 @@ const QUESTION_SYSTEM_PROMPT = `A developer asked you a question about a pull re
 ${WRITING_RULES}`;
 
 /** Reply outcomes that close the thread: the finding is fixed, accepted as not applying or deferred, or withdrawn. "Unverified." and "Still open." keep it open. */
-const RESOLVING_REPLY_RE = /^\**(?:Fixed|Agreed|Withdrawn)\b/;
+const RESOLVING_REPLY_RE = /^\**(Fixed|Agreed|Withdrawn)\b/;
+
+const REPLY_RESOLUTION_REASONS: Record<string, ResolutionReason> = { Fixed: 'ADDRESSED', Agreed: 'WONT_FIX', Withdrawn: 'INVALID' };
 
 const AGREED_REPLY_RE = /^\**Agreed\b/;
 
@@ -102,12 +104,12 @@ async function fetchThreadRoot(octokit: Octokit, owner: string, repo: string, id
 }
 
 /**
- * Resolves the Manki thread whose first comment is `rootCommentId`. A security thread is left open unless `securityAllowed`.
+ * Resolves the Manki thread whose first comment is `rootCommentId` with `reason`. A security thread is left open unless `securityAllowed`.
  * With `adminOverride`, the PR author clears a security thread as a repo admin, and Manki records that in the thread first.
  */
 async function resolveThreadOf(
-  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, rootCommentId: number, securityAllowed: boolean,
-  adminOverride?: string,
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, rootCommentId: number, reason: ResolutionReason,
+  securityAllowed: boolean, adminOverride?: string,
 ): Promise<void> {
   const thread = (await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber)).find(t => t.rootCommentId === rootCommentId);
   if (!thread || thread.isResolved) return;
@@ -119,7 +121,7 @@ async function resolveThreadOf(
     // The recorded override is what lets later rounds count the resolved thread, so without it the thread stays open.
     if (thread.recordedOverride?.login !== adminOverride && (await announceSecurityOverrides(octokit, [{ thread: thread.id, login: adminOverride, via: 'dismiss' }])).length === 0) return;
   }
-  await resolveReviewThread(octokit, thread.id);
+  await resolveReviewThread(octokit, thread.id, reason);
   core.info(`Resolved thread ${thread.id} after the reply`);
 }
 
@@ -231,9 +233,10 @@ export async function handleReviewCommentReply(
 
     core.info('Posted reply to review comment');
 
-    if (RESOLVING_REPLY_RE.test(reply) && mayResolve) {
+    const outcome = RESOLVING_REPLY_RE.exec(reply)?.[1];
+    if (outcome && mayResolve) {
       try {
-        await resolveThreadOf(octokit, bot, owner, repo, prNumber, root.id, securityAllowed);
+        await resolveThreadOf(octokit, bot, owner, repo, prNumber, root.id, REPLY_RESOLUTION_REASONS[outcome], securityAllowed);
       } catch (error) {
         core.warning(`Failed to resolve thread after reply: ${error}`);
       }
@@ -475,7 +478,7 @@ async function resolveDismissedThread(octokit: Octokit, bot: BotIdentity, owner:
     if (!mayResolve) return;
     const adminOverride = isSecurity && !securityAllowed && isPrAuthor && !!senderLogin
       && await isRepoAdmin(octokit, owner, repo, senderLogin);
-    await resolveThreadOf(octokit, bot, owner, repo, prNumber, root.id, securityAllowed, adminOverride ? senderLogin : undefined);
+    await resolveThreadOf(octokit, bot, owner, repo, prNumber, root.id, 'WONT_FIX', securityAllowed, adminOverride ? senderLogin : undefined);
   } catch (error) {
     core.warning(`Failed to resolve the dismissed thread: ${error}`);
   }
