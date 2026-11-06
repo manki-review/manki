@@ -243,6 +243,7 @@ jest.mock('./github', () => {
   isTrustedAssociation: jest.requireActual('./github').isTrustedAssociation,
   titleToSlug: jest.requireActual('./github').titleToSlug,
   truncateBody: jest.requireActual('./github').truncateBody,
+  APPROVED_LINE: jest.requireActual('./github').APPROVED_LINE,
   BOT_MARKER: '<!-- manki-bot -->',
   REVIEW_COMPLETE_MARKER: '<!-- manki-review-complete -->',
   FORCE_REVIEW_MARKER: '<!-- manki-force-review -->',
@@ -5782,6 +5783,22 @@ describe('runFullReview orchestration', () => {
       rounds[6].meta.commitSha = 'abc123';
       await callRunFullReview();
       expect(runs[3][1]).toMatchObject({ blockersOnly: false, finalRound: false });
+
+      // An approval outside a round, such as auto-approve after the last blocking thread is resolved, resets the count
+      // and lifts a pause by a round that did not converge.
+      const dated = priorRounds(5).map((r, i) => roundContextFromLegacy({ ...r, timestamp: `2025-01-0${i + 1}T00:00:00Z` }));
+      dated[4].meta.outcome = 'NOT_CONVERGING';
+      jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: dated, lastApprovalAt: '2025-01-01T12:00:00Z' });
+      await callRunFullReview();
+      expect(runs).toHaveLength(4);
+
+      jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: dated.slice(0, 4), lastApprovalAt: '2025-01-01T12:00:00Z' });
+      await callRunFullReview();
+      expect(runs[4][1]).toMatchObject({ blockersOnly: false, finalRound: false });
+
+      jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: dated, lastApprovalAt: '2025-01-05T12:00:00Z' });
+      await callRunFullReview();
+      expect(runs[5][1]).toMatchObject({ blockersOnly: false, finalRound: false });
     });
 
     it('bypasses the cap when skipCap is true', async () => {

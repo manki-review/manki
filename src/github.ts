@@ -90,6 +90,8 @@ const BOT_MARKER = '<!-- manki-bot -->';
 const REVIEW_COMPLETE_MARKER = '<!-- manki-review-complete -->';
 const FORCE_REVIEW_MARKER = '<!-- manki-force-review -->';
 const FORCE_CAP_MARKER = '<!-- manki-force-cap -->';
+/** Marks the approval auto-approve posts. It stays in the body after GitHub dismisses the review. */
+const AUTO_APPROVE_MARKER = '<!-- manki-auto-approve -->';
 const RUN_ID_MARKER_PREFIX = '<!-- manki-run-id:';
 const CANCELLED_MARKER = '<!-- manki-review-cancelled -->';
 const VERSION_MARKER_PREFIX = '<!-- manki-version:';
@@ -1426,9 +1428,12 @@ function asSentence(text: string): string {
   return /[.!?:]$/.test(trimmed) ? trimmed : `${trimmed}.`;
 }
 
+/** The first line of every review in which Manki approves the PR. */
+const APPROVED_LINE = '✅ **Approved.**';
+
 /** The first line of the review body for each outcome. Its emoji is the only one in the review. */
 const VERDICT_LINES: Record<RoundOutcome, (result: ReviewResult, blockerCount: number) => string> = {
-  READY: () => '✅ **Approved.**',
+  READY: () => APPROVED_LINE,
   ADDRESS_FIRST: (_result, blockerCount) => `🔴 **Changes requested:** ${countOf(blockerCount, 'blocker')}.`,
   INCOMPLETE: result => `${REVIEW_INCOMPLETE_LINE} ${asSentence(sanitizeMarkdown(result.summary.trim()) || 'The review did not finish')}`,
   NOT_CONVERGING: result => {
@@ -1437,7 +1442,7 @@ const VERDICT_LINES: Record<RoundOutcome, (result: ReviewResult, blockerCount: n
       ? `🛑 **Needs a human:** ${blockers} still open after the last automatic round.`
       : `🛑 **Needs a human:** ${blockers} came back after a fix.`;
   },
-  BUDGET: () => '✅ **Approved.**',
+  BUDGET: () => APPROVED_LINE,
 };
 
 /** Returns what goes wrong in practice, from the judge summary or else the top blocker's description. */
@@ -2321,5 +2326,5 @@ async function postConfigErrorComment(
   }
 }
 
-export { dynamicFence, formatContextBlock, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, isTrustedAssociation, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgressOn, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, FOLLOW_UP_MARKER, LOW_CONFIDENCE_NOTE };
+export { APPROVED_LINE, dynamicFence, formatContextBlock, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, isTrustedAssociation, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgressOn, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, FOLLOW_UP_MARKER, LOW_CONFIDENCE_NOTE };
 export type { InProgressLock, StandingVerdict };
