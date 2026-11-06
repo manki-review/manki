@@ -194,13 +194,15 @@ function isShellCandidate(path: string): boolean {
   return SHELL_SCRIPT.test(path) || !path.split('/').pop()!.includes('.');
 }
 
+/** Returns the files that are shell scripts for shellcheck. A shebang decides, and the extension only counts without one. */
 function shellScripts(files: Map<string, string>): Map<string, string> {
-  return new Map([...files].filter(([path, content]) => SHELL_SCRIPT.test(path) || SHELL_SHEBANG.test(content)));
+  return new Map([...files].filter(([path, content]) => content.startsWith('#!') ? SHELL_SHEBANG.test(content) : SHELL_SCRIPT.test(path)));
 }
 
 /**
- * Returns the text that shows which tools CI runs: the check run names on the PR head, and the base branch's workflows
- * without comment lines, so a `# shellcheck disable=...` directive does not count. The PR cannot add a workflow to skip a tool.
+ * Returns the text that shows which tools CI runs, which the PR cannot change: the names of the PR head's check runs from
+ * apps other than GitHub Actions, and the base branch's workflows without comment lines, so a `# shellcheck disable=...`
+ * directive does not count.
  */
 async function readCiSetup(octokit: Octokit, { owner, repo, baseRef, headSha }: StaticSignalRequest): Promise<string> {
   const [runs, workflows] = await Promise.all([
@@ -214,7 +216,8 @@ async function readCiSetup(octokit: Octokit, { owner, repo, baseRef, headSha }: 
     }),
   ]);
   const workflowLines = [...workflows.values()].flatMap(content => content.split('\n').filter(line => !line.trim().startsWith('#')));
-  return [...runs.map(r => r.name), ...workflowLines].join('\n');
+  // A PR can add a GitHub Actions job named after a tool, so only the base branch's workflows speak for GitHub Actions.
+  return [...runs.filter(r => r.app?.slug !== 'github-actions').map(r => r.name), ...workflowLines].join('\n');
 }
 
 async function readBaseWorkflows(octokit: Octokit, owner: string, repo: string, ref: string): Promise<Map<string, string>> {

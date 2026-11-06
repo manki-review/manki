@@ -435,6 +435,13 @@ describe('collectStaticSignals with analyzers and waits', () => {
       '@@ -0,0 +1,2 @@',
       '+#!/bin/sh',
       '+echo "done"',
+      'diff --git a/scripts/setup.sh b/scripts/setup.sh',
+      'new file mode 100644',
+      '--- /dev/null',
+      '+++ b/scripts/setup.sh',
+      '@@ -0,0 +1,2 @@',
+      '+#!/usr/bin/env zsh',
+      '+setopt extendedglob',
       'diff --git a/Makefile b/Makefile',
       '--- a/Makefile',
       '+++ b/Makefile',
@@ -447,6 +454,7 @@ describe('collectStaticSignals with analyzers and waits', () => {
       'head-sha:.github/workflows/ci.yml': WORKFLOW,
       'head-sha:scripts/deploy': '#!/usr/bin/env bash\nset -e\nrm -rf $DIR/*\n',
       'head-sha:scripts/clean.sh': '#!/bin/sh\necho "done"\n',
+      'head-sha:scripts/setup.sh': '#!/usr/bin/env zsh\nsetopt extendedglob\n',
       'head-sha:Makefile': 'all:\n\techo $(DIR)\n',
     };
     const workflowRequest = () => ({ ...request(), diff: parsePRDiff(DIFF), fullDiff: parsePRDiff(DIFF) });
@@ -500,9 +508,13 @@ describe('collectStaticSignals with analyzers and waits', () => {
     });
 
     it('skips a tool that CI already runs, one turned off on the base branch, and shellcheck when no changed file is a shell script', async () => {
+      // A job the PR adds runs as GitHub Actions, so only the base branch's workflows and other apps' check runs count.
       const lint = 'jobs:\n  lint:\n    steps:\n      - uses: rhysd/actionlint@v1\n      - run: |\n          # shellcheck disable=SC2086\n          make lint\n';
       const octokit = makeOctokit({ main: ONLY_ANALYZERS }, { ...FILES, 'main:.github/workflows/lint.yml': lint });
-      octokit.rest.checks.listForRef.mockResolvedValue({ data: [{ id: 5, name: 'Zizmor audit', status: 'completed', output: { annotations_count: 0 } }] });
+      octokit.rest.checks.listForRef.mockResolvedValue({ data: [
+        { id: 5, name: 'Zizmor audit', status: 'completed', app: { slug: 'security-scanner' }, output: { annotations_count: 0 } },
+        { id: 6, name: 'shellcheck', status: 'completed', app: { slug: 'github-actions' }, output: { annotations_count: 0 } },
+      ] });
 
       expect((await collectStaticSignals(octokit, workflowRequest(), runtime)).record).toEqual({ analyzers: [
         { analyzer: 'actionlint', status: 'skipped', reason: 'CI already runs actionlint' },
