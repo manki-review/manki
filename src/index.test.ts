@@ -2354,6 +2354,14 @@ describe('runFullReview orchestration', () => {
       expect(notice.startsWith('**Too big for automatic review** at `abc123`')).toBe(true);
       expect(notice).not.toContain(FORCE_REVIEW_MARKER);
       expect(notice.endsWith(withSettingsBlock('', view('too big for automatic review', { boxes: new Set(['pause', 'full', 'deeper', 'force']) })).trimStart())).toBe(true);
+
+      // Above the hard limit no box can review it, so the block offers only Pause.
+      jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [reviewableFile], totalAdditions: 15_001, totalDeletions: 0 });
+      jest.mocked(mockOctokitInstance.rest.issues.updateComment).mockClear();
+      await runWith();
+      const refused = jest.mocked(mockOctokitInstance.rest.issues.updateComment).mock.calls.find(([args]) => args.comment_id === 1)![0].body as string;
+      expect(refused.startsWith('**Too big to review** at `abc123`')).toBe(true);
+      expect(refused.endsWith(withSettingsBlock('', view('too big to review', { boxes: new Set(['pause']) })).trimStart())).toBe(true);
     });
 
     it('counts every finding as new code on a full review', async () => {

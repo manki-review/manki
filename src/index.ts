@@ -1129,7 +1129,9 @@ async function replaceWithNotice(target: RunTarget, progress: RunProgress, marke
 async function postTooBigNotice(target: RunTarget, progress: RunProgress, text: string, offerForce: boolean, lastRoundAt?: string): Promise<CheckReport> {
   const { octokit, owner, repo, prNumber } = target;
   await dismissPreviousReviews(octokit, owner, repo, prNumber, undefined, 'APPROVED');
-  const settings = progressSettings(target, progress, offerForce ? 'too big for automatic review' : 'too big to review', { boxes: offerForce ? ['force'] : [] });
+  const offered = progressSettings(target, progress, offerForce ? 'too big for automatic review' : 'too big to review', { boxes: ['force'] });
+  // Above the hard limit no box can review the PR, so only Pause stays.
+  const settings = offered && (offerForce ? offered : { ...offered, boxes: new Set<SettingsBox>(['pause']) });
   const body = settings
     ? withSettingsBlock(withMarkers(text, PROGRESS_MARKER, REVIEW_COMPLETE_MARKER, TOO_BIG_MARKER), settings)
     : offerForce
