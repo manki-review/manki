@@ -718,6 +718,9 @@ export interface DashboardData {
   agentCount: number;
   rawFindingCount?: number;
   judgeInputCount?: number;
+  suppressionCount?: number;
+  staticDedupCount?: number;
+  llmDedupCount?: number;
   keptCount?: number;
   droppedCount?: number;
   agentProgress?: AgentProgressEntry[];

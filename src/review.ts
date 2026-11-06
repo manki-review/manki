@@ -248,6 +248,9 @@ export interface ReviewProgress {
   agentStatus?: 'success' | 'failure' | 'retrying';
   rawFindingCount?: number;
   judgeInputCount?: number;
+  suppressionCount?: number;
+  staticDedupCount?: number;
+  llmDedupCount?: number;
   completedAgents?: number;
   totalAgents?: number;
   plannerResult?: PlannerResult;
@@ -980,6 +983,9 @@ export async function runReview(
       phase: 'judging',
       rawFindingCount: allFindings.length,
       judgeInputCount: findingsForJudge.length,
+      suppressionCount,
+      staticDedupCount,
+      llmDedupCount,
       totalAgents: team.finders.length,
       completedAgents: team.finders.length,
     });

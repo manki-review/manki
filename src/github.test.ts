@@ -2222,6 +2222,10 @@ describe('buildDashboard', () => {
     const md = buildDashboard(data);
     expect(md).toContain('**Review:** 12 findings');
     expect(md).toContain(`${INDENT}evaluating 10 findings...`);
+    expect(buildDashboard({ ...data, rawFindingCount: 1, judgeInputCount: 0, staticDedupCount: 1, llmDedupCount: 0 }))
+      .toContain(`${INDENT}evaluating 0 findings (1 dropped as a repeat of an earlier resolved finding)...`);
+    expect(buildDashboard({ ...data, suppressionCount: 1, staticDedupCount: 1, llmDedupCount: 1 }))
+      .toContain(`${INDENT}evaluating 10 findings (1 suppressed by memory, 2 dropped as repeats of earlier resolved findings)...`);
   });
 
   it('renders per-agent detail in the reviewed phase when agentProgress is provided', () => {
@@ -2251,6 +2255,9 @@ describe('buildDashboard', () => {
     expect(md).not.toContain('**Review in progress**');
     expect(md).toContain('**Review:** 20 findings');
     expect(md).toContain('**Judge:** 8 kept · 12 dropped');
+    expect(md).not.toContain('before the judge');
+    expect(buildDashboard({ ...data, rawFindingCount: 1, keptCount: 0, droppedCount: 0, suppressionCount: 0, llmDedupCount: 1 }))
+      .toContain(`**Judge:** 0 kept · 0 dropped\n${INDENT}before the judge: 1 dropped as a repeat of an earlier resolved finding`);
   });
 
   it('renders per-agent detail and the review class and group in the complete phase', () => {

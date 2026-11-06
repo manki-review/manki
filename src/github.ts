@@ -437,6 +437,14 @@ function reviewHeading(routing: DashboardData['routing']): string {
   return `Review (${sanitizeMarkdown(route)})`;
 }
 
+function preJudgeDrops(data: DashboardData): string {
+  const repeats = (data.staticDedupCount ?? 0) + (data.llmDedupCount ?? 0);
+  return [
+    ...(data.suppressionCount ? [`${data.suppressionCount} suppressed by memory`] : []),
+    ...(repeats > 0 ? [countOf(repeats, 'dropped as a repeat of an earlier resolved finding', 'dropped as repeats of earlier resolved findings')] : []),
+  ].join(', ');
+}
+
 export function buildDashboard(data: DashboardData): string {
   const agents = data.agentProgress;
   const review = reviewHeading(data.routing);
@@ -499,7 +507,8 @@ export function buildDashboard(data: DashboardData): string {
     judgeLines.push(`${INDENT}pending`);
   } else if (data.phase === 'reviewed') {
     judgeLines.push(`**Judge**`);
-    judgeLines.push(`${INDENT}evaluating ${data.judgeInputCount ?? data.rawFindingCount ?? 0} findings...`);
+    const drops = preJudgeDrops(data);
+    judgeLines.push(`${INDENT}evaluating ${data.judgeInputCount ?? data.rawFindingCount ?? 0} findings${drops ? ` (${drops})` : ''}...`);
   } else {
     const judgeDur = data.judgeDurationMs != null ? ` (${formatDuration(data.judgeDurationMs)})` : '';
     judgeLines.push(`**Judge:** ${data.keptCount ?? 0} kept · ${data.droppedCount ?? 0} dropped${judgeDur}`);
@@ -511,6 +520,8 @@ export function buildDashboard(data: DashboardData): string {
       const breakdown = renderSeverityBreakdown(data.droppedSeverities);
       if (breakdown) judgeLines.push(`${INDENT}dropped: ${breakdown}`);
     }
+    const drops = preJudgeDrops(data);
+    if (drops) judgeLines.push(`${INDENT}before the judge: ${drops}`);
     if (data.testNitSuppressedCount != null && data.testNitSuppressedCount > 0) {
       judgeLines.push(`${INDENT}suppressed: ${data.testNitSuppressedCount} test-only nit${data.testNitSuppressedCount === 1 ? '' : 's'} (round ≥2 throttle)`);
     }

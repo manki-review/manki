@@ -1106,6 +1106,9 @@ async function reviewRound(
         dashboard.phase = 'reviewed';
         dashboard.rawFindingCount = event.rawFindingCount;
         dashboard.judgeInputCount = event.judgeInputCount;
+        dashboard.suppressionCount = event.suppressionCount;
+        dashboard.staticDedupCount = event.staticDedupCount;
+        dashboard.llmDedupCount = event.llmDedupCount;
         updateProgressDashboard(octokit, owner, repo, commentId, dashboard, commitSha)
           .catch(err => core.warning(`Failed to update dashboard: ${err}`));
       }
