@@ -390,7 +390,7 @@ describe('tagFindingOrigins', () => {
     ], current, prior)).toEqual(['new', 'reviewed', 'new', 'new', 'reviewed', 'reviewed']);
   });
 
-  it('tags a finding new near code removed or restored since: a base line the PR removed or put back, or a line it added before and dropped', () => {
+  it('tags a finding new near code removed or restored since: a base line the PR removed or put back, or a line it added before and dropped or moved', () => {
     const removal = (path: string, start: number, removed: string, kept: string[]): string =>
       `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -${start},${kept.length + 2} +${start},${kept.length + 1} @@\n ctx\n-${removed}\n${kept.map(l => ` ${l}`).join('\n')}\n`;
     const prior = change('src/a.ts', 10, ['guard', 'body']);
@@ -412,6 +412,13 @@ describe('tagFindingOrigins', () => {
     const restoredFindings = [finding('src/b.ts', 11), finding('src/b.ts', 30)];
     tagFindingOrigins(restoredFindings, parsePRDiff(change('src/a.ts', 10, ['x'])), parsePRDiff(priorRemoval), parsePRDiff(restored));
     expect(restoredFindings.map(f => f.origin)).toEqual(['new', 'reviewed']);
+
+    // The PR moved its own `guard` line below `body`. The current change adds the same text, so only the diff between the commits shows it.
+    const moved = change('src/a.ts', 10, ['body', 'guard']);
+    const movedInterRound = `diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -10,3 +10,3 @@\n ctx\n-guard\n body\n+guard\n`;
+    const movedFindings = [finding('src/a.ts', 12), finding('src/a.ts', 20)];
+    tagFindingOrigins(movedFindings, parsePRDiff(moved), parsePRDiff(prior), parsePRDiff(movedInterRound));
+    expect(movedFindings.map(f => f.origin)).toEqual(['new', 'reviewed']);
   });
 });
 
