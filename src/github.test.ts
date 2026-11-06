@@ -2700,6 +2700,9 @@ describe('updateProgressComment', () => {
 
     await markProgressCommentSuperseded(mockOctokit, 'owner', 'repo', 123, new SupersededError('abc1234ffff', 'def5678ffff'), true);
     expect(mockUpdateComment.mock.calls[1][0].body).toContain('**Review superseded** by the new commit `def5678`. The review of `abc1234` was posted, and the earlier reviews stay until the new commit is reviewed.');
+
+    await markProgressCommentSuperseded(mockOctokit, 'owner', 'repo', 123, { reviewedSha: 'abc1234ffff', headSha: 'abc1234ffff' });
+    expect(mockUpdateComment.mock.calls[2][0].body).toMatch(/^\*\*Review superseded\*\* by a later review of `abc1234`, which posted its verdict\.\n/);
   });
 
   it('renders config section in metadata', async () => {
@@ -4221,6 +4224,15 @@ describe('hasBotReviewOnCommit', () => {
     ]);
 
     expect(await hasBotReviewOnCommit(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(true);
+  });
+
+  it('does not count an incomplete review, so a later run still reviews the commit', async () => {
+    const incomplete = { state: 'COMMENTED', commit_id: 'sha-123', body: `⚠️ **Review incomplete:** Claude subscription limit reached.\n\n${BOT_MARKER}`, user: { login: BOT_LOGIN, type: 'Bot' } };
+    expect(await hasBotReviewOnCommit(makeMockOctokit([incomplete]), TEST_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(false);
+
+    // A blocking review that quotes the incomplete line elsewhere in its body still counts.
+    const quoting = { ...incomplete, state: 'CHANGES_REQUESTED', body: `🔴 **Changes requested:** 1 blocker.\n\n⚠️ **Review incomplete:** quoted\n\n${BOT_MARKER}` };
+    expect(await hasBotReviewOnCommit(makeMockOctokit([quoting, incomplete]), TEST_BOT, 'owner', 'repo', 1, 'sha-123')).toBe(true);
   });
 
   it('returns true when the matching review is the 501st (beyond the 500-cap), not among the first 500', async () => {

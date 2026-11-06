@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
-import { approvalHeldLine, BotIdentity, BOT_MARKER as PROGRESS_MARKER, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchConflictingBase, fetchInterRoundDiff, fetchPRComments, fetchReviewThreadNodes, fetchStandingVerdict, FOLLOW_UP_MARKER, FORCE_CAP_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, postAutoApproveProgressComment } from './github';
+import { approvalHeldLine, BotIdentity, BOT_MARKER as PROGRESS_MARKER, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchConflictingBase, fetchInterRoundDiff, fetchPRComments, fetchReviewThreadNodes, fetchStandingVerdict, FOLLOW_UP_MARKER, FORCE_CAP_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgressOn, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
 import type { StandingVerdict } from './github';
 import { isSameChange } from './diff';
 import { fetchPriorRoundContexts, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, PreviousFinding, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf } from './recap';
@@ -355,6 +355,7 @@ async function holdApprovalOnConflict(
 
 /**
  * Deletes the auto-approve withheld notice for `headSha` and every approval-held notice. Call it once a review posts its verdict on `headSha`.
+ * Marks each failed or incomplete progress comment for `headSha` as superseded by that verdict.
  * Pass `pauseLiftedAt` when that round lifted the pause: each open pause notice last updated before then is marked as resumed.
  */
 async function retireStaleNotices(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string, pauseLiftedAt?: number): Promise<void> {
@@ -371,6 +372,8 @@ async function retireStaleNotices(octokit: Octokit, bot: BotIdentity, owner: str
     try {
       if (c.body.includes(marker) || c.body.includes(APPROVAL_HELD_MARKER_PREFIX)) {
         await octokit.rest.issues.deleteComment({ owner, repo, comment_id: c.id });
+      } else if (isFailedProgressOn(c.body, headSha)) {
+        await markProgressCommentSuperseded(octokit, owner, repo, c.id, { reviewedSha: headSha, headSha });
       } else if (pauseLiftedAt !== undefined && Date.parse(c.updated_at) < pauseLiftedAt
         && c.body.includes(FORCE_CAP_MARKER) && /- \[[ x]\] Force review/.test(c.body)) {
         const body = withMarkers(`Automatic review was paused. Review resumed on \`${headSha.slice(0, 7)}\`.`, PROGRESS_MARKER, FORCE_CAP_MARKER);

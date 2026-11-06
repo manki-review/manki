@@ -49,7 +49,7 @@ See [SETUP.md](SETUP.md#review-pipeline) for the full walkthrough.
 
 | Command | What it does |
 |---------|-------------|
-| `/manki review` | Trigger a full multi-agent review |
+| `/manki review` | Review the head commit, unless Manki already has a complete review of it. Then Manki replies with a Force review box, and ticking it reviews the commit again |
 | `/manki explain [topic]` | Ask about the PR changes |
 | `/manki dismiss [finding]` | Dismiss a finding (stored as suppression in memory). In a Manki thread, it also resolves the thread |
 | `/manki remember <instruction>` | Teach it something for future reviews |

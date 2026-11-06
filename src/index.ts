@@ -273,7 +273,7 @@ async function run(): Promise<void> {
       } else if (tickedMarker === 'FORCE_REVIEW_MARKER' && github.context.payload.issue?.pull_request) {
         await handleCommentTrigger(true, false, 'force_review');
       } else if (isReviewRequest(commentBody) && github.context.payload.issue?.pull_request) {
-        await handleCommentTrigger(true, true, 'manual_review_command');
+        await handleCommentTrigger(false, true, 'manual_review_command');
       } else if (isBotMentionNonReview(commentBody) && github.context.payload.issue?.pull_request) {
         await handleInteraction();
       } else if (isBotMentionNonReview(commentBody) && !github.context.payload.issue?.pull_request) {
@@ -301,7 +301,7 @@ async function run(): Promise<void> {
 type SkipReason = 'in_progress' | 'already_reviewed';
 
 async function postReviewSkippedComment(
-  octokit: Octokit, owner: string, repo: string, prNumber: number,
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number,
   commitSha: string, reason: SkipReason,
 ): Promise<void> {
   try {
@@ -309,12 +309,17 @@ async function postReviewSkippedComment(
     const line = reason === 'in_progress'
       ? `**Review skipped** for \`${shortSha}\`: a review is already in progress. Retry when it completes, or force one now:`
       : `**Review skipped** for \`${shortSha}\`: this commit already has a review. Force a new one:`;
-    const body = withMarkers(`${line}\n\n- [ ] Force review`, PROGRESS_MARKER, FORCE_REVIEW_MARKER);
-    // Always create a fresh comment. Editing an older skip-ack in place is
-    // silent on GitHub (no notification, original timeline position), so the
-    // user perceives no response. Each fresh comment carries its own Force
-    // review checkbox.
-    await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+    const text = `${line}\n\n- [ ] Force review`;
+    // A commit keeps one unticked already-reviewed notice. A ticked one is never reused: its eyes reaction would make Manki ignore the next tick.
+    if (reason === 'already_reviewed') {
+      const comments = await fetchPRComments(octokit, owner, repo, prNumber);
+      if (comments.some(c => isBotLogin(bot, c.user?.login) && c.body?.startsWith(text))) {
+        core.info(`An unticked already-reviewed notice for ${shortSha} is on the PR, posting no other`);
+        return;
+      }
+    }
+    // Every other notice is a fresh comment with its own Force review checkbox, since an edit in place notifies nobody.
+    await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: withMarkers(text, PROGRESS_MARKER, FORCE_REVIEW_MARKER) });
   } catch (error) {
     core.warning(`Failed to post review-skipped comment: ${error instanceof Error ? error.message : error}`);
   }
@@ -339,7 +344,7 @@ async function handlePullRequest(): Promise<void> {
 
   const { octokit, bot } = await getAuth();
   if (await isReviewInProgress(octokit, bot, owner, repo, prNumber, commitSha)) {
-    await postReviewSkippedComment(octokit, owner, repo, prNumber, commitSha, 'in_progress');
+    await postReviewSkippedComment(octokit, bot, owner, repo, prNumber, commitSha, 'in_progress');
     return;
   }
 
@@ -350,7 +355,7 @@ async function handlePullRequest(): Promise<void> {
 
   if (await hasBotReviewOnCommit(octokit, bot, owner, repo, prNumber, commitSha)) {
     core.info(`Bot already reviewed commit ${commitSha.slice(0, 7)} — skipping serialized sibling run`);
-    await postReviewSkippedComment(octokit, owner, repo, prNumber, commitSha, 'already_reviewed');
+    await postReviewSkippedComment(octokit, bot, owner, repo, prNumber, commitSha, 'already_reviewed');
     return;
   }
 
@@ -430,23 +435,17 @@ async function handleCommentTrigger(forceReview?: boolean, skipCap?: boolean, by
 
   if (!forceReview) {
     if (await isReviewInProgress(octokit, bot, owner, repo, prNumber, pr.head.sha)) {
-      await postReviewSkippedComment(octokit, owner, repo, prNumber, pr.head.sha, 'in_progress');
+      await postReviewSkippedComment(octokit, bot, owner, repo, prNumber, pr.head.sha, 'in_progress');
       core.info('Review already in progress — skipping');
       return;
     }
   }
 
-  if (!forceReview) {
-    if (await isApprovedOnCommit(octokit, bot, owner, repo, prNumber, pr.head.sha)) {
-      core.info('Already approved on this commit — skipping review');
-      return;
-    }
-  }
-
+  // An approved head counts as reviewed here, so a review command on it gets the notice with the Force review box.
   if (!forceReview) {
     if (await hasBotReviewOnCommit(octokit, bot, owner, repo, prNumber, pr.head.sha)) {
-      core.info(`Bot already reviewed commit ${pr.head.sha.slice(0, 7)} — skipping serialized sibling run`);
-      await postReviewSkippedComment(octokit, owner, repo, prNumber, pr.head.sha, 'already_reviewed');
+      core.info(`Bot already reviewed commit ${pr.head.sha.slice(0, 7)} — skipping`);
+      await postReviewSkippedComment(octokit, bot, owner, repo, prNumber, pr.head.sha, 'already_reviewed');
       return;
     }
   }
@@ -631,10 +630,10 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
   // and `pull_request_review_comment` fan-out from one human review) can both
   // pass the in-progress scan when the prior run's marker has already been
   // cleared. The state-based check on the bot's posted reviews catches that.
-  // Honors `forceReview` so explicit re-review on the same SHA still proceeds.
+  // Honors `forceReview`, so a Force review tick still reviews the same SHA again.
   if (!forceReview && await hasBotReviewOnCommit(octokit, bot, owner, repo, prNumber, commitSha)) {
     core.warning(`Bot already posted a non-DISMISSED review on commit ${commitSha.slice(0, 7)} — bailing serialized sibling run.`);
-    await postReviewSkippedComment(octokit, owner, repo, prNumber, commitSha, 'already_reviewed');
+    await postReviewSkippedComment(octokit, bot, owner, repo, prNumber, commitSha, 'already_reviewed');
     return true;
   }
 
@@ -1090,7 +1089,7 @@ async function postIncompleteRound(run: ReviewRun, result: ReviewResult): Promis
   result.verdict = 'COMMENT';
   await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
   dashboard.phase = 'complete';
-  await updateProgressComment(octokit, owner, repo, commentId, dashboard);
+  await updateProgressComment(octokit, owner, repo, commentId, dashboard, undefined, commitSha);
 }
 
 /**
@@ -1514,7 +1513,7 @@ async function runFullReview(
     core.setFailed(`Review failed: ${reason}`);
 
     if (progress.commentId !== undefined) {
-      await markProgressCommentFailed(octokit, owner, repo, progress.commentId, 'Review', reason);
+      await markProgressCommentFailed(octokit, owner, repo, progress.commentId, 'Review', reason, commitSha);
     }
   } finally {
     progress.stopHeadWatch();

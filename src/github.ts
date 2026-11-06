@@ -102,6 +102,8 @@ const MANKI_VERSION: string = (() => {
 })();
 const VERSION_MARKER = `${VERSION_MARKER_PREFIX} ${MANKI_VERSION} -->`;
 const BOT_MARKERS = [BOT_MARKER, VERSION_MARKER];
+const REVIEW_FAILED_LINE = '🔴 **Review failed**';
+const REVIEW_INCOMPLETE_LINE = '⚠️ **Review incomplete:**';
 
 const RUN_ID_MARKER_REGEX = /<!-- manki-run-id:(\d+) -->/;
 const COMMIT_MARKER_REGEX = /<!-- manki-commit:([0-9a-f]+) -->/;
@@ -590,6 +592,7 @@ export async function markAutoApproveComplete(
  * Transition a progress comment to a terminal failure state that names the
  * failed `action` and the reason, with tokens redacted. Uses `CANCELLED_MARKER`
  * so `findInProgressLock` no longer treats it as a live lock.
+ * With `commitSha`, a later verdict on that commit marks the comment superseded.
  */
 export async function markProgressCommentFailed(
   octokit: Octokit,
@@ -598,11 +601,13 @@ export async function markProgressCommentFailed(
   commentId: number,
   action: 'Review' | 'Auto-approve',
   reason: string,
+  commitSha?: string,
 ): Promise<void> {
   const body = withMarkers(
     `🔴 **${action} failed:** ${sanitizeMarkdown(sanitizeTokens(String(reason))).slice(0, 300)}`,
     ...BOT_MARKERS,
     CANCELLED_MARKER,
+    ...(commitSha ? [buildCommitMarker(commitSha)] : []),
   );
   try {
     await octokit.rest.issues.updateComment({ owner, repo, comment_id: commentId, body });
@@ -614,6 +619,7 @@ export async function markProgressCommentFailed(
 /**
  * Transition a progress comment to a terminal state that says a push to `headSha` superseded
  * the review of `reviewedSha`. With `reviewPosted`, it says the review was posted but replaced no earlier one.
+ * When both SHAs match, it says a later review of that commit posted its verdict.
  * Uses `CANCELLED_MARKER` so `findInProgressLock` no longer treats it as a live lock.
  */
 export async function markProgressCommentSuperseded(
@@ -621,14 +627,17 @@ export async function markProgressCommentSuperseded(
   owner: string,
   repo: string,
   commentId: number,
-  { reviewedSha, headSha }: SupersededError,
+  { reviewedSha, headSha }: Pick<SupersededError, 'reviewedSha' | 'headSha'>,
   reviewPosted = false,
 ): Promise<void> {
   const outcome = reviewPosted
     ? `The review of \`${reviewedSha.slice(0, 7)}\` was posted, and the earlier reviews stay until the new commit is reviewed.`
     : `No verdict was posted for \`${reviewedSha.slice(0, 7)}\`.`;
+  const line = reviewedSha === headSha
+    ? `**Review superseded** by a later review of \`${headSha.slice(0, 7)}\`, which posted its verdict.`
+    : `**Review superseded** by the new commit \`${headSha.slice(0, 7)}\`. ${outcome}`;
   const body = withMarkers(
-    `**Review superseded** by the new commit \`${headSha.slice(0, 7)}\`. ${outcome}`,
+    line,
     ...BOT_MARKERS,
     CANCELLED_MARKER,
   );
@@ -642,6 +651,7 @@ export async function markProgressCommentSuperseded(
 /**
  * Freeze the progress comment as an audit log with the final dashboard
  * and optional review metadata (config, judge decisions, recap, timing).
+ * Without `metadata` the comment reads as failed. With `commitSha`, a later verdict on that commit marks it superseded.
  * Throws the abort reason once GitHub writes are stopped.
  */
 export async function updateProgressComment(
@@ -651,9 +661,10 @@ export async function updateProgressComment(
   commentId: number,
   dashboard: DashboardData,
   metadata?: ReviewMetadata,
+  commitSha?: string,
 ): Promise<void> {
   const parts: string[] = [
-    metadata ? '✅ **Review complete**' : '🔴 **Review failed**',
+    metadata ? '✅ **Review complete**' : REVIEW_FAILED_LINE,
     '',
     buildDashboard({ ...dashboard, phase: 'complete' }),
   ];
@@ -694,8 +705,13 @@ export async function updateProgressComment(
     owner,
     repo,
     comment_id: commentId,
-    body: withMarkers(truncateBody(parts.join('\n')), ...BOT_MARKERS, REVIEW_COMPLETE_MARKER),
+    body: withMarkers(truncateBody(parts.join('\n')), ...BOT_MARKERS, REVIEW_COMPLETE_MARKER, ...(commitSha ? [buildCommitMarker(commitSha)] : [])),
   });
+}
+
+/** Whether `body` is a progress comment for `commitSha` whose review failed or ended incomplete. */
+function isFailedProgressOn(body: string, commitSha: string): boolean {
+  return (body.startsWith(REVIEW_FAILED_LINE) || body.startsWith('🔴 **Review failed:**')) && extractCommitFromBody(body) === commitSha;
 }
 
 /**
@@ -1324,7 +1340,7 @@ function asSentence(text: string): string {
 const VERDICT_LINES: Record<RoundOutcome, (result: ReviewResult, blockerCount: number) => string> = {
   READY: () => '✅ **Approved.**',
   ADDRESS_FIRST: (_result, blockerCount) => `🔴 **Changes requested:** ${countOf(blockerCount, 'blocker')}.`,
-  INCOMPLETE: result => `⚠️ **Review incomplete:** ${asSentence(sanitizeMarkdown(result.summary.trim()) || 'The review did not finish')}`,
+  INCOMPLETE: result => `${REVIEW_INCOMPLETE_LINE} ${asSentence(sanitizeMarkdown(result.summary.trim()) || 'The review did not finish')}`,
   NOT_CONVERGING: result => {
     const blockers = countOf(result.needsHuman?.blockers.length ?? 0, 'blocker');
     return result.needsHuman?.cause === 'budget'
@@ -2160,7 +2176,8 @@ async function fetchBotReviews(
 /**
  * State-based head-SHA dedupe gate. Returns the most-recent non-DISMISSED
  * review by `bot` whose `commit_id` matches `commitSha`, otherwise
- * `undefined`. Run entry points consult this before any LLM call so serialized
+ * `undefined`. An incomplete review does not count, so a later run still reviews the commit.
+ * Run entry points consult this before any LLM call so serialized
  * sibling events (e.g., the `pull_request_review` + `pull_request_review_comment`
  * fan-out from a single human review) cannot post duplicate reviews on the
  * same commit. Complements the temporally-overlapping `checkConcurrentSubmissionLock`.
@@ -2169,7 +2186,7 @@ async function findBotReviewOnCommit(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, commitSha: string,
 ): Promise<BotReviewSummary | undefined> {
   const reviews = await fetchBotReviews(octokit, bot, owner, repo, prNumber);
-  const onCommit = reviews.filter(r => r.commitId === commitSha);
+  const onCommit = reviews.filter(r => r.commitId === commitSha && !(r.state === 'COMMENTED' && r.body.startsWith(REVIEW_INCOMPLETE_LINE)));
   return onCommit[onCommit.length - 1];
 }
 
@@ -2275,5 +2292,5 @@ async function postConfigErrorComment(
   }
 }
 
-export { dynamicFence, formatContextBlock, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, isTrustedAssociation, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, FOLLOW_UP_MARKER, LOW_CONFIDENCE_NOTE };
+export { dynamicFence, formatContextBlock, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, isTrustedAssociation, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgressOn, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, FOLLOW_UP_MARKER, LOW_CONFIDENCE_NOTE };
 export type { InProgressLock, StandingVerdict };
