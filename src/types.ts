@@ -942,6 +942,8 @@ export interface RoundDiffPerFile {
 }
 
 export interface RoundDiff {
+  /** `changeDigest` of the reviewed diff, so rounds that reviewed the same change share it. Optional so older context blocks keep parsing. */
+  changeDigest?: string;
   lines: number;
   additions: number;
   deletions: number;

@@ -13,7 +13,7 @@ import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, 
 import { extractCurrentCodeWindow } from './code-window';
 import { recordFixRate } from './fix-rate';
 import { dispatchedNumber, isDispatchedRun, restoreDispatchedEvent } from './dispatch';
-import { addCodeContext, parsePRDiff, filterDiff, filterRawDiff, isDiffTooLarge, rebuildRawDiff } from './diff';
+import { addCodeContext, changeDigest, parsePRDiff, filterDiff, filterRawDiff, isDiffTooLarge, rebuildRawDiff } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, RepoMemory } from './memory';
@@ -38,6 +38,7 @@ import {
   updateProgressDashboard,
   dismissPreviousReviews,
   postReview,
+  formatOpenBlockers,
   reactToIssueComment,
   fetchLinkedIssues,
   BOT_MARKER as PROGRESS_MARKER,
@@ -57,7 +58,7 @@ import {
   postConfigErrorComment,
 } from './github';
 import type { BotIdentity, LinkedIssue, StandingVerdict } from './github';
-import { announceSecurityOverrides, checkAndAutoApprove, findUnchangedVerdict, holdApprovalOnConflict, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
+import { announceSecurityOverrides, checkAndAutoApprove, findUnchangedVerdict, holdApprovalOnConflict, isNewChange, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
 import type { PauseState } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -903,15 +904,16 @@ async function loadRunMemory(
 }
 
 /**
- * Replaces the progress comment with a notice that automatic review is paused. Each push during
- * the same pause updates the unticked notice from after `lastRoundAt` instead of adding another.
+ * Replaces the progress comment with a notice that automatic review is paused, listing the blocking threads still open.
+ * Each push during the same pause updates the unticked notice from after `lastRoundAt` instead of adding another.
  */
 async function postPauseNotice(
-  target: RunTarget, commentId: number, { capReached, capRounds, reason }: PauseState, maxAutoRounds: number, lastRoundAt?: string,
+  target: RunTarget, commentId: number, { capReached, capRounds, reason }: PauseState, maxAutoRounds: number,
+  previousFindings: PreviousFinding[], lastRoundAt?: string,
 ): Promise<CheckReport> {
   const { octokit, owner, repo, prNumber } = target;
   core.info(capReached
-    ? `Round cap reached (${capRounds} rounds since the last approval >= max ${maxAutoRounds}) — skipping auto review`
+    ? `Round cap reached (${capRounds} rounds with new changes since the last approval >= max ${maxAutoRounds}) — skipping auto review`
     : 'Last round did not converge — skipping auto review');
   try {
     await octokit.rest.issues.deleteComment({ owner, repo, comment_id: commentId });
@@ -919,8 +921,9 @@ async function postPauseNotice(
     core.warning(`Failed to delete progress comment: ${error}`);
   }
   try {
+    const blockers = formatOpenBlockers(previousFindings);
     const body = withMarkers(
-      `${reason} Automatic review is paused. Tick the box to run another round, or comment \`@manki review\`:\n\n- [ ] Force review`,
+      `${reason} Automatic review is paused.${blockers ? `\n\n${blockers}\n\n` : ' '}Tick the box to run another round, or comment \`@manki review\`:\n\n- [ ] Force review`,
       PROGRESS_MARKER,
       FORCE_CAP_MARKER,
     );
@@ -1487,10 +1490,11 @@ async function runFullReview(
     const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
     const pause = pauseState(recap.priorRounds, config);
     const { capRounds, paused } = pause;
-    if (paused && !skipCap) {
-      checkReport = await postPauseNotice(target, commentId, pause, maxAutoRounds, recap.priorRounds.at(-1)?.meta.timestamp);
+    if (paused && !skipCap && !forceReview) {
+      checkReport = await postPauseNotice(target, commentId, pause, maxAutoRounds, recap.previousFindings, recap.priorRounds.at(-1)?.meta.timestamp);
       return;
     }
+    const countsTowardCap = isNewChange({ commitSha, changeDigest: changeDigest(diff, config.exclude_paths) }, recap.priorRounds.at(-1));
 
     const { openThreads, fileContents } = await collectOpenThreads(target, recap, diff);
     const { interRoundDiff, linkedIssues, staticSignals, staticAnalysis } = await collectRoundSignals(target, config, recap, diff, fullDiff, configPath, prContext?.body);
@@ -1525,7 +1529,7 @@ async function runFullReview(
       interRoundDiff,
       headSha: commitSha,
       blockersOnly: paused,
-      finalRound: !paused && maxAutoRounds > 0 && capRounds + 1 === maxAutoRounds,
+      finalRound: !paused && countsTowardCap && maxAutoRounds > 0 && capRounds + 1 === maxAutoRounds,
     });
     // A model call the stop aborted can end the round incomplete, and that round must not be posted.
     stop.signal.throwIfAborted();

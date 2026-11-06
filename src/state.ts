@@ -223,15 +223,33 @@ function areAllFindingsResolved(threads: ReviewThread[], bot: BotIdentity, prAut
   )));
 }
 
+/** The change a round reviews: its commit, and the `changeDigest` of its diff when known. */
+interface ReviewedChange {
+  commitSha: string;
+  changeDigest?: string;
+}
+
+/** Whether `change` differs from the change `previous` reviewed. A round recorded without a digest is compared by commit. */
+function isNewChange(change: ReviewedChange, previous: RoundContext | undefined): boolean {
+  if (!previous) return true;
+  const before = previous.diff?.changeDigest;
+  return change.changeDigest && before ? change.changeDigest !== before : change.commitSha !== previous.meta.commitSha;
+}
+
 /**
- * Returns how many rounds ran since the last round that approved at the full bar, or all of them without one.
+ * Returns how many rounds reviewed a new change since the last round that approved at the full bar, or in all rounds without one.
  * The round cap stops fix loops, so a round after an approval, such as on a rebase, starts the count again.
+ * An approval held on a conflict is recorded as an approval, so it resets the count too.
  * A `BUDGET` approval deferred warnings to end a loop, so it does not reset the count.
  */
-function roundsSinceApproval(priorRounds: RoundContext[]): number {
+function roundsSinceApproval(priorRounds: RoundContext[]): { count: number; approved: boolean } {
   let count = 0;
-  for (let i = priorRounds.length - 1; i >= 0 && !(priorRounds[i].verdict === 'APPROVE' && priorRounds[i].meta.outcome !== 'BUDGET'); i--) count++;
-  return count;
+  for (let i = priorRounds.length - 1; i >= 0; i--) {
+    const round = priorRounds[i];
+    if (round.verdict === 'APPROVE' && round.meta.outcome !== 'BUDGET') return { count, approved: true };
+    if (isNewChange({ commitSha: round.meta.commitSha, changeDigest: round.diff?.changeDigest }, priorRounds[i - 1])) count++;
+  }
+  return { count, approved: false };
 }
 
 interface PauseState {
@@ -242,13 +260,13 @@ interface PauseState {
   reason?: string;
 }
 
-/** Returns the rounds since the last approval, whether they reach the round cap, and whether automatic review is paused by it or by a last round that ended `NOT_CONVERGING`. */
+/** Returns the rounds with new changes since the last approval, whether they reach the round cap, and whether automatic review is paused by it or by a last round that ended `NOT_CONVERGING`. */
 function pauseState(priorRounds: RoundContext[], config: ReviewConfig): PauseState {
   const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
-  const capRounds = roundsSinceApproval(priorRounds);
+  const { count: capRounds, approved } = roundsSinceApproval(priorRounds);
   const capReached = maxAutoRounds > 0 && capRounds >= maxAutoRounds;
   const reason = capReached
-    ? `Manki has completed ${capRounds}/${maxAutoRounds} review rounds on this PR${capRounds < priorRounds.length ? ' since its last approval' : ''}.`
+    ? `Manki has reviewed new changes in ${capRounds}/${maxAutoRounds} rounds on this PR${approved ? ' since its last approval' : ''}.`
     : priorRounds.at(-1)?.meta.outcome === 'NOT_CONVERGING' ? 'The last Manki round found a blocker that came back after a fix.' : undefined;
   return { capRounds, capReached, paused: reason !== undefined, ...(reason && { reason }) };
 }
@@ -535,4 +553,4 @@ async function checkAndAutoApprove(
   return true;
 }
 
-export { PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, explainUnreviewedHead, fetchBotReviewThreads, findUnchangedVerdict, holdApprovalOnConflict, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
+export { PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, explainUnreviewedHead, fetchBotReviewThreads, findUnchangedVerdict, holdApprovalOnConflict, isNewChange, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };

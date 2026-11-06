@@ -122,6 +122,7 @@ jest.mock('./diff', () => {
     isDiffTooLarge: jest.fn().mockReturnValue(false),
     addCodeContext: jest.requireActual('./diff').addCodeContext,
     isSameChange: jest.requireActual('./diff').isSameChange,
+    changeDigest: jest.requireActual('./diff').changeDigest,
     rebuildRawDiff: jest.requireActual('./diff').rebuildRawDiff,
   };
 });
@@ -190,6 +191,7 @@ jest.mock('./github', () => {
   updateProgressDashboard: jest.fn().mockResolvedValue(undefined),
   dismissPreviousReviews: jest.fn().mockResolvedValue(undefined),
   postReview: jest.fn().mockResolvedValue({ id: 123, approvalHeld: false }),
+  formatOpenBlockers: jest.requireActual('./github').formatOpenBlockers,
   reactToIssueComment: jest.fn().mockResolvedValue(undefined),
   fetchLinkedIssues: jest.fn().mockResolvedValue([]),
   hasWriteAccess: jest.fn().mockResolvedValue(true),
@@ -255,6 +257,7 @@ jest.mock('./state', () => ({
   announceSecurityOverrides: jest.fn().mockResolvedValue([]),
   checkAndAutoApprove: jest.fn().mockResolvedValue(false),
   holdApprovalOnConflict: jest.fn().mockResolvedValue(false),
+  isNewChange: jest.requireActual('./state').isNewChange,
   pauseState: jest.requireActual('./state').pauseState,
   reopenAuthorResolvedThreads: jest.fn().mockResolvedValue(undefined),
   replyToReviewThread: jest.requireActual('./state').replyToReviewThread,
@@ -5735,7 +5738,16 @@ describe('runFullReview orchestration', () => {
 
     it('skips review and posts notice when prior rounds reach the cap on auto trigger', async () => {
       jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(5));
-      seedPriorRounds(priorRounds(5));
+      const thread = (title: string, severity: 'blocker' | 'warning' | 'suggestion', status: 'open' | 'replied' | 'resolved', n: number) => ({
+        title, file: 'src/app.ts', line: n, severity, status, threadId: `T_${n}`, threadUrl: `https://github.com/test-owner/test-repo/pull/42#discussion_r${n}`,
+      });
+      seedPriorRounds(priorRounds(5), [
+        thread('Null check missing', 'blocker', 'open', 1),
+        thread('Retry never stops', 'warning', 'replied', 2),
+        thread('Fixed already', 'blocker', 'resolved', 3),
+        thread('Name could be clearer', 'suggestion', 'open', 4),
+        { ...thread('Token logged', 'blocker', 'resolved', 5), reopen: true },
+      ]);
 
       await callRunFullReview();
 
@@ -5752,8 +5764,22 @@ describe('runFullReview orchestration', () => {
         .find(([args]) => typeof args.body === 'string' && args.body.includes('Automatic review is paused'));
       expect(capCall).toBeDefined();
       const capBody = capCall![0].body as string;
-      expect(capBody.endsWith(`- [ ] Force review\n\n<!-- manki-bot -->\n${FORCE_CAP_MARKER}`)).toBe(true);
-      expect(capBody).not.toContain(FORCE_REVIEW_MARKER);
+      const link = (n: number) => `([view thread](https://github.com/test-owner/test-repo/pull/42#discussion_r${n}))`;
+      expect(capBody).toBe([
+        'Manki has reviewed new changes in 5/5 rounds on this PR. Automatic review is paused.',
+        '',
+        '**Still open from earlier reviews:**',
+        `- \`src/app.ts:1\`: Null check missing ${link(1)}`,
+        `- \`src/app.ts:2\`: Retry never stops ${link(2)}`,
+        `- \`src/app.ts:5\`: Token logged ${link(5)}`,
+        '',
+        'Tick the box to run another round, or comment `@manki review`:',
+        '',
+        '- [ ] Force review',
+        '',
+        '<!-- manki-bot -->',
+        FORCE_CAP_MARKER,
+      ].join('\n'));
     });
 
     it('counts the cap from the last approval, so rounds after it, as on rebases, start again', async () => {
@@ -5767,7 +5793,7 @@ describe('runFullReview orchestration', () => {
       expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
       const notice = jest.mocked(mockOctokitInstance.rest.issues.createComment).mock.calls
         .find(([args]) => typeof args.body === 'string' && args.body.includes('Automatic review is paused'));
-      expect(notice![0].body).toContain('Manki has completed 5/5 review rounds on this PR since its last approval.');
+      expect(notice![0].body).toContain('Manki has reviewed new changes in 5/5 rounds on this PR since its last approval. Automatic review is paused. Tick the box');
 
       // A `BUDGET` approval ends a loop by deferring warnings, so it does not reset the count.
       rounds[2].verdict = 'APPROVE';
@@ -5779,6 +5805,24 @@ describe('runFullReview orchestration', () => {
       await callRunFullReview();
 
       expect(jest.mocked(reviewModule.runReview).mock.calls[0][1]).toMatchObject({ blockersOnly: false, finalRound: true });
+
+      // Only rounds that reviewed a new change count. A round on the same commit, or on another commit with the same change, does not.
+      const runs = jest.mocked(reviewModule.runReview).mock.calls;
+      rounds[2].verdict = 'REQUEST_CHANGES';
+      rounds[3].meta.commitSha = rounds[2].meta.commitSha;
+      await callRunFullReview();
+      expect(runs[1][1]).toMatchObject({ blockersOnly: false, finalRound: true });
+
+      rounds[4].diff.changeDigest = 'same-change';
+      rounds[5].diff.changeDigest = 'same-change';
+      await callRunFullReview();
+      expect(runs[2][1]).toMatchObject({ blockersOnly: false, finalRound: false });
+
+      // A round on the commit the last round reviewed does not count, so it is not the last round either.
+      delete rounds[5].diff.changeDigest;
+      rounds[6].meta.commitSha = 'abc123';
+      await callRunFullReview();
+      expect(runs[3][1]).toMatchObject({ blockersOnly: false, finalRound: false });
     });
 
     it('bypasses the cap when skipCap is true', async () => {
@@ -5794,7 +5838,7 @@ describe('runFullReview orchestration', () => {
       expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
     });
 
-    it('does not bypass the cap when only forceReview is true', async () => {
+    it('runs a Force review round at the blockers-only bar while paused', async () => {
       jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(5));
       seedPriorRounds(priorRounds(5));
 
@@ -5804,8 +5848,8 @@ describe('runFullReview orchestration', () => {
         { forceReview: true },
       );
 
-      expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
-      expect(mockOctokitInstance.rest.issues.createComment).toHaveBeenCalledWith(
+      expect(jest.mocked(reviewModule.runReview).mock.calls[0][1]).toMatchObject({ blockersOnly: true, finalRound: false });
+      expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalledWith(
         expect.objectContaining({ body: expect.stringContaining('Automatic review is paused') }),
       );
     });
