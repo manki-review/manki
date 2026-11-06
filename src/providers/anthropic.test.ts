@@ -6,7 +6,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
 import { AnthropicClient, buildAnthropicAuth, CLAUDE_CLI_VERSION, extractAnthropicCLIUsage, resetCLIInstallPromise, sanitizeLogOutput, STALE_TIMEOUT_MS } from './anthropic';
-import { QuotaError, RefusalError, SendMessageOptions } from './types';
+import { QuotaError, RefusalError, SendMessageOptions, TurnLimitError } from './types';
 
 jest.mock('child_process', () => ({
   execFile: jest.fn(),
@@ -504,6 +504,13 @@ describe('sendViaOAuth — error paths', () => {
     expect(systemPromptFile).toMatch(/^Review the diff\.\n\n## Tools\n\nThe PR's head commit is checked out at `\/work\/repo`\./);
     expect(systemPromptFile).toContain('You have at most 15 turns');
     expect(response.toolSteps).toEqual([{ tool: 'Read', durationMs: expect.any(Number) }, { tool: 'mcp__manki__git_history', durationMs: expect.any(Number) }]);
+  });
+
+  it('throws a TurnLimitError when the CLI uses all its turns before it answers', async () => {
+    setupSpawnMock({ stdout: `${JSON.stringify({ type: 'result', subtype: 'error_max_turns', is_error: true, num_turns: 16 })}\n`, rawStdout: true, exitCode: 1 });
+    const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-5-5' });
+
+    await expect(client.sendMessage('sys', 'user', { repoTools: { root: '/work/repo', maxTurns: 15 } })).rejects.toThrow(new TurnLimitError('Claude CLI used all 15 turns before it answered'));
   });
 
   it('sends the system prompt as the CLI system prompt and only the user message on stdin', async () => {

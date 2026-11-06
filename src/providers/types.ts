@@ -64,6 +64,14 @@ export class RefusalError extends Error {
   }
 }
 
+/** Thrown when a call with `repoTools` used all its turns before it gave a final answer. */
+export class TurnLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'TurnLimitError';
+  }
+}
+
 /**
  * Thrown when a provider refuses a request because a quota, rate limit or capacity limit is used up.
  * Sending it again before `resetsAt` fails the same way, so callers neither retry it nor move it to

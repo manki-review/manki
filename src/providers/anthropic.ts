@@ -9,7 +9,7 @@ import * as core from '@actions/core';
 
 import { appendReplyTail, buildExitDiagnostics, callWithTimeout, cliEnv, matchQuotaText, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, warnReplyTail } from './cli-utils';
 import { MCP_SERVER_COMMAND } from '../mcp-server';
-import { AnthropicAuth, LLMClient, LLMResponse, LLMUsage, QuotaError, readCount, RefusalError, RepoTools, SendMessageOptions, ToolStep, ZERO_USAGE } from './types';
+import { AnthropicAuth, LLMClient, LLMResponse, LLMUsage, QuotaError, readCount, RefusalError, RepoTools, SendMessageOptions, ToolStep, TurnLimitError, ZERO_USAGE } from './types';
 
 // Re-export for backward compatibility with existing test imports.
 export { sanitizeLogOutput, STALE_TIMEOUT_MS };
@@ -357,6 +357,11 @@ export class AnthropicClient implements LLMClient {
       const message = `${limit}: ${sanitizeLogOutput(limitText.slice(-500)).trim()}`;
       core.warning(message);
       throw new QuotaError(message, limit, quota.resetsAt, quota.overloaded ? undefined : 'token');
+    }
+    if ((lastResultEvent as { subtype?: unknown } | null)?.subtype === 'error_max_turns') {
+      const message = `Claude CLI used all ${options?.repoTools?.maxTurns ?? 'its'} turns before it answered`;
+      core.warning(message);
+      throw new TurnLimitError(message);
     }
     if ((code !== 0 && !truncated) || refusal) {
       const msg = buildExitDiagnostics({

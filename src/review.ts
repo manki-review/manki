@@ -3,7 +3,7 @@ import { minimatch } from 'minimatch';
 
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { resolveReviewerModel } from './config';
-import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, SendMessageOptions, withRefusalFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
+import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, SendMessageOptions, TurnLimitError, withRefusalFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
 import { runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, LinkedIssue, titleToSlug } from './github';
@@ -1270,7 +1270,11 @@ async function runReviewerAgent(
     ...(effort && { effort }),
     ...(workspace && client.repoTools && { repoTools: { root: workspace, maxTurns: FINDER_MAX_TURNS } }),
   };
-  const response = await client.sendMessage(systemPrompt, userMessage, sendOptions);
+  const response = await client.sendMessage(systemPrompt, userMessage, sendOptions).catch((error: unknown) => {
+    if (!(error instanceof TurnLimitError) || !sendOptions.repoTools) throw error;
+    core.warning(`${finder.name} used all ${FINDER_MAX_TURNS} turns with the repository tools, so it reviews the diff again without them`);
+    return client.sendMessage(systemPrompt, userMessage, { ...(effort && { effort }) });
+  });
   if (response.truncated) {
     throw new Error(`response truncated at the output token limit (length ${response.content.length})`);
   }
