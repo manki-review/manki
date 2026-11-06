@@ -24,7 +24,7 @@ import { buildRoundContext, RoundRecordInput } from './round-context';
 import { collectStaticSignals } from './static-signals';
 import { runStepHook, STEP_HOOK_COMMAND } from './tool-steps';
 import { fetchWorkspace } from './workspace';
-import { isSettingsBox, SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
+import { isSettingsBox, SETTINGS_MARKER, SettingsBox, SettingsView, stripSettingsBlock, withSettingsBlock } from './settings';
 import { DashboardData, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, RoundTrigger, RunMode, SettingsState, StaticSignal, roundContextToFlatAliases } from './types';
 import {
   fetchPRDiff,
@@ -253,11 +253,13 @@ async function run(): Promise<void> {
       return;
     }
     if (!await commenterAllowed()) return;
-    const byManki = isBotLogin((await getAuth()).bot, github.context.payload.comment?.user?.login);
+    const { bot } = await getAuth();
+    const byManki = isBotLogin(bot, github.context.payload.comment?.user?.login);
     if (marker !== null && byManki) {
       tickedMarker = marker;
     }
-    settingsTick = settingsEdit && byManki && tickedMarker === null;
+    // A bot's edit never gets here, but Manki on a personal access token edits as that user.
+    settingsTick = settingsEdit && byManki && !isBotLogin(bot, github.context.payload.sender?.login) && tickedMarker === null;
     if (tickedMarker === null && !settingsTick && !mentioned) {
       core.info('Comment does not mention Manki — ignoring');
       return;
@@ -699,8 +701,11 @@ interface RunProgress {
   reviewPosted: boolean;
   /** Stops the head watcher, so a later push no longer stops the round. */
   stopHeadWatch: () => void;
-  /** What the settings block of the progress comment carries over all its edits. Unset while the Worker handles no boxes. */
-  settings?: { lastReviewed?: string; draft: boolean; ticked: ReadonlySet<SettingsBox> };
+  /**
+   * What the settings block of the progress comment carries over all its edits, and the comment that had the block before.
+   * Unset while the Worker handles no boxes.
+   */
+  settings?: { lastReviewed?: string; draft: boolean; ticked: ReadonlySet<SettingsBox>; previous?: { id: number; body: string } };
 }
 
 /** The settings block of the run's progress comment with `status`, or `undefined` without one. `reviewed` marks the head reviewed. */
@@ -729,15 +734,19 @@ async function postRunProgress(target: RunTarget, progress: RunProgress, { setti
   } catch (error) {
     core.warning(`Failed to read the earlier settings block, so it stays: ${error instanceof Error ? error.message : error}`);
   }
-  progress.settings = { lastReviewed: latestSettings(comments, bot)?.lastReviewed, draft, ticked: tickedBoxes(settings) };
+  const latest = latestSettings(comments, bot);
+  progress.settings = {
+    lastReviewed: latest?.settings.lastReviewed, draft, ticked: tickedBoxes(settings),
+    ...(latest && { previous: { id: latest.id, body: stripSettingsBlock(latest.body) } }),
+  };
   const commentId = await postProgressComment(octokit, owner, repo, prNumber, commitSha, undefined, runningSettings(target, progress));
   await retireSettingsBlocks(octokit, bot, owner, repo, comments, commentId);
   return commentId;
 }
 
 /**
- * Deletes the run's progress comment for a run that reviews nothing. With a settings block, `status` and `text`
- * go to a status comment instead, since the block left the older comments.
+ * Deletes the run's progress comment for a run that reviews nothing. With a settings block, the block goes back to
+ * the comment that had it before, with `status`. Without such a comment, `text` is posted with the block.
  */
 async function dropProgressComment(target: RunTarget, progress: RunProgress, settings: SettingsState | undefined, status: string, text: string): Promise<void> {
   const { octokit, bot, owner, repo, prNumber, commitSha } = target;
@@ -747,9 +756,16 @@ async function dropProgressComment(target: RunTarget, progress: RunProgress, set
   } catch (error) {
     core.warning(`Failed to delete the progress comment: ${error instanceof Error ? error.message : error}`);
   }
-  if (settings && progress.settings) {
-    const { draft, lastReviewed } = progress.settings;
+  if (!settings || !progress.settings) return;
+  const { draft, lastReviewed, previous } = progress.settings;
+  if (!previous) {
     await showRunStatus(octokit, bot, owner, repo, prNumber, settings, { head: commitSha, draft, status, text, lastReviewed });
+    return;
+  }
+  try {
+    await octokit.rest.issues.updateComment({ owner, repo, comment_id: previous.id, body: withSettingsBlock(previous.body, progressSettings(target, progress, status)) });
+  } catch (error) {
+    core.warning(`Failed to move the settings block back to comment ${previous.id}: ${error instanceof Error ? error.message : error}`);
   }
 }
 

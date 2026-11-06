@@ -2845,12 +2845,13 @@ describe('updateProgressDashboard', () => {
     expect(body).toContain('<!-- manki-commit:abc123 -->');
   });
 
-  it('ends with the settings block, keeping a box a person ticked on the live comment', async () => {
+  it('ends with the settings block, keeping a box a person ticked on the live comment, unless the comment lost its block', async () => {
     const warningSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const running: SettingsView = { head: 'abc1234', status: 'review running', boxes: new Set(['pause', 'full', 'cancel']), ticked: new Set() };
     const live = withSettingsBlock('**Review in progress**', running).replace('- [ ] Pause', '- [x] Pause');
     const updateCommentMock = jest.fn().mockResolvedValue({});
-    const getCommentMock = jest.fn().mockResolvedValueOnce({ data: { body: live } }).mockRejectedValueOnce(new Error('boom'));
+    const getCommentMock = jest.fn().mockResolvedValueOnce({ data: { body: live } }).mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce({ data: { body: '**Review in progress**' } });
     const mockOctokit = { rest: { issues: { updateComment: updateCommentMock, getComment: getCommentMock } } } as unknown as Parameters<typeof updateProgressDashboard>[0];
     const dashboard: DashboardData = { phase: 'reviewed', lineCount: 200, agentCount: 5, rawFindingCount: 8 };
 
@@ -2863,6 +2864,10 @@ describe('updateProgressDashboard', () => {
     expect(parseSettingsBlock(updateCommentMock.mock.calls[1][0].body)).toEqual(running);
     expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to read the ticked settings boxes'));
     warningSpy.mockRestore();
+
+    // A newer progress comment took the block, so this one stays without it.
+    await updateProgressDashboard(mockOctokit, 'owner', 'repo', 123, dashboard, 'abc123', running);
+    expect(updateCommentMock.mock.calls[2][0].body).not.toContain('manki-settings');
   });
 });
 

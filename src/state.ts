@@ -4,6 +4,7 @@ import * as github from '@actions/github';
 import { assertWritesAllowed } from './abort';
 import { completeReviewCheck, outcomeReport, startReviewCheck } from './check-run';
 import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchApprovalHold, fetchInterRoundDiff, fetchPRComments, fetchReviewThreadNodes, fetchStandingVerdict, FORCE_CAP_MARKER, PAUSE_NOTICE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgressOn, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
+import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { isSameChange } from './diff';
 import { fetchPriorRoundContexts, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, PreviousFinding, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf } from './recap';
@@ -410,8 +411,10 @@ async function retireStaleNotices(octokit: Octokit, bot: BotIdentity, owner: str
         await octokit.rest.issues.deleteComment({ owner, repo, comment_id: c.id });
       } else if (isFailedProgressOn(c.body, headSha)) {
         await markProgressCommentSuperseded(octokit, owner, repo, c.id, { reviewedSha: headSha, headSha });
-      } else if (pauseLiftedAt !== undefined && Date.parse(c.updated_at) < pauseLiftedAt
-        && (c.body.includes(PAUSE_NOTICE_MARKER) || (c.body.includes(FORCE_CAP_MARKER) && /- \[[ x]\] Force review/.test(c.body)))) {
+      } else if (pauseLiftedAt !== undefined && (
+        // The round's progress comment took the settings block from such a notice, which edited it after the round started.
+        (c.body.includes(PAUSE_NOTICE_MARKER) && !c.body.includes(SETTINGS_MARKER))
+        || (Date.parse(c.updated_at) < pauseLiftedAt && c.body.includes(FORCE_CAP_MARKER) && /- \[[ x]\] Force review/.test(c.body)))) {
         const body = withMarkers(`Automatic review was paused. Review resumed on \`${headSha.slice(0, 7)}\`.`, PROGRESS_MARKER, FORCE_CAP_MARKER);
         await octokit.rest.issues.updateComment({ owner, repo, comment_id: c.id, body });
       }

@@ -670,7 +670,8 @@ export async function postProgressComment(
 
 /**
  * Edits progress comment `commentId` to `body`, ending it with the settings block for `settings` when given.
- * The block keeps the boxes ticked on the live comment, since a writer can tick one while the run edits it.
+ * The block keeps the boxes ticked on the live comment, since a writer can tick one while the run edits it,
+ * and stays off a live comment that has none.
  */
 async function editProgressComment(
   octokit: Octokit, owner: string, repo: string, commentId: number, body: string, settings?: SettingsView,
@@ -679,7 +680,8 @@ async function editProgressComment(
     try {
       const { data } = await octokit.rest.issues.getComment({ owner, repo, comment_id: commentId });
       const live = parseSettingsBlock(data.body ?? '');
-      if (live) settings = { ...settings, ticked: live.ticked };
+      // A comment without the block lost it to a newer progress comment, which keeps the only one.
+      settings = live && { ...settings, ticked: live.ticked };
     } catch (error) {
       core.warning(`Failed to read the ticked settings boxes, rendering them from the PR state: ${error instanceof Error ? error.message : error}`);
     }
@@ -2026,10 +2028,11 @@ function findSettingsComment(comments: IssueComment[], bot: BotIdentity): (Issue
   return comments.find((c): c is IssueComment & { body: string } => isBotUser(bot, c.user) && !!c.body && parseSettingsBlock(c.body) !== undefined);
 }
 
-/** Returns the settings block of Manki's newest comment that has one. `comments` come newest first. */
-function latestSettings(comments: IssueComment[], bot: BotIdentity): SettingsView | undefined {
+/** Returns Manki's newest comment that has a settings block, with the block. `comments` come newest first. */
+function latestSettings(comments: IssueComment[], bot: BotIdentity): { id: number; body: string; settings: SettingsView } | undefined {
   const current = findSettingsComment(comments, bot);
-  return current && parseSettingsBlock(current.body);
+  const settings = current && parseSettingsBlock(current.body);
+  return current && settings && { id: current.id, body: current.body, settings };
 }
 
 /**
