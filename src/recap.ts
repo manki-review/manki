@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { LLMClient } from './providers';
-import { APPROVED_LINE, BotIdentity, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, isRepoAdmin, isTrustedAssociation, LOW_CONFIDENCE_NOTE, paginateGraphql, titleToSlug } from './github';
+import { AUTO_APPROVE_MARKER, BotIdentity, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, isRepoAdmin, isTrustedAssociation, LOW_CONFIDENCE_NOTE, paginateGraphql, titleToSlug } from './github';
 import { findPriorThreadId } from './finding-fingerprint';
 import { matchesSuppression, Suppression } from './memory';
 import { isSecurityFinding } from './review';
@@ -306,7 +306,7 @@ function replyClassOf(pf: PreviousFinding): AuthorReplyClass {
 interface RecapState {
   previousFindings: PreviousFinding[];
   priorRounds: RoundContext[];
-  /** When Manki last approved the PR in a review without a round context, as auto-approve does. */
+  /** When auto-approve last approved the PR, after the last blocking thread was resolved. */
   lastApprovalAt?: string;
   /** Three-way state of the open-thread fetch. Optional so legacy callers and test mocks omitting the field still typecheck; treated as `'fetched'` downstream. */
   openThreadsState?: OpenThreadsState;
@@ -616,8 +616,8 @@ function refreshAuthorReplyClass(
 }
 
 /**
- * Returns the round contexts in Manki's reviews, and when Manki last approved the PR in a review without one.
- * Such an approval keeps its body after GitHub dismisses it, so it is found by its first line.
+ * Returns the round contexts in Manki's reviews, and when auto-approve last approved the PR.
+ * An auto-approval is found by its marker, which stays in the body after GitHub dismisses the review.
  */
 async function fetchPriorRoundContexts(
   octokit: Octokit,
@@ -634,9 +634,10 @@ async function fetchPriorRoundContexts(
       per_page: 100,
     });
     const botReviews = reviews.filter((r): r is typeof r & { body: string; id: number } => !!r.body && isBotLogin(bot, r.user?.login));
-    const hasContext = (body: string) => body.includes('<summary>Manki context</summary>') || body.includes('<!-- manki-context:');
-    const candidates = botReviews.filter(r => hasContext(r.body)).map(r => ({ body: r.body, id: r.id }));
-    const lastApprovalAt = botReviews.filter(r => !hasContext(r.body) && r.body.startsWith(APPROVED_LINE)).at(-1)?.submitted_at;
+    const candidates = botReviews
+      .filter(r => r.body.includes('<summary>Manki context</summary>') || r.body.includes('<!-- manki-context:'))
+      .map(r => ({ body: r.body, id: r.id }));
+    const lastApprovalAt = botReviews.filter(r => r.body.includes(AUTO_APPROVE_MARKER)).at(-1)?.submitted_at;
     return { priorRounds: parseContextBlocks(candidates, owner, repo, prNumber), ...(lastApprovalAt && { lastApprovalAt }) };
   } catch (error) {
     core.warning(`Failed to fetch prior round contexts: ${error}`);

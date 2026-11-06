@@ -1,7 +1,7 @@
 import { Finding, FindingFingerprintEntry, RoundContext } from './types';
 import { Suppression } from './memory';
 import { classifyAuthorReply, collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, fingerprintFinding, PreviousFinding, fetchRecapState, REOPENED_MARKER, securityOverrideMarker, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment } from './recap';
-import { BOT_LOGIN, formatFindingComment, titleToSlug } from './github';
+import { AUTO_APPROVE_MARKER, BOT_LOGIN, formatFindingComment, titleToSlug } from './github';
 import { LAST_PAGE, paginateSinglePage, TEST_BOT } from './test-utils';
 import { determineOutcome } from './review';
 import { applyCrossRoundSuppression } from './judge';
@@ -1150,14 +1150,15 @@ describe('fetchRecapState', () => {
     it('parses a single HTML-comment context block, and finds the last approval outside a round', async () => {
       const ctx = makeRoundContext(2);
       const octokit = mockOctokit([], [
-        { id: 199, body: '✅ **Approved.** All blocking threads are resolved.\n\n<!-- manki -->', user: { login: BOT_LOGIN }, submitted_at: '2026-01-01T01:00:00Z' },
+        { id: 199, body: `✅ **Approved.** All blocking threads are resolved.\n\n<!-- manki -->\n${AUTO_APPROVE_MARKER}`, user: { login: BOT_LOGIN }, submitted_at: '2026-01-01T01:00:00Z' },
         { id: 200, body: `✅ **Approved.**\n${htmlCommentBlock(ctx)}\n`, user: { login: BOT_LOGIN }, submitted_at: '2026-01-01T02:00:00Z' },
-        { id: 201, body: '✅ **Approved.** Looks good to me.', user: { login: 'alice' }, submitted_at: '2026-01-01T03:00:00Z' },
+        { id: 201, body: '✅ **Approved.** No change to this PR since the reviewed commit `abc1234`.\n\n<!-- manki-bot -->', user: { login: BOT_LOGIN }, submitted_at: '2026-01-01T03:00:00Z' },
+        { id: 202, body: `Quoting it: ${AUTO_APPROVE_MARKER}`, user: { login: 'alice' }, submitted_at: '2026-01-01T04:00:00Z' },
       ]);
       const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds).toHaveLength(1);
       expect(state.priorRounds[0].meta.round).toBe(2);
-      // A round's own approval carries its context, and another reviewer's approval is not Manki's.
+      // A round's approval and a reposted standing verdict are not auto-approvals, and a quote of the marker is not Manki's.
       expect(state.lastApprovalAt).toBe('2026-01-01T01:00:00Z');
     });
 

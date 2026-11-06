@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
 import { completeReviewCheck, outcomeReport, startReviewCheck } from './check-run';
-import { approvalHeldLine, APPROVED_LINE, BotIdentity, BOT_MARKER as PROGRESS_MARKER, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchConflictingBase, fetchInterRoundDiff, fetchPRComments, fetchReviewThreadNodes, fetchStandingVerdict, FOLLOW_UP_MARKER, FORCE_CAP_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgressOn, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
+import { approvalHeldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchConflictingBase, fetchInterRoundDiff, fetchPRComments, fetchReviewThreadNodes, fetchStandingVerdict, FOLLOW_UP_MARKER, FORCE_CAP_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgressOn, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
 import type { StandingVerdict } from './github';
 import { isSameChange } from './diff';
 import { fetchPriorRoundContexts, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, PreviousFinding, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf } from './recap';
@@ -237,8 +237,7 @@ function isNewChange(change: ReviewedChange, previous: RoundContext | undefined)
 }
 
 /**
- * Whether the PR was approved at or after `round`: by the round itself at the full bar, or by an approval outside a round,
- * such as auto-approve, at `lastApprovalAt` or later. A `BUDGET` approval deferred warnings to end a loop, so it does not count.
+ * Whether the PR was approved at or after `round`: by the round itself at the full bar, or by auto-approve at `lastApprovalAt` or later. A `BUDGET` approval deferred warnings to end a loop, so it does not count.
  * An approval held on a conflict is recorded as an approval, so it counts.
  */
 function approvedSince(round: RoundContext, lastApprovalAt: string | undefined): boolean {
@@ -520,7 +519,7 @@ async function checkAndAutoApprove(
   // An empty review body trips the head-SHA dedupe gate (`hasBotReviewOnCommit`)
   // for any subsequent force-review tick on the same commit ([#840]).
   const overrideLine = formatSecurityOverrides(overrides);
-  const body = withMarkers(`${APPROVED_LINE} All blocking threads are resolved.${overrideLine ? `\n\n${overrideLine}` : ''}`, BOT_MARKER);
+  const body = withMarkers(`${APPROVED_LINE} All blocking threads are resolved.${overrideLine ? `\n\n${overrideLine}` : ''}`, BOT_MARKER, AUTO_APPROVE_MARKER);
 
   try {
     try {

@@ -392,7 +392,7 @@ describe('checkAndAutoApprove', () => {
 
     expect(result).toBe(true);
     expect(createReviewMock).toHaveBeenCalledWith(
-      expect.objectContaining({ event: 'APPROVE', commit_id: 'sha-456', body: expect.stringMatching(/^\u2705 \*\*Approved\.\*\* All blocking threads are resolved\.\n\n<!-- manki -->$/) }),
+      expect.objectContaining({ event: 'APPROVE', commit_id: 'sha-456', body: '\u2705 **Approved.** All blocking threads are resolved.\n\n<!-- manki -->\n<!-- manki-auto-approve -->' }),
     );
   });
 
