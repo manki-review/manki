@@ -252,6 +252,8 @@ export interface JudgeInput {
   resolvedThreadIds?: Set<string>;
   /** When true, resolved prior-round threads suppress matching findings. */
   suppressResolvedThreads?: boolean;
+  /** The related repos the round's finders could read with their tools. */
+  relatedRepos?: RelatedRepo[];
 }
 
 export interface JudgedFinding {
@@ -312,6 +314,7 @@ export function buildJudgeSystemPrompt(
   agentCount: number,
   isFollowUp?: boolean,
   openThreadsCount: number = 0,
+  relatedRepos?: RelatedRepo[],
 ): string {
   const hasOpenThreads = openThreadsCount > 0;
   const summaryInstruction = isFollowUp
@@ -546,8 +549,8 @@ Return one entry per finding, in the same order as the input. Set \`id\` to the 
     prompt += `\n\n${repositoryRules}`;
   }
 
-  if (config.related_repos?.length) {
-    prompt += `\n\n${buildRelatedRepoRules(config.related_repos)}`;
+  if (relatedRepos?.length) {
+    prompt += `\n\n${buildRelatedRepoRules(relatedRepos)}`;
   }
 
   if (config.instructions) {
@@ -1001,7 +1004,7 @@ export async function runJudgeAgent(
   inPrSuppressedCount?: number;
   interRoundDiffEmptyOverride?: InterRoundDiffEmptyOverride;
 }> {
-  const { findings, diff, rawDiff, memory, prContext, linkedIssues, agentCount, isFollowUp, openThreads, priorRounds, inPrSuppressions, interRoundDiff, resolvedThreadIds, suppressResolvedThreads } = input;
+  const { findings, diff, rawDiff, memory, prContext, linkedIssues, agentCount, isFollowUp, openThreads, priorRounds, inPrSuppressions, interRoundDiff, resolvedThreadIds, suppressResolvedThreads, relatedRepos } = input;
   const provenanceMap = input.provenanceMap ?? (rawDiff ? computeProvenanceMap(priorRounds, rawDiff) : []);
 
   const hasOpenThreads = (openThreads?.length ?? 0) > 0;
@@ -1029,7 +1032,7 @@ export async function runJudgeAgent(
 
   const changedFiles = diff.files;
 
-  const systemPrompt = buildJudgeSystemPrompt(config, agentCount, isFollowUp, openThreads?.length ?? 0);
+  const systemPrompt = buildJudgeSystemPrompt(config, agentCount, isFollowUp, openThreads?.length ?? 0, relatedRepos);
   const { classes } = resolveRouting(config.review);
   const findingNotes = (f: Finding): string[] => {
     const area = criticalAreaOf(classes, f.file);

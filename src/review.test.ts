@@ -1711,7 +1711,7 @@ describe('runReview', () => {
     mockedApplySuppressions.mockReturnValue({ kept: [], suppressed: [] });
   });
 
-  it('offers the finders the configured related repos with the fetched PR head, and warns about each one they could not fetch', async () => {
+  it('offers the finders and the judge the related repos only when the finders have tools, and warns about each one they could not fetch', async () => {
     const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const clients = makeClients();
     Object.assign(clients.reviewer, { repoTools: true });
@@ -1729,6 +1729,8 @@ describe('runReview', () => {
       await runReview(clients, { ...options, config: makeConfig({ related_repos }), workspace: '/work/pr-head' });
       await runReview(clients, { ...options, config: makeConfig({ related_repos }) });
       await runReview(clients, { ...options, config: makeConfig(), workspace: '/work/pr-head' });
+      const withoutTools = makeClients();
+      await runReview(withoutTools, { ...options, config: makeConfig({ related_repos }), workspace: '/work/pr-head' });
 
       // Two finders per round, and both of a round share its state directory.
       const [first, second, ...rest] = jest.mocked(clients.reviewer.sendMessage).mock.calls.map(call => call[2]?.repoTools);
@@ -1737,6 +1739,9 @@ describe('runReview', () => {
       });
       expect(second).toEqual(first);
       expect(rest).toEqual([undefined, undefined, { root: '/work/pr-head', steps: 30 }, { root: '/work/pr-head', steps: 30 }]);
+      expect(jest.mocked(withoutTools.reviewer.sendMessage).mock.calls.map(call => call[2]?.repoTools)).toEqual([undefined, undefined]);
+      // The judge gets the related repo rules only for a round whose finders could read them.
+      expect(mockedRunJudgeAgent.mock.calls.map(call => call[2].relatedRepos)).toEqual([related_repos, undefined, undefined, undefined]);
       expect(warnSpy).toHaveBeenCalledWith('Could not fetch related repo o/r, which must be public on github.com: fatal: repository not found');
     } finally {
       warnSpy.mockRestore();
