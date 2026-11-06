@@ -29,6 +29,12 @@ OAuth alternatives that ride your existing CLI subscription are also supported. 
 
 Create `.github/workflows/manki.yml`. See [full workflow below](#step-3-add-the-workflow).
 
+## Upgrading to 6.1
+
+- **Review memory.** With the manki-review App, 6.1 writes memory with a separate memory token from the token service, which can write only `<owner>/review-memory`. Releases before 6.1 use the App's review token for memory. That token now covers only the reviewed repo, so their memory reads and writes fail. Upgrade to 6.1, or set `memory_repo_token`. A memory repo with any other name needs `memory_repo_token`, or [your own GitHub App](#your-own-github-app).
+- **Comment access.** Copy the job `if` from [Step 3](#step-3-add-the-workflow) into your workflow. The old `if` let only owners, members and collaborators start Manki from a comment, and GitHub reports an organization member with a private membership as neither, so those members were refused. Manki checks the commenter's write access itself in any case, see [Event triggers explained](#event-triggers-explained).
+- **Webhook mode** is a preview in 6.1, open only to some repositories. See [Webhook mode](#webhook-mode-opt-in-new-in-61).
+
 ---
 
 ## Prerequisites
@@ -81,6 +87,10 @@ The app requires these permissions:
 | Pull requests | Read and write | Post review comments and approvals |
 | Issues | Read and write | Post progress comments and app warnings; read linked issues for review context |
 | Actions | Read and write | [Webhook mode](#webhook-mode-opt-in-new-in-61): start the dispatch workflow and follow its runs. Set on the App by its maintainers, so you only approve it |
+
+### Your own GitHub App
+
+Instead of the manki-review App, Manki can post as an App you create, with the `github_app_id` and `github_app_private_key` inputs. Manki limits the tokens it mints to the reviewed repo and the memory repo. The App's private key is a secret of the workflow, though. Any code that runs in that job can read the key and mint tokens for every repository the App is installed on. Keep that job to the steps Manki needs, or prefer the manki-review App, whose key stays in the token service.
 
 ## Step 2: Authentication Secrets
 
@@ -193,7 +203,7 @@ Runs reviews through the Gemini CLI binary, signed in with Google. Effort tiers 
 
 ### Review Memory Token (Optional)
 
-Required only if you enable the review memory system and the manki-review App can't write the memory repo. The App writes only a repo named `review-memory` in the same account as the reviewed repo, and only when it is installed there. Any other memory repo, a custom name or another account, needs this token. Without either, Manki skips memory and logs a warning. This is a fine-grained PAT scoped to the memory repo only.
+Required only if you enable the review memory system and the manki-review App can't write the memory repo. The App writes only a repo named `review-memory` in the same account as the reviewed repo, and only when it is installed there. Any other memory repo, a custom name or another account, needs this token, unless [your own GitHub App](#your-own-github-app) is installed on it. Without either, Manki skips memory and logs a warning. This is a fine-grained PAT scoped to the memory repo only.
 
 1. Go to [github.com/settings/personal-access-tokens/new](https://github.com/settings/personal-access-tokens/new)
 2. Configure:
@@ -339,7 +349,7 @@ models:
 
 ### Action inputs
 
-The workflow above uses the only inputs most setups need: a provider credential (e.g. `anthropic_api_key`, `openai_api_key`, `gemini_api_key`, or one of the OAuth equivalents) and optionally `memory_repo_token`. `github_token` defaults to the workflow token, so set it only to post with a different token. To point at a config file outside the repo root, set `config_path` (default: `.manki.yml`). For GitHub App identity, set `github_app_id`, `github_app_private_key`, and `manki_token_url`. To tune the in-app concurrent-submission lock TTL (defense in depth against simultaneous-start races on top of the workflow `concurrency` group), set `concurrency_lock_ttl_seconds` (default: 600). See [`action.yml`](action.yml) for the full input reference.
+The workflow above uses the only inputs most setups need: a provider credential (e.g. `anthropic_api_key`, `openai_api_key`, `gemini_api_key`, or one of the OAuth equivalents) and optionally `memory_repo_token`. `github_token` defaults to the workflow token, so set it only to post with a different token. To point at a config file outside the repo root, set `config_path` (default: `.manki.yml`). To post as [your own GitHub App](#your-own-github-app), set `github_app_id` and `github_app_private_key`. `manki_token_url` points at a different token service. To tune the in-app concurrent-submission lock TTL (defense in depth against simultaneous-start races on top of the workflow `concurrency` group), set `concurrency_lock_ttl_seconds` (default: 600). See [`action.yml`](action.yml) for the full input reference.
 
 ### Action outputs
 
@@ -553,7 +563,9 @@ Analyzer results follow the path of the CI results above, limited to lines of th
 
 ## Webhook mode (opt-in, new in 6.1)
 
-Webhook mode is new in 6.1 and off unless you opt in. The event-driven workflow from Step 3 keeps working unchanged.
+Webhook mode is a preview in 6.1 and off unless you opt in. The event-driven workflow from Step 3 keeps working unchanged.
+
+The service only handles repositories that its operator has added to an allowlist (`WEBHOOK_REPOS` in the token service). It ignores the events of every other repository, so those keep the event-driven workflow. Webhook mode opens to more repositories once the service has protections against floods of requests.
 
 In the default setup, GitHub starts a workflow run in your repository for every push, comment and review, and the job `if` skips the ones Manki ignores. In webhook mode the Manki GitHub App receives those events instead. The Manki service filters them, puts them in order for each PR, and starts a run of a dispatch-only workflow in your repository for each event Manki acts on. The run uses your runner and your secrets, as before. The service only orders and starts runs: every decision about a review, a reply or an approval stays in the action.
 
@@ -574,6 +586,8 @@ The Manki maintainers set up the App's webhook, the **Actions: read and write** 
 A new App permission only takes effect once each installation approves it. GitHub emails the owner of every installation and shows the request on the App's installation settings, where the owner accepts it. Until then the service cannot start runs in your repositories, so keep the event-driven workflow until you have approved it.
 
 ### Opting in
+
+Only opt in once your repository is in the preview. Outside it, removing the event-driven workflow stops all reviews, since the service starts no runs.
 
 Once the installation owner has approved the Actions permission, add `.github/workflows/manki-dispatch.yml` to the default branch:
 
@@ -913,8 +927,8 @@ You can also trigger a review manually by commenting `/manki review` on any PR.
 Manki handles untrusted PR content and cross-repo tokens. The security model rests on these guarantees:
 
 - **Prompt injection** — PR diffs are untrusted content passed into LLM prompts. All findings are sanitized before posting to GitHub so that embedded HTML, scripts, and `@mention` strings cannot be used to inject content or trigger notifications.
-- **Token handling** — All secrets are masked in workflow logs via `core.setSecret()`. The App's review token covers only the reviewed repo and only reads its code. Memory writes use a separate token: `memory_repo_token`, or an App token that can write only `<owner>/review-memory`. The provider CLIs run without the workflow's tokens, action inputs or OIDC endpoint in their environment.
-- **Memory access control** — Only repository owners, members, and collaborators can use `/manki remember`, `/manki forget`, and `/manki dismiss`. Commands from outside contributors are ignored so memory cannot be poisoned by drive-by PRs.
+- **Token handling** — All secrets are masked in workflow logs via `core.setSecret()`. The App's review token covers only the reviewed repo and only reads its code. Memory writes use a separate token: `memory_repo_token`, or an App token that can write only the memory repo (`<owner>/review-memory` with the manki-review App). Your own App's private key needs more care, see [Your own GitHub App](#your-own-github-app). The provider CLIs run without the workflow's tokens, action inputs or OIDC endpoint in their environment.
+- **Memory access control** — Only people with write access to the repository can use `/manki remember`, `/manki forget`, and `/manki dismiss`. Commands from anyone else are ignored so memory cannot be poisoned by drive-by PRs.
 - **Judge trust model** — The judge agent has final say on severity and can downgrade `required` to `ignore`. This is intentional: a single precise judge produces fewer false positives than trusting individual reviewers.
 - **OIDC authentication** — When using the GitHub App identity, token service requests are authenticated via GitHub Actions OIDC tokens. The request is cryptographically proven to come from a legitimate workflow run, so no shared secret is exchanged between your workflow and the token service.
 
