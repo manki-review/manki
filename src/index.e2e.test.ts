@@ -98,6 +98,8 @@ class FakeGitHub {
   onWrite?: (write: string) => void | Promise<void>;
   headSha = HEAD_SHA;
   mergeable: boolean | null = true;
+  /** Refuses `resolveReviewThread` the way GitHub does for a token without the permission. */
+  refuseResolve = false;
   /** The config file the PR carries at its head commit. */
   headConfig?: string;
   activeRuns: number[] = [];
@@ -118,6 +120,9 @@ class FakeGitHub {
     }
     const failure = this.failures.find(f => f.method === method && f.path.test(pathname));
     if (failure) return json({ message: 'Server Error' }, failure.status);
+    if (pathname === '/graphql' && this.refuseResolve && /\bresolveReviewThread\b/.test(String(body.query))) {
+      return json({ data: null, errors: [{ type: 'FORBIDDEN', message: 'Resource not accessible by integration' }] });
+    }
     if (pathname === '/graphql') return json({ data: this.graphql(body.query, body.variables ?? {}, login) });
 
     const route = decodeURIComponent(pathname).replace(`/repos/${OWNER}/${REPO}`, '');
@@ -634,6 +639,33 @@ describe('runFullReview end to end', () => {
     const [thread] = mockGitHub.threads;
     expect(thread.isResolved).toBe(true);
     expect(thread.comments.at(-1)?.body).toMatch(/^Fixed in c3c3c3c\./);
+  });
+
+  it.each([
+    ['blocker', 'CHANGES_REQUESTED'],
+    ['suggestion', 'APPROVED'],
+  ])('posts one review when a %s thread the round counts as fixed cannot be resolved', async (severity, state) => {
+    const finding = { ...BLOCKER, severity };
+    Object.assign(mockLLM.replies, {
+      reviewer: JSON.stringify([finding]),
+      judge: JSON.stringify({ summary: 'One finding.', findings: [{ id: 1, title: finding.title, severity, reasoning: 'Reachable.', confidence: 'high', reachability: 'reachable' }] }),
+    });
+    await reviewRound();
+    expect(mockGitHub.threads).toHaveLength(1);
+
+    mockGitHub.headSha = 'c3'.repeat(20);
+    mockGitHub.refuseResolve = true;
+    Object.assign(mockLLM.replies, READY_REPLIES, {
+      judge: JSON.stringify({ summary: 'The range check is in place.', findings: [], threadEvaluations: [{ threadId: 'PRRT_1', status: 'addressed', reason: 'The sum is checked now.' }] }),
+    });
+    const before = postedReviews().length;
+    await reviewRound();
+
+    const posted = postedReviews().slice(before);
+    expect(posted.map(r => r.state)).toEqual([state]);
+    expect(mockGitHub.roundContext(posted[0]).judge.threadEvaluations).toEqual([expect.objectContaining({ threadId: 'PRRT_1', status: 'uncertain' })]);
+    expect(mockGitHub.threads[0]).toMatchObject({ isResolved: false });
+    expect(mockGitHub.threads[0].comments).toHaveLength(1);
   });
 
   it('recognises its own comments, reviews and threads when it posts with the Actions token', async () => {

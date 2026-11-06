@@ -56,7 +56,7 @@ import {
   postConfigErrorComment,
 } from './github';
 import type { BotIdentity, LinkedIssue } from './github';
-import { announceSecurityOverrides, checkAndAutoApprove, findUnchangedVerdict, holdApprovalOnConflict, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices } from './state';
+import { announceSecurityOverrides, checkAndAutoApprove, findUnchangedVerdict, holdApprovalOnConflict, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
 import type { PauseState } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -1094,9 +1094,9 @@ async function postIncompleteRound(run: ReviewRun, result: ReviewResult): Promis
 }
 
 /**
- * Resolve threads the judge marked `addressed`, each with a `Fixed in <sha>.` reply. A thread that
- * fails to resolve stays open: `result` then records it as `uncertain`, a blocker thread among them
- * keeps the round from approving, and the function returns true so the review is posted again. Other statuses
+ * Resolves the threads the judge marked `addressed` and returns the ones it resolved. A thread that
+ * fails to resolve stays open: `result` then records it as `uncertain`, and a blocker thread among them
+ * keeps the round from approving. Other statuses
  * (`not_addressed`, `uncertain`) are logged for audit but never trigger a
  * resolveReviewThread mutation. Unknown thread IDs are filtered.
  *
@@ -1107,9 +1107,10 @@ async function postIncompleteRound(run: ReviewRun, result: ReviewResult): Promis
  * any `addressed` evaluation here as a second layer. `undefined` is the
  * unknown sentinel (compare-API failure) and must not trigger the guard.
  */
-async function resolveAddressedThreads(run: ReviewRun, result: ReviewResult): Promise<boolean> {
+async function resolveAddressedThreads(run: ReviewRun, result: ReviewResult): Promise<OpenThread[]> {
   const hasPriorRounds = run.recap.priorRounds.length > 0;
   const interRoundDiffKnownEmpty = hasPriorRounds && isEmptyInterRoundDiff(run.interRoundDiff);
+  const resolved: OpenThread[] = [];
   const stillOpen: OpenThread[] = [];
   if (result.threadEvaluations && result.threadEvaluations.length > 0) {
     const knownThreads = new Map(run.openThreads.map(t => [t.threadId, t]));
@@ -1133,21 +1134,39 @@ async function resolveAddressedThreads(run: ReviewRun, result: ReviewResult): Pr
         stillOpen.push(thread);
         continue;
       }
-      try {
-        await replyToReviewThread(run.octokit, threadId, `Fixed in ${run.commitSha.slice(0, 7)}.`);
-      } catch (error) {
-        core.warning(`Failed to reply on resolved thread ${threadId}: ${error}`);
-      }
+      resolved.push(thread);
     }
   }
-  if (stillOpen.length === 0) return false;
+  if (stillOpen.length === 0) return resolved;
   // A later round reads `addressed` as a confirmed fix, so a thread that stayed open must not keep it.
   const failed = new Set(stillOpen.map(t => t.threadId));
   result.threadEvaluations = result.threadEvaluations?.map(e => failed.has(e.threadId)
     ? { ...e, status: 'uncertain', reason: `Resolving the thread failed, so it stays open. ${e.reason}` }
     : e);
   blockOnOpenThreads(result, stillOpen);
-  return true;
+  return resolved;
+}
+
+/** Replies `Fixed in <sha>.` in each thread the round resolved. */
+async function replyFixedThreads(run: ReviewRun, threads: OpenThread[]): Promise<void> {
+  for (const { threadId } of threads) {
+    try {
+      await replyToReviewThread(run.octokit, threadId, `Fixed in ${run.commitSha.slice(0, 7)}.`);
+    } catch (error) {
+      core.warning(`Failed to reply on resolved thread ${threadId}: ${error}`);
+    }
+  }
+}
+
+/** Reopens the threads a round resolved when its review did not go through. */
+async function reopenThreads(octokit: Octokit, threads: OpenThread[]): Promise<void> {
+  for (const { threadId } of threads) {
+    try {
+      await unresolveReviewThread(octokit, threadId);
+    } catch (error) {
+      core.warning(`Failed to reopen thread ${threadId} after the review did not post: ${error}`);
+    }
+  }
 }
 
 /** Turns an approval into a request for changes when a blocker thread it counted as fixed could not be resolved. */
@@ -1458,17 +1477,20 @@ async function runFullReview(
       plannerDurationMs: dashboard.plannerDurationMs,
       judgeDurationMs: stage.judgeEndTime - stage.reviewEndTime,
     });
-    let context = buildContext();
 
     await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
-    let reviewId = await postRound(run, result, context, reviewTimeMs);
-    // Only after the review is posted, so a review that GitHub refuses as superseded resolves no thread.
-    if (await resolveAddressedThreads(run, result)) {
-      // The posted review counted a thread as fixed that is still open, so a corrected review replaces it.
-      context = buildContext();
-      await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
+    // Resolved before posting, so a thread that stays open settles the verdict of the one review the round posts.
+    const resolved = await resolveAddressedThreads(run, result);
+    const context = buildContext();
+    let reviewId: number;
+    try {
       reviewId = await postRound(run, result, context, reviewTimeMs);
+    } catch (error) {
+      // A thread is resolved only by a review that replaces the previous one.
+      await reopenThreads(octokit, resolved);
+      throw error;
     }
+    await replyFixedThreads(run, resolved);
     await completeProgressComment(run, stage);
     const pauseLifted = !pauseState([...recap.priorRounds, context], config).paused;
     await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha, pauseLifted ? startTime : undefined);
