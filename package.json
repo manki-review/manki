@@ -37,6 +37,7 @@
   },
   "devDependencies": {
     "@ast-grep/lang-python": "0.0.6",
+    "@ast-grep/lang-rust": "0.0.7",
     "@ast-grep/napi": "0.51.1",
     "@eslint/js": "^9.0.0",
     "@types/jest": "^29.5.0",
