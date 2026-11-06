@@ -202,7 +202,8 @@ function compileGlob(pattern: string): Minimatch {
   if (/\{[^}]*\{|\{[^}]*\.\.[^}]*\}/.test(pattern) || alternatives > MAX_GLOB_ALTERNATIVES) {
     throw new Error(`the glob expands into more than ${MAX_GLOB_ALTERNATIVES} patterns, nests braces or uses a brace range`);
   }
-  return new Minimatch(pattern, { dot: true, matchBase: !pattern.includes('/') });
+  // Extglobs such as `+(a|aa)+(a|aa)b` compile to nested quantifiers that backtrack for ages on a long file name.
+  return new Minimatch(pattern, { dot: true, matchBase: !pattern.includes('/'), noext: true });
 }
 
 export interface GrepArgs {

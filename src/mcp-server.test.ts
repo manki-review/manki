@@ -100,6 +100,8 @@ describe('Manki tool server', () => {
     expect(await call(fileClient, 'glob', { pattern: 'src/{1..99999}' })).toEqual(refusal);
     expect(await call(fileClient, 'grep', { text: 'x', glob: '{a,{b,c}}' })).toEqual(refusal);
     expect(await call(fileClient, 'grep', { text: 'x', glob: 'a'.repeat(201) })).toEqual({ text: 'the glob is longer than 200 characters', isError: true });
+    // An extglob matches literally, so it cannot backtrack.
+    expect((await call(fileClient, 'glob', { pattern: 'src/+(a|b).ts' })).text).toBe('No files.');
   });
 
   it('lists the commits of a file, or only those that changed its lines', async () => {
