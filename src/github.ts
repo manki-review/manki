@@ -289,7 +289,7 @@ export async function readConfigFile(
 const MAX_RESOLVE_DEPTH = 3;
 
 /**
- * Resolve `@path/to/file.md` references in CLAUDE.md content by fetching
+ * Resolve `@path/to/file.md` references in instruction file content by fetching
  * the referenced files from the repo and inlining their content.
  */
 async function resolveReferences(
@@ -342,30 +342,39 @@ async function resolveReferences(
   return resolvedLines.join('\n');
 }
 
+const INSTRUCTION_FILE_NAMES = ['AGENTS.md', 'CLAUDE.md'];
+const ROOT_INSTRUCTION_FILES = ['AGENTS.md', 'CLAUDE.md', '.claude/CLAUDE.md'];
+const MAX_INSTRUCTIONS_CHARS = 30_000;
+
 /**
- * Fetch repo context (CLAUDE.md, README, etc.) for richer reviews.
+ * Returns the repo description and the `AGENTS.md` and `CLAUDE.md` files at the root and nearest
+ * above each changed file, nearest first. Files with the same content after `@file` resolution
+ * appear once. The file that crosses `MAX_INSTRUCTIONS_CHARS` is cut, and farther files are left out.
  */
 export async function fetchRepoContext(
   octokit: Octokit,
   owner: string,
   repo: string,
   ref: string,
+  changedPaths: string[],
 ): Promise<string> {
-  const contextFiles = ['CLAUDE.md', '.claude/CLAUDE.md'];
-  const parts: string[] = [];
+  const paths = [...await findNearestInstructionFiles(octokit, owner, repo, ref, changedPaths), ...ROOT_INSTRUCTION_FILES];
 
-  for (const path of contextFiles) {
-    try {
-      const { data } = await octokit.rest.repos.getContent({ owner, repo, path, ref });
-      if ('content' in data && data.encoding === 'base64') {
-        let content = Buffer.from(data.content, 'base64').toString('utf-8');
-        const dir = path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
-        content = await resolveReferences(octokit, owner, repo, ref, content, dir);
-        parts.push(`## ${path}\n\n${content}`);
-      }
-    } catch {
-      // File doesn't exist, skip
+  const parts: string[] = [];
+  const seen = new Set<string>();
+  let total = 0;
+  for (const path of paths) {
+    const content = await fetchInstructionFile(octokit, owner, repo, ref, path);
+    if (content === null || !content.trim() || seen.has(content.trim())) continue;
+    seen.add(content.trim());
+    const part = `## ${path}\n\n${content}`;
+    if (total + part.length > MAX_INSTRUCTIONS_CHARS) {
+      parts.push(safeTruncate(part, MAX_INSTRUCTIONS_CHARS - total));
+      core.info(`Repo instructions reached ${MAX_INSTRUCTIONS_CHARS} characters: cut ${path} and skipped any farther files`);
+      break;
     }
+    parts.push(part);
+    total += part.length;
   }
 
   try {
@@ -378,6 +387,74 @@ export async function fetchRepoContext(
   }
 
   return parts.join('\n\n---\n\n');
+}
+
+/** Returns each name's nearest subdirectory file above any changed file, deepest first. */
+async function findNearestInstructionFiles(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  ref: string,
+  changedPaths: string[],
+): Promise<string[]> {
+  if (changedPaths.length === 0) return [];
+
+  let treeEntries: Array<{ path?: string; type?: string }>;
+  try {
+    const { data } = await octokit.rest.git.getTree({ owner, repo, tree_sha: ref, recursive: 'true' });
+    treeEntries = data.tree;
+  } catch {
+    core.debug('Could not fetch repo tree for subdirectory instruction files');
+    return [];
+  }
+
+  const existing = new Set(
+    treeEntries
+      .filter(e => e.type === 'blob' && e.path && INSTRUCTION_FILE_NAMES.some(name => e.path!.endsWith(`/${name}`)))
+      .map(e => e.path!)
+      .filter(p => !ROOT_INSTRUCTION_FILES.includes(p)),
+  );
+  if (existing.size === 0) return [];
+
+  const found = new Set<string>();
+  for (const changedPath of changedPaths) {
+    for (const name of INSTRUCTION_FILE_NAMES) {
+      let dir = changedPath.includes('/') ? changedPath.substring(0, changedPath.lastIndexOf('/')) : '';
+      while (dir) {
+        const candidate = `${dir}/${name}`;
+        if (existing.has(candidate)) {
+          found.add(candidate);
+          break;
+        }
+        dir = dir.includes('/') ? dir.substring(0, dir.lastIndexOf('/')) : '';
+      }
+    }
+  }
+
+  const depth = (path: string) => path.split('/').length;
+  return [...found].sort((a, b) => depth(b) - depth(a) || a.localeCompare(b));
+}
+
+/** Returns the file's content with `@file` references inlined, or null when it can't be read. */
+async function fetchInstructionFile(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  ref: string,
+  path: string,
+): Promise<string | null> {
+  try {
+    const { data } = await octokit.rest.repos.getContent({ owner, repo, path, ref });
+    if (!('content' in data) || data.encoding !== 'base64') return null;
+    const content = Buffer.from(data.content, 'base64').toString('utf-8');
+    const dir = path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
+    return await resolveReferences(octokit, owner, repo, ref, content, dir);
+  } catch (error) {
+    if ((error as { status?: number }).status !== 404) {
+      core.warning(`Could not read instruction file ${path}: ${error}`);
+    }
+    return null;
+  }
 }
 
 /**
@@ -1777,72 +1854,6 @@ export async function fetchLinkedIssues(
   }
 
   return results;
-}
-
-/**
- * Discover and fetch CLAUDE.md files in subdirectories relevant to changed file paths.
- * Walks up the directory tree from each changed file to find the nearest CLAUDE.md,
- * excluding root-level files already fetched by `fetchRepoContext`.
- */
-export async function fetchSubdirClaudeMd(
-  octokit: Octokit,
-  owner: string,
-  repo: string,
-  ref: string,
-  changedPaths: string[],
-): Promise<string> {
-  if (changedPaths.length === 0) return '';
-
-  let treeEntries: Array<{ path?: string; type?: string }>;
-  try {
-    const { data } = await octokit.rest.git.getTree({ owner, repo, tree_sha: ref, recursive: 'true' });
-    treeEntries = data.tree;
-  } catch {
-    core.debug('Could not fetch repo tree for subdirectory CLAUDE.md discovery');
-    return '';
-  }
-
-  const claudeMdPaths = new Set(
-    treeEntries
-      .filter(e => e.type === 'blob' && e.path?.endsWith('/CLAUDE.md'))
-      .map(e => e.path!)
-      .filter(p => p !== 'CLAUDE.md' && p !== '.claude/CLAUDE.md'),
-  );
-
-  if (claudeMdPaths.size === 0) return '';
-
-  // For each changed file, walk up the directory tree and find the nearest CLAUDE.md
-  const toFetch = new Set<string>();
-  for (const changedPath of changedPaths) {
-    let dir = changedPath.includes('/') ? changedPath.substring(0, changedPath.lastIndexOf('/')) : '';
-    while (dir) {
-      const candidate = `${dir}/CLAUDE.md`;
-      if (claudeMdPaths.has(candidate)) {
-        toFetch.add(candidate);
-        break;
-      }
-      dir = dir.includes('/') ? dir.substring(0, dir.lastIndexOf('/')) : '';
-    }
-  }
-
-  if (toFetch.size === 0) return '';
-
-  const parts: string[] = [];
-  for (const path of toFetch) {
-    try {
-      const { data } = await octokit.rest.repos.getContent({ owner, repo, path, ref });
-      if ('content' in data && data.encoding === 'base64') {
-        let content = Buffer.from(data.content, 'base64').toString('utf-8');
-        const dir = path.substring(0, path.lastIndexOf('/'));
-        content = await resolveReferences(octokit, owner, repo, ref, content, dir);
-        parts.push(`## ${path}\n\n${content}`);
-      }
-    } catch {
-      core.debug(`Could not fetch subdirectory CLAUDE.md: ${path}`);
-    }
-  }
-
-  return parts.join('\n\n---\n\n');
 }
 
 /**

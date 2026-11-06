@@ -180,7 +180,6 @@ jest.mock('./github', () => {
   fetchConfigFile: jest.fn().mockResolvedValue(null),
   readConfigFile: jest.fn().mockResolvedValue(null),
   fetchRepoContext: jest.fn().mockResolvedValue(''),
-  fetchSubdirClaudeMd: jest.fn().mockResolvedValue(null),
   fetchFileContents: jest.fn().mockResolvedValue(new Map()),
   fetchInterRoundDiff: jest.fn().mockResolvedValue(''),
   fetchHeadSha: jest.requireActual('./github').fetchHeadSha,
@@ -1878,8 +1877,6 @@ describe('runFullReview orchestration', () => {
     jest.mocked(ghUtils.postReview).mockResolvedValue({ id: 123, approvalHeld: false });
     jest.mocked(ghUtils.fetchPRDiff).mockResolvedValue('');
     jest.mocked(ghUtils.fetchRepoContext).mockResolvedValue('');
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    jest.mocked(ghUtils.fetchSubdirClaudeMd).mockResolvedValue(null as any);
     jest.mocked(ghUtils.fetchFileContents).mockResolvedValue(new Map());
     jest.mocked(ghUtils.fetchLinkedIssues).mockResolvedValue([]);
     jest.mocked(ghUtils.dismissPreviousReviews).mockResolvedValue(undefined);

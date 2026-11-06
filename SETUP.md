@@ -723,7 +723,8 @@ static_analysis:
 # metrics:
 #   fix_rate: true
 
-# Additional context for reviewers
+# Additional context for reviewers. Reviewers also read the root `AGENTS.md` and
+# `CLAUDE.md` files, and the nearest ones above each changed file.
 instructions: |
   This is a Rust project. Focus on ownership and error handling.
 

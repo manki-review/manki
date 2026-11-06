@@ -27,7 +27,6 @@ import {
   fetchConfigFile,
   readConfigFile,
   fetchRepoContext,
-  fetchSubdirClaudeMd,
   fetchFileContents,
   fetchInterRoundDiff,
   fetchHeadSha,
@@ -865,20 +864,6 @@ async function warmUpClients(clients: ReviewClients): Promise<void> {
   );
 }
 
-async function fetchReviewRepoContext(target: RunTarget, changedPaths: string[]): Promise<string> {
-  const { octokit, owner, repo, baseRef } = target;
-  let repoContext = await fetchRepoContext(octokit, owner, repo, baseRef);
-  try {
-    const subdirContext = await fetchSubdirClaudeMd(octokit, owner, repo, baseRef, changedPaths);
-    if (subdirContext) {
-      repoContext = repoContext ? `${repoContext}\n\n---\n\n${subdirContext}` : subdirContext;
-    }
-  } catch (error) {
-    core.warning(`Failed to fetch subdirectory CLAUDE.md files: ${error}`);
-  }
-  return repoContext;
-}
-
 async function loadRunMemory(
   config: ReviewConfig, appMemory: AppMemory | undefined, owner: string, repo: string,
 ): Promise<{ memory: RepoMemory | null; memoryLoadStatus: MemoryLoadStatus; memoryLoadError?: string }> {
@@ -1483,7 +1468,7 @@ async function runFullReview(
     // Placed after the diff-size and empty-files guards so cold installs are skipped on paths that never invoke an LLM.
     await warmUpClients(clients);
 
-    const repoContext = await fetchReviewRepoContext(target, diff.files.map(f => f.path));
+    const repoContext = await fetchRepoContext(target.octokit, target.owner, target.repo, target.baseRef, diff.files.map(f => f.path));
     const { memory, memoryLoadStatus, memoryLoadError } = await loadRunMemory(config, appMemory, owner, repo);
 
     const priorRoundCount = recap.priorRounds.length;
