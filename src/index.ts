@@ -806,17 +806,17 @@ async function replacePreviousReviews(target: RunTarget, progress: RunProgress, 
   await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId);
 }
 
-/** Posts a verdict for a diff no reviewer reads, then replaces the previous review. */
+/** Posts a verdict for a diff no reviewer reads, replaces the previous review and marks the progress comment complete. */
 async function postUnreviewedRound(
   target: RunTarget, progress: RunProgress, commentId: number, dashboard: DashboardData, diff: ParsedDiff,
-  verdict: 'APPROVE' | 'COMMENT', summary: string,
+  verdict: 'APPROVE' | 'COMMENT', summary: string, metadata: ReviewMetadata,
 ): Promise<void> {
   const { octokit, bot, owner, repo, prNumber, commitSha } = target;
   await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
   const result = { verdict, summary, findings: [], highlights: [], reviewComplete: true, agentNames: [] as string[] };
   const reviewId = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
   await replacePreviousReviews(target, progress, reviewId);
-  await updateProgressComment(octokit, owner, repo, commentId, dashboard);
+  await updateProgressComment(octokit, owner, repo, commentId, dashboard, metadata);
   await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha);
 }
 
@@ -1434,11 +1434,16 @@ async function runFullReview(
     const lineCount = diff.totalAdditions + diff.totalDeletions;
     const dashboard = initialDashboard(diff, config, !!clients.planner);
     await updateProgressDashboard(octokit, owner, repo, commentId, dashboard, commitSha);
+    const unreviewedMetadata = (): ReviewMetadata => ({
+      config: metadataConfig(config, models, 'none', []),
+      judgeDecisions: [],
+      timing: { parseMs: parseEndTime - startTime, reviewMs: 0, judgeMs: 0, totalMs: Date.now() - startTime },
+    });
 
     if (isDiffTooLarge(diff, config.max_diff_lines)) {
       core.warning(`Diff too large (${lineCount} reviewable lines > ${config.max_diff_lines} max)`);
       await postUnreviewedRound(target, progress, commentId, dashboard, diff, 'COMMENT',
-        `Too large to review automatically: ${lineCount} changed lines, above the limit of ${config.max_diff_lines}.`);
+        `Too large to review automatically: ${lineCount} changed lines, above the limit of ${config.max_diff_lines}.`, unreviewedMetadata());
       return;
     }
 
@@ -1446,7 +1451,8 @@ async function runFullReview(
 
     if (diff.files.length === 0) {
       core.info('No reviewable files in diff');
-      await postUnreviewedRound(target, progress, commentId, dashboard, diff, 'APPROVE', 'No reviewable files in this PR (all filtered out by config).');
+      await postUnreviewedRound(target, progress, commentId, dashboard, diff, 'APPROVE', 'No reviewable files in this PR (all filtered out by config).',
+        unreviewedMetadata());
       return;
     }
 

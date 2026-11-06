@@ -2036,6 +2036,9 @@ describe('runFullReview orchestration', () => {
       }),
       expect.anything(),
     );
+    expect(jest.mocked(ghUtils.updateProgressComment)).toHaveBeenLastCalledWith(
+      expect.anything(), 'test-owner', 'test-repo', expect.any(Number), expect.anything(), expect.objectContaining({ judgeDecisions: [] }),
+    );
     // Should NOT have called runReview (Claude)
     expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
     // Warmup must be skipped on paths that never invoke an LLM.
@@ -2078,6 +2081,11 @@ describe('runFullReview orchestration', () => {
         summary: expect.stringContaining('No reviewable files'),
       }),
       expect.anything(),
+    );
+    // Metadata is what makes the progress comment read as complete rather than failed.
+    expect(jest.mocked(ghUtils.updateProgressComment)).toHaveBeenLastCalledWith(
+      expect.anything(), 'test-owner', 'test-repo', expect.any(Number), expect.anything(),
+      expect.objectContaining({ judgeDecisions: [], config: expect.objectContaining({ triage: 'none', teamAgents: [] }) }),
     );
     expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
     // Warmup must be skipped on paths that never invoke an LLM.
