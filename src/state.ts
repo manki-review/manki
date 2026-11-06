@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
 import { completeReviewCheck, outcomeReport, startReviewCheck } from './check-run';
-import { approvalHeldLine, BotIdentity, BOT_MARKER as PROGRESS_MARKER, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchConflictingBase, fetchInterRoundDiff, fetchPRComments, fetchReviewThreadNodes, fetchStandingVerdict, FOLLOW_UP_MARKER, FORCE_CAP_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgressOn, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
+import { approvalHeldLine, APPROVED_LINE, BotIdentity, BOT_MARKER as PROGRESS_MARKER, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchConflictingBase, fetchInterRoundDiff, fetchPRComments, fetchReviewThreadNodes, fetchStandingVerdict, FOLLOW_UP_MARKER, FORCE_CAP_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgressOn, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
 import type { StandingVerdict } from './github';
 import { isSameChange } from './diff';
 import { fetchPriorRoundContexts, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, PreviousFinding, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf } from './recap';
@@ -508,7 +508,7 @@ async function checkAndAutoApprove(
   // An empty review body trips the head-SHA dedupe gate (`hasBotReviewOnCommit`)
   // for any subsequent force-review tick on the same commit ([#840]).
   const overrideLine = formatSecurityOverrides(overrides);
-  const body = withMarkers(`✅ **Approved.** All blocking threads are resolved.${overrideLine ? `\n\n${overrideLine}` : ''}`, BOT_MARKER);
+  const body = withMarkers(`${APPROVED_LINE} All blocking threads are resolved.${overrideLine ? `\n\n${overrideLine}` : ''}`, BOT_MARKER);
 
   try {
     try {

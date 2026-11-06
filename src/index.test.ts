@@ -244,6 +244,7 @@ jest.mock('./github', () => {
   isTrustedAssociation: jest.requireActual('./github').isTrustedAssociation,
   titleToSlug: jest.requireActual('./github').titleToSlug,
   truncateBody: jest.requireActual('./github').truncateBody,
+  APPROVED_LINE: jest.requireActual('./github').APPROVED_LINE,
   BOT_MARKER: '<!-- manki-bot -->',
   REVIEW_COMPLETE_MARKER: '<!-- manki-review-complete -->',
   FORCE_REVIEW_MARKER: '<!-- manki-force-review -->',
