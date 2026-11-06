@@ -122,7 +122,8 @@ async function main(): Promise<number> {
     writeFileSync(join(relatedDir, 'inside-related.txt'), relatedMarker);
     symlinkSync(outsideFile, join(relatedDir, 'related-link.txt'));
     symlinkSync(scratch, join(relatedDir, 'related-dirlink'));
-    mkdirSync(join(related.stateDir, 'canary%2Frelated.lock'), { recursive: true });
+    mkdirSync(related.stateDir);
+    writeFileSync(join(related.stateDir, 'canary%2Frelated.lock'), String(process.pid));
     writeFileSync(join(related.stateDir, 'canary%2Frelated.done'), relatedDir);
     const systemPromptPath = join(scratch, 'system.md');
     writeFileSync(systemPromptPath, 'You test a sandbox. Follow the user instructions exactly and report each tool result verbatim.');

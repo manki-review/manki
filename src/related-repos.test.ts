@@ -1,4 +1,5 @@
 import * as core from '@actions/core';
+import { spawnSync } from 'child_process';
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { devNull, tmpdir } from 'os';
 import { join } from 'path';
@@ -94,9 +95,10 @@ describe('relatedRepoLoader', () => {
     await expect(load('dashpay/other')).rejects.toThrow('dashpay/other is not a related repo');
   });
 
-  it('waits for another tool server that is fetching the repo, and takes its outcome', async () => {
-    mkdirSync(join(stateDir, 'dashpay%2Fdips.lock'));
-    mkdirSync(join(stateDir, 'dashpay%2Fdash.lock'));
+  it('waits for another tool server that is fetching the repo, takes its outcome, and records a failure when it stops or hangs', async () => {
+    const lock = (name: string, pid = process.pid) => writeFileSync(join(stateDir, `${name}.lock`), String(pid));
+    lock('dashpay%2Fdips');
+    lock('dashpay%2Fdash');
     const run = fakeGit();
     const load = loader([DASH, DIPS], { run, timeoutMs: 5000 });
 
@@ -109,9 +111,22 @@ describe('relatedRepoLoader', () => {
     await expect(dash).rejects.toThrow('fatal: repository not found');
     expect(run).not.toHaveBeenCalled();
 
-    // A lock whose holder died is given up on once the fetch time limit has passed.
-    mkdirSync(join(stateDir, 'dashpay%2Fplatform.lock'));
-    await expect(loader([PLATFORM], { timeoutMs: 100 })('dashpay/platform')).rejects.toThrow("another reviewer's fetch of dashpay/platform did not finish in time");
+    lock('dashpay%2Fplatform', spawnSync('true').pid);
+    await expect(loader([PLATFORM], { run })('dashpay/platform')).rejects.toThrow('the reviewer fetching dashpay/platform stopped before it finished');
+    const hung: RelatedRepo = { repo: 'dashpay/hung', kind: 'reference' };
+    lock('dashpay%2Fhung');
+    await expect(loader([hung], { run, timeoutMs: 100 })('dashpay/hung')).rejects.toThrow("another reviewer's fetch of dashpay/hung did not finish in time");
+    expect(run).not.toHaveBeenCalled();
+
+    // A lock that never got an outcome warns too.
+    lock('dashpay%2Fsilent');
+    warnRelatedRepoFailures(stateDir);
+    expect(jest.mocked(core.warning).mock.calls.map(([message]) => message)).toEqual([
+      'Could not fetch related repo dashpay/dash, which must be public on github.com: fatal: repository not found',
+      "Could not fetch related repo dashpay/hung, which must be public on github.com: another reviewer's fetch of dashpay/hung did not finish in time",
+      'Could not fetch related repo dashpay/platform, which must be public on github.com: the reviewer fetching dashpay/platform stopped before it finished',
+      'Could not fetch related repo dashpay/silent, which must be public on github.com: the fetch never finished',
+    ]);
   });
 
   /** Writes a clone as `actions/cache` restores it, with objects and a `.git/config` and `objects/info` that point elsewhere. */

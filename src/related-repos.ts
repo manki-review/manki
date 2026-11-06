@@ -7,7 +7,9 @@ import { runTool } from './binary-analyzers';
 import { RelatedRepo, RelatedRepoTools } from './types';
 import { gitEnv } from './workspace';
 
-const FETCH_TIMEOUT_MS = 120_000;
+// A tool call that runs for the fetch and the wait after it must end before the CLI's 90 second stale limit.
+const FETCH_TIMEOUT_MS = 60_000;
+const WAIT_SLACK_MS = 2_000;
 const WAIT_POLL_MS = 250;
 // Git sends no credential, so a private repo fails, and runs no hook or fsmonitor of a clone.
 const GIT_CONFIG = { 'credential.helper': '', 'core.hooksPath': devNull, 'core.fsmonitor': 'false' };
@@ -48,12 +50,12 @@ export function relatedRepoLoader(
 }
 
 /**
- * Runs `checkout` in the one process that creates the lock `<marker>.lock`, which records the outcome in `<marker>.done`
- * or `<marker>.failed`. Any other process waits for that outcome.
+ * Runs `checkout` in the one process that creates the lock `<marker>.lock`, holding its PID, which records the outcome
+ * in `<marker>.done` or `<marker>.failed`. Any other process waits for that outcome.
  */
 async function sharedCheckout(repo: RelatedRepo, marker: string, timeoutMs: number, checkout: () => Promise<string>): Promise<string> {
   try {
-    mkdirSync(`${marker}.lock`);
+    writeFileSync(`${marker}.lock`, String(process.pid), { flag: 'wx' });
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
     return waitForCheckout(repo, marker, timeoutMs);
@@ -74,22 +76,44 @@ function writeMarker(path: string, text: string): void {
   renameSync(`${path}.tmp`, path);
 }
 
+/** Waits for the outcome the lock holder records, and records a failure when the holder stops or runs out of time. */
 async function waitForCheckout(repo: RelatedRepo, marker: string, timeoutMs: number): Promise<string> {
-  // The process holding the lock gives up on its fetch after `timeoutMs`, so a lock held twice as long is stale.
-  const deadline = Date.now() + 2 * timeoutMs;
+  // The lock holder gives up on its fetch after `timeoutMs`, so a lock held longer belongs to a holder that hangs.
+  const deadline = Date.now() + timeoutMs + WAIT_SLACK_MS;
+  let reason = `another reviewer's fetch of ${repo.repo} did not finish in time`;
   while (Date.now() < deadline) {
     if (existsSync(`${marker}.done`)) return readFileSync(`${marker}.done`, 'utf-8');
     if (existsSync(`${marker}.failed`)) throw new Error(readFileSync(`${marker}.failed`, 'utf-8'));
+    if (!isHolderAlive(`${marker}.lock`)) {
+      reason = `the reviewer fetching ${repo.repo} stopped before it finished`;
+      break;
+    }
     await new Promise(done => setTimeout(done, WAIT_POLL_MS));
   }
-  throw new Error(`another reviewer's fetch of ${repo.repo} did not finish in time`);
+  writeMarker(`${marker}.failed`, reason);
+  throw new Error(reason);
 }
 
-/** Warns about each related repo a tool server of the round in `stateDir` could not fetch. */
+/** Whether the process whose PID the lock holds still runs. A lock whose PID is not written yet counts as held. */
+function isHolderAlive(lock: string): boolean {
+  const pid = Number(readFileSync(lock, 'utf-8'));
+  if (!pid) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/** Warns about each related repo a tool server of the round in `stateDir` could not fetch or never finished fetching. */
 export function warnRelatedRepoFailures(stateDir: string): void {
-  for (const file of readdirSync(stateDir).filter(f => f.endsWith('.failed')).sort()) {
-    const name = decodeURIComponent(file.slice(0, -'.failed'.length));
-    core.warning(`Could not fetch related repo ${name}, which must be public on github.com: ${readFileSync(join(stateDir, file), 'utf-8')}`);
+  const files = new Set(readdirSync(stateDir));
+  for (const lock of [...files].filter(f => f.endsWith('.lock')).sort()) {
+    const marker = lock.slice(0, -'.lock'.length);
+    if (files.has(`${marker}.done`)) continue;
+    const reason = files.has(`${marker}.failed`) ? readFileSync(join(stateDir, `${marker}.failed`), 'utf-8') : 'the fetch never finished';
+    core.warning(`Could not fetch related repo ${decodeURIComponent(marker)}, which must be public on github.com: ${reason}`);
   }
 }
 

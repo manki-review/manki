@@ -207,8 +207,9 @@ describe('Manki tool server', () => {
     writeFileSync(join(relatedDir, 'lib.rs'), 'pub fn api() {}\n');
     symlinkSync(join(outside, 'secret.ts'), join(relatedDir, 'link.rs'));
     // Another tool server of the round fetched `o/r` and failed on `o/missing`, so no git runs here.
+    mkdirSync(stateDir);
     for (const [marker, outcome] of [['o%2Fr.done', relatedDir], ['o%2Fmissing.failed', 'fatal: repository not found']]) {
-      mkdirSync(join(stateDir, marker.replace(/\.\w+$/, '.lock')), { recursive: true });
+      writeFileSync(join(stateDir, marker.replace(/\.\w+$/, '.lock')), String(process.pid));
       writeFileSync(join(stateDir, marker), outcome);
     }
     const related: RelatedRepoTools = { repos: [{ repo: 'o/r', kind: 'consumer' }, { repo: 'o/missing', kind: 'reference' }], cacheDir, stateDir };
