@@ -6,7 +6,7 @@ import OpenAI from 'openai';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import * as core from '@actions/core';
 
-import { buildExitDiagnostics, callWithTimeout, cliEnv, extractCliErrorSnippet, matchQuotaText, registerAuthFileSecrets, runCli, seedAuthFile, STALE_TIMEOUT_MS, warnReplyTail } from './cli-utils';
+import { buildExitDiagnostics, callWithTimeout, cliEnv, extractCliErrorSnippet, matchQuotaText, registerAuthFileSecrets, repoToolsPrompt, runCli, seedAuthFile, STALE_TIMEOUT_MS, ToolServerCommand, toolServerCommand, warnReplyTail } from './cli-utils';
 import { LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -88,6 +88,20 @@ function openAIQuotaError(error: unknown): QuotaError | undefined {
   return new QuotaError(`${limit}: ${text}`, limit, matchQuotaText(text)?.resetsAt, 'key');
 }
 
+/**
+ * Returns the `-c` overrides that give Codex Manki's tool server. Its tools are read-only, so they run without
+ * approval. Codex starts the server with a few default variables only, so the runner temp folder is passed on.
+ */
+function codexToolServerArgs({ command, args }: ToolServerCommand): string[] {
+  const runnerTemp = process.env.RUNNER_TEMP;
+  return [
+    '-c', `mcp_servers.manki.command=${JSON.stringify(command)}`,
+    '-c', `mcp_servers.manki.args=${JSON.stringify(args)}`,
+    '-c', 'mcp_servers.manki.default_tools_approval_mode="approve"',
+    ...(runnerTemp ? ['-c', `mcp_servers.manki.env.RUNNER_TEMP=${JSON.stringify(runnerTemp)}`] : []),
+  ];
+}
+
 let cliInstallPromise: Promise<string> | null = null;
 
 export function resetCLIInstallPromise(): void {
@@ -114,6 +128,10 @@ export class OpenAIClient implements LLMClient {
       // 1200s hard deadline. The SDK default (600s) leaves the action hanging on slow calls.
       this.openai = new OpenAI({ apiKey: this.auth.key, timeout: 300_000 });
     }
+  }
+
+  get repoTools(): boolean {
+    return this.auth.kind === 'oauth';
   }
 
   async sendMessage(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
@@ -168,7 +186,9 @@ export class OpenAIClient implements LLMClient {
   }
 
   private async sendViaOAuth(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
-    const fullPrompt = `${systemPrompt}\n\n---\n\n${userMessage}`;
+    const repoTools = options?.repoTools;
+    const toolsPrompt = repoTools ? `\n\n${repoToolsPrompt(repoTools, '`read_file`, `grep` and `glob`')}` : '';
+    const fullPrompt = `${systemPrompt}${toolsPrompt}\n\n---\n\n${userMessage}`;
     const codexHome = resolveCodexHome();
     const oauthToken = this.auth.kind === 'oauth' ? this.auth.token : undefined;
     const model = this.model;
@@ -198,6 +218,8 @@ export class OpenAIClient implements LLMClient {
     } else if (options?.effort) {
       core.warning(`Ignoring effort=${options.effort} for model "${this.model}": it does not accept reasoning effort. The Codex CLI will apply its own default effort instead.`);
     }
+
+    if (repoTools) args.push(...codexToolServerArgs(toolServerCommand(repoTools.root, true)));
 
     // Read prompt from stdin
     args.push('-');
