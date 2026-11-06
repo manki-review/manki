@@ -3432,10 +3432,10 @@ describe('postReview non-blocking findings', () => {
   });
 
   it('previews the flagged line with two lines each side at the reviewed commit, kept inside the file', async () => {
-    const { octokit, createReview, getContent } = makeOctokit({ 'src/a.ts': 'x\n'.repeat(41), 'src/c.ts': 'x\n'.repeat(10) });
+    const { octokit, createReview, getContent } = makeOctokit({ 'src/a.ts': 'x\n'.repeat(41), 'src/c.ts': `${'x'.repeat(60_000)}\n`.repeat(10) });
 
     await postReview(octokit, 'owner', 'repo', 1, 'abc1234', buildResult([
-      nonBlocking('suggestion', 'Near the end of `Vec<u8>` & co', 40),
+      nonBlocking('suggestion', 'Near the end of `Vec<u8>`\n\n& co', 40),
       nonBlocking('suggestion', 'Past the end', 50),
       nonBlocking('suggestion', 'At the top', 1, { file: 'src/c.ts' }),
     ]), diff);
@@ -3445,7 +3445,7 @@ describe('postReview non-blocking findings', () => {
     expect(body).toContain('<summary>\u2728 <b>Near the end of <code>Vec&lt;u8&gt;</code> &amp; co</b>');
     expect(body).toContain('\n\nhttps://github.com/owner/repo/blob/abc1234/src/a.ts#L38-L41\n\n</details>');
     expect(body).toContain('\n\nhttps://github.com/owner/repo/blob/abc1234/src/c.ts#L1-L3\n\n</details>');
-    expect(body).not.toContain('#L48-L');
+    expect(body).not.toContain('#L48');
     expect(body).toContain('<b>Past the end</b>');
   });
 

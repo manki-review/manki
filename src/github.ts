@@ -1020,9 +1020,13 @@ function formatFindingBlock(finding: Finding, linkTo: LineLink): string {
   return [...lines, ...formatFindingDetail(finding)].join('\n');
 }
 
-/** Renders inline Markdown as HTML, for a `<summary>`, which GitHub does not parse as Markdown. Keeps code spans and bold. */
+/**
+ * Renders inline Markdown as HTML on one line, for a `<summary>`, which GitHub does not parse as Markdown.
+ * Keeps code spans and bold.
+ */
 function inlineHtml(markdown: string): string {
   return markdown
+    .replace(/\s+/g, ' ')
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
     .replace(/(`+)\s?(.+?)\s?\1|\*\*(.+?)\*\*/g, (_, _ticks, code, bold) => (code !== undefined ? `<code>${code}</code>` : `<b>${bold}</b>`));
 }
@@ -1830,10 +1834,13 @@ export async function fetchFileContents(
   return fileContents;
 }
 
+/** The largest file the contents API returns with its content. */
+const MAX_CONTENT_API_BYTES = 1024 * 1024;
+
 /** Returns the number of lines in each of `files` at `ref`, leaving out any file that can't be read. */
 async function fetchLineCounts(octokit: Octokit, owner: string, repo: string, ref: string, files: string[]): Promise<Map<string, number>> {
   if (files.length === 0) return new Map();
-  const contents = await fetchFileContents(octokit, owner, repo, ref, files);
+  const contents = await fetchFileContents(octokit, owner, repo, ref, files, MAX_CONTENT_API_BYTES, Infinity);
   return new Map([...contents].map(([path, text]) => [path, text.split('\n').length - (text.endsWith('\n') ? 1 : 0)]));
 }
 
