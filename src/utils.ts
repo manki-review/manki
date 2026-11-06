@@ -62,6 +62,16 @@ export function redactSecrets(text: string): string {
   return secretForms().reduce((result, form) => result.replaceAll(form, '[REDACTED]'), text);
 }
 
+/** Applies `redactSecrets` to every string in `value`, through arrays and plain objects. */
+export function redactSecretsDeep(value: unknown): unknown {
+  if (typeof value === 'string') return redactSecrets(value);
+  if (Array.isArray(value)) return value.map(redactSecretsDeep);
+  if (value && Object.getPrototypeOf(value) === Object.prototype) {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, redactSecretsDeep(entry)]));
+  }
+  return value;
+}
+
 /** Returns every form of a secret value that `redactSecrets` replaces, longest first. */
 function secretForms(): string[] {
   const inputs = Object.entries(process.env).flatMap(([name, value]) => (/^INPUT_/i.test(name) && SECRET_NAME.test(name) && value ? [value] : []));
