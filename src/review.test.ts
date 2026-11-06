@@ -193,7 +193,7 @@ describe('validateSeverity', () => {
 describe('determineOutcome', () => {
   it('returns ADDRESS_FIRST when any finding is required', () => {
     const findings: Finding[] = [
-      makeFinding({ severity: 'warning' }),
+      makeFinding({ severity: 'warning', tags: ['security'] }),
       makeFinding({ severity: 'blocker' }),
     ];
     expect(determineOutcome(findings).outcome).toBe('ADDRESS_FIRST');
@@ -201,7 +201,7 @@ describe('determineOutcome', () => {
   });
 
   it('returns ADDRESS_FIRST when a novel suggestion exists', () => {
-    const findings: Finding[] = [makeFinding({ severity: 'warning' })];
+    const findings: Finding[] = [makeFinding({ severity: 'warning', tags: ['security'] })];
     expect(determineOutcome(findings).outcome).toBe('ADDRESS_FIRST');
     expect(determineOutcome(findings).verdictReason).toBe('novel_suggestion');
   });
@@ -225,7 +225,7 @@ describe('determineOutcome', () => {
 
   it('returns ADDRESS_FIRST when a suggestion has no matching prior-round dismissal', () => {
     const findings: Finding[] = [
-      { severity: 'warning', title: 'Missing null check', file: 'src/handler.ts', line: 1, description: 'The return value should be checked for null', reviewers: ['reviewer-1'], judgeConfidence: 'high' },
+      { severity: 'warning', tags: ['security'], title: 'Missing null check', file: 'src/handler.ts', line: 1, description: 'The return value should be checked for null', reviewers: ['reviewer-1'], judgeConfidence: 'high' },
     ];
     const result = determineOutcome(findings, []);
     expect(result.outcome).toBe('ADDRESS_FIRST');
@@ -234,7 +234,7 @@ describe('determineOutcome', () => {
 
   it('returns READY when the only suggestion matches a prior-round agreement', () => {
     const findings: Finding[] = [
-      { severity: 'warning', title: 'Missing null check', file: 'src/handler.ts', line: 10, description: 'desc', reviewers: ['reviewer-1'] },
+      { severity: 'warning', tags: ['security'], title: 'Missing null check', file: 'src/handler.ts', line: 10, description: 'desc', reviewers: ['reviewer-1'] },
     ];
     const priors: LegacyHandoverFindingFixture[] = [{
       fingerprint: { file: 'src/handler.ts', lineStart: 10, lineEnd: 10, slug: 'Missing-null-check' },
@@ -250,7 +250,7 @@ describe('determineOutcome', () => {
   it('returns READY for a mix of nitpicks and dismissed warnings', () => {
     const findings: Finding[] = [
       makeFinding({ severity: 'nitpick' }),
-      { severity: 'warning', title: 'Missing null check', file: 'src/handler.ts', line: 10, description: 'desc', reviewers: ['reviewer-1'] },
+      { severity: 'warning', tags: ['security'], title: 'Missing null check', file: 'src/handler.ts', line: 10, description: 'desc', reviewers: ['reviewer-1'] },
     ];
     const priors: LegacyHandoverFindingFixture[] = [{
       fingerprint: { file: 'src/handler.ts', lineStart: 10, lineEnd: 10, slug: 'Missing-null-check' },
@@ -265,7 +265,7 @@ describe('determineOutcome', () => {
 
   it('returns READY for a single dismissed warning (no nitpick mix)', () => {
     const findings: Finding[] = [
-      { severity: 'warning', title: 'Extract helper', file: 'src/handler.ts', line: 10, description: 'desc', reviewers: ['reviewer-1'] },
+      { severity: 'warning', tags: ['security'], title: 'Extract helper', file: 'src/handler.ts', line: 10, description: 'desc', reviewers: ['reviewer-1'] },
     ];
     const priors: LegacyHandoverFindingFixture[] = [{
       fingerprint: { file: 'src/handler.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Extract helper') },
@@ -280,7 +280,7 @@ describe('determineOutcome', () => {
 
   it('returns ADDRESS_FIRST when the matching prior warning has authorReply "disagree"', () => {
     const findings: Finding[] = [
-      { severity: 'warning', title: 'Extract helper', file: 'src/handler.ts', line: 10, description: 'desc', reviewers: ['reviewer-1'] },
+      { severity: 'warning', tags: ['security'], title: 'Extract helper', file: 'src/handler.ts', line: 10, description: 'desc', reviewers: ['reviewer-1'] },
     ];
     const priors: LegacyHandoverFindingFixture[] = [{
       fingerprint: { file: 'src/handler.ts', lineStart: 10, lineEnd: 10, slug: titleToSlug('Extract helper') },
@@ -323,8 +323,8 @@ describe('determineOutcome', () => {
 
   it('returns ADDRESS_FIRST when mixing dismissed and novel suggestions', () => {
     const findings: Finding[] = [
-      { severity: 'warning', title: 'Missing null check', file: 'src/handler.ts', line: 10, description: 'desc', reviewers: ['reviewer-1'] },
-      { severity: 'warning', title: 'Unused import', file: 'src/handler.ts', line: 20, description: 'desc', reviewers: ['reviewer-1'] },
+      { severity: 'warning', tags: ['security'], title: 'Missing null check', file: 'src/handler.ts', line: 10, description: 'desc', reviewers: ['reviewer-1'] },
+      { severity: 'warning', tags: ['security'], title: 'Unused import', file: 'src/handler.ts', line: 20, description: 'desc', reviewers: ['reviewer-1'] },
     ];
     const priors: LegacyHandoverFindingFixture[] = [{
       fingerprint: { file: 'src/handler.ts', lineStart: 10, lineEnd: 10, slug: 'Missing-null-check' },
@@ -339,7 +339,7 @@ describe('determineOutcome', () => {
 
   it('treats undefined priorRounds as "all suggestions novel"', () => {
     const findings: Finding[] = [
-      { severity: 'warning', title: 'Something', file: 'a.ts', line: 3, description: 'desc', reviewers: ['r'] },
+      { severity: 'warning', tags: ['security'], title: 'Something', file: 'a.ts', line: 3, description: 'desc', reviewers: ['r'] },
     ];
     expect(determineOutcome(findings).outcome).toBe('ADDRESS_FIRST');
     expect(determineOutcome(findings).verdictReason).toBe('novel_suggestion');
@@ -348,7 +348,7 @@ describe('determineOutcome', () => {
   it('only dismisses when the prior authorReply is "agree"', () => {
     const title = 'T';
     const findings: Finding[] = [
-      { severity: 'warning', title, file: 'f.ts', line: 5, description: 'd', reviewers: ['r'] },
+      { severity: 'warning', tags: ['security'], title, file: 'f.ts', line: 5, description: 'd', reviewers: ['r'] },
     ];
     const priors: LegacyHandoverFindingFixture[] = [{
       fingerprint: { file: 'f.ts', lineStart: 5, lineEnd: 5, slug: titleToSlug(title) },
@@ -362,7 +362,7 @@ describe('determineOutcome', () => {
   it.each(['partial', 'none'] as const)('does not dismiss when authorReply is "%s"', (reply) => {
     const title = 'T';
     const findings: Finding[] = [
-      { severity: 'warning', title, file: 'f.ts', line: 5, description: 'd', reviewers: ['r'] },
+      { severity: 'warning', tags: ['security'], title, file: 'f.ts', line: 5, description: 'd', reviewers: ['r'] },
     ];
     const priors: LegacyHandoverFindingFixture[] = [{
       fingerprint: { file: 'f.ts', lineStart: 5, lineEnd: 5, slug: titleToSlug(title) },
@@ -376,7 +376,7 @@ describe('determineOutcome', () => {
 
   it('tolerates ±5 line drift when matching a prior dismissal', () => {
     const findings: Finding[] = [
-      { severity: 'warning', title: 'Drifted', file: 'f.ts', line: 15, description: 'd', reviewers: ['r'] },
+      { severity: 'warning', tags: ['security'], title: 'Drifted', file: 'f.ts', line: 15, description: 'd', reviewers: ['r'] },
     ];
     const priors: LegacyHandoverFindingFixture[] = [{
       fingerprint: { file: 'f.ts', lineStart: 10, lineEnd: 10, slug: 'Drifted' },
@@ -389,7 +389,7 @@ describe('determineOutcome', () => {
 
   it('rejects matches outside the ±5 line tolerance', () => {
     const findings: Finding[] = [
-      { severity: 'warning', title: 'FarAway', file: 'f.ts', line: 100, description: 'd', reviewers: ['r'] },
+      { severity: 'warning', tags: ['security'], title: 'FarAway', file: 'f.ts', line: 100, description: 'd', reviewers: ['r'] },
     ];
     const priors: LegacyHandoverFindingFixture[] = [{
       fingerprint: { file: 'f.ts', lineStart: 10, lineEnd: 10, slug: 'FarAway' },
@@ -408,7 +408,7 @@ describe('determineOutcome', () => {
       authorReply: 'agree',
     };
     const atBoundary: Finding[] = [
-      { severity: 'warning', title: 'Boundary', file: 'f.ts', line: 15, description: 'd', reviewers: ['r'] },
+      { severity: 'warning', tags: ['security'], title: 'Boundary', file: 'f.ts', line: 15, description: 'd', reviewers: ['r'] },
     ];
     const { outcome: v1, verdictReason: vr1 } = determineOutcome(atBoundary, fingerprintEntriesFromLegacy([prior]));
     expect(v1).toBe('READY');
@@ -423,7 +423,7 @@ describe('determineOutcome', () => {
       authorReply: 'agree',
     };
     const outsideBoundary: Finding[] = [
-      { severity: 'warning', title: 'Boundary', file: 'f.ts', line: 16, description: 'd', reviewers: ['r'] },
+      { severity: 'warning', tags: ['security'], title: 'Boundary', file: 'f.ts', line: 16, description: 'd', reviewers: ['r'] },
     ];
     const { outcome: v4, verdictReason: vr4 } = determineOutcome(outsideBoundary, fingerprintEntriesFromLegacy([prior]));
     expect(v4).toBe('ADDRESS_FIRST');
@@ -438,7 +438,7 @@ describe('determineOutcome', () => {
       authorReply: 'agree',
     };
     const atEndBoundary: Finding[] = [
-      { severity: 'warning', title: 'Boundary2', file: 'f.ts', line: 25, description: 'd', reviewers: ['r'] },
+      { severity: 'warning', tags: ['security'], title: 'Boundary2', file: 'f.ts', line: 25, description: 'd', reviewers: ['r'] },
     ];
     const { outcome: v2, verdictReason: vr2 } = determineOutcome(atEndBoundary, fingerprintEntriesFromLegacy([prior]));
     expect(v2).toBe('READY');
@@ -453,7 +453,7 @@ describe('determineOutcome', () => {
       authorReply: 'agree',
     };
     const outsideEndBoundary: Finding[] = [
-      { severity: 'warning', title: 'Boundary2', file: 'f.ts', line: 26, description: 'd', reviewers: ['r'] },
+      { severity: 'warning', tags: ['security'], title: 'Boundary2', file: 'f.ts', line: 26, description: 'd', reviewers: ['r'] },
     ];
     const { outcome: v5, verdictReason: vr5 } = determineOutcome(outsideEndBoundary, fingerprintEntriesFromLegacy([prior]));
     expect(v5).toBe('ADDRESS_FIRST');
@@ -468,7 +468,7 @@ describe('determineOutcome', () => {
       authorReply: 'agree',
     };
     const atLowerBoundary: Finding[] = [
-      { severity: 'warning', title: 'Boundary', file: 'f.ts', line: 5, description: 'd', reviewers: ['r'] },
+      { severity: 'warning', tags: ['security'], title: 'Boundary', file: 'f.ts', line: 5, description: 'd', reviewers: ['r'] },
     ];
     const { outcome: v3, verdictReason: vr3 } = determineOutcome(atLowerBoundary, fingerprintEntriesFromLegacy([prior]));
     expect(v3).toBe('READY');
@@ -483,7 +483,7 @@ describe('determineOutcome', () => {
       authorReply: 'agree',
     };
     const outsideLowerBoundary: Finding[] = [
-      { severity: 'warning', title: 'Boundary', file: 'f.ts', line: 4, description: 'd', reviewers: ['r'] },
+      { severity: 'warning', tags: ['security'], title: 'Boundary', file: 'f.ts', line: 4, description: 'd', reviewers: ['r'] },
     ];
     const { outcome: v6, verdictReason: vr6 } = determineOutcome(outsideLowerBoundary, fingerprintEntriesFromLegacy([prior]));
     expect(v6).toBe('ADDRESS_FIRST');
@@ -492,10 +492,10 @@ describe('determineOutcome', () => {
 
   it('returns READY for a PR #106 R7 replay (4 suggestions all dismissed)', () => {
     const findings: Finding[] = [
-      { severity: 'warning', title: 'F1', file: 'src/a.ts', line: 10, description: 'd', reviewers: ['r'] },
-      { severity: 'warning', title: 'F2', file: 'src/b.ts', line: 20, description: 'd', reviewers: ['r'] },
-      { severity: 'warning', title: 'F3', file: 'src/c.ts', line: 30, description: 'd', reviewers: ['r'] },
-      { severity: 'warning', title: 'F4', file: 'src/d.ts', line: 40, description: 'd', reviewers: ['r'] },
+      { severity: 'warning', tags: ['security'], title: 'F1', file: 'src/a.ts', line: 10, description: 'd', reviewers: ['r'] },
+      { severity: 'warning', tags: ['security'], title: 'F2', file: 'src/b.ts', line: 20, description: 'd', reviewers: ['r'] },
+      { severity: 'warning', tags: ['security'], title: 'F3', file: 'src/c.ts', line: 30, description: 'd', reviewers: ['r'] },
+      { severity: 'warning', tags: ['security'], title: 'F4', file: 'src/d.ts', line: 40, description: 'd', reviewers: ['r'] },
     ];
     const priors: LegacyHandoverFindingFixture[] = findings.map(f => ({
       fingerprint: { file: f.file, lineStart: f.line, lineEnd: f.line, slug: titleToSlug(f.title) },
@@ -511,7 +511,7 @@ describe('determineOutcome', () => {
   it('does not dismiss a finding with line === 0 even when file and slug match', () => {
     const title = 'Null check';
     const findings: Finding[] = [
-      { severity: 'warning', title, file: 'f.ts', line: 0, description: 'd', reviewers: ['r'] },
+      { severity: 'warning', tags: ['security'], title, file: 'f.ts', line: 0, description: 'd', reviewers: ['r'] },
     ];
     const priors: LegacyHandoverFindingFixture[] = [{
       fingerprint: { file: 'f.ts', lineStart: 3, lineEnd: 3, slug: titleToSlug(title) },
@@ -524,12 +524,14 @@ describe('determineOutcome', () => {
   });
 
   describe('unresolved prior findings', () => {
+    // Only a security warning blocks, so these priors come from the legacy security finder.
     const makePriorWarning = (overrides: Partial<LegacyHandoverFindingFixture> = {}): LegacyHandoverFindingFixture => ({
       fingerprint: { file: 'src/x.ts', lineStart: 10, lineEnd: 10, slug: 'old-issue' },
       severity: 'warning',
       title: 'Old issue',
       authorReply: 'none',
       threadId: 'T1',
+      specialist: 'Security & Safety',
       ...overrides,
     });
     const makeOpenThread = (overrides: Partial<OpenThread> = {}): OpenThread => ({
@@ -590,27 +592,27 @@ describe('determineOutcome', () => {
       expect(result.verdictReason).toBe('prior_unaddressed');
     });
 
-    it('blocks only on blockers and security warnings, new or prior, at the blockers-only bar', () => {
+    it('blocks only on blockers and security warnings, new or prior, in every round', () => {
       const warning: Finding = { severity: 'warning', title: 'New concern', file: 'src/y.ts', line: 2, description: 'd', reviewers: ['r'] };
-      const priorWarning = fingerprintEntriesFromLegacy([makePriorWarning()]);
-      expect(determineOutcome([warning, nitpick], priorWarning, [makeOpenThread()], undefined, undefined, undefined, undefined, true))
+      const priorWarning = fingerprintEntriesFromLegacy([makePriorWarning({ specialist: undefined })]);
+      expect(determineOutcome([warning, nitpick], priorWarning, [makeOpenThread()]))
         .toEqual(expect.objectContaining({ outcome: 'READY', verdictReason: 'only_nit_or_suggestion' }));
-      expect(determineOutcome([warning, nitpick], priorWarning, null, undefined, undefined, undefined, undefined, true).outcome).toBe('READY');
+      expect(determineOutcome([warning, nitpick], priorWarning, null).outcome).toBe('READY');
 
       const priorBlocker = fingerprintEntriesFromLegacy([makePriorWarning({ severity: 'blocker' })]);
-      expect(determineOutcome([warning], priorBlocker, [makeOpenThread({ severity: 'blocker' })], undefined, undefined, undefined, undefined, true).verdictReason)
+      expect(determineOutcome([warning], priorBlocker, [makeOpenThread({ severity: 'blocker' })]).verdictReason)
         .toBe('prior_unaddressed');
-      expect(determineOutcome([{ ...warning, severity: 'blocker' }], [], [], undefined, undefined, undefined, undefined, true).verdictReason)
+      expect(determineOutcome([{ ...warning, severity: 'blocker' }], [], []).verdictReason)
         .toBe('required_present');
 
-      expect(determineOutcome([{ ...warning, tags: ['security'] }], [], [], undefined, undefined, undefined, undefined, true))
+      expect(determineOutcome([{ ...warning, tags: ['security'] }], [], []))
         .toEqual(expect.objectContaining({ outcome: 'ADDRESS_FIRST', verdictReason: 'novel_suggestion' }));
       for (const priorSecurity of [
         priorWarning.map(p => ({ ...p, tags: ['security'] })),
         fingerprintEntriesFromLegacy([makePriorWarning({ specialist: 'Security & Safety' })]),
         priorWarning.map(p => ({ ...p, reviewers: ['Correctness & Logic', 'Security & Safety'] })),
       ]) {
-        expect(determineOutcome([nitpick], priorSecurity, [makeOpenThread()], undefined, undefined, undefined, undefined, true))
+        expect(determineOutcome([nitpick], priorSecurity, [makeOpenThread()]))
           .toEqual(expect.objectContaining({ outcome: 'ADDRESS_FIRST', verdictReason: 'prior_unaddressed' }));
       }
     });
@@ -642,7 +644,7 @@ describe('determineOutcome', () => {
 
     it('novel current-round warning takes precedence over an unresolved prior', () => {
       const novelWarning: Finding = {
-        severity: 'warning', title: 'Brand new', file: 'src/z.ts', line: 5, description: 'd', reviewers: ['r'],
+        severity: 'warning', tags: ['security'], title: 'Brand new', file: 'src/z.ts', line: 5, description: 'd', reviewers: ['r'],
       };
       const priors = [makePriorWarning()];
       const open = [makeOpenThread()];
@@ -781,6 +783,7 @@ describe('determineOutcome', () => {
         severity: 'warning',
         title: 'Legacy warning',
         authorReply: 'none',
+        specialist: 'Security & Safety',
       }];
       // null openThreads signals openThreadsUnknown — the conservative guard must block retirement
       const result = determineOutcome([nitpick], fingerprintEntriesFromLegacy(priors), null);
@@ -844,6 +847,7 @@ describe('determineOutcome', () => {
         title: 'Old issue',
         authorReply: 'agree',
         threadId: 'T1',
+        specialist: 'Security & Safety',
       };
       const round2: LegacyHandoverFindingFixture = { ...round1, authorReply: 'none' };
       const open = [makeOpenThread()];
@@ -888,10 +892,12 @@ describe('determineOutcome', () => {
         title,
         authorReply: 'agree',
         threadId: 'T1',
+        specialist: 'Security & Safety',
       };
       const round2: LegacyHandoverFindingFixture = { ...round1, authorReply: 'none' };
       const currentWarning: Finding = {
         severity: 'warning',
+        tags: ['security'],
         title,
         file: 'src/x.ts',
         line: 10,
@@ -1021,6 +1027,7 @@ describe('determineOutcome', () => {
       title: 'Old issue',
       authorReply: 'none',
       threadId: 'T1',
+      specialist: 'Security & Safety',
       ...overrides,
     });
     const openThreadFor = (id = 'T1'): OpenThread => ({
@@ -1033,7 +1040,7 @@ describe('determineOutcome', () => {
 
     it('populates `survivingBlockers` on the `required_present` branch', () => {
       const blocker: Finding = { severity: 'blocker', title: 'Stack overflow', file: 'src/a.ts', line: 7, description: 'd', reviewers: ['r'] };
-      const noise: Finding = { severity: 'warning', title: 'Other', file: 'src/b.ts', line: 1, description: 'd', reviewers: ['r'] };
+      const noise: Finding = { severity: 'warning', tags: ['security'], title: 'Other', file: 'src/b.ts', line: 1, description: 'd', reviewers: ['r'] };
       const { verdictTrace } = determineOutcome([blocker, noise]);
       expect(verdictTrace.survivingBlockers).toEqual([
         {
@@ -1047,7 +1054,7 @@ describe('determineOutcome', () => {
     });
 
     it('populates `novelWarnings` on the `novel_suggestion` branch', () => {
-      const novel: Finding = { severity: 'warning', title: 'Missing null check', file: 'src/handler.ts', line: 3, description: 'd', reviewers: ['r'] };
+      const novel: Finding = { severity: 'warning', tags: ['security'], title: 'Missing null check', file: 'src/handler.ts', line: 3, description: 'd', reviewers: ['r'] };
       const { verdictTrace } = determineOutcome([novel], []);
       expect(verdictTrace.novelWarnings).toEqual([
         {
@@ -2176,7 +2183,7 @@ describe('runReview', () => {
     expect(unnamed.findings).toEqual([expect.objectContaining({ severity: 'blocker', title: 'The retry loop never ends.', description: 'The retry loop never ends.' })]);
   });
 
-  it('turns warnings into follow-ups from round 3, while a verdict reader blocker still blocks', async () => {
+  it('turns warnings into follow-ups in every round, while a verdict reader blocker still blocks', async () => {
     const warning: Finding = { severity: 'warning', title: 'Unbounded retry', file: 'src/a.ts', line: 4, description: 'd', reviewers: ['r'] };
     mockedRunJudgeAgent.mockResolvedValue({ findings: [warning], summary: 'One warning.' });
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -2193,21 +2200,18 @@ describe('runReview', () => {
       },
     );
 
-    const second = await runAtRound(makeClients(), 2);
-    expect(second.outcome).toBe('ADDRESS_FIRST');
-    expect(second.verdictReason).toBe('novel_suggestion');
-    expect(second.findings[0].tags).toBeUndefined();
-
-    const third = await runAtRound(makeClients(), 3);
-    expect(third.outcome).toBe('READY');
-    expect(third.verdict).toBe('APPROVE');
-    expect(third.findings).toEqual([expect.objectContaining({ severity: 'warning', title: 'Unbounded retry', tags: ['follow-up'] })]);
+    for (const round of [1, 2, 3]) {
+      const result = await runAtRound(makeClients(), round);
+      expect(result.outcome).toBe('READY');
+      expect(result.verdict).toBe('APPROVE');
+      expect(result.findings).toEqual([expect.objectContaining({ severity: 'warning', title: 'Unbounded retry', tags: ['follow-up'] })]);
+    }
 
     const injection: Finding = { ...warning, title: 'Reply prompt takes injected instructions', line: 7, tags: ['security'] };
     const specialist: Finding = { ...warning, title: 'Token in log', line: 9, reviewers: ['r', 'Security & Safety'] };
     const specialistNit: Finding = { ...warning, severity: 'nitpick', title: 'Log wording', line: 11, reviewers: ['Security & Safety'] };
     mockedRunJudgeAgent.mockResolvedValue({ findings: [warning, injection, specialist, specialistNit], summary: 'One security warning.' });
-    const secure = await runAtRound(makeClients(), 3);
+    const secure = await runAtRound(makeClients(), 1);
     expect(secure.outcome).toBe('ADDRESS_FIRST');
     expect(secure.verdict).toBe('REQUEST_CHANGES');
     // Only the judge's tag marks a current finding as security, whoever raised it.
@@ -2390,7 +2394,7 @@ describe('runReview', () => {
     expect(stuck.needsHuman).toEqual({ cause: 'budget', blockers: [expect.objectContaining({ title: 'Real bug', file: 'src/a.ts' })] });
   });
 
-  it('blocks on blockers only at round 1 when asked to, as after a pause', async () => {
+  it('turns a round 1 warning into a follow-up and approves', async () => {
     mockedRunJudgeAgent.mockResolvedValue({
       findings: [{ severity: 'warning', title: 'Unbounded retry', file: 'src/a.ts', line: 4, description: 'd', reviewers: ['r'] }],
       summary: 'One warning.',
@@ -2405,7 +2409,6 @@ describe('runReview', () => {
         openThreads: [],
         previousFindings: [],
         priorRounds: [],
-        blockersOnly: true,
       },
     );
     expect(result.outcome).toBe('READY');
@@ -3260,7 +3263,7 @@ describe('runReview', () => {
     expect(result.reviewComplete).toBe(true);
   });
 
-  it('returns REQUEST_CHANGES / prior_unaddressed when a prior warning thread is still open', async () => {
+  it('returns REQUEST_CHANGES / prior_unaddressed when a prior blocker thread is still open', async () => {
     const clients = makeClients('[]');
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
@@ -3272,8 +3275,8 @@ describe('runReview', () => {
       threadEvaluations: [],
     });
 
-    const priorRounds: RoundContext[] = [buildPriorRound(1, [makePriorWarningFinding()])];
-    const openThreads: OpenThread[] = [makePriorOpenThread()];
+    const priorRounds: RoundContext[] = [buildPriorRound(1, [makePriorWarningFinding({ severity: 'blocker' })])];
+    const openThreads: OpenThread[] = [makePriorOpenThread({ severity: 'blocker' })];
 
     const result = await runReview(
       clients, {

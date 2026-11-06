@@ -19,10 +19,6 @@ import { checkFindingClaims, formatStaticSignals, isAnalyzerSignal, toolAlertFin
 
 const DISMISSED_LINE_TOLERANCE = 5;
 
-// Rounds that block on warnings as well as blockers. Later rounds block on blockers and security
-// warnings, and their other warnings become follow-ups. The bar lives here so no prompt names the round.
-const FULL_BAR_ROUNDS = 2;
-
 // Priors saved before the generalist finders carry this reviewer instead of the judge's `security` tag.
 const LEGACY_SECURITY_AGENT_NAME = 'Security & Safety';
 
@@ -491,9 +487,7 @@ export interface ReviewOptions {
   interRoundDiff?: string;
   /** Commit under review. A prior blocker raised on another commit was followed by a push. */
   headSha?: string;
-  /** Blocks on blockers only whatever the round. Set for the round `@manki review` runs after a pause. */
-  blockersOnly?: boolean;
-  /** The last automatic round the round cap allows. It blocks on blockers only, and ends `NOT_CONVERGING` unless it is `READY`. */
+  /** The last automatic round the round cap allows. It ends `NOT_CONVERGING` unless it is `READY`. */
   finalRound?: boolean;
 }
 
@@ -1105,15 +1099,12 @@ export async function runReview(
   const priorFindingsFlat: FindingFingerprintEntry[] = sortedPriorRounds.flatMap(r => r.findings.entries);
   const priorRoundLookup = buildPriorRoundLookup(sortedPriorRounds);
   const changedFiles = new Set(diff.files.map(f => f.path));
-  const blockersOnly = options.blockersOnly || options.finalRound || roundNumber > FULL_BAR_ROUNDS;
-  if (blockersOnly) {
-    finalFindings = finalFindings.map(f => f.severity === 'warning' && !f.tags?.includes(SECURITY_TAG) ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f);
-  }
+  finalFindings = finalFindings.map(f => f.severity === 'warning' && !f.tags?.includes(SECURITY_TAG) ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f);
   const priorBlockers = collectPriorBlockers(sortedPriorRounds);
   const pushChangedFiles = new Set(interRoundDiff ? parsePRDiff(interRoundDiff).files.map(f => f.path) : []);
   const openThreadIndex = new Map((openThreads ?? []).map(t => [t.threadId, t]));
   let threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
-  const decided = determineOutcome(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, threadEvaluations, priorRoundLookup, changedFiles, blockersOnly);
+  const decided = determineOutcome(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, threadEvaluations, priorRoundLookup, changedFiles);
   let outcome: RoundOutcome = decided.outcome;
   let { verdictReason, verdictTrace } = decided;
 
@@ -1648,8 +1639,7 @@ export function buildPriorRoundLookup(sortedPriorRounds: RoundContext[]): Map<st
  *
  * Nitpicks and suggestions are non-blocking, and prior-round dismissed warnings
  * have already been acknowledged by the author. None of these cases block.
- * With `blockersOnly`, no warning blocks, whether raised now or in a prior round,
- * unless `isSecurityFinding` holds for it.
+ * No warning blocks, whether raised now or in a prior round, unless `isSecurityFinding` holds for it.
  */
 export function determineOutcome(
   findings: Finding[],
@@ -1659,7 +1649,6 @@ export function determineOutcome(
   threadEvaluations?: ThreadEvaluation[],
   priorRoundLookup?: Map<string, number>,
   changedFiles?: ReadonlySet<string>,
-  blockersOnly = false,
 ): { outcome: Extract<RoundOutcome, 'READY' | 'ADDRESS_FIRST'>; verdictReason: VerdictReason; verdictTrace: VerdictTrace } {
   const emptyTrace = (): VerdictTrace => ({
     survivingBlockers: [],
@@ -1676,7 +1665,7 @@ export function determineOutcome(
 
   const prior = dedupePriorFindings(priorRounds ?? []);
   const novelWarnings = findings.filter(
-    f => f.severity === 'warning' && (!blockersOnly || isSecurityFinding(f.tags)) && !wasDismissedInPriorRound(f, prior),
+    f => f.severity === 'warning' && isSecurityFinding(f.tags) && !wasDismissedInPriorRound(f, prior),
   );
   if (novelWarnings.length > 0) {
     const trace = emptyTrace();
@@ -1688,7 +1677,7 @@ export function determineOutcome(
   const openThreadIds = new Set((openThreads ?? []).map(t => t.threadId));
   const threadEvaluationsByThreadId = indexThreadEvaluations(threadEvaluations);
   const unresolvedPriors = prior.filter(p =>
-    !(blockersOnly && p.severity === 'warning' && !isSecurityFinding(p.tags, p.reviewers ?? [p.specialist]))
+    !(p.severity === 'warning' && !isSecurityFinding(p.tags, p.reviewers ?? [p.specialist]))
     && isPriorLikelyUnresolved(p, openThreadIds, openThreadsUnknown, resolvedThreadIds, threadEvaluationsByThreadId, changedFiles),
   );
   if (unresolvedPriors.length > 0) {

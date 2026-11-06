@@ -1514,7 +1514,6 @@ async function runFullReview(
       prAuthorLogin,
       interRoundDiff,
       headSha: commitSha,
-      blockersOnly: paused,
       finalRound: !paused && countsTowardCap && maxAutoRounds > 0 && capRounds + 1 === maxAutoRounds,
     });
     // A model call the stop aborted can end the round incomplete, and that round must not be posted.
