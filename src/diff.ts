@@ -216,29 +216,36 @@ function takeText(counts: Map<string, number>, text: string): boolean {
 }
 
 /**
- * Returns, per file, the lines of the new file where `current` changed the code since `prior`: a line it
- * adds that `prior` did not add, and the spot of a line it removes that `prior` did not remove. Lines are
- * compared by text, so a rebase or a shift in line numbers does not turn reviewed code into new code.
- * A line `prior` added and `current` no longer has is found in `interRound`, the diff between the two commits.
+ * Returns, per file, the lines of the new file where the PR changed its code since `prior`: a line `current`
+ * adds or removes that `prior` did not, and a line `prior` added or removed that `current` no longer does.
+ * Lines are compared by text, so a rebase or a shift in line numbers does not turn reviewed code into new
+ * code. `interRound`, the diff between the two commits, says where a line `current` no longer touches sits.
  */
 function changedSincePrior(current: ParsedDiff, prior: ParsedDiff, interRound: ParsedDiff | undefined): Map<string, number[]> {
   const fresh = new Map<string, number[]>();
-  for (const file of current.files) {
-    const priorFile = prior.files.find(f => f.path === file.path || f.path === file.oldPath);
+  const paths = new Set([...current.files, ...(interRound?.files ?? [])].map(f => f.path));
+  for (const path of paths) {
+    const file = current.files.find(f => f.path === path);
+    const priorFile = prior.files.find(f => f.path === path || f.path === file?.oldPath);
     const priorAdded = countTexts(priorFile ? addedLines(priorFile).values() : []);
     const priorRemoved = countTexts(priorFile ? removedLines(priorFile).map(([, text]) => text) : []);
     const lines: number[] = [];
-    for (const [line, text] of addedLines(file)) {
+    for (const [line, text] of file ? addedLines(file) : []) {
       if (!takeText(priorAdded, text)) lines.push(line);
     }
-    for (const [line, text] of removedLines(file)) {
+    for (const [line, text] of file ? removedLines(file) : []) {
       if (!takeText(priorRemoved, text)) lines.push(line);
     }
-    const interRoundFile = interRound?.files.find(f => f.path === file.path);
-    for (const [line, text] of interRoundFile ? removedLines(interRoundFile) : []) {
-      if (takeText(priorAdded, text)) lines.push(line);
+    const interRoundFile = interRound?.files.find(f => f.path === path);
+    if (interRoundFile) {
+      for (const [line, text] of removedLines(interRoundFile)) {
+        if (takeText(priorAdded, text)) lines.push(line);
+      }
+      for (const [line, text] of addedLines(interRoundFile)) {
+        if (takeText(priorRemoved, text)) lines.push(line);
+      }
     }
-    if (lines.length > 0) fresh.set(file.path, lines);
+    if (lines.length > 0) fresh.set(path, lines);
   }
   return fresh;
 }

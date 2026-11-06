@@ -390,7 +390,7 @@ describe('tagFindingOrigins', () => {
     ], current, prior)).toEqual(['new', 'reviewed', 'new', 'new', 'reviewed', 'reviewed']);
   });
 
-  it('tags a finding new near code removed since, whether the PR removed a base line or dropped a line it added before', () => {
+  it('tags a finding new near code removed or restored since: a base line the PR removed or put back, or a line it added before and dropped', () => {
     const removal = (path: string, start: number, removed: string, kept: string[]): string =>
       `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -${start},${kept.length + 2} +${start},${kept.length + 1} @@\n ctx\n-${removed}\n${kept.map(l => ` ${l}`).join('\n')}\n`;
     const prior = change('src/a.ts', 10, ['guard', 'body']);
@@ -405,6 +405,13 @@ describe('tagFindingOrigins', () => {
     tagFindingOrigins(findings, parsePRDiff(droppedOwnLine), parsePRDiff(prior), parsePRDiff(interRound));
     expect(findings[0].origin).toBe('new');
     expect(tag([finding('src/a.ts', 11)], droppedOwnLine, prior)).toEqual(['reviewed']);
+
+    // The PR puts back a base line it removed before, so `src/b.ts` drops out of its change.
+    const priorRemoval = removal('src/b.ts', 10, 'if (!user) return;', ['use(user);']);
+    const restored = change('src/b.ts', 10, ['if (!user) return;']);
+    const restoredFindings = [finding('src/b.ts', 11), finding('src/b.ts', 30)];
+    tagFindingOrigins(restoredFindings, parsePRDiff(change('src/a.ts', 10, ['x'])), parsePRDiff(priorRemoval), parsePRDiff(restored));
+    expect(restoredFindings.map(f => f.origin)).toEqual(['new', 'reviewed']);
   });
 });
 
