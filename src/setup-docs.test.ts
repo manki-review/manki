@@ -25,14 +25,18 @@ function readRepoFile(name: string): string {
   return fs.readFileSync(path.join(ROOT, name), 'utf-8');
 }
 
+function withoutFencedBlocks(markdown: string): string {
+  return markdown.replace(/^```[\s\S]*?^```$/gm, '');
+}
+
 function withoutCodeBlocks(markdown: string): string {
-  return markdown.replace(/^```[\s\S]*?^```$/gm, '').replace(/`[^`\n]*`/g, '');
+  return withoutFencedBlocks(markdown).replace(/`[^`\n]*`/g, '');
 }
 
 /** Returns the anchors GitHub gives the headings of `markdown`. */
 function headingAnchors(markdown: string): Set<string> {
   const anchors = new Set<string>();
-  for (const [, heading] of withoutCodeBlocks(markdown.replace(/`/g, '')).matchAll(/^#{1,6} (.+)$/gm)) {
+  for (const [, heading] of withoutFencedBlocks(markdown).replace(/`/g, '').matchAll(/^#{1,6} (.+)$/gm)) {
     const slug = heading.trim().toLowerCase().replace(/[^\p{L}\p{N} _-]/gu, '').replace(/ /g, '-');
     let anchor = slug;
     for (let n = 1; anchors.has(anchor); n++) anchor = `${slug}-${n}`;
