@@ -86,7 +86,8 @@ export function recordCalls(client: LLMClient, label: { stage: string; agent?: s
           ...(response.model && { model: response.model }),
           durationMs: response.latencyMs ?? Date.now() - start,
           ...usage,
-          costUsd: response.model && response.usage ? estimateCostUsd(response.model, usage) : null,
+          // Some paths report zeros when the provider sent no counts, and no real call uses no tokens.
+          costUsd: response.model && (usage.inputTokens > 0 || usage.outputTokens > 0) ? estimateCostUsd(response.model, usage) : null,
         });
         return response;
       } catch (error) {

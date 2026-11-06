@@ -4304,7 +4304,8 @@ describe('recordCalls', () => {
     const primary = { sendMessage: jest.fn()
       .mockResolvedValueOnce({ content: 'ok', usage, latencyMs: 40, model: 'claude-opus-5-5' })
       .mockRejectedValueOnce(new Error('timed out'))
-      .mockResolvedValueOnce({ content: 'ok', latencyMs: 5, model: 'claude-opus-5-5' }) } as unknown as LLMClient;
+      .mockResolvedValueOnce({ content: 'ok', latencyMs: 5, model: 'claude-opus-5-5' })
+      .mockResolvedValueOnce({ content: 'ok', usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 }, latencyMs: 5, model: 'claude-opus-5-5' }) } as unknown as LLMClient;
     const refusing = { sendMessage: jest.fn().mockRejectedValue(new RefusalError('declined', 'refusal (cyber)')) } as unknown as LLMClient;
     const fallback = { sendMessage: jest.fn().mockResolvedValue({ content: 'ok', usage, latencyMs: 60, model: 'gpt-5' }) } as unknown as LLMClient;
     const calls: LLMCall[] = [];
@@ -4314,6 +4315,7 @@ describe('recordCalls', () => {
     await judge.sendMessage('sys', 'user', { effort: 'high' });
     await expect(judge.sendMessage('sys', 'user')).rejects.toThrow('timed out');
     await judge.sendMessage('sys', 'user');
+    await judge.sendMessage('sys', 'user');
     await withRefusalFallback(recordCalls(refusing, finder, calls), recordCalls(fallback, { ...finder, fallback: true }, calls), () => {}).sendMessage('sys', 'user');
 
     const none = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 };
@@ -4321,13 +4323,14 @@ describe('recordCalls', () => {
       { stage: 'judge', effort: 'high', attempt: 1, model: 'claude-opus-5-5', durationMs: 40, ...usage, costUsd: (500 * 4 + 200 * 0.2 + 300 * 5 + 100 * 20) / 1_000_000 },
       { stage: 'judge', attempt: 2, failed: true, error: 'timed out', durationMs: expect.any(Number), ...none, costUsd: null },
       { stage: 'judge', attempt: 3, model: 'claude-opus-5-5', durationMs: 5, ...none, costUsd: null },
+      { stage: 'judge', attempt: 4, model: 'claude-opus-5-5', durationMs: 5, ...none, costUsd: null },
       { ...finder, attempt: 1, failed: true, error: 'declined', durationMs: expect.any(Number), ...none, costUsd: null },
       { ...finder, fallback: true, attempt: 2, model: 'gpt-5', durationMs: 60, ...usage, costUsd: null },
     ]);
     expect(summarizeCalls(calls)).toEqual({
-      calls: 5, failedCalls: 2, unpricedCalls: 2,
+      calls: 6, failedCalls: 2, unpricedCalls: 3,
       inputTokens: 2000, outputTokens: 200, cacheReadTokens: 400, cacheWriteTokens: 600, reasoningTokens: 0, totalTokens: 2200,
-      durationMs: 105 + calls[1].durationMs + calls[3].durationMs,
+      durationMs: 110 + calls[1].durationMs + calls[4].durationMs,
       estimatedCostUsd: calls[0].costUsd,
     });
   });
