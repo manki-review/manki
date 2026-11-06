@@ -56,13 +56,16 @@ import {
   checkConcurrentSubmissionLock,
   postConfigErrorComment,
 } from './github';
-import type { BotIdentity, LinkedIssue } from './github';
+import type { BotIdentity, LinkedIssue, StandingVerdict } from './github';
 import { announceSecurityOverrides, checkAndAutoApprove, findUnchangedVerdict, holdApprovalOnConflict, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
 import type { PauseState } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
 const HEAD_POLL_MS = 30_000;
+
+/** The outcome a standing review reports on a no-op push. A COMMENT never stands, so it runs a full round instead. */
+const STANDING_OUTCOMES: Record<StandingVerdict['verdict'], RoundOutcome> = { APPROVE: 'READY', REQUEST_CHANGES: 'ADDRESS_FIRST' };
 
 export function detectTickedMarker(body: string): 'FORCE_REVIEW_MARKER' | 'FORCE_CAP_MARKER' | null {
   if (!body.includes('- [x] Force review')) return null;
@@ -700,7 +703,7 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
           await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha);
         }
         core.info(`Round SKIPPED: no change since reviewed commit ${shortSha}, ${standing.verdict} stands`);
-        await completeReviewCheck(await startReviewCheck(octokit, owner, repo, commitSha), outcomeReport(approved ? 'READY' : 'ADDRESS_FIRST', summary, held));
+        await completeReviewCheck(await startReviewCheck(octokit, owner, repo, commitSha), outcomeReport(STANDING_OUTCOMES[standing.verdict], summary, held));
         return true;
       } catch (error) {
         core.warning(`Could not post the previous approval again, reviewing in full: ${error instanceof Error ? error.message : error}`);
