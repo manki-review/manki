@@ -3086,6 +3086,17 @@ describe('mapJudgedToFindings', () => {
 
     expect(rest).toEqual([]);
     expect([kept.severity, kept.evidence]).toEqual(['blocker', { checks: ['read src/math.ts:2'], proof: ['src/math.ts:2'] }]);
+
+    // Only the kept finding decides whether it claims something is missing, and a duplicate's search can back that claim.
+    const fold = (survivor: Finding['evidence'], duplicate: Finding['evidence']) => mapJudgedToFindings(
+      [makeFinding({ title: 'Overflow in sum', severity: 'blocker', evidence: survivor }), makeFinding({ title: 'Sum overflows', severity: 'blocker', evidence: duplicate })],
+      judged,
+    )[0];
+    const proven = { checks: [], proof: ['src/math.ts:2'] };
+    expect(fold(proven, { checks: [], proof: [], emptySearch: '' })).toMatchObject({ severity: 'blocker', evidence: { proof: ['src/math.ts:2'] } });
+    expect(fold(proven, { checks: [], proof: [], emptySearch: '' }).evidence).not.toHaveProperty('emptySearch');
+    expect(fold({ ...proven, emptySearch: '' }, { checks: [], proof: [], emptySearch: 'grep x: no match' })).toMatchObject({ severity: 'blocker', evidence: { emptySearch: 'grep x: no match' } });
+    expect(fold(undefined, { checks: [], proof: ['src/math.ts:2'], emptySearch: '' })).toMatchObject({ severity: 'blocker', evidence: { proof: ['src/math.ts:2'] } });
   });
 
   it('maps reordered entries by id instead of position or title', () => {

@@ -1241,10 +1241,17 @@ export function mapJudgedToFindings(
   return foldDuplicates(graded, aligned).map(capUnprovenBlocker);
 }
 
-/** Joins what two findings cite, without repeats. An empty search either one cites wins over none. */
+/**
+ * Adds what `b` cites to the evidence of `a`, without repeats. Only `a` decides whether the finding claims something is
+ * missing. When it does, an empty search either one cites backs the claim.
+ */
 function mergeEvidence(a: FindingEvidence | undefined, b: FindingEvidence | undefined): FindingEvidence | undefined {
-  if (!a || !b) return a ?? b;
-  const emptySearch = a.emptySearch || b.emptySearch || (a.emptySearch ?? b.emptySearch);
+  if (!b) return a;
+  if (!a) {
+    const { emptySearch: _emptySearch, ...cited } = b;
+    return cited;
+  }
+  const emptySearch = a.emptySearch === undefined ? undefined : a.emptySearch || b.emptySearch || '';
   return {
     checks: [...new Set([...a.checks, ...b.checks])],
     proof: [...new Set([...a.proof, ...b.proof])],
