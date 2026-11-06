@@ -49,7 +49,7 @@ const PEM_ARMOR = /^-----[A-Z0-9 ]+-----$/;
 
 /** Masks `value` in the log and adds it to the values `redactSecrets` removes. A value under 8 characters is ignored. */
 export function registerSecret(value: string): void {
-  if (value.length < MIN_SECRET_LENGTH) return;
+  if (value.length < MIN_SECRET_LENGTH || registeredSecrets.has(value)) return;
   core.setSecret(value);
   registeredSecrets.add(value);
 }

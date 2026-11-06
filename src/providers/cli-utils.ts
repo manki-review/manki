@@ -323,13 +323,33 @@ const PROVIDER_ENV: Record<CliProvider, RegExp> = {
   gemini: /^(?:GEMINI_|GOOGLE_|VERTEX_)/i,
 };
 
+/** Whether a mode switch such as `CLAUDE_CODE_USE_BEDROCK` is on. */
+function isOn(value: string | undefined): boolean {
+  return !!value && !/^(?:0|false|no|off)$/i.test(value);
+}
+
+// The credentials each documented Claude setup reads, passed only while that setup is on.
+const CLAUDE_MODE_CREDENTIALS: { on: (env: NodeJS.ProcessEnv) => boolean; names: string[] }[] = [
+  { on: env => isOn(env.CLAUDE_CODE_USE_BEDROCK), names: ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_BEARER_TOKEN_BEDROCK'] },
+  { on: env => isOn(env.CLAUDE_CODE_USE_VERTEX), names: ['GOOGLE_APPLICATION_CREDENTIALS'] },
+  { on: env => !!env.ANTHROPIC_BASE_URL, names: ['ANTHROPIC_AUTH_TOKEN'] },
+];
+
 /**
  * Returns the environment for the `provider` CLI: the variables of `env` any CLI needs to run, the provider's own
- * configuration, and `vars`. Nothing named like a secret, such as `*_TOKEN` or `*_KEY`, passes, except `credential`.
+ * configuration, and `vars`. Nothing named like a secret, such as `*_TOKEN` or `*_KEY`, passes, except `credential`
+ * and, for Claude, the credentials of a Bedrock, Vertex or gateway setup that is on. Those are registered as secrets.
  */
 export function cliEnv(provider: CliProvider, vars: NodeJS.ProcessEnv = {}, credential?: string, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const needed = Object.entries(env).filter(([name]) => CLI_ENV.has(name.toUpperCase()) || CLI_ENV_PREFIX.test(name) || PROVIDER_ENV[provider].test(name));
-  return Object.fromEntries([...needed, ...Object.entries(vars)].filter(([name]) => name === credential || !SECRET_NAME.test(name)));
+  const modeCredentials = provider === 'claude' ? CLAUDE_MODE_CREDENTIALS.filter(mode => mode.on(env)).flatMap(mode => mode.names) : [];
+  const credentials = new Set([...(credential ? [credential] : []), ...modeCredentials]);
+  const needed = Object.entries(env).filter(([name]) => CLI_ENV.has(name.toUpperCase()) || CLI_ENV_PREFIX.test(name) || PROVIDER_ENV[provider].test(name) || modeCredentials.includes(name));
+  const result = Object.fromEntries([...needed, ...Object.entries(vars)].filter(([name]) => credentials.has(name) || !SECRET_NAME.test(name)));
+  for (const name of modeCredentials) {
+    const value = result[name];
+    if (value) registerSecret(value);
+  }
+  return result;
 }
 
 export interface RunCliOptions {

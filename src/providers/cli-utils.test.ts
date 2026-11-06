@@ -116,7 +116,10 @@ describe('cliEnv', () => {
     };
     expect(cliEnv('claude', {}, undefined, env)).toEqual({
       ANTHROPIC_BASE_URL: 'https://gateway.example',
+      ANTHROPIC_AUTH_TOKEN: 'gateway-token',
       CLAUDE_CODE_USE_BEDROCK: '1',
+      AWS_SECRET_ACCESS_KEY: 'aws-secret',
+      AWS_SESSION_TOKEN: 'aws-session',
       AWS_REGION: 'us-east-1',
       AWS_PROFILE: 'bedrock',
       AWS_ROLE_ARN: 'arn:aws:iam::1:role/bedrock',
@@ -129,6 +132,29 @@ describe('cliEnv', () => {
     });
     expect(cliEnv('codex', {}, undefined, env)).toEqual({ OPENAI_BASE_URL: 'https://openai.example', CODEX_CA_CERTIFICATE: '/etc/ssl/codex.pem' });
     expect(cliEnv('gemini', {}, undefined, env)).toEqual({ GEMINI_MODEL: 'gemini-3', GOOGLE_CLOUD_PROJECT: 'manki-project', VERTEX_REGION_CLAUDE_4_5_SONNET: 'europe-west1' });
+  });
+
+  it('gives Claude the credentials of a Bedrock, Vertex or gateway setup only while it is on, and redacts them', () => {
+    const credentials = {
+      AWS_ACCESS_KEY_ID: 'AKIAEXAMPLEKEYID',
+      AWS_SECRET_ACCESS_KEY: 'aws-secret-access-key',
+      AWS_SESSION_TOKEN: 'aws-session-token',
+      AWS_BEARER_TOKEN_BEDROCK: 'bedrock-api-key',
+      GOOGLE_APPLICATION_CREDENTIALS: '/secrets/gcp-key.json',
+      ANTHROPIC_AUTH_TOKEN: 'gateway-auth-token',
+    };
+    expect(cliEnv('claude', {}, undefined, credentials)).toEqual({});
+
+    const on = { ...credentials, CLAUDE_CODE_USE_BEDROCK: '1', CLAUDE_CODE_USE_VERTEX: 'true', ANTHROPIC_BASE_URL: 'https://gateway.example' };
+    expect(cliEnv('claude', {}, undefined, on)).toEqual(on);
+    expect(cliEnv('claude', {}, undefined, { ...credentials, CLAUDE_CODE_USE_BEDROCK: '0', CLAUDE_CODE_USE_VERTEX: 'false' })).toEqual({ CLAUDE_CODE_USE_BEDROCK: '0', CLAUDE_CODE_USE_VERTEX: 'false' });
+    expect(redactSecrets('aws-secret-access-key gateway-auth-token')).toBe('[REDACTED] [REDACTED]');
+    for (const provider of ['codex', 'gemini'] as const) {
+      expect(Object.keys(cliEnv(provider, {}, undefined, on))).not.toEqual(expect.arrayContaining(['AWS_SECRET_ACCESS_KEY']));
+      expect(cliEnv(provider, {}, undefined, on)).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
+      expect(cliEnv(provider, {}, undefined, on)).not.toHaveProperty('AWS_ACCESS_KEY_ID');
+    }
+    expect(cliEnv('gemini', {}, undefined, on)).not.toHaveProperty('GOOGLE_APPLICATION_CREDENTIALS');
   });
 
   it('adds the provider variables, and of those named like a secret only the credential', () => {
