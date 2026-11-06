@@ -632,6 +632,15 @@ export interface RelatedRepo {
   paths?: string[];
 }
 
+/** The related repos one review round offers its reviewer tools, each fetched on first use. */
+export interface RelatedRepoTools {
+  repos: RelatedRepo[];
+  /** Directory the repos are cloned into, one `owner/name` directory each. A workflow can keep it between runs with `actions/cache`. */
+  cacheDir: string;
+  /** The round's own directory, where the tool servers record which repo one of them fetched or failed to fetch. */
+  stateDir: string;
+}
+
 export interface StaticAnalysisConfig {
   checks: boolean;
   code_scanning: boolean;

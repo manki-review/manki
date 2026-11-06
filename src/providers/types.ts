@@ -1,3 +1,5 @@
+import type { RelatedRepoTools } from '../types';
+
 export type ProviderName = 'anthropic' | 'openai' | 'gemini';
 
 /** Token counts of one or more calls. `inputTokens` includes the cache reads and writes, `outputTokens` the reasoning. */
@@ -123,6 +125,8 @@ export interface RepoTools {
   root: string;
   /** How many tool calls the model may make. Once they are used up, every further call is refused. */
   steps: number;
+  /** Related repos the tools may also read, each named by a `repo` argument. */
+  related?: RelatedRepoTools;
 }
 
 export interface SendMessageOptions {

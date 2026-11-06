@@ -1,3 +1,6 @@
+import { writeFileSync } from 'fs';
+import { join } from 'path';
+
 import {
   parseFindings,
   validateSeverity,
@@ -24,6 +27,7 @@ import {
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { DEFAULT_CONFIG } from './config';
 import { filterRawDiff } from './diff';
+import { relatedReposCacheDir } from './related-repos';
 import * as core from '@actions/core';
 import { LinkedIssue, titleToSlug } from './github';
 import { Finding, RoundContext, OpenThread, ReviewerAgent, ReviewConfig, ReviewGroup, ParsedDiff, DiffFile, ProvenanceEntry, ThreadEvaluation, MAX_AGENT_RETRIES, SECURITY_TAG } from './types';
@@ -1705,6 +1709,35 @@ describe('runReview', () => {
     jest.clearAllMocks();
     mockedRunJudgeAgent.mockResolvedValue({ findings: [], summary: 'All clear.' });
     mockedApplySuppressions.mockReturnValue({ kept: [], suppressed: [] });
+  });
+
+  it('offers the finders the configured related repos with the fetched PR head, and warns about each one they could not fetch', async () => {
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const clients = makeClients();
+    Object.assign(clients.reviewer, { repoTools: true });
+    jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (_system, _user, options) => {
+      const stateDir = options?.repoTools?.related?.stateDir;
+      if (stateDir) writeFileSync(join(stateDir, 'o%2Fr.failed'), 'fatal: repository not found');
+      return { content: '[]' };
+    });
+    const related_repos = [{ repo: 'o/r', kind: 'consumer' as const }];
+    const options = { diff: makeDiff(), rawDiff: 'raw diff', repoContext: 'repo context' };
+    try {
+      await runReview(clients, { ...options, config: makeConfig({ related_repos }), workspace: '/work/pr-head' });
+      await runReview(clients, { ...options, config: makeConfig({ related_repos }) });
+      await runReview(clients, { ...options, config: makeConfig(), workspace: '/work/pr-head' });
+
+      // Two finders per round, and both of a round share its state directory.
+      const [first, second, ...rest] = jest.mocked(clients.reviewer.sendMessage).mock.calls.map(call => call[2]?.repoTools);
+      expect(first).toEqual({
+        root: '/work/pr-head', steps: 30, related: { repos: related_repos, cacheDir: relatedReposCacheDir(), stateDir: expect.stringContaining('manki-related-') },
+      });
+      expect(second).toEqual(first);
+      expect(rest).toEqual([undefined, undefined, { root: '/work/pr-head', steps: 30 }, { root: '/work/pr-head', steps: 30 }]);
+      expect(warnSpy).toHaveBeenCalledWith('Could not fetch related repo o/r, which must be public on github.com: fatal: repository not found');
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('runs a single-pass review and returns approved result with no findings', async () => {

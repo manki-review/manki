@@ -3,12 +3,11 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, 
 import { devNull, tmpdir } from 'os';
 import { join } from 'path';
 
-import { relatedRepoLoader, relatedReposCacheDir } from './related-repos';
+import { relatedRepoLoader, RelatedRepoLoaderOptions, relatedReposCacheDir, warnRelatedRepoFailures } from './related-repos';
 import { RelatedRepo } from './types';
 import { gitEnv } from './workspace';
 
 jest.mock('@actions/core', () => ({
-  info: jest.fn(),
   warning: jest.fn(),
 }));
 
@@ -18,14 +17,17 @@ const DASH: RelatedRepo = { repo: 'dashpay/dash', kind: 'reference', ref: 'v23.0
 const DIPS: RelatedRepo = { repo: 'dashpay/dips', kind: 'reference' };
 const PLATFORM: RelatedRepo = { repo: 'dashpay/platform', kind: 'consumer', paths: ['packages/rs-*'] };
 
-type Run = NonNullable<Parameters<typeof relatedRepoLoader>[1]>['run'];
+type Run = NonNullable<RelatedRepoLoaderOptions['run']>;
 
 describe('relatedRepoLoader', () => {
+  let tempDir: string;
   let cacheDir: string;
+  let stateDir: string;
   let calls: Array<{ cwd: string; args: string[] }>;
+  let log: jest.Mock<void, [string]>;
 
   /** A git that succeeds, except that `failing[repo][command]` fails that command with its stderr. `init` makes `.git/objects`, as git does. */
-  function fakeGit(failing: Record<string, Record<string, string>> = {}): jest.MockedFunction<NonNullable<Run>> {
+  function fakeGit(failing: Record<string, Record<string, string>> = {}): jest.MockedFunction<Run> {
     return jest.fn(async (binary, args, cwd, options) => {
       expect(binary).toBe('git');
       expect(options?.env).toEqual(ENV);
@@ -38,26 +40,32 @@ describe('relatedRepoLoader', () => {
     });
   }
 
+  const loader = (repos: RelatedRepo[], options: RelatedRepoLoaderOptions = {}) =>
+    relatedRepoLoader({ repos, cacheDir, stateDir }, { run: fakeGit(), log, ...options });
+
   beforeEach(() => {
     jest.clearAllMocks();
-    cacheDir = mkdtempSync(join(tmpdir(), 'manki-related-repos-test-'));
+    tempDir = mkdtempSync(join(tmpdir(), 'manki-related-repos-test-'));
+    cacheDir = join(tempDir, 'cache');
+    stateDir = join(tempDir, 'state');
+    mkdirSync(cacheDir);
+    mkdirSync(stateDir);
     calls = [];
+    log = jest.fn();
   });
 
   afterEach(() => {
-    rmSync(cacheDir, { recursive: true, force: true });
+    rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it('fetches only the repos of the kind asked for, shallow and path-limited, once per loader', async () => {
+  it('fetches a repo only when asked for it, shallow and path-limited, once per round', async () => {
     const run = fakeGit();
-    const load = relatedRepoLoader([DASH, DIPS, PLATFORM], { cacheDir, run });
+    const load = loader([DASH, DIPS, PLATFORM], { run });
     expect(run).not.toHaveBeenCalled();
-
-    const references = await load('reference');
 
     const dashDir = join(cacheDir, 'dashpay', 'dash');
     const dipsDir = join(cacheDir, 'dashpay', 'dips');
-    expect(references).toEqual([{ ...DASH, dir: dashDir }, { ...DIPS, dir: dipsDir }]);
+    expect(await Promise.all([load('dashpay/dash'), load('dashpay/dips'), load('dashpay/dash')])).toEqual([dashDir, dipsDir, dashDir]);
     expect(calls.filter(c => c.cwd === dashDir).map(c => c.args)).toEqual([
       ['init', '-q'],
       ['remote', 'add', 'origin', 'https://github.com/dashpay/dash.git'],
@@ -74,14 +82,36 @@ describe('relatedRepoLoader', () => {
       ['checkout', '-q', '--force', '--detach', 'FETCH_HEAD'],
       ['repack', '-a', '-d', '-q'],
     ]);
-    expect(existsSync(dashDir)).toBe(true);
-
-    expect(await load('reference')).toEqual(references);
     expect(run).toHaveBeenCalledTimes(12);
+    expect(existsSync(join(cacheDir, 'dashpay', 'platform'))).toBe(false);
+    expect(log).toHaveBeenCalledWith('Fetched related repo dashpay/dash at v23.0.0');
 
-    expect(await load('consumer')).toEqual([{ ...PLATFORM, dir: join(cacheDir, 'dashpay', 'platform') }]);
-    expect(run).toHaveBeenCalledTimes(18);
-    expect(core.warning).not.toHaveBeenCalled();
+    // A second tool server of the round finds the repo fetched and runs no git.
+    const otherRun = fakeGit();
+    expect(await loader([DASH], { run: otherRun })('dashpay/dash')).toBe(dashDir);
+    expect(otherRun).not.toHaveBeenCalled();
+
+    await expect(load('dashpay/other')).rejects.toThrow('dashpay/other is not a related repo');
+  });
+
+  it('waits for another tool server that is fetching the repo, and takes its outcome', async () => {
+    mkdirSync(join(stateDir, 'dashpay%2Fdips.lock'));
+    mkdirSync(join(stateDir, 'dashpay%2Fdash.lock'));
+    const run = fakeGit();
+    const load = loader([DASH, DIPS], { run, timeoutMs: 5000 });
+
+    const dips = load('dashpay/dips');
+    const dash = load('dashpay/dash');
+    writeFileSync(join(stateDir, 'dashpay%2Fdips.done'), '/fetched/dips');
+    writeFileSync(join(stateDir, 'dashpay%2Fdash.failed'), 'fatal: repository not found');
+
+    await expect(dips).resolves.toBe('/fetched/dips');
+    await expect(dash).rejects.toThrow('fatal: repository not found');
+    expect(run).not.toHaveBeenCalled();
+
+    // A lock whose holder died is given up on once the fetch time limit has passed.
+    mkdirSync(join(stateDir, 'dashpay%2Fplatform.lock'));
+    await expect(loader([PLATFORM], { timeoutMs: 100 })('dashpay/platform')).rejects.toThrow("another reviewer's fetch of dashpay/platform did not finish in time");
   });
 
   /** Writes a clone as `actions/cache` restores it, with objects and a `.git/config` and `objects/info` that point elsewhere. */
@@ -99,7 +129,7 @@ describe('relatedRepoLoader', () => {
     const dashDir = join(cacheDir, 'dashpay', 'dash');
     restoreClone(dashDir);
 
-    await relatedRepoLoader([DASH], { cacheDir, run: fakeGit() })('reference');
+    await loader([DASH])('dashpay/dash');
 
     expect(calls.map(c => c.args)).toEqual([
       ['init', '-q'],
@@ -120,12 +150,11 @@ describe('relatedRepoLoader', () => {
     const dashDir = join(cacheDir, 'dashpay', 'dash');
     restoreClone(dashDir);
 
-    const fetched = await relatedRepoLoader([DASH], { cacheDir, run: fakeGit({ 'dashpay/dash': { fsck: 'error: index CRC mismatch for object 0931' } }) })('reference');
+    expect(await loader([DASH], { run: fakeGit({ 'dashpay/dash': { fsck: 'error: index CRC mismatch for object 0931' } }) })('dashpay/dash')).toBe(dashDir);
 
-    expect(fetched).toHaveLength(1);
     expect(calls.map(c => c.args[0] === '-c' ? 'fsck' : c.args[0])).toEqual(['init', 'remote', 'fsck', 'init', 'remote', 'sparse-checkout', 'fetch', 'checkout', 'repack']);
     expect(existsSync(join(dashDir, '.git', 'objects', 'pack'))).toBe(false);
-    expect(core.info).toHaveBeenCalledWith(`Discarding the cached objects of ${dashDir}: error: index CRC mismatch for object 0931`);
+    expect(log).toHaveBeenCalledWith(`Discarding the cached objects of ${dashDir}: error: index CRC mismatch for object 0931`);
   });
 
   it('reuses nothing through a symlink that the cache restored, in the path or in the object store', async () => {
@@ -134,7 +163,7 @@ describe('relatedRepoLoader', () => {
       restoreClone(join(outside, 'dash'));
       symlinkSync(outside, join(cacheDir, 'dashpay'));
 
-      await relatedRepoLoader([DASH], { cacheDir, run: fakeGit() })('reference');
+      await loader([DASH])('dashpay/dash');
 
       expect(calls.map(c => c.args[0])).toEqual(['init', 'remote', 'sparse-checkout', 'fetch', 'checkout', 'repack']);
       expect(lstatSync(join(cacheDir, 'dashpay')).isSymbolicLink()).toBe(false);
@@ -146,7 +175,7 @@ describe('relatedRepoLoader', () => {
       symlinkSync(join(outside, 'dash', '.git', 'objects', 'pack'), join(dipsDir, '.git', 'objects', 'pack'));
       calls = [];
 
-      await relatedRepoLoader([DIPS], { cacheDir, run: fakeGit() })('reference');
+      await loader([DIPS])('dashpay/dips');
 
       expect(calls.map(c => c.args[0])).toEqual(['init', 'remote', 'sparse-checkout', 'fetch', 'checkout', 'repack']);
       expect(existsSync(join(dipsDir, '.git', 'objects', 'pack'))).toBe(false);
@@ -156,7 +185,7 @@ describe('relatedRepoLoader', () => {
     }
   });
 
-  it('skips a repo whose restored directory or symlink it cannot remove, without running git there', async () => {
+  it('refuses a repo whose restored directory or symlink it cannot remove, without running git there', async () => {
     const dashDir = join(cacheDir, 'dashpay', 'dash');
     mkdirSync(join(dashDir, '.git'), { recursive: true });
     writeFileSync(join(dashDir, '.git', 'config'), '[core]\n\tworktree = /elsewhere\n');
@@ -164,13 +193,11 @@ describe('relatedRepoLoader', () => {
     const outside = mkdtempSync(join(tmpdir(), 'manki-related-repos-outside-'));
     try {
       const run = fakeGit();
-      expect(await relatedRepoLoader([DASH], { cacheDir, run })('reference')).toEqual([]);
-      expect(core.warning).toHaveBeenCalledWith(`Skipping related repo dashpay/dash, which must be public on github.com: could not remove ${dashDir}`);
+      await expect(loader([DASH], { run })('dashpay/dash')).rejects.toThrow(`could not remove ${dashDir}`);
 
       symlinkSync(outside, join(cacheDir, 'linked'));
       chmodSync(cacheDir, 0o555);
-      expect(await relatedRepoLoader([{ repo: 'linked/dips', kind: 'reference' }], { cacheDir, run })('reference')).toEqual([]);
-      expect(core.warning).toHaveBeenCalledWith(`Skipping related repo linked/dips, which must be public on github.com: could not remove ${join(cacheDir, 'linked')}`);
+      await expect(loader([{ repo: 'linked/dips', kind: 'reference' }], { run })('linked/dips')).rejects.toThrow(`could not remove ${join(cacheDir, 'linked')}`);
 
       expect(run).not.toHaveBeenCalled();
       expect(readdirSync(outside)).toEqual([]);
@@ -181,44 +208,47 @@ describe('relatedRepoLoader', () => {
     }
   });
 
-  it('skips a repo it cannot fetch with a warning, removes its directory, and returns the others, also when their repack fails', async () => {
+  it('records a repo it cannot fetch and removes its directory, and keeps one whose repack fails', async () => {
     const run = fakeGit({
       'dashpay/dips': { fetch: "fatal: could not read Username for 'https://github.com': terminal prompts disabled" },
       'dashpay/dash': { repack: 'fatal: out of memory' },
     });
+    const load = loader([DASH, DIPS], { run });
 
-    const references = await relatedRepoLoader([DASH, DIPS], { cacheDir, run })('reference');
+    await expect(load('dashpay/dips')).rejects.toThrow("fatal: could not read Username for 'https://github.com': terminal prompts disabled");
+    await expect(load('dashpay/dips')).rejects.toThrow('terminal prompts disabled');
+    expect(await load('dashpay/dash')).toBe(join(cacheDir, 'dashpay', 'dash'));
 
-    expect(references.map(r => r.repo)).toEqual(['dashpay/dash']);
-    expect(core.warning).toHaveBeenCalledWith(
-      "Skipping related repo dashpay/dips, which must be public on github.com: fatal: could not read Username for 'https://github.com': terminal prompts disabled",
-    );
     expect(existsSync(join(cacheDir, 'dashpay', 'dips'))).toBe(false);
-    expect(calls.filter(c => c.cwd.endsWith('dips')).map(c => c.args[0])).not.toContain('checkout');
-    expect(core.info).toHaveBeenCalledWith(`Could not repack ${join(cacheDir, 'dashpay', 'dash')}: fatal: out of memory`);
+    expect(calls.filter(c => c.cwd.endsWith('dips')).map(c => c.args[0])).toEqual(['init', 'remote', 'sparse-checkout', 'fetch']);
+    expect(log).toHaveBeenCalledWith(`Could not repack ${join(cacheDir, 'dashpay', 'dash')}: fatal: out of memory`);
+    expect(readdirSync(stateDir).sort()).toEqual(['dashpay%2Fdash.done', 'dashpay%2Fdash.lock', 'dashpay%2Fdips.failed', 'dashpay%2Fdips.lock']);
+
+    warnRelatedRepoFailures(stateDir);
     expect(core.warning).toHaveBeenCalledTimes(1);
+    expect(core.warning).toHaveBeenCalledWith(
+      "Could not fetch related repo dashpay/dips, which must be public on github.com: fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+    );
   });
 
-  it('gives each repo one time limit across its git commands, and skips it once that runs out', async () => {
-    const run = jest.fn<ReturnType<NonNullable<Run>>, Parameters<NonNullable<Run>>>(async (_binary, _args, _cwd, options) => {
+  it('gives each repo one time limit across its git commands', async () => {
+    const run = jest.fn<ReturnType<Run>, Parameters<Run>>(async (_binary, _args, _cwd, options) => {
       await new Promise(resolve => setTimeout(resolve, 20));
       expect(options?.timeoutMs).toBeLessThanOrEqual(10);
       return { code: -1, stdout: '', stderr: '' };
     });
 
-    expect(await relatedRepoLoader([DIPS], { cacheDir, run, timeoutMs: 10 })('reference')).toEqual([]);
+    await expect(loader([DIPS], { run, timeoutMs: 10 })('dashpay/dips')).rejects.toThrow('git did not finish within 0.01s');
 
     expect(run).toHaveBeenCalledTimes(1);
-    expect(core.warning).toHaveBeenCalledWith('Skipping related repo dashpay/dips, which must be public on github.com: git did not finish within 0.01s');
   });
 
   it('refuses a repo name that leaves the cache directory, and fetches nothing for it', async () => {
     const run = fakeGit();
 
-    expect(await relatedRepoLoader([{ repo: '../..', kind: 'reference' }], { cacheDir, run })('reference')).toEqual([]);
+    await expect(loader([{ repo: '../..', kind: 'reference' }], { run })('../..')).rejects.toThrow('not an "owner/name" repo');
 
     expect(run).not.toHaveBeenCalled();
-    expect(core.warning).toHaveBeenCalledWith('Skipping related repo ../..: not an "owner/name" repo');
   });
 
   it('clones into the runner temp directory by default', () => {

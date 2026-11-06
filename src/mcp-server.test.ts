@@ -10,6 +10,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 import { createMcpServer, McpServerOptions, runMcpServer } from './mcp-server';
+import { RelatedRepoTools } from './types';
 
 // The grammars are registered once per process, so every test file registers the same ones.
 napi.registerDynamicLanguage({ python, rust });
@@ -196,5 +197,50 @@ describe('Manki tool server', () => {
 
     expect(result.text).toContain('holds only the last 500 commits');
     await shallowClient.close();
+  });
+
+  it('reads a related repo named by `repo`, fetched on the first call that names it, and nowhere outside it', async () => {
+    const cacheDir = join(base, 'related');
+    const stateDir = join(base, 'state');
+    const relatedDir = join(cacheDir, 'o', 'r');
+    mkdirSync(relatedDir, { recursive: true });
+    writeFileSync(join(relatedDir, 'lib.rs'), 'pub fn api() {}\n');
+    symlinkSync(join(outside, 'secret.ts'), join(relatedDir, 'link.rs'));
+    // Another tool server of the round fetched `o/r` and failed on `o/missing`, so no git runs here.
+    for (const [marker, outcome] of [['o%2Fr.done', relatedDir], ['o%2Fmissing.failed', 'fatal: repository not found']]) {
+      mkdirSync(join(stateDir, marker.replace(/\.\w+$/, '.lock')), { recursive: true });
+      writeFileSync(join(stateDir, marker), outcome);
+    }
+    const related: RelatedRepoTools = { repos: [{ repo: 'o/r', kind: 'consumer' }, { repo: 'o/missing', kind: 'reference' }], cacheDir, stateDir };
+    const claude = await connect(repo, { related });
+    const codex = await connect(repo, { fileTools: true, related });
+    try {
+      // A client with its own file tools gets these for related repos only, so `repo` is required there.
+      const { tools } = await claude.listTools();
+      const schema = (name: string) => tools.find(t => t.name === name)!.inputSchema;
+      expect(tools.map(t => t.name).sort()).toEqual(['ast_grep', 'git_history', 'glob', 'grep', 'read_file']);
+      expect(['read_file', 'grep', 'glob'].map(name => schema(name).required)).toEqual([['path', 'repo'], ['text', 'repo'], ['pattern', 'repo']]);
+      expect(schema('ast_grep').required).toEqual(['pattern']);
+      expect(schema('git_history').properties).not.toHaveProperty('repo');
+
+      expect(await call(claude, 'read_file', { repo: 'o/r', path: 'lib.rs' })).toEqual({ text: '1\tpub fn api() {}\n2\t', isError: false });
+      expect((await call(claude, 'grep', { repo: 'o/r', text: 'api' })).text).toBe('lib.rs:1: pub fn api() {}');
+      expect((await call(claude, 'glob', { repo: 'o/r', pattern: '*.rs' })).text).toBe('lib.rs');
+      expect((await call(claude, 'ast_grep', { repo: 'o/r', pattern: 'pub fn $F() {}' })).text).toBe('lib.rs:1: pub fn api() {}');
+      expect((await call(claude, 'ast_grep', { pattern: '$V.unwrap()', language: 'rust' })).text).toBe('src/b.rs:2: v.unwrap()');
+      expect((await call(codex, 'read_file', { path: 'src/a.ts' })).text).toContain('const x = 2;');
+      expect((await call(codex, 'read_file', { repo: 'o/r', path: 'lib.rs' })).text).toContain('pub fn api()');
+
+      for (const path of ['../../../outside/secret.ts', join(outside, 'secret.ts'), 'link.rs']) {
+        expect(await call(claude, 'read_file', { repo: 'o/r', path })).toEqual({ text: expect.stringContaining('is outside the repository'), isError: true });
+      }
+      expect(await call(claude, 'read_file', { repo: 'o/missing', path: 'x' }))
+        .toEqual({ text: 'o/missing could not be fetched, so it cannot be read: fatal: repository not found', isError: true });
+      expect((await call(claude, 'read_file', { repo: 'o/other', path: 'lib.rs' })).isError).toBe(true);
+      expect((await call(claude, 'read_file', { path: 'src/a.ts' })).isError).toBe(true);
+    } finally {
+      await claude.close();
+      await codex.close();
+    }
   });
 });

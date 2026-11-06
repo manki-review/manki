@@ -6,6 +6,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
 import { AnthropicClient, buildAnthropicAuth, CLAUDE_CLI_VERSION, extractAnthropicCLIUsage, resetCLIInstallPromise, sanitizeLogOutput, STALE_TIMEOUT_MS } from './anthropic';
+import { RelatedRepoTools } from '../types';
 import { QuotaError, RefusalError, SendMessageOptions } from './types';
 
 jest.mock('child_process', () => ({
@@ -491,21 +492,37 @@ describe('sendViaOAuth — error paths', () => {
     expect(client.repoTools).toBe(true);
     expect(new AnthropicClient({ auth: { kind: 'apiKey', key: 'sk' }, model: 'claude-opus-5-5' }).repoTools).toBe(false);
 
-    const response = await client.sendMessage('Review the diff.', 'the diff', { repoTools: { root: '/work/repo', steps: 15 } });
+    const related: RelatedRepoTools = {
+      repos: [{ repo: 'dashpay/dash', kind: 'reference', ref: 'v23.0.0', paths: ['src/'] }, { repo: 'dashpay/platform', kind: 'consumer' }],
+      cacheDir: '/runner/temp/manki-related-repos',
+      stateDir: '/runner/temp/manki-related-1',
+    };
+    const response = await client.sendMessage('Review the diff.', 'the diff', { repoTools: { root: '/work/repo', steps: 15, related } });
 
     const spawnArgs = mockSpawn.mock.calls[0][1] as string[];
     const valueOf = (flag: string) => spawnArgs[spawnArgs.indexOf(flag) + 1];
     expect(spawnArgs).toEqual(expect.arrayContaining(['--restricted', '--strict-mcp-config']));
     expect([valueOf('--permission-mode'), valueOf('--tools'), valueOf('--add-dir'), valueOf('--allowedTools'), valueOf('--max-turns')])
-      .toEqual(['dontAsk', 'Read,Grep,Glob', '/work/repo', 'mcp__manki__git_history,mcp__manki__ast_grep', '20']);
+      .toEqual(['dontAsk', 'Read,Grep,Glob', '/work/repo', 'mcp__manki__git_history,mcp__manki__ast_grep,mcp__manki__read_file,mcp__manki__grep,mcp__manki__glob', '20']);
     const hook = JSON.parse(valueOf('--settings')).hooks.PreToolUse;
     expect(hook).toEqual([{ matcher: '*', hooks: [{ type: 'command', command: expect.stringMatching(/ 'step-hook' '[^']+\/steps' '15'$/) }] }]);
     expect(hook[0].hooks[0].command.startsWith(`'${process.execPath}' '${process.argv[1]}' `)).toBe(true);
     expect(valueOf('--setting-sources')).toBe('');
-    expect(mcpConfig!.mcpServers.manki).toEqual({ type: 'stdio', command: process.execPath, args: [process.argv[1], 'mcp-server', '/work/repo'], env: { CLAUDE_CODE_OAUTH_TOKEN: '' } });
+    expect(mcpConfig!.mcpServers.manki).toEqual({
+      type: 'stdio', command: process.execPath, args: [process.argv[1], 'mcp-server', '/work/repo', '--related-repos', JSON.stringify(related)], env: { CLAUDE_CODE_OAUTH_TOKEN: '' },
+    });
     expect(Object.keys(mcpConfig!.mcpServers)).toEqual(['manki']);
     expect(systemPromptFile).toMatch(/^Review the diff\.\n\n## Tools\n\nThe PR's head commit is checked out at `\/work\/repo`\./);
     expect(systemPromptFile).toContain('You have 15 tool steps, and each tool call takes one. When 3 are left, a note from Manki');
+    expect(systemPromptFile).toContain([
+      '## Related repos',
+      '',
+      '`read_file`, `grep`, `glob` and `ast_grep` read one of these repos instead when you name it in `repo`:',
+      '',
+      '- `dashpay/dash` at `v23.0.0`, reference: a codebase this one implements or ports. Only `src/` is fetched.',
+      '- `dashpay/platform`, consumer: a codebase that depends on this one.',
+    ].join('\n'));
+    expect(systemPromptFile).toContain('A change that breaks a consumer is a `warning` that lists the consumer\'s call sites');
     expect(response.toolSteps).toEqual([{ tool: 'Read', durationMs: expect.any(Number) }, { tool: 'mcp__manki__git_history', durationMs: expect.any(Number) }]);
   });
 
