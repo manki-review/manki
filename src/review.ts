@@ -1060,8 +1060,12 @@ export async function runReview(
       suppressResolvedThreads,
       ...(related && { relatedRepos: related.repos }),
       ...(workspace && clients.judge.repoTools && {
-        // Its own label keeps the refutation calls out of the judge's retry count.
-        refutation: { client: withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'judge', 'refute'), workspace },
+        // Its own label keeps the refutation calls out of the judge's retry count. A fallback without tools could not
+        // read the code, so without one a refused call fails and the finding keeps the judge's grade.
+        refutation: {
+          client: withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge?.client.repoTools ? clients.fallbacks.judge : undefined }, 'judge', 'refute'),
+          workspace,
+        },
       }),
     };
     const judgeStart = Date.now();
