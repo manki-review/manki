@@ -248,14 +248,10 @@ export async function writeSuppression(
   targetRepo: string,
   suppression: Suppression,
 ): Promise<void> {
-  const [owner, repo] = memoryRepo.split('/');
-  const path = `${targetRepo}/suppressions.yml`;
-
-  const existing = await fetchYamlFile<Suppression[]>(octokit, owner, repo, path) || [];
-  existing.push(suppression);
-
-  const content = stringifyYaml(existing);
-  await writeFile(octokit, owner, repo, path, content, `Add suppression: ${suppression.pattern}`);
+  await updateYamlList<Suppression>(octokit, memoryRepo, `${targetRepo}/suppressions.yml`, items => {
+    items.push(suppression);
+    return `Add suppression: ${suppression.pattern}`;
+  });
 }
 
 /**
@@ -267,15 +263,11 @@ export async function writeLearning(
   targetRepo: string,
   learning: Learning,
 ): Promise<void> {
-  const [owner, repo] = memoryRepo.split('/');
   const scope = learning.scope === 'global' ? '_global' : targetRepo;
-  const path = `${scope}/learnings.yml`;
-
-  const existing = await fetchYamlFile<Learning[]>(octokit, owner, repo, path) || [];
-  existing.push(learning);
-
-  const content = stringifyYaml(existing);
-  await writeFile(octokit, owner, repo, path, content, `Add learning: ${learning.content.slice(0, 50)}`);
+  await updateYamlList<Learning>(octokit, memoryRepo, `${scope}/learnings.yml`, items => {
+    items.push(learning);
+    return `Add learning: ${learning.content.slice(0, 50)}`;
+  });
 }
 
 /** Appends `line` to `<targetRepo>/<file>` in the memory repo, creating the file when it is missing. */
@@ -288,7 +280,7 @@ export async function appendMemoryLine(
   message: string,
 ): Promise<void> {
   const [owner, repo] = memoryRepo.split('/');
-  await writeFile(octokit, owner, repo, `${targetRepo}/${file}`, current => `${current ?? ''}${line}\n`, message);
+  await writeFile(octokit, owner, repo, `${targetRepo}/${file}`, current => ({ content: `${current ?? ''}${line}\n`, message }));
 }
 
 /**
@@ -300,22 +292,14 @@ export async function removeLearning(
   targetRepo: string,
   searchText: string,
 ): Promise<{ removed: Learning | null; remaining: number }> {
-  const [owner, repo] = memoryRepo.split('/');
-  const path = `${targetRepo}/learnings.yml`;
-
-  const existing = await fetchYamlFile<Learning[]>(octokit, owner, repo, path) || [];
   const searchLower = searchText.toLowerCase();
-  const index = existing.findIndex(l => l.content.toLowerCase().includes(searchLower));
-
-  if (index === -1) {
-    return { removed: null, remaining: existing.length };
-  }
-
-  const [removed] = existing.splice(index, 1);
-  const content = stringifyYaml(existing);
-  await writeFile(octokit, owner, repo, path, content, `Remove learning: ${removed.content.slice(0, 50)}`);
-
-  return { removed, remaining: existing.length };
+  return removeFromYamlList<Learning>(
+    octokit,
+    memoryRepo,
+    `${targetRepo}/learnings.yml`,
+    l => l.content.toLowerCase().includes(searchLower),
+    l => `Remove learning: ${l.content.slice(0, 50)}`,
+  );
 }
 
 /**
@@ -327,22 +311,52 @@ export async function removeSuppression(
   targetRepo: string,
   searchPattern: string,
 ): Promise<{ removed: Suppression | null; remaining: number }> {
-  const [owner, repo] = memoryRepo.split('/');
-  const path = `${targetRepo}/suppressions.yml`;
-
-  const existing = await fetchYamlFile<Suppression[]>(octokit, owner, repo, path) || [];
   const searchLower = searchPattern.toLowerCase();
-  const index = existing.findIndex(s => s.pattern.toLowerCase().includes(searchLower));
+  return removeFromYamlList<Suppression>(
+    octokit,
+    memoryRepo,
+    `${targetRepo}/suppressions.yml`,
+    s => s.pattern.toLowerCase().includes(searchLower),
+    s => `Remove suppression: ${s.pattern.slice(0, 50)}`,
+  );
+}
 
-  if (index === -1) {
-    return { removed: null, remaining: existing.length };
-  }
+/** Removes the first item matching `matches` from the YAML list at `path`. */
+async function removeFromYamlList<T>(
+  octokit: Octokit,
+  memoryRepo: string,
+  path: string,
+  matches: (item: T) => boolean,
+  message: (removed: T) => string,
+): Promise<{ removed: T | null; remaining: number }> {
+  let removed: T | null = null;
+  let remaining = 0;
+  await updateYamlList<T>(octokit, memoryRepo, path, items => {
+    const index = items.findIndex(matches);
+    removed = index === -1 ? null : items.splice(index, 1)[0];
+    remaining = items.length;
+    return removed === null ? null : message(removed);
+  });
+  return { removed, remaining };
+}
 
-  const [removed] = existing.splice(index, 1);
-  const content = stringifyYaml(existing);
-  await writeFile(octokit, owner, repo, path, content, `Remove suppression: ${removed.pattern.slice(0, 50)}`);
-
-  return { removed, remaining: existing.length };
+/**
+ * Edits the YAML list at `path` in the memory repo. `edit` changes the list in place and returns
+ * the commit message, or `null` to leave the file as it is. It runs again on fresh content after a
+ * write conflict.
+ */
+async function updateYamlList<T>(
+  octokit: Octokit,
+  memoryRepo: string,
+  path: string,
+  edit: (items: T[]) => string | null,
+): Promise<void> {
+  const [owner, repo] = memoryRepo.split('/');
+  await writeFile(octokit, owner, repo, path, current => {
+    const items = (current === null ? null : parseYaml(current) as T[] | null) ?? [];
+    const message = edit(items);
+    return message === null ? null : { content: stringifyYaml(items), message };
+  });
 }
 
 interface StoredFile {
@@ -371,33 +385,38 @@ async function fetchStoredFile(
 
 const DEFAULT_MAX_RETRIES = 3;
 
+interface FileUpdate {
+  content: string;
+  message: string;
+}
+
 /**
- * Writes `content` to `path`. An updater function is called with the file's current text on every
- * attempt, so a retry after a write conflict builds on the latest version.
+ * Writes the result of `update` to `path`. `update` gets the file's current text on every attempt,
+ * so a retry after a write conflict builds on the latest version. It returns `null` to skip the write.
  */
 async function writeFile(
   octokit: Octokit,
   owner: string,
   repo: string,
   path: string,
-  content: string | ((current: string | null) => string),
-  message: string,
+  update: (current: string | null) => FileUpdate | null,
   maxRetries: number = DEFAULT_MAX_RETRIES,
 ): Promise<void> {
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     const { sha, text } = await fetchStoredFile(octokit, owner, repo, path);
-    if (typeof content !== 'string' && sha && text === null) {
+    if (sha && text === null) {
       throw new Error(`Cannot read ${path} to update it`);
     }
-    const body = typeof content === 'string' ? content : content(text);
+    const next = update(text);
+    if (!next) return;
 
     try {
       await octokit.rest.repos.createOrUpdateFileContents({
         owner,
         repo,
         path,
-        message,
-        content: Buffer.from(body).toString('base64'),
+        message: next.message,
+        content: Buffer.from(next.content).toString('base64'),
         sha,
       });
       return;

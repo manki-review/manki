@@ -387,7 +387,12 @@ describe('filterSuppressionsForFinding', () => {
 
 type MockOctokit = Parameters<typeof removeLearning>[0];
 
-function mockMemoryOctokit(yamlFiles: Record<string, unknown[]>): MockOctokit {
+/** `concurrentWrite` changes the store before the first write, which then fails with a conflict. */
+function mockMemoryOctokit(
+  yamlFiles: Record<string, unknown[]>,
+  concurrentWrite?: (store: Map<string, unknown[]>) => void,
+): MockOctokit {
+  let conflict = concurrentWrite;
   const store = new Map<string, unknown[]>();
   for (const [path, data] of Object.entries(yamlFiles)) {
     store.set(path, [...data]);
@@ -409,6 +414,11 @@ function mockMemoryOctokit(yamlFiles: Record<string, unknown[]>): MockOctokit {
           };
         }),
         createOrUpdateFileContents: jest.fn(async ({ path, content }: { path: string; content: string }) => {
+          if (conflict) {
+            conflict(store);
+            conflict = undefined;
+            throw Object.assign(new Error('sha does not match'), { status: 409 });
+          }
           const { parse } = await import('yaml');
           const decoded = Buffer.from(content, 'base64').toString('utf-8');
           store.set(path, parse(decoded));
@@ -444,6 +454,7 @@ describe('removeLearning', () => {
 
     expect(removed).toBeNull();
     expect(remaining).toBe(1);
+    expect(octokit.rest.repos.createOrUpdateFileContents).not.toHaveBeenCalled();
   });
 
   it('returns null when no learnings file exists', async () => {
@@ -482,6 +493,7 @@ describe('removeSuppression', () => {
 
     expect(removed).toBeNull();
     expect(remaining).toBe(1);
+    expect(octokit.rest.repos.createOrUpdateFileContents).not.toHaveBeenCalled();
   });
 
   it('returns null when no suppressions file exists', async () => {
@@ -592,6 +604,44 @@ describe('writeLearning', () => {
 
     const createCall = (octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls[0][0];
     expect(createCall.path).toBe('_global/learnings.yml');
+  });
+});
+
+describe('memory writes after a write conflict', () => {
+  const learnings = 'test-repo/learnings.yml';
+  const suppressions = 'test-repo/suppressions.yml';
+  const addConcurrent = (store: Map<string, unknown[]>) => {
+    store.set(learnings, [...store.get(learnings)!, makeLearning({ id: 'other', content: 'written meanwhile' })]);
+    store.set(suppressions, [...store.get(suppressions)!, makeSuppression({ id: 'other', pattern: 'written meanwhile' })]);
+  };
+  const seed = () => ({
+    [learnings]: [makeLearning({ id: 'l1', content: 'old learning' })],
+    [suppressions]: [makeSuppression({ id: 's1', pattern: 'old pattern' })],
+  });
+
+  it.each([
+    ['writeLearning', learnings, (o: MockOctokit) => writeLearning(o, 'owner/memory', 'test-repo', makeLearning({ id: 'new', content: 'new learning' })), ['l1', 'other', 'new']],
+    ['writeSuppression', suppressions, (o: MockOctokit) => writeSuppression(o, 'owner/memory', 'test-repo', makeSuppression({ id: 'new', pattern: 'new pattern' })), ['s1', 'other', 'new']],
+    ['removeLearning', learnings, (o: MockOctokit) => removeLearning(o, 'owner/memory', 'test-repo', 'old learning'), ['other']],
+    ['removeSuppression', suppressions, (o: MockOctokit) => removeSuppression(o, 'owner/memory', 'test-repo', 'old pattern'), ['other']],
+  ])('%s re-applies its change to the latest file', async (_name, path, write, ids) => {
+    let store: Map<string, unknown[]> | undefined;
+    const octokit = mockMemoryOctokit(seed(), s => { store = s; addConcurrent(s); });
+
+    await write(octokit);
+
+    expect(octokit.rest.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(2);
+    expect((store!.get(path) as { id: string }[]).map(item => item.id)).toEqual(ids);
+  });
+
+  it('reports nothing removed when another write removed the match first', async () => {
+    const octokit = mockMemoryOctokit(seed(), store => store.set(learnings, []));
+
+    const { removed, remaining } = await removeLearning(octokit, 'owner/memory', 'test-repo', 'old learning');
+
+    expect(removed).toBeNull();
+    expect(remaining).toBe(0);
+    expect(octokit.rest.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(1);
   });
 });
 
