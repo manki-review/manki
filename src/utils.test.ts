@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 
-import { truncate, formatDuration, redactSecrets, registerSecret, safeJsonParse, safeTruncate, sanitizeTokens, withMarkers } from './utils';
+import { truncate, formatDuration, mapWithConcurrency, redactSecrets, registerSecret, safeJsonParse, safeTruncate, sanitizeTokens, withMarkers } from './utils';
 
 jest.mock('@actions/core');
 
@@ -167,5 +167,22 @@ describe('utils', () => {
     it('keeps the body first and puts each marker on its own line after a blank line', () => {
       expect(withMarkers('**Done.**', '<!-- a -->', '<!-- b -->')).toBe('**Done.**\n\n<!-- a -->\n<!-- b -->');
     });
+  });
+});
+
+describe('mapWithConcurrency', () => {
+  it('keeps the order and runs at most `limit` calls at once', async () => {
+    let running = 0;
+    let peak = 0;
+    const results = await mapWithConcurrency([5, 1, 4, 2, 3, 0], 2, async n => {
+      running++;
+      peak = Math.max(peak, running);
+      await new Promise(resolve => setTimeout(resolve, n));
+      running--;
+      return n * 10;
+    });
+    expect(results).toEqual([50, 10, 40, 20, 30, 0]);
+    expect(peak).toBe(2);
+    expect(await mapWithConcurrency([], 4, async n => n)).toEqual([]);
   });
 });

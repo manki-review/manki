@@ -921,6 +921,30 @@ async function loadRunMemory(
  * Replaces the progress comment with a notice that automatic review is paused, listing the blocking threads still open.
  * Each push during the same pause updates the unticked notice from after `lastRoundAt` instead of adding another.
  */
+/**
+ * Replaces the progress comment with a request to split a PR too big to review. Posts no review, so
+ * earlier reviews and their verdicts stay. `offerForce` adds a Force review box.
+ */
+async function postTooBigNotice(target: RunTarget, commentId: number, text: string, offerForce: boolean): Promise<CheckReport> {
+  const { octokit, owner, repo, prNumber } = target;
+  try {
+    await octokit.rest.issues.deleteComment({ owner, repo, comment_id: commentId });
+  } catch (error) {
+    core.warning(`Failed to delete progress comment: ${error}`);
+  }
+  try {
+    if (offerForce) {
+      await postForceReviewOffer(octokit, owner, repo, prNumber, `${text}\n\n- [ ] Force review`);
+    } else {
+      await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: withMarkers(text, PROGRESS_MARKER) });
+    }
+  } catch (error) {
+    core.warning(`Failed to post the too-big notice: ${error instanceof Error ? error.message : error}`);
+  }
+  // A diff no reviewer read must not pass a required check, so it waits for a person.
+  return { conclusion: 'action_required', title: 'Not reviewed', summary: text };
+}
+
 async function postPauseNotice(
   target: RunTarget, commentId: number, { capReached, capRounds, reason }: PauseState, maxAutoRounds: number,
   previousFindings: PreviousFinding[], lastRoundAt?: string,
@@ -1512,21 +1536,15 @@ async function runFullReview(
     });
 
     const autoLimit = Math.min(config.auto_review_max_lines ?? config.max_diff_lines, config.max_diff_lines);
+    const shortSha = commitSha.slice(0, 7);
     if (lineCount > config.max_diff_lines) {
       core.warning(`Diff too large (${lineCount} reviewable lines > ${config.max_diff_lines} max)`);
-      checkReport = await postUnreviewedRound(target, progress, commentId, dashboard, diff, 'COMMENT',
-        `This PR has ${lineCount} reviewable lines, above the limit of ${config.max_diff_lines} that Manki reviews. Split it into smaller PRs to get a review.`, unreviewedMetadata());
+      checkReport = await postTooBigNotice(target, commentId, `**Too big to review** at \`${shortSha}\`: this PR has ${lineCount} reviewable lines, above the limit of ${config.max_diff_lines} that Manki reviews. Split it into smaller PRs to get a review.`, false);
       return;
     }
     if (lineCount > autoLimit && !forceReview && !skipCap) {
       core.info(`No automatic review: ${lineCount} reviewable lines > ${autoLimit}`);
-      const tooBig = `This PR has ${lineCount} reviewable lines, above the limit of ${autoLimit} for automatic review. Split it into smaller PRs, or tick Force review to review it in full.`;
-      checkReport = await postUnreviewedRound(target, progress, commentId, dashboard, diff, 'COMMENT', tooBig, unreviewedMetadata());
-      try {
-        await postForceReviewOffer(octokit, owner, repo, prNumber, `**Too big for automatic review** at \`${commitSha.slice(0, 7)}\`: ${lineCount} reviewable lines. Split it, or force a full review:\n\n- [ ] Force review`);
-      } catch (error) {
-        core.warning(`Failed to post the Force review offer: ${error instanceof Error ? error.message : error}`);
-      }
+      checkReport = await postTooBigNotice(target, commentId, `**Too big for automatic review** at \`${shortSha}\`: this PR has ${lineCount} reviewable lines, above the limit of ${autoLimit} for automatic review. Split it into smaller PRs, or tick the box to review it in full:`, true);
       return;
     }
 

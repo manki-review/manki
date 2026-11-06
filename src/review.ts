@@ -4,6 +4,7 @@ import { minimatch } from 'minimatch';
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { DEFAULT_CONFIG, resolveReviewerModel } from './config';
 import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, SendMessageOptions, withRefusalFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
+import { mapWithConcurrency } from './utils';
 import { runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, LinkedIssue, titleToSlug } from './github';
@@ -1267,9 +1268,12 @@ interface RunReviewerAgentOptions {
   related?: RelatedRepoTools;
 }
 
+/** Slices one finder reads at once, so a large diff does not flood the provider with calls. */
+const MAX_PARALLEL_SLICES = 4;
+
 /**
  * Runs one finder on the diff. A diff over `config.slice_lines` is split by `sliceDiff`, and the finder
- * reads each slice in a call of its own, in parallel. The findings and usage of all slices are combined.
+ * reads each slice in a call of its own, `MAX_PARALLEL_SLICES` at a time. The findings and usage of all slices are combined.
  */
 async function runReviewerAgent(
   client: LLMClient,
@@ -1286,11 +1290,11 @@ async function runReviewerAgent(
   const slices = sliceDiff(parsePRDiff(rawDiff), config.slice_lines ?? DEFAULT_CONFIG.slice_lines!);
   if (slices.length <= 1) return runReviewerOnSlice(client, config, finder, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, options);
   core.info(`${finder.name} reads the diff in ${slices.length} slices`);
-  const results = await Promise.all(slices.map(slice => {
+  const results = await mapWithConcurrency(slices, MAX_PARALLEL_SLICES, slice => {
     const paths = new Set(slice.files.map(f => f.path));
     const sliceContents = fileContents && new Map([...fileContents].filter(([path]) => paths.has(path)));
     return runReviewerOnSlice(client, config, finder, rebuildRawDiff(slice), repoContext, sliceContents, prContext, memoryContext, linkedIssues, options);
-  }));
+  });
   return {
     findings: results.flatMap(r => r.findings),
     responseLength: results.reduce((sum, r) => sum + r.responseLength, 0),

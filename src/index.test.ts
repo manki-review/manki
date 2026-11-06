@@ -2025,7 +2025,7 @@ describe('runFullReview orchestration', () => {
 
       await asDispatchedRun(callRunFullReview);
 
-      expect(completedCheck()).toMatchObject({ conclusion: 'action_required', output: { title: 'Not reviewed', summary: expect.stringContaining('above the limit of 5000 that Manki reviews') } });
+      expect(completedCheck()).toMatchObject({ conclusion: 'action_required', output: { title: 'Not reviewed', summary: expect.stringContaining('above the limit of 15000 that Manki reviews') } });
     });
 
     it('completes the check as action required while automatic review is paused', async () => {
@@ -2253,35 +2253,6 @@ describe('runFullReview orchestration', () => {
     });
   });
 
-  it('handles diff too large by posting warning review without running Claude', async () => {
-    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
-      files: [], totalAdditions: 3000, totalDeletions: 3000,
-    });
-    const warmupCLI = jest.fn().mockResolvedValue(undefined);
-    jest.mocked(createLLMClient).mockImplementation(() => ({
-      sendMessage: jest.fn(), warmupCLI,
-    }));
-
-    await callRunFullReview();
-
-    // Should post a review with the "too large" message
-    expect(jest.mocked(ghUtils.postReview)).toHaveBeenCalledWith(
-      expect.anything(), 'test-owner', 'test-repo', 42, 'abc123',
-      expect.objectContaining({
-        verdict: 'COMMENT',
-        summary: 'This PR has 6000 reviewable lines, above the limit of 5000 that Manki reviews. Split it into smaller PRs to get a review.',
-      }),
-      expect.anything(),
-    );
-    expect(jest.mocked(ghUtils.updateProgressComment)).toHaveBeenLastCalledWith(
-      expect.anything(), 'test-owner', 'test-repo', expect.any(Number), expect.anything(), expect.objectContaining({ judgeDecisions: [] }),
-    );
-    // Should NOT have called runReview (Claude)
-    expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
-    // Warmup must be skipped on paths that never invoke an LLM.
-    expect(warmupCLI).not.toHaveBeenCalled();
-  });
-
   it.each([
     ['an automatic review of 10,000 lines', 10_000, false, 'offer'],
     ['a forced review of 10,000 lines', 10_000, true, 'review'],
@@ -2289,41 +2260,42 @@ describe('runFullReview orchestration', () => {
     ['a forced review of 15,001 lines', 15_001, true, 'refuse'],
     ['an automatic review of 8,000 lines', 8_000, false, 'review'],
   ] as const)('handles %s with the default limits', async (_label, lines, forceReview, expected) => {
-    jest.mocked(configModule.loadConfig).mockReturnValueOnce({ ...jest.mocked(configModule.loadConfig)(undefined), max_diff_lines: 15_000, auto_review_max_lines: 8_000 });
     const file = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 2, content: '+x' }] };
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [file], totalAdditions: lines, totalDeletions: 0 });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [file], excluded: [] });
+    const warmupCLI = jest.fn().mockResolvedValue(undefined);
+    jest.mocked(createLLMClient).mockImplementation(() => ({ sendMessage: jest.fn(), warmupCLI }));
 
     await runFullReview(baseArgs.owner, baseArgs.repo, baseArgs.prNumber, baseArgs.commitSha, baseArgs.baseRef, baseArgs.prContext, { forceReview });
 
-    const posted = jest.mocked(ghUtils.postReview).mock.calls[0]?.[5].summary;
-    const offers = jest.mocked(mockOctokitInstance.rest.issues.createComment).mock.calls.map(([c]) => (c as { body: string }).body).filter(b => b.includes('- [ ] Force review'));
+    const notices = jest.mocked(mockOctokitInstance.rest.issues.createComment).mock.calls.map(([c]) => (c as { body: string }).body).filter(b => b.includes('**Too big'));
     if (expected === 'review') {
       expect(reviewModule.runReview).toHaveBeenCalled();
-      expect(offers).toEqual([]);
-    } else if (expected === 'offer') {
-      expect(reviewModule.runReview).not.toHaveBeenCalled();
-      expect(posted).toBe('This PR has 10000 reviewable lines, above the limit of 8000 for automatic review. Split it into smaller PRs, or tick Force review to review it in full.');
-      expect(offers).toEqual([expect.stringMatching(/^\*\*Too big for automatic review\*\* at `abc123`: 10000 reviewable lines\. Split it, or force a full review:\n\n- \[ \] Force review\n/)]);
-    } else {
-      expect(reviewModule.runReview).not.toHaveBeenCalled();
-      expect(posted).toBe('This PR has 15001 reviewable lines, above the limit of 15000 that Manki reviews. Split it into smaller PRs to get a review.');
-      expect(offers).toEqual([]);
+      expect(notices).toEqual([]);
+      return;
     }
+    expect(reviewModule.runReview).not.toHaveBeenCalled();
+    expect(warmupCLI).not.toHaveBeenCalled();
+    // Earlier reviews and their verdicts stay, so a push cannot clear a blocker by making the PR too big.
+    expect(ghUtils.postReview).not.toHaveBeenCalled();
+    expect(ghUtils.dismissPreviousReviews).not.toHaveBeenCalled();
+    expect(mockOctokitInstance.rest.issues.deleteComment).toHaveBeenCalled();
+    expect(notices).toEqual([expected === 'offer'
+      ? expect.stringMatching(/^\*\*Too big for automatic review\*\* at `abc123`: this PR has 10000 reviewable lines, above the limit of 8000 for automatic review\. Split it into smaller PRs, or tick the box to review it in full:\n\n- \[ \] Force review\n/)
+      : expect.stringMatching(/^\*\*Too big to review\*\* at `abc123`: this PR has 15001 reviewable lines, above the limit of 15000 that Manki reviews\. Split it into smaller PRs to get a review\.\n/)]);
   });
 
-  it('dismisses previous reviews other than the diff-too-large comment after posting it', async () => {
-    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
-      files: [], totalAdditions: 6000, totalDeletions: 0,
-    });
+  it('takes the size limits from the base branch, not from the PR', async () => {
+    jest.mocked(configModule.loadConfig).mockReturnValueOnce({ ...jest.mocked(configModule.loadConfig)(undefined), max_diff_lines: 100_000, auto_review_max_lines: 100_000 });
+    jest.mocked(ghUtils.readConfigFile).mockImplementation(async (_o, _ow, _r, ref) => (ref === 'main' ? 'auto_review_max_lines: 500\n' : null));
+    const file = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 2, content: '+x' }] };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [file], totalAdditions: 600, totalDeletions: 0 });
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [file], excluded: [] });
 
     await callRunFullReview();
 
-    expect(jest.mocked(ghUtils.dismissPreviousReviews)).toHaveBeenCalledWith(
-      expect.anything(), 'test-owner', 'test-repo', 42, 123,
-    );
-    expect(jest.mocked(ghUtils.postReview).mock.invocationCallOrder[0])
-      .toBeLessThan(jest.mocked(ghUtils.dismissPreviousReviews).mock.invocationCallOrder[0]);
+    expect(reviewModule.runReview).not.toHaveBeenCalled();
+    jest.mocked(ghUtils.readConfigFile).mockResolvedValue(null);
   });
 
   it('approves when all files are filtered out by config', async () => {

@@ -29,11 +29,11 @@
 # approves and does not count toward the round cap.
 # drafts: skip
 
-# Review size limits, in reviewable lines after exclude_paths. A PR up to
-# auto_review_max_lines is reviewed automatically. A larger one gets a request
-# to split it and a Force review box, and a forced review covers it up to
-# max_diff_lines. Above that Manki never reviews. A finder reads a diff over
-# slice_lines in parallel slices of that size.
+# Review size limits, in reviewable lines after exclude_paths, read from the
+# base branch only. A PR up to auto_review_max_lines is reviewed automatically.
+# A larger one gets a request to split it and a Force review box, and a forced
+# review covers it up to max_diff_lines. Above that Manki never reviews. A finder
+# reads a diff over slice_lines (at least 200) in slices of that size.
 # auto_review_max_lines: 8000
 # max_diff_lines: 15000
 # slice_lines: 1500
