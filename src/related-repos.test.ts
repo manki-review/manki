@@ -127,7 +127,7 @@ describe('relatedRepoLoader', () => {
     expect(core.info).toHaveBeenCalledWith(`Discarding the cached objects of ${dashDir}: error: index CRC mismatch for object 0931`);
   });
 
-  it('reuses nothing through a symlink that the cache restored', async () => {
+  it('reuses nothing through a symlink that the cache restored, in the path or in the object store', async () => {
     const outside = mkdtempSync(join(tmpdir(), 'manki-related-repos-outside-'));
     try {
       restoreClone(join(outside, 'dash'));
@@ -138,6 +138,18 @@ describe('relatedRepoLoader', () => {
       expect(calls.map(c => c.args[0])).toEqual(['init', 'remote', 'sparse-checkout', 'fetch', 'checkout']);
       expect(lstatSync(join(cacheDir, 'dashpay')).isSymbolicLink()).toBe(false);
       expect(existsSync(join(outside, 'dash', 'stale.txt'))).toBe(true);
+
+      const dipsDir = join(cacheDir, 'dashpay', 'dips');
+      restoreClone(dipsDir);
+      rmSync(join(dipsDir, '.git', 'objects', 'pack'), { recursive: true });
+      symlinkSync(join(outside, 'dash', '.git', 'objects', 'pack'), join(dipsDir, '.git', 'objects', 'pack'));
+      calls = [];
+
+      await relatedRepoLoader([DIPS], { cacheDir, run: fakeGit() })('reference');
+
+      expect(calls.map(c => c.args[0])).toEqual(['init', 'remote', 'sparse-checkout', 'fetch', 'checkout']);
+      expect(existsSync(join(dipsDir, '.git', 'objects', 'pack'))).toBe(false);
+      expect(readFileSync(join(outside, 'dash', '.git', 'objects', 'pack', 'pack-1.pack'), 'utf-8')).toBe('objects');
     } finally {
       rmSync(outside, { recursive: true, force: true });
     }

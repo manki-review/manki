@@ -1,5 +1,5 @@
 import * as core from '@actions/core';
-import { lstatSync, mkdirSync, renameSync, rmSync } from 'fs';
+import { lstatSync, mkdirSync, readdirSync, renameSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join, resolve, sep } from 'path';
 
@@ -99,8 +99,8 @@ async function initReusingObjects(dir: string, init: () => Promise<void>, git: (
   const objects = join(dir, '.git', 'objects');
   const stash = `${dir}.objects`;
   removeQuietly(stash);
-  // A symlink anywhere in the path could point the clone outside the cache directory.
-  const restored = [dirname(dir), dir, join(dir, '.git'), objects].every(isRealDirectory);
+  // A symlink in the path or the store could make git read or write outside the cache directory.
+  const restored = [dirname(dir), dir, join(dir, '.git')].every(isRealDirectory) && isPlainTree(objects);
   if (restored) renameSync(objects, stash);
   if (!isRealDirectory(dirname(dir))) removeQuietly(dirname(dir));
   await init();
@@ -119,6 +119,11 @@ async function initReusingObjects(dir: string, init: () => Promise<void>, git: (
 
 function isRealDirectory(path: string): boolean {
   return lstatSync(path, { throwIfNoEntry: false })?.isDirectory() ?? false;
+}
+
+/** Whether `path` is a real directory that holds only regular files and real directories, at any depth. */
+function isPlainTree(path: string): boolean {
+  return isRealDirectory(path) && readdirSync(path, { withFileTypes: true, recursive: true }).every(entry => entry.isFile() || entry.isDirectory());
 }
 
 /** Removes `path`, warning instead of throwing, since a git process killed on timeout can still hold files in it. */
