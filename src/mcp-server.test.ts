@@ -54,6 +54,15 @@ describe('Manki tool server', () => {
     writeFileSync(join(repo, 'src', 'b.rs'), 'fn f(v: Option<u8>) -> u8 {\n    v.unwrap()\n}\n');
     git(repo, 'add', '.');
     git(repo, 'commit', '-qm', 'add b');
+    writeFileSync(join(repo, 'src', 'big.txt'), `${'a'.repeat(400_000)}\n`);
+    git(repo, 'add', '.');
+    git(repo, 'commit', '-qm', 'add big');
+    for (const fill of ['b', 'c', 'd']) {
+      writeFileSync(join(repo, 'src', 'big.txt'), `${fill.repeat(400_000)}\n`);
+      git(repo, 'commit', '-qam', `fill ${fill}`);
+    }
+    mkdirSync(join(repo, 'vendor'));
+    writeFileSync(join(repo, 'vendor', 'huge.ts'), `console.log(1);\n${'// filler\n'.repeat(110_000)}`);
     symlinkSync(join(outside, 'secret.ts'), join(repo, 'src', 'link.ts'));
     symlinkSync(outside, join(repo, 'src', 'outdir'));
     client = await connect(repo);
@@ -77,11 +86,22 @@ describe('Manki tool server', () => {
 
     const lines = await call(client, 'git_history', { path: 'src/a.ts', startLine: 2 });
     expect(lines.text.match(/^ {4}\S.*$/gm)).toEqual(['    add a']);
+
+    // Line history of four 400 KB rewrites runs past git's output buffer and is cut instead of failing.
+    const long = await call(client, 'git_history', { path: 'src/big.txt', startLine: 1 });
+    expect(long.isError).toBe(false);
+    expect(long.text).toContain('[output cut at 20000 characters]');
   });
 
   it('finds code by syntax, with file and line, and skips symlinks', async () => {
-    expect(await call(client, 'ast_grep', { pattern: 'console.log($A)' })).toEqual({ text: 'src/a.ts:2: console.log(x)', isError: false });
+    expect(await call(client, 'ast_grep', { pattern: 'console.log($A)', path: 'src' })).toEqual({ text: 'src/a.ts:2: console.log(x)', isError: false });
     expect(await call(client, 'ast_grep', { pattern: '$V.unwrap()', language: 'rust' })).toEqual({ text: 'src/b.rs:2: v.unwrap()', isError: false });
+  });
+
+  it('skips files a pattern does not parse for, and says which files it left out', async () => {
+    expect(await call(client, 'ast_grep', { pattern: 'fn $F($$$) -> u8 { $$$ }', path: 'src' })).toEqual({ text: 'src/b.rs:1: fn f(v: Option<u8>) -> u8 {', isError: false });
+    expect((await call(client, 'ast_grep', { pattern: 'console.log($A)' })).text).toBe('src/a.ts:2: console.log(x)\n[1 files over 1024 KB were not searched]');
+    expect(await call(client, 'ast_grep', { pattern: 'fn $F($$$) -> u8 { $$$ }', language: 'typescript', path: 'src' })).toEqual({ text: expect.stringContaining('Multiple AST nodes'), isError: true });
   });
 
   it.each([

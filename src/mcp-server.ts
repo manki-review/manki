@@ -17,6 +17,7 @@ const execFileAsync = promisify(execFile);
 export const MCP_SERVER_COMMAND = 'mcp-server';
 
 const GIT_TIMEOUT_MS = 30_000;
+const GIT_MAX_BUFFER = 1024 * 1024;
 const MAX_OUTPUT_CHARS = 20_000;
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_FILES = 20_000;
@@ -48,13 +49,20 @@ export function resolveInRoot(root: string, path: string): RepoPath {
   return { absolute, relative: rel === '' ? '.' : rel.split(sep).join('/') };
 }
 
-/** Returns the files under `dir`, as paths relative to `root`. Skips `.git` and symlinks, and stops at `MAX_FILES`. */
-function listFiles(root: string, dir: RepoPath): string[] {
-  if (statSync(dir.absolute).isFile()) return [dir.relative];
+/**
+ * Returns the files under `dir`, as paths relative to `root`, and whether the walk stopped at `MAX_FILES`.
+ * Skips `.git` and symlinks.
+ */
+function listFiles(root: string, dir: RepoPath): { files: string[]; cut: boolean } {
+  if (statSync(dir.absolute).isFile()) return { files: [dir.relative], cut: false };
   const files: string[] = [];
+  let cut = false;
   const walk = (absolute: string): void => {
     for (const name of readdirSync(absolute).sort()) {
-      if (files.length >= MAX_FILES) return;
+      if (files.length >= MAX_FILES) {
+        cut = true;
+        return;
+      }
       const child = join(absolute, name);
       const stat = lstatSync(child);
       if (stat.isSymbolicLink() || (name === '.git' && absolute === root)) continue;
@@ -63,7 +71,7 @@ function listFiles(root: string, dir: RepoPath): string[] {
     }
   };
   walk(dir.absolute);
-  return files;
+  return { files, cut };
 }
 
 function capOutput(text: string): string {
@@ -88,7 +96,13 @@ export async function gitHistory(root: string, { path, startLine, endLine, maxCo
   } else {
     args.push('--', target.relative);
   }
-  const { stdout } = await execFileAsync('git', args, { cwd: realRoot, env: gitEnv(), timeout: GIT_TIMEOUT_MS, maxBuffer: 4 * MAX_OUTPUT_CHARS });
+  const stdout = await execFileAsync('git', args, { cwd: realRoot, env: gitEnv(), timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER })
+    .then(result => result.stdout)
+    // A history longer than the buffer is cut like any other long output.
+    .catch((error: { code?: string; stdout?: string }) => {
+      if (error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' && error.stdout) return error.stdout;
+      throw error;
+    });
   const shallow = existsSync(join(realRoot, '.git', 'shallow'))
     ? `\n[The repository holds only the last ${WORKSPACE_DEPTH} commits of the PR head, so older history is missing.]`
     : '';
@@ -102,22 +116,44 @@ export interface AstGrepArgs {
   maxResults?: number;
 }
 
-/** Returns each match of the structural `pattern` under `path` as `file:line: first line of the match`. */
+/**
+ * Returns each match of the structural `pattern` under `path` as `file:line: first line of the match`, with a note when
+ * files were left out. A file the pattern does not parse for is skipped, and the search fails only when it fails on every file.
+ */
 export async function astGrepSearch(root: string, api: AstGrepApi, { pattern, language, path = '.', maxResults = 50 }: AstGrepArgs): Promise<string> {
   const realRoot = realpathSync(root);
   const limit = Math.min(maxResults, MAX_MATCHES);
+  const { files, cut } = listFiles(realRoot, resolveInRoot(root, path));
   const matches: string[] = [];
-  for (const file of listFiles(realRoot, resolveInRoot(root, path))) {
+  const notes: string[] = [];
+  let searched = 0;
+  let tooLarge = 0;
+  let firstError: unknown;
+  for (const file of files) {
     const lang = languageOf(file);
     if (!lang || (language && lang.family !== language)) continue;
     const absolute = join(realRoot, file);
-    if (statSync(absolute).size > MAX_FILE_BYTES) continue;
-    for (const node of api.parse(lang.lang, readFileSync(absolute, 'utf-8')).root().findAll(pattern)) {
+    if (statSync(absolute).size > MAX_FILE_BYTES) {
+      tooLarge++;
+      continue;
+    }
+    let nodes;
+    try {
+      nodes = api.parse(lang.lang, readFileSync(absolute, 'utf-8')).root().findAll(pattern);
+    } catch (error) {
+      firstError ??= error;
+      continue;
+    }
+    searched++;
+    for (const node of nodes) {
       matches.push(`${file}:${node.range().start.line + 1}: ${node.text().split('\n')[0].slice(0, 200)}`);
       if (matches.length >= limit) return capOutput(`${matches.join('\n')}\n[stopped at ${limit} matches]`);
     }
   }
-  return capOutput(matches.join('\n') || 'No matches.');
+  if (searched === 0 && firstError !== undefined) throw firstError;
+  if (cut) notes.push(`[the search stopped after ${MAX_FILES} files, so later files were not searched]`);
+  if (tooLarge > 0) notes.push(`[${tooLarge} files over ${MAX_FILE_BYTES / 1024} KB were not searched]`);
+  return capOutput([matches.join('\n') || 'No matches.', ...notes].join('\n'));
 }
 
 /** Runs `tool` and turns its text, or the message of its error, into an MCP tool result. */
@@ -153,7 +189,16 @@ export function createMcpServer(root: string, loadApi: () => Promise<AstGrepApi>
   return server;
 }
 
-/** Serves Manki's tools for the repository at `root` over stdin and stdout until the client disconnects. */
-export async function runMcpServer(root: string): Promise<void> {
-  await createMcpServer(root).connect(new StdioServerTransport());
+/**
+ * Serves Manki's tools for the repository at `root` over stdin and stdout until the client disconnects. Exits with an
+ * error on stderr when `root` is not a directory or the server cannot start.
+ */
+export async function runMcpServer(root: string | undefined): Promise<void> {
+  try {
+    if (!root || !statSync(root).isDirectory()) throw new Error(`${root ?? 'no root'} is not a directory`);
+    await createMcpServer(root).connect(new StdioServerTransport());
+  } catch (error) {
+    process.stderr.write(`Manki tool server: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.exit(1);
+  }
 }
