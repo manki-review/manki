@@ -331,6 +331,14 @@ describe('buildJudgeUserMessage', () => {
     expect(msg).toContain('src/app.ts:42');
     expect(msg).toContain('TestReviewer');
     expect(msg).not.toMatch(/severity|blocker|warning/i);
+    expect(msg).not.toContain('Resembles a fixed finding');
+
+    const noted = buildJudgeUserMessage([makeFinding({ resemblesFixed: { title: 'An `INCOMPLETE` round <reports> neutral', file: 'src/check.ts', line: 7 } })], new Map(), '');
+    expect(noted).toContain('- **Resembles a fixed finding**: "An \'INCOMPLETE\' round \uFF1Creports\uFF1E neutral" at src/check.ts:7, which an earlier round confirmed fixed. Check the current code.');
+
+    // An outdated thread has no line, so the note names only the file.
+    const outdated = buildJudgeUserMessage([makeFinding({ resemblesFixed: { title: 'Neutral check', file: 'src/check.ts', line: 0 } })], new Map(), '');
+    expect(outdated).toContain('"Neutral check" at src/check.ts, which an earlier round confirmed fixed.');
   });
 
   it('fences tool text as untrusted and gives each reviewer finding its claim-check note', () => {
