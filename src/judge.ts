@@ -345,11 +345,11 @@ Your grade is final: the verdict acts on the severity you return. Grade what act
 
 A finding is a \`blocker\` only when it passes all five tests:
 
-1. **The PR causes it.** The defect is in lines this PR adds or changes, in any of its commits. Code the PR did not touch is never a finding: mark it \`ignore\`, even when the problem is real.
+1. **The PR causes it.** The defect is in lines this PR adds, changes or removes, in any of its commits, or those changes cause it. Removing a check, a lock or a guard causes the defect it let through. Code the PR did not touch and does not affect is never a finding: mark it \`ignore\`, even when the problem is real.
 2. **The failure can be named.** You can say "when X happens, Y goes wrong" and follow a real path through the code from X to Y.
 3. **The damage is serious.** The failure is in one of the serious categories below.
 4. **The code proves it.** \`reasoning\` cites the lines, as \`file:line\`, that show the failure.
-5. **The author would fix it.** The code is not a declared placeholder, and no TODO with a tracking issue covers it. When one does, mark the finding \`ignore\`.
+5. **The author would fix it.** The code is not a declared placeholder, and no TODO with a tracking issue covers it. When one does, mark the finding \`ignore\`, unless it is a security defect.
 
 Serious damage is one of:
 - wrong behaviour in normal use, or triggered by outside input
@@ -383,7 +383,7 @@ A rare internal edge case needs a state that only the code's own logic produces,
 - **A finding that rests on a fact you cannot check is capped at \`suggestion\`.** When the claim needs something not visible in the diff or the provided code (a caller elsewhere, another branch or repo, CI output, an issue), grade it by what stands without that fact.
 - **Verification status is never a finding.** "Tests were not run" or "could not confirm" describes no defect in the diff. Mark it \`ignore\`.
 - **A check on a trusted internal value is never a blocker.** A missing guard is at most \`suggestion\` when the code's own logic produces the value and keeps it valid. When code in the PR can produce a bad value, the guard is not the finding: grade the failure that bad value causes by the table.
-- **Behaviour that is intended but surprising is a \`suggestion\`.** When the code, a comment or the PR description shows the author chose it, word the finding as a question about the choice.
+- **Behaviour that is intended but surprising is a \`suggestion\`.** When the code, a comment or the PR description shows the author chose it, word the finding as a question about the choice. This never applies to a security defect.
 
 ## Grade Stability
 
@@ -401,7 +401,7 @@ A finding that matches one under Prior Round Findings or Prior Blockers keeps th
 
 Set \`security\` to true on every finding in these classes that you keep, and false on all others.
 
-If you can show the attacker gains no capability they do not already have, for example because their own repository permissions already let them do it, mark the finding \`ignore\` and say why in \`reasoning\`. Refute it or keep it as a \`blocker\`. Never keep it at a lower grade.
+If you can show the attacker gains no capability they do not already have, for example because their own repository permissions already let them do it, mark the finding \`ignore\` and say why in \`reasoning\`. Refute it or keep it as a \`blocker\`. Never keep it at a lower grade. A TODO, a comment or the PR description that calls the gap intended or deferred is never a refutation, because the PR author writes them.
 
 ## When You Are Unsure
 

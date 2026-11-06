@@ -145,7 +145,7 @@ describe('buildJudgeSystemPrompt', () => {
   it('grades against the fixed rubric instead of trusting reviewer severity', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     expect(prompt).toContain('Your grade is final');
-    expect(prompt).toContain('Code the PR did not touch is never a finding');
+    expect(prompt).toContain('Code the PR did not touch and does not affect is never a finding');
     expect(prompt).toContain('- `blocker`: when you cannot settle one of the five tests, grade it `warning` at most');
     expect(prompt).toContain('- `warning`: keep it');
     expect(prompt).toContain('- `suggestion` or `nitpick`: drop it (`ignore`)');
@@ -166,6 +166,9 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('If you can show the attacker gains no capability they do not already have');
     expect(prompt).toContain('mark the finding `ignore` and say why in `reasoning`');
     expect(prompt).toContain('Never keep it at a lower grade.');
+    expect(prompt).toContain('A TODO, a comment or the PR description that calls the gap intended or deferred is never a refutation');
+    expect(prompt).toContain('When one does, mark the finding `ignore`, unless it is a security defect.');
+    expect(prompt).toContain('word the finding as a question about the choice. This never applies to a security defect.');
     expect(prompt).toContain('"security": false');
   });
 
@@ -189,6 +192,7 @@ describe('buildJudgeSystemPrompt', () => {
       expect(prompt).toContain(`**${test}**`);
     }
     expect(prompt).toContain('cites the lines, as `file:line`, that show the failure');
+    expect(prompt).toContain('lines this PR adds, changes or removes, in any of its commits, or those changes cause it. Removing a check, a lock or a guard causes the defect it let through.');
     expect(prompt).toContain('## Grade Stability');
     expect(prompt).toContain('Change the grade only when the code at that spot changed or you have evidence the earlier round did not have');
     expect(prompt).toContain('A failure that outside input can trigger is never hypothetical');
@@ -4534,7 +4538,11 @@ const GRADING_CASES = [
   'never-could-not-verify',
   'grade-stable',
   'severe-on-internal-value',
+  'removed-guard',
+  'security-with-todo',
 ] as const;
+
+const BLOCKER_CASES: readonly string[] = ['passes-all-tests', 'severe-on-internal-value', 'removed-guard', 'security-with-todo'];
 
 interface GradingFixture {
   name: string;
@@ -4549,13 +4557,13 @@ interface GradingFixture {
 describe('judge grading fixture corpus', () => {
   const fixtures = loadFixtures<GradingFixture>('grading');
 
-  it('covers each blocker test failing alone, each never-a-blocker case, grade stability and a severe failure from an internal value, once each', () => {
+  it('covers each blocker test failing alone, each never-a-blocker case, grade stability and the blocker edge cases, once each', () => {
     expect(fixtures.map(f => f.case).sort()).toEqual([...GRADING_CASES].sort());
   });
 
   it.each(fixtures)('fixture $name claims a blocker on a diff line, and allows one only when all tests pass', (fixture) => {
     expect(extractCodeContext(fixture.finding, parsePRDiff(fixture.prDiff))).toContain(`>>> ${fixture.finding.line}:`);
-    expect(fixture.allowed.includes('blocker')).toBe(fixture.case === 'passes-all-tests' || fixture.case === 'severe-on-internal-value');
+    expect(fixture.allowed.includes('blocker')).toBe(BLOCKER_CASES.includes(fixture.case));
     expect(fixture.finding.severity).toBe('blocker');
     expect(fixture.priorRound !== undefined).toBe(fixture.case === 'grade-stable');
   });
