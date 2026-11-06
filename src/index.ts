@@ -9,7 +9,7 @@ import { sanitizeTokens, withMarkers } from './utils';
 import { applyBaseReviewConfig, BaseReviewConfig, loadConfig, loadConfigFromFile, loadReviewConfig, sanitizeForkConfig, resolveFallbackModel, resolveMemoryRepo, resolveModel, resolvePairModel } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
-import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, outcomeReport, ReviewCheck, startReviewCheck } from './check-run';
+import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, outcomeReport, ReviewCheck, startReviewCheck } from './check-run';
 import { extractCurrentCodeWindow } from './code-window';
 import { recordFixRate } from './fix-rate';
 import { dispatchedNumber, isDispatchedRun, restoreDispatchedEvent } from './dispatch';
@@ -823,7 +823,8 @@ async function postUnreviewedRound(
   await replacePreviousReviews(target, progress, reviewId);
   await updateProgressComment(octokit, owner, repo, commentId, dashboard, metadata);
   await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha);
-  return verdict === 'APPROVE' ? outcomeReport('READY', summary, approvalHeld) : { conclusion: 'neutral', title: 'Not reviewed', summary };
+  // A diff no reviewer read must not pass a required check, so it waits for a person.
+  return verdict === 'APPROVE' ? outcomeReport('READY', summary, approvalHeld) : { conclusion: 'action_required', title: 'Not reviewed', summary };
 }
 
 /**
@@ -1437,7 +1438,7 @@ async function runFullReview(
     } catch (error) {
       const reason = `Invalid model config: ${error instanceof Error ? error.message : error}`;
       core.setFailed(reason);
-      checkReport = outcomeReport('INCOMPLETE', reason);
+      checkReport = failedReport(reason);
       await octokit.rest.issues.deleteComment({ owner, repo, comment_id: commentId }).catch(() => {});
       return;
     }
@@ -1572,7 +1573,7 @@ async function runFullReview(
     }
     const reason = failureReason(error);
     core.setFailed(`Review failed: ${reason}`);
-    checkReport = { conclusion: 'neutral', title: 'Review failed', summary: reason };
+    checkReport = failedReport(reason);
 
     if (progress.commentId !== undefined) {
       await markProgressCommentFailed(octokit, owner, repo, progress.commentId, 'Review', reason, commitSha);

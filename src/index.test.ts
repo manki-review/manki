@@ -1969,12 +1969,12 @@ describe('runFullReview orchestration', () => {
       expect(completedCheck()).toMatchObject({ conclusion: 'neutral', output: { title: 'Approval held: the PR conflicts with its base' } });
     });
 
-    it('completes the check as neutral for a diff too large to review', async () => {
+    it('completes the check as action required for a diff too large to review', async () => {
       jest.mocked(diffModule.isDiffTooLarge).mockReturnValueOnce(true);
 
       await asDispatchedRun(callRunFullReview);
 
-      expect(completedCheck()).toMatchObject({ conclusion: 'neutral', output: { title: 'Not reviewed', summary: expect.stringContaining('Too large to review automatically') } });
+      expect(completedCheck()).toMatchObject({ conclusion: 'action_required', output: { title: 'Not reviewed', summary: expect.stringContaining('Too large to review automatically') } });
     });
 
     it('completes the check as action required while automatic review is paused', async () => {
@@ -1999,12 +1999,23 @@ describe('runFullReview orchestration', () => {
       expect(completedCheck()).toMatchObject({ conclusion: 'cancelled', output: { title: 'Superseded' } });
     });
 
-    it('completes the check as neutral when the review fails', async () => {
+    it('completes the check as failure when the review fails', async () => {
       jest.mocked(ghUtils.postReview).mockRejectedValueOnce(new Error('boom'));
 
       await asDispatchedRun(callRunFullReview);
 
-      expect(completedCheck()).toMatchObject({ conclusion: 'neutral', output: { title: 'Review failed', summary: 'boom' } });
+      expect(completedCheck()).toMatchObject({ conclusion: 'failure', output: { title: 'Review failed', summary: 'boom' } });
+    });
+
+    it('completes the check as failure when the model config does not resolve', async () => {
+      jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'gemini', model: m }));
+      try {
+        await asDispatchedRun(callRunFullReview);
+      } finally {
+        jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
+      }
+
+      expect(completedCheck()).toMatchObject({ conclusion: 'failure', output: { title: 'Review failed', summary: expect.stringContaining('Invalid model config') } });
     });
 
     it('leaves the check to the post step when the run is cancelled', async () => {
