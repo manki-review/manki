@@ -4,7 +4,7 @@ import * as github from '@actions/github';
 import * as path from 'path';
 
 import { assertWritesAllowed, RunCancelledError, stopWritesOn } from './abort';
-import { AppMemory, AuthResult, createAuthenticatedOctokit, getMemoryToken } from './auth';
+import { AppMemory, AuthResult, createAuthenticatedOctokit, fetchPrState, getMemoryToken } from './auth';
 import { sanitizeTokens, withMarkers } from './utils';
 import { applyBaseReviewConfig, BaseReviewConfig, loadConfig, loadConfigFromFile, loadReviewConfig, matchSkipRule, sanitizeForkConfig, resolveFallbackModel, resolveMemoryRepo, resolveModel, resolvePairModel } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
@@ -24,7 +24,8 @@ import { buildRoundContext, RoundRecordInput } from './round-context';
 import { collectStaticSignals } from './static-signals';
 import { runStepHook, STEP_HOOK_COMMAND } from './tool-steps';
 import { fetchWorkspace } from './workspace';
-import { DashboardData, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, RoundTrigger, StaticSignal, roundContextToFlatAliases } from './types';
+import { isSettingsBox, SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
+import { DashboardData, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, RoundTrigger, RunMode, SettingsState, StaticSignal, roundContextToFlatAliases } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -59,6 +60,12 @@ import {
   postAppWarningIfNeeded,
   checkConcurrentSubmissionLock,
   postConfigErrorComment,
+  latestSettings,
+  PAUSE_NOTICE_MARKER,
+  REVIEW_COMPLETE_MARKER,
+  retireSettingsBlocks,
+  setSettingsBlock,
+  showSettings,
 } from './github';
 import type { ApprovalHeld, BotIdentity, LinkedIssue, StandingVerdict } from './github';
 import { announceSecurityOverrides, checkAndAutoApprove, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
@@ -220,6 +227,7 @@ async function run(): Promise<void> {
   }
 
   let tickedMarker: ReturnType<typeof detectTickedMarker> = null;
+  let settingsTick = false;
 
   // Event filtering — exit immediately for irrelevant events.
   // Tested via integration (live PR reviews) since it depends on GitHub Actions context.
@@ -240,21 +248,27 @@ async function run(): Promise<void> {
     const body = github.context.payload.comment?.body ?? '';
     const mentioned = hasBotMention(body) || isReviewRequest(body);
     const marker = action === 'edited' ? detectTickedMarker(body) : null;
-    if (!mentioned && marker === null) {
+    const settingsEdit = action === 'edited' && body.includes(SETTINGS_MARKER);
+    if (!mentioned && marker === null && !settingsEdit) {
       core.info('Comment does not mention Manki — ignoring');
       return;
     }
     if (!await commenterAllowed()) return;
-    if (marker !== null && isBotLogin((await getAuth()).bot, github.context.payload.comment?.user?.login)) {
+    const { bot } = await getAuth();
+    const byManki = isBotLogin(bot, github.context.payload.comment?.user?.login);
+    if (marker !== null && byManki) {
       tickedMarker = marker;
     }
-    if (tickedMarker === null && !mentioned) {
+    // A bot's edit never gets here, but Manki on a personal access token edits as that user.
+    settingsTick = settingsEdit && byManki && !isBotLogin(bot, github.context.payload.sender?.login) && tickedMarker === null;
+    if (tickedMarker === null && !settingsTick && !mentioned) {
       core.info('Comment does not mention Manki — ignoring');
       return;
     }
     const commentId = github.context.payload.comment?.id;
     const issueNumber = github.context.payload.issue?.number;
-    if (commentId && issueNumber) {
+    // Every tick in the settings block starts its own run, which the coordinator's modes describe, so none counts as answered.
+    if (commentId && issueNumber && !settingsTick) {
       const { octokit, bot } = await getAuth();
       const { owner, repo } = github.context.repo;
       if (action === 'edited') {
@@ -309,7 +323,9 @@ async function run(): Promise<void> {
 
     case 'issue_comment': {
       const commentBody = github.context.payload.comment?.body ?? '';
-      if (tickedMarker === 'FORCE_CAP_MARKER' && github.context.payload.issue?.pull_request) {
+      if (settingsTick && github.context.payload.issue?.pull_request) {
+        await handleCommentTrigger(false, false, undefined, true);
+      } else if (tickedMarker === 'FORCE_CAP_MARKER' && github.context.payload.issue?.pull_request) {
         await handleCommentTrigger(false, true, 'skip_cap');
       } else if (tickedMarker === 'FORCE_REVIEW_MARKER' && github.context.payload.issue?.pull_request) {
         await handleCommentTrigger(true, false, 'force_review');
@@ -339,12 +355,65 @@ async function run(): Promise<void> {
   }
 }
 
+/** Returns the PR's coordinator state once the Worker handles the settings boxes. Only a dispatched run has one. */
+async function loadSettings(owner: string, repo: string, prNumber: number): Promise<SettingsState | undefined> {
+  if (!isDispatchedRun()) return undefined;
+  const state = await fetchPrState(owner, repo, prNumber, github.context.runId);
+  return state?.settings ? { ...state, settings: state.settings } : undefined;
+}
+
+/** The boxes that apply to a PR: Pause and Full review always, Review this draft on a draft, and `extra`. */
+function settingsBoxes(draft: boolean, extra: SettingsBox[] = []): Set<SettingsBox> {
+  return new Set<SettingsBox>(['pause', 'full', ...(draft ? ['draft' as const] : []), ...extra]);
+}
+
+/** The boxes the coordinator state ticks: Pause while paused, and each box whose run is still queued. */
+function tickedBoxes(settings: SettingsState): Set<SettingsBox> {
+  const queued = [...settings.queuedModes].filter((mode): mode is RunMode & SettingsBox => isSettingsBox(mode));
+  return new Set<SettingsBox>([...(settings.settings.paused ? ['pause' as const] : []), ...queued]);
+}
+
+/**
+ * How a run reviews. A box a writer ticked (Force review, Full review or Review this draft) reviews even a draft or
+ * an already reviewed or paused PR, and `full` counts every finding as new.
+ */
+function reviewModes(settings: SettingsState | undefined): { forced: boolean; fullReview: boolean } {
+  const modes = settings?.runModes;
+  const fullReview = !!modes?.has('full');
+  return { forced: fullReview || !!modes?.has('force') || !!modes?.has('draft'), fullReview };
+}
+
+/**
+ * Shows `status` in the settings block, for a run that reviews nothing. Posts `text` with it when no comment has a block.
+ * Without `lastReviewed`, the block keeps the commit it names.
+ */
+async function showRunStatus(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, settings: SettingsState,
+  { head, draft, status, text, lastReviewed }: { head: string; draft: boolean; status: string; text: string; lastReviewed?: string },
+): Promise<void> {
+  await showSettings(octokit, bot, owner, repo, prNumber, {
+    ...(lastReviewed && { lastReviewed }), head, status, boxes: settingsBoxes(draft), ticked: tickedBoxes(settings),
+  }, text);
+}
+
 type SkipReason = 'in_progress' | 'already_reviewed';
 
+/**
+ * Tells the PR that `commitSha` is not reviewed now. With `settings`, the settings block says so: a running review
+ * shows there already, and an already reviewed commit reads as up to date. Without, a notice with a Force review box is posted.
+ */
 async function postReviewSkippedComment(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number,
-  commitSha: string, reason: SkipReason,
+  commitSha: string, reason: SkipReason, settings?: SettingsState, draft = false,
 ): Promise<void> {
+  if (settings) {
+    if (reason === 'already_reviewed') {
+      await showRunStatus(octokit, bot, owner, repo, prNumber, settings, {
+        head: commitSha, draft, status: 'up to date', text: 'This commit already has a review.', lastReviewed: commitSha,
+      });
+    }
+    return;
+  }
   try {
     const shortSha = commitSha.slice(0, 7);
     const line = reason === 'in_progress'
@@ -395,25 +464,40 @@ async function handlePullRequest(): Promise<void> {
   const owner = github.context.repo.owner;
   const repo = github.context.repo.repo;
 
+  const draft = !!pr.draft;
+  const settings = await loadSettings(owner, repo, prNumber);
+  const { forced, fullReview } = reviewModes(settings);
   const { octokit, bot } = await getAuth();
-  if (pr.draft && !(await reviewsDrafts(octokit, owner, repo, pr.base.ref))) {
+  if (draft && !forced && !(await reviewsDrafts(octokit, owner, repo, pr.base.ref))) {
     core.info('Skipping draft PR (`drafts: skip`)');
+    if (settings) {
+      await showRunStatus(octokit, bot, owner, repo, prNumber, settings, {
+        head: commitSha, draft, status: 'draft, not reviewed automatically', text: 'This PR is a draft, so Manki does not review it automatically.',
+      });
+    }
+    return;
+  }
+  if (settings?.settings.paused && !forced) {
+    core.info('Automatic review is paused in the settings block, skipping');
+    await showRunStatus(octokit, bot, owner, repo, prNumber, settings, {
+      head: commitSha, draft, status: 'automatic review paused', text: 'Automatic review is paused.',
+    });
     return;
   }
 
   if (await isReviewInProgress(octokit, bot, owner, repo, prNumber, commitSha)) {
-    await postReviewSkippedComment(octokit, bot, owner, repo, prNumber, commitSha, 'in_progress');
+    await postReviewSkippedComment(octokit, bot, owner, repo, prNumber, commitSha, 'in_progress', settings, draft);
     return;
   }
 
-  if (await isApprovedOnCommit(octokit, bot, owner, repo, prNumber, commitSha)) {
+  if (!forced && await isApprovedOnCommit(octokit, bot, owner, repo, prNumber, commitSha)) {
     core.info('Already approved on this commit — skipping review');
     return;
   }
 
-  if (await hasBotReviewOnCommit(octokit, bot, owner, repo, prNumber, commitSha)) {
+  if (!forced && await hasBotReviewOnCommit(octokit, bot, owner, repo, prNumber, commitSha)) {
     core.info(`Bot already reviewed commit ${commitSha.slice(0, 7)} — skipping serialized sibling run`);
-    await postReviewSkippedComment(octokit, bot, owner, repo, prNumber, commitSha, 'already_reviewed');
+    await postReviewSkippedComment(octokit, bot, owner, repo, prNumber, commitSha, 'already_reviewed', settings, draft);
     return;
   }
 
@@ -432,9 +516,12 @@ async function handlePullRequest(): Promise<void> {
       branch: pr.head.ref ?? '',
       fromFork: pr.head.repo?.full_name !== `${owner}/${repo}`,
     },
-    draft: !!pr.draft,
     headRepoFullName: pr.head.repo?.full_name,
     trigger: buildRoundTrigger(),
+    ...(forced && { forceReview: true, skipCap: true, bypassHint: 'force_review' as const }),
+    settings,
+    draft,
+    fullReview,
   });
 }
 
@@ -474,7 +561,10 @@ async function handleMergedPullRequest(): Promise<void> {
   }, memory);
 }
 
-async function handleCommentTrigger(forceReview?: boolean, skipCap?: boolean, bypassHint?: FullReviewOptions['bypassHint']): Promise<void> {
+/** Reviews the PR a comment is on. `settingsTick` marks a box ticked in the settings block, whose run reviews only with a mode. */
+async function handleCommentTrigger(
+  forceReview?: boolean, skipCap?: boolean, bypassHint?: FullReviewOptions['bypassHint'], settingsTick = false,
+): Promise<void> {
   const payload = github.context.payload;
 
   if (!payload.issue?.pull_request) {
@@ -487,9 +577,20 @@ async function handleCommentTrigger(forceReview?: boolean, skipCap?: boolean, by
   const prNumber = payload.issue.number;
 
   const { octokit, bot } = await getAuth();
+  const settings = await loadSettings(owner, repo, prNumber);
+  const { forced, fullReview } = reviewModes(settings);
+  if (settingsTick && !forced) {
+    core.info('The settings box tick queued no review for this run, nothing to do');
+    return;
+  }
+  if (forced) {
+    forceReview = true;
+    skipCap = true;
+    bypassHint = 'force_review';
+  }
 
   // Acknowledge the command unconditionally so the user knows it was received.
-  if (payload.comment?.id) {
+  if (payload.comment?.id && !settingsTick) {
     await reactToIssueComment(octokit, owner, repo, payload.comment.id, 'eyes');
   }
 
@@ -498,10 +599,11 @@ async function handleCommentTrigger(forceReview?: boolean, skipCap?: boolean, by
     repo,
     pull_number: prNumber,
   });
+  const draft = !!pr.draft;
 
   if (!forceReview) {
     if (await isReviewInProgress(octokit, bot, owner, repo, prNumber, pr.head.sha)) {
-      await postReviewSkippedComment(octokit, bot, owner, repo, prNumber, pr.head.sha, 'in_progress');
+      await postReviewSkippedComment(octokit, bot, owner, repo, prNumber, pr.head.sha, 'in_progress', settings, draft);
       core.info('Review already in progress — skipping');
       return;
     }
@@ -511,7 +613,7 @@ async function handleCommentTrigger(forceReview?: boolean, skipCap?: boolean, by
   if (!forceReview) {
     if (await hasBotReviewOnCommit(octokit, bot, owner, repo, prNumber, pr.head.sha)) {
       core.info(`Bot already reviewed commit ${pr.head.sha.slice(0, 7)} — skipping`);
-      await postReviewSkippedComment(octokit, bot, owner, repo, prNumber, pr.head.sha, 'already_reviewed');
+      await postReviewSkippedComment(octokit, bot, owner, repo, prNumber, pr.head.sha, 'already_reviewed', settings, draft);
       return;
     }
   }
@@ -524,12 +626,14 @@ async function handleCommentTrigger(forceReview?: boolean, skipCap?: boolean, by
 
   await runFullReview(owner, repo, prNumber, pr.head.sha, pr.base.ref, prContext, {
     prAuthorLogin: pr.user?.login,
-    draft: !!pr.draft,
     headRepoFullName: pr.head.repo?.full_name,
     forceReview,
     skipCap,
     bypassHint,
     trigger: buildRoundTrigger(),
+    settings,
+    draft,
+    fullReview,
   });
 }
 
@@ -597,6 +701,68 @@ interface RunProgress {
   reviewPosted: boolean;
   /** Stops the head watcher, so a later push no longer stops the round. */
   stopHeadWatch: () => void;
+  /**
+   * What the settings block of the progress comment carries over all its edits, and the comment that had the block before.
+   * Unset while the Worker handles no boxes.
+   */
+  settings?: { lastReviewed?: string; draft: boolean; ticked: ReadonlySet<SettingsBox>; previousId?: number };
+}
+
+/** The settings block of the run's progress comment with `status`, or `undefined` without one. `reviewed` marks the head reviewed. */
+function progressSettings(
+  target: RunTarget, progress: RunProgress, status: string, { boxes = [], reviewed = false }: { boxes?: SettingsBox[]; reviewed?: boolean } = {},
+): SettingsView | undefined {
+  const settings = progress.settings;
+  if (!settings) return undefined;
+  const lastReviewed = reviewed ? target.commitSha : settings.lastReviewed;
+  return { ...(lastReviewed && { lastReviewed }), head: target.commitSha, status, boxes: settingsBoxes(settings.draft, boxes), ticked: settings.ticked };
+}
+
+const runningSettings = (target: RunTarget, progress: RunProgress): SettingsView | undefined =>
+  progressSettings(target, progress, 'review running', { boxes: ['cancel'] });
+
+/**
+ * Posts the run's progress comment. With `settings` it ends with the settings block, which older comments then lose,
+ * so only the newest progress comment has one.
+ */
+async function postRunProgress(target: RunTarget, progress: RunProgress, { settings, draft = false }: FullReviewOptions): Promise<number> {
+  const { octokit, bot, owner, repo, prNumber, commitSha } = target;
+  if (!settings) return postProgressComment(octokit, owner, repo, prNumber, commitSha);
+  let comments: Awaited<ReturnType<typeof fetchPRComments>> = [];
+  try {
+    comments = await fetchPRComments(octokit, owner, repo, prNumber);
+  } catch (error) {
+    core.warning(`Failed to read the earlier settings block, so it stays: ${error instanceof Error ? error.message : error}`);
+  }
+  const latest = latestSettings(comments, bot);
+  progress.settings = {
+    lastReviewed: latest?.settings.lastReviewed, draft, ticked: tickedBoxes(settings),
+    ...(latest && { previousId: latest.id }),
+  };
+  const commentId = await postProgressComment(octokit, owner, repo, prNumber, commitSha, undefined, runningSettings(target, progress));
+  await retireSettingsBlocks(octokit, bot, owner, repo, comments, commentId);
+  return commentId;
+}
+
+/**
+ * Deletes the run's progress comment for a run that reviews nothing. With a settings block, the block goes back to
+ * the comment that had it before, with `status`. Without such a comment, `text` is posted with the block.
+ */
+async function dropProgressComment(target: RunTarget, progress: RunProgress, settings: SettingsState | undefined, status: string, text: string): Promise<void> {
+  const { octokit, bot, owner, repo, prNumber, commitSha } = target;
+  if (progress.commentId === undefined) return;
+  try {
+    await octokit.rest.issues.deleteComment({ owner, repo, comment_id: progress.commentId });
+  } catch (error) {
+    core.warning(`Failed to delete the progress comment: ${error instanceof Error ? error.message : error}`);
+  }
+  if (!settings || !progress.settings) return;
+  const { draft, lastReviewed, previousId } = progress.settings;
+  if (previousId === undefined) {
+    await showRunStatus(octokit, bot, owner, repo, prNumber, settings, { head: commitSha, draft, status, text, lastReviewed });
+    return;
+  }
+  await setSettingsBlock(octokit, owner, repo, previousId, progressSettings(target, progress, status));
 }
 
 /** What a review round works on. Built once its inputs are collected, then passed to the stages that review, post and record. */
@@ -682,7 +848,7 @@ async function loadBaseReviewConfig(octokit: Octokit, owner: string, repo: strin
 }
 
 /** Whether the run stops before posting a progress comment: another run holds the PR, the commit is reviewed or stale, or nothing changed. */
-async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: RoundTrigger, forceReview?: boolean, draft?: boolean): Promise<boolean> {
+async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: RoundTrigger, { forceReview, settings, draft }: FullReviewOptions): Promise<boolean> {
   const { octokit, bot, owner, repo, prNumber, commitSha, baseRef } = target;
 
   // Scan for a competing in-progress marker before posting our own to shorten
@@ -700,7 +866,7 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
   // Honors `forceReview`, so a Force review tick still reviews the same SHA again.
   if (!forceReview && await hasBotReviewOnCommit(octokit, bot, owner, repo, prNumber, commitSha)) {
     core.warning(`Bot already posted a non-DISMISSED review on commit ${commitSha.slice(0, 7)} — bailing serialized sibling run.`);
-    await postReviewSkippedComment(octokit, bot, owner, repo, prNumber, commitSha, 'already_reviewed');
+    await postReviewSkippedComment(octokit, bot, owner, repo, prNumber, commitSha, 'already_reviewed', settings, draft);
     return true;
   }
 
@@ -732,6 +898,11 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
           await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha);
         }
         core.info(`Round SKIPPED: no change since reviewed commit ${shortSha}, ${standing.verdict} stands`);
+        if (settings) {
+          await showRunStatus(octokit, bot, owner, repo, prNumber, settings, {
+            head: commitSha, draft: !!draft, status: 'up to date', text: summary, lastReviewed: standing.commitSha,
+          });
+        }
         await completeReviewCheck(await startReviewCheck(octokit, owner, repo, commitSha), outcomeReport(STANDING_OUTCOMES[standing.verdict], summary, held));
         return true;
       } catch (error) {
@@ -746,15 +917,18 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
  * Reads the prior rounds and threads, reopens security threads the author resolved, and records the ones a repo admin author cleared.
  * Returns `undefined` when `auto_review` is off for a push.
  */
-async function loadRecap(target: RunTarget, config: ReviewConfig, commentId: number, prAuthorLogin?: string): Promise<RecapState | undefined> {
+async function loadRecap(
+  target: RunTarget, config: ReviewConfig, progress: RunProgress, { prAuthorLogin, settings }: FullReviewOptions,
+): Promise<RecapState | undefined> {
   const { octokit, bot, owner, repo, prNumber } = target;
   const recap = await fetchRecapState(octokit, bot, owner, repo, prNumber, prAuthorLogin);
 
   if (github.context.eventName === 'pull_request' && !config.auto_review) {
     core.info('auto_review is disabled — skipping');
-    await octokit.rest.issues.deleteComment({ owner, repo, comment_id: commentId });
+    await dropProgressComment(target, progress, settings, 'automatic review off', 'Automatic review is off for this repository (`auto_review: false`).');
     return undefined;
   }
+  if (progress.settings) progress.settings.lastReviewed = recap.priorRounds.at(-1)?.meta.commitSha ?? progress.settings.lastReviewed;
 
   await reopenAuthorResolvedThreads(octokit, recap.previousFindings, pauseState(recap, config).paused);
   await announceSecurityOverrides(octokit, securityOverridesIn(recap.previousFindings).filter(o => !o.announced));
@@ -853,7 +1027,7 @@ async function postUnreviewedRound(
   const result = { verdict, summary, findings: [], highlights: [], reviewComplete: true, agentNames: [] as string[] };
   const { id: reviewId, approvalHeld } = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
   await replacePreviousReviews(target, progress, reviewId);
-  await updateProgressComment(octokit, owner, repo, commentId, dashboard, metadata);
+  await updateProgressComment(octokit, owner, repo, commentId, dashboard, metadata, undefined, progressSettings(target, progress, 'up to date', { reviewed: true }));
   await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha);
   // A diff no reviewer read must not pass a required check, so it waits for a person.
   return verdict === 'APPROVE' ? outcomeReport('READY', summary, approvalHeld) : { conclusion: 'action_required', title: 'Not reviewed', summary };
@@ -952,31 +1126,40 @@ async function postTooBigNotice(target: RunTarget, commentId: number, text: stri
 
 /**
  * Replaces the progress comment with a notice that automatic review is paused, listing the blocking threads still open.
- * Each push during the same pause updates the unticked notice from after `lastRoundAt` instead of adding another.
+ * Each push during the same pause updates the notice from after `lastRoundAt` instead of adding another.
+ * With a settings block, the notice carries the block with a Force review box. Without, the notice has its own box.
  */
 async function postPauseNotice(
-  target: RunTarget, commentId: number, { capReached, capRounds, reason }: PauseState, maxAutoRounds: number,
+  target: RunTarget, progress: RunProgress, { capReached, capRounds, reason }: PauseState, maxAutoRounds: number,
   previousFindings: PreviousFinding[], lastRoundAt?: string,
 ): Promise<CheckReport> {
   const { octokit, owner, repo, prNumber } = target;
   core.info(capReached
     ? `Round cap reached (${capRounds} rounds with new changes since the last approval >= max ${maxAutoRounds}) — skipping auto review`
     : 'Last round did not converge — skipping auto review');
-  try {
-    await octokit.rest.issues.deleteComment({ owner, repo, comment_id: commentId });
-  } catch (error) {
-    core.warning(`Failed to delete progress comment: ${error}`);
+  const settings = progressSettings(target, progress, 'automatic review paused', { boxes: ['force'] });
+  const notice = await findOpenNotice(target, settings ? PAUSE_NOTICE_MARKER : FORCE_CAP_MARKER, lastRoundAt);
+  // With a settings block and no earlier notice, the progress comment becomes the notice, so it keeps the block.
+  if (progress.commentId !== undefined && (notice || !settings)) {
+    try {
+      await octokit.rest.issues.deleteComment({ owner, repo, comment_id: progress.commentId });
+    } catch (error) {
+      core.warning(`Failed to delete progress comment: ${error}`);
+    }
   }
   try {
     const blockers = formatOpenBlockers(previousFindings);
-    const body = withMarkers(
-      `${reason} Automatic review is paused.${blockers ? `\n\n${blockers}\n\n` : ' '}Tick the box to run another round, or comment \`@manki review\`:\n\n- [ ] Force review`,
-      PROGRESS_MARKER,
-      FORCE_CAP_MARKER,
-    );
-    const notice = await findOpenNotice(target, FORCE_CAP_MARKER, lastRoundAt);
+    const body = settings
+      ? withSettingsBlock(withMarkers(`${reason} Automatic review is paused.${blockers ? `\n\n${blockers}` : ''}`, PROGRESS_MARKER, REVIEW_COMPLETE_MARKER, PAUSE_NOTICE_MARKER), settings)
+      : withMarkers(
+        `${reason} Automatic review is paused.${blockers ? `\n\n${blockers}\n\n` : ' '}Tick the box to run another round, or comment \`@manki review\`:\n\n- [ ] Force review`,
+        PROGRESS_MARKER,
+        FORCE_CAP_MARKER,
+      );
     if (notice) {
       await octokit.rest.issues.updateComment({ owner, repo, comment_id: notice.id, body });
+    } else if (settings && progress.commentId !== undefined) {
+      await octokit.rest.issues.updateComment({ owner, repo, comment_id: progress.commentId, body });
     } else {
       await octokit.rest.issues.createComment({
         owner,
@@ -1142,7 +1325,7 @@ async function reviewRound(
     if (progress.flushTimer) clearTimeout(progress.flushTimer);
     progress.flushTimer = setTimeout(() => {
       progress.flushTimer = null;
-      updateProgressDashboard(octokit, owner, repo, commentId, dashboard, commitSha)
+      updateProgressDashboard(octokit, owner, repo, commentId, dashboard, commitSha, runningSettings(run, progress))
         .catch(err => core.warning(`Failed to update dashboard: ${err}`));
     }, 500);
   }
@@ -1192,7 +1375,7 @@ async function reviewRound(
         reviewEndTime = Date.now();
         dashboard.phase = 'reviewed';
         dashboard.rawFindingCount = event.rawFindingCount;
-        updateProgressDashboard(octokit, owner, repo, commentId, dashboard, commitSha)
+        updateProgressDashboard(octokit, owner, repo, commentId, dashboard, commitSha, runningSettings(run, progress))
           .catch(err => core.warning(`Failed to update dashboard: ${err}`));
       } else if (event.phase === 'judging') {
         cancelDashboardFlush(progress);
@@ -1202,7 +1385,7 @@ async function reviewRound(
         dashboard.suppressionCount = event.suppressionCount;
         dashboard.staticDedupCount = event.staticDedupCount;
         dashboard.llmDedupCount = event.llmDedupCount;
-        updateProgressDashboard(octokit, owner, repo, commentId, dashboard, commitSha)
+        updateProgressDashboard(octokit, owner, repo, commentId, dashboard, commitSha, runningSettings(run, progress))
           .catch(err => core.warning(`Failed to update dashboard: ${err}`));
       }
     },
@@ -1219,7 +1402,7 @@ async function postIncompleteRound(run: ReviewRun, result: ReviewResult): Promis
   result.verdict = 'COMMENT';
   await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
   dashboard.phase = 'complete';
-  await updateProgressComment(octokit, owner, repo, commentId, dashboard, undefined, commitSha);
+  await updateProgressComment(octokit, owner, repo, commentId, dashboard, undefined, commitSha, progressSettings(run, run.progress, 'review incomplete'));
   return outcomeReport('INCOMPLETE', result.summary);
 }
 
@@ -1424,7 +1607,7 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult)
     timing,
   };
 
-  await updateProgressComment(octokit, owner, repo, commentId, completeDashboard, metadata);
+  await updateProgressComment(octokit, owner, repo, commentId, completeDashboard, metadata, undefined, progressSettings(run, run.progress, 'up to date', { reviewed: true }));
 }
 
 function setReviewOutputs(reviewId: number, context: RoundContext, result: ReviewResult): void {
@@ -1516,12 +1699,12 @@ async function runFullReview(
       checkReport = { conclusion: 'skipped', title: 'Review skipped', summary: `This PR matches the skip rule for ${skipRule} in \`${configPath}\` on the base branch.` };
       return;
     }
-    if (await skipsRound(target, config, trigger, forceReview, options.draft)) return;
+    if (await skipsRound(target, config, trigger, options)) return;
 
-    const commentId = await postProgressComment(octokit, owner, repo, prNumber, commitSha);
+    const commentId = await postRunProgress(target, progress, options);
     progress.commentId = commentId;
 
-    const recap = await loadRecap(target, config, commentId, prAuthorLogin);
+    const recap = await loadRecap(target, config, progress, options);
     if (!recap) return;
     check = await startReviewCheck(octokit, owner, repo, commitSha);
 
@@ -1532,7 +1715,7 @@ async function runFullReview(
       const reason = `Invalid model config: ${error instanceof Error ? error.message : error}`;
       core.setFailed(reason);
       checkReport = failedReport(reason);
-      await octokit.rest.issues.deleteComment({ owner, repo, comment_id: commentId }).catch(() => {});
+      await dropProgressComment(target, progress, options.settings, 'review failed', `Review failed: ${reason}`);
       return;
     }
     const { clients, models } = built;
@@ -1541,7 +1724,7 @@ async function runFullReview(
     const parseEndTime = Date.now();
     const lineCount = diff.totalAdditions + diff.totalDeletions;
     const dashboard = initialDashboard(diff, config, !!clients.planner);
-    await updateProgressDashboard(octokit, owner, repo, commentId, dashboard, commitSha);
+    await updateProgressDashboard(octokit, owner, repo, commentId, dashboard, commitSha, runningSettings(target, progress));
     const unreviewedMetadata = (): ReviewMetadata => ({
       config: metadataConfig(config, models, 'none', []),
       judgeDecisions: [],
@@ -1581,7 +1764,7 @@ async function runFullReview(
     const pause = pauseState(recap, config);
     const { capRounds, paused } = pause;
     if (paused && !skipCap && !forceReview) {
-      checkReport = await postPauseNotice(target, commentId, pause, maxAutoRounds, recap.previousFindings, recap.priorRounds.at(-1)?.meta.timestamp);
+      checkReport = await postPauseNotice(target, progress, pause, maxAutoRounds, recap.previousFindings, recap.priorRounds.at(-1)?.meta.timestamp);
       return;
     }
     const countsTowardCap = !options.draft && isNewChange({ commitSha, changeDigest: changeDigest(diff, config.exclude_paths) }, recap.priorRounds.at(-1));
@@ -1634,7 +1817,7 @@ async function runFullReview(
     }
 
     addCodeContext(result.findings, diff);
-    tagFindingOrigins(result.findings, diff, priorChange, interRoundDiff ? parsePRDiff(interRoundDiff) : undefined);
+    tagFindingOrigins(result.findings, diff, options.fullReview ? undefined : priorChange, interRoundDiff ? parsePRDiff(interRoundDiff) : undefined);
     const reviewTimeMs = Date.now() - startTime;
     const buildContext = () => buildRoundContext(run, result, {
       plannerDurationMs: dashboard.plannerDurationMs,
@@ -1680,7 +1863,7 @@ async function runFullReview(
     checkReport = failedReport(reason);
 
     if (progress.commentId !== undefined) {
-      await markProgressCommentFailed(octokit, owner, repo, progress.commentId, 'Review', reason, commitSha);
+      await markProgressCommentFailed(octokit, owner, repo, progress.commentId, 'Review', reason, commitSha, progressSettings(target, progress, 'review failed'));
     }
   } finally {
     progress.stopHeadWatch();

@@ -4,7 +4,7 @@ import { createAppAuth } from '@octokit/auth-app';
 import { retry } from '@octokit/plugin-retry';
 import { throttling } from '@octokit/plugin-throttling';
 
-import { AppMemory, createAuthenticatedOctokit, getMemoryToken, resolveGitHubToken, TokenResult } from './auth';
+import { AppMemory, createAuthenticatedOctokit, fetchPrState, getMemoryToken, resolveGitHubToken, TokenResult } from './auth';
 
 jest.mock('@actions/core');
 jest.mock('@actions/github');
@@ -202,6 +202,68 @@ describe('resolveGitHubToken', () => {
 
 const mockGetOctokit = github.getOctokit as jest.MockedFunction<typeof github.getOctokit>;
 const mockCreateAppAuth = createAppAuth as jest.MockedFunction<typeof createAppAuth>;
+
+describe('fetchPrState', () => {
+  beforeEach(() => {
+    mockGetInput.mockReset().mockReturnValue('');
+    jest.spyOn(core, 'getIDToken').mockResolvedValue('fake-oidc-token');
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('reads the settings, the modes of this run and the modes still queued', async () => {
+    mockFetch(async () => Response.json({
+      active: [{ run_id: 7, modes: ['full', 'bogus'] }, { run_id: 8, modes: ['deeper'] }],
+      queue: [{ modes: ['force'] }, { modes: 'draft' }, null],
+      settings: { paused: true },
+      last_reviewed: null,
+    }));
+
+    expect(await fetchPrState(OWNER, REPO, 12, 7)).toEqual({
+      settings: { paused: true }, runModes: new Set(['full']), queuedModes: new Set(['force']),
+    });
+    const [url, init] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toBe('https://manki-api.dustinface.me/state');
+    expect(init.headers['Authorization']).toBe('Bearer fake-oidc-token');
+    expect(JSON.parse(init.body)).toEqual({ owner: OWNER, repo: REPO, pr: 12 });
+  });
+
+  it('reads the state next to a custom token URL, and leaves out settings a Worker does not send', async () => {
+    mockGetInput.mockImplementation((name: string) => (name === 'manki_token_url' ? 'https://custom.example.com/api/token' : ''));
+    mockFetch(async () => Response.json({ active: [], queue: [], settings: { paused: 'yes' } }));
+
+    expect(await fetchPrState(OWNER, REPO, 12, 7)).toEqual({ runModes: new Set(), queuedModes: new Set() });
+    expect((global.fetch as jest.Mock).mock.calls[0][0]).toBe('https://custom.example.com/api/state');
+  });
+
+  it.each([
+    ['the run has no OIDC token', () => jest.spyOn(core, 'getIDToken').mockRejectedValue(new Error('no OIDC'))],
+    ['the service has no `/state`', () => mockFetch(async () => new Response('Not Found', { status: 404 }))],
+    ['the request fails', () => mockFetch(async () => { throw new Error('network down'); })],
+    ['the reply is not JSON', () => mockFetch(async () => new Response('oops', { status: 200 }))],
+  ])('returns null when %s', async (_case, arrange) => {
+    arrange();
+    expect(await fetchPrState(OWNER, REPO, 12, 7)).toBeNull();
+  });
+
+  it('gives up on a reply whose body never arrives', async () => {
+    jest.useFakeTimers();
+    try {
+      mockFetch(async (_url, init) => ({
+        ok: true,
+        status: 200,
+        json: () => new Promise((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new Error('aborted')))),
+      }) as unknown as Response);
+      const state = fetchPrState(OWNER, REPO, 12, 7);
+      await jest.advanceTimersByTimeAsync(10000);
+      expect(await state).toBeNull();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
 
 describe('createAuthenticatedOctokit', () => {
   beforeEach(() => {

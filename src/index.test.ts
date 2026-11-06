@@ -63,6 +63,7 @@ const mockOctokitInstance = {
 jest.mock('./auth', () => ({
   createAuthenticatedOctokit: jest.fn().mockResolvedValue({ octokit: mockOctokitInstance, identity: 'app', bot: { logins: ['manki-review[bot]', 'github-actions[bot]'] } }),
   getMemoryToken: jest.fn().mockResolvedValue(null),
+  fetchPrState: jest.fn().mockResolvedValue(null),
 }));
 
 jest.mock('./providers', () => ({
@@ -251,7 +252,12 @@ jest.mock('./github', () => {
   FORCE_REVIEW_MARKER: '<!-- manki-force-review -->',
   FORCE_CAP_MARKER: '<!-- manki-force-cap -->',
   APP_WARNING_MARKER: '<!-- manki-app-warning -->',
+  PAUSE_NOTICE_MARKER: jest.requireActual('./github').PAUSE_NOTICE_MARKER,
   postConfigErrorComment: jest.fn().mockResolvedValue(undefined),
+  latestSettings: jest.requireActual('./github').latestSettings,
+  retireSettingsBlocks: jest.fn().mockResolvedValue(undefined),
+  setSettingsBlock: jest.fn().mockResolvedValue(undefined),
+  showSettings: jest.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -280,7 +286,9 @@ jest.mock('./static-signals', () => ({
 import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInteraction, handleIssueInteraction, handleReviewCommentInteraction, handleReviewStateCheck, main, _resetOctokitCache, detectTickedMarker } from './index';
 import { buildRoundRecap } from './round-context';
 import { FORCE_REVIEW_MARKER, FORCE_CAP_MARKER } from './github';
-import type { ParsedDiff, ReviewConfig } from './types';
+import type { ParsedDiff, ReviewConfig, RunMode, SettingsState } from './types';
+import { SettingsView, withSettingsBlock } from './settings';
+import { withMarkers } from './utils';
 import { createLLMClient, LLMCall, parseModelSpec } from './providers';
 import * as interaction from './interaction';
 import * as ghUtils from './github';
@@ -331,6 +339,11 @@ function setContext(overrides: Record<string, unknown>): void {
   ctx.eventName = overrides.eventName ?? '';
   ctx.payload = overrides.payload ?? {};
   ctx.repo = overrides.repo ?? { owner: 'test-owner', repo: 'test-repo' };
+}
+
+/** The coordinator state of a PR whose Worker handles the settings boxes. */
+function settingsState(paused = false, runModes: RunMode[] = [], queuedModes: RunMode[] = []): SettingsState {
+  return { settings: { paused }, runModes: new Set(runModes), queuedModes: new Set(queuedModes) };
 }
 
 describe('run', () => {
@@ -947,6 +960,81 @@ describe('handlePullRequest', () => {
 
     expect(jest.mocked(core.warning)).toHaveBeenCalledWith('Could not read .manki.yml on the base branch, skipping the draft PR: Invalid config in .manki.yml: bad');
     expect(jest.mocked(core.info)).toHaveBeenCalledWith('Skipping draft PR (`drafts: skip`)');
+  });
+
+  describe('with the settings block', () => {
+    const prPayload = (draft: boolean) => ({
+      action: 'synchronize', sender: { login: 'user' },
+      pull_request: { number: 1, head: { sha: 'abc123' }, base: { ref: 'main' }, title: 'T', body: '', draft },
+    });
+
+    afterEach(() => {
+      jest.mocked(authModule.fetchPrState).mockResolvedValue(null);
+      jest.mocked(ghUtils.isReviewInProgress).mockResolvedValue(false);
+      jest.mocked(ghUtils.hasBotReviewOnCommit).mockResolvedValue(false);
+    });
+
+    it.each([
+      ['a draft', true, false, 'draft, not reviewed automatically', ['pause', 'full', 'draft'], ['full']],
+      ['a paused PR', false, true, 'automatic review paused', ['pause', 'full'], ['pause', 'full']],
+    ])('shows %s in the settings block instead of reviewing it or posting a notice', async (_case, draft, paused, status, boxes, ticked) => {
+      jest.mocked(authModule.fetchPrState).mockResolvedValue(settingsState(paused, [], ['full', 'deeper']));
+      setContext({ eventName: 'pull_request', payload: prPayload(draft) });
+
+      await asDispatchedRun(handlePullRequest);
+
+      expect(ghUtils.showSettings).toHaveBeenCalledWith(
+        expect.anything(), expect.anything(), 'test-owner', 'test-repo', 1,
+        { head: 'abc123', status, boxes: new Set(boxes), ticked: new Set(ticked) }, expect.any(String),
+      );
+      expect(ghUtils.postProgressComment).not.toHaveBeenCalled();
+      expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalled();
+    });
+
+    it('shows an already reviewed head as up to date, and posts nothing while a review runs', async () => {
+      jest.mocked(authModule.fetchPrState).mockResolvedValue(settingsState());
+      jest.mocked(ghUtils.hasBotReviewOnCommit).mockResolvedValue(true);
+      setContext({ eventName: 'pull_request', payload: prPayload(false) });
+
+      await asDispatchedRun(handlePullRequest);
+      expect(ghUtils.showSettings).toHaveBeenCalledWith(
+        expect.anything(), expect.anything(), 'test-owner', 'test-repo', 1,
+        { lastReviewed: 'abc123', head: 'abc123', status: 'up to date', boxes: new Set(['pause', 'full']), ticked: new Set() }, expect.any(String),
+      );
+
+      jest.mocked(ghUtils.showSettings).mockClear();
+      jest.mocked(ghUtils.isReviewInProgress).mockResolvedValue(true);
+      await asDispatchedRun(handlePullRequest);
+      expect(ghUtils.showSettings).not.toHaveBeenCalled();
+      expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalled();
+    });
+
+    it('reviews a draft, or a paused or reviewed head, when the run carries the mode for it', async () => {
+      jest.mocked(core.getInput).mockImplementation((name: string) => (name === 'anthropic_api_key' ? 'test-api-key' : ''));
+      jest.mocked(ghUtils.hasBotReviewOnCommit).mockResolvedValue(true);
+      try {
+        for (const [draft, paused, mode] of [[true, false, 'draft'], [true, false, 'full'], [false, true, 'force'], [false, false, 'full']] as const) {
+          jest.mocked(ghUtils.postProgressComment).mockClear();
+          jest.mocked(authModule.fetchPrState).mockResolvedValue(settingsState(paused, [mode]));
+          setContext({ eventName: 'pull_request', payload: prPayload(draft) });
+          await asDispatchedRun(handlePullRequest);
+          expect(ghUtils.postProgressComment).toHaveBeenCalled();
+        }
+      } finally {
+        jest.mocked(core.getInput).mockReturnValue('');
+      }
+      expect(ghUtils.showSettings).not.toHaveBeenCalled();
+    });
+
+    it('posts the separate notices while the Worker sends no settings', async () => {
+      jest.mocked(authModule.fetchPrState).mockResolvedValue({ runModes: new Set(), queuedModes: new Set() });
+      jest.mocked(ghUtils.hasBotReviewOnCommit).mockResolvedValue(true);
+      setContext({ eventName: 'pull_request', payload: prPayload(false) });
+
+      await asDispatchedRun(handlePullRequest);
+      expect(ghUtils.showSettings).not.toHaveBeenCalled();
+      expect(mockOctokitInstance.rest.issues.createComment).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining('Review skipped') }));
+    });
   });
 
   it('skips when review is already in progress and posts skip comment', async () => {
@@ -2186,6 +2274,85 @@ describe('runFullReview orchestration', () => {
     });
   });
 
+  describe('settings block', () => {
+    const reviewableFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 3, content: '+x' }] };
+    const older = {
+      id: 7, user: { login: 'manki-review[bot]', type: 'Bot' }, updated_at: '2025-01-01T00:00:00Z',
+      body: withSettingsBlock('Older', { lastReviewed: 'fff0000', head: 'fff0000', status: 'up to date', boxes: new Set(['pause', 'full']), ticked: new Set() }),
+    };
+    const view = (status: string, extra: Partial<SettingsView> = {}): SettingsView => ({ head: 'abc123', status, boxes: new Set(['pause', 'full']), ticked: new Set(['pause']), ...extra });
+    const runWith = (options: Parameters<typeof runFullReview>[6] = {}) => runFullReview(
+      baseArgs.owner, baseArgs.repo, baseArgs.prNumber, baseArgs.commitSha, baseArgs.baseRef, baseArgs.prContext,
+      { settings: settingsState(true), ...options },
+    );
+
+    beforeEach(() => {
+      jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([older]);
+      jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [reviewableFile], totalAdditions: 2, totalDeletions: 0 });
+      jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [reviewableFile], excluded: [] });
+    });
+
+    afterEach(() => {
+      jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([]);
+    });
+
+    it('keeps the block on the newest progress comment from the start of the run to its end', async () => {
+      await runWith();
+
+      const running = view('review running', { lastReviewed: 'fff0000', boxes: new Set(['pause', 'full', 'cancel']) });
+      expect(ghUtils.postProgressComment).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 42, 'abc123', undefined, running);
+      expect(ghUtils.retireSettingsBlocks).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', [older], 1);
+      expect(jest.mocked(ghUtils.updateProgressDashboard).mock.calls[0][6]).toEqual(running);
+      expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[7]).toEqual(view('up to date', { lastReviewed: 'abc123' }));
+    });
+
+    it('names the last reviewed commit from the round record, and keeps the block on a failed review', async () => {
+      seedPriorRounds([{ round: 1, commitSha: 'eee1111', timestamp: '2025-01-01T00:00:00Z', findings: [] }]);
+      jest.mocked(reviewModule.runReview).mockRejectedValueOnce(new Error('boom'));
+
+      await runWith({ draft: true });
+
+      expect(jest.mocked(ghUtils.updateProgressDashboard).mock.calls[0][6]).toEqual(
+        view('review running', { lastReviewed: 'eee1111', boxes: new Set(['pause', 'full', 'draft', 'cancel']) }),
+      );
+      expect(jest.mocked(ghUtils.markProgressCommentFailed).mock.calls[0][7]).toEqual(
+        view('review failed', { lastReviewed: 'eee1111', boxes: new Set(['pause', 'full', 'draft']) }),
+      );
+    });
+
+    it('moves the block back to the comment that had it when the run deletes its progress comment, or posts it once', async () => {
+      jest.mocked(configModule.loadConfig).mockReturnValue({ auto_review: false, auto_approve: false, max_diff_lines: 5000, exclude_paths: [], reviewers: [], instructions: '', memory: { enabled: false, repo: '' } });
+
+      await runWith();
+
+      expect(mockOctokitInstance.rest.issues.deleteComment).toHaveBeenCalledWith(expect.objectContaining({ comment_id: 1 }));
+      expect(ghUtils.setSettingsBlock).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 7, view('automatic review off', { lastReviewed: 'fff0000' }));
+      expect(ghUtils.showSettings).not.toHaveBeenCalled();
+
+      jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([]);
+      await runWith();
+      expect(ghUtils.showSettings).toHaveBeenCalledWith(
+        expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42,
+        { head: 'abc123', status: 'automatic review off', boxes: new Set(['pause', 'full']), ticked: new Set(['pause']) },
+        expect.stringContaining('auto_review: false'),
+      );
+    });
+
+    it('counts every finding as new code on a full review', async () => {
+      seedPriorRounds([{ round: 1, commitSha: 'abc123', timestamp: '2025-01-01T00:00:00Z', findings: [] }]);
+      const finding = { severity: 'suggestion' as const, title: 'Rename', file: 'src/app.ts', line: 2, description: 'd', reviewers: ['general'] };
+      jest.mocked(reviewModule.runReview).mockImplementation(async () => ({
+        verdict: 'COMMENT', outcome: 'READY', summary: 's', findings: [{ ...finding }], highlights: [], reviewComplete: true, agentNames: ['general'],
+      }));
+
+      await runWith();
+      await runWith({ fullReview: true });
+
+      const origins = jest.mocked(ghUtils.postReview).mock.calls.map(call => call[5].findings[0].origin);
+      expect(origins).toEqual(['reviewed', 'new']);
+    });
+  });
+
   describe('provider CLI warmup', () => {
     const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [] };
     beforeEach(() => {
@@ -2338,7 +2505,7 @@ describe('runFullReview orchestration', () => {
     // Metadata is what makes the progress comment read as complete rather than failed.
     expect(jest.mocked(ghUtils.updateProgressComment)).toHaveBeenLastCalledWith(
       expect.anything(), 'test-owner', 'test-repo', expect.any(Number), expect.anything(),
-      expect.objectContaining({ judgeDecisions: [], config: expect.objectContaining({ triage: 'none', teamAgents: [] }) }),
+      expect.objectContaining({ judgeDecisions: [], config: expect.objectContaining({ triage: 'none', teamAgents: [] }) }), undefined, undefined,
     );
     expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
     // Warmup must be skipped on paths that never invoke an LLM.
@@ -3079,7 +3246,7 @@ describe('runFullReview orchestration', () => {
 
     expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(`Review failed: ${reason}`);
     expect(jest.mocked(ghUtils.markProgressCommentFailed)).toHaveBeenCalledWith(
-      expect.anything(), 'test-owner', 'test-repo', 1, 'Review', reason, 'abc123',
+      expect.anything(), 'test-owner', 'test-repo', 1, 'Review', reason, 'abc123', undefined,
     );
     expect(jest.mocked(ghUtils.updateProgressComment)).not.toHaveBeenCalled();
     expect(jest.mocked(ghUtils.postReview)).not.toHaveBeenCalled();
@@ -5718,6 +5885,47 @@ describe('runFullReview orchestration', () => {
       jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([]);
     });
 
+    it('turns the progress comment into the pause notice with a Force review box in the settings block', async () => {
+      jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(5));
+      const rounds = priorRounds(2).map(roundContextFromLegacy);
+      rounds[1].meta.outcome = 'NOT_CONVERGING';
+      jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: rounds });
+      const paused = () => runFullReview(
+        baseArgs.owner, baseArgs.repo, baseArgs.prNumber, baseArgs.commitSha, baseArgs.baseRef, baseArgs.prContext,
+        { settings: settingsState() },
+      );
+      const updateComment = jest.mocked(mockOctokitInstance.rest.issues.updateComment);
+      const deleteComment = jest.mocked(mockOctokitInstance.rest.issues.deleteComment);
+
+      await paused();
+
+      expect(reviewModule.runReview).not.toHaveBeenCalled();
+      expect(deleteComment).not.toHaveBeenCalled();
+      expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalled();
+      const notice = updateComment.mock.calls.find(([args]) => args.comment_id === 1)![0].body as string;
+      expect(notice.startsWith('The last Manki round found a blocker that came back after a fix. Automatic review is paused.')).toBe(true);
+      expect(notice).not.toContain(FORCE_CAP_MARKER);
+      expect(notice.endsWith(withSettingsBlock('', {
+        lastReviewed: 'sha2', head: 'abc123', status: 'automatic review paused', boxes: new Set(['pause', 'full', 'force']), ticked: new Set(),
+      }).trimStart())).toBe(true);
+
+      // A later push during the same pause moves the notice back to the earlier comment and deletes its own.
+      jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([{ id: 501, body: notice, user: { login: 'manki-review[bot]', type: 'Bot' }, updated_at: '2025-01-02T00:00:00Z' }]);
+      updateComment.mockClear();
+      await paused();
+      expect(deleteComment).toHaveBeenCalledWith(expect.objectContaining({ comment_id: 1 }));
+      expect(updateComment).toHaveBeenCalledWith(expect.objectContaining({ comment_id: 501, body: notice }));
+
+      // The round that lifts the pause marks that notice as resumed, after its progress comment took the block and so edited the notice.
+      jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: priorRounds(2).map(roundContextFromLegacy) });
+      const stripped = { id: 501, body: notice.slice(0, notice.indexOf('\n\n---\n')), user: { login: 'manki-review[bot]', type: 'Bot' }, updated_at: '2099-01-01T00:00:00Z' };
+      jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([stripped]);
+      updateComment.mockClear();
+      await paused();
+      expect(updateComment).toHaveBeenCalledWith(expect.objectContaining({ comment_id: 501, body: expect.stringContaining('Review resumed on `abc123`') }));
+      jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([]);
+    });
+
     it('skips review and posts notice when prior rounds reach the cap on auto trigger', async () => {
       jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(5));
       const thread = (title: string, severity: 'blocker' | 'warning' | 'suggestion' | 'unknown', status: 'open' | 'replied' | 'resolved', n: number) => ({
@@ -6022,6 +6230,22 @@ describe('runFullReview orchestration', () => {
         event: 'APPROVE',
         body: expect.stringContaining('\u2705 **Approved.** No change to this PR since the reviewed commit `old9999`. The previous verdict stands.'),
       }));
+    });
+
+    it('shows the new head as up to date in the settings block', async () => {
+      seedPush('REQUEST_CHANGES', REBASED_DIFF);
+
+      await runFullReview(
+        baseArgs.owner, baseArgs.repo, baseArgs.prNumber, baseArgs.commitSha, baseArgs.baseRef, baseArgs.prContext,
+        { settings: settingsState() },
+      );
+
+      expectNoRound();
+      expect(ghUtils.showSettings).toHaveBeenCalledWith(
+        expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42,
+        { lastReviewed: 'old9999999', head: 'abc123', status: 'up to date', boxes: new Set(['pause', 'full']), ticked: new Set() },
+        expect.stringContaining('The previous verdict stands.'),
+      );
     });
 
     it('holds the previous APPROVE when the PR conflicts with its base, without running a round', async () => {
@@ -6818,6 +7042,41 @@ describe('force review checkbox', () => {
       expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalled();
       expect(mockPullsGet).not.toHaveBeenCalled();
     }
+  });
+
+  it('reviews on a settings box tick only when the coordinator queued a mode for the run', async () => {
+    const body = withSettingsBlock(withMarkers('**Review complete**', '<!-- manki-bot -->'), {
+      head: 'abc123', status: 'up to date', boxes: new Set(['pause', 'full']), ticked: new Set(['full']),
+    });
+    setContext({
+      eventName: 'issue_comment',
+      payload: {
+        action: 'edited',
+        sender: { login: 'user' },
+        issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } },
+        comment: { id: 42, body, user: { login: ghUtils.BOT_LOGIN }, author_association: 'COLLABORATOR' },
+      },
+    });
+    jest.mocked(authModule.fetchPrState).mockResolvedValue(settingsState(false, ['full']));
+
+    // Manki on a personal access token edits as a user, and its own edit starts nothing.
+    ctx.payload.sender = { login: ghUtils.BOT_LOGIN, type: 'User' };
+    await asDispatchedRun(run);
+    expect(authModule.fetchPrState).not.toHaveBeenCalled();
+    ctx.payload.sender = { login: 'user' };
+
+    jest.mocked(authModule.fetchPrState).mockResolvedValueOnce(settingsState(true));
+    await asDispatchedRun(run);
+    expect(mockPullsGet).not.toHaveBeenCalled();
+
+    jest.mocked(authModule.fetchPrState).mockResolvedValueOnce(settingsState(false, ['full']));
+    jest.mocked(ghUtils.isReviewInProgress).mockResolvedValueOnce(true);
+    await asDispatchedRun(run);
+    expect(mockPullsGet).toHaveBeenCalled();
+    expect(ghUtils.isReviewInProgress).not.toHaveBeenCalled();
+    expect(ghUtils.reactToIssueComment).not.toHaveBeenCalled();
+    expect(mockListComments).not.toHaveBeenCalled();
+    jest.mocked(authModule.fetchPrState).mockResolvedValue(null);
   });
 
   it('routes round-cap notice force review checkbox edit to handleCommentTrigger with skipCap only', async () => {

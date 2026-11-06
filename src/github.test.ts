@@ -1,7 +1,8 @@
 import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 
-import { ApprovalHeld, buildDashboard, titleToSlug, formatBlockingPriorThreads, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded } from './github';
+import { ApprovalHeld, buildDashboard, titleToSlug, formatBlockingPriorThreads, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings } from './github';
+import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { paginateSinglePage, TEST_BOT } from './test-utils';
 import { withMarkers } from './utils';
@@ -2843,6 +2844,101 @@ describe('updateProgressDashboard', () => {
     expect(body).toMatch(/<!-- manki-run-id:[^ ]+ -->/);
     expect(body).toContain('<!-- manki-commit:abc123 -->');
   });
+
+  it('ends with the settings block, keeping a box a person ticked on the live comment, unless the comment lost its block', async () => {
+    const warningSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const running: SettingsView = { head: 'abc1234', status: 'review running', boxes: new Set(['pause', 'full', 'cancel']), ticked: new Set() };
+    const live = withSettingsBlock('**Review in progress**', running).replace('- [ ] Pause', '- [x] Pause');
+    const updateCommentMock = jest.fn().mockResolvedValue({});
+    const getCommentMock = jest.fn().mockResolvedValueOnce({ data: { body: live } }).mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce({ data: { body: '**Review in progress**' } });
+    const mockOctokit = { rest: { issues: { updateComment: updateCommentMock, getComment: getCommentMock } } } as unknown as Parameters<typeof updateProgressDashboard>[0];
+    const dashboard: DashboardData = { phase: 'reviewed', lineCount: 200, agentCount: 5, rawFindingCount: 8 };
+
+    await updateProgressDashboard(mockOctokit, 'owner', 'repo', 123, dashboard, 'abc123', running);
+    const body = updateCommentMock.mock.calls[0][0].body as string;
+    expect(body).toContain('8 findings');
+    expect(parseSettingsBlock(body)).toEqual({ ...running, ticked: new Set(['pause']) });
+
+    await updateProgressDashboard(mockOctokit, 'owner', 'repo', 123, dashboard, 'abc123', running);
+    expect(parseSettingsBlock(updateCommentMock.mock.calls[1][0].body)).toEqual(running);
+    expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to read the ticked settings boxes'));
+    warningSpy.mockRestore();
+
+    // A newer progress comment took the block, so this one stays without it.
+    await updateProgressDashboard(mockOctokit, 'owner', 'repo', 123, dashboard, 'abc123', running);
+    expect(updateCommentMock.mock.calls[2][0].body).not.toContain('manki-settings');
+  });
+});
+
+describe('settings block placement', () => {
+  type Octokit = ReturnType<typeof import('@actions/github').getOctokit>;
+  const view: SettingsView = { lastReviewed: 'aaa1111', head: 'bbb2222', status: 'review running', boxes: new Set(['pause', 'full', 'cancel']), ticked: new Set() };
+
+  function makeOctokit(comments: Array<{ id: number; body: string; login?: string }>) {
+    const updateComment = jest.fn().mockResolvedValue({});
+    const createComment = jest.fn().mockResolvedValue({ data: { id: 99 } });
+    const getComment = jest.fn(async ({ comment_id }: { comment_id: number }) => ({ data: { body: comments.find(c => c.id === comment_id)?.body } }));
+    const data = comments.map(c => ({ id: c.id, body: c.body, user: { login: c.login ?? BOT_LOGIN, type: 'Bot' }, updated_at: '2026-01-01T00:00:00Z' }));
+    const octokit = { paginate: jest.fn().mockResolvedValue(data), rest: { issues: { listComments: jest.fn(), updateComment, createComment, getComment } } } as unknown as Octokit;
+    return { octokit, updateComment, createComment, getComment, data };
+  }
+
+  it('shows a status in the existing block, keeping its ticks and last reviewed commit unless given one', async () => {
+    const ticked = withSettingsBlock(withMarkers('**Review complete**', BOT_MARKER), { ...view, ticked: new Set(['pause']) });
+    const { octokit, updateComment, createComment } = makeOctokit([
+      { id: 1, body: withSettingsBlock('Spoofed', view), login: 'someone' },
+      { id: 2, body: ticked },
+    ]);
+
+    await showSettings(octokit, TEST_BOT, 'owner', 'repo', 1, { head: 'ccc3333', status: 'up to date', boxes: new Set(['pause', 'full']), ticked: new Set() }, 'Unused');
+    expect(createComment).not.toHaveBeenCalled();
+    expect(updateComment).toHaveBeenCalledWith(expect.objectContaining({ comment_id: 2 }));
+    const body = updateComment.mock.calls[0][0].body as string;
+    expect(body.startsWith(withMarkers('**Review complete**', BOT_MARKER))).toBe(true);
+    expect(parseSettingsBlock(body)).toEqual({ lastReviewed: 'aaa1111', head: 'ccc3333', status: 'up to date', boxes: new Set(['pause', 'full']), ticked: new Set(['pause']) });
+
+    await showSettings(octokit, TEST_BOT, 'owner', 'repo', 1, { lastReviewed: 'ccc3333', head: 'ccc3333', status: 'up to date', boxes: new Set(['pause']), ticked: new Set() }, 'Unused');
+    expect(parseSettingsBlock(updateComment.mock.calls[1][0].body)?.lastReviewed).toBe('ccc3333');
+  });
+
+  it('posts the text with the block when no comment of Manki has one, marked so it never reads as a run in progress', async () => {
+    const { octokit, createComment } = makeOctokit([{ id: 1, body: withMarkers('**Review complete**', BOT_MARKER) }]);
+
+    await showSettings(octokit, TEST_BOT, 'owner', 'repo', 1, view, 'This PR is a draft.');
+    const body = createComment.mock.calls[0][0].body as string;
+    expect(body.startsWith('This PR is a draft.')).toBe(true);
+    expect(body).toContain(REVIEW_COMPLETE_MARKER);
+    expect(body.endsWith(renderSettingsBlock(view))).toBe(true);
+  });
+
+  it('removes the block from every comment of Manki but the one to keep, from the comment as it is now', async () => {
+    const { octokit, updateComment, getComment, data } = makeOctokit([
+      { id: 1, body: withSettingsBlock('Newest', view) },
+      { id: 2, body: withSettingsBlock('Older', view) },
+      { id: 3, body: withSettingsBlock('Not Manki', view), login: 'someone' },
+      { id: 4, body: 'No block' },
+    ]);
+    getComment.mockResolvedValueOnce({ data: { body: withSettingsBlock('Older, now complete', view) } });
+
+    await retireSettingsBlocks(octokit, TEST_BOT, 'owner', 'repo', data, 1);
+    expect(updateComment).toHaveBeenCalledTimes(1);
+    expect(updateComment).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', comment_id: 2, body: 'Older, now complete' });
+  });
+
+  it('moves a block onto a comment as it is now, and only warns when that fails', async () => {
+    const warningSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const { octokit, updateComment, getComment } = makeOctokit([{ id: 2, body: 'Older' }]);
+
+    await setSettingsBlock(octokit, 'owner', 'repo', 2, view);
+    expect(updateComment).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', comment_id: 2, body: withSettingsBlock('Older', view) });
+
+    getComment.mockRejectedValueOnce(new Error('gone'));
+    await setSettingsBlock(octokit, 'owner', 'repo', 2, view);
+    expect(updateComment).toHaveBeenCalledTimes(1);
+    expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to update the settings block of comment 2'));
+    warningSpy.mockRestore();
+  });
 });
 
 describe('dismissPreviousReviews', () => {
@@ -3839,6 +3935,17 @@ describe('markOwnProgressCommentCancelled', () => {
     expect(body.startsWith('**Review cancelled:** a newer run replaced it.')).toBe(true);
     expect(body).toContain(original);
     expect(body.endsWith(`\n\n${CANCELLED_MARKER}`)).toBe(true);
+  });
+
+  it('keeps the settings block last, saying the review was cancelled and offering no Cancel box', async () => {
+    const view: SettingsView = { head: 'abc1234', status: 'review running', boxes: new Set(['pause', 'full', 'cancel']), ticked: new Set(['pause']) };
+    const original = withSettingsBlock(makeBody(77), view);
+    const { octokit, updateComment } = makeOctokit([{ id: 10, body: original, user: { type: 'Bot' } }]);
+
+    expect(await markOwnProgressCommentCancelled(octokit, TEST_BOT, 'owner', 'repo', 1, 77)).toBe(true);
+    const body = updateComment.mock.calls[0][0].body as string;
+    expect(body).toContain(`${makeBody(77)}\n\n</details>`);
+    expect(parseSettingsBlock(body)).toEqual({ head: 'abc1234', status: 'review cancelled', boxes: new Set(['pause', 'full']), ticked: new Set(['pause']) });
   });
 
   it('finds the progress comment past the first page of comments', async () => {
