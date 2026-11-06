@@ -785,15 +785,21 @@ describe('handleReviewCommentReply', () => {
     expect(state.resolveReviewThread).not.toHaveBeenCalled();
   });
 
-  it('checks the point with 10 tool steps on the PR head when the client has repository tools', async () => {
+  it('checks the point with 10 tool steps on the PR head, fetched only for a Manki thread and a client with tools', async () => {
     setContext({ comment: { id: 1, body: 'The caller checks this.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'MEMBER' }, pull_request: { number: 1 } });
     const octokit = createMockOctokit();
     const client = { ...createMockClient(), repoTools: true } as LLMClient;
+    const plain = createMockClient();
+    const loadWorkspace = jest.fn().mockResolvedValue('/work/head');
 
-    await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, undefined, '/work/head');
-    await handleReviewCommentReply(octokit, TEST_BOT, createMockClient(), 'test-owner', 'test-repo', 1, undefined, undefined, '/work/head');
+    await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, undefined, loadWorkspace);
+    await handleReviewCommentReply(octokit, TEST_BOT, plain, 'test-owner', 'test-repo', 1, undefined, undefined, loadWorkspace);
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: 'not a bot comment', path: 'file.ts', line: 5 } });
+    await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1, undefined, undefined, loadWorkspace);
 
-    expect(jest.mocked(client.sendMessage).mock.calls[0][2]).toEqual({ repoTools: { root: '/work/head', steps: 10 }, timeoutMs: 300_000 });
+    expect(jest.mocked(client.sendMessage).mock.calls.map(call => call[2])).toEqual([{ repoTools: { root: '/work/head', steps: 10 }, timeoutMs: 300_000 }]);
+    expect(jest.mocked(plain.sendMessage).mock.calls[0][2]).toBeUndefined();
+    expect(loadWorkspace).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -820,7 +826,7 @@ describe('handleReviewCommentReply', () => {
     const learning = jest.mocked(memory.writeLearning).mock.calls[0][3];
     expect(learning).toEqual({
       id: expect.stringMatching(/^learn-\d+$/), scope: 'repo', path: 'src/file.ts', source: 'test-owner/test-repo#7', created_at: expect.any(String),
-      content: 'Findings like "Token leaks into logs" do not apply on `src/file.ts`: `parse` returns early on an empty id.',
+      content: 'Findings like "Token leaks into logs" do not apply on `src/file.ts`: The caller always validates this upstream, so the check is not needed here.',
     });
     expect(body).toContain(`\n\nSaved a learning for \`src/file.ts\`, so findings like this one are not raised there again. \`/manki forget ${learning.id}\` removes it.\n\n<!-- manki -->`);
   });

@@ -188,19 +188,21 @@ export function sanitizeForPromptEmbed(text: string): string {
 }
 
 /**
- * Build a context string from memory to inject into reviewer prompts.
+ * Build a context string from memory to inject into reviewer prompts. With `paths`, a learning for one path appears
+ * only when that path is among them.
  */
-export function buildMemoryContext(memory: RepoMemory): string {
-  if (memory.learnings.length === 0 && memory.suppressions.length === 0) {
+export function buildMemoryContext(memory: RepoMemory, paths?: ReadonlySet<string>): string {
+  const learnings = paths ? memory.learnings.filter(l => !l.path || paths.has(l.path)) : memory.learnings;
+  if (learnings.length === 0 && memory.suppressions.length === 0) {
     return '';
   }
 
   const parts: string[] = [];
 
-  if (memory.learnings.length > 0) {
+  if (learnings.length > 0) {
     parts.push('## Review Memory — Learnings\n');
     parts.push('The following learnings have been recorded from previous reviews. Consider them when reviewing:\n');
-    for (const learning of memory.learnings) {
+    for (const learning of learnings) {
       parts.push(`- ${sanitizeMemoryField(learning.content)}`);
     }
   }

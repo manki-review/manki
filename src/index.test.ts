@@ -827,7 +827,6 @@ describe('run', () => {
 
       expect(jest.mocked(interaction.handleReviewCommentReply)).toHaveBeenCalled();
       expect(jest.mocked(interaction.handleReviewCommentCommand)).not.toHaveBeenCalled();
-      expect(fetchWorkspace).not.toHaveBeenCalled();
     });
 
     it('fetches the PR head for a reply when its client has repository tools', async () => {
@@ -846,8 +845,11 @@ describe('run', () => {
 
       await run();
 
+      // The handler fetches the head only once it knows the thread is Manki's.
+      expect(fetchWorkspace).not.toHaveBeenCalled();
+      const loadWorkspace = jest.mocked(interaction.handleReviewCommentReply).mock.calls.at(-1)?.at(-1) as () => Promise<string | undefined>;
+      expect(await loadWorkspace()).toBe('/work/head');
       expect(fetchWorkspace).toHaveBeenCalledWith(expect.stringMatching(/\/.+\.git$/), 'abc123', 'ghs_app');
-      expect(jest.mocked(interaction.handleReviewCommentReply).mock.calls.at(-1)?.at(-1)).toBe('/work/head');
     });
 
     it('routes command review comments to handleReviewCommentCommand', async () => {

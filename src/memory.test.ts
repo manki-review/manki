@@ -364,6 +364,9 @@ describe('filterLearningsForFinding', () => {
 
   it('applies a learning for one path only to findings on that path', () => {
     const learning = makeLearning({ content: 'Findings like "Unused variable" do not apply on `src/gen.ts`: it is generated.', path: 'src/gen.ts' });
+    const memory = { learnings: [learning], suppressions: [] };
+    expect(buildMemoryContext(memory, new Set(['src/gen.ts']))).toContain('src/gen.ts');
+    expect(buildMemoryContext(memory, new Set(['src/app.ts']))).toBe('');
 
     expect(filterLearningsForFinding([learning], makeFinding({ title: 'Unused variable', file: 'src/gen.ts' }))).toHaveLength(1);
     expect(filterLearningsForFinding([learning], makeFinding({ title: 'Unused variable', file: 'src/app.ts' }))).toHaveLength(0);

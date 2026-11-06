@@ -2028,8 +2028,8 @@ async function handleReviewCommentInteraction(): Promise<void> {
       return;
     }
     const headSha: string | undefined = payload.pull_request?.head?.sha;
-    const workspace = headSha ? await fetchToolWorkspace({ octokit, owner, repo, commitSha: headSha }, [client]) : undefined;
-    await handleReviewCommentReply(octokit, bot, client, owner, repo, prNumber, memoryConfig, memoryToken, workspace);
+    const loadWorkspace = async () => headSha ? fetchToolWorkspace({ octokit, owner, repo, commitSha: headSha }, [client]) : undefined;
+    await handleReviewCommentReply(octokit, bot, client, owner, repo, prNumber, memoryConfig, memoryToken, loadWorkspace);
   }
 
   // Check if all review threads are now resolved (e.g. the reply resolved the last conversation)
