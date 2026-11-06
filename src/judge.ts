@@ -477,7 +477,7 @@ If the PR description or linked issues contain acceptance criteria (checkbox ite
 
 ## Category and Effort
 
-Set \`category\` to the kind of problem the finding names, picking the closest of: \`correctness\` (a wrong result or broken logic), \`security\`, \`reliability\` (a crash, a hang, resource exhaustion or lost errors), \`data\` (lost or corrupted data), \`concurrency\`, \`performance\`, \`compatibility\` (a broken public contract, wire or file format), \`testing\`, \`maintainability\` (duplication, structure, readability), \`documentation\` or \`style\`.
+Set \`category\` to the kind of problem the finding names, picking the closest of: \`correctness\` (a wrong result or broken logic), \`security\` (exactly the findings you set \`security\` to true on), \`reliability\` (a crash, a hang, resource exhaustion or lost errors), \`data\` (lost or corrupted data), \`concurrency\`, \`performance\`, \`compatibility\` (a broken public contract, wire or file format), \`testing\`, \`maintainability\` (duplication, structure, readability), \`documentation\` or \`style\`.
 
 Set \`effort\` to how big the fix is: \`quick\` for a few lines in one place, \`moderate\` for several places or a small redesign, \`larger\` for a design change or work across modules.
 
@@ -1179,7 +1179,9 @@ export function mapJudgedToFindings(
       finding.judgeNotes = match.reasoning;
       finding.judgeConfidence = match.confidence;
       if (match.security) finding.tags = addTag(finding.tags, SECURITY_TAG);
-      if (match.category) finding.category = match.category;
+      // The header calls a finding security only when it carries the security tag.
+      if (finding.tags?.includes(SECURITY_TAG)) finding.category = 'security';
+      else if (match.category && match.category !== 'security') finding.category = match.category;
       if (match.effort) finding.effort = match.effort;
       applyOwnProposal(finding, provenanceMap);
       const prior = match.sameAs !== undefined ? priorBlockers[match.sameAs - 1] : undefined;

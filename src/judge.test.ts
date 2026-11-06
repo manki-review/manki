@@ -1330,12 +1330,12 @@ describe('runJudgeAgent', () => {
     expect(result.findings[0].tags).toBeUndefined();
   });
 
-  it('tags the findings the judge marks `security`', async () => {
+  it('tags the findings the judge marks `security`, and files exactly those under the `security` category', async () => {
     mockSendMessage.mockResolvedValue({ content: JSON.stringify({
       summary: 'One injection.',
       findings: [
-        { id: 1, title: 'Reply prompt takes injected instructions', severity: 'warning', reasoning: 'r', confidence: 'high', security: true },
-        { id: 2, title: 'Off by one', severity: 'warning', reasoning: 'r', confidence: 'high', security: false },
+        { id: 1, title: 'Reply prompt takes injected instructions', severity: 'warning', reasoning: 'r', confidence: 'high', security: true, category: 'correctness' },
+        { id: 2, title: 'Off by one', severity: 'warning', reasoning: 'r', confidence: 'high', security: false, category: 'security' },
         { id: 3, title: 'Token in log', severity: 'blocker', reasoning: 'r', confidence: 'high', security: 'yes' },
       ],
     }) });
@@ -1350,6 +1350,7 @@ describe('runJudgeAgent', () => {
       ['Off by one', undefined],
       ['Token in log', undefined],
     ]);
+    expect(result.findings.map(f => f.category)).toEqual(['security', undefined, undefined]);
   });
 
   it('calls judge with only openThreads when findings are empty', async () => {
