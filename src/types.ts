@@ -574,7 +574,7 @@ export interface PrContext {
 }
 
 /** Analyzers Manki runs itself on the PR's files. */
-export const ANALYZERS = ['ast_grep', 'secrets', 'dependencies', 'semgrep'] as const;
+export const ANALYZERS = ['ast_grep', 'secrets', 'dependencies', 'semgrep', 'actionlint', 'zizmor', 'shellcheck'] as const;
 
 export type AnalyzerName = typeof ANALYZERS[number];
 
@@ -584,6 +584,9 @@ export interface AnalyzerSettings {
   dependencies?: boolean;
   /** Paths of Semgrep rule files, read from the base branch. Manki ships no Semgrep rules. */
   semgrep?: false | { rules: string[] };
+  actionlint?: boolean;
+  zizmor?: boolean;
+  shellcheck?: boolean;
 }
 
 export interface StaticAnalysisConfig {

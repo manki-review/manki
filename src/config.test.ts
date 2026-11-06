@@ -132,8 +132,8 @@ describe('config', () => {
         .toEqual({ ...defaults, code_scanning: false });
       expect(loadConfigFromContent('static_analysis:\n  wait_for_checks: [lint]\n  wait_timeout_seconds: 60\n  analyzers: all\n').static_analysis)
         .toEqual({ ...defaults, wait_for_checks: ['lint'], wait_timeout_seconds: 60, analyzers: 'all' });
-      expect(loadConfigFromContent('static_analysis:\n  analyzers:\n    ast_grep: true\n    secrets: true\n    dependencies: false\n    semgrep:\n      rules: [.semgrep/manki.yml, rules/extra.yaml]\n').static_analysis?.analyzers)
-        .toEqual({ ast_grep: true, secrets: true, dependencies: false, semgrep: { rules: ['.semgrep/manki.yml', 'rules/extra.yaml'] } });
+      expect(loadConfigFromContent('static_analysis:\n  analyzers:\n    ast_grep: true\n    secrets: true\n    dependencies: false\n    semgrep:\n      rules: [.semgrep/manki.yml, rules/extra.yaml]\n    actionlint: false\n    zizmor: true\n    shellcheck: false\n').static_analysis?.analyzers)
+        .toEqual({ ast_grep: true, secrets: true, dependencies: false, semgrep: { rules: ['.semgrep/manki.yml', 'rules/extra.yaml'] }, actionlint: false, zizmor: true, shellcheck: false });
       expect(loadConfigFromContent('static_analysis:\n  analyzers:\n    semgrep: false\n').static_analysis?.analyzers).toEqual({ semgrep: false });
     });
 
