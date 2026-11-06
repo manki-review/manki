@@ -302,15 +302,19 @@ function emptyCliCwd(): string {
 }
 
 // Besides `SYSTEM_ENV`, a CLI needs a home, the locale, the CA bundles a proxy may need, and the Gemini Cloud project.
-const CLI_ENV = new Set([...SYSTEM_ENV, 'HOME', 'LANG', 'RUNNER_TEMP', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS', 'GOOGLE_CLOUD_PROJECT']);
-const CLI_ENV_PREFIX = /^(?:LC|XDG)_/;
+// Upper case, because Windows names some of them in mixed case, such as `Path`.
+const CLI_ENV = new Set([
+  ...SYSTEM_ENV, 'HOME', 'LANG', 'RUNNER_TEMP', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS', 'GOOGLE_CLOUD_PROJECT',
+  'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'PATHEXT', 'COMSPEC',
+].map((name) => name.toUpperCase()));
+const CLI_ENV_PREFIX = /^(?:LC|XDG)_/i;
 
 /**
  * Returns the environment for a provider CLI: the variables of `env` the CLI needs to run, plus the provider's own
  * `vars`. Nothing named like a secret, such as `*_TOKEN` or `*_KEY`, passes, except the variable named `credential`.
  */
 export function cliEnv(vars: NodeJS.ProcessEnv = {}, credential?: string, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const needed = Object.entries(env).filter(([name]) => CLI_ENV.has(name) || CLI_ENV_PREFIX.test(name));
+  const needed = Object.entries(env).filter(([name]) => CLI_ENV.has(name.toUpperCase()) || CLI_ENV_PREFIX.test(name));
   return Object.fromEntries([...needed, ...Object.entries(vars)].filter(([name]) => name === credential || !SECRET_NAME.test(name)));
 }
 

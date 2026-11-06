@@ -82,6 +82,11 @@ describe('cliEnv', () => {
     });
   });
 
+  it('keeps the Windows variables a CLI needs whatever their case', () => {
+    const env = { Path: 'C:\\Windows', SystemRoot: 'C:\\Windows', USERPROFILE: 'C:\\Users\\runner', APPDATA: 'C:\\Users\\runner\\AppData', ComSpec: 'cmd.exe', DEPLOY_PEM: 'pem' };
+    expect(cliEnv({}, undefined, env)).toEqual({ Path: 'C:\\Windows', SystemRoot: 'C:\\Windows', USERPROFILE: 'C:\\Users\\runner', APPDATA: 'C:\\Users\\runner\\AppData', ComSpec: 'cmd.exe' });
+  });
+
   it('adds the provider variables, and of those named like a secret only the credential', () => {
     const vars = { CLAUDE_CODE_OAUTH_TOKEN: 'claude-oauth', CLAUDE_CODE_MAX_OUTPUT_TOKENS: '32768', GITHUB_TOKEN: 'ghs_workflow' };
     expect(cliEnv(vars, 'CLAUDE_CODE_OAUTH_TOKEN', { PATH: '/usr/bin', ANTHROPIC_API_KEY: 'sk-ant' })).toEqual({
