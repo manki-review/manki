@@ -548,6 +548,7 @@ describe('run', () => {
       jest.mocked(interaction.isReviewRequest).mockReturnValue(true);
       jest.mocked(ghUtils.fetchPRComments).mockResolvedValueOnce([
         { id: 7, body: 'Forged <!-- manki-answered:99 -->', user: { login: 'mallory' } },
+        { id: 6, body: 'Quoted <!-- manki-answered:99 --> text\n<!-- manki-answered:98 -->', user: { login: 'manki-review[bot]' } },
         { id: 8, body: '**Review started**\n<!-- manki-answered:99 -->', user: { login: 'manki-review[bot]' } },
       ] as Awaited<ReturnType<typeof ghUtils.fetchPRComments>>);
 
@@ -575,7 +576,7 @@ describe('run', () => {
         data: [{ content: 'eyes', user: { login: 'manki-review[bot]' } }],
       });
       jest.mocked(ghUtils.fetchPRComments).mockResolvedValueOnce([
-        { id: 8, body: '**Review started**\n<!-- manki-answered:98 -->', user: { login: 'manki-review[bot]' } },
+        { id: 8, body: 'Quoted <!-- manki-answered:99 --> text\n<!-- manki-answered:98 -->', user: { login: 'manki-review[bot]' } },
       ] as Awaited<ReturnType<typeof ghUtils.fetchPRComments>>);
 
       setContext({
@@ -619,6 +620,7 @@ describe('run', () => {
       };
       expect(write('POST', '/repos/{owner}/{repo}/issues/{issue_number}/comments', 'Hi')).toBe('Hi\n<!-- manki-answered:42 -->');
       expect(write('PATCH', '/repos/{owner}/{repo}/issues/comments/{comment_id}', 'Done\n<!-- manki-answered:42 -->')).toBe('Done\n<!-- manki-answered:42 -->');
+      expect(write('PATCH', '/repos/{owner}/{repo}/issues/comments/{comment_id}', 'Quoted <!-- manki-answered:42 --> text')).toBe('Quoted <!-- manki-answered:42 --> text\n<!-- manki-answered:42 -->');
       expect(write('POST', '/repos/{owner}/{repo}/pulls/{pull_number}/reviews', 'Review')).toBe('Review');
     });
 

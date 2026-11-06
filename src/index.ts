@@ -170,17 +170,17 @@ const COMMENT_WRITES = new Set([
 function markAnswers(octokit: Octokit, commentId: number): void {
   const marker = answeredMarker(commentId);
   octokit.hook.before('request', (options) => {
-    if (COMMENT_WRITES.has(`${options.method} ${options.url}`) && typeof options.body === 'string' && !options.body.includes(marker)) {
+    if (COMMENT_WRITES.has(`${options.method} ${options.url}`) && typeof options.body === 'string' && !options.body.endsWith(marker)) {
       options.body = `${options.body}\n${marker}`;
     }
   });
 }
 
-/** Whether one of Manki's comments on PR or issue `issueNumber` answers comment `commentId`. */
+/** Whether one of Manki's comments on PR or issue `issueNumber` answers comment `commentId`. Only a marker on the last line counts, since a comment can quote user text. */
 async function wasAnswered(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, issueNumber: number, commentId: number): Promise<boolean> {
   const marker = answeredMarker(commentId);
   const comments = await fetchPRComments(octokit, owner, repo, issueNumber);
-  return comments.some(c => isBotLogin(bot, c.user?.login) && c.body?.includes(marker));
+  return comments.some(c => isBotLogin(bot, c.user?.login) && c.body?.trimEnd().endsWith(marker));
 }
 
 async function run(): Promise<void> {
