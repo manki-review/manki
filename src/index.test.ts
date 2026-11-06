@@ -41,6 +41,8 @@ const mockGraphql = jest.fn().mockResolvedValue({ resolveReviewThread: { thread:
 
 const mockCreateReview = jest.fn().mockResolvedValue({ data: { id: 777 } });
 
+const requestHooks: Array<(options: { method: string; url: string; body: string }) => void> = [];
+
 const mockOctokitInstance = {
   rest: {
     pulls: { get: mockPullsGet, listReviews: mockListReviews, createReview: mockCreateReview },
@@ -48,7 +50,7 @@ const mockOctokitInstance = {
     reactions: { listForIssueComment: mockListReactionsForIssueComment },
   },
   graphql: mockGraphql,
-  hook: { before: jest.fn() },
+  hook: { before: jest.fn((_name: string, hook: (options: { method: string; url: string; body: string }) => void) => { requestHooks.push(hook); }) },
 };
 
 jest.mock('./auth', () => ({
@@ -603,10 +605,21 @@ describe('run', () => {
       expect(jest.mocked(ghUtils.reactToIssueComment)).toHaveBeenCalled();
     });
 
-    it('marks the comments Manki writes while it answers a comment', async () => {
+    it('marks the comments Manki writes while it answers a comment, with one hook per client', async () => {
       jest.mocked(interaction.hasBotMention).mockReturnValue(true);
       jest.mocked(interaction.isReviewRequest).mockReturnValue(true);
 
+      setContext({
+        eventName: 'issue_comment',
+        payload: {
+          action: 'created',
+          sender: { login: 'user' },
+          comment: { body: '@manki review', id: 41, author_association: 'COLLABORATOR' },
+          issue: { number: 5, pull_request: { url: 'https://...' } },
+        },
+      });
+
+      await run();
       setContext({
         eventName: 'issue_comment',
         payload: {
@@ -616,13 +629,12 @@ describe('run', () => {
           issue: { number: 5, pull_request: { url: 'https://...' } },
         },
       });
-
       await run();
 
-      const [[, mark]] = mockOctokitInstance.hook.before.mock.calls;
+      expect(requestHooks).toHaveLength(1);
       const write = (method: string, url: string, body: string) => {
         const options = { method, url, body };
-        mark(options);
+        requestHooks[0](options);
         return options.body;
       };
       expect(write('POST', '/repos/{owner}/{repo}/issues/{issue_number}/comments', 'Hi')).toBe('Hi\n<!-- manki-answered:42 -->');

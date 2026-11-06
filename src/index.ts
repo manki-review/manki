@@ -166,20 +166,25 @@ const COMMENT_WRITES = new Set([
   'PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}',
 ]);
 
+/** The marker each client adds to the comments it writes. A client gets one hook, so a later run on it marks only its own comment. */
+const answerMarkers = new WeakMap<Octokit, string>();
+
 /** Adds `answeredMarker(commentId)` to every PR or issue comment `octokit` creates or edits from now on. */
 function markAnswers(octokit: Octokit, commentId: number): void {
-  const marker = answeredMarker(commentId);
-  octokit.hook.before('request', (options) => {
-    if (COMMENT_WRITES.has(`${options.method} ${options.url}`) && typeof options.body === 'string' && !options.body.endsWith(marker)) {
-      options.body = `${options.body}\n${marker}`;
-    }
-  });
+  if (!answerMarkers.has(octokit)) {
+    octokit.hook.before('request', (options) => {
+      const marker = answerMarkers.get(octokit);
+      if (marker && COMMENT_WRITES.has(`${options.method} ${options.url}`) && typeof options.body === 'string' && !options.body.endsWith(marker)) {
+        options.body = `${options.body}\n${marker}`;
+      }
+    });
+  }
+  answerMarkers.set(octokit, answeredMarker(commentId));
 }
 
-/** Whether one of Manki's comments on PR or issue `issueNumber` answers comment `commentId`. Only a marker on the last line counts, since a comment can quote user text. */
-async function wasAnswered(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, issueNumber: number, commentId: number): Promise<boolean> {
+/** Whether one of Manki's `comments` answers comment `commentId`. Only a marker on the last line counts, since a comment can quote user text. */
+function isAnswered(comments: Awaited<ReturnType<typeof fetchPRComments>>, bot: BotIdentity, commentId: number): boolean {
   const marker = answeredMarker(commentId);
-  const comments = await fetchPRComments(octokit, owner, repo, issueNumber);
   return comments.some(c => isBotLogin(bot, c.user?.login) && c.body?.trimEnd().endsWith(marker));
 }
 
@@ -240,7 +245,7 @@ async function run(): Promise<void> {
       const { owner, repo } = github.context.repo;
       if (action === 'edited') {
         try {
-          if (await wasAnswered(octokit, bot, owner, repo, issueNumber, commentId)) {
+          if (isAnswered(await fetchPRComments(octokit, owner, repo, issueNumber), bot, commentId)) {
             core.info('Manki already answered this comment, skipping the edit');
             return;
           }
@@ -332,11 +337,11 @@ async function postReviewSkippedComment(
       ? `**Review skipped** for \`${shortSha}\`: a review is already in progress. Retry when it completes, or force one now:`
       : `**Review skipped** for \`${shortSha}\`: this commit already has a review. Force a new one:`;
     const text = `${line}\n\n- [ ] Force review`;
-    // A commit keeps one unticked already-reviewed notice. One that carries an eyes reaction, from a tick Manki answered, is never
-    // reused, since Manki ignores a later tick on it.
+    // A commit keeps one unticked already-reviewed notice. One whose tick Manki answered is never reused, since Manki ignores
+    // a later tick on it.
     if (reason === 'already_reviewed') {
       const comments = await fetchPRComments(octokit, owner, repo, prNumber);
-      if (comments.some(c => isBotLogin(bot, c.user?.login) && c.body?.startsWith(text) && !c.reactions?.eyes)) {
+      if (comments.some(c => isBotLogin(bot, c.user?.login) && c.body?.startsWith(text) && !isAnswered(comments, bot, c.id))) {
         core.info(`An unticked already-reviewed notice for ${shortSha} is on the PR, posting no other`);
         return;
       }
