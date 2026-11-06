@@ -17,6 +17,7 @@ import { addCodeContext, changeDigest, parsePRDiff, filterDiff, filterRawDiff, i
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, RepoMemory } from './memory';
+import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
 import { fetchRecapState, PreviousFinding, RecapState, securityOverridesIn } from './recap';
 import { RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint, teamModels } from './review';
 import { buildRoundContext, RoundRecordInput } from './round-context';
@@ -1812,7 +1813,8 @@ async function main(): Promise<void> {
 
 // Only auto-run when executed directly (not imported for testing)
 if (process.env.NODE_ENV !== 'test') {
-  main();
+  if (process.argv[2] === MCP_SERVER_COMMAND) runMcpServer(process.argv[3]);
+  else main();
 }
 
 function _resetOctokitCache(): void {
