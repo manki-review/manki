@@ -343,6 +343,7 @@ describe('checkAndAutoApprove', () => {
     permission?: string;
     /** The PR diff at each commit, keyed by its SHA, as `compareCommits` against the base returns it. */
     diffs?: Record<string, string>;
+    mergeable?: boolean | null;
   } = {}) {
     const threads = overrides.threads ?? [];
     const prHeadSha = overrides.prHeadSha ?? 'abc123';
@@ -358,7 +359,7 @@ describe('checkAndAutoApprove', () => {
       paginate: jest.fn(paginateSinglePage),
       rest: {
         pulls: {
-          get: jest.fn().mockResolvedValue({ data: { head: { sha: prHeadSha }, base: { ref: 'main' }, user: { login: 'author' } } }),
+          get: jest.fn().mockResolvedValue({ data: { head: { sha: prHeadSha }, base: { ref: 'main' }, user: { login: 'author' }, mergeable: overrides.mergeable } }),
           createReview: createReviewFn,
           listReviews: jest.fn().mockResolvedValue({ data: existingReviews }),
         },
@@ -391,6 +392,29 @@ describe('checkAndAutoApprove', () => {
     expect(createReviewMock).toHaveBeenCalledWith(
       expect.objectContaining({ event: 'APPROVE', commit_id: 'sha-456', body: expect.stringMatching(/^\u2705 \*\*Approved\.\*\* All blocking threads are resolved\.\n\n<!-- manki -->$/) }),
     );
+  });
+
+  it('holds the approval of a PR that conflicts with its base, with one notice per head', async () => {
+    const resolved = [makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix-bug --> fix', isResolved: true })];
+    const createReviewMock = jest.fn().mockResolvedValue({});
+    const createCommentMock = jest.fn().mockResolvedValue({});
+    const notice = '**Approval held:** this PR conflicts with `main`. Rebase it, and Manki reviews the result.\n\n<!-- manki-approval-held:sha-456 -->';
+
+    const first = makeMockOctokit({ threads: resolved, prHeadSha: 'sha-456', mergeable: false, createReviewFn: createReviewMock, createCommentFn: createCommentMock });
+    expect(await checkAndAutoApprove(first, TEST_BOT, 'owner', 'repo', 1)).toBe(false);
+    expect(createCommentMock.mock.calls.map(([c]) => c.body)).toEqual([notice]);
+
+    const again = makeMockOctokit({
+      threads: resolved, prHeadSha: 'sha-456', mergeable: false, createReviewFn: createReviewMock, createCommentFn: createCommentMock,
+      existingComments: [{ body: notice, user: { login: 'github-actions[bot]' } }],
+    });
+    expect(await checkAndAutoApprove(again, TEST_BOT, 'owner', 'repo', 1)).toBe(false);
+    expect(createCommentMock).toHaveBeenCalledTimes(1);
+    expect(createReviewMock).not.toHaveBeenCalled();
+
+    const clean = makeMockOctokit({ threads: resolved, prHeadSha: 'sha-456', mergeable: true, createReviewFn: createReviewMock, createCommentFn: createCommentMock });
+    expect(await checkAndAutoApprove(clean, TEST_BOT, 'owner', 'repo', 1)).toBe(true);
+    expect(createReviewMock).toHaveBeenCalledWith(expect.objectContaining({ event: 'APPROVE', commit_id: 'sha-456' }));
   });
 
   it.each([

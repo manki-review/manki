@@ -97,6 +97,9 @@ class FakeGitHub {
   /** Runs before a write is answered, which waits for it. */
   onWrite?: (write: string) => void | Promise<void>;
   headSha = HEAD_SHA;
+  mergeable: boolean | null = true;
+  /** Refuses `resolveReviewThread` the way GitHub does for a token without the permission. */
+  refuseResolve = false;
   /** The config file the PR carries at its head commit. */
   headConfig?: string;
   activeRuns: number[] = [];
@@ -117,6 +120,9 @@ class FakeGitHub {
     }
     const failure = this.failures.find(f => f.method === method && f.path.test(pathname));
     if (failure) return json({ message: 'Server Error' }, failure.status);
+    if (pathname === '/graphql' && this.refuseResolve && /\bresolveReviewThread\b/.test(String(body.query))) {
+      return json({ data: null, errors: [{ type: 'FORBIDDEN', message: 'Resource not accessible by integration' }] });
+    }
     if (pathname === '/graphql') return json({ data: this.graphql(body.query, body.variables ?? {}, login) });
 
     const route = decodeURIComponent(pathname).replace(`/repos/${OWNER}/${REPO}`, '');
@@ -126,7 +132,7 @@ class FakeGitHub {
 
     if (method === 'GET' && route === `/pulls/${PR_NUMBER}`) {
       if (headers.get('accept')?.includes('diff')) return text(PR_DIFF);
-      return json({ number: PR_NUMBER, title: 'Keep the sum in a variable', body: 'Small refactor.', draft: false, head: { sha: this.headSha, ref: 'feature', repo: { full_name: `${OWNER}/${REPO}` } }, base: { ref: 'main', repo: { full_name: `${OWNER}/${REPO}` } }, user: { login: 'alice', type: 'User' } });
+      return json({ number: PR_NUMBER, title: 'Keep the sum in a variable', body: 'Small refactor.', draft: false, head: { sha: this.headSha, ref: 'feature', repo: { full_name: `${OWNER}/${REPO}` } }, base: { ref: 'main', repo: { full_name: `${OWNER}/${REPO}` } }, user: { login: 'alice', type: 'User' }, mergeable: this.mergeable, mergeable_state: this.mergeable === false ? 'dirty' : 'clean' });
     }
     if ((match = route.match(/^\/pulls\/comments\/(\d+)(\/reactions)?$/))) {
       const id = Number(match[1]);
@@ -635,6 +641,33 @@ describe('runFullReview end to end', () => {
     expect(thread.comments.at(-1)?.body).toMatch(/^Fixed in c3c3c3c\./);
   });
 
+  it.each([
+    ['blocker', 'CHANGES_REQUESTED'],
+    ['suggestion', 'APPROVED'],
+  ])('posts one review when a %s thread the round counts as fixed cannot be resolved', async (severity, state) => {
+    const finding = { ...BLOCKER, severity };
+    Object.assign(mockLLM.replies, {
+      reviewer: JSON.stringify([finding]),
+      judge: JSON.stringify({ summary: 'One finding.', findings: [{ id: 1, title: finding.title, severity, reasoning: 'Reachable.', confidence: 'high', reachability: 'reachable' }] }),
+    });
+    await reviewRound();
+    expect(mockGitHub.threads).toHaveLength(1);
+
+    mockGitHub.headSha = 'c3'.repeat(20);
+    mockGitHub.refuseResolve = true;
+    Object.assign(mockLLM.replies, READY_REPLIES, {
+      judge: JSON.stringify({ summary: 'The range check is in place.', findings: [], threadEvaluations: [{ threadId: 'PRRT_1', status: 'addressed', reason: 'The sum is checked now.' }] }),
+    });
+    const before = postedReviews().length;
+    await reviewRound();
+
+    const posted = postedReviews().slice(before);
+    expect(posted.map(r => r.state)).toEqual([state]);
+    expect(mockGitHub.roundContext(posted[0]).judge.threadEvaluations).toEqual([expect.objectContaining({ threadId: 'PRRT_1', status: 'uncertain' })]);
+    expect(mockGitHub.threads[0]).toMatchObject({ isResolved: false });
+    expect(mockGitHub.threads[0].comments).toHaveLength(1);
+  });
+
   it('recognises its own comments, reviews and threads when it posts with the Actions token', async () => {
     jest.mocked(core.getIDToken).mockRejectedValue(new Error('no OIDC'));
     for (let i = 0; i < 40; i++) mockGitHub.addComment(`Comment ${i}`, 'alice');
@@ -695,6 +728,31 @@ describe('runFullReview end to end', () => {
       expect(core.setFailed).not.toHaveBeenCalled();
       expect(mockLLM.calls).toEqual([]);
       expect(postedReviews().map(r => [r.state, r.commit_id])).toEqual([['DISMISSED', HEAD_SHA], ['APPROVED', HEAD_SHA]]);
+    });
+
+    it('never approves a PR that conflicts with its base, and says so once per head', async () => {
+      mockGitHub.mergeable = false;
+      const held = '**Approval held:** this PR conflicts with `main`. Rebase it, and Manki reviews the result.';
+      Object.assign(mockLLM.replies, BLOCKER_REPLIES);
+      await reviewRound();
+      Object.assign(mockGitHub.threads[0], { isResolved: true, resolvedBy: { login: 'bob' } });
+
+      for (const id of ['0a', '0b']) {
+        await dispatch({ event: 'pull_request_review_thread', action: 'resolved', pr: String(PR_NUMBER), delivery_id: `72d3162e-cc78-11e3-81ab-4c9367dc09${id}` });
+      }
+
+      expect(core.setFailed).not.toHaveBeenCalled();
+      expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED']);
+      expect(mockGitHub.comments.filter(c => c.body.startsWith(held)).map(c => c.user.login)).toEqual([APP_LOGIN]);
+
+      Object.assign(mockLLM.replies, READY_REPLIES);
+      await forcedRound();
+
+      const ready = postedReviews()[1];
+      expect(ready.state).toBe('COMMENTED');
+      expect(ready.body.startsWith(`${held}\n\n\u2705 **Approved.**`)).toBe(true);
+      expect(mockGitHub.roundContext(ready)).toMatchObject({ meta: { outcome: 'READY' }, verdict: 'APPROVE' });
+      expect(mockGitHub.comments.filter(c => c.body.startsWith(held))).toEqual([]);
     });
 
     it('answers a reply in a Manki thread as the person who wrote it', async () => {

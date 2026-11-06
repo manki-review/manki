@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
-import { BotIdentity, BOT_MARKER as PROGRESS_MARKER, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchInterRoundDiff, fetchPRComments, fetchReviewThreadNodes, fetchStandingVerdict, FOLLOW_UP_MARKER, FORCE_CAP_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, postAutoApproveProgressComment } from './github';
+import { approvalHeldLine, BotIdentity, BOT_MARKER as PROGRESS_MARKER, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchConflictingBase, fetchInterRoundDiff, fetchPRComments, fetchReviewThreadNodes, fetchStandingVerdict, FOLLOW_UP_MARKER, FORCE_CAP_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, postAutoApproveProgressComment } from './github';
 import type { StandingVerdict } from './github';
 import { isSameChange } from './diff';
 import { fetchPriorRoundContexts, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, PreviousFinding, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf } from './recap';
@@ -15,6 +15,7 @@ type ReviewEntry = { body?: string | null; state?: string; commit_id?: string | 
 
 const BOT_MARKER = '<!-- manki -->';
 const STALE_APPROVE_MARKER_PREFIX = '<!-- manki-stale-approve:';
+const APPROVAL_HELD_MARKER_PREFIX = '<!-- manki-approval-held:';
 
 function staleApproveMarker(headSha: string): string {
   return `${STALE_APPROVE_MARKER_PREFIX}${headSha} -->`;
@@ -141,6 +142,11 @@ async function resolveReviewThread(octokit: Octokit, threadId: string): Promise<
   await octokit.graphql('mutation($threadId: ID!) { resolveReviewThread(input: { threadId: $threadId }) { thread { isResolved } } }', { threadId });
 }
 
+async function unresolveReviewThread(octokit: Octokit, threadId: string): Promise<void> {
+  assertWritesAllowed();
+  await octokit.graphql('mutation($threadId: ID!) { unresolveReviewThread(input: { threadId: $threadId }) { thread { isResolved } } }', { threadId });
+}
+
 /**
  * Posts `body` as a Manki reply in the review thread `threadId`. Pass any marker besides `BOT_MARKER` in `markers`.
  * Throws the abort reason once GitHub writes are stopped.
@@ -170,7 +176,7 @@ async function reopenAuthorResolvedThreads(octokit: Octokit, previousFindings: P
       continue;
     }
     try {
-      await octokit.graphql('mutation($threadId: ID!) { unresolveReviewThread(input: { threadId: $threadId }) { thread { isResolved } } }', { threadId: f.threadId });
+      await unresolveReviewThread(octokit, f.threadId);
       core.info(`Reopened security thread ${f.threadId} that the PR author resolved`);
     } catch (error) {
       core.warning(`Failed to reopen security thread ${f.threadId}: ${error}`);
@@ -285,6 +291,20 @@ async function explainUnreviewedHead(octokit: Octokit, bot: BotIdentity, owner: 
     : `Manki has not reviewed ${head} yet. A push review should start shortly, and approval follows from its verdict.`;
 }
 
+/** Posts `text` as a comment carrying `marker`, unless a Manki comment with `marker` is already on the PR. */
+async function postNoticeOnce(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, marker: string, text: string,
+): Promise<void> {
+  const existing = await octokit.paginate(octokit.rest.issues.listComments, {
+    owner, repo, issue_number: prNumber, per_page: 100,
+  });
+  if (existing.some(c => isBotLogin(bot, c.user?.login) && c.body?.includes(marker))) {
+    core.info(`Notice ${marker} already present, skipping duplicate`);
+    return;
+  }
+  await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: withMarkers(text, marker) });
+}
+
 /**
  * Posts a one-time comment that auto-approve is withheld because Manki has not reviewed `headSha`,
  * and no automatic review will. `halt` says why and how to start one.
@@ -300,33 +320,41 @@ async function postStaleApproveSkippedComment(
   latestReviewSha: string,
   halt: string,
 ): Promise<void> {
-  const marker = staleApproveMarker(headSha);
+  const shortHead = headSha.slice(0, 7);
+  const shortLatest = latestReviewSha.slice(0, 7);
+  const text = [
+    `**Auto-approve withheld** for \`${shortHead}\`: all blocking review threads are resolved, but Manki has not reviewed this commit. Its latest review was on \`${shortLatest}\`.`,
+    '',
+    halt,
+  ].join('\n');
   try {
-    const existing = await octokit.paginate(octokit.rest.issues.listComments, {
-      owner, repo, issue_number: prNumber, per_page: 100,
-    });
-    if (existing.some(c =>
-      isBotLogin(bot, c.user?.login) &&
-      c.body?.includes(marker)
-    )) {
-      core.info(`Stale-approve comment already present for ${headSha.slice(0, 7)} — skipping duplicate`);
-      return;
-    }
-    const shortHead = headSha.slice(0, 7);
-    const shortLatest = latestReviewSha.slice(0, 7);
-    const body = withMarkers([
-      `**Auto-approve withheld** for \`${shortHead}\`: all blocking review threads are resolved, but Manki has not reviewed this commit. Its latest review was on \`${shortLatest}\`.`,
-      '',
-      halt,
-    ].join('\n'), marker);
-    await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+    await postNoticeOnce(octokit, bot, owner, repo, prNumber, staleApproveMarker(headSha), text);
   } catch (error) {
     core.warning(`Failed to post stale-approve-skipped comment: ${error instanceof Error ? error.message : error}`);
   }
 }
 
 /**
- * Deletes the auto-approve withheld notice for `headSha`. Call it once a review posts its verdict on `headSha`.
+ * Returns true when the PR conflicts with its base, after posting a one-time notice for `headSha`
+ * that the approval is held. An approval would cover code that changes once the conflict is resolved.
+ */
+async function holdApprovalOnConflict(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string,
+): Promise<boolean> {
+  const conflictingBase = await fetchConflictingBase(octokit, owner, repo, prNumber);
+  if (!conflictingBase) return false;
+  core.info(`PR conflicts with ${conflictingBase}, so it is not approved`);
+  assertWritesAllowed();
+  try {
+    await postNoticeOnce(octokit, bot, owner, repo, prNumber, `${APPROVAL_HELD_MARKER_PREFIX}${headSha} -->`, approvalHeldLine(conflictingBase));
+  } catch (error) {
+    core.warning(`Failed to post the approval-held notice: ${error instanceof Error ? error.message : error}`);
+  }
+  return true;
+}
+
+/**
+ * Deletes the auto-approve withheld notice for `headSha` and every approval-held notice. Call it once a review posts its verdict on `headSha`.
  * Pass `pauseLiftedAt` when that round lifted the pause: each open pause notice last updated before then is marked as resumed.
  */
 async function retireStaleNotices(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string, pauseLiftedAt?: number): Promise<void> {
@@ -341,7 +369,7 @@ async function retireStaleNotices(octokit: Octokit, bot: BotIdentity, owner: str
   for (const c of comments) {
     if (!isBotLogin(bot, c.user?.login) || !c.body) continue;
     try {
-      if (c.body.includes(marker)) {
+      if (c.body.includes(marker) || c.body.includes(APPROVAL_HELD_MARKER_PREFIX)) {
         await octokit.rest.issues.deleteComment({ owner, repo, comment_id: c.id });
       } else if (pauseLiftedAt !== undefined && Date.parse(c.updated_at) < pauseLiftedAt
         && c.body.includes(FORCE_CAP_MARKER) && /- \[[ x]\] Force review/.test(c.body)) {
@@ -443,6 +471,8 @@ async function checkAndAutoApprove(
     return true;
   }
 
+  if (await holdApprovalOnConflict(octokit, bot, owner, repo, prNumber, pr.head.sha)) return false;
+
   const progressCommentId = await postAutoApproveProgressComment(octokit, owner, repo, prNumber);
 
   core.info('All findings resolved — auto-approving');
@@ -494,4 +524,4 @@ async function checkAndAutoApprove(
   return true;
 }
 
-export { PauseState, ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, explainUnreviewedHead, fetchBotReviewThreads, findUnchangedVerdict, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
+export { PauseState, ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, explainUnreviewedHead, fetchBotReviewThreads, findUnchangedVerdict, holdApprovalOnConflict, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };

@@ -173,6 +173,35 @@ export async function fetchHeadSha(octokit: Octokit, owner: string, repo: string
   }
 }
 
+const MERGEABLE_ATTEMPTS = 3;
+const MERGEABLE_RETRY_MS = 1500;
+
+/**
+ * Returns the base branch when GitHub reports that the PR conflicts with it, otherwise `undefined`.
+ * GitHub reports `mergeable: null` until it has computed it, so a `null` is read again a few times.
+ * A state that stays unknown, or a failed lookup, counts as no conflict.
+ */
+export async function fetchConflictingBase(octokit: Octokit, owner: string, repo: string, prNumber: number): Promise<string | undefined> {
+  for (let attempt = 1; attempt <= MERGEABLE_ATTEMPTS; attempt++) {
+    if (attempt > 1) await new Promise(resolve => setTimeout(resolve, MERGEABLE_RETRY_MS));
+    try {
+      const { data } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
+      if (data.mergeable === false || data.mergeable_state === 'dirty') return data.base.ref;
+      if (data.mergeable !== null) return undefined;
+    } catch (error) {
+      core.warning(`Mergeable lookup failed, proceeding: ${error instanceof Error ? error.message : error}`);
+      return undefined;
+    }
+  }
+  core.info(`GitHub has not computed whether PR #${prNumber} conflicts with its base, proceeding`);
+  return undefined;
+}
+
+/** Returns the line that says Manki does not approve because the PR conflicts with `baseRef`. */
+export function approvalHeldLine(baseRef: string): string {
+  return `**Approval held:** this PR conflicts with \`${sanitizeFilePath(baseRef)}\`. Rebase it, and Manki reviews the result.`;
+}
+
 /** Thrown when the PR head moved past the commit under review, so the review must post no verdict. */
 export class SupersededError extends Error {
   constructor(readonly reviewedSha: string, readonly headSha: string) {
@@ -1065,9 +1094,10 @@ export async function postReview(
 
   const blockingFindings = result.findings.filter(isBlockingFinding);
   const lead = formatLead(result, blockingFindings);
+  const conflictingBase = event === 'APPROVE' ? await fetchConflictingBase(octokit, owner, repo, prNumber) : undefined;
 
   const renderBody = (ctx: RoundContext | undefined): string => {
-    let b = lead;
+    let b = conflictingBase ? `${approvalHeldLine(conflictingBase)}\n\n${lead}` : lead;
     const needsHuman = formatNeedsHuman(result);
     if (needsHuman) {
       b += `\n\n${needsHuman}`;
@@ -1125,9 +1155,13 @@ export async function postReview(
   if (invalidComments.length > 0) {
     core.info(`Moved ${invalidComments.length} comments to review body (not postable as threads)`);
   }
-  core.info(`Posting review: ${event} with ${validComments.length} line comments and ${fileComments.length} file-level comments`);
+  const postedVerdict = conflictingBase ? 'COMMENT' : result.verdict;
+  if (conflictingBase) {
+    core.info(`PR conflicts with ${conflictingBase}, so the approval is posted as a comment`);
+  }
+  core.info(`Posting review: ${mapVerdictToEvent(postedVerdict)} with ${validComments.length} line comments and ${fileComments.length} file-level comments`);
 
-  const review = await submitReview(octokit, owner, repo, prNumber, commitSha, result.verdict, body, validComments.map(highlight), reviewedCommitFooter);
+  const review = await submitReview(octokit, owner, repo, prNumber, commitSha, postedVerdict, body, validComments.map(highlight), reviewedCommitFooter);
   const refused = await postFileLevelComments(octokit, owner, repo, prNumber, commitSha, fileComments.map(highlight));
   if (refused.length > 0) {
     const titles = refused.map(f => `"${f.title}" (${f.file})`).join(', ');

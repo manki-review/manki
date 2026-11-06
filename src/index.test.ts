@@ -242,11 +242,13 @@ jest.mock('./github', () => {
 jest.mock('./state', () => ({
   announceSecurityOverrides: jest.fn().mockResolvedValue([]),
   checkAndAutoApprove: jest.fn().mockResolvedValue(false),
+  holdApprovalOnConflict: jest.fn().mockResolvedValue(false),
   pauseState: jest.requireActual('./state').pauseState,
   reopenAuthorResolvedThreads: jest.fn().mockResolvedValue(undefined),
   replyToReviewThread: jest.requireActual('./state').replyToReviewThread,
   resolveReviewThread: jest.requireActual('./state').resolveReviewThread,
   retireStaleNotices: jest.requireActual('./state').retireStaleNotices,
+  unresolveReviewThread: jest.requireActual('./state').unresolveReviewThread,
   findUnchangedVerdict: jest.requireActual('./state').findUnchangedVerdict,
 }));
 
@@ -274,6 +276,7 @@ import type { PreviousFinding, RecapState } from './recap';
 import * as memoryModule from './memory';
 import * as stateModule from './state';
 import * as authModule from './auth';
+import { RunCancelledError, stopWritesOn } from './abort';
 import * as fixRateModule from './fix-rate';
 import * as staticSignalsModule from './static-signals';
 import { LegacyHandoverRoundFixture, roundContextFromLegacy, TEST_BOT } from './test-utils';
@@ -4927,9 +4930,11 @@ describe('runFullReview orchestration', () => {
   });
 
   it.each([
-    ['posts its review', true],
-    ['finds at posting that the head moved', false],
-  ])('resolves an addressed thread with prior rounds and a non-empty inter-round diff only when the round %s', async (_label, posted) => {
+    ['posts its review', 'posted'],
+    ['finds at posting that the head moved', 'superseded'],
+    ['is cancelled while it posts', 'cancelled'],
+  ] as const)('resolves an addressed thread with prior rounds and a non-empty inter-round diff, and keeps it resolved only when the round %s', async (_label, outcome) => {
+    const posted = outcome === 'posted';
     // End-to-end happy path for the thread-resolution flow: memory enabled,
     // recap exposes a prior round with a SHA distinct from the current
     // commit, `fetchInterRoundDiff` returns a non-empty patch, and the LLM
@@ -4972,11 +4977,18 @@ describe('runFullReview orchestration', () => {
         { threadId: 'PRRT_abc', status: 'addressed', reason: 'Fixed in latest push' },
       ],
     });
-    if (!posted) jest.mocked(ghUtils.postReview).mockRejectedValueOnce(new ghUtils.SupersededError('abc123', 'def456'));
+    if (outcome === 'superseded') jest.mocked(ghUtils.postReview).mockRejectedValueOnce(new ghUtils.SupersededError('abc123', 'def456'));
+    if (outcome === 'cancelled') {
+      jest.mocked(ghUtils.postReview).mockImplementationOnce(async () => {
+        const cancelled = new RunCancelledError('SIGTERM');
+        stopWritesOn(AbortSignal.abort(cancelled));
+        throw cancelled;
+      });
+    }
 
     await callRunFullReview();
 
-    expect(jest.mocked(ghUtils.markProgressCommentSuperseded)).toHaveBeenCalledTimes(posted ? 0 : 1);
+    expect(jest.mocked(ghUtils.markProgressCommentSuperseded)).toHaveBeenCalledTimes(outcome === 'superseded' ? 1 : 0);
     expect(jest.mocked(ghUtils.fetchInterRoundDiff)).toHaveBeenCalledTimes(1);
     expect(jest.mocked(diffModule.filterDiff)).toHaveBeenCalledWith(expect.anything(), ['dist/**']);
     expect(jest.mocked(diffModule.filterRawDiff)).toHaveBeenCalledWith(
@@ -4989,8 +5001,9 @@ describe('runFullReview orchestration', () => {
     expect(passedInterRoundDiff).toBe(
       'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
     );
-    expect(mockGraphql.mock.calls.some(([query]) => String(query).includes('resolveReviewThread'))).toBe(posted);
-    expect(jest.mocked(core.info).mock.calls.some(([m]) => m === 'Judge resolved: "Fixed in latest push" — thread PRRT_abc')).toBe(posted);
+    // A round that does not post reopens the thread it resolved, unless the run is cancelled and writes nothing more.
+    expect(mockGraphql.mock.calls.filter(([query]) => String(query).includes('resolveReviewThread')).map(([query, vars]) => [String(query).includes('unresolveReviewThread'), vars]))
+      .toEqual([[false, { threadId: 'PRRT_abc' }], ...(outcome === 'superseded' ? [[true, { threadId: 'PRRT_abc' }]] : [])]);
     expect(mockGraphql.mock.calls.some(([query, vars]) => String(query).includes('addPullRequestReviewThreadReply')
       && (vars as { body?: string }).body === 'Fixed in abc123.\n\n<!-- manki -->')).toBe(posted);
   });
@@ -5158,18 +5171,16 @@ describe('runFullReview orchestration', () => {
 
     expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('Failed to resolve thread PRRT_fail, it stays open'));
     expect(mockGraphql).not.toHaveBeenCalledWith(expect.stringContaining('addPullRequestReviewThreadReply'), expect.anything());
-    // Threads resolve only after the review posts, so the approval is replaced by a review that records the thread as open.
     const posts = jest.mocked(ghUtils.postReview).mock.calls;
-    expect(posts).toHaveLength(2);
-    expect(posts[0][7]).toMatchObject({ verdict: 'APPROVE', judge: { threadEvaluations: [expect.objectContaining({ threadId: 'PRRT_fail', status: 'addressed' })] } });
-    expect(posts[1][7]).toMatchObject({ verdict: 'REQUEST_CHANGES', judge: { threadEvaluations: [expect.objectContaining({ threadId: 'PRRT_fail', status: 'uncertain' })] } });
-    expect(posts[1][5]).toMatchObject({
+    expect(posts).toHaveLength(1);
+    expect(posts[0][7]).toMatchObject({ verdict: 'REQUEST_CHANGES', judge: { threadEvaluations: [expect.objectContaining({ threadId: 'PRRT_fail', status: 'uncertain' })] } });
+    expect(posts[0][5]).toMatchObject({
       verdict: 'REQUEST_CHANGES',
       outcome: 'ADDRESS_FIRST',
       verdictReason: 'prior_unaddressed',
       verdictTrace: { unresolvedPriors: [expect.objectContaining({ threadId: 'PRRT_fail', title: 'Bug A', file: 'src/app.ts', line: 1 })] },
     });
-    expect(jest.mocked(ghUtils.dismissPreviousReviews)).toHaveBeenCalledTimes(2);
+    expect(jest.mocked(ghUtils.dismissPreviousReviews)).toHaveBeenCalledTimes(1);
   });
 
   it('fails fast with setFailed when no API key is configured', async () => {
@@ -5755,6 +5766,17 @@ describe('runFullReview orchestration', () => {
         event: 'APPROVE',
         body: expect.stringContaining('\u2705 **Approved.** No change to this PR since the reviewed commit `old9999`. The previous verdict stands.'),
       }));
+    });
+
+    it('holds the previous APPROVE when the PR conflicts with its base, without running a round', async () => {
+      seedPush('APPROVE', REVIEWED_DIFF);
+      jest.mocked(stateModule.holdApprovalOnConflict).mockResolvedValueOnce(true);
+
+      await callRunFullReview();
+
+      expectNoRound();
+      expect(jest.mocked(stateModule.holdApprovalOnConflict)).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, 'abc123');
+      expect(mockCreateReview).not.toHaveBeenCalled();
     });
 
     it('leaves a previous REQUEST_CHANGES standing without posting another review', async () => {
