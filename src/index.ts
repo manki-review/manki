@@ -161,25 +161,31 @@ function answeredMarker(commentId: number): string {
   return `<!-- manki-answered:${commentId} -->`;
 }
 
-const COMMENT_WRITES = new Set([
-  'POST /repos/{owner}/{repo}/issues/{issue_number}/comments',
-  'PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}',
-]);
+const CREATE_COMMENT = 'POST /repos/{owner}/{repo}/issues/{issue_number}/comments';
+const EDIT_COMMENT = 'PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}';
 
-/** The marker each client adds to the comments it writes. A client gets one hook, so a later run on it marks only its own comment. */
-const answerMarkers = new WeakMap<Octokit, string>();
+/** The marker a client adds while it answers a comment, and the ids of the comments it created for that answer. */
+const answering = new WeakMap<Octokit, { marker: string; created: Set<number> }>();
 
-/** Adds `answeredMarker(commentId)` to every PR or issue comment `octokit` creates or edits from now on. */
+/**
+ * Adds `answeredMarker(commentId)` to every PR or issue comment `octokit` creates from now on, and to its later edits of
+ * those comments. An edit of an older comment keeps the marker of the answer it belongs to.
+ */
 function markAnswers(octokit: Octokit, commentId: number): void {
-  if (!answerMarkers.has(octokit)) {
-    octokit.hook.before('request', (options) => {
-      const marker = answerMarkers.get(octokit);
-      if (marker && COMMENT_WRITES.has(`${options.method} ${options.url}`) && typeof options.body === 'string' && !options.body.endsWith(marker)) {
-        options.body = `${options.body}\n${marker}`;
+  if (!answering.has(octokit)) {
+    octokit.hook.wrap('request', async (request, options) => {
+      const current = answering.get(octokit);
+      const route = `${options.method} ${options.url}`;
+      const ours = route === CREATE_COMMENT || (route === EDIT_COMMENT && !!current?.created.has(Number(options.comment_id)));
+      if (current && ours && typeof options.body === 'string' && !options.body.endsWith(current.marker)) {
+        options.body = `${options.body}\n${current.marker}`;
       }
+      const response = await request(options);
+      if (current && route === CREATE_COMMENT) current.created.add(response.data.id);
+      return response;
     });
   }
-  answerMarkers.set(octokit, answeredMarker(commentId));
+  answering.set(octokit, { marker: answeredMarker(commentId), created: new Set() });
 }
 
 /** Whether one of Manki's `comments` answers comment `commentId`. Only a marker on the last line counts, since a comment can quote user text. */

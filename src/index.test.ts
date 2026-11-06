@@ -41,7 +41,9 @@ const mockGraphql = jest.fn().mockResolvedValue({ resolveReviewThread: { thread:
 
 const mockCreateReview = jest.fn().mockResolvedValue({ data: { id: 777 } });
 
-const requestHooks: Array<(options: { method: string; url: string; body: string }) => void> = [];
+type RequestOptions = { method: string; url: string; body: string; comment_id?: number };
+type RequestHook = (request: (options: RequestOptions) => Promise<{ data: { id: number } }>, options: RequestOptions) => Promise<unknown>;
+const requestHooks: RequestHook[] = [];
 
 const mockOctokitInstance = {
   rest: {
@@ -50,7 +52,7 @@ const mockOctokitInstance = {
     reactions: { listForIssueComment: mockListReactionsForIssueComment },
   },
   graphql: mockGraphql,
-  hook: { before: jest.fn((_name: string, hook: (options: { method: string; url: string; body: string }) => void) => { requestHooks.push(hook); }) },
+  hook: { wrap: jest.fn((_name: string, hook: RequestHook) => { requestHooks.push(hook); }) },
 };
 
 jest.mock('./auth', () => ({
@@ -632,15 +634,19 @@ describe('run', () => {
       await run();
 
       expect(requestHooks).toHaveLength(1);
-      const write = (method: string, url: string, body: string) => {
-        const options = { method, url, body };
-        requestHooks[0](options);
+      const write = async (method: string, url: string, body: string, commentId?: number) => {
+        const options = { method, url, body, comment_id: commentId };
+        await requestHooks[0](async () => ({ data: { id: 500 } }), options);
         return options.body;
       };
-      expect(write('POST', '/repos/{owner}/{repo}/issues/{issue_number}/comments', 'Hi')).toBe('Hi\n<!-- manki-answered:42 -->');
-      expect(write('PATCH', '/repos/{owner}/{repo}/issues/comments/{comment_id}', 'Done\n<!-- manki-answered:42 -->')).toBe('Done\n<!-- manki-answered:42 -->');
-      expect(write('PATCH', '/repos/{owner}/{repo}/issues/comments/{comment_id}', 'Quoted <!-- manki-answered:42 --> text')).toBe('Quoted <!-- manki-answered:42 --> text\n<!-- manki-answered:42 -->');
-      expect(write('POST', '/repos/{owner}/{repo}/pulls/{pull_number}/reviews', 'Review')).toBe('Review');
+      const comments = '/repos/{owner}/{repo}/issues/{issue_number}/comments';
+      const comment = '/repos/{owner}/{repo}/issues/comments/{comment_id}';
+      expect(await write('POST', comments, 'Hi')).toBe('Hi\n<!-- manki-answered:42 -->');
+      expect(await write('PATCH', comment, 'Done', 500)).toBe('Done\n<!-- manki-answered:42 -->');
+      expect(await write('PATCH', comment, 'Done\n<!-- manki-answered:42 -->', 500)).toBe('Done\n<!-- manki-answered:42 -->');
+      expect(await write('PATCH', comment, 'Quoted <!-- manki-answered:42 --> text', 500)).toBe('Quoted <!-- manki-answered:42 --> text\n<!-- manki-answered:42 -->');
+      expect(await write('PATCH', comment, 'Superseded\n<!-- manki-answered:41 -->', 7)).toBe('Superseded\n<!-- manki-answered:41 -->');
+      expect(await write('POST', '/repos/{owner}/{repo}/pulls/{pull_number}/reviews', 'Review')).toBe('Review');
     });
 
     it('routes bot mention on issue (not PR) to handleIssueInteraction', async () => {
