@@ -56,6 +56,7 @@ The `effort` level maps to provider-specific thinking or reasoning settings insi
 ## Where to look
 
 - Config schema + defaults: `src/config.ts`
+- Config reference: `docs/configuration.md`. A new or changed setting needs its entry in `scripts/config-reference.ts`, then `npm run config-reference`.
 - Action inputs/outputs: `action.yml`
 - User-facing docs: `README.md` and the pages in `docs/`
 - Convention changes or open design questions: GitHub issues
