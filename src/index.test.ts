@@ -569,7 +569,7 @@ describe('run', () => {
       expect(jest.mocked(ghUtils.reactToIssueComment)).not.toHaveBeenCalled();
     });
 
-    it('handles an edited comment that only carries its eyes reaction', async () => {
+    it('handles an edited comment that only carries its eyes reaction, or whose answers cannot be read', async () => {
       jest.mocked(interaction.hasBotMention).mockReturnValue(true);
       jest.mocked(interaction.isReviewRequest).mockReturnValue(true);
       mockListReactionsForIssueComment.mockResolvedValueOnce({
@@ -594,6 +594,13 @@ describe('run', () => {
       expect(jest.mocked(ghUtils.reactToIssueComment)).toHaveBeenCalledWith(
         expect.anything(), 'test-owner', 'test-repo', 99, 'eyes',
       );
+
+      jest.mocked(ghUtils.reactToIssueComment).mockClear();
+      jest.mocked(ghUtils.fetchPRComments).mockRejectedValueOnce(new Error('Server Error'));
+      await run();
+
+      expect(jest.mocked(core.warning)).toHaveBeenCalledWith('Could not check whether Manki already answered comment 99, handling the edit: Server Error');
+      expect(jest.mocked(ghUtils.reactToIssueComment)).toHaveBeenCalled();
     });
 
     it('marks the comments Manki writes while it answers a comment', async () => {

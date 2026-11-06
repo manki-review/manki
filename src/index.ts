@@ -244,8 +244,8 @@ async function run(): Promise<void> {
             core.info('Manki already answered this comment, skipping the edit');
             return;
           }
-        } catch {
-          // If we can't check, proceed anyway
+        } catch (error) {
+          core.warning(`Could not check whether Manki already answered comment ${commentId}, handling the edit: ${error instanceof Error ? error.message : error}`);
         }
       }
       markAnswers(octokit, commentId);
