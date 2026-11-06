@@ -1,4 +1,7 @@
+import { parse as parseYaml } from 'yaml';
+
 import {
+  appendMemoryLine,
   applySuppressions,
   matchesSuppression,
   buildMemoryContext,
@@ -598,16 +601,23 @@ describe('writeLearning', () => {
     expect(createCall.path).toBe('test-repo/learnings.yml');
   });
 
-  it('redacts secret values from the learning and the commit message', async () => {
+  it('redacts secret values from the learning and the commit message, keeping the file readable', async () => {
     registerSecret('ghs_memoryLeakToken');
     const octokit = mockMemoryOctokit({});
+    const longContent = `${'x'.repeat(45)} ghs_memoryLeakToken is printed`;
 
-    await writeLearning(octokit, 'owner/memory', 'test-repo', makeLearning({ id: 'l1', content: 'never log ghs_memoryLeakToken' }));
+    await writeLearning(octokit, 'owner/memory', 'test-repo', makeLearning({ id: 'l1', content: 'ghs_memoryLeakToken' }));
+    await writeLearning(octokit, 'owner/memory', 'test-repo', makeLearning({ id: 'l2', content: longContent }));
 
-    const createCall = (octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls[0][0];
-    const written = Buffer.from(createCall.content, 'base64').toString();
-    expect(written).toContain('never log [REDACTED]');
-    expect(written + createCall.message).not.toContain('ghs_memoryLeakToken');
+    const calls = (octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls.map(([call]) => call);
+    const written = Buffer.from(calls[1].content, 'base64').toString();
+    expect((parseYaml(written) as Learning[]).map(l => l.content)).toEqual(['[REDACTED]', `${'x'.repeat(45)} [REDACTED] is printed`]);
+    expect(calls[1].message).toBe(`Add learning: ${'x'.repeat(45)} [REDACTED] i`);
+    expect(calls.map(c => c.message).join()).not.toContain('ghs_');
+
+    await appendMemoryLine(octokit, 'owner/memory', 'test-repo', 'metrics/fix-rate.jsonl', JSON.stringify({ note: 'ghs_memoryLeakToken' }), 'Record');
+    const line = Buffer.from((octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls[2][0].content, 'base64').toString();
+    expect(JSON.parse(line)).toEqual({ note: '[REDACTED]' });
   });
 
   it('writes global-scoped learning to _global path', async () => {
