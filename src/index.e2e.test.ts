@@ -325,7 +325,7 @@ const READY_REPLIES: Record<Stage, string> = {
   dedup: '[]',
 };
 
-const BLOCKER = { severity: 'blocker', title: 'Sum is never range checked', file: 'src/math.ts', line: 2, description: 'Large inputs overflow silently.', suggestedFix: 'Check the range before adding.' };
+const BLOCKER = { severity: 'blocker', title: 'Sum is never range checked', file: 'src/math.ts', line: 2, description: 'Large inputs overflow silently.', suggestedFix: 'Check the range before adding.', proof: ['src/math.ts:2'] };
 const BLOCKER_REPLIES: Partial<Record<Stage, string>> = {
   reviewer: JSON.stringify([BLOCKER]),
   judge: JSON.stringify({ summary: 'One blocker.', findings: [{ id: 1, title: BLOCKER.title, severity: 'blocker', reasoning: 'Reachable from any caller.', confidence: 'high' }] }),
@@ -504,6 +504,22 @@ describe('runFullReview end to end', () => {
     expect(mockLLM.tools).toEqual([]);
     expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('so the reviewers run without them: Error: fetch failed'));
     expect(postedReviews().map(r => r.state)).toEqual(['APPROVED', 'APPROVED']);
+  });
+
+  it('lists an open lead below blocker as not finished checking, and has the judge settle a blocker lead', async () => {
+    const lead = { lead: true, file: 'src/math.ts', line: 2, description: '', checked: 'read src/math.ts:2', left: 'find every caller' };
+    mockLLM.replies.reviewer = JSON.stringify([{ ...lead, severity: 'warning', title: 'Cache may go stale' }, { ...lead, severity: 'blocker', title: 'Sum may overflow' }]);
+    mockLLM.replies.judge = JSON.stringify({ summary: 'Nothing blocks merge.', findings: [{ id: 1, title: 'Sum may overflow', severity: 'ignore', reasoning: 'Inputs are bounded.', confidence: 'high' }] });
+
+    await reviewRound();
+
+    const progress = mockGitHub.comments.find(c => c.body.startsWith('✅ **Review complete**'))!.body;
+    expect(progress).toContain('**Not finished checking:** 1 lead\n&nbsp;&nbsp;&nbsp;&nbsp;Cache may go stale (`src/math.ts:2`)');
+    expect(progress).toContain('Dropped: "Sum may overflow" (ignore, high confidence)');
+    // The listed lead never reached the judge, so it is no duplicate the judge merged.
+    const record = mockGitHub.roundContext(postedReviews()[0]);
+    expect([record.judge.mergedDuplicates, record.reviewers.rawFindings?.map(f => f.lead !== undefined)]).toEqual([0, [true, true]]);
+    expect(postedReviews().map(r => r.state)).toEqual(['APPROVED']);
   });
 
   it('ends INCOMPLETE and never approves when a reviewer reply does not parse, and a later run still reviews the commit', async () => {

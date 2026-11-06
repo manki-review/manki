@@ -19,7 +19,9 @@ Respond with ONLY a JSON array (no markdown fences, no explanation). Each findin
     "file": "path/to/file.ext",
     "line": <line number in the NEW file>,
     "description": "At most three sentences: what goes wrong in practice, the decisive evidence, and the change that fixes it.",
-    "suggestedFix": "Optional: the replacement code for the flagged line"
+    "suggestedFix": "Optional: the replacement code for the flagged line",
+    "evidence": ["What you read or searched and what it showed, one short line each, with file:line"],
+    "proof": ["file:line of each line that shows the failure"]
   }
 ]
 \`\`\`
@@ -33,11 +35,19 @@ Example of one finding:
   "file": "src/sync.ts",
   "line": 42,
   "description": "With no filter headers, \`unwrap_or(0)\` makes \`fh_bound\` 0, and \`truncate_above(0)\` fails when storage starts above 0. Handle \`None\` separately.",
-  "suggestedFix": "let fh_bound = match filter_height { Some(h) => h, None => return Ok(()) };"
+  "suggestedFix": "let fh_bound = match filter_height { Some(h) => h, None => return Ok(()) };",
+  "evidence": ["src/sync.ts:40 reads \`filter_height\`, which is \`None\` after a checkpoint sync", "src/sync.ts:42 passes \`fh_bound\` to \`truncate_above\`"],
+  "proof": ["src/sync.ts:42"]
 }
 \`\`\`
 
 \`suggestedFix\` is offered to the author as a one-click change that replaces the flagged line. Put in it only code that applies as is: no prose, no markdown fences, no comment saying where it goes. When the fix is not a drop-in replacement for that line, leave \`suggestedFix\` out and describe the change in \`description\`. List any known caveats of the fix in the \`description\`, such as a missing bounds check or an untested edge case.
+
+## Evidence
+
+- In \`evidence\`, list what you read or searched to check the finding and what it showed, one short line each, with \`file:line\`.
+- A \`blocker\` must list in \`proof\` the \`file:line\` of each line that shows the failure. A blocker without proof is posted as a warning at most.
+- When a finding says something is missing or handled nowhere, set \`"claimsMissing": true\` and put the search that came back empty in \`emptySearch\`, such as "grep \`close(\` under src/net: no match". Such a claim never blocks on its own, and without the search it is a warning at most.
 
 ## Severity Guidelines
 

@@ -77,6 +77,7 @@ const makeFinding = (overrides: Partial<Finding> = {}): Finding => ({
   line: 10,
   description: 'A test finding.',
   reviewers: ['Reviewer A'],
+  evidence: { checks: [], proof: ['src/a.ts:10'] },
   ...overrides,
 });
 
@@ -102,6 +103,32 @@ describe('parseFindings', () => {
     expect(findings[0].description).toBe('There is a bug here.');
     expect(findings[0].suggestedFix).toBe('Fix it like this.');
     expect(findings[0].reviewers).toEqual(['TestReviewer']);
+    expect(findings[0].evidence).toBeUndefined();
+  });
+
+  it('reads the evidence, keeps only proof entries that start with a location, and marks open leads not checked', () => {
+    const json = JSON.stringify([
+      {
+        severity: 'blocker', title: 'Division by zero', file: 'src/api.ts', line: 42, description: 'd',
+        evidence: ['src/api.ts:42 divides by `page`', '', 7],
+        proof: ['`src/api.ts:42`', 'src/api.ts:40-42 (the loop)', 'the division', 'Makefile:3.'],
+        claimsMissing: true, emptySearch: 'grep `page === 0` under src: no match',
+      },
+      { severity: 'warning', title: 'Unchecked', file: 'src/b.ts', line: 1, description: 'd', claimsMissing: true, notChecked: true },
+      { lead: true, severity: 'blocker', title: 'Cache may go stale', file: 'src/c.ts', line: 3, description: '', checked: 'read src/c.ts:3', left: 'find the writers' },
+    ]);
+
+    const [checked, unchecked, lead] = parseFindings(json, 'R');
+
+    expect(checked.evidence).toEqual({
+      checks: ['src/api.ts:42 divides by `page`'],
+      proof: ['src/api.ts:42', 'src/api.ts:40-42', 'Makefile:3'],
+      emptySearch: 'grep `page === 0` under src: no match',
+    });
+    expect(checked.notChecked).toBeUndefined();
+    expect([unchecked.evidence, unchecked.notChecked]).toEqual([{ checks: [], proof: [], emptySearch: '' }, true]);
+    expect([lead.lead, lead.notChecked, lead.evidence]).toEqual([{ checked: 'read src/c.ts:3', left: 'find the writers' }, true, undefined]);
+    expect(lead.description).toBe('A reviewer raised this as a suspicion it had not finished checking. It had checked: read src/c.ts:3. Still to check: find the writers.');
   });
 
   it('parses markdown-wrapped JSON', () => {
@@ -876,6 +903,15 @@ describe('buildReviewerSystemPrompt', () => {
     it('reproduces the pre-noise_level prompt body verbatim at "medium"', () => {
       const medium = buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, undefined, 'medium');
       expect(medium).toMatchSnapshot();
+    });
+
+    it('asks for evidence from every reviewer, and for open leads only from one with tools', () => {
+      const without = buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, undefined, 'medium');
+      const withTools = buildReviewerSystemPrompt(reviewer, makeConfig(), undefined, undefined, 'medium', true);
+      expect(without).toContain('A `blocker` must list in `proof`');
+      expect(without).not.toContain('"lead": true');
+      expect(withTools).toContain('Report each suspicion you were still checking as an open lead');
+      expect(withTools).toContain('Set `"notChecked": true`');
     });
 
     it('invites marginal suggestions at "high"', () => {

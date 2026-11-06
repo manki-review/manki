@@ -1404,6 +1404,7 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult)
     keptSeverities,
     droppedSeverities,
     ...(result.testNitSuppressedCount != null && result.testNitSuppressedCount > 0 && { testNitSuppressedCount: result.testNitSuppressedCount }),
+    ...(result.openLeads && { unfinishedChecks: result.openLeads.map(({ title, file, line }) => ({ title, file, line })) }),
     judgeDurationMs: judgeEndTime - reviewEndTime,
   };
 

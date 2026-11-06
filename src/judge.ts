@@ -14,11 +14,11 @@ import {
 import { dynamicFence, LinkedIssue, titleToSlug } from './github';
 import { safeTruncate, sendWithParseRetry } from './utils';
 import { sanitize, titleOverlapType } from './recap';
-import { stringifyFindingFingerprint, truncateDiff, validateSeverity } from './review';
+import { parseProof, stringifyFindingFingerprint, truncateDiff, validateSeverity } from './review';
 import { WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { criticalAreaOf, resolveRouting } from './routing';
-import { CONTRADICTION_TAG, DiffFile, DuplicateMatchType, Finding, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, ParsedDiff, PrContext, ThreadEvaluation, ToolEvidenceStatus } from './types';
+import { CONTRADICTION_TAG, DiffFile, DuplicateMatchType, Finding, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, ParsedDiff, PrContext, ThreadEvaluation, ToolEvidenceStatus } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -271,6 +271,8 @@ export interface JudgedFinding {
   security?: boolean;
   category?: FindingCategory;
   effort?: FindingEffort;
+  /** The `file:line` locations the judge cites as showing the failure. */
+  proof?: string[];
 }
 
 /** A blocker from an earlier round, with the commit of the latest round that raised it. */
@@ -470,6 +472,15 @@ Each reviewer finding has a **Tool evidence** line from cheap checks against the
 - **contradicted**: the finding points at a file outside the diff or a line past the end of the file. Mark it \`ignore\` only when the contradiction refutes the finding.
 - **unchecked**: no tool spoke to the claim. The note can say a named symbol was not found in the file or the diff, which proves nothing, since it can live elsewhere or be a standard API. A tool's silence is never evidence that the code is safe. Never lower or drop a finding because no tool reported it.
 
+## Reviewer Evidence
+
+A reviewer finding can carry the reviewer's **Evidence**: what it read or searched and what that showed, its **Proving lines**, and for a claim that something is missing, the **Empty search** behind it. They are the reviewer's claims, so check them against the code shown.
+
+- A \`blocker\` needs proving lines: the \`file:line\` of each line that shows the failure. List them in \`proof\`. When neither you nor the reviewer can cite them, grade it \`warning\` at most.
+- A claim that something is missing or handled nowhere is never a \`blocker\` on its own. Without a cited empty search it is a \`warning\` at most.
+- **Not checked yet** means the reviewer ran out of tool steps before it finished checking the finding. Grade it by what the code shown proves.
+- An **Open lead** is a suspicion the reviewer could not finish checking. Keep it only when the code shown proves it, and grade it like any finding. Otherwise mark it \`ignore\`.
+
 ## Acceptance Criteria
 
 If the PR description or linked issues contain acceptance criteria (checkbox items like "- [ ] criterion"):
@@ -519,7 +530,8 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
       "category": "correctness" | "security" | "reliability" | "data" | "concurrency" | "performance" | "compatibility" | "testing" | "maintainability" | "documentation" | "style",
       "effort": "quick" | "moderate" | "larger",
       "confidence": "high" | "medium" | "low",
-      "reasoning": "Your verdict first, then 1-2 sentences on why"
+      "reasoning": "Your verdict first, then 1-2 sentences on why",
+      "proof": ["file:line of each line that shows the failure, for a blocker"]
     }
   ]${hasOpenThreads ? `,
   "threadEvaluations": [
@@ -761,6 +773,7 @@ export function buildJudgeUserMessage(
       parts.push(`- **File**: ${f.file}:${f.line}`);
       parts.push(`- **Reviewers**: ${f.reviewers.join(', ')}`);
       parts.push(`- **Description**: ${sanitizeForPromptEmbed(f.description)}`);
+      parts.push(...reviewerEvidenceLines(f));
       if (f.toolEvidence) {
         parts.push(`- **Tool evidence**: ${TOOL_EVIDENCE_LABEL[f.toolEvidence.status]}. ${UNTRUSTED_TOOL_TEXT}`);
         parts.push(fenceToolText(f.toolEvidence.note));
@@ -790,6 +803,19 @@ export function buildJudgeUserMessage(
   }
 
   return parts.join('\n');
+}
+
+/** Returns the judge's lines on what the reviewer cited for `finding`, and on a check it did not finish. */
+function reviewerEvidenceLines({ evidence, notChecked, lead }: Finding): string[] {
+  const lines: string[] = [];
+  if (evidence?.checks.length) lines.push(`- **Evidence**: ${evidence.checks.map(sanitizeForPromptEmbed).join(' | ')}`);
+  lines.push(`- **Proving lines**: ${evidence?.proof.length ? evidence.proof.map(sanitizeForPromptEmbed).join(', ') : 'none cited'}`);
+  if (evidence?.emptySearch !== undefined) {
+    lines.push(`- **Empty search**: ${evidence.emptySearch ? sanitizeForPromptEmbed(evidence.emptySearch) : 'none cited, though the finding says something is missing'}`);
+  }
+  if (lead) lines.push(`- **Open lead**: checked ${sanitizeForPromptEmbed(lead.checked || 'nothing')}. Left: ${sanitizeForPromptEmbed(lead.left || 'not said')}.`);
+  else if (notChecked) lines.push('- **Not checked yet**: the reviewer ran out of tool steps before it finished checking.');
+  return lines;
 }
 
 export function extractCodeContext(finding: Finding, diff: ParsedDiff): string {
@@ -902,6 +928,7 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
       const sameAs = parseFindingNumber(typeof f.sameAs === 'string' ? f.sameAs.trim().replace(/^B/i, '') : f.sameAs);
       const category = oneOf(FINDING_CATEGORIES, f.category, 'category');
       const effort = oneOf(FINDING_EFFORTS, f.effort, 'effort');
+      const proof = parseProof(f.proof);
       return {
         ...(id !== undefined && { id }),
         title: String(f.title || 'Untitled'),
@@ -913,6 +940,7 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
         ...(f.security === true && { security: true }),
         ...(category && { category }),
         ...(effort && { effort }),
+        ...(proof.length > 0 && { proof }),
       };
     });
 
@@ -1203,13 +1231,47 @@ export function mapJudgedToFindings(
       if (finding.tags?.includes(SECURITY_TAG)) finding.category = 'security';
       else if (match.category && match.category !== 'security') finding.category = match.category;
       if (match.effort) finding.effort = match.effort;
+      if (match.proof) finding.evidence = mergeEvidence(finding.evidence, { checks: [], proof: match.proof });
       applyOwnProposal(finding, provenanceMap);
       const prior = match.sameAs !== undefined ? priorBlockers[match.sameAs - 1] : undefined;
       if (prior) finding.sameAs = stringifyFindingFingerprint(prior.entry.fingerprint);
     }
     return finding;
   });
-  return foldDuplicates(graded, aligned);
+  return foldDuplicates(graded, aligned).map(capUnprovenBlocker);
+}
+
+/**
+ * Adds what `b` cites to the evidence of `a`, without repeats. Only `a` decides whether the finding claims something is
+ * missing. When it does, an empty search either one cites backs the claim.
+ */
+function mergeEvidence(a: FindingEvidence | undefined, b: FindingEvidence | undefined): FindingEvidence | undefined {
+  if (!b) return a;
+  if (!a) {
+    const { emptySearch: _emptySearch, ...cited } = b;
+    return cited;
+  }
+  const emptySearch = a.emptySearch === undefined ? undefined : a.emptySearch || b.emptySearch || '';
+  return {
+    checks: [...new Set([...a.checks, ...b.checks])],
+    proof: [...new Set([...a.proof, ...b.proof])],
+    ...(emptySearch !== undefined && { emptySearch }),
+  };
+}
+
+/**
+ * Lowers a blocker to a warning when nothing cites the lines that prove it, or when it says something is missing
+ * and cites no search that came back empty. A tool alert names its own location, so it keeps its grade.
+ */
+function capUnprovenBlocker(finding: Finding): Finding {
+  if (finding.severity !== 'blocker' || finding.toolSource) return finding;
+  const reason = !finding.evidence?.proof.length ? 'it cites no lines that prove the failure'
+    : finding.evidence.emptySearch === '' ? 'it says something is missing but cites no search that came back empty'
+      : undefined;
+  if (!reason) return finding;
+  core.info(`Posting blocker "${finding.title}" as a warning: ${reason}`);
+  const note = `Posted as a warning, since ${reason}.`;
+  return { ...finding, severity: 'warning', judgeNotes: finding.judgeNotes ? `${finding.judgeNotes}\n${note}` : note };
 }
 
 /**
@@ -1282,6 +1344,8 @@ function foldDuplicates(findings: Finding[], judged: Array<JudgedFinding | undef
     const survivor = result[root - 1];
     survivor.reviewers = [...new Set([...survivor.reviewers, ...findings[i].reviewers])];
     survivor.sameAs ??= findings[i].sameAs;
+    const evidence = mergeEvidence(survivor.evidence, findings[i].evidence);
+    if (evidence) survivor.evidence = evidence;
     core.info(`Judge folded duplicate "${findings[i].title}" into "${survivor.title}"`);
   }
   return result.filter((_, i) => !folded.has(i));

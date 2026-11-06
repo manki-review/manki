@@ -9,7 +9,7 @@ import { runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeP
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, LinkedIssue, titleToSlug } from './github';
 import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, PreviousFinding, titleOverlapType } from './recap';
-import { FOLLOW_UP_TAG, SECURITY_TAG, ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { FOLLOW_UP_TAG, SECURITY_TAG, ReviewConfig, ReviewerAgent, Finding, FindingEvidence, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
 import { fetchedRelatedRepos, relatedReposCacheDir, warnRelatedRepoFailures } from './related-repos';
 import { makeScratchDir } from './tool-install';
@@ -950,7 +950,8 @@ export async function runReview(
     diff, rawDiff, fileContents, signals: staticSignals,
     ...(related && { related: { names: related.repos.map(r => r.repo), checkouts: fetchedRelatedRepos(related.stateDir) } }),
   };
-  let finderFindings: Finding[] = allFindings.map(f => ({ ...f, toolEvidence: checkFindingClaims(f, claimSources) }));
+  const { findings: checkedFindings, openLeads } = splitOpenLeads(allFindings);
+  let finderFindings: Finding[] = checkedFindings.map(f => ({ ...f, toolEvidence: checkFindingClaims(f, claimSources) }));
   let suppressionCount = 0;
   if (memory?.suppressions && memory.suppressions.length > 0) {
     const { kept, suppressed } = applySuppressions(finderFindings, memory.suppressions);
@@ -1218,11 +1219,12 @@ export async function runReview(
     findings: finalFindings,
     highlights: [],
     reviewComplete: true,
-    rawFindingCount: allFindings.length,
+    rawFindingCount: allFindings.length - openLeads.length,
     ...(toolAlerts.length > 0 && { toolAlertCount: toolAlerts.length }),
     agentNames: team.finders.map(a => a.name),
     allJudgedFindings,
     rawFindings: allFindings,
+    ...(openLeads.length > 0 && { openLeads }),
     threadEvaluations,
     plannerResult: plannerResult ?? undefined,
     staticDedupCount,
@@ -1320,12 +1322,13 @@ async function runReviewerOnSlice(
   options: RunReviewerAgentOptions = {},
 ): Promise<AgentResult> {
   const { effort, language, context, workspace, related } = options;
-  const systemPrompt = buildReviewerSystemPrompt(finder.prompt, config, language, context, config.noise_level);
+  const tools = !!workspace && !!client.repoTools;
+  const systemPrompt = buildReviewerSystemPrompt(finder.prompt, config, language, context, config.noise_level, tools);
   const userMessage = buildReviewerUserMessage(rawDiff, repoContext, { fileContents, prContext, memoryContext, linkedIssues });
 
   const sendOptions: SendMessageOptions = {
     ...(effort && { effort }),
-    ...(workspace && client.repoTools && { repoTools: { root: workspace, steps: finder.steps, ...(related && { related }) }, timeoutMs: FINDER_TOOLS_TIMEOUT_MS }),
+    ...(tools && { repoTools: { root: workspace!, steps: finder.steps, ...(related && { related }) }, timeoutMs: FINDER_TOOLS_TIMEOUT_MS }),
   };
   const response = await client.sendMessage(systemPrompt, userMessage, sendOptions);
   if (response.truncated) {
@@ -1346,6 +1349,7 @@ export function buildReviewerSystemPrompt(
   language?: string,
   context?: string,
   noiseLevel: NoiseLevel = 'low',
+  tools = false,
 ): string {
   let prompt = `You are a code reviewer specializing in: ${reviewer.focus}
 
@@ -1377,7 +1381,9 @@ Respond with ONLY a JSON array (no markdown fences, no explanation). Each findin
     "file": "path/to/file.ext",
     "line": <line number in the NEW file>,
     "description": "At most three sentences: what goes wrong in practice, the decisive evidence, and the change that fixes it.",
-    "suggestedFix": "Optional: the replacement code for the flagged line"
+    "suggestedFix": "Optional: the replacement code for the flagged line",
+    "evidence": ["What you read or searched and what it showed, one short line each, with file:line"],
+    "proof": ["file:line of each line that shows the failure"]
   }
 ]
 \`\`\`
@@ -1391,11 +1397,21 @@ Example of one finding:
   "file": "src/sync.ts",
   "line": 42,
   "description": "With no filter headers, \`unwrap_or(0)\` makes \`fh_bound\` 0, and \`truncate_above(0)\` fails when storage starts above 0. Handle \`None\` separately.",
-  "suggestedFix": "let fh_bound = match filter_height { Some(h) => h, None => return Ok(()) };"
+  "suggestedFix": "let fh_bound = match filter_height { Some(h) => h, None => return Ok(()) };",
+  "evidence": ["src/sync.ts:40 reads \`filter_height\`, which is \`None\` after a checkpoint sync", "src/sync.ts:42 passes \`fh_bound\` to \`truncate_above\`"],
+  "proof": ["src/sync.ts:42"]
 }
 \`\`\`
 
 \`suggestedFix\` is offered to the author as a one-click change that replaces the flagged line. Put in it only code that applies as is: no prose, no markdown fences, no comment saying where it goes. When the fix is not a drop-in replacement for that line, leave \`suggestedFix\` out and describe the change in \`description\`. List any known caveats of the fix in the \`description\`, such as a missing bounds check or an untested edge case.
+
+## Evidence
+
+- In \`evidence\`, list what you read or searched to check the finding and what it showed, one short line each, with \`file:line\`.
+- A \`blocker\` must list in \`proof\` the \`file:line\` of each line that shows the failure. A blocker without proof is posted as a warning at most.
+- When a finding says something is missing or handled nowhere, set \`"claimsMissing": true\` and put the search that came back empty in \`emptySearch\`, such as "grep \`close(\` under src/net: no match". Such a claim never blocks on its own, and without the search it is a warning at most.${tools ? `
+- When Manki tells you to wrap up, report what you have. Set \`"notChecked": true\` on a finding you could not finish checking.
+- Report each suspicion you were still checking as an open lead: an entry with \`"lead": true\`, the \`severity\` it would have, the suspicion as \`title\` and \`description\`, its \`file\` and \`line\`, what you \`checked\` so far and what is \`left\`. The judge settles a lead you would grade \`blocker\`. Other leads are listed as not finished, never posted.` : ''}
 
 ## Severity Guidelines
 
@@ -1541,15 +1557,60 @@ export function parseFindings(responseText: string, reviewerName: string): Findi
     throw new Error(`response is not a JSON array, got ${parsed === null ? 'null' : typeof parsed} (length ${responseText.length})`);
   }
 
-  return parsed.map((f: Record<string, unknown>) => ({
-    severity: validateSeverity(f.severity),
-    title: String(f.title || 'Untitled finding'),
-    file: String(f.file || ''),
-    line: Number(f.line) || 0,
-    description: String(f.description || ''),
-    suggestedFix: f.suggestedFix ? String(f.suggestedFix) : undefined,
-    reviewers: [reviewerName],
-  }));
+  return parsed.map((f: Record<string, unknown>) => {
+    const evidence = parseEvidence(f);
+    const lead = f.lead === true ? { checked: textOf(f.checked), left: textOf(f.left) } : undefined;
+    // A lead the judge keeps is posted like a finding, so it needs a description even when the reviewer gave none.
+    const leadDescription = lead && `A reviewer raised this as a suspicion it had not finished checking. It had checked: ${lead.checked || 'nothing'}. Still to check: ${lead.left || 'not said'}.`;
+    return {
+      severity: validateSeverity(f.severity),
+      title: String(f.title || 'Untitled finding'),
+      file: String(f.file || ''),
+      line: Number(f.line) || 0,
+      description: String(f.description || leadDescription || ''),
+      suggestedFix: f.suggestedFix ? String(f.suggestedFix) : undefined,
+      reviewers: [reviewerName],
+      ...(evidence && { evidence }),
+      ...((lead || f.notChecked === true) && { notChecked: true }),
+      ...(lead && { lead }),
+    };
+  });
+}
+
+const EVIDENCE_LINE_CHARS = 300;
+const MAX_EVIDENCE_LINES = 10;
+// A location as `path:line` or `path:start-end`, at the start of a proof entry.
+const PROOF_LOCATION = /^[^\s:]+:\d+(?:-\d+)?(?!\w)/;
+
+function textOf(value: unknown): string {
+  return typeof value === 'string' ? value.trim().slice(0, EVIDENCE_LINE_CHARS) : '';
+}
+
+function textLines(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(textOf).filter(line => line.length > 0).slice(0, MAX_EVIDENCE_LINES) : [];
+}
+
+/** Returns the `file:line` locations at the start of each entry of a `proof` list, and drops entries without one. */
+export function parseProof(value: unknown): string[] {
+  return textLines(value).flatMap(entry => entry.replace(/`/g, '').match(PROOF_LOCATION)?.[0] ?? []);
+}
+
+/** Reads a reviewer entry's `evidence`, `proof` and `claimsMissing` with `emptySearch`, or returns `undefined` when it cites none. */
+function parseEvidence(f: Record<string, unknown>): FindingEvidence | undefined {
+  const checks = textLines(f.evidence);
+  const proof = parseProof(f.proof);
+  const emptySearch = f.claimsMissing === true ? textOf(f.emptySearch) : undefined;
+  if (checks.length === 0 && proof.length === 0 && emptySearch === undefined) return undefined;
+  return { checks, proof, ...(emptySearch !== undefined && { emptySearch }) };
+}
+
+/**
+ * Takes the open leads out of the finders' findings. A lead the reviewer would grade `blocker` stays, so the judge
+ * settles it. The others come back in `openLeads`, to be listed as not finished checking.
+ */
+function splitOpenLeads(all: Finding[]): { findings: Finding[]; openLeads: Finding[] } {
+  const openLeads = all.filter(f => f.lead && f.severity !== 'blocker');
+  return { findings: all.filter(f => !openLeads.includes(f)), openLeads };
 }
 
 export function validateSeverity(severity: unknown): Finding['severity'] {

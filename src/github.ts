@@ -617,8 +617,24 @@ export function buildDashboard(data: DashboardData): string {
   }
   sections.push(judgeLines.join('\n'));
 
+  if (data.phase === 'complete') {
+    const where = (f: { title: string; file: string; line: number }) => `${sanitizeMarkdown(f.title)} (\`${sanitizeFilePath(f.file)}:${f.line}\`)`;
+    const unfinished = listSection('Not finished checking', 'lead', (data.unfinishedChecks ?? []).map(where));
+    if (unfinished) sections.push(unfinished);
+  }
+
   return sections.join('\n\n');
 }
+
+/** Renders a bold heading with the count, then the first `MAX_LISTED_FINDINGS` lines, or `undefined` for none. */
+function listSection(heading: string, noun: string, lines: string[]): string | undefined {
+  if (lines.length === 0) return undefined;
+  const shown = lines.slice(0, MAX_LISTED_FINDINGS).map(line => `${INDENT}${line}`);
+  const more = lines.length - shown.length;
+  return [`**${heading}:** ${countOf(lines.length, noun)}`, ...shown, ...(more > 0 ? [`${INDENT}and ${more} more`] : [])].join('\n');
+}
+
+const MAX_LISTED_FINDINGS = 10;
 
 /**
  * Post a "review in progress" comment for the review of `commitSha` on the PR.
