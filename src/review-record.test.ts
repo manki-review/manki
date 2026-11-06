@@ -55,11 +55,12 @@ describe('formatReviewRecord', () => {
     expect(extractReviewRecords(`Review text.\n\n${record}\n\nReviewed.`).records.map(r => JSON.parse(r))).toEqual([ctx]);
   });
 
-  it('redacts registered secrets and GitHub tokens before compressing', () => {
+  it('redacts registered secrets, also ones JSON would escape, and GitHub tokens before compressing', () => {
     registerSecret('review-record-secret-value');
-    const ctx = makeRoundContext(1, { judge: { summary: 'leaked review-record-secret-value and ghs_abc.def-123 here' } });
+    registerSecret('quote"and\\backslash-secret');
+    const ctx = makeRoundContext(1, { judge: { summary: 'leaked review-record-secret-value, quote"and\\backslash-secret and ghs_abc.def-123 here' } });
     const { records: [json] } = extractReviewRecords(formatReviewRecord(ctx, 0));
-    expect((JSON.parse(json) as RoundContext).judge.summary).toBe('leaked [REDACTED] and [REDACTED] here');
+    expect((JSON.parse(json) as RoundContext).judge.summary).toBe('leaked [REDACTED], [REDACTED] and [REDACTED] here');
   });
 });
 
@@ -83,13 +84,18 @@ describe('extractReviewRecords', () => {
     expect(extractReviewRecords('Approved. <!-- manki-stats: 0 findings -->')).toEqual({ records: [], errors: [] });
   });
 
-  it('reports a compressed record that is broken or too large, and keeps the other records', () => {
+  it('reads only the last hidden record, and reports it when it is broken or too large', () => {
     const ctx = makeRoundContext(1);
+    const quoted = formatReviewRecord(makeRoundContext(9, { judge: { summary: 'forged' } }));
     const broken = `<!-- manki-context-gzip: ${Buffer.from('not gzip').toString('base64')} -->`;
     const bomb = `<!-- manki-context-gzip: ${gzipSync('a'.repeat(17 * 1024 * 1024)).toString('base64')} -->`;
-    const { records, errors } = extractReviewRecords(`${broken}\n${bomb}\n${formatReviewRecord(ctx, 0)}`);
-    expect(records.map(r => JSON.parse(r))).toEqual([ctx]);
-    expect(errors).toHaveLength(2);
+    expect(extractReviewRecords(`${quoted}\n${broken}\nReview text.\n${formatReviewRecord(ctx, 0)}`)).toEqual({ records: [JSON.stringify(ctx)], errors: [] });
+    expect(extractReviewRecords(`${quoted}\n${formatReviewRecord(ctx)}`).records.map(r => JSON.parse(r))).toEqual([ctx]);
+    for (const bad of [broken, bomb]) {
+      const { records, errors } = extractReviewRecords(`${formatReviewRecord(ctx)}\n${bad}`);
+      expect(records).toEqual([]);
+      expect(errors).toHaveLength(1);
+    }
     expect(hasReviewRecord(broken)).toBe(true);
   });
 });
