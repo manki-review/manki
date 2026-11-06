@@ -1,6 +1,6 @@
 import { execFile } from 'child_process';
 import { createHash } from 'crypto';
-import { chmodSync, mkdtempSync, realpathSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdtempSync, realpathSync, renameSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { basename, join } from 'path';
 import { promisify } from 'util';
@@ -8,6 +8,8 @@ import { promisify } from 'util';
 const execFileAsync = promisify(execFile);
 
 const DOWNLOAD_TIMEOUT_MS = 120_000;
+// Written last, so a directory with it holds a whole install.
+const INSTALLED_MARKER = '.manki-installed';
 
 /** A release file pinned to one version by its digest in Subresource Integrity form, such as `sha512-<base64>`. */
 export interface PinnedDownload {
@@ -19,8 +21,8 @@ const installs = new Map<string, Promise<string>>();
 
 /**
  * Returns the directory a pinned download was installed into. A `.tgz`, `.tar.gz` or `.zip` is unpacked there, and
- * any other file is saved there as an executable under its own name. Each URL is downloaded at most once per run.
- * Throws when the download fails or its digest differs from `integrity`.
+ * any other file is saved there as an executable under its own name. Each download is installed at most once per run,
+ * also across processes such as Manki's tool server. Throws when the download fails or its digest differs from `integrity`.
  */
 export function installPinned(download: PinnedDownload): Promise<string> {
   let install = installs.get(download.url);
@@ -37,6 +39,8 @@ export function makeScratchDir(prefix: string): string {
 }
 
 async function downloadAndInstall({ url, integrity }: PinnedDownload): Promise<string> {
+  const installed = join(realpathSync(process.env.RUNNER_TEMP || tmpdir()), `manki-pinned-${createHash('sha256').update(integrity).digest('hex').slice(0, 16)}`);
+  if (existsSync(join(installed, INSTALLED_MARKER))) return installed;
   const response = await fetch(url, { signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
   if (!response.ok) throw new Error(`download of ${url} failed with HTTP ${response.status}`);
   const data = Buffer.from(await response.arrayBuffer());
@@ -58,5 +62,13 @@ async function downloadAndInstall({ url, integrity }: PinnedDownload): Promise<s
   } else {
     chmodSync(file, 0o755);
   }
-  return dir;
+  writeFileSync(join(dir, INSTALLED_MARKER), '');
+  try {
+    renameSync(dir, installed);
+  } catch (error) {
+    // Another process installed the same download first.
+    if (!existsSync(join(installed, INSTALLED_MARKER))) throw error;
+    rmSync(dir, { recursive: true, force: true });
+  }
+  return installed;
 }
