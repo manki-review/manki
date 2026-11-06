@@ -150,6 +150,14 @@
 #     dependencies: false    # OSV-Scanner on the changed lockfiles, Cargo.lock included
 #     semgrep: false         # or `rules: [...]`, your Semgrep rule files
 
+# Public github.com repos the review may read as context (default: none).
+# `reference`: a repo this one implements or ports. `consumer`: a repo that
+# depends on this one. `ref` (branch, tag or commit) and `paths` are optional.
+# Read from the base branch, never from the PR. See SETUP.md, "Related repositories".
+# related_repos:
+#   - { repo: dashpay/dash, kind: reference, paths: [src/] }
+#   - { repo: dashpay/platform, kind: consumer, ref: master, paths: ["packages/rs-*"] }
+
 # Where to post nit findings: 'issues' (separate GitHub issue) or 'comments' (inline PR comments)
 # nit_handling: issues
 

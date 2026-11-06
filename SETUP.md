@@ -725,6 +725,12 @@ static_analysis:
     zizmor: true           # on changed workflows, unless CI runs it
     shellcheck: true       # on changed shell scripts, unless CI runs it
 
+# Public repos the review may read as context (default: none). Read from the
+# base branch, never from the PR. See "Related repositories" below.
+# related_repos:
+#   - { repo: dashpay/dash, kind: reference, paths: [src/] }
+#   - { repo: dashpay/platform, kind: consumer, paths: ["packages/rs-*"] }
+
 # Multi-pass verification (integer 1-5, default: 1). Runs each reviewer N
 # times with shuffled file ordering; only consistent findings are kept.
 # review_passes: 1
@@ -870,6 +876,38 @@ Each review's `Manki context` block records a `routing` object: the class, its r
 Manki reads the `review` block from the PR's base branch only, like `static_analysis`, so a PR cannot weaken its own review. A PR that changes the block is reviewed with the base branch's, and the change applies after merge. A PR whose own block misses a floor fails, so a broken block never lands. When the base branch's config cannot be read, or its block is invalid or misses a floor, Manki uses the built-ins with a warning, never the PR's copy, so the PR that fixes it still gets reviewed. The models behind `@reviewer` and `@reviewer_pair` come from the PR's `models` block, except that a PR cannot put both finders of a pair on one model when the base branch's models give two: that round keeps the base branch's reviewer models.
 
 `planner.paired` still works and is deprecated in favour of `routing`: `always` turns `paired` on before the PR is classified, and `never` turns it off, which routes `behavior` changes to the `internal` class and its group.
+
+### Related repositories
+
+`related_repos` lists public repositories on github.com that the review may read as context. Each entry has:
+
+- **`repo`**: the repository as `owner/name`.
+- **`kind`**: `reference` for a repository this one implements or ports, such as a protocol's reference implementation or its specifications. `consumer` for a repository that depends on this one, where a change to a public API or a wire or data format can break it.
+- **`ref`** (optional): the branch, tag or commit to read. The default is the repository's default branch.
+- **`paths`** (optional): up to 20 paths or globs inside the repository, such as `src/` or `packages/rs-*`. Only these are fetched. The default is the whole repository.
+
+```yaml
+related_repos:
+  - { repo: dashpay/dash, kind: reference, paths: [src/] }
+  - { repo: dashpay/dips, kind: reference }
+  - { repo: dashpay/platform, kind: consumer, paths: ["packages/rs-*"] }
+```
+
+This release adds the setting and the fetch. Reviewers start reading the repositories in a later release, and until then nothing is fetched.
+
+Manki reads `related_repos` from the PR's base branch only, so a PR cannot make Manki fetch another repository. A PR that changes it is reviewed with the base branch's list. Once reviewers read them, a round fetches a repository only when it needs that kind: references for protocol behaviour, consumers only when the PR changes a public API or a wire or data format. The fetch is a shallow, path-limited clone of one commit (`git` with `--depth 1`, `--filter=blob:none` and a sparse checkout of `paths`), run without any credentials, so a private repository cannot be read. A repository that is private, missing, or not fetched within 2 minutes is skipped with a warning, and the review goes on without it.
+
+The clones go to `manki-related-repos` in the runner's temp directory. To reuse them across runs, restore and save that directory with `actions/cache` before the Manki step. Each run saves a new entry and restores the latest one:
+
+```yaml
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/manki-related-repos
+          key: manki-related-repos-${{ github.run_id }}
+          restore-keys: manki-related-repos-
+```
+
+A restored clone downloads only the objects it does not have yet. A run without write access to the cache, such as one started by a comment, still restores it (see [Cache access](#cache-access)).
 
 ### Severity tiers
 
