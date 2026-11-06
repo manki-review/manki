@@ -71,6 +71,11 @@ jobs:
             exit 1
           fi
           node scripts/check-changelog-version.js
+          PREV_VERSION=$(git show HEAD^:package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
+          if [ "$PREV_VERSION" = "$VERSION" ]; then
+            echo "::error::$GITHUB_REF_NAME must point at the commit that bumps the version to $VERSION"
+            exit 1
+          fi
 
       - if: steps.check.outputs.has_dist == 'false'
         run: npm ci

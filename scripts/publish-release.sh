@@ -104,6 +104,9 @@ read -r -a parents <<<"$(git rev-list --parents -n 1 "$BUILD")"
 RELEASE_COMMIT="${parents[1]}"
 git merge-base --is-ancestor "$RELEASE_COMMIT" "refs/remotes/$REMOTE/main" ||
   die "release commit $RELEASE_COMMIT is not on $REMOTE/main"
+prev_version=$(git show "$RELEASE_COMMIT^:package.json" | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version')
+[ "$prev_version" != "$VERSION" ] ||
+  die "release commit $RELEASE_COMMIT doesn't bump the version to $VERSION. Point $BRANCH at the commit that does."
 if has_dist "$RELEASE_COMMIT"; then
   die "release commit $RELEASE_COMMIT already contains dist/"
 fi

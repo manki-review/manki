@@ -77,6 +77,9 @@ function setup(version = '1.2.3', branchVersion = version): Fixture {
     fs.copyFileSync(path.join(__dirname, script), path.join(work, 'scripts', script));
   }
   fs.writeFileSync(path.join(work, '.gitignore'), 'dist/\nnode_modules/\n');
+  writeRelease(work, '0.9.0');
+  git('add', '.');
+  git('commit', '-q', '-m', 'previous release');
   writeRelease(work, version);
   git('add', '.');
   git('commit', '-q', '-m', 'release');
@@ -204,6 +207,22 @@ describe('publish-release.sh --dry-run', () => {
     const result = publish(fx, 'v1.2.3');
     expect(result.status).toBe(1);
     expect(result.stderr).toContain(`release commit ${fx.release} is not on origin/main`);
+  });
+
+  it('refuses a later main commit at the same version', () => {
+    fx = setup();
+    fx.git('commit', '-q', '--allow-empty', '-m', 'feature');
+    fx.git('push', '-q', 'origin', 'main');
+    const feature = fx.git('rev-parse', 'HEAD');
+    fx.git('checkout', '-q', '--detach');
+    fs.mkdirSync(path.join(fx.work, 'dist'));
+    fs.writeFileSync(path.join(fx.work, 'dist', 'index.js'), 'built\n');
+    fx.git('add', '-f', 'dist/');
+    fx.git('commit', '-q', '-m', 'build');
+    fx.git('push', '-q', '-f', 'origin', 'HEAD:refs/heads/release/v1.2.3');
+    const result = publish(fx, 'v1.2.3');
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`release commit ${feature} doesn't bump the version to 1.2.3`);
   });
 
   it('refuses a release branch whose name does not match package.json', () => {
