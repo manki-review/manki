@@ -64,14 +64,6 @@ export class RefusalError extends Error {
   }
 }
 
-/** Thrown when a call with `repoTools` used all its turns before it gave a final answer. */
-export class TurnLimitError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'TurnLimitError';
-  }
-}
-
 /**
  * Thrown when a provider refuses a request because a quota, rate limit or capacity limit is used up.
  * Sending it again before `resetsAt` fails the same way, so callers neither retry it nor move it to
@@ -129,8 +121,8 @@ export interface UsageSummary extends LLMUsage {
 export interface RepoTools {
   /** The repository the tools read. Nothing outside it is readable. */
   root: string;
-  /** How many model turns the call may take, tool calls included. */
-  maxTurns: number;
+  /** How many tool calls the model may make. Once they are used up, every further call is refused. */
+  steps: number;
 }
 
 export interface SendMessageOptions {

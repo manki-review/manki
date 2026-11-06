@@ -1,5 +1,5 @@
 import { execFile } from 'child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { promisify } from 'util';
@@ -7,8 +7,8 @@ import { promisify } from 'util';
 import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
-import { appendReplyTail, buildExitDiagnostics, callWithTimeout, cliEnv, matchQuotaText, repoToolsPrompt, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, ToolServerCommand, toolServerCommand, warnReplyTail } from './cli-utils';
-import { AnthropicAuth, LLMClient, LLMResponse, LLMUsage, QuotaError, readCount, RefusalError, SendMessageOptions, ToolStep, TurnLimitError, ZERO_USAGE } from './types';
+import { appendReplyTail, buildExitDiagnostics, callWithTimeout, cliEnv, MankiCommand, matchQuotaText, repoToolsPrompt, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, stepHookCommand, toolServerCommand, warnReplyTail } from './cli-utils';
+import { AnthropicAuth, LLMClient, LLMResponse, LLMUsage, QuotaError, readCount, RefusalError, SendMessageOptions, ToolStep, ZERO_USAGE } from './types';
 
 // Re-export for backward compatibility with existing test imports.
 export { sanitizeLogOutput, STALE_TIMEOUT_MS };
@@ -138,32 +138,47 @@ const MANKI_TOOLS = ['mcp__manki__git_history', 'mcp__manki__ast_grep'];
  * Writes the MCP config that starts Manki's tool server into `dir` and returns its path. The server gets the CLI's
  * environment without the Claude credential, which it does not need.
  */
-export function writeToolServerConfig(dir: string, { command, args }: ToolServerCommand): string {
+export function writeToolServerConfig(dir: string, { command, args }: MankiCommand): string {
   const path = join(dir, 'mcp.json');
   const config = { mcpServers: { manki: { type: 'stdio', command, args, env: { CLAUDE_CODE_OAUTH_TOKEN: '' } } } };
   writeFileSync(path, JSON.stringify(config), { mode: 0o600 });
   return path;
 }
 
+// Turns past the step budget, so the model can still answer after the hook refuses a call.
+const EXTRA_TURNS = 5;
+
+/** The Manki parts a call with repository tools starts: the tool server from its MCP config, and the step hook. */
+export interface ClaudeToolSetup {
+  mcpConfigPath: string;
+  stepHook: MankiCommand;
+}
+
+function shellCommand({ command, args }: MankiCommand): string {
+  return [command, ...args].map(arg => `'${arg.replace(/'/g, `'\\''`)}'`).join(' ');
+}
+
 /**
  * Returns the Claude CLI arguments for one call. Without `repoTools` the CLI gets no tools at all. With them it gets
- * Read, Grep and Glob confined to `repoTools.root`, Manki's tool server from `mcpConfigPath`, and no other tool.
+ * Read, Grep and Glob confined to `repoTools.root`, Manki's tool server, the hook that counts the tool steps, and no
+ * other tool.
  */
-export function claudeCliArgs(model: string, systemPromptPath: string, { effort, repoTools }: SendMessageOptions = {}, mcpConfigPath?: string): string[] {
+export function claudeCliArgs(model: string, systemPromptPath: string, { effort, repoTools }: SendMessageOptions = {}, tools?: ClaudeToolSetup): string[] {
   // -p enables pipe mode — reads prompt from stdin when no argument follows
   const args = [
     '-p',
     '--verbose',
     '--output-format', 'stream-json',
     '--include-partial-messages',
-    // No MCP servers and no settings files beyond `--mcp-config`: only the environment configures the CLI.
+    // No MCP servers and no settings files beyond `--mcp-config` and `--settings`: only the environment configures the CLI.
     '--strict-mcp-config',
     '--setting-sources', '',
     // Replaces Claude Code's own agentic system prompt, which otherwise frames every stage.
     '--system-prompt-file', systemPromptPath,
     '--model', model,
   ];
-  if (repoTools && mcpConfigPath) {
+  if (repoTools && tools) {
+    const hooks = { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: shellCommand(tools.stepHook) }] }] };
     args.push(
       // `--restricted` confines the file tools to the working directories, which are an empty directory and `--add-dir`,
       // whatever the permission rules say. `dontAsk` refuses every call nothing allowed.
@@ -171,9 +186,10 @@ export function claudeCliArgs(model: string, systemPromptPath: string, { effort,
       '--permission-mode', 'dontAsk',
       '--tools', 'Read,Grep,Glob',
       '--add-dir', repoTools.root,
-      '--mcp-config', mcpConfigPath,
+      '--mcp-config', tools.mcpConfigPath,
       '--allowedTools', MANKI_TOOLS.join(','),
-      '--max-turns', String(repoTools.maxTurns),
+      '--settings', JSON.stringify({ hooks }),
+      '--max-turns', String(repoTools.steps + EXTRA_TURNS),
     );
   } else {
     // Without tools the reply is a single turn. With them, the CLI's `result` keeps only the last message.
@@ -263,8 +279,13 @@ export class AnthropicClient implements LLMClient {
       const repoTools = options?.repoTools;
       const fullPrompt = repoTools ? `${systemPrompt}\n\n${repoToolsPrompt(repoTools, 'Read, Grep and Glob')}` : systemPrompt;
       writeFileSync(systemPromptPath, fullPrompt, { mode: 0o600 });
-      const mcpConfigPath = repoTools && writeToolServerConfig(promptDir, toolServerCommand(repoTools.root));
-      const args = claudeCliArgs(this.model, systemPromptPath, options, mcpConfigPath);
+      let tools: ClaudeToolSetup | undefined;
+      if (repoTools) {
+        const stepsDir = join(promptDir, 'steps');
+        mkdirSync(stepsDir);
+        tools = { mcpConfigPath: writeToolServerConfig(promptDir, toolServerCommand(repoTools.root)), stepHook: stepHookCommand(stepsDir, repoTools.steps) };
+      }
+      const args = claudeCliArgs(this.model, systemPromptPath, options, tools);
       return await this.runOAuthCli(cliPath, args, fullPrompt.length + userMessage.length, userMessage, options);
     } finally {
       rmSync(promptDir, { recursive: true, force: true });
@@ -338,9 +359,9 @@ export class AnthropicClient implements LLMClient {
       throw new QuotaError(message, limit, quota.resetsAt, quota.overloaded ? undefined : 'token');
     }
     if ((lastResultEvent as { subtype?: unknown } | null)?.subtype === 'error_max_turns') {
-      const message = `Claude CLI used all ${options?.repoTools?.maxTurns ?? 'its'} turns before it answered`;
+      const message = 'Claude CLI used all its turns before it answered';
       core.warning(message);
-      throw new TurnLimitError(message);
+      throw new Error(message);
     }
     if ((code !== 0 && !truncated) || refusal) {
       const msg = buildExitDiagnostics({

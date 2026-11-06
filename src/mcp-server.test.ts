@@ -9,7 +9,7 @@ import rust from '@ast-grep/lang-rust';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
-import { createMcpServer } from './mcp-server';
+import { createMcpServer, McpServerOptions } from './mcp-server';
 
 // The grammars are registered once per process, so every test file registers the same ones.
 napi.registerDynamicLanguage({ python, rust });
@@ -19,9 +19,9 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 /** Connects a client to Manki's tool server for `root`, through the MCP protocol. */
-async function connect(root: string, fileTools = false): Promise<Client> {
+async function connect(root: string, options: McpServerOptions = {}): Promise<Client> {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  await createMcpServer(root, { fileTools, loadApi: async () => napi }).connect(serverTransport);
+  await createMcpServer(root, { ...options, loadApi: async () => napi }).connect(serverTransport);
   const client = new Client({ name: 'test', version: '0' });
   await client.connect(clientTransport);
   return client;
@@ -69,7 +69,7 @@ describe('Manki tool server', () => {
     symlinkSync(join(outside, 'secret.ts'), join(repo, 'src', 'link.ts'));
     symlinkSync(outside, join(repo, 'src', 'outdir'));
     client = await connect(repo);
-    fileClient = await connect(repo, true);
+    fileClient = await connect(repo, { fileTools: true });
   }, 30_000);
 
   afterAll(async () => {
@@ -154,6 +154,19 @@ describe('Manki tool server', () => {
       expect(result.isError).toBe(true);
       expect(result.text).toContain(message);
     }
+  });
+
+  it('asks the model to wrap up 3 steps before its step budget ends, then refuses every call', async () => {
+    const budgeted = await connect(repo, { fileTools: true, steps: 5 });
+    const results = [];
+    for (let step = 1; step <= 7; step++) results.push(await call(budgeted, step % 2 ? 'read_file' : 'git_history', { path: 'src/a.ts' }));
+    await budgeted.close();
+
+    const wrapUp = 'Manki: only 3 tool steps are left after this one. Finish the check you are on, then give your final answer.';
+    expect(results.map(r => r.text.endsWith(wrapUp))).toEqual([false, true, false, false, false, false, false]);
+    expect(results[1].text).toContain('change x');
+    const refusal = { text: 'Manki: all 5 tool steps are used, so this call did not run. Call no more tools and give your final answer now.', isError: true };
+    expect(results.slice(4)).toEqual([expect.objectContaining({ isError: false }), refusal, refusal]);
   });
 
   it('says when the history is cut at the shallow boundary', async () => {

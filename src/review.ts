@@ -3,7 +3,7 @@ import { minimatch } from 'minimatch';
 
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { resolveReviewerModel } from './config';
-import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, SendMessageOptions, TurnLimitError, withRefusalFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
+import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, SendMessageOptions, withRefusalFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
 import { runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, LinkedIssue, titleToSlug } from './github';
@@ -41,8 +41,12 @@ export const RETRY_HINT = 'Retry with @manki review.';
 
 
 export const PLANNER_TIMEOUT_MS = 60_000;
-// The turn limit of a finder with repository tools, tool calls included.
-const FINDER_MAX_TURNS = 15;
+// Tool steps a finder may take, by the risk its review group stands for.
+const QUICK_CHECK_STEPS = 8;
+const FINDER_STEPS = 15;
+const RISKY_FINDER_STEPS = 30;
+// A safety net for a finder with tools. The step budget is what normally ends its call.
+const FINDER_TOOLS_TIMEOUT_MS = 600_000;
 
 class PlannerTimeoutError extends Error {
   constructor() {
@@ -110,7 +114,7 @@ export function selectTeam(diff: ParsedDiff, config: ReviewConfig, triage: Triag
   const choice = chooseGroup(routing, classification, ref => resolveReviewerModel(config, ref));
   const reviewClass = classification.name ? routing.classes[classification.name] : undefined;
   return {
-    finders: buildFinders(choice.group, config, classification.triage),
+    finders: buildFinders(choice.group, config, classification.triage, classification.floor !== undefined),
     routing: {
       ...(classification.name && { class: classification.name, rank: reviewClass!.rank }),
       matched: classification.matched,
@@ -137,9 +141,11 @@ function shortFocus(focus: string): string {
   return `${cut.slice(0, end > 0 ? end : FOCUS_LABEL_LENGTH).replace(/[\s,;:.]+$/, '')}…`;
 }
 
-function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage): Finder[] {
+/** Builds one finder per reader of `group`. A group with two finders, or a PR in a floor class, gets the most tool steps. */
+function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage, floor: boolean): Finder[] {
   const shared = buildFinderAgent(config.reviewers);
   const names = new Set<string>();
+  const risky = floor || group.reviewers.filter(r => r.role !== 'verifier').length >= 2;
   return group.reviewers.map((reviewer, index) => {
     const model = resolveReviewerModel(config, reviewer.model);
     const effort: EffortLevel = !reviewer.effort || reviewer.effort === 'auto' ? (triage.subtle ? 'high' : 'medium') : reviewer.effort;
@@ -151,7 +157,8 @@ function buildFinders(group: ReviewGroup, config: ReviewConfig, triage: Triage):
     let name = label;
     for (let n = 2; names.has(name); n++) name = `${label} #${n}`;
     names.add(name);
-    return { name, prompt, index, model, effort };
+    const steps = verifier ? QUICK_CHECK_STEPS : risky ? RISKY_FINDER_STEPS : FINDER_STEPS;
+    return { name, prompt, index, model, effort, steps };
   });
 }
 
@@ -1268,13 +1275,9 @@ async function runReviewerAgent(
 
   const sendOptions: SendMessageOptions = {
     ...(effort && { effort }),
-    ...(workspace && client.repoTools && { repoTools: { root: workspace, maxTurns: FINDER_MAX_TURNS } }),
+    ...(workspace && client.repoTools && { repoTools: { root: workspace, steps: finder.steps }, timeoutMs: FINDER_TOOLS_TIMEOUT_MS }),
   };
-  const response = await client.sendMessage(systemPrompt, userMessage, sendOptions).catch((error: unknown) => {
-    if (!(error instanceof TurnLimitError) || !sendOptions.repoTools) throw error;
-    core.warning(`${finder.name} used all ${FINDER_MAX_TURNS} turns with the repository tools, so it reviews the diff again without them`);
-    return client.sendMessage(systemPrompt, userMessage, { ...(effort && { effort }) });
-  });
+  const response = await client.sendMessage(systemPrompt, userMessage, sendOptions);
   if (response.truncated) {
     throw new Error(`response truncated at the output token limit (length ${response.content.length})`);
   }

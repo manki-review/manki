@@ -7,7 +7,8 @@ import { StringDecoder } from 'string_decoder';
 import * as core from '@actions/core';
 
 import { registerSecret, safeJsonParse, sanitizeTokens, SECRET_NAME, SYSTEM_ENV } from '../utils';
-import { FILE_TOOLS_FLAG, MCP_SERVER_COMMAND } from '../mcp-server';
+import { FILE_TOOLS_FLAG, MCP_SERVER_COMMAND, STEPS_FLAG } from '../mcp-server';
+import { STEP_HOOK_COMMAND, WRAP_UP_STEPS } from '../tool-steps';
 import { RepoTools, SendMessageOptions } from './types';
 
 export const STALE_TIMEOUT_MS = 90_000;
@@ -381,27 +382,37 @@ function registerGoogleCredentials(path: string): void {
   }
 }
 
-/** How a CLI starts Manki's tool server. */
-export interface ToolServerCommand {
+/** How a CLI starts a part of Manki, such as its tool server. */
+export interface MankiCommand {
   command: string;
   args: string[];
 }
 
+/** Runs `args` with the script this process runs, which is the action's `dist/index.js`. */
+function mankiCommand(args: string[]): MankiCommand {
+  return { command: process.execPath, args: [process.argv[1], ...args] };
+}
+
 /**
- * Starts the tool server for `root` from the script this process runs, which is the action's `dist/index.js`.
- * With `fileTools` the server also offers `read_file`, `grep` and `glob`, for a CLI without its own.
+ * Starts the tool server for `root`. With `fileTools` the server also offers `read_file`, `grep` and `glob`, for a CLI
+ * without its own. With `steps` it refuses every call after that many, for a CLI whose every tool comes from this server.
  */
-export function toolServerCommand(root: string, fileTools = false): ToolServerCommand {
-  return { command: process.execPath, args: [process.argv[1], MCP_SERVER_COMMAND, root, ...(fileTools ? [FILE_TOOLS_FLAG] : [])] };
+export function toolServerCommand(root: string, { fileTools = false, steps }: { fileTools?: boolean; steps?: number } = {}): MankiCommand {
+  return mankiCommand([MCP_SERVER_COMMAND, root, ...(fileTools ? [FILE_TOOLS_FLAG] : []), ...(steps ? [STEPS_FLAG, String(steps)] : [])]);
+}
+
+/** Starts the Claude CLI hook that counts the tool steps of one call in `dir` and refuses every call after `steps`. */
+export function stepHookCommand(dir: string, steps: number): MankiCommand {
+  return mankiCommand([STEP_HOOK_COMMAND, dir, String(steps)]);
 }
 
 /** Tells the model which tools it has, with `fileTools` naming the ones that read files, and how to use them. */
-export function repoToolsPrompt({ root, maxTurns }: RepoTools, fileTools: string): string {
+export function repoToolsPrompt({ root, steps }: RepoTools, fileTools: string): string {
   return `## Tools
 
 The PR's head commit is checked out at \`${root}\`. ${fileTools} read files under that directory, \`git_history\` lists the commits behind a file or a range of its lines, and \`ast_grep\` finds code by syntax. Nothing outside \`${root}\` is readable.
 
-Use the tools to check claims about the changed code, such as how a changed function is called or whether a case is handled elsewhere, not to explore. You have at most ${maxTurns} turns, tool calls included. Your last message must be the JSON your instructions ask for, with nothing after it.`;
+Use the tools to check claims about the changed code, such as how a changed function is called or whether a case is handled elsewhere, not to explore. You have ${steps} tool steps, and each tool call takes one. When ${WRAP_UP_STEPS} are left, a note from Manki comes with a tool result and asks you to wrap up. Once they are used up, Manki refuses every further call, so give your final answer then. Your last message must be the JSON your instructions ask for, with nothing after it.`;
 }
 
 export interface RunCliOptions {

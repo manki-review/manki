@@ -17,11 +17,12 @@ import { addCodeContext, changeDigest, parsePRDiff, filterDiff, filterRawDiff, i
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, RepoMemory } from './memory';
-import { FILE_TOOLS_FLAG, MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
+import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
 import { fetchRecapState, PreviousFinding, RecapState, securityOverridesIn } from './recap';
 import { RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint, teamModels } from './review';
 import { buildRoundContext, RoundRecordInput } from './round-context';
 import { collectStaticSignals } from './static-signals';
+import { runStepHook, STEP_HOOK_COMMAND } from './tool-steps';
 import { fetchWorkspace } from './workspace';
 import { DashboardData, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, RoundTrigger, StaticSignal, roundContextToFlatAliases } from './types';
 import {
@@ -1859,7 +1860,8 @@ async function main(): Promise<void> {
 
 // Only auto-run when executed directly (not imported for testing)
 if (process.env.NODE_ENV !== 'test') {
-  if (process.argv[2] === MCP_SERVER_COMMAND) runMcpServer(process.argv[3], process.argv[4] === FILE_TOOLS_FLAG);
+  if (process.argv[2] === MCP_SERVER_COMMAND) runMcpServer(process.argv.slice(3));
+  else if (process.argv[2] === STEP_HOOK_COMMAND) runStepHook(process.argv[3], process.argv[4]);
   else main();
 }
 

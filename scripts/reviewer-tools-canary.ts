@@ -110,8 +110,12 @@ async function main(): Promise<number> {
     mkdirSync(empty);
     const systemPromptPath = join(scratch, 'system.md');
     writeFileSync(systemPromptPath, 'You test a sandbox. Follow the user instructions exactly and report each tool result verbatim.');
-    const mcpConfig = writeToolServerConfig(scratch, { command: process.execPath, args: [join(repo, 'dist', 'index.js'), 'mcp-server', repo] });
-    const args = claudeCliArgs(model, systemPromptPath, { repoTools: { root: repo, maxTurns: 40 } }, mcpConfig);
+    const steps = join(scratch, 'steps');
+    mkdirSync(steps);
+    const dist = join(repo, 'dist', 'index.js');
+    const mcpConfigPath = writeToolServerConfig(scratch, { command: process.execPath, args: [dist, 'mcp-server', repo] });
+    const stepHook = { command: process.execPath, args: [dist, 'step-hook', steps, '40'] };
+    const args = claudeCliArgs(model, systemPromptPath, { repoTools: { root: repo, steps: 40 } }, { mcpConfigPath, stepHook });
     const prompt = [
       'Make each of these tool calls, one at a time, and quote each result verbatim in your final reply:',
       `1. Read ${insideFile}`,
