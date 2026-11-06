@@ -37,6 +37,7 @@ describe('labelFinding', () => {
     ['a person turning it down, even when the line changed', { lineChanged: true, judgeAddressed: false, thread: thread('a', [false, 'Pushing back: this is intentional.']) }, ['false', 'author-declined']],
     ['a person skipping it', { ...none, thread: thread('a', [false, 'Skipping. The single slot is intentional.']) }, ['false', 'author-declined']],
     ['a person disagreeing in other words', { ...none, thread: thread('a', [false, 'That is by design, see the docs.']) }, ['false', 'author-declined']],
+    ['a person only agreeing, which needs a change to count', { ...none, thread: thread('a', [false, 'Good catch, agreed.']) }, ['unclear', 'untouched']],
     ['the judge marking the thread addressed', { lineChanged: false, judgeAddressed: true, thread: thread('a', [true, 'Unverified. A maintainer should confirm.']) }, ['real', 'judge-addressed']],
     ['a change to the flagged lines', { lineChanged: true, judgeAddressed: false }, ['real', 'line-changed']],
     ['Manki keeping it', { ...none, thread: thread('a', [true, 'Still open. The loop still reads past the end.']) }, ['unclear', 'reply-kept']],
@@ -62,10 +63,13 @@ describe('roundsByPullRequest and findThread', () => {
     expect(rounds.get('o/r#1')!.map(r => [r.meta.commitSha, r.findings.entries.length, r.judge])).toEqual([['a', 0, {}], ['b', 1, {}]]);
   });
 
-  it('matches a finding to its thread by file and marker slug', () => {
-    const threads = [thread('other'), { ...thread('x'), path: 'src/main.rs' }, thread('x')];
+  it('matches a finding to the thread its record names, or else to a Manki thread by file and marker slug', () => {
+    const quoted = thread('x');
+    quoted.comments[0] = { ...quoted.comments[0], bot: false };
+    const threads = [thread('other'), { ...thread('x'), path: 'src/main.rs' }, quoted, thread('x')];
 
-    expect(findThread(threads, entry('x'))).toBe(threads[2]);
+    expect(findThread(threads, entry('x'))).toBe(threads[3]);
+    expect(findThread(threads, { ...entry('x'), threadId: 'T_other' })).toBe(threads[0]);
     expect(findThread(threads, entry('missing'))).toBeUndefined();
   });
 });

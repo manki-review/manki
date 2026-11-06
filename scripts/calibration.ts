@@ -118,9 +118,7 @@ export function labelFinding({ thread, lineChanged, judgeAddressed }: Evidence):
   if (reply !== undefined) {
     if (AUTHOR_FIXED.test(reply)) return ['real', 'author-fixed'];
     if (AUTHOR_DECLINED.test(reply)) return ['false', 'author-declined'];
-    const stance = classifyAuthorReply(reply);
-    if (stance === 'agree') return ['real', 'author-fixed'];
-    if (stance === 'disagree') return ['false', 'author-declined'];
+    if (classifyAuthorReply(reply) === 'disagree') return ['false', 'author-declined'];
   }
   if (judgeAddressed) return ['real', 'judge-addressed'];
   if (lineChanged) return ['real', 'line-changed'];
@@ -140,9 +138,13 @@ export function roundsByPullRequest(lines: HistoryLine[]): Map<string, RoundCont
   return rounds;
 }
 
-/** Returns the thread a finding was posted in, matched by file and the slug in its `<!-- manki:<severity>:<slug> -->` marker. */
+/**
+ * Returns the thread a finding was posted in: the one its record names, or else a thread Manki started on the same file
+ * whose `<!-- manki:<severity>:<slug> -->` marker holds the finding's slug.
+ */
 export function findThread(threads: Thread[], entry: FindingFingerprintEntry): Thread | undefined {
-  return threads.find(t => t.path === entry.fingerprint.file && FINDING_MARKER.exec(t.comments[0]?.body ?? '')?.[1] === entry.fingerprint.slug);
+  return (entry.threadId ? threads.find(t => t.id === entry.threadId) : undefined) ?? threads.find(t =>
+    t.path === entry.fingerprint.file && t.comments[0]?.bot && FINDING_MARKER.exec(t.comments[0].body)?.[1] === entry.fingerprint.slug);
 }
 
 function percent(part: number, whole: number): string {
@@ -318,7 +320,11 @@ async function main(args: string[]): Promise<number> {
   const octokit = github.getOctokit(githubToken());
   const findings: LabelledFinding[] = [];
   for (const [key, rounds] of roundsByPullRequest(lines)) {
-    findings.push(...await labelPullRequest(octokit, key, rounds));
+    try {
+      findings.push(...await labelPullRequest(octokit, key, rounds));
+    } catch (error) {
+      console.error(`Skipping ${key}: ${error instanceof Error ? error.message : error}`);
+    }
   }
   const fixRatePath = option(args, '--fix-rate');
   process.stdout.write(renderReport(findings, fixRatePath ? readFileSync(fixRatePath, 'utf-8').split('\n') : []));
