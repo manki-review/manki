@@ -1,9 +1,11 @@
 name: Release
 
+# Builds `dist/` for a release and pushes it to the release branch. It never writes tags:
+# an org admin tags and publishes the build commit with `scripts/publish-release.sh`.
 on:
   push:
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
+    branches:
+      - 'release/v[0-9]+.[0-9]+.[0-9]+'
 
 permissions:
   contents: write
@@ -16,22 +18,25 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      # Check out the tag as it stands now, not the pushed commit, so a rerun after the
-      # tag was rewritten to the build commit sees `dist/` and skips the rebuild.
+      # Check out the branch as it stands now, not the pushed commit, so a rerun after the
+      # build commit was pushed sees `dist/` and skips the rebuild.
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.ref }}
           fetch-depth: 0
 
-      - name: Resolve tag info
-        id: tag
+      - name: Resolve version
+        id: version
         run: |
-          TAG="${GITHUB_REF#refs/tags/}"
-          MAJOR=$(echo "$TAG" | grep -oE '^v[0-9]+')
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "major=$MAJOR" >> "$GITHUB_OUTPUT"
+          VERSION="${GITHUB_REF_NAME#release/v}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Branch $GITHUB_REF_NAME is not release/vX.Y.Z"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
-      - name: Check whether tag already has built dist/
+      - name: Check whether the branch already has built dist/
         id: check
         run: |
           if git ls-tree -r HEAD --name-only | grep -q '^dist/'; then
@@ -46,52 +51,40 @@ jobs:
           node-version: '24'
           cache: 'npm'
 
+      - name: Check the release commit
+        if: steps.check.outputs.has_dist == 'false'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "::error::Tag $TAG already exists"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::$GITHUB_REF_NAME must point at a commit on main"
+            exit 1
+          fi
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$PKG_VERSION" != "$VERSION" ]; then
+            echo "::error file=package.json::package.json version $PKG_VERSION does not match $GITHUB_REF_NAME"
+            exit 1
+          fi
+          node scripts/check-changelog-version.js
+
       - if: steps.check.outputs.has_dist == 'false'
         run: npm ci
 
       - if: steps.check.outputs.has_dist == 'false'
         run: npm run build
 
-      - name: Commit dist/ and rewrite tag to the release commit
+      - name: Commit dist/ and push it to the release branch
         if: steps.check.outputs.has_dist == 'false'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
-          TAG="${{ steps.tag.outputs.tag }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -f dist/
           git commit -m "release: build artifacts for $TAG"
-          git tag -fa "$TAG" -m "$TAG"
-          git push origin "refs/tags/$TAG" --force
-
-      # Immutable releases lock the tag and assets on publish, so the release starts as a
-      # draft and is published only once the tag points at the build commit.
-      - name: Create draft release
-        run: |
-          TAG="${{ steps.tag.outputs.tag }}"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG already exists"
-          else
-            gh release create "$TAG" --draft --verify-tag --title "$TAG" --generate-notes
-          fi
-        env:
-          GH_TOKEN: ${{ github.token }}
-
-      - name: Publish release
-        run: |
-          TAG="${{ steps.tag.outputs.tag }}"
-          IS_DRAFT=$(gh release view "$TAG" --json isDraft --jq .isDraft)
-          if [ "$IS_DRAFT" = "true" ]; then
-            gh release edit "$TAG" --draft=false --latest
-          fi
-        env:
-          GH_TOKEN: ${{ github.token }}
-
-      # `vX` carries no release, so it stays movable under immutable releases.
-      - name: Update floating major tag
-        run: |
-          TAG="${{ steps.tag.outputs.tag }}"
-          MAJOR="${{ steps.tag.outputs.major }}"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -fa "$MAJOR" "$TAG^{commit}" -m "Update $MAJOR tag to $TAG"
-          git push origin "refs/tags/$MAJOR" --force
+          git push origin "HEAD:refs/heads/$GITHUB_REF_NAME"
