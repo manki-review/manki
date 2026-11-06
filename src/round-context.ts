@@ -249,6 +249,8 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(f.toolEvidence && { toolEvidence: f.toolEvidence.status }),
     ...(f.toolSource && { toolSource: f.toolSource }),
     ...(f.origin && { origin: f.origin }),
+    ...(f.category && { category: f.category }),
+    ...(f.effort && { effort: f.effort }),
   }));
   return {
     meta: {

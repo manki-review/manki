@@ -20,6 +20,8 @@ const DIMENSIONS: ReadonlyArray<{ name: string; source: 'counts' | 'calibration'
   { name: 'specialist', source: 'counts' },
   { name: 'confidence', source: 'calibration' },
   { name: 'toolEvidence', source: 'calibration' },
+  { name: 'category', source: 'calibration' },
+  { name: 'effort', source: 'calibration' },
 ];
 
 export function aggregate(lines: string[]): Map<string, Map<string, Totals>> {

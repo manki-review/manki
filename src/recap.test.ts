@@ -2204,7 +2204,7 @@ describe('parseFindingFromComment', () => {
   it('extracts the description of a not-blocking, low-confidence comment from `formatFindingComment`', () => {
     const body = formatFindingComment({ severity: 'suggestion', title: 'Extract helper', file: 'src/a.ts', line: 2, description: 'The logic is duplicated.', reviewers: [], judgeConfidence: 'low' });
     expect(parseFindingFromComment(body)).toEqual({ description: 'The logic is duplicated.', suggestedFix: undefined });
-    const toolBody = formatFindingComment({ severity: 'warning', title: 'js/sql-injection: Query built from user input', file: 'src/a.ts', line: 2, description: 'The query uses `name`.', reviewers: ['CodeQL'], toolSource: 'CodeQL (1.2)' });
+    const toolBody = formatFindingComment({ severity: 'warning', title: 'js/sql-injection: Query built from user input', file: 'src/a.ts', line: 2, description: 'The query uses `name`.', reviewers: ['CodeQL'], toolSource: 'CodeQL (1.2)', category: 'security', effort: 'quick' });
     expect(parseFindingFromComment(toolBody)).toEqual({ description: 'The query uses `name`.', suggestedFix: undefined });
   });
 

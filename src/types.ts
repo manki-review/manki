@@ -7,6 +7,30 @@ export type FindingSeverity = 'blocker' | 'warning' | 'suggestion' | 'nitpick' |
 /** Severities from most to least severe. */
 export const SEVERITY_ORDER: readonly FindingSeverity[] = ['blocker', 'warning', 'suggestion', 'nitpick', 'ignore'];
 
+/** The kind of problem a finding names, as the judge classifies it, with the label a reader sees. */
+export const FINDING_CATEGORIES = {
+  correctness: 'Correctness',
+  security: 'Security',
+  reliability: 'Reliability',
+  data: 'Data integrity',
+  concurrency: 'Concurrency',
+  performance: 'Performance',
+  compatibility: 'Compatibility',
+  testing: 'Testing',
+  maintainability: 'Maintainability',
+  documentation: 'Documentation',
+  style: 'Style',
+} as const;
+export type FindingCategory = keyof typeof FINDING_CATEGORIES;
+
+/** How big the fix for a finding is, as the judge estimates it, with the label a reader sees. */
+export const FINDING_EFFORTS = {
+  quick: 'Quick fix',
+  moderate: 'Moderate',
+  larger: 'Larger change',
+} as const;
+export type FindingEffort = keyof typeof FINDING_EFFORTS;
+
 /**
  * Maps legacy severity values written by older versions of manki to the
  * current `FindingSeverity` set. `'required'` was renamed to `'blocker'` and
@@ -170,6 +194,10 @@ export interface Finding {
   resemblesFixed?: { title: string; file: string; line: number };
   /** Whether the finding sits on code the PR changed since the last reviewed round, or on code an earlier round reviewed. */
   origin?: FindingOrigin;
+  /** The kind of problem, set by the judge. */
+  category?: FindingCategory;
+  /** How big the fix is, set by the judge. */
+  effort?: FindingEffort;
 }
 
 export type FindingOrigin = 'new' | 'reviewed';
@@ -1345,6 +1373,10 @@ export interface FindingFingerprintEntry {
   toolSource?: string;
   /** New code or code an earlier round reviewed. Mirrors `Finding.origin`. */
   origin?: FindingOrigin;
+  /** Mirrors `Finding.category`. */
+  category?: FindingCategory;
+  /** Mirrors `Finding.effort`. */
+  effort?: FindingEffort;
 }
 
 /** What a reply-handler run, Manki answering in a thread or to a command, records in its comment. */

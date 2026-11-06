@@ -119,10 +119,13 @@ function mayClearSecurityThread(login: string | undefined, bot: BotIdentity, prA
   return !prAuthorLogin || login.toLowerCase() !== prAuthorLogin.toLowerCase();
 }
 
-/** Matches the title line of a thread comment in either layout. */
+/** Matches the title line of a thread comment in any layout: after the label, or on its own line below the header. */
 function matchTitleLine(body: string): RegExpMatchArray | null {
   return body.match(new RegExp(FINDING_TITLE_RE.source + '(.+?)(?:\\n|$)'))
-    ?? (FINDING_DATA_RE.test(body) ? body.match(/^\S+ \*\*\w+(?:, not blocking)?(?::\*\*|\*\* \(.*?\):) (.+?)[ \t]*(?:\n|$)/) : null);
+    ?? (FINDING_DATA_RE.test(body)
+      ? body.match(/^\S+ \*\*\w+(?:, not blocking)?(?::\*\*|\*\* \(.*?\):) (.+?)[ \t]*(?:\n|$)/)
+        ?? body.match(/^\S+ \*\*\w+(?:, not blocking)?\*\*[^\n]*\n\n\*\*(.+)\*\*[ \t]*(?:\n|$)/)
+      : null);
 }
 
 /** Escape double quotes and strip triple-backtick sequences from untrusted text before LLM interpolation. */

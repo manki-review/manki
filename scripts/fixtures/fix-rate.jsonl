@@ -1,4 +1,4 @@
 {"pr":40,"mergedSha":"aaa","rounds":1,"counts":[{"severity":"warning","specialist":"Security","posted":2,"fixed":1,"dismissed":1,"untouched":0}]}
 not json
-{"pr":41,"mergedSha":"bbb","rounds":2,"counts":[{"severity":"blocker","specialist":"Security","posted":1,"fixed":1,"dismissed":0,"untouched":0},{"severity":"warning","specialist":"Style","posted":3,"fixed":0,"dismissed":2,"untouched":1}],"calibration":[{"severity":"blocker","confidence":"high","toolEvidence":"confirmed","posted":1,"fixed":1,"dismissed":0,"untouched":0},{"severity":"warning","confidence":"low","toolEvidence":"none","posted":3,"fixed":0,"dismissed":2,"untouched":1}]}
+{"pr":41,"mergedSha":"bbb","rounds":2,"counts":[{"severity":"blocker","specialist":"Security","posted":1,"fixed":1,"dismissed":0,"untouched":0},{"severity":"warning","specialist":"Style","posted":3,"fixed":0,"dismissed":2,"untouched":1}],"calibration":[{"severity":"blocker","confidence":"high","toolEvidence":"confirmed","category":"correctness","effort":"quick","posted":1,"fixed":1,"dismissed":0,"untouched":0},{"severity":"warning","confidence":"low","toolEvidence":"none","posted":3,"fixed":0,"dismissed":2,"untouched":1}]}
 

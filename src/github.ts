@@ -4,7 +4,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
-import { AgentProgressEntry, DashboardData, FOLLOW_UP_TAG, Finding, FindingSeverity, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity } from './types';
+import { AgentProgressEntry, DashboardData, FOLLOW_UP_TAG, Finding, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity } from './types';
 import { isLineInDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { findPriorThreadId } from './finding-fingerprint';
@@ -992,7 +992,7 @@ function splitLead(text: string, maxSentences: number, maxLength: number): { lea
 
 /** Renders a finding listed in the review body: title, link to the line, what goes wrong, and the fix. */
 function formatFindingBlock(finding: Finding, linkTo: LineLink): string {
-  const lines = [`**${sanitizeMarkdown(finding.title)}**${finding.toolSource ? ` (${sanitizeMarkdown(finding.toolSource)})` : ''}`];
+  const lines = [formatFindingHeader(finding), `**${sanitizeMarkdown(finding.title)}**`];
   if (finding.judgeConfidence === 'low') lines.push(LOW_CONFIDENCE_NOTE);
   if (finding.file) {
     const location = `${sanitizeFilePath(finding.file)}${finding.line > 0 ? `:${finding.line}` : ''}`;
@@ -1286,7 +1286,7 @@ async function submitReview(
     // If it's a line validation error, retry without inline comments
     if (isLineError && validComments.length > 0) {
       core.warning('Inline comments rejected by GitHub (invalid lines). Posting review without inline comments.');
-      const allAsBody = validComments.map(c => `- ${c.body.split('\n')[0]}`).join('\n');
+      const allAsBody = validComments.map(c => `- ${commentHeadline(c.body)}`).join('\n');
       const lineErrFallbackBody = fit(`${body}\n\n**Inline comments could not be posted:**\n${allAsBody}`);
 
       const { data: review } = await octokit.rest.pulls.createReview({
@@ -1316,10 +1316,7 @@ async function submitReview(
       : '';
     core.warning(`GitHub refused the ${event} review (${status}: ${errorMessage}).${hint} Falling back to COMMENT.`);
 
-    const findingSummary = validComments.map(c => {
-      const firstLine = c.body.split('\n')[0];
-      return `- ${firstLine} (\`${c.path}:${c.line}\`)`;
-    }).join('\n');
+    const findingSummary = validComments.map(c => `- ${commentHeadline(c.body)} (\`${c.path}:${c.line}\`)`).join('\n');
     const fallbackBody = fit(`${body}\n\n**Findings (could not post inline):**\n${findingSummary}`);
 
     const { data: review } = await octokit.rest.pulls.createReview({
@@ -1624,11 +1621,22 @@ function formatSuggestedFix(fix: string, file: string): string {
   return isShort ? rendered : `<details>\n<summary>Suggested fix</summary>\n\n${rendered}\n</details>`;
 }
 
-function formatFindingComment(finding: Finding): string {
+/** Returns the line a finding opens with: severity, the reporting tool if any, category and effort. */
+function formatFindingHeader(finding: Finding): string {
   const severity = `${finding.severity[0].toUpperCase()}${finding.severity.slice(1)}`;
-  const label = isBlockingFinding(finding) ? severity : `${severity}, not blocking`;
-  const heading = finding.toolSource ? `**${label}** (${sanitizeMarkdown(finding.toolSource)}):` : `**${label}:**`;
-  let comment = `${SEVERITY_EMOJI[finding.severity]} ${heading} ${sanitizeMarkdown(finding.title)}\n\n`;
+  const label = `**${isBlockingFinding(finding) ? severity : `${severity}, not blocking`}**`;
+  const tool = finding.toolSource ? ` (${sanitizeMarkdown(finding.toolSource)})` : '';
+  const kind = [finding.category && FINDING_CATEGORIES[finding.category], finding.effort && FINDING_EFFORTS[finding.effort]].filter(Boolean);
+  return [`${label}${tool}`, ...kind].join(' · ');
+}
+
+/** Returns the header line and title of a comment from `formatFindingComment`, on one line. */
+function commentHeadline(body: string): string {
+  return body.split('\n\n', 2).join(' ');
+}
+
+function formatFindingComment(finding: Finding): string {
+  let comment = `${SEVERITY_EMOJI[finding.severity]} ${formatFindingHeader(finding)}\n\n**${sanitizeMarkdown(finding.title)}**\n\n`;
   if (finding.judgeConfidence === 'low') comment += `${LOW_CONFIDENCE_NOTE}\n\n`;
   const fix = finding.suggestedFix?.trim() ? `\n\n${formatSuggestedFix(finding.suggestedFix, finding.file)}` : '';
   const room = Math.max(MIN_VISIBLE_DESCRIPTION, MAX_VISIBLE_COMMENT - comment.length - visibleLength(fix));
