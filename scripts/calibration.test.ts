@@ -9,7 +9,11 @@ function thread(slug: string, ...replies: Array<[bot: boolean, body: string]>): 
     id: `T_${slug}`,
     path: 'src/lib.rs',
     comments: [
-      { body: `🚫 **Blocker:** ${slug}\n\nThe text.\n\n<!-- manki:blocker:${slug} -->`, bot: true, url: `https://github.com/o/r/pull/1#${slug}` },
+      {
+        body: `🔴 🚫 **Blocker**: ${slug}\n\nThe text.\n\n<details>\n<summary>AI context</summary>\n\n\`\`\`json\n{ "severity": "blocker" }\n\`\`\`\n</details>\n\n<!-- manki:blocker:${slug} -->`,
+        bot: true,
+        url: `https://github.com/o/r/pull/1#${slug}`,
+      },
       ...replies.map(([bot, body]) => ({ body, bot })),
     ],
   };
@@ -127,7 +131,7 @@ describe('selectSet', () => {
     ]);
     expect(set[0]).toEqual({
       id: 'o/r#1:src/lib.rs:f', repo: 'o/r', pr: 1, commitSha: 'abc', file: 'src/lib.rs', lineStart: 10, lineEnd: 10, severity: 'warning',
-      title: 'Title f', comment: '🚫 **Blocker:** f\n\nThe text.', label: 'false', labelSource: 'reply-withdrawn', threadUrl: 'https://github.com/o/r/pull/1#f',
+      title: 'Title f', comment: 'The text.', label: 'false', labelSource: 'reply-withdrawn', threadUrl: 'https://github.com/o/r/pull/1#f',
     });
     expect(selectSet(findings, 1)).toHaveLength(1);
   });

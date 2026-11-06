@@ -89,6 +89,9 @@ const REPLY_OUTCOME = /^\**(Fixed|Agreed|Withdrawn|Unverified|Still open|Kept)\b
 const AUTHOR_FIXED = /^\**(Fixed|Applied|Added|Adopted|Addressed|Done|Switched|Restructured)\b/i;
 const AUTHOR_DECLINED = /^\**(Pushing back|Declin|Skipping|Not applied|Not fixing|Won't fix|Keeping|Leaving)/i;
 const FINDING_MARKER = /<!-- manki:[a-z]+:(\S+) -->/;
+// The posted grade would anchor a replayed judge, so the export drops the severity header and the `AI context` block.
+const SEVERITY_HEADER = /^[^\n]*\*\*(Blocker|Warning|Suggestion|Nitpick)\b[^\n]*\n*/;
+const AI_CONTEXT_BLOCK = /<details>\s*<summary>AI context<\/summary>[\s\S]*?<\/details>/g;
 const THREAD_FIELDS = 'id path comments(first: 100) { nodes { body url author { __typename } } }';
 
 const REPLY_LABELS: Record<string, [Label, LabelSource]> = {
@@ -249,7 +252,7 @@ export function selectSet(findings: LabelledFinding[], limit = DEFAULT_SET_LIMIT
       lineEnd: f.entry.fingerprint.lineEnd,
       severity: f.entry.severity,
       title: f.entry.title ?? f.entry.fingerprint.slug,
-      comment: f.thread!.comments[0].body.replace(/<!--[\s\S]*?-->/g, '').trim(),
+      comment: f.thread!.comments[0].body.replace(/<!--[\s\S]*?-->/g, '').replace(AI_CONTEXT_BLOCK, '').trim().replace(SEVERITY_HEADER, '').trim(),
       ...(f.entry.judgeNotes && { judgeNotes: f.entry.judgeNotes }),
       ...(f.entry.judgeConfidence && { judgeConfidence: f.entry.judgeConfidence }),
       label: f.label as 'real' | 'false',
