@@ -1228,10 +1228,10 @@ function blockOnOpenThreads(result: ReviewResult, threads: OpenThread[]): void {
 
 /** Posts the round's review and dismisses the previous one. Returns the new review's id, and whether its approval was held. */
 async function postRound(run: ReviewRun, result: ReviewResult, context: RoundContext, reviewTimeMs: number): Promise<{ id: number; approvalHeld: boolean }> {
-  const { octokit, owner, repo, prNumber, commitSha, diff, config, recap, interRoundDiff } = run;
+  const { octokit, owner, repo, prNumber, commitSha, diff, recap, interRoundDiff } = run;
   const hasPriorRounds = recap.priorRounds.length > 0;
   const parsedInterRoundDiff = hasPriorRounds && interRoundDiff !== undefined ? parsePRDiff(interRoundDiff) : undefined;
-  const posted = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, context, reviewTimeMs, config, {
+  const posted = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, context, reviewTimeMs, {
     interRoundDiff: parsedInterRoundDiff,
     existingThreads: recap.previousFindings,
   });

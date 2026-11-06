@@ -4,14 +4,15 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
-import { AgentProgressEntry, DashboardData, FOLLOW_UP_TAG, Finding, FindingFingerprintEntry, FindingSeverity, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity } from './types';
+import { AgentProgressEntry, DashboardData, FOLLOW_UP_TAG, Finding, FindingSeverity, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity } from './types';
 import { isLineInDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
 import { MAX_AGENT_RETRIES, SEVERITY_ORDER } from './types';
 import { MAX_LOCK_TTL_SECONDS } from './config';
-import { safeTruncate, sanitizeTokens, withMarkers } from './utils';
+import { safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
+import { formatReviewRecord, omitBulkyDiagnostics } from './review-record';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -885,83 +886,29 @@ function formatStatsOneLiner(context: RoundContext, reviewTimeMs: number): strin
   return `<!-- manki-stats: ${countOf(context.findings.count, 'finding')} (${breakdown || 'none'}), ${countOf(context.diff.lines, 'line')}, ${time}s -->`;
 }
 
-/**
- * Neutralise any `-->` or `--!>` inside a JSON payload by escaping the
- * closing `>` as the JSON Unicode escape. Both sequences close HTML5 comments.
- * Reversible: JSON parsing un-escapes back to `>`.
- */
-function sanitizeHtmlCommentJson(json: string): string {
-  return json.replace(/--(!?)>/g, '--$1\\u003E');
-}
-
-function formatContextBlock(context: RoundContext, hidden = false): string {
-  const ctx = context.judge.threadEvaluations?.length === 0
-    ? { ...context, judge: { ...context.judge, threadEvaluations: undefined } }
-    : context;
-  if (hidden) {
-    const json = sanitizeHtmlCommentJson(JSON.stringify(ctx));
-    return `<!-- manki-context: ${json} -->`;
-  }
-  const json = JSON.stringify(ctx, null, 2)
-    .replace(/`/g, '\\u0060');
-  return `<details>\n<summary>Manki context</summary>\n\n\`\`\`json\n${json}\n\`\`\`\n</details>`;
-}
-
-/**
- * Severity drop order when shrinking `findings.entries[]` to fit the review
- * body budget. Lowest-impact severities go first; metadata, agents, judge
- * summary, models, and usage are preserved unconditionally.
- *
- * `'unknown'` is placed before `'blocker'` because a confirmed blocker carries
- * more informational value than an entry whose severity could not be determined.
- */
-const TRUNCATION_PRIORITY: ReadonlyArray<FindingFingerprintEntry['severity']> = [
-  'ignore', 'nitpick', 'suggestion', 'warning', 'unknown', 'blocker',
-];
-
-/**
- * Drop entries from `findings.entries[]` in priority order until the
- * rendered review body is within `maxBodyLength`. Returns the (possibly
- * mutated) context, the count of entries dropped, and whether the judge
- * summary was capped. Caller is expected to `core.warning` on either signal.
- */
-function truncateContextToFitBody(
-  context: RoundContext,
-  renderBody: (ctx: RoundContext) => string,
-  maxBodyLength: number,
-): { context: RoundContext; droppedCount: number; summaryCapped: boolean } {
-  if (renderBody(context).length <= maxBodyLength) {
-    return { context, droppedCount: 0, summaryCapped: false };
-  }
-  const remaining = [...context.findings.entries];
-  let dropped = 0;
-  for (const target of TRUNCATION_PRIORITY) {
-    while (renderBody({ ...context, findings: { ...context.findings, entries: remaining, truncated: true } }).length > maxBodyLength) {
-      const idx = remaining.findIndex(e => e.severity === target);
-      if (idx === -1) break;
-      remaining.splice(idx, 1);
-      dropped++;
-    }
-    if (renderBody({ ...context, findings: { ...context.findings, entries: remaining, truncated: true } }).length <= maxBodyLength) {
-      break;
-    }
-  }
-  let truncated: RoundContext = {
-    ...context,
-    findings: { ...context.findings, entries: remaining, count: remaining.length, ...(dropped > 0 && { truncated: true }) },
-  };
-  let summaryCapped = false;
-  if (renderBody(truncated).length > maxBodyLength && truncated.judge.summary) {
-    const cappedSummary = safeTruncate(truncated.judge.summary, 2000);
-    if (cappedSummary !== truncated.judge.summary) {
-      truncated = { ...truncated, judge: { ...truncated.judge, summary: cappedSummary } };
-      summaryCapped = true;
-    }
-  }
-  return { context: truncated, droppedCount: dropped, summaryCapped };
-}
-
 const REVIEW_BODY_BUDGET = 60000;
+
+/** The most of the review body the round record may take, so the verdict and findings still show. */
+const MAX_RECORD_CHARS = REVIEW_BODY_BUDGET - 10000;
+
+/**
+ * Returns the hidden stats line and round record that end a review. The record is plain JSON when
+ * it fits in `room` characters, and compressed otherwise. A record over `MAX_RECORD_CHARS` even
+ * compressed is posted without its bulky diagnostics, and the full record goes to the log.
+ */
+function formatRecordTrailer(context: RoundContext, reviewTimeMs: number, room: number): string {
+  const stats = `\n\n${formatStatsOneLiner(context, reviewTimeMs)}\n`;
+  const record = formatReviewRecord(context, room - stats.length);
+  if (stats.length + record.length <= MAX_RECORD_CHARS) return `${stats}${record}`;
+
+  core.warning(`The round record takes ${record.length} characters even compressed, so the review carries it without per-file and per-finding diagnostics. The full record follows in the log.`);
+  core.info(formatReviewRecord(context));
+  const slim = formatReviewRecord(omitBulkyDiagnostics(context), room - stats.length);
+  if (stats.length + slim.length > MAX_RECORD_CHARS) {
+    throw new Error(`The round record takes ${slim.length} characters even without its diagnostics, too many for a review body`);
+  }
+  return `${stats}${slim}`;
+}
 
 /** The icon that opens a finding comment. Apart from the verdict line, the only emoji Manki posts. */
 const SEVERITY_EMOJI: Record<FindingSeverity, string> = {
@@ -1124,10 +1071,8 @@ export async function postReview(
   diff?: ParsedDiff,
   context?: RoundContext,
   reviewTimeMs?: number,
-  config?: ReviewConfig,
   { interRoundDiff, existingThreads = [] }: { interRoundDiff?: ParsedDiff; existingThreads?: PreviousFinding[] } = {},
 ): Promise<{ id: number; approvalHeld: boolean }> {
-  const statsHidden = config?.stats?.hidden ?? true;
   const event = mapVerdictToEvent(result.verdict);
 
   const validComments: Array<{path: string; line: number; side: 'RIGHT'; body: string}> = [];
@@ -1201,7 +1146,7 @@ export async function postReview(
   const lead = formatLead(result, blockingFindings);
   const conflictingBase = event === 'APPROVE' ? await fetchConflictingBase(octokit, owner, repo, prNumber) : undefined;
 
-  const renderBody = (ctx: RoundContext | undefined): string => {
+  const renderBody = (): string => {
     let b = conflictingBase ? `${approvalHeldLine(conflictingBase)}\n\n${lead}` : lead;
     const needsHuman = formatNeedsHuman(result);
     if (needsHuman) {
@@ -1233,29 +1178,14 @@ export async function postReview(
     if (smaller) {
       b += `\n\n${smaller}`;
     }
-    if (ctx) {
-      b += `\n\n${formatStatsOneLiner(ctx, reviewTimeMs ?? 0)}`;
-      b += `\n${formatContextBlock(ctx, statsHidden)}`;
-    }
     return b;
   };
 
-  let effectiveContext = context;
-  if (context) {
-    const { context: maybeTruncated, droppedCount, summaryCapped } = truncateContextToFitBody(
-      context,
-      ctx => renderBody(ctx),
-      REVIEW_BODY_BUDGET,
-    );
-    effectiveContext = maybeTruncated;
-    if (droppedCount > 0 || summaryCapped) {
-      core.warning(`Manki context truncated: dropped ${droppedCount} finding entries${summaryCapped ? ', judge summary capped at 2000 chars' : ''} to fit comment body`);
-    }
-  }
   // Generated text often names code without backticks, so every posted body is highlighted before it goes out.
   const codeTokens = diff ? codeTokensFromDiff(diff) : new Set<string>();
   const highlight = <T extends { body: string }>(c: T): T => ({ ...c, body: highlightCode(c.body, codeTokens) });
-  const body = highlightCode(renderBody(effectiveContext), codeTokens);
+  const body = highlightCode(renderBody(), codeTokens);
+  const record = context ? formatRecordTrailer(context, reviewTimeMs ?? 0, REVIEW_BODY_BUDGET - body.length) : '';
 
   if (invalidComments.length > 0) {
     core.info(`Moved ${invalidComments.length} comments to review body (not postable as threads)`);
@@ -1266,13 +1196,13 @@ export async function postReview(
   }
   core.info(`Posting review: ${mapVerdictToEvent(postedVerdict)} with ${validComments.length} line comments and ${fileComments.length} file-level comments`);
 
-  const review = await submitReview(octokit, owner, repo, prNumber, commitSha, postedVerdict, body, validComments.map(highlight), reviewedCommitFooter);
+  const review = await submitReview(octokit, owner, repo, prNumber, commitSha, postedVerdict, body, record, validComments.map(highlight), reviewedCommitFooter);
   const refused = await postFileLevelComments(octokit, owner, repo, prNumber, commitSha, fileComments.map(highlight));
   if (refused.length > 0) {
     const titles = refused.map(f => `"${f.title}" (${f.file})`).join(', ');
     const section = highlightCode(`\n\n**Blockers that could not be posted as threads:**\n\n${refused.map(f => formatFindingBlock(f, linkTo)).join('\n\n')}`, codeTokens);
-    // Truncate the existing body, never the blocking findings appended to it.
-    const room = REVIEW_BODY_BUDGET - section.length;
+    // Truncate the existing body, never the blocking findings appended to it or the round record.
+    const room = REVIEW_BODY_BUDGET - section.length - record.length;
     if (room <= 0) {
       throw new Error(`Could not post blocking findings as threads or fit them in review #${review.id}: ${titles}`);
     }
@@ -1282,7 +1212,7 @@ export async function postReview(
         repo,
         pull_number: prNumber,
         review_id: review.id,
-        body: appendReviewFooter(`${truncateBody(review.body, room)}${section}`, reviewedCommitFooter),
+        body: appendReviewFooter(`${truncateBody(review.body, room)}${section}${record}`, reviewedCommitFooter),
       });
     } catch (error) {
       throw new Error(`Could not post blocking findings as threads or in review #${review.id}: ${titles}. ${error instanceof Error ? error.message : error}`);
@@ -1310,10 +1240,13 @@ async function submitReview(
   commitSha: string,
   verdict: ReviewVerdict,
   body: string,
+  record: string,
   validComments: Array<{path: string; line: number; side: 'RIGHT'; body: string}>,
   reviewedCommitFooter: string,
 ): Promise<{ id: number; body: string }> {
   const event = mapVerdictToEvent(verdict);
+  const fit = (text: string): string => truncateBody(text, REVIEW_BODY_BUDGET - record.length);
+  const compose = (text: string): string => appendReviewFooter(`${text}${record}`, reviewedCommitFooter);
   assertWritesAllowed();
   try {
     const { data: review } = await octokit.rest.pulls.createReview({
@@ -1322,12 +1255,12 @@ async function submitReview(
       pull_number: prNumber,
       commit_id: commitSha,
       event,
-      body: appendReviewFooter(truncateBody(body), reviewedCommitFooter),
+      body: compose(fit(body)),
       comments: validComments,
     });
 
     core.info(`Posted review #${review.id} with verdict ${verdict}`);
-    return { id: review.id, body: truncateBody(body) };
+    return { id: review.id, body: fit(body) };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     const isLineError = errorMessage.includes('pull_request_review_thread.line') ||
@@ -1337,7 +1270,7 @@ async function submitReview(
     if (isLineError && validComments.length > 0) {
       core.warning('Inline comments rejected by GitHub (invalid lines). Posting review without inline comments.');
       const allAsBody = validComments.map(c => `- ${c.body.split('\n')[0]}`).join('\n');
-      const lineErrFallbackBody = truncateBody(`${body}\n\n**Inline comments could not be posted:**\n${allAsBody}`);
+      const lineErrFallbackBody = fit(`${body}\n\n**Inline comments could not be posted:**\n${allAsBody}`);
 
       const { data: review } = await octokit.rest.pulls.createReview({
         owner,
@@ -1345,7 +1278,7 @@ async function submitReview(
         pull_number: prNumber,
         commit_id: commitSha,
         event,
-        body: appendReviewFooter(lineErrFallbackBody, reviewedCommitFooter),
+        body: compose(lineErrFallbackBody),
         comments: [],
       });
 
@@ -1370,7 +1303,7 @@ async function submitReview(
       const firstLine = c.body.split('\n')[0];
       return `- ${firstLine} (\`${c.path}:${c.line}\`)`;
     }).join('\n');
-    const fallbackBody = truncateBody(`${body}\n\n**Findings (could not post inline):**\n${findingSummary}`);
+    const fallbackBody = fit(`${body}\n\n**Findings (could not post inline):**\n${findingSummary}`);
 
     const { data: review } = await octokit.rest.pulls.createReview({
       owner,
@@ -1378,7 +1311,7 @@ async function submitReview(
       pull_number: prNumber,
       commit_id: commitSha,
       event: 'COMMENT',
-      body: appendReviewFooter(fallbackBody, reviewedCommitFooter),
+      body: compose(fallbackBody),
       comments: [],
     });
 
@@ -2321,5 +2254,5 @@ async function postConfigErrorComment(
   }
 }
 
-export { APPROVED_LINE, dynamicFence, formatContextBlock, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, isTrustedAssociation, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgressOn, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE };
+export { APPROVED_LINE, dynamicFence, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, isTrustedAssociation, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgressOn, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE };
 export type { InProgressLock, StandingVerdict };

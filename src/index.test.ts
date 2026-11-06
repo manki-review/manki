@@ -2336,7 +2336,6 @@ describe('runFullReview orchestration', () => {
       expect.anything(),
       expect.anything(),
       expect.anything(),
-      expect.anything(),
       expect.objectContaining({ interRoundDiff: undefined, existingThreads: [] }),
     );
     // Outputs set
@@ -3860,7 +3859,7 @@ describe('runFullReview orchestration', () => {
     expect(rc!.findings.entries[0].title).toHaveLength(200);
   });
 
-  it('carries judge and tool evidence state per finding into RoundContext findingEntries', async () => {
+  it('carries raw findings, judge drops, and judge and tool evidence state per finding into RoundContext', async () => {
     const testFile = {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
@@ -3893,12 +3892,32 @@ describe('runFullReview orchestration', () => {
         toolSource: 'CodeQL',
         toolEvidence: { status: 'confirmed' as const, note: 'CodeQL reports this result.' },
       }],
+      rawFindings: [{
+        severity: 'warning' as const, title: 'Hypothetical race', file: 'src/app.ts', line: 5,
+        description: 'Race condition that needs a strict ordering.', reviewers: ['Concurrency'], suggestedFix: 'Take the lock first.', codeContext: 'code',
+      }, {
+        severity: 'suggestion' as const, title: 'Rename helper', file: 'src/app.ts', line: 7, description: 'Name it after what it does.', reviewers: ['Concurrency'],
+      }],
+      allJudgedFindings: [{
+        severity: 'ignore' as const, title: 'Rename helper', file: 'src/app.ts', line: 7, description: 'Name it after what it does.', reviewers: ['Concurrency'],
+        reviewerSeverity: 'suggestion' as const, judgeConfidence: 'high' as const, judgeNotes: `The name matches the module convention. ${'Detail. '.repeat(100)}`,
+      }],
       highlights: [], reviewComplete: true, agentNames: ['Concurrency'],
     });
 
     await callRunFullReview();
 
     const [,,,,,,,rc] = jest.mocked(ghUtils.postReview).mock.calls[0];
+    expect(rc!.reviewers.rawFindings).toEqual([{
+      severity: 'warning', title: 'Hypothetical race', file: 'src/app.ts', line: 5,
+      description: 'Race condition that needs a strict ordering.', reviewers: ['Concurrency'], suggestedFix: 'Take the lock first.',
+    }, {
+      severity: 'suggestion', title: 'Rename helper', file: 'src/app.ts', line: 7, description: 'Name it after what it does.', reviewers: ['Concurrency'],
+    }]);
+    expect(rc!.judge.dropped).toEqual([{
+      title: 'Rename helper', file: 'src/app.ts', line: 7, reviewers: ['Concurrency'],
+      reviewerSeverity: 'suggestion', judgeConfidence: 'high', judgeNotes: `The name matches the module convention. ${'Detail. '.repeat(100)}`,
+    }]);
     expect(rc!.findings.entries.map(e => [e.toolEvidence, e.toolSource])).toEqual([['contradicted', undefined], ['confirmed', 'CodeQL']]);
     const entry = rc!.findings.entries[0];
     expect(entry.judgeNotes).toBe('Reachable only under shutdown');
@@ -4951,7 +4970,7 @@ describe('runFullReview orchestration', () => {
     expect(runReviewArgs.linkedIssues).toEqual([
       { number: 7, title: 'Linked issue', body: 'Issue body' },
     ]);
-    expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)?.[10]?.interRoundDiff).toBeUndefined();
+    expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)?.[9]?.interRoundDiff).toBeUndefined();
   });
 
   it('handles linked issues fetch rejection while inter-round diff fetch fulfills', async () => {
@@ -4980,7 +4999,7 @@ describe('runFullReview orchestration', () => {
     expect(jest.mocked(diffModule.parsePRDiff)).toHaveBeenCalledWith(
       'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
     );
-    expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)?.[10]?.interRoundDiff).toBeDefined();
+    expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)?.[9]?.interRoundDiff).toBeDefined();
   });
 
   it('handles both inter-round diff and linked issues fetch rejecting simultaneously', async () => {

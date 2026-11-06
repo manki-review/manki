@@ -83,34 +83,6 @@ describe('config', () => {
     });
   });
 
-  describe('stats config', () => {
-    it('defaults stats.hidden to true', () => {
-      expect(DEFAULT_CONFIG.stats?.hidden).toBe(true);
-      const config = loadConfigFromContent('');
-      expect(config.stats?.hidden).toBe(true);
-    });
-
-    it('merges user-provided stats.hidden over defaults', () => {
-      const config = loadConfigFromContent('stats:\n  hidden: false\n');
-      expect(config.stats?.hidden).toBe(false);
-    });
-
-    it('keeps stats.hidden true when stats key is present but hidden is omitted', () => {
-      const config = loadConfigFromContent('stats: {}');
-      expect(config.stats?.hidden).toBe(true);
-    });
-
-    it('rejects non-boolean stats.hidden', () => {
-      expect(() => loadConfigFromContent('stats:\n  hidden: "yes"\n'))
-        .toThrow(/stats\.hidden/);
-    });
-
-    it('rejects non-object stats', () => {
-      expect(() => loadConfigFromContent('stats: "nope"\n'))
-        .toThrow(/`stats` must be an object/);
-    });
-  });
-
   describe('metrics config', () => {
     it('leaves metrics.fix_rate unset by default and accepts a boolean', () => {
       expect(loadConfigFromContent('').metrics?.fix_rate).toBeUndefined();
@@ -448,10 +420,10 @@ memory:
         .toThrow(/^Invalid config in cfg\/manki\.yml: /);
     });
 
-    it('accepts `review_level` and `review_thresholds` with a deprecation warning and drops them', () => {
-      const config = loadConfigFromContent('review_level: large\nreview_thresholds:\n  small: 500\n  medium: 100\n');
+    it('accepts `review_level`, `review_thresholds` and `stats` with a deprecation warning and drops them', () => {
+      const config = loadConfigFromContent('review_level: large\nreview_thresholds:\n  small: 500\n  medium: 100\nstats:\n  hidden: false\n');
       expect(config).toEqual(DEFAULT_CONFIG);
-      for (const key of ['review_level', 'review_thresholds']) {
+      for (const key of ['review_level', 'review_thresholds', 'stats']) {
         expect(core.warning).toHaveBeenCalledWith(expect.stringContaining(`\`${key}\` is deprecated and ignored`));
       }
       expect(core.warning).not.toHaveBeenCalledWith(expect.stringContaining('Unknown config key'));

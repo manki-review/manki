@@ -1,10 +1,11 @@
 import * as core from '@actions/core';
+import { randomBytes } from 'crypto';
 
-import { buildDashboard, titleToSlug, formatBlockingPriorThreads, formatContextBlock, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, truncateContextToFitBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded } from './github';
+import { buildDashboard, titleToSlug, formatBlockingPriorThreads, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded } from './github';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
-import { DEFAULT_CONFIG } from './config';
 import { paginateSinglePage, TEST_BOT } from './test-utils';
 import { withMarkers } from './utils';
+import { extractReviewRecords } from './review-record';
 import type { PreviousFinding } from './recap';
 
 const CUSTOM_APP_BOT: BotIdentity = { logins: ['acme-reviewer[bot]'] };
@@ -750,83 +751,6 @@ describe('formatStatsOneLiner', () => {
   });
 });
 
-describe('formatContextBlock', () => {
-  it('wraps the round context in a collapsed details block with JSON', () => {
-    const ctx = makeContext({
-      meta: {
-        prNumber: 10, commitSha: 'def456', round: 2, timestamp: '2026-01-01T00:00:00.000Z',
-        mankiVersion: '4.7.0',
-      },
-      findings: { count: 2, severityCounts: { blocker: 1, warning: 0, suggestion: 1, nitpick: 0 }, entries: [] },
-      verdict: 'APPROVE',
-    });
-    const result = formatContextBlock(ctx);
-    expect(result).toContain('<details>');
-    expect(result).toContain('<summary>Manki context</summary>');
-    expect(result).toContain('```json');
-    expect(result).toContain('"reviewer": "claude-sonnet-4-20250514"');
-    expect(result).toContain('"count": 2');
-    expect(result).toContain('"verdict": "APPROVE"');
-    expect(result).toContain('</details>');
-    expect(result).not.toContain('Review stats');
-  });
-
-  it('escapes triple-backtick runs in the serialized JSON to avoid breaking the code fence', () => {
-    const ctx = makeContext({ judge: { summary: 'Use ```json``` fences in examples.' } });
-    const result = formatContextBlock(ctx);
-    // The JSON blob between the opening ```json fence and closing ``` must not
-    // contain a raw triple-backtick sequence that would close the fence early.
-    const fenceOpen = result.indexOf('```json\n');
-    const fenceClose = result.indexOf('\n```\n', fenceOpen + 8);
-    const jsonBlob = result.slice(fenceOpen + 8, fenceClose);
-    expect(jsonBlob).not.toContain('```');
-    expect(result).toContain('\\u0060\\u0060\\u0060');
-  });
-
-  it('escapes a single backtick in a string value to \\u0060', () => {
-    const ctx = makeContext({ judge: { summary: 'call `foo()` here' } });
-    const result = formatContextBlock(ctx);
-    expect(result).toContain('\\u0060foo()\\u0060');
-    expect(result).not.toContain('`foo()`');
-  });
-
-  it('surfaces threadEvaluations from the judge block in the hidden metadata payload', () => {
-    const ctx = makeContext({
-      judge: {
-        summary: 'Done.',
-        threadEvaluations: [
-          { threadId: 'PRRT_abc', status: 'addressed', reason: 'Fix landed in diff.' },
-          { threadId: 'PRRT_def', status: 'not_addressed', reason: 'Code still flags.' },
-        ],
-      },
-    });
-    const result = formatContextBlock(ctx, true);
-    const inner = result.slice('<!-- manki-context: '.length, -' -->'.length);
-    const parsed = JSON.parse(inner) as RoundContext;
-    expect(parsed.judge.threadEvaluations).toEqual([
-      { threadId: 'PRRT_abc', status: 'addressed', reason: 'Fix landed in diff.' },
-      { threadId: 'PRRT_def', status: 'not_addressed', reason: 'Code still flags.' },
-    ]);
-  });
-
-  it('omits threadEvaluations from the hidden metadata payload when the array is absent', () => {
-    const ctx = makeContext({ judge: { summary: 'Done.' } });
-    const result = formatContextBlock(ctx, true);
-    const inner = result.slice('<!-- manki-context: '.length, -' -->'.length);
-    const parsed = JSON.parse(inner) as RoundContext;
-    expect(parsed.judge.threadEvaluations).toBeUndefined();
-  });
-
-  it('omits threadEvaluations from the hidden metadata payload when the array is empty', () => {
-    const ctx = makeContext({ judge: { summary: 'Done.', threadEvaluations: [] } });
-    const result = formatContextBlock(ctx, true);
-    const inner = result.slice('<!-- manki-context: '.length, -' -->'.length);
-    const parsed = JSON.parse(inner) as RoundContext;
-    expect(parsed.judge.threadEvaluations).toBeUndefined();
-  });
-
-});
-
 describe('roundContextToFlatAliases', () => {
   it('round-trips the flat-alias projection for a representative round', () => {
     const ctx = makeContext({
@@ -860,168 +784,6 @@ describe('roundContextToFlatAliases', () => {
     const aliases = roundContextToFlatAliases(ctx);
     expect(aliases.findingsRaw).toBe(4);
     expect(aliases.findingsDropped).toBe(0);
-  });
-
-  it('hidden mode emits a single HTML comment with no details/code-fence', () => {
-    const ctx = makeContext();
-    const result = formatContextBlock(ctx, true);
-    expect(result.startsWith('<!-- manki-context: ')).toBe(true);
-    expect(result.endsWith(' -->')).toBe(true);
-    expect(result).not.toContain('<details>');
-    expect(result).not.toContain('<summary>');
-    expect(result).not.toContain('```');
-    expect(result.split('\n')).toHaveLength(1);
-  });
-
-  it('hidden mode neutralises `-->` inside the JSON payload', () => {
-    const ctx = makeContext({ judge: { summary: 'closes html comment with --> here' } });
-    const result = formatContextBlock(ctx, true);
-    const inner = result.slice('<!-- manki-context: '.length, -' -->'.length);
-    expect(inner).not.toContain('-->');
-    expect(inner).toContain('--\\u003E');
-  });
-
-  it('hidden mode neutralises `--!>` inside the JSON payload', () => {
-    const ctx = makeContext({ judge: { summary: 'bang close --!> here' } });
-    const result = formatContextBlock(ctx, true);
-    const inner = result.slice('<!-- manki-context: '.length, -' -->'.length);
-    expect(inner).not.toContain('--!>');
-    expect(inner).toContain('--!\\u003E');
-  });
-
-  it('hidden mode JSON round-trips back to the original context after un-escaping', () => {
-    const ctx = makeContext({ judge: { summary: 'arrow --> token preserved' } });
-    const result = formatContextBlock(ctx, true);
-    const inner = result.slice('<!-- manki-context: '.length, -' -->'.length);
-    const parsed = JSON.parse(inner) as RoundContext;
-    expect(parsed).toEqual(ctx);
-    expect(parsed.judge.summary).toBe('arrow --> token preserved');
-  });
-
-  it('hidden mode --!> round-trips back to original value', () => {
-    const ctx = makeContext({ judge: { summary: 'bang close --!> here' } });
-    const result = formatContextBlock(ctx, true);
-    const inner = result.slice('<!-- manki-context: '.length, -' -->'.length);
-    const parsed = JSON.parse(inner) as RoundContext;
-    expect(parsed.judge.summary).toBe('bang close --!> here');
-  });
-
-  describe('sanitizeHtmlCommentJson (via formatContextBlock hidden path)', () => {
-    it('replaces all --> occurrences', () => {
-      const ctx = makeContext({ judge: { summary: '--> first --> second' } });
-      const result = formatContextBlock(ctx, true);
-      const inner = result.slice('<!-- manki-context: '.length, -' -->'.length);
-      expect(inner).not.toContain('-->');
-      expect((inner.match(/--\\u003E/g) ?? []).length).toBe(2);
-    });
-
-    it('is a no-op when no --> is present', () => {
-      const ctx = makeContext({ judge: { summary: 'clean summary' } });
-      const result = formatContextBlock(ctx, true);
-      const inner = result.slice('<!-- manki-context: '.length, -' -->'.length);
-      expect(JSON.parse(inner).judge.summary).toBe('clean summary');
-    });
-  });
-});
-
-describe('truncateContextToFitBody', () => {
-  it('returns original context unchanged when body is already within budget', () => {
-    const ctx = makeContext();
-    const render = (c: RoundContext) => JSON.stringify(c);
-    const { context: out, droppedCount, summaryCapped } = truncateContextToFitBody(ctx, render, 1_000_000);
-    expect(droppedCount).toBe(0);
-    expect(summaryCapped).toBe(false);
-    expect(out).toBe(ctx);
-  });
-
-  it('is idempotent — calling twice on an already-truncated context is a no-op', () => {
-    const entries: FindingFingerprintEntry[] = Array.from({ length: 50 }, (_, i) => ({
-      fingerprint: { file: `src/f-${i}.ts`, lineStart: i, lineEnd: i, slug: 'slug-'.repeat(20) + i },
-      severity: 'nitpick' as const,
-    }));
-    const ctx = makeContext({
-      findings: { count: entries.length, severityCounts: { blocker: 0, warning: 0, suggestion: 0, nitpick: entries.length }, entries },
-    });
-    const render = (c: RoundContext) => JSON.stringify(c);
-    const budget = render(ctx).length - 100;
-    const { context: once } = truncateContextToFitBody(ctx, render, budget);
-    expect(once.findings.entries.length).toBeLessThan(entries.length);
-    const { context: twice, droppedCount } = truncateContextToFitBody(once, render, budget);
-    expect(droppedCount).toBe(0);
-    expect(twice.findings.entries).toEqual(once.findings.entries);
-  });
-
-  it('returns over-budget context without truncated flag when no entries were dropped', () => {
-    const ctx = makeContext({
-      judge: { summary: 'x'.repeat(200) },
-      findings: { count: 0, severityCounts: { blocker: 0, warning: 0, suggestion: 0, nitpick: 0 }, entries: [] },
-    });
-    const render = (c: RoundContext) => JSON.stringify(c);
-    const { context: out, droppedCount } = truncateContextToFitBody(ctx, render, 1);
-    expect(droppedCount).toBe(0);
-    expect(out.findings.entries).toEqual([]);
-    expect(out.findings.truncated).toBeUndefined();
-    expect(render(out).length).toBeGreaterThan(1);
-  });
-
-  it('truncates judge.summary when it alone exceeds budget after entries are exhausted', () => {
-    const longSummary = 'a'.repeat(3000);
-    const ctx = makeContext({
-      judge: { summary: longSummary },
-      findings: { count: 0, severityCounts: { blocker: 0, warning: 0, suggestion: 0, nitpick: 0 }, entries: [] },
-    });
-    const render = (c: RoundContext) => JSON.stringify(c);
-    // Set budget just below the size of the bare context with the long summary so
-    // summary truncation is what pulls it under.
-    const fullSize = render(ctx).length;
-    const budget = fullSize - 500;
-    const { context: out, droppedCount, summaryCapped } = truncateContextToFitBody(ctx, render, budget);
-    expect(droppedCount).toBe(0);
-    expect(summaryCapped).toBe(true);
-    expect(out.judge.summary.length).toBeLessThan(longSummary.length);
-    // safeTruncate(summary, 2000) yields at most 2003 chars (2000 + ellipsis)
-    expect(out.judge.summary.length).toBeLessThanOrEqual(2003);
-    expect(render(out).length).toBeLessThanOrEqual(budget);
-  });
-
-  it('drops ignore entries before nitpick entries', () => {
-    const entries: FindingFingerprintEntry[] = [
-      { fingerprint: { file: 'f.ts', lineStart: 1, lineEnd: 1, slug: 'a' }, severity: 'ignore' },
-      { fingerprint: { file: 'f.ts', lineStart: 2, lineEnd: 2, slug: 'b' }, severity: 'nitpick' },
-    ];
-    const ctx = makeContext({ findings: { count: 2, severityCounts: {}, entries } });
-    const render = (c: RoundContext) => JSON.stringify(c);
-    // Budget must fit one entry with `truncated: true` but not two entries.
-    const oneEntryTruncated = makeContext({ findings: { count: 1, severityCounts: {}, entries: [entries[1]], truncated: true } });
-    const budget = render(oneEntryTruncated).length;
-    const { context: out } = truncateContextToFitBody(ctx, render, budget);
-    expect(out.findings.entries.map(e => e.severity)).toEqual(['nitpick']);
-  });
-
-  it('drops unknown entries before blocker entries', () => {
-    const entries: FindingFingerprintEntry[] = [
-      { fingerprint: { file: 'f.ts', lineStart: 1, lineEnd: 1, slug: 'a' }, severity: 'unknown' },
-      { fingerprint: { file: 'f.ts', lineStart: 2, lineEnd: 2, slug: 'b' }, severity: 'blocker' },
-    ];
-    const ctx = makeContext({ findings: { count: 2, severityCounts: {}, entries } });
-    const render = (c: RoundContext) => JSON.stringify(c);
-    // Budget must fit one entry with `truncated: true` but not two entries.
-    const oneEntryTruncated = makeContext({ findings: { count: 1, severityCounts: {}, entries: [entries[1]], truncated: true } });
-    const budget = render(oneEntryTruncated).length;
-    const { context: out } = truncateContextToFitBody(ctx, render, budget);
-    expect(out.findings.entries.map(e => e.severity)).toEqual(['blocker']);
-  });
-
-  it('does not set summaryCapped when judge.summary is already within 2000 chars', () => {
-    const shortSummary = 'short summary';
-    const ctx = makeContext({
-      judge: { summary: shortSummary },
-      findings: { count: 0, severityCounts: {}, entries: [] },
-    });
-    const render = (c: RoundContext) => JSON.stringify(c) + 'x'.repeat(1000);
-    const { summaryCapped, context: out } = truncateContextToFitBody(ctx, render, 1);
-    expect(summaryCapped).toBe(false);
-    expect(out.judge.summary).toBe(shortSummary);
   });
 });
 
@@ -1089,117 +851,58 @@ describe('postReview with context', () => {
     expect(body).not.toContain('Manki context');
   });
 
-  it('truncates findings.entries in priority order when body exceeds 60k chars', async () => {
+  it('keeps a record that would not fit as plain JSON whole, compressed in the same review', async () => {
     const result: ReviewResult = {
-      verdict: 'COMMENT',
-      summary: 'Many findings.',
-      findings: [],
-      highlights: [],
-      reviewComplete: true,
-      agentNames: [],
+      verdict: 'COMMENT', summary: 'word '.repeat(4000), findings: [],
+      highlights: [], reviewComplete: true, agentNames: [],
     };
-    // Each fingerprint slug is ~120 chars; 1000 entries with mixed severities push the
-    // serialized JSON over the 60k budget so truncation must drop the lowest-priority
-    // entries first.
-    const longSlug = 'long-slug-token-'.repeat(8);
-    const entries: FindingFingerprintEntry[] = [];
-    for (let i = 0; i < 250; i++) {
-      entries.push({ fingerprint: { file: `src/file-${i}.ts`, lineStart: i, lineEnd: i, slug: `nit-${longSlug}${i}` }, severity: 'nitpick' });
-      entries.push({ fingerprint: { file: `src/file-${i}.ts`, lineStart: i, lineEnd: i, slug: `sug-${longSlug}${i}` }, severity: 'suggestion' });
-      entries.push({ fingerprint: { file: `src/file-${i}.ts`, lineStart: i, lineEnd: i, slug: `warn-${longSlug}${i}` }, severity: 'warning' });
-      entries.push({ fingerprint: { file: `src/file-${i}.ts`, lineStart: i, lineEnd: i, slug: `block-${longSlug}${i}` }, severity: 'blocker' });
-    }
+    const entries: FindingFingerprintEntry[] = Array.from({ length: 1000 }, (_, i) => ({
+      fingerprint: { file: `src/file-${i}.ts`, lineStart: i, lineEnd: i, slug: `slug-${'token-'.repeat(16)}${i}` },
+      severity: 'nitpick',
+    }));
     const ctx = makeContext({
-      findings: { count: entries.length, severityCounts: { blocker: 250, warning: 250, suggestion: 250, nitpick: 250 }, entries },
+      judge: { summary: 'a'.repeat(65000) },
+      findings: { count: entries.length, severityCounts: { nitpick: 1000 }, entries },
     });
 
-    const preTruncationBody = JSON.stringify(ctx);
-    expect(preTruncationBody.length).toBeGreaterThan(60_000);
-
-    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, ctx, 1000, { ...DEFAULT_CONFIG, stats: { hidden: false } });
-    const body = mockCreateReview.mock.calls[0][0].body as string;
-    expect(body.length).toBeLessThanOrEqual(60000);
-
-    const match = body.match(/```json\n([\s\S]*?)\n```/);
-    expect(match).not.toBeNull();
-    const parsed = JSON.parse(match![1]) as RoundContext;
-    expect(parsed.findings.truncated).toBe(true);
-    expect(parsed.findings.entries.length).toBeLessThan(entries.length);
-    // Nitpicks are dropped first, so any survivor must be a higher-priority severity
-    // unless every nitpick was preserved (which would mean no truncation).
-    const bySev = (s: string) => parsed.findings.entries.filter(e => e.severity === s).length;
-    // At least some nitpicks must have been dropped — the budget is tight enough to require it.
-    expect(bySev('nitpick')).toBeLessThan(250);
-    // Nitpicks are always dropped before suggestions. With 1000 entries and 4 tiers the budget
-    // is designed so that suggestions must also be dropped, so we can assert this unconditionally.
-    expect(bySev('nitpick')).toBe(0);
-    const droppedSuggestion = 250 - bySev('suggestion');
-    const droppedWarning = 250 - bySev('warning');
-    const droppedBlocker = 250 - bySev('blocker');
-    // Nitpicks are dropped first: any dropped suggestion implies all nitpicks gone.
-    if (droppedSuggestion > 0) expect(bySev('nitpick')).toBe(0);
-    // Suggestions are dropped before warnings: any dropped warning implies all suggestions gone.
-    if (droppedWarning > 0) expect(bySev('suggestion')).toBe(0);
-    // Warnings are dropped before blockers: any dropped blocker implies all warnings gone.
-    if (droppedBlocker > 0) expect(bySev('warning')).toBe(0);
-
-    expect(warningSpy).toHaveBeenCalledWith(expect.stringMatching(/Manki context truncated: dropped \d+ finding entries/));
-  });
-
-  it('hidden mode renders HTML-comment block instead of `<details>` while preserving the stats line', async () => {
-    const result: ReviewResult = {
-      verdict: 'APPROVE',
-      summary: 'All good.',
-      findings: [],
-      highlights: [],
-      reviewComplete: true,
-      agentNames: [],
-    };
-    const ctx = makeContext({
-      diff: { lines: 200, additions: 150, deletions: 50, filesReviewed: 8, fileTypes: { '.ts': 8 } },
-      reviewers: { agents: ['Security', 'Correctness'] },
-      findings: { count: 3, severityCounts: { blocker: 0, warning: 0, suggestion: 2, nitpick: 1 }, entries: [] },
-      verdict: 'APPROVE',
-    });
-    const config = { ...DEFAULT_CONFIG, stats: { hidden: true } };
-
-    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, ctx, 60000, config);
-    const body = mockCreateReview.mock.calls[0][0].body as string;
-    expect(body).toContain('<!-- manki-stats: 3 findings (2 suggestions, 1 nitpick), 200 lines, 60s -->');
-    expect(body).toContain('<!-- manki-context: ');
-    expect(body).not.toContain('<details>');
-    expect(body).not.toContain('<summary>Manki context</summary>');
-    expect(body).not.toContain('```json');
-    const match = body.match(/<!-- manki-context: ([\s\S]*?) -->/);
-    expect(match).not.toBeNull();
-    const parsed = JSON.parse(match![1]) as RoundContext;
-    expect(parsed.findings.count).toBe(3);
-    expect(parsed.verdict).toBe('APPROVE');
-  });
-
-  it('does not truncate when rendered body is under the 60k budget', async () => {
-    const result: ReviewResult = {
-      verdict: 'APPROVE',
-      summary: 'Small review.',
-      findings: [],
-      highlights: [],
-      reviewComplete: true,
-      agentNames: [],
-    };
-    const ctx = makeContext({
-      findings: {
-        count: 1,
-        severityCounts: { blocker: 0, warning: 0, suggestion: 1, nitpick: 0 },
-        entries: [{ fingerprint: { file: 'src/a.ts', lineStart: 1, lineEnd: 1, slug: 'tiny' }, severity: 'suggestion' }],
-      },
-    });
     await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, ctx, 1000);
     const body = mockCreateReview.mock.calls[0][0].body as string;
-    const match = body.match(/<!-- manki-context: ([\s\S]*?) -->/);
-    const parsed = JSON.parse(match![1]) as RoundContext;
-    expect(parsed.findings.truncated).toBeUndefined();
-    expect(parsed.findings.entries).toHaveLength(1);
-    expect(warningSpy).not.toHaveBeenCalledWith(expect.stringMatching(/Manki context truncated/));
+    expect(body.length).toBeLessThanOrEqual(60000 + 200);
+    expect(body).not.toContain('<!-- manki-context: ');
+    expect(body).toContain('word word');
+    expect(body).not.toContain('*(Review body truncated)*');
+    const { records } = extractReviewRecords(body);
+    expect(records).toHaveLength(1);
+    expect(JSON.parse(records[0])).toEqual(ctx);
+  });
+
+  it('posts a record too large even compressed without its bulky diagnostics, and fails only when the rest is too large too', async () => {
+    const result: ReviewResult = {
+      verdict: 'COMMENT', summary: 'Many findings.', findings: [],
+      highlights: [], reviewComplete: true, agentNames: [],
+    };
+    const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
+    const noise = () => randomBytes(100).toString('hex');
+    const entries: FindingFingerprintEntry[] = [{ fingerprint: { file: 'src/a.ts', lineStart: 1, lineEnd: 1, slug: 'kept' }, severity: 'warning' }];
+    const ctx = makeContext({
+      findings: { count: 1, severityCounts: { warning: 1 }, entries },
+      reviewers: { agents: ['Correctness'], rawFindings: Array.from({ length: 600 }, (_, i) => ({ title: noise(), file: `src/${i}.ts`, line: i, severity: 'nitpick' as const, reviewers: ['Correctness'], description: noise() })) },
+    });
+
+    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, ctx, 1000);
+    const body = mockCreateReview.mock.calls[0][0].body as string;
+    expect(body).toContain('Many findings.');
+    const [record] = extractReviewRecords(body).records.map(r => JSON.parse(r) as RoundContext);
+    expect(record.meta.diagnosticsOmitted).toBe(true);
+    expect(record.reviewers.rawFindings).toBeUndefined();
+    expect(record.findings.entries).toEqual(entries);
+    expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('without per-file and per-finding diagnostics'));
+
+    const huge = makeContext({
+      findings: { count: 600, severityCounts: { nitpick: 600 }, entries: Array.from({ length: 600 }, (_, i) => ({ fingerprint: { file: `src/${i}.ts`, lineStart: i, lineEnd: i, slug: noise() }, severity: 'nitpick' as const, title: noise() })) },
+    });
+    await expect(postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, huge, 1000)).rejects.toThrow('even without its diagnostics');
+    infoSpy.mockRestore();
   });
 
   it('shows 0s for review time when reviewTimeMs is omitted', async () => {
@@ -1210,24 +913,6 @@ describe('postReview with context', () => {
     await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, makeContext());
     const body = mockCreateReview.mock.calls[0][0].body as string;
     expect(body).toContain('0s');
-  });
-
-  it('fires core.warning and caps summary when only judge.summary exceeds budget', async () => {
-    const result: ReviewResult = {
-      verdict: 'APPROVE', summary: '', findings: [],
-      highlights: [], reviewComplete: true, agentNames: [],
-    };
-    const ctx = makeContext({
-      judge: { summary: 'a'.repeat(65000) },
-      findings: { count: 0, severityCounts: {}, entries: [] },
-    });
-    await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, ctx, 0);
-    expect(warningSpy).toHaveBeenCalledWith(expect.stringMatching(/judge summary capped/));
-    const body = mockCreateReview.mock.calls[0][0].body as string;
-    const match = body.match(/<!-- manki-context: ([\s\S]*?) -->/);
-    const parsed = JSON.parse(match![1]) as RoundContext;
-    expect(parsed.findings.truncated).toBeUndefined();
-    expect(parsed.judge.summary.length).toBeLessThanOrEqual(2003);
   });
 });
 
@@ -1279,7 +964,7 @@ describe('postReview body lead', () => {
 
   async function postedBody(result: ReviewResult, existingThreads: PreviousFinding[] = []): Promise<{ body: string; event: string; approvalHeld: boolean }> {
     mockCreateReview.mockClear();
-    const { approvalHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', result, diff, undefined, undefined, undefined, { existingThreads });
+    const { approvalHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', result, diff, undefined, undefined, { existingThreads });
     return { ...mockCreateReview.mock.calls[0][0] as { body: string; event: string }, approvalHeld };
   }
 
@@ -3478,7 +3163,7 @@ describe('postReview fallback paths', () => {
         .map(title => ({ ...offLineBlocker, title }));
       findings[4] = { ...findings[4], file: 'src/renamed.ts', line: 0 };
 
-      await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult(findings), diff, undefined, undefined, undefined, {
+      await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult(findings), diff, undefined, undefined, {
         existingThreads: [
           thread('File thread', 0, 'open'),
           thread('Nearby line thread', 37, 'replied'),
@@ -3502,7 +3187,7 @@ describe('postReview fallback paths', () => {
       const named = (line: number): Finding => ({ ...offLineBlocker, title: 'Floor class weakened by the PR', line, threadId: 'T1' });
 
       for (const line of [2, 40]) {
-        await postReview(octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([named(line)]), outcome: 'ADDRESS_FIRST' }, diff, undefined, undefined, undefined, { existingThreads });
+        await postReview(octokit, 'owner', 'repo', 1, 'sha', { ...buildResult([named(line)]), outcome: 'ADDRESS_FIRST' }, diff, undefined, undefined, { existingThreads });
       }
 
       expect(createReviewComment).not.toHaveBeenCalled();
@@ -3538,12 +3223,14 @@ describe('postReview fallback paths', () => {
       const createReviewComment = jest.fn().mockRejectedValue(Object.assign(new Error('refused'), { status: 422 }));
       const { octokit, updateReview } = makeOctokit(createReviewComment);
       const result = { ...buildResult([offLineBlocker]), summary: 'word '.repeat(11990) };
+      const context = makeContext();
 
-      await postReview(octokit, 'owner', 'repo', 1, 'sha', result, diff);
+      await postReview(octokit, 'owner', 'repo', 1, 'sha', result, diff, context);
 
       const update = updateReview.mock.calls[0][0].body as string;
       expect(update).toContain('*(Review body truncated)*');
-      expect(update).toContain('**Blockers that could not be posted as threads:**\n\n**Refused thread**\n[`src/a.ts:40`](https://github.com/owner/repo/blob/sha/src/a.ts#L40)\nDesc.\n\nReviewed [');
+      expect(extractReviewRecords(update).records.map(r => JSON.parse(r))).toEqual([context]);
+      expect(update).toContain('**Blockers that could not be posted as threads:**\n\n**Refused thread**\n[`src/a.ts:40`](https://github.com/owner/repo/blob/sha/src/a.ts#L40)\nDesc.\n\n<!-- manki-stats: ');
       expect(update.length).toBeLessThanOrEqual(60000 + 200);
     });
 
@@ -3655,7 +3342,7 @@ describe('postReview non-blocking findings', () => {
     const { octokit, createReview } = makeOctokit();
     const existingThreads = [{ title: 'Extract helper', file: 'src/a.ts', line: 5, severity: 'suggestion' as const, status: 'open' as const, threadId: 'T1', markerSlug: 'Extract-helper' }];
 
-    await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([nonBlocking('suggestion', 'Extract helper', 5)]), diff, undefined, undefined, undefined, { existingThreads });
+    await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([nonBlocking('suggestion', 'Extract helper', 5)]), diff, undefined, undefined, { existingThreads });
 
     const review = createReview.mock.calls[0][0];
     expect(review.comments).toEqual([]);
@@ -3675,7 +3362,7 @@ describe('postReview non-blocking findings', () => {
       nonBlocking('suggestion', 'On old code', 3),
       nonBlocking('nitpick', 'Untouched file', 3, { file: 'src/b.ts' }),
       nonBlocking('blocker', 'Old blocker', 3),
-    ]), diff, undefined, undefined, undefined, { interRoundDiff });
+    ]), diff, undefined, undefined, { interRoundDiff });
 
     const review = createReview.mock.calls[0][0];
     expect(review.comments.map((c: { body: string }) => c.body.split('\n')[0])).toEqual(['\u{1F6AB} **Blocker:** Old blocker', '\u2728 **Suggestion, not blocking:** On new code']);

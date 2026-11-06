@@ -520,15 +520,6 @@ export interface ReviewConfig {
     /** When true, a prior-round finding whose thread a human resolved, or Manki resolved as judge-addressed, suppresses matching current findings. */
     suppress_resolved_threads?: boolean;
   };
-  stats?: {
-    /**
-     * When true, the `Manki context` block is rendered as an HTML comment
-     * (`<!-- manki-context: ... -->`) instead of a `<details>` block. Hides
-     * the structured payload from the rendered review while keeping it
-     * machine-readable.
-     */
-    hidden?: boolean;
-  };
   metrics?: {
     /**
      * Records at merge how many posted findings were fixed, dismissed or left untouched.
@@ -869,6 +860,8 @@ export interface RoundMeta {
   trigger?: RoundTrigger;
   /** How the round ended. Optional so older context blocks keep parsing. */
   outcome?: RoundOutcome;
+  /** Set when the record was too large for the review even compressed, and its per-file and per-finding diagnostics were left out. */
+  diagnosticsOmitted?: boolean;
 }
 
 /** Round-cap accounting captured at the moment a round was admitted. */
@@ -1046,6 +1039,8 @@ export interface RoundReviewers {
   /** Reviewer agent names that participated in this round. */
   agents: string[];
   agentMetrics?: RoundAgentMetric[];
+  /** Every finding the finders reported, before suppressions, dedup and the judge. */
+  rawFindings?: RoundRawFinding[];
   /** Kept findings raised only by agents on `models.reviewer`. */
   keptPrimaryOnly?: number;
   /** Kept findings raised only by the second finder. */
@@ -1056,6 +1051,28 @@ export interface RoundReviewers {
   keptOnlyBy?: Record<string, number>;
   /** Kept findings raised by two or more finders. */
   keptByMany?: number;
+}
+
+/** A finding as the finders reported it. */
+export interface RoundRawFinding {
+  title: string;
+  file: string;
+  line: number;
+  severity: FindingSeverity;
+  reviewers: string[];
+  description: string;
+  suggestedFix?: string;
+}
+
+/** A finding the judge dropped, with the judge's reasoning. */
+export interface RoundJudgeDrop {
+  title: string;
+  file: string;
+  line: number;
+  reviewers: string[];
+  reviewerSeverity?: FindingSeverity;
+  judgeConfidence?: 'high' | 'medium' | 'low';
+  judgeNotes?: string;
 }
 
 export interface RoundAgentMetric {
@@ -1091,6 +1108,8 @@ export interface RoundAgentMetric {
 export interface RoundJudge {
   /** Narrative summary written by the judge. */
   summary: string;
+  /** Findings the judge dropped. The kept ones are in `RoundFindings.entries`. */
+  dropped?: RoundJudgeDrop[];
   confidenceDistribution?: { high: number; medium: number; low: number };
   severityChanges?: number;
   /** Findings the judge graded above (`up`) or below (`down`) the reviewer's severity. */
@@ -1192,8 +1211,7 @@ export interface RoundDedup {
    * Per-drop attribution for cross-round dedup. Each entry records the
    * dropped finding title, the prior-round title it matched, and which
    * matcher fired. LLM-stage matches use `matchType: 'llm'`; static
-   * matches use the title-overlap branch that hit. Capped at 50 entries
-   * to bound the context-block size.
+   * matches use the title-overlap branch that hit.
    */
   duplicateMatches?: RoundDedupDuplicateMatch[];
   /**
@@ -1202,7 +1220,7 @@ export interface RoundDedup {
    * never written into `RoundContext`.
    */
   testNitSuppressedCount?: number;
-  /** Suggestions and nitpicks dropped because a CI tool already reports a result on the same file and line. Capped at 50 entries. */
+  /** Suggestions and nitpicks dropped because a CI tool already reports a result on the same file and line. */
   staticSignalMatches?: RoundStaticSignalMatch[];
   durationMs?: number;
 }
@@ -1246,7 +1264,7 @@ export interface RoundRecap {
   priorRoundCount: number;
   /** Count of fingerprints whose `authorReplyClass` flipped during refresh. */
   reclassifiedPriorCount: number;
-  /** Capped list of the actual flips (top N). Omitted when none flipped. */
+  /** The flips. Omitted when none flipped. */
   reclassifiedPriors?: ReclassifiedPrior[];
   /** Security threads the PR author cleared as a repo admin. Omitted when none. */
   securityOverrides?: SecurityOverride[];
@@ -1269,12 +1287,6 @@ export interface RoundFindings {
   count: number;
   severityCounts: Record<string, number>;
   entries: FindingFingerprintEntry[];
-  /**
-   * True when the emit-side budget enforcer dropped one or more entries from
-   * `entries[]` to fit the review-comment body limit. Set by the truncation
-   * helper at emit time, never by upstream pipeline stages.
-   */
-  truncated?: boolean;
 }
 
 export interface FindingFingerprintEntry {

@@ -138,3 +138,11 @@ export async function sendWithParseRetry<R, T>(
   }
   return parse(await send());
 }
+
+/**
+ * Escapes `-->` and `--!>`, which close an HTML comment, inside a JSON payload as `--\u003E` and
+ * `--!\u003E`. JSON parsing turns them back into `>`.
+ */
+export function sanitizeHtmlCommentJson(json: string): string {
+  return json.replace(/--(!?)>/g, '--$1\\u003E');
+}

@@ -5,7 +5,7 @@ import { collectResolvedThreadIds, fingerprintFinding, PreviousFinding, RecapSta
 import { MANKI_VERSION } from './github';
 import { parseModelSpec } from './providers';
 import { routingDigest } from './routing';
-import { CONTRADICTION_TAG, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OpenThread, OWN_PROPOSAL_TAG, ParsedDiff, RATCHET_SUPPRESSED_TAG, ReclassifiedPrior, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ReviewModels, ReviewResult, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundRecap, RoundRouting, RoundStaticAnalysis, RoundTrigger, RoundUsage, RoundUsageStage, SECURITY_TAG, SecurityOverride, SEVERITY_ORDER, ThreadResolutionOverrides } from './types';
+import { CONTRADICTION_TAG, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OpenThread, OWN_PROPOSAL_TAG, ParsedDiff, RATCHET_SUPPRESSED_TAG, ReclassifiedPrior, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ReviewModels, ReviewResult, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundJudgeDrop, RoundRawFinding, RoundRecap, RoundRouting, RoundStaticAnalysis, RoundTrigger, RoundUsage, RoundUsageStage, SECURITY_TAG, SecurityOverride, SEVERITY_ORDER, ThreadResolutionOverrides } from './types';
 
 const ALLOWED_FINGERPRINT_TAGS = new Set<string>([
   OWN_PROPOSAL_TAG,
@@ -237,6 +237,24 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     totalTokens: totalInput + totalOutput,
     ...(Object.keys(perStage).length > 0 && { perStage }),
   };
+  const rawFindingRecords: RoundRawFinding[] = (result.rawFindings ?? []).map(f => ({
+    title: f.title,
+    file: f.file,
+    line: f.line,
+    severity: f.severity,
+    reviewers: f.reviewers,
+    description: f.description,
+    ...(f.suggestedFix && { suggestedFix: f.suggestedFix }),
+  }));
+  const judgeDrops: RoundJudgeDrop[] = allJudged.filter(f => f.severity === 'ignore').map(f => ({
+    title: f.title,
+    file: f.file,
+    line: f.line,
+    reviewers: f.reviewers,
+    ...(f.reviewerSeverity && { reviewerSeverity: f.reviewerSeverity }),
+    ...(f.judgeConfidence && { judgeConfidence: f.judgeConfidence }),
+    ...(f.judgeNotes && { judgeNotes: f.judgeNotes }),
+  }));
   const findingEntries = result.findings.map(f => ({
     fingerprint: fingerprintFinding(f.title, f.file ?? '', f.line || 0),
     ...(f.threadId && { threadId: f.threadId }),
@@ -244,7 +262,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     ...(f.reviewers.length > 0 && { reviewers: f.reviewers }),
     ...(f.suggestedFix && { suggestedFix: f.suggestedFix.slice(0, 300) }),
     ...(f.title && { title: f.title.slice(0, 200) }),
-    ...(f.judgeNotes && { judgeNotes: f.judgeNotes.slice(0, 500) }),
+    ...(f.judgeNotes && { judgeNotes: f.judgeNotes }),
     ...(f.judgeConfidence && { judgeConfidence: f.judgeConfidence }),
     ...(f.tags && f.tags.length > 0 && { tags: f.tags.filter(t => ALLOWED_FINGERPRINT_TAGS.has(t)) }),
     ...(f.originalSeverity && { originalSeverity: f.originalSeverity }),
@@ -274,10 +292,10 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
       deletions: diff.totalDeletions,
       filesReviewed: filteredFiles.length,
       fileTypes,
-      ...(excludedFiles.length > 0 && { excludedFiles: excludedFiles.slice(0, 100) as RoundDiffExcludedFile[] }),
-      ...(diff.binarySkipped && diff.binarySkipped.length > 0 && { binarySkipped: diff.binarySkipped.slice(0, 100) }),
+      ...(excludedFiles.length > 0 && { excludedFiles }),
+      ...(diff.binarySkipped && diff.binarySkipped.length > 0 && { binarySkipped: diff.binarySkipped }),
       oversizedHandled: false,
-      perFile: filteredFiles.slice(0, 200).map((f): RoundDiffPerFile => ({
+      perFile: filteredFiles.map((f): RoundDiffPerFile => ({
         path: f.path,
         additions: f.additions ?? 0,
         deletions: f.deletions ?? 0,
@@ -320,6 +338,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     reviewers: {
       agents: result.agentNames,
       ...(agentMetrics && { agentMetrics }),
+      ...(rawFindingRecords.length > 0 && { rawFindings: rawFindingRecords }),
       ...corroboration,
     },
     ...(result.routing && {
@@ -335,6 +354,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     }),
     judge: {
       summary: result.summary,
+      ...(judgeDrops.length > 0 && { dropped: judgeDrops }),
       confidenceDistribution,
       severityChanges,
       ...((regrades.up > 0 || regrades.down > 0) && { regrades }),
@@ -365,9 +385,9 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
       ...(result.staticDedupCount != null && { staticDropped: result.staticDedupCount }),
       ...(result.llmDedupCount != null && { llmDropped: result.llmDedupCount }),
       ...(mergedDuplicates > 0 && { sameRoundLlmDropped: mergedDuplicates }),
-      ...(result.duplicateMatches && result.duplicateMatches.length > 0 && { duplicateMatches: result.duplicateMatches.slice(0, 50) }),
+      ...(result.duplicateMatches && result.duplicateMatches.length > 0 && { duplicateMatches: result.duplicateMatches }),
       ...(result.testNitSuppressedCount != null && result.testNitSuppressedCount > 0 && { testNitSuppressedCount: result.testNitSuppressedCount }),
-      ...(result.staticSignalMatches && result.staticSignalMatches.length > 0 && { staticSignalMatches: result.staticSignalMatches.slice(0, 50) }),
+      ...(result.staticSignalMatches && result.staticSignalMatches.length > 0 && { staticSignalMatches: result.staticSignalMatches }),
       ...(result.dedupDurationMs != null && { durationMs: result.dedupDurationMs }),
     },
     memory: {

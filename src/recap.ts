@@ -3,6 +3,7 @@ import * as github from '@actions/github';
 import { LLMClient } from './providers';
 import { APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, isRepoAdmin, isTrustedAssociation, LOW_CONFIDENCE_NOTE, paginateGraphql, titleToSlug } from './github';
 import { findPriorThreadId } from './finding-fingerprint';
+import { extractReviewRecords, hasReviewRecord } from './review-record';
 import { matchesSuppression, Suppression } from './memory';
 import { isSecurityFinding } from './review';
 import { AuthorReplyClass, DuplicateMatchType, Finding, FindingFingerprint, FindingMetadata, FindingSeverity, InPrSuppression, InPrSuppressionReason, ReclassifiedPrior, migrateLegacyPrType, migrateLegacySeverity, OpenThreadsState, RoundContext, SecurityOverride, SEVERITY_TOKEN_PATTERN } from './types';
@@ -316,14 +317,11 @@ interface RecapState {
   reclassifiedPriors?: ReclassifiedPrior[];
 }
 
-const CONTEXT_BLOCK_DETAILS_RE = /<details>\s*<summary>Manki context<\/summary>\s*```json\s*([\s\S]*?)```\s*<\/details>/g;
-const CONTEXT_BLOCK_HTML_COMMENT_RE = /<!-- manki-context: (.+?) -->/g;
 const REQUIRED_ROUND_CONTEXT_KEYS = ['meta', 'config', 'diff', 'models', 'planner', 'reviewers', 'judge', 'dedup', 'memory', 'findings', 'usage', 'verdict'] as const;
 
 /**
- * Parse Manki context blocks from PR-level review bodies. Supports both the
- * `<details>` wrapper (visible aggregate review) and the `<!-- manki-context: ... -->`
- * wrapper (hidden per-round review). Unknown future fields on `RoundContext`
+ * Parse round records from PR-level review bodies, in every format `extractReviewRecords`
+ * reads. Unknown future fields on `RoundContext`
  * are preserved opaquely. Duplicates on `meta.round` are deduped by keeping
  * the entry with the highest review id (latest-posted). Result is sorted
  * ascending by `meta.round`.
@@ -339,15 +337,9 @@ function parseContextBlocks(
 
   for (const review of reviews) {
     const reviewUrl = `https://github.com/${owner}/${repo}/pull/${prNumber}#pullrequestreview-${review.id}`;
-    const candidates: string[] = [];
-
-    for (const m of review.body.matchAll(CONTEXT_BLOCK_DETAILS_RE)) {
-      candidates.push(m[1]);
-    }
-    if (candidates.length === 0) {
-      for (const m of review.body.matchAll(CONTEXT_BLOCK_HTML_COMMENT_RE)) {
-        candidates.push(m[1]);
-      }
+    const { records: candidates, errors } = extractReviewRecords(review.body);
+    for (const error of errors) {
+      core.warning(`Skipping undecodable Manki context block at ${reviewUrl}: ${error}`);
     }
 
     for (const raw of candidates) {
@@ -558,8 +550,6 @@ function attachPriorThreadIds(rounds: RoundContext[], previousFindings: Previous
   }));
 }
 
-/** Cap on `reclassifiedPriors[]` to bound context-block size. */
-const RECLASSIFIED_PRIORS_CAP = 50;
 
 /**
  * Re-derive `authorReplyClass` on each prior-round fingerprint from the live
@@ -606,7 +596,7 @@ function refreshAuthorReplyClass(
         const prev = entry.authorReplyClass ?? 'none';
         if (next !== prev) {
           reclassifiedPriorCount++;
-          if (entry.threadId && reclassifiedPriors.length < RECLASSIFIED_PRIORS_CAP) {
+          if (entry.threadId) {
             reclassifiedPriors.push({ threadId: entry.threadId, from: prev, to: next });
           }
         }
@@ -636,11 +626,10 @@ async function fetchPriorRoundContexts(
       per_page: 100,
     });
     const botReviews = reviews.filter((r): r is typeof r & { body: string; id: number } => !!r.body && isBotLogin(bot, r.user?.login));
-    const hasContext = (body: string) => body.includes('<summary>Manki context</summary>') || body.includes('<!-- manki-context:');
-    const candidates = botReviews.filter(r => hasContext(r.body)).map(r => ({ body: r.body, id: r.id }));
+    const candidates = botReviews.filter(r => hasReviewRecord(r.body)).map(r => ({ body: r.body, id: r.id }));
     // A round review quotes model text, which could echo the marker, so only a review without a round context counts.
     const lastApprovalAt = botReviews
-      .filter(r => !hasContext(r.body) && r.body.startsWith(APPROVED_LINE) && r.body.includes(AUTO_APPROVE_MARKER))
+      .filter(r => !hasReviewRecord(r.body) && r.body.startsWith(APPROVED_LINE) && r.body.includes(AUTO_APPROVE_MARKER))
       .at(-1)?.submitted_at;
     return { priorRounds: parseContextBlocks(candidates, owner, repo, prNumber), ...(lastApprovalAt && { lastApprovalAt }) };
   } catch (error) {
