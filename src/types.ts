@@ -20,10 +20,11 @@ export function migrateLegacySeverity(severity: string): FindingSeverity | strin
   return severity;
 }
 
-/** Whether a finding of this severity blocks the PR, so it is posted as a review thread. */
+/** Whether a finding of this severity is posted as a review thread, unless it is a follow-up. */
 export function isBlockingSeverity(severity: FindingSeverity): boolean {
   return severity === 'blocker' || severity === 'warning';
 }
+
 
 /** Regex source matching all current and legacy severity tokens. */
 export const SEVERITY_TOKEN_PATTERN = 'blocker|warning|suggestion|nitpick|ignore|required|nit';
@@ -107,7 +108,6 @@ export interface VerdictTraceEntry {
  */
 export interface VerdictTrace {
   survivingBlockers: VerdictTraceEntry[];
-  novelWarnings: VerdictTraceEntry[];
   unresolvedPriors: VerdictTraceEntry[];
 }
 
@@ -219,7 +219,7 @@ export interface NeedsHuman {
   blockers: VerdictTraceEntry[];
 }
 
-export type VerdictReason = 'required_present' | 'novel_suggestion' | 'prior_unaddressed' | 'only_nit_or_suggestion' | 'verdict_reader';
+export type VerdictReason = 'required_present' | 'prior_unaddressed' | 'only_nit_or_suggestion' | 'verdict_reader';
 
 /** The verdict reader's answer on a round where no finding blocked. */
 export interface VerdictReport {
@@ -511,9 +511,8 @@ export interface ReviewConfig {
   review_passes?: number;
   convergence?: {
     /**
-     * Hard cap on the number of automatic review rounds since Manki last approved the PR at the full bar. The last round
-     * blocks on blockers only. After it, automatic review is paused until
-     * `@manki review`, which runs one round at the same bar. `0` disables the cap.
+     * Hard cap on the number of automatic review rounds since Manki last approved the PR. After the last round,
+     * automatic review is paused until `@manki review`, which runs one more round. `0` disables the cap.
      */
     max_auto_rounds?: number;
     /** Glob patterns for test files. Suggestion/nitpick findings on these paths are dropped on round 2+. */

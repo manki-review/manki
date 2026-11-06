@@ -1215,7 +1215,6 @@ function blockOnOpenThreads(result: ReviewResult, threads: OpenThread[]): void {
   result.verdictReason = 'prior_unaddressed';
   result.verdictTrace = {
     survivingBlockers: [],
-    novelWarnings: [],
     unresolvedPriors: blocking.map(t => ({
       file: t.file,
       title: t.title,
@@ -1514,7 +1513,6 @@ async function runFullReview(
       prAuthorLogin,
       interRoundDiff,
       headSha: commitSha,
-      blockersOnly: paused,
       finalRound: !paused && countsTowardCap && maxAutoRounds > 0 && capRounds + 1 === maxAutoRounds,
     });
     // A model call the stop aborted can end the round incomplete, and that round must not be posted.

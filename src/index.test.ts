@@ -2386,7 +2386,7 @@ describe('runFullReview orchestration', () => {
       agentNames: ['security', 'general'],
       allJudgedFindings: allJudged,
       rawFindings,
-      verdictReason: 'novel_suggestion',
+      verdictReason: 'required_present',
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
 
@@ -2406,7 +2406,7 @@ describe('runFullReview orchestration', () => {
       severityChanges: 2,
       regrades: { up: 2, down: 1 },
       mergedDuplicates: 2,
-      verdictReason: 'novel_suggestion',
+      verdictReason: 'required_present',
     }));
     expect(statsArg!.findings.entries.map(e => [e.severity, e.originalSeverity, e.reviewerSeverity])).toEqual([
       ['blocker', undefined, 'warning'],
@@ -3190,7 +3190,6 @@ describe('runFullReview orchestration', () => {
           survivingBlockers: [
             { file: 'src/app.ts', title: 'Critical bug', fingerprint: 'src/app.ts:3:3:critical-bug' },
           ],
-          novelWarnings: [],
           unresolvedPriors: [],
         },
       });
@@ -3201,7 +3200,6 @@ describe('runFullReview orchestration', () => {
       expect(roundContext!.judge.verdictReason).toBe('required_present');
       expect(roundContext!.judge.verdictTrace?.survivingBlockers).toHaveLength(1);
       expect(roundContext!.judge.verdictTrace?.survivingBlockers[0].title).toBe('Critical bug');
-      expect(roundContext!.judge.verdictTrace?.novelWarnings).toEqual([]);
       expect(roundContext!.judge.verdictTrace?.unresolvedPriors).toEqual([]);
     });
 
@@ -5610,21 +5608,21 @@ describe('runFullReview orchestration', () => {
       jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [reviewableFile], excluded: [] });
     });
 
-    it('runs review normally when prior rounds are below the cap, at the full bar until the last round', async () => {
+    it('runs review normally when prior rounds are below the cap, and marks the last round', async () => {
       jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(5));
       seedPriorRounds(priorRounds(3));
 
       await callRunFullReview();
 
-      expect(jest.mocked(reviewModule.runReview).mock.calls[0][1]).toMatchObject({ headSha: 'abc123', blockersOnly: false, finalRound: false });
+      expect(jest.mocked(reviewModule.runReview).mock.calls[0][1]).toMatchObject({ headSha: 'abc123', finalRound: false });
 
       seedPriorRounds(priorRounds(4));
       await callRunFullReview();
 
-      expect(jest.mocked(reviewModule.runReview).mock.calls[1][1]).toMatchObject({ headSha: 'abc123', blockersOnly: false, finalRound: true });
+      expect(jest.mocked(reviewModule.runReview).mock.calls[1][1]).toMatchObject({ headSha: 'abc123', finalRound: true });
     });
 
-    it('pauses after a round that did not converge, and `@manki review` then runs at the blockers-only bar', async () => {
+    it('pauses after a round that did not converge, and `@manki review` then runs a round that is not the last', async () => {
       jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(5));
       const rounds = priorRounds(2).map(roundContextFromLegacy);
       rounds[1].meta.outcome = 'NOT_CONVERGING';
@@ -5685,7 +5683,7 @@ describe('runFullReview orchestration', () => {
       jest.mocked(reviewModule.runReview).mockClear();
       await forcedRound();
 
-      expect(jest.mocked(reviewModule.runReview).mock.calls[0][1]).toMatchObject({ headSha: 'abc123', blockersOnly: true, finalRound: false });
+      expect(jest.mocked(reviewModule.runReview).mock.calls[0][1]).toMatchObject({ headSha: 'abc123', finalRound: false });
       expect(mockOctokitInstance.rest.issues.deleteComment).toHaveBeenCalledWith(expect.objectContaining({ comment_id: 502 }));
       expect(mockOctokitInstance.rest.issues.updateComment).toHaveBeenCalledWith(expect.objectContaining({
         comment_id: 501, body: `Automatic review was paused. Review resumed on \`abc123\`.\n\n<!-- manki-bot -->\n${FORCE_CAP_MARKER}`,
@@ -5705,6 +5703,8 @@ describe('runFullReview orchestration', () => {
         thread('Name could be clearer', 'suggestion', 'open', 4),
         { ...thread('Token logged', 'blocker', 'resolved', 5), reopen: true },
         thread('Posted before severity markers', 'unknown', 'open', 6),
+        { ...thread('Token in error message', 'warning', 'open', 7), isSecurity: true },
+        { ...thread('Secret in URL', 'blocker', 'open', 8), isSecurity: true },
       ]);
 
       await callRunFullReview();
@@ -5728,9 +5728,9 @@ describe('runFullReview orchestration', () => {
         '',
         '**Still open from earlier reviews:**',
         `- \`src/app.ts:1\`: Null check missing ${link(1)}`,
-        `- \`src/app.ts:2\`: Retry never stops ${link(2)}`,
         `- \`src/app.ts:5\`: Token logged ${link(5)}`,
         `- \`src/app.ts:6\`: Posted before severity markers ${link(6)}`,
+        `- \`src/app.ts:8\`: Secret in URL ${link(8)}`,
         '',
         'Tick the box to run another round, or comment `@manki review`:',
         '',
@@ -5758,25 +5758,25 @@ describe('runFullReview orchestration', () => {
       rounds[2].meta.outcome = 'READY';
       await callRunFullReview();
 
-      expect(jest.mocked(reviewModule.runReview).mock.calls[0][1]).toMatchObject({ blockersOnly: false, finalRound: true });
+      expect(jest.mocked(reviewModule.runReview).mock.calls[0][1]).toMatchObject({ finalRound: true });
 
       // Only rounds that reviewed a new change count. A round on the same commit, or on another commit with the same change, does not.
       const runs = jest.mocked(reviewModule.runReview).mock.calls;
       rounds[2].verdict = 'REQUEST_CHANGES';
       rounds[3].meta.commitSha = rounds[2].meta.commitSha;
       await callRunFullReview();
-      expect(runs[1][1]).toMatchObject({ blockersOnly: false, finalRound: true });
+      expect(runs[1][1]).toMatchObject({ finalRound: true });
 
       rounds[4].diff.changeDigest = 'same-change';
       rounds[5].diff.changeDigest = 'same-change';
       await callRunFullReview();
-      expect(runs[2][1]).toMatchObject({ blockersOnly: false, finalRound: false });
+      expect(runs[2][1]).toMatchObject({ finalRound: false });
 
       // A round on the commit the last round reviewed does not count, so it is not the last round either.
       delete rounds[5].diff.changeDigest;
       rounds[6].meta.commitSha = 'abc123';
       await callRunFullReview();
-      expect(runs[3][1]).toMatchObject({ blockersOnly: false, finalRound: false });
+      expect(runs[3][1]).toMatchObject({ finalRound: false });
 
       // An approval outside a round, such as auto-approve after the last blocking thread is resolved, resets the count
       // and lifts a pause by a round that did not converge.
@@ -5788,11 +5788,11 @@ describe('runFullReview orchestration', () => {
 
       jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: dated.slice(0, 4), lastApprovalAt: '2025-01-01T12:00:00Z' });
       await callRunFullReview();
-      expect(runs[4][1]).toMatchObject({ blockersOnly: false, finalRound: false });
+      expect(runs[4][1]).toMatchObject({ finalRound: false });
 
       jest.mocked(recapModule.fetchRecapState).mockResolvedValue({ previousFindings: [], priorRounds: dated, lastApprovalAt: '2025-01-05T12:00:00Z' });
       await callRunFullReview();
-      expect(runs[5][1]).toMatchObject({ blockersOnly: false, finalRound: false });
+      expect(runs[5][1]).toMatchObject({ finalRound: false });
     });
 
     it('bypasses the cap when skipCap is true', async () => {
@@ -5808,7 +5808,7 @@ describe('runFullReview orchestration', () => {
       expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
     });
 
-    it('runs a Force review round at the blockers-only bar while paused', async () => {
+    it('runs a Force review round while paused', async () => {
       jest.mocked(configModule.loadConfig).mockReturnValue(memoryEnabledConfig(5));
       seedPriorRounds(priorRounds(5));
 
@@ -5818,7 +5818,7 @@ describe('runFullReview orchestration', () => {
         { forceReview: true },
       );
 
-      expect(jest.mocked(reviewModule.runReview).mock.calls[0][1]).toMatchObject({ blockersOnly: true, finalRound: false });
+      expect(jest.mocked(reviewModule.runReview).mock.calls[0][1]).toMatchObject({ finalRound: false });
       expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalledWith(
         expect.objectContaining({ body: expect.stringContaining('Automatic review is paused') }),
       );
@@ -5929,7 +5929,7 @@ describe('runFullReview orchestration', () => {
       await run();
 
       expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
-      expect(jest.mocked(reviewModule.runReview).mock.calls[0][1]).toMatchObject({ blockersOnly: true, finalRound: false });
+      expect(jest.mocked(reviewModule.runReview).mock.calls[0][1]).toMatchObject({ finalRound: false });
     });
   });
 
@@ -6900,7 +6900,7 @@ describe('force review checkbox', () => {
     expect(mockPullsGet).toHaveBeenCalled();
   });
 
-  it('in-progress tickbox runs a blockers-only round while the cap pauses automatic review', async () => {
+  it('in-progress tickbox runs a round while the cap pauses automatic review', async () => {
     jest.mocked(core.getInput).mockImplementation((name: string) =>
       name === 'anthropic_api_key' ? 'test-api-key' : '',
     );
@@ -6937,7 +6937,7 @@ describe('force review checkbox', () => {
 
     await run();
 
-    expect(jest.mocked(reviewModule.runReview).mock.calls[0][1]).toMatchObject({ blockersOnly: true, finalRound: false });
+    expect(jest.mocked(reviewModule.runReview).mock.calls[0][1]).toMatchObject({ finalRound: false });
     expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalledWith(
       expect.objectContaining({ body: expect.stringContaining('Automatic review is paused') }),
     );

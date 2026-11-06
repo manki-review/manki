@@ -125,7 +125,7 @@ function fullyPopulatedContext(): RoundContext {
       severityChanges: 1,
       mergedDuplicates: 2,
       durationMs: 4500,
-      verdictReason: 'novel_suggestion',
+      verdictReason: 'required_present',
       inPrSuppressedCount: 1,
       crossRoundSuppressed: 0,
       crossRoundDemoted: 1,
@@ -235,7 +235,6 @@ describe('RoundContext', () => {
         verdictReason: 'prior_unaddressed',
         verdictTrace: {
           survivingBlockers: [],
-          novelWarnings: [],
           unresolvedPriors: [
             { file: 'src/a.ts', title: 'Race condition', fingerprint: 'src/a.ts:10:10:race-condition', threadId: 'PRRT_a', round: 3 },
           ],

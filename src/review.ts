@@ -19,10 +19,6 @@ import { checkFindingClaims, formatStaticSignals, isAnalyzerSignal, toolAlertFin
 
 const DISMISSED_LINE_TOLERANCE = 5;
 
-// Rounds that block on warnings as well as blockers. Later rounds block on blockers and security
-// warnings, and their other warnings become follow-ups. The bar lives here so no prompt names the round.
-const FULL_BAR_ROUNDS = 2;
-
 // Priors saved before the generalist finders carry this reviewer instead of the judge's `security` tag.
 const LEGACY_SECURITY_AGENT_NAME = 'Security & Safety';
 
@@ -491,9 +487,7 @@ export interface ReviewOptions {
   interRoundDiff?: string;
   /** Commit under review. A prior blocker raised on another commit was followed by a push. */
   headSha?: string;
-  /** Blocks on blockers only whatever the round. Set for the round `@manki review` runs after a pause. */
-  blockersOnly?: boolean;
-  /** The last automatic round the round cap allows. It blocks on blockers only, and ends `NOT_CONVERGING` unless it is `READY`. */
+  /** The last automatic round the round cap allows. It ends `NOT_CONVERGING` unless it is `READY`. */
   finalRound?: boolean;
 }
 
@@ -1105,15 +1099,12 @@ export async function runReview(
   const priorFindingsFlat: FindingFingerprintEntry[] = sortedPriorRounds.flatMap(r => r.findings.entries);
   const priorRoundLookup = buildPriorRoundLookup(sortedPriorRounds);
   const changedFiles = new Set(diff.files.map(f => f.path));
-  const blockersOnly = options.blockersOnly || options.finalRound || roundNumber > FULL_BAR_ROUNDS;
-  if (blockersOnly) {
-    finalFindings = finalFindings.map(f => f.severity === 'warning' && !f.tags?.includes(SECURITY_TAG) ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f);
-  }
+  finalFindings = finalFindings.map(f => f.severity === 'warning' ? { ...f, tags: [...(f.tags ?? []), FOLLOW_UP_TAG] } : f);
   const priorBlockers = collectPriorBlockers(sortedPriorRounds);
   const pushChangedFiles = new Set(interRoundDiff ? parsePRDiff(interRoundDiff).files.map(f => f.path) : []);
   const openThreadIndex = new Map((openThreads ?? []).map(t => [t.threadId, t]));
   let threadEvaluations = confirmFixes(judgeThreadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
-  const decided = determineOutcome(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, threadEvaluations, priorRoundLookup, changedFiles, blockersOnly);
+  const decided = determineOutcome(finalFindings, priorFindingsFlat, openThreads, resolvedThreadIds, threadEvaluations, priorRoundLookup, changedFiles);
   let outcome: RoundOutcome = decided.outcome;
   let { verdictReason, verdictTrace } = decided;
 
@@ -1150,7 +1141,7 @@ export async function runReview(
       threadEvaluations = confirmFixes(threadEvaluations, openThreadIndex, namedPriorThreadIds(finalFindings, priorBlockers), pushChangedFiles);
       outcome = 'ADDRESS_FIRST';
       verdictReason = 'verdict_reader';
-      verdictTrace = { survivingBlockers: readerFindings.map(findingToTraceEntry), novelWarnings: [], unresolvedPriors: [] };
+      verdictTrace = { survivingBlockers: readerFindings.map(findingToTraceEntry), unresolvedPriors: [] };
     }
   }
 
@@ -1167,7 +1158,7 @@ export async function runReview(
     needsHuman = { cause: 'repeated', blockers: repeated.map(p => priorToTraceEntry(p.entry, priorRoundLookup, openThreadIndex)) };
   } else if (options.finalRound && outcome !== 'READY') {
     outcome = 'NOT_CONVERGING';
-    needsHuman = { cause: 'budget', blockers: [...verdictTrace.survivingBlockers, ...verdictTrace.novelWarnings, ...verdictTrace.unresolvedPriors] };
+    needsHuman = { cause: 'budget', blockers: [...verdictTrace.survivingBlockers, ...verdictTrace.unresolvedPriors] };
   }
   const verdict = OUTCOME_VERDICT[outcome];
 
@@ -1501,26 +1492,6 @@ export function validateSeverity(severity: unknown): Finding['severity'] {
 }
 
 /**
- * Check whether a current finding matches a prior-round fingerprint entry.
- * Uses file + title-slug with a line-window tolerance so small drift between
- * rounds does not break the match. Thread-resolved status is not consulted
- * here, only the cached author-reply class.
- */
-function matchesDismissedPrior(finding: Finding, prior: FindingFingerprintEntry): boolean {
-  if (finding.line === 0) return false;
-  if (finding.file !== prior.fingerprint.file) return false;
-  if (titleToSlug(finding.title) !== prior.fingerprint.slug) return false;
-  const line = finding.line;
-  const lo = prior.fingerprint.lineStart - DISMISSED_LINE_TOLERANCE;
-  const hi = prior.fingerprint.lineEnd + DISMISSED_LINE_TOLERANCE;
-  return line >= lo && line <= hi;
-}
-
-function wasDismissedInPriorRound(finding: Finding, priorRounds: FindingFingerprintEntry[]): boolean {
-  return priorRounds.some(p => p.authorReplyClass === 'agree' && matchesDismissedPrior(finding, p));
-}
-
-/**
  * Collapse multi-round prior findings to one entry per logical issue, keeping
  * the most recent round's view. Identity is the fingerprint tuple, which is
  * always present and stable across rounds. `threadId` is intentionally not
@@ -1541,7 +1512,7 @@ function isPriorLikelyUnresolved(
   threadEvaluationsByThreadId: Map<string, ThreadEvaluation>,
   changedFiles: ReadonlySet<string> | undefined,
 ): boolean {
-  if (p.severity !== 'warning' && p.severity !== 'blocker') return false;
+  if (p.severity !== 'blocker') return false;
   if (p.authorReplyClass === 'agree') return false;
   // Order matters. `openThreadsUnknown` must short-circuit before
   // `resolvedThreadIds` because both signals come from the same recap scan,
@@ -1593,11 +1564,10 @@ export function buildPriorRoundLookup(sortedPriorRounds: RoundContext[]): Map<st
  *
  * Decision order:
  *   1. any surviving `blocker` finding → ADDRESS_FIRST / required_present
- *   2. any `warning` that is NOT a prior-round dismissed match → ADDRESS_FIRST / novel_suggestion
- *   3. any prior-round `warning`/`blocker` still unresolved → ADDRESS_FIRST / prior_unaddressed
- *   4. otherwise (only suggestions/nitpicks / previously-dismissed warnings / empty) → READY / only_nit_or_suggestion
+ *   2. any prior-round `blocker` still unresolved → ADDRESS_FIRST / prior_unaddressed
+ *   3. otherwise (only warnings, suggestions and nitpicks, or empty) → READY / only_nit_or_suggestion
  *
- * A prior `warning`/`blocker` is "unresolved" when the author has not agreed to
+ * A prior `blocker` is "unresolved" when the author has not agreed to
  * dismiss it (`authorReply !== 'agree'`) and the underlying GitHub thread is
  * still in `openThreads`. A prior without a `threadId` was posted in the review
  * body. It blocks only when it is a `blocker` on a file in `changedFiles`, or
@@ -1622,7 +1592,7 @@ export function buildPriorRoundLookup(sortedPriorRounds: RoundContext[]): Map<st
  *
  * Contract for `openThreads`: three states with distinct meaning.
  *   - `null` / omitted → "unknown": caller did not (or could not) fetch open
- *     threads. Treated conservatively: any prior `warning`/`blocker` with a
+ *     threads. Treated conservatively: any prior `blocker` with a
  *     non-`agree` `authorReply` blocks with `prior_unaddressed`,
  *     unconditionally. `resolvedThreadIds` is NOT honored in this branch,
  *     since both signals come from the same recap scan and could be stale
@@ -1646,10 +1616,7 @@ export function buildPriorRoundLookup(sortedPriorRounds: RoundContext[]): Map<st
  * no longer open on GitHub but the prior's `authorReplyClass` stays `none`,
  * while still blocking when the live state cannot be trusted.
  *
- * Nitpicks and suggestions are non-blocking, and prior-round dismissed warnings
- * have already been acknowledged by the author. None of these cases block.
- * With `blockersOnly`, no warning blocks, whether raised now or in a prior round,
- * unless `isSecurityFinding` holds for it.
+ * No warning blocks, whether raised now or in a prior round, and whether or not it is a security finding.
  */
 export function determineOutcome(
   findings: Finding[],
@@ -1659,11 +1626,9 @@ export function determineOutcome(
   threadEvaluations?: ThreadEvaluation[],
   priorRoundLookup?: Map<string, number>,
   changedFiles?: ReadonlySet<string>,
-  blockersOnly = false,
 ): { outcome: Extract<RoundOutcome, 'READY' | 'ADDRESS_FIRST'>; verdictReason: VerdictReason; verdictTrace: VerdictTrace } {
   const emptyTrace = (): VerdictTrace => ({
     survivingBlockers: [],
-    novelWarnings: [],
     unresolvedPriors: [],
   });
 
@@ -1675,21 +1640,12 @@ export function determineOutcome(
   }
 
   const prior = dedupePriorFindings(priorRounds ?? []);
-  const novelWarnings = findings.filter(
-    f => f.severity === 'warning' && (!blockersOnly || isSecurityFinding(f.tags)) && !wasDismissedInPriorRound(f, prior),
-  );
-  if (novelWarnings.length > 0) {
-    const trace = emptyTrace();
-    trace.novelWarnings = novelWarnings.map(findingToTraceEntry);
-    return { outcome: 'ADDRESS_FIRST', verdictReason: 'novel_suggestion', verdictTrace: trace };
-  }
 
   const openThreadsUnknown = openThreads == null;
   const openThreadIds = new Set((openThreads ?? []).map(t => t.threadId));
   const threadEvaluationsByThreadId = indexThreadEvaluations(threadEvaluations);
   const unresolvedPriors = prior.filter(p =>
-    !(blockersOnly && p.severity === 'warning' && !isSecurityFinding(p.tags, p.reviewers ?? [p.specialist]))
-    && isPriorLikelyUnresolved(p, openThreadIds, openThreadsUnknown, resolvedThreadIds, threadEvaluationsByThreadId, changedFiles),
+    isPriorLikelyUnresolved(p, openThreadIds, openThreadsUnknown, resolvedThreadIds, threadEvaluationsByThreadId, changedFiles),
   );
   if (unresolvedPriors.length > 0) {
     const trace = emptyTrace();

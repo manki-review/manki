@@ -4,7 +4,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
-import { AgentProgressEntry, DashboardData, FOLLOW_UP_TAG, Finding, FindingFingerprintEntry, FindingSeverity, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, VALID_PR_TYPES, VerdictTraceEntry, SECURITY_TAG, TestGuide, isBlockingSeverity } from './types';
+import { AgentProgressEntry, DashboardData, FOLLOW_UP_TAG, Finding, FindingFingerprintEntry, FindingSeverity, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity } from './types';
 import { isLineInDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { findPriorThreadId } from './finding-fingerprint';
@@ -978,12 +978,9 @@ const LOW_CONFIDENCE_NOTE = '_Manki is not sure this applies, so please check it
 /** Non-blocking findings posted as line comments per review. The rest go in the body list. */
 const MAX_NON_BLOCKING_INLINE = 5;
 
-/** Marks a thread for a warning that no longer blocks, so auto-approve skips it. */
-const FOLLOW_UP_MARKER = '<!-- manki-follow-up -->';
-
-/** Whether a warning was deferred as a follow-up. A security finding never is, whatever its tags say. */
+/** Whether a warning was deferred as a follow-up. */
 function isFollowUp(finding: Finding): boolean {
-  return !!finding.tags?.includes(FOLLOW_UP_TAG) && !finding.tags.includes(SECURITY_TAG);
+  return !!finding.tags?.includes(FOLLOW_UP_TAG);
 }
 
 function isBlockingFinding(finding: Finding): boolean {
@@ -1486,7 +1483,7 @@ const STILL_OPEN_HEADING = '**Still open from earlier reviews:**';
 /** Returns the blocking threads still open, one linked line each, or null when there are none. A thread without a severity marker blocks. */
 export function formatOpenBlockers(threads: PreviousFinding[]): string | null {
   const open = threads.filter(t => (t.status === 'open' || t.status === 'replied' || t.reopen)
-    && (t.severity === 'unknown' || isBlockingSeverity(t.severity)));
+    && (t.severity === 'unknown' || t.severity === 'blocker'));
   return open.length > 0 ? `${STILL_OPEN_HEADING}\n${open.map(formatTraceEntry).join('\n')}` : null;
 }
 
@@ -1689,7 +1686,6 @@ function formatFindingComment(finding: Finding): string {
     ...(finding.originalSeverity && { originalSeverity: finding.originalSeverity }),
   };
   comment += `\n\n<!-- manki:${finding.severity}:${titleToSlug(finding.title)} -->`;
-  if (isFollowUp(finding)) comment += `\n${FOLLOW_UP_MARKER}`;
   comment += `\n<!-- manki-finding: ${sanitizeHtmlCommentJson(JSON.stringify(data))} -->`;
 
   return comment;
@@ -2325,5 +2321,5 @@ async function postConfigErrorComment(
   }
 }
 
-export { APPROVED_LINE, dynamicFence, formatContextBlock, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, isTrustedAssociation, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgressOn, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, FOLLOW_UP_MARKER, LOW_CONFIDENCE_NOTE };
+export { APPROVED_LINE, dynamicFence, formatContextBlock, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, truncateContextToFitBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, isTrustedAssociation, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgressOn, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE };
 export type { InProgressLock, StandingVerdict };
