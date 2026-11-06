@@ -219,7 +219,7 @@ export class OpenAIClient implements LLMClient {
       core.warning(`Ignoring effort=${options.effort} for model "${this.model}": it does not accept reasoning effort. The Codex CLI will apply its own default effort instead.`);
     }
 
-    if (repoTools) args.push(...codexToolServerArgs(toolServerCommand(repoTools.root, { fileTools: true, steps: repoTools.steps })));
+    if (repoTools) args.push(...codexToolServerArgs(toolServerCommand(repoTools.root, { fileTools: true, steps: repoTools.steps, related: repoTools.related })));
 
     // Read prompt from stdin
     args.push('-');

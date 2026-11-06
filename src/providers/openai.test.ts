@@ -438,6 +438,7 @@ describe('sendViaOAuth (Codex CLI path)', () => {
     const stdin = proc.stdin.write.mock.calls.map(c => String(c[0])).join('');
     expect(stdin).toMatch(/^Review the diff\.\n\n## Tools\n\nThe PR's head commit is checked out at `\/work\/repo`\. `read_file`, `grep` and `glob` read files/);
     expect(stdin).toContain('\n\n---\n\nthe diff');
+    expect(stdin).not.toContain('## Related repos');
   });
 
   it('passes model_reasoning_effort override when effort is set on o-series model', async () => {

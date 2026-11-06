@@ -18,7 +18,7 @@ import { stringifyFindingFingerprint, truncateDiff, validateSeverity } from './r
 import { WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { criticalAreaOf, resolveRouting } from './routing';
-import { CONTRADICTION_TAG, DiffFile, DuplicateMatchType, Finding, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, ParsedDiff, PrContext, ThreadEvaluation, ToolEvidenceStatus } from './types';
+import { CONTRADICTION_TAG, DiffFile, DuplicateMatchType, Finding, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, ParsedDiff, PrContext, ThreadEvaluation, ToolEvidenceStatus } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -252,6 +252,8 @@ export interface JudgeInput {
   resolvedThreadIds?: Set<string>;
   /** When true, resolved prior-round threads suppress matching findings. */
   suppressResolvedThreads?: boolean;
+  /** The related repos the round's finders could read with their tools. */
+  relatedRepos?: RelatedRepo[];
 }
 
 export interface JudgedFinding {
@@ -312,6 +314,7 @@ export function buildJudgeSystemPrompt(
   agentCount: number,
   isFollowUp?: boolean,
   openThreadsCount: number = 0,
+  relatedRepos?: RelatedRepo[],
 ): string {
   const hasOpenThreads = openThreadsCount > 0;
   const summaryInstruction = isFollowUp
@@ -546,11 +549,28 @@ Return one entry per finding, in the same order as the input. Set \`id\` to the 
     prompt += `\n\n${repositoryRules}`;
   }
 
+  if (relatedRepos?.length) {
+    prompt += `\n\n${buildRelatedRepoRules(relatedRepos)}`;
+  }
+
   if (config.instructions) {
     prompt += `\n\n## Project Instructions\n\n${config.instructions}`;
   }
 
   return prompt;
+}
+
+/** Returns how to grade a finding about a related repo that reviewers read with their tools. */
+function buildRelatedRepoRules(repos: RelatedRepo[]): string {
+  const names = (kind: RelatedRepo['kind']) => repos.filter(r => r.kind === kind).map(r => `\`${r.repo}\``).join(', ') || 'none';
+  return `## Related Repos
+
+Reviewers can read these repos with their tools. References, which this repository implements or ports: ${names('reference')}. Consumers, which depend on this repository: ${names('consumer')}.
+
+A finding cites their code as \`owner/name:path:line\`. Such a citation is evidence the reviewer read, so the cap for a fact you cannot check does not apply to it.
+
+- **A divergence from a reference** is graded by the blocker tests and the severity table, like any other finding.
+- **A change that breaks a consumer** is a \`warning\` that lists the consumer's call sites and says it breaks once the consumer upgrades. It is a \`blocker\` only when the PR description says the change does not break anything. This replaces the broken public contract row of the table for a consumer.`;
 }
 
 /** Returns the judge rules the base branch's `review` block adds, or an empty string when it adds none. */
@@ -984,7 +1004,7 @@ export async function runJudgeAgent(
   inPrSuppressedCount?: number;
   interRoundDiffEmptyOverride?: InterRoundDiffEmptyOverride;
 }> {
-  const { findings, diff, rawDiff, memory, prContext, linkedIssues, agentCount, isFollowUp, openThreads, priorRounds, inPrSuppressions, interRoundDiff, resolvedThreadIds, suppressResolvedThreads } = input;
+  const { findings, diff, rawDiff, memory, prContext, linkedIssues, agentCount, isFollowUp, openThreads, priorRounds, inPrSuppressions, interRoundDiff, resolvedThreadIds, suppressResolvedThreads, relatedRepos } = input;
   const provenanceMap = input.provenanceMap ?? (rawDiff ? computeProvenanceMap(priorRounds, rawDiff) : []);
 
   const hasOpenThreads = (openThreads?.length ?? 0) > 0;
@@ -1012,7 +1032,7 @@ export async function runJudgeAgent(
 
   const changedFiles = diff.files;
 
-  const systemPrompt = buildJudgeSystemPrompt(config, agentCount, isFollowUp, openThreads?.length ?? 0);
+  const systemPrompt = buildJudgeSystemPrompt(config, agentCount, isFollowUp, openThreads?.length ?? 0, relatedRepos);
   const { classes } = resolveRouting(config.review);
   const findingNotes = (f: Finding): string[] => {
     const area = criticalAreaOf(classes, f.file);

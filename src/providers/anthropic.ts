@@ -132,7 +132,7 @@ function anthropicQuotaError(error: unknown): QuotaError | undefined {
 }
 
 // The names Claude Code gives the tools of Manki's tool server.
-const MANKI_TOOLS = ['mcp__manki__git_history', 'mcp__manki__ast_grep'];
+const MANKI_TOOLS = ['mcp__manki__git_history', 'mcp__manki__ast_grep', 'mcp__manki__read_file', 'mcp__manki__grep', 'mcp__manki__glob'];
 
 /**
  * Writes the MCP config that starts Manki's tool server into `dir` and returns its path. The server gets the CLI's
@@ -283,7 +283,7 @@ export class AnthropicClient implements LLMClient {
       if (repoTools) {
         const stepsDir = join(promptDir, 'steps');
         mkdirSync(stepsDir);
-        tools = { mcpConfigPath: writeToolServerConfig(promptDir, toolServerCommand(repoTools.root)), stepHook: stepHookCommand(stepsDir, repoTools.steps) };
+        tools = { mcpConfigPath: writeToolServerConfig(promptDir, toolServerCommand(repoTools.root, { related: repoTools.related })), stepHook: stepHookCommand(stepsDir, repoTools.steps) };
       }
       const args = claudeCliArgs(this.model, systemPromptPath, options, tools);
       return await this.runOAuthCli(cliPath, args, fullPrompt.length + userMessage.length, userMessage, options);

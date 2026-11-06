@@ -8,8 +8,10 @@ import { runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeP
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, LinkedIssue, titleToSlug } from './github';
 import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, PreviousFinding, titleOverlapType } from './recap';
-import { FOLLOW_UP_TAG, SECURITY_TAG, ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundStaticSignalMatch, EffortLevel, Finder, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
+import { FOLLOW_UP_TAG, SECURITY_TAG, ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
 import { countChangedLines, parsePRDiff, rebuildRawDiff } from './diff';
+import { relatedReposCacheDir, warnRelatedRepoFailures } from './related-repos';
+import { makeScratchDir } from './tool-install';
 import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, chooseGroup, classifyPr, resolveRouting } from './routing';
 import { extractJSON } from './json';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
@@ -569,7 +571,12 @@ export async function runReview(
 
   const memoryContext = memory ? buildMemoryContext(memory) : '';
   const finderClients = new Map(team.finders.map(f => [f.name, withFallback(pickReviewerClient(clients, f), 'reviewer', f.name)]));
-  const finderOptions = (finder: Finder): RunReviewerAgentOptions => ({ effort: finder.effort, language: plannerResult?.language, context: plannerResult?.context, workspace });
+  const related: RelatedRepoTools | undefined = workspace && config.related_repos?.length && [...finderClients.values()].some(c => c.repoTools)
+    ? { repos: config.related_repos, cacheDir: relatedReposCacheDir(), stateDir: makeScratchDir('related') }
+    : undefined;
+  const finderOptions = (finder: Finder): RunReviewerAgentOptions => ({
+    effort: finder.effort, language: plannerResult?.language, context: plannerResult?.context, workspace, related,
+  });
 
   const passes = config.review_passes ?? 1;
   const multiPass = passes > 1;
@@ -908,6 +915,7 @@ export async function runReview(
   }
 
   for (const [name, usage] of agentUsage) logOutputTokens(name, usage);
+  if (related) warnRelatedRepoFailures(related.stateDir);
 
   // Every reader counts: a round where one finder failed must not approve on the other's word.
   if (failedAgents.length > 0) {
@@ -1045,6 +1053,7 @@ export async function runReview(
       interRoundDiff,
       resolvedThreadIds,
       suppressResolvedThreads,
+      ...(related && { relatedRepos: related.repos }),
     };
     const judgeStart = Date.now();
     const judgeResult = await runJudgeAgent(judgeWrap.client, config, judgeInput);
@@ -1255,6 +1264,7 @@ interface RunReviewerAgentOptions {
   language?: string;
   context?: string;
   workspace?: string;
+  related?: RelatedRepoTools;
 }
 
 async function runReviewerAgent(
@@ -1269,13 +1279,13 @@ async function runReviewerAgent(
   linkedIssues?: LinkedIssue[],
   options: RunReviewerAgentOptions = {},
 ): Promise<AgentResult> {
-  const { effort, language, context, workspace } = options;
+  const { effort, language, context, workspace, related } = options;
   const systemPrompt = buildReviewerSystemPrompt(finder.prompt, config, language, context, config.noise_level);
   const userMessage = buildReviewerUserMessage(rawDiff, repoContext, { fileContents, prContext, memoryContext, linkedIssues });
 
   const sendOptions: SendMessageOptions = {
     ...(effort && { effort }),
-    ...(workspace && client.repoTools && { repoTools: { root: workspace, steps: finder.steps }, timeoutMs: FINDER_TOOLS_TIMEOUT_MS }),
+    ...(workspace && client.repoTools && { repoTools: { root: workspace, steps: finder.steps, ...(related && { related }) }, timeoutMs: FINDER_TOOLS_TIMEOUT_MS }),
   };
   const response = await client.sendMessage(systemPrompt, userMessage, sendOptions);
   if (response.truncated) {

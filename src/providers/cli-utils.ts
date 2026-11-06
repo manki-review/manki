@@ -7,8 +7,9 @@ import { StringDecoder } from 'string_decoder';
 import * as core from '@actions/core';
 
 import { registerSecret, safeJsonParse, sanitizeTokens, SECRET_NAME, SYSTEM_ENV } from '../utils';
-import { FILE_TOOLS_FLAG, MCP_SERVER_COMMAND, STEPS_FLAG } from '../mcp-server';
+import { FILE_TOOLS_FLAG, MCP_SERVER_COMMAND, RELATED_REPOS_FLAG, STEPS_FLAG } from '../mcp-server';
 import { STEP_HOOK_COMMAND, WRAP_UP_STEPS } from '../tool-steps';
+import { RelatedRepo, RelatedRepoTools } from '../types';
 import { RepoTools, SendMessageOptions } from './types';
 
 export const STALE_TIMEOUT_MS = 90_000;
@@ -396,9 +397,17 @@ function mankiCommand(args: string[]): MankiCommand {
 /**
  * Starts the tool server for `root`. With `fileTools` the server also offers `read_file`, `grep` and `glob`, for a CLI
  * without its own. With `steps` it refuses every call after that many, for a CLI whose every tool comes from this server.
+ * With `related` a `repo` argument also reads those repos.
  */
-export function toolServerCommand(root: string, { fileTools = false, steps }: { fileTools?: boolean; steps?: number } = {}): MankiCommand {
-  return mankiCommand([MCP_SERVER_COMMAND, root, ...(fileTools ? [FILE_TOOLS_FLAG] : []), ...(steps ? [STEPS_FLAG, String(steps)] : [])]);
+export function toolServerCommand(
+  root: string, { fileTools = false, steps, related }: { fileTools?: boolean; steps?: number; related?: RelatedRepoTools } = {},
+): MankiCommand {
+  return mankiCommand([
+    MCP_SERVER_COMMAND, root,
+    ...(fileTools ? [FILE_TOOLS_FLAG] : []),
+    ...(steps ? [STEPS_FLAG, String(steps)] : []),
+    ...(related ? [RELATED_REPOS_FLAG, JSON.stringify(related)] : []),
+  ]);
 }
 
 /** Starts the Claude CLI hook that counts the tool steps of one call in `dir` and refuses every call after `steps`. */
@@ -407,12 +416,30 @@ export function stepHookCommand(dir: string, steps: number): MankiCommand {
 }
 
 /** Tells the model which tools it has, with `fileTools` naming the ones that read files, and how to use them. */
-export function repoToolsPrompt({ root, steps }: RepoTools, fileTools: string): string {
+export function repoToolsPrompt({ root, steps, related }: RepoTools, fileTools: string): string {
   return `## Tools
 
 The PR's head commit is checked out at \`${root}\`. ${fileTools} read files under that directory, \`git_history\` lists the commits behind a file or a range of its lines, and \`ast_grep\` finds code by syntax. Nothing outside \`${root}\` is readable.
 
-Use the tools to check claims about the changed code, such as how a changed function is called or whether a case is handled elsewhere, not to explore. You have ${steps} tool steps, and each tool call takes one. When ${WRAP_UP_STEPS} are left, a note from Manki comes with a tool result and asks you to wrap up. Once they are used up, Manki refuses every further call, so give your final answer then. Your last message must be the JSON your instructions ask for, with nothing after it.`;
+Use the tools to check claims about the changed code, such as how a changed function is called or whether a case is handled elsewhere, not to explore. You have ${steps} tool steps, and each tool call takes one. When ${WRAP_UP_STEPS} are left, a note from Manki comes with a tool result and asks you to wrap up. Once they are used up, Manki refuses every further call, so give your final answer then. Your last message must be the JSON your instructions ask for, with nothing after it.${related ? `\n\n${relatedReposPrompt(related.repos)}` : ''}`;
+}
+
+/** Lists the related repos and tells the model when to read them and how to grade what it finds there. */
+function relatedReposPrompt(repos: RelatedRepo[]): string {
+  const kinds = { reference: 'a codebase this one implements or ports', consumer: 'a codebase that depends on this one' };
+  const list = repos.map(({ repo, kind, ref, paths }) =>
+    `- \`${repo}\`${ref ? ` at \`${ref}\`` : ''}, ${kind}: ${kinds[kind]}.${paths ? ` Only ${paths.map(p => `\`${p}\``).join(', ')} is fetched.` : ''}`);
+  return `## Related repos
+
+\`read_file\`, \`grep\`, \`glob\` and \`ast_grep\` read one of these repos instead when you name it in \`repo\`:
+
+${list.join('\n')}
+
+A repo is fetched the first time you name it, which takes a while, so name one only for these checks:
+- Read a **reference** to check protocol behaviour: whether the changed code does what the reference does, such as a message format, a validation or consensus rule, or an algorithm it ports.
+- Read a **consumer** only when the PR changes public API or a wire or data format, to find the consumer's code that uses what changed.
+
+Cite a related repo's code as \`owner/name:path:line\`. A divergence from a reference is graded like any other finding. A change that breaks a consumer is a \`warning\` that lists the consumer's call sites and says the consumer breaks once it upgrades. It is a \`blocker\` only when the PR says it does not break anything.`;
 }
 
 export interface RunCliOptions {

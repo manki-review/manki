@@ -24,18 +24,19 @@ describe('findProblems', () => {
   const outside = ['/proc/', '/tmp/scratch'];
   const tries = ['/proc/self/environ', '/proc/9/environ', '/tmp/scratch/a', '/tmp/scratch/b', '/tmp/scratch/c', '/tmp/scratch/d'].map(refused);
   const inside: ToolCall = { name: 'Read', input: '/repo/inside.txt', result: '1\tmarker', isError: false };
+  const insideRelated: ToolCall = { name: 'mcp__manki__read_file', input: '{"repo":"o/r","path":"a.txt"}', result: '1\trelated', isError: false };
 
-  it('passes when every outside call is refused and the inside file was read', () => {
-    expect(findProblems({ calls: [...tries, inside], reply: 'ok' }, ['s3cret'], outside, 'marker')).toEqual([]);
+  it('passes when every outside call is refused and each inside file was read', () => {
+    expect(findProblems({ calls: [...tries, inside, insideRelated], reply: 'ok' }, ['s3cret'], outside, ['marker', 'related'])).toEqual([]);
   });
 
   it('reports an outside call that succeeded, a leaked secret, too few attempts and a missing inside read', () => {
     const leaked: ToolCall = { name: 'Grep', input: '/tmp/scratch', result: 's3cret', isError: false };
-    expect(findProblems({ calls: [tries[0], leaked], reply: '' }, ['s3cret'], outside, 'marker')).toEqual([
+    expect(findProblems({ calls: [tries[0], leaked, inside], reply: '' }, ['s3cret'], outside, ['marker', 'related'])).toEqual([
       'a secret was read: s3cr…',
       'Grep /tmp/scratch succeeded',
       'only 2 tool calls tried an outside path',
-      'the file inside the repository was never read',
+      'the inside file holding related was never read',
     ]);
   });
 });

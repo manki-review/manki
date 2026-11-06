@@ -144,6 +144,22 @@ describe('buildJudgeSystemPrompt', () => {
     expect(buildJudgeSystemPrompt(makeConfig(), 5)).not.toContain('## Repository Rules');
   });
 
+  it('grades a related repo finding by its kind, only when the finders could read related repos', () => {
+    const related_repos: ReviewConfig['related_repos'] = [
+      { repo: 'dashpay/dash', kind: 'reference' }, { repo: 'dashpay/dips', kind: 'reference' }, { repo: 'dashpay/platform', kind: 'consumer' },
+    ];
+    const prompt = buildJudgeSystemPrompt(makeConfig({ instructions: 'Use strict TypeScript.' }), 5, false, 0, related_repos);
+    const rules = prompt.slice(prompt.indexOf('## Related Repos'), prompt.indexOf('## Project Instructions'));
+    expect(rules).toContain('References, which this repository implements or ports: `dashpay/dash`, `dashpay/dips`. Consumers, which depend on this repository: `dashpay/platform`.');
+    expect(rules).toContain('the cap for a fact you cannot check does not apply to it');
+    expect(rules).toContain('**A divergence from a reference** is graded by the blocker tests');
+    expect(rules).toContain('It is a `blocker` only when the PR description says the change does not break anything.');
+    expect(buildJudgeSystemPrompt(makeConfig(), 5, false, 0, [related_repos[2]])).toContain('References, which this repository implements or ports: none.');
+    // Configured repos that no finder could read this round give no rules.
+    expect(buildJudgeSystemPrompt(makeConfig({ related_repos }), 5, false, 0, [])).not.toContain('## Related Repos');
+    expect(buildJudgeSystemPrompt(makeConfig({ related_repos }), 5)).not.toContain('## Related Repos');
+  });
+
   it('omits project instructions section when empty', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig({ instructions: '' }), 5);
     expect(prompt).not.toContain('Project Instructions');
