@@ -811,6 +811,18 @@ export interface RoundContext {
    */
   recap?: RoundRecap;
   staticAnalysis?: RoundStaticAnalysis;
+  /**
+   * Lengths of what the round composed, in characters. The record goes out with the review, so a comment
+   * GitHub refuses afterwards, or a body rewritten to carry it, is not reflected.
+   */
+  output?: RoundOutput;
+}
+
+export interface RoundOutput {
+  /** The review body without the round record and the reviewed-commit footer. */
+  bodyLength: number;
+  /** Each inline and file-level comment, in posting order. */
+  commentLengths: number[];
 }
 
 /** What the static analysis stage did besides reading results. */
