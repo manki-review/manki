@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.1.0] - 2026-11-06
+
+### Upgrading
+
+1. Pin the action to `manki-review/manki@v6`.
+2. Copy the new job `if` from Step 3 of `SETUP.md`. The comment rules changed: the workflow no longer filters on `author_association`, and the action checks write access itself before it reads any secret ([#991](https://github.com/manki-review/manki/pull/991), [#995](https://github.com/manki-review/manki/pull/995)).
+3. Review memory with the shared Manki App needs 6.1, because 6.0.x can no longer write memory through the App token. Otherwise set `memory_repo_token`. A memory repo with a name other than `<owner>/review-memory` needs `memory_repo_token` or your own App ([#994](https://github.com/manki-review/manki/pull/994), [#999](https://github.com/manki-review/manki/pull/999), [#1000](https://github.com/manki-review/manki/pull/1000)).
+4. A review command no longer reviews a commit again when it already has a complete review. Manki replies with a Force review box instead, and only ticking it reviews the same commit again ([#1002](https://github.com/manki-review/manki/pull/1002)).
+
+### Webhook mode (preview)
+
+- New opt-in webhook mode. The Manki App receives the events and starts a dispatch-only workflow, `manki-dispatch.yml`, on your default branch, while every decision stays in the action. It is a preview for repositories on the service's allowlist, and every other repository keeps the event-driven workflow ([#987](https://github.com/manki-review/manki/pull/987), [#988](https://github.com/manki-review/manki/pull/988), [#1000](https://github.com/manki-review/manki/pull/1000)).
+- Events run in order in two queues per PR, and several pushes during a review become one review of the newest head. Events Manki ignores start no run, and missed deliveries are picked up again every 5 minutes ([#988](https://github.com/manki-review/manki/pull/988)).
+- Resolving the last open thread by hand runs the auto-approve check at once, which GitHub Actions cannot trigger on its own ([#987](https://github.com/manki-review/manki/pull/987)).
+- The service adds the eyes reaction as soon as it queues a command. Manki now tracks the comments it answered with a hidden marker, so editing a comment to add a command still runs it ([#1003](https://github.com/manki-review/manki/pull/1003)).
+- In webhook mode every run belongs to the default branch, so the PR shows no Manki check yet ([#1004](https://github.com/manki-review/manki/issues/1004)). Do not require a Manki status check while you use this mode.
+
+### Review loop and verdicts
+
+- Manki never approves a PR that conflicts with its base. A ready round posts its full verdict as a COMMENT with an "Approval held" line on top, and auto-approve posts one held notice per head instead of approving ([#998](https://github.com/manki-review/manki/pull/998)).
+- Each run posts exactly one verdict review. Manki resolves the threads it counts as fixed before it posts, so a thread that cannot be resolved no longer leads to an approval followed by a request for changes on the same commit ([#998](https://github.com/manki-review/manki/pull/998)).
+- An incomplete or failed review no longer counts as a review of its commit, so the next run reviews that commit normally. Its progress comment is marked superseded once a later verdict on the same head is posted ([#1002](https://github.com/manki-review/manki/pull/1002)).
+- The review command reviews the current head when it has no complete review, and still bypasses the round cap and a pause ([#1002](https://github.com/manki-review/manki/pull/1002)).
+
+### Security
+
+- Starting Manki from a comment needs write access, and the action checks it before it requests a token or reads a provider credential. Organization members with a private membership work again. A contributor without write access and the author of a fork PR are refused without a reply ([#991](https://github.com/manki-review/manki/pull/991), [#995](https://github.com/manki-review/manki/pull/995)).
+- A collaborator who is not the PR author can now tick Force review. The tick is checked against the editor, not the author of Manki's comment ([#991](https://github.com/manki-review/manki/pull/991)).
+- With your own GitHub App, the review token is limited to the reviewed repo, and memory gets a second token limited to the memory repo with only `contents: write` ([#999](https://github.com/manki-review/manki/pull/999)).
+- Memory writes use their own token: `memory_repo_token` first, then the App's memory token. They never fall back to the review token or `github_token`, and Manki logs one warning when no memory token is available ([#994](https://github.com/manki-review/manki/pull/994)).
+- Provider CLIs start with a filtered environment. They get no `INPUT_*` variables, no OIDC request URL and no `*_TOKEN`, `*_KEY` or `*_SECRET` variables other than their own credential ([#994](https://github.com/manki-review/manki/pull/994)).
+
+### Reliability
+
+- A failed review always names its cause. A 5xx from GitHub reads as a transient failure with the status, the failing call, the request id and a retry hint, and an empty error names its status or type ([#992](https://github.com/manki-review/manki/pull/992)).
+
+### Docs
+
+- `SETUP.md` documents webhook mode, adds "Upgrading to 6.1", and explains the trade-off of running Manki under your own GitHub App, whose private key can mint tokens for the whole installation. The security notes say memory commands need write access ([#988](https://github.com/manki-review/manki/pull/988), [#1000](https://github.com/manki-review/manki/pull/1000)).
+
+### Internal
+
+- Manki reviews its own PRs in webhook mode. The event-driven workflow moves to `docs/examples/manki.yml`, which the snippet test keeps in step with `SETUP.md` ([#989](https://github.com/manki-review/manki/pull/989), [#997](https://github.com/manki-review/manki/pull/997)).
+
 ## [6.0.1] - 2026-11-06
 
 ### Review format
