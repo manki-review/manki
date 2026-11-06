@@ -247,6 +247,22 @@ describe('fetchPrState', () => {
     arrange();
     expect(await fetchPrState(OWNER, REPO, 12, 7)).toBeNull();
   });
+
+  it('gives up on a reply whose body never arrives', async () => {
+    jest.useFakeTimers();
+    try {
+      mockFetch(async (_url, init) => ({
+        ok: true,
+        status: 200,
+        json: () => new Promise((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new Error('aborted')))),
+      }) as unknown as Response);
+      const state = fetchPrState(OWNER, REPO, 12, 7);
+      await jest.advanceTimersByTimeAsync(10000);
+      expect(await state).toBeNull();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });
 
 describe('createAuthenticatedOctokit', () => {

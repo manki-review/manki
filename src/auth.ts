@@ -87,8 +87,11 @@ function tokenServiceUrl(): string {
   return core.getInput('manki_token_url') || 'https://manki-api.dustinface.me/token';
 }
 
-/** Posts `body` to the token service at `url` with the workflow's OIDC token. Returns `null` when the run has no OIDC token. */
-async function postToTokenService(url: string, body: unknown): Promise<Response | null> {
+/**
+ * Posts `body` to the token service at `url` with the workflow's OIDC token, and reads the JSON reply of a 2xx response.
+ * The timeout covers the reply too. Returns `null` when the run has no OIDC token.
+ */
+async function postToTokenService(url: string, body: unknown): Promise<{ ok: boolean; status: number; data?: unknown } | null> {
   let oidcToken: string;
   try {
     oidcToken = await core.getIDToken(OIDC_AUDIENCE);
@@ -98,12 +101,13 @@ async function postToTokenService(url: string, body: unknown): Promise<Response 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10000);
   try {
-    return await fetch(url, {
+    const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${oidcToken}` },
       body: JSON.stringify(body),
       signal: controller.signal,
     });
+    return response.ok ? { ok: true, status: response.status, data: await response.json() } : { ok: false, status: response.status };
   } finally {
     clearTimeout(timeout);
   }
@@ -131,9 +135,9 @@ export async function resolveGitHubToken(
       return { token: githubToken, identity: 'actions' };
     }
 
-    const tokenData = await tokenResponse.json() as { token: string; expires_at: string; memory_token?: unknown };
+    const tokenData = tokenResponse.data as { token?: unknown; expires_at?: unknown; memory_token?: unknown } | null;
 
-    if (!tokenData.token || typeof tokenData.token !== 'string') {
+    if (!tokenData || !tokenData.token || typeof tokenData.token !== 'string') {
       core.warning('Token service returned invalid response — falling back to github-actions[bot]');
       return { token: githubToken, identity: 'actions' };
     }
@@ -175,7 +179,7 @@ export async function fetchPrState(owner: string, repo: string, prNumber: number
       core.info(`The token service has no PR state for #${prNumber} (${response.status})`);
       return null;
     }
-    const data = await response.json() as Record<string, unknown> | null;
+    const data = response.data as Record<string, unknown> | null;
     const settings = data?.settings as Record<string, unknown> | undefined;
     return {
       ...(settings && typeof settings.paused === 'boolean' && { settings: { paused: settings.paused } }),
