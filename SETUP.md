@@ -687,7 +687,8 @@ exclude_paths:
 # Review size limits, in reviewable lines after `exclude_paths`, read from the
 # base branch only. A PR up to `auto_review_max_lines` (default: 8000) is
 # reviewed automatically. A larger one gets a comment asking to split it with a
-# Force review box, and no review, so earlier reviews stay. A forced review covers
+# Force review box, and no review: a request for changes stays, and Manki's
+# earlier approvals are dismissed. A forced review covers
 # the whole PR up to `max_diff_lines` (default: 15000). Above that Manki never
 # reviews, even when forced. Each finder reads a diff over `slice_lines`
 # (default: 1500, at least 200) in slices of that size, four at a time. A file

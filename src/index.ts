@@ -917,26 +917,32 @@ async function loadRunMemory(
   }
 }
 
+/** Marks a request to split a PR too big to review, so the next push edits it. */
+const TOO_BIG_MARKER = '<!-- manki-too-big -->';
+
 /**
- * Replaces the progress comment with a notice that automatic review is paused, listing the blocking threads still open.
- * Each push during the same pause updates the unticked notice from after `lastRoundAt` instead of adding another.
- */
-/**
- * Replaces the progress comment with a request to split a PR too big to review. Posts no review, so
- * earlier reviews and their verdicts stay. `offerForce` adds a Force review box.
+ * Replaces the progress comment with a request to split a PR too big to review, and dismisses Manki's earlier
+ * approvals, since no reviewer read the new code. Posts no review, so a request for changes stays. `offerForce`
+ * adds a Force review box. Each push edits the last unanswered notice instead of adding another.
  */
 async function postTooBigNotice(target: RunTarget, commentId: number, text: string, offerForce: boolean): Promise<CheckReport> {
-  const { octokit, owner, repo, prNumber } = target;
+  const { octokit, bot, owner, repo, prNumber } = target;
   try {
     await octokit.rest.issues.deleteComment({ owner, repo, comment_id: commentId });
   } catch (error) {
     core.warning(`Failed to delete progress comment: ${error}`);
   }
+  await dismissPreviousReviews(octokit, owner, repo, prNumber, undefined, 'APPROVED');
   try {
-    if (offerForce) {
-      await postForceReviewOffer(octokit, owner, repo, prNumber, `${text}\n\n- [ ] Force review`);
+    const body = offerForce
+      ? withMarkers(`${text}\n\n- [ ] Force review`, PROGRESS_MARKER, FORCE_REVIEW_MARKER, TOO_BIG_MARKER)
+      : withMarkers(text, PROGRESS_MARKER, TOO_BIG_MARKER);
+    const comments = await fetchPRComments(octokit, owner, repo, prNumber);
+    const earlier = comments.find(c => isBotLogin(bot, c.user?.login) && !!c.body?.includes(TOO_BIG_MARKER) && !c.body.includes('- [x] Force review'));
+    if (earlier) {
+      await octokit.rest.issues.updateComment({ owner, repo, comment_id: earlier.id, body });
     } else {
-      await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: withMarkers(text, PROGRESS_MARKER) });
+      await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
     }
   } catch (error) {
     core.warning(`Failed to post the too-big notice: ${error instanceof Error ? error.message : error}`);
@@ -945,6 +951,10 @@ async function postTooBigNotice(target: RunTarget, commentId: number, text: stri
   return { conclusion: 'action_required', title: 'Not reviewed', summary: text };
 }
 
+/**
+ * Replaces the progress comment with a notice that automatic review is paused, listing the blocking threads still open.
+ * Each push during the same pause updates the unticked notice from after `lastRoundAt` instead of adding another.
+ */
 async function postPauseNotice(
   target: RunTarget, commentId: number, { capReached, capRounds, reason }: PauseState, maxAutoRounds: number,
   previousFindings: PreviousFinding[], lastRoundAt?: string,

@@ -2276,13 +2276,29 @@ describe('runFullReview orchestration', () => {
     }
     expect(reviewModule.runReview).not.toHaveBeenCalled();
     expect(warmupCLI).not.toHaveBeenCalled();
-    // Earlier reviews and their verdicts stay, so a push cannot clear a blocker by making the PR too big.
+    // A request for changes stays, so a push cannot clear a blocker by making the PR too big. Approvals go.
     expect(ghUtils.postReview).not.toHaveBeenCalled();
-    expect(ghUtils.dismissPreviousReviews).not.toHaveBeenCalled();
+    expect(jest.mocked(ghUtils.dismissPreviousReviews).mock.calls).toEqual([[expect.anything(), 'test-owner', 'test-repo', 42, undefined, 'APPROVED']]);
     expect(mockOctokitInstance.rest.issues.deleteComment).toHaveBeenCalled();
     expect(notices).toEqual([expected === 'offer'
       ? expect.stringMatching(/^\*\*Too big for automatic review\*\* at `abc123`: this PR has 10000 reviewable lines, above the limit of 8000 for automatic review\. Split it into smaller PRs, or tick the box to review it in full:\n\n- \[ \] Force review\n/)
       : expect.stringMatching(/^\*\*Too big to review\*\* at `abc123`: this PR has 15001 reviewable lines, above the limit of 15000 that Manki reviews\. Split it into smaller PRs to get a review\.\n/)]);
+  });
+
+  it('edits the last unanswered too-big notice on a later push instead of adding another', async () => {
+    const file = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 2, content: '+x' }] };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [file], totalAdditions: 9_000, totalDeletions: 0 });
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [file], excluded: [] });
+    jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([
+      { id: 71, body: '**Too big for automatic review** ...\n\n- [ ] Force review\n\n<!-- manki -->\n<!-- manki-force-review -->\n<!-- manki-too-big -->', user: { login: 'manki-review[bot]' } },
+      { id: 70, body: '**Too big for automatic review** ...\n\n- [x] Force review\n\n<!-- manki -->\n<!-- manki-force-review -->\n<!-- manki-too-big -->', user: { login: 'manki-review[bot]' } },
+    ] as Awaited<ReturnType<typeof ghUtils.fetchPRComments>>);
+
+    await callRunFullReview();
+
+    expect(mockOctokitInstance.rest.issues.updateComment).toHaveBeenCalledWith(expect.objectContaining({ comment_id: 71, body: expect.stringContaining('9000 reviewable lines') }));
+    expect(jest.mocked(mockOctokitInstance.rest.issues.createComment).mock.calls.filter(([c]) => (c as { body: string }).body.includes('**Too big'))).toEqual([]);
+    jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([]);
   });
 
   it('takes the size limits from the base branch, not from the PR', async () => {

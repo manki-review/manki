@@ -185,4 +185,15 @@ describe('mapWithConcurrency', () => {
     expect(peak).toBe(2);
     expect(await mapWithConcurrency([], 4, async n => n)).toEqual([]);
   });
+
+  it('starts no further call after one rejects', async () => {
+    const started: number[] = [];
+    await expect(mapWithConcurrency([1, 2, 3, 4, 5], 2, async n => {
+      started.push(n);
+      if (n === 1) throw new Error('slice 1 failed');
+      await new Promise(resolve => setTimeout(resolve, 5));
+      return n;
+    })).rejects.toThrow('slice 1 failed');
+    expect(started).toEqual([1, 2]);
+  });
 });
