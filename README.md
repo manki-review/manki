@@ -85,7 +85,7 @@ See [`.manki.yml.example`](.manki.yml.example) for all options, or [SETUP.md](SE
 
 ## Security
 
-Secrets are masked, PR content is sanitized before posting, and memory access is restricted to repo collaborators. See [SETUP.md](SETUP.md#security) for the full security model.
+Secrets are masked, PR content is sanitized before posting, and only people with write access to the repo can start Manki from a comment or change its memory. See [SETUP.md](SETUP.md#security) for the full security model.
 
 ## License
 
