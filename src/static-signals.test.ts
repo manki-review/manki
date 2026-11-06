@@ -3,6 +3,8 @@ import { basename, join } from 'path';
 
 import * as core from '@actions/core';
 import * as github from '@actions/github';
+import python from '@ast-grep/lang-python';
+import rust from '@ast-grep/lang-rust';
 import * as napi from '@ast-grep/napi';
 
 import { filterDiff, parsePRDiff } from './diff';
@@ -24,6 +26,9 @@ jest.mock('@actions/github', () => ({
 }));
 
 type Octokit = ReturnType<typeof github.getOctokit>;
+
+// The grammars are registered once per process, so every test file registers the same ones.
+napi.registerDynamicLanguage({ python, rust });
 
 const RAW_DIFF = [
   'diff --git a/src/app.ts b/src/app.ts',
@@ -55,7 +60,7 @@ function annotation(path: string, line: number, message: string, level = 'failur
   return { path, start_line: line, end_line: line, annotation_level: level, title: 'no-unused-vars', message };
 }
 
-/** `configByRef` holds `.manki.yml` per ref, and `files` any other file keyed by `ref:path`. A directory lists the files under it. */
+/** `configByRef` holds `.manki.yml` per ref, and `files` any other file keyed by `ref:path`. A directory lists the files under it, and `git.getTree` lists every file of a ref. */
 function makeOctokit(configByRef: Record<string, string> = {}, files: Record<string, string> = {}) {
   const rest = {
     repos: {
@@ -85,6 +90,11 @@ function makeOctokit(configByRef: Record<string, string> = {}, files: Record<str
             { ...annotation('src/app.ts', 2, 'file-level result'), start_line: null },
           ]
           : [annotation('src/app.ts', 1, 'from an excluded run')],
+      })),
+    },
+    git: {
+      getTree: jest.fn(async ({ tree_sha }: { tree_sha: string }) => ({
+        data: { tree: Object.keys(files).filter(key => key.startsWith(`${tree_sha}:`)).map(key => ({ type: 'blob', path: key.slice(tree_sha.length + 1) })) },
       })),
     },
     codeScanning: {
@@ -240,6 +250,47 @@ describe('collectStaticSignals with analyzers and waits', () => {
     const headOn = makeOctokit({ main: ONLY_ANALYZERS, 'head-sha': `${ONLY_ANALYZERS}  analyzers: all\n` }, HEAD_FILES);
     expect(await collectStaticSignals(headOn, request(), runtime)).toEqual({ signals: [] });
     expect(runtime.loadAstGrep).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs the Rust rules on added lines without `ast_grep: true` when a `Cargo.toml` on the base branch sits above a changed Rust file, and never otherwise', async () => {
+    const LIB = 'fn a() { unsafe { old() } }\nfn b() { unsafe { new() } }\nfn c() {}\n';
+    const rustRequest = (path: string) => {
+      const diff = parsePRDiff([
+        `diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, '@@ -1,2 +1,3 @@',
+        ' fn a() { unsafe { old() } }', '+fn b() { unsafe { new() } }', ' fn c() {}', RAW_DIFF,
+      ].join('\n'));
+      return { ...request(), diff, fullDiff: diff };
+    };
+    const files = { ...HEAD_FILES, 'head-sha:src/lib.rs': LIB, 'head-sha:crates/net/src/lib.rs': LIB };
+    const cargo = makeOctokit({ main: ONLY_ANALYZERS }, { ...files, 'main:Cargo.toml': '[package]\n' });
+
+    const { signals, record } = await collectStaticSignals(cargo, rustRequest('src/lib.rs'), runtime);
+
+    expect(signals).toEqual([expect.objectContaining({ tool: 'ast-grep', ruleId: 'rust-unsafe-block', severity: 'note', file: 'src/lib.rs', line: 2 })]);
+    expect(record).toEqual({ analyzers: [{ analyzer: 'ast_grep', status: 'ran', results: 1 }] });
+    expect(cargo.rest.repos.getContent).not.toHaveBeenCalledWith(expect.objectContaining({ path: 'src/app.ts' }));
+    expect(cargo.rest.git.getTree).toHaveBeenCalledWith(expect.objectContaining({ tree_sha: 'main', recursive: 'true' }));
+    expect(toolAlertFindings(signals)).toEqual([expect.objectContaining({ toolSource: 'ast-grep', severity: 'suggestion' })]);
+
+    // A workspace in a subdirectory counts for the files under it, and a sibling crate's manifest does not.
+    const workspace = makeOctokit({ main: ONLY_ANALYZERS }, { ...files, 'main:crates/Cargo.toml': '[workspace]\n', 'main:tools/Cargo.toml': '[package]\n' });
+    expect((await collectStaticSignals(workspace, rustRequest('crates/net/src/lib.rs'), runtime)).signals.map(s => `${s.file}:${s.line}`)).toEqual(['crates/net/src/lib.rs:2']);
+    expect(await collectStaticSignals(workspace, rustRequest('src/lib.rs'), runtime)).toEqual({ signals: [] });
+
+    const headCargo = makeOctokit({ main: ONLY_ANALYZERS }, { ...files, 'head-sha:Cargo.toml': '[package]\n' });
+    expect(await collectStaticSignals(headCargo, rustRequest('src/lib.rs'), runtime)).toEqual({ signals: [] });
+    const allNoCargo = makeOctokit({ main: `${ONLY_ANALYZERS}  analyzers:\n    ast_grep: true\n` }, files);
+    expect((await collectStaticSignals(allNoCargo, rustRequest('src/lib.rs'), runtime)).signals.map(s => s.ruleId)).toEqual(['security-eval-injection']);
+
+    // A failed tree listing only leaves the Rust rules out, and every other source still reports.
+    const unreadable = makeOctokit({ main: 'static_analysis:\n  code_scanning: false\n  dependency_review: false\n' }, { ...files, 'main:Cargo.toml': '[package]\n' });
+    unreadable.rest.git.getTree.mockRejectedValue(new Error('socket hang up'));
+    expect((await collectStaticSignals(unreadable, rustRequest('src/lib.rs'), runtime)).signals.map(s => s.source)).toEqual(['checks']);
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('could not list the files on the base branch, skipping the Rust rules: socket hang up'));
+
+    const off = makeOctokit({ main: `${ONLY_ANALYZERS}  analyzers:\n    ast_grep: false\n` }, { ...files, 'main:Cargo.toml': '[package]\n' });
+    expect(await collectStaticSignals(off, rustRequest('src/lib.rs'), runtime)).toEqual({ signals: [] });
+    expect(off.rest.git.getTree).not.toHaveBeenCalled();
   });
 
   it('turns on every analyzer but Semgrep with `all`, skips one that cannot run, records why, and keeps the other sources', async () => {

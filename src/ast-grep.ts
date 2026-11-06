@@ -3,31 +3,34 @@ import { join } from 'path';
 
 import * as core from '@actions/core';
 import type { NapiConfig, parse, registerDynamicLanguage } from '@ast-grep/napi';
+import { minimatch } from 'minimatch';
 import { parseAllDocuments } from 'yaml';
 
 import { installPinned, PinnedDownload } from './tool-install';
 import { StaticSignal } from './types';
 
-/** The part of `@ast-grep/napi` the analyzer uses, with the Python grammar registered as `python`. */
+/** The part of `@ast-grep/napi` the analyzer uses, with the Python and Rust grammars registered as `python` and `rust`. */
 export interface AstGrepApi {
   parse: typeof parse;
   registerDynamicLanguage: typeof registerDynamicLanguage;
 }
 
-type Family = 'typescript' | 'python';
+type Family = 'typescript' | 'python' | 'rust';
 
 interface AstGrepRule extends NapiConfig {
   id: string;
   family: Family;
   severity: StaticSignal['severity'];
   message: string;
+  /** Globs of files the rule skips. */
+  ignores: string[];
 }
 
 const RULES_DIR = join(__dirname, '..', 'rules', 'ast-grep');
 
 const NAPI_VERSION = '0.51.1';
 
-// ncc only bundles the native binding of the platform that builds `dist/`, and never the Python grammar, so both load at run time.
+// ncc only bundles the native binding of the platform that builds `dist/`, and never the grammars, so all of them load at run time.
 const NAPI_BUILDS: Record<string, { target: string; integrity: string }> = {
   'linux-x64': { target: 'linux-x64-gnu', integrity: 'sha512-qjPDrnHd6mO3JfQS4VZRN5/W1as58y2jgb6sdZcSHvKvpwpYgt9Rlr37r6cwH8riA4uNpATrVH4jMnsAgZGYKg==' },
   'linux-arm64': { target: 'linux-arm64-gnu', integrity: 'sha512-oUV+9XSdBwgMOneaG4qrDgDlbKOex/nwZ/xxN/LtrxHAN3y2DvUqG5Ds952F/shXJUxjqPRqsGUnB4chTpoj4Q==' },
@@ -41,7 +44,12 @@ const PYTHON_GRAMMAR: PinnedDownload = {
   integrity: 'sha512-eF/bEBspmrxdVuPNihvZDyyJx5qtIpGEMz9l1nNQmrji7NZcUiRNC8WwzYyQCBdy1mj8HZ0Tn4I2q3gp/6Bkiw==',
 };
 
-const PYTHON_PREBUILDS: Record<string, string> = {
+const RUST_GRAMMAR: PinnedDownload = {
+  url: 'https://registry.npmjs.org/@ast-grep/lang-rust/-/lang-rust-0.0.7.tgz',
+  integrity: 'sha512-CF6jv8XmlVQgr/pFKADM87EkoGiHIrHKsG1wcX2iqgdBX5kW8wH+Zd4GP6SMme2eZogD49f19vRoRTF44iZqzg==',
+};
+
+const GRAMMAR_PREBUILDS: Record<string, string> = {
   'linux-x64': 'Linux-X64',
   'linux-arm64': 'Linux-ARM64',
   'darwin-x64': 'macOS-X64',
@@ -60,15 +68,16 @@ const LANGUAGES: Record<string, { family: Family; lang: string }> = {
   mjs: { family: 'typescript', lang: 'Tsx' },
   cjs: { family: 'typescript', lang: 'Tsx' },
   py: { family: 'python', lang: 'python' },
+  rs: { family: 'rust', lang: 'rust' },
 };
 
-const FAMILIES: Record<string, Family> = { typescript: 'typescript', tsx: 'typescript', javascript: 'typescript', python: 'python' };
+const FAMILIES: Record<string, Family> = { typescript: 'typescript', tsx: 'typescript', javascript: 'typescript', python: 'python', rust: 'rust' };
 
 const SEVERITIES: Record<string, StaticSignal['severity']> = { error: 'error', warning: 'warning', info: 'note', hint: 'note' };
 
 let loaded: Promise<AstGrepApi> | undefined;
 
-/** Downloads the pinned `@ast-grep/napi` binding and Python grammar for this platform once per run and loads them. */
+/** Downloads the pinned `@ast-grep/napi` binding and the Python and Rust grammars for this platform once per run and loads them. */
 export function loadAstGrep(): Promise<AstGrepApi> {
   loaded ??= loadPinnedAstGrep();
   return loaded;
@@ -78,20 +87,18 @@ async function loadPinnedAstGrep(): Promise<AstGrepApi> {
   const platform = `${process.platform}-${process.arch}`;
   const build = NAPI_BUILDS[platform];
   if (!build) throw new Error(`no pinned ast-grep build for ${platform}`);
-  const [bindingDir, grammarDir] = await Promise.all([
+  const [bindingDir, pythonDir, rustDir] = await Promise.all([
     installPinned({ url: `https://registry.npmjs.org/@ast-grep/napi-${build.target}/-/napi-${build.target}-${NAPI_VERSION}.tgz`, integrity: build.integrity }),
     installPinned(PYTHON_GRAMMAR),
+    installPinned(RUST_GRAMMAR),
   ]);
+  const parser = (dir: string) => join(dir, 'package', 'prebuilds', `prebuild-${GRAMMAR_PREBUILDS[platform]}`, 'parser.so');
   const binding = { exports: {} };
   process.dlopen(binding, join(bindingDir, 'package', `ast-grep-napi.${build.target}.node`));
   const api = binding.exports as AstGrepApi;
   api.registerDynamicLanguage({
-    python: {
-      libraryPath: join(grammarDir, 'package', 'prebuilds', `prebuild-${PYTHON_PREBUILDS[platform]}`, 'parser.so'),
-      extensions: ['py'],
-      languageSymbol: 'tree_sitter_python',
-      expandoChar: 'µ',
-    },
+    python: { libraryPath: parser(pythonDir), extensions: ['py'], languageSymbol: 'tree_sitter_python', expandoChar: 'µ' },
+    rust: { libraryPath: parser(rustDir), extensions: ['rs'], languageSymbol: 'tree_sitter_rust', expandoChar: 'µ' },
   });
   return api;
 }
@@ -109,8 +116,8 @@ export function runAstGrep(api: AstGrepApi, files: Map<string, string>): StaticS
     const language = languageOf(file);
     if (!language) continue;
     const root = api.parse(language.lang, content).root();
-    for (const { id, family, severity, message, rule, constraints, utils } of rules) {
-      if (family !== language.family) continue;
+    for (const { id, family, severity, message, rule, constraints, utils, ignores } of rules) {
+      if (family !== language.family || ignores.some(glob => minimatch(file, glob))) continue;
       try {
         for (const node of root.findAll({ rule, constraints, utils })) {
           signals.push({ tool: 'ast-grep', ruleId: id, severity, file, line: node.range().start.line + 1, message, source: 'ast_grep' });
@@ -123,6 +130,11 @@ export function runAstGrep(api: AstGrepApi, files: Map<string, string>): StaticS
   return signals;
 }
 
+/** Whether the file is Rust. Manki's Rust rules run only in a repository with a `Cargo.toml`. */
+export function isRustFile(path: string): boolean {
+  return languageOf(path)?.family === 'rust';
+}
+
 function languageOf(path: string): { family: Family; lang: string } | undefined {
   const dot = path.lastIndexOf('.');
   return dot === -1 ? undefined : LANGUAGES[path.slice(dot + 1).toLowerCase()];
@@ -133,13 +145,22 @@ let rules: AstGrepRule[] | undefined;
 function loadRules(): AstGrepRule[] {
   rules ??= readdirSync(RULES_DIR)
     .filter(name => name.endsWith('.yml'))
-    .flatMap(name => parseAllDocuments(readFileSync(join(RULES_DIR, name), 'utf-8')).map(doc => {
-      const { id, language, severity, message, rule, constraints, utils } = doc.toJS() as Record<string, unknown>;
-      const family = FAMILIES[String(language).toLowerCase()];
-      if (typeof id !== 'string' || !family || !SEVERITIES[String(severity)] || typeof message !== 'string' || !rule) {
-        throw new Error(`invalid ast-grep rule ${String(id)} in ${name}`);
-      }
-      return { id, family, severity: SEVERITIES[String(severity)], message, rule, constraints, utils } as AstGrepRule;
-    }));
+    .flatMap(name => {
+      const docs = parseAllDocuments(readFileSync(join(RULES_DIR, name), 'utf-8')).map(doc => doc.toJS() as Record<string, unknown>);
+      // A document without an `id` holds `utils` and `ignores` shared by every rule in its file.
+      const shared = docs.filter(doc => doc.id === undefined);
+      const sharedUtils = Object.assign({}, ...shared.map(doc => doc.utils));
+      const sharedIgnores = shared.flatMap(doc => (doc.ignores ?? []) as string[]);
+      return docs.filter(doc => doc.id !== undefined).map(({ id, language, severity, message, rule, constraints, utils, ignores }) => {
+        const family = FAMILIES[String(language).toLowerCase()];
+        if (typeof id !== 'string' || !family || !SEVERITIES[String(severity)] || typeof message !== 'string' || !rule) {
+          throw new Error(`invalid ast-grep rule ${String(id)} in ${name}`);
+        }
+        return {
+          id, family, severity: SEVERITIES[String(severity)], message, rule, constraints,
+          utils: { ...sharedUtils, ...(utils as object) }, ignores: [...sharedIgnores, ...((ignores ?? []) as string[])],
+        } as AstGrepRule;
+      });
+    });
   return rules;
 }

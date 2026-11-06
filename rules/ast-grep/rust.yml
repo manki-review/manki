@@ -1,0 +1,110 @@
+# Manki's ast-grep rules for Rust. They run only when the repository has a `Cargo.toml`, and report hints for the
+# judge to grade. The parser keeps a macro's body as a token tree, so no rule looks inside `assert_eq!` and alike.
+# Tests, benchmarks, examples and build scripts never see outside input.
+ignores: ['**/tests/**', '**/benches/**', '**/examples/**', '**/build.rs', '**/test_utils/**', '**/test_utils.rs', '**/tests.rs', '**/*_tests.rs', '**/*_test.rs']
+utils:
+  test-code:
+    any:
+      - kind: function_item
+        follows: { kind: attribute_item, regex: '^#\[(\w+::)*(test|bench)\b', stopBy: { not: { any: [{ kind: attribute_item }, { kind: line_comment }] } } }
+      - kind: mod_item
+        follows: { kind: attribute_item, regex: '^#\[cfg\((all\()?(test|bench)\b', stopBy: { not: { any: [{ kind: attribute_item }, { kind: line_comment }] } } }
+  decode-name:
+    regex: ^(decode|consensus_decode|deserialize|from_slice|from_bytes|from_reader|from_hex|from_str|from_utf8|parse|read_\w+|decode_\w+|deserialize_\w+)$
+  decode-function:
+    any:
+      # A method on a string literal, such as `"127.0.0.1".parse()`, reads no input.
+      - kind: field_expression
+        all:
+          - has: { field: field, matches: decode-name }
+          - not: { has: { field: value, kind: string_literal } }
+      - { kind: scoped_identifier, has: { field: name, matches: decode-name } }
+      - { kind: identifier, matches: decode-name }
+      - { kind: generic_function, has: { field: function, matches: decode-function } }
+  decode-call:
+    kind: call_expression
+    all:
+      - has: { field: function, matches: decode-function }
+      # Decoding a string literal, such as a hard-coded hash, reads no input.
+      - not: { has: { field: arguments, regex: '^\(\s*&?r?#*"[^"]*"#*\s*\)$' } }
+---
+id: rust-truncating-cast
+language: Rust
+severity: hint
+message: Casts a length, count or index to a narrower integer with `as`, which silently drops the high bits when the value does not fit. Use `try_from` and handle the error.
+rule:
+  kind: type_cast_expression
+  all:
+    # Only a value that grows with the input, such as `items.len()`, `count` or `msg.offset`, so enum and flag casts pass.
+    # A collection does not reach 2^32 items, so `.len() as u32` passes too.
+    - any:
+        - all:
+            - has: { field: type, regex: ^(u8|u16|i8|i16)$ }
+            - has: { field: value, regex: '\.(len|count)\(\)$' }
+        - all:
+            - has: { field: type, regex: ^(u8|u16|u32|i8|i16|i32)$ }
+            - has: { field: value, regex: '(?i)(^|[._])(len|length|size|count|num_\w+|n_\w+|\w*_?idx|index|offset|height)$' }
+            - not: { has: { field: value, regex: '^[A-Z][A-Z0-9_]*$' } }
+    - not: { inside: { matches: test-code, stopBy: end } }
+---
+id: rust-unwrap-decoded-input
+language: Rust
+severity: hint
+message: Panics when decoding fails. When the bytes come from a peer, a file or a user, return the error instead of calling `unwrap` or `expect`.
+rule:
+  kind: call_expression
+  all:
+    - has:
+        field: function
+        kind: field_expression
+        all:
+          - has: { field: field, regex: ^(unwrap|expect)$ }
+          - has: { field: value, matches: decode-call }
+    - not: { inside: { matches: test-code, stopBy: end } }
+---
+id: rust-capacity-from-decoded-length
+language: Rust
+severity: hint
+message: Allocates up front for a length in a function that decodes input. A length read from input can ask for gigabytes, so cap it or let the collection grow as items arrive.
+rule:
+  kind: call_expression
+  all:
+    - has:
+        field: function
+        kind: scoped_identifier
+        all:
+          - has: { field: path, regex: ^(Vec|VecDeque|String|HashMap|HashSet|BytesMut)$ }
+          - has: { field: name, regex: ^with_capacity$ }
+    # A literal, a constant, the length of data already in memory or a bounded value cannot be too large.
+    - has: { field: arguments, not: { regex: '^\(\s*\d+\s*\)$|\b[A-Z][A-Z0-9_]{2,}\b|\.len\(\)|\bmin\b|size_of|size_hint' } }
+    - inside: { kind: function_item, stopBy: end, has: { matches: decode-call, stopBy: end } }
+    - not: { inside: { matches: test-code, stopBy: end } }
+---
+id: rust-unsafe-block
+language: Rust
+severity: hint
+message: Adds an `unsafe` block. Check that every invariant it relies on holds, and state them in a `// SAFETY:` comment.
+rule:
+  kind: unsafe_block
+---
+id: rust-secret-equality
+language: Rust
+severity: hint
+message: Compares secret bytes with `==`, which stops at the first difference and can leak the secret through timing. Use a constant-time comparison such as `subtle::ConstantTimeEq`.
+rule:
+  any:
+    - pattern: $LEFT == $RIGHT
+    - pattern: $LEFT != $RIGHT
+  # A comparison with a literal, such as `uses_password != 0`, checks a flag or a length.
+  not: { has: { any: [{ kind: integer_literal }, { kind: boolean_literal }, { kind: string_literal }] } }
+  has:
+    all:
+      - regex: '(?i)(secret|priv(ate)?_?key|seed|hmac|(^|[._])mac\b|auth_?tag|password|passwd|api_?key|(api|auth|access)_?token)'
+      - not: { regex: '\.(len|is_empty|is_some|is_none)\(\)$' }
+      - any:
+          # A MAC, an authentication tag or a password is compared byte by byte whatever its type.
+          - regex: '(?i)(hmac|(^|[._])mac|auth_?tag|password|passwd)\w*$'
+          - regex: '\.(as_bytes|to_bytes|secret_bytes|as_ref|as_slice|to_vec|into_bytes|expose_secret)\(\)$'
+          - regex: '(?i)bytes$'
+          - kind: index_expression
+          - { kind: reference_expression, has: { kind: index_expression } }

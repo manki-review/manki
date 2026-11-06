@@ -533,7 +533,7 @@ static_analysis:
 
 ### Running Manki's analyzers
 
-Manki can run analyzers itself. `actionlint`, `zizmor` and `shellcheck` are on by default, but each runs only when a file it checks changes, and only when CI does not run the same tool already. The others are off by default, for a repository without CI checks. Turn them on or off in `.manki.yml` on the base branch:
+Manki can run analyzers itself. `actionlint`, `zizmor` and `shellcheck` are on by default, but each runs only when a file it checks changes, and only when CI does not run the same tool already. Manki's Rust rules for `ast_grep` are on by default in a Cargo repository (see below). The others are off by default, for a repository without CI checks. Turn them on or off in `.manki.yml` on the base branch:
 
 ```yaml
 static_analysis:
@@ -550,7 +550,7 @@ static_analysis:
 
 | Analyzer | Tool | What it checks |
 |----------|------|----------------|
-| `ast_grep` | [ast-grep](https://ast-grep.github.io) 0.51.1 | Manki's own rules in [`rules/ast-grep`](rules/ast-grep) (MIT licensed): code and shell injection, HTML sinks, disabled TLS checks and unsafe deserialization, plus error-prone patterns such as an async `forEach` callback, a comparison with `NaN` or a mutable default argument. Runs on the changed JavaScript, TypeScript and Python files. |
+| `ast_grep` | [ast-grep](https://ast-grep.github.io) 0.51.1 | Manki's own rules in [`rules/ast-grep`](rules/ast-grep) (MIT licensed): code and shell injection, HTML sinks, disabled TLS checks and unsafe deserialization, plus error-prone patterns such as an async `forEach` callback, a comparison with `NaN` or a mutable default argument. Runs on the changed JavaScript, TypeScript and Python files. The Rust rules also run on a changed Rust file that has a `Cargo.toml` in its directory or one above it on the base branch, even without `ast_grep: true`: a narrowing `as` cast of a length, count or index, `unwrap` or `expect` on decoded input, `with_capacity` sized by a decoded length, a new `unsafe` block, and `==` on secret bytes. They report hints on added lines only, skip tests, benchmarks, examples and build scripts, and stop with `ast_grep: false`. |
 | `secrets` | [gitleaks](https://github.com/gitleaks/gitleaks) 8.30.1 | Secrets on the lines the PR adds in any changed file, with gitleaks' default rules through Manki's [`rules/gitleaks.toml`](rules/gitleaks.toml). `gitleaks:allow` comments are ignored. |
 | `dependencies` | [OSV-Scanner](https://github.com/google/osv-scanner) 2.7.0 | Known vulnerabilities in the packages of the changed lockfiles, such as `package-lock.json`, `pnpm-lock.yaml`, `go.mod` or `requirements.txt`, with Manki's [`rules/osv-scanner.toml`](rules/osv-scanner.toml). A result sits on the line that adds the package. |
 | `semgrep` | [Opengrep](https://github.com/opengrep/opengrep) 1.33.1 | Your Semgrep rules on the changed files. List rule files in the repository, read from the base branch. Manki ships no Semgrep rules and never fetches registry rules such as `p/default`. `nosemgrep` comments are ignored. |

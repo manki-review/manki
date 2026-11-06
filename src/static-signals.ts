@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { AstGrepApi, isAstGrepFile, loadAstGrep, runAstGrep } from './ast-grep';
+import { AstGrepApi, isAstGrepFile, isRustFile, loadAstGrep, runAstGrep } from './ast-grep';
 import { installTool, isLockfile, runActionlint, runGitleaks, runOpengrep, runOsvScanner, runShellcheck, runTool, runZizmor, ToolRunner } from './binary-analyzers';
 import { loadStaticAnalysisConfig } from './config';
 import { addedLines, isLineInDiff } from './diff';
@@ -91,8 +91,11 @@ export async function collectStaticSignals(
     return null;
   });
   const settings = loadStaticAnalysisConfig(content, configPath);
-  const checksStillPending = await waitForChecks(octokit, request, settings, runtime.sleep);
-  const analyzers = enabledAnalyzers(settings);
+  const [checksStillPending, rustRules] = await Promise.all([
+    waitForChecks(octokit, request, settings, runtime.sleep),
+    usesRustRules(octokit, request, settings),
+  ]);
+  const analyzers = enabledAnalyzers(settings, rustRules);
   const semgrepRules = settings.analyzers !== 'all' && settings.analyzers.semgrep ? settings.analyzers.semgrep.rules : [];
   // The files are read through the API and only parsed, so no code from the PR runs. Each analyzer reads its own files
   // within its own budget, so turning one on never shrinks what another one scans.
@@ -107,9 +110,11 @@ export async function collectStaticSignals(
   if (settings.code_scanning) sources.push(['code_scanning', () => fetchCodeScanningAlerts(octokit, request)]);
   if (settings.dependency_review) sources.push(['dependency_review', () => fetchDependencyReview(octokit, request)]);
   if (analyzers.includes('ast_grep')) {
+    const allRules = settings.analyzers === 'all' || settings.analyzers.ast_grep === true;
+    const keep = (path: string) => isRustFile(path) ? rustRules : allRules && isAstGrepFile(path);
     sources.push(['ast_grep', async () => {
-      if (!diff.files.some(f => f.changeType !== 'deleted' && isAstGrepFile(f.path))) return [];
-      const [api, contents] = await Promise.all([runtime.loadAstGrep(), readHeadFiles(isAstGrepFile)]);
+      if (!diff.files.some(f => f.changeType !== 'deleted' && keep(f.path))) return [];
+      const [api, contents] = await Promise.all([runtime.loadAstGrep(), readHeadFiles(keep)]);
       return runAstGrep(api, contents);
     }]);
   }
@@ -151,7 +156,9 @@ export async function collectStaticSignals(
       const onlyAdded = (DEFAULT_ANALYZERS as readonly string[]).includes(source);
       const onDiff = results.filter(s => {
         const file = (source === 'dependencies' || source === 'secrets' || onlyAdded ? allFiles : files).get(s.file);
-        return file !== undefined && (onlyAdded ? addedLines(file).has(s.line) : isLineInDiff(file, s.line));
+        // The Rust rules point at what the PR adds, such as a new `unsafe` block, so they keep only added lines too.
+        const added = onlyAdded || (source === 'ast_grep' && isRustFile(s.file));
+        return file !== undefined && (added ? addedLines(file).has(s.line) : isLineInDiff(file, s.line));
       }).map(s => analyzer ? { ...s, ruleId: cleanMessage(s.ruleId, MAX_NAME_CHARS), message: cleanMessage(s.message) } : s);
       if (analyzer) runs.push({ analyzer, status: 'ran', results: onDiff.length });
       return onDiff;
@@ -176,11 +183,11 @@ export function isAnalyzerSignal(signal: StaticSignal): boolean {
   return (ANALYZERS as readonly string[]).includes(signal.source);
 }
 
-function enabledAnalyzers(settings: StaticAnalysisConfig): AnalyzerName[] {
+function enabledAnalyzers(settings: StaticAnalysisConfig, rustRules: boolean): AnalyzerName[] {
   const { analyzers } = settings;
   // Semgrep runs only with the user's rules, so `all` cannot turn it on.
   if (analyzers === 'all') return ANALYZERS.filter(a => a !== 'semgrep');
-  return ANALYZERS.filter(a => a === 'semgrep' ? !!analyzers.semgrep : analyzers[a] ?? DEFAULT_ANALYZERS.includes(a));
+  return ANALYZERS.filter(a => a === 'semgrep' ? !!analyzers.semgrep : (analyzers[a] ?? DEFAULT_ANALYZERS.includes(a)) || (a === 'ast_grep' && rustRules));
 }
 
 /** Thrown by an analyzer that has a reason not to run, which is recorded without a warning. */
@@ -235,6 +242,24 @@ async function readActionlintConfig(octokit: Octokit, { owner, repo, baseRef }: 
     if (content !== null) return content;
   }
   return null;
+}
+
+/**
+ * Whether Manki's Rust rules run: `ast_grep` is not turned off, and a changed Rust file has a `Cargo.toml` in its own
+ * directory or one above it on the base branch, so a workspace in a subdirectory counts. They need no `ast_grep: true`.
+ */
+async function usesRustRules(octokit: Octokit, { owner, repo, baseRef, diff }: StaticSignalRequest, settings: StaticAnalysisConfig): Promise<boolean> {
+  if (settings.analyzers !== 'all' && settings.analyzers.ast_grep === false) return false;
+  const rustFiles = diff.files.filter(f => f.changeType !== 'deleted' && isRustFile(f.path)).map(f => f.path);
+  if (rustFiles.length === 0) return false;
+  try {
+    const { data } = await octokit.rest.git.getTree({ owner, repo, tree_sha: baseRef, recursive: 'true' });
+    const manifests = new Set(data.tree.filter(e => e.type === 'blob' && e.path?.split('/').pop() === 'Cargo.toml').map(e => e.path));
+    return rustFiles.some(path => path.split('/').some((_, i, parts) => manifests.has([...parts.slice(0, i), 'Cargo.toml'].join('/'))));
+  } catch (error) {
+    core.warning(`Static analysis: could not list the files on the base branch, skipping the Rust rules: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
 }
 
 /** Polls the check runs named in `wait_for_checks` until each has finished, and returns the ones still running at the timeout. */
