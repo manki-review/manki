@@ -24,7 +24,7 @@ import { buildRoundContext, RoundRecordInput } from './round-context';
 import { collectStaticSignals } from './static-signals';
 import { runStepHook, STEP_HOOK_COMMAND } from './tool-steps';
 import { fetchWorkspace } from './workspace';
-import { isSettingsBox, SETTINGS_MARKER, SettingsBox, SettingsView, stripSettingsBlock, withSettingsBlock } from './settings';
+import { isSettingsBox, SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, RoundTrigger, RunMode, SettingsState, StaticSignal, roundContextToFlatAliases } from './types';
 import {
   fetchPRDiff,
@@ -64,6 +64,7 @@ import {
   PAUSE_NOTICE_MARKER,
   REVIEW_COMPLETE_MARKER,
   retireSettingsBlocks,
+  setSettingsBlock,
   showSettings,
 } from './github';
 import type { ApprovalHeld, BotIdentity, LinkedIssue, StandingVerdict } from './github';
@@ -373,14 +374,13 @@ function tickedBoxes(settings: SettingsState): Set<SettingsBox> {
 }
 
 /**
- * How a run reviews. A box a writer ticked reviews even an already reviewed or paused PR, `draft` reviews a draft,
- * and `full` counts every finding as new.
+ * How a run reviews. A box a writer ticked (Force review, Full review or Review this draft) reviews even a draft or
+ * an already reviewed or paused PR, and `full` counts every finding as new.
  */
-function reviewModes(settings: SettingsState | undefined): { forced: boolean; fullReview: boolean; draft: boolean } {
+function reviewModes(settings: SettingsState | undefined): { forced: boolean; fullReview: boolean } {
   const modes = settings?.runModes;
-  const draft = !!modes?.has('draft');
   const fullReview = !!modes?.has('full');
-  return { forced: draft || fullReview || !!modes?.has('force'), fullReview, draft };
+  return { forced: fullReview || !!modes?.has('force') || !!modes?.has('draft'), fullReview };
 }
 
 /**
@@ -466,9 +466,9 @@ async function handlePullRequest(): Promise<void> {
 
   const draft = !!pr.draft;
   const settings = await loadSettings(owner, repo, prNumber);
-  const { forced, fullReview, draft: reviewDraft } = reviewModes(settings);
+  const { forced, fullReview } = reviewModes(settings);
   const { octokit, bot } = await getAuth();
-  if (draft && !reviewDraft && !(await reviewsDrafts(octokit, owner, repo, pr.base.ref))) {
+  if (draft && !forced && !(await reviewsDrafts(octokit, owner, repo, pr.base.ref))) {
     core.info('Skipping draft PR (`drafts: skip`)');
     if (settings) {
       await showRunStatus(octokit, bot, owner, repo, prNumber, settings, {
@@ -705,7 +705,7 @@ interface RunProgress {
    * What the settings block of the progress comment carries over all its edits, and the comment that had the block before.
    * Unset while the Worker handles no boxes.
    */
-  settings?: { lastReviewed?: string; draft: boolean; ticked: ReadonlySet<SettingsBox>; previous?: { id: number; body: string } };
+  settings?: { lastReviewed?: string; draft: boolean; ticked: ReadonlySet<SettingsBox>; previousId?: number };
 }
 
 /** The settings block of the run's progress comment with `status`, or `undefined` without one. `reviewed` marks the head reviewed. */
@@ -737,7 +737,7 @@ async function postRunProgress(target: RunTarget, progress: RunProgress, { setti
   const latest = latestSettings(comments, bot);
   progress.settings = {
     lastReviewed: latest?.settings.lastReviewed, draft, ticked: tickedBoxes(settings),
-    ...(latest && { previous: { id: latest.id, body: stripSettingsBlock(latest.body) } }),
+    ...(latest && { previousId: latest.id }),
   };
   const commentId = await postProgressComment(octokit, owner, repo, prNumber, commitSha, undefined, runningSettings(target, progress));
   await retireSettingsBlocks(octokit, bot, owner, repo, comments, commentId);
@@ -757,16 +757,12 @@ async function dropProgressComment(target: RunTarget, progress: RunProgress, set
     core.warning(`Failed to delete the progress comment: ${error instanceof Error ? error.message : error}`);
   }
   if (!settings || !progress.settings) return;
-  const { draft, lastReviewed, previous } = progress.settings;
-  if (!previous) {
+  const { draft, lastReviewed, previousId } = progress.settings;
+  if (previousId === undefined) {
     await showRunStatus(octokit, bot, owner, repo, prNumber, settings, { head: commitSha, draft, status, text, lastReviewed });
     return;
   }
-  try {
-    await octokit.rest.issues.updateComment({ owner, repo, comment_id: previous.id, body: withSettingsBlock(previous.body, progressSettings(target, progress, status)) });
-  } catch (error) {
-    core.warning(`Failed to move the settings block back to comment ${previous.id}: ${error instanceof Error ? error.message : error}`);
-  }
+  await setSettingsBlock(octokit, owner, repo, previousId, progressSettings(target, progress, status));
 }
 
 /** What a review round works on. Built once its inputs are collected, then passed to the stages that review, post and record. */

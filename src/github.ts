@@ -2058,17 +2058,25 @@ async function showSettings(
   }
 }
 
+/**
+ * Replaces the settings block of comment `commentId` with the block for `settings`, or removes it without one.
+ * The comment is read just before, so an edit another run made to it in the meantime stays.
+ */
+async function setSettingsBlock(octokit: Octokit, owner: string, repo: string, commentId: number, settings?: SettingsView): Promise<void> {
+  try {
+    const { data } = await octokit.rest.issues.getComment({ owner, repo, comment_id: commentId });
+    await octokit.rest.issues.updateComment({ owner, repo, comment_id: commentId, body: withSettingsBlock(stripSettingsBlock(data.body ?? ''), settings) });
+  } catch (error) {
+    core.warning(`Failed to update the settings block of comment ${commentId}: ${error instanceof Error ? error.message : error}`);
+  }
+}
+
 /** Removes the settings block from each of Manki's `comments` except `keepId`, so only the newest progress comment has one. */
 async function retireSettingsBlocks(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, comments: IssueComment[], keepId: number,
 ): Promise<void> {
   for (const c of comments) {
-    if (c.id === keepId || !isBotUser(bot, c.user) || !c.body?.includes(SETTINGS_MARKER)) continue;
-    try {
-      await octokit.rest.issues.updateComment({ owner, repo, comment_id: c.id, body: stripSettingsBlock(c.body) });
-    } catch (error) {
-      core.warning(`Failed to remove the settings block from comment ${c.id}: ${error instanceof Error ? error.message : error}`);
-    }
+    if (c.id !== keepId && isBotUser(bot, c.user) && c.body?.includes(SETTINGS_MARKER)) await setSettingsBlock(octokit, owner, repo, c.id);
   }
 }
 
@@ -2450,5 +2458,5 @@ async function postConfigErrorComment(
   }
 }
 
-export { APPROVED_LINE, dynamicFence, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, isTrustedAssociation, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgressOn, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, showSettings };
+export { APPROVED_LINE, dynamicFence, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, isTrustedAssociation, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgressOn, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings };
 export type { InProgressLock, StandingVerdict };

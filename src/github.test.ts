@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 
-import { ApprovalHeld, buildDashboard, titleToSlug, formatBlockingPriorThreads, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, showSettings } from './github';
+import { ApprovalHeld, buildDashboard, titleToSlug, formatBlockingPriorThreads, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { paginateSinglePage, TEST_BOT } from './test-utils';
@@ -2878,9 +2878,10 @@ describe('settings block placement', () => {
   function makeOctokit(comments: Array<{ id: number; body: string; login?: string }>) {
     const updateComment = jest.fn().mockResolvedValue({});
     const createComment = jest.fn().mockResolvedValue({ data: { id: 99 } });
+    const getComment = jest.fn(async ({ comment_id }: { comment_id: number }) => ({ data: { body: comments.find(c => c.id === comment_id)?.body } }));
     const data = comments.map(c => ({ id: c.id, body: c.body, user: { login: c.login ?? BOT_LOGIN, type: 'Bot' }, updated_at: '2026-01-01T00:00:00Z' }));
-    const octokit = { paginate: jest.fn().mockResolvedValue(data), rest: { issues: { listComments: jest.fn(), updateComment, createComment } } } as unknown as Octokit;
-    return { octokit, updateComment, createComment, data };
+    const octokit = { paginate: jest.fn().mockResolvedValue(data), rest: { issues: { listComments: jest.fn(), updateComment, createComment, getComment } } } as unknown as Octokit;
+    return { octokit, updateComment, createComment, getComment, data };
   }
 
   it('shows a status in the existing block, keeping its ticks and last reviewed commit unless given one', async () => {
@@ -2911,17 +2912,32 @@ describe('settings block placement', () => {
     expect(body.endsWith(renderSettingsBlock(view))).toBe(true);
   });
 
-  it('removes the block from every comment of Manki but the one to keep', async () => {
-    const { octokit, updateComment, data } = makeOctokit([
+  it('removes the block from every comment of Manki but the one to keep, from the comment as it is now', async () => {
+    const { octokit, updateComment, getComment, data } = makeOctokit([
       { id: 1, body: withSettingsBlock('Newest', view) },
       { id: 2, body: withSettingsBlock('Older', view) },
       { id: 3, body: withSettingsBlock('Not Manki', view), login: 'someone' },
       { id: 4, body: 'No block' },
     ]);
+    getComment.mockResolvedValueOnce({ data: { body: withSettingsBlock('Older, now complete', view) } });
 
     await retireSettingsBlocks(octokit, TEST_BOT, 'owner', 'repo', data, 1);
     expect(updateComment).toHaveBeenCalledTimes(1);
-    expect(updateComment).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', comment_id: 2, body: 'Older' });
+    expect(updateComment).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', comment_id: 2, body: 'Older, now complete' });
+  });
+
+  it('moves a block onto a comment as it is now, and only warns when that fails', async () => {
+    const warningSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const { octokit, updateComment, getComment } = makeOctokit([{ id: 2, body: 'Older' }]);
+
+    await setSettingsBlock(octokit, 'owner', 'repo', 2, view);
+    expect(updateComment).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', comment_id: 2, body: withSettingsBlock('Older', view) });
+
+    getComment.mockRejectedValueOnce(new Error('gone'));
+    await setSettingsBlock(octokit, 'owner', 'repo', 2, view);
+    expect(updateComment).toHaveBeenCalledTimes(1);
+    expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('Failed to update the settings block of comment 2'));
+    warningSpy.mockRestore();
   });
 });
 

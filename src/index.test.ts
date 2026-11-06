@@ -256,6 +256,7 @@ jest.mock('./github', () => {
   postConfigErrorComment: jest.fn().mockResolvedValue(undefined),
   latestSettings: jest.requireActual('./github').latestSettings,
   retireSettingsBlocks: jest.fn().mockResolvedValue(undefined),
+  setSettingsBlock: jest.fn().mockResolvedValue(undefined),
   showSettings: jest.fn().mockResolvedValue(undefined),
   };
 });
@@ -1012,7 +1013,7 @@ describe('handlePullRequest', () => {
       jest.mocked(core.getInput).mockImplementation((name: string) => (name === 'anthropic_api_key' ? 'test-api-key' : ''));
       jest.mocked(ghUtils.hasBotReviewOnCommit).mockResolvedValue(true);
       try {
-        for (const [draft, paused, mode] of [[true, false, 'draft'], [false, true, 'force'], [false, false, 'full']] as const) {
+        for (const [draft, paused, mode] of [[true, false, 'draft'], [true, false, 'full'], [false, true, 'force'], [false, false, 'full']] as const) {
           jest.mocked(ghUtils.postProgressComment).mockClear();
           jest.mocked(authModule.fetchPrState).mockResolvedValue(settingsState(paused, [mode]));
           setContext({ eventName: 'pull_request', payload: prPayload(draft) });
@@ -2325,9 +2326,7 @@ describe('runFullReview orchestration', () => {
       await runWith();
 
       expect(mockOctokitInstance.rest.issues.deleteComment).toHaveBeenCalledWith(expect.objectContaining({ comment_id: 1 }));
-      expect(mockOctokitInstance.rest.issues.updateComment).toHaveBeenCalledWith(expect.objectContaining({
-        comment_id: 7, body: withSettingsBlock('Older', view('automatic review off', { lastReviewed: 'fff0000' })),
-      }));
+      expect(ghUtils.setSettingsBlock).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 7, view('automatic review off', { lastReviewed: 'fff0000' }));
       expect(ghUtils.showSettings).not.toHaveBeenCalled();
 
       jest.mocked(ghUtils.fetchPRComments).mockResolvedValue([]);
