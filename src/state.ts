@@ -285,6 +285,20 @@ async function explainUnreviewedHead(octokit: Octokit, bot: BotIdentity, owner: 
     : `Manki has not reviewed ${head} yet. A push review should start shortly, and approval follows from its verdict.`;
 }
 
+/** Posts `text` as a comment carrying `marker`, unless a Manki comment with `marker` is already on the PR. */
+async function postNoticeOnce(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, marker: string, text: string,
+): Promise<void> {
+  const existing = await octokit.paginate(octokit.rest.issues.listComments, {
+    owner, repo, issue_number: prNumber, per_page: 100,
+  });
+  if (existing.some(c => isBotLogin(bot, c.user?.login) && c.body?.includes(marker))) {
+    core.info(`Notice ${marker} already present, skipping duplicate`);
+    return;
+  }
+  await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: withMarkers(text, marker) });
+}
+
 /**
  * Posts a one-time comment that auto-approve is withheld because Manki has not reviewed `headSha`,
  * and no automatic review will. `halt` says why and how to start one.
@@ -300,26 +314,15 @@ async function postStaleApproveSkippedComment(
   latestReviewSha: string,
   halt: string,
 ): Promise<void> {
-  const marker = staleApproveMarker(headSha);
+  const shortHead = headSha.slice(0, 7);
+  const shortLatest = latestReviewSha.slice(0, 7);
+  const text = [
+    `**Auto-approve withheld** for \`${shortHead}\`: all blocking review threads are resolved, but Manki has not reviewed this commit. Its latest review was on \`${shortLatest}\`.`,
+    '',
+    halt,
+  ].join('\n');
   try {
-    const existing = await octokit.paginate(octokit.rest.issues.listComments, {
-      owner, repo, issue_number: prNumber, per_page: 100,
-    });
-    if (existing.some(c =>
-      isBotLogin(bot, c.user?.login) &&
-      c.body?.includes(marker)
-    )) {
-      core.info(`Stale-approve comment already present for ${headSha.slice(0, 7)} — skipping duplicate`);
-      return;
-    }
-    const shortHead = headSha.slice(0, 7);
-    const shortLatest = latestReviewSha.slice(0, 7);
-    const body = withMarkers([
-      `**Auto-approve withheld** for \`${shortHead}\`: all blocking review threads are resolved, but Manki has not reviewed this commit. Its latest review was on \`${shortLatest}\`.`,
-      '',
-      halt,
-    ].join('\n'), marker);
-    await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+    await postNoticeOnce(octokit, bot, owner, repo, prNumber, staleApproveMarker(headSha), text);
   } catch (error) {
     core.warning(`Failed to post stale-approve-skipped comment: ${error instanceof Error ? error.message : error}`);
   }
