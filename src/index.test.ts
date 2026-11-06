@@ -1111,12 +1111,6 @@ describe('isApprovedOnCommit guard', () => {
     },
   };
 
-  const commentPayload = {
-    action: 'created',
-    issue: { number: 1, pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/1' } },
-    comment: { id: 42, body: '@manki review', author_association: 'COLLABORATOR' },
-  };
-
   it('skips review when already approved on commit', async () => {
     jest.mocked(ghUtils.isApprovedOnCommit).mockResolvedValueOnce(true);
 
@@ -1136,7 +1130,6 @@ describe('isApprovedOnCommit guard', () => {
     expect(jest.mocked(core.info)).not.toHaveBeenCalledWith('Already approved on this commit — skipping review');
     expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
   });
-
 });
 
 describe('hasBotReviewOnCommit head-SHA dedupe gate', () => {
