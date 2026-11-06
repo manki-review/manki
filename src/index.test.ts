@@ -121,7 +121,6 @@ jest.mock('./diff', () => {
       return { diff: { ...diff, files: included }, excluded };
     }),
     filterRawDiff: jest.fn((rawDiff: string) => rawDiff),
-    isDiffTooLarge: jest.fn().mockReturnValue(false),
     addCodeContext: jest.requireActual('./diff').addCodeContext,
     tagFindingOrigins: jest.requireActual('./diff').tagFindingOrigins,
     isSameChange: jest.requireActual('./diff').isSameChange,
@@ -1883,7 +1882,6 @@ describe('runFullReview orchestration', () => {
       instructions: '',
       memory: { enabled: false, repo: '' },
     });
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [], totalAdditions: 0, totalDeletions: 0 });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [], excluded: [] });
     jest.mocked(authModule.getMemoryToken).mockResolvedValue(null);
@@ -2023,11 +2021,11 @@ describe('runFullReview orchestration', () => {
     });
 
     it('completes the check as action required for a diff too large to review', async () => {
-      jest.mocked(diffModule.isDiffTooLarge).mockReturnValueOnce(true);
+      jest.mocked(diffModule.parsePRDiff).mockReturnValueOnce({ files: [reviewableFile], totalAdditions: 20_000, totalDeletions: 0 });
 
       await asDispatchedRun(callRunFullReview);
 
-      expect(completedCheck()).toMatchObject({ conclusion: 'action_required', output: { title: 'Not reviewed', summary: expect.stringContaining('Too large to review automatically') } });
+      expect(completedCheck()).toMatchObject({ conclusion: 'action_required', output: { title: 'Not reviewed', summary: expect.stringContaining('above the limit of 5000 that Manki reviews') } });
     });
 
     it('completes the check as action required while automatic review is paused', async () => {
@@ -2256,7 +2254,6 @@ describe('runFullReview orchestration', () => {
   });
 
   it('handles diff too large by posting warning review without running Claude', async () => {
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(true);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [], totalAdditions: 3000, totalDeletions: 3000,
     });
@@ -2272,7 +2269,7 @@ describe('runFullReview orchestration', () => {
       expect.anything(), 'test-owner', 'test-repo', 42, 'abc123',
       expect.objectContaining({
         verdict: 'COMMENT',
-        summary: expect.stringContaining('Too large to review automatically'),
+        summary: 'This PR has 6000 reviewable lines, above the limit of 5000 that Manki reviews. Split it into smaller PRs to get a review.',
       }),
       expect.anything(),
     );
@@ -2285,8 +2282,37 @@ describe('runFullReview orchestration', () => {
     expect(warmupCLI).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['an automatic review of 10,000 lines', 10_000, false, 'offer'],
+    ['a forced review of 10,000 lines', 10_000, true, 'review'],
+    ['a forced review of 15,000 lines', 15_000, true, 'review'],
+    ['a forced review of 15,001 lines', 15_001, true, 'refuse'],
+    ['an automatic review of 8,000 lines', 8_000, false, 'review'],
+  ] as const)('handles %s with the default limits', async (_label, lines, forceReview, expected) => {
+    jest.mocked(configModule.loadConfig).mockReturnValueOnce({ ...jest.mocked(configModule.loadConfig)(undefined), max_diff_lines: 15_000, auto_review_max_lines: 8_000 });
+    const file = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 2, content: '+x' }] };
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [file], totalAdditions: lines, totalDeletions: 0 });
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [file], excluded: [] });
+
+    await runFullReview(baseArgs.owner, baseArgs.repo, baseArgs.prNumber, baseArgs.commitSha, baseArgs.baseRef, baseArgs.prContext, { forceReview });
+
+    const posted = jest.mocked(ghUtils.postReview).mock.calls[0]?.[5].summary;
+    const offers = jest.mocked(mockOctokitInstance.rest.issues.createComment).mock.calls.map(([c]) => (c as { body: string }).body).filter(b => b.includes('- [ ] Force review'));
+    if (expected === 'review') {
+      expect(reviewModule.runReview).toHaveBeenCalled();
+      expect(offers).toEqual([]);
+    } else if (expected === 'offer') {
+      expect(reviewModule.runReview).not.toHaveBeenCalled();
+      expect(posted).toBe('This PR has 10000 reviewable lines, above the limit of 8000 for automatic review. Split it into smaller PRs, or tick Force review to review it in full.');
+      expect(offers).toEqual([expect.stringMatching(/^\*\*Too big for automatic review\*\* at `abc123`: 10000 reviewable lines\. Split it, or force a full review:\n\n- \[ \] Force review\n/)]);
+    } else {
+      expect(reviewModule.runReview).not.toHaveBeenCalled();
+      expect(posted).toBe('This PR has 15001 reviewable lines, above the limit of 15000 that Manki reviews. Split it into smaller PRs to get a review.');
+      expect(offers).toEqual([]);
+    }
+  });
+
   it('dismisses previous reviews other than the diff-too-large comment after posting it', async () => {
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(true);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [], totalAdditions: 6000, totalDeletions: 0,
     });
@@ -2301,7 +2327,6 @@ describe('runFullReview orchestration', () => {
   });
 
   it('approves when all files are filtered out by config', async () => {
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [{ path: 'package-lock.json', changeType: 'modified', hunks: [] }],
       totalAdditions: 10, totalDeletions: 5,
@@ -2359,7 +2384,6 @@ describe('runFullReview orchestration', () => {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'line1\nline2\nline3' }],
     };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
@@ -2409,7 +2433,6 @@ describe('runFullReview orchestration', () => {
       { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] },
       { path: 'src/utils.js', changeType: 'added' as const, hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 3, content: 'new' }] },
     ];
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: testFiles, totalAdditions: 20, totalDeletions: 5,
     });
@@ -2485,7 +2508,6 @@ describe('runFullReview orchestration', () => {
     const testFiles = [
       { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] },
     ];
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: testFiles, totalAdditions: 20, totalDeletions: 5,
     });
@@ -2537,7 +2559,6 @@ describe('runFullReview orchestration', () => {
     const testFiles = [
       { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] },
     ];
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: testFiles, totalAdditions: 20, totalDeletions: 5,
     });
@@ -2582,7 +2603,6 @@ describe('runFullReview orchestration', () => {
     const testFiles = [
       { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] },
     ];
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: testFiles, totalAdditions: 20, totalDeletions: 5,
     });
@@ -2617,7 +2637,6 @@ describe('runFullReview orchestration', () => {
     const testFiles = [
       { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] },
     ];
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: testFiles, totalAdditions: 20, totalDeletions: 5,
     });
@@ -2999,7 +3018,6 @@ describe('runFullReview orchestration', () => {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
     };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
@@ -3085,7 +3103,6 @@ describe('runFullReview orchestration', () => {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
     };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
@@ -3119,7 +3136,6 @@ describe('runFullReview orchestration', () => {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
     };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
@@ -3689,7 +3705,6 @@ describe('runFullReview orchestration', () => {
     };
 
     beforeEach(() => {
-      jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
       jest.mocked(diffModule.parsePRDiff).mockReturnValue({
         files: [pinTestFile], totalAdditions: 10, totalDeletions: 5,
       });
@@ -4028,7 +4043,6 @@ describe('runFullReview orchestration', () => {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
     };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
@@ -4069,7 +4083,6 @@ describe('runFullReview orchestration', () => {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
     };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
@@ -4094,7 +4107,6 @@ describe('runFullReview orchestration', () => {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 10, newStart: 1, newLines: 10, content: hunkContent }],
     };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
@@ -4129,7 +4141,6 @@ describe('runFullReview orchestration', () => {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
     };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
@@ -4189,7 +4200,6 @@ describe('runFullReview orchestration', () => {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
     };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
@@ -4247,7 +4257,6 @@ describe('runFullReview orchestration', () => {
         path: 'src/app.ts', changeType: 'modified' as const,
         hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
       };
-      jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
       jest.mocked(diffModule.parsePRDiff).mockReturnValue({
         files: [testFile], totalAdditions: 10, totalDeletions: 5,
       });
@@ -4299,7 +4308,6 @@ describe('runFullReview orchestration', () => {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
     };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
@@ -4348,7 +4356,6 @@ describe('runFullReview orchestration', () => {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
     };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
@@ -4404,7 +4411,6 @@ describe('runFullReview orchestration', () => {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
     };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
@@ -4455,7 +4461,6 @@ describe('runFullReview orchestration', () => {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
     };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
@@ -4498,7 +4503,6 @@ describe('runFullReview orchestration', () => {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
     };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
@@ -4558,7 +4562,6 @@ describe('runFullReview orchestration', () => {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
     };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
@@ -4599,7 +4602,6 @@ describe('runFullReview orchestration', () => {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
     };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
@@ -4656,7 +4658,6 @@ describe('runFullReview orchestration', () => {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
     };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
@@ -4692,7 +4693,6 @@ describe('runFullReview orchestration', () => {
       path: threadFile, changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 20, content: 'code' }],
     };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [changedFile], totalAdditions: 20, totalDeletions: 5,
     });
@@ -4721,7 +4721,6 @@ describe('runFullReview orchestration', () => {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
     };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [changedFile], totalAdditions: 10, totalDeletions: 5,
     });
@@ -4754,7 +4753,6 @@ describe('runFullReview orchestration', () => {
       path: 'src/gone.ts', changeType: 'deleted' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 0, newLines: 0, content: 'code' }],
     };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [deletedFile], totalAdditions: 0, totalDeletions: 5,
     });
@@ -4782,7 +4780,6 @@ describe('runFullReview orchestration', () => {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
     };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
@@ -4825,7 +4822,6 @@ describe('runFullReview orchestration', () => {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
     };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
@@ -4893,7 +4889,6 @@ describe('runFullReview orchestration', () => {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
     };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
@@ -4950,7 +4945,6 @@ describe('runFullReview orchestration', () => {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
     };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
@@ -5113,7 +5107,6 @@ describe('runFullReview orchestration', () => {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
     };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
@@ -5170,7 +5163,6 @@ describe('runFullReview orchestration', () => {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
     };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
@@ -5237,7 +5229,6 @@ describe('runFullReview orchestration', () => {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
     };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
@@ -5293,7 +5284,6 @@ describe('runFullReview orchestration', () => {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
     };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
@@ -5336,7 +5326,6 @@ describe('runFullReview orchestration', () => {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
     };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
@@ -5367,7 +5356,6 @@ describe('runFullReview orchestration', () => {
       path: 'src/app.ts', changeType: 'modified' as const,
       hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }],
     };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({
       files: [testFile], totalAdditions: 10, totalDeletions: 5,
     });
@@ -7071,7 +7059,6 @@ describe('runFullReview concurrent-submission lock', () => {
       memory: { enabled: false, repo: '' },
     });
     const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [] };
-    jest.mocked(diffModule.isDiffTooLarge).mockReturnValue(false);
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
     jest.mocked(authModule.getMemoryToken).mockResolvedValue(null);

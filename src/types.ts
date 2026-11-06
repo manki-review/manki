@@ -504,7 +504,12 @@ export interface ReviewConfig {
   skip_authors?: string[];
   /** Glob patterns for head branches in the repo itself that skip review, such as `dependabot/**`. Read from the base branch only. */
   skip_branches?: string[];
+  /** Reviewable lines above which Manki never reviews a PR, even when forced. */
   max_diff_lines: number;
+  /** Reviewable lines above which a PR gets no automatic review, only a forced one. */
+  auto_review_max_lines?: number;
+  /** Changed lines a finder reads in one call. A larger diff is split into slices read in parallel. */
+  slice_lines?: number;
   reviewers: ReviewerAgent[];
   instructions: string;
   memory: {
@@ -1036,7 +1041,7 @@ export interface RoundDiff {
   /** Paths skipped by `isBinaryFile` during `parsePRDiff`. */
   binarySkipped?: string[];
   /**
-   * True when `isDiffTooLarge` fired for this round. The early-exit path
+   * True when the PR was over `max_diff_lines` for this round. The early-exit path
    * never emits a `RoundContext`, so on the success path this is always
    * `false`. Recorded explicitly so the absence of context for an
    * oversized PR is unambiguous in replay tooling.

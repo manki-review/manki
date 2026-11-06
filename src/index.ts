@@ -13,7 +13,7 @@ import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, 
 import { extractCurrentCodeWindow } from './code-window';
 import { recordFixRate } from './fix-rate';
 import { dispatchedNumber, isDispatchedRun, restoreDispatchedEvent } from './dispatch';
-import { addCodeContext, changeDigest, parsePRDiff, filterDiff, filterRawDiff, isDiffTooLarge, rebuildRawDiff, tagFindingOrigins } from './diff';
+import { addCodeContext, changeDigest, parsePRDiff, filterDiff, filterRawDiff, rebuildRawDiff, tagFindingOrigins } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, RepoMemory } from './memory';
@@ -361,7 +361,7 @@ async function postReviewSkippedComment(
       }
     }
     // Every other notice is a fresh comment with its own Force review checkbox, since an edit in place notifies nobody.
-    await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: withMarkers(text, PROGRESS_MARKER, FORCE_REVIEW_MARKER) });
+    await postForceReviewOffer(octokit, owner, repo, prNumber, text);
   } catch (error) {
     core.warning(`Failed to post review-skipped comment: ${error instanceof Error ? error.message : error}`);
   }
@@ -376,6 +376,11 @@ async function reviewsDrafts(octokit: Octokit, owner: string, repo: string, base
     core.warning(`Could not read ${configPath} on the base branch, skipping the draft PR: ${error instanceof Error ? error.message : error}`);
     return false;
   }
+}
+
+/** Posts `text`, which ends in a Force review checkbox, as a comment whose tick forces a review. */
+async function postForceReviewOffer(octokit: Octokit, owner: string, repo: string, prNumber: number, text: string): Promise<void> {
+  await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: withMarkers(text, PROGRESS_MARKER, FORCE_REVIEW_MARKER) });
 }
 
 async function handlePullRequest(): Promise<void> {
@@ -1506,10 +1511,22 @@ async function runFullReview(
       timing: { parseMs: parseEndTime - startTime, reviewMs: 0, judgeMs: 0, totalMs: Date.now() - startTime },
     });
 
-    if (isDiffTooLarge(diff, config.max_diff_lines)) {
+    const autoLimit = Math.min(config.auto_review_max_lines ?? config.max_diff_lines, config.max_diff_lines);
+    if (lineCount > config.max_diff_lines) {
       core.warning(`Diff too large (${lineCount} reviewable lines > ${config.max_diff_lines} max)`);
       checkReport = await postUnreviewedRound(target, progress, commentId, dashboard, diff, 'COMMENT',
-        `Too large to review automatically: ${lineCount} changed lines, above the limit of ${config.max_diff_lines}.`, unreviewedMetadata());
+        `This PR has ${lineCount} reviewable lines, above the limit of ${config.max_diff_lines} that Manki reviews. Split it into smaller PRs to get a review.`, unreviewedMetadata());
+      return;
+    }
+    if (lineCount > autoLimit && !forceReview && !skipCap) {
+      core.info(`No automatic review: ${lineCount} reviewable lines > ${autoLimit}`);
+      const tooBig = `This PR has ${lineCount} reviewable lines, above the limit of ${autoLimit} for automatic review. Split it into smaller PRs, or tick Force review to review it in full.`;
+      checkReport = await postUnreviewedRound(target, progress, commentId, dashboard, diff, 'COMMENT', tooBig, unreviewedMetadata());
+      try {
+        await postForceReviewOffer(octokit, owner, repo, prNumber, `**Too big for automatic review** at \`${commitSha.slice(0, 7)}\`: ${lineCount} reviewable lines. Split it, or force a full review:\n\n- [ ] Force review`);
+      } catch (error) {
+        core.warning(`Failed to post the Force review offer: ${error instanceof Error ? error.message : error}`);
+      }
       return;
     }
 

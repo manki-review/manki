@@ -2,14 +2,14 @@ import * as core from '@actions/core';
 import { minimatch } from 'minimatch';
 
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
-import { resolveReviewerModel } from './config';
+import { DEFAULT_CONFIG, resolveReviewerModel } from './config';
 import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, SendMessageOptions, withRefusalFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
 import { runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, LinkedIssue, titleToSlug } from './github';
 import { collectInPrSuppressions, collectResolvedThreadIds, deduplicateFindings, judgeAddressedThreadIds, llmDeduplicateFindings, PreviousFinding, titleOverlapType } from './recap';
 import { FOLLOW_UP_TAG, SECURITY_TAG, ReviewConfig, ReviewerAgent, Finding, FindingFingerprint, FindingFingerprintEntry, NeedsHuman, NoiseLevel, OpenThread, ReviewResult, ReviewVerdict, RoundOutcome, VerdictReason, VerdictReport, ParsedDiff, ReviewGroup, TeamRoster, TeamRouting, PrContext, PlannerResult, RoundContext, RoundDedupDuplicateMatch, RoundModelFallback, RoundPlannerSource, RoundStaticSignalMatch, EffortLevel, Finder, RelatedRepoTools, Triage, ThreadEvaluation, VerdictTrace, VerdictTraceEntry, MAX_AGENT_RETRIES, VALID_PR_TYPES, ValidPrType } from './types';
-import { countChangedLines, parsePRDiff, rebuildRawDiff } from './diff';
+import { countChangedLines, parsePRDiff, rebuildRawDiff, sliceDiff } from './diff';
 import { relatedReposCacheDir, warnRelatedRepoFailures } from './related-repos';
 import { makeScratchDir } from './tool-install';
 import { BUILT_IN_GROUPS, FLOOR_FALLBACK_GROUP, chooseGroup, classifyPr, resolveRouting } from './routing';
@@ -1267,7 +1267,39 @@ interface RunReviewerAgentOptions {
   related?: RelatedRepoTools;
 }
 
+/**
+ * Runs one finder on the diff. A diff over `config.slice_lines` is split by `sliceDiff`, and the finder
+ * reads each slice in a call of its own, in parallel. The findings and usage of all slices are combined.
+ */
 async function runReviewerAgent(
+  client: LLMClient,
+  config: ReviewConfig,
+  finder: Finder,
+  rawDiff: string,
+  repoContext: string,
+  fileContents?: Map<string, string>,
+  prContext?: PrContext,
+  memoryContext?: string,
+  linkedIssues?: LinkedIssue[],
+  options: RunReviewerAgentOptions = {},
+): Promise<AgentResult> {
+  const slices = sliceDiff(parsePRDiff(rawDiff), config.slice_lines ?? DEFAULT_CONFIG.slice_lines!);
+  if (slices.length <= 1) return runReviewerOnSlice(client, config, finder, rawDiff, repoContext, fileContents, prContext, memoryContext, linkedIssues, options);
+  core.info(`${finder.name} reads the diff in ${slices.length} slices`);
+  const results = await Promise.all(slices.map(slice => {
+    const paths = new Set(slice.files.map(f => f.path));
+    const sliceContents = fileContents && new Map([...fileContents].filter(([path]) => paths.has(path)));
+    return runReviewerOnSlice(client, config, finder, rebuildRawDiff(slice), repoContext, sliceContents, prContext, memoryContext, linkedIssues, options);
+  }));
+  return {
+    findings: results.flatMap(r => r.findings),
+    responseLength: results.reduce((sum, r) => sum + r.responseLength, 0),
+    usage: results.reduce((sum, r) => addUsage(sum, r.usage), { ...ZERO_USAGE }),
+    latencyMs: Math.max(...results.map(r => r.latencyMs)),
+  };
+}
+
+async function runReviewerOnSlice(
   client: LLMClient,
   config: ReviewConfig,
   finder: Finder,

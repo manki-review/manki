@@ -20,7 +20,9 @@ export const DEFAULT_CONFIG: ReviewConfig = {
   skip_labels: [],
   skip_authors: [],
   skip_branches: [],
-  max_diff_lines: 50000,
+  max_diff_lines: 15000,
+  auto_review_max_lines: 8000,
+  slice_lines: 1500,
   reviewers: [],
   instructions: '',
   models: {
@@ -67,6 +69,8 @@ const KNOWN_KEYS = new Set([
   'skip_authors',
   'skip_branches',
   'max_diff_lines',
+  'auto_review_max_lines',
+  'slice_lines',
   'reviewers',
   'instructions',
   'review_level',
@@ -124,9 +128,9 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
     }
   }
 
-  if ('max_diff_lines' in config) {
-    if (typeof config.max_diff_lines !== 'number' || config.max_diff_lines <= 0) {
-      errors.push('`max_diff_lines` must be a positive number');
+  for (const key of ['max_diff_lines', 'auto_review_max_lines', 'slice_lines'] as const) {
+    if (key in config && (typeof config[key] !== 'number' || !Number.isInteger(config[key]) || (config[key] as number) <= 0)) {
+      errors.push(`\`${key}\` must be a positive whole number`);
     }
   }
 

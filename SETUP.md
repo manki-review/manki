@@ -581,7 +581,7 @@ In the default setup, GitHub starts a workflow run in your repository for every 
 - **No run for an event Manki ignores.** A comment without a mention, a bot's push or a PR closed without merging never starts a workflow run, so the Actions tab and the PR checks show no skipped runs for them.
 - **Events run in order.** Each PR has two queues. Reviews, thread replies, `check` and `dismiss` run one at a time in the order they arrived, and several pushes during a review become one review of the newest head. `explain`, `help`, `remember`, `forget` and free questions run one at a time in a second queue beside it, so a question never waits behind a review. The service replaces the `concurrency` block.
 - **Every run uses the current version.** The service always starts the workflow on the default branch, so reviews, comment commands and thread replies all run the Manki version pinned there. In the event-driven setup, pushes, reviews and thread replies run the workflow from the PR's merge commit, so a PR that changes the workflow runs its own version for them. PR comments already run the workflow on the default branch.
-- **A `Manki` check on the PR.** In webhook mode every run belongs to the default branch, so its job shows on no PR. Manki creates a check named `Manki` on the PR head instead. It shows in progress during a review, links to the run, and ends with the result: success when Manki approves, failure when it requests changes or needs a human, or when the review is incomplete or the run fails, neutral when it holds its approval because the PR conflicts, cancelled when a newer push replaces the review, and action required when the diff is too large to review or automatic review is paused. This needs the App's **Checks: read and write** permission. Until your installation approves it, the PR shows no Manki check and each review logs a warning, so don't require one before then. Once it shows, you can require the `Manki` check in branch protection.
+- **A `Manki` check on the PR.** In webhook mode every run belongs to the default branch, so its job shows on no PR. Manki creates a check named `Manki` on the PR head instead. It shows in progress during a review, links to the run, and ends with the result: success when Manki approves, failure when it requests changes or needs a human, or when the review is incomplete or the run fails, neutral when it holds its approval because the PR conflicts, cancelled when a newer push replaces the review, and action required when the PR is too big for an automatic review or for any review, or automatic review is paused. This needs the App's **Checks: read and write** permission. Until your installation approves it, the PR shows no Manki check and each review logs a warning, so don't require one before then. Once it shows, you can require the `Manki` check in branch protection.
 - **Resolving a thread can approve the PR.** GitHub Actions cannot start a run when someone resolves a review thread, so in the event-driven setup Manki only approves after a later event. In webhook mode, resolving the last open thread by hand runs the auto-approve check at once.
 - **Missed events come back.** Every 5 minutes the service retries the deliveries GitHub failed to hand over and queues a review for any open, non-draft PR from your repository whose head has no Manki review yet.
 
@@ -684,8 +684,16 @@ exclude_paths:
 # review never approves and does not count toward `convergence.max_auto_rounds`.
 # drafts: skip
 
-# Maximum diff size before skipping (default: 50000 lines)
-max_diff_lines: 50000
+# Review size limits, in reviewable lines after `exclude_paths`. A PR up to
+# `auto_review_max_lines` (default: 8000) is reviewed automatically. A larger one
+# gets a request to split it and a Force review box. A forced review covers the
+# whole PR up to `max_diff_lines` (default: 15000). Above that Manki never
+# reviews, even when forced. Each finder reads a diff over `slice_lines`
+# (default: 1500) in slices of that size, in parallel. A file and its test, and
+# the files of one folder, stay in one slice where they fit.
+auto_review_max_lines: 8000
+max_diff_lines: 15000
+slice_lines: 1500
 
 # Per-stage model selection
 models:
@@ -1038,7 +1046,8 @@ Manki handles untrusted PR content and cross-repo tokens. The security model res
 | Review says "No reviewable files" | Check `exclude_paths` in config -- dotfiles are included by default |
 | Memory not loading | Verify `REVIEW_MEMORY_TOKEN` secret is set and the PAT has Contents read/write on the memory repo |
 | Review doesn't trigger on `/manki review` | The workflow file must exist on the default branch (main) |
-| "Diff too large" | Increase `max_diff_lines` in config or split the PR |
+| "above the limit ... for automatic review" | Split the PR, tick Force review to review it in full, or raise `auto_review_max_lines` |
+| "above the limit ... that Manki reviews" | Split the PR, or raise `max_diff_lines` |
 | Auto-approve not working | Check that `auto_approve: true` is set in `.manki.yml` and the `pull_request_review` event trigger is in the workflow |
 | Inline comments land on wrong lines | The judge agent validated line numbers but the diff may have shifted. A blocking finding that is not on a changed line is posted as a comment on its file instead |
 

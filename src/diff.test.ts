@@ -5,7 +5,7 @@ import {
   filterFilesWithAttribution,
   filterRawDiff,
   isLineInDiff,
-  isDiffTooLarge,
+  sliceDiff,
   isSameChange,
   rebuildRawDiff,
   tagFindingOrigins,
@@ -322,7 +322,6 @@ describe('filterDiff', () => {
     expect(excluded).toEqual([{ path: 'dist/index.js.map', matchedPattern: 'dist/**' }]);
     expect(diff.totalAdditions).toBe(2);
     expect(diff.totalDeletions).toBe(0);
-    expect(isDiffTooLarge(diff, 2)).toBe(false);
   });
 });
 
@@ -505,48 +504,38 @@ describe('isLineInDiff', () => {
   });
 });
 
-describe('isDiffTooLarge', () => {
-  const makeFile = (path: string, additions: number, deletions: number): DiffFile => ({
-    path,
-    changeType: 'modified',
-    hunks: [],
-    additions,
-    deletions,
+describe('sliceDiff', () => {
+  const file = (path: string, additions: number): DiffFile => ({ path, changeType: 'modified', hunks: [], additions, deletions: 0 });
+  const diffOf = (...files: DiffFile[]) => ({ files, totalAdditions: files.reduce((sum, f) => sum + (f.additions ?? 0), 0), totalDeletions: 0 });
+  const paths = (slices: ReturnType<typeof sliceDiff>) => slices.map(s => s.files.map(f => f.path));
+
+  it('keeps a diff within the slice size whole', () => {
+    const diff = diffOf(file('src/a.ts', 700), file('lib/b.ts', 800));
+    expect(sliceDiff(diff, 1500)).toEqual([diff]);
   });
 
-  it('returns false when diff is within limit', () => {
-    const diff = {
-      files: [makeFile('src/main.ts', 100, 50)],
-      totalAdditions: 100,
-      totalDeletions: 50,
-    };
-    expect(isDiffTooLarge(diff, 200)).toBe(false);
+  it('keeps a file with its test and one folder together, and fills each slice up to the size', () => {
+    const slices = sliceDiff(diffOf(
+      file('src/auth/login.ts', 600),
+      file('docs/guide.md', 400),
+      file('src/auth/__tests__/login.test.ts', 500),
+      file('src/auth/token.ts', 300),
+      file('src/db/query.go', 700),
+      file('src/db/query_test.go', 600),
+      file('tests/test_cli.py', 200),
+      file('cli.py', 100),
+    ), 1500);
+
+    expect(paths(slices)).toEqual([
+      ['tests/test_cli.py', 'cli.py', 'docs/guide.md'],
+      ['src/auth/login.ts', 'src/auth/__tests__/login.test.ts', 'src/auth/token.ts'],
+      ['src/db/query.go', 'src/db/query_test.go'],
+    ]);
+    expect(slices.map(s => s.totalAdditions)).toEqual([700, 1400, 1300]);
+    expect(slices.flatMap(s => s.files)).toHaveLength(8);
   });
 
-  it('returns true when diff exceeds limit', () => {
-    const diff = {
-      files: [makeFile('src/main.ts', 500, 600)],
-      totalAdditions: 500,
-      totalDeletions: 600,
-    };
-    expect(isDiffTooLarge(diff, 1000)).toBe(true);
-  });
-
-  it('returns false when diff exactly equals limit', () => {
-    const diff = {
-      files: [makeFile('src/main.ts', 50, 50)],
-      totalAdditions: 50,
-      totalDeletions: 50,
-    };
-    expect(isDiffTooLarge(diff, 100)).toBe(false);
-  });
-
-  it('returns true for empty max', () => {
-    const diff = {
-      files: [makeFile('src/main.ts', 1, 0)],
-      totalAdditions: 1,
-      totalDeletions: 0,
-    };
-    expect(isDiffTooLarge(diff, 0)).toBe(true);
+  it('gives a unit over the slice size a slice of its own', () => {
+    expect(paths(sliceDiff(diffOf(file('a.ts', 100), file('b.ts', 2000), file('c.ts', 100)), 1500))).toEqual([['a.ts'], ['b.ts'], ['c.ts']]);
   });
 });
