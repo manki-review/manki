@@ -110,11 +110,21 @@
 #     hot_path:
 #       rank: 85
 #       match: { paths_any: ["src/consensus/**", "src/net/**"] }
+#     ledger:
+#       rank: 75
+#       critical: true               # any wrong result in these paths is severe
+#       match: { paths_any: ["src/ledger/**"] }
 #   routing:
 #     security: deep
 #     hot_path: deep
 #     internal: solo
 #   allow_weaker: []                 # floor classes allowed below the floor
+#   outside_input: "HTTP requests and webhook payloads"   # for the judge
+#   examples:                        # findings from this repo on each side of the bar, for the judge
+#     blocker:
+#       - "A rounding error in a ledger balance, however rare."
+#     not_blocker:
+#       - "A slow export of the monthly report: `suggestion`."
 
 # CI results the reviewers read as evidence (default: all on)
 # Manki reads what CI reported on the PR head commit and keeps the results on

@@ -830,6 +830,30 @@ review:
 - **`routing`**: the group per class. Classes you leave out keep their built-in group. When you set `groups` but no `routing`, every class goes to `default_group`, and the floors still apply.
 - **`default_group`**: the group for a class with no route (default `pair`).
 - **`allow_weaker`**: floor classes allowed to route to a group below the floor, such as `allow_weaker: [security]`. Without it, routing a floor class to a weaker group fails the run with the reason. Every round that runs below the floor logs a warning.
+- **`critical`**: on a class of your own, marks its `match.paths_any` as a critical area, where any wrong result is severe even in a rare internal edge case. The judge sees which findings sit in a critical area and grades a wrong result there as severe damage, which blocks when the other blocker tests hold. A critical class takes paths only, no `triage`.
+- **`outside_input`**: what counts as outside input in your repository, in a sentence or two. The judge treats a failure that this input can trigger as reachable, never as a rare internal case.
+- **`examples`**: worked examples from your repository, one string each, under `blocker` for findings that block and `not_blocker` for findings that do not. Set either side or both. The judge reads them next to its built-in examples on the same two sides.
+
+The last three only change how the judge grades findings. A repository with consensus code might set them like this:
+
+```yaml
+review:
+  classes:
+    consensus:
+      rank: 70
+      critical: true
+      match: { paths_any: ["dash/src/consensus/**", "dash/src/blockdata/**"] }
+  outside_input: >-
+    Anything a network peer sends: P2P messages, blocks, transactions, headers
+    and the length prefixes inside them.
+  examples:
+    blocker:
+      - "Indexing `buf[len]` with a length read from a peer message panics on a short message."
+      - "Changing the field order in a `consensus_encode` implementation changes the bytes on the wire, even when every test passes."
+      - "An inverted weight comparison picks the wrong quorum member on every block."
+    not_blocker:
+      - "A debug log of a decoded message that leaves out the peer address: `suggestion`."
+```
 
 Each review's `Manki context` block records a `routing` object: the class, its rank and source, every matched class, the group and why it was picked, any floor and escalation, where the `review` block came from, a `configDigest` of the classes, groups and routes, and each reader's model, provider and effort. `reviewers.keptOnlyBy` counts the kept findings only one finder raised, per finder, and `keptByMany` those two or more raised.
 

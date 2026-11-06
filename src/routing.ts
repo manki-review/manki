@@ -150,7 +150,7 @@ export function resolveRouting(review: ReviewRoutingConfig | undefined): Resolve
     const builtIn = BUILT_IN_CLASSES[name];
     classes[name] = builtIn
       ? { ...builtIn, match: { ...builtIn.match, paths_any: [...(builtIn.match.paths_any ?? []), ...(def.match?.paths_any ?? [])] } }
-      : { rank: def.rank ?? 0, match: def.match ?? {} };
+      : { rank: def.rank ?? 0, ...(def.critical && { critical: true }), match: def.match ?? {} };
   }
   // Groups without routing send every class to the default group.
   const routing = review?.groups && !review.routing ? {} : { ...BUILT_IN_ROUTING, ...review?.routing };
@@ -161,6 +161,13 @@ export function resolveRouting(review: ReviewRoutingConfig | undefined): Resolve
     defaultGroup: review?.default_group ?? BUILT_IN_DEFAULT_GROUP,
     allowWeaker: review?.allow_weaker ?? [],
   };
+}
+
+/** Returns the highest ranked critical class whose paths match `path`, or undefined when none does. */
+export function criticalAreaOf(classes: Readonly<Record<string, ReviewClass>>, path: string): string | undefined {
+  return Object.entries(classes)
+    .filter(([, c]) => c.critical && c.match.paths_any?.some(p => matchesPath(path, p)))
+    .sort(([, a], [, b]) => b.rank - a.rank)[0]?.[0];
 }
 
 /** Returns the group a class routes to. */
