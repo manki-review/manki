@@ -1,12 +1,12 @@
 import { spawn } from 'child_process';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { StringDecoder } from 'string_decoder';
 
 import * as core from '@actions/core';
 
-import { registerSecret, sanitizeTokens, SECRET_NAME } from '../utils';
+import { registerSecret, safeJsonParse, sanitizeTokens, SECRET_NAME } from '../utils';
 import { SendMessageOptions } from './types';
 
 export const STALE_TIMEOUT_MS = 90_000;
@@ -236,13 +236,11 @@ export function seedAuthFile(opts: SeedAuthFileOptions): void {
   }
 
   for (const field of opts.requiredFields) {
-    const value = nestedString(parsed as Record<string, unknown>, field);
-    if (!value) {
+    if (!hasNestedString(parsed as Record<string, unknown>, field)) {
       throw new Error(
         `${opts.inputName} is missing required field \`${field}\`. ${opts.bootstrapHint}`,
       );
     }
-    registerSecret(value);
   }
 
   mkdirSync(dirname(opts.targetPath), { recursive: true, mode: 0o700 });
@@ -255,19 +253,32 @@ export function seedAuthFile(opts: SeedAuthFileOptions): void {
   try {
     writeFileSync(opts.targetPath, decoded, { mode: 0o600, flag: 'wx' });
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'EEXIST') return;
-    throw err;
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
   }
+  registerAuthFileSecrets(opts.targetPath);
 }
 
-function nestedString(obj: Record<string, unknown>, dottedPath: string): string | undefined {
+function hasNestedString(obj: Record<string, unknown>, dottedPath: string): boolean {
   const parts = dottedPath.split('.');
   let current: unknown = obj;
   for (const part of parts) {
-    if (!current || typeof current !== 'object') return undefined;
+    if (!current || typeof current !== 'object') return false;
     current = (current as Record<string, unknown>)[part];
   }
-  return typeof current === 'string' && current.length > 0 ? current : undefined;
+  return typeof current === 'string' && current.length > 0;
+}
+
+function registerJsonSecrets(json: unknown): void {
+  if (typeof json === 'string') registerSecret(json);
+  else if (json && typeof json === 'object') Object.values(json).forEach(registerJsonSecrets);
+}
+
+/**
+ * Registers every string in the JSON auth file at `path` as a secret, since none of its fields is safe to post.
+ * Run it again after a CLI call, because the CLI can replace the tokens when it refreshes them.
+ */
+export function registerAuthFileSecrets(path: string): void {
+  if (existsSync(path)) registerJsonSecrets(safeJsonParse(readFileSync(path, 'utf8')));
 }
 
 let emptyCwd: string | undefined;

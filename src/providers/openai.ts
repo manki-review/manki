@@ -6,7 +6,7 @@ import OpenAI from 'openai';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import * as core from '@actions/core';
 
-import { buildExitDiagnostics, callWithTimeout, cliEnv, extractCliErrorSnippet, matchQuotaText, runCli, seedAuthFile, STALE_TIMEOUT_MS, warnReplyTail } from './cli-utils';
+import { buildExitDiagnostics, callWithTimeout, cliEnv, extractCliErrorSnippet, matchQuotaText, registerAuthFileSecrets, runCli, seedAuthFile, STALE_TIMEOUT_MS, warnReplyTail } from './cli-utils';
 import { LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -215,7 +215,7 @@ export class OpenAIClient implements LLMClient {
     }).catch((error: unknown) => {
       warnReplyTail('Codex CLI', output);
       throw error;
-    });
+    }).finally(() => registerAuthFileSecrets(join(codexHome, 'auth.json')));
 
     if (code !== 0) {
       // Codex echoes the prompt to stderr, so only its `ERROR:` line is read for a limit.

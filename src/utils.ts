@@ -45,8 +45,9 @@ export function formatDuration(ms: number): string {
 const MIN_SECRET_LENGTH = 8;
 const registeredSecrets = new Set<string>();
 
-/** Masks `value` in the log and adds it to the values `redactSecrets` removes. */
+/** Masks `value` in the log and adds it to the values `redactSecrets` removes. A value under 8 characters is ignored. */
 export function registerSecret(value: string): void {
+  if (value.length < MIN_SECRET_LENGTH) return;
   core.setSecret(value);
   registeredSecrets.add(value);
 }

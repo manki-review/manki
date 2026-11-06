@@ -5,7 +5,7 @@ import { promisify } from 'util';
 import { FinishReason, GoogleGenAI, ThinkingConfig, ThinkingLevel } from '@google/genai';
 import * as core from '@actions/core';
 
-import { buildExitDiagnostics, callWithTimeout, cliEnv, matchQuotaText, runCli, sanitizeLogOutput, seedAuthFile, warnReplyTail } from './cli-utils';
+import { buildExitDiagnostics, callWithTimeout, cliEnv, matchQuotaText, registerAuthFileSecrets, runCli, sanitizeLogOutput, seedAuthFile, warnReplyTail } from './cli-utils';
 import { GeminiAuth, LLMClient, LLMResponse, LLMUsage, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -188,7 +188,7 @@ export class GeminiClient implements LLMClient {
     }).catch((error: unknown) => {
       warnReplyTail('Gemini CLI', output);
       throw error;
-    });
+    }).finally(() => registerAuthFileSecrets(join(geminiCredsDir, 'oauth_creds.json')));
 
     if (code !== 0) {
       // The CLI logs 429 retries it recovered from, so only its final error line counts. Stack frames are skipped.
