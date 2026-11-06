@@ -672,7 +672,8 @@ exclude_paths:
 
 # PRs that get no automatic review (default: none). Read from the base branch
 # only, so a PR cannot skip itself. Labels and authors compare case-insensitively,
-# branches are glob patterns on the head branch. See "Skipping PRs" below.
+# branches are glob patterns on a head branch in the repo itself, never a fork's.
+# A skipped check passes a required status check. See "Skipping PRs" below.
 # skip_labels: ["dependencies"]
 # skip_authors: ["dependabot[bot]", "renovate[bot]"]
 # skip_branches: ["dependabot/**"]
@@ -756,7 +757,7 @@ See [`.manki.yml.example`](.manki.yml.example) for the full reference with defau
 
 `skip_labels`, `skip_authors` and `skip_branches` name PRs that get no automatic review, such as dependency bumps from a bot. Manki reads them from `.manki.yml` on the base branch only, so a PR that edits them cannot skip itself. A PR that matches any rule gets no review, no comment and no approval. In webhook mode its `Manki` check completes as skipped. A `@manki review` comment still reviews it.
 
-A skipped check passes a required status check, so a branch protection rule that requires `Manki` lets a skipped PR merge without a review. Use a rule that only trusted actors can trigger, such as `skip_authors` for bot accounts, rather than a label any contributor can add.
+A skipped check passes a required status check, so a branch protection rule that requires `Manki` lets a skipped PR merge without a review. Use rules that only trusted actors can meet. GitHub sets the author, so `skip_authors` for bot accounts is the safest. A label needs triage access to add. A branch rule matches only branches pushed to the repo itself, never a fork's branch, whose author can name it freely, but anyone with write access can still pick a matching name.
 
 ### Review pipeline
 

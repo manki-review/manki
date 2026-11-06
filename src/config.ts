@@ -817,13 +817,17 @@ export function sanitizeForkConfig(config: ReviewConfig): ReviewConfig {
   };
 }
 
-/** Returns which of `config`'s skip rules the PR matches, such as `label "dependencies"`, or `undefined` when none does. */
+/**
+ * Returns which of `config`'s skip rules the PR matches, such as `label "dependencies"`, or `undefined` when none does.
+ * A branch rule matches only a head branch in the repo itself.
+ */
 export function matchSkipRule(config: ReviewConfig, facts: SkipFacts): string | undefined {
   const lower = (values: string[]) => values.map(v => v.toLowerCase());
   const label = facts.labels.find(l => lower(config.skip_labels ?? []).includes(l.toLowerCase()));
   if (label) return `label "${label}"`;
   if (facts.author && lower(config.skip_authors ?? []).includes(facts.author.toLowerCase())) return `author ${facts.author}`;
-  const branch = (config.skip_branches ?? []).find(pattern => minimatch(facts.branch, pattern));
+  // Only writers can push a branch to the repo itself, while a fork's author names its branch freely.
+  const branch = !facts.fromFork && (config.skip_branches ?? []).find(pattern => minimatch(facts.branch, pattern));
   if (branch) return `branch ${facts.branch}`;
   return undefined;
 }

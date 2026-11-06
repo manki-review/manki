@@ -468,7 +468,7 @@ export interface ReviewConfig {
   skip_labels?: string[];
   /** PR authors whose PRs are skipped, compared case-insensitively, such as `dependabot[bot]`. Read from the base branch only. */
   skip_authors?: string[];
-  /** Glob patterns for head branches that skip review, such as `dependabot/**`. Read from the base branch only. */
+  /** Glob patterns for head branches in the repo itself that skip review, such as `dependabot/**`. Read from the base branch only. */
   skip_branches?: string[];
   max_diff_lines: number;
   reviewers: ReviewerAgent[];
@@ -881,6 +881,8 @@ export interface SkipFacts {
   labels: string[];
   author?: string;
   branch: string;
+  /** Whether the head branch lives in a fork, where anyone can pick its name. */
+  fromFork: boolean;
 }
 
 export interface FullReviewOptions {

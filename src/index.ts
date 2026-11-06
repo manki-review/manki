@@ -411,6 +411,7 @@ async function handlePullRequest(): Promise<void> {
       labels: (pr.labels ?? []).map((l: { name?: string }) => l.name ?? '').filter(Boolean),
       author: pr.user?.login,
       branch: pr.head.ref ?? '',
+      fromFork: pr.head.repo?.full_name !== `${owner}/${repo}`,
     },
     headRepoFullName: pr.head.repo?.full_name,
     trigger: buildRoundTrigger(),

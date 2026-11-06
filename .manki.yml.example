@@ -17,9 +17,9 @@
 #   - "*.generated.*"
 
 # PRs that get no automatic review (default: none). Read from the base branch
-# only. Labels and authors compare case-insensitively, branches are globs on the
-# head branch. A skipped Manki check passes a required status check, so prefer
-# skip_authors for bots over a label any contributor can add.
+# only. Labels and authors compare case-insensitively. Branches are globs on a
+# head branch in the repo itself, never a fork's. A skipped Manki check passes a
+# required status check, so prefer skip_authors for bots: GitHub sets the author.
 # skip_labels: ["dependencies"]
 # skip_authors: ["dependabot[bot]"]
 # skip_branches: ["dependabot/**"]

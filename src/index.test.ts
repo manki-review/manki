@@ -1942,7 +1942,7 @@ describe('runFullReview orchestration', () => {
 
     it('completes the check as skipped, with no comment or review, when the PR matches a base-branch skip rule', async () => {
       jest.mocked(ghUtils.readConfigFile).mockImplementation(async (_o, _ow, _r, ref) => (ref === 'main' ? 'skip_authors: ["dependabot[bot]"]\n' : null));
-      const skipFacts = { labels: [], author: 'Dependabot[bot]', branch: 'dependabot/npm/yaml-2' };
+      const skipFacts = { labels: [], author: 'Dependabot[bot]', branch: 'dependabot/npm/yaml-2', fromFork: false };
       const run = (forceReview?: boolean) => runFullReview(baseArgs.owner, baseArgs.repo, baseArgs.prNumber, baseArgs.commitSha, baseArgs.baseRef, baseArgs.prContext, { skipFacts, forceReview });
 
       await asDispatchedRun(() => run());
