@@ -4,7 +4,7 @@ import { minimatch } from 'minimatch';
 import { parse as parseYaml } from 'yaml';
 
 import { BUILT_IN_CLASSES, BUILT_IN_GROUPS, PATH_ALIASES, floorShortfall, modelIdentity, resolveRouting, routeClass } from './routing';
-import { ANALYZERS, PairedPin, ReviewConfig, ReviewRoutingConfig, SkipFacts, StaticAnalysisConfig } from './types';
+import { ANALYZERS, PairedPin, RelatedRepo, ReviewConfig, ReviewRoutingConfig, SkipFacts, StaticAnalysisConfig } from './types';
 
 export const MAX_LOCK_TTL_SECONDS = 3600;
 const MAX_WAIT_TIMEOUT_SECONDS = 3600;
@@ -52,6 +52,7 @@ export const DEFAULT_CONFIG: ReviewConfig = {
     test_path_patterns: ['**/*.test.*', '**/*.spec.*', '**/tests/**', '**/__tests__/**'],
     suppress_resolved_threads: true,
   },
+  related_repos: [],
   concurrency_lock_ttl_seconds: 600,
 };
 
@@ -74,6 +75,7 @@ const KNOWN_KEYS = new Set([
   'planner',
   'review',
   'static_analysis',
+  'related_repos',
   'nit_handling',
   'noise_level',
   'review_passes',
@@ -94,6 +96,13 @@ const REVIEWER_EFFORTS = new Set(['low', 'medium', 'high', 'max', 'auto']);
 const TRIAGE_KEYS = new Set(['trivial', 'subtle', 'paired']);
 
 const REPO_FORMAT = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
+
+const RELATED_REPO_KEYS = new Set(['repo', 'kind', 'ref', 'paths']);
+const RELATED_REPO_KINDS = new Set(['reference', 'consumer']);
+const MAX_RELATED_REPOS = 10;
+const MAX_RELATED_REPO_PATHS = 20;
+// A ref is passed to `git fetch`, so it may not start with `-` or hold `..`.
+const RELATED_REPO_REF = /^(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,255}$/;
 
 interface ConfigValidationResult {
   valid: boolean;
@@ -273,6 +282,10 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
     }
   }
 
+  if ('related_repos' in config) {
+    validateRelatedRepos(config.related_repos, errors, warnings);
+  }
+
   if ('nit_handling' in config) {
     if (config.nit_handling === 'issues' || config.nit_handling === 'comments') {
       warnings.push("`nit_handling: '" + config.nit_handling + "'` is deprecated and ignored, surviving nit findings now post inline. See https://github.com/manki-review/manki/issues/738 for context.");
@@ -370,6 +383,52 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
 
 const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const isStringArray = (value: unknown): value is string[] => Array.isArray(value) && value.every(v => typeof v === 'string' && v !== '');
+
+function validateRelatedRepos(value: unknown, errors: string[], warnings: string[]): void {
+  if (!Array.isArray(value)) {
+    errors.push('`related_repos` must be a list of repos');
+    return;
+  }
+  if (value.length > MAX_RELATED_REPOS) errors.push(`\`related_repos\` lists ${value.length} repos, at most ${MAX_RELATED_REPOS} are allowed`);
+  const seen = new Set<string>();
+  value.forEach((entry: unknown, i) => {
+    const at = `\`related_repos[${i}]`;
+    if (!isObject(entry)) {
+      errors.push(`${at}\` must be an object`);
+      return;
+    }
+    for (const key of Object.keys(entry)) {
+      if (!RELATED_REPO_KEYS.has(key)) warnings.push(`Unknown config key: "related_repos[${i}].${key}"`);
+    }
+    const { repo, kind, ref, paths } = entry;
+    if (typeof repo !== 'string' || !REPO_FORMAT.test(repo) || repo.split('/').some(part => part === '.' || part === '..')) {
+      errors.push(`${at}.repo\` must be in "owner/name" format`);
+    } else if (seen.has(repo.toLowerCase())) {
+      errors.push(`${at}.repo\` lists ${repo} a second time`);
+    } else {
+      seen.add(repo.toLowerCase());
+    }
+    if (!RELATED_REPO_KINDS.has(kind as string)) errors.push(`${at}.kind\` must be one of: reference, consumer`);
+    if (ref !== undefined && (typeof ref !== 'string' || !RELATED_REPO_REF.test(ref))) {
+      errors.push(`${at}.ref\` must be a branch, tag or commit name`);
+    }
+    if (paths !== undefined) {
+      if (!isStringArray(paths) || paths.length === 0 || paths.length > MAX_RELATED_REPO_PATHS) {
+        errors.push(`${at}.paths\` must be a list of 1 to ${MAX_RELATED_REPO_PATHS} paths`);
+      } else {
+        for (const p of paths) {
+          if (!isRepoRelativePattern(p)) errors.push(`${at}.paths\` has \`${p}\`, which must be a path or glob inside the repo`);
+        }
+      }
+    }
+  });
+}
+
+/** Whether `pattern` names files inside a repo: relative, without `..`, and without the characters a sparse checkout reads specially. */
+function isRepoRelativePattern(pattern: string): boolean {
+  return !/^[/!#-]/.test(pattern) && !pattern.includes('\\') && ![...pattern].some(c => c.charCodeAt(0) < 0x20)
+    && !pattern.split('/').includes('..');
+}
 
 function validateReviewBlock(review: unknown, errors: string[], warnings: string[]): void {
   if (!isObject(review)) {
@@ -656,6 +715,8 @@ export interface BaseReviewConfig {
   skip?: Pick<ReviewConfig, (typeof SKIP_KEYS)[number]>;
   /** The base branch's `models`, with defaults, when its config file parses. */
   models?: ReviewConfig['models'];
+  /** The base branch's `related_repos`. Unset when its config file or that block is missing or invalid. */
+  relatedRepos?: RelatedRepo[];
   /**
    * `builtin` when the base branch has no `review` block, `base_unreadable` when its config could
    * not be read, and `base_invalid` when its `review` block fails validation or misses a floor.
@@ -683,14 +744,15 @@ export function loadReviewConfig(content: string | null, source = '.manki.yml'):
     ? deepMerge(DEFAULT_CONFIG, { models: root.models }).models
     : DEFAULT_CONFIG.models;
   const skip = loadSkipRules(root, source);
-  if (root.review === undefined) return { models, ...(skip && { skip }), source: 'builtin' };
+  const relatedRepos = baseRelatedRepos(root.related_repos, source);
+  if (root.review === undefined) return { models, ...(skip && { skip }), relatedRepos, source: 'builtin' };
   const validation = validateConfig({ review: root.review });
   for (const warning of validation.warnings) core.warning(warning);
   if (!validation.valid) {
     core.warning(`Invalid \`review\` in ${source} on the base branch, using the built-in review groups: ${validation.errors.join('; ')}`);
-    return { models, ...(skip && { skip }), source: 'base_invalid' };
+    return { models, ...(skip && { skip }), relatedRepos, source: 'base_invalid' };
   }
-  return { review: root.review as ReviewRoutingConfig, models, ...(skip && { skip }), source: 'base' };
+  return { review: root.review as ReviewRoutingConfig, models, ...(skip && { skip }), relatedRepos, source: 'base' };
 }
 
 /** Returns the skip rules of a base config, or `undefined` when it sets none or they fail validation. */
@@ -705,8 +767,20 @@ function loadSkipRules(root: Record<string, unknown>, source: string): BaseRevie
   return { skip_labels: [], skip_authors: [], skip_branches: [], ...given } as BaseReviewConfig['skip'];
 }
 
+/** Returns the base branch's `related_repos`, or `undefined` when it has none or the block is invalid, which it warns about. */
+function baseRelatedRepos(block: unknown, source: string): RelatedRepo[] | undefined {
+  if (block === undefined) return undefined;
+  const validation = validateConfig({ related_repos: block });
+  for (const warning of validation.warnings) core.warning(warning);
+  if (!validation.valid) {
+    core.warning(`Invalid \`related_repos\` in ${source} on the base branch, reading no related repos: ${validation.errors.join('; ')}`);
+    return undefined;
+  }
+  return block as RelatedRepo[];
+}
+
 /**
- * Returns the PR's config with the base branch's `review` block. When the PR's models would run both
+ * Returns the PR's config with the base branch's `review` block and `related_repos`. When the PR's models would run both
  * finders of a pair on one model and the base branch's give two, the reviewer models come from the
  * base, so a PR cannot drop the second model. A base block that misses a floor gives the built-ins.
  */
@@ -714,7 +788,12 @@ export function applyBaseReviewConfig(head: ReviewConfig, base: BaseReviewConfig
   if (JSON.stringify(head.review) !== JSON.stringify(base.review)) {
     core.info('This PR changes the `review` block. The change applies after merge: this round uses the base branch\'s review groups.');
   }
-  let config: ReviewConfig = { ...head, review: base.review, skip_labels: [], skip_authors: [], skip_branches: [], ...base.skip };
+  if (JSON.stringify(head.related_repos ?? []) !== JSON.stringify(base.relatedRepos ?? [])) {
+    core.info('This PR changes `related_repos`. The change applies after merge: this round uses the base branch\'s related repos.');
+  }
+  let config: ReviewConfig = {
+    ...head, review: base.review, related_repos: base.relatedRepos ?? [], skip_labels: [], skip_authors: [], skip_branches: [], ...base.skip,
+  };
   if (base.models) {
     const baseConfig: ReviewConfig = { ...DEFAULT_CONFIG, models: base.models };
     const onOneModel = (c: ReviewConfig) => modelIdentity(resolvePairModel(c)) === modelIdentity(resolveModel(c, 'reviewer'));
