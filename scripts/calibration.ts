@@ -86,7 +86,7 @@ const MIN_SET_SIZE = 40;
 const SEVERITIES = ['blocker', 'warning', 'suggestion', 'nitpick', 'unknown'];
 const REPLY_OUTCOME = /^\**(Fixed|Agreed|Withdrawn|Unverified|Still open|Kept)\b/;
 // A person's reply that opens with one of these says the finding was acted on, or turned down.
-const AUTHOR_FIXED = /^\**(Fixed|Applied|Added|Adopted|Addressed|Done|Changed|Switched|Restructured|Dropped)\b/i;
+const AUTHOR_FIXED = /^\**(Fixed|Applied|Added|Adopted|Addressed|Done|Switched|Restructured)\b/i;
 const AUTHOR_DECLINED = /^\**(Pushing back|Declin|Skipping|Not applied|Not fixing|Won't fix|Keeping|Leaving)/i;
 const FINDING_MARKER = /<!-- manki:[a-z]+:(\S+) -->/;
 const THREAD_FIELDS = 'id path comments(first: 100) { nodes { body url author { __typename } } }';
@@ -311,16 +311,23 @@ async function main(args: string[]): Promise<number> {
   const lines = readFileSync(historyPath, 'utf-8').split('\n').filter(l => l.trim()).map(l => JSON.parse(l) as HistoryLine);
   const octokit = github.getOctokit(githubToken());
   const findings: LabelledFinding[] = [];
+  const skipped: string[] = [];
   for (const [key, rounds] of roundsByPullRequest(lines)) {
     try {
       findings.push(...await labelPullRequest(octokit, key, rounds));
     } catch (error) {
+      skipped.push(key);
       console.error(`Skipping ${key}: ${error instanceof Error ? error.message : error}`);
     }
   }
   const fixRatePath = option(args, '--fix-rate');
   process.stdout.write(renderReport(findings, fixRatePath ? readFileSync(fixRatePath, 'utf-8').split('\n') : []));
 
+  // A partial set would replace a full one, so nothing is exported after a skipped pull request.
+  if (skipped.length > 0) {
+    console.error(`${skipped.length} pull request(s) could not be read, so the report is partial and nothing is exported.`);
+    return 1;
+  }
   const exportPath = option(args, '--export');
   if (exportPath) {
     const set = selectSet(findings, limit);

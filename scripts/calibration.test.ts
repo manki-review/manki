@@ -34,6 +34,7 @@ describe('labelFinding', () => {
     ['Manki\'s "Withdrawn." reply, even when the line changed', { lineChanged: true, judgeAddressed: true, thread: thread('a', [true, 'Withdrawn. The early return covers it.']) }, ['false', 'reply-withdrawn']],
     ['a person saying they fixed it', { ...none, thread: thread('a', [false, 'Fixed in c7251bb. The check runs first.']) }, ['real', 'author-fixed']],
     ['a person saying they added it', { ...none, thread: thread('a', [false, 'Added in db359aa5: a test for the cap.']) }, ['real', 'author-fixed']],
+    ['a person dropping it, which says nothing about a fix', { ...none, thread: thread('a', [false, 'Dropped this, the pool is bounded.']) }, ['unclear', 'untouched']],
     ['a person turning it down, even when the line changed', { lineChanged: true, judgeAddressed: false, thread: thread('a', [false, 'Pushing back: this is intentional.']) }, ['false', 'author-declined']],
     ['a person skipping it', { ...none, thread: thread('a', [false, 'Skipping. The single slot is intentional.']) }, ['false', 'author-declined']],
     ['a person disagreeing in other words', { ...none, thread: thread('a', [false, 'That is by design, see the docs.']) }, ['false', 'author-declined']],
