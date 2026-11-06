@@ -732,6 +732,24 @@ describe('runFullReview end to end', () => {
     expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('another Manki run (id=6999)'));
   });
 
+  it('redacts the value of a secret action input from every review, thread and comment it posts', async () => {
+    const secret = INPUTS.anthropic_api_key;
+    process.env.INPUT_ANTHROPIC_API_KEY = secret;
+    const leaked = { ...BLOCKER, description: `The key ${secret} is in the log.` };
+    Object.assign(mockLLM.replies, {
+      reviewer: JSON.stringify([leaked]),
+      judge: JSON.stringify({ summary: `Leaks ${secret}.`, findings: [{ id: 1, title: leaked.title, severity: 'blocker', reasoning: `Prints ${secret}.`, confidence: 'high', reachability: 'reachable' }] }),
+    });
+    try {
+      await reviewRound();
+    } finally {
+      delete process.env.INPUT_ANTHROPIC_API_KEY;
+    }
+
+    expect(mockGitHub.threads[0].comments[0].body).toContain('The key [REDACTED] is in the log.');
+    expect(JSON.stringify([mockGitHub.reviews, mockGitHub.threads, mockGitHub.comments])).not.toContain(secret);
+  });
+
   it('keeps a blocker in its open thread across a rebase, then resolves it once a round confirms the fix', async () => {
     Object.assign(mockLLM.replies, BLOCKER_REPLIES);
     await reviewRound();

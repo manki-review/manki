@@ -316,7 +316,7 @@ describe('createAuthenticatedOctokit', () => {
     expect(result.appMemory).toBeUndefined();
     expect(result.identity).toBe('actions');
     expect(result.bot).toEqual({ logins: ['manki-review[bot]', 'github-actions[bot]', 'review-user'] });
-    expect(mockGetOctokit).toHaveBeenCalledWith('ghp_fallback', expect.anything(), retry, throttling);
+    expect(mockGetOctokit).toHaveBeenCalledWith('ghp_fallback', expect.anything(), retry, throttling, expect.any(Function));
   });
 
   it('keeps the default identity for the workflow token and when the token user cannot be resolved', async () => {

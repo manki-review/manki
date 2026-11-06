@@ -4,6 +4,7 @@ import { createAppAuth } from '@octokit/auth-app';
 import { retry } from '@octokit/plugin-retry';
 import { throttling } from '@octokit/plugin-throttling';
 import { ACTIONS_BOT_LOGIN, BOT_LOGIN, BotIdentity } from './github';
+import { redactSecrets, registerSecret } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -18,9 +19,30 @@ function onRateLimit(retryAfter: number, options: { method: string; url: string 
   return true;
 }
 
-/** Octokit that retries 5xx responses and waits out primary and secondary rate limits. */
+// Request options that route a request rather than carry its text.
+const ROUTING_OPTIONS = new Set(['method', 'url', 'baseUrl', 'headers', 'request', 'mediaType']);
+
+function redactDeep(value: unknown): unknown {
+  if (typeof value === 'string') return redactSecrets(value);
+  if (Array.isArray(value)) return value.map(redactDeep);
+  if (value && Object.getPrototypeOf(value) === Object.prototype) {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, redactDeep(entry)]));
+  }
+  return value;
+}
+
+/** Octokit plugin that removes Manki's own secret values from every request, so nothing Manki posts can carry one. */
+function redactRequests(octokit: Pick<Octokit, 'hook'>): void {
+  octokit.hook.before('request', (options) => {
+    for (const key of Object.keys(options)) {
+      if (!ROUTING_OPTIONS.has(key)) options[key] = redactDeep(options[key]);
+    }
+  });
+}
+
+/** Octokit that retries 5xx responses, waits out primary and secondary rate limits and redacts Manki's secret values. */
 function createOctokit(token: string): Octokit {
-  return github.getOctokit(token, { throttle: { onRateLimit, onSecondaryRateLimit: onRateLimit } }, retry, throttling);
+  return github.getOctokit(token, { throttle: { onRateLimit, onSecondaryRateLimit: onRateLimit } }, retry, throttling, redactRequests);
 }
 
 /** Review memory access through a GitHub App. */
@@ -113,11 +135,11 @@ export async function resolveGitHubToken(
     }
 
     core.info(`Using ${BOT_LOGIN} identity (token expires ${tokenData.expires_at})`);
-    core.setSecret(tokenData.token);
+    registerSecret(tokenData.token);
     if (typeof tokenData.memory_token !== 'string' || !tokenData.memory_token) {
       return { token: tokenData.token, identity: 'app' };
     }
-    core.setSecret(tokenData.memory_token);
+    registerSecret(tokenData.memory_token);
     return { token: tokenData.token, memoryToken: tokenData.memory_token, identity: 'app' };
   } catch (error) {
     core.info(`App token resolution failed: ${error} — using github-actions[bot] identity`);
@@ -192,7 +214,7 @@ async function mintMemoryToken(auth: AppAuth, installationId: number, owner: str
   }
   try {
     const { token } = await auth({ type: 'installation', installationId, repositoryNames: [name], permissions: { contents: 'write' } });
-    core.setSecret(token);
+    registerSecret(token);
     return token;
   } catch (error) {
     if (![403, 404, 422].includes((error as { status?: number }).status ?? 0)) throw error;
@@ -216,7 +238,7 @@ async function getInstallationToken(
   });
 
   const appAuth = await auth({ type: 'app' });
-  core.setSecret(appAuth.token);
+  registerSecret(appAuth.token);
   const appOctokit = createOctokit(appAuth.token);
 
   const owner = github.context.repo.owner;
@@ -238,7 +260,7 @@ async function getInstallationToken(
       repositoryNames: [repo],
     });
 
-    core.setSecret(installationAuth.token);
+    registerSecret(installationAuth.token);
     core.info(`Authenticated as GitHub App ${app.slug}[bot] (installation ${installation.id})`);
     const appMemory: AppMemory = { tokenFor: (memoryRepo) => mintMemoryToken(auth, installation.id, owner, memoryRepo) };
     return { token: installationAuth.token, slug: app.slug, appMemory };

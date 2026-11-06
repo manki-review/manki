@@ -6,7 +6,7 @@ import { StringDecoder } from 'string_decoder';
 
 import * as core from '@actions/core';
 
-import { sanitizeTokens, SECRET_NAME } from '../utils';
+import { registerSecret, sanitizeTokens, SECRET_NAME } from '../utils';
 import { SendMessageOptions } from './types';
 
 export const STALE_TIMEOUT_MS = 90_000;
@@ -236,11 +236,13 @@ export function seedAuthFile(opts: SeedAuthFileOptions): void {
   }
 
   for (const field of opts.requiredFields) {
-    if (!hasNestedString(parsed as Record<string, unknown>, field)) {
+    const value = nestedString(parsed as Record<string, unknown>, field);
+    if (!value) {
       throw new Error(
         `${opts.inputName} is missing required field \`${field}\`. ${opts.bootstrapHint}`,
       );
     }
+    registerSecret(value);
   }
 
   mkdirSync(dirname(opts.targetPath), { recursive: true, mode: 0o700 });
@@ -258,14 +260,14 @@ export function seedAuthFile(opts: SeedAuthFileOptions): void {
   }
 }
 
-function hasNestedString(obj: Record<string, unknown>, dottedPath: string): boolean {
+function nestedString(obj: Record<string, unknown>, dottedPath: string): string | undefined {
   const parts = dottedPath.split('.');
   let current: unknown = obj;
   for (const part of parts) {
-    if (!current || typeof current !== 'object') return false;
+    if (!current || typeof current !== 'object') return undefined;
     current = (current as Record<string, unknown>)[part];
   }
-  return typeof current === 'string' && current.length > 0;
+  return typeof current === 'string' && current.length > 0 ? current : undefined;
 }
 
 let emptyCwd: string | undefined;
