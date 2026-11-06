@@ -114,12 +114,15 @@ describe('utils', () => {
       expect(redactSecrets('the line MIIEpAIBAAKCAQEAsecretline leaked')).toBe('the line [REDACTED] leaked');
     });
 
-    it.each(['', 'a', 'ab'])('redacts a value inside base64 text after the prefix %p', (prefix) => {
+    // Only the characters that also encode `x-access-token:`, the prefix or the token's last partial group are kept.
+    it.each([
+      ['', 'eC1hY2Nlc3MtdG9rZW46[REDACTED]ZW4='],
+      ['a', 'eC1hY2Nlc3MtdG9rZW46YW[REDACTED]'],
+      ['ab', 'eC1hY2Nlc3MtdG9rZW46YWJ[REDACTED]bg=='],
+    ])('redacts a value inside base64 text after the prefix %p', (prefix, expected) => {
       registerSecret('ghs_checkoutHeaderToken');
       const header = Buffer.from(`x-access-token:${prefix}ghs_checkoutHeaderToken`).toString('base64');
-      const redacted = redactSecrets(`AUTHORIZATION: basic ${header}`);
-      expect(redacted).toContain('[REDACTED]');
-      expect(Buffer.from(redacted.split('[REDACTED]').join(''), 'base64').toString()).not.toContain('checkoutHeaderToken');
+      expect(redactSecrets(`AUTHORIZATION: basic ${header}`)).toBe(`AUTHORIZATION: basic ${expected}`);
     });
   });
 
