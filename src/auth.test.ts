@@ -230,7 +230,8 @@ describe('createAuthenticatedOctokit', () => {
       .mockResolvedValueOnce({ token: 'app-jwt-token' })
       .mockResolvedValueOnce({ token: 'installation-token-abc' })
       .mockResolvedValueOnce({ token: 'memory-token-def' })
-      .mockRejectedValueOnce(new Error('Not installed on that repo'));
+      .mockRejectedValueOnce(Object.assign(new Error('Not installed on that repo'), { status: 422 }))
+      .mockRejectedValueOnce(Object.assign(new Error('Bad gateway'), { status: 502 }));
     mockAuth.hook = jest.fn();
     mockCreateAppAuth.mockReturnValue(mockAuth);
 
@@ -265,9 +266,17 @@ describe('createAuthenticatedOctokit', () => {
     jest.mocked(core.warning).mockClear();
     expect(await getMemoryToken(result.appMemory, 'test-owner/not-installed')).toBeNull();
     expect(await getMemoryToken(result.appMemory, 'other-owner/review-memory')).toBeNull();
-    expect(mockAuth).toHaveBeenCalledTimes(4);
     expect(core.warning).toHaveBeenCalledTimes(2);
     expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('`test-owner/not-installed`'));
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('memory_repo_token'));
+
+    // A transient failure names its cause instead of the setup advice.
+    jest.mocked(core.warning).mockClear();
+    expect(await getMemoryToken(result.appMemory, 'test-owner/team-memory-2')).toBeNull();
+    expect(mockAuth).toHaveBeenCalledTimes(5);
+    expect(core.warning).toHaveBeenCalledTimes(1);
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Bad gateway'));
+    expect(core.warning).not.toHaveBeenCalledWith(expect.stringContaining('memory_repo_token'));
   });
 
   it('throws when github_app_id is not a number', async () => {

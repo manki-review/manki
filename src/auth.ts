@@ -164,7 +164,13 @@ export async function createAuthenticatedOctokit(): Promise<AuthResult> {
 export async function getMemoryToken(appMemory: AppMemory | undefined, memoryRepo: string): Promise<string | null> {
   const memoryRepoToken = core.getInput('memory_repo_token');
   if (memoryRepoToken) return memoryRepoToken;
-  const appToken = await appMemory?.tokenFor(memoryRepo);
+  let appToken: string | null | undefined;
+  try {
+    appToken = await appMemory?.tokenFor(memoryRepo);
+  } catch (error) {
+    core.warning(`Could not get a token for the review memory repo \`${memoryRepo}\`, so memory is skipped: ${error}`);
+    return null;
+  }
   if (appToken) return appToken;
   core.warning(
     `No token for the review memory repo \`${memoryRepo}\`, so memory is skipped. Set \`memory_repo_token\`, or use a `
@@ -174,7 +180,10 @@ export async function getMemoryToken(appMemory: AppMemory | undefined, memoryRep
   return null;
 }
 
-/** Mints a token that writes only the contents of `memoryRepo`, which must belong to `owner`'s installation. */
+/**
+ * Mints a token that writes only the contents of `memoryRepo`, which must belong to `owner`'s installation.
+ * Returns `null` when GitHub refuses the mint, and throws any other error, such as a 5xx or a network failure.
+ */
 async function mintMemoryToken(auth: AppAuth, installationId: number, owner: string, memoryRepo: string): Promise<string | null> {
   const [memoryOwner, name] = memoryRepo.split('/');
   if (memoryOwner.toLowerCase() !== owner.toLowerCase() || !name) {
@@ -186,7 +195,8 @@ async function mintMemoryToken(auth: AppAuth, installationId: number, owner: str
     core.setSecret(token);
     return token;
   } catch (error) {
-    core.info(`Could not mint a memory token for \`${memoryRepo}\`: ${error}`);
+    if (![403, 404, 422].includes((error as { status?: number }).status ?? 0)) throw error;
+    core.info(`GitHub refused a memory token for \`${memoryRepo}\`: ${error}`);
     return null;
   }
 }
