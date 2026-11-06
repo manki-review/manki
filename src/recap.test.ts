@@ -1213,7 +1213,7 @@ describe('fetchRecapState', () => {
       expect(state.priorRounds[0].planner.source).toBe(expectedSource);
     });
 
-    it('ignores HTML-comment block when a details block is present in the same review', async () => {
+    it('reads the hidden record and ignores a details block quoted in the same review', async () => {
       const ctxDetails = makeRoundContext(1, { judge: { summary: 'from details' } });
       const ctxHtml = makeRoundContext(2, { judge: { summary: 'from html comment' } });
       const body = `${detailsBlock(ctxDetails)}\n${htmlCommentBlock(ctxHtml)}`;
@@ -1222,8 +1222,8 @@ describe('fetchRecapState', () => {
       ]);
       const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds).toHaveLength(1);
-      expect(state.priorRounds[0].meta.round).toBe(1);
-      expect(state.priorRounds[0].judge.summary).toBe('from details');
+      expect(state.priorRounds[0].meta.round).toBe(2);
+      expect(state.priorRounds[0].judge.summary).toBe('from html comment');
     });
 
     it('round-trips findings.entries with specialist, suggestedFix, and title fields', async () => {

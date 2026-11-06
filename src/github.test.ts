@@ -871,7 +871,7 @@ describe('postReview with context', () => {
     expect(body).not.toContain('<!-- manki-context: ');
     expect(body).toContain('word word');
     expect(body).not.toContain('*(Review body truncated)*');
-    const records = extractReviewRecords(body);
+    const { records } = extractReviewRecords(body);
     expect(records).toHaveLength(1);
     expect(JSON.parse(records[0])).toEqual(ctx);
   });
@@ -892,7 +892,7 @@ describe('postReview with context', () => {
     await postReview(mockOctokit, 'owner', 'repo', 99, 'abc', result, undefined, ctx, 1000);
     const body = mockCreateReview.mock.calls[0][0].body as string;
     expect(body).toContain('Many findings.');
-    const [record] = extractReviewRecords(body).map(r => JSON.parse(r) as RoundContext);
+    const [record] = extractReviewRecords(body).records.map(r => JSON.parse(r) as RoundContext);
     expect(record.meta.diagnosticsOmitted).toBe(true);
     expect(record.reviewers.rawFindings).toBeUndefined();
     expect(record.findings.entries).toEqual(entries);
@@ -3229,7 +3229,7 @@ describe('postReview fallback paths', () => {
 
       const update = updateReview.mock.calls[0][0].body as string;
       expect(update).toContain('*(Review body truncated)*');
-      expect(extractReviewRecords(update).map(r => JSON.parse(r))).toEqual([context]);
+      expect(extractReviewRecords(update).records.map(r => JSON.parse(r))).toEqual([context]);
       expect(update).toContain('**Blockers that could not be posted as threads:**\n\n**Refused thread**\n[`src/a.ts:40`](https://github.com/owner/repo/blob/sha/src/a.ts#L40)\nDesc.\n\n<!-- manki-stats: ');
       expect(update.length).toBeLessThanOrEqual(60000 + 200);
     });

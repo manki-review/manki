@@ -36,12 +36,9 @@ export function historyLines(repo: string, pr: number, reviews: ReviewLike[]): H
   const lines: HistoryLine[] = [];
   for (const review of reviews) {
     if (!review.body || !hasReviewRecord(review.body)) continue;
-    let records: string[];
-    try {
-      records = extractReviewRecords(review.body);
-    } catch (error) {
-      console.error(`Skipping review ${review.id} on ${repo}#${pr}: ${error instanceof Error ? error.message : error}`);
-      continue;
+    const { records, errors } = extractReviewRecords(review.body);
+    for (const error of errors) {
+      console.error(`Skipping an undecodable record in review ${review.id} on ${repo}#${pr}: ${error}`);
     }
     for (const text of records) {
       let record: unknown;

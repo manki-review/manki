@@ -337,12 +337,9 @@ function parseContextBlocks(
 
   for (const review of reviews) {
     const reviewUrl = `https://github.com/${owner}/${repo}/pull/${prNumber}#pullrequestreview-${review.id}`;
-    let candidates: string[];
-    try {
-      candidates = extractReviewRecords(review.body);
-    } catch (e) {
-      core.warning(`Skipping undecodable Manki context block at ${reviewUrl}: ${e instanceof Error ? e.message : String(e)}`);
-      continue;
+    const { records: candidates, errors } = extractReviewRecords(review.body);
+    for (const error of errors) {
+      core.warning(`Skipping undecodable Manki context block at ${reviewUrl}: ${error}`);
     }
 
     for (const raw of candidates) {
