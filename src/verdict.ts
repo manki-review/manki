@@ -26,12 +26,12 @@ CI builds the change and runs its tests separately, so whether it compiles and i
 Return READY only if you would merge it as it stands. When you return ADDRESS_FIRST, every blocker must be specific enough for someone else to fix without asking you what you meant. Name as a blocker only what you would refuse to merge with, and put everything else in the summary as a suggestion. Write each blocker as \`path/to/file.ext:LINE: <the defect in one plain sentence>. <what goes wrong in practice and the change that fixes it>\`, with the path as shown in the diff and the line number on the new side of the diff. For example: \`src/sync.ts:42: Startup aborts for a client synced from a checkpoint. With no filter headers the bound falls back to 0, and truncating storage above 0 fails, so handle the missing header separately.\`
 
 Also write two things for the pull request:
-- whatThisDoes: two or three sentences a non-specialist can follow. What was wrong or missing, what the change does now, what it gets the user. Ground it in the diff, never in the change's own framing.
+- whatThisDoes: one or two sentences a non-specialist can follow. What was wrong or missing, what the change does now, what it gets the user. Ground it in the diff, never in the change's own framing.
 - whatToTest: manual checks from the diff. \`setup\` says in one or two sentences what the checks need first, and is left out when they need nothing. \`steps\` holds at most ${MAX_TEST_STEPS} checks, each one "Do X. Expect Y." pair, ending with edge cases worth trying. Never invent behaviour the code does not implement.
 
 ${WRITING_RULES}
 
-Keep the whole reply short. Name at most 8 blockers, keep \`summary\` under 150 words and \`whatThisDoes\` under 60 words, then end the JSON object.
+Keep the whole reply short. Name at most 8 blockers, keep \`summary\` under 150 words and \`whatThisDoes\` under 50 words, then end the JSON object.
 
 Respond with ONLY a JSON object (no markdown fences):
 {

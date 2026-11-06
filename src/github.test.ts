@@ -86,6 +86,21 @@ describe('formatFindingComment', () => {
     expect(suggestionBlocks(comment)).toEqual(['Run the setup script first.']);
   });
 
+  it('shows the title, at most three sentences and the fix under 700 visible characters, and collapses the rest', () => {
+    const visible = (text: string) => text.replace(/<details>[\s\S]*?<\/details>/g, '').replace(/<!--[\s\S]*?-->/g, '').length;
+    const sentence = (n: number) => `Sentence ${n} explains one more part of why the cache key collides when two tenants share a name.`;
+    const long = formatFindingComment({ ...baseFinding, description: [1, 2, 3, 4, 5].map(sentence).join(' '), suggestedFix: 'const key = `${tenant}:${name}`;' });
+    expect(long).toContain(`${sentence(1)} ${sentence(2)} ${sentence(3)}\n\n\`\`\`suggestion`);
+    expect(long).toContain(`<details>\n<summary>Details</summary>\n\n${sentence(4)} ${sentence(5)}\n\n</details>`);
+    expect(visible(long)).toBeLessThan(700);
+
+    const wordy = formatFindingComment({ ...baseFinding, description: `${'A very long first sentence '.repeat(40)}ends here. Then more.` });
+    expect(visible(wordy)).toBeLessThan(700);
+    expect(wordy).toContain('<summary>Details</summary>\n\nA very long first sentence');
+
+    expect(formatFindingComment(baseFinding)).not.toContain('<details>');
+  });
+
   it('omits the fix when there is none', () => {
     const comment = formatFindingComment(baseFinding);
     expect(comment).not.toContain('<summary>Suggested fix</summary>');
@@ -873,7 +888,7 @@ describe('postReview with context', () => {
     expect(body).not.toContain('*(Review body truncated)*');
     const { records } = extractReviewRecords(body);
     expect(records).toHaveLength(1);
-    expect(JSON.parse(records[0])).toEqual(ctx);
+    expect(JSON.parse(records[0])).toEqual({ ...ctx, output: { bodyLength: expect.any(Number), commentLengths: [] } });
   });
 
   it('posts a record too large even compressed without its bulky diagnostics, and fails only when the rest is too large too', async () => {
@@ -982,12 +997,34 @@ describe('postReview body lead', () => {
       '',
       '**What this does:** Adds a cache in front of the API. x',
       '',
-      '**What to test:**',
+      '<details>',
+      '<summary>What to test</summary>',
       '',
       '1. Load the page twice. Expect one request.',
       '',
+      '</details>',
+      '',
       'Reviewed [`abcdef1`](https://github.com/owner/repo/commit/abcdef1234).',
     ].join('\n'));
+  });
+
+  it('lists the findings before what the change does, which keeps its first two sentences', async () => {
+    const offDiff: Finding = { severity: 'suggestion', title: 'Rename cache', file: 'src/b.ts', line: 3, description: 'Unclear.', reviewers: [] };
+    const { body } = await postedBody({ ...ready, verdictReport: { ...verdictReport, whatThisDoes: 'Adds a cache. It halves requests. It also logs hits.' }, findings: [offDiff] });
+    expect(body.indexOf('<summary>1 smaller fix in this PR</summary>')).toBeGreaterThan(0);
+    expect(body.indexOf('<summary>1 smaller fix in this PR</summary>')).toBeLessThan(body.indexOf('**What this does:**'));
+    expect(body).toContain('**What this does:** Adds a cache. It halves requests.\n\n<details>\n<summary>What to test</summary>');
+  });
+
+  it('records the length of the body and of each comment it posts', async () => {
+    const ctx = makeContext({});
+    mockCreateReview.mockClear();
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, findings: [blocker, ...ready.findings] }, diff, ctx, 1000);
+    const { body, comments } = mockCreateReview.mock.calls[0][0] as { body: string; comments: Array<{ body: string }> };
+    const output = JSON.parse(extractReviewRecords(body).records[0]).output;
+    expect(output.commentLengths).toEqual(comments.map(c => c.body.length));
+    expect(output.commentLengths).toHaveLength(2);
+    expect(body.slice(output.bodyLength)).toMatch(/^\n\n<!-- manki-stats: /);
   });
 
   it.each([
@@ -1026,7 +1063,7 @@ describe('postReview body lead', () => {
 
   it('renders the testing setup on its own line and the steps as a numbered list', async () => {
     const { body } = await postedBody({ ...ready, verdictReport: { ...verdictReport, whatToTest: { setup: 'Start the dev\nserver.', steps: ['Load the page.', '2. Reload it.'] } } });
-    expect(body).toContain('**What to test:**\n\n**Setup:** Start the dev server.\n\n1. Load the page.\n2. Reload it.');
+    expect(body).toContain('<summary>What to test</summary>\n\n**Setup:** Start the dev server.\n\n1. Load the page.\n2. Reload it.\n\n</details>');
   });
 
   it('opens an ADDRESS_FIRST review with the blocker count, then what goes wrong in practice', async () => {
@@ -3229,7 +3266,7 @@ describe('postReview fallback paths', () => {
 
       const update = updateReview.mock.calls[0][0].body as string;
       expect(update).toContain('*(Review body truncated)*');
-      expect(extractReviewRecords(update).records.map(r => JSON.parse(r))).toEqual([context]);
+      expect(extractReviewRecords(update).records.map(r => JSON.parse(r))).toEqual([{ ...context, output: { bodyLength: expect.any(Number), commentLengths: [expect.any(Number)] } }]);
       expect(update).toContain('**Blockers that could not be posted as threads:**\n\n**Refused thread**\n[`src/a.ts:40`](https://github.com/owner/repo/blob/sha/src/a.ts#L40)\nDesc.\n\n<!-- manki-stats: ');
       expect(update.length).toBeLessThanOrEqual(60000 + 200);
     });
@@ -3278,7 +3315,7 @@ describe('postReview non-blocking findings', () => {
     severity, title, file: 'src/a.ts', line, description: 'It goes wrong. Second sentence. Third sentence.', reviewers: [], ...extra,
   });
 
-  it('posts non-blocking findings on changed lines inline as not blocking, and lists the rest as blocks', async () => {
+  it('posts non-blocking findings on changed lines inline as not blocking, lists the rest as blocks, and nitpicks only in their own list', async () => {
     const { octokit, createReview, createReviewComment } = makeOctokit();
 
     await postReview(octokit, 'owner', 'repo', 1, 'abc1234', buildResult([
@@ -3290,10 +3327,10 @@ describe('postReview non-blocking findings', () => {
 
     const review = createReview.mock.calls[0][0];
     expect(createReviewComment).not.toHaveBeenCalled();
-    expect(review.comments.map((c: { line: number }) => c.line)).toEqual([5, 7]);
+    expect(review.comments.map((c: { line: number }) => c.line)).toEqual([5]);
     expect(review.comments[0].body).toMatch(/^\u2728 \*\*Suggestion, not blocking:\*\* Extract helper\n\nIt goes wrong\./u);
     expect(review.comments[0].body).toContain('<!-- manki:suggestion:Extract-helper -->');
-    expect(review.comments[1].body).toMatch(/^\u{1F4DD} \*\*Nitpick, not blocking:\*\* Typo in name\n/u);
+    expect(review.body).toContain('<details>\n<summary>1 nitpick</summary>\n\n**Typo in name**\n[`src/a.ts:7`]');
     expect(review.body).toContain([
       '<details>',
       '<summary>2 smaller fixes in this PR</summary>',
@@ -3318,7 +3355,7 @@ describe('postReview non-blocking findings', () => {
     expect(review.body).not.toContain('not listed');
   });
 
-  it('posts at most five non-blocking findings inline, most severe first, and lists the sixth', async () => {
+  it('posts at most five non-blocking findings inline, most severe first, and lists the rest', async () => {
     const { octokit, createReview } = makeOctokit();
 
     await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([
@@ -3328,14 +3365,17 @@ describe('postReview non-blocking findings', () => {
       nonBlocking('suggestion', 'Suggestion two', 4),
       nonBlocking('nitpick', 'Nit two', 5),
       nonBlocking('suggestion', 'Suggestion three', 6),
+      nonBlocking('suggestion', 'Suggestion four', 8),
+      nonBlocking('suggestion', 'Suggestion five', 9),
     ]), diff);
 
     const review = createReview.mock.calls[0][0];
     const byLine = new Map(review.comments.map((c: { line: number; body: string }) => [c.line, c.body]));
-    expect([...byLine.keys()].sort()).toEqual([1, 2, 3, 4, 6]);
+    expect([...byLine.keys()].sort()).toEqual([2, 3, 4, 6, 8]);
     expect(byLine.get(3)).toMatch(/^\u26A0\uFE0F \*\*Warning, not blocking:\*\* Deferred warning\n/u);
     expect(byLine.get(3)).toContain('<!-- manki:warning:Deferred-warning -->');
-    expect(review.body).toContain('<summary>1 smaller fix in this PR</summary>\n\n**Nit two**\n');
+    expect(review.body).toContain('<summary>1 smaller fix in this PR</summary>\n\n**Suggestion five**\n');
+    expect(review.body).toContain('<summary>2 nitpicks</summary>\n\n**Nit one**\n');
   });
 
   it('does not post a non-blocking finding again while its open thread carries it', async () => {

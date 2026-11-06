@@ -972,6 +972,24 @@ function formatBodyFix(fix: string, file: string): string {
   return `Fix:\n${rendered}`;
 }
 
+/**
+ * Splits `text` after its first sentences: at most `maxSentences`, and fewer when they would pass `maxLength`.
+ * The first sentence is always kept, truncated when it alone passes `maxLength`. A code fence ends the lead.
+ */
+function splitLead(text: string, maxSentences: number, maxLength: number): { lead: string; rest: string } {
+  const trimmed = text.trim();
+  const fenceAt = trimmed.indexOf('```');
+  const prose = fenceAt === -1 ? trimmed : trimmed.slice(0, fenceAt);
+  // Odd entries are the whitespace between sentences, so joining a slice keeps the original spacing.
+  const parts = prose.trimEnd().split(/(?<=[.!?])(\s+)/);
+  let end = 1;
+  while (end + 1 < parts.length && (end + 1) / 2 < maxSentences && parts.slice(0, end + 2).join('').length <= maxLength) end += 2;
+  const lead = parts.slice(0, end).join('');
+  const rest = trimmed.slice(lead.length).trim();
+  if (lead.length <= maxLength) return { lead, rest };
+  return { lead: safeTruncate(lead, maxLength), rest: trimmed };
+}
+
 /** Renders a finding listed in the review body: title, link to the line, what goes wrong, and the fix. */
 function formatFindingBlock(finding: Finding, linkTo: LineLink): string {
   const lines = [`**${sanitizeMarkdown(finding.title)}**${finding.toolSource ? ` (${sanitizeMarkdown(finding.toolSource)})` : ''}`];
@@ -980,16 +998,19 @@ function formatFindingBlock(finding: Finding, linkTo: LineLink): string {
     const location = `${sanitizeFilePath(finding.file)}${finding.line > 0 ? `:${finding.line}` : ''}`;
     lines.push(`[${inlineCode(location)}](${linkTo(finding.file, finding.line)})`);
   }
-  const description = sanitizeMarkdown(finding.description.trim()).split(/(?<=[.!?])\s+/).slice(0, 2).join(' ');
-  if (description) lines.push(safeTruncate(description, 300));
+  const description = splitLead(sanitizeMarkdown(finding.description), 2, 300).lead;
+  if (description) lines.push(description);
   if (finding.suggestedFix?.trim()) lines.push(formatBodyFix(finding.suggestedFix, finding.file));
   return lines.join('\n');
 }
 
-function formatSmallerFindings(entries: string[], previouslyMissed: string[]): string | null {
+function formatSmallerFindings(entries: string[], nitpicks: string[], previouslyMissed: string[]): string | null {
   const parts: string[] = [];
   if (entries.length > 0) {
     parts.push(`<details>\n<summary>${countOf(entries.length, 'smaller fix', 'smaller fixes')} in this PR</summary>\n\n${entries.join('\n\n')}\n\n</details>`);
+  }
+  if (nitpicks.length > 0) {
+    parts.push(`<details>\n<summary>${countOf(nitpicks.length, 'nitpick', 'nitpicks')}</summary>\n\n${nitpicks.join('\n\n')}\n\n</details>`);
   }
   if (previouslyMissed.length > 0) {
     parts.push(`<details>\n<summary>Previously missed: ${countOf(previouslyMissed.length, 'smaller fix', 'smaller fixes')}</summary>\n\nThese sit on code an earlier review already covered. None of them blocks.\n\n${previouslyMissed.join('\n\n')}\n\n</details>`);
@@ -1072,6 +1093,7 @@ export async function postReview(
   const invalidComments: string[] = [];
   const generalFindings: string[] = [];
   const smallerFindings: string[] = [];
+  const nitpicks: string[] = [];
   const stillOpen: string[] = [];
   const previouslyMissed: string[] = [];
   const nonBlocking: Finding[] = [];
@@ -1121,14 +1143,14 @@ export async function postReview(
   }
 
   const inline = new Set(nonBlocking
-    .filter(f => diff && f.line > 0 && isOnChangedLine(f, diff))
+    .filter(f => f.severity !== 'nitpick' && diff && f.line > 0 && isOnChangedLine(f, diff))
     .sort((a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity))
     .slice(0, MAX_NON_BLOCKING_INLINE));
   for (const f of nonBlocking) {
     if (inline.has(f)) {
       validComments.push({ path: f.file, line: f.line, side: 'RIGHT', body: formatFindingComment(f) });
     } else {
-      smallerFindings.push(formatFindingBlock(f, linkTo));
+      (f.severity === 'nitpick' ? nitpicks : smallerFindings).push(formatFindingBlock(f, linkTo));
     }
   }
 
@@ -1151,6 +1173,16 @@ export async function postReview(
     if (stillOpen.length > 0) {
       b += `\n\n${STILL_OPEN_HEADING}\n${stillOpen.join('\n')}`;
     }
+    if (generalFindings.length > 0) {
+      b += `\n\n**Blockers not tied to a line:**\n\n${generalFindings.join('\n\n')}`;
+    }
+    if (invalidComments.length > 0) {
+      b += `\n\n**Blockers in files outside this diff:**\n\n${invalidComments.join('\n\n')}`;
+    }
+    const smaller = formatSmallerFindings(smallerFindings, nitpicks, previouslyMissed);
+    if (smaller) {
+      b += `\n\n${smaller}`;
+    }
     const overrides = event === 'APPROVE' && formatSecurityOverrides(existingThreads.flatMap(t =>
       t.securityOverride ? [{ title: t.title, threadUrl: t.threadUrl, login: t.securityOverride.login }] : []));
     if (overrides) {
@@ -1160,16 +1192,6 @@ export async function postReview(
     if (readyReport) {
       b += `\n\n${readyReport}`;
     }
-    if (generalFindings.length > 0) {
-      b += `\n\n**Blockers not tied to a line:**\n\n${generalFindings.join('\n\n')}`;
-    }
-    if (invalidComments.length > 0) {
-      b += `\n\n**Blockers in files outside this diff:**\n\n${invalidComments.join('\n\n')}`;
-    }
-    const smaller = formatSmallerFindings(smallerFindings, previouslyMissed);
-    if (smaller) {
-      b += `\n\n${smaller}`;
-    }
     return b;
   };
 
@@ -1177,7 +1199,10 @@ export async function postReview(
   const codeTokens = diff ? codeTokensFromDiff(diff) : new Set<string>();
   const highlight = <T extends { body: string }>(c: T): T => ({ ...c, body: highlightCode(c.body, codeTokens) });
   const body = highlightCode(renderBody(), codeTokens);
-  const record = context ? formatRecordTrailer(context, reviewTimeMs ?? 0, REVIEW_BODY_BUDGET - body.length) : '';
+  const postedComments = [...validComments, ...fileComments].map(highlight);
+  const record = context
+    ? formatRecordTrailer({ ...context, output: { bodyLength: body.length, commentLengths: postedComments.map(c => c.body.length) } }, reviewTimeMs ?? 0, REVIEW_BODY_BUDGET - body.length)
+    : '';
 
   if (invalidComments.length > 0) {
     core.info(`Moved ${invalidComments.length} comments to review body (not postable as threads)`);
@@ -1456,7 +1481,8 @@ function formatTestGuide(guide: TestGuide): string {
 function formatReadyReport(result: ReviewResult): string | null {
   if (result.outcome !== 'READY' || !result.verdictReport) return null;
   const { whatThisDoes, whatToTest } = result.verdictReport;
-  return `${formatLabelled('What this does', whatThisDoes)}\n\n**What to test:**\n\n${formatTestGuide(whatToTest)}`;
+  const summary = splitLead(whatThisDoes, 2, 400).lead;
+  return `${formatLabelled('What this does', summary)}\n\n<details>\n<summary>What to test</summary>\n\n${formatTestGuide(whatToTest)}\n\n</details>`;
 }
 
 // Sanitizes LLM-generated text (titles, descriptions, summaries) before embedding
@@ -1504,6 +1530,16 @@ export function titleToSlug(title: string): string {
 
 const SUGGESTION_MAX_LINES = 3;
 const SUGGESTION_MAX_LENGTH = 120;
+
+// An inline finding shows about 700 characters at most, this budget plus line breaks and a truncation mark.
+// The rest of its description is collapsed.
+const MAX_VISIBLE_COMMENT = 650;
+const MIN_VISIBLE_DESCRIPTION = 150;
+
+/** Returns the length of `text` without collapsed `<details>` blocks and HTML comments, which a reader does not see. */
+function visibleLength(text: string): number {
+  return text.replace(/<details>[\s\S]*?<\/details>/g, '').replace(/<!--[\s\S]*?-->/g, '').length;
+}
 const FENCE_LINE_RE = /^\s*(`{3,}|~{3,})(.*)$/;
 const PROSE_LINE_RE = /^[A-Z][A-Za-z']*(?:\s+\S+){2,}[.:]$/;
 // A comment that says where the code goes, such as `// After the guard, add:`, means the code does not apply as is.
@@ -1594,9 +1630,12 @@ function formatFindingComment(finding: Finding): string {
   const heading = finding.toolSource ? `**${label}** (${sanitizeMarkdown(finding.toolSource)}):` : `**${label}:**`;
   let comment = `${SEVERITY_EMOJI[finding.severity]} ${heading} ${sanitizeMarkdown(finding.title)}\n\n`;
   if (finding.judgeConfidence === 'low') comment += `${LOW_CONFIDENCE_NOTE}\n\n`;
-  comment += sanitizeMarkdown(finding.description);
-  if (finding.suggestedFix?.trim()) {
-    comment += `\n\n${formatSuggestedFix(finding.suggestedFix, finding.file)}`;
+  const fix = finding.suggestedFix?.trim() ? `\n\n${formatSuggestedFix(finding.suggestedFix, finding.file)}` : '';
+  const room = Math.max(MIN_VISIBLE_DESCRIPTION, MAX_VISIBLE_COMMENT - comment.length - visibleLength(fix));
+  const { lead, rest } = splitLead(sanitizeMarkdown(finding.description), 3, room);
+  comment += `${lead}${fix}`;
+  if (rest) {
+    comment += `\n\n<details>\n<summary>Details</summary>\n\n${rest}\n\n</details>`;
   }
 
   const data: Record<string, unknown> = {

@@ -811,6 +811,15 @@ export interface RoundContext {
    */
   recap?: RoundRecap;
   staticAnalysis?: RoundStaticAnalysis;
+  /** Lengths of what the round posted, in characters. */
+  output?: RoundOutput;
+}
+
+export interface RoundOutput {
+  /** The review body without the round record and the reviewed-commit footer. */
+  bodyLength: number;
+  /** Each inline and file-level comment, in posting order. */
+  commentLengths: number[];
 }
 
 /** What the static analysis stage did besides reading results. */
