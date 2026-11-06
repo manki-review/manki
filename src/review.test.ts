@@ -128,7 +128,7 @@ describe('parseFindings', () => {
     expect(checked.notChecked).toBeUndefined();
     expect([unchecked.evidence, unchecked.notChecked]).toEqual([{ checks: [], proof: [], emptySearch: '' }, true]);
     expect([lead.lead, lead.notChecked, lead.evidence]).toEqual([{ checked: 'read src/c.ts:3', left: 'find the writers' }, true, undefined]);
-    expect(lead.description).toBe('The reviewer did not finish checking this. Checked: read src/c.ts:3. Left: find the writers.');
+    expect(lead.description).toBe('A reviewer raised this as a suspicion it had not finished checking. It had checked: read src/c.ts:3. Still to check: find the writers.');
   });
 
   it('parses markdown-wrapped JSON', () => {

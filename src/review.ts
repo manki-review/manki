@@ -1561,7 +1561,7 @@ export function parseFindings(responseText: string, reviewerName: string): Findi
     const evidence = parseEvidence(f);
     const lead = f.lead === true ? { checked: textOf(f.checked), left: textOf(f.left) } : undefined;
     // A lead the judge keeps is posted like a finding, so it needs a description even when the reviewer gave none.
-    const leadDescription = lead && `The reviewer did not finish checking this. Checked: ${lead.checked || 'nothing'}. Left: ${lead.left || 'not said'}.`;
+    const leadDescription = lead && `A reviewer raised this as a suspicion it had not finished checking. It had checked: ${lead.checked || 'nothing'}. Still to check: ${lead.left || 'not said'}.`;
     return {
       severity: validateSeverity(f.severity),
       title: String(f.title || 'Untitled finding'),
