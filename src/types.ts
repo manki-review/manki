@@ -468,6 +468,12 @@ export interface ReviewConfig {
   auto_review: boolean;
   auto_approve: boolean;
   exclude_paths: string[];
+  /** Labels that skip review, compared case-insensitively. Read from the base branch only. */
+  skip_labels?: string[];
+  /** PR authors whose PRs are skipped, compared case-insensitively, such as `dependabot[bot]`. Read from the base branch only. */
+  skip_authors?: string[];
+  /** Glob patterns for head branches in the repo itself that skip review, such as `dependabot/**`. Read from the base branch only. */
+  skip_branches?: string[];
   max_diff_lines: number;
   reviewers: ReviewerAgent[];
   instructions: string;
@@ -874,8 +880,21 @@ export interface RoundCap {
 }
 
 /** Options forwarded from the dispatch site into `runFullReview`. */
+/** What the skip rules match on a PR. */
+export interface SkipFacts {
+  labels: string[];
+  author?: string;
+  /** Who caused the event, such as who pushed on `synchronize`. */
+  sender?: string;
+  branch: string;
+  /** Whether the head branch lives in a fork, where anyone can pick its name. */
+  fromFork: boolean;
+}
+
 export interface FullReviewOptions {
   prAuthorLogin?: string;
+  /** Set on automatic reviews of PR events, so the base branch's skip rules apply. */
+  skipFacts?: SkipFacts;
   forceReview?: boolean;
   skipCap?: boolean;
   bypassHint?: 'force_review' | 'skip_cap' | 'manual_review_command';

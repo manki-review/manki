@@ -1,9 +1,10 @@
 import * as core from '@actions/core';
 import * as fs from 'fs';
+import { minimatch } from 'minimatch';
 import { parse as parseYaml } from 'yaml';
 
 import { BUILT_IN_CLASSES, BUILT_IN_GROUPS, PATH_ALIASES, floorShortfall, modelIdentity, resolveRouting, routeClass } from './routing';
-import { ANALYZERS, PairedPin, ReviewConfig, ReviewRoutingConfig, StaticAnalysisConfig } from './types';
+import { ANALYZERS, PairedPin, ReviewConfig, ReviewRoutingConfig, SkipFacts, StaticAnalysisConfig } from './types';
 
 export const MAX_LOCK_TTL_SECONDS = 3600;
 const MAX_WAIT_TIMEOUT_SECONDS = 3600;
@@ -16,6 +17,9 @@ export const DEFAULT_CONFIG: ReviewConfig = {
   auto_review: true,
   auto_approve: true,
   exclude_paths: ['*.lock', 'dist/**', '*.generated.*'],
+  skip_labels: [],
+  skip_authors: [],
+  skip_branches: [],
   max_diff_lines: 50000,
   reviewers: [],
   instructions: '',
@@ -51,10 +55,15 @@ export const DEFAULT_CONFIG: ReviewConfig = {
   concurrency_lock_ttl_seconds: 600,
 };
 
+const SKIP_KEYS = ['skip_labels', 'skip_authors', 'skip_branches'] as const;
+
 const KNOWN_KEYS = new Set([
   'auto_review',
   'auto_approve',
   'exclude_paths',
+  'skip_labels',
+  'skip_authors',
+  'skip_branches',
   'max_diff_lines',
   'reviewers',
   'instructions',
@@ -118,6 +127,12 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
 
   if ('instructions' in config && typeof config.instructions !== 'string') {
     errors.push('`instructions` must be a string');
+  }
+
+  for (const key of SKIP_KEYS) {
+    if (key in config && (!Array.isArray(config[key]) || !(config[key] as unknown[]).every(v => typeof v === 'string' && v.trim() !== ''))) {
+      errors.push(`\`${key}\` must be an array of non-empty strings`);
+    }
   }
 
   if ('exclude_paths' in config) {
@@ -637,6 +652,8 @@ export function loadStaticAnalysisConfig(content: string | null, source = '.mank
 
 export interface BaseReviewConfig {
   review?: ReviewRoutingConfig;
+  /** The base branch's skip rules, when they validate. */
+  skip?: Pick<ReviewConfig, (typeof SKIP_KEYS)[number]>;
   /** The base branch's `models`, with defaults, when its config file parses. */
   models?: ReviewConfig['models'];
   /**
@@ -665,14 +682,27 @@ export function loadReviewConfig(content: string | null, source = '.manki.yml'):
   const models = root.models !== undefined && validateConfig({ models: root.models }).valid
     ? deepMerge(DEFAULT_CONFIG, { models: root.models }).models
     : DEFAULT_CONFIG.models;
-  if (root.review === undefined) return { models, source: 'builtin' };
+  const skip = loadSkipRules(root, source);
+  if (root.review === undefined) return { models, ...(skip && { skip }), source: 'builtin' };
   const validation = validateConfig({ review: root.review });
   for (const warning of validation.warnings) core.warning(warning);
   if (!validation.valid) {
     core.warning(`Invalid \`review\` in ${source} on the base branch, using the built-in review groups: ${validation.errors.join('; ')}`);
-    return { models, source: 'base_invalid' };
+    return { models, ...(skip && { skip }), source: 'base_invalid' };
   }
-  return { review: root.review as ReviewRoutingConfig, models, source: 'base' };
+  return { review: root.review as ReviewRoutingConfig, models, ...(skip && { skip }), source: 'base' };
+}
+
+/** Returns the skip rules of a base config, or `undefined` when it sets none or they fail validation. */
+function loadSkipRules(root: Record<string, unknown>, source: string): BaseReviewConfig['skip'] {
+  const given = Object.fromEntries(SKIP_KEYS.filter(k => k in root).map(k => [k, root[k]]));
+  if (Object.keys(given).length === 0) return undefined;
+  const validation = validateConfig(given);
+  if (!validation.valid) {
+    core.warning(`Invalid skip rules in ${source} on the base branch, skipping no PR: ${validation.errors.join('; ')}`);
+    return undefined;
+  }
+  return { skip_labels: [], skip_authors: [], skip_branches: [], ...given } as BaseReviewConfig['skip'];
 }
 
 /**
@@ -684,7 +714,7 @@ export function applyBaseReviewConfig(head: ReviewConfig, base: BaseReviewConfig
   if (JSON.stringify(head.review) !== JSON.stringify(base.review)) {
     core.info('This PR changes the `review` block. The change applies after merge: this round uses the base branch\'s review groups.');
   }
-  let config: ReviewConfig = { ...head, review: base.review };
+  let config: ReviewConfig = { ...head, review: base.review, skip_labels: [], skip_authors: [], skip_branches: [], ...base.skip };
   if (base.models) {
     const baseConfig: ReviewConfig = { ...DEFAULT_CONFIG, models: base.models };
     const onOneModel = (c: ReviewConfig) => modelIdentity(resolvePairModel(c)) === modelIdentity(resolveModel(c, 'reviewer'));
@@ -785,4 +815,22 @@ export function sanitizeForkConfig(config: ReviewConfig): ReviewConfig {
     reviewers: [...DEFAULT_CONFIG.reviewers],
     memory: { ...config.memory, repo: DEFAULT_CONFIG.memory.repo },
   };
+}
+
+/**
+ * Returns which of `config`'s skip rules the PR matches, such as `label "dependencies"`, or `undefined` when none does.
+ * A label or branch rule matches only a head branch in the repo itself.
+ */
+export function matchSkipRule(config: ReviewConfig, facts: SkipFacts): string | undefined {
+  const lower = (values: string[]) => values.map(v => v.toLowerCase());
+  // A fork's author can push after a skip label is added, so only labels on the repo's own branches count.
+  const label = !facts.fromFork && facts.labels.find(l => lower(config.skip_labels ?? []).includes(l.toLowerCase()));
+  if (label) return `label "${label}"`;
+  // A writer can push to a bot's PR, so the event's sender must match too.
+  const skippedAuthor = (login: string | undefined) => !!login && lower(config.skip_authors ?? []).includes(login.toLowerCase());
+  if (skippedAuthor(facts.author) && (facts.sender === undefined || skippedAuthor(facts.sender))) return `author ${facts.author}`;
+  // Only writers can push a branch to the repo itself, while a fork's author names its branch freely.
+  const branch = !facts.fromFork && (config.skip_branches ?? []).find(pattern => minimatch(facts.branch, pattern));
+  if (branch) return `branch ${facts.branch}`;
+  return undefined;
 }

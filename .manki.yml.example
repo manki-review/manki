@@ -16,6 +16,14 @@
 #   - "dist/**"
 #   - "*.generated.*"
 
+# PRs that get no automatic review (default: none). Read from the base branch
+# only. Labels and authors compare case-insensitively. Branches are globs on the
+# head branch. Label and branch rules skip only branches in the repo itself. A skipped Manki check passes a
+# required status check, so prefer skip_authors for bots: GitHub sets the author.
+# skip_labels: ["dependencies"]
+# skip_authors: ["dependabot[bot]"]
+# skip_branches: ["dependabot/**"]
+
 # Maximum diff lines before skipping review (default: 50000)
 # max_diff_lines: 50000
 
