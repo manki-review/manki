@@ -48,6 +48,8 @@ describe('refuteBlockers', () => {
       'Confirmed without proof': { outcome: 'confirmed', reason: 'Trust me.' },
       'Unsettled': { outcome: 'unsettled', reason: 'The callers are generated.' },
       'Lead confirmed': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] },
+      'Unproven lead confirmed': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] },
+      'Disproved without proof': { outcome: 'disproved', reason: 'Probably fine.' },
       'Lead unsettled': { outcome: 'unsettled', reason: 'Could not tell.' },
       'Failing': new Error('CLI crashed'),
     });
@@ -57,6 +59,8 @@ describe('refuteBlockers', () => {
       finding('Confirmed without proof'),
       finding('Unsettled'),
       finding('Lead confirmed', { severity: 'warning', notChecked: true, lead }),
+      finding('Unproven lead confirmed', { severity: 'warning', notChecked: true, lead, tags: ['unproven-blocker'] }),
+      finding('Disproved without proof'),
       finding('Lead unsettled', { notChecked: true, lead }),
       finding('Failing'),
       finding('A warning', { severity: 'warning' }),
@@ -71,7 +75,10 @@ describe('refuteBlockers', () => {
       ['Confirmed', 'blocker', 'confirmed'],
       ['Confirmed without proof', 'warning', 'unsettled'],
       ['Unsettled', 'warning', 'unsettled'],
-      ['Lead confirmed', 'blocker', 'confirmed'],
+      // A confirmation keeps the grade the judge gave a lead, and lifts only the cap on an unproven blocker.
+      ['Lead confirmed', 'warning', 'confirmed'],
+      ['Unproven lead confirmed', 'blocker', 'confirmed'],
+      ['Disproved without proof', 'warning', 'unsettled'],
       ['Lead unsettled', 'ignore', 'unsettled'],
       ['Failing', 'blocker', undefined],
       ['A warning', 'warning', undefined],
@@ -83,8 +90,9 @@ describe('refuteBlockers', () => {
     expect(result[0].judgeNotes).toBe('Refutation disproved: Both inputs are checked at src/api.ts:9.');
     expect(result[1].evidence?.proof).toEqual(['src/math.ts:2', 'src/api.ts:4']);
     expect([result[4].lead, result[4].notChecked]).toEqual([undefined, undefined]);
+    expect(result[5].tags).toEqual([]);
     // Every blocker and lead was asked once, and the warning never.
-    expect(client.calls.map(([title]) => title).sort()).toEqual(['Confirmed', 'Confirmed without proof', 'Disproved', 'Failing', 'Lead confirmed', 'Lead unsettled', 'Unsettled']);
+    expect(client.calls.map(([title]) => title).sort()).toEqual(['Confirmed', 'Confirmed without proof', 'Disproved', 'Disproved without proof', 'Failing', 'Lead confirmed', 'Lead unsettled', 'Unproven lead confirmed', 'Unsettled']);
     expect(client.calls[0][1]).toEqual({ effort: 'high', repoTools: { root: workspace, steps: 15 }, timeoutMs: 600_000 });
   });
 

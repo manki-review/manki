@@ -78,6 +78,8 @@ export const IN_PR_SUPPRESSED_TAG = 'suppressed-in-pr' as const;
 export const FOLLOW_UP_TAG = 'follow-up' as const;
 /** Marks a security defect, which blocks at every round and never becomes a follow-up. */
 export const SECURITY_TAG = 'security' as const;
+/** Marks a blocker posted as a warning because nothing cited the lines that prove it. */
+export const UNPROVEN_TAG = 'unproven-blocker' as const;
 
 export interface InterRoundDiffEmptyOverride {
   applied: boolean;

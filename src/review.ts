@@ -1059,7 +1059,10 @@ export async function runReview(
       resolvedThreadIds,
       suppressResolvedThreads,
       ...(related && { relatedRepos: related.repos }),
-      workspace,
+      ...(workspace && clients.judge.repoTools && {
+        // Its own label keeps the refutation calls out of the judge's retry count.
+        refutation: { client: withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge }, 'judge', 'refute'), workspace },
+      }),
     };
     const judgeStart = Date.now();
     const judgeResult = await runJudgeAgent(judgeWrap.client, config, judgeInput);

@@ -528,6 +528,9 @@ describe('runFullReview end to end', () => {
       const progress = mockGitHub.comments.find(c => c.body.startsWith('✅ **Review complete**'))!.body;
       expect(progress).toContain('**Disproved by the judge:** 1 finding\n&nbsp;&nbsp;&nbsp;&nbsp;Sum is never range checked (`src/math.ts:2`): Both inputs are bounded at src/api.ts:3.');
       expect(postedReviews().map(r => r.state)).toEqual(['APPROVED']);
+      // The refutation call is recorded under its own label, so it is no judge retry.
+      const record = mockGitHub.roundContext(postedReviews()[0]);
+      expect([record.judge.retryCount, record.usage.llmCalls?.filter(c => c.agent === 'refute').length]).toEqual([0, 1]);
 
       mockLLM.calls = [];
       await forcedRound();
