@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
 import { completeReviewCheck, outcomeReport, startReviewCheck } from './check-run';
-import { approvalHeldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchConflictingBase, fetchInterRoundDiff, fetchPRComments, fetchReviewThreadNodes, fetchStandingVerdict, FORCE_CAP_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgressOn, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
+import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchApprovalHold, fetchInterRoundDiff, fetchPRComments, fetchReviewThreadNodes, fetchStandingVerdict, FORCE_CAP_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgressOn, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
 import type { StandingVerdict } from './github';
 import { isSameChange } from './diff';
 import { fetchPriorRoundContexts, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, PreviousFinding, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf } from './recap';
@@ -246,7 +246,7 @@ function approvedSince(round: RoundContext, lastApprovalAt: string | undefined):
 }
 
 /**
- * Returns how many rounds reviewed a new change since the last approval, or in all rounds without one.
+ * Returns how many rounds reviewed a new change since the last approval, or in all rounds without one. Draft rounds don't count.
  * The round cap stops fix loops, so a round after an approval, such as on a rebase, starts the count again.
  */
 function roundsSinceApproval(priorRounds: RoundContext[], lastApprovalAt: string | undefined): { count: number; approved: boolean } {
@@ -254,7 +254,7 @@ function roundsSinceApproval(priorRounds: RoundContext[], lastApprovalAt: string
   for (let i = priorRounds.length - 1; i >= 0; i--) {
     const round = priorRounds[i];
     if (approvedSince(round, lastApprovalAt)) return { count, approved: true };
-    if (isNewChange({ commitSha: round.meta.commitSha, changeDigest: round.diff?.changeDigest }, priorRounds[i - 1])) count++;
+    if (!round.meta.draft && isNewChange({ commitSha: round.meta.commitSha, changeDigest: round.diff?.changeDigest }, priorRounds[i - 1])) count++;
   }
   return { count, approved: lastApprovalAt !== undefined };
 }
@@ -371,22 +371,22 @@ async function postStaleApproveSkippedComment(
 }
 
 /**
- * Returns true when the PR conflicts with its base, after posting a one-time notice for `headSha`
- * that the approval is held. An approval would cover code that changes once the conflict is resolved.
+ * Returns why the PR's approval must be held now, a draft or a conflict with its base, and posts one
+ * notice per head saying so. Returns `false` when it may be approved. `draftWhenUnread` decides when the PR can't be read.
  */
-async function holdApprovalOnConflict(
-  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string,
-): Promise<boolean> {
-  const conflictingBase = await fetchConflictingBase(octokit, owner, repo, prNumber);
-  if (!conflictingBase) return false;
-  core.info(`PR conflicts with ${conflictingBase}, so it is not approved`);
+async function holdApproval(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string, draftWhenUnread = false,
+): Promise<ApprovalHeld> {
+  const hold = await fetchApprovalHold(octokit, owner, repo, prNumber, draftWhenUnread);
+  if (!hold) return false;
+  core.info(`${hold.reason === 'conflict' ? `PR conflicts with ${hold.baseRef}` : 'The PR is a draft'}, so it is not approved`);
   assertWritesAllowed();
   try {
-    await postNoticeOnce(octokit, bot, owner, repo, prNumber, `${APPROVAL_HELD_MARKER_PREFIX}${headSha} -->`, approvalHeldLine(conflictingBase));
+    await postNoticeOnce(octokit, bot, owner, repo, prNumber, `${APPROVAL_HELD_MARKER_PREFIX}${headSha} -->`, approvalHoldLine(hold));
   } catch (error) {
     core.warning(`Failed to post the approval-held notice: ${error instanceof Error ? error.message : error}`);
   }
-  return true;
+  return hold.reason;
 }
 
 /**
@@ -462,6 +462,10 @@ async function checkAndAutoApprove(
     repo,
     pull_number: prNumber,
   });
+  if (pr.draft) {
+    core.info('Skipping auto-approve — the PR is a draft');
+    return false;
+  }
 
   const prAuthorLogin = pr.user?.login;
   const prAuthorIsAdmin = !!prAuthorLogin && threads.some(t => isOverrideCandidate(t, prAuthorLogin))
@@ -510,7 +514,7 @@ async function checkAndAutoApprove(
     return true;
   }
 
-  if (await holdApprovalOnConflict(octokit, bot, owner, repo, prNumber, pr.head.sha)) return false;
+  if (await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha)) return false;
 
   const progressCommentId = await postAutoApproveProgressComment(octokit, owner, repo, prNumber);
 
@@ -564,4 +568,4 @@ async function checkAndAutoApprove(
   return true;
 }
 
-export { PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, explainUnreviewedHead, fetchBotReviewThreads, findUnchangedVerdict, holdApprovalOnConflict, isNewChange, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
+export { PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, explainUnreviewedHead, fetchBotReviewThreads, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };

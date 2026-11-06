@@ -60,8 +60,8 @@ import {
   checkConcurrentSubmissionLock,
   postConfigErrorComment,
 } from './github';
-import type { BotIdentity, LinkedIssue, StandingVerdict } from './github';
-import { announceSecurityOverrides, checkAndAutoApprove, findUnchangedVerdict, holdApprovalOnConflict, isNewChange, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
+import type { ApprovalHeld, BotIdentity, LinkedIssue, StandingVerdict } from './github';
+import { announceSecurityOverrides, checkAndAutoApprove, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
 import type { PauseState } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -367,6 +367,17 @@ async function postReviewSkippedComment(
   }
 }
 
+/** Whether the base branch's config sets `drafts: review`. A config that cannot be read counts as `drafts: skip`. */
+async function reviewsDrafts(octokit: Octokit, owner: string, repo: string, baseRef: string): Promise<boolean> {
+  const configPath = core.getInput('config_path') || '.manki.yml';
+  try {
+    return loadConfig(await fetchConfigFile(octokit, owner, repo, baseRef, configPath) ?? undefined, configPath).drafts === 'review';
+  } catch (error) {
+    core.warning(`Could not read ${configPath} on the base branch, skipping the draft PR: ${error instanceof Error ? error.message : error}`);
+    return false;
+  }
+}
+
 async function handlePullRequest(): Promise<void> {
   const pr = github.context.payload.pull_request;
   if (!pr) {
@@ -379,12 +390,12 @@ async function handlePullRequest(): Promise<void> {
   const owner = github.context.repo.owner;
   const repo = github.context.repo.repo;
 
-  if (pr.draft) {
-    core.info('Skipping draft PR');
+  const { octokit, bot } = await getAuth();
+  if (pr.draft && !(await reviewsDrafts(octokit, owner, repo, pr.base.ref))) {
+    core.info('Skipping draft PR (`drafts: skip`)');
     return;
   }
 
-  const { octokit, bot } = await getAuth();
   if (await isReviewInProgress(octokit, bot, owner, repo, prNumber, commitSha)) {
     await postReviewSkippedComment(octokit, bot, owner, repo, prNumber, commitSha, 'in_progress');
     return;
@@ -416,6 +427,7 @@ async function handlePullRequest(): Promise<void> {
       branch: pr.head.ref ?? '',
       fromFork: pr.head.repo?.full_name !== `${owner}/${repo}`,
     },
+    draft: !!pr.draft,
     headRepoFullName: pr.head.repo?.full_name,
     trigger: buildRoundTrigger(),
   });
@@ -507,6 +519,7 @@ async function handleCommentTrigger(forceReview?: boolean, skipCap?: boolean, by
 
   await runFullReview(owner, repo, prNumber, pr.head.sha, pr.base.ref, prContext, {
     prAuthorLogin: pr.user?.login,
+    draft: !!pr.draft,
     headRepoFullName: pr.head.repo?.full_name,
     forceReview,
     skipCap,
@@ -664,7 +677,7 @@ async function loadBaseReviewConfig(octokit: Octokit, owner: string, repo: strin
 }
 
 /** Whether the run stops before posting a progress comment: another run holds the PR, the commit is reviewed or stale, or nothing changed. */
-async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: RoundTrigger, forceReview?: boolean): Promise<boolean> {
+async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: RoundTrigger, forceReview?: boolean, draft?: boolean): Promise<boolean> {
   const { octokit, bot, owner, repo, prNumber, commitSha, baseRef } = target;
 
   // Scan for a competing in-progress marker before posting our own to shorten
@@ -703,7 +716,7 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
       assertWritesAllowed();
       try {
         const approved = standing.verdict === 'APPROVE';
-        const held = approved && await holdApprovalOnConflict(octokit, bot, owner, repo, prNumber, commitSha);
+        const held = approved && await holdApproval(octokit, bot, owner, repo, prNumber, commitSha, draft);
         const summary = `No change to this PR since the reviewed commit \`${shortSha}\`. The previous verdict stands.`;
         // A push can dismiss approvals, so the approval is posted again on the new head.
         if (approved && !held) {
@@ -1266,10 +1279,11 @@ function blockOnOpenThreads(result: ReviewResult, threads: OpenThread[]): void {
 }
 
 /** Posts the round's review and dismisses the previous one. Returns the new review's id, and whether its approval was held. */
-async function postRound(run: ReviewRun, result: ReviewResult, context: RoundContext, reviewTimeMs: number): Promise<{ id: number; approvalHeld: boolean }> {
+async function postRound(run: ReviewRun, result: ReviewResult, context: RoundContext, reviewTimeMs: number): Promise<{ id: number; approvalHeld: ApprovalHeld }> {
   const { octokit, owner, repo, prNumber, commitSha, diff, recap } = run;
   const posted = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, context, reviewTimeMs, {
     existingThreads: recap.previousFindings,
+    draft: run.options.draft,
   });
   await replacePreviousReviews(run, run.progress, posted.id);
   return posted;
@@ -1460,7 +1474,7 @@ async function runFullReview(
       checkReport = { conclusion: 'skipped', title: 'Review skipped', summary: `This PR matches the skip rule for ${skipRule} in \`${configPath}\` on the base branch.` };
       return;
     }
-    if (await skipsRound(target, config, trigger, forceReview)) return;
+    if (await skipsRound(target, config, trigger, forceReview, options.draft)) return;
 
     const commentId = await postProgressComment(octokit, owner, repo, prNumber, commitSha);
     progress.commentId = commentId;
@@ -1522,7 +1536,7 @@ async function runFullReview(
       checkReport = await postPauseNotice(target, commentId, pause, maxAutoRounds, recap.previousFindings, recap.priorRounds.at(-1)?.meta.timestamp);
       return;
     }
-    const countsTowardCap = isNewChange({ commitSha, changeDigest: changeDigest(diff, config.exclude_paths) }, recap.priorRounds.at(-1));
+    const countsTowardCap = !options.draft && isNewChange({ commitSha, changeDigest: changeDigest(diff, config.exclude_paths) }, recap.priorRounds.at(-1));
 
     const { openThreads, fileContents } = await collectOpenThreads(target, recap, diff);
     const [{ interRoundDiff, priorChange, linkedIssues, staticSignals, staticAnalysis }, workspace] = await Promise.all([

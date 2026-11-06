@@ -542,6 +542,8 @@ export interface ReviewConfig {
    */
   nit_handling?: 'issues' | 'comments';
   noise_level?: NoiseLevel;
+  /** `skip` reviews a draft PR only on request, `review` reviews it automatically. A draft review never approves. */
+  drafts?: 'skip' | 'review';
   review_passes?: number;
   convergence?: {
     /**
@@ -919,6 +921,8 @@ export interface RoundMeta {
   trigger?: RoundTrigger;
   /** How the round ended. Optional so older context blocks keep parsing. */
   outcome?: RoundOutcome;
+  /** Set when the round reviewed a draft, which does not count toward the round cap. */
+  draft?: boolean;
   /** Set when the record was too large for the review even compressed, and its per-file and per-finding diagnostics were left out. */
   diagnosticsOmitted?: boolean;
 }
@@ -952,6 +956,8 @@ export interface FullReviewOptions {
   prAuthorLogin?: string;
   /** Set on automatic reviews of PR events, so the base branch's skip rules apply. */
   skipFacts?: SkipFacts;
+  /** Whether the PR is a draft. A draft round never approves and does not count toward the round cap. */
+  draft?: boolean;
   forceReview?: boolean;
   skipCap?: boolean;
   bypassHint?: 'force_review' | 'skip_cap' | 'manual_review_command';

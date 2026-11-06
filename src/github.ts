@@ -182,30 +182,39 @@ export async function fetchHeadSha(octokit: Octokit, owner: string, repo: string
 const MERGEABLE_ATTEMPTS = 3;
 const MERGEABLE_RETRY_MS = 1500;
 
+/** Why an approval was posted as a comment instead, or `false` when it was not held. */
+export type ApprovalHeld = false | 'conflict' | 'draft';
+
+/** Why Manki holds an approval right now: the PR is a draft, or it conflicts with `baseRef`. */
+export type ApprovalHold = { reason: 'draft' } | { reason: 'conflict'; baseRef: string };
+
 /**
- * Returns the base branch when GitHub reports that the PR conflicts with it, otherwise `undefined`.
- * GitHub reports `mergeable: null` until it has computed it, so a `null` is read again a few times.
- * A state that stays unknown, or a failed lookup, counts as no conflict.
+ * Returns why an approval must be held, read from the PR as it is now, or `undefined` when it may be posted.
+ * Retries while GitHub has not computed whether the PR conflicts with its base. When the PR can't be read,
+ * `draftWhenUnread` decides whether it counts as a draft.
  */
-export async function fetchConflictingBase(octokit: Octokit, owner: string, repo: string, prNumber: number): Promise<string | undefined> {
+export async function fetchApprovalHold(octokit: Octokit, owner: string, repo: string, prNumber: number, draftWhenUnread = false): Promise<ApprovalHold | undefined> {
   for (let attempt = 1; attempt <= MERGEABLE_ATTEMPTS; attempt++) {
     if (attempt > 1) await new Promise(resolve => setTimeout(resolve, MERGEABLE_RETRY_MS));
     try {
       const { data } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
-      if (data.mergeable === false || data.mergeable_state === 'dirty') return data.base.ref;
+      if (data.draft) return { reason: 'draft' };
+      if (data.mergeable === false || data.mergeable_state === 'dirty') return { reason: 'conflict', baseRef: data.base.ref };
       if (data.mergeable !== null) return undefined;
     } catch (error) {
       core.warning(`Mergeable lookup failed, proceeding: ${error instanceof Error ? error.message : error}`);
-      return undefined;
+      return draftWhenUnread ? { reason: 'draft' } : undefined;
     }
   }
   core.info(`GitHub has not computed whether PR #${prNumber} conflicts with its base, proceeding`);
   return undefined;
 }
 
-/** Returns the line that says Manki does not approve because the PR conflicts with `baseRef`. */
-export function approvalHeldLine(baseRef: string): string {
-  return `**Approval held:** this PR conflicts with \`${sanitizeFilePath(baseRef)}\`. Rebase it, and Manki reviews the result.`;
+/** Returns the line that says why Manki does not approve. */
+export function approvalHoldLine(hold: ApprovalHold): string {
+  return hold.reason === 'draft'
+    ? '**Approval held:** this PR is a draft. Mark it ready for review, and Manki reviews it again.'
+    : `**Approval held:** this PR conflicts with \`${sanitizeFilePath(hold.baseRef)}\`. Rebase it, and Manki reviews the result.`;
 }
 
 /** Thrown when the PR head moved past the commit under review, so the review must post no verdict. */
@@ -1072,7 +1081,8 @@ function hasOpenThread(finding: Finding, existingThreads: PreviousFinding[]): bo
  * When `context` is provided without `reviewTimeMs`, the hidden stats line
  * records `0s` for review time. Pass both together to avoid this.
  * Once GitHub writes are stopped, throws the abort reason and posts nothing.
- * Returns the review's id, and whether an approval was held as a COMMENT because the PR conflicts with its base.
+ * Returns the review's id, and why an approval was held as a COMMENT: the PR is a draft, or it conflicts with its base, as it is when posting.
+ * `draft` is the PR's draft state at the event, used when the PR can't be read.
  */
 export async function postReview(
   octokit: Octokit,
@@ -1084,8 +1094,8 @@ export async function postReview(
   diff?: ParsedDiff,
   context?: RoundContext,
   reviewTimeMs?: number,
-  { existingThreads = [] }: { existingThreads?: PreviousFinding[] } = {},
-): Promise<{ id: number; approvalHeld: boolean }> {
+  { existingThreads = [], draft = false }: { existingThreads?: PreviousFinding[]; draft?: boolean } = {},
+): Promise<{ id: number; approvalHeld: ApprovalHeld }> {
   const event = mapVerdictToEvent(result.verdict);
 
   const validComments: Array<{path: string; line: number; side: 'RIGHT'; body: string}> = [];
@@ -1158,10 +1168,12 @@ export async function postReview(
 
   const blockingFindings = result.findings.filter(isBlockingFinding);
   const lead = formatLead(result, blockingFindings);
-  const conflictingBase = event === 'APPROVE' ? await fetchConflictingBase(octokit, owner, repo, prNumber) : undefined;
+  const hold = event === 'APPROVE' ? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) : undefined;
+  const approvalHeld: ApprovalHeld = hold?.reason ?? false;
+  const heldLine = hold && approvalHoldLine(hold);
 
   const renderBody = (): string => {
-    let b = conflictingBase ? `${approvalHeldLine(conflictingBase)}\n\n${lead}` : lead;
+    let b = heldLine ? `${heldLine}\n\n${lead}` : lead;
     const needsHuman = formatNeedsHuman(result);
     if (needsHuman) {
       b += `\n\n${needsHuman}`;
@@ -1207,9 +1219,9 @@ export async function postReview(
   if (invalidComments.length > 0) {
     core.info(`Moved ${invalidComments.length} comments to review body (not postable as threads)`);
   }
-  const postedVerdict = conflictingBase ? 'COMMENT' : result.verdict;
-  if (conflictingBase) {
-    core.info(`PR conflicts with ${conflictingBase}, so the approval is posted as a comment`);
+  const postedVerdict = approvalHeld ? 'COMMENT' : result.verdict;
+  if (approvalHeld) {
+    core.info(`${hold?.reason === 'conflict' ? `PR conflicts with ${hold.baseRef}` : 'The PR is a draft'}, so the approval is posted as a comment`);
   }
   core.info(`Posting review: ${mapVerdictToEvent(postedVerdict)} with ${validComments.length} line comments and ${fileComments.length} file-level comments`);
 
@@ -1235,7 +1247,7 @@ export async function postReview(
       throw new Error(`Could not post blocking findings as threads or in review #${review.id}: ${titles}. ${error instanceof Error ? error.message : error}`);
     }
   }
-  return { id: review.id, approvalHeld: conflictingBase !== undefined };
+  return { id: review.id, approvalHeld };
 }
 
 /** Whether `error` is GitHub's refusal when the repo setting stops the workflow token from approving. */

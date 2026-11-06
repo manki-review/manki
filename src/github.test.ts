@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 
-import { buildDashboard, titleToSlug, formatBlockingPriorThreads, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded } from './github';
+import { ApprovalHeld, buildDashboard, titleToSlug, formatBlockingPriorThreads, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded } from './github';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { paginateSinglePage, TEST_BOT } from './test-utils';
 import { withMarkers } from './utils';
@@ -989,7 +989,7 @@ describe('postReview body lead', () => {
     agentNames: [],
   };
 
-  async function postedBody(result: ReviewResult, existingThreads: PreviousFinding[] = []): Promise<{ body: string; event: string; approvalHeld: boolean }> {
+  async function postedBody(result: ReviewResult, existingThreads: PreviousFinding[] = []): Promise<{ body: string; event: string; approvalHeld: ApprovalHeld }> {
     mockCreateReview.mockClear();
     const { approvalHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', result, diff, undefined, undefined, { existingThreads });
     return { ...mockCreateReview.mock.calls[0][0] as { body: string; event: string }, approvalHeld };
@@ -1047,8 +1047,24 @@ describe('postReview body lead', () => {
     mockGet.mockResolvedValueOnce({ data: { ...state, base: { ref: 'main' } } });
     const { body, event, approvalHeld } = await postedBody(ready);
     expect(event).toBe('COMMENT');
-    expect(approvalHeld).toBe(true);
+    expect(approvalHeld).toBe('conflict');
     expect(body).toBe(`**Approval held:** this PR conflicts with \`main\`. Rebase it, and Manki reviews the result.\n\n${approved.body}`);
+  });
+
+  it('holds the approval of a draft as a COMMENT when the PR cannot be read, and approves another PR then', async () => {
+    mockGet.mockRejectedValueOnce(new Error('API down'));
+    const held = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { draft: true });
+    expect([mockCreateReview.mock.calls.at(-1)![0].event, held.approvalHeld]).toEqual(['COMMENT', 'draft']);
+    mockGet.mockRejectedValueOnce(new Error('API down'));
+    expect((await postedBody(ready)).event).toBe('APPROVE');
+  });
+
+  it('holds the approval of a READY round as a COMMENT when the PR is a draft at posting time, conflicting or not', async () => {
+    const approved = await postedBody(ready);
+    mockGet.mockResolvedValueOnce({ data: { draft: true, mergeable: false, mergeable_state: 'dirty', base: { ref: 'main' } } });
+    const { body, event, approvalHeld } = await postedBody(ready);
+    expect([event, approvalHeld]).toEqual(['COMMENT', 'draft']);
+    expect(body).toBe(`**Approval held:** this PR is a draft. Mark it ready for review, and Manki reviews it again.\n\n${approved.body}`);
   });
 
   it('approves when GitHub still reports mergeable as unknown after the retries', async () => {

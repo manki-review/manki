@@ -1,5 +1,5 @@
 import * as core from '@actions/core';
-import { areAllFindingsResolved, fetchBotReviewThreads, checkAndAutoApprove, explainUnreviewedHead, reopenAuthorResolvedThreads, BOT_MARKER, ReviewThread } from './state';
+import { areAllFindingsResolved, fetchBotReviewThreads, checkAndAutoApprove, explainUnreviewedHead, holdApproval, pauseState, reopenAuthorResolvedThreads, BOT_MARKER, ReviewThread } from './state';
 import { PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
 import { LAST_PAGE, makeRoundContext, paginateSinglePage, TEST_BOT } from './test-utils';
 import { formatFindingComment, isReviewInProgress } from './github';
@@ -351,6 +351,7 @@ describe('checkAndAutoApprove', () => {
     /** The PR diff at each commit, keyed by its SHA, as `compareCommits` against the base returns it. */
     diffs?: Record<string, string>;
     mergeable?: boolean | null;
+    draft?: boolean;
   } = {}) {
     const threads = overrides.threads ?? [];
     const prHeadSha = overrides.prHeadSha ?? 'abc123';
@@ -366,7 +367,7 @@ describe('checkAndAutoApprove', () => {
       paginate: jest.fn(paginateSinglePage),
       rest: {
         pulls: {
-          get: jest.fn().mockResolvedValue({ data: { head: { sha: prHeadSha }, base: { ref: 'main' }, user: { login: 'author' }, mergeable: overrides.mergeable } }),
+          get: jest.fn().mockResolvedValue({ data: { head: { sha: prHeadSha }, base: { ref: 'main' }, user: { login: 'author' }, mergeable: overrides.mergeable, draft: overrides.draft } }),
           createReview: createReviewFn,
           listReviews: jest.fn().mockResolvedValue({ data: existingReviews }),
         },
@@ -400,6 +401,32 @@ describe('checkAndAutoApprove', () => {
     expect(createReviewMock).toHaveBeenCalledWith(
       expect.objectContaining({ event: 'APPROVE', commit_id: 'sha-456', body: '\u2705 **Approved.** All blocking threads are resolved.\n\n<!-- manki -->\n<!-- manki-auto-approve -->' }),
     );
+  });
+
+  it('holds an approval on a draft with one notice per head, and on the event draft state when the PR cannot be read', async () => {
+    const createCommentMock = jest.fn().mockResolvedValue({});
+    const octokit = makeMockOctokit({ draft: true, mergeable: true, createCommentFn: createCommentMock });
+
+    expect(await holdApproval(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-9')).toBe('draft');
+    expect(createCommentMock.mock.calls.map(([c]) => c.body)).toEqual([
+      '**Approval held:** this PR is a draft. Mark it ready for review, and Manki reviews it again.\n\n<!-- manki-approval-held:sha-9 -->',
+    ]);
+    expect(await holdApproval(makeMockOctokit({ mergeable: true }), TEST_BOT, 'owner', 'repo', 1, 'sha-9')).toBe(false);
+    const unreadable = makeMockOctokit({ mergeable: true });
+    jest.mocked(unreadable.rest.pulls.get).mockRejectedValue(new Error('API down'));
+    expect(await holdApproval(unreadable, TEST_BOT, 'owner', 'repo', 1, 'sha-9', true)).toBe('draft');
+    expect(await holdApproval(unreadable, TEST_BOT, 'owner', 'repo', 1, 'sha-9')).toBe(false);
+  });
+
+  it('never approves a draft, however its threads stand', async () => {
+    const createReviewMock = jest.fn().mockResolvedValue({});
+    const octokit = makeMockOctokit({
+      threads: [makeGraphqlFetchThreadNode({ id: 't1', body: '<!-- manki:blocker:fix-bug --> fix', isResolved: true })],
+      draft: true, createReviewFn: createReviewMock,
+    });
+
+    expect(await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1)).toBe(false);
+    expect(createReviewMock).not.toHaveBeenCalled();
   });
 
   it('holds the approval of a PR that conflicts with its base, with one notice per head', async () => {
@@ -1416,5 +1443,15 @@ describe('postAutoApproveProgressComment / markAutoApprove*', () => {
     expect(ghActual.findInProgressLock(comments, TEST_BOT, 999)).toBeNull();
     expect(updatedBody).toContain('API rate limited for [REDACTED]');
     expect(updatedBody).not.toContain('ghs_secret123');
+  });
+});
+
+describe('pauseState', () => {
+  it('leaves draft rounds out of the round cap', () => {
+    const rounds = [1, 2, 3, 4, 5].map(n => makeRoundContext(n));
+    expect(pauseState({ priorRounds: rounds }, DEFAULT_CONFIG)).toMatchObject({ capRounds: 5, paused: true });
+    rounds[1].meta.draft = true;
+    rounds[3].meta.draft = true;
+    expect(pauseState({ priorRounds: rounds }, DEFAULT_CONFIG)).toEqual({ capRounds: 3, capReached: false, paused: false });
   });
 });
