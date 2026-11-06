@@ -961,14 +961,14 @@ async function llmDeduplicateFindings(
   previousFindings: PreviousFinding[],
   client: LLMClient,
 ): Promise<{ unique: Finding[]; duplicates: DuplicateMatch[] }> {
-  const dismissed = previousFindings.filter(f => f.status === 'resolved');
-  if (findings.length === 0 || dismissed.length === 0) {
+  const resolved = previousFindings.filter(f => f.status === 'resolved');
+  if (findings.length === 0 || resolved.length === 0) {
     return { unique: findings, duplicates: [] };
   }
 
   // Uses the module-level sanitize() function
 
-  const dismissedList = dismissed.map((f, i) =>
+  const resolvedList = resolved.map((f, i) =>
     `${i + 1}. "${sanitize(f.title)}" (${sanitize(f.file)}:${f.line})`
   ).join('\n');
 
@@ -978,8 +978,8 @@ async function llmDeduplicateFindings(
 
   try {
     const response = await client.sendMessage(
-      'You are deduplicating code review findings. Given a list of new findings and a list of previously dismissed findings, determine which new findings are about the same issue as a dismissed one — even if phrased differently. Respond with ONLY a JSON array of objects: { "index": <1-based new finding index>, "matchedDismissed": <1-based dismissed finding index> }. Only include findings that match. If none match, return [].',
-      `## Previously dismissed findings:\n${dismissedList}\n\n## New findings:\n${newList}`,
+      'You are deduplicating code review findings. Given a list of new findings and a list of earlier resolved findings, determine which new findings are about the same issue as a resolved one, even if phrased differently. Respond with ONLY a JSON array of objects: { "index": <1-based new finding index>, "matchedDismissed": <1-based resolved finding index> }. Only include findings that match. If none match, return [].',
+      `## Earlier resolved findings:\n${resolvedList}\n\n## New findings:\n${newList}`,
       { effort: 'low', timeoutMs: LLM_DEDUP_TIMEOUT_MS },
     );
 
@@ -992,7 +992,7 @@ async function llmDeduplicateFindings(
     const matchedIndices = new Set(
       matches
         .filter(m => m.index - 1 >= 0 && m.index - 1 < findings.length
-                  && m.matchedDismissed - 1 >= 0 && m.matchedDismissed - 1 < dismissed.length)
+                  && m.matchedDismissed - 1 >= 0 && m.matchedDismissed - 1 < resolved.length)
         .map(m => m.index - 1),
     );
 
@@ -1001,17 +1001,17 @@ async function llmDeduplicateFindings(
     for (let i = 0; i < findings.length; i++) {
       if (matchedIndices.has(i)) {
         const match = matches.find(m => m.index - 1 === i);
-        const dismissedIdx = match ? match.matchedDismissed - 1 : -1;
-        const dismissedTitle = dismissedIdx >= 0 && dismissedIdx < dismissed.length ? (dismissed[dismissedIdx].title ?? 'unknown') : 'unknown';
-        core.info(`LLM dedup: "${findings[i].title}" matches dismissed "${dismissedTitle}"`);
-        duplicates.push({ finding: findings[i], matchedTitle: dismissedTitle, matchType: 'llm' });
+        const resolvedIdx = match ? match.matchedDismissed - 1 : -1;
+        const resolvedTitle = resolvedIdx >= 0 && resolvedIdx < resolved.length ? (resolved[resolvedIdx].title ?? 'unknown') : 'unknown';
+        core.info(`LLM dedup: "${findings[i].title}" matches earlier resolved "${resolvedTitle}"`);
+        duplicates.push({ finding: findings[i], matchedTitle: resolvedTitle, matchType: 'llm' });
       } else {
         unique.push(findings[i]);
       }
     }
 
     if (duplicates.length > 0) {
-      core.info(`LLM dedup removed ${duplicates.length} findings matching dismissed ones`);
+      core.info(`LLM dedup removed ${duplicates.length} findings matching earlier resolved ones`);
     }
 
     return { unique, duplicates };

@@ -2938,8 +2938,7 @@ describe('runReview', () => {
       (call: [import('./review').ReviewProgress]) => call[0].phase === 'judging',
     );
     expect(judgingCalls).toHaveLength(1);
-    expect(judgingCalls[0][0].rawFindingCount).toBe(2);
-    expect(judgingCalls[0][0].judgeInputCount).toBe(0);
+    expect(judgingCalls[0][0]).toMatchObject({ rawFindingCount: 2, judgeInputCount: 0, suppressionCount: 1, staticDedupCount: 1, llmDedupCount: 0 });
   });
 
   it('runs LLM dedup after static dedup when a dedup client is provided', async () => {

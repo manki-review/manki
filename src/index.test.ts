@@ -4416,6 +4416,9 @@ describe('runFullReview orchestration', () => {
             phase: 'judging',
             rawFindingCount: 5,
             judgeInputCount: 3,
+            suppressionCount: 1,
+            staticDedupCount: 1,
+            llmDedupCount: 0,
           });
         }
         return {
@@ -4436,6 +4439,8 @@ describe('runFullReview orchestration', () => {
     expect(lastDashboard.phase).toBe('reviewed');
     expect(lastDashboard.judgeInputCount).toBe(3);
     expect(lastDashboard.agentProgress).toBeDefined();
+    expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[4])
+      .toMatchObject({ phase: 'complete', suppressionCount: 1, staticDedupCount: 1, llmDedupCount: 0 });
   });
 
   it('flushes dashboard immediately on reviewed progress', async () => {
