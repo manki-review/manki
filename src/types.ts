@@ -596,7 +596,7 @@ export interface RelatedRepo {
   /** `owner/name` of a public repo on github.com. */
   repo: string;
   kind: RelatedRepoKind;
-  /** Branch, tag or commit to read. Defaults to the repo's default branch. */
+  /** Branch, tag or full commit hash to read. Defaults to the repo's default branch. */
   ref?: string;
   /** Paths or globs to fetch, relative to the repo root. Defaults to the whole repo. */
   paths?: string[];

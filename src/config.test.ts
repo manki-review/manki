@@ -147,7 +147,8 @@ describe('config', () => {
     it('loads the entries as written, and none by default', () => {
       expect(loadConfigFromContent('').related_repos).toEqual([]);
       expect(loadConfigFromContent(yaml).related_repos).toEqual(repos);
-      expect(loadConfigFromContent('related_repos:\n  - { repo: dashpay/dash, kind: reference, ref: 0123abcd }\n').related_repos?.[0].ref).toBe('0123abcd');
+      const commit = '0123456789abcdef0123456789abcdef01234567';
+      expect(loadConfigFromContent(`related_repos:\n  - { repo: dashpay/dash, kind: reference, ref: ${commit} }\n`).related_repos?.[0].ref).toBe(commit);
       expect(core.warning).not.toHaveBeenCalled();
     });
 
@@ -160,6 +161,7 @@ describe('config', () => {
       ['a missing kind', 'related_repos: [{ repo: dashpay/dash }]\n', '`related_repos[0].kind` must be one of: reference, consumer'],
       ['an unknown kind', 'related_repos: [{ repo: dashpay/dash, kind: upstream }]\n', '`related_repos[0].kind` must be one of: reference, consumer'],
       ['a ref that reads as an option', 'related_repos: [{ repo: dashpay/dash, kind: reference, ref: --upload-pack=x }]\n', '`related_repos[0].ref` must be a branch, tag or commit name'],
+      ['an abbreviated commit', 'related_repos: [{ repo: dashpay/dash, kind: reference, ref: 0123abcd }]\n', '`related_repos[0].ref` looks like an abbreviated commit, use the full hash'],
       ['a ref with `..`', 'related_repos: [{ repo: dashpay/dash, kind: reference, ref: a..b }]\n', '`related_repos[0].ref` must be a branch, tag or commit name'],
       ['empty paths', 'related_repos: [{ repo: dashpay/dash, kind: reference, paths: [] }]\n', '`related_repos[0].paths` must be a list of 1 to 20 paths'],
       ['an absolute path', 'related_repos: [{ repo: dashpay/dash, kind: reference, paths: [/etc] }]\n', '`related_repos[0].paths` has `/etc`'],

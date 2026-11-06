@@ -103,6 +103,8 @@ const MAX_RELATED_REPOS = 10;
 const MAX_RELATED_REPO_PATHS = 20;
 // A ref is passed to `git fetch`, so it may not start with `-` or hold `..`.
 const RELATED_REPO_REF = /^(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,255}$/;
+// `git fetch` reads an abbreviated commit hash as a ref name, which the server cannot resolve.
+const ABBREVIATED_COMMIT = /^[0-9a-f]{7,39}$/i;
 
 interface ConfigValidationResult {
   valid: boolean;
@@ -411,6 +413,8 @@ function validateRelatedRepos(value: unknown, errors: string[], warnings: string
     if (!RELATED_REPO_KINDS.has(kind as string)) errors.push(`${at}.kind\` must be one of: reference, consumer`);
     if (ref !== undefined && (typeof ref !== 'string' || !RELATED_REPO_REF.test(ref))) {
       errors.push(`${at}.ref\` must be a branch, tag or commit name`);
+    } else if (typeof ref === 'string' && ABBREVIATED_COMMIT.test(ref)) {
+      errors.push(`${at}.ref\` looks like an abbreviated commit, use the full hash`);
     }
     if (paths !== undefined) {
       if (!isStringArray(paths) || paths.length === 0 || paths.length > MAX_RELATED_REPO_PATHS) {
