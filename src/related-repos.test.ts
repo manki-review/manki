@@ -1,5 +1,5 @@
 import * as core from '@actions/core';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -24,16 +24,18 @@ describe('relatedRepoLoader', () => {
   let cacheDir: string;
   let calls: Array<{ cwd: string; args: string[] }>;
 
-  /** A git that succeeds, except on the repos in `failing`, which fail at `fetch` with `stderr`. */
-  function fakeGit(failing: Record<string, string> = {}): jest.MockedFunction<NonNullable<Run>> {
+  /** A git that succeeds, except that `failing[repo][command]` fails that command with its stderr. `init` makes `.git/objects`, as git does. */
+  function fakeGit(failing: Record<string, Record<string, string>> = {}): jest.MockedFunction<NonNullable<Run>> {
     return jest.fn(async (binary, args, cwd, options) => {
       expect(binary).toBe('git');
       expect(options?.env).toEqual(ENV);
       expect(args.slice(0, SAFETY.length)).toEqual(SAFETY);
       const gitArgs = args.slice(SAFETY.length);
       calls.push({ cwd, args: gitArgs });
-      const failure = Object.entries(failing).find(([repo]) => cwd.endsWith(join(...repo.split('/'))));
-      if (failure && gitArgs[0] === 'fetch') return { code: 128, stdout: '', stderr: `remote: Repository not found.\n${failure[1]}\n` };
+      const command = gitArgs.find(arg => /^[a-z][a-z-]*$/.test(arg))!;
+      const stderr = Object.entries(failing).find(([repo]) => cwd.endsWith(join(...repo.split('/'))))?.[1][command];
+      if (stderr) return { code: 128, stdout: '', stderr: `${stderr}\nnotice: No default references\n` };
+      if (command === 'init') mkdirSync(join(cwd, '.git', 'objects'), { recursive: true });
       return { code: 0, stdout: '', stderr: '' };
     });
   }
@@ -82,21 +84,67 @@ describe('relatedRepoLoader', () => {
     expect(core.warning).not.toHaveBeenCalled();
   });
 
-  it('reuses a clone restored from the cache, pointing it at the repo again', async () => {
+  /** Writes a clone as `actions/cache` restores it, with objects and a `.git/config` and `objects/info` that point elsewhere. */
+  function restoreClone(dir: string): void {
+    mkdirSync(join(dir, '.git', 'objects', 'pack'), { recursive: true });
+    mkdirSync(join(dir, '.git', 'objects', 'info'));
+    writeFileSync(join(dir, '.git', 'objects', 'pack', 'pack-1.pack'), 'objects');
+    writeFileSync(join(dir, '.git', 'objects', 'info', 'alternates'), '/elsewhere/objects');
+    writeFileSync(join(dir, '.git', 'config'), '[core]\n\tworktree = /elsewhere\n');
+    writeFileSync(join(dir, 'stale.txt'), 'x');
+  }
+  const FSCK = ['-c', 'remote.origin.promisor=true', '-c', 'remote.origin.partialclonefilter=blob:none', 'fsck', '--no-dangling', '--no-progress'];
+
+  it('keeps only the checked objects of a clone restored from the cache, in a new repository', async () => {
     const dashDir = join(cacheDir, 'dashpay', 'dash');
-    mkdirSync(join(dashDir, '.git'), { recursive: true });
-    writeFileSync(join(dashDir, 'kept.txt'), 'x');
-    const run = fakeGit();
+    restoreClone(dashDir);
 
-    await relatedRepoLoader([DASH], { cacheDir, run })('reference');
+    await relatedRepoLoader([DASH], { cacheDir, run: fakeGit() })('reference');
 
-    expect(calls.map(c => c.args[0])).toEqual(['remote', 'sparse-checkout', 'fetch', 'checkout']);
-    expect(calls[0].args).toEqual(['remote', 'set-url', 'origin', 'https://github.com/dashpay/dash.git']);
-    expect(existsSync(join(dashDir, 'kept.txt'))).toBe(true);
+    expect(calls.map(c => c.args)).toEqual([
+      ['init', '-q'],
+      ['remote', 'add', 'origin', 'https://github.com/dashpay/dash.git'],
+      FSCK,
+      ['sparse-checkout', 'set', '--no-cone', '/src/consensus', '/doc/*.md'],
+      ['fetch', '-q', '--depth', '1', '--filter=blob:none', '--no-tags', 'origin', 'v23.0.0'],
+      ['checkout', '-q', '--force', '--detach', 'FETCH_HEAD'],
+    ]);
+    expect(readFileSync(join(dashDir, '.git', 'objects', 'pack', 'pack-1.pack'), 'utf-8')).toBe('objects');
+    expect(existsSync(join(dashDir, '.git', 'objects', 'info'))).toBe(false);
+    expect(existsSync(join(dashDir, '.git', 'config'))).toBe(false);
+    expect(existsSync(join(dashDir, 'stale.txt'))).toBe(false);
+  });
+
+  it('starts from an empty repository when the restored objects fail the check', async () => {
+    const dashDir = join(cacheDir, 'dashpay', 'dash');
+    restoreClone(dashDir);
+
+    const fetched = await relatedRepoLoader([DASH], { cacheDir, run: fakeGit({ 'dashpay/dash': { fsck: 'error: index CRC mismatch for object 0931' } }) })('reference');
+
+    expect(fetched).toHaveLength(1);
+    expect(calls.map(c => c.args[0] === '-c' ? 'fsck' : c.args[0])).toEqual(['init', 'remote', 'fsck', 'init', 'remote', 'sparse-checkout', 'fetch', 'checkout']);
+    expect(existsSync(join(dashDir, '.git', 'objects', 'pack'))).toBe(false);
+    expect(core.info).toHaveBeenCalledWith(`Discarding the cached objects of ${dashDir}: error: index CRC mismatch for object 0931`);
+  });
+
+  it('reuses nothing through a symlink that the cache restored', async () => {
+    const outside = mkdtempSync(join(tmpdir(), 'manki-related-repos-outside-'));
+    try {
+      restoreClone(join(outside, 'dash'));
+      symlinkSync(outside, join(cacheDir, 'dashpay'));
+
+      await relatedRepoLoader([DASH], { cacheDir, run: fakeGit() })('reference');
+
+      expect(calls.map(c => c.args[0])).toEqual(['init', 'remote', 'sparse-checkout', 'fetch', 'checkout']);
+      expect(lstatSync(join(cacheDir, 'dashpay')).isSymbolicLink()).toBe(false);
+      expect(existsSync(join(outside, 'dash', 'stale.txt'))).toBe(true);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   it('skips a repo it cannot fetch with a warning, removes its directory, and returns the others', async () => {
-    const run = fakeGit({ 'dashpay/dips': "fatal: could not read Username for 'https://github.com': terminal prompts disabled" });
+    const run = fakeGit({ 'dashpay/dips': { fetch: "fatal: could not read Username for 'https://github.com': terminal prompts disabled" } });
 
     const references = await relatedRepoLoader([DASH, DIPS], { cacheDir, run })('reference');
 

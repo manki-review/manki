@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
-import { existsSync, mkdirSync, rmSync } from 'fs';
+import { lstatSync, mkdirSync, renameSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
-import { join, resolve, sep } from 'path';
+import { dirname, join, resolve, sep } from 'path';
 
 import { runTool } from './binary-analyzers';
 import { RelatedRepo, RelatedRepoKind } from './types';
@@ -52,7 +52,7 @@ export function relatedRepoLoader(
 }
 
 /**
- * Fetches one commit of `repo`, with only its `paths`, into its directory under `cacheDir`, reusing a clone already there.
+ * Fetches one commit of `repo`, with only its `paths`, into its directory under `cacheDir`, reusing the objects of a clone already there.
  * A repo that cannot be fetched in time, such as a private or missing one, is skipped with a warning.
  */
 async function checkoutRelatedRepo(repo: RelatedRepo, cacheDir: string, timeoutMs: number, run: typeof runTool): Promise<RelatedRepoCheckout | undefined> {
@@ -69,18 +69,16 @@ async function checkoutRelatedRepo(repo: RelatedRepo, cacheDir: string, timeoutM
       : { code: -1, stderr: '' };
     if (code === 0) return;
     if (Date.now() >= deadline) throw new Error(`git did not finish within ${timeoutMs / 1000}s`);
-    throw new Error(stderr.trim().split('\n').at(-1) || `\`git ${args[0]}\` exited with ${code}`);
+    throw new Error(stderr.trim().split('\n').filter(line => !line.startsWith('notice:')).at(-1) || `\`git ${args.find(arg => /^[a-z][a-z-]*$/.test(arg))}\` exited with ${code}`);
+  };
+  const init = async (): Promise<void> => {
+    removeQuietly(dir);
+    mkdirSync(dir, { recursive: true });
+    await git('init', '-q');
+    await git('remote', 'add', 'origin', `https://github.com/${repo.repo}.git`);
   };
   try {
-    const url = `https://github.com/${repo.repo}.git`;
-    if (existsSync(join(dir, '.git'))) {
-      await git('remote', 'set-url', 'origin', url);
-    } else {
-      rmSync(dir, { recursive: true, force: true });
-      mkdirSync(dir, { recursive: true });
-      await git('init', '-q');
-      await git('remote', 'add', 'origin', url);
-    }
+    await initReusingObjects(dir, init, git);
     await git(...(repo.paths ? ['sparse-checkout', 'set', '--no-cone', ...repo.paths.map(sparsePattern)] : ['sparse-checkout', 'disable']));
     await git('fetch', '-q', '--depth', '1', '--filter=blob:none', '--no-tags', 'origin', repo.ref ?? 'HEAD');
     await git('checkout', '-q', '--force', '--detach', 'FETCH_HEAD');
@@ -88,8 +86,47 @@ async function checkoutRelatedRepo(repo: RelatedRepo, cacheDir: string, timeoutM
     return { ...repo, dir };
   } catch (error) {
     core.warning(`Skipping related repo ${repo.repo}, which must be public on github.com: ${error instanceof Error ? error.message : String(error)}`);
-    rmSync(dir, { recursive: true, force: true });
+    removeQuietly(dir);
     return undefined;
+  }
+}
+
+/**
+ * Makes `dir` a new repository with `init`. Of a clone restored from the cache it keeps only the object store, and only
+ * once `git fsck` finds every object intact. Whoever can write the cache can write the rest of `.git`, such as its config.
+ */
+async function initReusingObjects(dir: string, init: () => Promise<void>, git: (...args: string[]) => Promise<void>): Promise<void> {
+  const objects = join(dir, '.git', 'objects');
+  const stash = `${dir}.objects`;
+  removeQuietly(stash);
+  // A symlink anywhere in the path could point the clone outside the cache directory.
+  const restored = [dirname(dir), dir, join(dir, '.git'), objects].every(isRealDirectory);
+  if (restored) renameSync(objects, stash);
+  if (!isRealDirectory(dirname(dir))) removeQuietly(dirname(dir));
+  await init();
+  if (!restored) return;
+  rmSync(objects, { recursive: true, force: true });
+  renameSync(stash, objects);
+  rmSync(join(objects, 'info'), { recursive: true, force: true });
+  try {
+    // The store comes from a blobless clone, so fsck must not report its missing blobs as damage.
+    await git('-c', 'remote.origin.promisor=true', '-c', 'remote.origin.partialclonefilter=blob:none', 'fsck', '--no-dangling', '--no-progress');
+  } catch (error) {
+    core.info(`Discarding the cached objects of ${dir}: ${error instanceof Error ? error.message : String(error)}`);
+    await init();
+  }
+}
+
+function isRealDirectory(path: string): boolean {
+  return lstatSync(path, { throwIfNoEntry: false })?.isDirectory() ?? false;
+}
+
+/** Removes `path`, warning instead of throwing, since a git process killed on timeout can still hold files in it. */
+function removeQuietly(path: string): void {
+  try {
+    rmSync(path, { recursive: true, force: true, maxRetries: 3 });
+  } catch (error) {
+    core.warning(`Could not remove ${path}: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
