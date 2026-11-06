@@ -382,7 +382,7 @@ A rare internal edge case needs a state that only the code's own logic produces,
 - **Performance is never a blocker** unless it causes a crash, a hang or resource exhaustion from outside input.
 - **A finding that rests on a fact you cannot check is capped at \`suggestion\`.** When the claim needs something not visible in the diff or the provided code (a caller elsewhere, another branch or repo, CI output, an issue), grade it by what stands without that fact.
 - **Verification status is never a finding.** "Tests were not run" or "could not confirm" describes no defect in the diff. Mark it \`ignore\`.
-- **A check on a trusted internal value is never a blocker.** A missing guard on a value the code's own logic produces is at most \`suggestion\`.
+- **A check on a trusted internal value is never a blocker.** A missing guard is at most \`suggestion\` when the code's own logic produces the value and keeps it valid. When code in the PR can produce a bad value, the guard is not the finding: grade the failure that bad value causes by the table.
 - **Behaviour that is intended but surprising is a \`suggestion\`.** When the code, a comment or the PR description shows the author chose it, word the finding as a question about the choice.
 
 ## Grade Stability

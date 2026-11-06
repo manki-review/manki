@@ -220,6 +220,7 @@ describe('buildJudgeSystemPrompt', () => {
       expect(section).toContain(rule);
     }
     expect(section).toContain('word the finding as a question');
+    expect(section).toContain('When code in the PR can produce a bad value, the guard is not the finding: grade the failure that bad value causes by the table.');
   });
 
   it('gives four to six worked examples on each side, across several languages', () => {
@@ -4532,6 +4533,7 @@ const GRADING_CASES = [
   'never-style',
   'never-could-not-verify',
   'grade-stable',
+  'severe-on-internal-value',
 ] as const;
 
 interface GradingFixture {
@@ -4547,13 +4549,13 @@ interface GradingFixture {
 describe('judge grading fixture corpus', () => {
   const fixtures = loadFixtures<GradingFixture>('grading');
 
-  it('covers each blocker test failing alone, each never-a-blocker case and grade stability, once each', () => {
+  it('covers each blocker test failing alone, each never-a-blocker case, grade stability and a severe failure from an internal value, once each', () => {
     expect(fixtures.map(f => f.case).sort()).toEqual([...GRADING_CASES].sort());
   });
 
   it.each(fixtures)('fixture $name claims a blocker on a diff line, and allows one only when all tests pass', (fixture) => {
     expect(extractCodeContext(fixture.finding, parsePRDiff(fixture.prDiff))).toContain(`>>> ${fixture.finding.line}:`);
-    expect(fixture.allowed.includes('blocker')).toBe(fixture.case === 'passes-all-tests');
+    expect(fixture.allowed.includes('blocker')).toBe(fixture.case === 'passes-all-tests' || fixture.case === 'severe-on-internal-value');
     expect(fixture.finding.severity).toBe('blocker');
     expect(fixture.priorRound !== undefined).toBe(fixture.case === 'grade-stable');
   });

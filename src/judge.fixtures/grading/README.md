@@ -1,6 +1,6 @@
 # Judge grading fixture corpus
 
-Each `*.json` file holds one reviewer finding that claims a `blocker`, the PR diff it sits in, and the grades the judge may return (`allowed`). Every fixture but `passes-all-tests` breaks exactly one rule of the blocker definition, so a `blocker` is never allowed for it.
+Each `*.json` file holds one reviewer finding that claims a `blocker`, the PR diff it sits in, and the grades the judge may return (`allowed`). Every fixture but `passes-all-tests` and `severe-on-internal-value` breaks exactly one rule of the blocker definition, so a `blocker` is never allowed for it.
 
 `judge.test.ts` checks that the corpus covers every case once and that each finding points at a line of its diff. A live replay, gated on `RUN_JUDGE_LIVE_FIXTURES=1`, sends each fixture through `runJudgeAgent` against a real model and checks the grade is allowed. CI does not run it. Run it after changing the judge prompt or model.
 
@@ -18,3 +18,4 @@ Each `*.json` file holds one reviewer finding that claims a `blocker`, the PR di
 | `08_never_style.json` | not `blocker` | A variable name could be clearer. |
 | `09_never_could_not_verify.json` | not `blocker` | The reviewer could not confirm that CI runs the migration. |
 | `10_grade_stable.json` | `warning` | A prior round graded the finding `warning`, and the code has not changed since. |
+| `11_severe_on_internal_value.json` | `blocker` | An internally computed index writes past a buffer in `unsafe` code. A missing guard on an internal value is not the finding. The write past the buffer is. |
