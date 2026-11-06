@@ -17,7 +17,7 @@ const GIT_MAX_BUFFER = 10 * 1024 * 1024;
  * Returns the environment for git: no global or system config, so no credential helper, hook path or LFS filter of
  * the runner applies, no prompt, and the `config` entries passed through `GIT_CONFIG_*`.
  */
-function gitEnv(config: Record<string, string> = {}): NodeJS.ProcessEnv {
+export function gitEnv(config: Record<string, string> = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: devNull, GIT_TERMINAL_PROMPT: '0' };
   for (const key of [...SYSTEM_ENV, 'HOME']) {
     if (process.env[key] !== undefined) env[key] = process.env[key];

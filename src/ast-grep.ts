@@ -15,7 +15,10 @@ export interface AstGrepApi {
   registerDynamicLanguage: typeof registerDynamicLanguage;
 }
 
-type Family = 'typescript' | 'python' | 'rust';
+/** The language families Manki's ast-grep can parse. */
+export const AST_GREP_FAMILIES = ['typescript', 'python', 'rust'] as const;
+
+type Family = typeof AST_GREP_FAMILIES[number];
 
 interface AstGrepRule extends NapiConfig {
   id: string;
@@ -135,7 +138,8 @@ export function isRustFile(path: string): boolean {
   return languageOf(path)?.family === 'rust';
 }
 
-function languageOf(path: string): { family: Family; lang: string } | undefined {
+/** Returns the language family and ast-grep language of the file, or `undefined` when ast-grep cannot parse it. */
+export function languageOf(path: string): { family: Family; lang: string } | undefined {
   const dot = path.lastIndexOf('.');
   return dot === -1 ? undefined : LANGUAGES[path.slice(dot + 1).toLowerCase()];
 }

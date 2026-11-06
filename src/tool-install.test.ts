@@ -1,8 +1,8 @@
 import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
-import { accessSync, constants, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
+import { accessSync, chmodSync, constants, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { basename, join } from 'path';
 
 import { installPinned } from './tool-install';
 
@@ -18,16 +18,20 @@ describe('installPinned', () => {
   const data = tarball();
   const integrity = `sha512-${createHash('sha512').update(data).digest('base64')}`;
   let fetchMock: jest.SpyInstance;
+  const savedRunnerTemp = process.env.RUNNER_TEMP;
 
   beforeEach(() => {
+    process.env.RUNNER_TEMP = mkdtempSync(join(tmpdir(), 'manki-runner-temp-'));
     fetchMock = jest.spyOn(global, 'fetch').mockImplementation(async () => new Response(data));
   });
 
   afterEach(() => {
     fetchMock.mockRestore();
+    if (savedRunnerTemp === undefined) delete process.env.RUNNER_TEMP;
+    else process.env.RUNNER_TEMP = savedRunnerTemp;
   });
 
-  it('unpacks a download that matches its digest, and downloads each URL once per run', async () => {
+  it('unpacks a download that matches its digest, and downloads it once per run, across processes too', async () => {
     const download = { url: 'https://example.test/tool-1.tgz', integrity };
 
     const [first, second] = await Promise.all([installPinned(download), installPinned(download)]);
@@ -35,6 +39,34 @@ describe('installPinned', () => {
     expect(readFileSync(join(first, 'package', 'tool.txt'), 'utf-8')).toBe('pinned tool');
     expect(second).toBe(first);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // Another process, such as Manki's tool server, finds the install without downloading it again.
+    let fromOtherProcess: string | undefined;
+    await jest.isolateModulesAsync(async () => {
+      fromOtherProcess = await (await import('./tool-install')).installPinned(download);
+    });
+    expect(fromOtherProcess).toBe(first);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('never reuses an install that others can write, or one outside the runner temp folder', async () => {
+    const download = { url: 'https://example.test/tool-4.tgz', integrity };
+    const first = await installPinned(download);
+    chmodSync(first, 0o777);
+    let planted: string | undefined;
+    await jest.isolateModulesAsync(async () => {
+      planted = await (await import('./tool-install')).installPinned(download);
+    });
+    expect(planted).not.toBe(first);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    delete process.env.RUNNER_TEMP;
+    let unshared: string | undefined;
+    await jest.isolateModulesAsync(async () => {
+      unshared = await (await import('./tool-install')).installPinned(download);
+    });
+    expect(basename(unshared!)).toMatch(/^manki-tool-/);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it('saves a download that is not an archive as an executable under its own name', async () => {
