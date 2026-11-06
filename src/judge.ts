@@ -17,8 +17,9 @@ import { sanitize, titleOverlapType } from './recap';
 import { parseProof, stringifyFindingFingerprint, truncateDiff, validateSeverity } from './review';
 import { WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
+import { refuteBlockers } from './refute';
 import { criticalAreaOf, resolveRouting } from './routing';
-import { CONTRADICTION_TAG, DiffFile, DuplicateMatchType, Finding, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, ParsedDiff, PrContext, ThreadEvaluation, ToolEvidenceStatus } from './types';
+import { CONTRADICTION_TAG, DiffFile, DuplicateMatchType, Finding, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingEvidence, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RelatedRepo, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, ParsedDiff, PrContext, ThreadEvaluation, ToolEvidenceStatus, UNPROVEN_TAG } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -254,6 +255,8 @@ export interface JudgeInput {
   suppressResolvedThreads?: boolean;
   /** The related repos the round's finders could read with their tools. */
   relatedRepos?: RelatedRepo[];
+  /** A client with `repoTools` and the checked-out PR head, with which the judge tries to refute each blocker and open lead. */
+  refutation?: { client: LLMClient; workspace: string };
 }
 
 export interface JudgedFinding {
@@ -1032,7 +1035,7 @@ export async function runJudgeAgent(
   inPrSuppressedCount?: number;
   interRoundDiffEmptyOverride?: InterRoundDiffEmptyOverride;
 }> {
-  const { findings, diff, rawDiff, memory, prContext, linkedIssues, agentCount, isFollowUp, openThreads, priorRounds, inPrSuppressions, interRoundDiff, resolvedThreadIds, suppressResolvedThreads, relatedRepos } = input;
+  const { findings, diff, rawDiff, memory, prContext, linkedIssues, agentCount, isFollowUp, openThreads, priorRounds, inPrSuppressions, interRoundDiff, resolvedThreadIds, suppressResolvedThreads, relatedRepos, refutation } = input;
   const provenanceMap = input.provenanceMap ?? (rawDiff ? computeProvenanceMap(priorRounds, rawDiff) : []);
 
   const hasOpenThreads = (openThreads?.length ?? 0) > 0;
@@ -1145,9 +1148,10 @@ export async function runJudgeAgent(
   const mapped = deduplicateFindings(mapJudgedToFindings(findings, judgeResult.findings, provenanceMap, collectPriorBlockers(priorRounds)));
   const suppression = applyCrossRoundSuppression(mapped, priorRounds, crossRoundOptions);
   const { findings: suppressed, count: inPrCount } = applyInPrSuppression(suppression.findings, inPrSuppressions);
+  const checked = refutation ? await refuteBlockers(refutation.client, suppressed, { workspace: refutation.workspace, priorRounds, effort }) : suppressed;
 
   return {
-    findings: suppressed,
+    findings: checked,
     summary: judgeResult.summary,
     threadEvaluations,
     ...(suppression.suppressedCount > 0 && { crossRoundSuppressed: suppression.suppressedCount }),
@@ -1271,7 +1275,7 @@ function capUnprovenBlocker(finding: Finding): Finding {
   if (!reason) return finding;
   core.info(`Posting blocker "${finding.title}" as a warning: ${reason}`);
   const note = `Posted as a warning, since ${reason}.`;
-  return { ...finding, severity: 'warning', judgeNotes: finding.judgeNotes ? `${finding.judgeNotes}\n${note}` : note };
+  return { ...finding, severity: 'warning', tags: addTag(finding.tags, UNPROVEN_TAG), judgeNotes: finding.judgeNotes ? `${finding.judgeNotes}\n${note}` : note };
 }
 
 /**

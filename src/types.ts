@@ -78,6 +78,8 @@ export const IN_PR_SUPPRESSED_TAG = 'suppressed-in-pr' as const;
 export const FOLLOW_UP_TAG = 'follow-up' as const;
 /** Marks a security defect, which blocks at every round and never becomes a follow-up. */
 export const SECURITY_TAG = 'security' as const;
+/** Marks a blocker posted as a warning because nothing cited the lines that prove it. */
+export const UNPROVEN_TAG = 'unproven-blocker' as const;
 
 export interface InterRoundDiffEmptyOverride {
   applied: boolean;
@@ -204,6 +206,23 @@ export interface Finding {
   notChecked?: boolean;
   /** Set on a suspicion the reviewer was still checking when it wrapped up, instead of a finished finding. */
   lead?: OpenLead;
+  /** How the judge's attempt to refute the finding with tools came out. Set on blockers and open leads only. */
+  refutation?: Refutation;
+}
+
+export type RefutationOutcome = 'disproved' | 'confirmed' | 'unsettled';
+
+/** The outcome of the judge's attempt to refute a blocker or an open lead. */
+export interface Refutation {
+  outcome: RefutationOutcome;
+  /** What decided it, in one or two sentences. */
+  reason: string;
+  /** The `file:line` locations the judge cites: the failure for `confirmed`, the reason it cannot happen for `disproved`. */
+  proof?: string[];
+  /** The finding's own file and the files the outcome cites. */
+  files: string[];
+  /** SHA-256 over `files` at the commit checked. A later round reuses the outcome while it still matches. */
+  codeDigest: string;
 }
 
 export type FindingOrigin = 'new' | 'reviewed';
@@ -833,6 +852,8 @@ export interface DashboardData {
   routing?: Pick<TeamRouting, 'class' | 'group'>;
   /** Open leads below blocker that the reviewers did not finish checking. They are listed, never posted. */
   unfinishedChecks?: Pick<Finding, 'title' | 'file' | 'line'>[];
+  /** Blockers and open leads the judge disproved with tools, with the reason. They are dropped. */
+  disproved?: (Pick<Finding, 'title' | 'file' | 'line'> & { reason: string })[];
 }
 
 export interface JudgeDecision {
@@ -1218,6 +1239,7 @@ export interface RoundJudgeDrop {
   reviewerSeverity?: FindingSeverity;
   judgeConfidence?: 'high' | 'medium' | 'low';
   judgeNotes?: string;
+  refutation?: Refutation;
 }
 
 export interface RoundAgentMetric {
@@ -1471,6 +1493,8 @@ export interface FindingFingerprintEntry {
   evidence?: FindingEvidence;
   /** Mirrors `Finding.notChecked`. */
   notChecked?: boolean;
+  /** Mirrors `Finding.refutation`. */
+  refutation?: Refutation;
 }
 
 /** What a reply-handler run, Manki answering in a thread or to a command, records in its comment. */

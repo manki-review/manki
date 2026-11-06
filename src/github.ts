@@ -622,8 +622,9 @@ export function buildDashboard(data: DashboardData): string {
 
   if (data.phase === 'complete') {
     const where = (f: { title: string; file: string; line: number }) => `${sanitizeMarkdown(f.title)} (\`${sanitizeFilePath(f.file)}:${f.line}\`)`;
+    const disproved = listSection('Disproved by the judge', 'finding', (data.disproved ?? []).map(d => `${where(d)}: ${sanitizeMarkdown(d.reason)}`));
     const unfinished = listSection('Not finished checking', 'lead', (data.unfinishedChecks ?? []).map(where));
-    if (unfinished) sections.push(unfinished);
+    sections.push(...[disproved, unfinished].filter((section): section is string => section !== undefined));
   }
 
   return sections.join('\n\n');

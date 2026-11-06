@@ -1,3 +1,7 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+
 import * as core from '@actions/core';
 
 import { BOT_MARKER, CANCELLED_MARKER, FORCE_CAP_MARKER, RUN_ID_MARKER_PREFIX } from './github';
@@ -315,7 +319,7 @@ function text(data: string): Response {
   return new Response(data, { status: 200, headers: { 'content-type': 'text/plain; charset=utf-8' } });
 }
 
-type Stage = 'planner' | 'reviewer' | 'judge' | 'verdict' | 'dedup';
+type Stage = 'planner' | 'reviewer' | 'judge' | 'refute' | 'verdict' | 'dedup';
 
 const READY_REPLIES: Record<Stage, string> = {
   planner: JSON.stringify({ trivial: false, subtle: true, paired: false, judgeEffort: 'low', prType: 'refactor', language: 'typescript', context: 'math library' }),
@@ -323,6 +327,7 @@ const READY_REPLIES: Record<Stage, string> = {
   judge: JSON.stringify({ summary: 'Nothing blocks merge.', findings: [] }),
   verdict: JSON.stringify({ verdict: 'READY', blockers: [], summary: 'Ready to merge.', whatThisDoes: 'Keeps the sum in a variable before returning it.', whatToTest: { steps: ['Call `add(1, 2)`. Expect 3.'] } }),
   dedup: '[]',
+  refute: JSON.stringify({ outcome: 'unsettled', reason: 'Could not tell.' }),
 };
 
 const BLOCKER = { severity: 'blocker', title: 'Sum is never range checked', file: 'src/math.ts', line: 2, description: 'Large inputs overflow silently.', suggestedFix: 'Check the range before adding.', proof: ['src/math.ts:2'] };
@@ -348,6 +353,7 @@ class FakeLLM {
   async sendMessage(system: string, _user: string, options?: SendMessageOptions): Promise<{ content: string }> {
     const stage: Stage = system.startsWith('You give the final merge-readiness verdict') ? 'verdict'
       : system.startsWith('You are a code review judge') ? 'judge'
+        : system.startsWith('You check one finding') ? 'refute'
         : system.startsWith('You are deduplicating') ? 'dedup'
           : system.includes('"judgeEffort"') ? 'planner'
             : 'reviewer';
@@ -504,6 +510,37 @@ describe('runFullReview end to end', () => {
     expect(mockLLM.tools).toEqual([]);
     expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('so the reviewers run without them: Error: fetch failed'));
     expect(postedReviews().map(r => r.state)).toEqual(['APPROVED', 'APPROVED']);
+  });
+
+  it('has the judge try to refute a blocker with tools, drops it with the reason when disproved, and reuses that on unchanged code', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'manki-e2e-head-'));
+    mkdirSync(join(workspace, 'src'));
+    writeFileSync(join(workspace, 'src', 'math.ts'), 'export const add = (a: number, b: number) => a + b;\n');
+    writeFileSync(join(workspace, 'src', 'api.ts'), 'export const MAX = 1000;\nexport const bounded = (n: number) => n <= MAX;\nif (!bounded(input)) throw new Error();\n');
+    try {
+      mockLLM.repoTools = true;
+      jest.mocked(fetchWorkspace).mockResolvedValue(workspace);
+      mockLLM.replies = { ...mockLLM.replies, ...BLOCKER_REPLIES, refute: JSON.stringify({ outcome: 'disproved', reason: 'Both inputs are bounded at src/api.ts:3.', proof: ['src/api.ts:3'] }) };
+
+      await reviewRound();
+
+      expect(mockLLM.tools).toContainEqual(['refute', { root: workspace, steps: 15 }]);
+      const progress = mockGitHub.comments.find(c => c.body.startsWith('✅ **Review complete**'))!.body;
+      expect(progress).toContain('**Disproved by the judge:** 1 finding\n&nbsp;&nbsp;&nbsp;&nbsp;Sum is never range checked (`src/math.ts:2`): Both inputs are bounded at src/api.ts:3.');
+      expect(postedReviews().map(r => r.state)).toEqual(['APPROVED']);
+      // The refutation call is recorded under its own label, so it is no judge retry.
+      const record = mockGitHub.roundContext(postedReviews()[0]);
+      expect([record.judge.retryCount, record.usage.llmCalls?.filter(c => c.agent === 'refute').length]).toEqual([0, 1]);
+
+      mockLLM.calls = [];
+      await forcedRound();
+
+      expect(mockLLM.calls).toContain('judge');
+      expect(mockLLM.calls).not.toContain('refute');
+      expect(postedReviews().map(r => r.state)).toEqual(['APPROVED', 'APPROVED']);
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
   });
 
   it('lists an open lead below blocker as not finished checking, and has the judge settle a blocker lead', async () => {

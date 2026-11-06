@@ -501,7 +501,7 @@ export interface ReviewOptions {
   headSha?: string;
   /** The last automatic round the round cap allows. It ends `NOT_CONVERGING` unless it is `READY`. */
   finalRound?: boolean;
-  /** The checked-out PR head, which finders on a client with `repoTools` read with read-only tools. */
+  /** The checked-out PR head, which finders and the judge on a client with `repoTools` read with read-only tools. */
   workspace?: string;
 }
 
@@ -1059,6 +1059,14 @@ export async function runReview(
       resolvedThreadIds,
       suppressResolvedThreads,
       ...(related && { relatedRepos: related.repos }),
+      ...(workspace && clients.judge.repoTools && {
+        // Its own label keeps the refutation calls out of the judge's retry count. A fallback without tools could not
+        // read the code, so without one a refused call fails and the finding keeps the judge's grade.
+        refutation: {
+          client: withFallback({ client: clients.judge, fallback: clients.fallbacks?.judge?.client.repoTools ? clients.fallbacks.judge : undefined }, 'judge', 'refute'),
+          workspace,
+        },
+      }),
     };
     const judgeStart = Date.now();
     const judgeResult = await runJudgeAgent(judgeWrap.client, config, judgeInput);

@@ -2084,6 +2084,9 @@ describe('buildDashboard', () => {
     expect(md).toContain(`\n\n**Not finished checking:** 12 leads\n${INDENT}Lead 0 (\`src/'a'.ts:1\`)\n`);
     expect(md).toContain(`${INDENT}Lead 9 (\`src/'a'.ts:10\`)\n${INDENT}and 2 more`);
     expect(buildDashboard({ phase: 'reviewed', lineCount: 10, agentCount: 1, unfinishedChecks: leads })).not.toContain('Not finished checking');
+
+    const disproved = buildDashboard({ phase: 'complete', lineCount: 10, agentCount: 1, unfinishedChecks: leads.slice(0, 1), disproved: [{ title: 'Overflow', file: 'src/m.ts', line: 2, reason: 'Checked at <i>src/api.ts:3</i>.' }] });
+    expect(disproved).toContain(`\n\n**Disproved by the judge:** 1 finding\n${INDENT}Overflow (\`src/m.ts:2\`): Checked at src/api.ts:3.\n\n**Not finished checking:** 1 lead\n`);
   });
 
   it('renders per-agent detail and the review class and group in the complete phase', () => {

@@ -1300,11 +1300,11 @@ async function collectRoundSignals(
 }
 
 /**
- * Fetches the PR head for the finders whose client has repository tools. Returns `undefined` when none has them,
- * or when the fetch fails, and the finders then review without tools.
+ * Fetches the PR head for the finders and the judge when the client of any has repository tools. Returns `undefined`
+ * when none has them, or when the fetch fails, and the round then runs without tools.
  */
 async function fetchReviewWorkspace({ octokit, owner, repo, commitSha }: RunTarget, clients: ReviewClients): Promise<string | undefined> {
-  if (![clients.reviewer, ...(clients.reviewerByModel?.values() ?? [])].some(client => client.repoTools)) return undefined;
+  if (![clients.reviewer, clients.judge, ...(clients.reviewerByModel?.values() ?? [])].some(client => client.repoTools)) return undefined;
   try {
     const { token } = await octokit.auth() as { token?: string };
     return await fetchWorkspace(`${github.context.serverUrl}/${owner}/${repo}.git`, commitSha, token);
@@ -1578,6 +1578,7 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult)
   });
 
   const judgeDroppedCount = allJudgedForDashboard.length - keptSet.size;
+  const disproved = allJudgedForDashboard.flatMap(({ title, file, line, severity, refutation }) => refutation?.outcome === 'disproved' && severity === 'ignore' ? [{ title, file, line, reason: refutation.reason }] : []);
   const completeDashboard: DashboardData = {
     ...dashboard,
     phase: 'complete',
@@ -1588,6 +1589,7 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult)
     droppedSeverities,
     ...(result.testNitSuppressedCount != null && result.testNitSuppressedCount > 0 && { testNitSuppressedCount: result.testNitSuppressedCount }),
     ...(result.openLeads && { unfinishedChecks: result.openLeads.map(({ title, file, line }) => ({ title, file, line })) }),
+    ...(disproved.length > 0 && { disproved }),
     judgeDurationMs: judgeEndTime - reviewEndTime,
   };
 
