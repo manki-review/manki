@@ -1,4 +1,5 @@
 import type { LLMUsage } from './providers';
+import { changeDigest } from './diff';
 import { isEmptyInterRoundDiff, MAX_INTER_ROUND_DIFF_CHARS } from './judge';
 import { collectResolvedThreadIds, fingerprintFinding, PreviousFinding, RecapState, securityOverridesIn } from './recap';
 import { MANKI_VERSION } from './github';
@@ -267,6 +268,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
       ...(config.review_passes != null && { reviewPasses: config.review_passes }),
     },
     diff: {
+      changeDigest: changeDigest(diff, config.exclude_paths),
       lines: diff.totalAdditions + diff.totalDeletions,
       additions: diff.totalAdditions,
       deletions: diff.totalDeletions,

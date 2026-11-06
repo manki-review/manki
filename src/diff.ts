@@ -1,3 +1,5 @@
+import { createHash } from 'crypto';
+
 import parseDiff from 'parse-diff';
 import { minimatch } from 'minimatch';
 
@@ -116,19 +118,21 @@ export function filterRawDiff(rawDiff: string, excludePaths: string[]): string {
 }
 
 /**
- * Whether two raw diffs make the same change once `excludePaths` are dropped.
- * Hunk positions and `index` lines are ignored, so a diff moved by a rebase
- * still matches.
+ * Returns a SHA-256 digest of the change `diff` makes once `excludePaths` are dropped.
+ * Hunk positions and `index` lines are left out, so a diff moved by a rebase
+ * keeps its digest.
  */
+export function changeDigest(diff: ParsedDiff, excludePaths: string[]): string {
+  const { files, binarySkipped } = filterDiff(diff, excludePaths).diff;
+  return createHash('sha256').update(JSON.stringify([
+    files.map(f => [f.changeType, f.oldPath, f.path, f.hunks.map(h => h.content)]),
+    binarySkipped?.filter(path => !findExcludePattern(path, excludePaths)),
+  ])).digest('hex');
+}
+
+/** Whether two raw diffs make the same change once `excludePaths` are dropped. */
 export function isSameChange(a: string, b: string, excludePaths: string[]): boolean {
-  const changeKey = (raw: string): string => {
-    const diff = filterDiff(parsePRDiff(raw), excludePaths).diff;
-    return JSON.stringify([
-      diff.files.map(f => [f.changeType, f.oldPath, f.path, f.hunks.map(h => h.content)]),
-      diff.binarySkipped?.filter(path => !findExcludePattern(path, excludePaths)),
-    ]);
-  };
-  return changeKey(a) === changeKey(b);
+  return changeDigest(parsePRDiff(a), excludePaths) === changeDigest(parsePRDiff(b), excludePaths);
 }
 
 /** Returns the text of each line the diff adds to the file, keyed by its line number in the new file. */

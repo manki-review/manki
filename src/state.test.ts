@@ -746,7 +746,7 @@ describe('checkAndAutoApprove', () => {
     notConverging.meta.outcome = 'NOT_CONVERGING';
     it.each([
       ['the last round did not converge', DEFAULT_CONFIG, [formatContextBlock(notConverging)], 'The last Manki round found a blocker that came back after a fix. Automatic review is paused. Tick **Force review** on the pause notice'],
-      ['the round cap is reached', DEFAULT_CONFIG, [1, 2, 3, 4, 5].map(n => formatContextBlock(makeRoundContext(n))), 'Manki has completed 5/5 review rounds on this PR. Automatic review is paused.'],
+      ['the round cap is reached', DEFAULT_CONFIG, [1, 2, 3, 4, 5].map(n => formatContextBlock(makeRoundContext(n))), 'Manki has reviewed new changes in 5/5 rounds on this PR. Automatic review is paused.'],
       ['automatic review is off', AUTO_REVIEW_OFF, [], 'Automatic review is off for this repository (`auto_review: false`). Comment `@manki review` to review it.'],
     ])('posts one withheld notice with the reason when %s', async (_label, config, roundBodies, reason) => {
       const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 1 } });
@@ -765,7 +765,7 @@ describe('checkAndAutoApprove', () => {
       expect(body).toContain('<!-- manki-stale-approve:head-sha-aaaa -->');
     });
 
-    it('still approves when the latest manki review is on the current HEAD', async () => {
+    it('still approves when the latest manki review is on the current HEAD, even with automatic review paused by the round cap', async () => {
       const createReviewMock = jest.fn().mockResolvedValue({});
       const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 1 } });
       const octokit = makeMockOctokit({
@@ -775,12 +775,13 @@ describe('checkAndAutoApprove', () => {
         prHeadSha: 'head-sha-aaaa',
         createReviewFn: createReviewMock,
         createCommentFn: createCommentMock,
-        existingReviews: [
-          { body: '<!-- manki -->', state: 'CHANGES_REQUESTED', commit_id: 'head-sha-aaaa', user: { login: 'manki-review[bot]', type: 'Bot' } },
-        ],
+        existingReviews: [1, 2, 3, 4, 5].map(n => ({
+          body: `<!-- manki -->\n${formatContextBlock(makeRoundContext(n))}`, state: n === 5 ? 'CHANGES_REQUESTED' : 'COMMENTED',
+          commit_id: n === 5 ? 'head-sha-aaaa' : `old-sha-${n}`, user: { login: 'manki-review[bot]', type: 'Bot' },
+        })),
       });
 
-      const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
+      const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG);
 
       expect(result).toBe(true);
       expect(createReviewMock).toHaveBeenCalledWith(

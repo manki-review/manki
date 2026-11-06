@@ -1,4 +1,5 @@
 import {
+  changeDigest,
   parsePRDiff,
   filterDiff,
   filterFilesWithAttribution,
@@ -341,6 +342,8 @@ describe('filterRawDiff', () => {
 
 describe('isSameChange', () => {
   it('ignores hunk positions, index lines and excluded files', () => {
+    const excluded = DEFAULT_CONFIG.exclude_paths;
+    expect(changeDigest(filterDiff(parsePRDiff(GENERATED_FIRST_DIFF), excluded).diff, excluded)).toBe(changeDigest(parsePRDiff(MULTI_FILE_DIFF), excluded));
     const rebased = MULTI_FILE_DIFF
       .replace('index 1111111..2222222', 'index 5555555..6666666')
       .replace('@@ -5,3 +5,4 @@ export function b() {', '@@ -42,3 +57,4 @@ export function moved() {');
