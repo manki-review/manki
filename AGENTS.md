@@ -2,7 +2,7 @@
 
 Manki is a GitHub Action that runs a multi-agent LLM code review on pull requests. This file captures the repo conventions that both human contributors and coding agents (Claude Code, Codex, Cursor, Aider, Continue, etc.) should follow. It's read natively by all of those tools — one file, all agents.
 
-See `README.md` for what manki does and `SETUP.md` for installing it in a repo. This file is strictly about conventions for working on manki itself.
+See `README.md` for what manki does and `docs/getting-started.md` for installing it in a repo. This file is strictly about conventions for working on manki itself.
 
 ## Pipeline order
 
@@ -57,5 +57,5 @@ The `effort` level maps to provider-specific thinking or reasoning settings insi
 
 - Config schema + defaults: `src/config.ts`
 - Action inputs/outputs: `action.yml`
-- User-facing docs: `README.md`, `SETUP.md`
+- User-facing docs: `README.md` and the pages in `docs/`
 - Convention changes or open design questions: GitHub issues

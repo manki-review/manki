@@ -444,7 +444,7 @@ export async function runPlanner(
     clearTimeout(timeoutId!);
     if (error instanceof PlannerTimeoutError) {
       core.warning(
-        'Planner timed out, using the fail-safe triage. If your workflow does not pre-install the Claude Code CLI, see the "spawn claude ENOENT" row in SETUP.md.',
+        'Planner timed out, using the fail-safe triage. If your workflow does not pre-install the Claude Code CLI, see the "spawn claude ENOENT" row in docs/getting-started.md.',
       );
       if (outcome) outcome.fallbackReason = 'timeout';
       return null;

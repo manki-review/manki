@@ -1,5 +1,5 @@
 # Not run from here: GitHub only runs workflows under `.github/workflows`. Manki uses `manki-dispatch.yml` instead.
-# The canonical event-driven workflow, checked against the snippets in SETUP.md and docs/index.html.
+# The canonical event-driven workflow, checked against the snippets in docs/getting-started.md and docs/index.html.
 name: Manki
 
 on:
