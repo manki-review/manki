@@ -2,7 +2,8 @@ import * as core from '@actions/core';
 import { areAllFindingsResolved, fetchBotReviewThreads, checkAndAutoApprove, explainUnreviewedHead, reopenAuthorResolvedThreads, BOT_MARKER, ReviewThread } from './state';
 import { PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
 import { LAST_PAGE, makeRoundContext, paginateSinglePage, TEST_BOT } from './test-utils';
-import { formatContextBlock, formatFindingComment, isReviewInProgress } from './github';
+import { formatFindingComment, isReviewInProgress } from './github';
+import { formatReviewRecord } from './review-record';
 import { DEFAULT_CONFIG } from './config';
 import { Finding } from './types';
 
@@ -738,7 +739,7 @@ describe('checkAndAutoApprove', () => {
       ['automatic review is on and not paused', DEFAULT_CONFIG],
     ])('posts no withheld notice on a stale SHA when %s, since a push review covers the head', async (_label, config) => {
       const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 1 } });
-      const octokit = staleHeadOctokit(createCommentMock, [formatContextBlock(makeRoundContext(1))]);
+      const octokit = staleHeadOctokit(createCommentMock, [formatReviewRecord(makeRoundContext(1))]);
 
       const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1, config);
 
@@ -751,8 +752,8 @@ describe('checkAndAutoApprove', () => {
     const notConverging = makeRoundContext(1);
     notConverging.meta.outcome = 'NOT_CONVERGING';
     it.each([
-      ['the last round did not converge', DEFAULT_CONFIG, [formatContextBlock(notConverging)], 'The last Manki round found a blocker that came back after a fix. Automatic review is paused. Tick **Force review** on the pause notice'],
-      ['the round cap is reached', DEFAULT_CONFIG, [1, 2, 3, 4, 5].map(n => formatContextBlock(makeRoundContext(n))), 'Manki has reviewed new changes in 5/5 rounds on this PR. Automatic review is paused.'],
+      ['the last round did not converge', DEFAULT_CONFIG, [formatReviewRecord(notConverging)], 'The last Manki round found a blocker that came back after a fix. Automatic review is paused. Tick **Force review** on the pause notice'],
+      ['the round cap is reached', DEFAULT_CONFIG, [1, 2, 3, 4, 5].map(n => formatReviewRecord(makeRoundContext(n))), 'Manki has reviewed new changes in 5/5 rounds on this PR. Automatic review is paused.'],
       ['automatic review is off', AUTO_REVIEW_OFF, [], 'Automatic review is off for this repository (`auto_review: false`). Comment `@manki review` to review it.'],
     ])('posts one withheld notice with the reason when %s', async (_label, config, roundBodies, reason) => {
       const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 1 } });
@@ -782,7 +783,7 @@ describe('checkAndAutoApprove', () => {
         createReviewFn: createReviewMock,
         createCommentFn: createCommentMock,
         existingReviews: [1, 2, 3, 4, 5].map(n => ({
-          body: `<!-- manki -->\n${formatContextBlock(makeRoundContext(n))}`, state: n === 5 ? 'CHANGES_REQUESTED' : 'COMMENTED',
+          body: `<!-- manki -->\n${formatReviewRecord(makeRoundContext(n))}`, state: n === 5 ? 'CHANGES_REQUESTED' : 'COMMENTED',
           commit_id: n === 5 ? 'head-sha-aaaa' : `old-sha-${n}`, user: { login: 'manki-review[bot]', type: 'Bot' },
         })),
       });
@@ -918,7 +919,7 @@ describe('checkAndAutoApprove', () => {
     });
 
     it('explains an unreviewed head by the review that is running, the pause, or the absence of both', async () => {
-      const octokit = staleHeadOctokit(jest.fn(), [formatContextBlock(notConverging)]);
+      const octokit = staleHeadOctokit(jest.fn(), [formatReviewRecord(notConverging)]);
       jest.mocked(isReviewInProgress).mockResolvedValueOnce(true);
       expect(await explainUnreviewedHead(octokit, TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG))
         .toBe('A review of `head-sh` is running or queued. Approval follows from its verdict.');

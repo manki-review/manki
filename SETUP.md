@@ -218,7 +218,7 @@ Required only if you enable the review memory system and the manki-review App ca
    gh secret set REVIEW_MEMORY_TOKEN --repo <owner>/<repo>
    ```
 
-The token's write surface is limited to cross-PR memory files (`learnings.yml`, `suppressions.yml`, `metrics/fix-rate.jsonl`). As of v5.0.0, per-round state lives in a `Manki context` block embedded in each review summary on the PR, so the memory repo no longer receives `prs/{n}/handover.json` writes. Existing `handover.json` files in older memory repos are orphaned but harmless and require no migration.
+The token's write surface is limited to cross-PR memory files (`learnings.yml`, `suppressions.yml`, `metrics/fix-rate.jsonl`). As of v5.0.0, per-round state lives in a `Manki context` block embedded in each review summary on the PR, so the memory repo no longer receives `prs/{n}/handover.json` writes. The block is a hidden HTML comment holding the round's diagnostics as JSON. When it would not fit in the review body, Manki stores it gzip compressed and base64 encoded in the same comment instead of cutting it. Existing `handover.json` files in older memory repos are orphaned but harmless and require no migration.
 
 ## Step 3: Add the Workflow
 
@@ -719,11 +719,6 @@ static_analysis:
 # Multi-pass verification (integer 1-5, default: 1). Runs each reviewer N
 # times with shuffled file ordering; only consistent findings are kept.
 # review_passes: 1
-
-# Keep the structured `Manki context` block in an HTML comment
-# (`<!-- manki-context: ... -->`). Set to false to show it as a `<details>` block (default: true).
-# stats:
-#   hidden: true
 
 # On merge, count per severity and reviewer how many posted findings were
 # fixed, dismissed or left untouched. Written to the job summary, and appended

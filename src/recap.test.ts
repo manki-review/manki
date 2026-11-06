@@ -2400,7 +2400,7 @@ describe('refreshAuthorReplyClass', () => {
     expect(result.reclassifiedPriors).toHaveLength(0);
   });
 
-  it('caps entries at 50 when flips exceed the limit', () => {
+  it('records every flip', () => {
     const entries = Array.from({ length: 55 }, (_, i) => makeEntry({ threadId: `T${i}`, authorReplyClass: 'none' }));
     const previousFindings: PreviousFinding[] = entries.map((e, i) => ({
       title: 'Test finding', file: 'src/foo.ts', line: 10, severity: 'suggestion' as const, status: 'resolved' as const, threadId: `T${i}`, authorReplyText: 'fixed',
@@ -2408,6 +2408,6 @@ describe('refreshAuthorReplyClass', () => {
 
     const result = refreshAuthorReplyClass([makeRound(entries)], previousFindings);
     expect(result.reclassifiedPriorCount).toBe(55);
-    expect(result.reclassifiedPriors).toHaveLength(50);
+    expect(result.reclassifiedPriors).toHaveLength(55);
   });
 });

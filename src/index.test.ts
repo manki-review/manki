@@ -2336,7 +2336,6 @@ describe('runFullReview orchestration', () => {
       expect.anything(),
       expect.anything(),
       expect.anything(),
-      expect.anything(),
       expect.objectContaining({ interRoundDiff: undefined, existingThreads: [] }),
     );
     // Outputs set
@@ -4951,7 +4950,7 @@ describe('runFullReview orchestration', () => {
     expect(runReviewArgs.linkedIssues).toEqual([
       { number: 7, title: 'Linked issue', body: 'Issue body' },
     ]);
-    expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)?.[10]?.interRoundDiff).toBeUndefined();
+    expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)?.[9]?.interRoundDiff).toBeUndefined();
   });
 
   it('handles linked issues fetch rejection while inter-round diff fetch fulfills', async () => {
@@ -4980,7 +4979,7 @@ describe('runFullReview orchestration', () => {
     expect(jest.mocked(diffModule.parsePRDiff)).toHaveBeenCalledWith(
       'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
     );
-    expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)?.[10]?.interRoundDiff).toBeDefined();
+    expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)?.[9]?.interRoundDiff).toBeDefined();
   });
 
   it('handles both inter-round diff and linked issues fetch rejecting simultaneously', async () => {

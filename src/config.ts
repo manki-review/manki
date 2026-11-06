@@ -48,9 +48,6 @@ export const DEFAULT_CONFIG: ReviewConfig = {
     test_path_patterns: ['**/*.test.*', '**/*.spec.*', '**/tests/**', '**/__tests__/**'],
     suppress_resolved_threads: true,
   },
-  stats: {
-    hidden: true,
-  },
   concurrency_lock_ttl_seconds: 600,
 };
 
@@ -78,7 +75,7 @@ const KNOWN_KEYS = new Set([
 ]);
 
 // Accepted so older configs keep loading, then dropped.
-const IGNORED_KEYS = new Set(['review_level', 'review_thresholds']);
+const IGNORED_KEYS = new Set(['review_level', 'review_thresholds', 'stats']);
 
 const PAIRED_PINS: readonly PairedPin[] = ['auto', 'always', 'never'];
 
@@ -314,14 +311,7 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
   }
 
   if ('stats' in config) {
-    const stats = config.stats as Record<string, unknown>;
-    if (!stats || typeof stats !== 'object' || Array.isArray(stats)) {
-      errors.push('`stats` must be an object');
-    } else {
-      if ('hidden' in stats && typeof stats.hidden !== 'boolean') {
-        errors.push('`stats.hidden` must be a boolean');
-      }
-    }
+    warnings.push('`stats` is deprecated and ignored. The round record is always a hidden comment in the review.');
   }
 
   if ('metrics' in config) {
@@ -551,8 +541,6 @@ function deepMerge(defaults: ReviewConfig, overrides: Record<string, unknown>): 
       result.static_analysis = { ...defaults.static_analysis, ...(value as Record<string, unknown>) } as ReviewConfig['static_analysis'];
     } else if (key === 'convergence' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
       result.convergence = { ...defaults.convergence, ...(value as Record<string, unknown>) } as ReviewConfig['convergence'];
-    } else if (key === 'stats' && typeof value === 'object' && value !== null && !Array.isArray(value)) {
-      result.stats = { ...defaults.stats, ...(value as Record<string, unknown>) } as ReviewConfig['stats'];
     } else if (key === 'exclude_paths' && Array.isArray(value)) {
       // Union with defaults so users adding a single pattern don't lose
       // built-in skips (`*.lock`, `dist/**`, `*.generated.*`).
