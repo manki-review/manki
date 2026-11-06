@@ -50,11 +50,12 @@ describe('labelFinding', () => {
 });
 
 describe('roundsByPullRequest and findThread', () => {
-  it('groups rounds per pull request oldest first, fills missing blocks and skips records without a commit', () => {
+  it('groups rounds per pull request oldest first, fills missing blocks and skips reply records and records without a commit', () => {
     const lines: HistoryLine[] = [
       { repo: 'o/r', pr: 1, record: { meta: { prNumber: 1, commitSha: 'b', round: 2, timestamp: '' }, findings: { count: 1, severityCounts: {}, entries: [entry('x')] } } as HistoryLine['record'] },
       { repo: 'o/r', pr: 1, record: { meta: { prNumber: 1, commitSha: 'a', round: 1, timestamp: '' } } as HistoryLine['record'] },
       { repo: 'o/r', pr: 2, record: {} },
+      { kind: 'reply', repo: 'o/r', pr: 3, record: { meta: { prNumber: 3, commitSha: 'c', round: 1, timestamp: '' } } as HistoryLine['record'] },
     ];
 
     const rounds = roundsByPullRequest(lines);

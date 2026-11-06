@@ -9,7 +9,6 @@
  * Reads the GitHub token from `GITHUB_TOKEN`, or from `gh auth token` when that is unset.
  */
 
-import { execFileSync } from 'child_process';
 import { readFileSync, writeFileSync } from 'fs';
 
 import * as github from '@actions/github';
@@ -20,6 +19,7 @@ import { fetchInterRoundDiff, fetchReviewThreadNodes } from '../src/github';
 import { classifyAuthorReply, judgeAddressedThreadIds } from '../src/recap';
 import { FindingFingerprintEntry, ParsedDiff, RoundContext } from '../src/types';
 import { aggregate } from './fix-rate-report';
+import { githubToken, HistoryLine as RecordLine } from './review-history';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -29,12 +29,8 @@ export type LabelSource =
   | 'reply-fixed' | 'reply-withdrawn' | 'author-fixed' | 'author-declined' | 'judge-addressed' | 'line-changed'
   | 'reply-agreed' | 'reply-unverified' | 'reply-kept' | 'untouched';
 
-/** One line of `npm run review-history`. */
-export interface HistoryLine {
-  repo: string;
-  pr: number;
-  record: Partial<RoundContext>;
-}
+/** One line of `npm run review-history`. Only a `round` line holds a round context. */
+export type HistoryLine = Pick<RecordLine, 'repo' | 'pr'> & { kind?: RecordLine['kind']; record: Partial<RoundContext> };
 
 export interface ThreadComment {
   body: string;
@@ -128,8 +124,8 @@ export function labelFinding({ thread, lineChanged, judgeAddressed }: Evidence):
 /** Returns the rounds of each pull request in the history, oldest first, keyed by `owner/repo#number`. */
 export function roundsByPullRequest(lines: HistoryLine[]): Map<string, RoundContext[]> {
   const rounds = new Map<string, RoundContext[]>();
-  for (const { repo, pr, record } of lines) {
-    if (!record.meta?.commitSha) continue;
+  for (const { kind, repo, pr, record } of lines) {
+    if (kind === 'reply' || !record.meta?.commitSha) continue;
     const round = { ...record, judge: record.judge ?? {}, findings: { ...record.findings, entries: record.findings?.entries ?? [] } } as RoundContext;
     const key = `${repo}#${pr}`;
     rounds.set(key, [...(rounds.get(key) ?? []), round]);
@@ -298,10 +294,6 @@ async function labelPullRequest(octokit: Octokit, key: string, rounds: RoundCont
     });
     return { repo: fullName, pr, commitSha, entry, label, source, ...(thread && { thread }) };
   });
-}
-
-function githubToken(): string {
-  return process.env.GITHUB_TOKEN || execFileSync('gh', ['auth', 'token'], { encoding: 'utf-8' }).trim();
 }
 
 function option(args: string[], name: string): string | undefined {
