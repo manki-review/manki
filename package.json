@@ -10,6 +10,7 @@
     "test": "jest --passWithNoTests",
     "smoke": "tsx scripts/smoke.ts",
     "fix-rate-report": "tsx scripts/fix-rate-report.ts",
+    "review-history": "tsx scripts/review-history.ts",
     "check-changelog-version": "node scripts/check-changelog-version.js",
     "all": "npm run lint && npm run typecheck && npm run test && npm run build"
   },
