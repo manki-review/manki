@@ -989,9 +989,9 @@ describe('postReview body lead', () => {
     agentNames: [],
   };
 
-  async function postedBody(result: ReviewResult, existingThreads: PreviousFinding[] = [], draft = false): Promise<{ body: string; event: string; approvalHeld: ApprovalHeld }> {
+  async function postedBody(result: ReviewResult, existingThreads: PreviousFinding[] = []): Promise<{ body: string; event: string; approvalHeld: ApprovalHeld }> {
     mockCreateReview.mockClear();
-    const { approvalHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', result, diff, undefined, undefined, { existingThreads, draft });
+    const { approvalHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', result, diff, undefined, undefined, { existingThreads });
     return { ...mockCreateReview.mock.calls[0][0] as { body: string; event: string }, approvalHeld };
   }
 
@@ -1051,14 +1051,12 @@ describe('postReview body lead', () => {
     expect(body).toBe(`**Approval held:** this PR conflicts with \`main\`. Rebase it, and Manki reviews the result.\n\n${approved.body}`);
   });
 
-  it('holds the approval of a READY round on a draft as a COMMENT, without looking up whether it conflicts', async () => {
+  it('holds the approval of a READY round as a COMMENT when the PR is a draft at posting time, conflicting or not', async () => {
     const approved = await postedBody(ready);
-    mockGet.mockClear();
-    const { body, event, approvalHeld } = await postedBody(ready, [], true);
+    mockGet.mockResolvedValueOnce({ data: { draft: true, mergeable: false, mergeable_state: 'dirty', base: { ref: 'main' } } });
+    const { body, event, approvalHeld } = await postedBody(ready);
     expect([event, approvalHeld]).toEqual(['COMMENT', 'draft']);
     expect(body).toBe(`**Approval held:** this PR is a draft. Mark it ready for review, and Manki reviews it again.\n\n${approved.body}`);
-    expect(mockGet).not.toHaveBeenCalled();
-    expect((await postedBody({ ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', verdictReport: undefined, findings: [blocker] }, [], true)).event).toBe('REQUEST_CHANGES');
   });
 
   it('approves when GitHub still reports mergeable as unknown after the retries', async () => {

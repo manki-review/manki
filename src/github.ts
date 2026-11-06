@@ -182,17 +182,23 @@ export async function fetchHeadSha(octokit: Octokit, owner: string, repo: string
 const MERGEABLE_ATTEMPTS = 3;
 const MERGEABLE_RETRY_MS = 1500;
 
+/** Why an approval was posted as a comment instead, or `false` when it was not held. */
+export type ApprovalHeld = false | 'conflict' | 'draft';
+
+/** Why Manki holds an approval right now: the PR is a draft, or it conflicts with `baseRef`. */
+export type ApprovalHold = { reason: 'draft' } | { reason: 'conflict'; baseRef: string };
+
 /**
- * Returns the base branch when GitHub reports that the PR conflicts with it, otherwise `undefined`.
- * GitHub reports `mergeable: null` until it has computed it, so a `null` is read again a few times.
- * A state that stays unknown, or a failed lookup, counts as no conflict.
+ * Returns why an approval must be held, read from the PR as it is now, or `undefined` when it may be posted.
+ * Retries while GitHub has not computed whether the PR conflicts with its base.
  */
-export async function fetchConflictingBase(octokit: Octokit, owner: string, repo: string, prNumber: number): Promise<string | undefined> {
+export async function fetchApprovalHold(octokit: Octokit, owner: string, repo: string, prNumber: number): Promise<ApprovalHold | undefined> {
   for (let attempt = 1; attempt <= MERGEABLE_ATTEMPTS; attempt++) {
     if (attempt > 1) await new Promise(resolve => setTimeout(resolve, MERGEABLE_RETRY_MS));
     try {
       const { data } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
-      if (data.mergeable === false || data.mergeable_state === 'dirty') return data.base.ref;
+      if (data.draft) return { reason: 'draft' };
+      if (data.mergeable === false || data.mergeable_state === 'dirty') return { reason: 'conflict', baseRef: data.base.ref };
       if (data.mergeable !== null) return undefined;
     } catch (error) {
       core.warning(`Mergeable lookup failed, proceeding: ${error instanceof Error ? error.message : error}`);
@@ -203,14 +209,11 @@ export async function fetchConflictingBase(octokit: Octokit, owner: string, repo
   return undefined;
 }
 
-/** Returns the line that says Manki does not approve because the PR conflicts with `baseRef`. */
-/** Why an approval was posted as a comment instead, or `false` when it was not held. */
-export type ApprovalHeld = false | 'conflict' | 'draft';
-
-const DRAFT_HELD_LINE = '**Approval held:** this PR is a draft. Mark it ready for review, and Manki reviews it again.';
-
-export function approvalHeldLine(baseRef: string): string {
-  return `**Approval held:** this PR conflicts with \`${sanitizeFilePath(baseRef)}\`. Rebase it, and Manki reviews the result.`;
+/** Returns the line that says why Manki does not approve. */
+export function approvalHoldLine(hold: ApprovalHold): string {
+  return hold.reason === 'draft'
+    ? '**Approval held:** this PR is a draft. Mark it ready for review, and Manki reviews it again.'
+    : `**Approval held:** this PR conflicts with \`${sanitizeFilePath(hold.baseRef)}\`. Rebase it, and Manki reviews the result.`;
 }
 
 /** Thrown when the PR head moved past the commit under review, so the review must post no verdict. */
@@ -1077,7 +1080,7 @@ function hasOpenThread(finding: Finding, existingThreads: PreviousFinding[]): bo
  * When `context` is provided without `reviewTimeMs`, the hidden stats line
  * records `0s` for review time. Pass both together to avoid this.
  * Once GitHub writes are stopped, throws the abort reason and posts nothing.
- * Returns the review's id, and why an approval was held as a COMMENT: the PR conflicts with its base, or it is a draft.
+ * Returns the review's id, and why an approval was held as a COMMENT: the PR is a draft, or it conflicts with its base, as it is when posting.
  */
 export async function postReview(
   octokit: Octokit,
@@ -1089,7 +1092,7 @@ export async function postReview(
   diff?: ParsedDiff,
   context?: RoundContext,
   reviewTimeMs?: number,
-  { existingThreads = [], draft = false }: { existingThreads?: PreviousFinding[]; draft?: boolean } = {},
+  { existingThreads = [] }: { existingThreads?: PreviousFinding[] } = {},
 ): Promise<{ id: number; approvalHeld: ApprovalHeld }> {
   const event = mapVerdictToEvent(result.verdict);
 
@@ -1163,9 +1166,9 @@ export async function postReview(
 
   const blockingFindings = result.findings.filter(isBlockingFinding);
   const lead = formatLead(result, blockingFindings);
-  const conflictingBase = event === 'APPROVE' && !draft ? await fetchConflictingBase(octokit, owner, repo, prNumber) : undefined;
-  const approvalHeld: ApprovalHeld = event !== 'APPROVE' ? false : draft ? 'draft' : conflictingBase ? 'conflict' : false;
-  const heldLine = approvalHeld === 'draft' ? DRAFT_HELD_LINE : conflictingBase && approvalHeldLine(conflictingBase);
+  const hold = event === 'APPROVE' ? await fetchApprovalHold(octokit, owner, repo, prNumber) : undefined;
+  const approvalHeld: ApprovalHeld = hold?.reason ?? false;
+  const heldLine = hold && approvalHoldLine(hold);
 
   const renderBody = (): string => {
     let b = heldLine ? `${heldLine}\n\n${lead}` : lead;
@@ -1216,7 +1219,7 @@ export async function postReview(
   }
   const postedVerdict = approvalHeld ? 'COMMENT' : result.verdict;
   if (approvalHeld) {
-    core.info(`${approvalHeld === 'draft' ? 'The PR is a draft' : `PR conflicts with ${conflictingBase}`}, so the approval is posted as a comment`);
+    core.info(`${hold?.reason === 'conflict' ? `PR conflicts with ${hold.baseRef}` : 'The PR is a draft'}, so the approval is posted as a comment`);
   }
   core.info(`Posting review: ${mapVerdictToEvent(postedVerdict)} with ${validComments.length} line comments and ${fileComments.length} file-level comments`);
 

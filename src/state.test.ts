@@ -1,5 +1,5 @@
 import * as core from '@actions/core';
-import { areAllFindingsResolved, fetchBotReviewThreads, checkAndAutoApprove, explainUnreviewedHead, pauseState, reopenAuthorResolvedThreads, BOT_MARKER, ReviewThread } from './state';
+import { areAllFindingsResolved, fetchBotReviewThreads, checkAndAutoApprove, explainUnreviewedHead, holdApproval, pauseState, reopenAuthorResolvedThreads, BOT_MARKER, ReviewThread } from './state';
 import { PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
 import { LAST_PAGE, makeRoundContext, paginateSinglePage, TEST_BOT } from './test-utils';
 import { formatFindingComment, isReviewInProgress } from './github';
@@ -401,6 +401,17 @@ describe('checkAndAutoApprove', () => {
     expect(createReviewMock).toHaveBeenCalledWith(
       expect.objectContaining({ event: 'APPROVE', commit_id: 'sha-456', body: '\u2705 **Approved.** All blocking threads are resolved.\n\n<!-- manki -->\n<!-- manki-auto-approve -->' }),
     );
+  });
+
+  it('holds an approval on a draft with one notice per head', async () => {
+    const createCommentMock = jest.fn().mockResolvedValue({});
+    const octokit = makeMockOctokit({ draft: true, mergeable: true, createCommentFn: createCommentMock });
+
+    expect(await holdApproval(octokit, TEST_BOT, 'owner', 'repo', 1, 'sha-9')).toBe('draft');
+    expect(createCommentMock.mock.calls.map(([c]) => c.body)).toEqual([
+      '**Approval held:** this PR is a draft. Mark it ready for review, and Manki reviews it again.\n\n<!-- manki-approval-held:sha-9 -->',
+    ]);
+    expect(await holdApproval(makeMockOctokit({ mergeable: true }), TEST_BOT, 'owner', 'repo', 1, 'sha-9')).toBe(false);
   });
 
   it('never approves a draft, however its threads stand', async () => {

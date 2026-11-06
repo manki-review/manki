@@ -61,7 +61,7 @@ import {
   postConfigErrorComment,
 } from './github';
 import type { ApprovalHeld, BotIdentity, LinkedIssue, StandingVerdict } from './github';
-import { announceSecurityOverrides, checkAndAutoApprove, findUnchangedVerdict, holdApprovalOnConflict, isNewChange, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
+import { announceSecurityOverrides, checkAndAutoApprove, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread } from './state';
 import type { PauseState } from './state';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -367,6 +367,17 @@ async function postReviewSkippedComment(
   }
 }
 
+/** Whether the base branch's config sets `drafts: review`. A config that cannot be read counts as `drafts: skip`. */
+async function reviewsDrafts(octokit: Octokit, owner: string, repo: string, baseRef: string): Promise<boolean> {
+  const configPath = core.getInput('config_path') || '.manki.yml';
+  try {
+    return loadConfig(await fetchConfigFile(octokit, owner, repo, baseRef, configPath) ?? undefined, configPath).drafts === 'review';
+  } catch (error) {
+    core.warning(`Could not read ${configPath} on the base branch, skipping the draft PR: ${error instanceof Error ? error.message : error}`);
+    return false;
+  }
+}
+
 async function handlePullRequest(): Promise<void> {
   const pr = github.context.payload.pull_request;
   if (!pr) {
@@ -380,13 +391,9 @@ async function handlePullRequest(): Promise<void> {
   const repo = github.context.repo.repo;
 
   const { octokit, bot } = await getAuth();
-  if (pr.draft) {
-    const configPath = core.getInput('config_path') || '.manki.yml';
-    const config = loadConfig(await fetchConfigFile(octokit, owner, repo, pr.base.ref, configPath) ?? undefined, configPath);
-    if (config.drafts !== 'review') {
-      core.info('Skipping draft PR (`drafts: skip`)');
-      return;
-    }
+  if (pr.draft && !(await reviewsDrafts(octokit, owner, repo, pr.base.ref))) {
+    core.info('Skipping draft PR (`drafts: skip`)');
+    return;
   }
 
   if (await isReviewInProgress(octokit, bot, owner, repo, prNumber, commitSha)) {
@@ -576,8 +583,6 @@ interface RunTarget {
   prNumber: number;
   commitSha: string;
   baseRef: string;
-  /** Whether the PR is a draft, so the run never approves it. */
-  draft?: boolean;
 }
 
 /** The progress comment of a run, its pending dashboard update and whether its review is posted, which the failure path also reads. */
@@ -704,15 +709,14 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
     return true;
   }
 
-  // A draft never gets an approval, so its rounds always run.
-  if (trigger.event === 'pull_request:synchronize' && config.auto_review && !target.draft) {
+  if (trigger.event === 'pull_request:synchronize' && config.auto_review) {
     const standing = await findUnchangedVerdict(octokit, bot, owner, repo, prNumber, baseRef, commitSha, config.exclude_paths);
     if (standing) {
       const shortSha = standing.commitSha.slice(0, 7);
       assertWritesAllowed();
       try {
         const approved = standing.verdict === 'APPROVE';
-        const held = approved && await holdApprovalOnConflict(octokit, bot, owner, repo, prNumber, commitSha);
+        const held = approved && await holdApproval(octokit, bot, owner, repo, prNumber, commitSha);
         const summary = `No change to this PR since the reviewed commit \`${shortSha}\`. The previous verdict stands.`;
         // A push can dismiss approvals, so the approval is posted again on the new head.
         if (approved && !held) {
@@ -723,7 +727,7 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
           await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha);
         }
         core.info(`Round SKIPPED: no change since reviewed commit ${shortSha}, ${standing.verdict} stands`);
-        await completeReviewCheck(await startReviewCheck(octokit, owner, repo, commitSha), outcomeReport(STANDING_OUTCOMES[standing.verdict], summary, held && 'conflict'));
+        await completeReviewCheck(await startReviewCheck(octokit, owner, repo, commitSha), outcomeReport(STANDING_OUTCOMES[standing.verdict], summary, held));
         return true;
       } catch (error) {
         core.warning(`Could not post the previous approval again, reviewing in full: ${error instanceof Error ? error.message : error}`);
@@ -842,7 +846,7 @@ async function postUnreviewedRound(
   const { octokit, bot, owner, repo, prNumber, commitSha } = target;
   await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
   const result = { verdict, summary, findings: [], highlights: [], reviewComplete: true, agentNames: [] as string[] };
-  const { id: reviewId, approvalHeld } = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, undefined, undefined, { draft: target.draft });
+  const { id: reviewId, approvalHeld } = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
   await replacePreviousReviews(target, progress, reviewId);
   await updateProgressComment(octokit, owner, repo, commentId, dashboard, metadata);
   await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha);
@@ -1279,7 +1283,6 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
   const { octokit, owner, repo, prNumber, commitSha, diff, recap } = run;
   const posted = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, context, reviewTimeMs, {
     existingThreads: recap.previousFindings,
-    draft: run.draft,
   });
   await replacePreviousReviews(run, run.progress, posted.id);
   return posted;
@@ -1442,7 +1445,7 @@ async function runFullReview(
   const startTime = Date.now();
   const configPath = core.getInput('config_path') || '.manki.yml';
   const { octokit, bot, identity, appMemory } = await getAuth();
-  const target: RunTarget = { octokit, bot, owner, repo, prNumber, commitSha, baseRef, draft: options.draft };
+  const target: RunTarget = { octokit, bot, owner, repo, prNumber, commitSha, baseRef };
 
   if (identity === 'actions') {
     try {

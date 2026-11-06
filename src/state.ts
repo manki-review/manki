@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
 import { completeReviewCheck, outcomeReport, startReviewCheck } from './check-run';
-import { approvalHeldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchConflictingBase, fetchInterRoundDiff, fetchPRComments, fetchReviewThreadNodes, fetchStandingVerdict, FORCE_CAP_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgressOn, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
+import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchApprovalHold, fetchInterRoundDiff, fetchPRComments, fetchReviewThreadNodes, fetchStandingVerdict, FORCE_CAP_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgressOn, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
 import type { StandingVerdict } from './github';
 import { isSameChange } from './diff';
 import { fetchPriorRoundContexts, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, PreviousFinding, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf } from './recap';
@@ -371,22 +371,22 @@ async function postStaleApproveSkippedComment(
 }
 
 /**
- * Returns true when the PR conflicts with its base, after posting a one-time notice for `headSha`
- * that the approval is held. An approval would cover code that changes once the conflict is resolved.
+ * Returns why the PR's approval must be held now, a draft or a conflict with its base, and posts one
+ * notice per head saying so. Returns `false` when it may be approved.
  */
-async function holdApprovalOnConflict(
+async function holdApproval(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string,
-): Promise<boolean> {
-  const conflictingBase = await fetchConflictingBase(octokit, owner, repo, prNumber);
-  if (!conflictingBase) return false;
-  core.info(`PR conflicts with ${conflictingBase}, so it is not approved`);
+): Promise<ApprovalHeld> {
+  const hold = await fetchApprovalHold(octokit, owner, repo, prNumber);
+  if (!hold) return false;
+  core.info(`${hold.reason === 'conflict' ? `PR conflicts with ${hold.baseRef}` : 'The PR is a draft'}, so it is not approved`);
   assertWritesAllowed();
   try {
-    await postNoticeOnce(octokit, bot, owner, repo, prNumber, `${APPROVAL_HELD_MARKER_PREFIX}${headSha} -->`, approvalHeldLine(conflictingBase));
+    await postNoticeOnce(octokit, bot, owner, repo, prNumber, `${APPROVAL_HELD_MARKER_PREFIX}${headSha} -->`, approvalHoldLine(hold));
   } catch (error) {
     core.warning(`Failed to post the approval-held notice: ${error instanceof Error ? error.message : error}`);
   }
-  return true;
+  return hold.reason;
 }
 
 /**
@@ -514,7 +514,7 @@ async function checkAndAutoApprove(
     return true;
   }
 
-  if (await holdApprovalOnConflict(octokit, bot, owner, repo, prNumber, pr.head.sha)) return false;
+  if (await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha)) return false;
 
   const progressCommentId = await postAutoApproveProgressComment(octokit, owner, repo, prNumber);
 
@@ -568,4 +568,4 @@ async function checkAndAutoApprove(
   return true;
 }
 
-export { PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, explainUnreviewedHead, fetchBotReviewThreads, findUnchangedVerdict, holdApprovalOnConflict, isNewChange, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
+export { PauseState, ResolutionReason, ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, explainUnreviewedHead, fetchBotReviewThreads, findUnchangedVerdict, holdApproval, isNewChange, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };

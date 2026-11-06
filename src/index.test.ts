@@ -259,7 +259,7 @@ jest.mock('./github', () => {
 jest.mock('./state', () => ({
   announceSecurityOverrides: jest.fn().mockResolvedValue([]),
   checkAndAutoApprove: jest.fn().mockResolvedValue(false),
-  holdApprovalOnConflict: jest.fn().mockResolvedValue(false),
+  holdApproval: jest.fn().mockResolvedValue(false),
   isNewChange: jest.requireActual('./state').isNewChange,
   pauseState: jest.requireActual('./state').pauseState,
   reopenAuthorResolvedThreads: jest.fn().mockResolvedValue(undefined),
@@ -935,6 +935,19 @@ describe('handlePullRequest', () => {
       return;
     }
     expect(jest.mocked(core.info)).toHaveBeenCalledWith('Starting review for test-owner/test-repo#1');
+  });
+
+  it('skips a draft PR with a warning when the base config cannot be read', async () => {
+    jest.mocked(configModule.loadConfig).mockImplementationOnce(() => { throw new Error('Invalid config in .manki.yml: bad'); });
+    setContext({
+      eventName: 'pull_request',
+      payload: { action: 'synchronize', sender: { login: 'user' }, pull_request: { number: 1, head: { sha: 'abc' }, base: { ref: 'main' }, title: 'Draft PR', body: '', draft: true } },
+    });
+
+    await handlePullRequest();
+
+    expect(jest.mocked(core.warning)).toHaveBeenCalledWith('Could not read .manki.yml on the base branch, skipping the draft PR: Invalid config in .manki.yml: bad');
+    expect(jest.mocked(core.info)).toHaveBeenCalledWith('Skipping draft PR (`drafts: skip`)');
   });
 
   it('skips when review is already in progress and posts skip comment', async () => {
@@ -1988,13 +2001,12 @@ describe('runFullReview orchestration', () => {
       expect(completedCheck()).toMatchObject({ conclusion: 'failure', output: { title: 'Review incomplete', summary: 'The judge failed.' } });
     });
 
-    it('posts a draft round with `draft`, records it as a draft and never makes it the final capped round', async () => {
+    it('records a draft round as a draft and never makes it the final capped round', async () => {
       jest.mocked(configModule.loadConfig).mockReturnValueOnce({ ...jest.mocked(configModule.loadConfig)(undefined), convergence: { max_auto_rounds: 1 } });
       await asDispatchedRun(() => runFullReview(baseArgs.owner, baseArgs.repo, baseArgs.prNumber, baseArgs.commitSha, baseArgs.baseRef, baseArgs.prContext, { draft: true }));
 
-      const [, , , , , , , context, , options] = jest.mocked(ghUtils.postReview).mock.calls[0];
+      const [, , , , , , , context] = jest.mocked(ghUtils.postReview).mock.calls[0];
       expect(context!.meta.draft).toBe(true);
-      expect(options).toEqual(expect.objectContaining({ draft: true }));
       expect(jest.mocked(reviewModule.runReview).mock.calls[0][1]).toEqual(expect.objectContaining({ finalRound: false }));
     });
 
@@ -2261,7 +2273,7 @@ describe('runFullReview orchestration', () => {
         verdict: 'COMMENT',
         summary: expect.stringContaining('Too large to review automatically'),
       }),
-      expect.anything(), undefined, undefined, { draft: undefined },
+      expect.anything(),
     );
     expect(jest.mocked(ghUtils.updateProgressComment)).toHaveBeenLastCalledWith(
       expect.anything(), 'test-owner', 'test-repo', expect.any(Number), expect.anything(), expect.objectContaining({ judgeDecisions: [] }),
@@ -2307,7 +2319,7 @@ describe('runFullReview orchestration', () => {
         verdict: 'APPROVE',
         summary: expect.stringContaining('No reviewable files'),
       }),
-      expect.anything(), undefined, undefined, { draft: undefined },
+      expect.anything(),
     );
     // Metadata is what makes the progress comment read as complete rather than failed.
     expect(jest.mocked(ghUtils.updateProgressComment)).toHaveBeenLastCalledWith(
@@ -6037,12 +6049,12 @@ describe('runFullReview orchestration', () => {
 
     it('holds the previous APPROVE when the PR conflicts with its base, without running a round', async () => {
       seedPush('APPROVE', REVIEWED_DIFF);
-      jest.mocked(stateModule.holdApprovalOnConflict).mockResolvedValueOnce(true);
+      jest.mocked(stateModule.holdApproval).mockResolvedValueOnce('conflict');
 
       await callRunFullReview();
 
       expectNoRound();
-      expect(jest.mocked(stateModule.holdApprovalOnConflict)).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, 'abc123');
+      expect(jest.mocked(stateModule.holdApproval)).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', 42, 'abc123');
       expect(mockCreateReview).not.toHaveBeenCalled();
     });
 
@@ -6061,7 +6073,7 @@ describe('runFullReview orchestration', () => {
       ['a request for changes', 'REQUEST_CHANGES', false, 'failure', 'Changes requested'],
     ] as const)('reports %s that stands as the PR check in webhook mode', async (_label, verdict, held, conclusion, title) => {
       seedPush(verdict, REBASED_DIFF);
-      if (held) jest.mocked(stateModule.holdApprovalOnConflict).mockResolvedValueOnce(true);
+      if (held) jest.mocked(stateModule.holdApproval).mockResolvedValueOnce('conflict');
 
       await asDispatchedRun(callRunFullReview);
 
