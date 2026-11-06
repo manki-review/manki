@@ -271,13 +271,13 @@ describe('RoundContext', () => {
           forceReview: false,
           bypassReason: 'skip_cap',
         },
-        trigger: { event: 'issue_comment:edited:tick:FORCE_CAP_MARKER', sender: 'alice' },
+        trigger: { event: 'issue_comment:edited:settings:force', sender: 'alice' },
       },
     };
     expect(ctx.meta.cap?.priorRoundCount).toBe(5);
     expect(ctx.meta.cap?.maxAutoRounds).toBe(5);
     expect(ctx.meta.cap?.bypassReason).toBe('skip_cap');
-    expect(ctx.meta.trigger?.event).toBe('issue_comment:edited:tick:FORCE_CAP_MARKER');
+    expect(ctx.meta.trigger?.event).toBe('issue_comment:edited:settings:force');
     expect(ctx.meta.trigger?.sender).toBe('alice');
   });
 

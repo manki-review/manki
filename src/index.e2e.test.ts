@@ -4,7 +4,8 @@ import { join } from 'path';
 
 import * as core from '@actions/core';
 
-import { BOT_MARKER, CANCELLED_MARKER, FORCE_CAP_MARKER, RUN_ID_MARKER_PREFIX } from './github';
+import { BOT_MARKER, CANCELLED_MARKER, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, RUN_ID_MARKER_PREFIX } from './github';
+import { parseSettingsBlock } from './settings';
 import { _resetOctokitCache, handlePullRequest, main, runFullReview } from './index';
 import type { SendMessageOptions } from './providers';
 import { STALE_APPROVE_MARKER_PREFIX } from './state';
@@ -404,7 +405,7 @@ function reviewRound(trigger = 'pull_request:opened', force = false): Promise<vo
 
 /** Runs a second round on the same commit, as a Force review tick does. */
 function forcedRound(): Promise<void> {
-  return reviewRound('issue_comment:edited:tick:FORCE_REVIEW_MARKER', true);
+  return reviewRound('issue_comment:edited:settings:force', true);
 }
 
 /** Runs Manki on a review command that alice comments on the PR. */
@@ -416,21 +417,6 @@ function reviewCommand(): Promise<void> {
       sender: { login: 'alice', type: 'User' },
       issue: { number: PR_NUMBER, pull_request: { url: `https://api.github.com/repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}` } },
       comment: { id: 9100, body: '@manki review', author_association: 'OWNER', user: { login: 'alice', type: 'User' } },
-    },
-  });
-  return main();
-}
-
-/** Runs Manki on alice ticking the Force review box of `notice`. */
-function tickForceReview(notice: FakeComment): Promise<void> {
-  notice.body = notice.body.replace('- [ ] Force review', '- [x] Force review');
-  Object.assign(mockContext, {
-    eventName: 'issue_comment',
-    payload: {
-      action: 'edited',
-      sender: { login: 'alice', type: 'User' },
-      issue: { number: PR_NUMBER, pull_request: { url: `https://api.github.com/repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}` } },
-      comment: { id: notice.id, body: notice.body, author_association: 'NONE', user: { login: APP_LOGIN, type: 'Bot' } },
     },
   });
   return main();
@@ -464,7 +450,7 @@ describe('runFullReview end to end', () => {
   });
 
   it('approves a clean round, records it, and retires the notices the verdict makes stale', async () => {
-    const pauseNotice = `The last Manki round found a blocker that came back after a fix. Automatic review is paused. Tick the box to run another round:\n\n- [x] Force review\n\n${BOT_MARKER}\n${FORCE_CAP_MARKER}`;
+    const pauseNotice = `The last Manki round found a blocker that came back after a fix. Automatic review is paused.\n\n${BOT_MARKER}\n${REVIEW_COMPLETE_MARKER}\n${PAUSE_NOTICE_MARKER}`;
     mockGitHub.addComment(pauseNotice, APP_LOGIN);
     mockGitHub.addComment(`**Auto-approve withheld** for \`a1b2c3d\`.\n\n${STALE_APPROVE_MARKER_PREFIX}${HEAD_SHA} -->`, APP_LOGIN);
     mockGitHub.addComment(`**Auto-approve withheld** for \`0f0f0f0\`.\n\n${STALE_APPROVE_MARKER_PREFIX}${'0f'.repeat(20)} -->`, APP_LOGIN);
@@ -478,8 +464,8 @@ describe('runFullReview end to end', () => {
     expect(review).toMatchObject({ state: 'APPROVED', commit_id: HEAD_SHA });
     // Only Manki's notice for the reviewed head goes. The one for another head and a quote of the marker stay.
     expect(mockGitHub.comments.filter(c => c.body.includes(STALE_APPROVE_MARKER_PREFIX)).map(c => c.user.login)).toEqual([APP_LOGIN, 'alice']);
-    expect(mockGitHub.comments.filter(c => c.body.includes(FORCE_CAP_MARKER)).map(c => c.body)).toEqual([
-      `Automatic review was paused. Review resumed on \`a1b2c3d\`.\n\n${BOT_MARKER}\n${FORCE_CAP_MARKER}`,
+    expect(mockGitHub.comments.filter(c => c.body.includes('Automatic review')).map(c => c.body)).toEqual([
+      `Automatic review was paused. Review resumed on \`a1b2c3d\`.\n\n${BOT_MARKER}\n${REVIEW_COMPLETE_MARKER}`,
       pauseNotice,
     ]);
     expect(mockGitHub.roundContext(review)).toMatchObject({
@@ -613,29 +599,19 @@ describe('runFullReview end to end', () => {
   });
 
   describe('review command', () => {
-    it('reviews a commit only once, and replies with one Force review notice to a command on a reviewed commit', async () => {
+    it('reviews a commit only once, and shows a command on a reviewed commit as up to date in the settings block', async () => {
       await reviewCommand();
       expect(postedReviews().map(r => [r.state, r.commit_id])).toEqual([['APPROVED', HEAD_SHA]]);
-      expect(skipNotices()).toEqual([]);
+      const comments = mockGitHub.comments.length;
 
       await reviewCommand();
       await reviewCommand();
 
       expect(postedReviews()).toHaveLength(1);
-      const [notice] = skipNotices();
-      expect(skipNotices()).toHaveLength(1);
-      expect(notice.body).toContain('this commit already has a review. Force a new one:\n\n- [ ] Force review');
-
-      await tickForceReview(notice);
-
-      expect(core.setFailed).not.toHaveBeenCalled();
-      expect(postedReviews().map(r => [r.state, r.commit_id])).toEqual([['APPROVED', HEAD_SHA], ['APPROVED', HEAD_SHA]]);
-
-      // Manki answered the tick, so a later command on the commit posts a fresh notice, also after the box is unticked again.
-      notice.body = notice.body.replace('- [x] Force review', '- [ ] Force review');
-      await reviewCommand();
-      expect(postedReviews()).toHaveLength(2);
-      expect(skipNotices()).toHaveLength(2);
+      expect(skipNotices()).toEqual([]);
+      expect(mockGitHub.comments).toHaveLength(comments);
+      const blocks = mockGitHub.comments.map(c => parseSettingsBlock(c.body)).filter(b => b !== undefined);
+      expect(blocks).toEqual([expect.objectContaining({ lastReviewed: HEAD_SHA.slice(0, 7), status: 'up to date', boxes: new Set(['pause', 'full', 'deeper']) })]);
     });
 
     it('reviews a commit whose only review is incomplete', async () => {
@@ -787,8 +763,8 @@ describe('runFullReview end to end', () => {
     await handlePullRequest();
 
     expect(postedReviews().map(r => [r.state, r.commit_id])).toEqual(states.map(state => [state, HEAD_SHA]));
-    const skipped = mockGitHub.comments.some(c => c.body.includes('**Review skipped**'));
-    expect(skipped).toBe(states.length === 0);
+    // A running review shows in the settings block, so a skipped push posts no notice.
+    expect(mockGitHub.comments.some(c => c.body.includes('**Review skipped**'))).toBe(false);
     // The older run's comment is its own: the push run neither takes it as its lock nor rewrites it.
     expect(mockGitHub.comments.find(c => c.body.includes(`${RUN_ID_MARKER_PREFIX}6999 -->`))?.body).toBe(oldProgress);
     expect(mockGitHub.comments.some(c => c.body.includes(CANCELLED_MARKER))).toBe(false);

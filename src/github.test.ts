@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 
-import { ApprovalHeld, buildDashboard, titleToSlug, formatBlockingPriorThreads, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, FORCE_REVIEW_MARKER, FORCE_CAP_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings } from './github';
+import { ApprovalHeld, buildDashboard, titleToSlug, formatBlockingPriorThreads, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { paginateSinglePage, TEST_BOT } from './test-utils';
@@ -3758,26 +3758,6 @@ describe('isReviewInProgress', () => {
     expect(result).toBe(false);
   });
 
-  it('returns false when comment is a skip comment containing FORCE_REVIEW_MARKER', async () => {
-    const { octokit } = makeMockOctokit({
-      comments: [{ body: `${BOT_MARKER}\n**Review skipped**\n\n${FORCE_REVIEW_MARKER}`, user: { type: 'Bot' } }],
-    });
-
-    const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
-
-    expect(result).toBe(false);
-  });
-
-  it('returns false when comment is a cap-notice comment containing FORCE_CAP_MARKER', async () => {
-    const { octokit } = makeMockOctokit({
-      comments: [{ body: `${BOT_MARKER}\nAutomatic review is paused.\n\n- [ ] Force review\n\n${FORCE_CAP_MARKER}`, user: { type: 'Bot' } }],
-    });
-
-    const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
-
-    expect(result).toBe(false);
-  });
-
   it('returns false when the listComments API call fails', async () => {
     const octokit = {
       paginate: jest.fn(paginateSinglePage),
@@ -4437,12 +4417,10 @@ describe('findInProgressLock', () => {
     expect(findInProgressLock(comments, TEST_BOT, 42)).toBeNull();
   });
 
-  it('skips comments bearing terminal markers (complete, cancelled, force-review, force-cap)', () => {
+  it('skips comments bearing terminal markers (complete, cancelled)', () => {
     const comments = [
       botComment(1, `${makeInProgressBody(101)}\n${REVIEW_COMPLETE_MARKER}`),
       botComment(2, `${makeInProgressBody(102)}\n${CANCELLED_MARKER}`),
-      botComment(3, `${makeInProgressBody(103)}\n${FORCE_REVIEW_MARKER}`),
-      botComment(4, `${makeInProgressBody(104)}\n${FORCE_CAP_MARKER}`),
     ];
 
     expect(findInProgressLock(comments, TEST_BOT, 42)).toBeNull();
