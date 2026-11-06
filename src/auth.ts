@@ -4,7 +4,7 @@ import { createAppAuth } from '@octokit/auth-app';
 import { retry } from '@octokit/plugin-retry';
 import { throttling } from '@octokit/plugin-throttling';
 import { ACTIONS_BOT_LOGIN, BOT_LOGIN, BotIdentity } from './github';
-import { redactSecrets, registerSecret } from './utils';
+import { redactSecretsDeep, registerSecret } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -22,20 +22,11 @@ function onRateLimit(retryAfter: number, options: { method: string; url: string 
 // Request options that route a request rather than carry its text.
 const ROUTING_OPTIONS = new Set(['method', 'url', 'baseUrl', 'headers', 'request', 'mediaType']);
 
-function redactDeep(value: unknown): unknown {
-  if (typeof value === 'string') return redactSecrets(value);
-  if (Array.isArray(value)) return value.map(redactDeep);
-  if (value && Object.getPrototypeOf(value) === Object.prototype) {
-    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, redactDeep(entry)]));
-  }
-  return value;
-}
-
 /** Octokit plugin that removes Manki's own secret values from every request, so nothing Manki posts can carry one. */
 function redactRequests(octokit: Pick<Octokit, 'hook'>): void {
   octokit.hook.before('request', (options) => {
     for (const key of Object.keys(options)) {
-      if (!ROUTING_OPTIONS.has(key)) options[key] = redactDeep(options[key]);
+      if (!ROUTING_OPTIONS.has(key)) options[key] = redactSecretsDeep(options[key]);
     }
   });
 }

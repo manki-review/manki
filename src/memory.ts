@@ -4,6 +4,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { minimatch } from 'minimatch';
 
 import { Finding, FindingSeverity } from './types';
+import { redactSecrets, redactSecretsDeep } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -266,20 +267,21 @@ export async function writeLearning(
   const scope = learning.scope === 'global' ? '_global' : targetRepo;
   await updateYamlList<Learning>(octokit, memoryRepo, `${scope}/learnings.yml`, items => {
     items.push(learning);
-    return `Add learning: ${learning.content.slice(0, 50)}`;
+    return `Add learning: ${learning.content}`;
   });
 }
 
-/** Appends `line` to `<targetRepo>/<file>` in the memory repo, creating the file when it is missing. */
+/** Appends `entry` as a JSON line to `<targetRepo>/<file>` in the memory repo, creating the file when it is missing. Secret values are redacted before serializing. */
 export async function appendMemoryLine(
   octokit: Octokit,
   memoryRepo: string,
   targetRepo: string,
   file: string,
-  line: string,
+  entry: unknown,
   message: string,
 ): Promise<void> {
   const [owner, repo] = memoryRepo.split('/');
+  const line = JSON.stringify(redactSecretsDeep(entry));
   await writeFile(octokit, owner, repo, `${targetRepo}/${file}`, current => ({ content: `${current ?? ''}${line}\n`, message }));
 }
 
@@ -298,7 +300,7 @@ export async function removeLearning(
     memoryRepo,
     `${targetRepo}/learnings.yml`,
     l => l.content.toLowerCase().includes(searchLower),
-    l => `Remove learning: ${l.content.slice(0, 50)}`,
+    l => `Remove learning: ${l.content}`,
   );
 }
 
@@ -317,7 +319,7 @@ export async function removeSuppression(
     memoryRepo,
     `${targetRepo}/suppressions.yml`,
     s => s.pattern.toLowerCase().includes(searchLower),
-    s => `Remove suppression: ${s.pattern.slice(0, 50)}`,
+    s => `Remove suppression: ${s.pattern}`,
   );
 }
 
@@ -343,7 +345,7 @@ async function removeFromYamlList<T>(
 /**
  * Edits the YAML list at `path` in the memory repo. `edit` changes the list in place and returns
  * the commit message, or `null` to leave the file as it is. It runs again on fresh content after a
- * write conflict.
+ * write conflict. Secret values are redacted from each string before serializing, since a memory repo can be public.
  */
 async function updateYamlList<T>(
   octokit: Octokit,
@@ -355,7 +357,7 @@ async function updateYamlList<T>(
   await writeFile(octokit, owner, repo, path, current => {
     const items = (current === null ? null : parseYaml(current) as T[] | null) ?? [];
     const message = edit(items);
-    return message === null ? null : { content: stringifyYaml(items), message };
+    return message === null ? null : { content: stringifyYaml(redactSecretsDeep(items)), message };
   });
 }
 
@@ -384,6 +386,7 @@ async function fetchStoredFile(
 }
 
 const DEFAULT_MAX_RETRIES = 3;
+const MAX_MESSAGE_LENGTH = 72;
 
 interface FileUpdate {
   content: string;
@@ -393,6 +396,7 @@ interface FileUpdate {
 /**
  * Writes the result of `update` to `path`. `update` gets the file's current text on every attempt,
  * so a retry after a write conflict builds on the latest version. It returns `null` to skip the write.
+ * The commit message is redacted before it is shortened, so no part of a secret is published.
  */
 async function writeFile(
   octokit: Octokit,
@@ -415,7 +419,7 @@ async function writeFile(
         owner,
         repo,
         path,
-        message: next.message,
+        message: redactSecrets(next.message).slice(0, MAX_MESSAGE_LENGTH),
         content: Buffer.from(next.content).toString('base64'),
         sha,
       });

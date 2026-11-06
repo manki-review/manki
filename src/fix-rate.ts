@@ -90,7 +90,7 @@ export async function recordFixRate(
   }
 
   const routing = [...priorRounds].reverse().find(r => r.routing)?.routing;
-  const line = JSON.stringify({
+  const record = {
     pr: pr.number,
     mergedSha: pr.mergedSha,
     rounds: priorRounds.length,
@@ -98,7 +98,8 @@ export async function recordFixRate(
     counts: [...counts.values()],
     calibration: [...calibration.values()],
     ...(partial && { partial: true }),
-  });
+  };
+  const line = JSON.stringify(record);
   core.info(`Fix rate: ${line}`);
 
   try {
@@ -109,7 +110,7 @@ export async function recordFixRate(
 
   if (!memory) return;
   try {
-    await appendMemoryLine(memory.octokit, memory.repo, repo, FIX_RATE_FILE, line, `Record fix rate of ${owner}/${repo}#${pr.number}`);
+    await appendMemoryLine(memory.octokit, memory.repo, repo, FIX_RATE_FILE, record, `Record fix rate of ${owner}/${repo}#${pr.number}`);
   } catch (error) {
     core.warning(`Failed to append the fix rate to ${memory.repo}: ${sanitizeTokens(String(error))}`);
   }
