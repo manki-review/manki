@@ -89,8 +89,9 @@ const REPLY_OUTCOME = /^\**(Fixed|Agreed|Withdrawn|Unverified|Still open|Kept)\b
 const AUTHOR_FIXED = /^\**(Fixed|Applied|Added|Adopted|Addressed|Done|Switched|Restructured)\b/i;
 const AUTHOR_DECLINED = /^\**(Pushing back|Declin|Skipping|Not applied|Not fixing|Won't fix|Keeping|Leaving)/i;
 const FINDING_MARKER = /<!-- manki:[a-z]+:(\S+) -->/;
-// The posted grade would anchor a replayed judge, so the export drops the severity header and the `AI context` block.
-const SEVERITY_HEADER = /^[^\n]*\*\*(Blocker|Warning|Suggestion|Nitpick)\b[^\n]*\n*/;
+// The posted grade would anchor a replayed judge, so the export drops the severity header, a cap note under it and the
+// `AI context` block.
+const SEVERITY_HEADER = /^[^\n]*\*\*(Blocker|Warning|Suggestion|Nitpick)\b[^\n]*\n*(<sub>\[[^\]\n]*\]<\/sub>\n*)?/;
 const AI_CONTEXT_BLOCK = /<details>\s*<summary>AI context<\/summary>[\s\S]*?<\/details>/g;
 const THREAD_FIELDS = 'id path comments(first: 100) { nodes { body url author { __typename } } }';
 

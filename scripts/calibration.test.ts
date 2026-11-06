@@ -10,7 +10,7 @@ function thread(slug: string, ...replies: Array<[bot: boolean, body: string]>): 
     path: 'src/lib.rs',
     comments: [
       {
-        body: `🔴 🚫 **Blocker**: ${slug}\n\nThe text.\n\n<details>\n<summary>AI context</summary>\n\n\`\`\`json\n{ "severity": "blocker" }\n\`\`\`\n</details>\n\n<!-- manki:blocker:${slug} -->`,
+        body: `🔴 🚫 **Blocker**: ${slug}\n\n<sub>[defensive hardening — capped from suggestion]</sub>\n\nThe text.\n\n<details>\n<summary>AI context</summary>\n\n\`\`\`json\n{ "severity": "blocker" }\n\`\`\`\n</details>\n\n<!-- manki:blocker:${slug} -->`,
         bot: true,
         url: `https://github.com/o/r/pull/1#${slug}`,
       },
