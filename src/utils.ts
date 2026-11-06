@@ -50,6 +50,9 @@ export function safeJsonParse(text: string): unknown | null {
   }
 }
 
+/** Matches a variable name that holds a credential, such as `*_TOKEN`, `*_KEY` or `*_PASSWORD`. */
+export const SECRET_NAME = /(?:^|_)(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD|PASSPHRASE|PAT|CREDENTIALS?|AUTH)$/i;
+
 /**
  * Redact GitHub token literals from a string so they cannot leak into logs
  * or user-visible output.

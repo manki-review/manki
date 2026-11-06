@@ -6,7 +6,7 @@ import { StringDecoder } from 'string_decoder';
 
 import * as core from '@actions/core';
 
-import { sanitizeTokens } from '../utils';
+import { sanitizeTokens, SECRET_NAME } from '../utils';
 import { SendMessageOptions } from './types';
 
 export const STALE_TIMEOUT_MS = 90_000;
@@ -285,7 +285,6 @@ function emptyCliCwd(): string {
 
 // The OIDC endpoint lets a CLI mint an identity token, which the token service trades for an App token.
 const CLI_BLOCKED_ENV = new Set(['ACTIONS_ID_TOKEN_REQUEST_URL', 'ACTIONS_RESULTS_URL']);
-const CLI_SECRET_ENV = /(?:^|_)(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD|PASSPHRASE|PAT|CREDENTIALS?|AUTH)$/i;
 
 /**
  * Returns `env` without what a provider CLI must not see: action inputs (`INPUT_*`), the OIDC endpoint and every
@@ -293,7 +292,7 @@ const CLI_SECRET_ENV = /(?:^|_)(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD|PASSPHRASE|PA
  */
 export function cliEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   return Object.fromEntries(
-    Object.entries(env).filter(([name]) => !CLI_BLOCKED_ENV.has(name) && !/^INPUT_/i.test(name) && !CLI_SECRET_ENV.test(name)),
+    Object.entries(env).filter(([name]) => !CLI_BLOCKED_ENV.has(name) && !/^INPUT_/i.test(name) && !SECRET_NAME.test(name)),
   );
 }
 
