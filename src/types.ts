@@ -171,6 +171,8 @@ export interface Finding {
   toolSource?: string;
   /** What the deterministic claim checks and CI results say about the finding. */
   toolEvidence?: ToolEvidence;
+  /** Earlier finding this one resembles, whose fix the judge of an earlier round confirmed. */
+  resemblesFixed?: { title: string; file: string; line: number };
 }
 
 /** `none` means no tool spoke to the claim. Silence is never evidence against a finding. */

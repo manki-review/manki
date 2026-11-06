@@ -222,6 +222,8 @@ interface PreviousFinding extends FindingMetadata {
   severity: FindingSeverity | 'unknown';
   /** `auto-resolved`: Manki resolved the thread without the judge marking it `addressed`. It counts as neither dismissed nor open. */
   status: 'open' | 'resolved' | 'replied' | 'auto-resolved';
+  /** Resolved because the judge of an earlier round marked the thread `addressed`. */
+  fixed?: boolean;
   threadId?: string;
   threadUrl?: string;
   /** Slug from the thread's `<!-- manki:<severity>:<slug> -->` marker. */
@@ -461,6 +463,7 @@ async function fetchRecapState(
       lineStart: t.lineStart,
       severity: t.severity,
       status: threadStatus(t, addressedThreadIds, bot, prAuthorLogin, !!securityOverride),
+      ...(t.isResolved && addressedThreadIds.has(t.threadId) && { fixed: true }),
       threadId: t.threadId,
       threadUrl: t.threadUrl,
       ...(t.markerSlug && { markerSlug: t.markerSlug }),
@@ -882,7 +885,9 @@ function deduplicateFindings(
 
   const unique: Finding[] = [];
   const duplicates: DuplicateMatch[] = [];
-  const engaged = previousFindings.filter(f => f.status === 'resolved');
+  const resolved = previousFindings.filter(f => f.status === 'resolved');
+  // Waived priors come first, so a finding that matches both a waived and a fixed one is still dropped.
+  const engaged = [...resolved.filter(f => !f.fixed), ...resolved.filter(f => f.fixed)];
 
   for (const finding of newFindings) {
     let matched: { prev: PreviousFinding; matchType: DuplicateMatchType } | undefined;
@@ -894,7 +899,9 @@ function deduplicateFindings(
       }
     }
 
-    if (matched) {
+    if (matched?.prev.fixed) {
+      unique.push(resemblingFixed(finding, matched.prev));
+    } else if (matched) {
       duplicates.push({ finding, matchedTitle: matched.prev.title, matchType: matched.matchType });
     } else {
       unique.push(finding);
@@ -902,6 +909,12 @@ function deduplicateFindings(
   }
 
   return { unique, duplicates };
+}
+
+/** Returns `finding` with a note for the judge. A finding next to a fixed one can be a new defect, so dedup never drops it. */
+function resemblingFixed(finding: Finding, fixed: PreviousFinding): Finding {
+  core.info(`Dedup: "${finding.title}" resembles fixed "${fixed.title}", sending it to the judge`);
+  return finding.resemblesFixed ? finding : { ...finding, resemblesFixed: { title: fixed.title, file: fixed.file, line: fixed.line } };
 }
 
 /**
@@ -989,22 +1002,16 @@ async function llmDeduplicateFindings(
     }
 
     const matches = JSON.parse(jsonText) as Array<{ index: number; matchedDismissed: number }>;
-    const matchedIndices = new Set(
-      matches
-        .filter(m => m.index - 1 >= 0 && m.index - 1 < findings.length
-                  && m.matchedDismissed - 1 >= 0 && m.matchedDismissed - 1 < resolved.length)
-        .map(m => m.index - 1),
-    );
-
     const unique: Finding[] = [];
     const duplicates: DuplicateMatch[] = [];
     for (let i = 0; i < findings.length; i++) {
-      if (matchedIndices.has(i)) {
-        const match = matches.find(m => m.index - 1 === i);
-        const resolvedIdx = match ? match.matchedDismissed - 1 : -1;
-        const resolvedTitle = resolvedIdx >= 0 && resolvedIdx < resolved.length ? (resolved[resolvedIdx].title ?? 'unknown') : 'unknown';
-        core.info(`LLM dedup: "${findings[i].title}" matches earlier resolved "${resolvedTitle}"`);
-        duplicates.push({ finding: findings[i], matchedTitle: resolvedTitle, matchType: 'llm' });
+      const priors = matches.filter(m => m.index - 1 === i).map(m => resolved[m.matchedDismissed - 1]).filter(p => p !== undefined);
+      const waived = priors.find(p => !p.fixed);
+      if (waived) {
+        core.info(`LLM dedup: "${findings[i].title}" matches earlier resolved "${waived.title}"`);
+        duplicates.push({ finding: findings[i], matchedTitle: waived.title ?? 'unknown', matchType: 'llm' });
+      } else if (priors.length > 0) {
+        unique.push(resemblingFixed(findings[i], priors[0]));
       } else {
         unique.push(findings[i]);
       }

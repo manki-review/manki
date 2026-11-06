@@ -53,6 +53,12 @@ describe('deduplicateFindings', () => {
     expect(result.unique).toHaveLength(0);
     expect(result.duplicates).toHaveLength(1);
     expect(result.duplicates[0].matchType).toBe('exact');
+
+    const fixed = makePrevious({ ...previous[0], line: 40, fixed: true });
+    const kept = deduplicateFindings(findings, [fixed]);
+    expect(kept.duplicates).toHaveLength(0);
+    expect(kept.unique).toEqual([{ ...findings[0], resemblesFixed: { title: 'Missing null check', file: 'src/foo.ts', line: 40 } }]);
+    expect(deduplicateFindings(findings, [fixed, ...previous]).duplicates).toHaveLength(1);
   });
 
   it('attributes match types: exact, substring, word_overlap', () => {
@@ -1316,9 +1322,12 @@ describe('fetchRecapState', () => {
 
       const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.previousFindings.map(f => f.status)).toEqual(['resolved', 'auto-resolved', 'resolved', 'auto-resolved']);
+      expect(state.previousFindings.map(f => f.fixed ?? false)).toEqual([false, false, true, false]);
 
       const newFindings = Object.values(files).map(file => makeFinding({ title, file, line: 10 }));
-      expect(deduplicateFindings(newFindings, state.previousFindings).unique.map(f => f.file)).toEqual([files.bot, files.unknown]);
+      const { unique } = deduplicateFindings(newFindings, state.previousFindings);
+      expect(unique.map(f => f.file)).toEqual([files.bot, files.judge, files.unknown]);
+      expect(unique[1].resemblesFixed).toEqual({ title, file: files.judge, line: 10 });
       expect(collectInPrSuppressions(state.previousFindings).map(s => s.fingerprint.file)).toEqual([files.human, files.judge]);
       const resolvedThreadIds = collectResolvedThreadIds(state.previousFindings);
       expect(resolvedThreadIds).toEqual(new Set(['T_HUMAN', 'T_JUDGE']));
@@ -1403,9 +1412,9 @@ describe('fetchRecapState', () => {
       const reRaised = files.map(file => makeFinding({ severity: 'blocker', title, file, line: 10 }));
       expect(collectInPrSuppressions(state.previousFindings, 'author').map(s => s.fingerprint.file))
         .toEqual(files.filter(file => !cases[file].blocks));
-      // Dedup drops only findings on resolved threads. An agreed thread, security or not, is dropped by the in-PR suppressions above.
+      // Dedup drops only findings on resolved threads that were not confirmed fixed. An agreed thread, security or not, is dropped by the in-PR suppressions above.
       expect(deduplicateFindings(reRaised, state.previousFindings).unique.map(f => f.file))
-        .toEqual(files.filter(file => cases[file].blocks || cases[file].reply));
+        .toEqual(files.filter(file => cases[file].blocks || cases[file].reply || file === 'src/judge-addressed.ts'));
 
       // With the PR author unknown, any human resolver has write access, so a human resolution clears the thread.
       const unknownAuthor = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
@@ -2079,6 +2088,14 @@ describe('llmDeduplicateFindings', () => {
     expect(result.duplicates[0].finding.title).toBe('Missing null check');
     expect(result.duplicates[0].matchedTitle).toBe('Null safety issue');
     expect(result.duplicates[0].matchType).toBe('llm');
+
+    const fixed = makePrevious({ ...previous[0], fixed: true });
+    const kept = await llmDeduplicateFindings(findings, [fixed], mockClient);
+    expect(kept.duplicates).toHaveLength(0);
+    expect(kept.unique).toEqual([{ ...findings[0], resemblesFixed: { title: 'Null safety issue', file: 'src/foo.ts', line: 10 } }, findings[1]]);
+    jest.mocked(mockClient.sendMessage).mockResolvedValueOnce({ content: '[{ "index": 1, "matchedDismissed": 1 }, { "index": 1, "matchedDismissed": 2 }]' } as never);
+    const both = await llmDeduplicateFindings(findings, [fixed, previous[0]], mockClient);
+    expect(both.duplicates.map(d => d.finding.title)).toEqual(['Missing null check']);
   });
 
   it('handles LLM returning no matches', async () => {
