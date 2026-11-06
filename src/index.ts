@@ -156,6 +156,44 @@ async function commenterAllowed(): Promise<boolean> {
   return false;
 }
 
+/** Marks the comments Manki writes while it answers comment `commentId`. Unlike the eyes reaction, the webhook service never writes it. */
+function answeredMarker(commentId: number): string {
+  return `<!-- manki-answered:${commentId} -->`;
+}
+
+const CREATE_COMMENT = 'POST /repos/{owner}/{repo}/issues/{issue_number}/comments';
+const EDIT_COMMENT = 'PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}';
+
+/** The marker a client adds while it answers a comment, and the ids of the comments it created for that answer. */
+const answering = new WeakMap<Octokit, { marker: string; created: Set<number> }>();
+
+/**
+ * Adds `answeredMarker(commentId)` to every PR or issue comment `octokit` creates from now on, and to its later edits of
+ * those comments. An edit of an older comment keeps the marker of the answer it belongs to.
+ */
+function markAnswers(octokit: Octokit, commentId: number): void {
+  if (!answering.has(octokit)) {
+    octokit.hook.wrap('request', async (request, options) => {
+      const current = answering.get(octokit);
+      const route = `${options.method} ${options.url}`;
+      const ours = route === CREATE_COMMENT || (route === EDIT_COMMENT && !!current?.created.has(Number(options.comment_id)));
+      if (current && ours && typeof options.body === 'string' && !options.body.endsWith(current.marker)) {
+        options.body = `${options.body}\n${current.marker}`;
+      }
+      const response = await request(options);
+      if (current && route === CREATE_COMMENT) current.created.add(response.data.id);
+      return response;
+    });
+  }
+  answering.set(octokit, { marker: answeredMarker(commentId), created: new Set() });
+}
+
+/** Whether one of Manki's `comments` answers comment `commentId`. Only a marker on the last line counts, since a comment can quote user text. */
+function isAnswered(comments: Awaited<ReturnType<typeof fetchPRComments>>, bot: BotIdentity, commentId: number): boolean {
+  const marker = answeredMarker(commentId);
+  return comments.some(c => isBotLogin(bot, c.user?.login) && c.body?.trimEnd().endsWith(marker));
+}
+
 async function run(): Promise<void> {
   const eventName = github.context.eventName;
   const action = github.context.payload.action;
@@ -206,27 +244,22 @@ async function run(): Promise<void> {
       core.info('Comment does not mention Manki — ignoring');
       return;
     }
-    // For edited comments, check if we already processed this comment (has eyes reaction)
-    if (action === 'edited') {
-      const commentId = github.context.payload.comment?.id;
-      if (commentId) {
+    const commentId = github.context.payload.comment?.id;
+    const issueNumber = github.context.payload.issue?.number;
+    if (commentId && issueNumber) {
+      const { octokit, bot } = await getAuth();
+      const { owner, repo } = github.context.repo;
+      if (action === 'edited') {
         try {
-          const { octokit, bot } = await getAuth();
-          const { owner, repo } = github.context.repo;
-          const { data: reactions } = await octokit.rest.reactions.listForIssueComment({
-            owner, repo, comment_id: commentId,
-          });
-          const alreadyProcessed = reactions.some(r =>
-            r.content === 'eyes' && isBotLogin(bot, r.user?.login)
-          );
-          if (alreadyProcessed) {
-            core.info('Edited comment already processed (has eyes reaction) — skipping');
+          if (isAnswered(await fetchPRComments(octokit, owner, repo, issueNumber), bot, commentId)) {
+            core.info('Manki already answered this comment, skipping the edit');
             return;
           }
-        } catch {
-          // If we can't check reactions, proceed anyway
+        } catch (error) {
+          core.warning(`Could not check whether Manki already answered comment ${commentId}, handling the edit: ${error instanceof Error ? error.message : error}`);
         }
       }
+      markAnswers(octokit, commentId);
     }
   } else if (eventName === 'pull_request_review_comment') {
     if (action !== 'created') {
@@ -310,11 +343,11 @@ async function postReviewSkippedComment(
       ? `**Review skipped** for \`${shortSha}\`: a review is already in progress. Retry when it completes, or force one now:`
       : `**Review skipped** for \`${shortSha}\`: this commit already has a review. Force a new one:`;
     const text = `${line}\n\n- [ ] Force review`;
-    // A commit keeps one unticked already-reviewed notice. One that carries an eyes reaction, from a tick Manki answered, is never
-    // reused, since Manki ignores a later tick on it.
+    // A commit keeps one unticked already-reviewed notice. One whose tick Manki answered is never reused, since Manki ignores
+    // a later tick on it.
     if (reason === 'already_reviewed') {
       const comments = await fetchPRComments(octokit, owner, repo, prNumber);
-      if (comments.some(c => isBotLogin(bot, c.user?.login) && c.body?.startsWith(text) && !c.reactions?.eyes)) {
+      if (comments.some(c => isBotLogin(bot, c.user?.login) && c.body?.startsWith(text) && !isAnswered(comments, bot, c.id))) {
         core.info(`An unticked already-reviewed notice for ${shortSha} is on the PR, posting no other`);
         return;
       }

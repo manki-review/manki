@@ -41,6 +41,10 @@ const mockGraphql = jest.fn().mockResolvedValue({ resolveReviewThread: { thread:
 
 const mockCreateReview = jest.fn().mockResolvedValue({ data: { id: 777 } });
 
+type RequestOptions = { method: string; url: string; body: string; comment_id?: number };
+type RequestHook = (request: (options: RequestOptions) => Promise<{ data: { id: number } }>, options: RequestOptions) => Promise<unknown>;
+const requestHooks: RequestHook[] = [];
+
 const mockOctokitInstance = {
   rest: {
     pulls: { get: mockPullsGet, listReviews: mockListReviews, createReview: mockCreateReview },
@@ -48,6 +52,7 @@ const mockOctokitInstance = {
     reactions: { listForIssueComment: mockListReactionsForIssueComment },
   },
   graphql: mockGraphql,
+  hook: { wrap: jest.fn((_name: string, hook: RequestHook) => { requestHooks.push(hook); }) },
 };
 
 jest.mock('./auth', () => ({
@@ -542,37 +547,14 @@ describe('run', () => {
       expect(jest.mocked(interaction.handlePRComment)).toHaveBeenCalled();
     });
 
-    it('skips edited comments that already have eyes reaction from bot', async () => {
+    it('skips an edited comment that one of its comments already answers', async () => {
       jest.mocked(interaction.hasBotMention).mockReturnValue(true);
       jest.mocked(interaction.isReviewRequest).mockReturnValue(true);
-      mockListReactionsForIssueComment.mockResolvedValueOnce({
-        data: [{ content: 'eyes', user: { login: 'manki-review[bot]' } }],
-      });
-
-      setContext({
-        eventName: 'issue_comment',
-        payload: {
-          action: 'edited',
-          sender: { login: 'user' },
-          comment: { body: '@manki review', id: 99 },
-          issue: { number: 5, pull_request: { url: 'https://...' } },
-        },
-      });
-
-      await run();
-
-      expect(jest.mocked(core.info)).toHaveBeenCalledWith(
-        'Edited comment already processed (has eyes reaction) — skipping',
-      );
-      expect(jest.mocked(ghUtils.reactToIssueComment)).not.toHaveBeenCalled();
-    });
-
-    it('processes edited comments that have no eyes reaction from bot', async () => {
-      jest.mocked(interaction.hasBotMention).mockReturnValue(true);
-      jest.mocked(interaction.isReviewRequest).mockReturnValue(true);
-      mockListReactionsForIssueComment.mockResolvedValueOnce({
-        data: [{ content: 'heart', user: { login: 'some-user' } }],
-      });
+      jest.mocked(ghUtils.fetchPRComments).mockResolvedValueOnce([
+        { id: 7, body: 'Forged <!-- manki-answered:99 -->', user: { login: 'mallory' } },
+        { id: 6, body: 'Quoted <!-- manki-answered:99 --> text\n<!-- manki-answered:98 -->', user: { login: 'manki-review[bot]' } },
+        { id: 8, body: '**Review started**\n<!-- manki-answered:99 -->', user: { login: 'manki-review[bot]' } },
+      ] as Awaited<ReturnType<typeof ghUtils.fetchPRComments>>);
 
       setContext({
         eventName: 'issue_comment',
@@ -586,8 +568,85 @@ describe('run', () => {
 
       await run();
 
-      // Should proceed to handle the comment (reactToIssueComment is called in handleCommentTrigger)
+      expect(jest.mocked(ghUtils.fetchPRComments)).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 5);
+      expect(jest.mocked(core.info)).toHaveBeenCalledWith('Manki already answered this comment, skipping the edit');
+      expect(jest.mocked(ghUtils.reactToIssueComment)).not.toHaveBeenCalled();
+    });
+
+    it('handles an edited comment that only carries its eyes reaction, or whose answers cannot be read', async () => {
+      jest.mocked(interaction.hasBotMention).mockReturnValue(true);
+      jest.mocked(interaction.isReviewRequest).mockReturnValue(true);
+      mockListReactionsForIssueComment.mockResolvedValueOnce({
+        data: [{ content: 'eyes', user: { login: 'manki-review[bot]' } }],
+      });
+      jest.mocked(ghUtils.fetchPRComments).mockResolvedValueOnce([
+        { id: 8, body: 'Quoted <!-- manki-answered:99 --> text\n<!-- manki-answered:98 -->', user: { login: 'manki-review[bot]' } },
+      ] as Awaited<ReturnType<typeof ghUtils.fetchPRComments>>);
+
+      setContext({
+        eventName: 'issue_comment',
+        payload: {
+          action: 'edited',
+          sender: { login: 'user' },
+          comment: { body: '@manki review', id: 99, author_association: 'COLLABORATOR' },
+          issue: { number: 5, pull_request: { url: 'https://...' } },
+        },
+      });
+
+      await run();
+
+      expect(jest.mocked(ghUtils.reactToIssueComment)).toHaveBeenCalledWith(
+        expect.anything(), 'test-owner', 'test-repo', 99, 'eyes',
+      );
+
+      jest.mocked(ghUtils.reactToIssueComment).mockClear();
+      jest.mocked(ghUtils.fetchPRComments).mockRejectedValueOnce(new Error('Server Error'));
+      await run();
+
+      expect(jest.mocked(core.warning)).toHaveBeenCalledWith('Could not check whether Manki already answered comment 99, handling the edit: Server Error');
       expect(jest.mocked(ghUtils.reactToIssueComment)).toHaveBeenCalled();
+    });
+
+    it('marks the comments Manki writes while it answers a comment, with one hook per client', async () => {
+      jest.mocked(interaction.hasBotMention).mockReturnValue(true);
+      jest.mocked(interaction.isReviewRequest).mockReturnValue(true);
+
+      setContext({
+        eventName: 'issue_comment',
+        payload: {
+          action: 'created',
+          sender: { login: 'user' },
+          comment: { body: '@manki review', id: 41, author_association: 'COLLABORATOR' },
+          issue: { number: 5, pull_request: { url: 'https://...' } },
+        },
+      });
+
+      await run();
+      setContext({
+        eventName: 'issue_comment',
+        payload: {
+          action: 'created',
+          sender: { login: 'user' },
+          comment: { body: '@manki review', id: 42, author_association: 'COLLABORATOR' },
+          issue: { number: 5, pull_request: { url: 'https://...' } },
+        },
+      });
+      await run();
+
+      expect(requestHooks).toHaveLength(1);
+      const write = async (method: string, url: string, body: string, commentId?: number) => {
+        const options = { method, url, body, comment_id: commentId };
+        await requestHooks[0](async () => ({ data: { id: 500 } }), options);
+        return options.body;
+      };
+      const comments = '/repos/{owner}/{repo}/issues/{issue_number}/comments';
+      const comment = '/repos/{owner}/{repo}/issues/comments/{comment_id}';
+      expect(await write('POST', comments, 'Hi')).toBe('Hi\n<!-- manki-answered:42 -->');
+      expect(await write('PATCH', comment, 'Done', 500)).toBe('Done\n<!-- manki-answered:42 -->');
+      expect(await write('PATCH', comment, 'Done\n<!-- manki-answered:42 -->', 500)).toBe('Done\n<!-- manki-answered:42 -->');
+      expect(await write('PATCH', comment, 'Quoted <!-- manki-answered:42 --> text', 500)).toBe('Quoted <!-- manki-answered:42 --> text\n<!-- manki-answered:42 -->');
+      expect(await write('PATCH', comment, 'Superseded\n<!-- manki-answered:41 -->', 7)).toBe('Superseded\n<!-- manki-answered:41 -->');
+      expect(await write('POST', '/repos/{owner}/{repo}/pulls/{pull_number}/reviews', 'Review')).toBe('Review');
     });
 
     it('routes bot mention on issue (not PR) to handleIssueInteraction', async () => {

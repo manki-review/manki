@@ -161,6 +161,9 @@ class FakeGitHub {
       this.comments.push(comment);
       return json(comment, 201);
     }
+    if (method === 'GET' && route === `/issues/${PR_NUMBER}`) {
+      return json({ number: PR_NUMBER, pull_request: { url: `https://api.github.com/repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}` }, user: { login: 'alice', type: 'User' } });
+    }
     if ((match = route.match(/^\/issues\/comments\/(\d+)\/reactions$/))) {
       const comment = this.comments.find(c => c.id === Number(match![1]));
       if (!comment) return json({ message: 'Not Found' }, 404);
@@ -171,6 +174,13 @@ class FakeGitHub {
     if ((match = route.match(/^\/issues\/comments\/(\d+)$/))) {
       const index = this.comments.findIndex(c => c.id === Number(match![1]));
       if (index === -1) return json({ message: 'Not Found' }, 404);
+      if (method === 'GET') {
+        const comment = this.comments[index];
+        return json({
+          ...comment, node_id: `IC_${comment.id}`, author_association: comment.user.type === 'Bot' ? 'NONE' : 'OWNER',
+          issue_url: `https://api.github.com/repos/${OWNER}/${REPO}/issues/${PR_NUMBER}`,
+        });
+      }
       if (method === 'DELETE') {
         this.comments.splice(index, 1);
         return new Response(null, { status: 204 });
@@ -222,8 +232,10 @@ class FakeGitHub {
     return thread;
   }
 
-  addComment(body: string, login: string, at = new Date(Date.now() - 3_600_000).toISOString()): void {
-    this.comments.push({ id: this.nextId++, body, user: { login, type: login.endsWith('[bot]') ? 'Bot' : 'User' }, created_at: at, updated_at: at });
+  addComment(body: string, login: string, at = new Date(Date.now() - 3_600_000).toISOString()): FakeComment {
+    const comment = { id: this.nextId++, body, user: { login, type: login.endsWith('[bot]') ? 'Bot' : 'User' }, created_at: at, updated_at: at };
+    this.comments.push(comment);
+    return comment;
   }
 
   addReview(body: string, state: string, commitId: string, login: string): FakeReview {
@@ -276,6 +288,10 @@ class FakeGitHub {
       const page = connection(this.threads, 100, after(variables.cursor));
       const nodes = page.nodes.map(t => ({ ...t, comments: connection(t.comments, 10, 0) }));
       return { repository: { pullRequest: { reviewThreads: { ...page, nodes } } } };
+    }
+    if (query.includes('... on IssueComment')) {
+      const comment = this.comments.find(c => `IC_${c.id}` === variables.id);
+      return { node: comment && { editor: { login: comment.user.login.replace(/\[bot\]$/, ''), __typename: comment.user.type } } };
     }
     if (query.includes('node(id: $threadId)')) {
       const thread = this.threads.find(t => t.id === variables.threadId);
@@ -864,6 +880,23 @@ describe('runFullReview end to end', () => {
       expect(ready.body.startsWith(`${held}\n\n\u2705 **Approved.**`)).toBe(true);
       expect(mockGitHub.roundContext(ready)).toMatchObject({ meta: { outcome: 'READY' }, verdict: 'APPROVE' });
       expect(mockGitHub.comments.filter(c => c.body.startsWith(held))).toEqual([]);
+    });
+
+    it('answers a command once, and an edit only when it adds the command', async () => {
+      const command = mockGitHub.addComment('@manki help', 'alice');
+      const thanks = mockGitHub.addComment('Thanks for the review.', 'alice');
+      const answers = () => mockGitHub.comments.filter(c => c.user.login === APP_LOGIN).map(c => c.body.match(/<!-- manki-answered:(\d+) -->/)?.[1]);
+
+      await dispatch({ event: 'issue_comment', action: 'created', pr: String(PR_NUMBER), comment_id: String(command.id) });
+      expect(answers()).toEqual([String(command.id)]);
+
+      command.body = '@manki help me with the commands';
+      await dispatch({ event: 'issue_comment', action: 'edited', pr: String(PR_NUMBER), comment_id: String(command.id) });
+      thanks.body = 'Thanks for the review. @manki help';
+      await dispatch({ event: 'issue_comment', action: 'edited', pr: String(PR_NUMBER), comment_id: String(thanks.id) });
+
+      expect(core.setFailed).not.toHaveBeenCalled();
+      expect(answers()).toEqual([String(command.id), String(thanks.id)]);
     });
 
     it('answers a reply in a Manki thread as the person who wrote it', async () => {
