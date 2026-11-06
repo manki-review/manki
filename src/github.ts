@@ -939,14 +939,6 @@ function isOnChangedLine(finding: Finding, diff: ParsedDiff): boolean {
   return !!diffFile && isLineInDiff(diffFile, finding.line);
 }
 
-/** Whether a finding sits on code that the inter-round diff did not touch. */
-function isOnUnchangedCode(finding: Finding, interRoundDiff: ParsedDiff): boolean {
-  if (!finding.file) return false;
-  const diffFile = interRoundDiff.files.find(df => df.path === finding.file);
-  if (!diffFile) return true;
-  return finding.line > 0 && !isLineInDiff(diffFile, finding.line);
-}
-
 function inlineCode(text: string): string {
   const longestRun = (text.match(/`+/g) ?? []).reduce((max, run) => Math.max(max, run.length), 0);
   const ticks = '`'.repeat(longestRun + 1);
@@ -994,13 +986,13 @@ function formatFindingBlock(finding: Finding, linkTo: LineLink): string {
   return lines.join('\n');
 }
 
-function formatSmallerFindings(entries: string[], unpostedCount: number): string | null {
+function formatSmallerFindings(entries: string[], previouslyMissed: string[]): string | null {
   const parts: string[] = [];
   if (entries.length > 0) {
     parts.push(`<details>\n<summary>${countOf(entries.length, 'smaller fix', 'smaller fixes')} in this PR</summary>\n\n${entries.join('\n\n')}\n\n</details>`);
   }
-  if (unpostedCount > 0) {
-    parts.push(`${countOf(unpostedCount, 'smaller fix', 'smaller fixes')} on code unchanged since the last review ${unpostedCount === 1 ? 'is' : 'are'} not listed.`);
+  if (previouslyMissed.length > 0) {
+    parts.push(`<details>\n<summary>Previously missed: ${countOf(previouslyMissed.length, 'smaller fix', 'smaller fixes')}</summary>\n\nThese sit on code an earlier review already covered. None of them blocks.\n\n${previouslyMissed.join('\n\n')}\n\n</details>`);
   }
   return parts.length > 0 ? parts.join('\n\n') : null;
 }
@@ -1071,7 +1063,7 @@ export async function postReview(
   diff?: ParsedDiff,
   context?: RoundContext,
   reviewTimeMs?: number,
-  { interRoundDiff, existingThreads = [] }: { interRoundDiff?: ParsedDiff; existingThreads?: PreviousFinding[] } = {},
+  { existingThreads = [] }: { existingThreads?: PreviousFinding[] } = {},
 ): Promise<{ id: number; approvalHeld: boolean }> {
   const event = mapVerdictToEvent(result.verdict);
 
@@ -1081,16 +1073,16 @@ export async function postReview(
   const generalFindings: string[] = [];
   const smallerFindings: string[] = [];
   const stillOpen: string[] = [];
-  let unpostedCount = 0;
+  const previouslyMissed: string[] = [];
   const nonBlocking: Finding[] = [];
   const linkTo = buildLineLink(owner, repo, commitSha, github.context.serverUrl);
 
   for (const f of result.findings) {
     if (!isBlockingFinding(f)) {
-      if (!isFollowUp(f) && interRoundDiff && isOnUnchangedCode(f, interRoundDiff)) {
-        unpostedCount++;
-      } else if (hasOpenThread(f, existingThreads)) {
+      if (hasOpenThread(f, existingThreads)) {
         core.info(`Skipping "${f.title}" on ${f.file}: an open thread already carries it`);
+      } else if (f.origin === 'reviewed') {
+        previouslyMissed.push(formatFindingBlock(f, linkTo));
       } else {
         nonBlocking.push(f);
       }
@@ -1174,7 +1166,7 @@ export async function postReview(
     if (invalidComments.length > 0) {
       b += `\n\n**Blockers in files outside this diff:**\n\n${invalidComments.join('\n\n')}`;
     }
-    const smaller = formatSmallerFindings(smallerFindings, unpostedCount);
+    const smaller = formatSmallerFindings(smallerFindings, previouslyMissed);
     if (smaller) {
       b += `\n\n${smaller}`;
     }

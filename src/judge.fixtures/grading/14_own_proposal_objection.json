@@ -1,0 +1,26 @@
+{
+  "name": "own-proposal-objection",
+  "case": "own-proposal-objection",
+  "allowed": [
+    "ignore"
+  ],
+  "finding": {
+    "title": "Timeout floor overrides a configured value",
+    "file": "src/client.ts",
+    "line": 21,
+    "description": "`Math.max(..., 1000)` raises any configured timeout below one second to 1000 ms, so a user who sets `timeoutMs: 200` silently gets a slower timeout than asked for.",
+    "severity": "warning",
+    "reviewers": [
+      "Correctness"
+    ],
+    "suggestedFix": "Honour the configured value: `const timeoutMs = Number(config.timeoutMs) || 1000;`"
+  },
+  "prDiff": "diff --git a/src/client.ts b/src/client.ts\nindex 1111111..2222222 100644\n--- a/src/client.ts\n+++ b/src/client.ts\n@@ -20,3 +20,3 @@\n export function createClient(config: ClientConfig): Client {\n-  const timeoutMs = Number(config.timeoutMs);\n+  const timeoutMs = Math.max(Number(config.timeoutMs) || 0, 1000);\n   return new Client({ timeoutMs });\n",
+  "priorRound": {
+    "commitSha": "priorsha",
+    "severity": "warning",
+    "title": "A zero timeout makes every request fail at once",
+    "suggestedFix": "const timeoutMs = Math.max(Number(config.timeoutMs) || 0, 1000);"
+  },
+  "interRoundDiff": "diff --git a/src/client.ts b/src/client.ts\nindex 1111111..2222222 100644\n--- a/src/client.ts\n+++ b/src/client.ts\n@@ -20,3 +20,3 @@\n export function createClient(config: ClientConfig): Client {\n-  const timeoutMs = Number(config.timeoutMs);\n+  const timeoutMs = Math.max(Number(config.timeoutMs) || 0, 1000);\n   return new Client({ timeoutMs });\n"
+}

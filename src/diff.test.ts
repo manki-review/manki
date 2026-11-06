@@ -8,9 +8,10 @@ import {
   isDiffTooLarge,
   isSameChange,
   rebuildRawDiff,
+  tagFindingOrigins,
 } from './diff';
 import { DEFAULT_CONFIG } from './config';
-import { DiffFile, ParsedDiff } from './types';
+import { DiffFile, Finding, ParsedDiff } from './types';
 
 // -- Test fixtures --
 
@@ -358,6 +359,72 @@ describe('isSameChange', () => {
     expect(isSameChange(MULTI_FILE_DIFF, MULTI_FILE_DIFF.replace(' line2', ' line2 from base'), [])).toBe(false);
     expect(isSameChange(MULTI_FILE_DIFF, GENERATED_FIRST_DIFF, [])).toBe(false);
     expect(isSameChange(MULTI_FILE_DIFF, `${BINARY_FILE_DIFF}${MULTI_FILE_DIFF}`, [])).toBe(false);
+  });
+});
+
+describe('tagFindingOrigins', () => {
+  const change = (path: string, start: number, lines: string[], oldPath?: string): string =>
+    `diff --git a/${oldPath ?? path} b/${path}\n--- a/${oldPath ?? path}\n+++ b/${path}\n@@ -${start},1 +${start},${lines.length + 1} @@\n ctx\n${lines.map(l => `+${l}`).join('\n')}\n`;
+  const finding = (file: string, line: number): Finding => ({ severity: 'suggestion', title: 't', file, line, description: 'd', reviewers: [] });
+  const tag = (findings: Finding[], current: string, prior?: string) => {
+    tagFindingOrigins(findings, parsePRDiff(current), prior === undefined ? undefined : parsePRDiff(prior));
+    return findings.map(f => f.origin);
+  };
+
+  it('tags every finding new without an earlier change, as on a first or full review', () => {
+    expect(tag([finding('src/a.ts', 11), finding('src/b.ts', 1), finding('', 0)], change('src/a.ts', 10, ['x']))).toEqual(['new', 'new', 'new']);
+  });
+
+  it('compares added lines by text, so a rebase that moves them keeps them reviewed', () => {
+    const prior = change('src/a.ts', 10, ['one', 'two', 'three']);
+    const rebased = change('src/a.ts', 40, ['one', 'two', 'three']);
+    expect(tag([finding('src/a.ts', 42), finding('src/b.ts', 3)], rebased, prior)).toEqual(['reviewed', 'reviewed']);
+  });
+
+  it('tags a finding new within three lines of a line added since, and on a renamed file by its old path', () => {
+    const prior = `${change('src/a.ts', 10, ['one', 'two'])}${change('src/old.ts', 1, ['kept'])}`;
+    const current = `${change('src/a.ts', 10, ['one', 'two', 'fresh', 'two'])}${change('src/new.ts', 1, ['kept'], 'src/old.ts')}`;
+    // `fresh` is line 13 and the second `two` line 14, a duplicate the prior change added once.
+    expect(tag([
+      finding('src/a.ts', 16), finding('src/a.ts', 18), finding('src/a.ts', 10), finding('src/a.ts', 0), finding('src/new.ts', 2), finding('src/new.ts', 0),
+    ], current, prior)).toEqual(['new', 'reviewed', 'new', 'new', 'reviewed', 'reviewed']);
+  });
+
+  it('tags a finding new near code removed or restored since: a base line the PR removed or put back, or a line it added before and dropped or moved', () => {
+    const removal = (path: string, start: number, removed: string, kept: string[]): string =>
+      `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -${start},${kept.length + 2} +${start},${kept.length + 1} @@\n ctx\n-${removed}\n${kept.map(l => ` ${l}`).join('\n')}\n`;
+    const prior = change('src/a.ts', 10, ['guard', 'body']);
+    // The PR now also removes `if (!user) return;` from the base, which sits at line 11 of the new file.
+    const removesBaseLine = `${change('src/a.ts', 10, ['guard', 'body'])}${removal('src/b.ts', 10, 'if (!user) return;', ['use(user);'])}`;
+    expect(tag([finding('src/b.ts', 11), finding('src/b.ts', 20)], removesBaseLine, prior)).toEqual(['new', 'reviewed']);
+
+    // The PR dropped its own `guard` line. Only the diff between the two commits says where it was.
+    const droppedOwnLine = change('src/a.ts', 10, ['body']);
+    const interRound = removal('src/a.ts', 10, 'guard', ['body']);
+    const findings = [finding('src/a.ts', 11)];
+    tagFindingOrigins(findings, parsePRDiff(droppedOwnLine), parsePRDiff(prior), parsePRDiff(interRound));
+    expect(findings[0].origin).toBe('new');
+    expect(tag([finding('src/a.ts', 11)], droppedOwnLine, prior)).toEqual(['reviewed']);
+
+    // The PR puts back a base line it removed before, so `src/b.ts` drops out of its change.
+    const priorRemoval = removal('src/b.ts', 10, 'if (!user) return;', ['use(user);']);
+    const restored = change('src/b.ts', 10, ['if (!user) return;']);
+    const restoredFindings = [finding('src/b.ts', 11), finding('src/b.ts', 30)];
+    tagFindingOrigins(restoredFindings, parsePRDiff(change('src/a.ts', 10, ['x'])), parsePRDiff(priorRemoval), parsePRDiff(restored));
+    expect(restoredFindings.map(f => f.origin)).toEqual(['new', 'reviewed']);
+
+    // The PR moved its own `guard` line below `body`. The current change adds the same text, so only the diff between the commits shows it.
+    const moved = change('src/a.ts', 10, ['body', 'guard']);
+    const movedInterRound = `diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -10,3 +10,3 @@\n ctx\n-guard\n body\n+guard\n`;
+    const movedFindings = [finding('src/a.ts', 12), finding('src/a.ts', 20)];
+    tagFindingOrigins(movedFindings, parsePRDiff(moved), parsePRDiff(prior), parsePRDiff(movedInterRound));
+    expect(movedFindings.map(f => f.origin)).toEqual(['new', 'reviewed']);
+
+    // A rebase brings in a base line `}` that the PR also adds elsewhere. It sits on a line the PR does not add, so it stays reviewed.
+    const rebaseInterRound = `diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,1 +1,2 @@\n ctx\n+}\n`;
+    const rebaseFindings = [finding('src/a.ts', 2)];
+    tagFindingOrigins(rebaseFindings, parsePRDiff(change('src/a.ts', 10, ['guard', 'body', '}'])), parsePRDiff(change('src/a.ts', 10, ['guard', 'body', '}'])), parsePRDiff(rebaseInterRound));
+    expect(rebaseFindings[0].origin).toBe('reviewed');
   });
 });
 

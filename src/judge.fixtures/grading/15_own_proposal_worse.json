@@ -1,0 +1,27 @@
+{
+  "name": "own-proposal-worse",
+  "case": "own-proposal-worse",
+  "allowed": [
+    "warning",
+    "blocker"
+  ],
+  "finding": {
+    "title": "A request without `limit` now returns no items",
+    "file": "src/routes/items.ts",
+    "line": 9,
+    "description": "The new line drops the `?? 20` default. When a client omits `limit`, `Number(undefined)` is `NaN` and `Math.min(NaN, 100)` is `NaN`, so `findMany({ take: NaN })` returns no items. Before this change a request without `limit` returned the first 20 items.",
+    "severity": "blocker",
+    "reviewers": [
+      "Correctness"
+    ],
+    "suggestedFix": "const limit = Math.min(Number(req.query.limit ?? 20), 100);"
+  },
+  "prDiff": "diff --git a/src/routes/items.ts b/src/routes/items.ts\nindex 1111111..2222222 100644\n--- a/src/routes/items.ts\n+++ b/src/routes/items.ts\n@@ -8,4 +8,4 @@\n export async function listItems(req: Request, res: Response) {\n-  const limit = Number(req.query.limit ?? 20);\n+  const limit = Math.min(Number(req.query.limit), 100);\n   const items = await db.items.findMany({ take: limit });\n   res.json(items);\n",
+  "priorRound": {
+    "commitSha": "priorsha",
+    "severity": "warning",
+    "title": "Unbounded `limit` lets a client fetch every row",
+    "suggestedFix": "const limit = Math.min(Number(req.query.limit), 100);"
+  },
+  "interRoundDiff": "diff --git a/src/routes/items.ts b/src/routes/items.ts\nindex 1111111..2222222 100644\n--- a/src/routes/items.ts\n+++ b/src/routes/items.ts\n@@ -8,4 +8,4 @@\n export async function listItems(req: Request, res: Response) {\n-  const limit = Number(req.query.limit ?? 20);\n+  const limit = Math.min(Number(req.query.limit), 100);\n   const items = await db.items.findMany({ take: limit });\n   res.json(items);\n"
+}

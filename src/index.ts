@@ -13,7 +13,7 @@ import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, 
 import { extractCurrentCodeWindow } from './code-window';
 import { recordFixRate } from './fix-rate';
 import { dispatchedNumber, isDispatchedRun, restoreDispatchedEvent } from './dispatch';
-import { addCodeContext, changeDigest, parsePRDiff, filterDiff, filterRawDiff, isDiffTooLarge, rebuildRawDiff } from './diff';
+import { addCodeContext, changeDigest, parsePRDiff, filterDiff, filterRawDiff, isDiffTooLarge, rebuildRawDiff, tagFindingOrigins } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, RepoMemory } from './memory';
@@ -987,10 +987,13 @@ async function collectOpenThreads(
   return { openThreads, fileContents };
 }
 
-/** Fetches the diff since the last reviewed commit, the issues the PR body links, and the static analysis results. */
+/**
+ * Fetches the diff since the last reviewed commit, the PR's change at that commit, the issues the PR body links,
+ * and the static analysis results.
+ */
 async function collectRoundSignals(
   target: RunTarget, config: ReviewConfig, recap: RecapState, diff: ParsedDiff, fullDiff: ParsedDiff, configPath: string, prBody?: string,
-): Promise<{ interRoundDiff?: string; linkedIssues?: LinkedIssue[]; staticSignals: StaticSignal[]; staticAnalysis?: RoundStaticAnalysis }> {
+): Promise<{ interRoundDiff?: string; priorChange?: ParsedDiff; linkedIssues?: LinkedIssue[]; staticSignals: StaticSignal[]; staticAnalysis?: RoundStaticAnalysis }> {
   const { octokit, owner, repo, prNumber, commitSha, baseRef } = target;
   // Fetch inter-round diff (prior round commit -> current head) so the judge
   // can ground per-thread resolution in actual changes since last review.
@@ -1008,10 +1011,21 @@ async function collectRoundSignals(
     ? fetchInterRoundDiff(octokit, owner, repo, lastPriorSha, commitSha)
       .then(raw => filterRawDiff(raw, config.exclude_paths))
     : Promise.resolve(undefined);
+  // The base branch diffed against the prior commit gives the PR's own change then, without what a rebase brought in.
+  const priorChangePromise: Promise<ParsedDiff | undefined> = !lastPriorSha || lastPriorSha === commitSha
+    ? Promise.resolve(lastPriorSha ? diff : undefined)
+    : fetchInterRoundDiff(octokit, owner, repo, baseRef, lastPriorSha)
+      .then(raw => filterDiff(parsePRDiff(raw), config.exclude_paths).diff);
   const linkedIssuesPromise = prBody
     ? fetchLinkedIssues(octokit, owner, repo, prBody)
     : Promise.resolve(undefined);
-  const [diffResult, linkedIssuesResult] = await Promise.allSettled([diffPromise, linkedIssuesPromise]);
+  const [diffResult, priorChangeResult, linkedIssuesResult] = await Promise.allSettled([diffPromise, priorChangePromise, linkedIssuesPromise]);
+  let priorChange: ParsedDiff | undefined;
+  if (priorChangeResult.status === 'fulfilled') {
+    priorChange = priorChangeResult.value;
+  } else {
+    core.warning(`Failed to fetch the PR's change at the last reviewed commit, so every finding counts as new: ${priorChangeResult.reason}`);
+  }
 
   if (shouldFetchDiff) {
     if (diffResult.status === 'fulfilled') {
@@ -1036,7 +1050,7 @@ async function collectRoundSignals(
   }
 
   const { signals: staticSignals, record: staticAnalysis } = await staticSignalsPromise;
-  return { interRoundDiff, linkedIssues, staticSignals, staticAnalysis };
+  return { interRoundDiff, priorChange, linkedIssues, staticSignals, staticAnalysis };
 }
 
 /** Runs the review pipeline and mirrors its progress on the dashboard in the progress comment. */
@@ -1229,11 +1243,8 @@ function blockOnOpenThreads(result: ReviewResult, threads: OpenThread[]): void {
 
 /** Posts the round's review and dismisses the previous one. Returns the new review's id, and whether its approval was held. */
 async function postRound(run: ReviewRun, result: ReviewResult, context: RoundContext, reviewTimeMs: number): Promise<{ id: number; approvalHeld: boolean }> {
-  const { octokit, owner, repo, prNumber, commitSha, diff, recap, interRoundDiff } = run;
-  const hasPriorRounds = recap.priorRounds.length > 0;
-  const parsedInterRoundDiff = hasPriorRounds && interRoundDiff !== undefined ? parsePRDiff(interRoundDiff) : undefined;
+  const { octokit, owner, repo, prNumber, commitSha, diff, recap } = run;
   const posted = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, context, reviewTimeMs, {
-    interRoundDiff: parsedInterRoundDiff,
     existingThreads: recap.previousFindings,
   });
   await replacePreviousReviews(run, run.progress, posted.id);
@@ -1483,7 +1494,7 @@ async function runFullReview(
     const countsTowardCap = isNewChange({ commitSha, changeDigest: changeDigest(diff, config.exclude_paths) }, recap.priorRounds.at(-1));
 
     const { openThreads, fileContents } = await collectOpenThreads(target, recap, diff);
-    const { interRoundDiff, linkedIssues, staticSignals, staticAnalysis } = await collectRoundSignals(target, config, recap, diff, fullDiff, configPath, prContext?.body);
+    const { interRoundDiff, priorChange, linkedIssues, staticSignals, staticAnalysis } = await collectRoundSignals(target, config, recap, diff, fullDiff, configPath, prContext?.body);
 
     const run: ReviewRun = {
       ...target, options, trigger, config, reviewSource, models, plannerEnabled: !!clients.planner,
@@ -1526,6 +1537,7 @@ async function runFullReview(
     }
 
     addCodeContext(result.findings, diff);
+    tagFindingOrigins(result.findings, diff, priorChange, interRoundDiff ? parsePRDiff(interRoundDiff) : undefined);
     const reviewTimeMs = Date.now() - startTime;
     const buildContext = () => buildRoundContext(run, result, {
       plannerDurationMs: dashboard.plannerDurationMs,

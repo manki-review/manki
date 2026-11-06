@@ -390,6 +390,8 @@ A rare internal edge case needs a state that only the code's own logic produces,
 
 A finding that matches one under Prior Round Findings or Prior Blockers keeps the grade it had. Change the grade only when the code at that spot changed or you have evidence the earlier round did not have, and say which in \`reasoning\`. Reading the same code again is not new evidence.
 
+**No flip-flops.** A finding marked **Applies an earlier Manki fix** sits on code that applies a fix Manki asked for in an earlier round. Mark it \`ignore\` when it objects to that change. Keep it only when the new code is worse than the code it replaced, for example because it adds a defect, and grade that defect as usual.
+
 ## Security Defects
 
 **A security defect that outside input can trigger is a \`blocker\`, however unlikely it looks.** Security is serious damage under test 3, and the attacker decides whether it happens, so rarity never lowers the grade. In code that handles pull requests, attacker-controlled input is anything a PR author or commenter can write: PR content and diffs, file contents, comments and replies, branch names, and config read from the PR. The classes are:
@@ -571,7 +573,7 @@ export function buildJudgeUserMessage(
   priorRounds?: RoundContext[],
   interRoundDiff?: string,
   prDiff?: string,
-  criticalArea: (file: string) => string | undefined = () => undefined,
+  findingNotes: (finding: Finding) => string[] = () => [],
 ): string {
   const parts: string[] = [];
 
@@ -735,10 +737,7 @@ export function buildJudgeUserMessage(
       }
     }
 
-    const area = criticalArea(f.file);
-    if (area) {
-      parts.push(`- **Critical area**: \`${area}\``);
-    }
+    parts.push(...findingNotes(f));
 
     if (f.suggestedFix) {
       parts.push(`- **Suggested fix**: ${sanitizeForPromptEmbed(f.suggestedFix)}`);
@@ -993,7 +992,15 @@ export async function runJudgeAgent(
 
   const systemPrompt = buildJudgeSystemPrompt(config, agentCount, isFollowUp, openThreads?.length ?? 0);
   const { classes } = resolveRouting(config.review);
-  const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads, priorRounds, interRoundDiff, rawDiff, file => criticalAreaOf(classes, file));
+  const findingNotes = (f: Finding): string[] => {
+    const area = criticalAreaOf(classes, f.file);
+    const fix = ownProposalOf(f, provenanceMap);
+    return [
+      ...(area ? [`- **Critical area**: \`${area}\``] : []),
+      ...(fix ? [`- **Applies an earlier Manki fix**: round ${fix.originatingRound} asked for this change in "${sanitizeForPromptEmbed(fix.originatingTitle)}".`] : []),
+    ];
+  };
+  const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads, priorRounds, interRoundDiff, rawDiff, findingNotes);
 
   const effort = input.effort ?? 'high';
   let judgeResult = await sendWithParseRetry(
@@ -1234,28 +1241,26 @@ function foldDuplicates(findings: Finding[], judged: Array<JudgedFinding | undef
   return result.filter((_, i) => !folded.has(i));
 }
 
-/**
- * Demote findings that flag code implementing a prior-round `suggestedFix`.
- * A reachable blocker bug introduced by the fix itself is preserved. Only
- * caveat-level concerns are capped to nitpick.
- */
-function applyOwnProposal(finding: Finding, provenanceMap?: ProvenanceEntry[]): void {
-  if (!provenanceMap || provenanceMap.length === 0) return;
-
-  const match = provenanceMap.find(entry =>
+/** Returns the prior-round fix that the code under `finding` applies, if any. */
+function ownProposalOf(finding: Finding, provenanceMap?: ProvenanceEntry[]): ProvenanceEntry | undefined {
+  return provenanceMap?.find(entry =>
     entry.file === finding.file &&
     finding.line >= entry.lineStart &&
     finding.line <= entry.lineEnd,
   );
+}
+
+/**
+ * Drops a finding below `warning` on code that applies a prior-round `suggestedFix`, so Manki does not
+ * object to a change it asked for. A `warning` or `blocker` there means the new code is worse, and it stays.
+ */
+function applyOwnProposal(finding: Finding, provenanceMap?: ProvenanceEntry[]): void {
+  const match = ownProposalOf(finding, provenanceMap);
   if (!match) return;
+  if (finding.severity !== 'suggestion' && finding.severity !== 'nitpick') return;
 
-  if (finding.severity === 'ignore') return;
-  if (finding.severity === 'blocker') return;
-
-  if (finding.severity !== 'nitpick') {
-    finding.originalSeverity ??= finding.severity;
-    finding.severity = 'nitpick';
-  }
+  finding.originalSeverity ??= finding.severity;
+  finding.severity = 'ignore';
 
   finding.tags = addTag(finding.tags, OWN_PROPOSAL_TAG);
 

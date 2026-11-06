@@ -3349,26 +3349,21 @@ describe('postReview non-blocking findings', () => {
     expect(review.body).not.toContain('Extract helper');
   });
 
-  it('counts non-blocking findings on code the inter-round diff did not change', async () => {
+  it('lists smaller findings on reviewed code as previously missed, and keeps a blocker there inline', async () => {
     const { octokit, createReview } = makeOctokit();
-    const interRoundDiff: ParsedDiff = {
-      files: [{ path: 'src/a.ts', changeType: 'modified', hunks: [{ oldStart: 10, oldLines: 2, newStart: 10, newLines: 3, content: '' }] }],
-      totalAdditions: 1,
-      totalDeletions: 0,
-    };
 
     await postReview(octokit, 'owner', 'repo', 1, 'sha', buildResult([
-      nonBlocking('suggestion', 'On new code', 11),
-      nonBlocking('suggestion', 'On old code', 3),
-      nonBlocking('nitpick', 'Untouched file', 3, { file: 'src/b.ts' }),
-      nonBlocking('blocker', 'Old blocker', 3),
-    ]), diff, undefined, undefined, { interRoundDiff });
+      nonBlocking('suggestion', 'On new code', 11, { origin: 'new' }),
+      nonBlocking('suggestion', 'On old code', 3, { origin: 'reviewed' }),
+      nonBlocking('nitpick', 'Untouched file', 3, { file: 'src/b.ts', origin: 'reviewed' }),
+      nonBlocking('blocker', 'Old blocker', 3, { origin: 'reviewed' }),
+    ]), diff);
 
     const review = createReview.mock.calls[0][0];
     expect(review.comments.map((c: { body: string }) => c.body.split('\n')[0])).toEqual(['\u{1F6AB} **Blocker:** Old blocker', '\u2728 **Suggestion, not blocking:** On new code']);
-    expect(review.body).not.toContain('On old code');
-    expect(review.body).not.toContain('Untouched file');
-    expect(review.body).toContain('2 smaller fixes on code unchanged since the last review are not listed.');
+    expect(review.body).toContain('<summary>Previously missed: 2 smaller fixes</summary>\n\nThese sit on code an earlier review already covered. None of them blocks.\n\n**On old code**\n');
+    expect(review.body).toContain('**Untouched file**\n[`src/b.ts:3`]');
+    expect(review.body).not.toMatch(/not listed|smaller fix(es)? in this PR/);
   });
 });
 

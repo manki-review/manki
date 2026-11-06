@@ -2058,7 +2058,7 @@ describe('runJudgeAgent', () => {
     expect(result.summary).toBe('One surviving finding.');
   });
 
-  it('demotes and tags a finding when priorRounds contain matching suggestedFix in rawDiff', async () => {
+  it('marks a finding on code that applies an earlier Manki fix for the judge, and drops it below warning', async () => {
     const suggestedFix = 'const clamped = Math.min(value, Number.MAX_SAFE_INTEGER);';
     const diffFile = 'src/utils.ts';
     const diffStartLine = 10;
@@ -2104,8 +2104,11 @@ describe('runJudgeAgent', () => {
     };
 
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
+    const [systemPrompt, userMessage] = mockSendMessage.mock.calls[0];
+    expect(systemPrompt).toContain('**No flip-flops.**');
+    expect(userMessage).toContain('- **Applies an earlier Manki fix**: round 1 asked for this change in "Clamp value to safe integer".');
     expect(result.findings).toHaveLength(1);
-    expect(result.findings[0].severity).toBe('nitpick');
+    expect(result.findings[0].severity).toBe('ignore');
     expect(result.findings[0].originalSeverity).toBe('suggestion');
     expect(result.findings[0].tags).toContain('own-proposal-followup');
     expect(result.findings[0].judgeNotes).toContain('Own-proposal follow-up: implements round 1 finding "Clamp value to safe integer"');
@@ -3045,7 +3048,7 @@ describe('mapJudgedToFindings', () => {
   });
 });
 
-describe('mapJudgedToFindings own-proposal demotion', () => {
+describe('mapJudgedToFindings own-proposal drop', () => {
   const makeProvenance = (overrides: Partial<ProvenanceEntry> = {}): ProvenanceEntry => ({
     file: 'src/index.ts',
     lineStart: 5,
@@ -3055,41 +3058,17 @@ describe('mapJudgedToFindings own-proposal demotion', () => {
     ...overrides,
   });
 
-  it('demotes a suggestion finding that overlaps prior-round proposal to nit and tags it', () => {
+  it.each(['suggestion', 'nitpick'] as const)('drops a %s that objects to a prior-round proposal and tags it', (severity) => {
     const originals = [makeFinding({ title: 'Missing bounds check', severity: 'suggestion', line: 10 })];
     const judged: JudgedFinding[] = [
-      { title: 'Missing bounds check', severity: 'suggestion', reasoning: 'Caveat concern.', confidence: 'high' },
+      { title: 'Missing bounds check', severity, reasoning: 'Caveat concern.', confidence: 'high' },
     ];
 
     const result = mapJudgedToFindings(originals, judged, [makeProvenance()]);
-    expect(result[0].severity).toBe('nitpick');
-    expect(result[0].originalSeverity).toBe('suggestion');
+    expect(result[0].severity).toBe('ignore');
+    expect(result[0].originalSeverity).toBe(severity);
     expect(result[0].tags).toEqual(['own-proposal-followup']);
     expect(result[0].judgeNotes).toContain('Own-proposal follow-up: implements round 2 finding "Clamp future time"');
-  });
-
-  it('demotes a suggestion finding that overlaps to nit', () => {
-    const originals = [makeFinding({ title: 'Naming nit', severity: 'suggestion', line: 8 })];
-    const judged: JudgedFinding[] = [
-      { title: 'Naming nit', severity: 'suggestion', reasoning: 'Cleaner name.', confidence: 'medium' },
-    ];
-
-    const result = mapJudgedToFindings(originals, judged, [makeProvenance()]);
-    expect(result[0].severity).toBe('nitpick');
-    expect(result[0].originalSeverity).toBe('suggestion');
-    expect(result[0].tags).toEqual(['own-proposal-followup']);
-  });
-
-  it('tags a nit finding without setting originalSeverity', () => {
-    const originals = [makeFinding({ title: 'Style nit', severity: 'suggestion', line: 12 })];
-    const judged: JudgedFinding[] = [
-      { title: 'Style nit', severity: 'nitpick', reasoning: 'Tiny.', confidence: 'low' },
-    ];
-
-    const result = mapJudgedToFindings(originals, judged, [makeProvenance()]);
-    expect(result[0].severity).toBe('nitpick');
-    expect(result[0].originalSeverity).toBeUndefined();
-    expect(result[0].tags).toEqual(['own-proposal-followup']);
   });
 
   it('does not tag an ignore finding that overlaps provenance', () => {
@@ -3104,14 +3083,14 @@ describe('mapJudgedToFindings own-proposal demotion', () => {
     expect(result[0].originalSeverity).toBeUndefined();
   });
 
-  it('does not demote a blocker (concrete bug guard)', () => {
+  it.each(['warning', 'blocker'] as const)('keeps a %s, which means the new code is worse', (severity) => {
     const originals = [makeFinding({ title: 'Confirmed bug', severity: 'suggestion', line: 10 })];
     const judged: JudgedFinding[] = [
-      { title: 'Confirmed bug', severity: 'blocker', reasoning: 'Real.', confidence: 'high' },
+      { title: 'Confirmed bug', severity, reasoning: 'Real.', confidence: 'high' },
     ];
 
     const result = mapJudgedToFindings(originals, judged, [makeProvenance()]);
-    expect(result[0].severity).toBe('blocker');
+    expect(result[0].severity).toBe(severity);
     expect(result[0].originalSeverity).toBeUndefined();
     expect(result[0].tags).toBeUndefined();
   });
@@ -3128,17 +3107,6 @@ describe('mapJudgedToFindings own-proposal demotion', () => {
     const result = mapJudgedToFindings(originals, judged, [makeProvenance()]);
     expect(result[0].severity).toBe('suggestion');
     expect(result[0].tags).toBeUndefined();
-  });
-
-  it('demotes a suggestion finding (guard only exempts blockers)', () => {
-    const originals = [makeFinding({ title: 'Style issue', severity: 'suggestion', line: 9 })];
-    const judged: JudgedFinding[] = [
-      { title: 'Style issue', severity: 'suggestion', reasoning: 'Minor.', confidence: 'medium' },
-    ];
-
-    const result = mapJudgedToFindings(originals, judged, [makeProvenance()]);
-    expect(result[0].severity).toBe('nitpick');
-    expect(result[0].tags).toContain('own-proposal-followup');
   });
 
   it('leaves findings outside the provenance range unchanged', () => {
@@ -3165,7 +3133,7 @@ describe('mapJudgedToFindings own-proposal demotion', () => {
     expect(result[0].tags).toHaveLength(2);
   });
 
-  it('demotes the surviving finding when the judge marks a duplicate', () => {
+  it('drops the surviving finding when the judge marks a duplicate', () => {
     const originals = [
       makeFinding({ title: 'Clamp A', severity: 'blocker', line: 10, reviewers: ['R1'] }),
       makeFinding({ title: 'Clamp A missing', severity: 'suggestion', line: 10, reviewers: ['R2'] }),
@@ -3177,7 +3145,7 @@ describe('mapJudgedToFindings own-proposal demotion', () => {
 
     const result = mapJudgedToFindings(originals, judged, [makeProvenance()]);
     expect(result).toHaveLength(1);
-    expect(result[0].severity).toBe('nitpick');
+    expect(result[0].severity).toBe('ignore');
     expect(result[0].originalSeverity).toBe('suggestion');
     expect(result[0].tags).toEqual(['own-proposal-followup']);
   });
@@ -4595,6 +4563,8 @@ const GRADING_CASES = [
   'severe-on-internal-value',
   'removed-guard',
   'security-with-todo',
+  'own-proposal-objection',
+  'own-proposal-worse',
 ] as const;
 
 const BLOCKER_CASES: readonly string[] = ['passes-all-tests', 'severe-on-internal-value', 'removed-guard', 'security-with-todo'];
@@ -4605,22 +4575,42 @@ interface GradingFixture {
   allowed: FindingSeverity[];
   finding: Finding;
   prDiff: string;
-  priorRound?: { commitSha: string; severity: FindingSeverity; title: string };
+  priorRound?: { commitSha: string; severity: FindingSeverity; title: string; suggestedFix?: string };
   interRoundDiff?: string;
+}
+
+const PRIOR_ROUND_CASES: readonly string[] = ['grade-stable', 'own-proposal-objection', 'own-proposal-worse'];
+
+/** The fixture's prior round, with its one finding at the fixture finding's line. */
+function gradingPriorRounds({ finding, priorRound }: GradingFixture): RoundContext[] | undefined {
+  return priorRound && [roundContextFromLegacy({
+    round: 1,
+    commitSha: priorRound.commitSha,
+    timestamp: '2025-01-01T00:00:00Z',
+    findings: [{
+      fingerprint: { file: finding.file, lineStart: finding.line, lineEnd: finding.line, slug: titleToSlug(priorRound.title) },
+      severity: priorRound.severity,
+      title: priorRound.title,
+      authorReply: 'none',
+      ...(priorRound.suggestedFix && { suggestedFix: priorRound.suggestedFix }),
+    }],
+  })];
 }
 
 describe('judge grading fixture corpus', () => {
   const fixtures = loadFixtures<GradingFixture>('grading');
 
-  it('covers each blocker test failing alone, each never-a-blocker case, grade stability and the blocker edge cases, once each', () => {
+  it('covers each blocker test failing alone, each never-a-blocker case, grade stability, the blocker edge cases and objections to an applied Manki fix, once each', () => {
     expect(fixtures.map(f => f.case).sort()).toEqual([...GRADING_CASES].sort());
   });
 
-  it.each(fixtures)('fixture $name claims a blocker on a diff line, and allows one only when all tests pass', (fixture) => {
+  it.each(fixtures)('fixture $name points at a diff line, and allows a blocker only when all tests pass', (fixture) => {
     expect(extractCodeContext(fixture.finding, parsePRDiff(fixture.prDiff))).toContain(`>>> ${fixture.finding.line}:`);
-    expect(fixture.allowed.includes('blocker')).toBe(BLOCKER_CASES.includes(fixture.case));
-    expect(fixture.finding.severity).toBe('blocker');
-    expect(fixture.priorRound !== undefined).toBe(fixture.case === 'grade-stable');
+    expect(fixture.allowed.includes('blocker')).toBe(BLOCKER_CASES.includes(fixture.case) || fixture.case === 'own-proposal-worse');
+    expect(fixture.priorRound !== undefined).toBe(PRIOR_ROUND_CASES.includes(fixture.case));
+    const appliesFix = computeProvenanceMap(gradingPriorRounds(fixture), fixture.prDiff)
+      .some(e => e.file === fixture.finding.file && fixture.finding.line >= e.lineStart && fixture.finding.line <= e.lineEnd);
+    expect(appliesFix).toBe(fixture.case.startsWith('own-proposal-'));
   });
 
   // Live replay against a real LLM, gated like the thread-evaluation corpus above.
@@ -4628,21 +4618,10 @@ describe('judge grading fixture corpus', () => {
   const liveModel = process.env.JUDGE_LIVE_MODEL ?? 'claude-opus-5-5';
   (runLive ? it : it.skip).each(fixtures)('live judge grades $name within its allowed grades', async (fixture) => {
     const client = new AnthropicClient({ auth: { kind: 'oauth', token: '' }, model: liveModel });
-    const { finding, priorRound } = fixture;
-    const priorRounds = priorRound && [roundContextFromLegacy({
-      round: 1,
-      commitSha: priorRound.commitSha,
-      timestamp: '2025-01-01T00:00:00Z',
-      findings: [{
-        fingerprint: { file: finding.file, lineStart: finding.line, lineEnd: finding.line, slug: titleToSlug(priorRound.title) },
-        severity: priorRound.severity,
-        title: priorRound.title,
-        authorReply: 'none',
-      }],
-    })];
+    const priorRounds = gradingPriorRounds(fixture);
 
     const result = await runJudgeAgent(client, makeConfig(), {
-      findings: [finding],
+      findings: [fixture.finding],
       diff: parsePRDiff(fixture.prDiff),
       rawDiff: fixture.prDiff,
       repoContext: '',

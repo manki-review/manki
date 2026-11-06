@@ -122,6 +122,7 @@ jest.mock('./diff', () => {
     filterRawDiff: jest.fn((rawDiff: string) => rawDiff),
     isDiffTooLarge: jest.fn().mockReturnValue(false),
     addCodeContext: jest.requireActual('./diff').addCodeContext,
+    tagFindingOrigins: jest.requireActual('./diff').tagFindingOrigins,
     isSameChange: jest.requireActual('./diff').isSameChange,
     changeDigest: jest.requireActual('./diff').changeDigest,
     rebuildRawDiff: jest.requireActual('./diff').rebuildRawDiff,
@@ -2337,7 +2338,7 @@ describe('runFullReview orchestration', () => {
       expect.anything(),
       expect.anything(),
       expect.anything(),
-      expect.objectContaining({ interRoundDiff: undefined, existingThreads: [] }),
+      expect.objectContaining({ existingThreads: [] }),
     );
     // Outputs set
     expect(jest.mocked(core.setOutput)).toHaveBeenCalledWith('verdict', 'REQUEST_CHANGES');
@@ -3892,6 +3893,8 @@ describe('runFullReview orchestration', () => {
       reviewerSeverity: 'suggestion', judgeConfidence: 'high', judgeNotes: `The name matches the module convention. ${'Detail. '.repeat(100)}`,
     }]);
     expect(rc!.findings.entries.map(e => [e.toolEvidence, e.toolSource])).toEqual([['contradicted', undefined], ['confirmed', 'CodeQL']]);
+    // A first round has no earlier change to compare with, so every finding is new.
+    expect(rc!.findings.entries.map(e => e.origin)).toEqual(['new', 'new']);
     const entry = rc!.findings.entries[0];
     expect(entry.judgeNotes).toBe('Reachable only under shutdown');
     expect(entry.judgeConfidence).toBe('medium');
@@ -4815,7 +4818,8 @@ describe('runFullReview orchestration', () => {
 
     await callRunFullReview();
 
-    expect(jest.mocked(ghUtils.fetchInterRoundDiff)).toHaveBeenCalledTimes(1);
+    // One call for the diff since the prior commit, one for the PR's change at that commit.
+    expect(jest.mocked(ghUtils.fetchInterRoundDiff)).toHaveBeenCalledTimes(2);
     const runReviewArgs = jest.mocked(reviewModule.runReview).mock.calls[0][1];
     const passedInterRoundDiff = runReviewArgs.interRoundDiff;
     expect(passedInterRoundDiff).toBe('');
@@ -4943,7 +4947,7 @@ describe('runFullReview orchestration', () => {
     expect(runReviewArgs.linkedIssues).toEqual([
       { number: 7, title: 'Linked issue', body: 'Issue body' },
     ]);
-    expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)?.[9]?.interRoundDiff).toBeUndefined();
+    expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining('so every finding counts as new'));
   });
 
   it('handles linked issues fetch rejection while inter-round diff fetch fulfills', async () => {
@@ -4972,7 +4976,8 @@ describe('runFullReview orchestration', () => {
     expect(jest.mocked(diffModule.parsePRDiff)).toHaveBeenCalledWith(
       'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
     );
-    expect(jest.mocked(ghUtils.postReview).mock.calls.at(-1)?.[9]?.interRoundDiff).toBeDefined();
+    // The PR's change at the prior commit comes from the base branch diffed against that commit.
+    expect(jest.mocked(ghUtils.fetchInterRoundDiff)).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', expect.any(String), 'prior-sha');
   });
 
   it('handles both inter-round diff and linked issues fetch rejecting simultaneously', async () => {
@@ -5012,7 +5017,7 @@ describe('runFullReview orchestration', () => {
       { title: 'Test PR', body: '', baseBranch: 'main' },
     );
 
-    expect(jest.mocked(ghUtils.fetchInterRoundDiff)).toHaveBeenCalledTimes(1);
+    expect(jest.mocked(ghUtils.fetchInterRoundDiff)).toHaveBeenCalledTimes(2);
     expect(jest.mocked(ghUtils.fetchLinkedIssues)).not.toHaveBeenCalled();
     const runReviewArgs = jest.mocked(reviewModule.runReview).mock.calls[0][1];
     expect(runReviewArgs.interRoundDiff).toBe(
@@ -5154,7 +5159,7 @@ describe('runFullReview orchestration', () => {
     await callRunFullReview();
 
     expect(jest.mocked(ghUtils.markProgressCommentSuperseded)).toHaveBeenCalledTimes(outcome === 'superseded' ? 1 : 0);
-    expect(jest.mocked(ghUtils.fetchInterRoundDiff)).toHaveBeenCalledTimes(1);
+    expect(jest.mocked(ghUtils.fetchInterRoundDiff)).toHaveBeenCalledTimes(2);
     expect(jest.mocked(diffModule.filterDiff)).toHaveBeenCalledWith(expect.anything(), ['dist/**']);
     expect(jest.mocked(diffModule.filterRawDiff)).toHaveBeenCalledWith(
       'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
