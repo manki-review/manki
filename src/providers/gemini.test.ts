@@ -360,7 +360,7 @@ describe('GeminiClient OAuth path', () => {
 
     const result = await client.sendMessage('system', 'user');
     expect(result.content).toBe('hello there');
-    expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 });
+    expect(result.usage).toBeUndefined();
     expect(result.latencyMs).toBeGreaterThanOrEqual(0);
   });
 

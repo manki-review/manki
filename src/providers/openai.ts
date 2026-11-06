@@ -245,7 +245,6 @@ export class OpenAIClient implements LLMClient {
     core.debug(sanitizeLogOutput(content.slice(0, 200)));
     return {
       content,
-      usage: { ...ZERO_USAGE },
       latencyMs: Date.now() - startTime,
       model: this.model,
     };

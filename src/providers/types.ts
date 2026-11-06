@@ -15,8 +15,6 @@ export interface LLMResponse {
   latencyMs?: number;
   /** Model that answered. */
   model?: string;
-  /** Whether a fallback model answered after a safety filter refused the stage's own model. */
-  fallback?: boolean;
   /** Whether the provider reports that the output stopped at its token limit. Unset when the provider does not expose a stop reason. */
   truncated?: boolean;
 }
@@ -99,7 +97,7 @@ export interface LLMCall extends LLMUsage {
   failed?: boolean;
   error?: string;
   durationMs: number;
-  /** Estimate at public API prices, `null` for a model without a known price. */
+  /** Estimate at public API prices, `null` when the model has no known price or the provider reported no usage. */
   costUsd: number | null;
   /** Tool steps the call took. Left out until reviewers have tools. */
   toolSteps?: ToolStep[];
@@ -113,7 +111,7 @@ export interface UsageSummary extends LLMUsage {
   durationMs: number;
   /** Estimate at public API prices, over the calls whose model has a known price. */
   estimatedCostUsd: number;
-  /** Calls left out of `estimatedCostUsd` because their model has no known price. */
+  /** Successful calls left out of `estimatedCostUsd`: their model has no known price, or their provider reported no usage. */
   unpricedCalls: number;
 }
 

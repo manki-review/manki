@@ -4265,8 +4265,8 @@ describe('withRefusalFallback', () => {
     const onFallback = jest.fn();
     const client = withRefusalFallback(primary, fallback, onFallback);
 
-    await expect(client.sendMessage('sys', 'first', { effort: 'low' })).resolves.toEqual({ content: 'ok', fallback: true });
-    await expect(client.sendMessage('sys', 'second')).resolves.toEqual({ content: 'ok', fallback: true });
+    await expect(client.sendMessage('sys', 'first', { effort: 'low' })).resolves.toEqual({ content: 'ok' });
+    await expect(client.sendMessage('sys', 'second')).resolves.toEqual({ content: 'ok' });
     expect(primary.sendMessage).toHaveBeenCalledTimes(1);
     expect(jest.mocked(fallback.sendMessage).mock.calls).toEqual([['sys', 'first', { effort: 'low' }], ['sys', 'second', undefined]]);
     expect(onFallback).toHaveBeenCalledTimes(1);
@@ -4300,28 +4300,34 @@ describe('withRefusalFallback', () => {
 describe('recordCalls', () => {
   const usage = { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 200, cacheWriteTokens: 300, reasoningTokens: 0 };
 
-  it('records each call with its model, effort, attempt, tokens and cost, failed and fallback calls included', async () => {
+  it('records each call with its model, effort, attempt, tokens and cost, refused, failed and fallback calls included', async () => {
     const primary = { sendMessage: jest.fn()
       .mockResolvedValueOnce({ content: 'ok', usage, latencyMs: 40, model: 'claude-opus-5-5' })
-      .mockRejectedValueOnce(new Error('timed out')) } as unknown as LLMClient;
+      .mockRejectedValueOnce(new Error('timed out'))
+      .mockResolvedValueOnce({ content: 'ok', latencyMs: 5, model: 'claude-opus-5-5' }) } as unknown as LLMClient;
     const refusing = { sendMessage: jest.fn().mockRejectedValue(new RefusalError('declined', 'refusal (cyber)')) } as unknown as LLMClient;
     const fallback = { sendMessage: jest.fn().mockResolvedValue({ content: 'ok', usage, latencyMs: 60, model: 'gpt-5' }) } as unknown as LLMClient;
     const calls: LLMCall[] = [];
+    const finder = { stage: 'reviewer', agent: 'Finder' };
 
     const judge = recordCalls(primary, { stage: 'judge' }, calls);
     await judge.sendMessage('sys', 'user', { effort: 'high' });
     await expect(judge.sendMessage('sys', 'user')).rejects.toThrow('timed out');
-    await recordCalls(withRefusalFallback(refusing, fallback, () => {}), { stage: 'reviewer', agent: 'Finder' }, calls).sendMessage('sys', 'user');
+    await judge.sendMessage('sys', 'user');
+    await withRefusalFallback(recordCalls(refusing, finder, calls), recordCalls(fallback, { ...finder, fallback: true }, calls), () => {}).sendMessage('sys', 'user');
 
+    const none = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 };
     expect(calls).toEqual([
       { stage: 'judge', effort: 'high', attempt: 1, model: 'claude-opus-5-5', durationMs: 40, ...usage, costUsd: (500 * 4 + 200 * 0.2 + 300 * 5 + 100 * 20) / 1_000_000 },
-      { stage: 'judge', attempt: 2, failed: true, error: 'timed out', durationMs: expect.any(Number), inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, costUsd: null },
-      { stage: 'reviewer', agent: 'Finder', attempt: 1, model: 'gpt-5', fallback: true, durationMs: 60, ...usage, costUsd: null },
+      { stage: 'judge', attempt: 2, failed: true, error: 'timed out', durationMs: expect.any(Number), ...none, costUsd: null },
+      { stage: 'judge', attempt: 3, model: 'claude-opus-5-5', durationMs: 5, ...none, costUsd: null },
+      { ...finder, attempt: 1, failed: true, error: 'declined', durationMs: expect.any(Number), ...none, costUsd: null },
+      { ...finder, fallback: true, attempt: 2, model: 'gpt-5', durationMs: 60, ...usage, costUsd: null },
     ]);
     expect(summarizeCalls(calls)).toEqual({
-      calls: 3, failedCalls: 1, unpricedCalls: 1,
+      calls: 5, failedCalls: 2, unpricedCalls: 2,
       inputTokens: 2000, outputTokens: 200, cacheReadTokens: 400, cacheWriteTokens: 600, reasoningTokens: 0, totalTokens: 2200,
-      durationMs: 100 + calls[1].durationMs,
+      durationMs: 105 + calls[1].durationMs + calls[3].durationMs,
       estimatedCostUsd: calls[0].costUsd,
     });
   });

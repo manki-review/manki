@@ -502,11 +502,14 @@ export async function runReview(
   const provenanceMap = computeProvenanceMap(priorRounds, rawDiff);
   const modelFallbacks: RoundModelFallback[] = [];
   const llmCalls: LLMCall[] = [];
-  const withFallback = ({ client, fallback }: StageClient, stage: RoundModelFallback['stage'], agent?: string): LLMClient =>
-    recordCalls(withSignal(withRefusalFallback(client, fallback?.client, (error) => {
+  const withFallback = ({ client, fallback }: StageClient, stage: RoundModelFallback['stage'], agent?: string): LLMClient => {
+    const label = { stage, ...(agent && { agent }) };
+    const recordedFallback = fallback && recordCalls(fallback.client, { ...label, fallback: true }, llmCalls);
+    return withSignal(withRefusalFallback(recordCalls(client, label, llmCalls), recordedFallback, (error) => {
       core.warning(`A safety filter refused the ${agent ?? stage} call (${error.reason}), sending it again on ${fallback!.model}`);
       modelFallbacks.push({ stage, ...(agent && { agent }), fallbackModel: fallback!.model, reason: error.reason });
-    }), signal), { stage, ...(agent && { agent }) }, llmCalls);
+    }), signal);
+  };
   let plannerResult: PlannerResult | null = null;
   let plannerUsage: LLMUsage | undefined;
   let plannerDurationMs: number | undefined;

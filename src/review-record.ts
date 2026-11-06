@@ -30,9 +30,10 @@ export function formatReplyRecord(record: ReplyRecord): string {
   return `<!-- manki-reply-record: ${sanitizeHtmlCommentJson(recordJson(record))} -->`;
 }
 
-/** Returns the JSON text of every reply record in a comment body. */
+/** Returns the JSON text of the reply record in a comment body. Manki writes it last, so an earlier one is quoted text. */
 export function extractReplyRecords(body: string): string[] {
-  return [...body.matchAll(REPLY_RE)].map(m => m[1]);
+  const last = [...body.matchAll(REPLY_RE)].at(-1);
+  return last ? [last[1]] : [];
 }
 
 /** Serializes a record with secrets and tokens redacted, since nothing that scans posted text can see inside a compressed one. */

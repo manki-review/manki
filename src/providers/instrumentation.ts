@@ -55,7 +55,7 @@ export function withRefusalFallback(
           refused = true;
         }
       }
-      return { ...(await fallback.sendMessage(sys, user, opts)), fallback: true };
+      return fallback.sendMessage(sys, user, opts);
     },
     ...(client.warmupCLI ? { warmupCLI: client.warmupCLI.bind(client) } : {}),
   };
@@ -71,7 +71,7 @@ export function withSignal(client: LLMClient, signal: AbortSignal | undefined): 
 }
 
 /** Appends one `LLMCall` to `calls` for every request sent through the returned client, failed ones included. */
-export function recordCalls(client: LLMClient, label: { stage: string; agent?: string }, calls: LLMCall[]): LLMClient {
+export function recordCalls(client: LLMClient, label: { stage: string; agent?: string; fallback?: true }, calls: LLMCall[]): LLMClient {
   return {
     sendMessage: async (...args) => {
       const opts = args[2];
@@ -84,10 +84,9 @@ export function recordCalls(client: LLMClient, label: { stage: string; agent?: s
         calls.push({
           ...base,
           ...(response.model && { model: response.model }),
-          ...(response.fallback && { fallback: true }),
           durationMs: response.latencyMs ?? Date.now() - start,
           ...usage,
-          costUsd: response.model ? estimateCostUsd(response.model, usage) : null,
+          costUsd: response.model && response.usage ? estimateCostUsd(response.model, usage) : null,
         });
         return response;
       } catch (error) {
