@@ -17,6 +17,8 @@ export interface LLMResponse {
   model?: string;
   /** Whether the provider reports that the output stopped at its token limit. Unset when the provider does not expose a stop reason. */
   truncated?: boolean;
+  /** The tools the model called while it answered, in order. Unset when it called none. */
+  toolSteps?: ToolStep[];
 }
 
 /**
@@ -99,7 +101,7 @@ export interface LLMCall extends LLMUsage {
   durationMs: number;
   /** Estimate at public API prices, `null` when the model has no known price or the provider reported no usage. */
   costUsd: number | null;
-  /** Tool steps the call took. Left out until reviewers have tools. */
+  /** Tool steps the call took. Unset when it took none. */
   toolSteps?: ToolStep[];
 }
 

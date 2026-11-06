@@ -473,8 +473,11 @@ describe('sendViaOAuth — error paths', () => {
     expect(readdirSync(cwd)).toEqual([]);
   });
 
-  it('gives the CLI read-only tools on the repository and Manki\'s tool server when asked for them', async () => {
-    setupSpawnMock({ stdout: 'ok' });
+  it('gives the CLI read-only tools on the repository and Manki\'s tool server when asked for them, and reports the tool steps', async () => {
+    const toolUse = (id: string, name: string) => ({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input: {} }] } });
+    const toolResult = (id: string) => ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'x' }] } });
+    const events = [toolUse('t1', 'Read'), toolResult('t1'), toolUse('t2', 'mcp__manki__git_history'), toolResult('t2'), { type: 'result', result: '[]' }];
+    setupSpawnMock({ stdout: `${events.map(e => JSON.stringify(e)).join('\n')}\n`, rawStdout: true });
     const spawnProc = mockSpawn.getMockImplementation()!;
     let systemPromptFile = '';
     let mcpConfig: { mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }> } | undefined;
@@ -488,7 +491,7 @@ describe('sendViaOAuth — error paths', () => {
     expect(client.repoTools).toBe(true);
     expect(new AnthropicClient({ auth: { kind: 'apiKey', key: 'sk' }, model: 'claude-opus-5-5' }).repoTools).toBe(false);
 
-    await client.sendMessage('Review the diff.', 'the diff', { repoTools: { root: '/work/repo', maxTurns: 15 } });
+    const response = await client.sendMessage('Review the diff.', 'the diff', { repoTools: { root: '/work/repo', maxTurns: 15 } });
 
     const spawnArgs = mockSpawn.mock.calls[0][1] as string[];
     const valueOf = (flag: string) => spawnArgs[spawnArgs.indexOf(flag) + 1];
@@ -500,6 +503,7 @@ describe('sendViaOAuth — error paths', () => {
     expect(Object.keys(mcpConfig!.mcpServers)).toEqual(['manki']);
     expect(systemPromptFile).toMatch(/^Review the diff\.\n\n## Tools\n\nThe PR's head commit is checked out at `\/work\/repo`\./);
     expect(systemPromptFile).toContain('You have at most 15 turns');
+    expect(response.toolSteps).toEqual([{ tool: 'Read', durationMs: expect.any(Number) }, { tool: 'mcp__manki__git_history', durationMs: expect.any(Number) }]);
   });
 
   it('sends the system prompt as the CLI system prompt and only the user message on stdin', async () => {

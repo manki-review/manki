@@ -9,7 +9,7 @@ import * as core from '@actions/core';
 
 import { appendReplyTail, buildExitDiagnostics, callWithTimeout, cliEnv, matchQuotaText, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, warnReplyTail } from './cli-utils';
 import { MCP_SERVER_COMMAND } from '../mcp-server';
-import { AnthropicAuth, LLMClient, LLMResponse, LLMUsage, QuotaError, readCount, RefusalError, RepoTools, SendMessageOptions, ZERO_USAGE } from './types';
+import { AnthropicAuth, LLMClient, LLMResponse, LLMUsage, QuotaError, readCount, RefusalError, RepoTools, SendMessageOptions, ToolStep, ZERO_USAGE } from './types';
 
 // Re-export for backward compatibility with existing test imports.
 export { sanitizeLogOutput, STALE_TIMEOUT_MS };
@@ -34,16 +34,23 @@ export function buildAnthropicAuth(oauthToken: string, apiKey: string): Anthropi
  * `--include-partial-messages` wraps each API stream event in a `stream_event` line.
  * `assistantRefusal` is set on every assistant message: the refusal reason, or null when it did not end on `stop_reason: "refusal"`.
  */
-function processJsonLine(line: string): { text: string; replace: boolean; resultEvent: unknown; assistantRefusal?: string | null } {
+function processJsonLine(line: string): {
+  text: string; replace: boolean; resultEvent: unknown; assistantRefusal?: string | null; toolUses?: { id: string; tool: string }[]; toolResults?: string[];
+} {
   try {
     const event = JSON.parse(line);
     const streamed = event.type === 'stream_event' ? event.event : event;
     if (streamed?.type === 'content_block_delta' && streamed.delta?.type === 'text_delta' && streamed.delta.text) {
       return { text: streamed.delta.text, replace: false, resultEvent: null };
     }
+    const blocks: { type?: unknown; id?: unknown; name?: unknown; tool_use_id?: unknown }[] = Array.isArray(event.message?.content) ? event.message.content : [];
     if (event.type === 'assistant') {
       const refused = event.message?.stop_reason === 'refusal';
-      return { text: '', replace: false, resultEvent: null, assistantRefusal: refused ? refusalReason(event.message.stop_details) : null };
+      const toolUses = blocks.filter(b => b.type === 'tool_use').map(b => ({ id: String(b.id), tool: String(b.name) }));
+      return { text: '', replace: false, resultEvent: null, assistantRefusal: refused ? refusalReason(event.message.stop_details) : null, toolUses };
+    }
+    if (event.type === 'user') {
+      return { text: '', replace: false, resultEvent: null, toolResults: blocks.filter(b => b.type === 'tool_result').map(b => String(b.tool_use_id)) };
     }
     if (event.type === 'result') {
       const text = typeof event.result === 'string' ? event.result : '';
@@ -295,9 +302,16 @@ export class AnthropicClient implements LLMClient {
     let jsonBuffer = '';
     let lastResultEvent: unknown = null;
     let refusal: string | undefined;
+    const toolSteps: ToolStep[] = [];
+    const toolStarts = new Map<string, { tool: string; start: number }>();
     const consumeLine = (line: string): void => {
       if (!line.trim()) return;
       const delta = processJsonLine(line);
+      for (const { id, tool } of delta.toolUses ?? []) toolStarts.set(id, { tool, start: Date.now() });
+      for (const id of delta.toolResults ?? []) {
+        const started = toolStarts.get(id);
+        if (started) toolSteps.push({ tool: started.tool, durationMs: Date.now() - started.start });
+      }
       if (delta.resultEvent !== null) lastResultEvent = delta.resultEvent;
       if (!delta.replace) replyTail = appendReplyTail(replyTail, delta.text);
       if (delta.assistantRefusal !== undefined) refusal = delta.assistantRefusal ?? undefined;
@@ -375,6 +389,7 @@ export class AnthropicClient implements LLMClient {
       latencyMs: Date.now() - startTime,
       model: this.model,
       truncated,
+      ...(toolSteps.length > 0 && { toolSteps }),
     };
   }
 

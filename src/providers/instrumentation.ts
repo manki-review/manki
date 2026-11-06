@@ -87,6 +87,7 @@ export function recordCalls(client: LLMClient, label: { stage: string; agent?: s
         calls.push({
           ...base,
           ...(response.model && { model: response.model }),
+          ...(response.toolSteps && { toolSteps: response.toolSteps }),
           durationMs: response.latencyMs ?? Date.now() - start,
           ...usage,
           // Some paths report zeros when the provider sent no counts, and no real call uses no tokens.
@@ -106,6 +107,7 @@ export function recordCalls(client: LLMClient, label: { stage: string; agent?: s
       }
     },
     ...(client.warmupCLI ? { warmupCLI: client.warmupCLI.bind(client) } : {}),
+    ...(client.repoTools ? { repoTools: true } : {}),
   };
 }
 
