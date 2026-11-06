@@ -278,7 +278,12 @@ function registerJsonSecrets(json: unknown): void {
  * Run it again after a CLI call, because the CLI can replace the tokens when it refreshes them.
  */
 export function registerAuthFileSecrets(path: string): void {
-  if (existsSync(path)) registerJsonSecrets(safeJsonParse(readFileSync(path, 'utf8')));
+  if (!existsSync(path)) return;
+  try {
+    registerJsonSecrets(safeJsonParse(readFileSync(path, 'utf8')));
+  } catch (error) {
+    core.warning(`Could not read ${path} to redact its tokens: ${error}`);
+  }
 }
 
 let emptyCwd: string | undefined;

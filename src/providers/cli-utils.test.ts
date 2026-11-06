@@ -416,6 +416,7 @@ describe('seedAuthFile', () => {
     writeFileSync(target, JSON.stringify({ tokens: { access_token: 'refreshed-during-run' } }));
     registerAuthFileSecrets(target);
     expect(redactSecrets('refreshed-during-run')).toBe('[REDACTED]');
+    expect(() => registerAuthFileSecrets(tmpRoot)).not.toThrow();
   });
 
   it('rejects an empty secret', () => {
