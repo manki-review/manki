@@ -169,12 +169,18 @@ describe('config', () => {
 
     it('loads groups, classes and routing as written and leaves the built-ins when unset', () => {
       expect(loadConfigFromContent('').review).toBeUndefined();
-      const config = loadConfigFromContent(`${deep}  classes:\n    security:\n      match: { paths_any: ["src/billing/**"] }\n    hot_path:\n      rank: 85\n      match: { paths_any: ["src/net/**"], triage: { subtle: true } }\n  routing:\n    security: deep\n    hot_path: deep\n    internal: solo\n  default_group: pair\n`);
+      const config = loadConfigFromContent(`${deep}  classes:\n    security:\n      match: { paths_any: ["src/billing/**"] }\n    hot_path:\n      rank: 85\n      match: { paths_any: ["src/net/**"], triage: { subtle: true } }\n    consensus:\n      rank: 60\n      critical: true\n      match: { paths_any: ["src/consensus/**"] }\n  routing:\n    security: deep\n    hot_path: deep\n    internal: solo\n  default_group: pair\n  outside_input: Messages from network peers.\n  examples:\n    - A panic on a peer message is a blocker.\n`);
       expect(config.review).toEqual({
         groups: { deep: { reviewers: [{ model: 'claude-opus-5-5', effort: 'high' }, { model: 'gpt-5.5', effort: 'high' }] } },
-        classes: { security: { match: { paths_any: ['src/billing/**'] } }, hot_path: { rank: 85, match: { paths_any: ['src/net/**'], triage: { subtle: true } } } },
+        classes: {
+          security: { match: { paths_any: ['src/billing/**'] } },
+          hot_path: { rank: 85, match: { paths_any: ['src/net/**'], triage: { subtle: true } } },
+          consensus: { rank: 60, critical: true, match: { paths_any: ['src/consensus/**'] } },
+        },
         routing: { security: 'deep', hot_path: 'deep', internal: 'solo' },
         default_group: 'pair',
+        outside_input: 'Messages from network peers.',
+        examples: ['A panic on a peer message is a blocker.'],
       });
       expect(core.warning).not.toHaveBeenCalled();
     });
@@ -196,6 +202,14 @@ describe('config', () => {
       ['a new rank on a built-in class', 'review:\n  classes:\n    security: { rank: 10, match: { paths_any: ["src/**"] } }\n', '`review.classes.security` is built in: it takes only `match.paths_any`'],
       ['a change to a triage class', 'review:\n  classes:\n    docs: { match: { paths_any: ["docs/**"] } }\n', '`review.classes.docs` is built in and cannot be changed'],
       ['allow_weaker on a class that is no floor', 'review:\n  allow_weaker: [behavior]\n', '`review.allow_weaker` must be an array of floor classes'],
+      ['a critical built-in class', 'review:\n  classes:\n    security: { critical: true, match: { paths_any: ["src/**"] } }\n', '`review.classes.security` is built in: it takes only `match.paths_any`'],
+      ['a critical class matched by triage', 'review:\n  classes:\n    hot: { rank: 60, critical: true, match: { paths_any: ["src/**"], triage: { subtle: true } } }\n', '`review.classes.hot.critical` needs `match.paths_any` and no `triage`'],
+      ['a critical class without paths', 'review:\n  classes:\n    hot: { rank: 60, critical: true, match: { triage: { subtle: true } } }\n', '`review.classes.hot.critical` needs `match.paths_any` and no `triage`'],
+      ['a critical flag that is no boolean', 'review:\n  classes:\n    hot: { rank: 60, critical: "yes", match: { paths_any: ["src/**"] } }\n', '`review.classes.hot.critical` must be a boolean'],
+      ['an empty outside_input', 'review:\n  outside_input: "  "\n', '`review.outside_input` must be a non-empty string'],
+      ['outside_input that is no string', 'review:\n  outside_input: [peers]\n', '`review.outside_input` must be a non-empty string'],
+      ['empty examples', 'review:\n  examples: []\n', '`review.examples` must be a non-empty array of strings'],
+      ['examples that are no strings', 'review:\n  examples: [{ text: x }]\n', '`review.examples` must be a non-empty array of strings'],
     ])('rejects %s', (_label, yaml, message) => {
       expect(() => loadConfigFromContent(yaml)).toThrow(message);
     });

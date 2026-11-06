@@ -82,7 +82,7 @@ const IGNORED_KEYS = new Set(['review_level', 'review_thresholds']);
 
 const PAIRED_PINS: readonly PairedPin[] = ['auto', 'always', 'never'];
 
-const REVIEW_KEYS = new Set(['default_group', 'groups', 'classes', 'routing', 'allow_weaker']);
+const REVIEW_KEYS = new Set(['default_group', 'groups', 'classes', 'routing', 'allow_weaker', 'outside_input', 'examples']);
 const GROUP_REVIEWER_KEYS = new Set(['model', 'effort', 'focus', 'role']);
 const REVIEWER_EFFORTS = new Set(['low', 'medium', 'high', 'max', 'auto']);
 const TRIAGE_KEYS = new Set(['trivial', 'subtle', 'paired']);
@@ -421,7 +421,7 @@ function validateReviewBlock(review: unknown, errors: string[], warnings: string
         const builtIn = BUILT_IN_CLASSES[name];
         const match = def.match;
         if (builtIn) {
-          if (!builtIn.match.paths_any || 'rank' in def || 'floor' in def || !isObject(match) || Object.keys(match).some(k => k !== 'paths_any')) {
+          if (!builtIn.match.paths_any || 'rank' in def || 'floor' in def || 'critical' in def || !isObject(match) || Object.keys(match).some(k => k !== 'paths_any')) {
             errors.push(builtIn.match.paths_any
               ? `${at}\` is built in: it takes only \`match.paths_any\`, which adds paths to its built-in rule`
               : `${at}\` is built in and cannot be changed. Route it with \`review.routing\` instead`);
@@ -429,6 +429,10 @@ function validateReviewBlock(review: unknown, errors: string[], warnings: string
           }
         } else {
           if ('floor' in def) errors.push(`${at}.floor\` is not allowed: only the built-in security, supply_chain and data_contract classes are floors`);
+          if ('critical' in def && typeof def.critical !== 'boolean') errors.push(`${at}.critical\` must be a boolean`);
+          if (def.critical === true && (!isObject(match) || !('paths_any' in match) || 'triage' in match)) {
+            errors.push(`${at}.critical\` needs \`match.paths_any\` and no \`triage\`: a critical area is a set of paths`);
+          }
           if (typeof def.rank !== 'number' || !Number.isInteger(def.rank)) {
             errors.push(`${at}.rank\` must be an integer`);
           } else if (ranks.has(def.rank)) {
@@ -460,6 +464,13 @@ function validateReviewBlock(review: unknown, errors: string[], warnings: string
         }
       }
     }
+  }
+
+  if ('outside_input' in review && (typeof review.outside_input !== 'string' || !review.outside_input.trim())) {
+    errors.push('`review.outside_input` must be a non-empty string');
+  }
+  if ('examples' in review && (!isStringArray(review.examples) || review.examples.length === 0)) {
+    errors.push('`review.examples` must be a non-empty array of strings');
   }
 
   if ('routing' in review) {

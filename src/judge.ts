@@ -17,6 +17,7 @@ import { sanitize, titleOverlapType } from './recap';
 import { stringifyFindingFingerprint, truncateDiff, validateSeverity } from './review';
 import { WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
+import { criticalAreaOf, resolveRouting } from './routing';
 import { CONTRADICTION_TAG, DiffFile, DuplicateMatchType, Finding, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, ParsedDiff, PrContext, ThreadEvaluation, ToolEvidenceStatus } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
@@ -528,11 +529,34 @@ The flagged thread \`line\` is GitHub-anchored from when the thread was created 
 ` : ''}
 Return one entry per finding, in the same order as the input. Set \`id\` to the N of the finding's "Finding N" heading. State the verdict before the reasoning.`;
 
+  const repositoryRules = buildRepositoryRules(config);
+  if (repositoryRules) {
+    prompt += `\n\n${repositoryRules}`;
+  }
+
   if (config.instructions) {
     prompt += `\n\n## Project Instructions\n\n${config.instructions}`;
   }
 
   return prompt;
+}
+
+/** Returns the judge rules the base branch's `review` block adds, or an empty string when it adds none. */
+function buildRepositoryRules(config: ReviewConfig): string {
+  const { outside_input: outsideInput, examples } = config.review ?? {};
+  const hasCriticalAreas = Object.values(resolveRouting(config.review).classes).some(c => c.critical);
+  if (!hasCriticalAreas && !outsideInput && !examples) return '';
+  const parts = ['## Repository Rules', '', 'The repository\'s maintainers set these rules. They add to the rules above and never lower a security defect.'];
+  if (hasCriticalAreas) {
+    parts.push('', '**Critical areas:** a finding marked **Critical area** sits in a path where any wrong result is severe damage. Grade a wrong result there by the Severe row of the table, even in a rare internal edge case. The other tests still apply.');
+  }
+  if (outsideInput) {
+    parts.push('', `**Outside input in this repository:** ${outsideInput.trim()}`);
+  }
+  if (examples) {
+    parts.push('', '**Repository examples:**', ...examples.map(e => `- ${e.trim()}`));
+  }
+  return parts.join('\n');
 }
 
 export function buildJudgeUserMessage(
@@ -546,6 +570,7 @@ export function buildJudgeUserMessage(
   priorRounds?: RoundContext[],
   interRoundDiff?: string,
   prDiff?: string,
+  criticalArea: (file: string) => string | undefined = () => undefined,
 ): string {
   const parts: string[] = [];
 
@@ -707,6 +732,11 @@ export function buildJudgeUserMessage(
         parts.push(`- **Tool evidence**: ${TOOL_EVIDENCE_LABEL[f.toolEvidence.status]}. ${UNTRUSTED_TOOL_TEXT}`);
         parts.push(fenceToolText(f.toolEvidence.note));
       }
+    }
+
+    const area = criticalArea(f.file);
+    if (area) {
+      parts.push(`- **Critical area**: \`${area}\``);
     }
 
     if (f.suggestedFix) {
@@ -961,7 +991,8 @@ export async function runJudgeAgent(
   const changedFiles = diff.files;
 
   const systemPrompt = buildJudgeSystemPrompt(config, agentCount, isFollowUp, openThreads?.length ?? 0);
-  const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads, priorRounds, interRoundDiff, rawDiff);
+  const { classes } = resolveRouting(config.review);
+  const userMessage = buildJudgeUserMessage(findings, codeContextMap, memoryContext, prContext, linkedIssues, changedFiles, openThreads, priorRounds, interRoundDiff, rawDiff, file => criticalAreaOf(classes, file));
 
   const effort = input.effort ?? 'high';
   let judgeResult = await sendWithParseRetry(

@@ -119,6 +119,27 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('Project Instructions');
   });
 
+  it('adds the repository rules the `review` block sets, before the project instructions, and only those it sets', () => {
+    const review: ReviewConfig['review'] = {
+      classes: { consensus: { rank: 60, critical: true, match: { paths_any: ['src/consensus/**'] } } },
+      outside_input: 'Messages from network peers and RPC callers.',
+      examples: ['A panic on a peer message is a `blocker`.', 'A slow RPC call is a `suggestion`.'],
+    };
+    const prompt = buildJudgeSystemPrompt(makeConfig({ review, instructions: 'Use strict TypeScript.' }), 5);
+    const rules = prompt.slice(prompt.indexOf('## Repository Rules'), prompt.indexOf('## Project Instructions'));
+    expect(rules).toContain('never lower a security defect');
+    expect(rules).toContain('a finding marked **Critical area** sits in a path where any wrong result is severe damage. Grade a wrong result there by the Severe row of the table, even in a rare internal edge case.');
+    expect(rules).toContain('**Outside input in this repository:** Messages from network peers and RPC callers.');
+    expect(rules).toContain('**Repository examples:**\n- A panic on a peer message is a `blocker`.\n- A slow RPC call is a `suggestion`.');
+
+    const onlyInput = buildJudgeSystemPrompt(makeConfig({ review: { outside_input: 'Peer messages.' } }), 5);
+    expect(onlyInput).toContain('**Outside input in this repository:** Peer messages.');
+    expect(onlyInput).not.toMatch(/Critical area|Repository examples/);
+    const plainClass = { classes: { hot: { rank: 60, match: { paths_any: ['src/net/**'] } } } };
+    expect(buildJudgeSystemPrompt(makeConfig({ review: plainClass }), 5)).not.toContain('## Repository Rules');
+    expect(buildJudgeSystemPrompt(makeConfig(), 5)).not.toContain('## Repository Rules');
+  });
+
   it('omits project instructions section when empty', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig({ instructions: '' }), 5);
     expect(prompt).not.toContain('Project Instructions');
@@ -2237,6 +2258,36 @@ describe('runJudgeAgent', () => {
     expect(result.findings[0].severity).toBe('suggestion');
     expect(result.findings[0].tags).toBeUndefined();
     expect(result.inPrSuppressedCount).toBeUndefined();
+  });
+
+  it('marks each finding in a critical area with the highest ranked critical class', async () => {
+    mockSendMessage.mockResolvedValue({ content: JSON.stringify({ summary: 'x', findings: [1, 2, 3].map(id => ({ id, title: 't', severity: 'warning', reasoning: 'r', confidence: 'high' })) }) });
+    const review: ReviewConfig['review'] = {
+      classes: {
+        consensus: { rank: 60, critical: true, match: { paths_any: ['src/consensus/**'] } },
+        validation: { rank: 70, critical: true, match: { paths_any: ['src/consensus/validate/**'] } },
+        hot_path: { rank: 85, match: { paths_any: ['src/**'] } },
+      },
+    };
+    const input: JudgeInput = {
+      findings: [
+        makeFinding({ title: 'Wrong fee', file: 'src/consensus/fees.ts' }),
+        makeFinding({ title: 'Wrong check', file: 'src/consensus/validate/block.ts' }),
+        makeFinding({ title: 'Slow loop', file: 'src/net/peer.ts' }),
+      ],
+      diff: makeDiff(),
+      rawDiff: '',
+      repoContext: '',
+      agentCount: 1,
+    };
+
+    await runJudgeAgent(mockClient, makeConfig({ review }), input);
+
+    const userMessage: string = mockSendMessage.mock.calls[0][1];
+    const block = (title: string) => userMessage.slice(userMessage.indexOf(`: ${title}`)).split('### Finding')[0];
+    expect(block('Wrong fee')).toContain('- **Critical area**: `consensus`');
+    expect(block('Wrong check')).toContain('- **Critical area**: `validation`');
+    expect(block('Slow loop')).not.toContain('Critical area');
   });
 
   it('sends the same system prompt whatever `noise_level` is', async () => {
