@@ -31,7 +31,7 @@ const OPENAI_OAUTH_BOOTSTRAP_HINT =
 
 // Pin Codex CLI to a known-good version and disable lifecycle scripts on install
 // to mitigate supply-chain risk if a compromised release is published. Keep this
-// in sync with the explicit install step in `.github/workflows/manki.yml`.
+// in sync with the explicit install step in `.github/workflows/manki-dispatch.yml`.
 export const CODEX_CLI_VERSION = '0.166.0';
 
 export function buildOpenAIAuth(oauthToken: string, apiKey: string): OpenAIAuth {
