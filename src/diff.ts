@@ -178,13 +178,6 @@ export function countChangedLines(file: DiffFile): { additions: number; deletion
   return { additions: lines.filter(l => l.startsWith('+')).length, deletions: lines.filter(l => l.startsWith('-')).length };
 }
 
-/**
- * Check if the diff size exceeds the maximum line count.
- */
-export function isDiffTooLarge(diff: ParsedDiff, maxLines: number): boolean {
-  return countDiffLines(diff.files) > maxLines;
-}
-
 // Lines around a new line that count as new code, as many as a diff hunk shows around a change.
 const NEW_CODE_WINDOW = 3;
 
@@ -307,4 +300,48 @@ function determineChangeType(file: parseDiff.File): DiffFile['changeType'] {
   }
 
   return 'modified';
+}
+
+/** Returns the source path a test file covers, so a file and its test share it, or `path` for any other file. */
+function sourceKey(path: string): string {
+  const segments = path.split('/');
+  const base = segments.pop() ?? '';
+  const dir = segments.filter(s => s !== '__tests__' && s !== 'tests' && s !== 'test').join('/');
+  const stem = base.replace(/\.(test|spec)(?=\.[^.]+$)/, '').replace(/_test(?=\.[^.]+$)/, '').replace(/^test_/, '');
+  return dir ? `${dir}/${stem}` : stem;
+}
+
+/**
+ * Splits `diff` into slices of at most about `maxLines` changed lines. A file and its test stay in one
+ * slice, and files of one folder are packed next to each other. A unit over `maxLines` gets a slice of its own.
+ */
+export function sliceDiff(diff: ParsedDiff, maxLines: number): ParsedDiff[] {
+  const lines = (f: DiffFile) => f.additions !== undefined ? f.additions + (f.deletions ?? 0) : Object.values(countChangedLines(f)).reduce((a, b) => a + b, 0);
+  if (diff.files.reduce((sum, f) => sum + lines(f), 0) <= maxLines) return [diff];
+
+  const units = new Map<string, DiffFile[]>();
+  for (const file of diff.files) {
+    const key = sourceKey(file.path);
+    units.set(key, [...(units.get(key) ?? []), file]);
+  }
+  const slices: DiffFile[][] = [];
+  let current: DiffFile[] = [];
+  let currentLines = 0;
+  for (const key of [...units.keys()].sort()) {
+    const files = units.get(key)!;
+    const unitLines = files.reduce((sum, f) => sum + lines(f), 0);
+    if (current.length > 0 && currentLines + unitLines > maxLines) {
+      slices.push(current);
+      current = [];
+      currentLines = 0;
+    }
+    current.push(...files);
+    currentLines += unitLines;
+  }
+  if (current.length > 0) slices.push(current);
+  return slices.map(files => ({
+    files,
+    totalAdditions: files.reduce((sum, f) => sum + (f.additions ?? 0), 0),
+    totalDeletions: files.reduce((sum, f) => sum + (f.deletions ?? 0), 0),
+  }));
 }

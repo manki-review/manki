@@ -20,7 +20,9 @@ export const DEFAULT_CONFIG: ReviewConfig = {
   skip_labels: [],
   skip_authors: [],
   skip_branches: [],
-  max_diff_lines: 50000,
+  max_diff_lines: 15000,
+  auto_review_max_lines: 8000,
+  slice_lines: 1500,
   reviewers: [],
   instructions: '',
   models: {
@@ -59,6 +61,10 @@ export const DEFAULT_CONFIG: ReviewConfig = {
 
 const SKIP_KEYS = ['skip_labels', 'skip_authors', 'skip_branches'] as const;
 
+const LIMIT_KEYS = ['max_diff_lines', 'auto_review_max_lines', 'slice_lines'] as const;
+/** Smaller slices would multiply the model calls a review makes. */
+const MIN_SLICE_LINES = 200;
+
 const KNOWN_KEYS = new Set([
   'auto_review',
   'auto_approve',
@@ -67,6 +73,8 @@ const KNOWN_KEYS = new Set([
   'skip_authors',
   'skip_branches',
   'max_diff_lines',
+  'auto_review_max_lines',
+  'slice_lines',
   'reviewers',
   'instructions',
   'review_level',
@@ -124,10 +132,13 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
     }
   }
 
-  if ('max_diff_lines' in config) {
-    if (typeof config.max_diff_lines !== 'number' || config.max_diff_lines <= 0) {
-      errors.push('`max_diff_lines` must be a positive number');
+  for (const key of LIMIT_KEYS) {
+    if (key in config && (typeof config[key] !== 'number' || !Number.isInteger(config[key]) || (config[key] as number) <= 0)) {
+      errors.push(`\`${key}\` must be a positive whole number`);
     }
+  }
+  if (typeof config.slice_lines === 'number' && Number.isInteger(config.slice_lines) && config.slice_lines > 0 && config.slice_lines < MIN_SLICE_LINES) {
+    errors.push(`\`slice_lines\` must be at least ${MIN_SLICE_LINES}`);
   }
 
   if ('auto_review' in config && typeof config.auto_review !== 'boolean') {
@@ -727,6 +738,8 @@ export interface BaseReviewConfig {
   models?: ReviewConfig['models'];
   /** The base branch's `related_repos`. Unset when its config file or that block is missing or invalid. */
   relatedRepos?: RelatedRepo[];
+  /** The base branch's review size limits, with defaults, when its config file parses. */
+  limits?: Pick<ReviewConfig, (typeof LIMIT_KEYS)[number]>;
   /**
    * `builtin` when the base branch has no `review` block, `base_unreadable` when its config could
    * not be read, and `base_invalid` when its `review` block fails validation or misses a floor.
@@ -741,7 +754,7 @@ export interface BaseReviewConfig {
  */
 export function loadReviewConfig(content: string | null, source = '.manki.yml'): BaseReviewConfig {
   // A base branch without a config file runs on the default models, so a PR cannot collapse those either.
-  if (!content) return { models: DEFAULT_CONFIG.models, source: 'builtin' };
+  if (!content) return { models: DEFAULT_CONFIG.models, limits: loadLimits({}, source), source: 'builtin' };
   let parsed: unknown;
   try {
     parsed = parseYaml(content);
@@ -755,14 +768,15 @@ export function loadReviewConfig(content: string | null, source = '.manki.yml'):
     : DEFAULT_CONFIG.models;
   const skip = loadSkipRules(root, source);
   const relatedRepos = baseRelatedRepos(root.related_repos, source);
-  if (root.review === undefined) return { models, ...(skip && { skip }), relatedRepos, source: 'builtin' };
+  const limits = loadLimits(root, source);
+  if (root.review === undefined) return { models, limits, ...(skip && { skip }), relatedRepos, source: 'builtin' };
   const validation = validateConfig({ review: root.review });
   for (const warning of validation.warnings) core.warning(warning);
   if (!validation.valid) {
     core.warning(`Invalid \`review\` in ${source} on the base branch, using the built-in review groups: ${validation.errors.join('; ')}`);
-    return { models, ...(skip && { skip }), relatedRepos, source: 'base_invalid' };
+    return { models, limits, ...(skip && { skip }), relatedRepos, source: 'base_invalid' };
   }
-  return { review: root.review as ReviewRoutingConfig, models, ...(skip && { skip }), relatedRepos, source: 'base' };
+  return { review: root.review as ReviewRoutingConfig, models, limits, ...(skip && { skip }), relatedRepos, source: 'base' };
 }
 
 /** Returns the skip rules of a base config, or `undefined` when it sets none or they fail validation. */
@@ -789,8 +803,19 @@ function baseRelatedRepos(block: unknown, source: string): RelatedRepo[] | undef
   return block as RelatedRepo[];
 }
 
+/** Returns the review size limits of a base config, each falling back to its default when missing or invalid. */
+function loadLimits(root: Record<string, unknown>, source: string): NonNullable<BaseReviewConfig['limits']> {
+  return Object.fromEntries(LIMIT_KEYS.map(key => {
+    if (!(key in root)) return [key, DEFAULT_CONFIG[key]];
+    const validation = validateConfig({ [key]: root[key] });
+    if (validation.valid) return [key, root[key]];
+    core.warning(`Invalid \`${key}\` in ${source} on the base branch, using ${DEFAULT_CONFIG[key]}: ${validation.errors.join('; ')}`);
+    return [key, DEFAULT_CONFIG[key]];
+  })) as NonNullable<BaseReviewConfig['limits']>;
+}
+
 /**
- * Returns the PR's config with the base branch's `review` block and `related_repos`. When the PR's models would run both
+ * Returns the PR's config with the base branch's `review` block, `related_repos` and size limits. When the PR's models would run both
  * finders of a pair on one model and the base branch's give two, the reviewer models come from the
  * base, so a PR cannot drop the second model. A base block that misses a floor gives the built-ins.
  */
@@ -802,7 +827,7 @@ export function applyBaseReviewConfig(head: ReviewConfig, base: BaseReviewConfig
     core.info('This PR changes `related_repos`. The change applies after merge: this round uses the base branch\'s related repos.');
   }
   let config: ReviewConfig = {
-    ...head, review: base.review, related_repos: base.relatedRepos ?? [], skip_labels: [], skip_authors: [], skip_branches: [], ...base.skip,
+    ...head, review: base.review, related_repos: base.relatedRepos ?? [], skip_labels: [], skip_authors: [], skip_branches: [], ...base.skip, ...(base.limits ?? loadLimits({}, '')),
   };
   if (base.models) {
     const baseConfig: ReviewConfig = { ...DEFAULT_CONFIG, models: base.models };

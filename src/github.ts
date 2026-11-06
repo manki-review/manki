@@ -835,7 +835,7 @@ export async function updateProgressDashboard(
 }
 
 /**
- * Dismiss the bot's `CHANGES_REQUESTED` reviews on this PR, except `keepReviewId`.
+ * Dismiss the bot's reviews in `state`, `CHANGES_REQUESTED` by default, on this PR, except `keepReviewId`.
  * Call it only after the new review is posted, so a failed run leaves the merge
  * block in place. A failed dismissal only warns, since the new review already stands.
  * Throws the abort reason once GitHub writes are stopped.
@@ -846,6 +846,7 @@ export async function dismissPreviousReviews(
   repo: string,
   prNumber: number,
   keepReviewId?: number,
+  state: 'CHANGES_REQUESTED' | 'APPROVED' = 'CHANGES_REQUESTED',
 ): Promise<void> {
   assertWritesAllowed();
   let reviews;
@@ -862,7 +863,7 @@ export async function dismissPreviousReviews(
   }
 
   for (const review of reviews) {
-    if (review.id !== keepReviewId && review.body?.includes(BOT_MARKER) && review.state === 'CHANGES_REQUESTED') {
+    if (review.id !== keepReviewId && review.body?.includes(BOT_MARKER) && review.state === state) {
       assertWritesAllowed();
       try {
         await octokit.rest.pulls.dismissReview({
@@ -874,8 +875,8 @@ export async function dismissPreviousReviews(
         });
         core.info(`Dismissed previous review #${review.id}`);
       } catch (e) {
-        // A repository ruleset can restrict who may dismiss reviews, and the stale review then keeps blocking the merge.
-        core.warning(`Could not dismiss the previous review #${review.id}, it still requests changes: ${e instanceof Error ? e.message : e}`);
+        // A repository ruleset can restrict who may dismiss reviews, and the stale review then stays in force.
+        core.warning(`Could not dismiss the previous review #${review.id}, it still ${state === 'APPROVED' ? 'approves' : 'requests changes'}: ${e instanceof Error ? e.message : e}`);
       }
     }
   }

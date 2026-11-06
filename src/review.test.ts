@@ -3388,6 +3388,36 @@ describe('runReview', () => {
     infoSpy.mockRestore();
   });
 
+  it('reads a diff over `slice_lines` in parallel slices per finder and combines their findings and usage', async () => {
+    const fileDiff = (path: string, lines: number) =>
+      `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1,1 +1,${lines + 1} @@\n ctx\n${Array.from({ length: lines }, (_, i) => `+line ${i}`).join('\n')}`;
+    const rawDiff = [fileDiff('src/a.ts', 3), fileDiff('src/a.test.ts', 2), fileDiff('src/b.ts', 4)].join('\n');
+    const reviewerSend = jest.fn().mockImplementation(async (_system: string, user: string) => {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      return {
+        content: JSON.stringify([{ severity: 'suggestion', title: user.includes('src/b.ts') ? 'In b' : 'In a', file: user.includes('src/b.ts') ? 'src/b.ts' : 'src/a.ts', line: 1, description: 'Desc' }]),
+        usage: { inputTokens: 100, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 },
+        latencyMs: 1,
+      };
+    });
+    const clients: ReviewClients = {
+      reviewer: { sendMessage: reviewerSend } as unknown as import('./providers').LLMClient,
+      judge: { sendMessage: jest.fn().mockResolvedValue({ content: READY_VERDICT }) } as unknown as import('./providers').LLMClient,
+    };
+    mockedRunJudgeAgent.mockImplementationOnce(async (_client, _config, input) => ({ findings: input.findings, summary: 'ok' }));
+
+    const result = await runReview(clients, { config: makeConfig({ slice_lines: 5 }), diff: makeDiff({ totalAdditions: 9, totalDeletions: 0 }), rawDiff, repoContext: '' });
+
+    const finders = result.agentNames.length;
+    expect(reviewerSend).toHaveBeenCalledTimes(2 * finders);
+    const sliceMessages = reviewerSend.mock.calls.slice(0, 2).map(([, user]) => user as string);
+    expect(sliceMessages.find(m => m.includes('src/a.ts'))).toEqual(expect.stringContaining('src/a.test.ts'));
+    expect(sliceMessages.find(m => m.includes('src/b.ts'))).not.toContain('src/a.ts');
+    expect(result.rawFindings!.map(f => f.title).sort()).toEqual(Array.from({ length: finders }, () => ['In a', 'In b']).flat().sort());
+    // The duration is the elapsed time of all slices, not the latency one call reports.
+    for (const [, ms] of result.agentDurationMs!) expect(ms).toBeGreaterThanOrEqual(15);
+  });
+
   it('records `agentFailureReasons` when an agent fails after all retries', async () => {
     const failingSend = jest.fn().mockRejectedValue(new Error('Provider down'));
     const clients: ReviewClients = {

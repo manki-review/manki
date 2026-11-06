@@ -274,13 +274,23 @@ describe('config', () => {
 
     it('reads the block and models from the base branch, with the built-ins when it is missing, unreadable or invalid', () => {
       const models = DEFAULT_CONFIG.models;
-      expect(loadReviewConfig(null)).toEqual({ models, source: 'builtin' });
-      expect(loadReviewConfig('auto_review: true\n')).toEqual({ models, source: 'builtin' });
+      const limits = { max_diff_lines: 15_000, auto_review_max_lines: 8_000, slice_lines: 1_500 };
+      expect(loadReviewConfig(null)).toEqual({ models, limits, source: 'builtin' });
+      expect(loadReviewConfig('auto_review: true\n')).toEqual({ models, limits, source: 'builtin' });
       expect(loadReviewConfig('review: [\n')).toEqual({ source: 'base_unreadable' });
       expect(loadReviewConfig('models:\n  reviewer: gpt-5.5\nreview:\n  routing:\n    internal: pair\n'))
-        .toEqual({ review: { routing: { internal: 'pair' } }, models: { ...models, reviewer: 'gpt-5.5' }, source: 'base' });
-      expect(loadReviewConfig('review:\n  routing:\n    security: deep\n')).toEqual({ models, source: 'base_invalid' });
+        .toEqual({ review: { routing: { internal: 'pair' } }, models: { ...models, reviewer: 'gpt-5.5' }, limits, source: 'base' });
+      expect(loadReviewConfig('review:\n  routing:\n    security: deep\n')).toEqual({ models, limits, source: 'base_invalid' });
       expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Invalid `review` in .manki.yml on the base branch, using the built-in review groups'));
+    });
+
+    it('takes the size limits from the base branch, with the default for a missing or invalid one', () => {
+      const base = loadReviewConfig('max_diff_lines: 12000\nauto_review_max_lines: 0\nslice_lines: 50\n');
+      expect(base.limits).toEqual({ max_diff_lines: 12_000, auto_review_max_lines: 8_000, slice_lines: 1_500 });
+      expect(core.warning).toHaveBeenCalledWith('Invalid `slice_lines` in .manki.yml on the base branch, using 1500: `slice_lines` must be at least 200');
+      const head = loadConfigFromContent('max_diff_lines: 90000\nauto_review_max_lines: 90000\n');
+      expect(applyBaseReviewConfig(head, base).config).toEqual(expect.objectContaining({ max_diff_lines: 12_000, auto_review_max_lines: 8_000, slice_lines: 1_500 }));
+      expect(applyBaseReviewConfig(head, { source: 'base_unreadable' }).config.max_diff_lines).toBe(15_000);
     });
 
     it('fails the PR that adds a floor class routed below the floor in its own config file', () => {
@@ -431,6 +441,15 @@ another_unknown: 123
     it('throws on non-number max_diff_lines', () => {
       const yaml = 'max_diff_lines: "big"';
       expect(() => loadConfigFromContent(yaml)).toThrow('Invalid config');
+    });
+
+    it('defaults the review size limits to 15,000, 8,000 and 1,500 lines, and accepts only positive whole numbers', () => {
+      expect([DEFAULT_CONFIG.max_diff_lines, DEFAULT_CONFIG.auto_review_max_lines, DEFAULT_CONFIG.slice_lines]).toEqual([15_000, 8_000, 1_500]);
+      expect(loadConfigFromContent('auto_review_max_lines: 4000\nslice_lines: 900\n')).toEqual(expect.objectContaining({ auto_review_max_lines: 4000, slice_lines: 900 }));
+      for (const yaml of ['auto_review_max_lines: 0', 'slice_lines: 1.5', 'slice_lines: "big"']) {
+        expect(() => loadConfigFromContent(yaml)).toThrow('must be a positive whole number');
+      }
+      expect(() => loadConfigFromContent('slice_lines: 199')).toThrow('`slice_lines` must be at least 200');
     });
 
     it('throws on invalid auto_review type', () => {

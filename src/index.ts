@@ -13,7 +13,7 @@ import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, 
 import { extractCurrentCodeWindow } from './code-window';
 import { recordFixRate } from './fix-rate';
 import { dispatchedNumber, isDispatchedRun, restoreDispatchedEvent } from './dispatch';
-import { addCodeContext, changeDigest, parsePRDiff, filterDiff, filterRawDiff, isDiffTooLarge, rebuildRawDiff, tagFindingOrigins } from './diff';
+import { addCodeContext, changeDigest, parsePRDiff, filterDiff, filterRawDiff, rebuildRawDiff, tagFindingOrigins } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, RepoMemory } from './memory';
@@ -361,7 +361,7 @@ async function postReviewSkippedComment(
       }
     }
     // Every other notice is a fresh comment with its own Force review checkbox, since an edit in place notifies nobody.
-    await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: withMarkers(text, PROGRESS_MARKER, FORCE_REVIEW_MARKER) });
+    await postForceReviewOffer(octokit, owner, repo, prNumber, text);
   } catch (error) {
     core.warning(`Failed to post review-skipped comment: ${error instanceof Error ? error.message : error}`);
   }
@@ -376,6 +376,11 @@ async function reviewsDrafts(octokit: Octokit, owner: string, repo: string, base
     core.warning(`Could not read ${configPath} on the base branch, skipping the draft PR: ${error instanceof Error ? error.message : error}`);
     return false;
   }
+}
+
+/** Posts `text`, which ends in a Force review checkbox, as a comment whose tick forces a review. */
+async function postForceReviewOffer(octokit: Octokit, owner: string, repo: string, prNumber: number, text: string): Promise<void> {
+  await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body: withMarkers(text, PROGRESS_MARKER, FORCE_REVIEW_MARKER) });
 }
 
 async function handlePullRequest(): Promise<void> {
@@ -912,6 +917,39 @@ async function loadRunMemory(
   }
 }
 
+/** Marks a request to split a PR too big to review, so the next push edits it. */
+const TOO_BIG_MARKER = '<!-- manki-too-big -->';
+
+/**
+ * Replaces the progress comment with a request to split a PR too big to review, and dismisses Manki's earlier
+ * approvals, since no reviewer read the new code. Posts no review, so a request for changes stays. `offerForce`
+ * adds a Force review box. Each push since the last round edits the unanswered notice instead of adding another.
+ */
+async function postTooBigNotice(target: RunTarget, commentId: number, text: string, offerForce: boolean, lastRoundAt?: string): Promise<CheckReport> {
+  const { octokit, owner, repo, prNumber } = target;
+  try {
+    await octokit.rest.issues.deleteComment({ owner, repo, comment_id: commentId });
+  } catch (error) {
+    core.warning(`Failed to delete progress comment: ${error}`);
+  }
+  await dismissPreviousReviews(octokit, owner, repo, prNumber, undefined, 'APPROVED');
+  try {
+    const body = offerForce
+      ? withMarkers(`${text}\n\n- [ ] Force review`, PROGRESS_MARKER, FORCE_REVIEW_MARKER, TOO_BIG_MARKER)
+      : withMarkers(text, PROGRESS_MARKER, TOO_BIG_MARKER);
+    const earlier = await findOpenNotice(target, TOO_BIG_MARKER, lastRoundAt);
+    if (earlier) {
+      await octokit.rest.issues.updateComment({ owner, repo, comment_id: earlier.id, body });
+    } else {
+      await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+    }
+  } catch (error) {
+    core.warning(`Failed to post the too-big notice: ${error instanceof Error ? error.message : error}`);
+  }
+  // A diff no reviewer read must not pass a required check, so it waits for a person.
+  return { conclusion: 'action_required', title: 'Not reviewed', summary: text };
+}
+
 /**
  * Replaces the progress comment with a notice that automatic review is paused, listing the blocking threads still open.
  * Each push during the same pause updates the unticked notice from after `lastRoundAt` instead of adding another.
@@ -936,7 +974,7 @@ async function postPauseNotice(
       PROGRESS_MARKER,
       FORCE_CAP_MARKER,
     );
-    const notice = await findPauseNotice(target, lastRoundAt);
+    const notice = await findOpenNotice(target, FORCE_CAP_MARKER, lastRoundAt);
     if (notice) {
       await octokit.rest.issues.updateComment({ owner, repo, comment_id: notice.id, body });
     } else {
@@ -953,16 +991,19 @@ async function postPauseNotice(
   return { conclusion: 'action_required', title: 'Automatic review paused', summary: `${reason} Automatic review is paused until someone asks for another round.` };
 }
 
-/** Returns the unticked pause notice posted or updated after `lastRoundAt`. A failed lookup returns `undefined`, so a new notice is posted. */
-async function findPauseNotice(target: RunTarget, lastRoundAt: string | undefined): Promise<{ id: number } | undefined> {
+/**
+ * Returns Manki's latest notice with `marker` and no ticked box, posted or updated after `lastRoundAt`.
+ * A failed lookup returns `undefined`, so a new notice is posted.
+ */
+async function findOpenNotice(target: RunTarget, marker: string, lastRoundAt: string | undefined): Promise<{ id: number } | undefined> {
   const { octokit, bot, owner, repo, prNumber } = target;
   const since = lastRoundAt ? Date.parse(lastRoundAt) : -Infinity;
   try {
     const comments = await fetchPRComments(octokit, owner, repo, prNumber);
-    return comments.find(c => isBotLogin(bot, c.user?.login) && !!c.body?.includes(FORCE_CAP_MARKER)
-      && c.body.includes('- [ ] Force review') && Date.parse(c.updated_at) > since);
+    return comments.find(c => isBotLogin(bot, c.user?.login) && !!c.body?.includes(marker)
+      && !c.body.includes('- [x] Force review') && Date.parse(c.updated_at) > since);
   } catch (error) {
-    core.warning(`Failed to look up an earlier pause notice: ${error}`);
+    core.warning(`Failed to look up an earlier notice: ${error}`);
     return undefined;
   }
 }
@@ -1506,10 +1547,16 @@ async function runFullReview(
       timing: { parseMs: parseEndTime - startTime, reviewMs: 0, judgeMs: 0, totalMs: Date.now() - startTime },
     });
 
-    if (isDiffTooLarge(diff, config.max_diff_lines)) {
+    const autoLimit = Math.min(config.auto_review_max_lines ?? config.max_diff_lines, config.max_diff_lines);
+    const shortSha = commitSha.slice(0, 7);
+    if (lineCount > config.max_diff_lines) {
       core.warning(`Diff too large (${lineCount} reviewable lines > ${config.max_diff_lines} max)`);
-      checkReport = await postUnreviewedRound(target, progress, commentId, dashboard, diff, 'COMMENT',
-        `Too large to review automatically: ${lineCount} changed lines, above the limit of ${config.max_diff_lines}.`, unreviewedMetadata());
+      checkReport = await postTooBigNotice(target, commentId, `**Too big to review** at \`${shortSha}\`: this PR has ${lineCount} reviewable lines, above the limit of ${config.max_diff_lines} that Manki reviews. Split it into smaller PRs to get a review.`, false, recap.priorRounds.at(-1)?.meta.timestamp);
+      return;
+    }
+    if (lineCount > autoLimit && !forceReview && !skipCap) {
+      core.info(`No automatic review: ${lineCount} reviewable lines > ${autoLimit}`);
+      checkReport = await postTooBigNotice(target, commentId, `**Too big for automatic review** at \`${shortSha}\`: this PR has ${lineCount} reviewable lines, above the limit of ${autoLimit} for automatic review. Split it into smaller PRs, or tick the box to review it in full:`, true, recap.priorRounds.at(-1)?.meta.timestamp);
       return;
     }
 
