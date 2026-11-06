@@ -999,18 +999,24 @@ function splitLead(text: string, maxSentences: number, maxLength: number): { lea
   return { lead: safeTruncate(lead, maxLength), rest: trimmed };
 }
 
-/** Renders a finding listed in the review body: title, link to the line, what goes wrong, and the fix. */
-function formatFindingBlock(finding: Finding, linkTo: LineLink): string {
-  const lines = [formatFindingHeader(finding), `**${sanitizeMarkdown(finding.title)}**`];
-  if (finding.judgeConfidence === 'low') lines.push(LOW_CONFIDENCE_NOTE);
-  if (finding.file) {
-    const location = `${sanitizeFilePath(finding.file)}${finding.line > 0 ? `:${finding.line}` : ''}`;
-    lines.push(`[${inlineCode(location)}](${linkTo(finding.file, finding.line)})`);
-  }
+function findingLocation(finding: Finding): string {
+  return `${sanitizeFilePath(finding.file)}${finding.line > 0 ? `:${finding.line}` : ''}`;
+}
+
+/** Returns what goes wrong and the fix, as listed under a finding in the review body. */
+function formatFindingDetail(finding: Finding): string[] {
+  const lines = finding.judgeConfidence === 'low' ? [LOW_CONFIDENCE_NOTE] : [];
   const description = splitLead(sanitizeMarkdown(finding.description), 2, 300).lead;
   if (description) lines.push(description);
   if (finding.suggestedFix?.trim()) lines.push(formatBodyFix(finding.suggestedFix, finding.file));
-  return lines.join('\n');
+  return lines;
+}
+
+/** Renders a finding listed in the review body: title, link to the line, what goes wrong, and the fix. */
+function formatFindingBlock(finding: Finding, linkTo: LineLink): string {
+  const lines = [formatFindingHeader(finding), `**${sanitizeMarkdown(finding.title)}**`];
+  if (finding.file) lines.push(`[${inlineCode(findingLocation(finding))}](${linkTo(finding.file, finding.line)})`);
+  return [...lines, ...formatFindingDetail(finding)].join('\n');
 }
 
 function formatSmallerFindings(entries: string[], nitpicks: string[], previouslyMissed: string[]): string | null {
