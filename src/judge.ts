@@ -725,7 +725,7 @@ export function buildJudgeUserMessage(
 
     if (f.resemblesFixed) {
       const fixed = f.resemblesFixed;
-      parts.push(`- **Resembles a fixed finding**: "${sanitizeForPromptEmbed(fixed.title)}" at ${sanitizeForPromptEmbed(fixed.file)}:${fixed.line}, which an earlier round confirmed fixed. Check the current code. Keep this finding only if the defect it describes is still there or is a new one.`);
+      parts.push(`- **Resembles a fixed finding**: "${sanitizeForPromptEmbed(fixed.title)}" at ${sanitizeForPromptEmbed(fixed.file)}${fixed.line ? `:${fixed.line}` : ''}, which an earlier round confirmed fixed. Check the current code. Keep this finding only if the defect it describes is still there or is a new one.`);
     }
 
     if (ctx) {
