@@ -516,6 +516,7 @@ describe('runFullReview end to end', () => {
     const workspace = mkdtempSync(join(tmpdir(), 'manki-e2e-head-'));
     mkdirSync(join(workspace, 'src'));
     writeFileSync(join(workspace, 'src', 'math.ts'), 'export const add = (a: number, b: number) => a + b;\n');
+    writeFileSync(join(workspace, 'src', 'api.ts'), 'export const MAX = 1000;\nexport const bounded = (n: number) => n <= MAX;\nif (!bounded(input)) throw new Error();\n');
     try {
       mockLLM.repoTools = true;
       jest.mocked(fetchWorkspace).mockResolvedValue(workspace);

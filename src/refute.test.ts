@@ -61,6 +61,7 @@ describe('refuteBlockers', () => {
       finding('Failing'),
       finding('A warning', { severity: 'warning' }),
       finding('Elsewhere', { file: 'src/missing.ts' }),
+      finding('Dropped lead', { severity: 'ignore', notChecked: true, lead }),
     ];
 
     const result = await refuteBlockers(client, findings, { workspace, effort: 'high' });
@@ -76,6 +77,8 @@ describe('refuteBlockers', () => {
       ['A warning', 'warning', undefined],
       // Its file is not in the workspace, so there is no code to check.
       ['Elsewhere', 'blocker', undefined],
+      // The judge or a suppression dropped it, so it is never checked or brought back.
+      ['Dropped lead', 'ignore', undefined],
     ]);
     expect(result[0].judgeNotes).toBe('Refutation disproved: Both inputs are checked at src/api.ts:9.');
     expect(result[1].evidence?.proof).toEqual(['src/math.ts:2', 'src/api.ts:4']);
@@ -85,19 +88,32 @@ describe('refuteBlockers', () => {
     expect(client.calls[0][1]).toEqual({ effort: 'high', repoTools: { root: workspace, steps: 15 }, timeoutMs: 600_000 });
   });
 
-  it('reuses the outcome an earlier round stored for the same finding while its file is unchanged', async () => {
-    const client = fakeClient({ 'Sum overflows': { outcome: 'disproved', reason: 'Checked at src/api.ts:9.', proof: ['src/api.ts:9'] } });
+  it('reuses the outcome an earlier round stored for the same finding while every file it rests on is unchanged', async () => {
+    writeFileSync(join(workspace, 'src', 'api.ts'), 'if (a > 1000) throw new Error();\n');
+    const client = fakeClient({ 'Sum overflows': { outcome: 'disproved', reason: 'Checked at src/api.ts:1.', proof: ['src/api.ts:1'] } });
+    const [first] = await refuteBlockers(client, [finding('Sum overflows')], { workspace });
+    const priorRounds = [{ findings: { entries: [] }, judge: { dropped: [{ title: 'Sum overflows', file: 'src/math.ts', line: 2, reviewers: ['R'], refutation: first.refutation }] } }] as unknown as RoundContext[];
+    const calls = async () => {
+      await refuteBlockers(client, [finding('Sum overflows', { line: 3 })], { workspace, priorRounds });
+      return client.calls.length;
+    };
+
+    expect(first.refutation?.files).toEqual(['src/api.ts', 'src/math.ts']);
+    const [again] = await refuteBlockers(client, [finding('Sum overflows', { line: 3 })], { workspace, priorRounds });
+    expect([client.calls.length, again.severity, again.refutation]).toEqual([1, 'ignore', first.refutation]);
+
+    // A change to the file that holds the check the outcome cites forces a new check, like a change to the finding's file.
+    writeFileSync(join(workspace, 'src', 'api.ts'), '// the check is gone\n');
+    expect(await calls()).toBe(2);
+  });
+
+  it('never stores a reusable outcome that cites a file the workspace does not hold', async () => {
+    const client = fakeClient({ 'Sum overflows': { outcome: 'disproved', reason: 'Checked at src/gone.ts:1.', proof: ['src/gone.ts:1'] } });
     const [first] = await refuteBlockers(client, [finding('Sum overflows')], { workspace });
     const priorRounds = [{ findings: { entries: [] }, judge: { dropped: [{ title: 'Sum overflows', file: 'src/math.ts', line: 2, reviewers: ['R'], refutation: first.refutation }] } }] as unknown as RoundContext[];
 
-    const [again] = await refuteBlockers(client, [finding('Sum overflows', { line: 3 })], { workspace, priorRounds });
-
-    expect(client.calls).toHaveLength(1);
-    expect([again.severity, again.refutation]).toEqual(['ignore', first.refutation]);
-
-    writeFileSync(join(workspace, 'src', 'math.ts'), 'export const add = (a: number, b: number) => a + b;\n');
     await refuteBlockers(client, [finding('Sum overflows')], { workspace, priorRounds });
 
-    expect(client.calls).toHaveLength(2);
+    expect([first.refutation?.codeDigest, client.calls.length]).toEqual(['', 2]);
   });
 });

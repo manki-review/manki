@@ -9,12 +9,13 @@ import { sanitizeForPromptEmbed } from './memory';
 import { LLMClient } from './providers';
 import { parseProof, titlesMatch } from './review';
 import { Finding, Refutation, RefutationOutcome, RoundContext } from './types';
-import { sendWithParseRetry } from './utils';
+import { mapWithConcurrency, sendWithParseRetry } from './utils';
 
 const REFUTE_STEPS = 15;
 // A safety net. The step budget is what normally ends the call.
 const REFUTE_TIMEOUT_MS = 600_000;
 const MAX_REASON_CHARS = 500;
+const MAX_PARALLEL_REFUTATIONS = 3;
 const OUTCOMES: readonly RefutationOutcome[] = ['disproved', 'confirmed', 'unsettled'];
 
 const REFUTE_SYSTEM_PROMPT = `You check one finding a code review raised on a pull request, using read-only tools on the PR's head commit.
@@ -31,22 +32,33 @@ Respond with ONLY a JSON object:
 
 {"outcome": "disproved" | "confirmed" | "unsettled", "reason": "One or two plain sentences on what decides it", "proof": ["file:line"]}`;
 
-/** Returns the SHA-256 of `file` in the workspace, or `undefined` when it cannot be read there. */
-function codeDigest(workspace: string, file: string): string | undefined {
+/** Returns the SHA-256 over `files` in the workspace, each path with its content, or `undefined` when one cannot be read there. */
+function codeDigest(workspace: string, files: readonly string[]): string | undefined {
+  const hash = createHash('sha256');
   try {
-    return createHash('sha256').update(readFileSync(resolveInRoot(workspace, file).absolute)).digest('hex');
+    for (const file of files) hash.update(file).update('\0').update(readFileSync(resolveInRoot(workspace, file).absolute)).update('\0');
   } catch {
     return undefined;
   }
+  return hash.digest('hex');
 }
 
-/** Returns the refutation an earlier round stored for the same finding on the same code, the latest first. */
-function priorRefutation(finding: Finding, digest: string, priorRounds: RoundContext[]): Refutation | undefined {
+/** The finding's own file and every file the refutation cites, which decide whether a later round may reuse it. */
+function refutationFiles(file: string, proof: readonly string[] = []): string[] {
+  return [...new Set([file, ...proof.map(location => location.replace(/:\d+(?:-\d+)?$/, ''))])].sort();
+}
+
+/**
+ * Returns the refutation an earlier round stored for the same finding, the latest first, when none of the files it
+ * rests on changed since.
+ */
+function priorRefutation(finding: Finding, workspace: string, priorRounds: RoundContext[]): Refutation | undefined {
   for (const round of [...priorRounds].reverse()) {
     const stored = [
       ...round.findings.entries.map(e => ({ title: e.title ?? '', file: e.fingerprint.file, refutation: e.refutation })),
       ...(round.judge.dropped ?? []),
-    ].find(e => e.refutation?.codeDigest === digest && e.file === finding.file && titlesMatch(e.title, finding.title));
+    ].find(({ title, file, refutation }) => refutation && file === finding.file && titlesMatch(title, finding.title)
+      && codeDigest(workspace, refutation.files) === refutation.codeDigest);
     if (stored?.refutation) return stored.refutation;
   }
   return undefined;
@@ -65,7 +77,7 @@ function buildRefuteMessage(finding: Finding): string {
   return lines.join('\n');
 }
 
-function parseRefutation(text: string, codeDigest: string): Refutation {
+function parseRefutation(text: string, workspace: string, file: string): Refutation {
   const parsed = JSON.parse(extractJSON(text)) as Record<string, unknown>;
   const outcome = OUTCOMES.find(o => o === parsed.outcome);
   if (!outcome) throw new Error(`refutation outcome is ${JSON.stringify(parsed.outcome)}, not one of ${OUTCOMES.join(', ')}`);
@@ -73,7 +85,9 @@ function parseRefutation(text: string, codeDigest: string): Refutation {
   const proof = parseProof(parsed.proof);
   // A confirmation has to show the failure, so one without proving lines settles nothing.
   const settled = outcome === 'confirmed' && proof.length === 0 ? 'unsettled' : outcome;
-  return { outcome: settled, reason, ...(proof.length > 0 && { proof }), codeDigest };
+  const files = refutationFiles(file, proof);
+  // A cited file the workspace doesn't hold can't be checked again, so the empty digest never matches a later round.
+  return { outcome: settled, reason, ...(proof.length > 0 && { proof }), files, codeDigest: codeDigest(workspace, files) ?? '' };
 }
 
 /** Grades `finding` by the refutation: a disproved one is dropped, an unsettled one is a warning at most. */
@@ -98,18 +112,18 @@ export interface RefuteOptions {
 }
 
 /**
- * Tries to refute each blocker and open lead in `findings` with read-only tools on the workspace, and grades it by the
- * outcome. An earlier round's outcome for the same finding on an unchanged file is reused without a new check. A call
- * that fails leaves the finding as the judge graded it.
+ * Tries to refute each blocker and open lead in `findings` with read-only tools on the workspace, at most
+ * `MAX_PARALLEL_REFUTATIONS` at a time, and grades it by the outcome. An earlier round's outcome for the same finding is
+ * reused without a new check while the files it rests on are unchanged. A call that fails leaves the judge's grade.
  */
 export async function refuteBlockers(client: LLMClient, findings: Finding[], { workspace, priorRounds = [], effort }: RefuteOptions): Promise<Finding[]> {
-  return Promise.all(findings.map(async finding => {
-    if (finding.severity !== 'blocker' && !finding.lead) return finding;
-    const digest = codeDigest(workspace, finding.file);
-    if (!digest) return finding;
-    const prior = priorRefutation(finding, digest, priorRounds);
+  return mapWithConcurrency(findings, MAX_PARALLEL_REFUTATIONS, async finding => {
+    // A finding the judge or a suppression dropped stays dropped, even when it was a lead.
+    if (finding.severity === 'ignore' || (finding.severity !== 'blocker' && !finding.lead)) return finding;
+    if (!codeDigest(workspace, [finding.file])) return finding;
+    const prior = priorRefutation(finding, workspace, priorRounds);
     if (prior) {
-      core.info(`Reusing the ${prior.outcome} refutation of "${finding.title}" from an earlier round, since its file is unchanged`);
+      core.info(`Reusing the ${prior.outcome} refutation of "${finding.title}" from an earlier round, since the files it rests on are unchanged`);
       return applyRefutation(finding, prior);
     }
     try {
@@ -117,7 +131,7 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
         () => client.sendMessage(REFUTE_SYSTEM_PROMPT, buildRefuteMessage(finding), {
           ...(effort && { effort }), repoTools: { root: workspace, steps: REFUTE_STEPS }, timeoutMs: REFUTE_TIMEOUT_MS,
         }),
-        reply => parseRefutation(reply.content, digest),
+        reply => parseRefutation(reply.content, workspace, finding.file),
         error => core.warning(`Refutation reply for "${finding.title}" could not be used (${error}), asking once more`),
       );
       core.info(`Refutation of "${finding.title}": ${refutation.outcome}`);
@@ -126,5 +140,5 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
       core.warning(`Could not check "${finding.title}" for a refutation, so it keeps the judge's grade: ${error}`);
       return finding;
     }
-  }));
+  });
 }

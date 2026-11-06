@@ -217,7 +217,9 @@ export interface Refutation {
   reason: string;
   /** The `file:line` locations the judge cites: the failure for `confirmed`, the reason it cannot happen for `disproved`. */
   proof?: string[];
-  /** SHA-256 of the finding's file at the commit checked. A later round reuses the outcome while the file is unchanged. */
+  /** The finding's own file and the files the outcome cites. */
+  files: string[];
+  /** SHA-256 over `files` at the commit checked. A later round reuses the outcome while it still matches. */
   codeDigest: string;
 }
 
