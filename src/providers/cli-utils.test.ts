@@ -154,6 +154,13 @@ describe('cliEnv', () => {
     cliEnv('claude', {}, undefined, { CLAUDE_CODE_USE_VERTEX: '1', GOOGLE_APPLICATION_CREDENTIALS: keyFile });
     expect(redactSecrets('key-id-0123456789 MIIEvgIBADANBgkqhkiG9w0BAQ reviewer@project.iam.gserviceaccount.com'))
       .toBe('[REDACTED] [REDACTED] reviewer@project.iam.gserviceaccount.com');
+    // The file `google-github-actions/auth` writes for workload identity federation carries the OIDC request token in a header.
+    writeFileSync(keyFile, JSON.stringify({
+      type: 'external_account', audience: '//iam.googleapis.com/projects/1/pool',
+      credential_source: { url: 'https://pipelines.actions.example/oidc', headers: { Authorization: 'Bearer oidc-request-token-xyz' } },
+    }));
+    cliEnv('claude', {}, undefined, { CLAUDE_CODE_USE_VERTEX: '1', GOOGLE_APPLICATION_CREDENTIALS: keyFile });
+    expect(redactSecrets('Bearer oidc-request-token-xyz https://pipelines.actions.example/oidc')).toBe('[REDACTED] https://pipelines.actions.example/oidc');
     for (const provider of ['codex', 'gemini'] as const) {
       expect(Object.keys(cliEnv(provider, {}, undefined, on))).not.toEqual(expect.arrayContaining(['AWS_SECRET_ACCESS_KEY']));
       expect(cliEnv(provider, {}, undefined, on)).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');

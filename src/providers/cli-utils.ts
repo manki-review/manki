@@ -349,20 +349,34 @@ export function cliEnv(provider: CliProvider, vars: NodeJS.ProcessEnv = {}, cred
     const value = result[name];
     if (!value) continue;
     registerSecret(value);
-    if (name === 'GOOGLE_APPLICATION_CREDENTIALS') registerServiceAccountKey(value);
+    if (name === 'GOOGLE_APPLICATION_CREDENTIALS') registerGoogleCredentials(value);
   }
   return result;
 }
 
-/** Registers the private key of the Google service account file at `path`, leaving its public fields such as `client_email` unredacted. */
-function registerServiceAccountKey(path: string): void {
+// Fields of a Google credentials file that identify an account or endpoint and are safe to post.
+const GOOGLE_PUBLIC_FIELDS = new Set([
+  'type', 'client_email', 'client_id', 'project_id', 'quota_project_id', 'audience', 'universe_domain', 'subject_token_type',
+  'token_url', 'token_uri', 'auth_uri', 'auth_provider_x509_cert_url', 'client_x509_cert_url', 'service_account_impersonation_url', 'url', 'file',
+]);
+
+function registerGoogleSecrets(json: unknown, key = ''): void {
+  if (typeof json === 'string') {
+    if (!GOOGLE_PUBLIC_FIELDS.has(key)) registerSecret(json);
+  } else if (json && typeof json === 'object') {
+    for (const [field, value] of Object.entries(json)) registerGoogleSecrets(value, field);
+  }
+}
+
+/**
+ * Registers the secrets of the Google credentials file at `path`, such as a service account's private key, an
+ * `authorized_user` refresh token or an `external_account` request header. Public fields such as `client_email` stay unredacted.
+ */
+function registerGoogleCredentials(path: string): void {
   try {
-    const file = safeJsonParse(readFileSync(path, 'utf8')) as { private_key?: unknown; private_key_id?: unknown } | null;
-    for (const value of [file?.private_key, file?.private_key_id]) {
-      if (typeof value === 'string') registerSecret(value);
-    }
+    registerGoogleSecrets(safeJsonParse(readFileSync(path, 'utf8')));
   } catch (error) {
-    core.warning(`Could not read ${path} to redact its private key: ${error}`);
+    core.warning(`Could not read ${path} to redact its secrets: ${error}`);
   }
 }
 
