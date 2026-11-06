@@ -3875,6 +3875,8 @@ describe('runFullReview orchestration', () => {
         judgeConfidence: 'medium' as const,
         tags: ['own-proposal-followup', 'follow-up', 'security'],
         originalSeverity: 'warning' as const,
+        category: 'concurrency' as const,
+        effort: 'moderate' as const,
         toolEvidence: { status: 'contradicted' as const, note: 'src/gone.ts is not changed in this diff.' },
       }, {
         severity: 'warning' as const,
@@ -3920,6 +3922,7 @@ describe('runFullReview orchestration', () => {
     expect(entry.judgeConfidence).toBe('medium');
     expect(entry.tags).toEqual(['own-proposal-followup', 'follow-up', 'security']);
     expect(entry.originalSeverity).toBe('warning');
+    expect([entry.category, entry.effort]).toEqual(['concurrency', 'moderate']);
   });
 
   it('splits judge suppression counters by tag in RoundContext.judge', async () => {

@@ -18,7 +18,7 @@ import { stringifyFindingFingerprint, truncateDiff, validateSeverity } from './r
 import { WRITING_RULES } from './writing-rules';
 import { indexThreadEvaluations, isPriorAddressedByJudge } from './finding-fingerprint';
 import { criticalAreaOf, resolveRouting } from './routing';
-import { CONTRADICTION_TAG, DiffFile, DuplicateMatchType, Finding, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, ParsedDiff, PrContext, ThreadEvaluation, ToolEvidenceStatus } from './types';
+import { CONTRADICTION_TAG, DiffFile, DuplicateMatchType, Finding, FINDING_CATEGORIES, FINDING_EFFORTS, FindingCategory, FindingEffort, FindingFingerprintEntry, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, InterRoundDiffEmptyOverride, OpenThread, OWN_PROPOSAL_TAG, ProvenanceEntry, RATCHET_SUPPRESSED_TAG, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, RoundContext, SECURITY_TAG, ParsedDiff, PrContext, ThreadEvaluation, ToolEvidenceStatus } from './types';
 
 /** Cap on how many prior rounds we pass to the judge. */
 const PRIOR_ROUNDS_WINDOW = 3;
@@ -267,6 +267,8 @@ export interface JudgedFinding {
   sameAs?: number;
   /** Whether the judge classed the finding as a security defect. */
   security?: boolean;
+  category?: FindingCategory;
+  effort?: FindingEffort;
 }
 
 /** A blocker from an earlier round, with the commit of the latest round that raised it. */
@@ -473,6 +475,12 @@ If the PR description or linked issues contain acceptance criteria (checkbox ite
 - A partially met criterion should be flagged as \`warning\` with details on what's missing
 - Acceptance criteria from the issue that are clearly out of scope for this specific PR can be ignored
 
+## Category and Effort
+
+Set \`category\` to the kind of problem the finding names, picking the closest of: \`correctness\` (a wrong result or broken logic), \`security\`, \`reliability\` (a crash, a hang, resource exhaustion or lost errors), \`data\` (lost or corrupted data), \`concurrency\`, \`performance\`, \`compatibility\` (a broken public contract, wire or file format), \`testing\`, \`maintainability\` (duplication, structure, readability), \`documentation\` or \`style\`.
+
+Set \`effort\` to how big the fix is: \`quick\` for a few lines in one place, \`moderate\` for several places or a small redesign, \`larger\` for a design change or work across modules.
+
 ## Duplicate Detection
 
 Reviewers often report one defect twice, in different words, on different lines or under different titles. For each finding, set \`duplicateOf\` to the number N of an EARLIER "Finding N" that names the same underlying defect, or 0 when it is its own. Judge by what goes wrong in the code, never by wording. Two separate bugs in one function are two findings, however similar they read. When you cannot tell, treat them as separate.
@@ -505,6 +513,8 @@ Respond with ONLY a JSON object (no markdown fences, no explanation):
       "duplicateOf": 0,
       "sameAs": "",
       "security": false,
+      "category": "correctness" | "security" | "reliability" | "data" | "concurrency" | "performance" | "compatibility" | "testing" | "maintainability" | "documentation" | "style",
+      "effort": "quick" | "moderate" | "larger",
       "confidence": "high" | "medium" | "low",
       "reasoning": "Your verdict first, then 1-2 sentences on why"
     }
@@ -852,6 +862,14 @@ function filterSuppressionsForFindings(suppressions: Suppression[], findings: Fi
   return result;
 }
 
+/** Returns `value` when it is a key of `allowed`. Any other value is dropped with a warning naming `field`. */
+function oneOf<K extends string>(allowed: Readonly<Record<K, string>>, value: unknown, field: string): K | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value === 'string' && Object.hasOwn(allowed, value)) return value as K;
+  core.warning(`Judge returned ${field} ${JSON.stringify(value).slice(0, 40)}, which is not one of ${Object.keys(allowed).join(', ')}. Dropping it.`);
+  return undefined;
+}
+
 export function parseJudgeResponse(responseText: string): JudgeResult {
   const parsed = JSON.parse(extractJSON(responseText));
 
@@ -862,6 +880,8 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
         : undefined;
       const id = parseFindingNumber(f.id);
       const sameAs = parseFindingNumber(typeof f.sameAs === 'string' ? f.sameAs.trim().replace(/^B/i, '') : f.sameAs);
+      const category = oneOf(FINDING_CATEGORIES, f.category, 'category');
+      const effort = oneOf(FINDING_EFFORTS, f.effort, 'effort');
       return {
         ...(id !== undefined && { id }),
         title: String(f.title || 'Untitled'),
@@ -871,6 +891,8 @@ export function parseJudgeResponse(responseText: string): JudgeResult {
         ...(duplicateOf && { duplicateOf }),
         ...(sameAs !== undefined && { sameAs }),
         ...(f.security === true && { security: true }),
+        ...(category && { category }),
+        ...(effort && { effort }),
       };
     });
 
@@ -1157,6 +1179,8 @@ export function mapJudgedToFindings(
       finding.judgeNotes = match.reasoning;
       finding.judgeConfidence = match.confidence;
       if (match.security) finding.tags = addTag(finding.tags, SECURITY_TAG);
+      if (match.category) finding.category = match.category;
+      if (match.effort) finding.effort = match.effort;
       applyOwnProposal(finding, provenanceMap);
       const prior = match.sameAs !== undefined ? priorBlockers[match.sameAs - 1] : undefined;
       if (prior) finding.sameAs = stringifyFindingFingerprint(prior.entry.fingerprint);

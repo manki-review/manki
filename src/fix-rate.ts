@@ -34,6 +34,8 @@ interface CalibrationKey {
   severity: string;
   confidence: string;
   toolEvidence: string;
+  category: string;
+  effort: string;
 }
 
 export interface PostedFinding {
@@ -43,8 +45,8 @@ export interface PostedFinding {
 
 /**
  * Records how many posted findings of a merged pull request were fixed, dismissed or left
- * untouched, per severity and specialist (`counts`) and per severity, judge confidence and tool
- * evidence (`calibration`). Writes one JSON line to the job summary, and appends it to
+ * untouched, per severity and specialist (`counts`) and per severity, judge confidence, tool
+ * evidence, category and effort (`calibration`). Writes one JSON line to the job summary, and appends it to
  * `<repo>/metrics/fix-rate.jsonl` in the memory repo when `memory` is given. The line carries
  * the class, group and config digest of the last round that recorded them.
  */
@@ -86,7 +88,13 @@ export async function recordFixRate(
     const outcome: Outcome = fixed ? 'fixed' : isDismissed(thread, pr.authorLogin) ? 'dismissed' : 'untouched';
     const specialist = entry.reviewers?.[0] ?? entry.specialist ?? 'unknown';
     tally<SpecialistKey>(counts, { severity: entry.severity, specialist }, outcome);
-    tally<CalibrationKey>(calibration, { severity: entry.severity, confidence: entry.judgeConfidence ?? 'unknown', toolEvidence: entry.toolEvidence ?? 'unknown' }, outcome);
+    tally<CalibrationKey>(calibration, {
+      severity: entry.severity,
+      confidence: entry.judgeConfidence ?? 'unknown',
+      toolEvidence: entry.toolEvidence ?? 'unknown',
+      category: entry.category ?? 'unknown',
+      effort: entry.effort ?? 'unknown',
+    }, outcome);
   }
 
   const routing = [...priorRounds].reverse().find(r => r.routing)?.routing;

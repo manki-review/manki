@@ -37,6 +37,20 @@ describe('fix-rate report', () => {
       '| none | 3 | 0 | 2 | 1 | 0% | 67% |',
       '| confirmed | 1 | 1 | 0 | 0 | 100% | 0% |',
       '',
+      '## By category',
+      '',
+      '| category | posted | fixed | dismissed | untouched | fixed % | dismissed % |',
+      '| --- | ---: | ---: | ---: | ---: | ---: | ---: |',
+      '| unknown | 3 | 0 | 2 | 1 | 0% | 67% |',
+      '| correctness | 1 | 1 | 0 | 0 | 100% | 0% |',
+      '',
+      '## By effort',
+      '',
+      '| effort | posted | fixed | dismissed | untouched | fixed % | dismissed % |',
+      '| --- | ---: | ---: | ---: | ---: | ---: | ---: |',
+      '| unknown | 3 | 0 | 2 | 1 | 0% | 67% |',
+      '| quick | 1 | 1 | 0 | 0 | 100% | 0% |',
+      '',
     ].join('\n'));
     expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('not JSON'));
     errorSpy.mockRestore();

@@ -354,6 +354,15 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).not.toMatch(/reachability|defensive|no current caller/i);
   });
 
+  it('asks for a category and an effort from fixed lists, before the reasoning', () => {
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
+    expect(prompt).toContain('## Category and Effort');
+    expect(prompt).toContain('"category": "correctness" | "security" | "reliability" | "data" | "concurrency" | "performance" | "compatibility" | "testing" | "maintainability" | "documentation" | "style"');
+    expect(prompt).toContain('"effort": "quick" | "moderate" | "larger"');
+    const schema = prompt.slice(prompt.indexOf('"findings": ['));
+    expect(schema.indexOf('"effort"')).toBeLessThan(schema.indexOf('"reasoning"'));
+  });
+
   it('carries no `noise_level` calibration note', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
     expect(prompt).not.toContain('Calibration note');
@@ -871,6 +880,19 @@ describe('extractCodeContext', () => {
 });
 
 describe('parseJudgeResponse', () => {
+  it('keeps a category and an effort from the fixed lists, and drops any other value with a warning', () => {
+    const warnSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const result = parseJudgeResponse(JSON.stringify({ summary: 's', findings: [
+      { id: 1, title: 'A', severity: 'warning', reasoning: 'r', confidence: 'high', category: 'concurrency', effort: 'larger' },
+      { id: 2, title: 'B', severity: 'warning', reasoning: 'r', confidence: 'high', category: 'Bug', effort: 'huge' },
+      { id: 3, title: 'C', severity: 'warning', reasoning: 'r', confidence: 'high', category: 'toString' },
+    ] }));
+    expect(result.findings.map(f => [f.category, f.effort])).toEqual([['concurrency', 'larger'], [undefined, undefined], [undefined, undefined]]);
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Judge returned category "Bug", which is not one of correctness, security'));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Judge returned effort "huge"'));
+    warnSpy.mockRestore();
+  });
+
   it('parses object format with summary and findings', () => {
     const json = JSON.stringify({
       summary: 'Clean PR with one minor issue.',
@@ -2985,12 +3007,13 @@ describe('mapJudgedToFindings', () => {
       makeFinding({ title: 'Missing null check in lexer', file: 'lexer.ts' }),
     ];
     const judged: JudgedFinding[] = [
-      { id: 2, title: 'Missing null check in parser', severity: 'blocker', reasoning: 'Lexer crashes.', confidence: 'high' },
+      { id: 2, title: 'Missing null check in parser', severity: 'blocker', reasoning: 'Lexer crashes.', confidence: 'high', category: 'reliability', effort: 'quick' },
       { id: 1, title: 'Missing null check in lexer', severity: 'nitpick', reasoning: 'Parser is guarded.', confidence: 'low' },
     ];
 
     const result = mapJudgedToFindings(originals, judged);
     expect(result.map(f => [f.file, f.severity])).toEqual([['parser.ts', 'nitpick'], ['lexer.ts', 'blocker']]);
+    expect(result.map(f => [f.category, f.effort])).toEqual([[undefined, undefined], ['reliability', 'quick']]);
     expect(result.map(f => f.reviewerSeverity)).toEqual(['suggestion', 'suggestion']);
     expect(result.map(f => f.originalSeverity)).toEqual([undefined, undefined]);
     expect(result[1].judgeNotes).toBe('Lexer crashes.');
