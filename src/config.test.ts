@@ -613,6 +613,12 @@ models:
       expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("`nit_handling: 'email'` is not a recognized value"));
     });
 
+    it('defaults `drafts` to skip, accepts skip and review, and rejects anything else', () => {
+      expect(loadConfigFromContent('').drafts).toBe('skip');
+      expect(loadConfigFromContent('drafts: review').drafts).toBe('review');
+      expect(() => loadConfigFromContent('drafts: always')).toThrow('`drafts` must be one of: skip, review');
+    });
+
     it('accepts valid noise_level values', () => {
       expect(loadConfigFromContent('noise_level: low').noise_level).toBe('low');
       expect(loadConfigFromContent('noise_level: medium').noise_level).toBe('medium');

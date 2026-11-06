@@ -3,6 +3,7 @@ import * as github from '@actions/github';
 
 import { isDispatchedRun } from './dispatch';
 import { truncateBody } from './github';
+import type { ApprovalHeld } from './github';
 import type { RoundOutcome } from './types';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -34,9 +35,14 @@ const OUTCOME_REPORTS: Record<RoundOutcome, Omit<CheckReport, 'summary'>> = {
   INCOMPLETE: { conclusion: 'failure', title: 'Review incomplete' },
 };
 
+const HELD_TITLES: Record<Exclude<ApprovalHeld, false>, string> = {
+  conflict: 'Approval held: the PR conflicts with its base',
+  draft: 'Approval held: the PR is a draft',
+};
+
 /** Returns the check report for a round that ended with `outcome`. A held approval reports neutral, whatever the outcome. */
-export function outcomeReport(outcome: RoundOutcome, summary: string, approvalHeld = false): CheckReport {
-  if (approvalHeld) return { conclusion: 'neutral', title: 'Approval held: the PR conflicts with its base', summary };
+export function outcomeReport(outcome: RoundOutcome, summary: string, approvalHeld: ApprovalHeld = false): CheckReport {
+  if (approvalHeld) return { conclusion: 'neutral', title: HELD_TITLES[approvalHeld], summary };
   return { ...OUTCOME_REPORTS[outcome], summary };
 }
 

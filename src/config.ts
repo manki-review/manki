@@ -46,6 +46,7 @@ export const DEFAULT_CONFIG: ReviewConfig = {
     repo: '',
   },
   noise_level: 'low',
+  drafts: 'skip',
   review_passes: 1,
   convergence: {
     max_auto_rounds: 5,
@@ -78,6 +79,7 @@ const KNOWN_KEYS = new Set([
   'related_repos',
   'nit_handling',
   'noise_level',
+  'drafts',
   'review_passes',
   'convergence',
   'stats',
@@ -294,6 +296,10 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
     } else {
       warnings.push(`\`nit_handling: '${String(config.nit_handling)}'\` is not a recognized value. Remove it from your config.`);
     }
+  }
+
+  if ('drafts' in config && config.drafts !== 'skip' && config.drafts !== 'review') {
+    errors.push('`drafts` must be one of: skip, review');
   }
 
   if ('noise_level' in config) {

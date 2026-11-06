@@ -246,7 +246,7 @@ function approvedSince(round: RoundContext, lastApprovalAt: string | undefined):
 }
 
 /**
- * Returns how many rounds reviewed a new change since the last approval, or in all rounds without one.
+ * Returns how many rounds reviewed a new change since the last approval, or in all rounds without one. Draft rounds don't count.
  * The round cap stops fix loops, so a round after an approval, such as on a rebase, starts the count again.
  */
 function roundsSinceApproval(priorRounds: RoundContext[], lastApprovalAt: string | undefined): { count: number; approved: boolean } {
@@ -254,7 +254,7 @@ function roundsSinceApproval(priorRounds: RoundContext[], lastApprovalAt: string
   for (let i = priorRounds.length - 1; i >= 0; i--) {
     const round = priorRounds[i];
     if (approvedSince(round, lastApprovalAt)) return { count, approved: true };
-    if (isNewChange({ commitSha: round.meta.commitSha, changeDigest: round.diff?.changeDigest }, priorRounds[i - 1])) count++;
+    if (!round.meta.draft && isNewChange({ commitSha: round.meta.commitSha, changeDigest: round.diff?.changeDigest }, priorRounds[i - 1])) count++;
   }
   return { count, approved: lastApprovalAt !== undefined };
 }
@@ -462,6 +462,10 @@ async function checkAndAutoApprove(
     repo,
     pull_number: prNumber,
   });
+  if (pr.draft) {
+    core.info('Skipping auto-approve — the PR is a draft');
+    return false;
+  }
 
   const prAuthorLogin = pr.user?.login;
   const prAuthorIsAdmin = !!prAuthorLogin && threads.some(t => isOverrideCandidate(t, prAuthorLogin))

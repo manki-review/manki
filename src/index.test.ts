@@ -909,7 +909,8 @@ describe('handlePullRequest', () => {
     );
   });
 
-  it('skips draft PRs', async () => {
+  it.each([undefined, 'skip', 'review'] as const)('reviews a draft PR automatically only with `drafts: review` (drafts: %s)', async (drafts) => {
+    jest.mocked(configModule.loadConfig).mockReturnValueOnce({ ...jest.mocked(configModule.loadConfig)(undefined), ...(drafts && { drafts }) });
     setContext({
       eventName: 'pull_request',
       payload: {
@@ -928,8 +929,12 @@ describe('handlePullRequest', () => {
 
     await handlePullRequest();
 
-    expect(jest.mocked(core.info)).toHaveBeenCalledWith('Skipping draft PR');
-    expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
+    if (drafts !== 'review') {
+      expect(jest.mocked(core.info)).toHaveBeenCalledWith('Skipping draft PR (`drafts: skip`)');
+      expect(jest.mocked(ghUtils.postProgressComment)).not.toHaveBeenCalled();
+      return;
+    }
+    expect(jest.mocked(core.info)).toHaveBeenCalledWith('Starting review for test-owner/test-repo#1');
   });
 
   it('skips when review is already in progress and posts skip comment', async () => {
@@ -1983,12 +1988,25 @@ describe('runFullReview orchestration', () => {
       expect(completedCheck()).toMatchObject({ conclusion: 'failure', output: { title: 'Review incomplete', summary: 'The judge failed.' } });
     });
 
-    it('completes the check as neutral when the approval is held on a conflicting PR', async () => {
-      jest.mocked(ghUtils.postReview).mockResolvedValueOnce({ id: 123, approvalHeld: true });
+    it('posts a draft round with `draft`, records it as a draft and never makes it the final capped round', async () => {
+      jest.mocked(configModule.loadConfig).mockReturnValueOnce({ ...jest.mocked(configModule.loadConfig)(undefined), convergence: { max_auto_rounds: 1 } });
+      await asDispatchedRun(() => runFullReview(baseArgs.owner, baseArgs.repo, baseArgs.prNumber, baseArgs.commitSha, baseArgs.baseRef, baseArgs.prContext, { draft: true }));
+
+      const [, , , , , , , context, , options] = jest.mocked(ghUtils.postReview).mock.calls[0];
+      expect(context!.meta.draft).toBe(true);
+      expect(options).toEqual(expect.objectContaining({ draft: true }));
+      expect(jest.mocked(reviewModule.runReview).mock.calls[0][1]).toEqual(expect.objectContaining({ finalRound: false }));
+    });
+
+    it.each([
+      ['conflict', 'Approval held: the PR conflicts with its base'],
+      ['draft', 'Approval held: the PR is a draft'],
+    ] as const)('completes the check as neutral when the approval is held for a %s', async (held, title) => {
+      jest.mocked(ghUtils.postReview).mockResolvedValueOnce({ id: 123, approvalHeld: held });
 
       await asDispatchedRun(callRunFullReview);
 
-      expect(completedCheck()).toMatchObject({ conclusion: 'neutral', output: { title: 'Approval held: the PR conflicts with its base' } });
+      expect(completedCheck()).toMatchObject({ conclusion: 'neutral', output: { title } });
     });
 
     it('completes the check as action required for a diff too large to review', async () => {
@@ -2243,7 +2261,7 @@ describe('runFullReview orchestration', () => {
         verdict: 'COMMENT',
         summary: expect.stringContaining('Too large to review automatically'),
       }),
-      expect.anything(),
+      expect.anything(), undefined, undefined, { draft: undefined },
     );
     expect(jest.mocked(ghUtils.updateProgressComment)).toHaveBeenLastCalledWith(
       expect.anything(), 'test-owner', 'test-repo', expect.any(Number), expect.anything(), expect.objectContaining({ judgeDecisions: [] }),
@@ -2289,7 +2307,7 @@ describe('runFullReview orchestration', () => {
         verdict: 'APPROVE',
         summary: expect.stringContaining('No reviewable files'),
       }),
-      expect.anything(),
+      expect.anything(), undefined, undefined, { draft: undefined },
     );
     // Metadata is what makes the progress comment read as complete rather than failed.
     expect(jest.mocked(ghUtils.updateProgressComment)).toHaveBeenLastCalledWith(

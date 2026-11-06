@@ -24,6 +24,11 @@
 # skip_authors: ["dependabot[bot]"]
 # skip_branches: ["dependabot/**"]
 
+# Draft PRs (default: skip). `skip` reviews a draft only on request, such as
+# `@manki review`. `review` reviews drafts automatically. A draft review never
+# approves and does not count toward the round cap.
+# drafts: skip
+
 # Maximum diff lines before skipping review (default: 50000)
 # max_diff_lines: 50000
 

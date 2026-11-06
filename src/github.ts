@@ -204,6 +204,11 @@ export async function fetchConflictingBase(octokit: Octokit, owner: string, repo
 }
 
 /** Returns the line that says Manki does not approve because the PR conflicts with `baseRef`. */
+/** Why an approval was posted as a comment instead, or `false` when it was not held. */
+export type ApprovalHeld = false | 'conflict' | 'draft';
+
+const DRAFT_HELD_LINE = '**Approval held:** this PR is a draft. Mark it ready for review, and Manki reviews it again.';
+
 export function approvalHeldLine(baseRef: string): string {
   return `**Approval held:** this PR conflicts with \`${sanitizeFilePath(baseRef)}\`. Rebase it, and Manki reviews the result.`;
 }
@@ -1072,7 +1077,7 @@ function hasOpenThread(finding: Finding, existingThreads: PreviousFinding[]): bo
  * When `context` is provided without `reviewTimeMs`, the hidden stats line
  * records `0s` for review time. Pass both together to avoid this.
  * Once GitHub writes are stopped, throws the abort reason and posts nothing.
- * Returns the review's id, and whether an approval was held as a COMMENT because the PR conflicts with its base.
+ * Returns the review's id, and why an approval was held as a COMMENT: the PR conflicts with its base, or it is a draft.
  */
 export async function postReview(
   octokit: Octokit,
@@ -1084,8 +1089,8 @@ export async function postReview(
   diff?: ParsedDiff,
   context?: RoundContext,
   reviewTimeMs?: number,
-  { existingThreads = [] }: { existingThreads?: PreviousFinding[] } = {},
-): Promise<{ id: number; approvalHeld: boolean }> {
+  { existingThreads = [], draft = false }: { existingThreads?: PreviousFinding[]; draft?: boolean } = {},
+): Promise<{ id: number; approvalHeld: ApprovalHeld }> {
   const event = mapVerdictToEvent(result.verdict);
 
   const validComments: Array<{path: string; line: number; side: 'RIGHT'; body: string}> = [];
@@ -1158,10 +1163,12 @@ export async function postReview(
 
   const blockingFindings = result.findings.filter(isBlockingFinding);
   const lead = formatLead(result, blockingFindings);
-  const conflictingBase = event === 'APPROVE' ? await fetchConflictingBase(octokit, owner, repo, prNumber) : undefined;
+  const conflictingBase = event === 'APPROVE' && !draft ? await fetchConflictingBase(octokit, owner, repo, prNumber) : undefined;
+  const approvalHeld: ApprovalHeld = event !== 'APPROVE' ? false : draft ? 'draft' : conflictingBase ? 'conflict' : false;
+  const heldLine = approvalHeld === 'draft' ? DRAFT_HELD_LINE : conflictingBase && approvalHeldLine(conflictingBase);
 
   const renderBody = (): string => {
-    let b = conflictingBase ? `${approvalHeldLine(conflictingBase)}\n\n${lead}` : lead;
+    let b = heldLine ? `${heldLine}\n\n${lead}` : lead;
     const needsHuman = formatNeedsHuman(result);
     if (needsHuman) {
       b += `\n\n${needsHuman}`;
@@ -1207,9 +1214,9 @@ export async function postReview(
   if (invalidComments.length > 0) {
     core.info(`Moved ${invalidComments.length} comments to review body (not postable as threads)`);
   }
-  const postedVerdict = conflictingBase ? 'COMMENT' : result.verdict;
-  if (conflictingBase) {
-    core.info(`PR conflicts with ${conflictingBase}, so the approval is posted as a comment`);
+  const postedVerdict = approvalHeld ? 'COMMENT' : result.verdict;
+  if (approvalHeld) {
+    core.info(`${approvalHeld === 'draft' ? 'The PR is a draft' : `PR conflicts with ${conflictingBase}`}, so the approval is posted as a comment`);
   }
   core.info(`Posting review: ${mapVerdictToEvent(postedVerdict)} with ${validComments.length} line comments and ${fileComments.length} file-level comments`);
 
@@ -1235,7 +1242,7 @@ export async function postReview(
       throw new Error(`Could not post blocking findings as threads or in review #${review.id}: ${titles}. ${error instanceof Error ? error.message : error}`);
     }
   }
-  return { id: review.id, approvalHeld: conflictingBase !== undefined };
+  return { id: review.id, approvalHeld };
 }
 
 /** Whether `error` is GitHub's refusal when the repo setting stops the workflow token from approving. */

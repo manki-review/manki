@@ -414,7 +414,7 @@ You can also forward `severity_counts` or `findings_json` to a metrics sink (Sla
 | Event | Purpose |
 |-------|---------|
 | `pull_request: [opened, synchronize]` | Auto-review on PR open and new pushes |
-| `pull_request: [ready_for_review]` | Auto-review when a draft PR is marked ready (head SHA unchanged, so the planner sees the same diff a `synchronize` would have produced) |
+| `pull_request: [ready_for_review]` | Auto-review when a draft PR is marked ready (head SHA unchanged, so the planner sees the same diff a `synchronize` would have produced). Drafts get no automatic review unless `drafts: review` is set. A draft review never approves: a clean round is posted as a comment saying the approval is held until the PR is ready, and it does not count toward the round cap |
 | `pull_request: [closed]` | On merge, records how many posted findings were fixed, dismissed or left untouched (see `metrics.fix_rate` below). Closing without merging does nothing |
 | `issue_comment: [created, edited]` | `/manki` commands on PRs and issues. PR-only commands: `review`, `check`, `explain`. Available on both: `help`, `dismiss`, `remember`, `forget`, and free-form questions. |
 | `pull_request_review_comment: [created]` | Replies to review comment threads |
@@ -678,6 +678,11 @@ exclude_paths:
 # skip_labels: ["dependencies"]
 # skip_authors: ["dependabot[bot]", "renovate[bot]"]
 # skip_branches: ["dependabot/**"]
+
+# Draft PRs (default: skip). `skip` reviews a draft only on request, such as
+# `@manki review`. `review` reviews drafts automatically. Either way a draft
+# review never approves and does not count toward `convergence.max_auto_rounds`.
+# drafts: skip
 
 # Maximum diff size before skipping (default: 50000 lines)
 max_diff_lines: 50000

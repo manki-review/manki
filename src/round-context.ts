@@ -262,6 +262,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
       cap,
       trigger,
       ...(result.outcome && { outcome: result.outcome }),
+      ...(options.draft && { draft: true }),
     },
     config: {
       memoryEnabled: config.memory?.enabled ?? false,
