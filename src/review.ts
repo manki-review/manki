@@ -584,7 +584,7 @@ export async function runReview(
     });
   }
 
-  const memoryContext = memory ? buildMemoryContext(memory) : '';
+  const memoryContext = memory ? buildMemoryContext(memory, new Set(diff.files.map(f => f.path))) : '';
   const finderClients = new Map(team.finders.map(f => [f.name, withFallback(pickReviewerClient(clients, f), 'reviewer', f.name)]));
   const related: RelatedRepoTools | undefined = workspace && config.related_repos?.length && [...finderClients.values()].some(c => c.repoTools)
     ? { repos: config.related_repos, cacheDir: relatedReposCacheDir(), stateDir: makeScratchDir('related') }

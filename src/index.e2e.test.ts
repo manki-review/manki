@@ -508,7 +508,7 @@ describe('runFullReview end to end', () => {
     await forcedRound();
 
     expect(mockLLM.tools).toEqual([]);
-    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('so the reviewers run without them: Error: fetch failed'));
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('so the models run without them: Error: fetch failed'));
     expect(postedReviews().map(r => r.state)).toEqual(['APPROVED', 'APPROVED']);
   });
 

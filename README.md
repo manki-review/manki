@@ -59,7 +59,7 @@ See [How reviews work](docs/how-reviews-work.md#review-pipeline) for the full wa
 | `/manki forget suppression <pattern>` | Remove a suppression matching the pattern |
 | `/manki help` | Show all commands |
 
-You can also use `@manki` as the command prefix. A reply to a review comment gets one short answer that starts with Fixed, Agreed, Withdrawn, Unverified or Still open. Manki answers Agreed or Withdrawn only when the PR changes prove the point, and Unverified when the reply rests on facts it can't check from the code, so a maintainer should confirm them and resolve the thread. For the first three, Manki resolves the thread when the PR author or a collaborator wrote the reply. Tip: edit a comment to add `/manki` if you forgot to include it.
+You can also use `@manki` as the command prefix. A reply to a review comment gets one short answer that starts with Fixed, Withdrawn, Agreed, Kept or Unverified. With the Claude or Codex CLI, Manki checks the reply against the PR head with the same read-only tools its reviewers use. It answers Withdrawn only when the code proves the finding wrong, Agreed when you defer the finding to later work, Kept only with new lines that show the problem still happens, and Unverified when the reply rests on facts it can't check from the code, so a maintainer should confirm them and resolve the thread. For Fixed, Withdrawn and Agreed, Manki resolves the thread when the PR author or a collaborator wrote the reply. When a collaborator's reply gets a finding withdrawn and memory is on, Manki saves a learning for that file and says how to remove it with `/manki forget`. A security finding never leaves a learning. Tip: edit a comment to add `/manki` if you forgot to include it.
 
 ## Configure
 

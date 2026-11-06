@@ -23,6 +23,8 @@ export interface Learning {
   id: string;
   content: string;
   scope: 'repo' | 'global';
+  /** The file the learning holds for. Unset holds for the whole repo. */
+  path?: string;
   source: string;
   created_at: string;
   last_used?: string;
@@ -186,19 +188,21 @@ export function sanitizeForPromptEmbed(text: string): string {
 }
 
 /**
- * Build a context string from memory to inject into reviewer prompts.
+ * Build a context string from memory to inject into reviewer prompts. With `paths`, a learning for one path appears
+ * only when that path is among them.
  */
-export function buildMemoryContext(memory: RepoMemory): string {
-  if (memory.learnings.length === 0 && memory.suppressions.length === 0) {
+export function buildMemoryContext(memory: RepoMemory, paths?: ReadonlySet<string>): string {
+  const learnings = paths ? memory.learnings.filter(l => !l.path || paths.has(l.path)) : memory.learnings;
+  if (learnings.length === 0 && memory.suppressions.length === 0) {
     return '';
   }
 
   const parts: string[] = [];
 
-  if (memory.learnings.length > 0) {
+  if (learnings.length > 0) {
     parts.push('## Review Memory — Learnings\n');
     parts.push('The following learnings have been recorded from previous reviews. Consider them when reviewing:\n');
-    for (const learning of memory.learnings) {
+    for (const learning of learnings) {
       parts.push(`- ${sanitizeMemoryField(learning.content)}`);
     }
   }
@@ -218,6 +222,7 @@ export function buildMemoryContext(memory: RepoMemory): string {
 /**
  * Filter learnings to those relevant to a specific finding,
  * matching by keyword overlap between the finding and learning content.
+ * A learning for one path applies only to findings on that path.
  */
 export function filterLearningsForFinding(learnings: Learning[], finding: Finding): Learning[] {
   const text = `${finding.title} ${finding.description}`.toLowerCase();
@@ -228,6 +233,7 @@ export function filterLearningsForFinding(learnings: Learning[], finding: Findin
   if (keywords.length === 0) return [];
 
   return learnings.filter(l => {
+    if (l.path && l.path !== finding.file) return false;
     const contentLower = l.content.toLowerCase();
     return keywords.some(kw => contentLower.includes(kw));
   });
@@ -286,7 +292,7 @@ export async function appendMemoryLine(
 }
 
 /**
- * Remove a learning from the memory repo by case-insensitive substring match on content.
+ * Remove a learning from the memory repo by its id, or by case-insensitive substring match on content.
  */
 export async function removeLearning(
   octokit: Octokit,
@@ -299,7 +305,7 @@ export async function removeLearning(
     octokit,
     memoryRepo,
     `${targetRepo}/learnings.yml`,
-    l => l.content.toLowerCase().includes(searchLower),
+    l => l.id.toLowerCase() === searchLower || l.content.toLowerCase().includes(searchLower),
     l => `Remove learning: ${l.content}`,
   );
 }

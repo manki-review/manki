@@ -18,7 +18,7 @@ const FINDING_TITLE_RE = /\*\*(?:Blocker|Warning|Suggestion|Nitpick|Ignore)\*\*(
 /** The hidden finding data in a thread comment. Comments without it use the older `**Severity**: title` layout. */
 const FINDING_DATA_RE = /<!-- manki-finding: (.+?) -->/;
 
-function parseFindingData(body: string): { title?: string; fix?: string; tags?: string[]; flaggedBy?: string[] } | undefined {
+export function parseFindingData(body: string): { title?: string; fix?: string; tags?: string[]; flaggedBy?: string[] } | undefined {
   const match = body.match(FINDING_DATA_RE);
   if (!match) return undefined;
   try {

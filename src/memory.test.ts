@@ -361,6 +361,16 @@ describe('filterLearningsForFinding', () => {
     const result = filterLearningsForFinding(learnings, finding);
     expect(result).toHaveLength(1);
   });
+
+  it('applies a learning for one path only to findings on that path', () => {
+    const learning = makeLearning({ content: 'Findings like "Unused variable" do not apply on `src/gen.ts`: it is generated.', path: 'src/gen.ts' });
+    const memory = { learnings: [learning], suppressions: [] };
+    expect(buildMemoryContext(memory, new Set(['src/gen.ts']))).toContain('src/gen.ts');
+    expect(buildMemoryContext(memory, new Set(['src/app.ts']))).toBe('');
+
+    expect(filterLearningsForFinding([learning], makeFinding({ title: 'Unused variable', file: 'src/gen.ts' }))).toHaveLength(1);
+    expect(filterLearningsForFinding([learning], makeFinding({ title: 'Unused variable', file: 'src/app.ts' }))).toHaveLength(0);
+  });
 });
 
 describe('filterSuppressionsForFinding', () => {
@@ -446,6 +456,14 @@ describe('removeLearning', () => {
     expect(removed!.id).toBe('l1');
     expect(removed!.content).toBe('Always use strict mode');
     expect(remaining).toBe(1);
+  });
+
+  it('removes a learning by its id', async () => {
+    const octokit = mockMemoryOctokit({ 'test-repo/learnings.yml': [makeLearning({ id: 'learn-17', content: 'Always use strict mode' })] });
+
+    const { removed } = await removeLearning(octokit, 'owner/memory', 'test-repo', 'LEARN-17');
+
+    expect(removed?.id).toBe('learn-17');
   });
 
   it('returns null when no learning matches', async () => {

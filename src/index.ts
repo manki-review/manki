@@ -1293,16 +1293,16 @@ async function collectRoundSignals(
 }
 
 /**
- * Fetches the PR head for the finders and the judge when the client of any has repository tools. Returns `undefined`
- * when none has them, or when the fetch fails, and the round then runs without tools.
+ * Fetches the PR head for the repository tools when any of `clients` has them. Returns `undefined` when none has them,
+ * or when the fetch fails, and the models then run without tools.
  */
-async function fetchReviewWorkspace({ octokit, owner, repo, commitSha }: RunTarget, clients: ReviewClients): Promise<string | undefined> {
-  if (![clients.reviewer, clients.judge, ...(clients.reviewerByModel?.values() ?? [])].some(client => client.repoTools)) return undefined;
+async function fetchToolWorkspace({ octokit, owner, repo, commitSha }: Pick<RunTarget, 'octokit' | 'owner' | 'repo' | 'commitSha'>, clients: LLMClient[]): Promise<string | undefined> {
+  if (!clients.some(client => client.repoTools)) return undefined;
   try {
     const { token } = await octokit.auth() as { token?: string };
     return await fetchWorkspace(`${github.context.serverUrl}/${owner}/${repo}.git`, commitSha, token);
   } catch (error) {
-    core.warning(`Could not fetch the PR head for the reviewer tools, so the reviewers run without them: ${sanitizeTokens(String(error))}`);
+    core.warning(`Could not fetch the PR head for the repository tools, so the models run without them: ${sanitizeTokens(String(error))}`);
     return undefined;
   }
 }
@@ -1767,7 +1767,7 @@ async function runFullReview(
     const { openThreads, fileContents } = await collectOpenThreads(target, recap, diff);
     const [{ interRoundDiff, priorChange, linkedIssues, staticSignals, staticAnalysis }, workspace] = await Promise.all([
       collectRoundSignals(target, config, recap, diff, fullDiff, configPath, prContext?.body),
-      fetchReviewWorkspace(target, clients),
+      fetchToolWorkspace(target, [clients.reviewer, clients.judge, ...(clients.reviewerByModel?.values() ?? [])]),
     ]);
 
     const run: ReviewRun = {
@@ -2021,7 +2021,9 @@ async function handleReviewCommentInteraction(): Promise<void> {
       core.warning('Cannot handle reply — pull request number not available');
       return;
     }
-    await handleReviewCommentReply(octokit, bot, client, owner, repo, prNumber, memoryConfig, memoryToken);
+    const headSha: string | undefined = payload.pull_request?.head?.sha;
+    const loadWorkspace = async () => headSha ? fetchToolWorkspace({ octokit, owner, repo, commitSha: headSha }, [client]) : undefined;
+    await handleReviewCommentReply(octokit, bot, client, owner, repo, prNumber, memoryConfig, memoryToken, loadWorkspace);
   }
 
   // Check if all review threads are now resolved (e.g. the reply resolved the last conversation)

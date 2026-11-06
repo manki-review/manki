@@ -50,6 +50,7 @@ describe('refuteBlockers', () => {
       'Unsettled': { outcome: 'unsettled', reason: 'The callers are generated.' },
       'Lead confirmed': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] },
       'Unproven lead confirmed': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] },
+      'Unproven and contradicted': { outcome: 'confirmed', reason: 'It overflows.', proof: ['src/math.ts:2'] },
       'Disproved without proof': { outcome: 'disproved', reason: 'Probably fine.' },
       'Disproved on made-up lines': { outcome: 'disproved', reason: 'Checked elsewhere.', proof: ['src/gone.ts:1', 'src/api.ts:99'] },
       'Security disproved': { outcome: 'disproved', reason: 'A comment says it is intended.', proof: ['src/api.ts:9'] },
@@ -63,6 +64,7 @@ describe('refuteBlockers', () => {
       finding('Unsettled'),
       finding('Lead confirmed', { severity: 'warning', notChecked: true, lead }),
       finding('Unproven lead confirmed', { severity: 'warning', notChecked: true, lead, tags: ['unproven-blocker'] }),
+      finding('Unproven and contradicted', { severity: 'nitpick', notChecked: true, lead, tags: ['unproven-blocker', 'contradicts-prior-round'] }),
       finding('Disproved without proof'),
       finding('Disproved on made-up lines'),
       finding('Security disproved', { tags: ['security'] }),
@@ -83,6 +85,8 @@ describe('refuteBlockers', () => {
       // A confirmation keeps the grade the judge gave a lead, and lifts only the cap on an unproven blocker.
       ['Lead confirmed', 'warning', 'confirmed'],
       ['Unproven lead confirmed', 'blocker', 'confirmed'],
+      // A cross-round contradiction lowered it after the cap, so the proving lines do not lift it.
+      ['Unproven and contradicted', 'nitpick', 'confirmed'],
       ['Disproved without proof', 'warning', 'unsettled'],
       // A citation of a file the workspace lacks, or of a line past its end, settles nothing.
       ['Disproved on made-up lines', 'warning', 'unsettled'],
@@ -101,7 +105,7 @@ describe('refuteBlockers', () => {
     expect([result[4].lead, result[4].notChecked]).toEqual([undefined, undefined]);
     expect(result[5].tags).toEqual([]);
     // Every blocker and lead was asked once, and the warning never.
-    expect(client.calls.map(([title]) => title).sort()).toEqual(['Confirmed', 'Confirmed without proof', 'Disproved', 'Disproved on made-up lines', 'Disproved without proof', 'Failing', 'Lead confirmed', 'Lead unsettled', 'Security disproved', 'Unproven lead confirmed', 'Unsettled']);
+    expect(client.calls.map(([title]) => title).sort()).toEqual(['Confirmed', 'Confirmed without proof', 'Disproved', 'Disproved on made-up lines', 'Disproved without proof', 'Failing', 'Lead confirmed', 'Lead unsettled', 'Security disproved', 'Unproven and contradicted', 'Unproven lead confirmed', 'Unsettled']);
     expect(client.calls[0][1]).toEqual({ effort: 'high', repoTools: { root: workspace, steps: 15 }, timeoutMs: 600_000 });
   });
 
