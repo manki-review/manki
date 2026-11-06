@@ -949,7 +949,7 @@ export async function runReview(
   if (previousFindings && previousFindings.length > 0 && findingsForJudge.length > 0) {
     const { unique, duplicates } = deduplicateFindings(findingsForJudge, previousFindings, memory?.suppressions);
     if (duplicates.length > 0) {
-      core.info(`Static dedup removed ${duplicates.length} findings matching dismissed ones before judge`);
+      core.info(`Static dedup removed ${duplicates.length} findings matching earlier resolved ones before judge`);
     }
     findingsForJudge = unique;
     staticDedupCount = duplicates.length;
@@ -962,7 +962,7 @@ export async function runReview(
       const dedupWrap = wrapClientForUsage(withFallback({ client: clients.dedup, fallback: clients.fallbacks?.dedup }, 'dedup'));
       const llmResult = await llmDeduplicateFindings(findingsForJudge, previousFindings, dedupWrap.client);
       if (llmResult.duplicates.length > 0) {
-        core.info(`LLM dedup removed ${llmResult.duplicates.length} findings matching dismissed ones before judge`);
+        core.info(`LLM dedup removed ${llmResult.duplicates.length} findings matching earlier resolved ones before judge`);
       }
       findingsForJudge = llmResult.unique;
       llmDedupCount = llmResult.duplicates.length;
