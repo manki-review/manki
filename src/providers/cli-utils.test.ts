@@ -53,6 +53,8 @@ describe('cliEnv', () => {
       XDG_CONFIG_HOME: '/home/runner/.config',
       RUNNER_TEMP: '/home/runner/work/_temp',
       HTTPS_PROXY: 'http://proxy:3128',
+      all_proxy: 'socks5://proxy:1080',
+      NODE_USE_ENV_PROXY: '1',
       NODE_EXTRA_CA_CERTS: '/etc/ssl/proxy.pem',
       DEPLOY_PEM: '-----BEGIN PRIVATE KEY-----',
       DATABASE_URL: 'postgres://admin:hunter2@db/prod',
@@ -74,6 +76,8 @@ describe('cliEnv', () => {
       XDG_CONFIG_HOME: '/home/runner/.config',
       RUNNER_TEMP: '/home/runner/work/_temp',
       HTTPS_PROXY: 'http://proxy:3128',
+      all_proxy: 'socks5://proxy:1080',
+      NODE_USE_ENV_PROXY: '1',
       NODE_EXTRA_CA_CERTS: '/etc/ssl/proxy.pem',
     });
   });
