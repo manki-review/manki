@@ -59,7 +59,7 @@ See [SETUP.md](SETUP.md#review-pipeline) for the full walkthrough.
 | `/manki forget suppression <pattern>` | Remove a suppression matching the pattern |
 | `/manki help` | Show all commands |
 
-You can also use `@manki` as the command prefix. A reply to a review comment gets one short answer that starts with Fixed, Agreed, Withdrawn, Unverified or Still open. Manki answers Agreed or Withdrawn only when the PR changes prove the point, and Unverified when the reply rests on facts it can't check from the code, so a maintainer should confirm them. For the first three, Manki resolves the thread when the PR author or a collaborator wrote the reply. Tip: edit a comment to add `/manki` if you forgot to include it.
+You can also use `@manki` as the command prefix. A reply to a review comment gets one short answer that starts with Fixed, Agreed, Withdrawn, Unverified or Still open. Manki answers Agreed or Withdrawn only when the PR changes prove the point, and Unverified when the reply rests on facts it can't check from the code, so a maintainer should confirm them and resolve the thread. For the first three, Manki resolves the thread when the PR author or a collaborator wrote the reply. Tip: edit a comment to add `/manki` if you forgot to include it.
 
 ## Configure
 

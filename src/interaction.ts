@@ -53,10 +53,10 @@ Start with exactly one of these outcomes, followed by a full stop:
 - "Fixed." The PR changes below contain the fix.
 - "Agreed." The PR changes below show the developer's point holds: the finding does not apply, or the code is intentional. Also use it when the developer will handle the finding in later work. Accept a deferral without arguing.
 - "Withdrawn." The PR changes below show the finding was wrong.
-- "Unverified." The developer's point rests on facts the PR changes don't show, such as how an external API or tool behaves, what documentation says, or code in other files. Say that you can't verify this from the code and that a maintainer should confirm it.
+- "Unverified." The developer's point rests on facts the PR changes don't show, such as how an external API or tool behaves, what documentation says, or code in other files. Say that you can't verify this from the code, and that a maintainer should confirm it and resolve the thread.
 - "Still open." The finding stands. Say what still goes wrong and what change resolves it.
 
-Pick "Agreed." or "Withdrawn." only when the PR changes shown prove the point. A plausible argument is not proof.
+Pick "Agreed." or "Withdrawn." only when the PR changes shown prove the point. A plausible argument is not proof. A deferral needs no proof: answer "Agreed." to it.
 
 Then write at most three sentences. Answer every question the developer asked. Give one answer, never two.
 
@@ -66,7 +66,7 @@ Examples:
 - "Fixed. \`hasReviewedHead\` now requires a Manki review on the head commit."
 - "Withdrawn. \`loadUser\` returns early when \`id\` is empty, so the lookup never sees an empty key."
 - "Agreed. \`parseConfig\` falls back to \`DEFAULT_CONFIG\` on a missing file, so the throw can't happen."
-- "Unverified. I can't verify from the code that the GitHub API returns reviews oldest first. A maintainer should confirm that before this thread is closed."
+- "Unverified. I can't verify from the code that the GitHub API returns reviews oldest first. A maintainer should confirm that and resolve this thread."
 
 ${WRITING_RULES}`;
 
