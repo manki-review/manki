@@ -1411,7 +1411,7 @@ Example of one finding:
 - A \`blocker\` must list in \`proof\` the \`file:line\` of each line that shows the failure. A blocker without proof is posted as a warning at most.
 - When a finding says something is missing or handled nowhere, set \`"claimsMissing": true\` and put the search that came back empty in \`emptySearch\`, such as "grep \`close(\` under src/net: no match". Such a claim never blocks on its own, and without the search it is a warning at most.${tools ? `
 - When Manki tells you to wrap up, report what you have. Set \`"notChecked": true\` on a finding you could not finish checking.
-- Report each suspicion you were still checking as an open lead: an entry with \`"lead": true\`, the \`severity\` it would have, the suspicion as \`title\`, its \`file\` and \`line\`, what you \`checked\` so far and what is \`left\`. The judge settles a lead you would grade \`blocker\`. Other leads are listed as not finished, never posted.` : ''}
+- Report each suspicion you were still checking as an open lead: an entry with \`"lead": true\`, the \`severity\` it would have, the suspicion as \`title\` and \`description\`, its \`file\` and \`line\`, what you \`checked\` so far and what is \`left\`. The judge settles a lead you would grade \`blocker\`. Other leads are listed as not finished, never posted.` : ''}
 
 ## Severity Guidelines
 
@@ -1559,18 +1559,20 @@ export function parseFindings(responseText: string, reviewerName: string): Findi
 
   return parsed.map((f: Record<string, unknown>) => {
     const evidence = parseEvidence(f);
-    const lead = f.lead === true;
+    const lead = f.lead === true ? { checked: textOf(f.checked), left: textOf(f.left) } : undefined;
+    // A lead the judge keeps is posted like a finding, so it needs a description even when the reviewer gave none.
+    const leadDescription = lead && `The reviewer did not finish checking this. Checked: ${lead.checked || 'nothing'}. Left: ${lead.left || 'not said'}.`;
     return {
       severity: validateSeverity(f.severity),
       title: String(f.title || 'Untitled finding'),
       file: String(f.file || ''),
       line: Number(f.line) || 0,
-      description: String(f.description || ''),
+      description: String(f.description || leadDescription || ''),
       suggestedFix: f.suggestedFix ? String(f.suggestedFix) : undefined,
       reviewers: [reviewerName],
       ...(evidence && { evidence }),
       ...((lead || f.notChecked === true) && { notChecked: true }),
-      ...(lead && { lead: { checked: textOf(f.checked), left: textOf(f.left) } }),
+      ...(lead && { lead }),
     };
   });
 }
