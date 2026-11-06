@@ -94,7 +94,7 @@ function makeOctokit(configByRef: Record<string, string> = {}, files: Record<str
     },
     git: {
       getTree: jest.fn(async ({ tree_sha }: { tree_sha: string }) => ({
-        data: { tree: Object.keys(files).filter(key => key.startsWith(`${tree_sha}:`)).map(key => ({ type: 'blob', path: key.slice(tree_sha.length + 1) })) },
+        data: { tree: Object.keys(files).filter(key => key.startsWith(`${tree_sha}:`)).map(key => ({ type: 'blob', path: key.slice(tree_sha.length + 1) })), truncated: false },
       })),
     },
     codeScanning: {
@@ -254,10 +254,13 @@ describe('collectStaticSignals with analyzers and waits', () => {
 
   it('runs the Rust rules on added lines without `ast_grep: true` when a `Cargo.toml` on the base branch sits above a changed Rust file, and never otherwise', async () => {
     const LIB = 'fn a() { unsafe { old() } }\nfn b() { unsafe { new() } }\nfn c() {}\n';
-    const rustRequest = (path: string) => {
+    const rustRequest = (...paths: string[]) => {
       const diff = parsePRDiff([
-        `diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, '@@ -1,2 +1,3 @@',
-        ' fn a() { unsafe { old() } }', '+fn b() { unsafe { new() } }', ' fn c() {}', RAW_DIFF,
+        ...paths.flatMap(path => [
+          `diff --git a/${path} b/${path}`, `--- a/${path}`, `+++ b/${path}`, '@@ -1,2 +1,3 @@',
+          ' fn a() { unsafe { old() } }', '+fn b() { unsafe { new() } }', ' fn c() {}',
+        ]),
+        RAW_DIFF,
       ].join('\n'));
       return { ...request(), diff, fullDiff: diff };
     };
@@ -274,8 +277,13 @@ describe('collectStaticSignals with analyzers and waits', () => {
 
     // A workspace in a subdirectory counts for the files under it, and a sibling crate's manifest does not.
     const workspace = makeOctokit({ main: ONLY_ANALYZERS }, { ...files, 'main:crates/Cargo.toml': '[workspace]\n', 'main:tools/Cargo.toml': '[package]\n' });
-    expect((await collectStaticSignals(workspace, rustRequest('crates/net/src/lib.rs'), runtime)).signals.map(s => `${s.file}:${s.line}`)).toEqual(['crates/net/src/lib.rs:2']);
+    const both = rustRequest('crates/net/src/lib.rs', 'src/lib.rs');
+    expect((await collectStaticSignals(workspace, both, runtime)).signals.map(s => `${s.file}:${s.line}`)).toEqual(['crates/net/src/lib.rs:2']);
     expect(await collectStaticSignals(workspace, rustRequest('src/lib.rs'), runtime)).toEqual({ signals: [] });
+    // A truncated listing falls back to reading the manifests above each file.
+    workspace.rest.git.getTree.mockResolvedValue({ data: { tree: [], truncated: true } });
+    expect((await collectStaticSignals(workspace, both, runtime)).signals.map(s => `${s.file}:${s.line}`)).toEqual(['crates/net/src/lib.rs:2']);
+    expect(workspace.rest.repos.getContent).toHaveBeenCalledWith(expect.objectContaining({ ref: 'main', path: 'crates/net/Cargo.toml' }));
 
     const headCargo = makeOctokit({ main: ONLY_ANALYZERS }, { ...files, 'head-sha:Cargo.toml': '[package]\n' });
     expect(await collectStaticSignals(headCargo, rustRequest('src/lib.rs'), runtime)).toEqual({ signals: [] });

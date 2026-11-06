@@ -91,11 +91,11 @@ export async function collectStaticSignals(
     return null;
   });
   const settings = loadStaticAnalysisConfig(content, configPath);
-  const [checksStillPending, rustRules] = await Promise.all([
+  const [checksStillPending, rustPaths] = await Promise.all([
     waitForChecks(octokit, request, settings, runtime.sleep),
-    usesRustRules(octokit, request, settings),
+    rustRulePaths(octokit, request, settings),
   ]);
-  const analyzers = enabledAnalyzers(settings, rustRules);
+  const analyzers = enabledAnalyzers(settings, rustPaths.size > 0);
   const semgrepRules = settings.analyzers !== 'all' && settings.analyzers.semgrep ? settings.analyzers.semgrep.rules : [];
   // The files are read through the API and only parsed, so no code from the PR runs. Each analyzer reads its own files
   // within its own budget, so turning one on never shrinks what another one scans.
@@ -111,7 +111,7 @@ export async function collectStaticSignals(
   if (settings.dependency_review) sources.push(['dependency_review', () => fetchDependencyReview(octokit, request)]);
   if (analyzers.includes('ast_grep')) {
     const allRules = settings.analyzers === 'all' || settings.analyzers.ast_grep === true;
-    const keep = (path: string) => isRustFile(path) ? rustRules : allRules && isAstGrepFile(path);
+    const keep = (path: string) => isRustFile(path) ? rustPaths.has(path) : allRules && isAstGrepFile(path);
     sources.push(['ast_grep', async () => {
       if (!diff.files.some(f => f.changeType !== 'deleted' && keep(f.path))) return [];
       const [api, contents] = await Promise.all([runtime.loadAstGrep(), readHeadFiles(keep)]);
@@ -245,20 +245,27 @@ async function readActionlintConfig(octokit: Octokit, { owner, repo, baseRef }: 
 }
 
 /**
- * Whether Manki's Rust rules run: `ast_grep` is not turned off, and a changed Rust file has a `Cargo.toml` in its own
- * directory or one above it on the base branch, so a workspace in a subdirectory counts. They need no `ast_grep: true`.
+ * Returns the changed Rust files Manki's Rust rules check: those with a `Cargo.toml` in their directory or one above it on
+ * the base branch, so a workspace in a subdirectory counts. They need no `ast_grep: true`, and `ast_grep: false` stops them.
  */
-async function usesRustRules(octokit: Octokit, { owner, repo, baseRef, diff }: StaticSignalRequest, settings: StaticAnalysisConfig): Promise<boolean> {
-  if (settings.analyzers !== 'all' && settings.analyzers.ast_grep === false) return false;
+async function rustRulePaths(octokit: Octokit, { owner, repo, baseRef, diff }: StaticSignalRequest, settings: StaticAnalysisConfig): Promise<Set<string>> {
+  if (settings.analyzers !== 'all' && settings.analyzers.ast_grep === false) return new Set();
   const rustFiles = diff.files.filter(f => f.changeType !== 'deleted' && isRustFile(f.path)).map(f => f.path);
-  if (rustFiles.length === 0) return false;
+  if (rustFiles.length === 0) return new Set();
+  const manifestsAbove = (path: string) => path.split('/').map((_, i, parts) => [...parts.slice(0, i), 'Cargo.toml'].join('/'));
   try {
     const { data } = await octokit.rest.git.getTree({ owner, repo, tree_sha: baseRef, recursive: 'true' });
-    const manifests = new Set(data.tree.filter(e => e.type === 'blob' && e.path?.split('/').pop() === 'Cargo.toml').map(e => e.path));
-    return rustFiles.some(path => path.split('/').some((_, i, parts) => manifests.has([...parts.slice(0, i), 'Cargo.toml'].join('/'))));
+    let manifests = new Set(data.tree.filter(e => e.type === 'blob' && e.path?.split('/').pop() === 'Cargo.toml').map(e => e.path));
+    // GitHub truncates the listing of a very large tree, so the manifests above each file are then read one by one.
+    if (data.truncated) {
+      const candidates = [...new Set(rustFiles.flatMap(manifestsAbove))];
+      const found = await Promise.all(candidates.map(async path => await fetchConfigFile(octokit, owner, repo, baseRef, path) !== null ? [path] : []));
+      manifests = new Set(found.flat());
+    }
+    return new Set(rustFiles.filter(path => manifestsAbove(path).some(manifest => manifests.has(manifest))));
   } catch (error) {
     core.warning(`Static analysis: could not list the files on the base branch, skipping the Rust rules: ${error instanceof Error ? error.message : String(error)}`);
-    return false;
+    return new Set();
   }
 }
 
