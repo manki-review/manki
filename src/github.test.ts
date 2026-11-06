@@ -482,7 +482,7 @@ describe('postReview reviewed-commit footer', () => {
       verdict: 'COMMENT',
       summary: 'Summary.',
       findings: [{
-        severity: 'warning',
+        severity: 'blocker',
         title: 'Issue',
         file: 'src/a.ts',
         line: 10,
@@ -497,7 +497,7 @@ describe('postReview reviewed-commit footer', () => {
     await postReview(octokit, 'acme', 'widgets', 1, fullSha, result);
     const fallbackBody = createReviewMock.mock.calls[1][0].body as string;
     expect(fallbackBody.endsWith(expectedEnd)).toBe(true);
-    expect(fallbackBody).toContain('**Inline comments could not be posted:**');
+    expect(fallbackBody).toContain('**Inline comments could not be posted:**\n- \u{1F6AB} **Blocker** **Issue**');
   });
 
   it('keeps the footer at the bottom when APPROVE falls back to COMMENT due to permissions', async () => {
@@ -524,10 +524,16 @@ describe('postReview reviewed-commit footer', () => {
       agentNames: [],
     };
 
-    await postReview(octokit, 'acme', 'widgets', 1, fullSha, result);
+    const diff: ParsedDiff = {
+      files: [{ path: 'src/a.ts', changeType: 'modified', hunks: [{ oldStart: 10, oldLines: 1, newStart: 10, newLines: 1, content: '' }] }],
+      totalAdditions: 1,
+      totalDeletions: 0,
+    };
+
+    await postReview(octokit, 'acme', 'widgets', 1, fullSha, result, diff);
     const fallbackBody = createReviewMock.mock.calls[1][0].body as string;
     expect(fallbackBody.endsWith(expectedEnd)).toBe(true);
-    expect(fallbackBody).toContain('**Findings (could not post inline):**');
+    expect(fallbackBody).toContain('**Findings (could not post inline):**\n- \u2728 **Suggestion, not blocking** **Minor** (`src/a.ts:10`)');
   });
 
   it('preserves the footer even when the review body exceeds the truncation limit', async () => {

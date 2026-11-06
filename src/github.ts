@@ -1286,7 +1286,7 @@ async function submitReview(
     // If it's a line validation error, retry without inline comments
     if (isLineError && validComments.length > 0) {
       core.warning('Inline comments rejected by GitHub (invalid lines). Posting review without inline comments.');
-      const allAsBody = validComments.map(c => `- ${c.body.split('\n')[0]}`).join('\n');
+      const allAsBody = validComments.map(c => `- ${commentHeadline(c.body)}`).join('\n');
       const lineErrFallbackBody = fit(`${body}\n\n**Inline comments could not be posted:**\n${allAsBody}`);
 
       const { data: review } = await octokit.rest.pulls.createReview({
@@ -1316,10 +1316,7 @@ async function submitReview(
       : '';
     core.warning(`GitHub refused the ${event} review (${status}: ${errorMessage}).${hint} Falling back to COMMENT.`);
 
-    const findingSummary = validComments.map(c => {
-      const firstLine = c.body.split('\n')[0];
-      return `- ${firstLine} (\`${c.path}:${c.line}\`)`;
-    }).join('\n');
+    const findingSummary = validComments.map(c => `- ${commentHeadline(c.body)} (\`${c.path}:${c.line}\`)`).join('\n');
     const fallbackBody = fit(`${body}\n\n**Findings (could not post inline):**\n${findingSummary}`);
 
     const { data: review } = await octokit.rest.pulls.createReview({
@@ -1631,6 +1628,11 @@ function formatFindingHeader(finding: Finding): string {
   const tool = finding.toolSource ? ` (${sanitizeMarkdown(finding.toolSource)})` : '';
   const kind = [finding.category && FINDING_CATEGORIES[finding.category], finding.effort && FINDING_EFFORTS[finding.effort]].filter(Boolean);
   return [`${label}${tool}`, ...kind].join(' · ');
+}
+
+/** Returns the header line and title of a comment from `formatFindingComment`, on one line. */
+function commentHeadline(body: string): string {
+  return body.split('\n\n', 2).join(' ');
 }
 
 function formatFindingComment(finding: Finding): string {
