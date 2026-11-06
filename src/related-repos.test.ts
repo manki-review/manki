@@ -1,5 +1,5 @@
 import * as core from '@actions/core';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -151,6 +151,31 @@ describe('relatedRepoLoader', () => {
       expect(existsSync(join(dipsDir, '.git', 'objects', 'pack'))).toBe(false);
       expect(readFileSync(join(outside, 'dash', '.git', 'objects', 'pack', 'pack-1.pack'), 'utf-8')).toBe('objects');
     } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('skips a repo whose restored directory or symlink it cannot remove, without running git there', async () => {
+    const dashDir = join(cacheDir, 'dashpay', 'dash');
+    mkdirSync(join(dashDir, '.git'), { recursive: true });
+    writeFileSync(join(dashDir, '.git', 'config'), '[core]\n\tworktree = /elsewhere\n');
+    chmodSync(join(dashDir, '.git'), 0o555);
+    const outside = mkdtempSync(join(tmpdir(), 'manki-related-repos-outside-'));
+    try {
+      const run = fakeGit();
+      expect(await relatedRepoLoader([DASH], { cacheDir, run })('reference')).toEqual([]);
+      expect(core.warning).toHaveBeenCalledWith(`Skipping related repo dashpay/dash, which must be public on github.com: could not remove ${dashDir}`);
+
+      symlinkSync(outside, join(cacheDir, 'linked'));
+      chmodSync(cacheDir, 0o555);
+      expect(await relatedRepoLoader([{ repo: 'linked/dips', kind: 'reference' }], { cacheDir, run })('reference')).toEqual([]);
+      expect(core.warning).toHaveBeenCalledWith(`Skipping related repo linked/dips, which must be public on github.com: could not remove ${join(cacheDir, 'linked')}`);
+
+      expect(run).not.toHaveBeenCalled();
+      expect(readdirSync(outside)).toEqual([]);
+    } finally {
+      chmodSync(cacheDir, 0o755);
+      chmodSync(join(dashDir, '.git'), 0o755);
       rmSync(outside, { recursive: true, force: true });
     }
   });

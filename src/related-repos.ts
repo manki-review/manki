@@ -73,11 +73,16 @@ async function checkoutRelatedRepo(repo: RelatedRepo, cacheDir: string, timeoutM
   };
   const init = async (): Promise<void> => {
     removeQuietly(dir);
+    // A restored `.git` left in place would bring its own config into `git init`.
+    if (lstatSync(dir, { throwIfNoEntry: false })) throw new Error(`could not remove ${dir}`);
     mkdirSync(dir, { recursive: true });
     await git('init', '-q');
     await git('remote', 'add', 'origin', `https://github.com/${repo.repo}.git`);
   };
   try {
+    // A symlink restored from the cache could point the clone outside it.
+    removeUnlessRealDirectory(cacheDir);
+    removeUnlessRealDirectory(dirname(dir));
     await initReusingObjects(dir, init, git);
     await git(...(repo.paths ? ['sparse-checkout', 'set', '--no-cone', ...repo.paths.map(sparsePattern)] : ['sparse-checkout', 'disable']));
     await git('fetch', '-q', '--depth', '1', '--filter=blob:none', '--no-tags', 'origin', repo.ref ?? 'HEAD');
@@ -86,7 +91,7 @@ async function checkoutRelatedRepo(repo: RelatedRepo, cacheDir: string, timeoutM
     return { ...repo, dir };
   } catch (error) {
     core.warning(`Skipping related repo ${repo.repo}, which must be public on github.com: ${error instanceof Error ? error.message : String(error)}`);
-    removeQuietly(dir);
+    if ([cacheDir, dirname(dir)].every(isRealDirectory)) removeQuietly(dir);
     return undefined;
   }
 }
@@ -99,10 +104,9 @@ async function initReusingObjects(dir: string, init: () => Promise<void>, git: (
   const objects = join(dir, '.git', 'objects');
   const stash = `${dir}.objects`;
   removeQuietly(stash);
-  // A symlink in the path or the store could make git read or write outside the cache directory.
-  const restored = [dirname(dir), dir, join(dir, '.git')].every(isRealDirectory) && isPlainTree(objects);
+  // A symlink in the store could make git read or write outside the cache directory.
+  const restored = [dir, join(dir, '.git')].every(isRealDirectory) && isPlainTree(objects);
   if (restored) renameSync(objects, stash);
-  if (!isRealDirectory(dirname(dir))) removeQuietly(dirname(dir));
   await init();
   if (!restored) return;
   rmSync(objects, { recursive: true, force: true });
@@ -115,6 +119,13 @@ async function initReusingObjects(dir: string, init: () => Promise<void>, git: (
     core.info(`Discarding the cached objects of ${dir}: ${error instanceof Error ? error.message : String(error)}`);
     await init();
   }
+}
+
+/** Removes `path` when it exists and is not a real directory, and throws when that fails. */
+function removeUnlessRealDirectory(path: string): void {
+  if (!lstatSync(path, { throwIfNoEntry: false }) || isRealDirectory(path)) return;
+  removeQuietly(path);
+  if (lstatSync(path, { throwIfNoEntry: false })) throw new Error(`could not remove ${path}`);
 }
 
 function isRealDirectory(path: string): boolean {
