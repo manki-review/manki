@@ -1236,6 +1236,17 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
   return reviewId;
 }
 
+function metadataConfig(config: ReviewConfig, models: ReviewModels, triage: string, teamAgents: string[]): ReviewMetadata['config'] {
+  return {
+    reviewerModel: models.reviewer,
+    judgeModel: models.judge,
+    triage,
+    teamAgents,
+    memoryEnabled: config.memory?.enabled ?? false,
+    memoryRepo: config.memory?.repo ?? '',
+  };
+}
+
 /** Marks the progress comment complete with the judge's decisions and the round's timing. */
 async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult): Promise<void> {
   const { octokit, owner, repo, commentId, dashboard, config, models, startTime, parseEndTime } = run;
@@ -1309,17 +1320,11 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult)
     totalMs: judgeEndTime - startTime,
   };
 
+  const triage = result.triage
+    ? `trivial=${result.triage.trivial}, subtle=${result.triage.subtle}, paired=${result.triage.paired} (${result.plannerSource ?? 'planner'}${result.sensitivePaths ? ', security-sensitive paths' : ''}${result.ciOrDependencyPaths ? ', CI or dependency paths' : ''})`
+    : 'none';
   const metadata: ReviewMetadata = {
-    config: {
-      reviewerModel: models.reviewer,
-      judgeModel: models.judge,
-      triage: result.triage
-        ? `trivial=${result.triage.trivial}, subtle=${result.triage.subtle}, paired=${result.triage.paired} (${result.plannerSource ?? 'planner'}${result.sensitivePaths ? ', security-sensitive paths' : ''}${result.ciOrDependencyPaths ? ', CI or dependency paths' : ''})`
-        : 'none',
-      teamAgents: result.agentNames,
-      memoryEnabled: config.memory?.enabled ?? false,
-      memoryRepo: config.memory?.repo ?? '',
-    },
+    config: metadataConfig(config, models, triage, result.agentNames),
     judgeDecisions,
     timing,
   };
