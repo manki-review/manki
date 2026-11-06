@@ -271,17 +271,18 @@ export async function writeLearning(
   });
 }
 
-/** Appends `line`, with secret values redacted, to `<targetRepo>/<file>` in the memory repo, creating the file when it is missing. */
+/** Appends `entry` as a JSON line to `<targetRepo>/<file>` in the memory repo, creating the file when it is missing. Secret values are redacted before serializing. */
 export async function appendMemoryLine(
   octokit: Octokit,
   memoryRepo: string,
   targetRepo: string,
   file: string,
-  line: string,
+  entry: unknown,
   message: string,
 ): Promise<void> {
   const [owner, repo] = memoryRepo.split('/');
-  await writeFile(octokit, owner, repo, `${targetRepo}/${file}`, current => ({ content: `${current ?? ''}${redactSecrets(line)}\n`, message }));
+  const line = JSON.stringify(redactSecretsDeep(entry));
+  await writeFile(octokit, owner, repo, `${targetRepo}/${file}`, current => ({ content: `${current ?? ''}${line}\n`, message }));
 }
 
 /**

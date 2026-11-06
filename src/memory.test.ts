@@ -615,9 +615,10 @@ describe('writeLearning', () => {
     expect(calls[1].message).toBe(`Add learning: ${'x'.repeat(45)} [REDACTED] i`);
     expect(calls.map(c => c.message).join()).not.toContain('ghs_');
 
-    await appendMemoryLine(octokit, 'owner/memory', 'test-repo', 'metrics/fix-rate.jsonl', JSON.stringify({ note: 'ghs_memoryLeakToken' }), 'Record');
+    registerSecret('pass"word\\with-escapes');
+    await appendMemoryLine(octokit, 'owner/memory', 'test-repo', 'metrics/fix-rate.jsonl', { note: 'ghs_memoryLeakToken', other: 'pass"word\\with-escapes' }, 'Record');
     const line = Buffer.from((octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls[2][0].content, 'base64').toString();
-    expect(JSON.parse(line)).toEqual({ note: '[REDACTED]' });
+    expect(JSON.parse(line)).toEqual({ note: '[REDACTED]', other: '[REDACTED]' });
   });
 
   it('writes global-scoped learning to _global path', async () => {
