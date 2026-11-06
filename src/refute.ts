@@ -121,8 +121,8 @@ function applyRefutation(finding: Finding, refutation: Refutation): Finding {
   if (refutation.outcome === 'confirmed') {
     const proof = [...new Set([...(finding.evidence?.proof ?? []), ...(refutation.proof ?? [])])];
     const { lead: _lead, notChecked: _notChecked, ...confirmed } = graded;
-    // The proving lines lift only the cap on an unproven blocker. Any other grade the judge gave a lead stays.
-    const unproven = finding.tags?.includes(UNPROVEN_TAG);
+    // The proving lines lift only the cap on an unproven blocker, and only while nothing lowered it further since.
+    const unproven = finding.tags?.includes(UNPROVEN_TAG) && finding.severity === 'warning';
     const tags = finding.tags?.filter(tag => tag !== UNPROVEN_TAG);
     return {
       ...confirmed, severity: unproven ? 'blocker' : finding.severity, evidence: { ...(finding.evidence ?? { checks: [] }), proof },
