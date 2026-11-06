@@ -60,8 +60,10 @@ remote_tag_commit() {
 
 # Prints the highest remote vX.Y.Z tag matching the glob, counting $TAG as already pushed.
 newest_tag() {
-  { git ls-remote --tags --refs "$REMOTE" "refs/tags/$1" | sed 's#.*refs/tags/##'; echo "$TAG"; } |
-    grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1
+  local tags
+  tags=$(git ls-remote --tags --refs "$REMOTE" "refs/tags/$1" | sed 's#.*refs/tags/##') ||
+    die "git ls-remote $REMOTE failed"
+  printf '%s\n%s\n' "$tags" "$TAG" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1
 }
 
 # Prints absent, draft or published.
@@ -157,8 +159,11 @@ else
   echo "$TAG already points at $BUILD"
 fi
 
+newest=$(newest_tag 'v*')
+newest_in_major=$(newest_tag "$MAJOR.*")
+major_commit=$(remote_tag_commit "$MAJOR")
 latest=false
-[ "$(newest_tag 'v*')" = "$TAG" ] && latest=true
+[ "$newest" = "$TAG" ] && latest=true
 case "$state" in
   absent)
     if $DRY_RUN; then
@@ -171,9 +176,9 @@ case "$state" in
   published) echo "release $TAG is already published" ;;
 esac
 
-if [ "$(newest_tag "$MAJOR.*")" != "$TAG" ]; then
+if [ "$newest_in_major" != "$TAG" ]; then
   echo "$MAJOR stays where it is, because a newer $MAJOR release exists"
-elif [ "$(remote_tag_commit "$MAJOR")" = "$BUILD" ]; then
+elif [ "$major_commit" = "$BUILD" ]; then
   echo "$MAJOR already points at $BUILD"
 else
   run git tag -fa "$MAJOR" "$BUILD" -m "Update $MAJOR tag to $TAG"
