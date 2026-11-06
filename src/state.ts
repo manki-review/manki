@@ -142,6 +142,10 @@ async function resolveReviewThread(octokit: Octokit, threadId: string): Promise<
   await octokit.graphql('mutation($threadId: ID!) { resolveReviewThread(input: { threadId: $threadId }) { thread { isResolved } } }', { threadId });
 }
 
+async function unresolveReviewThread(octokit: Octokit, threadId: string): Promise<void> {
+  await octokit.graphql('mutation($threadId: ID!) { unresolveReviewThread(input: { threadId: $threadId }) { thread { isResolved } } }', { threadId });
+}
+
 /**
  * Posts `body` as a Manki reply in the review thread `threadId`. Pass any marker besides `BOT_MARKER` in `markers`.
  * Throws the abort reason once GitHub writes are stopped.
@@ -171,7 +175,7 @@ async function reopenAuthorResolvedThreads(octokit: Octokit, previousFindings: P
       continue;
     }
     try {
-      await octokit.graphql('mutation($threadId: ID!) { unresolveReviewThread(input: { threadId: $threadId }) { thread { isResolved } } }', { threadId: f.threadId });
+      await unresolveReviewThread(octokit, f.threadId);
       core.info(`Reopened security thread ${f.threadId} that the PR author resolved`);
     } catch (error) {
       core.warning(`Failed to reopen security thread ${f.threadId}: ${error}`);
@@ -519,4 +523,4 @@ async function checkAndAutoApprove(
   return true;
 }
 
-export { PauseState, ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, explainUnreviewedHead, fetchBotReviewThreads, findUnchangedVerdict, holdApprovalOnConflict, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
+export { PauseState, ReviewThread, announceSecurityOverrides, areAllFindingsResolved, checkAndAutoApprove, explainUnreviewedHead, fetchBotReviewThreads, findUnchangedVerdict, holdApprovalOnConflict, pauseState, reopenAuthorResolvedThreads, replyToReviewThread, resolveReviewThread, retireStaleNotices, unresolveReviewThread, BOT_MARKER, STALE_APPROVE_MARKER_PREFIX };
