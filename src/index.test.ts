@@ -1951,14 +1951,14 @@ describe('runFullReview orchestration', () => {
       expect(completedCheck()).toMatchObject({ conclusion, output: { title, summary: 'Round summary' } });
     });
 
-    it('completes the check as neutral for an incomplete round', async () => {
+    it('completes the check as failure for an incomplete round', async () => {
       jest.mocked(reviewModule.runReview).mockResolvedValueOnce({
         verdict: 'COMMENT', outcome: 'INCOMPLETE', summary: 'The judge failed.', findings: [], highlights: [], reviewComplete: false, agentNames: ['general'],
       });
 
       await asDispatchedRun(callRunFullReview);
 
-      expect(completedCheck()).toMatchObject({ conclusion: 'neutral', output: { title: 'Review incomplete', summary: 'The judge failed.' } });
+      expect(completedCheck()).toMatchObject({ conclusion: 'failure', output: { title: 'Review incomplete', summary: 'The judge failed.' } });
     });
 
     it('completes the check as neutral when the approval is held on a conflicting PR', async () => {

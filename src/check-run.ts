@@ -31,7 +31,7 @@ const OUTCOME_REPORTS: Record<RoundOutcome, Omit<CheckReport, 'summary'>> = {
   READY: { conclusion: 'success', title: 'Approved' },
   ADDRESS_FIRST: { conclusion: 'failure', title: 'Changes requested' },
   NOT_CONVERGING: { conclusion: 'failure', title: 'Needs a human' },
-  INCOMPLETE: { conclusion: 'neutral', title: 'Review incomplete' },
+  INCOMPLETE: { conclusion: 'failure', title: 'Review incomplete' },
   BUDGET: { conclusion: 'neutral', title: 'Round limit reached' },
 };
 
