@@ -102,7 +102,8 @@ async function checkoutRelatedRepo(repo: RelatedRepo, cacheDir: string, timeoutM
  */
 async function initReusingObjects(dir: string, init: () => Promise<void>, git: (...args: string[]) => Promise<void>): Promise<void> {
   const objects = join(dir, '.git', 'objects');
-  const stash = `${dir}.objects`;
+  // `@` cannot occur in a repo name, so the stash never collides with another repo's directory.
+  const stash = `${dir}@objects`;
   removeQuietly(stash);
   // A symlink in the store could make git read or write outside the cache directory.
   const restored = [dir, join(dir, '.git')].every(isRealDirectory) && isPlainTree(objects);
