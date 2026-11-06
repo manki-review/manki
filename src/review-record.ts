@@ -1,7 +1,7 @@
 import { gunzipSync, gzipSync } from 'zlib';
 
 import type { RoundContext } from './types';
-import { sanitizeHtmlCommentJson } from './utils';
+import { redactSecrets, sanitizeHtmlCommentJson } from './utils';
 
 const PLAIN_RE = /<!-- manki-context: (.+?) -->/g;
 const GZIP_RE = /<!-- manki-context-gzip: ([A-Za-z0-9+/=]+) -->/g;
@@ -16,7 +16,8 @@ export function formatReviewRecord(context: RoundContext, room: number = Infinit
   const ctx = context.judge.threadEvaluations?.length === 0
     ? { ...context, judge: { ...context.judge, threadEvaluations: undefined } }
     : context;
-  const json = JSON.stringify(ctx);
+  // Redacted here because the request hook that redacts posted text can't see inside a compressed record.
+  const json = redactSecrets(JSON.stringify(ctx));
   const plain = `<!-- manki-context: ${sanitizeHtmlCommentJson(json)} -->`;
   if (plain.length <= room) return plain;
   return `<!-- manki-context-gzip: ${gzipSync(json).toString('base64')} -->`;

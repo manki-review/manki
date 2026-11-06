@@ -3,6 +3,7 @@ import { gzipSync } from 'zlib';
 import { extractReviewRecords, formatReviewRecord, hasReviewRecord } from './review-record';
 import { makeRoundContext } from './test-utils';
 import { RoundContext } from './types';
+import { registerSecret } from './utils';
 
 const PLAIN_PREFIX = '<!-- manki-context: ';
 
@@ -47,6 +48,13 @@ describe('formatReviewRecord', () => {
     expect(record.length).toBeLessThan(plain.length / 10);
     expect(formatReviewRecord(ctx, plain.length)).toBe(plain);
     expect(extractReviewRecords(`Review text.\n\n${record}\n\nReviewed.`).map(r => JSON.parse(r))).toEqual([ctx]);
+  });
+
+  it('redacts registered secrets before compressing', () => {
+    registerSecret('review-record-secret-value');
+    const ctx = makeRoundContext(1, { judge: { summary: 'leaked review-record-secret-value here' } });
+    const [json] = extractReviewRecords(formatReviewRecord(ctx, 0));
+    expect((JSON.parse(json) as RoundContext).judge.summary).toBe('leaked [REDACTED] here');
   });
 });
 
