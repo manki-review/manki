@@ -2386,7 +2386,7 @@ describe('runFullReview orchestration', () => {
       agentNames: ['security', 'general'],
       allJudgedFindings: allJudged,
       rawFindings,
-      verdictReason: 'novel_suggestion',
+      verdictReason: 'required_present',
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: findings, duplicates: [] });
 
@@ -2406,7 +2406,7 @@ describe('runFullReview orchestration', () => {
       severityChanges: 2,
       regrades: { up: 2, down: 1 },
       mergedDuplicates: 2,
-      verdictReason: 'novel_suggestion',
+      verdictReason: 'required_present',
     }));
     expect(statsArg!.findings.entries.map(e => [e.severity, e.originalSeverity, e.reviewerSeverity])).toEqual([
       ['blocker', undefined, 'warning'],
@@ -3190,7 +3190,6 @@ describe('runFullReview orchestration', () => {
           survivingBlockers: [
             { file: 'src/app.ts', title: 'Critical bug', fingerprint: 'src/app.ts:3:3:critical-bug' },
           ],
-          novelWarnings: [],
           unresolvedPriors: [],
         },
       });
@@ -3201,7 +3200,6 @@ describe('runFullReview orchestration', () => {
       expect(roundContext!.judge.verdictReason).toBe('required_present');
       expect(roundContext!.judge.verdictTrace?.survivingBlockers).toHaveLength(1);
       expect(roundContext!.judge.verdictTrace?.survivingBlockers[0].title).toBe('Critical bug');
-      expect(roundContext!.judge.verdictTrace?.novelWarnings).toEqual([]);
       expect(roundContext!.judge.verdictTrace?.unresolvedPriors).toEqual([]);
     });
 
@@ -5706,6 +5704,7 @@ describe('runFullReview orchestration', () => {
         { ...thread('Token logged', 'blocker', 'resolved', 5), reopen: true },
         thread('Posted before severity markers', 'unknown', 'open', 6),
         { ...thread('Token in error message', 'warning', 'open', 7), isSecurity: true },
+        { ...thread('Secret in URL', 'blocker', 'open', 8), isSecurity: true },
       ]);
 
       await callRunFullReview();
@@ -5731,7 +5730,7 @@ describe('runFullReview orchestration', () => {
         `- \`src/app.ts:1\`: Null check missing ${link(1)}`,
         `- \`src/app.ts:5\`: Token logged ${link(5)}`,
         `- \`src/app.ts:6\`: Posted before severity markers ${link(6)}`,
-        `- \`src/app.ts:7\`: Token in error message ${link(7)}`,
+        `- \`src/app.ts:8\`: Secret in URL ${link(8)}`,
         '',
         'Tick the box to run another round, or comment `@manki review`:',
         '',

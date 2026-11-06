@@ -564,10 +564,9 @@ describe('formatBlockingPriorThreads', () => {
 
   it('returns null when verdict reason is not `prior_unaddressed`', () => {
     const result = makeResult({
-      verdictReason: 'novel_suggestion',
+      verdictReason: 'required_present',
       verdictTrace: {
         survivingBlockers: [],
-        novelWarnings: [],
         unresolvedPriors: [{ file: 'a.ts', title: 'x', fingerprint: 'a.ts:1:1:x' }],
       },
     });
@@ -576,7 +575,7 @@ describe('formatBlockingPriorThreads', () => {
 
   it('returns null when there are no unresolved priors on the trace', () => {
     const result = makeResult({
-      verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [] },
+      verdictTrace: { survivingBlockers: [], unresolvedPriors: [] },
     });
     expect(formatBlockingPriorThreads(result)).toBeNull();
   });
@@ -584,7 +583,7 @@ describe('formatBlockingPriorThreads', () => {
   it('leaves out the priors that "Needs a human" already lists', () => {
     const listed = { file: 'a.ts', title: 'A', fingerprint: 'a.ts:1:1:a', line: 1 };
     const other = { file: 'b.ts', title: 'B', fingerprint: 'b.ts:2:2:b', line: 2 };
-    const trace = { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [listed, other] };
+    const trace = { survivingBlockers: [], unresolvedPriors: [listed, other] };
     const paused = (unresolvedPriors: typeof trace.unresolvedPriors) => makeResult({
       outcome: 'NOT_CONVERGING', verdictTrace: { ...trace, unresolvedPriors }, needsHuman: { cause: 'budget', blockers: [listed] },
     });
@@ -599,7 +598,6 @@ describe('formatBlockingPriorThreads', () => {
     const result = makeResult({
       verdictTrace: {
         survivingBlockers: [],
-        novelWarnings: [],
         unresolvedPriors: [
           {
             file: 'src/handler.ts',
@@ -623,7 +621,6 @@ describe('formatBlockingPriorThreads', () => {
     const result = makeResult({
       verdictTrace: {
         survivingBlockers: [],
-        novelWarnings: [],
         unresolvedPriors: [
           { file: 'a.ts', title: 'A', fingerprint: 'a.ts:1:1:a', severity: 'blocker', line: 1 },
           { file: 'b.ts', title: 'B', fingerprint: 'b.ts:2:2:b', severity: 'warning', line: 2 },
@@ -638,7 +635,6 @@ describe('formatBlockingPriorThreads', () => {
     const result = makeResult({
       verdictTrace: {
         survivingBlockers: [],
-        novelWarnings: [],
         unresolvedPriors: [
           { file: 'a.ts', title: 'A', fingerprint: 'a.ts:1:1:a', severity: 'warning', line: 1 },
         ],
@@ -652,7 +648,6 @@ describe('formatBlockingPriorThreads', () => {
     const result = makeResult({
       verdictTrace: {
         survivingBlockers: [],
-        novelWarnings: [],
         unresolvedPriors: [
           { file: 'a.ts', title: 'A', fingerprint: 'a.ts:1:1:a', severity: 'warning', line: 1, threadUrl: 'https://example.com/path)injected' },
         ],
@@ -666,7 +661,6 @@ describe('formatBlockingPriorThreads', () => {
     const result = makeResult({
       verdictTrace: {
         survivingBlockers: [],
-        novelWarnings: [],
         unresolvedPriors: [
           { file: 'a.ts', title: 'A', fingerprint: 'a.ts:1:1:a', severity: 'warning', line: 1, threadUrl: 'javascript:alert(1)' },
         ],
@@ -686,7 +680,6 @@ describe('formatBlockingPriorThreads', () => {
       summary: 'Nothing blocking and prior concerns appear addressed.',
       verdictTrace: {
         survivingBlockers: [],
-        novelWarnings: [],
         unresolvedPriors: [
           {
             file: 'src/handler.ts',
@@ -1395,7 +1388,7 @@ describe('postReview body lead', () => {
     const prior = { file: 'src/a.ts', line: 10, title: 'Still open prior', fingerprint: 'k' };
     const budgetStuck = await postedBody({
       ...base, verdict: 'REQUEST_CHANGES', outcome: 'NOT_CONVERGING', verdictReason: 'prior_unaddressed',
-      verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [prior] },
+      verdictTrace: { survivingBlockers: [], unresolvedPriors: [prior] },
       needsHuman: { cause: 'budget', blockers: [prior] },
     });
     expect(lead(budgetStuck.body)).toMatch(/^\u{1F6D1} \*\*Needs a human:\*\* 1 blocker still open after the last automatic round\./u);
@@ -1447,7 +1440,7 @@ describe('postReview body lead', () => {
       verdictReport: undefined,
       summary: '',
       findings: [],
-      verdictTrace: { survivingBlockers: [], novelWarnings: [], unresolvedPriors: [{ file: 'src/a.ts', title: 'Cache never expires', fingerprint: 'f', line: 3 }] },
+      verdictTrace: { survivingBlockers: [], unresolvedPriors: [{ file: 'src/a.ts', title: 'Cache never expires', fingerprint: 'f', line: 3 }] },
     });
     expect(lead(body)).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker\.\n\n\*\*Still open from earlier reviews:\*\*\n- `src\/a\.ts:3`: Cache never expires\n/u);
   });
@@ -1457,7 +1450,7 @@ describe('postReview body lead', () => {
     expect(lead(body)).toBe('\u26A0\uFE0F **Review incomplete:** The judge failed.\n\nReviewed [`abcdef1`](https://github.com/owner/repo/commit/abcdef1234).');
   });
 
-  it('lists follow-up warnings off the diff with the smaller fixes in one section, but never a security warning', async () => {
+  it('lists follow-up warnings off the diff with the smaller fixes in one section, security ones included', async () => {
     const followUp = (title: string, line: number, suggestedFix?: string): Finding => ({
       severity: 'warning', title, file: 'src/a.ts', line, description: 'd', reviewers: ['r'], tags: ['follow-up'], ...(suggestedFix && { suggestedFix }),
     });
@@ -1467,17 +1460,14 @@ describe('postReview body lead', () => {
         followUp('Unbounded retry', 40, 'cap at `3`\nattempts'),
         { severity: 'suggestion', title: 'Extract helper', file: 'src/a.ts', line: 47, description: 'Duplicated.', reviewers: [] },
         blocker,
-        { severity: 'warning', title: 'Injected reply', file: 'src/a.ts', line: 6, description: 'd', reviewers: ['r'], tags: ['security'] },
         { severity: 'warning', title: 'Tagged both ways', file: 'src/gone.ts', line: 41, description: 'd', reviewers: ['r'], tags: ['follow-up', 'security'] },
       ],
     });
     const { comments } = mockCreateReview.mock.calls[0][0] as { comments: Array<{ line: number; body: string }> };
-    expect(comments.map(c => c.line)).toEqual([5, 6]);
-    expect(comments[1].body).toMatch(/^\u26A0\uFE0F \*\*Warning:\*\* Injected reply\n/u);
-    expect(body).toContain('**Blockers in files outside this diff:**\n\n**Tagged both ways**');
-    expect(body).not.toMatch(/not blocking:\*\* (?:Injected reply|Tagged both ways)|manki-follow-up/);
-    expect(body).toContain('<summary>2 smaller fixes in this PR</summary>\n\n**Unbounded retry**\n');
-    expect(body).toContain('\n\n**Extract helper**\n[`src/a.ts:47`](https://github.com/owner/repo/blob/abcdef1234/src/a.ts#L47)\nDuplicated.\n\n</details>');
+    expect(comments.map(c => c.line)).toEqual([5]);
+    expect(body).not.toContain('Blockers in files outside this diff');
+    expect(body).toContain('<summary>3 smaller fixes in this PR</summary>\n\n**Unbounded retry**\n');
+    expect(body).toContain('\n\n**Extract helper**\n[`src/a.ts:47`](https://github.com/owner/repo/blob/abcdef1234/src/a.ts#L47)\nDuplicated.\n\n**Tagged both ways**\n[`src/gone.ts:41`](https://github.com/owner/repo/blob/abcdef1234/src/gone.ts#L41)\nd\n\n</details>');
     expect(body.match(/smaller fix/g)).toHaveLength(1);
   });
 
@@ -3657,7 +3647,7 @@ describe('postReview non-blocking findings', () => {
     const byLine = new Map(review.comments.map((c: { line: number; body: string }) => [c.line, c.body]));
     expect([...byLine.keys()].sort()).toEqual([1, 2, 3, 4, 6]);
     expect(byLine.get(3)).toMatch(/^\u26A0\uFE0F \*\*Warning, not blocking:\*\* Deferred warning\n/u);
-    expect(byLine.get(3)).toContain('<!-- manki:warning:Deferred-warning -->\n<!-- manki-follow-up -->');
+    expect(byLine.get(3)).toContain('<!-- manki:warning:Deferred-warning -->');
     expect(review.body).toContain('<summary>1 smaller fix in this PR</summary>\n\n**Nit two**\n');
   });
 

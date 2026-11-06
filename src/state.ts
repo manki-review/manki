@@ -3,11 +3,11 @@ import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
 import { completeReviewCheck, outcomeReport, startReviewCheck } from './check-run';
-import { approvalHeldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchConflictingBase, fetchInterRoundDiff, fetchPRComments, fetchReviewThreadNodes, fetchStandingVerdict, FOLLOW_UP_MARKER, FORCE_CAP_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgressOn, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
+import { approvalHeldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchConflictingBase, fetchInterRoundDiff, fetchPRComments, fetchReviewThreadNodes, fetchStandingVerdict, FORCE_CAP_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgressOn, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
 import type { StandingVerdict } from './github';
 import { isSameChange } from './diff';
 import { fetchPriorRoundContexts, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, PreviousFinding, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf } from './recap';
-import { FindingSeverity, isBlockingThread, migrateLegacySeverity, ReviewConfig, RoundContext, SecurityOverride, SEVERITY_TOKEN_PATTERN } from './types';
+import { migrateLegacySeverity, ReviewConfig, RoundContext, SecurityOverride, SEVERITY_TOKEN_PATTERN } from './types';
 import { withMarkers } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -114,7 +114,7 @@ async function fetchBotReviewThreads(
       const isSecurity = isSecurityThread(body);
       // A thread without a severity marker predates them, so it keeps blocking.
       const isBlocking = severityMatch?.[1]
-        ? isBlockingThread(migrateLegacySeverity(severityMatch[1]) as FindingSeverity, isSecurity) && !body.includes(FOLLOW_UP_MARKER)
+        ? migrateLegacySeverity(severityMatch[1]) === 'blocker'
         : true;
       const titleMatch = body.match(/<!-- manki:\w+:(.+?) -->/);
       const findingTitle = titleMatch?.[1]?.replace(/-/g, ' ') ?? 'Unknown';

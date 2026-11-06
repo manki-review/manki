@@ -1,4 +1,4 @@
-import { isBlockingSeverity, isBlockingThread, migrateLegacyPrType, migrateLegacySeverity, RoundContext, roundContextToFlatAliases } from './types';
+import { isBlockingSeverity, migrateLegacyPrType, migrateLegacySeverity, RoundContext, roundContextToFlatAliases } from './types';
 
 describe('migrateLegacySeverity', () => {
   it('maps `required` to `blocker`', () => {
@@ -25,17 +25,15 @@ describe('migrateLegacySeverity', () => {
   });
 });
 
-describe('isBlockingSeverity and isBlockingThread', () => {
+describe('isBlockingSeverity', () => {
   it.each([
-    ['blocker', true, true, true],
-    ['warning', true, false, true],
-    ['suggestion', false, false, false],
-    ['nitpick', false, false, false],
-    ['ignore', false, false, false],
-  ] as const)('posts `%s` as a thread: %s, blocks as a plain thread: %s, as a security thread: %s', (severity, posted, plain, security) => {
-    expect(isBlockingSeverity(severity)).toBe(posted);
-    expect(isBlockingThread(severity, false)).toBe(plain);
-    expect(isBlockingThread(severity, true)).toBe(security);
+    ['blocker', true],
+    ['warning', true],
+    ['suggestion', false],
+    ['nitpick', false],
+    ['ignore', false],
+  ] as const)('treats `%s` as blocking: %s', (severity, blocking) => {
+    expect(isBlockingSeverity(severity)).toBe(blocking);
   });
 });
 
@@ -127,7 +125,7 @@ function fullyPopulatedContext(): RoundContext {
       severityChanges: 1,
       mergedDuplicates: 2,
       durationMs: 4500,
-      verdictReason: 'novel_suggestion',
+      verdictReason: 'required_present',
       inPrSuppressedCount: 1,
       crossRoundSuppressed: 0,
       crossRoundDemoted: 1,
@@ -237,7 +235,6 @@ describe('RoundContext', () => {
         verdictReason: 'prior_unaddressed',
         verdictTrace: {
           survivingBlockers: [],
-          novelWarnings: [],
           unresolvedPriors: [
             { file: 'src/a.ts', title: 'Race condition', fingerprint: 'src/a.ts:10:10:race-condition', threadId: 'PRRT_a', round: 3 },
           ],

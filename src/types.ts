@@ -25,10 +25,6 @@ export function isBlockingSeverity(severity: FindingSeverity): boolean {
   return severity === 'blocker' || severity === 'warning';
 }
 
-/** Whether an open thread of this severity blocks the PR. A warning thread blocks only when it is a security finding. */
-export function isBlockingThread(severity: FindingSeverity, isSecurity: boolean): boolean {
-  return severity === 'blocker' || (severity === 'warning' && isSecurity);
-}
 
 /** Regex source matching all current and legacy severity tokens. */
 export const SEVERITY_TOKEN_PATTERN = 'blocker|warning|suggestion|nitpick|ignore|required|nit';
@@ -112,7 +108,6 @@ export interface VerdictTraceEntry {
  */
 export interface VerdictTrace {
   survivingBlockers: VerdictTraceEntry[];
-  novelWarnings: VerdictTraceEntry[];
   unresolvedPriors: VerdictTraceEntry[];
 }
 
@@ -224,7 +219,7 @@ export interface NeedsHuman {
   blockers: VerdictTraceEntry[];
 }
 
-export type VerdictReason = 'required_present' | 'novel_suggestion' | 'prior_unaddressed' | 'only_nit_or_suggestion' | 'verdict_reader';
+export type VerdictReason = 'required_present' | 'prior_unaddressed' | 'only_nit_or_suggestion' | 'verdict_reader';
 
 /** The verdict reader's answer on a round where no finding blocked. */
 export interface VerdictReport {

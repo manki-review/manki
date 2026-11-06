@@ -1215,7 +1215,6 @@ function blockOnOpenThreads(result: ReviewResult, threads: OpenThread[]): void {
   result.verdictReason = 'prior_unaddressed';
   result.verdictTrace = {
     survivingBlockers: [],
-    novelWarnings: [],
     unresolvedPriors: blocking.map(t => ({
       file: t.file,
       title: t.title,
