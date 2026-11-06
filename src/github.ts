@@ -1025,6 +1025,7 @@ function hasOpenThread(finding: Finding, existingThreads: PreviousFinding[]): bo
  * When `context` is provided without `reviewTimeMs`, the hidden stats line
  * records `0s` for review time. Pass both together to avoid this.
  * Once GitHub writes are stopped, throws the abort reason and posts nothing.
+ * Returns the review's id, and whether an approval was held as a COMMENT because the PR conflicts with its base.
  */
 export async function postReview(
   octokit: Octokit,
@@ -1038,7 +1039,7 @@ export async function postReview(
   reviewTimeMs?: number,
   config?: ReviewConfig,
   { interRoundDiff, existingThreads = [] }: { interRoundDiff?: ParsedDiff; existingThreads?: PreviousFinding[] } = {},
-): Promise<number> {
+): Promise<{ id: number; approvalHeld: boolean }> {
   const statsHidden = config?.stats?.hidden ?? true;
   const event = mapVerdictToEvent(result.verdict);
 
@@ -1200,7 +1201,7 @@ export async function postReview(
       throw new Error(`Could not post blocking findings as threads or in review #${review.id}: ${titles}. ${error instanceof Error ? error.message : error}`);
     }
   }
-  return review.id;
+  return { id: review.id, approvalHeld: conflictingBase !== undefined };
 }
 
 /** Whether `error` is GitHub's refusal when the repo setting stops the workflow token from approving. */

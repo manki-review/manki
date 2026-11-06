@@ -1288,10 +1288,10 @@ describe('postReview body lead', () => {
     agentNames: [],
   };
 
-  async function postedBody(result: ReviewResult, existingThreads: PreviousFinding[] = []): Promise<{ body: string; event: string }> {
+  async function postedBody(result: ReviewResult, existingThreads: PreviousFinding[] = []): Promise<{ body: string; event: string; approvalHeld: boolean }> {
     mockCreateReview.mockClear();
-    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', result, diff, undefined, undefined, undefined, { existingThreads });
-    return mockCreateReview.mock.calls[0][0] as { body: string; event: string };
+    const { approvalHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', result, diff, undefined, undefined, undefined, { existingThreads });
+    return { ...mockCreateReview.mock.calls[0][0] as { body: string; event: string }, approvalHeld };
   }
 
   function lead(body: string): string {
@@ -1300,8 +1300,9 @@ describe('postReview body lead', () => {
   }
 
   it('opens a READY review with the verdict line, then what the change does and how to test it', async () => {
-    const { body, event } = await postedBody(ready);
+    const { body, event, approvalHeld } = await postedBody(ready);
     expect(event).toBe('APPROVE');
+    expect(approvalHeld).toBe(false);
     expect(lead(body)).toBe([
       '\u2705 **Approved.**',
       '',
@@ -1321,8 +1322,9 @@ describe('postReview body lead', () => {
   ])('holds the approval of a READY round as a COMMENT with the full body when %s', async (_label, state) => {
     const approved = await postedBody(ready);
     mockGet.mockResolvedValueOnce({ data: { ...state, base: { ref: 'main' } } });
-    const { body, event } = await postedBody(ready);
+    const { body, event, approvalHeld } = await postedBody(ready);
     expect(event).toBe('COMMENT');
+    expect(approvalHeld).toBe(true);
     expect(body).toBe(`**Approval held:** this PR conflicts with \`main\`. Rebase it, and Manki reviews the result.\n\n${approved.body}`);
   });
 
@@ -3189,7 +3191,7 @@ describe('postReview fallback paths', () => {
     };
 
     const reviewId = await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
-    expect(reviewId).toBe(2);
+    expect(reviewId).toEqual({ id: 2, approvalHeld: false });
     expect(createReviewMock).toHaveBeenCalledTimes(2);
     // Second call should have empty comments
     expect(createReviewMock.mock.calls[1][0].comments).toEqual([]);
@@ -3219,7 +3221,7 @@ describe('postReview fallback paths', () => {
 
     const reviewId = await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', approveWithSuggestion);
 
-    expect(reviewId).toBe(3);
+    expect(reviewId).toEqual({ id: 3, approvalHeld: false });
     expect(createReviewMock.mock.calls[1][0].event).toBe('COMMENT');
     const warning = warningSpy.mock.calls.map(c => String(c[0])).find(w => w.includes('Falling back to COMMENT'));
     expect(warning).toContain(`422: ${message}`);
@@ -3266,7 +3268,7 @@ describe('postReview fallback paths', () => {
     };
 
     const reviewId = await postReview(mockOctokit, 'owner', 'repo', 1, 'sha', result);
-    expect(reviewId).toBe(4);
+    expect(reviewId).toEqual({ id: 4, approvalHeld: false });
     expect(createReviewMock.mock.calls[1][0].event).toBe('COMMENT');
   });
 

@@ -41,6 +41,10 @@ const mockGraphql = jest.fn().mockResolvedValue({ resolveReviewThread: { thread:
 
 const mockCreateReview = jest.fn().mockResolvedValue({ data: { id: 777 } });
 
+const mockChecksCreate = jest.fn().mockResolvedValue({ data: { id: 901 } });
+const mockChecksUpdate = jest.fn().mockResolvedValue({ data: {} });
+const mockChecksGet = jest.fn().mockResolvedValue({ data: { status: 'in_progress' } });
+
 type RequestOptions = { method: string; url: string; body: string; comment_id?: number };
 type RequestHook = (request: (options: RequestOptions) => Promise<{ data: { id: number } }>, options: RequestOptions) => Promise<unknown>;
 const requestHooks: RequestHook[] = [];
@@ -50,6 +54,7 @@ const mockOctokitInstance = {
     pulls: { get: mockPullsGet, listReviews: mockListReviews, createReview: mockCreateReview },
     issues: { deleteComment: jest.fn().mockResolvedValue(undefined), listComments: mockListComments, createComment: jest.fn().mockResolvedValue({ data: { id: 999 } }), updateComment: jest.fn().mockResolvedValue({}) },
     reactions: { listForIssueComment: mockListReactionsForIssueComment },
+    checks: { create: mockChecksCreate, update: mockChecksUpdate, get: mockChecksGet },
   },
   graphql: mockGraphql,
   hook: { wrap: jest.fn((_name: string, hook: RequestHook) => { requestHooks.push(hook); }) },
@@ -184,7 +189,7 @@ jest.mock('./github', () => {
   updateProgressComment: jest.fn().mockResolvedValue(undefined),
   updateProgressDashboard: jest.fn().mockResolvedValue(undefined),
   dismissPreviousReviews: jest.fn().mockResolvedValue(undefined),
-  postReview: jest.fn().mockResolvedValue(123),
+  postReview: jest.fn().mockResolvedValue({ id: 123, approvalHeld: false }),
   reactToIssueComment: jest.fn().mockResolvedValue(undefined),
   fetchLinkedIssues: jest.fn().mockResolvedValue([]),
   hasWriteAccess: jest.fn().mockResolvedValue(true),
@@ -236,6 +241,7 @@ jest.mock('./github', () => {
   isBotLogin: jest.requireActual('./github').isBotLogin,
   isTrustedAssociation: jest.requireActual('./github').isTrustedAssociation,
   titleToSlug: jest.requireActual('./github').titleToSlug,
+  truncateBody: jest.requireActual('./github').truncateBody,
   BOT_MARKER: '<!-- manki-bot -->',
   REVIEW_COMPLETE_MARKER: '<!-- manki-review-complete -->',
   FORCE_REVIEW_MARKER: '<!-- manki-force-review -->',
@@ -303,6 +309,18 @@ function seedPriorRounds(
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const ctx = github.context as any;
+
+/** Runs `fn` as a run started by `workflow_dispatch`, as in webhook mode. */
+async function asDispatchedRun(fn: () => Promise<void>): Promise<void> {
+  const eventName = process.env.GITHUB_EVENT_NAME;
+  process.env.GITHUB_EVENT_NAME = 'workflow_dispatch';
+  try {
+    await fn();
+  } finally {
+    if (eventName === undefined) delete process.env.GITHUB_EVENT_NAME;
+    else process.env.GITHUB_EVENT_NAME = eventName;
+  }
+}
 
 function setContext(overrides: Record<string, unknown>): void {
   ctx.eventName = overrides.eventName ?? '';
@@ -1779,21 +1797,34 @@ describe('postCleanup (via main dispatch)', () => {
   });
 
   it('marks the progress comment of a dispatched run cancelled, with the PR number from the inputs', async () => {
-    const eventName = process.env.GITHUB_EVENT_NAME;
-    process.env.GITHUB_EVENT_NAME = 'workflow_dispatch';
     setContext({ eventName: 'workflow_dispatch', payload: { inputs: { event: 'issue_comment', action: 'created', pr: '42', comment_id: '7' } } });
     jest.mocked(ghUtils.markOwnProgressCommentCancelled).mockResolvedValueOnce(true);
 
-    try {
-      await runPostPhase();
-    } finally {
-      if (eventName === undefined) delete process.env.GITHUB_EVENT_NAME;
-      else process.env.GITHUB_EVENT_NAME = eventName;
-    }
+    await asDispatchedRun(runPostPhase);
 
     expect(jest.mocked(ghUtils.markOwnProgressCommentCancelled)).toHaveBeenCalledWith(
       expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 42, 12345,
     );
+    expect(mockChecksGet).not.toHaveBeenCalled();
+    expect(mockChecksUpdate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['in_progress', true],
+    ['completed', false],
+  ])('cancels the PR check the main step left open only when it is %s', async (status, cancels) => {
+    setContext({ eventName: 'workflow_dispatch', payload: { inputs: { event: 'pull_request', action: 'synchronize', pr: '42', head_sha: 'a'.repeat(40) } } });
+    mockChecksGet.mockResolvedValueOnce({ data: { status } });
+    jest.mocked(core.getState).mockReturnValueOnce('true').mockReturnValueOnce('901');
+
+    await asDispatchedRun(main);
+
+    expect(jest.mocked(core.getState)).toHaveBeenCalledWith('manki_check_run');
+    expect(mockChecksGet).toHaveBeenCalledWith({ owner: 'test-owner', repo: 'test-repo', check_run_id: 901 });
+    expect(mockChecksUpdate.mock.calls).toEqual(cancels ? [[expect.objectContaining({
+      check_run_id: 901, status: 'completed', conclusion: 'cancelled',
+      output: { title: 'Review stopped', summary: 'The run ended before the review finished.' },
+    })]] : []);
   });
 
   it('does not save state again when running in post phase', async () => {
@@ -1841,7 +1872,7 @@ describe('runFullReview orchestration', () => {
     });
     jest.mocked(reviewModule.selectTeam).mockReturnValue({ finders: [{ name: 'general', prompt: { name: 'general', focus: '' }, index: 0, model: 'claude-sonnet-5-5', effort: 'high' }], routing: { matched: ['internal'], classSource: 'triage', group: 'solo', groupSource: 'routing' }, triage: { trivial: false, subtle: true, paired: false }, sensitivePaths: false, ciOrDependencyPaths: false, trivialOverridden: false });
     jest.mocked(ghUtils.postProgressComment).mockResolvedValue(1);
-    jest.mocked(ghUtils.postReview).mockResolvedValue(123);
+    jest.mocked(ghUtils.postReview).mockResolvedValue({ id: 123, approvalHeld: false });
     jest.mocked(ghUtils.fetchPRDiff).mockResolvedValue('');
     jest.mocked(ghUtils.fetchRepoContext).mockResolvedValue('');
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1870,6 +1901,145 @@ describe('runFullReview orchestration', () => {
       baseArgs.commitSha, baseArgs.baseRef, baseArgs.prContext,
     );
   }
+
+  describe('PR check in webhook mode', () => {
+    const reviewableFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 2, content: '+x' }] };
+
+    beforeEach(() => {
+      ctx.serverUrl = 'https://github.com';
+      ctx.runId = 12345;
+      jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [reviewableFile], totalAdditions: 1, totalDeletions: 0 });
+      jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [reviewableFile], excluded: [] });
+    });
+
+    afterEach(() => {
+      ctx.serverUrl = undefined;
+      ctx.runId = undefined;
+    });
+
+    function completedCheck(): unknown {
+      expect(mockChecksUpdate).toHaveBeenCalledTimes(1);
+      return mockChecksUpdate.mock.calls[0][0];
+    }
+
+    it('creates an in-progress `Manki` check on the head that links to the run, then completes it', async () => {
+      await asDispatchedRun(callRunFullReview);
+
+      expect(mockChecksCreate).toHaveBeenCalledWith({
+        owner: 'test-owner', repo: 'test-repo', name: 'Manki', head_sha: 'abc123', status: 'in_progress',
+        details_url: 'https://github.com/test-owner/test-repo/actions/runs/12345',
+      });
+      expect(jest.mocked(core.saveState)).toHaveBeenCalledWith('manki_check_run', '901');
+      expect(mockChecksCreate.mock.invocationCallOrder[0]).toBeLessThan(jest.mocked(reviewModule.runReview).mock.invocationCallOrder[0]);
+      expect(completedCheck()).toEqual({
+        owner: 'test-owner', repo: 'test-repo', check_run_id: 901, status: 'completed', conclusion: 'success',
+        output: { title: 'Approved', summary: 'Looks good' },
+      });
+    });
+
+    it.each([
+      ['ADDRESS_FIRST', 'REQUEST_CHANGES', 'failure', 'Changes requested'],
+      ['NOT_CONVERGING', 'REQUEST_CHANGES', 'failure', 'Needs a human'],
+      ['BUDGET', 'APPROVE', 'neutral', 'Round limit reached'],
+    ] as const)('completes the check for a %s round as %s', async (outcome, verdict, conclusion, title) => {
+      jest.mocked(reviewModule.runReview).mockResolvedValueOnce({
+        verdict, outcome, summary: 'Round summary', findings: [], highlights: [], reviewComplete: true, agentNames: ['general'],
+      });
+
+      await asDispatchedRun(callRunFullReview);
+
+      expect(completedCheck()).toMatchObject({ conclusion, output: { title, summary: 'Round summary' } });
+    });
+
+    it('completes the check as neutral for an incomplete round', async () => {
+      jest.mocked(reviewModule.runReview).mockResolvedValueOnce({
+        verdict: 'COMMENT', outcome: 'INCOMPLETE', summary: 'The judge failed.', findings: [], highlights: [], reviewComplete: false, agentNames: ['general'],
+      });
+
+      await asDispatchedRun(callRunFullReview);
+
+      expect(completedCheck()).toMatchObject({ conclusion: 'neutral', output: { title: 'Review incomplete', summary: 'The judge failed.' } });
+    });
+
+    it('completes the check as neutral when the approval is held on a conflicting PR', async () => {
+      jest.mocked(ghUtils.postReview).mockResolvedValueOnce({ id: 123, approvalHeld: true });
+
+      await asDispatchedRun(callRunFullReview);
+
+      expect(completedCheck()).toMatchObject({ conclusion: 'neutral', output: { title: 'Approval held: the PR conflicts with its base' } });
+    });
+
+    it('completes the check as neutral for a diff too large to review', async () => {
+      jest.mocked(diffModule.isDiffTooLarge).mockReturnValueOnce(true);
+
+      await asDispatchedRun(callRunFullReview);
+
+      expect(completedCheck()).toMatchObject({ conclusion: 'neutral', output: { title: 'Not reviewed', summary: expect.stringContaining('Too large to review automatically') } });
+    });
+
+    it('completes the check as action required while automatic review is paused', async () => {
+      const round = roundContextFromLegacy({ round: 1, commitSha: 'prior-sha', timestamp: '2025-01-01T00:00:00Z', findings: [] });
+      round.meta.outcome = 'NOT_CONVERGING';
+      jest.mocked(recapModule.fetchRecapState).mockResolvedValueOnce({ previousFindings: [], priorRounds: [round] });
+
+      await asDispatchedRun(callRunFullReview);
+
+      expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
+      expect(completedCheck()).toMatchObject({
+        conclusion: 'action_required',
+        output: { title: 'Automatic review paused', summary: expect.stringContaining('Automatic review is paused until someone asks for another round.') },
+      });
+    });
+
+    it('completes the check as cancelled when a newer commit supersedes the round', async () => {
+      jest.mocked(ghUtils.postReview).mockRejectedValueOnce(new ghUtils.SupersededError('abc123', 'def456'));
+
+      await asDispatchedRun(callRunFullReview);
+
+      expect(completedCheck()).toMatchObject({ conclusion: 'cancelled', output: { title: 'Superseded' } });
+    });
+
+    it('completes the check as neutral when the review fails', async () => {
+      jest.mocked(ghUtils.postReview).mockRejectedValueOnce(new Error('boom'));
+
+      await asDispatchedRun(callRunFullReview);
+
+      expect(completedCheck()).toMatchObject({ conclusion: 'neutral', output: { title: 'Review failed', summary: 'boom' } });
+    });
+
+    it('leaves the check to the post step when the run is cancelled', async () => {
+      jest.mocked(ghUtils.postReview).mockImplementationOnce(async () => {
+        const cancelled = new RunCancelledError('SIGTERM');
+        stopWritesOn(AbortSignal.abort(cancelled));
+        throw cancelled;
+      });
+
+      await asDispatchedRun(callRunFullReview);
+
+      expect(mockChecksCreate).toHaveBeenCalledTimes(1);
+      expect(mockChecksUpdate).not.toHaveBeenCalled();
+    });
+
+    it('warns once and reviews as usual when the App may not write checks', async () => {
+      mockChecksCreate.mockRejectedValueOnce(Object.assign(new Error('Resource not accessible by integration'), { status: 403 }));
+
+      await asDispatchedRun(callRunFullReview);
+
+      const warnings = jest.mocked(core.warning).mock.calls.map(([message]) => String(message)).filter(m => m.includes('Manki` check') || m.includes('Manki check'));
+      expect(warnings).toEqual([expect.stringContaining('Could not create the Manki check, reviewing without it. The GitHub App needs the Checks read and write permission: Resource not accessible by integration')]);
+      expect(jest.mocked(ghUtils.postReview)).toHaveBeenCalledTimes(1);
+      expect(mockChecksUpdate).not.toHaveBeenCalled();
+      expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
+    });
+
+    it('creates no check in event-driven mode, where the job is the check', async () => {
+      await callRunFullReview();
+
+      expect(jest.mocked(ghUtils.postReview)).toHaveBeenCalledTimes(1);
+      expect(mockChecksCreate).not.toHaveBeenCalled();
+      expect(mockChecksUpdate).not.toHaveBeenCalled();
+    });
+  });
 
   describe('`review` block from the base branch', () => {
     const testFile = { path: 'src/auth/login.ts', changeType: 'modified' as const, hunks: [] };
@@ -5817,6 +5987,24 @@ describe('runFullReview orchestration', () => {
       expect(mockCreateReview).not.toHaveBeenCalled();
     });
 
+    it.each([
+      ['an approval', 'APPROVE', false, 'success', 'Approved'],
+      ['an approval held on a conflict', 'APPROVE', true, 'neutral', 'Approval held: the PR conflicts with its base'],
+      ['a request for changes', 'REQUEST_CHANGES', false, 'failure', 'Changes requested'],
+    ] as const)('reports %s that stands as the PR check in webhook mode', async (_label, verdict, held, conclusion, title) => {
+      seedPush(verdict, REBASED_DIFF);
+      if (held) jest.mocked(stateModule.holdApprovalOnConflict).mockResolvedValueOnce(true);
+
+      await asDispatchedRun(callRunFullReview);
+
+      expectNoRound();
+      expect(mockChecksCreate).toHaveBeenCalledWith(expect.objectContaining({ name: 'Manki', head_sha: 'abc123', status: 'in_progress' }));
+      expect(mockChecksUpdate).toHaveBeenCalledWith(expect.objectContaining({
+        conclusion,
+        output: { title, summary: 'No change to this PR since the reviewed commit `old9999`. The previous verdict stands.' },
+      }));
+    });
+
     it('runs a normal round when the PR change differs from the reviewed commit', async () => {
       seedPush('APPROVE', REBASED_DIFF.replace('+const b = 2;', '+const b = 3;'));
 
@@ -7136,7 +7324,7 @@ describe('runFullReview concurrent-submission lock', () => {
       if (moment === 'dismiss') {
         jest.mocked(ghUtils.postReview).mockImplementationOnce(async () => {
           mockPullsGet.mockResolvedValueOnce(movedHead);
-          return 123;
+          return { id: 123, approvalHeld: false };
         });
       }
 
