@@ -1717,7 +1717,10 @@ describe('runReview', () => {
     Object.assign(clients.reviewer, { repoTools: true });
     jest.mocked(clients.reviewer.sendMessage).mockImplementation(async (_system, _user, options) => {
       const stateDir = options?.repoTools?.related?.stateDir;
-      if (stateDir) writeFileSync(join(stateDir, 'o%2Fr.failed'), 'fatal: repository not found');
+      if (stateDir) {
+        writeFileSync(join(stateDir, 'o%2Fr.lock'), String(process.pid));
+        writeFileSync(join(stateDir, 'o%2Fr.failed'), 'fatal: repository not found');
+      }
       return { content: '[]' };
     });
     const related_repos = [{ repo: 'o/r', kind: 'consumer' as const }];
