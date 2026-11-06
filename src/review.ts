@@ -3,7 +3,7 @@ import { minimatch } from 'minimatch';
 
 import { TRIVIAL_VERIFIER_AGENT, buildFinderAgent } from './agents';
 import { resolveReviewerModel } from './config';
-import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, withRefusalFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
+import { addUsage, LLMCall, LLMClient, LLMUsage, modelDisplayName, QuotaError, recordCalls, SendMessageOptions, withRefusalFallback, withSignal, wrapClientForUsage, ZERO_USAGE, sanitizeLogOutput } from './providers';
 import { runJudgeAgent, JudgeInput, PriorBlocker, collectPriorBlockers, computeProvenanceMap } from './judge';
 import { RepoMemory, applySuppressions, buildMemoryContext } from './memory';
 import { dynamicFence, LinkedIssue, titleToSlug } from './github';
@@ -41,6 +41,8 @@ export const RETRY_HINT = 'Retry with @manki review.';
 
 
 export const PLANNER_TIMEOUT_MS = 60_000;
+// The turn limit of a finder with repository tools, tool calls included.
+const FINDER_MAX_TURNS = 15;
 
 class PlannerTimeoutError extends Error {
   constructor() {
@@ -489,6 +491,8 @@ export interface ReviewOptions {
   headSha?: string;
   /** The last automatic round the round cap allows. It ends `NOT_CONVERGING` unless it is `READY`. */
   finalRound?: boolean;
+  /** The checked-out PR head, which finders on a client with `repoTools` read with read-only tools. */
+  workspace?: string;
 }
 
 export async function runReview(
@@ -497,7 +501,7 @@ export async function runReview(
 ): Promise<ReviewResult & { outcome: RoundOutcome }> {
   const {
     config, diff, rawDiff, repoContext, memory, fileContents, prContext, linkedIssues, onProgress, checkpoint, signal,
-    isFollowUp, openThreads, previousFindings, priorRounds, prAuthorLogin, interRoundDiff,
+    isFollowUp, openThreads, previousFindings, priorRounds, prAuthorLogin, interRoundDiff, workspace,
   } = options;
   const provenanceMap = computeProvenanceMap(priorRounds, rawDiff);
   const modelFallbacks: RoundModelFallback[] = [];
@@ -558,7 +562,7 @@ export async function runReview(
 
   const memoryContext = memory ? buildMemoryContext(memory) : '';
   const finderClients = new Map(team.finders.map(f => [f.name, withFallback(pickReviewerClient(clients, f), 'reviewer', f.name)]));
-  const finderOptions = (finder: Finder): RunReviewerAgentOptions => ({ effort: finder.effort, language: plannerResult?.language, context: plannerResult?.context });
+  const finderOptions = (finder: Finder): RunReviewerAgentOptions => ({ effort: finder.effort, language: plannerResult?.language, context: plannerResult?.context, workspace });
 
   const passes = config.review_passes ?? 1;
   const multiPass = passes > 1;
@@ -1243,6 +1247,7 @@ interface RunReviewerAgentOptions {
   effort?: EffortLevel;
   language?: string;
   context?: string;
+  workspace?: string;
 }
 
 async function runReviewerAgent(
@@ -1257,11 +1262,14 @@ async function runReviewerAgent(
   linkedIssues?: LinkedIssue[],
   options: RunReviewerAgentOptions = {},
 ): Promise<AgentResult> {
-  const { effort, language, context } = options;
+  const { effort, language, context, workspace } = options;
   const systemPrompt = buildReviewerSystemPrompt(finder.prompt, config, language, context, config.noise_level);
   const userMessage = buildReviewerUserMessage(rawDiff, repoContext, { fileContents, prContext, memoryContext, linkedIssues });
 
-  const sendOptions = effort ? { effort } : undefined;
+  const sendOptions: SendMessageOptions = {
+    ...(effort && { effort }),
+    ...(workspace && client.repoTools && { repoTools: { root: workspace, maxTurns: FINDER_MAX_TURNS } }),
+  };
   const response = await client.sendMessage(systemPrompt, userMessage, sendOptions);
   if (response.truncated) {
     throw new Error(`response truncated at the output token limit (length ${response.content.length})`);

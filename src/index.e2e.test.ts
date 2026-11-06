@@ -4,6 +4,7 @@ import { BOT_MARKER, CANCELLED_MARKER, FORCE_CAP_MARKER, RUN_ID_MARKER_PREFIX } 
 import { _resetOctokitCache, handlePullRequest, main, runFullReview } from './index';
 import type { SendMessageOptions } from './providers';
 import { STALE_APPROVE_MARKER_PREFIX } from './state';
+import { fetchWorkspace } from './workspace';
 import { RoundContext } from './types';
 
 jest.mock('@actions/core', () => ({
@@ -39,8 +40,13 @@ jest.mock('@actions/github', () => {
 
 jest.mock('./providers', () => ({
   ...jest.requireActual('./providers'),
-  createLLMClient: () => ({ sendMessage: (system: string, user: string, options?: SendMessageOptions) => mockLLM.sendMessage(system, user, options) }),
+  createLLMClient: () => ({
+    sendMessage: (system: string, user: string, options?: SendMessageOptions) => mockLLM.sendMessage(system, user, options),
+    get repoTools() { return mockLLM.repoTools; },
+  }),
 }));
+
+jest.mock('./workspace', () => ({ fetchWorkspace: jest.fn() }));
 
 const OWNER = 'acme';
 const REPO = 'widgets';
@@ -335,6 +341,9 @@ class FakeLLM {
   aborted: Stage[] = [];
   hold?: { stage: Stage; until: Promise<void> };
   onCall?: (stage: Stage) => void;
+  repoTools = false;
+  /** The stages called with repository tools, and the root each was given. */
+  toolRoots: [Stage, string][] = [];
 
   async sendMessage(system: string, _user: string, options?: SendMessageOptions): Promise<{ content: string }> {
     const stage: Stage = system.startsWith('You give the final merge-readiness verdict') ? 'verdict'
@@ -343,6 +352,7 @@ class FakeLLM {
           : system.includes('"judgeEffort"') ? 'planner'
             : 'reviewer';
     this.calls.push(stage);
+    if (options?.repoTools) this.toolRoots.push([stage, options.repoTools.root]);
     this.onCall?.(stage);
     const signal = options?.signal;
     try {
@@ -473,6 +483,26 @@ describe('runFullReview end to end', () => {
     });
     expect(mockLLM.calls).toEqual(['planner', 'reviewer', 'judge', 'verdict']);
     expect(core.setOutput).toHaveBeenCalledWith('verdict', 'APPROVE');
+    // No finder client has repository tools, so the PR head is not fetched.
+    expect(fetchWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('gives only the finders read-only tools on the fetched PR head, and reviews without them when the fetch fails', async () => {
+    mockLLM.repoTools = true;
+    jest.mocked(fetchWorkspace).mockResolvedValueOnce('/work/pr-head');
+
+    await reviewRound();
+
+    expect(fetchWorkspace).toHaveBeenCalledWith(`https://github.com/${OWNER}/${REPO}.git`, HEAD_SHA, 'ghs_app');
+    expect(mockLLM.toolRoots).toEqual([['reviewer', '/work/pr-head']]);
+
+    mockLLM.toolRoots = [];
+    jest.mocked(fetchWorkspace).mockRejectedValueOnce(new Error('fetch failed'));
+    await forcedRound();
+
+    expect(mockLLM.toolRoots).toEqual([]);
+    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('so the reviewers run without them: Error: fetch failed'));
+    expect(postedReviews().map(r => r.state)).toEqual(['APPROVED', 'APPROVED']);
   });
 
   it('ends INCOMPLETE and never approves when a reviewer reply does not parse, and a later run still reviews the commit', async () => {

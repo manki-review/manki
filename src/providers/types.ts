@@ -115,12 +115,22 @@ export interface UsageSummary extends LLMUsage {
   unpricedCalls: number;
 }
 
+/** Read-only tools on a checked-out repository, for a call to use while it answers. */
+export interface RepoTools {
+  /** The repository the tools read. Nothing outside it is readable. */
+  root: string;
+  /** How many model turns the call may take, tool calls included. */
+  maxTurns: number;
+}
+
 export interface SendMessageOptions {
   effort?: 'low' | 'medium' | 'high' | 'max';
   /** Wall-clock limit for the call. Unset keeps the provider's default limit. */
   timeoutMs?: number;
   /** Stops the call once it aborts. The call then rejects with the signal's reason. */
   signal?: AbortSignal;
+  /** Gives the call read-only tools on a repository. A client without `repoTools` ignores it. */
+  repoTools?: RepoTools;
 }
 
 export interface LLMClient {
@@ -132,6 +142,8 @@ export interface LLMClient {
    * leave it undefined.
    */
   warmupCLI?(): Promise<void>;
+  /** Whether `sendMessage` gives the model the tools `SendMessageOptions.repoTools` asks for. */
+  readonly repoTools?: boolean;
 }
 
 export type AnthropicAuth =

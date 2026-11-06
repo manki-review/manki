@@ -28,6 +28,7 @@ export function wrapClientForUsage(client: LLMClient): {
       }
     },
     ...(client.warmupCLI ? { warmupCLI: client.warmupCLI.bind(client) } : {}),
+    ...(client.repoTools ? { repoTools: true } : {}),
   };
   return { client: wrapped, getTotals: () => Object.freeze({ ...totals, usage: Object.freeze({ ...totals.usage }) }) };
 }
@@ -58,6 +59,7 @@ export function withRefusalFallback(
       return fallback.sendMessage(sys, user, opts);
     },
     ...(client.warmupCLI ? { warmupCLI: client.warmupCLI.bind(client) } : {}),
+    ...(client.repoTools ? { repoTools: true } : {}),
   };
 }
 
@@ -67,6 +69,7 @@ export function withSignal(client: LLMClient, signal: AbortSignal | undefined): 
   return {
     sendMessage: (sys, user, opts) => client.sendMessage(sys, user, { ...opts, signal }),
     ...(client.warmupCLI ? { warmupCLI: client.warmupCLI.bind(client) } : {}),
+    ...(client.repoTools ? { repoTools: true } : {}),
   };
 }
 

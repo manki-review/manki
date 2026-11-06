@@ -8,7 +8,8 @@ import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
 import { appendReplyTail, buildExitDiagnostics, callWithTimeout, cliEnv, matchQuotaText, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, warnReplyTail } from './cli-utils';
-import { AnthropicAuth, LLMClient, LLMResponse, LLMUsage, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
+import { MCP_SERVER_COMMAND } from '../mcp-server';
+import { AnthropicAuth, LLMClient, LLMResponse, LLMUsage, QuotaError, readCount, RefusalError, RepoTools, SendMessageOptions, ZERO_USAGE } from './types';
 
 // Re-export for backward compatibility with existing test imports.
 export { sanitizeLogOutput, STALE_TIMEOUT_MS };
@@ -124,6 +125,78 @@ function anthropicQuotaError(error: unknown): QuotaError | undefined {
   return undefined;
 }
 
+// The names Claude Code gives the tools of Manki's tool server.
+const MANKI_TOOLS = ['mcp__manki__git_history', 'mcp__manki__ast_grep'];
+
+/** How the Claude CLI starts Manki's tool server. */
+export interface ToolServerCommand {
+  command: string;
+  args: string[];
+}
+
+/** Starts the tool server from the script this process runs, which is the action's `dist/index.js`. */
+function toolServerCommand(root: string): ToolServerCommand {
+  return { command: process.execPath, args: [process.argv[1], MCP_SERVER_COMMAND, root] };
+}
+
+/**
+ * Writes the MCP config that starts Manki's tool server into `dir` and returns its path. The server gets the CLI's
+ * environment without the Claude credential, which it does not need.
+ */
+export function writeToolServerConfig(dir: string, { command, args }: ToolServerCommand): string {
+  const path = join(dir, 'mcp.json');
+  const config = { mcpServers: { manki: { type: 'stdio', command, args, env: { CLAUDE_CODE_OAUTH_TOKEN: '' } } } };
+  writeFileSync(path, JSON.stringify(config), { mode: 0o600 });
+  return path;
+}
+
+/** Tells the model which tools it has and how to use them. */
+export function repoToolsPrompt({ root, maxTurns }: RepoTools): string {
+  return `## Tools
+
+The PR's head commit is checked out at \`${root}\`. Read, Grep and Glob read files under that directory, \`git_history\` lists the commits behind a file or a range of its lines, and \`ast_grep\` finds code by syntax. Nothing outside \`${root}\` is readable.
+
+Use the tools to check claims about the changed code, such as how a changed function is called or whether a case is handled elsewhere, not to explore. You have at most ${maxTurns} turns, tool calls included. Your last message must be the JSON your instructions ask for, with nothing after it.`;
+}
+
+/**
+ * Returns the Claude CLI arguments for one call. Without `repoTools` the CLI gets no tools at all. With them it gets
+ * Read, Grep and Glob confined to `repoTools.root`, Manki's tool server from `mcpConfigPath`, and no other tool.
+ */
+export function claudeCliArgs(model: string, systemPromptPath: string, { effort, repoTools }: SendMessageOptions = {}, mcpConfigPath?: string): string[] {
+  // -p enables pipe mode — reads prompt from stdin when no argument follows
+  const args = [
+    '-p',
+    '--verbose',
+    '--output-format', 'stream-json',
+    '--include-partial-messages',
+    // No MCP servers and no settings files beyond `--mcp-config`: only the environment configures the CLI.
+    '--strict-mcp-config',
+    '--setting-sources', '',
+    // Replaces Claude Code's own agentic system prompt, which otherwise frames every stage.
+    '--system-prompt-file', systemPromptPath,
+    '--model', model,
+  ];
+  if (repoTools && mcpConfigPath) {
+    args.push(
+      // `--restricted` confines the file tools to the working directories, which are an empty directory and `--add-dir`,
+      // whatever the permission rules say. `dontAsk` refuses every call nothing allowed.
+      '--restricted',
+      '--permission-mode', 'dontAsk',
+      '--tools', 'Read,Grep,Glob',
+      '--add-dir', repoTools.root,
+      '--mcp-config', mcpConfigPath,
+      '--allowedTools', MANKI_TOOLS.join(','),
+      '--max-turns', String(repoTools.maxTurns),
+    );
+  } else {
+    // Without tools the reply is a single turn. With them, the CLI's `result` keeps only the last message.
+    args.push('--tools', '');
+  }
+  if (effort) args.push('--effort', effort);
+  return args;
+}
+
 export interface AnthropicClientOptions {
   auth: AnthropicAuth;
   model: string;
@@ -149,6 +222,10 @@ export class AnthropicClient implements LLMClient {
       return this.sendViaOAuth(systemPrompt, userMessage, options);
     }
     return this.sendViaAPI(systemPrompt, userMessage, options);
+  }
+
+  get repoTools(): boolean {
+    return this.auth.kind === 'oauth';
   }
 
   async warmupCLI(): Promise<void> {
@@ -197,37 +274,21 @@ export class AnthropicClient implements LLMClient {
     const promptDir = mkdtempSync(join(tmpdir(), 'manki-prompt-'));
     try {
       const systemPromptPath = join(promptDir, 'system.md');
-      writeFileSync(systemPromptPath, systemPrompt, { mode: 0o600 });
-      return await this.runOAuthCli(cliPath, systemPromptPath, systemPrompt.length + userMessage.length, userMessage, options);
+      const repoTools = options?.repoTools;
+      const fullPrompt = repoTools ? `${systemPrompt}\n\n${repoToolsPrompt(repoTools)}` : systemPrompt;
+      writeFileSync(systemPromptPath, fullPrompt, { mode: 0o600 });
+      const mcpConfigPath = repoTools && writeToolServerConfig(promptDir, toolServerCommand(repoTools.root));
+      const args = claudeCliArgs(this.model, systemPromptPath, options, mcpConfigPath);
+      return await this.runOAuthCli(cliPath, args, fullPrompt.length + userMessage.length, userMessage, options);
     } finally {
       rmSync(promptDir, { recursive: true, force: true });
     }
   }
 
-  private async runOAuthCli(cliPath: string, systemPromptPath: string, promptChars: number, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
+  private async runOAuthCli(cliPath: string, args: string[], promptChars: number, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
     const oauthToken = this.auth.kind === 'oauth' ? this.auth.token : undefined;
     const startTime = Date.now();
     const model = this.model;
-
-    // -p enables pipe mode — reads prompt from stdin when no argument follows
-    const args = [
-      '-p',
-      '--verbose',
-      '--output-format', 'stream-json',
-      '--include-partial-messages',
-      // Without tools the reply is a single turn. With them, a reviewer could write its JSON in one turn and end on a prose summary, and the CLI's `result` keeps only that last message.
-      '--tools', '',
-      // No MCP servers and no settings files: only the environment configures the CLI.
-      '--strict-mcp-config',
-      '--setting-sources', '',
-      // Replaces Claude Code's own agentic system prompt, which otherwise frames every stage.
-      '--system-prompt-file', systemPromptPath,
-      '--model', this.model,
-    ];
-
-    if (options?.effort) {
-      args.push('--effort', options.effort);
-    }
 
     let output = '';
     let replyTail = '';

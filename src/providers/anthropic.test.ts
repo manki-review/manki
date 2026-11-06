@@ -466,10 +466,40 @@ describe('sendViaOAuth — error paths', () => {
     expect(spawnArgs[spawnArgs.indexOf('--tools') + 1]).toBe('');
     expect(spawnArgs).toContain('--strict-mcp-config');
     expect(spawnArgs).not.toContain('--mcp-config');
+    expect(spawnArgs).not.toContain('--restricted');
     expect(spawnArgs[spawnArgs.indexOf('--setting-sources') + 1]).toBe('');
     const { cwd } = mockSpawn.mock.calls[0][2] as { cwd: string };
     expect(cwd.startsWith(join(tmpdir(), 'manki-cli-'))).toBe(true);
     expect(readdirSync(cwd)).toEqual([]);
+  });
+
+  it('gives the CLI read-only tools on the repository and Manki\'s tool server when asked for them', async () => {
+    setupSpawnMock({ stdout: 'ok' });
+    const spawnProc = mockSpawn.getMockImplementation()!;
+    let systemPromptFile = '';
+    let mcpConfig: { mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }> } | undefined;
+    mockSpawn.mockImplementationOnce((...args: Parameters<typeof spawnProc>) => {
+      const cliArgs = args[1] as string[];
+      systemPromptFile = readFileSync(cliArgs[cliArgs.indexOf('--system-prompt-file') + 1], 'utf-8');
+      mcpConfig = JSON.parse(readFileSync(cliArgs[cliArgs.indexOf('--mcp-config') + 1], 'utf-8'));
+      return spawnProc(...args);
+    });
+    const client = new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-5-5' });
+    expect(client.repoTools).toBe(true);
+    expect(new AnthropicClient({ auth: { kind: 'apiKey', key: 'sk' }, model: 'claude-opus-5-5' }).repoTools).toBe(false);
+
+    await client.sendMessage('Review the diff.', 'the diff', { repoTools: { root: '/work/repo', maxTurns: 15 } });
+
+    const spawnArgs = mockSpawn.mock.calls[0][1] as string[];
+    const valueOf = (flag: string) => spawnArgs[spawnArgs.indexOf(flag) + 1];
+    expect(spawnArgs).toEqual(expect.arrayContaining(['--restricted', '--strict-mcp-config']));
+    expect([valueOf('--permission-mode'), valueOf('--tools'), valueOf('--add-dir'), valueOf('--allowedTools'), valueOf('--max-turns')])
+      .toEqual(['dontAsk', 'Read,Grep,Glob', '/work/repo', 'mcp__manki__git_history,mcp__manki__ast_grep', '15']);
+    expect(valueOf('--setting-sources')).toBe('');
+    expect(mcpConfig!.mcpServers.manki).toEqual({ type: 'stdio', command: process.execPath, args: [process.argv[1], 'mcp-server', '/work/repo'], env: { CLAUDE_CODE_OAUTH_TOKEN: '' } });
+    expect(Object.keys(mcpConfig!.mcpServers)).toEqual(['manki']);
+    expect(systemPromptFile).toMatch(/^Review the diff\.\n\n## Tools\n\nThe PR's head commit is checked out at `\/work\/repo`\./);
+    expect(systemPromptFile).toContain('You have at most 15 turns');
   });
 
   it('sends the system prompt as the CLI system prompt and only the user message on stdin', async () => {

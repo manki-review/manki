@@ -22,6 +22,7 @@ import { fetchRecapState, PreviousFinding, RecapState, securityOverridesIn } fro
 import { RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint, teamModels } from './review';
 import { buildRoundContext, RoundRecordInput } from './round-context';
 import { collectStaticSignals } from './static-signals';
+import { fetchWorkspace } from './workspace';
 import { DashboardData, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, RoundTrigger, StaticSignal, roundContextToFlatAliases } from './types';
 import {
   fetchPRDiff,
@@ -1060,6 +1061,21 @@ async function collectRoundSignals(
   return { interRoundDiff, priorChange, linkedIssues, staticSignals, staticAnalysis };
 }
 
+/**
+ * Fetches the PR head for the finders whose client has repository tools. Returns `undefined` when none has them,
+ * or when the fetch fails, and the finders then review without tools.
+ */
+async function fetchReviewWorkspace({ octokit, owner, repo, commitSha }: RunTarget, clients: ReviewClients): Promise<string | undefined> {
+  if (![clients.reviewer, ...(clients.reviewerByModel?.values() ?? [])].some(client => client.repoTools)) return undefined;
+  try {
+    const { token } = await octokit.auth() as { token?: string };
+    return await fetchWorkspace(`${github.context.serverUrl}/${owner}/${repo}.git`, commitSha, token);
+  } catch (error) {
+    core.warning(`Could not fetch the PR head for the reviewer tools, so the reviewers run without them: ${sanitizeTokens(String(error))}`);
+    return undefined;
+  }
+}
+
 /** Runs the review pipeline and mirrors its progress on the dashboard in the progress comment. */
 async function reviewRound(
   run: ReviewRun, clients: ReviewClients, inputs: Omit<ReviewOptions, 'onProgress'>,
@@ -1508,7 +1524,10 @@ async function runFullReview(
     const countsTowardCap = isNewChange({ commitSha, changeDigest: changeDigest(diff, config.exclude_paths) }, recap.priorRounds.at(-1));
 
     const { openThreads, fileContents } = await collectOpenThreads(target, recap, diff);
-    const { interRoundDiff, priorChange, linkedIssues, staticSignals, staticAnalysis } = await collectRoundSignals(target, config, recap, diff, fullDiff, configPath, prContext?.body);
+    const [{ interRoundDiff, priorChange, linkedIssues, staticSignals, staticAnalysis }, workspace] = await Promise.all([
+      collectRoundSignals(target, config, recap, diff, fullDiff, configPath, prContext?.body),
+      fetchReviewWorkspace(target, clients),
+    ]);
 
     const run: ReviewRun = {
       ...target, options, trigger, config, reviewSource, models, plannerEnabled: !!clients.planner,
@@ -1540,6 +1559,7 @@ async function runFullReview(
       interRoundDiff,
       headSha: commitSha,
       finalRound: !paused && countsTowardCap && maxAutoRounds > 0 && capRounds + 1 === maxAutoRounds,
+      workspace,
     });
     // A model call the stop aborted can end the round incomplete, and that round must not be posted.
     stop.signal.throwIfAborted();
