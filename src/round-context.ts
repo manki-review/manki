@@ -5,7 +5,7 @@ import { collectResolvedThreadIds, fingerprintFinding, PreviousFinding, RecapSta
 import { MANKI_VERSION } from './github';
 import { parseModelSpec } from './providers';
 import { routingDigest } from './routing';
-import { CONTRADICTION_TAG, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OpenThread, OWN_PROPOSAL_TAG, ParsedDiff, RATCHET_SUPPRESSED_TAG, ReclassifiedPrior, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ReviewModels, ReviewResult, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundRecap, RoundRouting, RoundStaticAnalysis, RoundTrigger, RoundUsage, RoundUsageStage, SECURITY_TAG, SecurityOverride, SEVERITY_ORDER, ThreadResolutionOverrides } from './types';
+import { CONTRADICTION_TAG, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OpenThread, OWN_PROPOSAL_TAG, ParsedDiff, RATCHET_SUPPRESSED_TAG, ReclassifiedPrior, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ReviewModels, ReviewResult, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundJudgeDrop, RoundRawFinding, RoundRecap, RoundRouting, RoundStaticAnalysis, RoundTrigger, RoundUsage, RoundUsageStage, SECURITY_TAG, SecurityOverride, SEVERITY_ORDER, ThreadResolutionOverrides } from './types';
 
 const ALLOWED_FINGERPRINT_TAGS = new Set<string>([
   OWN_PROPOSAL_TAG,
@@ -237,6 +237,24 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     totalTokens: totalInput + totalOutput,
     ...(Object.keys(perStage).length > 0 && { perStage }),
   };
+  const rawFindingRecords: RoundRawFinding[] = (result.rawFindings ?? []).map(f => ({
+    title: f.title,
+    file: f.file,
+    line: f.line,
+    severity: f.severity,
+    reviewers: f.reviewers,
+    description: f.description,
+    ...(f.suggestedFix && { suggestedFix: f.suggestedFix }),
+  }));
+  const judgeDrops: RoundJudgeDrop[] = allJudged.filter(f => f.severity === 'ignore').map(f => ({
+    title: f.title,
+    file: f.file,
+    line: f.line,
+    reviewers: f.reviewers,
+    ...(f.reviewerSeverity && { reviewerSeverity: f.reviewerSeverity }),
+    ...(f.judgeConfidence && { judgeConfidence: f.judgeConfidence }),
+    ...(f.judgeNotes && { judgeNotes: f.judgeNotes }),
+  }));
   const findingEntries = result.findings.map(f => ({
     fingerprint: fingerprintFinding(f.title, f.file ?? '', f.line || 0),
     ...(f.threadId && { threadId: f.threadId }),
@@ -320,6 +338,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     reviewers: {
       agents: result.agentNames,
       ...(agentMetrics && { agentMetrics }),
+      ...(rawFindingRecords.length > 0 && { rawFindings: rawFindingRecords }),
       ...corroboration,
     },
     ...(result.routing && {
@@ -335,6 +354,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     }),
     judge: {
       summary: result.summary,
+      ...(judgeDrops.length > 0 && { dropped: judgeDrops }),
       confidenceDistribution,
       severityChanges,
       ...((regrades.up > 0 || regrades.down > 0) && { regrades }),

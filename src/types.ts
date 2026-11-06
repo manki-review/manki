@@ -1037,6 +1037,8 @@ export interface RoundReviewers {
   /** Reviewer agent names that participated in this round. */
   agents: string[];
   agentMetrics?: RoundAgentMetric[];
+  /** Every finding the finders reported, before suppressions, dedup and the judge. */
+  rawFindings?: RoundRawFinding[];
   /** Kept findings raised only by agents on `models.reviewer`. */
   keptPrimaryOnly?: number;
   /** Kept findings raised only by the second finder. */
@@ -1047,6 +1049,28 @@ export interface RoundReviewers {
   keptOnlyBy?: Record<string, number>;
   /** Kept findings raised by two or more finders. */
   keptByMany?: number;
+}
+
+/** A finding as the finders reported it. */
+export interface RoundRawFinding {
+  title: string;
+  file: string;
+  line: number;
+  severity: FindingSeverity;
+  reviewers: string[];
+  description: string;
+  suggestedFix?: string;
+}
+
+/** A finding the judge dropped, with the judge's reasoning. */
+export interface RoundJudgeDrop {
+  title: string;
+  file: string;
+  line: number;
+  reviewers: string[];
+  reviewerSeverity?: FindingSeverity;
+  judgeConfidence?: 'high' | 'medium' | 'low';
+  judgeNotes?: string;
 }
 
 export interface RoundAgentMetric {
@@ -1082,6 +1106,8 @@ export interface RoundAgentMetric {
 export interface RoundJudge {
   /** Narrative summary written by the judge. */
   summary: string;
+  /** Findings the judge dropped. The kept ones are in `RoundFindings.entries`. */
+  dropped?: RoundJudgeDrop[];
   confidenceDistribution?: { high: number; medium: number; low: number };
   severityChanges?: number;
   /** Findings the judge graded above (`up`) or below (`down`) the reviewer's severity. */
