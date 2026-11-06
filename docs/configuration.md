@@ -2,6 +2,12 @@
 
 Create `.manki.yml` in your repository root. If the file is not valid YAML or has an invalid setting, the run fails, and a review run posts the error on the PR instead of reviewing with the defaults.
 
+Settings marked "read from the base branch" in the reference come from `.manki.yml` on the PR's base branch only, so a PR cannot change them for its own review.
+
+Every setting is in the [reference](#reference) below the example.
+
+## Example
+
 ```yaml
 # Auto-review on PR open/update (default: true)
 auto_review: true
