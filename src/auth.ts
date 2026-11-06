@@ -79,6 +79,35 @@ export interface TokenResult {
   identity: 'app' | 'actions';
 }
 
+const OIDC_AUDIENCE = 'manki-api.dustinface.me';
+
+/** The token service's `/token` URL. Its other endpoints sit next to it. */
+function tokenServiceUrl(): string {
+  return core.getInput('manki_token_url') || 'https://manki-api.dustinface.me/token';
+}
+
+/** Posts `body` to the token service at `url` with the workflow's OIDC token. Returns `null` when the run has no OIDC token. */
+async function postToTokenService(url: string, body: unknown): Promise<Response | null> {
+  let oidcToken: string;
+  try {
+    oidcToken = await core.getIDToken(OIDC_AUDIENCE);
+  } catch {
+    return null;
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    return await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${oidcToken}` },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 /**
  * Auto-detect manki-review GitHub App installation and fetch an app token
  * from the token service. Falls back to the provided github_token on any failure.
@@ -90,28 +119,11 @@ export async function resolveGitHubToken(
   repo: string,
 ): Promise<TokenResult> {
   try {
-    // Request OIDC token from GitHub Actions
-    let oidcToken: string;
-    try {
-      oidcToken = await core.getIDToken('manki-api.dustinface.me');
-    } catch {
+    const tokenResponse = await postToTokenService(tokenUrl, { owner, repo, memory: true });
+    if (!tokenResponse) {
       core.info('OIDC token not available — using github-actions[bot] identity');
       return { token: githubToken, identity: 'actions' };
     }
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
-
-    const tokenResponse = await fetch(tokenUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${oidcToken}`,
-      },
-      body: JSON.stringify({ owner, repo, memory: true }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
 
     if (!tokenResponse.ok) {
       core.info(`Manki app not available for ${owner}/${repo} — using github-actions[bot] identity`);
@@ -157,7 +169,7 @@ export async function createAuthenticatedOctokit(): Promise<AuthResult> {
     throw new Error('No authentication configured. Provide either github_token or both github_app_id and github_app_private_key.');
   }
 
-  const tokenUrl = core.getInput('manki_token_url') || 'https://manki-api.dustinface.me/token';
+  const tokenUrl = tokenServiceUrl();
   const { owner, repo: repoName } = github.context.repo;
   const { token, memoryToken, identity } = await resolveGitHubToken(githubToken, tokenUrl, owner, repoName);
 
