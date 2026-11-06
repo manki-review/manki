@@ -313,7 +313,12 @@ export type CliProvider = 'claude' | 'codex' | 'gemini';
 
 // The configuration each CLI documents, such as base URLs, regions, projects and the Bedrock and Vertex switches.
 const PROVIDER_ENV: Record<CliProvider, RegExp> = {
-  claude: /^(?:ANTHROPIC_|CLAUDE_CODE_|VERTEX_REGION_|CLOUD_ML_REGION$|AWS_(?:REGION|DEFAULT_REGION|PROFILE|CONFIG_FILE|SHARED_CREDENTIALS_FILE)$)/i,
+  claude: new RegExp([
+    '^(?:ANTHROPIC_|CLAUDE_CODE_|DISABLE_|VERTEX_REGION_)',
+    '^(?:CLAUDE_CONFIG_DIR|API_TIMEOUT_MS|MAX_THINKING_TOKENS|MCP_TIMEOUT|MCP_TOOL_TIMEOUT|CLOUD_ML_REGION)$',
+    // Bedrock reads the standard AWS SDK credential chain. Its secret-named keys stay out.
+    '^AWS_(?:REGION|DEFAULT_REGION|PROFILE|CONFIG_FILE|SHARED_CREDENTIALS_FILE|ROLE_ARN|ROLE_SESSION_NAME|WEB_IDENTITY_TOKEN_FILE|CONTAINER_CREDENTIALS_(?:RELATIVE|FULL)_URI)$',
+  ].join('|'), 'i'),
   codex: /^(?:OPENAI_|CODEX_)/i,
   gemini: /^(?:GEMINI_|GOOGLE_|VERTEX_)/i,
 };
