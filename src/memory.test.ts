@@ -16,6 +16,7 @@ import {
   RepoMemory,
 } from './memory';
 import { Finding } from './types';
+import { registerSecret } from './utils';
 
 const makeFinding = (overrides: Partial<Finding> = {}): Finding => ({
   severity: 'suggestion',
@@ -595,6 +596,18 @@ describe('writeLearning', () => {
 
     const createCall = (octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls[0][0];
     expect(createCall.path).toBe('test-repo/learnings.yml');
+  });
+
+  it('redacts secret values from the learning and the commit message', async () => {
+    registerSecret('ghs_memoryLeakToken');
+    const octokit = mockMemoryOctokit({});
+
+    await writeLearning(octokit, 'owner/memory', 'test-repo', makeLearning({ id: 'l1', content: 'never log ghs_memoryLeakToken' }));
+
+    const createCall = (octokit.rest.repos.createOrUpdateFileContents as unknown as jest.Mock).mock.calls[0][0];
+    const written = Buffer.from(createCall.content, 'base64').toString();
+    expect(written).toContain('never log [REDACTED]');
+    expect(written + createCall.message).not.toContain('ghs_memoryLeakToken');
   });
 
   it('writes global-scoped learning to _global path', async () => {

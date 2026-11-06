@@ -4,6 +4,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { minimatch } from 'minimatch';
 
 import { Finding, FindingSeverity } from './types';
+import { redactSecrets } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
@@ -391,8 +392,9 @@ interface FileUpdate {
 }
 
 /**
- * Writes the result of `update` to `path`. `update` gets the file's current text on every attempt,
- * so a retry after a write conflict builds on the latest version. It returns `null` to skip the write.
+ * Writes the result of `update` to `path`, with Manki's secret values redacted, since a memory repo can be public.
+ * `update` gets the file's current text on every attempt, so a retry after a write conflict builds on the latest
+ * version. It returns `null` to skip the write.
  */
 async function writeFile(
   octokit: Octokit,
@@ -415,8 +417,8 @@ async function writeFile(
         owner,
         repo,
         path,
-        message: next.message,
-        content: Buffer.from(next.content).toString('base64'),
+        message: redactSecrets(next.message),
+        content: Buffer.from(redactSecrets(next.content)).toString('base64'),
         sha,
       });
       return;
