@@ -1,0 +1,21 @@
+{
+  "name": "fails-damage-serious",
+  "case": "fails-damage-serious",
+  "allowed": [
+    "warning",
+    "suggestion",
+    "nitpick",
+    "ignore"
+  ],
+  "finding": {
+    "title": "Retry log drops the error cause",
+    "file": "pkg/fetch/retry.go",
+    "line": 20,
+    "description": "When every attempt fails, the loop logs `fetch failed after 3 attempts` without `err`. The caller still gets the error back, but operators reading the log cannot see why the fetch failed.",
+    "severity": "blocker",
+    "reviewers": [
+      "Correctness"
+    ]
+  },
+  "prDiff": "diff --git a/pkg/fetch/retry.go b/pkg/fetch/retry.go\nindex 1111111..2222222 100644\n--- a/pkg/fetch/retry.go\n+++ b/pkg/fetch/retry.go\n@@ -10,2 +10,14 @@\n func Fetch(ctx context.Context, url string) ([]byte, error) {\n \tvar err error\n+\tfor attempt := 0; attempt < 3; attempt++ {\n+\t\tvar body []byte\n+\t\tbody, err = get(ctx, url)\n+\t\tif err == nil {\n+\t\t\treturn body, nil\n+\t\t}\n+\t\ttime.Sleep(backoff(attempt))\n+\t}\n+\tlog.Printf(\"fetch failed after 3 attempts\")\n+\treturn nil, err\n+}\n+\n"
+}

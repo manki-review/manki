@@ -1,0 +1,21 @@
+{
+  "name": "fails-failure-named",
+  "case": "fails-failure-named",
+  "allowed": [
+    "warning",
+    "suggestion",
+    "nitpick",
+    "ignore"
+  ],
+  "finding": {
+    "title": "Possible race condition in `formatLabel`",
+    "file": "src/labels.ts",
+    "line": 8,
+    "description": "This function could have race conditions or other concurrency problems if it is ever called from several places at the same time. Consider making it thread-safe.",
+    "severity": "blocker",
+    "reviewers": [
+      "Correctness"
+    ]
+  },
+  "prDiff": "diff --git a/src/labels.ts b/src/labels.ts\nindex 1111111..2222222 100644\n--- a/src/labels.ts\n+++ b/src/labels.ts\n@@ -5,2 +5,8 @@\n import { Label } from './types';\n \n+export function formatLabel(label: Label): string {\n+  const name = label.name.trim();\n+  const color = label.color.toLowerCase();\n+  return `${name} (#${color})`;\n+}\n+\n"
+}

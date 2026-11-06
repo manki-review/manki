@@ -1,0 +1,20 @@
+{
+  "name": "never-tests",
+  "case": "never-tests",
+  "allowed": [
+    "suggestion",
+    "nitpick",
+    "ignore"
+  ],
+  "finding": {
+    "title": "New error branch in `parseHeader` has no test",
+    "file": "src/main/java/net/HeaderParser.java",
+    "line": 18,
+    "description": "The PR adds a branch that throws `MalformedHeaderException` for a header without a colon, but no test covers it. A later change could break it unnoticed.",
+    "severity": "blocker",
+    "reviewers": [
+      "Correctness"
+    ]
+  },
+  "prDiff": "diff --git a/src/main/java/net/HeaderParser.java b/src/main/java/net/HeaderParser.java\nindex 1111111..2222222 100644\n--- a/src/main/java/net/HeaderParser.java\n+++ b/src/main/java/net/HeaderParser.java\n@@ -16,3 +16,9 @@\n     public Header parseHeader(String line) {\n         int colon = line.indexOf(':');\n+        if (colon < 0) {\n+            throw new MalformedHeaderException(line);\n+        }\n         String name = line.substring(0, colon).trim();\n+        String value = line.substring(colon + 1).trim();\n+        return new Header(name, value);\n+    }\n"
+}

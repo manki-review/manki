@@ -1,0 +1,20 @@
+{
+  "name": "fails-pr-causes-it",
+  "case": "fails-pr-causes-it",
+  "allowed": [
+    "ignore",
+    "nitpick",
+    "suggestion"
+  ],
+  "finding": {
+    "title": "Average divides by zero on an empty list",
+    "file": "app/stats.py",
+    "line": 21,
+    "description": "`mean` divides by `len(values)`, which raises `ZeroDivisionError` when `values` is empty.",
+    "severity": "blocker",
+    "reviewers": [
+      "Correctness"
+    ]
+  },
+  "prDiff": "diff --git a/app/stats.py b/app/stats.py\nindex 1111111..2222222 100644\n--- a/app/stats.py\n+++ b/app/stats.py\n@@ -18,6 +18,10 @@\n \n def mean(values):\n     total = sum(values)\n     return total / len(values)\n \n \n+def median(values):\n+    ordered = sorted(values)\n+    return ordered[len(ordered) // 2] if ordered else None\n+\n"
+}

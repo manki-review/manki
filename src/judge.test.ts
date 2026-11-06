@@ -24,8 +24,9 @@ import { AnthropicClient } from './providers/anthropic';
 import { RepoMemory, Learning, Suppression } from './memory';
 import { LinkedIssue, titleToSlug } from './github';
 import { truncateDiff } from './review';
+import { parsePRDiff } from './diff';
 import { WRITING_RULES } from './writing-rules';
-import { Finding, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, ReviewConfig, RoundContext, ParsedDiff, DiffFile, DiffHunk, ThreadEvaluation } from './types';
+import { Finding, FindingSeverity, IN_PR_SUPPRESSED_TAG, InPrSuppression, OpenThread, ProvenanceEntry, ReviewConfig, RoundContext, ParsedDiff, DiffFile, DiffHunk, ThreadEvaluation } from './types';
 import { LegacyHandoverFindingFixture, LegacyHandoverRoundFixture, makeFindingFingerprintEntry, makeRoundContext, roundContextFromLegacy } from './test-utils';
 
 const makeConfig = (overrides: Partial<ReviewConfig> = {}): ReviewConfig => ({
@@ -143,14 +144,10 @@ describe('buildJudgeSystemPrompt', () => {
 
   it('grades against the fixed rubric instead of trusting reviewer severity', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
-    expect(prompt).toContain('## Grading Rules');
     expect(prompt).toContain('Your grade is final');
-    expect(prompt).toContain('**Missing test coverage is `suggestion`.**');
-    expect(prompt).toContain('**A finding that rests on a fact you cannot check is capped at `suggestion`.**');
-    expect(prompt).toContain('**Code the PR did not touch is never a finding.**');
-    expect(prompt).toContain('**Verification status is never a finding.**');
-    expect(prompt).toContain('**Commit messages never block.**');
-    expect(prompt).toContain('- `blocker` or `warning`: keep it');
+    expect(prompt).toContain('Code the PR did not touch is never a finding');
+    expect(prompt).toContain('- `blocker`: when you cannot settle one of the five tests, grade it `warning` at most');
+    expect(prompt).toContain('- `warning`: keep it');
     expect(prompt).toContain('- `suggestion` or `nitpick`: drop it (`ignore`)');
     expect(prompt).toContain('Agreement never raises or protects a finding\'s severity.');
     expect(prompt).not.toMatch(/trust (the )?(reviewer )?severity/i);
@@ -158,10 +155,10 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).not.toMatch(/original severity|reviewer's (original )?(severity|assessment|grade)|not on the reviewer's/i);
   });
 
-  it('makes a reachable security defect on attacker-controlled input a blocker unless refuted', () => {
+  it('makes a security defect on attacker-controlled input a blocker unless refuted', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
-    expect(prompt).toContain('Rate that likelihood Certain, never Possible.');
-    expect(prompt).toContain('**A reachable security defect is a `blocker` when an attacker controls the input that triggers it, however unlikely it looks.**');
+    expect(prompt).toContain('**A security defect that outside input can trigger is a `blocker`, however unlikely it looks.**');
+    expect(prompt).toContain('Security is serious damage under test 3, and the attacker decides whether it happens, so rarity never lowers the grade.');
     expect(prompt).toContain('PR content and diffs, file contents, comments and replies, branch names, and config read from the PR');
     for (const cls of ['prompt injection', 'permission bypass', 'secret or token exposure', 'code, command or path injection', 'unsafe execution of config the PR controls']) {
       expect(prompt).toContain(cls);
@@ -185,24 +182,59 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).not.toContain('Scope Validation');
   });
 
-  it('includes severity examples for each level', () => {
+  it('requires all five blocker tests and keeps a grade until the code or the evidence changes', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
-    // required examples
-    expect(prompt).toContain('SQL injection');
-    expect(prompt).toContain('Null/undefined dereference');
-    expect(prompt).toContain('Missing error handling');
-    // suggestion examples
-    expect(prompt).toContain('Error message lacks context');
-    expect(prompt).toContain('improve testability');
-    expect(prompt).toContain('Missing timeout on HTTP request');
-    // nit examples
-    expect(prompt).toContain('Variable name could be more descriptive');
-    expect(prompt).toContain('import ordering');
-    expect(prompt).toContain('JSDoc');
-    // ignore examples (judge only)
-    expect(prompt).toContain('TODO with a tracking issue');
-    expect(prompt).toContain('workaround documented');
-    expect(prompt).toContain('Style preference that does not affect correctness');
+    expect(prompt).toContain('A finding is a `blocker` only when it passes all five tests:');
+    for (const test of ['The PR causes it.', 'The failure can be named.', 'The damage is serious.', 'The code proves it.', 'The author would fix it.']) {
+      expect(prompt).toContain(`**${test}**`);
+    }
+    expect(prompt).toContain('cites the lines, as `file:line`, that show the failure');
+    expect(prompt).toContain('## Grade Stability');
+    expect(prompt).toContain('Change the grade only when the code at that spot changed or you have evidence the earlier round did not have');
+    expect(prompt).toContain('A failure that outside input can trigger is never hypothetical');
+  });
+
+  it('grades severity from a table of damage against how the failure is reached', () => {
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
+    expect(prompt).toContain('## Severity Table');
+    expect(prompt).toContain('| What goes wrong | In normal use or from outside input | In a rare internal edge case |');
+    expect(prompt).toMatch(/\| Severe: [^|]+\| `blocker` \| `blocker` \|/);
+    expect(prompt).toMatch(/\| Wrong behaviour: [^|]+\| `blocker` \| `warning` \|/);
+    expect(prompt).toMatch(/\| Degraded but correct: [^|]+\| `warning` \| `suggestion` \|/);
+    expect(prompt).toContain('| Style, naming, docs | `nitpick` | `nitpick` |');
+  });
+
+  it('lists what is never a blocker and makes intended but surprising behaviour a suggestion', () => {
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
+    const section = prompt.slice(prompt.indexOf('## Never a Blocker'), prompt.indexOf('## Grade Stability'));
+    for (const rule of [
+      '**Missing test coverage is `suggestion`.**',
+      '**Style, naming, docs and comments are `nitpick`.**',
+      '**Commit messages never block.**',
+      '**Performance is never a blocker** unless it causes a crash, a hang or resource exhaustion from outside input.',
+      '**A finding that rests on a fact you cannot check is capped at `suggestion`.**',
+      '**Verification status is never a finding.**',
+      '**A check on a trusted internal value is never a blocker.**',
+      '**Behaviour that is intended but surprising is a `suggestion`.**',
+    ]) {
+      expect(section).toContain(rule);
+    }
+    expect(section).toContain('word the finding as a question');
+  });
+
+  it('gives four to six worked examples on each side, across several languages', () => {
+    const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
+    const section = prompt.slice(prompt.indexOf('## Worked Examples'), prompt.indexOf('## Evaluation Criteria'));
+    const [blockers, others] = section.split('Not blockers:');
+    const examples = (text: string) => text.split('\n').filter(line => line.startsWith('- **'));
+    const languages = new Set([...examples(blockers), ...examples(others)].map(line => line.match(/^- \*\*(\w+)\*\*/)?.[1]));
+    for (const side of [blockers, others]) {
+      expect(examples(side).length).toBeGreaterThanOrEqual(4);
+      expect(examples(side).length).toBeLessThanOrEqual(6);
+    }
+    expect(examples(blockers).every(line => line.endsWith('`blocker`.'))).toBe(true);
+    expect(examples(others).some(line => line.includes('`blocker`'))).toBe(false);
+    expect(languages.size).toBeGreaterThanOrEqual(4);
   });
 
   it('weighs two-finder agreement as evidence that never raises severity, and omits it for one reader', () => {
@@ -230,15 +262,6 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).toContain('## Acceptance Criteria');
     expect(prompt).toContain('unmet acceptance criterion');
     expect(prompt).toContain('partially met criterion');
-  });
-
-  it('contains Impact and Likelihood severity framework', () => {
-    const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
-    expect(prompt).toContain('## Severity Assessment');
-    expect(prompt).toContain('**Impact**');
-    expect(prompt).toContain('**Likelihood**');
-    expect(prompt).toContain('**Severity mapping:**');
-    expect(prompt).toContain('correctness bug, data loss risk, or security issue');
   });
 
   it('uses follow-up summary instruction when isFollowUp is true', () => {
@@ -296,19 +319,9 @@ describe('buildJudgeSystemPrompt', () => {
     expect(prompt).not.toContain('Open Thread Evaluation');
   });
 
-  it('contains Practical Reachability section and classification values', () => {
+  it('carries no cap for defensive hardening or a missing current caller', () => {
     const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
-    expect(prompt).toContain('## Practical Reachability');
-    expect(prompt).toContain('**reachable**');
-    expect(prompt).toContain('**hypothetical**');
-    expect(prompt).toContain('**unknown**');
-  });
-
-  it('lists reachability fields in the output schema', () => {
-    const prompt = buildJudgeSystemPrompt(makeConfig(), 5);
-    expect(prompt).toContain('"reachability"');
-    expect(prompt).toContain('"reachabilityReasoning"');
-    expect(prompt).toContain('"reachable" | "hypothetical" | "unknown"');
+    expect(prompt).not.toMatch(/reachability|defensive|no current caller/i);
   });
 
   it('carries no `noise_level` calibration note', () => {
@@ -988,53 +1001,6 @@ describe('parseJudgeResponse', () => {
     expect(result.findings[0].severity).toBe('blocker');
     expect(result.findings[1].severity).toBe('ignore');
   });
-
-  it.each(['reachable', 'hypothetical', 'unknown'] as const)(
-    'parses reachability value %s and reachabilityReasoning when present',
-    (value) => {
-      const json = JSON.stringify([
-        {
-          title: 'T',
-          severity: 'suggestion',
-          reasoning: 'x',
-          confidence: 'medium',
-          reachability: value,
-          reachabilityReasoning: 'because reasons',
-        },
-      ]);
-
-      const result = parseJudgeResponse(json);
-      expect(result.findings[0].reachability).toBe(value);
-      expect(result.findings[0].reachabilityReasoning).toBe('because reasons');
-    },
-  );
-
-  it('falls back to undefined for invalid reachability value', () => {
-    const json = JSON.stringify([
-      {
-        title: 'T',
-        severity: 'suggestion',
-        reasoning: 'x',
-        confidence: 'medium',
-        reachability: 'yes',
-        reachabilityReasoning: 'because reasons',
-      },
-    ]);
-
-    const result = parseJudgeResponse(json);
-    expect(result.findings[0].reachability).toBeUndefined();
-    expect(result.findings[0].reachabilityReasoning).toBeUndefined();
-  });
-
-  it('leaves reachability undefined when missing from the response', () => {
-    const json = JSON.stringify([
-      { title: 'T', severity: 'suggestion', reasoning: 'x', confidence: 'medium' },
-    ]);
-
-    const result = parseJudgeResponse(json);
-    expect(result.findings[0].reachability).toBeUndefined();
-    expect(result.findings[0].reachabilityReasoning).toBeUndefined();
-  });
 });
 
 describe('filterMemoryForFindings', () => {
@@ -1298,95 +1264,18 @@ describe('runJudgeAgent', () => {
     expect(userMessage).toContain('Null check missing');
   });
 
-  it('keeps a hypothetical blocker at blocker severity', async () => {
-    const judgedResponse = JSON.stringify({
-      summary: 'One defensive guard flagged.',
-      findings: [
-        {
-          title: 'Unused variable',
-          severity: 'blocker',
-          reasoning: 'Technically a bug.',
-          confidence: 'high',
-          reachability: 'hypothetical',
-          reachabilityReasoning: 'No visible caller triggers the failure.',
-        },
-      ],
-    });
-    mockSendMessage.mockResolvedValue({ content: judgedResponse });
+  it.each(['blocker', 'warning', 'suggestion'] as const)('keeps a %s at its grade when the response calls it hypothetical', async (severity) => {
+    mockSendMessage.mockResolvedValue({ content: JSON.stringify({
+      summary: 'One guard flagged.',
+      findings: [{ title: 'Unused variable', severity, reasoning: 'Rare internal edge case.', confidence: 'high', reachability: 'hypothetical' }],
+    }) });
 
-    const input: JudgeInput = {
-      findings: [makeFinding()],
-      diff: makeDiff(),
-      rawDiff: '',
-      repoContext: '',
-      agentCount: 3,
-    };
+    const input: JudgeInput = { findings: [makeFinding()], diff: makeDiff(), rawDiff: '', repoContext: '', agentCount: 3 };
 
     const result = await runJudgeAgent(mockClient, makeConfig(), input);
-    expect(result.findings).toHaveLength(1);
-    expect(result.findings[0].severity).toBe('blocker');
+    expect(result.findings[0].severity).toBe(severity);
     expect(result.findings[0].originalSeverity).toBeUndefined();
     expect(result.findings[0].tags).toBeUndefined();
-    expect(result.findings[0].reachability).toBe('hypothetical');
-  });
-
-  it('demotes hypothetical suggestion findings to nit with defensive-hardening tag', async () => {
-    const judgedResponse = JSON.stringify({
-      summary: 'Suggestion demoted.',
-      findings: [
-        {
-          title: 'Unused variable',
-          severity: 'suggestion',
-          reasoning: 'Defensive guard.',
-          confidence: 'medium',
-          reachability: 'hypothetical',
-          reachabilityReasoning: 'No caller exercises this path.',
-        },
-      ],
-    });
-    mockSendMessage.mockResolvedValue({ content: judgedResponse });
-
-    const input: JudgeInput = {
-      findings: [makeFinding()],
-      diff: makeDiff(),
-      rawDiff: '',
-      repoContext: '',
-      agentCount: 3,
-    };
-
-    const result = await runJudgeAgent(mockClient, makeConfig(), input);
-    expect(result.findings[0].severity).toBe('nitpick');
-    expect(result.findings[0].originalSeverity).toBe('suggestion');
-    expect(result.findings[0].tags).toEqual(['defensive-hardening']);
-  });
-
-  it('preserves severity when judge marks finding reachable', async () => {
-    const judgedResponse = JSON.stringify({
-      summary: 'Real bug.',
-      findings: [
-        {
-          title: 'Unused variable',
-          severity: 'blocker',
-          reasoning: 'Null deref on every call.',
-          confidence: 'high',
-          reachability: 'reachable',
-        },
-      ],
-    });
-    mockSendMessage.mockResolvedValue({ content: judgedResponse });
-
-    const input: JudgeInput = {
-      findings: [makeFinding()],
-      diff: makeDiff(),
-      rawDiff: '',
-      repoContext: '',
-      agentCount: 3,
-    };
-
-    const result = await runJudgeAgent(mockClient, makeConfig(), input);
-    expect(result.findings[0].severity).toBe('blocker');
-    expect(result.findings[0].tags).toBeUndefined();
-    expect(result.findings[0].reachability).toBe('reachable');
   });
 
   it('tags the findings the judge marks `security`', async () => {
@@ -2635,7 +2524,7 @@ describe('runJudgeAgent', () => {
         .mockResolvedValueOnce({
           content: JSON.stringify({
             summary: 'original summary',
-            findings: [{ title: 'Original finding', severity: 'warning', reasoning: 'r', confidence: 'high', reachability: 'reachable' }],
+            findings: [{ title: 'Original finding', severity: 'warning', reasoning: 'r', confidence: 'high' }],
           }),
         })
         .mockResolvedValueOnce({ content: 'not valid json at all' });
@@ -3094,137 +2983,6 @@ describe('mapJudgedToFindings', () => {
     expect(result[0].severity).toBe('blocker');
     expect(result[1].severity).toBe('nitpick');
   });
-
-  it.each([
-    ['warning' as const],
-    ['suggestion' as const],
-  ])('demotes hypothetical %s findings to nit and tags defensive-hardening', (severity) => {
-    const originals = [makeFinding({ title: 'Bug', severity: 'suggestion' })];
-    const judged: JudgedFinding[] = [
-      {
-        title: 'Bug',
-        severity,
-        reasoning: 'Correct but unreachable.',
-        confidence: 'high',
-        reachability: 'hypothetical',
-        reachabilityReasoning: 'No caller passes negative values.',
-      },
-    ];
-
-    const result = mapJudgedToFindings(originals, judged);
-    expect(result[0].severity).toBe('nitpick');
-    expect(result[0].originalSeverity).toBe(severity);
-    expect(result[0].tags).toEqual(['defensive-hardening']);
-    expect(result[0].reachability).toBe('hypothetical');
-    expect(result[0].reachabilityReasoning).toBe('No caller passes negative values.');
-  });
-
-  it('appends defensive-hardening without dropping pre-existing tags', () => {
-    const originals = [makeFinding({ title: 'Bug', severity: 'warning', tags: ['security'] })];
-    const judged: JudgedFinding[] = [
-      {
-        title: 'Bug',
-        severity: 'warning',
-        reasoning: 'Correct but unreachable.',
-        confidence: 'high',
-        reachability: 'hypothetical',
-      },
-    ];
-
-    const result = mapJudgedToFindings(originals, judged);
-    expect(result[0].tags).toContain('security');
-    expect(result[0].tags).toContain('defensive-hardening');
-    expect(result[0].tags).toHaveLength(2);
-  });
-
-  it('leaves hypothetical nit findings unchanged and does not tag', () => {
-    const originals = [makeFinding({ title: 'Bug', severity: 'suggestion' })];
-    const judged: JudgedFinding[] = [
-      {
-        title: 'Bug',
-        severity: 'nitpick',
-        reasoning: 'Minor.',
-        confidence: 'low',
-        reachability: 'hypothetical',
-      },
-    ];
-
-    const result = mapJudgedToFindings(originals, judged);
-    expect(result[0].severity).toBe('nitpick');
-    expect(result[0].originalSeverity).toBeUndefined();
-    expect(result[0].tags).toBeUndefined();
-    expect(result[0].reachability).toBe('hypothetical');
-  });
-
-  it('leaves hypothetical ignore findings unchanged and does not tag', () => {
-    const originals = [makeFinding({ title: 'Bug', severity: 'blocker' })];
-    const judged: JudgedFinding[] = [
-      {
-        title: 'Bug',
-        severity: 'ignore',
-        reasoning: 'False positive.',
-        confidence: 'high',
-        reachability: 'hypothetical',
-      },
-    ];
-
-    const result = mapJudgedToFindings(originals, judged);
-    expect(result[0].severity).toBe('ignore');
-    expect(result[0].originalSeverity).toBeUndefined();
-    expect(result[0].tags).toBeUndefined();
-    expect(result[0].reachability).toBe('hypothetical');
-  });
-
-  it('preserves severity when reachability is reachable', () => {
-    const originals = [makeFinding({ title: 'Bug', severity: 'suggestion' })];
-    const judged: JudgedFinding[] = [
-      {
-        title: 'Bug',
-        severity: 'blocker',
-        reasoning: 'Real bug.',
-        confidence: 'high',
-        reachability: 'reachable',
-      },
-    ];
-
-    const result = mapJudgedToFindings(originals, judged);
-    expect(result[0].severity).toBe('blocker');
-    expect(result[0].originalSeverity).toBeUndefined();
-    expect(result[0].tags).toBeUndefined();
-    expect(result[0].reachability).toBe('reachable');
-  });
-
-  it('preserves severity when reachability is unknown', () => {
-    const originals = [makeFinding({ title: 'Bug', severity: 'suggestion' })];
-    const judged: JudgedFinding[] = [
-      {
-        title: 'Bug',
-        severity: 'blocker',
-        reasoning: 'Callers outside diff.',
-        confidence: 'medium',
-        reachability: 'unknown',
-      },
-    ];
-
-    const result = mapJudgedToFindings(originals, judged);
-    expect(result[0].severity).toBe('blocker');
-    expect(result[0].originalSeverity).toBeUndefined();
-    expect(result[0].tags).toBeUndefined();
-    expect(result[0].reachability).toBe('unknown');
-  });
-
-  it('does not demote when reachability is absent', () => {
-    const originals = [makeFinding({ title: 'Bug', severity: 'suggestion' })];
-    const judged: JudgedFinding[] = [
-      { title: 'Bug', severity: 'blocker', reasoning: 'Real bug.', confidence: 'high' },
-    ];
-
-    const result = mapJudgedToFindings(originals, judged);
-    expect(result[0].severity).toBe('blocker');
-    expect(result[0].originalSeverity).toBeUndefined();
-    expect(result[0].tags).toBeUndefined();
-    expect(result[0].reachability).toBeUndefined();
-  });
 });
 
 describe('mapJudgedToFindings own-proposal demotion', () => {
@@ -3286,30 +3044,7 @@ describe('mapJudgedToFindings own-proposal demotion', () => {
     expect(result[0].originalSeverity).toBeUndefined();
   });
 
-  it('does not demote a reachable + required finding (concrete bug guard)', () => {
-    const originals = [makeFinding({ title: 'Real bug', severity: 'suggestion', line: 9 })];
-    const judged: JudgedFinding[] = [
-      {
-        title: 'Real bug',
-        severity: 'blocker',
-        reasoning: 'Triggered by caller X.',
-        confidence: 'high',
-        reachability: 'reachable',
-      },
-    ];
-
-    const result = mapJudgedToFindings(originals, judged, [makeProvenance()]);
-    expect(result[0].severity).toBe('blocker');
-    expect(result[0].reachability).toBe('reachable');
-    expect(result[0].originalSeverity).toBeUndefined();
-    expect(result[0].tags).toBeUndefined();
-  });
-
-  it('does not demote a required finding when judge omits reachability annotation', () => {
-    // Guard must fire on severity alone: when the judge says 'blocker' but provides
-    // no reachability, applyReachability leaves finding.reachability undefined.
-    // The old compound guard (reachability === 'reachable' && severity === 'blocker')
-    // would be false here, incorrectly demoting the finding to nit.
+  it('does not demote a blocker (concrete bug guard)', () => {
     const originals = [makeFinding({ title: 'Confirmed bug', severity: 'suggestion', line: 10 })];
     const judged: JudgedFinding[] = [
       { title: 'Confirmed bug', severity: 'blocker', reasoning: 'Real.', confidence: 'high' },
@@ -3335,16 +3070,10 @@ describe('mapJudgedToFindings own-proposal demotion', () => {
     expect(result[0].tags).toBeUndefined();
   });
 
-  it('demotes a reachable+suggestion finding (guard only exempts required)', () => {
+  it('demotes a suggestion finding (guard only exempts blockers)', () => {
     const originals = [makeFinding({ title: 'Style issue', severity: 'suggestion', line: 9 })];
     const judged: JudgedFinding[] = [
-      {
-        title: 'Style issue',
-        severity: 'suggestion',
-        reasoning: 'Minor.',
-        confidence: 'medium',
-        reachability: 'reachable',
-      },
+      { title: 'Style issue', severity: 'suggestion', reasoning: 'Minor.', confidence: 'medium' },
     ];
 
     const result = mapJudgedToFindings(originals, judged, [makeProvenance()]);
@@ -3374,28 +3103,6 @@ describe('mapJudgedToFindings own-proposal demotion', () => {
     expect(result[0].tags).toContain('security');
     expect(result[0].tags).toContain('own-proposal-followup');
     expect(result[0].tags).toHaveLength(2);
-  });
-
-  it('retains originalSeverity from applyReachability when own-proposal also fires', () => {
-    // applyReachability runs first and sets originalSeverity to the judge's severity.
-    // applyOwnProposal must not overwrite it.
-    const originals = [makeFinding({ title: 'Guard', severity: 'suggestion', line: 10 })];
-    const judged: JudgedFinding[] = [
-      {
-        title: 'Guard',
-        severity: 'warning',
-        reasoning: 'Unreachable.',
-        confidence: 'high',
-        reachability: 'hypothetical',
-        reachabilityReasoning: 'no caller triggers this.',
-      },
-    ];
-
-    const result = mapJudgedToFindings(originals, judged, [makeProvenance()]);
-    expect(result[0].severity).toBe('nitpick');
-    expect(result[0].originalSeverity).toBe('warning');
-    expect(result[0].tags).toContain('defensive-hardening');
-    expect(result[0].tags).toContain('own-proposal-followup');
   });
 
   it('demotes the surviving finding when the judge marks a duplicate', () => {
@@ -4244,7 +3951,7 @@ describe('applyCrossRoundSuppression', () => {
   });
 
   it('does not overwrite pre-existing originalSeverity when contradiction fires', () => {
-    // Simulates a finding that was already demoted by applyReachability (originalSeverity='blocker')
+    // Simulates a finding already demoted as an own-proposal follow-up (originalSeverity='blocker')
     // before applyCrossRoundSuppression runs. The contradiction path must preserve it.
     const findings = [makeFinding({
       title: 'Naming convention',
@@ -4720,16 +4427,16 @@ interface ThreadFixture {
   interRoundDiff: string;
 }
 
-function loadThreadFixtures(): ThreadFixture[] {
-  const dir = path.join(__dirname, 'judge.fixtures', 'threadEvaluations');
+function loadFixtures<T>(corpus: string): T[] {
+  const dir = path.join(__dirname, 'judge.fixtures', corpus);
   return fs.readdirSync(dir)
     .filter(f => f.endsWith('.json'))
     .sort()
-    .map(f => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')) as ThreadFixture);
+    .map(f => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')) as T);
 }
 
 describe('judge thread-evaluation fixture corpus', () => {
-  const fixtures = loadThreadFixtures();
+  const fixtures = loadFixtures<ThreadFixture>('threadEvaluations');
 
   it('loads at least the eight required fixtures', () => {
     expect(fixtures.length).toBeGreaterThanOrEqual(8);
@@ -4811,5 +4518,77 @@ describe('judge thread-evaluation fixture corpus', () => {
 
     expect(evaluation).toBeDefined();
     expect(actualStatus).toBe(fixture.expectedStatus);
+  }, 600_000);
+});
+
+const GRADING_CASES = [
+  'passes-all-tests',
+  'fails-pr-causes-it',
+  'fails-failure-named',
+  'fails-damage-serious',
+  'fails-code-proves-it',
+  'fails-author-would-fix',
+  'never-tests',
+  'never-style',
+  'never-could-not-verify',
+  'grade-stable',
+] as const;
+
+interface GradingFixture {
+  name: string;
+  case: typeof GRADING_CASES[number];
+  allowed: FindingSeverity[];
+  finding: Finding;
+  prDiff: string;
+  priorRound?: { commitSha: string; severity: FindingSeverity; title: string };
+  interRoundDiff?: string;
+}
+
+describe('judge grading fixture corpus', () => {
+  const fixtures = loadFixtures<GradingFixture>('grading');
+
+  it('covers each blocker test failing alone, each never-a-blocker case and grade stability, once each', () => {
+    expect(fixtures.map(f => f.case).sort()).toEqual([...GRADING_CASES].sort());
+  });
+
+  it.each(fixtures)('fixture $name claims a blocker on a diff line, and allows one only when all tests pass', (fixture) => {
+    expect(extractCodeContext(fixture.finding, parsePRDiff(fixture.prDiff))).toContain(`>>> ${fixture.finding.line}:`);
+    expect(fixture.allowed.includes('blocker')).toBe(fixture.case === 'passes-all-tests');
+    expect(fixture.finding.severity).toBe('blocker');
+    expect(fixture.priorRound !== undefined).toBe(fixture.case === 'grade-stable');
+  });
+
+  // Live replay against a real LLM, gated like the thread-evaluation corpus above.
+  const runLive = process.env.RUN_JUDGE_LIVE_FIXTURES === '1';
+  const liveModel = process.env.JUDGE_LIVE_MODEL ?? 'claude-opus-5-5';
+  (runLive ? it : it.skip).each(fixtures)('live judge grades $name within its allowed grades', async (fixture) => {
+    const client = new AnthropicClient({ auth: { kind: 'oauth', token: '' }, model: liveModel });
+    const { finding, priorRound } = fixture;
+    const priorRounds = priorRound && [roundContextFromLegacy({
+      round: 1,
+      commitSha: priorRound.commitSha,
+      timestamp: '2025-01-01T00:00:00Z',
+      findings: [{
+        fingerprint: { file: finding.file, lineStart: finding.line, lineEnd: finding.line, slug: titleToSlug(priorRound.title) },
+        severity: priorRound.severity,
+        title: priorRound.title,
+        authorReply: 'none',
+      }],
+    })];
+
+    const result = await runJudgeAgent(client, makeConfig(), {
+      findings: [finding],
+      diff: parsePRDiff(fixture.prDiff),
+      rawDiff: fixture.prDiff,
+      repoContext: '',
+      agentCount: 1,
+      isFollowUp: priorRounds !== undefined,
+      priorRounds,
+      interRoundDiff: fixture.interRoundDiff,
+    });
+
+    const actual = result.findings[0]?.severity;
+    console.log(`[live-judge] ${fixture.name}: allowed=${fixture.allowed.join('|')} actual=${actual} reasoning=${JSON.stringify(result.findings[0]?.judgeNotes ?? '')}`);
+    expect(fixture.allowed).toContain(actual);
   }, 600_000);
 });

@@ -43,9 +43,6 @@ export function migrateLegacyPrType(value: string): string {
   return LEGACY_PR_TYPE_MAP[value] ?? value;
 }
 
-export type FindingReachability = 'reachable' | 'hypothetical' | 'unknown';
-
-export const DEFENSIVE_HARDENING_TAG = 'defensive-hardening' as const;
 export const RATCHET_SUPPRESSED_TAG = 'suppressed-by-ratchet' as const;
 export const CONTRADICTION_TAG = 'contradicts-prior-round' as const;
 export const RESOLVED_THREAD_SUPPRESSED_TAG = 'suppressed-by-resolved-thread' as const;
@@ -157,8 +154,6 @@ export interface Finding {
   codeContext?: string;
   judgeNotes?: string;
   judgeConfidence?: 'high' | 'medium' | 'low';
-  reachability?: FindingReachability;
-  reachabilityReasoning?: string;
   tags?: string[];
   originalSeverity?: FindingSeverity;
   /** Severity the reviewer gave, when the judge graded the finding differently. The judge never sees it. */
@@ -688,7 +683,6 @@ export interface ReviewStats {
     confidenceDistribution: { high: number; medium: number; low: number };
     severityChanges: number;
     mergedDuplicates: number;
-    defensiveHardeningCount?: number;
     inPrSuppressedCount?: number;
     verdictReason?: VerdictReason;
     crossRoundSuppressed?: number;
@@ -1098,14 +1092,12 @@ export interface RoundJudge {
   /** Number of judge LLM retries (zero when the first call satisfied the validation contract). */
   retryCount?: number;
   verdictReason?: VerdictReason;
-  defensiveHardeningCount?: number;
   inPrSuppressedCount?: number;
   crossRoundSuppressed?: number;
   crossRoundDemoted?: number;
   /**
    * Count of findings demoted to `nitpick` because they implement a prior-round
-   * `suggestedFix` (tagged `OWN_PROPOSAL_TAG`). Distinct from
-   * `defensiveHardeningCount` which covers hypothetical-reachability demotions.
+   * `suggestedFix` (tagged `OWN_PROPOSAL_TAG`).
    */
   ownProposalDemotedCount?: number;
   /**
@@ -1292,11 +1284,7 @@ export interface FindingFingerprintEntry {
   judgeNotes?: string;
   /** Judge confidence in the verdict. Mirrors `Finding.judgeConfidence`. */
   judgeConfidence?: 'high' | 'medium' | 'low';
-  /** Reachability classification of the underlying issue. Mirrors `Finding.reachability`. */
-  reachability?: FindingReachability;
-  /** Free-form explanation of the reachability classification. Mirrors `Finding.reachabilityReasoning`. */
-  reachabilityReasoning?: string;
-  /** Tags applied by the judge (e.g. `DEFENSIVE_HARDENING_TAG`, `OWN_PROPOSAL_TAG`). Preserves the exact string constants from `Finding.tags`. */
+  /** Tags applied by the judge (e.g. `OWN_PROPOSAL_TAG`, `SECURITY_TAG`). Preserves the exact string constants from `Finding.tags`. */
   tags?: string[];
   /** Pre-demotion severity, when the judge demoted the finding. Mirrors `Finding.originalSeverity`. */
   originalSeverity?: FindingSeverity;

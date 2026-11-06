@@ -98,10 +98,8 @@ describe('formatFindingComment', () => {
       reviewers: ['Security', 'Testing'],
       judgeConfidence: 'high',
       suggestedFix: 'a'.repeat(250),
-      tags: ['defensive-hardening', 'own-proposal-followup'],
+      tags: ['own-proposal-followup'],
       originalSeverity: 'blocker',
-      reachability: 'hypothetical',
-      reachabilityReasoning: 'no caller passes a negative value',
     };
     const comment = formatFindingComment(finding);
     expect(comment).not.toMatch(/AI context|<sub>|capped from|Flagged by/);
@@ -113,9 +111,7 @@ describe('formatFindingComment', () => {
       flaggedBy: ['Security', 'Testing'],
       title: 'Null pointer dereference',
       fix: 'a'.repeat(200),
-      tags: ['defensive-hardening', 'own-proposal-followup'],
-      reachability: 'hypothetical',
-      reachabilityReasoning: 'no caller passes a negative value',
+      tags: ['own-proposal-followup'],
       originalSeverity: 'blocker',
     });
     expect(findingData(formatFindingComment(baseFinding))).toEqual({

@@ -1,0 +1,20 @@
+{
+  "name": "never-could-not-verify",
+  "case": "never-could-not-verify",
+  "allowed": [
+    "ignore",
+    "suggestion",
+    "nitpick"
+  ],
+  "finding": {
+    "title": "Could not verify the new migration runs in CI",
+    "file": "db/migrate.py",
+    "line": 12,
+    "description": "The PR adds `add_index_on_email`, but I could not confirm that the CI pipeline runs migrations or that this migration was tested against a real database.",
+    "severity": "blocker",
+    "reviewers": [
+      "Correctness"
+    ]
+  },
+  "prDiff": "diff --git a/db/migrate.py b/db/migrate.py\nindex 1111111..2222222 100644\n--- a/db/migrate.py\n+++ b/db/migrate.py\n@@ -9,1 +9,6 @@\n MIGRATIONS = []\n+\n+\n+def add_index_on_email(conn):\n+    conn.execute(\"CREATE INDEX IF NOT EXISTS users_email ON users (email)\")\n+    MIGRATIONS.append(\"add_index_on_email\")\n"
+}

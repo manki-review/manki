@@ -1,0 +1,20 @@
+{
+  "name": "never-style",
+  "case": "never-style",
+  "allowed": [
+    "nitpick",
+    "suggestion",
+    "ignore"
+  ],
+  "finding": {
+    "title": "Unclear variable name `d`",
+    "file": "src/timing.ts",
+    "line": 7,
+    "description": "`d` holds a duration in milliseconds. Name it `durationMs` so readers do not have to look up its unit.",
+    "severity": "blocker",
+    "reviewers": [
+      "Correctness"
+    ]
+  },
+  "prDiff": "diff --git a/src/timing.ts b/src/timing.ts\nindex 1111111..2222222 100644\n--- a/src/timing.ts\n+++ b/src/timing.ts\n@@ -4,2 +4,7 @@\n export function measure<T>(fn: () => T): [T, number] {\n   const start = Date.now();\n+  const result = fn();\n+  const d = Date.now() - start;\n+  return [result, d];\n+}\n+\n"
+}

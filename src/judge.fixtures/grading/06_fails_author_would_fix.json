@@ -1,0 +1,20 @@
+{
+  "name": "fails-author-would-fix",
+  "case": "fails-author-would-fix",
+  "allowed": [
+    "ignore",
+    "nitpick",
+    "suggestion"
+  ],
+  "finding": {
+    "title": "Webhook delivery is never retried",
+    "file": "internal/hooks/deliver.go",
+    "line": 16,
+    "description": "`Deliver` sends the webhook once and returns the error. A temporary failure at the receiver loses the event.",
+    "severity": "blocker",
+    "reviewers": [
+      "Correctness"
+    ]
+  },
+  "prDiff": "diff --git a/internal/hooks/deliver.go b/internal/hooks/deliver.go\nindex 1111111..2222222 100644\n--- a/internal/hooks/deliver.go\n+++ b/internal/hooks/deliver.go\n@@ -8,2 +8,12 @@\n \n // Deliver posts the event to the subscriber.\n+func Deliver(ctx context.Context, sub Subscriber, ev Event) error {\n+\tbody, err := json.Marshal(ev)\n+\tif err != nil {\n+\t\treturn err\n+\t}\n+\t// TODO(#412): retry with backoff once the delivery queue lands.\n+\t_, err = sub.Client.Post(ctx, sub.URL, body)\n+\treturn err\n+}\n+\n"
+}
