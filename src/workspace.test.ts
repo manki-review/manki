@@ -1,13 +1,15 @@
 import { execFileSync } from 'child_process';
 import { createServer } from 'http';
 import { AddressInfo } from 'net';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
+import { lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { fetchWorkspace } from './workspace';
 
 const TOKEN = 'ghs_workspaceFetchToken';
+// Several git processes per test can pass Jest's default 5 seconds on a slow runner.
+const GIT_TEST_TIMEOUT_MS = 30_000;
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' }).trim();
@@ -39,12 +41,14 @@ describe('fetchWorkspace', () => {
     else process.env.RUNNER_TEMP = savedRunnerTemp;
   });
 
-  it('checks out the commit with its history, and keeps the token out of the checkout', async () => {
+  it('checks out the commit with its history and symlinks as plain files, and keeps the token out of the checkout', async () => {
     writeFileSync(join(source, 'a.txt'), 'first\n');
     git(source, 'add', '.');
     git(source, 'commit', '-qm', 'first');
     writeFileSync(join(source, 'a.txt'), 'second\n');
-    git(source, 'commit', '-qam', 'second');
+    symlinkSync('/etc/hosts', join(source, 'link'));
+    git(source, 'add', '.');
+    git(source, 'commit', '-qm', 'second');
     const sha = git(source, 'rev-parse', 'HEAD');
     writeFileSync(join(source, 'a.txt'), 'third\n');
     git(source, 'commit', '-qam', 'third');
@@ -55,13 +59,15 @@ describe('fetchWorkspace', () => {
     expect(readFileSync(join(dir, 'a.txt'), 'utf8')).toBe('second\n');
     expect(git(dir, 'log', '--format=%s')).toBe('second\nfirst');
     expect(git(dir, 'remote')).toBe('');
+    expect(lstatSync(join(dir, 'link')).isFile()).toBe(true);
+    expect(readFileSync(join(dir, 'link'), 'utf8')).toBe('/etc/hosts');
     const encoded = Buffer.from(`x-access-token:${TOKEN}`).toString('base64');
     for (const file of filesUnder(dir)) {
       const text = readFileSync(file, 'latin1');
       expect(text).not.toContain(TOKEN);
       expect(text).not.toContain(encoded);
     }
-  });
+  }, GIT_TEST_TIMEOUT_MS);
 
   it('sends the token as a basic auth header with the fetch', async () => {
     const headers: (string | undefined)[] = [];
@@ -78,5 +84,5 @@ describe('fetchWorkspace', () => {
     }
     expect(headers.length).toBeGreaterThan(0);
     expect(new Set(headers)).toEqual(new Set([`basic ${Buffer.from(`x-access-token:${TOKEN}`).toString('base64')}`]));
-  });
+  }, GIT_TEST_TIMEOUT_MS);
 });

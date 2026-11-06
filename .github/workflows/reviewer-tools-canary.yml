@@ -26,7 +26,10 @@ jobs:
       - run: npm ci
       - run: npm run build
       - name: Install the Claude CLI version Manki pins
-        run: npm install -g "@anthropic-ai/claude-code@$(sed -n "s/^export const CLAUDE_CLI_VERSION = '\(.*\)';$/\1/p" src/providers/anthropic.ts)"
+        run: |
+          version=$(sed -n "s/^export const CLAUDE_CLI_VERSION = '\(.*\)';$/\1/p" src/providers/anthropic.ts)
+          if [ -z "$version" ]; then echo "::error file=src/providers/anthropic.ts::CLAUDE_CLI_VERSION not found"; exit 1; fi
+          npm install -g "@anthropic-ai/claude-code@$version"
       - name: Try to read outside the checkout
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
