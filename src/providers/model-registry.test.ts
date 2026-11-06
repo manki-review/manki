@@ -1,4 +1,4 @@
-import { modelDisplayName, parseModelSpec } from './model-registry';
+import { estimateCostUsd, modelDisplayName, parseModelSpec } from './model-registry';
 
 describe('parseModelSpec', () => {
   it('parses bare model with known prefix', () => {
@@ -83,5 +83,25 @@ describe('modelDisplayName', () => {
 
   it.each(['o3', 'my-model', 'claude', 'claude-20241022', 'claude-opus-4-6/v1', 'constructor-1', 'openai/ft:gpt-4o:org'])('returns the unknown id %s as given', id => {
     expect(modelDisplayName(id)).toBe(id);
+  });
+});
+
+describe('estimateCostUsd', () => {
+  const usage = (inputTokens: number, outputTokens: number, cacheReadTokens = 0, cacheWriteTokens = 0) => ({ inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens: 0 });
+
+  it('prices uncached input, cache reads, cache writes and output separately', () => {
+    expect(estimateCostUsd('claude-sonnet-5-5', usage(1_000_000, 1_000_000))).toBeCloseTo(12);
+    expect(estimateCostUsd('claude-opus-5-5', usage(1_000_000, 0, 500_000, 250_000))).toBeCloseTo(0.25 * 4 + 0.5 * 0.2 + 0.25 * 5);
+  });
+
+  it('uses the long-prompt price above 100,000 input tokens, and the price of a dated id', () => {
+    expect(estimateCostUsd('claude-haiku-5-5', usage(100_000, 0))).toBeCloseTo(0.01);
+    expect(estimateCostUsd('claude-haiku-5-5', usage(200_000, 1_000_000))).toBeCloseTo(0.1 + 2.5);
+    expect(estimateCostUsd('claude-haiku-4-5-20251001', usage(1_000_000, 0))).toBeCloseTo(1);
+  });
+
+  it('returns null for a model without a known price', () => {
+    expect(estimateCostUsd('gpt-5', usage(1000, 1000))).toBeNull();
+    expect(estimateCostUsd('claude-unknown-9', usage(1000, 1000))).toBeNull();
   });
 });

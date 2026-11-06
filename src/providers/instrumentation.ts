@@ -1,4 +1,6 @@
-import { addUsage, LLMClient, LLMUsage, RefusalError, ZERO_USAGE } from './types';
+import { estimateCostUsd } from './model-registry';
+import { addUsage, LLMCall, LLMClient, LLMUsage, RefusalError, UsageSummary, ZERO_USAGE } from './types';
+import { sanitizeLogOutput } from './cli-utils';
 
 export interface UsageTotals {
   usage: LLMUsage;
@@ -53,7 +55,7 @@ export function withRefusalFallback(
           refused = true;
         }
       }
-      return fallback.sendMessage(sys, user, opts);
+      return { ...(await fallback.sendMessage(sys, user, opts)), fallback: true };
     },
     ...(client.warmupCLI ? { warmupCLI: client.warmupCLI.bind(client) } : {}),
   };
@@ -65,5 +67,56 @@ export function withSignal(client: LLMClient, signal: AbortSignal | undefined): 
   return {
     sendMessage: (sys, user, opts) => client.sendMessage(sys, user, { ...opts, signal }),
     ...(client.warmupCLI ? { warmupCLI: client.warmupCLI.bind(client) } : {}),
+  };
+}
+
+/** Appends one `LLMCall` to `calls` for every request sent through the returned client, failed ones included. */
+export function recordCalls(client: LLMClient, label: { stage: string; agent?: string }, calls: LLMCall[]): LLMClient {
+  return {
+    sendMessage: async (...args) => {
+      const opts = args[2];
+      const attempt = calls.filter(c => c.stage === label.stage && c.agent === label.agent).length + 1;
+      const base = { ...label, ...(opts?.effort && { effort: opts.effort }), attempt };
+      const start = Date.now();
+      try {
+        const response = await client.sendMessage(...args);
+        const usage = response.usage ?? ZERO_USAGE;
+        calls.push({
+          ...base,
+          ...(response.model && { model: response.model }),
+          ...(response.fallback && { fallback: true }),
+          durationMs: response.latencyMs ?? Date.now() - start,
+          ...usage,
+          costUsd: response.model ? estimateCostUsd(response.model, usage) : null,
+        });
+        return response;
+      } catch (error) {
+        calls.push({
+          ...base,
+          failed: true,
+          error: sanitizeLogOutput(String((error as Error)?.message ?? error)).slice(0, 300),
+          durationMs: Date.now() - start,
+          ...ZERO_USAGE,
+          costUsd: null,
+        });
+        throw error;
+      }
+    },
+    ...(client.warmupCLI ? { warmupCLI: client.warmupCLI.bind(client) } : {}),
+  };
+}
+
+/** Sums `calls` into one `UsageSummary`. */
+export function summarizeCalls(calls: readonly LLMCall[]): UsageSummary {
+  const usage = calls.reduce<LLMUsage>((sum, c) => addUsage(sum, c), { ...ZERO_USAGE });
+  const priced = calls.filter(c => c.costUsd !== null);
+  return {
+    calls: calls.length,
+    failedCalls: calls.filter(c => c.failed).length,
+    ...usage,
+    totalTokens: usage.inputTokens + usage.outputTokens,
+    durationMs: calls.reduce((sum, c) => sum + c.durationMs, 0),
+    estimatedCostUsd: priced.reduce((sum, c) => sum + c.costUsd!, 0),
+    unpricedCalls: calls.length - priced.length - calls.filter(c => c.failed).length,
   };
 }

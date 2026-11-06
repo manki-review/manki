@@ -1,5 +1,6 @@
 import { parseCommand, buildReplyContext, ParsedCommand, isBotComment, hasBotMention, isReviewRequest, isBotMentionNonReview, handlePRComment, handleReviewCommentReply, handleReviewCommentCommand, scopeDiffToFile, isLLMAccessAllowed } from './interaction';
-import { ReviewConfig } from './types';
+import { ReplyRecord, ReviewConfig } from './types';
+import { extractReplyRecords } from './review-record';
 import { WRITING_RULES } from './writing-rules';
 import * as github from '@actions/github';
 import * as core from '@actions/core';
@@ -464,7 +465,7 @@ describe('handlePRComment', () => {
       expect.stringContaining('the changes'),
     );
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
-      expect.objectContaining({ body: expect.stringContaining('AI response here') }),
+      expect.objectContaining({ body: expect.stringMatching(/^AI response here\n\n<!-- manki -->\n<!-- manki-reply-record: \{"kind":"explain","prNumber":1,/) }),
     );
   });
 
@@ -531,7 +532,7 @@ describe('handlePRComment', () => {
       expect.stringContaining('what do you think?'),
     );
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
-      expect.objectContaining({ body: expect.stringContaining('AI response here') }),
+      expect.objectContaining({ body: expect.stringMatching(/^AI response here\n\n<!-- manki -->\n<!-- manki-reply-record: \{"kind":"question","prNumber":1,/) }),
     );
   });
 
@@ -646,7 +647,8 @@ describe('handleReviewCommentReply', () => {
   it('posts a reply when parent is a bot comment', async () => {
     setContext({ comment: { id: 1, body: 'Can you explain more?', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'MEMBER' }, pull_request: { number: 1 } });
     const octokit = createMockOctokit();
-    const client = createMockClient();
+    const usage = { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 };
+    const client = { sendMessage: jest.fn().mockResolvedValue({ content: 'AI response here', usage, latencyMs: 30, model: 'claude-sonnet-5-5' }) } as unknown as LLMClient;
     await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1);
     expect(ghUtils.reactToReviewComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 1, 'eyes');
     expect(client.sendMessage).toHaveBeenCalledWith(
@@ -655,10 +657,16 @@ describe('handleReviewCommentReply', () => {
     );
     expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenCalledWith(
       expect.objectContaining({
-        body: 'AI response here\n\n<!-- manki -->',
+        body: expect.stringMatching(/^AI response here\n\n<!-- manki -->\n<!-- manki-reply-record: .+ -->$/),
         pull_number: 1,
       }),
     );
+    const body = jest.mocked(octokit.rest.pulls.createReplyForReviewComment).mock.calls[0][0].body as string;
+    const [record] = extractReplyRecords(body).map(r => JSON.parse(r) as ReplyRecord);
+    expect(record).toMatchObject({
+      kind: 'thread-reply', prNumber: 1,
+      usage: { calls: 1, inputTokens: 1000, outputTokens: 100, estimatedCostUsd: 0.003, llmCalls: [{ stage: 'reply', model: 'claude-sonnet-5-5', durationMs: 30, costUsd: 0.003 }] },
+    });
     expect(core.info).toHaveBeenCalledWith('Posted reply to review comment');
     expect(state.resolveReviewThread).not.toHaveBeenCalled();
   });
@@ -739,7 +747,7 @@ describe('handleReviewCommentReply', () => {
     // An agreement that cannot close a security thread says who can.
     const staysOpen = isSecurity && !reason && reply.startsWith('Agreed.');
     const note = '\n\nThis is a security finding, so the thread stays open until a maintainer other than the PR author, or a repo admin, closes it.';
-    expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenCalledWith(expect.objectContaining({ body: `${reply}${staysOpen ? note : ''}\n\n<!-- manki -->` }));
+    expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining(`${reply}${staysOpen ? note : ''}\n\n<!-- manki -->\n<!-- manki-reply-record: `) }));
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(reason ? [[octokit, 'PRRT_this', reason]] : []);
   });
 

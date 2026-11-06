@@ -1,9 +1,9 @@
-import type { LLMUsage } from './providers';
+import type { LLMCall } from './providers';
 import { changeDigest } from './diff';
 import { isEmptyInterRoundDiff, MAX_INTER_ROUND_DIFF_CHARS } from './judge';
 import { collectResolvedThreadIds, fingerprintFinding, PreviousFinding, RecapState, securityOverridesIn } from './recap';
 import { MANKI_VERSION } from './github';
-import { parseModelSpec } from './providers';
+import { parseModelSpec, summarizeCalls } from './providers';
 import { routingDigest } from './routing';
 import { CONTRADICTION_TAG, FOLLOW_UP_TAG, FullReviewOptions, MemoryLoadStatus, OpenThread, OWN_PROPOSAL_TAG, ParsedDiff, RATCHET_SUPPRESSED_TAG, ReclassifiedPrior, RESOLVED_THREAD_SUPPRESSED_TAG, ReviewConfig, ReviewModels, ReviewResult, RoundCap, RoundContext, RoundDiffExcludedFile, RoundDiffPerFile, RoundJudgeDrop, RoundRawFinding, RoundRecap, RoundRouting, RoundStaticAnalysis, RoundTrigger, RoundUsage, RoundUsageStage, SECURITY_TAG, SecurityOverride, SEVERITY_ORDER, ThreadResolutionOverrides } from './types';
 
@@ -62,6 +62,22 @@ export function buildRoundRecap(recap: {
   };
 }
 
+/** Totals `calls`, per stage and per model, and keeps the calls. */
+export function buildRoundUsage(calls: LLMCall[]): RoundUsage {
+  const groups = (key: (call: LLMCall) => string | undefined): Record<string, RoundUsageStage> => {
+    const byKey = new Map<string, LLMCall[]>();
+    for (const call of calls) {
+      const k = key(call);
+      if (k) byKey.set(k, [...(byKey.get(k) ?? []), call]);
+    }
+    return Object.fromEntries([...byKey].map(([k, group]) => [k, summarizeCalls(group)]));
+  };
+  return {
+    ...summarizeCalls(calls),
+    ...(calls.length > 0 && { perStage: groups(c => c.stage), perModel: groups(c => c.model), llmCalls: calls }),
+  };
+}
+
 /** Builds the `RoundContext` a review posts, which later rounds read back as their history. */
 export function buildRoundContext(input: RoundRecordInput, result: ReviewResult, durations: RoundDurations): RoundContext {
   const {
@@ -82,9 +98,10 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
   const rawFindings = result.rawFindings ?? allJudged;
   const agentModels = result.agentModels ?? new Map<string, string>();
   const reviewerEffort = result.agentEffortMap?.values().next().value;
+  const llmCalls = result.llmCalls ?? [];
   const agentMetrics = agentNames.length > 0
     ? agentNames.map(name => {
-        const usage = result.agentUsage?.get(name);
+        const usage = summarizeCalls(llmCalls.filter(c => c.stage === 'reviewer' && c.agent === name));
         const durationMs = result.agentDurationMs?.get(name);
         const retryCount = result.agentRetryCount?.get(name);
         const failureReason = result.agentFailureReasons?.[name];
@@ -198,45 +215,7 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
     bypassReason: bypassHint ?? (forceReview ? 'force_review' : skipCap ? 'skip_cap' : 'within_cap'),
   };
 
-  const buildStage = (usage: LLMUsage | undefined): RoundUsageStage => {
-    const inputTokens = usage?.inputTokens ?? 0;
-    const outputTokens = usage?.outputTokens ?? 0;
-    return { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens };
-  };
-  const reviewerUsage: LLMUsage | undefined = result.agentUsage && result.agentUsage.size > 0
-    ? Array.from(result.agentUsage.values()).reduce(
-        (acc, u) => ({
-          inputTokens: acc.inputTokens + u.inputTokens,
-          outputTokens: acc.outputTokens + u.outputTokens,
-          cacheReadTokens: acc.cacheReadTokens + u.cacheReadTokens,
-          reasoningTokens: acc.reasoningTokens + u.reasoningTokens,
-        }),
-        { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, reasoningTokens: 0 },
-      )
-    : undefined;
-  const stageUsages: Array<['planner' | 'reviewer' | 'judge' | 'dedup' | 'verdict', LLMUsage | undefined]> = [
-    ['planner', result.plannerUsage],
-    ['reviewer', reviewerUsage],
-    ['judge', result.judgeUsage],
-    ['dedup', result.dedupUsage],
-    ['verdict', result.verdictUsage],
-  ];
-  const perStage: NonNullable<RoundUsage['perStage']> = {};
-  let totalInput = 0;
-  let totalOutput = 0;
-  for (const [name, u] of stageUsages) {
-    if (!u) continue;
-    const stage = buildStage(u);
-    perStage[name] = stage;
-    totalInput += stage.inputTokens ?? 0;
-    totalOutput += stage.outputTokens ?? 0;
-  }
-  const usage: RoundUsage = {
-    inputTokens: totalInput,
-    outputTokens: totalOutput,
-    totalTokens: totalInput + totalOutput,
-    ...(Object.keys(perStage).length > 0 && { perStage }),
-  };
+  const usage = buildRoundUsage(llmCalls);
   const rawFindingRecords: RoundRawFinding[] = (result.rawFindings ?? []).map(f => ({
     title: f.title,
     file: f.file,

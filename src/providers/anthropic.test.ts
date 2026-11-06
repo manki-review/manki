@@ -1554,17 +1554,17 @@ describe('extractAnthropicCLIUsage', () => {
           cache_read_input_tokens: 999,
         },
       }),
-    ).toEqual({ inputTokens: 2202, outputTokens: 56, cacheReadTokens: 999, reasoningTokens: 0 });
+    ).toEqual({ inputTokens: 2202, outputTokens: 56, cacheReadTokens: 999, cacheWriteTokens: 1200, reasoningTokens: 0 });
   });
 
   it('coerces string-valued counters to integers', () => {
     expect(
       extractAnthropicCLIUsage({ usage: { input_tokens: '7', output_tokens: '13' } }),
-    ).toEqual({ inputTokens: 7, outputTokens: 13, cacheReadTokens: 0, reasoningTokens: 0 });
+    ).toEqual({ inputTokens: 7, outputTokens: 13, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 });
   });
 
   it('returns ZERO_USAGE when the event is missing or malformed', () => {
-    const zero = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, reasoningTokens: 0 };
+    const zero = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 };
     expect(extractAnthropicCLIUsage(null)).toEqual(zero);
     expect(extractAnthropicCLIUsage({})).toEqual(zero);
     expect(extractAnthropicCLIUsage({ usage: null })).toEqual(zero);
@@ -1589,7 +1589,7 @@ describe('AnthropicClient API-path usage', () => {
     });
     const client = new AnthropicClient({ auth: { kind: 'apiKey', key: 'sk-key' }, model: 'claude-opus-4-6' });
     const result = await client.sendMessage('sys', 'user');
-    expect(result.usage).toEqual({ inputTokens: 110, outputTokens: 25, cacheReadTokens: 10, reasoningTokens: 0 });
+    expect(result.usage).toEqual({ inputTokens: 110, outputTokens: 25, cacheReadTokens: 10, cacheWriteTokens: 0, reasoningTokens: 0 });
     expect(typeof result.latencyMs).toBe('number');
     expect(result.latencyMs).toBeGreaterThanOrEqual(0);
   });
@@ -1644,6 +1644,6 @@ describe('AnthropicClient API-path usage', () => {
     mockFinalMessage.mockResolvedValue({ content: [{ type: 'text', text: 'response' }] });
     const client = new AnthropicClient({ auth: { kind: 'apiKey', key: 'sk-key' }, model: 'claude-opus-4-6' });
     const result = await client.sendMessage('sys', 'user');
-    expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, reasoningTokens: 0 });
+    expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 });
   });
 });

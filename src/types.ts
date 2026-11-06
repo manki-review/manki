@@ -1,4 +1,4 @@
-import type { LLMUsage } from './providers/types';
+import type { LLMCall, UsageSummary } from './providers/types';
 
 export const MAX_AGENT_RETRIES = 1;
 
@@ -267,24 +267,16 @@ export interface ReviewResult {
   suppressionCount?: number;
   inPrSuppressedCount?: number;
   agentResponseLengths?: Map<string, number>;
-  /** Aggregated reviewer usage per agent across all passes/retries. */
-  agentUsage?: Map<string, LLMUsage>;
   /** Aggregated wall-clock duration per agent across all passes/retries. */
   agentDurationMs?: Map<string, number>;
   /** Number of CLI/SDK retries per agent. Zero (omitted) when the first try succeeded. */
   agentRetryCount?: Map<string, number>;
-  /** Aggregated planner LLM usage and wall-clock duration. */
-  plannerUsage?: LLMUsage;
   plannerDurationMs?: number;
-  /** Aggregated judge LLM usage, wall-clock duration, and retry count. */
-  judgeUsage?: LLMUsage;
   judgeDurationMs?: number;
   judgeRetryCount?: number;
-  /** Aggregated dedup LLM usage and wall-clock duration (LLM dedup step only). */
-  dedupUsage?: LLMUsage;
   dedupDurationMs?: number;
-  /** Verdict reader LLM usage. */
-  verdictUsage?: LLMUsage;
+  /** Every LLM call of the round, in the order each finished. */
+  llmCalls?: LLMCall[];
   crossRoundSuppressed?: number;
   crossRoundDemoted?: number;
   /** Set when the judge stage forced every open thread to `not_addressed` because the inter-round diff was known-empty. */
@@ -1318,20 +1310,24 @@ export interface FindingFingerprintEntry {
   toolSource?: string;
 }
 
-export interface RoundUsage {
-  inputTokens?: number;
-  outputTokens?: number;
-  totalTokens?: number;
-  estimatedCostUsd?: number;
-  perStage?: Partial<Record<'planner' | 'reviewer' | 'judge' | 'dedup' | 'verdict', RoundUsageStage>>;
+/** What a reply-handler run, Manki answering in a thread or to a command, records in its comment. */
+export interface ReplyRecord {
+  kind: 'thread-reply' | 'explain' | 'question';
+  prNumber: number;
+  timestamp: string;
+  mankiVersion: string;
+  usage: RoundUsage;
 }
 
-export interface RoundUsageStage {
-  inputTokens?: number;
-  outputTokens?: number;
-  totalTokens?: number;
-  estimatedCostUsd?: number;
+/** The round's LLM usage: totals over its calls, per stage and per model, and the calls themselves. */
+export interface RoundUsage extends RoundUsageStage {
+  perStage?: Partial<Record<'planner' | 'reviewer' | 'judge' | 'dedup' | 'verdict', RoundUsageStage>>;
+  perModel?: Record<string, RoundUsageStage>;
+  llmCalls?: LLMCall[];
 }
+
+/** Older records hold only some of the fields. */
+export type RoundUsageStage = Partial<UsageSummary>;
 
 /**
  * Flat-compat aliases preserved for downstream workflows that read the legacy

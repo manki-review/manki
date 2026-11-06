@@ -1,4 +1,4 @@
-import { ProviderName } from './types';
+import { LLMUsage, ProviderName } from './types';
 
 export interface ModelSpec {
   provider: ProviderName;
@@ -62,4 +62,49 @@ export function modelDisplayName(id: string): string {
     else words.push(part[0].toUpperCase() + part.slice(1));
   }
   return words.join(' ');
+}
+
+interface ModelPrice {
+  /** USD per million tokens. */
+  input: number;
+  output: number;
+  cacheRead: number;
+  /** Five-minute cache writes. */
+  cacheWrite: number;
+  /** Prices for a prompt over 100,000 tokens, where the model charges more for one. */
+  longPrompt?: { input: number; output: number };
+}
+
+/** Public Anthropic API prices, as of 2026-10. Other providers' models have none, so their cost is unknown. */
+const MODEL_PRICES: Readonly<Record<string, ModelPrice>> = {
+  'claude-fable-5-1': { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 },
+  'claude-fable-5': { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+  'claude-opus-5-5': { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
+  'claude-opus-5': { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  'claude-opus-4-8': { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  'claude-opus-4-7': { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  'claude-opus-4-6': { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  'claude-sonnet-5-5': { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+  'claude-sonnet-5': { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+  'claude-sonnet-4-6': { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+  'claude-haiku-5-5': { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125, longPrompt: { input: 0.5, output: 2.5 } },
+  'claude-haiku-4-5': { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
+};
+
+const LONG_PROMPT_TOKENS = 100_000;
+
+/**
+ * Returns an estimate of a call's cost in USD at public API prices, or `null` for a model without a
+ * known price. Subscription use is not billed per token, so this is what the same calls would cost on the API.
+ */
+export function estimateCostUsd(model: string, usage: LLMUsage): number | null {
+  const price = MODEL_PRICES[model] ?? MODEL_PRICES[model.replace(/-\d{8}$/, '')];
+  if (!price) return null;
+  const long = price.longPrompt && usage.inputTokens > LONG_PROMPT_TOKENS ? price.longPrompt : undefined;
+  const uncached = Math.max(0, usage.inputTokens - usage.cacheReadTokens - usage.cacheWriteTokens);
+  const cost = uncached * (long?.input ?? price.input)
+    + usage.cacheReadTokens * price.cacheRead
+    + usage.cacheWriteTokens * price.cacheWrite
+    + usage.outputTokens * (long?.output ?? price.output);
+  return cost / 1_000_000;
 }

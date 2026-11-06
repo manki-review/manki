@@ -69,6 +69,7 @@ jest.mock('./providers', () => ({
   buildAuthForProvider: jest.requireActual('./providers').buildAuthForProvider,
   hasAnyProviderCredentials: jest.requireActual('./providers').hasAnyProviderCredentials,
   sanitizeLogOutput: jest.requireActual('./providers').sanitizeLogOutput,
+  summarizeCalls: jest.requireActual('./providers').summarizeCalls,
   createLLMClient: jest.fn().mockImplementation(() => ({ sendMessage: jest.fn() })),
   parseModelSpec: jest.fn().mockImplementation((m: string) => ({ provider: 'anthropic', model: m })),
 }));
@@ -279,7 +280,7 @@ import { run, runFullReview, handlePullRequest, handleCommentTrigger, handleInte
 import { buildRoundRecap } from './round-context';
 import { FORCE_REVIEW_MARKER, FORCE_CAP_MARKER } from './github';
 import type { ParsedDiff, ReviewConfig } from './types';
-import { createLLMClient, parseModelSpec } from './providers';
+import { createLLMClient, LLMCall, parseModelSpec } from './providers';
 import * as interaction from './interaction';
 import * as ghUtils from './github';
 import * as diffModule from './diff';
@@ -2609,11 +2610,22 @@ describe('runFullReview orchestration', () => {
     expect(dashboardArg?.testNitSuppressedCount).toBe(1);
   });
 
-  it('builds `RoundUsage` with per-stage and total tokens from the review result', async () => {
+  it('builds `RoundUsage` totals per stage and per model from the round\'s LLM calls', async () => {
     const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
     jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
     jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
 
+    const call = (stage: string, model: string | undefined, input: number, output: number, costUsd: number | null, extra: Partial<LLMCall> = {}): LLMCall => ({
+      stage, ...(model && { model }), attempt: 1, durationMs: 100, inputTokens: input, outputTokens: output,
+      cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, costUsd, ...extra,
+    });
+    const llmCalls = [
+      call('planner', 'claude-haiku-5-5', 30, 5, 0.001),
+      call('reviewer', 'claude-sonnet-5-5', 100, 20, 0.002, { agent: 'security', cacheReadTokens: 5, cacheWriteTokens: 7 }),
+      call('reviewer', undefined, 0, 0, null, { agent: 'general', failed: true, error: 'CLI timed out' }),
+      call('reviewer', 'gpt-5', 80, 10, null, { agent: 'general', attempt: 2, fallback: true }),
+      call('judge', 'claude-opus-5-5', 200, 50, 0.004, { reasoningTokens: 25 }),
+    ];
     const security = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['security'] };
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'REQUEST_CHANGES', summary: 'Issues found',
@@ -2621,21 +2633,14 @@ describe('runFullReview orchestration', () => {
       rawFindingCount: 1,
       agentNames: ['security', 'general'],
       allJudgedFindings: [security], rawFindings: [security],
-      agentUsage: new Map([
-        ['security', { inputTokens: 100, outputTokens: 20, cacheReadTokens: 5, reasoningTokens: 0 }],
-        ['general',  { inputTokens: 80,  outputTokens: 10, cacheReadTokens: 0, reasoningTokens: 0 }],
-      ]),
       agentDurationMs: new Map([['security', 1500], ['general', 1200]]),
       agentRetryCount: new Map([['security', 0], ['general', 1]]),
       agentFailureReasons: { general: 'CLI timed out' },
-      plannerUsage: { inputTokens: 30, outputTokens: 5, cacheReadTokens: 0, reasoningTokens: 0 },
       plannerDurationMs: 500,
-      judgeUsage: { inputTokens: 200, outputTokens: 50, cacheReadTokens: 10, reasoningTokens: 25 },
       judgeDurationMs: 800,
       judgeRetryCount: 2,
-      dedupUsage: { inputTokens: 40, outputTokens: 8, cacheReadTokens: 0, reasoningTokens: 0 },
       dedupDurationMs: 200,
-      verdictUsage: { inputTokens: 60, outputTokens: 12, cacheReadTokens: 0, reasoningTokens: 0 },
+      llmCalls,
       outcome: 'ADDRESS_FIRST',
     });
     jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [security], duplicates: [] });
@@ -2644,16 +2649,19 @@ describe('runFullReview orchestration', () => {
 
     const ctx = jest.mocked(ghUtils.postReview).mock.calls[0][7];
     expect(ctx!.meta.outcome).toBe('ADDRESS_FIRST');
-    expect(ctx!.usage.perStage).toEqual({
-      planner: { inputTokens: 30, outputTokens: 5, totalTokens: 35 },
-      reviewer: { inputTokens: 180, outputTokens: 30, totalTokens: 210 },
-      judge: { inputTokens: 200, outputTokens: 50, totalTokens: 250 },
-      dedup: { inputTokens: 40, outputTokens: 8, totalTokens: 48 },
-      verdict: { inputTokens: 60, outputTokens: 12, totalTokens: 72 },
+    expect(ctx!.usage).toMatchObject({
+      calls: 5, failedCalls: 1, unpricedCalls: 1,
+      inputTokens: 410, outputTokens: 85, totalTokens: 495, cacheReadTokens: 5, cacheWriteTokens: 7, reasoningTokens: 25, durationMs: 500,
+      llmCalls,
     });
-    expect(ctx!.usage.inputTokens).toBe(510);
-    expect(ctx!.usage.outputTokens).toBe(105);
-    expect(ctx!.usage.totalTokens).toBe(615);
+    expect(ctx!.usage.estimatedCostUsd).toBeCloseTo(0.007);
+    expect(ctx!.usage.perStage).toEqual({
+      planner: expect.objectContaining({ calls: 1, inputTokens: 30, outputTokens: 5, estimatedCostUsd: 0.001 }),
+      reviewer: expect.objectContaining({ calls: 3, failedCalls: 1, unpricedCalls: 1, inputTokens: 180, outputTokens: 30, cacheWriteTokens: 7 }),
+      judge: expect.objectContaining({ calls: 1, inputTokens: 200, reasoningTokens: 25, estimatedCostUsd: 0.004 }),
+    });
+    expect(Object.keys(ctx!.usage.perModel!)).toEqual(['claude-haiku-5-5', 'claude-sonnet-5-5', 'gpt-5', 'claude-opus-5-5']);
+    expect(ctx!.usage.perModel!['gpt-5']).toMatchObject({ calls: 1, unpricedCalls: 1, estimatedCostUsd: 0 });
 
     expect(ctx!.judge.retryCount).toBe(2);
     expect(ctx!.dedup.durationMs).toBe(200);
@@ -2911,41 +2919,6 @@ describe('runFullReview orchestration', () => {
     expect(ctx!.routing).toEqual(expect.objectContaining({ class: 'security', group: 'deep', configSource: 'base' }));
     expect(ctx!.routing!.configDigest).toMatch(/^[0-9a-f]{64}$/);
     expect(ctx!.routing!.configDigest).not.toBe(routingDigest(undefined));
-  });
-
-  it('builds `perStage` with only present stages when planner and dedup are absent', async () => {
-    const testFile = { path: 'src/app.ts', changeType: 'modified' as const, hunks: [{ oldStart: 1, oldLines: 5, newStart: 1, newLines: 10, content: 'code' }] };
-    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: [testFile], totalAdditions: 10, totalDeletions: 5 });
-    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [testFile], excluded: [] });
-
-    const finding = { severity: 'blocker' as const, title: 'Bug', file: 'src/app.ts', line: 5, description: 'd', reviewers: ['security'] };
-    jest.mocked(reviewModule.runReview).mockResolvedValue({
-      verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST' as const, summary: 'Issues found',
-      findings: [finding], highlights: [], reviewComplete: true,
-      rawFindingCount: 1,
-      agentNames: ['security'],
-      allJudgedFindings: [finding], rawFindings: [finding],
-      agentUsage: new Map([
-        ['security', { inputTokens: 50, outputTokens: 10, cacheReadTokens: 0, reasoningTokens: 0 }],
-      ]),
-      judgeUsage: { inputTokens: 100, outputTokens: 25, cacheReadTokens: 0, reasoningTokens: 0 },
-      judgeDurationMs: 400,
-      judgeRetryCount: 0,
-    });
-    jest.mocked(recapModule.deduplicateFindings).mockReturnValue({ unique: [finding], duplicates: [] });
-
-    await callRunFullReview();
-
-    const ctx = jest.mocked(ghUtils.postReview).mock.calls[0][7];
-    expect(ctx!.usage.perStage).toEqual({
-      reviewer: { inputTokens: 50, outputTokens: 10, totalTokens: 60 },
-      judge: { inputTokens: 100, outputTokens: 25, totalTokens: 125 },
-    });
-    expect(ctx!.usage.inputTokens).toBe(150);
-    expect(ctx!.usage.outputTokens).toBe(35);
-    expect(ctx!.usage.totalTokens).toBe(185);
-    expect(ctx!.usage.perStage).not.toHaveProperty('planner');
-    expect(ctx!.usage.perStage).not.toHaveProperty('dedup');
   });
 
   it('passes nitpick findings through to postReview so they post inline', async () => {

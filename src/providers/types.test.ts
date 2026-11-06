@@ -56,13 +56,13 @@ describe('readCount', () => {
 
 describe('addUsage', () => {
   it('sums all fields from two non-zero operands', () => {
-    const a = { inputTokens: 10, outputTokens: 5, cacheReadTokens: 2, reasoningTokens: 1 };
-    const b = { inputTokens: 3, outputTokens: 7, cacheReadTokens: 0, reasoningTokens: 4 };
-    expect(addUsage(a, b)).toEqual({ inputTokens: 13, outputTokens: 12, cacheReadTokens: 2, reasoningTokens: 5 });
+    const a = { inputTokens: 10, outputTokens: 5, cacheReadTokens: 2, cacheWriteTokens: 0, reasoningTokens: 1 };
+    const b = { inputTokens: 3, outputTokens: 7, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 4 };
+    expect(addUsage(a, b)).toEqual({ inputTokens: 13, outputTokens: 12, cacheReadTokens: 2, cacheWriteTokens: 0, reasoningTokens: 5 });
   });
 
   it('returns a copy equal to the non-zero operand when adding ZERO_USAGE', () => {
-    const a = { inputTokens: 8, outputTokens: 3, cacheReadTokens: 1, reasoningTokens: 2 };
+    const a = { inputTokens: 8, outputTokens: 3, cacheReadTokens: 1, cacheWriteTokens: 0, reasoningTokens: 2 };
     expect(addUsage(a, ZERO_USAGE)).toEqual(a);
     expect(addUsage(ZERO_USAGE, a)).toEqual(a);
   });
@@ -72,8 +72,8 @@ describe('addUsage', () => {
   });
 
   it('does not mutate either operand', () => {
-    const a = { inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, reasoningTokens: 4 };
-    const b = { inputTokens: 5, outputTokens: 6, cacheReadTokens: 7, reasoningTokens: 8 };
+    const a = { inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 0, reasoningTokens: 4 };
+    const b = { inputTokens: 5, outputTokens: 6, cacheReadTokens: 7, cacheWriteTokens: 0, reasoningTokens: 8 };
     const aCopy = { ...a };
     const bCopy = { ...b };
     addUsage(a, b);

@@ -32,7 +32,7 @@ import { runJudgeAgent, computeProvenanceMap } from './judge';
 import { applySuppressions } from './memory';
 import { PreviousFinding } from './recap';
 import { WRITING_RULES } from './writing-rules';
-import { LLMClient, LLMResponse, QuotaError, RefusalError, withRefusalFallback, wrapClientForUsage } from './providers';
+import { LLMCall, LLMClient, LLMResponse, QuotaError, recordCalls, RefusalError, summarizeCalls, withRefusalFallback, wrapClientForUsage } from './providers';
 
 const READY_VERDICT = JSON.stringify({
   verdict: 'READY',
@@ -2052,7 +2052,7 @@ describe('runReview', () => {
     ['a whatToTest whose steps are not strings', { content: JSON.stringify({ verdict: 'READY', blockers: [], summary: 'ok', whatThisDoes: 'x', whatToTest: { steps: [1] } }) }],
   ])('ends the round INCOMPLETE, never READY, when the verdict reader returns %s', async (_label, response) => {
     const clients = makeClients();
-    jest.mocked(clients.judge.sendMessage).mockResolvedValue({ ...response, usage: { inputTokens: 10, outputTokens: 32768, cacheReadTokens: 0, reasoningTokens: 0 } });
+    jest.mocked(clients.judge.sendMessage).mockResolvedValue({ ...response, usage: { inputTokens: 10, outputTokens: 32768, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 } });
     const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
 
     const result = await runReview(clients, { config: makeConfig(), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo context' });
@@ -3298,18 +3298,19 @@ describe('runReview', () => {
     }
   });
 
-  it('aggregates per-agent usage, duration, and judge usage on ReviewResult', async () => {
+  it('records every LLM call with its stage, agent, model, tokens and cost, and per-agent durations', async () => {
     const response = JSON.stringify([
       { severity: 'suggestion', title: 'Test', file: 'a.ts', line: 1, description: 'Desc' },
     ]);
     const reviewerSend = jest.fn().mockResolvedValue({
       content: response,
-      usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 5, reasoningTokens: 0 },
+      usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 5, cacheWriteTokens: 0, reasoningTokens: 0 },
       latencyMs: 1500,
+      model: 'claude-sonnet-5-5',
     });
     const judgeSend = jest.fn().mockResolvedValue({
       content: READY_VERDICT,
-      usage: { inputTokens: 300, outputTokens: 60, cacheReadTokens: 0, reasoningTokens: 25 },
+      usage: { inputTokens: 300, outputTokens: 60, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 25 },
       latencyMs: 800,
     });
     const clients: ReviewClients = {
@@ -3323,11 +3324,12 @@ describe('runReview', () => {
     const infoSpy = jest.spyOn(core, 'info').mockImplementation(() => {});
     const result = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context' });
 
-    expect(result.agentUsage).toBeDefined();
-    expect(result.agentUsage!.size).toBe(2);
-    for (const [, usage] of result.agentUsage!) {
-      expect(usage).toEqual({ inputTokens: 100, outputTokens: 20, cacheReadTokens: 5, reasoningTokens: 0 });
-    }
+    expect(result.llmCalls!.filter(c => c.stage === 'reviewer')).toEqual(result.agentNames.map(agent => ({
+      stage: 'reviewer', agent, model: 'claude-sonnet-5-5', effort: 'high', attempt: 1, durationMs: 1500,
+      inputTokens: 100, outputTokens: 20, cacheReadTokens: 5, cacheWriteTokens: 0, reasoningTokens: 0,
+      costUsd: (95 * 2 + 5 * 0.2 + 20 * 10) / 1_000_000,
+    })));
+    expect(result.llmCalls!.filter(c => c.stage === 'verdict')).toEqual([expect.objectContaining({ attempt: 1, outputTokens: 60, reasoningTokens: 25, costUsd: null })]);
     expect(result.agentDurationMs).toBeDefined();
     for (const [, ms] of result.agentDurationMs!) {
       expect(ms).toBe(1500);
@@ -4263,8 +4265,8 @@ describe('withRefusalFallback', () => {
     const onFallback = jest.fn();
     const client = withRefusalFallback(primary, fallback, onFallback);
 
-    await expect(client.sendMessage('sys', 'first', { effort: 'low' })).resolves.toEqual({ content: 'ok' });
-    await expect(client.sendMessage('sys', 'second')).resolves.toEqual({ content: 'ok' });
+    await expect(client.sendMessage('sys', 'first', { effort: 'low' })).resolves.toEqual({ content: 'ok', fallback: true });
+    await expect(client.sendMessage('sys', 'second')).resolves.toEqual({ content: 'ok', fallback: true });
     expect(primary.sendMessage).toHaveBeenCalledTimes(1);
     expect(jest.mocked(fallback.sendMessage).mock.calls).toEqual([['sys', 'first', { effort: 'low' }], ['sys', 'second', undefined]]);
     expect(onFallback).toHaveBeenCalledTimes(1);
@@ -4295,34 +4297,64 @@ describe('withRefusalFallback', () => {
   });
 });
 
+describe('recordCalls', () => {
+  const usage = { inputTokens: 1000, outputTokens: 100, cacheReadTokens: 200, cacheWriteTokens: 300, reasoningTokens: 0 };
+
+  it('records each call with its model, effort, attempt, tokens and cost, failed and fallback calls included', async () => {
+    const primary = { sendMessage: jest.fn()
+      .mockResolvedValueOnce({ content: 'ok', usage, latencyMs: 40, model: 'claude-opus-5-5' })
+      .mockRejectedValueOnce(new Error('timed out')) } as unknown as LLMClient;
+    const refusing = { sendMessage: jest.fn().mockRejectedValue(new RefusalError('declined', 'refusal (cyber)')) } as unknown as LLMClient;
+    const fallback = { sendMessage: jest.fn().mockResolvedValue({ content: 'ok', usage, latencyMs: 60, model: 'gpt-5' }) } as unknown as LLMClient;
+    const calls: LLMCall[] = [];
+
+    const judge = recordCalls(primary, { stage: 'judge' }, calls);
+    await judge.sendMessage('sys', 'user', { effort: 'high' });
+    await expect(judge.sendMessage('sys', 'user')).rejects.toThrow('timed out');
+    await recordCalls(withRefusalFallback(refusing, fallback, () => {}), { stage: 'reviewer', agent: 'Finder' }, calls).sendMessage('sys', 'user');
+
+    expect(calls).toEqual([
+      { stage: 'judge', effort: 'high', attempt: 1, model: 'claude-opus-5-5', durationMs: 40, ...usage, costUsd: (500 * 4 + 200 * 0.2 + 300 * 5 + 100 * 20) / 1_000_000 },
+      { stage: 'judge', attempt: 2, failed: true, error: 'timed out', durationMs: expect.any(Number), inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, costUsd: null },
+      { stage: 'reviewer', agent: 'Finder', attempt: 1, model: 'gpt-5', fallback: true, durationMs: 60, ...usage, costUsd: null },
+    ]);
+    expect(summarizeCalls(calls)).toEqual({
+      calls: 3, failedCalls: 1, unpricedCalls: 1,
+      inputTokens: 2000, outputTokens: 200, cacheReadTokens: 400, cacheWriteTokens: 600, reasoningTokens: 0, totalTokens: 2200,
+      durationMs: 100 + calls[1].durationMs,
+      estimatedCostUsd: calls[0].costUsd,
+    });
+  });
+});
+
 describe('wrapClientForUsage', () => {
   const makeUsageClient = (response: LLMResponse) => ({
     sendMessage: jest.fn().mockResolvedValue(response),
   } as unknown as LLMClient);
 
   it('records usage and latency on a single call', async () => {
-    const inner = makeUsageClient({ content: 'ok', usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 2, reasoningTokens: 0 }, latencyMs: 100 });
+    const inner = makeUsageClient({ content: 'ok', usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 2, cacheWriteTokens: 0, reasoningTokens: 0 }, latencyMs: 100 });
     const { client, getTotals } = wrapClientForUsage(inner);
 
     const result = await client.sendMessage('sys', 'user');
     const totals = getTotals();
 
     expect(result.content).toBe('ok');
-    expect(totals.usage).toEqual({ inputTokens: 10, outputTokens: 5, cacheReadTokens: 2, reasoningTokens: 0 });
+    expect(totals.usage).toEqual({ inputTokens: 10, outputTokens: 5, cacheReadTokens: 2, cacheWriteTokens: 0, reasoningTokens: 0 });
     expect(totals.latencyMs).toBe(100);
     expect(totals.calls).toBe(1);
     expect(totals.failures).toBe(0);
   });
 
   it('accumulates usage and latency across multiple calls', async () => {
-    const inner = makeUsageClient({ content: 'ok', usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, reasoningTokens: 0 }, latencyMs: 50 });
+    const inner = makeUsageClient({ content: 'ok', usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 }, latencyMs: 50 });
     const { client, getTotals } = wrapClientForUsage(inner);
 
     await client.sendMessage('sys', 'user1');
     await client.sendMessage('sys', 'user2');
     const totals = getTotals();
 
-    expect(totals.usage).toEqual({ inputTokens: 20, outputTokens: 10, cacheReadTokens: 0, reasoningTokens: 0 });
+    expect(totals.usage).toEqual({ inputTokens: 20, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 });
     expect(totals.latencyMs).toBe(100);
     expect(totals.calls).toBe(2);
   });
@@ -4334,7 +4366,7 @@ describe('wrapClientForUsage', () => {
     await client.sendMessage('sys', 'user');
     const totals = getTotals();
 
-    expect(totals.usage).toEqual({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, reasoningTokens: 0 });
+    expect(totals.usage).toEqual({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 });
     expect(totals.latencyMs).toBe(0);
     expect(totals.calls).toBe(1);
   });
@@ -4350,7 +4382,7 @@ describe('wrapClientForUsage', () => {
     const totals = getTotals();
     expect(totals.failures).toBe(1);
     expect(totals.calls).toBe(0);
-    expect(totals.usage).toEqual({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, reasoningTokens: 0 });
+    expect(totals.usage).toEqual({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 });
   });
 
   it('counts failures independently from successful calls', async () => {
@@ -4359,7 +4391,7 @@ describe('wrapClientForUsage', () => {
       sendMessage: jest.fn().mockImplementation(() => {
         callCount++;
         if (callCount === 1) return Promise.reject(new Error('fail'));
-        return Promise.resolve({ content: 'ok', usage: { inputTokens: 5, outputTokens: 3, cacheReadTokens: 0, reasoningTokens: 0 }, latencyMs: 10 });
+        return Promise.resolve({ content: 'ok', usage: { inputTokens: 5, outputTokens: 3, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 }, latencyMs: 10 });
       }),
     } as unknown as LLMClient;
     const { client, getTotals } = wrapClientForUsage(inner);
@@ -4370,11 +4402,11 @@ describe('wrapClientForUsage', () => {
 
     expect(totals.failures).toBe(1);
     expect(totals.calls).toBe(1);
-    expect(totals.usage).toEqual({ inputTokens: 5, outputTokens: 3, cacheReadTokens: 0, reasoningTokens: 0 });
+    expect(totals.usage).toEqual({ inputTokens: 5, outputTokens: 3, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 });
   });
 
   it('getTotals returns a snapshot frozen against external mutation', async () => {
-    const inner = makeUsageClient({ content: 'ok', usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, reasoningTokens: 0 }, latencyMs: 5 });
+    const inner = makeUsageClient({ content: 'ok', usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 }, latencyMs: 5 });
     const { client, getTotals } = wrapClientForUsage(inner);
 
     await client.sendMessage('sys', 'user');
@@ -4388,7 +4420,7 @@ describe('wrapClientForUsage', () => {
   });
 
   it('getTotals deep-freezes the nested usage object', async () => {
-    const inner = makeUsageClient({ content: 'ok', usage: { inputTokens: 3, outputTokens: 2, cacheReadTokens: 1, reasoningTokens: 0 }, latencyMs: 10 });
+    const inner = makeUsageClient({ content: 'ok', usage: { inputTokens: 3, outputTokens: 2, cacheReadTokens: 1, cacheWriteTokens: 0, reasoningTokens: 0 }, latencyMs: 10 });
     const { client, getTotals } = wrapClientForUsage(inner);
 
     await client.sendMessage('sys', 'user');
@@ -4419,7 +4451,7 @@ describe('wrapClientForUsage', () => {
   });
 
   it('derives judgeRetryCount as 0 for one call and 1 for two calls', async () => {
-    const inner = makeUsageClient({ content: 'ok', usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, reasoningTokens: 0 }, latencyMs: 10 });
+    const inner = makeUsageClient({ content: 'ok', usage: { inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 }, latencyMs: 10 });
     const { client, getTotals } = wrapClientForUsage(inner);
 
     await client.sendMessage('sys', 'user');

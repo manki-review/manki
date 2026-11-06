@@ -218,6 +218,7 @@ export class GeminiClient implements LLMClient {
       content,
       usage: { ...ZERO_USAGE },
       latencyMs: Date.now() - startTime,
+      model: this.model,
     };
   }
 
@@ -265,10 +266,11 @@ export class GeminiClient implements LLMClient {
           inputTokens: readCount(usageMetadata.promptTokenCount),
           outputTokens: readCount(usageMetadata.candidatesTokenCount),
           cacheReadTokens: readCount(usageMetadata.cachedContentTokenCount),
+          cacheWriteTokens: 0,
           reasoningTokens: readCount(usageMetadata.thoughtsTokenCount),
         }
       : { ...ZERO_USAGE };
 
-    return { content, usage, latencyMs: Date.now() - startTime, truncated };
+    return { content, usage, latencyMs: Date.now() - startTime, model: this.model, truncated };
   }
 }
