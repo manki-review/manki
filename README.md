@@ -37,7 +37,7 @@ Full setup guide with troubleshooting: **[Getting started](docs/getting-started.
 
 ## How it works
 
-Manki wakes up when a PR is opened. A fast planner (Haiku) triages the change and sets the effort, one or two finders review it in parallel, dedup drops findings that match repeats from prior reviews, and the judge evaluates and classifies what remains. Results land as inline comments plus a summary and verdict. When all blocking threads resolve, manki approves.
+Manki wakes up when a PR is opened. A fast planner (Haiku) triages the change and sets the effort, one or two finders review it in parallel, dedup drops findings that match repeats from prior reviews, and the judge evaluates and classifies what remains. Results land as inline comments plus a summary and verdict. A finding backed by evidence has a collapsed "How this was checked" section: up to five plain lines on what was read or searched, the lines that prove it, and for a blocker the outcome of the judge's attempt to refute it. When all blocking threads resolve, manki approves.
 
 <p align="center">
   <img src="assets/pipeline.svg" alt="Manki review pipeline: Planner → Reviewers → Dedup → Judge → Review Posted" />

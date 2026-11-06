@@ -4,7 +4,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
-import { AgentProgressEntry, DashboardData, FOLLOW_UP_TAG, Finding, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity } from './types';
+import { AgentProgressEntry, DashboardData, FOLLOW_UP_TAG, Finding, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity } from './types';
 import { isLineInDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { findPriorThreadId } from './finding-fingerprint';
@@ -1731,6 +1731,36 @@ function commentHeadline(body: string): string {
   return body.split('\n\n', 2).join(' ');
 }
 
+const MAX_CHECK_LINES = 5;
+const MAX_CHECK_CHARS = 160;
+
+const REFUTATION_LINE: Record<RefutationOutcome, string> = {
+  confirmed: 'The judge tried to refute it with the repository tools and confirmed it',
+  unsettled: 'The judge tried to refute it with the repository tools and could not settle it',
+  // A disproved finding is dropped, so a posted one is a security finding, which keeps its grade.
+  disproved: 'The judge found a reason it may not happen, but a security finding keeps its grade',
+};
+
+/** Shortens model text to one plain line, so no raw tool output or code block reaches the comment. */
+function oneLine(text: string): string {
+  const line = sanitizeMarkdown(text).replace(/```/g, '').replace(/\s+/g, ' ').trim();
+  return line.length <= MAX_CHECK_CHARS ? line : `${line.slice(0, MAX_CHECK_CHARS - 1).trimEnd()}…`;
+}
+
+/**
+ * Returns the checks behind a finding, at most `MAX_CHECK_LINES` one-line entries: the judge's refutation first, then
+ * the proving lines and the reviewer's own checks. A finding nobody checked gets none.
+ */
+function howThisWasChecked({ evidence, refutation }: Finding): string[] {
+  const lines = [
+    ...(refutation ? [`${REFUTATION_LINE[refutation.outcome]}${refutation.reason ? `: ${oneLine(refutation.reason)}` : '.'}`] : []),
+    ...(evidence?.proof.length ? [`Proving lines: ${evidence.proof.map(p => `\`${sanitizeFilePath(p)}\``).join(', ')}`] : []),
+    ...(evidence?.emptySearch ? [`Searched with no match: ${oneLine(evidence.emptySearch)}`] : []),
+    ...(evidence?.checks ?? []).map(oneLine).filter(line => line.length > 0),
+  ];
+  return lines.slice(0, MAX_CHECK_LINES);
+}
+
 function formatFindingComment(finding: Finding): string {
   let comment = `${SEVERITY_EMOJI[finding.severity]} ${formatFindingHeader(finding)}\n\n**${sanitizeMarkdown(finding.title)}**\n\n`;
   if (finding.judgeConfidence === 'low') comment += `${LOW_CONFIDENCE_NOTE}\n\n`;
@@ -1740,6 +1770,10 @@ function formatFindingComment(finding: Finding): string {
   comment += `${lead}${fix}`;
   if (rest) {
     comment += `\n\n<details>\n<summary>Details</summary>\n\n${rest}\n\n</details>`;
+  }
+  const checks = howThisWasChecked(finding);
+  if (checks.length > 0) {
+    comment += `\n\n<details>\n<summary>How this was checked</summary>\n\n${checks.map(line => `- ${line}`).join('\n')}\n\n</details>`;
   }
 
   const data: Record<string, unknown> = {

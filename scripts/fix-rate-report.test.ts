@@ -51,6 +51,20 @@ describe('fix-rate report', () => {
       '| unknown | 3 | 0 | 2 | 1 | 0% | 67% |',
       '| quick | 1 | 1 | 0 | 0 | 100% | 0% |',
       '',
+      '## By hadEvidence',
+      '',
+      '| hadEvidence | posted | fixed | dismissed | untouched | fixed % | dismissed % |',
+      '| --- | ---: | ---: | ---: | ---: | ---: | ---: |',
+      '| unknown | 3 | 0 | 2 | 1 | 0% | 67% |',
+      '| true | 1 | 1 | 0 | 0 | 100% | 0% |',
+      '',
+      '## By judgeChecked',
+      '',
+      '| judgeChecked | posted | fixed | dismissed | untouched | fixed % | dismissed % |',
+      '| --- | ---: | ---: | ---: | ---: | ---: | ---: |',
+      '| unknown | 3 | 0 | 2 | 1 | 0% | 67% |',
+      '| true | 1 | 1 | 0 | 0 | 100% | 0% |',
+      '',
     ].join('\n'));
     expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('not JSON'));
     errorSpy.mockRestore();

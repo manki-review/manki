@@ -5,7 +5,7 @@ import { parsePRDiff } from './diff';
 import { BotIdentity, fetchInterRoundDiff } from './github';
 import { appendMemoryLine } from './memory';
 import { classifyAuthorReply, fetchRecapState, judgeAddressedThreadIds, PreviousFinding } from './recap';
-import { FindingFingerprint, FindingFingerprintEntry, ParsedDiff, RoundContext } from './types';
+import { citesEvidence, FindingFingerprint, FindingFingerprintEntry, ParsedDiff, RoundContext } from './types';
 import { sanitizeTokens } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -36,6 +36,10 @@ interface CalibrationKey {
   toolEvidence: string;
   category: string;
   effort: string;
+  /** Whether the finding cited evidence, which its comment shows under "How this was checked". */
+  hadEvidence: boolean;
+  /** Whether the judge tried to refute the finding with the repository tools. */
+  judgeChecked: boolean;
 }
 
 export interface PostedFinding {
@@ -46,7 +50,8 @@ export interface PostedFinding {
 /**
  * Records how many posted findings of a merged pull request were fixed, dismissed or left
  * untouched, per severity and specialist (`counts`) and per severity, judge confidence, tool
- * evidence, category and effort (`calibration`). Writes one JSON line to the job summary, and appends it to
+ * evidence, category, effort, whether the finding had evidence and whether the judge checked
+ * it (`calibration`). Writes one JSON line to the job summary, and appends it to
  * `<repo>/metrics/fix-rate.jsonl` in the memory repo when `memory` is given. The line carries
  * the class, group and config digest of the last round that recorded them.
  */
@@ -94,6 +99,8 @@ export async function recordFixRate(
       toolEvidence: entry.toolEvidence ?? 'unknown',
       category: entry.category ?? 'unknown',
       effort: entry.effort ?? 'unknown',
+      hadEvidence: citesEvidence(entry.evidence),
+      judgeChecked: !!entry.refutation,
     }, outcome);
   }
 
