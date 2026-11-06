@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { LLMClient } from './providers';
-import { BotIdentity, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, isRepoAdmin, isTrustedAssociation, LOW_CONFIDENCE_NOTE, paginateGraphql, titleToSlug } from './github';
+import { APPROVED_LINE, BotIdentity, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, isRepoAdmin, isTrustedAssociation, LOW_CONFIDENCE_NOTE, paginateGraphql, titleToSlug } from './github';
 import { findPriorThreadId } from './finding-fingerprint';
 import { matchesSuppression, Suppression } from './memory';
 import { isSecurityFinding } from './review';
@@ -306,6 +306,8 @@ function replyClassOf(pf: PreviousFinding): AuthorReplyClass {
 interface RecapState {
   previousFindings: PreviousFinding[];
   priorRounds: RoundContext[];
+  /** When Manki last approved the PR in a review without a round context, as auto-approve does. */
+  lastApprovalAt?: string;
   /** Three-way state of the open-thread fetch. Optional so legacy callers and test mocks omitting the field still typecheck; treated as `'fetched'` downstream. */
   openThreadsState?: OpenThreadsState;
   /** Count of fingerprints whose `authorReplyClass` flipped during `refreshAuthorReplyClass`. Optional so test mocks omitting the field still typecheck; defaults to 0. */
@@ -441,7 +443,7 @@ async function fetchRecapState(
   prNumber: number,
   prAuthorLogin?: string,
 ): Promise<RecapState> {
-  const [threadsResult, priorRounds] = await Promise.all([
+  const [threadsResult, { priorRounds, lastApprovalAt }] = await Promise.all([
     fetchReviewThreads(octokit, bot, owner, repo, prNumber),
     fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber),
   ]);
@@ -495,6 +497,7 @@ async function fetchRecapState(
   return {
     previousFindings,
     priorRounds: enrichedPriorRounds,
+    ...(lastApprovalAt && { lastApprovalAt }),
     openThreadsState,
     reclassifiedPriorCount,
     reclassifiedPriors,
@@ -612,13 +615,17 @@ function refreshAuthorReplyClass(
   return { rounds: refreshed, reclassifiedPriorCount, reclassifiedPriors };
 }
 
+/**
+ * Returns the round contexts in Manki's reviews, and when Manki last approved the PR in a review without one.
+ * Such an approval keeps its body after GitHub dismisses it, so it is found by its first line.
+ */
 async function fetchPriorRoundContexts(
   octokit: Octokit,
   bot: BotIdentity,
   owner: string,
   repo: string,
   prNumber: number,
-): Promise<RoundContext[]> {
+): Promise<Pick<RecapState, 'priorRounds' | 'lastApprovalAt'>> {
   try {
     const reviews = await octokit.paginate(octokit.rest.pulls.listReviews, {
       owner,
@@ -626,18 +633,14 @@ async function fetchPriorRoundContexts(
       pull_number: prNumber,
       per_page: 100,
     });
-    const candidates = reviews
-      .filter((r): r is typeof r & { body: string; id: number } => {
-        const body = r.body;
-        if (!body) return false;
-        if (!isBotLogin(bot, r.user?.login)) return false;
-        return body.includes('<summary>Manki context</summary>') || body.includes('<!-- manki-context:');
-      })
-      .map(r => ({ body: r.body, id: r.id }));
-    return parseContextBlocks(candidates, owner, repo, prNumber);
+    const botReviews = reviews.filter((r): r is typeof r & { body: string; id: number } => !!r.body && isBotLogin(bot, r.user?.login));
+    const hasContext = (body: string) => body.includes('<summary>Manki context</summary>') || body.includes('<!-- manki-context:');
+    const candidates = botReviews.filter(r => hasContext(r.body)).map(r => ({ body: r.body, id: r.id }));
+    const lastApprovalAt = botReviews.filter(r => !hasContext(r.body) && r.body.startsWith(APPROVED_LINE)).at(-1)?.submitted_at;
+    return { priorRounds: parseContextBlocks(candidates, owner, repo, prNumber), ...(lastApprovalAt && { lastApprovalAt }) };
   } catch (error) {
     core.warning(`Failed to fetch prior round contexts: ${error}`);
-    return [];
+    return { priorRounds: [] };
   }
 }
 

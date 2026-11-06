@@ -729,7 +729,7 @@ async function loadRecap(target: RunTarget, config: ReviewConfig, commentId: num
     return undefined;
   }
 
-  await reopenAuthorResolvedThreads(octokit, recap.previousFindings, pauseState(recap.priorRounds, config).paused);
+  await reopenAuthorResolvedThreads(octokit, recap.previousFindings, pauseState(recap, config).paused);
   await announceSecurityOverrides(octokit, securityOverridesIn(recap.previousFindings).filter(o => !o.announced));
   return recap;
 }
@@ -1489,7 +1489,7 @@ async function runFullReview(
 
     const priorRoundCount = recap.priorRounds.length;
     const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
-    const pause = pauseState(recap.priorRounds, config);
+    const pause = pauseState(recap, config);
     const { capRounds, paused } = pause;
     if (paused && !skipCap && !forceReview) {
       checkReport = await postPauseNotice(target, commentId, pause, maxAutoRounds, recap.previousFindings, recap.priorRounds.at(-1)?.meta.timestamp);
@@ -1562,7 +1562,7 @@ async function runFullReview(
     }
     await replyFixedThreads(run, resolved);
     await completeProgressComment(run, stage);
-    const pauseLifted = !pauseState([...recap.priorRounds, context], config).paused;
+    const pauseLifted = !pauseState({ ...recap, priorRounds: [...recap.priorRounds, context] }, config).paused;
     await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha, pauseLifted ? startTime : undefined);
     setReviewOutputs(posted.id, context, result);
     checkReport = outcomeReport(result.outcome, result.summary, posted.approvalHeld);

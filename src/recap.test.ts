@@ -550,7 +550,7 @@ describe('fetchRecapState', () => {
 
   function mockOctokit(
     threads: ReturnType<typeof makeThread>[],
-    reviews: Array<{ id: number; body: string; user: { login: string } | null }> = [],
+    reviews: Array<{ id: number; body: string; user: { login: string } | null; submitted_at?: string }> = [],
   ) {
     return {
       graphql: jest.fn().mockResolvedValue({
@@ -1133,6 +1133,7 @@ describe('fetchRecapState', () => {
       const octokit = mockOctokit([], []);
       const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds).toEqual([]);
+      expect(state).not.toHaveProperty('lastApprovalAt');
     });
 
     it('parses a single details-wrapper context block', async () => {
@@ -1146,14 +1147,18 @@ describe('fetchRecapState', () => {
       expect(state.priorRounds[0].meta.mankiVersion).toBe('4.7.0');
     });
 
-    it('parses a single HTML-comment context block', async () => {
+    it('parses a single HTML-comment context block, and finds the last approval outside a round', async () => {
       const ctx = makeRoundContext(2);
       const octokit = mockOctokit([], [
-        { id: 200, body: `Public summary\n${htmlCommentBlock(ctx)}\n`, user: { login: BOT_LOGIN } },
+        { id: 199, body: '✅ **Approved.** All blocking threads are resolved.\n\n<!-- manki -->', user: { login: BOT_LOGIN }, submitted_at: '2026-01-01T01:00:00Z' },
+        { id: 200, body: `✅ **Approved.**\n${htmlCommentBlock(ctx)}\n`, user: { login: BOT_LOGIN }, submitted_at: '2026-01-01T02:00:00Z' },
+        { id: 201, body: '✅ **Approved.** Looks good to me.', user: { login: 'alice' }, submitted_at: '2026-01-01T03:00:00Z' },
       ]);
       const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
       expect(state.priorRounds).toHaveLength(1);
       expect(state.priorRounds[0].meta.round).toBe(2);
+      // A round's own approval carries its context, and another reviewer's approval is not Manki's.
+      expect(state.lastApprovalAt).toBe('2026-01-01T01:00:00Z');
     });
 
     it.each([

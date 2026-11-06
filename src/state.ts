@@ -6,7 +6,7 @@ import { completeReviewCheck, outcomeReport, startReviewCheck } from './check-ru
 import { approvalHeldLine, APPROVED_LINE, BotIdentity, BOT_MARKER as PROGRESS_MARKER, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchConflictingBase, fetchInterRoundDiff, fetchPRComments, fetchReviewThreadNodes, fetchStandingVerdict, FOLLOW_UP_MARKER, FORCE_CAP_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgressOn, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
 import type { StandingVerdict } from './github';
 import { isSameChange } from './diff';
-import { fetchPriorRoundContexts, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, PreviousFinding, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf } from './recap';
+import { fetchPriorRoundContexts, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, PreviousFinding, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf } from './recap';
 import { FindingSeverity, isBlockingSeverity, migrateLegacySeverity, ReviewConfig, RoundContext, SecurityOverride, SEVERITY_TOKEN_PATTERN } from './types';
 import { withMarkers } from './utils';
 
@@ -237,19 +237,27 @@ function isNewChange(change: ReviewedChange, previous: RoundContext | undefined)
 }
 
 /**
- * Returns how many rounds reviewed a new change since the last round that approved at the full bar, or in all rounds without one.
- * The round cap stops fix loops, so a round after an approval, such as on a rebase, starts the count again.
- * An approval held on a conflict is recorded as an approval, so it resets the count too.
- * A `BUDGET` approval deferred warnings to end a loop, so it does not reset the count.
+ * Whether the PR was approved at or after `round`: by the round itself at the full bar, or by an approval outside a round,
+ * such as auto-approve, at `lastApprovalAt` or later. A `BUDGET` approval deferred warnings to end a loop, so it does not count.
+ * An approval held on a conflict is recorded as an approval, so it counts.
  */
-function roundsSinceApproval(priorRounds: RoundContext[]): { count: number; approved: boolean } {
+function approvedSince(round: RoundContext, lastApprovalAt: string | undefined): boolean {
+  return (round.verdict === 'APPROVE' && round.meta.outcome !== 'BUDGET')
+    || (lastApprovalAt !== undefined && Date.parse(round.meta.timestamp) <= Date.parse(lastApprovalAt));
+}
+
+/**
+ * Returns how many rounds reviewed a new change since the last approval, or in all rounds without one.
+ * The round cap stops fix loops, so a round after an approval, such as on a rebase, starts the count again.
+ */
+function roundsSinceApproval(priorRounds: RoundContext[], lastApprovalAt: string | undefined): { count: number; approved: boolean } {
   let count = 0;
   for (let i = priorRounds.length - 1; i >= 0; i--) {
     const round = priorRounds[i];
-    if (round.verdict === 'APPROVE' && round.meta.outcome !== 'BUDGET') return { count, approved: true };
+    if (approvedSince(round, lastApprovalAt)) return { count, approved: true };
     if (isNewChange({ commitSha: round.meta.commitSha, changeDigest: round.diff?.changeDigest }, priorRounds[i - 1])) count++;
   }
-  return { count, approved: false };
+  return { count, approved: lastApprovalAt !== undefined };
 }
 
 interface PauseState {
@@ -260,14 +268,18 @@ interface PauseState {
   reason?: string;
 }
 
-/** Returns the rounds with new changes since the last approval, whether they reach the round cap, and whether automatic review is paused by it or by a last round that ended `NOT_CONVERGING`. */
-function pauseState(priorRounds: RoundContext[], config: ReviewConfig): PauseState {
+/**
+ * Returns the rounds with new changes since the last approval, whether they reach the round cap, and whether automatic review
+ * is paused by it or by a last round that ended `NOT_CONVERGING` with no approval since.
+ */
+function pauseState({ priorRounds, lastApprovalAt }: Pick<RecapState, 'priorRounds' | 'lastApprovalAt'>, config: ReviewConfig): PauseState {
   const maxAutoRounds = config.convergence?.max_auto_rounds ?? 0;
-  const { count: capRounds, approved } = roundsSinceApproval(priorRounds);
+  const { count: capRounds, approved } = roundsSinceApproval(priorRounds, lastApprovalAt);
   const capReached = maxAutoRounds > 0 && capRounds >= maxAutoRounds;
+  const lastRound = priorRounds.at(-1);
   const reason = capReached
     ? `Manki has reviewed new changes in ${capRounds}/${maxAutoRounds} rounds on this PR${approved ? ' since its last approval' : ''}.`
-    : priorRounds.at(-1)?.meta.outcome === 'NOT_CONVERGING' ? 'The last Manki round found a blocker that came back after a fix.' : undefined;
+    : lastRound?.meta.outcome === 'NOT_CONVERGING' && !approvedSince(lastRound, lastApprovalAt) ? 'The last Manki round found a blocker that came back after a fix.' : undefined;
   return { capRounds, capReached, paused: reason !== undefined, ...(reason && { reason }) };
 }
 
