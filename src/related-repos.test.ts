@@ -1,18 +1,18 @@
 import * as core from '@actions/core';
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { devNull, tmpdir } from 'os';
 import { join } from 'path';
 
 import { relatedRepoLoader, relatedReposCacheDir } from './related-repos';
 import { RelatedRepo } from './types';
+import { gitEnv } from './workspace';
 
 jest.mock('@actions/core', () => ({
   info: jest.fn(),
   warning: jest.fn(),
 }));
 
-const SAFETY = ['-c', 'credential.helper=', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false'];
-const ENV = { GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0' };
+const ENV = gitEnv({ 'credential.helper': '', 'core.hooksPath': devNull, 'core.fsmonitor': 'false' });
 
 const DASH: RelatedRepo = { repo: 'dashpay/dash', kind: 'reference', ref: 'v23.0.0', paths: ['src/consensus', './doc/*.md'] };
 const DIPS: RelatedRepo = { repo: 'dashpay/dips', kind: 'reference' };
@@ -29,10 +29,8 @@ describe('relatedRepoLoader', () => {
     return jest.fn(async (binary, args, cwd, options) => {
       expect(binary).toBe('git');
       expect(options?.env).toEqual(ENV);
-      expect(args.slice(0, SAFETY.length)).toEqual(SAFETY);
-      const gitArgs = args.slice(SAFETY.length);
-      calls.push({ cwd, args: gitArgs });
-      const command = gitArgs.find(arg => /^[a-z][a-z-]*$/.test(arg))!;
+      calls.push({ cwd, args });
+      const command = args.find(arg => /^[a-z][a-z-]*$/.test(arg))!;
       const stderr = Object.entries(failing).find(([repo]) => cwd.endsWith(join(...repo.split('/'))))?.[1][command];
       if (stderr) return { code: 128, stdout: '', stderr: `${stderr}\nnotice: No default references\n` };
       if (command === 'init') mkdirSync(join(cwd, '.git', 'objects'), { recursive: true });

@@ -1,15 +1,15 @@
 import * as core from '@actions/core';
 import { lstatSync, mkdirSync, readdirSync, renameSync, rmSync } from 'fs';
-import { tmpdir } from 'os';
+import { devNull, tmpdir } from 'os';
 import { dirname, join, resolve, sep } from 'path';
 
 import { runTool } from './binary-analyzers';
 import { RelatedRepo, RelatedRepoKind } from './types';
+import { gitEnv } from './workspace';
 
 const FETCH_TIMEOUT_MS = 120_000;
-// Git reads no global or system config and asks for no password, so it never sends a credential and a private repo fails.
-const GIT_ENV = { GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0' };
-const GIT_SAFETY = ['-c', 'credential.helper=', '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false'];
+// Git sends no credential, so a private repo fails, and runs no hook or fsmonitor of a clone.
+const GIT_CONFIG = { 'credential.helper': '', 'core.hooksPath': devNull, 'core.fsmonitor': 'false' };
 
 export interface RelatedRepoCheckout extends RelatedRepo {
   /** Directory holding the fetched files. */
@@ -65,7 +65,7 @@ async function checkoutRelatedRepo(repo: RelatedRepo, cacheDir: string, timeoutM
   const git = async (...args: string[]): Promise<void> => {
     const remaining = deadline - Date.now();
     const { code, stderr } = remaining > 0
-      ? await run('git', [...GIT_SAFETY, ...args], dir, { env: GIT_ENV, timeoutMs: remaining })
+      ? await run('git', args, dir, { env: gitEnv(GIT_CONFIG), timeoutMs: remaining })
       : { code: -1, stderr: '' };
     if (code === 0) return;
     if (Date.now() >= deadline) throw new Error(`git did not finish within ${timeoutMs / 1000}s`);
