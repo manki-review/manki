@@ -16,25 +16,28 @@ import { WRITING_RULES } from './writing-rules';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
 
-// GitHub author_association values that indicate the user is a known repo participant.
-// Used to gate LLM-triggering commands — less strict than `isTrustedAssociation` (which guards write ops).
-export function isRepoUser(authorAssociation: string | null | undefined): boolean {
-  return ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR'].includes(authorAssociation ?? '');
+/**
+ * Whether the commenter may start Manki from a comment, which takes write access.
+ * On an edit of another user's comment, such as a Force review tick, the association describes the comment author,
+ * so only the editor's write access counts.
+ */
+export async function isLLMAccessAllowed(octokit: Octokit, owner: string, repo: string): Promise<boolean> {
+  const { action, comment, sender } = github.context.payload;
+  const senderLogin: string | undefined = sender?.login;
+  if (action === 'edited' && (!senderLogin || senderLogin !== comment?.user?.login)) {
+    return !!senderLogin && await hasWriteAccess(octokit, owner, repo, senderLogin);
+  }
+  return commenterCanWrite(octokit, owner, repo);
 }
 
 /**
- * Returns true if the sender is allowed to trigger LLM calls.
- * Logs a diagnostic when the PR author cannot be determined from the payload.
+ * Whether the commenter has write access. `OWNER`, `MEMBER` and `COLLABORATOR` count without an API call, and anyone
+ * else is looked up, since GitHub can report an organization member as `CONTRIBUTOR` or `NONE`.
  */
-export function isLLMAccessAllowed(
-  authorAssociation: string | null | undefined,
-  senderLogin: string | undefined,
-  prAuthorLogin: string | undefined,
-): boolean {
-  if (!prAuthorLogin && !isRepoUser(authorAssociation)) {
-    core.info(`PR author login unavailable in payload — PR-author bypass inactive for ${senderLogin}`);
-  }
-  return isRepoUser(authorAssociation) || !!(prAuthorLogin && senderLogin?.toLowerCase() === prAuthorLogin.toLowerCase());
+async function commenterCanWrite(octokit: Octokit, owner: string, repo: string): Promise<boolean> {
+  const { comment, sender } = github.context.payload;
+  const login: string | undefined = sender?.login;
+  return isTrustedAssociation(comment?.author_association) || (!!login && await hasWriteAccess(octokit, owner, repo, login));
 }
 
 interface MemoryConfig {
@@ -120,9 +123,9 @@ async function resolveThreadOf(
  */
 async function resolvePermission(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, isSecurity: boolean,
-  authorAssociation: string | undefined, senderLogin: string | undefined, prAuthorLogin: string | undefined,
+  senderLogin: string | undefined, prAuthorLogin: string | undefined,
 ): Promise<{ mayResolve: boolean; isPrAuthor: boolean; securityAllowed: boolean }> {
-  const isTrusted = isTrustedAssociation(authorAssociation);
+  const isTrusted = await commenterCanWrite(octokit, owner, repo);
   const isPrAuthor = !!prAuthorLogin && senderLogin?.toLowerCase() === prAuthorLogin.toLowerCase();
   const securityAllowed = isSecurity && isTrusted && !!senderLogin && mayClearSecurityThread(senderLogin, bot, prAuthorLogin)
     && await hasWriteAccess(octokit, owner, repo, senderLogin);
@@ -155,10 +158,6 @@ export async function handleReviewCommentReply(
 
   const senderLogin = github.context.payload.sender?.login;
   const prAuthorLogin = github.context.payload.pull_request?.user?.login;
-  if (!isLLMAccessAllowed(comment.author_association, senderLogin, prAuthorLogin)) {
-    core.info(`Ignoring reply from non-contributor ${senderLogin} (${comment.author_association ?? 'unknown association'})`);
-    return;
-  }
 
   // Check if this is a reply to one of our comments
   const inReplyTo = comment.in_reply_to_id;
@@ -212,7 +211,7 @@ export async function handleReviewCommentReply(
     const reply = highlightCode(response.content.trim(), codeTokens);
     const isSecurity = isSecurityThread(root.comment.body ?? '');
     const { mayResolve, securityAllowed } = await resolvePermission(
-      octokit, bot, owner, repo, isSecurity, comment.author_association, senderLogin, prAuthorLogin);
+      octokit, bot, owner, repo, isSecurity, senderLogin, prAuthorLogin);
     const staysOpen = AGREED_REPLY_RE.test(reply) && isSecurity && !securityAllowed;
 
     await octokit.rest.pulls.createReplyForReviewComment({
@@ -238,8 +237,7 @@ export async function handleReviewCommentReply(
       const simpleAcks = ['ok', 'done', 'fixed', 'thanks', 'will do', 'got it'];
       const isSubstantive = replyBody.length > 50 && !simpleAcks.includes(replyBody.toLowerCase());
 
-      const isTrusted = isTrustedAssociation(comment.author_association);
-      if (isSubstantive && isTrusted) {
+      if (isSubstantive && await commenterCanWrite(octokit, owner, repo)) {
         try {
           const memoryOctokit = github.getOctokit(memoryToken);
           const memoryRepo = resolveMemoryRepo(memoryConfig, owner);
@@ -304,20 +302,9 @@ export async function handlePRComment(
     return;
   }
 
-  const senderLogin = payload.sender?.login;
-  const prAuthorLogin = payload.issue?.user?.login;
-
   switch (command.type) {
     case 'explain': {
       await reactToIssueComment(octokit, owner, repo, commentId, 'eyes');
-      if (!isLLMAccessAllowed(comment.author_association, senderLogin, prAuthorLogin)) {
-        core.info(`Ignoring @manki command from non-contributor ${senderLogin} (${comment.author_association ?? 'unknown association'})`);
-        await octokit.rest.issues.createComment({
-          owner, repo, issue_number: issueNumber,
-          body: withMarkers('Only repo contributors can use this command.', BOT_MARKER),
-        });
-        return;
-      }
       if (!client) { core.warning('Claude client required for explain command'); return; }
       const topic = command.args.slice(0, 500).trim();
       await handleExplain(octokit, client, owner, repo, issueNumber, topic);
@@ -345,17 +332,8 @@ export async function handlePRComment(
       break;
     default: {
       await reactToIssueComment(octokit, owner, repo, commentId, 'eyes');
-      if (!isLLMAccessAllowed(comment.author_association, senderLogin, prAuthorLogin)) {
-        core.info(`Ignoring @manki command from non-contributor ${senderLogin} (${comment.author_association ?? 'unknown association'})`);
-        await octokit.rest.issues.createComment({
-          owner, repo, issue_number: issueNumber,
-          body: withMarkers('Only repo contributors can use this command.', BOT_MARKER),
-        });
-        return;
-      }
       if (!client) { core.warning('Claude client required for generic questions'); return; }
       // Strip the command prefix and truncate before forwarding to the LLM.
-      // Access is already gated by isLLMAccessAllowed above.
       const question = body.replace(/(?:@manki-review|@manki|\/manki)\s*/gi, '').trim().slice(0, 500);
       await handleGenericQuestion(octokit, client, owner, repo, issueNumber, question);
     }
@@ -433,8 +411,7 @@ async function handleDismiss(
     return;
   }
 
-  const authorAssociation = github.context.payload.comment?.author_association;
-  const isTrusted = isTrustedAssociation(authorAssociation);
+  const isTrusted = await commenterCanWrite(octokit, owner, repo);
 
   if (!isTrusted) {
     core.info('Dismiss from non-collaborator — acknowledging but not persisting suppression');
@@ -487,7 +464,7 @@ async function resolveDismissedThread(octokit: Octokit, bot: BotIdentity, owner:
     if (!root || !isBotComment(root.comment.body ?? '')) return;
     const isSecurity = isSecurityThread(root.comment.body ?? '');
     const { mayResolve, isPrAuthor, securityAllowed } = await resolvePermission(
-      octokit, bot, owner, repo, isSecurity, payload.comment?.author_association, senderLogin, payload.pull_request?.user?.login);
+      octokit, bot, owner, repo, isSecurity, senderLogin, payload.pull_request?.user?.login);
     if (!mayResolve) return;
     const adminOverride = isSecurity && !securityAllowed && isPrAuthor && !!senderLogin
       && await isRepoAdmin(octokit, owner, repo, senderLogin);
@@ -520,8 +497,7 @@ async function handleRemember(
   memoryConfig?: MemoryConfig,
   memoryToken?: string,
 ): Promise<void> {
-  const authorAssociation = github.context.payload.comment?.author_association;
-  const isTrusted = isTrustedAssociation(authorAssociation);
+  const isTrusted = await commenterCanWrite(octokit, owner, repo);
 
   if (!isTrusted) {
     await octokit.rest.issues.createComment({
@@ -598,8 +574,7 @@ async function handleForget(
   memoryConfig?: MemoryConfig,
   memoryToken?: string,
 ): Promise<void> {
-  const authorAssociation = github.context.payload.comment?.author_association;
-  const isTrusted = isTrustedAssociation(authorAssociation);
+  const isTrusted = await commenterCanWrite(octokit, owner, repo);
 
   if (!isTrusted) {
     await octokit.rest.issues.createComment({
@@ -696,8 +671,7 @@ async function handleCheck(
   prNumber: number,
   config?: ReviewConfig,
 ): Promise<void> {
-  const authorAssociation = github.context.payload.comment?.author_association;
-  const isTrusted = isTrustedAssociation(authorAssociation);
+  const isTrusted = await commenterCanWrite(octokit, owner, repo);
 
   if (!isTrusted) {
     await octokit.rest.issues.createComment({
