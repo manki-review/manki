@@ -1578,7 +1578,7 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult)
   });
 
   const judgeDroppedCount = allJudgedForDashboard.length - keptSet.size;
-  const disproved = allJudgedForDashboard.flatMap(({ title, file, line, refutation }) => refutation?.outcome === 'disproved' ? [{ title, file, line, reason: refutation.reason }] : []);
+  const disproved = allJudgedForDashboard.flatMap(({ title, file, line, severity, refutation }) => refutation?.outcome === 'disproved' && severity === 'ignore' ? [{ title, file, line, reason: refutation.reason }] : []);
   const completeDashboard: DashboardData = {
     ...dashboard,
     phase: 'complete',
