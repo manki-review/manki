@@ -58,6 +58,7 @@ const mockOctokitInstance = {
   },
   graphql: mockGraphql,
   hook: { wrap: jest.fn((_name: string, hook: RequestHook) => { requestHooks.push(hook); }) },
+  auth: jest.fn().mockResolvedValue({ token: 'ghs_app' }),
 };
 
 jest.mock('./auth', () => ({
@@ -65,6 +66,8 @@ jest.mock('./auth', () => ({
   getMemoryToken: jest.fn().mockResolvedValue(null),
   fetchPrState: jest.fn().mockResolvedValue(null),
 }));
+
+jest.mock('./workspace', () => ({ fetchWorkspace: jest.fn() }));
 
 jest.mock('./providers', () => ({
   buildAuthForProvider: jest.requireActual('./providers').buildAuthForProvider,
@@ -290,6 +293,7 @@ import type { ParsedDiff, ReviewConfig, RunMode, SettingsState } from './types';
 import { SettingsView, withSettingsBlock } from './settings';
 import { withMarkers } from './utils';
 import { createLLMClient, LLMCall, parseModelSpec } from './providers';
+import { fetchWorkspace } from './workspace';
 import * as interaction from './interaction';
 import * as ghUtils from './github';
 import * as diffModule from './diff';
@@ -823,6 +827,27 @@ describe('run', () => {
 
       expect(jest.mocked(interaction.handleReviewCommentReply)).toHaveBeenCalled();
       expect(jest.mocked(interaction.handleReviewCommentCommand)).not.toHaveBeenCalled();
+      expect(fetchWorkspace).not.toHaveBeenCalled();
+    });
+
+    it('fetches the PR head for a reply when its client has repository tools', async () => {
+      jest.mocked(interaction.parseCommand).mockReturnValueOnce({ type: 'generic', args: '' });
+      jest.mocked(createLLMClient).mockImplementationOnce(() => ({ sendMessage: jest.fn(), repoTools: true }));
+      jest.mocked(fetchWorkspace).mockResolvedValueOnce('/work/head');
+      setContext({
+        eventName: 'pull_request_review_comment',
+        payload: {
+          action: 'created',
+          sender: { login: 'user' },
+          comment: { body: 'The caller checks this.', in_reply_to_id: 123, user: { type: 'User' } },
+          pull_request: { number: 1, base: { ref: 'main' }, head: { sha: 'abc123' } },
+        },
+      });
+
+      await run();
+
+      expect(fetchWorkspace).toHaveBeenCalledWith(expect.stringMatching(/\/.+\.git$/), 'abc123', 'ghs_app');
+      expect(jest.mocked(interaction.handleReviewCommentReply).mock.calls.at(-1)?.at(-1)).toBe('/work/head');
     });
 
     it('routes command review comments to handleReviewCommentCommand', async () => {

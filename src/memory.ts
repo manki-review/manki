@@ -23,6 +23,8 @@ export interface Learning {
   id: string;
   content: string;
   scope: 'repo' | 'global';
+  /** The file the learning holds for. Unset holds for the whole repo. */
+  path?: string;
   source: string;
   created_at: string;
   last_used?: string;
@@ -218,6 +220,7 @@ export function buildMemoryContext(memory: RepoMemory): string {
 /**
  * Filter learnings to those relevant to a specific finding,
  * matching by keyword overlap between the finding and learning content.
+ * A learning for one path applies only to findings on that path.
  */
 export function filterLearningsForFinding(learnings: Learning[], finding: Finding): Learning[] {
   const text = `${finding.title} ${finding.description}`.toLowerCase();
@@ -228,6 +231,7 @@ export function filterLearningsForFinding(learnings: Learning[], finding: Findin
   if (keywords.length === 0) return [];
 
   return learnings.filter(l => {
+    if (l.path && l.path !== finding.file) return false;
     const contentLower = l.content.toLowerCase();
     return keywords.some(kw => contentLower.includes(kw));
   });
@@ -286,7 +290,7 @@ export async function appendMemoryLine(
 }
 
 /**
- * Remove a learning from the memory repo by case-insensitive substring match on content.
+ * Remove a learning from the memory repo by its id, or by case-insensitive substring match on content.
  */
 export async function removeLearning(
   octokit: Octokit,
@@ -299,7 +303,7 @@ export async function removeLearning(
     octokit,
     memoryRepo,
     `${targetRepo}/learnings.yml`,
-    l => l.content.toLowerCase().includes(searchLower),
+    l => l.id.toLowerCase() === searchLower || l.content.toLowerCase().includes(searchLower),
     l => `Remove learning: ${l.content}`,
   );
 }
