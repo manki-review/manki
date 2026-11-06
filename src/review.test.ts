@@ -1111,7 +1111,7 @@ describe('selectTeam', () => {
     ]) {
       const team = selectTeam(makeDiff({ files }), makeConfig(), trivial);
       expect(team.finders).toEqual([
-        { name: 'Quick check · Claude Sonnet 5.5', prompt: TRIVIAL_VERIFIER_AGENT, index: 0, model: 'claude-sonnet-5-5', effort: 'medium' },
+        { name: 'Quick check · Claude Sonnet 5.5', prompt: TRIVIAL_VERIFIER_AGENT, index: 0, model: 'claude-sonnet-5-5', effort: 'medium', steps: 8 },
       ]);
       expect([team.routing.class, team.routing.group]).toEqual(['docs', 'trivial']);
       expect(team.trivialOverridden).toBe(false);
@@ -1157,6 +1157,9 @@ describe('selectTeam', () => {
     ])('routes %s as before', (...row) => {
       const team = run(row);
       expect([team.routing.class, readers(team)]).toEqual([row[4], row[5]]);
+      // Tool steps by risk: 8 for the quick check, 30 for two finders, 15 for one.
+      const steps = row[5][0] === verifier ? 8 : row[5].length === 2 ? 30 : 15;
+      expect(team.finders.map(f => f.steps)).toEqual(row[5].map(() => steps));
     });
 
     it('gives a tests-only change one full finder, where the trivial verifier read it before', () => {
@@ -1325,6 +1328,8 @@ describe('selectTeam', () => {
       const config = makeConfig({ review: { routing: { security: 'solo' }, allow_weaker: ['security'] } });
       const weak = selectTeam(authDiff, config, quiet);
       expect([weak.routing.group, weak.routing.groupSource, weak.routing.weakerAllowed, readers(weak)]).toEqual(['solo', 'routing', ['security'], ['Claude Sonnet 5.5 · medium']]);
+      // The one finder still gets the tool steps of a floor class.
+      expect(weak.finders[0].steps).toBe(30);
       const withCi = selectTeam(diffOf('src/auth/login.ts', '.github/workflows/ci.yml'), config, quiet);
       expect([withCi.routing.group, withCi.routing.groupSource, withCi.routing.weakerAllowed]).toEqual(['pair', 'floor_escalation', undefined]);
     });

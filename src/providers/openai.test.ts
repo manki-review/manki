@@ -418,7 +418,7 @@ describe('sendViaOAuth (Codex CLI path)', () => {
       expect(client.repoTools).toBe(true);
       expect(new OpenAIClient({ auth: { kind: 'apiKey', key: 'sk' }, model: 'gpt-5.5' }).repoTools).toBe(false);
 
-      await client.sendMessage('Review the diff.', 'the diff', { repoTools: { root: '/work/repo', maxTurns: 15 } });
+      await client.sendMessage('Review the diff.', 'the diff', { repoTools: { root: '/work/repo', steps: 15 } });
       await client.sendMessage('Review the diff.', 'the diff');
     } finally {
       if (savedRunnerTemp === undefined) delete process.env.RUNNER_TEMP;
@@ -428,7 +428,7 @@ describe('sendViaOAuth (Codex CLI path)', () => {
     const [withTools, without] = mockSpawn.mock.calls.map(call => call[1] as string[]);
     expect(withTools.join(' ')).toContain([
       `-c mcp_servers.manki.command=${JSON.stringify(process.execPath)}`,
-      `-c mcp_servers.manki.args=${JSON.stringify([process.argv[1], 'mcp-server', '/work/repo', '--file-tools'])}`,
+      `-c mcp_servers.manki.args=${JSON.stringify([process.argv[1], 'mcp-server', '/work/repo', '--file-tools', '--steps', '15'])}`,
       '-c mcp_servers.manki.default_tools_approval_mode="approve"',
       '-c mcp_servers.manki.env.RUNNER_TEMP="/runner/temp" -',
     ].join(' '));

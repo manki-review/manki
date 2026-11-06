@@ -10,6 +10,7 @@ import { z } from 'zod';
 
 import { AST_GREP_FAMILIES, AstGrepApi, languageOf, loadAstGrep } from './ast-grep';
 import { MANKI_VERSION } from './github';
+import { stepCheck } from './tool-steps';
 import { gitEnv, WORKSPACE_DEPTH } from './workspace';
 
 const execFileAsync = promisify(execFile);
@@ -19,6 +20,9 @@ export const MCP_SERVER_COMMAND = 'mcp-server';
 
 /** The argument after the root that makes the tool server also offer `read_file`, `grep` and `glob`. */
 export const FILE_TOOLS_FLAG = '--file-tools';
+
+/** The argument before the number of tool calls the server runs before it refuses every further call. */
+export const STEPS_FLAG = '--steps';
 
 const GIT_TIMEOUT_MS = 30_000;
 const GIT_MAX_BUFFER = 1024 * 1024;
@@ -272,8 +276,10 @@ export async function globRepo(root: string, { pattern, path = '.' }: GlobArgs):
   return capOutput([shown.join('\n') || 'No files.', ...notes].join('\n'));
 }
 
+type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
+
 /** Runs `tool` and turns its text, or the message of its error, into an MCP tool result. */
-async function toolResult(tool: () => Promise<string>): Promise<{ content: { type: 'text'; text: string }[]; isError?: boolean }> {
+async function toolResult(tool: () => Promise<string>): Promise<ToolResult> {
   try {
     return { content: [{ type: 'text', text: await tool() }] };
   } catch (error) {
@@ -284,6 +290,8 @@ async function toolResult(tool: () => Promise<string>): Promise<{ content: { typ
 export interface McpServerOptions {
   /** Also offer `read_file`, `grep` and `glob`, for a CLI without file tools of its own. */
   fileTools?: boolean;
+  /** Refuse every tool call after this many, and add the wrap-up note to the call that leaves `WRAP_UP_STEPS`. */
+  steps?: number;
   loadApi?: () => Promise<AstGrepApi>;
 }
 
@@ -291,8 +299,16 @@ export interface McpServerOptions {
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
 
 /** Returns Manki's tool server for the repository at `root`. Every tool reads only inside `root` and runs no shell. */
-export function createMcpServer(root: string, { fileTools = false, loadApi = loadAstGrep }: McpServerOptions = {}): McpServer {
+export function createMcpServer(root: string, { fileTools = false, steps, loadApi = loadAstGrep }: McpServerOptions = {}): McpServer {
   const server = new McpServer({ name: 'manki', version: MANKI_VERSION });
+  let taken = 0;
+  const run = async (tool: () => Promise<string>): Promise<ToolResult> => {
+    const check = steps === undefined ? {} : stepCheck(++taken, steps);
+    if (check.refusal) return { content: [{ type: 'text', text: check.refusal }], isError: true };
+    const result = await toolResult(tool);
+    if (check.note) result.content.push({ type: 'text', text: check.note });
+    return result;
+  };
   if (fileTools) {
     server.registerTool('read_file', {
       description: 'Reads a text file of the repository, numbering each line.',
@@ -302,7 +318,7 @@ export function createMcpServer(root: string, { fileTools = false, loadApi = loa
         limit: z.number().int().positive().max(MAX_READ_LINES).optional().describe(`At most this many lines. Defaults to ${MAX_READ_LINES}.`),
       },
       annotations: READ_ONLY,
-    }, (args) => toolResult(() => readRepoFile(root, args)));
+    }, (args) => run(() => readRepoFile(root, args)));
     server.registerTool('grep', {
       description: 'Finds the lines of the repository that contain a piece of text, and lists each as file:line. Matches plain text, not a regular expression.',
       inputSchema: {
@@ -313,7 +329,7 @@ export function createMcpServer(root: string, { fileTools = false, loadApi = loa
         maxResults: z.number().int().positive().max(MAX_MATCHES).optional().describe('At most this many matches. Defaults to 100.'),
       },
       annotations: READ_ONLY,
-    }, (args) => toolResult(() => grepRepo(root, args)));
+    }, (args) => run(() => grepRepo(root, args)));
     server.registerTool('glob', {
       description: 'Lists the files of the repository whose path matches a glob, such as `**/*.rs` or `src/net/*`.',
       inputSchema: {
@@ -321,7 +337,7 @@ export function createMcpServer(root: string, { fileTools = false, loadApi = loa
         path: z.string().optional().describe('Directory to list, relative to the repository root. Defaults to the whole repository.'),
       },
       annotations: READ_ONLY,
-    }, (args) => toolResult(() => globRepo(root, args)));
+    }, (args) => run(() => globRepo(root, args)));
   }
   server.registerTool('git_history', {
     description: 'Lists the commits that changed a file or directory of the repository, newest first. With startLine, it follows only those lines and shows how each commit changed them.',
@@ -332,7 +348,7 @@ export function createMcpServer(root: string, { fileTools = false, loadApi = loa
       maxCommits: z.number().int().positive().max(MAX_COMMITS).optional().describe(`At most this many commits. Defaults to 20.`),
     },
     annotations: READ_ONLY,
-  }, (args) => toolResult(() => gitHistory(root, args)));
+  }, (args) => run(() => gitHistory(root, args)));
   server.registerTool('ast_grep', {
     description: 'Finds code by syntax with an ast-grep pattern, such as `$A.unwrap()` or `fn $NAME($$$) -> Result<$T, $E>`, and lists each match as file:line.',
     inputSchema: {
@@ -342,18 +358,23 @@ export function createMcpServer(root: string, { fileTools = false, loadApi = loa
       maxResults: z.number().int().positive().max(MAX_MATCHES).optional().describe('At most this many matches. Defaults to 50.'),
     },
     annotations: READ_ONLY,
-  }, (args) => toolResult(async () => astGrepSearch(root, await loadApi(), args)));
+  }, (args) => run(async () => astGrepSearch(root, await loadApi(), args)));
   return server;
 }
 
 /**
- * Serves Manki's tools for the repository at `root` over stdin and stdout until the client disconnects, with the file
- * tools when `fileTools` is set. Exits with an error on stderr when `root` is not a directory or the server cannot start.
+ * Serves Manki's tools over stdin and stdout until the client disconnects. `args` are the repository root, then
+ * `FILE_TOOLS_FLAG` for the file tools and `STEPS_FLAG` with a number for a step budget. Exits with an error on stderr
+ * when the arguments are wrong, the root is not a directory or the server cannot start.
  */
-export async function runMcpServer(root: string | undefined, fileTools = false): Promise<void> {
+export async function runMcpServer(args: string[]): Promise<void> {
   try {
+    const [root, ...flags] = args;
+    const stepsAt = flags.indexOf(STEPS_FLAG);
+    const steps = stepsAt === -1 ? undefined : Number(flags[stepsAt + 1]);
+    if (steps !== undefined && !(Number.isInteger(steps) && steps > 0)) throw new Error(`${STEPS_FLAG} needs a positive whole number`);
     if (!root || !statSync(root).isDirectory()) throw new Error(`${root ?? 'no root'} is not a directory`);
-    await createMcpServer(root, { fileTools }).connect(new StdioServerTransport());
+    await createMcpServer(root, { fileTools: flags.includes(FILE_TOOLS_FLAG), steps }).connect(new StdioServerTransport());
   } catch (error) {
     process.stderr.write(`Manki tool server: ${error instanceof Error ? error.message : String(error)}\n`);
     process.exit(1);

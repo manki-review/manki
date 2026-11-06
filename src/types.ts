@@ -368,6 +368,8 @@ export interface Finder {
   index: number;
   model: string;
   effort: EffortLevel;
+  /** How many tool calls the finder may make when its client has repository tools. */
+  steps: number;
 }
 
 /** One reader in a review group. `auto` effort is `high` when the triage says `subtle`, else `medium`. */

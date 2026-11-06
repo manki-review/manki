@@ -2,7 +2,6 @@ import * as core from '@actions/core';
 
 import { BOT_MARKER, CANCELLED_MARKER, FORCE_CAP_MARKER, RUN_ID_MARKER_PREFIX } from './github';
 import { _resetOctokitCache, handlePullRequest, main, runFullReview } from './index';
-import { TurnLimitError } from './providers';
 import type { SendMessageOptions } from './providers';
 import { STALE_APPROVE_MARKER_PREFIX } from './state';
 import { fetchWorkspace } from './workspace';
@@ -343,10 +342,8 @@ class FakeLLM {
   hold?: { stage: Stage; until: Promise<void> };
   onCall?: (stage: Stage) => void;
   repoTools = false;
-  /** The stages called with repository tools, and the root each was given. */
-  toolRoots: [Stage, string][] = [];
-  /** Fails the next call with repository tools as one that used all its turns. */
-  turnLimitOnce = false;
+  /** The stages called with repository tools, and the tools each was given. */
+  tools: [Stage, SendMessageOptions['repoTools']][] = [];
 
   async sendMessage(system: string, _user: string, options?: SendMessageOptions): Promise<{ content: string }> {
     const stage: Stage = system.startsWith('You give the final merge-readiness verdict') ? 'verdict'
@@ -355,13 +352,7 @@ class FakeLLM {
           : system.includes('"judgeEffort"') ? 'planner'
             : 'reviewer';
     this.calls.push(stage);
-    if (options?.repoTools) {
-      this.toolRoots.push([stage, options.repoTools.root]);
-      if (this.turnLimitOnce) {
-        this.turnLimitOnce = false;
-        throw new TurnLimitError('used all turns');
-      }
-    }
+    if (options?.repoTools) this.tools.push([stage, options.repoTools]);
     this.onCall?.(stage);
     const signal = options?.signal;
     try {
@@ -496,32 +487,23 @@ describe('runFullReview end to end', () => {
     expect(fetchWorkspace).not.toHaveBeenCalled();
   });
 
-  it('gives only the finders read-only tools on the fetched PR head, and reviews without them when the fetch fails or the turns run out', async () => {
+  it('gives only the finders read-only tools on the fetched PR head with a step budget, and reviews without them when the fetch fails', async () => {
     mockLLM.repoTools = true;
     jest.mocked(fetchWorkspace).mockResolvedValueOnce('/work/pr-head');
 
     await reviewRound();
 
     expect(fetchWorkspace).toHaveBeenCalledWith(`https://github.com/${OWNER}/${REPO}.git`, HEAD_SHA, 'ghs_app');
-    expect(mockLLM.toolRoots).toEqual([['reviewer', '/work/pr-head']]);
+    // One finder on a PR in no floor class gets the normal budget.
+    expect(mockLLM.tools).toEqual([['reviewer', { root: '/work/pr-head', steps: 15 }]]);
 
-    mockLLM.toolRoots = [];
+    mockLLM.tools = [];
     jest.mocked(fetchWorkspace).mockRejectedValueOnce(new Error('fetch failed'));
     await forcedRound();
 
-    expect(mockLLM.toolRoots).toEqual([]);
+    expect(mockLLM.tools).toEqual([]);
     expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('so the reviewers run without them: Error: fetch failed'));
-
-    // A finder that uses all its turns reviews the diff again without the tools, and the round still completes.
-    jest.mocked(fetchWorkspace).mockResolvedValueOnce('/work/pr-head');
-    mockLLM.turnLimitOnce = true;
-    mockLLM.calls = [];
-    await forcedRound();
-
-    expect(mockLLM.calls.filter(stage => stage === 'reviewer')).toHaveLength(2);
-    expect(mockLLM.toolRoots).toEqual([['reviewer', '/work/pr-head']]);
-    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('turns with the repository tools, so it reviews the diff again without them'));
-    expect(postedReviews().map(r => r.state)).toEqual(['APPROVED', 'APPROVED', 'APPROVED']);
+    expect(postedReviews().map(r => r.state)).toEqual(['APPROVED', 'APPROVED']);
   });
 
   it('ends INCOMPLETE and never approves when a reviewer reply does not parse, and a later run still reviews the commit', async () => {

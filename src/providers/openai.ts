@@ -6,7 +6,7 @@ import OpenAI from 'openai';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import * as core from '@actions/core';
 
-import { buildExitDiagnostics, callWithTimeout, cliEnv, extractCliErrorSnippet, matchQuotaText, registerAuthFileSecrets, repoToolsPrompt, runCli, seedAuthFile, STALE_TIMEOUT_MS, ToolServerCommand, toolServerCommand, warnReplyTail } from './cli-utils';
+import { buildExitDiagnostics, callWithTimeout, cliEnv, extractCliErrorSnippet, MankiCommand, matchQuotaText, registerAuthFileSecrets, repoToolsPrompt, runCli, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail } from './cli-utils';
 import { LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -92,7 +92,7 @@ function openAIQuotaError(error: unknown): QuotaError | undefined {
  * Returns the `-c` overrides that give Codex Manki's tool server. Its tools are read-only, so they run without
  * approval. Codex starts the server with a few default variables only, so the runner temp folder is passed on.
  */
-function codexToolServerArgs({ command, args }: ToolServerCommand): string[] {
+function codexToolServerArgs({ command, args }: MankiCommand): string[] {
   const runnerTemp = process.env.RUNNER_TEMP;
   return [
     '-c', `mcp_servers.manki.command=${JSON.stringify(command)}`,
@@ -219,7 +219,7 @@ export class OpenAIClient implements LLMClient {
       core.warning(`Ignoring effort=${options.effort} for model "${this.model}": it does not accept reasoning effort. The Codex CLI will apply its own default effort instead.`);
     }
 
-    if (repoTools) args.push(...codexToolServerArgs(toolServerCommand(repoTools.root, true)));
+    if (repoTools) args.push(...codexToolServerArgs(toolServerCommand(repoTools.root, { fileTools: true, steps: repoTools.steps })));
 
     // Read prompt from stdin
     args.push('-');
