@@ -36,7 +36,7 @@ interface CalibrationKey {
   toolEvidence: string;
 }
 
-interface PostedFinding {
+export interface PostedFinding {
   entry: FindingFingerprintEntry;
   commitSha: string;
 }
@@ -125,7 +125,7 @@ function tally<K extends object>(rows: Map<string, K & OutcomeCounts>, dims: K, 
 }
 
 /** A finding raised again in a later round counts once, measured from the latest round that raised it. */
-function postedFindings(rounds: RoundContext[]): PostedFinding[] {
+export function postedFindings(rounds: RoundContext[]): PostedFinding[] {
   const byKey = new Map<string, PostedFinding>();
   for (const round of rounds) {
     for (const entry of round.findings.entries) {
@@ -138,7 +138,7 @@ function postedFindings(rounds: RoundContext[]): PostedFinding[] {
 }
 
 /** Whether the diff changed the finding's lines. Hunks include the unchanged lines around each change, which act as the line window. */
-function touchesFinding(diff: ParsedDiff | undefined, fp: FindingFingerprint): boolean {
+export function touchesFinding(diff: ParsedDiff | undefined, fp: FindingFingerprint): boolean {
   const file = diff?.files.find(f => (f.oldPath ?? f.path) === fp.file);
   if (!file) return false;
   if (fp.lineStart <= 0) return file.hunks.length > 0;

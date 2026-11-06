@@ -25,7 +25,7 @@ interface PostedLike {
   created_at?: string | null;
 }
 
-interface HistoryLine {
+export interface HistoryLine {
   kind: 'round' | 'reply';
   repo: string;
   pr: number;
@@ -89,7 +89,7 @@ export function callLines(lines: HistoryLine[]): Array<Omit<HistoryLine, 'record
   });
 }
 
-function githubToken(): string {
+export function githubToken(): string {
   return process.env.GITHUB_TOKEN || execFileSync('gh', ['auth', 'token'], { encoding: 'utf-8' }).trim();
 }
 

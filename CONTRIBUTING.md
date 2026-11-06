@@ -36,6 +36,22 @@ npm run all
 
 Locally, `npm run build` writes `dist/` for testing. The repo's own `Manki dispatch` workflow builds it before running the action from the checkout.
 
+## Changing the blocker rubric
+
+A change to how the judge grades blockers can shift grades on real PRs in ways no unit test shows. Calibrate it per repository against a labelled set of real findings:
+
+```sh
+npm run review-history -- <owner/repo> > history.jsonl
+npm run calibration -- history.jsonl --fix-rate fix-rate.jsonl --export set.jsonl > report.md
+```
+
+The report gives the blocker precision per repository (real blockers divided by blockers raised), the labels by severity and where they came from, and the findings graded below blocker that were fixed, which are candidate missed blockers. `--fix-rate` takes the repository's `metrics/fix-rate.jsonl` from the memory repo and is optional. `--export` writes up to 60 labelled findings (`--limit`) for a judge replay. The format and the first set are in [`src/judge.fixtures/calibration`](src/judge.fixtures/calibration).
+
+The rule for a rubric change:
+
+- Change the rubric only after 3 real cases that the change fixes.
+- Replay the judge over the repository's labelled set 3 times with the old and the new rubric, and compare blocker precision and the findings that changed grade. The target is a blocker precision of at least 80%.
+
 ## Commit and PR conventions
 
 - Commit messages and PR titles use [Conventional Commits](https://www.conventionalcommits.org/) (`feat`, `fix`, `refactor`, `build`, `ci`, `chore`, `docs`, `test`). PR titles are enforced by CI.
