@@ -25,7 +25,6 @@ interface IssueComment {
 }
 
 const BOT_LOGIN = 'manki-review[bot]';
-const ACTIONS_BOT_LOGIN = 'github-actions[bot]';
 
 /** The logins Manki's comments and reviews can carry on this repo, in REST form (`<slug>[bot]`). */
 interface BotIdentity {
@@ -2249,32 +2248,7 @@ async function fetchStandingVerdict(
   return undefined;
 }
 
-const APP_WARNING_MARKER = '<!-- manki-app-warning -->';
 const CONFIG_ERROR_MARKER = '<!-- manki-config-error -->';
-
-async function postAppWarningIfNeeded(
-  octokit: Octokit,
-  bot: BotIdentity,
-  owner: string,
-  repo: string,
-  prNumber: number,
-): Promise<void> {
-  const comments = await octokit.paginate(octokit.rest.issues.listComments, {
-    owner, repo, issue_number: prNumber,
-  });
-
-  if (comments.some(c =>
-    isBotLogin(bot, c.user?.login) &&
-    c.body?.includes(APP_WARNING_MARKER)
-  )) {
-    return;
-  }
-
-  await octokit.rest.issues.createComment({
-    owner, repo, issue_number: prNumber,
-    body: withMarkers('The [Manki GitHub App](https://github.com/apps/manki-review) is not installed on this repository. Reviews are posting as `github-actions[bot]` instead of `manki-review[bot]`. Some features (memory repo access, bot identity for review dismissal) may not work correctly.\n\nInstall the app at: https://github.com/apps/manki-review', APP_WARNING_MARKER),
-  });
-}
 
 /**
  * Posts a config load error on the PR. Uses its own marker instead of `BOT_MARKER`,
@@ -2296,5 +2270,5 @@ async function postConfigErrorComment(
   }
 }
 
-export { APPROVED_LINE, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, BOT_MARKER, REVIEW_COMPLETE_MARKER, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings };
+export { APPROVED_LINE, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, BOT_MARKER, REVIEW_COMPLETE_MARKER, REVIEW_INCOMPLETE_LINE, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings };
 export type { StandingVerdict };

@@ -3,15 +3,15 @@ import * as github from '@actions/github';
 import * as path from 'path';
 
 import { assertWritesAllowed, RunCancelledError, stopWritesOn } from './abort';
-import { AppMemory, AuthResult, createAuthenticatedOctokit, fetchPrState, getMemoryToken, reportPrState } from './auth';
-import { sanitizeTokens, withMarkers } from './utils';
+import { AppMemory, AuthResult, createAuthenticatedOctokit, fetchPrState, getMemoryToken, reportPrState, TokenServiceError } from './auth';
+import { redactSecrets, sanitizeTokens, withMarkers } from './utils';
 import { changedKeys, loadConfig, resolveFallbackModel, resolveMemoryRepo, resolveModel, resolvePairModel } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, outcomeReport, ReviewCheck, startReviewCheck } from './check-run';
 import { extractCurrentCodeWindow } from './code-window';
 import { recordFixRate } from './fix-rate';
-import { dispatchedNumber, isDispatchedRun, restoreDispatchedEvent } from './dispatch';
+import { dispatchedInputs, dispatchedNumber, isDispatchedRun, restoreDispatchedEvent } from './dispatch';
 import { addCodeContext, changeDigest, parsePRDiff, filterDiff, filterRawDiff, rebuildRawDiff, tagFindingOrigins } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
@@ -54,11 +54,11 @@ import {
   markOwnProgressCommentCancelled,
   markProgressCommentFailed,
   markProgressCommentSuperseded,
-  postAppWarningIfNeeded,
   postConfigErrorComment,
   latestSettings,
   PAUSE_NOTICE_MARKER,
   REVIEW_COMPLETE_MARKER,
+  REVIEW_INCOMPLETE_LINE,
   retireSettingsBlocks,
   setSettingsBlock,
   showSettings,
@@ -1556,16 +1556,8 @@ async function runFullReview(
 
   const startTime = Date.now();
   const configPath = core.getInput('config_path') || '.manki.yml';
-  const { octokit, bot, identity, appMemory } = await getAuth();
+  const { octokit, bot, appMemory } = await getAuth();
   const target: RunTarget = { octokit, bot, owner, repo, prNumber, commitSha, baseRef };
-
-  if (identity === 'actions') {
-    try {
-      await postAppWarningIfNeeded(octokit, bot, owner, repo, prNumber);
-    } catch (error) {
-      core.warning(`Failed to post app warning: ${error}`);
-    }
-  }
 
   const headMoved = new AbortController();
   const stop = stopWritesOn(headMoved.signal);
@@ -1927,6 +1919,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
 }
 
 const POST_PHASE_STATE_KEY = 'manki_post_phase';
+const TOKEN_FAILURE_LINE = '⚠️ **Manki did not run:**';
 
 const NOT_DISPATCHED = 'Manki runs only from the `workflow_dispatch` workflow that the Manki service starts. '
   + 'See https://github.com/manki-review/manki/blob/main/docs/getting-started.md#step-3-add-the-workflow';
@@ -1952,6 +1945,26 @@ async function postCleanup(): Promise<void> {
   }
 }
 
+/**
+ * Tells the PR or issue a dispatched run is for that the run stopped because the token service failed, once per reason.
+ * Only the workflow's `github_token` can post then, so the note comes from `github-actions[bot]` and carries no Manki
+ * marker. A merge waits on nobody, so it gets no note.
+ */
+async function reportTokenFailure({ event, action, number }: ReturnType<typeof dispatchedInputs>, error: TokenServiceError): Promise<void> {
+  const token = core.getInput('github_token');
+  if (!token || (event === 'pull_request' && action === 'closed')) return;
+  const { owner, repo } = github.context.repo;
+  const body = `${event === 'pull_request' ? REVIEW_INCOMPLETE_LINE : TOKEN_FAILURE_LINE} ${redactSecrets(error.message)}`;
+  try {
+    const octokit = github.getOctokit(token);
+    const comments = await octokit.paginate(octokit.rest.issues.listComments, { owner, repo, issue_number: number, per_page: 100 });
+    if (comments.some(comment => comment.body === body)) return;
+    await octokit.rest.issues.createComment({ owner, repo, issue_number: number, body });
+  } catch (postError) {
+    core.warning(`Could not post that the token service failed: ${postError}`);
+  }
+}
+
 async function main(): Promise<void> {
   const cancel = new AbortController();
   const stop = stopWritesOn(cancel.signal);
@@ -1966,6 +1979,8 @@ async function main(): Promise<void> {
   // `core.saveState` sets a STATE_<key> env var that only reaches the post step,
   // so its presence indicates we're in the post phase.
   const isPostPhase = core.getState(POST_PHASE_STATE_KEY) === 'true';
+  // Read before the dispatched event replaces the inputs in the context.
+  let dispatched: ReturnType<typeof dispatchedInputs> | undefined;
 
   try {
     if (isPostPhase) {
@@ -1973,9 +1988,11 @@ async function main(): Promise<void> {
     } else {
       core.saveState(POST_PHASE_STATE_KEY, 'true');
       if (!isDispatchedRun()) throw new Error(NOT_DISPATCHED);
+      dispatched = dispatchedInputs();
       if (await restoreDispatchedEvent(await workflowOctokit()) === 'run') await run();
     }
   } catch (error) {
+    if (dispatched !== undefined && error instanceof TokenServiceError) await reportTokenFailure(dispatched, error);
     core.setFailed(`Manki encountered an error: ${failureReason(error)}`);
   } finally {
     process.off('SIGTERM', onSignal);
