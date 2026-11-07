@@ -1287,6 +1287,9 @@ describe('runJudgeAgent', () => {
     const recovered = await runJudgeAgent(mockClient, makeConfig(), input);
     expect(mockSendMessage).toHaveBeenCalledTimes(2);
     expect(recovered.findings).toHaveLength(1);
+    // The second call tells the model what was wrong with its first reply.
+    const [first, second] = mockSendMessage.mock.calls.map(call => call[1] as string);
+    expect(second.startsWith(`${first}\n\nYour previous reply could not be used: `)).toBe(true);
   });
 
   it('matches judge findings by fuzzy title when order differs', async () => {
