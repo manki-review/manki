@@ -2,6 +2,8 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync 
 import { tmpdir } from 'os';
 import { join } from 'path';
 
+import * as core from '@actions/core';
+
 import { buildExitDiagnostics, buildTimeoutDiagnostics, callWithTimeout, cliEnv, extractCliErrorSnippet, matchQuotaText, registerAuthFileSecrets, sanitizeLogOutput, seedAuthFile } from './cli-utils';
 import { redactSecrets } from '../utils';
 
@@ -72,9 +74,12 @@ describe('cliEnv', () => {
       ANTHROPIC_CUSTOM_HEADERS: 'X-Api-Key: gateway-key',
       XDG_AUTH_HEADERS_DIR: '/run/headers',
     };
-    for (const provider of ['claude', 'gemini'] as const) {
+    const warning = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    for (const provider of ['claude', 'claude', 'gemini'] as const) {
       expect(Object.keys(cliEnv(provider, {}, undefined, env))).toEqual(Object.keys(cliEnv('codex', {}, undefined, env)));
     }
+    expect(warning.mock.calls).toEqual([[expect.stringMatching(/^ANTHROPIC_CUSTOM_HEADERS is not passed to the Claude CLI/)]]);
+    warning.mockRestore();
     expect(cliEnv('codex', {}, undefined, env)).toEqual({
       PATH: '/usr/bin',
       HOME: '/home/runner',
@@ -163,6 +168,11 @@ describe('cliEnv', () => {
     expect(cliEnv('claude', {}, undefined, on)).toEqual(on);
     expect(cliEnv('claude', {}, undefined, { ...credentials, CLAUDE_CODE_USE_BEDROCK: '0', CLAUDE_CODE_USE_VERTEX: 'false' })).toEqual({ CLAUDE_CODE_USE_BEDROCK: '0', CLAUDE_CODE_USE_VERTEX: 'false' });
     expect(redactSecrets('aws-secret-access-key gateway-auth-token gateway-header-key')).toBe('[REDACTED] [REDACTED] [REDACTED]');
+    // A Bedrock or Vertex gateway gets the headers too, but not the Anthropic gateway token.
+    for (const url of ['ANTHROPIC_BEDROCK_BASE_URL', 'ANTHROPIC_VERTEX_BASE_URL']) {
+      expect(cliEnv('claude', {}, undefined, { ...credentials, [url]: 'https://gateway.example' }))
+        .toEqual({ [url]: 'https://gateway.example', ANTHROPIC_CUSTOM_HEADERS: credentials.ANTHROPIC_CUSTOM_HEADERS });
+    }
     const keyFile = join(mkdtempSync(join(tmpdir(), 'manki-gcp-')), 'key.json');
     writeFileSync(keyFile, JSON.stringify({ private_key_id: 'key-id-0123456789', private_key: '-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQ\n-----END PRIVATE KEY-----\n', client_email: 'reviewer@project.iam.gserviceaccount.com' }));
     cliEnv('claude', {}, undefined, { CLAUDE_CODE_USE_VERTEX: '1', GOOGLE_APPLICATION_CREDENTIALS: keyFile });

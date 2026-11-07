@@ -345,8 +345,11 @@ function isOn(value: string | undefined): boolean {
 const CLAUDE_MODE_CREDENTIALS: { on: (env: NodeJS.ProcessEnv) => boolean; names: string[] }[] = [
   { on: env => isOn(env.CLAUDE_CODE_USE_BEDROCK), names: ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_BEARER_TOKEN_BEDROCK'] },
   { on: env => isOn(env.CLAUDE_CODE_USE_VERTEX), names: ['GOOGLE_APPLICATION_CREDENTIALS'] },
-  { on: env => !!env.ANTHROPIC_BASE_URL, names: ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_CUSTOM_HEADERS'] },
+  { on: env => !!env.ANTHROPIC_BASE_URL, names: ['ANTHROPIC_AUTH_TOKEN'] },
+  { on: env => !!(env.ANTHROPIC_BASE_URL || env.ANTHROPIC_BEDROCK_BASE_URL || env.ANTHROPIC_VERTEX_BASE_URL), names: ['ANTHROPIC_CUSTOM_HEADERS'] },
 ];
+
+let warnedDroppedHeaders = false;
 
 /**
  * Returns the environment for the `provider` CLI: the variables of `env` any CLI needs to run, the provider's own
@@ -355,6 +358,10 @@ const CLAUDE_MODE_CREDENTIALS: { on: (env: NodeJS.ProcessEnv) => boolean; names:
  */
 export function cliEnv(provider: CliProvider, vars: NodeJS.ProcessEnv = {}, credential?: string, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const modeCredentials = provider === 'claude' ? CLAUDE_MODE_CREDENTIALS.filter(mode => mode.on(env)).flatMap(mode => mode.names) : [];
+  if (provider === 'claude' && env.ANTHROPIC_CUSTOM_HEADERS && !modeCredentials.includes('ANTHROPIC_CUSTOM_HEADERS') && !warnedDroppedHeaders) {
+    warnedDroppedHeaders = true;
+    core.warning('ANTHROPIC_CUSTOM_HEADERS is not passed to the Claude CLI, since it can hold a credential. It is passed only with a gateway set in ANTHROPIC_BASE_URL, ANTHROPIC_BEDROCK_BASE_URL or ANTHROPIC_VERTEX_BASE_URL.');
+  }
   const credentials = new Set([...(credential ? [credential] : []), ...modeCredentials]);
   const needed = Object.entries(env).filter(([name]) => CLI_ENV.has(name.toUpperCase()) || CLI_ENV_PREFIX.test(name) || PROVIDER_ENV[provider].test(name) || modeCredentials.includes(name));
   const result = Object.fromEntries([...needed, ...Object.entries(vars)].filter(([name]) => credentials.has(name) || !isSecretName(name)));
