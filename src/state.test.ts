@@ -30,6 +30,7 @@ const makeThread = (overrides: Partial<ReviewThread> = {}): ReviewThread => ({
   isResolved: false,
   isBlocking: true,
   findingTitle: 'Test finding',
+  ...(overrides.isResolved && { resolvedByLogin: 'reviewer' }),
   ...overrides,
 });
 
@@ -63,19 +64,19 @@ describe('areAllFindingsResolved', () => {
     expect(areAllFindingsResolved(threads, TEST_BOT)).toBe(true);
   });
 
-  it('counts a resolved security thread only for Manki or a human other than the PR author', () => {
-    const security = (resolvedByLogin: string) => [makeThread({ isResolved: true, isSecurity: true, resolvedByLogin })];
-    expect(areAllFindingsResolved(security('author'), TEST_BOT, 'author')).toBe(false);
-    expect(areAllFindingsResolved(security('dependabot[bot]'), TEST_BOT, 'author')).toBe(false);
-    expect(areAllFindingsResolved(security('alice'), TEST_BOT, 'author')).toBe(true);
-    expect(areAllFindingsResolved(security('github-actions[bot]'), TEST_BOT, 'author')).toBe(true);
+  it.each([true, false])('counts a resolved blocking thread only for Manki or a human other than the PR author, security %s', isSecurity => {
+    const resolvedBy = (resolvedByLogin: string) => [makeThread({ isResolved: true, isSecurity, resolvedByLogin })];
+    expect(areAllFindingsResolved(resolvedBy('author'), TEST_BOT, 'author')).toBe(false);
+    expect(areAllFindingsResolved(resolvedBy('dependabot[bot]'), TEST_BOT, 'author')).toBe(false);
+    expect(areAllFindingsResolved(resolvedBy('alice'), TEST_BOT, 'author')).toBe(true);
+    expect(areAllFindingsResolved(resolvedBy('github-actions[bot]'), TEST_BOT, 'author')).toBe(true);
     // With the PR author unknown, any human resolver has write access.
-    expect(areAllFindingsResolved(security('alice'), TEST_BOT)).toBe(true);
+    expect(areAllFindingsResolved(resolvedBy('alice'), TEST_BOT)).toBe(true);
     // A PR author who is a repo admin clears their own.
-    expect(areAllFindingsResolved(security('author'), TEST_BOT, 'author', true)).toBe(true);
-    expect(areAllFindingsResolved(security('dependabot[bot]'), TEST_BOT, 'author', true)).toBe(false);
+    expect(areAllFindingsResolved(resolvedBy('author'), TEST_BOT, 'author', true)).toBe(true);
+    expect(areAllFindingsResolved(resolvedBy('dependabot[bot]'), TEST_BOT, 'author', true)).toBe(false);
     // A recorded override counts only for an admin author, since a Manki reply can echo any text.
-    const recorded = [makeThread({ isResolved: true, isSecurity: true, resolvedByLogin: 'author', recordedOverride: { login: 'author', via: 'dismiss' } })];
+    const recorded = [makeThread({ isResolved: true, isSecurity, resolvedByLogin: 'author', recordedOverride: { login: 'author', via: 'dismiss' } })];
     expect(areAllFindingsResolved(recorded, TEST_BOT, 'author')).toBe(false);
     expect(areAllFindingsResolved(recorded, TEST_BOT, 'author', true)).toBe(true);
   });
@@ -96,7 +97,7 @@ function makeGraphqlFetchThreadNode(overrides: {
   return {
     id: overrides.id ?? 'thread-1',
     isResolved: overrides.isResolved ?? false,
-    ...(overrides.resolvedBy && { resolvedBy: { login: overrides.resolvedBy } }),
+    ...(overrides.isResolved && { resolvedBy: { login: overrides.resolvedBy ?? 'reviewer' } }),
     comments: {
       nodes: [{
         ...(overrides.databaseId !== undefined && { databaseId: overrides.databaseId }),
@@ -134,7 +135,7 @@ describe('fetchBotReviewThreads', () => {
 
     expect(threads).toHaveLength(2);
     expect(threads[0]).toEqual({ id: 't1', rootCommentId: 501, isResolved: false, isBlocking: true, findingTitle: 'null check' });
-    expect(threads[1]).toEqual({ id: 't2', isResolved: true, isBlocking: false, findingTitle: 'rename var' });
+    expect(threads[1]).toEqual({ id: 't2', isResolved: true, resolvedByLogin: 'reviewer', isBlocking: false, findingTitle: 'rename var' });
   });
 
   it('reads every page of review threads', async () => {
@@ -301,6 +302,10 @@ describe('reopenAuthorResolvedThreads', () => {
     const pausedReply = graphql.mock.calls[0][1].body;
     expect(pausedReply).toContain('Automatic review is paused, so after pushing a fix comment `@manki review` and Manki will check it.');
     expect(pausedReply).not.toContain('push a fix and Manki will check it');
+
+    graphql.mockClear();
+    await reopenAuthorResolvedThreads({ graphql } as unknown as Octokit, [{ ...previous('T_plain', true), isSecurity: false }]);
+    expect(graphql.mock.calls[0][1].body).toMatch(/^Reopened\. A blocking finding needs a maintainer or a fix/);
   });
 
   it('skips the reopen when the reply fails, and keeps going when the reopen fails', async () => {
@@ -459,7 +464,7 @@ describe('checkAndAutoApprove', () => {
     ['the PR author as a repo admin', 'author', 'admin', false, true],
     ['the PR author as a repo admin, already recorded', 'author', 'admin', true, true],
     ['the PR author without admin, with a recorded override', 'author', 'write', true, false],
-  ])('approves a security thread resolved by %s', async (who, resolver, permission, recorded, approves) => {
+  ])('approves a security and a plain blocking thread resolved by %s', async (who, resolver, permission, recorded, approves) => {
     const finding = (title: string, tags?: string[]): Finding => ({
       severity: 'blocker', title, file: 'src/a.ts', line: 3, description: 'd', reviewers: [], ...(tags && { tags }),
     });
@@ -471,7 +476,7 @@ describe('checkAndAutoApprove', () => {
           body: formatFindingComment(finding('Token leaks into logs', ['security'])),
           ...(recorded && { replies: [{ body: `<!-- manki -->\n${securityOverrideMarker('resolve', 'author')}`, author: { login: 'github-actions[bot]' } }] }),
         }),
-        makeGraphqlFetchThreadNode({ id: 't2', isResolved: true, resolvedBy: 'author', body: formatFindingComment(finding('Off by one')) }),
+        makeGraphqlFetchThreadNode({ id: 't2', isResolved: true, resolvedBy: resolver, url: 'https://github.com/o/r/pull/1#r2', body: formatFindingComment(finding('Off by one')) }),
       ],
       createReviewFn: createReviewMock,
       permission,
@@ -482,13 +487,12 @@ describe('checkAndAutoApprove', () => {
 
     const isAdmin = who.includes('repo admin');
     const replies = jest.mocked(octokit.graphql).mock.calls.filter(([query]) => String(query).includes('addPullRequestReviewThreadReply'));
-    expect(replies.map(([, vars]) => vars)).toEqual(isAdmin && !recorded
-      ? [{ threadId: 't1', body: 'Security finding dismissed by @author (repo admin).\n\n<!-- manki -->\n<!-- manki-security-override:resolve:author -->' }]
-      : []);
-    // Only a security thread the author resolved or overrode needs the admin lookup.
+    const reply = (threadId: string) => ({ threadId, body: 'Finding dismissed by @author (repo admin).\n\n<!-- manki -->\n<!-- manki-security-override:resolve:author -->' });
+    expect(replies.map(([, vars]) => vars)).toEqual(isAdmin ? [...(recorded ? [] : [reply('t1')]), reply('t2')] : []);
+    // Only a thread the author resolved or overrode needs the admin lookup.
     expect(octokit.rest.repos.getCollaboratorPermissionLevel).toHaveBeenCalledTimes(resolver === 'author' ? 1 : 0);
     if (approves) {
-      const line = '**Security findings dismissed by a repo admin:** [Token leaks into logs](https://github.com/o/r/pull/1#r1) by @author.';
+      const line = '**Findings dismissed by a repo admin:** [Token leaks into logs](https://github.com/o/r/pull/1#r1) by @author, [Off by one](https://github.com/o/r/pull/1#r2) by @author.';
       expect(createReviewMock.mock.calls[0][0].body.includes(line)).toBe(isAdmin);
     }
   });

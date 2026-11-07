@@ -103,8 +103,18 @@ function recordedSecurityOverride(
   return undefined;
 }
 
+/**
+ * Whether only someone other than the PR author can clear the finding: a blocker, or a security finding of any severity.
+ * A live thread says so with `isBlocking`, a parsed one with `severity`. A thread without a severity marker predates them and blocks.
+ */
+function isGuarded(t: { isSecurity?: boolean; isBlocking?: boolean; severity?: FindingSeverity | 'unknown' }): boolean {
+  return !!t.isSecurity || !!t.isBlocking || t.severity === 'blocker' || t.severity === 'unknown';
+}
+
 interface OverrideCandidate {
   isSecurity?: boolean;
+  isBlocking?: boolean;
+  severity?: FindingSeverity | 'unknown';
   isResolved: boolean;
   resolvedByLogin?: string;
   recordedOverride?: Omit<SecurityOverride, 'thread'>;
@@ -114,9 +124,9 @@ function isLogin(login: string | undefined, prAuthorLogin: string | undefined): 
   return !!login && !!prAuthorLogin && login.toLowerCase() === prAuthorLogin.toLowerCase();
 }
 
-/** Whether a resolved security thread can only be cleared by the PR author as a repo admin, so it needs the admin check. */
+/** Whether a resolved guarded thread can only be cleared by the PR author as a repo admin, so it needs the admin check. */
 function isOverrideCandidate(t: OverrideCandidate, prAuthorLogin: string | undefined): boolean {
-  return !!t.isSecurity && t.isResolved && (isLogin(t.resolvedByLogin, prAuthorLogin) || isLogin(t.recordedOverride?.login, prAuthorLogin));
+  return isGuarded(t) && t.isResolved && (isLogin(t.resolvedByLogin, prAuthorLogin) || isLogin(t.recordedOverride?.login, prAuthorLogin));
 }
 
 /** The security overrides on `previousFindings`, one per thread. */
@@ -267,11 +277,11 @@ interface PreviousFinding extends FindingMetadata {
   /** `author_association` of the latest non-bot replier. */
   authorReplyAssociation?: string;
   isSecurity?: boolean;
-  /** On a security thread, whether the latest replier may agree it away: `mayClearSecurityThread` with write access. */
+  /** On a guarded thread, whether the latest replier may agree it away: `mayClearSecurityThread` with write access. */
   authorReplyMayClear?: boolean;
-  /** A security thread the PR author resolved, which Manki has not reopened before. */
+  /** A guarded thread the PR author resolved, which Manki has not reopened before. */
   reopen?: boolean;
-  /** A security thread the PR author cleared as a repo admin. */
+  /** A guarded thread the PR author cleared as a repo admin. */
   securityOverride?: ThreadSecurityOverride;
   /** Manki's latest answer to a developer in the thread, from `latestAnswer`. */
   answer?: string;
@@ -287,8 +297,8 @@ interface PreviousFinding extends FindingMetadata {
  * `agree-reply` suppressions only fire when the reply author matches
  * `prAuthorLogin`. This prevents an arbitrary third-party commenter from
  * silently dropping findings by posting "Fixed!" on a manki thread on a
- * public repo. On a security finding they fire only for someone other than
- * the PR author with write access. `resolved-thread` suppressions are
+ * public repo. On a blocker or security finding they fire only for someone
+ * other than the PR author with write access. `resolved-thread` suppressions are
  * unaffected because resolving a thread already requires repository write access.
  */
 function collectInPrSuppressions(
@@ -324,16 +334,16 @@ function inPrSuppressionReasonFor(
   // third-party commenter on a public repo could suppress lower-severity
   // findings by posting "Fixed!" on a manki thread.
   if (
-    (pf.isSecurity || (prAuthorLogin && pf.authorReplyLogin === prAuthorLogin)) &&
+    (isGuarded(pf) || (prAuthorLogin && pf.authorReplyLogin === prAuthorLogin)) &&
     replyClassOf(pf) === 'agree'
   ) return 'agree-reply';
   return undefined;
 }
 
-/** Classifies the latest human reply on `pf`. A security finding is agreed away only when `authorReplyMayClear` holds. */
+/** Classifies the latest human reply on `pf`. A guarded finding is agreed away only when `authorReplyMayClear` holds. */
 function replyClassOf(pf: PreviousFinding): AuthorReplyClass {
   const replyClass = classifyAuthorReply(pf.authorReplyText);
-  return replyClass === 'agree' && pf.isSecurity && !pf.authorReplyMayClear ? 'none' : replyClass;
+  return replyClass === 'agree' && isGuarded(pf) && !pf.authorReplyMayClear ? 'none' : replyClass;
 }
 
 interface RecapState {
@@ -452,7 +462,7 @@ async function fetchRecapState(
   const botThreads = threads.filter(t => t.isBotThread);
   const prAuthorIsAdmin = !!prAuthorLogin && botThreads.some(t => isOverrideCandidate(t, prAuthorLogin))
     && await isRepoAdmin(octokit, owner, repo, prAuthorLogin);
-  const agreers = new Set(botThreads.flatMap(t => t.isSecurity && t.authorReplyLogin && mayClearSecurityThread(t.authorReplyLogin, bot, prAuthorLogin)
+  const agreers = new Set(botThreads.flatMap(t => isGuarded(t) && t.authorReplyLogin && mayClearSecurityThread(t.authorReplyLogin, bot, prAuthorLogin)
     ? [t.authorReplyLogin] : []));
   const mayAgree = new Map(await Promise.all([...agreers].map(async login => [login, await hasWriteAccess(octokit, owner, repo, login)] as const)));
 
@@ -474,7 +484,7 @@ async function fetchRecapState(
       authorReplyLogin: t.authorReplyLogin,
       ...(t.authorReplyAssociation && { authorReplyAssociation: t.authorReplyAssociation }),
       ...(t.isSecurity && { isSecurity: true }),
-      ...(t.isSecurity && t.authorReplyLogin && mayAgree.get(t.authorReplyLogin) && { authorReplyMayClear: true }),
+      ...(isGuarded(t) && t.authorReplyLogin && mayAgree.get(t.authorReplyLogin) && { authorReplyMayClear: true }),
       ...(!securityOverride && shouldReopen(t, addressedThreadIds, prAuthorLogin) && { reopen: true }),
       ...(securityOverride && { securityOverride }),
       ...(t.answer && { answer: t.answer }),
@@ -513,15 +523,16 @@ function judgeAddressedThreadIds(rounds: RoundContext[]): Set<string> {
   );
 }
 
-/** Whether the PR author resolved a security thread the judge has not marked `addressed`, and Manki has not reopened it yet. */
+/** Whether the PR author resolved a guarded thread the judge has not marked `addressed`, and Manki has not reopened it yet. */
 function shouldReopen(t: ReviewThread, addressedThreadIds: Set<string>, prAuthorLogin: string | undefined): boolean {
-  return t.isSecurity && t.isResolved && t.resolvedByHuman && !t.reopenedByManki && !addressedThreadIds.has(t.threadId)
+  return isGuarded(t) && t.isResolved && t.resolvedByHuman && !t.reopenedByManki && !addressedThreadIds.has(t.threadId)
     && !!prAuthorLogin && t.resolvedByLogin?.toLowerCase() === prAuthorLogin.toLowerCase();
 }
 
 /**
- * Returns the thread's status for the next round. A resolved security thread stays `open` or `replied`
+ * Returns the thread's status for the next round. A resolved guarded thread stays `open` or `replied`
  * unless the judge marked it `addressed`, `mayClearSecurityThread` accepts the resolver, or a repo admin overrode it.
+ * A blocker Manki resolved counts as `auto-resolved`, since Manki resolves one only after such a clear.
  */
 function threadStatus(
   t: ReviewThread, addressedThreadIds: Set<string>, bot: BotIdentity, prAuthorLogin: string | undefined, securityOverride: boolean,
@@ -529,8 +540,10 @@ function threadStatus(
   const unresolved = t.hasHumanReply ? 'replied' : 'open';
   if (!t.isResolved) return unresolved;
   if (addressedThreadIds.has(t.threadId)) return 'resolved';
-  if (t.isSecurity) return securityOverride || mayClearSecurityThread(t.resolvedByLogin, bot, prAuthorLogin) ? 'resolved' : unresolved;
-  return t.resolvedByHuman ? 'resolved' : 'auto-resolved';
+  const cleared = securityOverride || mayClearSecurityThread(t.resolvedByLogin, bot, prAuthorLogin);
+  if (t.isSecurity) return cleared ? 'resolved' : unresolved;
+  if (!t.resolvedByHuman) return 'auto-resolved';
+  return cleared || !isGuarded(t) ? 'resolved' : unresolved;
 }
 
 /**
@@ -902,7 +915,7 @@ function deduplicateFindings(
   const answered = previousFindings.flatMap(f => (f.answer && f.threadId ? [{ ...f, line: f.line || f.originalLine || 0, answer: f.answer, threadId: f.threadId }] : []));
 
   for (const finding of newFindings) {
-    const matched = firstMatch(finding, engaged);
+    const matched = firstMatch(finding, engaged.filter(prev => prev.fixed || mayWaive(prev, finding)));
     const answeredMatch = matched ? undefined : firstMatch(finding, answered);
 
     if (matched?.prev.fixed) {
@@ -928,6 +941,14 @@ function firstMatch<P extends PreviousFinding>(finding: Finding, previous: P[]):
     if (matchType) return { prev, matchType };
   }
   return undefined;
+}
+
+/**
+ * Whether the resolved `prev` lets dedup drop `finding` as already waived. A blocker is dropped only for a guarded
+ * thread, since the PR author alone can resolve any other thread.
+ */
+function mayWaive(prev: PreviousFinding, finding: Finding): boolean {
+  return !prev.fixed && (finding.severity !== 'blocker' || isGuarded(prev));
 }
 
 /** Returns `finding` with a note for the judge. A finding next to a fixed one can be a new defect, so dedup never drops it. */
@@ -1025,12 +1046,13 @@ async function llmDeduplicateFindings(
     const duplicates: DuplicateMatch[] = [];
     for (let i = 0; i < findings.length; i++) {
       const priors = matches.filter(m => m.index - 1 === i).map(m => resolved[m.matchedDismissed - 1]).filter(p => p !== undefined);
-      const waived = priors.find(p => !p.fixed);
+      const waived = priors.find(p => mayWaive(p, findings[i]));
+      const fixed = priors.find(p => p.fixed);
       if (waived) {
         core.info(`LLM dedup: "${findings[i].title}" matches earlier resolved "${waived.title}"`);
         duplicates.push({ finding: findings[i], matchedTitle: waived.title ?? 'unknown', matchType: 'llm' });
-      } else if (priors.length > 0) {
-        unique.push(resemblingFixed(findings[i], priors[0]));
+      } else if (fixed) {
+        unique.push(resemblingFixed(findings[i], fixed));
       } else {
         unique.push(findings[i]);
       }
@@ -1056,4 +1078,4 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
   );
 }
 
-export { DuplicateMatch, FOUND_AGAIN_BLOCKER_MARKER, FOUND_AGAIN_MARKER, foundAgainAsBlocker, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment };
+export { DuplicateMatch, FOUND_AGAIN_BLOCKER_MARKER, FOUND_AGAIN_MARKER, foundAgainAsBlocker, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isGuarded, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, threadSeverity, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment };

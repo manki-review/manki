@@ -56,7 +56,7 @@ interface ReviewThread {
   resolvedByLogin?: string;
   isBlocking: boolean;
   isSecurity?: boolean;
-  /** The override recorded in one of Manki's comments on this security thread. Trusted only after an admin check. */
+  /** The override recorded in one of Manki's comments on this blocking or security thread. Trusted only after an admin check. */
   recordedOverride?: Omit<SecurityOverride, 'thread'>;
   findingTitle: string;
   /** URL of the thread's first comment. */
@@ -122,7 +122,7 @@ async function fetchBotReviewThreads(
       const rootCommentId = thread.comments.nodes[0]?.databaseId;
       const resolvedByLogin = thread.resolvedBy?.login;
       const threadUrl = thread.comments.nodes[0]?.url;
-      const recordedOverride = isSecurity ? recordedSecurityOverride(bot, thread.comments.nodes) : undefined;
+      const recordedOverride = isSecurity || isBlocking ? recordedSecurityOverride(bot, thread.comments.nodes) : undefined;
       return {
         id: thread.id,
         ...(rootCommentId != null && { rootCommentId }),
@@ -166,27 +166,29 @@ async function replyToReviewThread(octokit: Octokit, threadId: string, body: str
   );
 }
 
-const REOPEN_REPLY = 'Reopened. A security finding needs a maintainer or a fix: the PR author cannot resolve it. '
-  + 'A reviewer with write access can resolve it, or push a fix and Manki will check it.';
-const PAUSED_REOPEN_REPLY = 'Reopened. A security finding needs a maintainer or a fix: the PR author cannot resolve it. '
-  + 'A reviewer with write access can resolve it. Automatic review is paused, so after pushing a fix comment `@manki review` and Manki will check it.';
+function reopenReply(isSecurity: boolean, paused: boolean): string {
+  const next = paused
+    ? 'A reviewer with write access can resolve it. Automatic review is paused, so after pushing a fix comment `@manki review` and Manki will check it.'
+    : 'A reviewer with write access can resolve it, or push a fix and Manki will check it.';
+  return `Reopened. A ${isSecurity ? 'security' : 'blocking'} finding needs a maintainer or a fix: the PR author cannot resolve it. ${next}`;
+}
 
-/** Reopens each security thread the PR author resolved and replies once to say why. While `paused`, the reply says a push alone is not reviewed. */
+/** Reopens each guarded thread the PR author resolved and replies once to say why. While `paused`, the reply says a push alone is not reviewed. */
 async function reopenAuthorResolvedThreads(octokit: Octokit, previousFindings: PreviousFinding[], paused = false): Promise<void> {
   for (const f of previousFindings) {
     if (!f.reopen || !f.threadId) continue;
     // The reply goes first: its marker is what stops a later round from reopening the thread again.
     try {
-      await replyToReviewThread(octokit, f.threadId, paused ? PAUSED_REOPEN_REPLY : REOPEN_REPLY, REOPENED_MARKER);
+      await replyToReviewThread(octokit, f.threadId, reopenReply(!!f.isSecurity, paused), REOPENED_MARKER);
     } catch (error) {
-      core.warning(`Failed to reply on security thread ${f.threadId}, leaving it resolved: ${error}`);
+      core.warning(`Failed to reply on thread ${f.threadId}, leaving it resolved: ${error}`);
       continue;
     }
     try {
       await unresolveReviewThread(octokit, f.threadId);
-      core.info(`Reopened security thread ${f.threadId} that the PR author resolved`);
+      core.info(`Reopened thread ${f.threadId} that the PR author resolved`);
     } catch (error) {
-      core.warning(`Failed to reopen security thread ${f.threadId}: ${error}`);
+      core.warning(`Failed to reopen thread ${f.threadId}: ${error}`);
     }
   }
 }
@@ -199,7 +201,7 @@ async function announceSecurityOverrides(octokit: Octokit, overrides: SecurityOv
   const announced: SecurityOverride[] = [];
   for (const o of overrides) {
     try {
-      await replyToReviewThread(octokit, o.thread, `Security finding dismissed by @${o.login} (repo admin).`, securityOverrideMarker(o.via, o.login));
+      await replyToReviewThread(octokit, o.thread, `Finding dismissed by @${o.login} (repo admin).`, securityOverrideMarker(o.via, o.login));
       announced.push(o);
       core.info(`Recorded the security override by ${o.login} on thread ${o.thread}`);
     } catch (error) {
@@ -212,13 +214,13 @@ async function announceSecurityOverrides(octokit: Octokit, overrides: SecurityOv
 /**
  * Check if every blocking bot review thread is resolved. Suggestion and nitpick
  * threads posted by older versions never block, matching the verdict's bar.
- * A resolved security thread counts only when Manki resolved it, which it does after the judge marks it
+ * A resolved thread counts only when Manki resolved it, which it does after the judge marks it
  * addressed or a maintainer agrees, when `mayClearSecurityThread` accepts the resolver,
  * or when the PR author resolved it as a repo admin (`prAuthorIsAdmin`).
  */
 function areAllFindingsResolved(threads: ReviewThread[], bot: BotIdentity, prAuthorLogin?: string, prAuthorIsAdmin = false): boolean {
   return threads.every(t => !t.isBlocking || (t.isResolved && (
-    !t.isSecurity || isBotLogin(bot, t.resolvedByLogin) || mayClearSecurityThread(t.resolvedByLogin, bot, prAuthorLogin)
+    isBotLogin(bot, t.resolvedByLogin) || mayClearSecurityThread(t.resolvedByLogin, bot, prAuthorLogin)
     || !!securityOverrideOf(t, prAuthorLogin, prAuthorIsAdmin)
   )));
 }

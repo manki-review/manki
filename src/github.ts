@@ -1541,7 +1541,7 @@ function formatSecurityOverrides(overrides: ReadonlyArray<{ title: string; threa
     const url = safeThreadUrl(o.threadUrl);
     return `${url ? `[${title}](${url})` : title} by @${o.login}`;
   });
-  return `**Security findings dismissed by a repo admin:** ${entries.join(', ')}.`;
+  return `**Findings dismissed by a repo admin:** ${entries.join(', ')}.`;
 }
 
 function formatLabelled(label: string, text: string): string {

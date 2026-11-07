@@ -1311,10 +1311,10 @@ describe('fetchRecapState', () => {
       expect(determineOutcome([], judgePrior, [], resolvedThreadIds).outcome).toBe('READY');
     });
 
-    it('keeps a security finding blocking until someone other than the PR author dismisses it', async () => {
+    it('keeps a blocking or security finding blocking until someone other than the PR author dismisses it', async () => {
       const title = 'Token leaks into logs';
       const slug = titleToSlug(title);
-      type Case = { resolver?: string; reply?: { login: string; association: string; text?: string }; reopened?: boolean; dismissed?: boolean; security: boolean; blocks: boolean };
+      type Case = { resolver?: string; reply?: { login: string; association: string; text?: string }; reopened?: boolean; dismissed?: boolean; security: boolean; blocker?: boolean; blocks: boolean };
       const cases: Record<string, Case> = {
         'src/author-resolved.ts': { resolver: 'author', security: true, blocks: true },
         // A recorded override counts only once the PR author passes the admin check, since a Manki reply can echo any text.
@@ -1333,7 +1333,11 @@ describe('fetchRecapState', () => {
         'src/judge-addressed.ts': { resolver: 'author', security: true, blocks: false },
         'src/plain-author-resolved.ts': { resolver: 'author', security: false, blocks: false },
         'src/plain-author-agreed.ts': { reply: { login: 'author', association: 'NONE' }, security: false, blocks: false },
+        'src/blocker-author-resolved.ts': { resolver: 'author', security: false, blocker: true, blocks: true },
+        'src/blocker-author-agreed.ts': { reply: { login: 'author', association: 'OWNER' }, security: false, blocker: true, blocks: true },
+        'src/blocker-collaborator-resolved.ts': { resolver: 'alice', security: false, blocker: true, blocks: false },
       };
+      const severity = (file: string) => cases[file].security || cases[file].blocker ? 'blocker' as const : 'warning' as const;
       const files = Object.keys(cases);
       const ctx = makeRoundContext(1, {
         findings: {
@@ -1341,7 +1345,7 @@ describe('fetchRecapState', () => {
           severityCounts: { blocker: 11, warning: 2, suggestion: 0, nitpick: 0 },
           entries: files.map(file => ({
             fingerprint: { file, lineStart: 10, lineEnd: 10, slug },
-            severity: cases[file].security ? 'blocker' as const : 'warning' as const,
+            severity: severity(file),
             title,
             ...(cases[file].security && { tags: ['security'] }),
           })),
@@ -1351,7 +1355,7 @@ describe('fetchRecapState', () => {
       const octokit = mockOctokit(files.map(file => {
         const { resolver, reply, reopened, dismissed, security } = cases[file];
         const body = formatFindingComment(makeFinding({
-          severity: security ? 'blocker' : 'warning', title, file, line: 10, ...(security && { tags: ['security'] }),
+          severity: severity(file), title, file, line: 10, ...(security && { tags: ['security'] }),
         }));
         return makeThread({
           id: `T_${file}`,
@@ -1372,7 +1376,7 @@ describe('fetchRecapState', () => {
       Object.assign(octokit.rest, { repos: { getCollaboratorPermissionLevel: permission } });
 
       const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1, 'author');
-      expect(state.previousFindings.filter(f => f.reopen).map(f => f.file)).toEqual(['src/author-resolved.ts']);
+      expect(state.previousFindings.filter(f => f.reopen).map(f => f.file)).toEqual(['src/author-resolved.ts', 'src/blocker-author-resolved.ts']);
       expect(state.previousFindings.filter(f => f.securityOverride)).toEqual([]);
       const openThreads = state.previousFindings
         .filter(f => f.status === 'open' || f.status === 'replied')
@@ -1386,9 +1390,9 @@ describe('fetchRecapState', () => {
       const reRaised = files.map(file => makeFinding({ severity: 'blocker', title, file, line: 10 }));
       expect(collectInPrSuppressions(state.previousFindings, 'author').map(s => s.fingerprint.file))
         .toEqual(files.filter(file => !cases[file].blocks && file !== 'src/judge-addressed.ts'));
-      // Dedup drops only findings on resolved threads that were not confirmed fixed. An agreed thread, security or not, is dropped by the in-PR suppressions above.
+      // Dedup drops a blocker only on a resolved blocking or security thread not confirmed fixed. An agreed thread is dropped by the in-PR suppressions above.
       expect(deduplicateFindings(reRaised, state.previousFindings).unique.map(f => f.file))
-        .toEqual(files.filter(file => cases[file].blocks || cases[file].reply || file === 'src/judge-addressed.ts'));
+        .toEqual(files.filter(file => cases[file].blocks || cases[file].reply || severity(file) === 'warning' || file === 'src/judge-addressed.ts'));
 
       // With the PR author unknown, any human resolver has write access, so a human resolution clears the thread.
       const unknownAuthor = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
@@ -1397,7 +1401,7 @@ describe('fetchRecapState', () => {
 
       // A reply from someone with write access agrees a security thread away under the same fallback.
       expect(collectInPrSuppressions(unknownAuthor.previousFindings).filter(s => s.reason === 'agree-reply').map(s => s.fingerprint.file))
-        .toEqual(['src/author-agreed.ts', 'src/collaborator-agreed.ts', 'src/collaborator-dismissed.ts', 'src/private-member-agreed.ts']);
+        .toEqual(['src/author-agreed.ts', 'src/collaborator-agreed.ts', 'src/collaborator-dismissed.ts', 'src/private-member-agreed.ts', 'src/blocker-author-agreed.ts']);
 
       // A repo admin author clears their own resolved threads. Nothing is reopened, and the override waits for Manki's reply.
       // Permissions are cached per client, so the admin check needs a fresh one.
@@ -1409,13 +1413,14 @@ describe('fetchRecapState', () => {
         ['src/author-resolved.ts', { login: 'author', via: 'resolve', announced: false }],
         ['src/admin-dismissed.ts', { login: 'author', via: 'dismiss', announced: true }],
         ['src/author-resolved-again.ts', { login: 'author', via: 'resolve', announced: false }],
+        ['src/blocker-author-resolved.ts', { login: 'author', via: 'resolve', announced: false }],
       ]);
       const adminOpen = adminState.previousFindings.filter(f => f.status === 'open' || f.status === 'replied')
         .map(f => ({ threadId: f.threadId!, title: f.title, file: f.file, line: f.line, severity: f.severity }));
       expect(adminState.priorRounds[0].findings.entries
         .filter(e => determineOutcome([], [e], adminOpen, collectResolvedThreadIds(adminState.previousFindings)).outcome === 'ADDRESS_FIRST')
         .map(e => e.fingerprint.file))
-        .toEqual(files.filter(file => cases[file].blocks && !['src/author-resolved.ts', 'src/admin-dismissed.ts', 'src/author-resolved-again.ts'].includes(file)));
+        .toEqual(files.filter(file => cases[file].blocks && !['src/author-resolved.ts', 'src/admin-dismissed.ts', 'src/author-resolved-again.ts', 'src/blocker-author-resolved.ts'].includes(file)));
       // A second read on the same client does not ask GitHub again.
       const lookups = permission.mock.calls.length;
       await fetchRecapState(admin, TEST_BOT, 'owner', 'repo', 1, 'author');
@@ -1662,10 +1667,10 @@ describe('fetchRecapState', () => {
       const ctx = makeRoundContext(1, {
         findings: {
           count: 1,
-          severityCounts: { blocker: 1 },
+          severityCounts: { warning: 1 },
           entries: [{
             fingerprint: { file: 'src/foo.ts', lineStart: 10, lineEnd: 10, slug: 'Null-check' },
-            severity: 'blocker',
+            severity: 'warning',
             threadId: 'thread-1',
             authorReplyClass: 'none',
             title: 'Null check',
@@ -1676,7 +1681,7 @@ describe('fetchRecapState', () => {
         id: 'thread-1',
         comments: {
           nodes: [
-            { body: '<!-- manki:blocker:Null-check --> \u{1F6AB} **Blocker**: Null check\n\nDescription.', author: { login: 'github-actions[bot]' } },
+            { body: '<!-- manki:warning:Null-check --> **Warning**: Null check\n\nDescription.', author: { login: 'github-actions[bot]' } },
             { body: 'Fixed in latest push', author: { login: 'author' } },
           ],
         },
@@ -1792,11 +1797,11 @@ describe('fetchRecapState', () => {
       const ctx = makeRoundContext(1, {
         findings: {
           count: 2,
-          severityCounts: { blocker: 1, warning: 1 },
+          severityCounts: { warning: 2 },
           entries: [
             {
               fingerprint: { file: 'src/foo.ts', lineStart: 10, lineEnd: 10, slug: 'Null-check' },
-              severity: 'blocker',
+              severity: 'warning',
               threadId: 'thread-agree',
               authorReplyClass: 'none',
               title: 'Null check',
@@ -1815,7 +1820,7 @@ describe('fetchRecapState', () => {
         id: 'thread-agree',
         comments: {
           nodes: [
-            { body: '<!-- manki:blocker:Null-check --> **Blocker**: Null check', author: { login: 'github-actions[bot]' } },
+            { body: '<!-- manki:warning:Null-check --> **Warning**: Null check', author: { login: 'github-actions[bot]' } },
             { body: 'Agreed, will fix', author: { login: 'author' } },
           ],
         },
@@ -2060,6 +2065,15 @@ describe('llmDeduplicateFindings', () => {
     jest.mocked(mockClient.sendMessage).mockResolvedValueOnce({ content: '[{ "index": 1, "matchedDismissed": 1 }, { "index": 1, "matchedDismissed": 2 }]' } as never);
     const both = await llmDeduplicateFindings(findings, [fixed, previous[0]], mockClient);
     expect(both.duplicates.map(d => d.finding.title)).toEqual(['Missing null check']);
+
+    // A blocker is dropped only for a resolved blocking or security thread, since the PR author can resolve any other.
+    const blocker = { ...findings[0], severity: 'blocker' as const };
+    const notWaived = await llmDeduplicateFindings([blocker], previous, mockClient);
+    expect(notWaived).toEqual({ unique: [blocker], duplicates: [] });
+    for (const guarded of [{ severity: 'blocker' as const }, { isSecurity: true }]) {
+      const waived = await llmDeduplicateFindings([blocker], [makePrevious({ ...previous[0], ...guarded })], mockClient);
+      expect(waived.duplicates.map(d => d.finding.title)).toEqual(['Missing null check']);
+    }
   });
 
   it('handles LLM returning no matches', async () => {
