@@ -872,17 +872,20 @@ function initialDashboard(diff: ParsedDiff, config: ReviewConfig, plannerEnabled
  * so a review of an old commit never lifts the merge block on a new one. Past that check the round is final,
  * so a later push no longer stops it.
  */
-async function replacePreviousReviews(target: RunTarget, progress: RunProgress, reviewId: number): Promise<void> {
+async function replacePreviousReviews(
+  target: RunTarget, progress: RunProgress, reviewId: number, state: 'CHANGES_REQUESTED' | 'APPROVED' = 'CHANGES_REQUESTED',
+): Promise<void> {
   const { octokit, owner, repo, prNumber, commitSha } = target;
   progress.reviewPosted = true;
   await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
   progress.stopHeadWatch();
-  await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId);
+  await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId, state);
 }
 
 /**
- * Posts a comment for a diff no model reads, replaces the previous reviews, approvals included, and marks the progress
- * comment complete. Returns the report for the PR check, which waits for a person.
+ * Posts a comment for a diff no model reads, dismisses the earlier approvals and marks the progress comment complete.
+ * An earlier request for changes stands, since no model read whether the change fixed it. Returns the report for the
+ * PR check, which waits for a person.
  */
 async function postUnreviewedRound(
   target: RunTarget, progress: RunProgress, commentId: number, dashboard: DashboardData, diff: ParsedDiff, summary: string, metadata: ReviewMetadata,
@@ -891,8 +894,7 @@ async function postUnreviewedRound(
   await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
   const result = { verdict: 'COMMENT' as const, summary, findings: [], highlights: [], reviewComplete: true, agentNames: [] as string[] };
   const { id: reviewId } = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, undefined, undefined, { noVerdict: true });
-  await replacePreviousReviews(target, progress, reviewId);
-  await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId, 'APPROVED');
+  await replacePreviousReviews(target, progress, reviewId, 'APPROVED');
   await updateProgressComment(octokit, owner, repo, commentId, dashboard, metadata, progressSettings(target, progress, 'up to date', { reviewed: true }));
   await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha);
   return { conclusion: 'action_required', title: 'Not reviewed', summary };

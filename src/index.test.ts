@@ -2268,9 +2268,9 @@ describe('runFullReview orchestration', () => {
     expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual({ noVerdict: true });
     expect(posted.summary).toContain('**Not reviewed** at `abc123`: no model read this PR');
     expect(posted.summary).toContain(file && matchedPattern ? `- \`${file.path}\`: matches \`${matchedPattern}\` in \`exclude_paths\`` : '- `gradle/wrapper/gradle-wrapper.jar`: no lines to read');
-    if (file?.path === 'yarn.lock') expect(posted.summary).toContain('**Static analysis on the skipped files:**\n- `yarn.lock:12`: osv-scanner GHSA-1234: left-pad 1.0.0 is vulnerable');
+    if (file?.path === 'yarn.lock') expect(posted.summary).toContain('**Static analysis on the skipped files:**\n- `yarn.lock:12`: `osv-scanner GHSA-1234`: `left-pad 1.0.0 is vulnerable`');
     expect(staticSignalsModule.collectStaticSignals).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ headSha: 'abc123', fullDiff: expect.objectContaining({ binarySkipped }) }));
-    expect(jest.mocked(ghUtils.dismissPreviousReviews)).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 42, 123, 'APPROVED');
+    expect(jest.mocked(ghUtils.dismissPreviousReviews).mock.calls).toEqual([[expect.anything(), 'test-owner', 'test-repo', 42, 123, 'APPROVED']]);
     expect(mockChecksUpdate).toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'action_required', output: expect.objectContaining({ title: 'Not reviewed' }) }));
     // Metadata is what makes the progress comment read as complete rather than failed.
     expect(jest.mocked(ghUtils.updateProgressComment)).toHaveBeenLastCalledWith(
@@ -2987,7 +2987,7 @@ describe('runFullReview orchestration', () => {
     await callRunFullReview();
 
     expect(jest.mocked(ghUtils.dismissPreviousReviews)).toHaveBeenCalledWith(
-      expect.anything(), 'test-owner', 'test-repo', 42, 123,
+      expect.anything(), 'test-owner', 'test-repo', 42, 123, 'CHANGES_REQUESTED',
     );
     expect(jest.mocked(ghUtils.postReview).mock.invocationCallOrder[0])
       .toBeLessThan(jest.mocked(ghUtils.dismissPreviousReviews).mock.invocationCallOrder[0]);
