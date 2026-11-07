@@ -818,13 +818,25 @@ describe('openMemoryStore', () => {
     expect(warning).toHaveBeenCalledWith(expect.stringContaining('`memory_repo_token` is not set, so memory is skipped'));
   });
 
+  it('skips the public central memory for a private repo with a warning', () => {
+    const warning = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const payload = github.context.payload;
+    github.context.payload = { ...payload, repository: { name: 'test-repo', owner: { login: 'owner' }, private: true } };
+    try {
+      expect(centralStore()).toBeUndefined();
+    } finally {
+      github.context.payload = payload;
+    }
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('memory is skipped for this private repo'));
+  });
+
   it('uses the central memory without `memory.repo`, and warns that a `memory_repo_token` is unused', async () => {
     const warning = jest.spyOn(core, 'warning').mockImplementation(() => {});
     const service = mockMemoryService({});
 
     await loadMemory(centralStore('memory-token'));
 
-    expect(warning).toHaveBeenCalledWith(expect.stringContaining('`memory_repo_token` is set without `memory.repo`, so it is unused'));
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('`memory_repo_token` is set without `memory.repo`, so it is unused and memory comes from the central memory repository'));
     expect(service.requests.map(r => r.endpoint)).toEqual(['/memory/read']);
   });
 });
