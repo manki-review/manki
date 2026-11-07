@@ -198,7 +198,9 @@ export function formatUnreviewedNotice(shortSha: string, excluded: RoundDiffExcl
     ...excluded.map(f => `- \`${sanitizeFilePath(f.path)}\`: matches \`${sanitizeFilePath(f.matchedPattern)}\` in \`exclude_paths\``),
     ...binary.map(f => `- \`${sanitizeFilePath(f.path)}\`: no lines to read, such as a binary, a mode change or an empty file`),
   ];
-  const found = signals.map(s => `- \`${sanitizeFilePath(s.file)}:${s.line}\`: ${s.tool}${s.ruleId ? ` ${s.ruleId}` : ''}: ${s.message}`);
+  // Tool output can quote the PR, so it is shown as inline code on one line.
+  const inline = (text: string) => `\`${sanitizeFilePath(sanitizeMarkdown(text))}\``;
+  const found = signals.map(s => `- \`${sanitizeFilePath(s.file)}:${s.line}\`: ${inline([s.tool, s.ruleId].filter(Boolean).join(' '))}: ${inline(s.message)}`);
   return [
     `**Not reviewed** at \`${shortSha}\`: no model read this PR, since Manki skips every file it changes. A person needs to review it.`,
     ...(skipped.length > 0 ? [`**Skipped files:**\n${list(skipped)}`] : []),
