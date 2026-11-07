@@ -74,9 +74,9 @@ describe('recordFixRate', () => {
             count: 4,
             severityCounts: {},
             entries: [
-              { ...makeFindingFingerprintEntry({ title: 'Changed line', file: 'src/a.ts', lineStart: 10, severity: 'warning', specialist: 'Security' }), judgeConfidence: 'high', toolEvidence: 'confirmed', category: 'security', effort: 'quick' },
+              { ...makeFindingFingerprintEntry({ title: 'Changed line', file: 'src/a.ts', lineStart: 10, severity: 'warning', specialist: 'Security' }), judgeConfidence: 'high', toolEvidence: 'confirmed', category: 'security', effort: 'quick', evidence: { checks: ['read src/a.ts:10'], proof: ['src/a.ts:10'] }, refutation: { outcome: 'confirmed', reason: 'Reachable.', files: ['src/a.ts'], codeDigest: 'd' } },
               makeFindingFingerprintEntry({ title: 'Judge addressed', file: 'src/b.ts', lineStart: 5, severity: 'suggestion', specialist: 'Style', threadId: 'T_B' }),
-              { ...makeFindingFingerprintEntry({ title: 'Human resolved', file: 'src/b.ts', lineStart: 20, severity: 'warning', specialist: 'Security', threadId: 'T_C' }), judgeConfidence: 'high', toolEvidence: 'confirmed', category: 'security', effort: 'quick' },
+              { ...makeFindingFingerprintEntry({ title: 'Human resolved', file: 'src/b.ts', lineStart: 20, severity: 'warning', specialist: 'Security', threadId: 'T_C' }), judgeConfidence: 'high', toolEvidence: 'confirmed', category: 'security', effort: 'quick', evidence: { checks: ['read src/a.ts:10'], proof: ['src/a.ts:10'] }, refutation: { outcome: 'confirmed', reason: 'Reachable.', files: ['src/a.ts'], codeDigest: 'd' } },
               { ...makeFindingFingerprintEntry({ title: 'Far from change', file: 'src/a.ts', lineStart: 80, severity: 'warning', reviewers: ['Security', 'Style'] }), judgeConfidence: 'low', toolEvidence: 'none', category: 'style', effort: 'moderate' },
             ],
           },
@@ -103,7 +103,7 @@ describe('recordFixRate', () => {
     });
   });
 
-  it('counts fixed, dismissed and untouched findings per specialist and per confidence, tool evidence, category and effort, and appends them to the memory repo', async () => {
+  it('counts fixed, dismissed and untouched findings per specialist and per confidence, tool evidence, category, effort, evidence and judge check, and appends them to the memory repo', async () => {
     const github = mockOctokit();
     const memory = mockOctokit('{"pr":41}\n');
 
@@ -122,10 +122,10 @@ describe('recordFixRate', () => {
         { severity: 'nitpick', specialist: 'Style', posted: 2, fixed: 0, dismissed: 1, untouched: 1 },
       ],
       calibration: [
-        { severity: 'warning', confidence: 'high', toolEvidence: 'confirmed', category: 'security', effort: 'quick', posted: 2, fixed: 1, dismissed: 1, untouched: 0 },
-        { severity: 'suggestion', confidence: 'unknown', toolEvidence: 'unknown', category: 'unknown', effort: 'unknown', posted: 1, fixed: 1, dismissed: 0, untouched: 0 },
-        { severity: 'warning', confidence: 'low', toolEvidence: 'none', category: 'style', effort: 'moderate', posted: 1, fixed: 0, dismissed: 0, untouched: 1 },
-        { severity: 'nitpick', confidence: 'unknown', toolEvidence: 'unknown', category: 'unknown', effort: 'unknown', posted: 2, fixed: 0, dismissed: 1, untouched: 1 },
+        { severity: 'warning', confidence: 'high', toolEvidence: 'confirmed', category: 'security', effort: 'quick', hadEvidence: true, judgeChecked: true, posted: 2, fixed: 1, dismissed: 1, untouched: 0 },
+        { severity: 'suggestion', confidence: 'unknown', toolEvidence: 'unknown', category: 'unknown', effort: 'unknown', hadEvidence: false, judgeChecked: false, posted: 1, fixed: 1, dismissed: 0, untouched: 0 },
+        { severity: 'warning', confidence: 'low', toolEvidence: 'none', category: 'style', effort: 'moderate', hadEvidence: false, judgeChecked: false, posted: 1, fixed: 0, dismissed: 0, untouched: 1 },
+        { severity: 'nitpick', confidence: 'unknown', toolEvidence: 'unknown', category: 'unknown', effort: 'unknown', hadEvidence: false, judgeChecked: false, posted: 2, fixed: 0, dismissed: 1, untouched: 1 },
       ],
     };
     expect(summaryLine()).toEqual(expected);

@@ -108,6 +108,31 @@ describe('formatFindingComment', () => {
     expect(formatFindingComment(baseFinding)).not.toContain('<details>');
   });
 
+  it('collapses "How this was checked" with at most five plain lines, the refutation first, and only on a finding with evidence', () => {
+    const comment = formatFindingComment({
+      ...baseFinding,
+      evidence: {
+        checks: ['read src/main.ts:40, where `value` comes from the request', 'grep `value ==` under src:\n```\nsrc/x.ts:1: no\n```', `${'very long check '.repeat(20)}end`, 'fourth check'],
+        proof: ['src/main.ts:42'],
+        emptySearch: 'grep `value == null` under src: no match',
+      },
+      refutation: { outcome: 'confirmed', reason: 'No caller checks `value` first.', proof: ['src/main.ts:42'], files: ['src/main.ts'], codeDigest: 'abc' },
+    });
+
+    const section = comment.match(/<details>\n<summary>How this was checked<\/summary>\n\n([\s\S]*?)\n\n<\/details>/)![1].split('\n');
+    expect(section).toEqual([
+      '- The judge tried to refute it with the repository tools and confirmed it: No caller checks `value` first.',
+      '- Proving lines: `src/main.ts:42`',
+      '- Searched with no match: grep `value == null` under src: no match',
+      '- read src/main.ts:40, where `value` comes from the request',
+      '- grep `value ==` under src: src/x.ts:1: no',
+    ]);
+    expect(formatFindingComment({ ...baseFinding, evidence: { checks: [`${'very long check '.repeat(20)}end`], proof: [] } }))
+      .toMatch(/<summary>How this was checked<\/summary>\n\n- (very long check ){9}very long check…\n/);
+    expect(formatFindingComment({ ...baseFinding, evidence: { checks: [], proof: [] } })).not.toContain('How this was checked');
+    expect(formatFindingComment(baseFinding)).not.toContain('How this was checked');
+  });
+
   it('omits the fix when there is none', () => {
     const comment = formatFindingComment(baseFinding);
     expect(comment).not.toContain('<summary>Suggested fix</summary>');
