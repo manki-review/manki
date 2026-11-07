@@ -2196,6 +2196,23 @@ describe('runReview', () => {
     infoSpy.mockRestore();
   });
 
+  it('reads the verdict when the reader answers in markdown first, after telling it what was wrong', async () => {
+    const clients = makeClients();
+    jest.mocked(clients.judge.sendMessage)
+      .mockResolvedValueOnce({ content: '**Verdict:** READY\n\nNothing blocks a merge.' })
+      .mockResolvedValueOnce({ content: READY_VERDICT });
+    const warningSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
+
+    const result = await runReview(clients, { config: makeConfig(), diff: makeDiff({ totalAdditions: 10, totalDeletions: 5 }), rawDiff: 'raw diff', repoContext: 'repo context' });
+    expect(result.reviewComplete).toBe(true);
+    expect(result.outcome).toBe('READY');
+    const [first, second] = jest.mocked(clients.judge.sendMessage).mock.calls.map(call => call[1]);
+    expect(second.startsWith(`${first}\n\nYour previous reply could not be used: malformed verdict`)).toBe(true);
+    expect(second).toContain('Reply with only the JSON object the system prompt describes');
+    expect(warningSpy).toHaveBeenCalledWith(expect.stringContaining('Verdict reader reply could not be used'));
+    warningSpy.mockRestore();
+  });
+
   const refusal = new RefusalError("Opus 5.5's safeguards flagged this message", 'refusal (reasoning_extraction)');
 
   it.each([
