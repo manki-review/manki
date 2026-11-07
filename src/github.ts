@@ -1601,7 +1601,8 @@ function sanitizeMarkdown(text: string): string {
     .replace(/!\[([^\]]*)\]\[[^\]]*\]/g, '$1')                       // Reference images
     .replace(/\[([^\]]*)\]\[[^\]]*\]/g, '$1')                        // Reference links
     .replace(/^\[[^\]]*\]:\s+.*$/gm, '')                             // Link/image definitions
-    .replace(SUGGESTION_FENCE_RE, '$1')                             // Suggestion fences: plain code, no commit button
+    .replace(FENCE_INFO_RE, (_, ticks?: string, tickInfo?: string, tildes?: string, tildeInfo?: string) => // No suggestion fences
+      `${ticks ?? tildes}${plainLanguage(ticks ? tickInfo : tildeInfo)}`)
     // Insert zero-width space after @ to prevent GitHub from resolving mentions.
     // Lookbehind avoids matching email addresses (which have chars before @).
     // Also handles @org/team patterns.
@@ -1626,10 +1627,19 @@ function visibleLength(text: string): number {
   return text.replace(/<details>[\s\S]*?<\/details>/g, '').replace(/<!--[\s\S]*?-->/g, '').length;
 }
 const FENCE_LINE_RE = /^\s*(`{3,}|~{3,})(.*)$/;
-// Any fence run, wherever it sits, since later splitting can move it to the start of a line, whose info string holds
-// `suggestion` anywhere or an `&`, since GitHub trims it and decodes entities in it. The rest of the line goes too, so no
-// later word on it can become the info string.
-const SUGGESTION_FENCE_RE = /(`{3,}|~{3,})(?=[^\n`]*(?:suggestion|&))[^\n]*/gi;
+// Every fence run with its info string, wherever it sits, since later splitting can move it to the start of a line. A
+// backtick run's info string stops at the next backtick, so a later run on the same line is matched too.
+const FENCE_INFO_RE = /(`{3,})([^\n`]*)|(~{3,})([^\n]*)/g;
+const PLAIN_LANGUAGE_RE = /^[A-Za-z0-9_+#.-]{1,32}$/;
+
+/**
+ * Returns `info` when it is a plain language name, or nothing. Any other info string is dropped, so no spelling that
+ * GitHub would read as `suggestion` gets a commit button.
+ */
+function plainLanguage(info = ''): string {
+  const lang = info.trim();
+  return PLAIN_LANGUAGE_RE.test(lang) && lang.toLowerCase() !== 'suggestion' ? info : '';
+}
 const PROSE_LINE_RE = /^[A-Z][A-Za-z']*(?:\s+\S+){2,}[.:]$/;
 // A comment that says where the code goes, such as `// After the guard, add:`, means the code does not apply as is.
 const PLACEMENT_COMMENT_RE = /^\s*(?:\/\/|#|--|\/\*)\s+(?:(?:in|after|before|replace|add|then|change|move|instead)\b|.*:\s*(?:\*\/)?$)/i;
@@ -1698,7 +1708,7 @@ function renderFixParts(parts: FixPart[], file: string): string {
     const text = p.lines.join('\n');
     if (p.kind === 'prose') return sanitizeMarkdown(text);
     const fence = dynamicFence(text);
-    const lang = [p.lang, extension].map(l => (l ?? '').replace(/[^\w+#.-]/g, '')).find(l => l && !/^suggestion/i.test(l)) ?? '';
+    const lang = plainLanguage(p.lang) || plainLanguage(extension);
     return `${fence}${lang}\n${text}\n${fence}`;
   }).join('\n\n');
 }
