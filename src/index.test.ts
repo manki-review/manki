@@ -198,7 +198,6 @@ jest.mock('./github', () => ({
   fetchPRComments: jest.fn().mockResolvedValue([]),
   BOT_LOGIN: 'manki-review[bot]',
   isBotLogin: jest.requireActual('./github').isBotLogin,
-  isTrustedAssociation: jest.requireActual('./github').isTrustedAssociation,
   titleToSlug: jest.requireActual('./github').titleToSlug,
   truncateBody: jest.requireActual('./github').truncateBody,
   APPROVED_LINE: jest.requireActual('./github').APPROVED_LINE,

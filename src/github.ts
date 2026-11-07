@@ -43,16 +43,11 @@ function isBotUser(bot: BotIdentity, user: { login?: string | null } | null | un
   return !!user?.login && bot.logins.includes(user.login);
 }
 
-/** Whether a comment's `author_association` grants write access to the repo. */
-function isTrustedAssociation(authorAssociation: string | null | undefined): boolean {
-  return ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(authorAssociation ?? '');
-}
-
 const permissionLookups = new WeakMap<Octokit, Map<string, Promise<string>>>();
 
 /**
  * Returns the repo permission of `login`: `admin`, `write`, `read` or `none`. `author_association` cannot tell,
- * since an org owner and an org member with read access both show as `MEMBER`.
+ * since an org member with read access shows as `MEMBER` and a private org member with write access as `NONE`.
  * Each client caches its answers, so a run asks once per login. A failed lookup counts as `none`.
  */
 function repoPermission(octokit: Octokit, owner: string, repo: string, login: string): Promise<string> {
@@ -2295,5 +2290,5 @@ async function postConfigErrorComment(
   }
 }
 
-export { APPROVED_LINE, dynamicFence, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, isTrustedAssociation, BOT_MARKER, REVIEW_COMPLETE_MARKER, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings };
+export { APPROVED_LINE, dynamicFence, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, BOT_MARKER, REVIEW_COMPLETE_MARKER, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings };
 export type { StandingVerdict };

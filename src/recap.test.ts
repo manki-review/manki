@@ -1328,6 +1328,8 @@ describe('fetchRecapState', () => {
         'src/collaborator-dismissed.ts': { resolver: BOT_LOGIN, reply: { login: 'bob', association: 'MEMBER', text: '@manki dismiss' }, security: true, blocks: false },
         // `MEMBER` covers an org member with read access, so write access comes from the API.
         'src/reader-agreed.ts': { reply: { login: 'dave', association: 'MEMBER' }, security: true, blocks: true },
+        // A private org member shows as `NONE`.
+        'src/private-member-agreed.ts': { reply: { login: 'erin', association: 'NONE' }, security: true, blocks: false },
         'src/judge-addressed.ts': { resolver: 'author', security: true, blocks: false },
         'src/plain-author-resolved.ts': { resolver: 'author', security: false, blocks: false },
         'src/plain-author-agreed.ts': { reply: { login: 'author', association: 'NONE' }, security: false, blocks: false },
@@ -1365,7 +1367,7 @@ describe('fetchRecapState', () => {
           ] },
         });
       }), [{ id: 100, body: htmlCommentBlock(ctx), user: { login: BOT_LOGIN } }]);
-      const permissions: Record<string, string> = { author: 'write', bob: 'write', dave: 'read' };
+      const permissions: Record<string, string> = { author: 'write', bob: 'write', dave: 'read', erin: 'write' };
       const permission = jest.fn(async ({ username }: { username: string }) => ({ data: { permission: permissions[username] ?? 'none' } }));
       Object.assign(octokit.rest, { repos: { getCollaboratorPermissionLevel: permission } });
 
@@ -1395,7 +1397,7 @@ describe('fetchRecapState', () => {
 
       // A reply from someone with write access agrees a security thread away under the same fallback.
       expect(collectInPrSuppressions(unknownAuthor.previousFindings).filter(s => s.reason === 'agree-reply').map(s => s.fingerprint.file))
-        .toEqual(['src/author-agreed.ts', 'src/collaborator-agreed.ts', 'src/collaborator-dismissed.ts']);
+        .toEqual(['src/author-agreed.ts', 'src/collaborator-agreed.ts', 'src/collaborator-dismissed.ts', 'src/private-member-agreed.ts']);
 
       // A repo admin author clears their own resolved threads. Nothing is reopened, and the override waits for Manki's reply.
       // Permissions are cached per client, so the admin check needs a fresh one.

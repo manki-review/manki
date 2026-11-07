@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { LLMClient } from './providers';
-import { APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, isRepoAdmin, isTrustedAssociation, LOW_CONFIDENCE_NOTE, paginateGraphql, titleToSlug } from './github';
+import { APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, fetchReviewThreadNodes, GraphqlConnection, hasWriteAccess, isBotLogin, isRepoAdmin, LOW_CONFIDENCE_NOTE, paginateGraphql, titleToSlug } from './github';
 import { findPriorThreadId } from './finding-fingerprint';
 import { extractReviewRecords, hasReviewRecord } from './review-record';
 import { matchesSuppression, Suppression } from './memory';
@@ -446,9 +446,8 @@ async function fetchRecapState(
   const botThreads = threads.filter(t => t.isBotThread);
   const prAuthorIsAdmin = !!prAuthorLogin && botThreads.some(t => isOverrideCandidate(t, prAuthorLogin))
     && await isRepoAdmin(octokit, owner, repo, prAuthorLogin);
-  // An org member with read access also shows as `MEMBER`, so a security agreement needs write access checked through the API.
   const agreers = new Set(botThreads.flatMap(t => t.isSecurity && t.authorReplyLogin && mayClearSecurityThread(t.authorReplyLogin, bot, prAuthorLogin)
-    && isTrustedAssociation(t.authorReplyAssociation) ? [t.authorReplyLogin] : []));
+    ? [t.authorReplyLogin] : []));
   const mayAgree = new Map(await Promise.all([...agreers].map(async login => [login, await hasWriteAccess(octokit, owner, repo, login)] as const)));
 
   const previousFindings = botThreads.map(t => {
