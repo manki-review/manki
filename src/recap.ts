@@ -52,6 +52,14 @@ const REOPENED_MARKER = '<!-- manki-reopened -->';
 /** Marks Manki's reply in an answered thread that the problem came back and the code there got worse. */
 const FOUND_AGAIN_MARKER = '<!-- manki-found-again -->';
 
+/** Added to a found-again reply whose finding is a blocker. The thread blocks from then on, whatever its first comment says. */
+const FOUND_AGAIN_BLOCKER_MARKER = '<!-- manki-found-again-blocker -->';
+
+/** Whether a Manki reply in `comments` says the problem came back as a blocker. */
+function foundAgainAsBlocker(bot: BotIdentity, comments: ReadonlyArray<{ body?: string | null; author: { login: string } | null }>): boolean {
+  return comments.slice(1).some(c => isBotLogin(bot, c.author?.login) && !!c.body?.includes(FOUND_AGAIN_BLOCKER_MARKER));
+}
+
 // The outcome a Manki reply to a developer starts with.
 const REPLY_OUTCOME_RE = /^\**(Fixed|Withdrawn|Agreed|Kept|Unverified)\./;
 
@@ -828,9 +836,10 @@ async function fetchReviewThreads(
       const authorReplyAssociation = lastNonBotReply?.authorAssociation;
 
       const severityMatch = firstComment?.body?.match(new RegExp(`manki:(${SEVERITY_TOKEN_PATTERN}):`));
-      const severity = (severityMatch?.[1]
+      const rootSeverity = (severityMatch?.[1]
         ? migrateLegacySeverity(severityMatch[1])
         : 'unknown') as FindingSeverity | 'unknown';
+      const severity = isBotThread && foundAgainAsBlocker(bot, thread.comments.nodes) ? 'blocker' : rootSeverity;
 
       const markerSlug = firstComment?.body?.match(new RegExp(`<!-- manki:(?:${SEVERITY_TOKEN_PATTERN}):(.+?) -->`))?.[1];
 
@@ -1070,4 +1079,4 @@ export function collectResolvedThreadIds(previousFindings?: PreviousFinding[]): 
   );
 }
 
-export { DuplicateMatch, FOUND_AGAIN_MARKER, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment };
+export { DuplicateMatch, FOUND_AGAIN_BLOCKER_MARKER, FOUND_AGAIN_MARKER, foundAgainAsBlocker, PreviousFinding, RecapState, OpenThreadsState, classifyAuthorReply, collectInPrSuppressions, fingerprintFinding, fetchPriorRoundContexts, fetchRecapState, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, securityOverridesIn, judgeAddressedThreadIds, deduplicateFindings, titlesOverlap, titleOverlapType, refreshAuthorReplyClass, llmDeduplicateFindings, parseFindingFromComment };

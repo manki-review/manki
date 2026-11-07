@@ -18,7 +18,7 @@ import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, 
 import { isEmptyInterRoundDiff } from './judge';
 import { loadMemory, RepoMemory } from './memory';
 import { MCP_SERVER_COMMAND, runMcpServer } from './mcp-server';
-import { fetchRecapState, FOUND_AGAIN_MARKER, PreviousFinding, RecapState, securityOverridesIn } from './recap';
+import { fetchRecapState, FOUND_AGAIN_BLOCKER_MARKER, FOUND_AGAIN_MARKER, PreviousFinding, RecapState, securityOverridesIn } from './recap';
 import { RETRY_HINT, ReviewClients, ReviewOptions, runReview, selectTeam, stringifyFindingFingerprint, teamModels } from './review';
 import { buildRoundContext, RoundRecordInput } from './round-context';
 import { collectStaticSignals } from './static-signals';
@@ -1385,8 +1385,8 @@ async function replyFixedThreads(run: ReviewRun, threads: OpenThread[]): Promise
 }
 
 /**
- * Replies in each answered thread where the judge kept a finding that repeats its problem, and reopens a closed one.
- * A thread gets one reply per round.
+ * Reopens each closed answered thread where the judge kept a finding that repeats its problem, and replies there.
+ * A thread gets one reply per round, and a blocker's reply makes the thread block.
  */
 async function replyAnsweredThreads(run: ReviewRun, result: ReviewResult): Promise<void> {
   const replied = new Set<string>();
@@ -1395,9 +1395,17 @@ async function replyAnsweredThreads(run: ReviewRun, result: ReviewResult): Promi
     if (!threadId || replied.has(threadId)) continue;
     replied.add(threadId);
     const thread = run.recap.previousFindings.find(t => t.threadId === threadId);
+    // Reopened first, so the thread a blocker was listed under stays open even when the reply fails.
+    if (thread && thread.status !== 'open' && thread.status !== 'replied') {
+      try {
+        await unresolveReviewThread(run.octokit, threadId);
+      } catch (error) {
+        core.warning(`Failed to reopen answered thread ${threadId}: ${error}`);
+      }
+    }
+    const markers = f.severity === 'blocker' ? [FOUND_AGAIN_MARKER, FOUND_AGAIN_BLOCKER_MARKER] : [FOUND_AGAIN_MARKER];
     try {
-      await replyToReviewThread(run.octokit, threadId, formatFoundAgainReply(f), FOUND_AGAIN_MARKER);
-      if (thread && thread.status !== 'open' && thread.status !== 'replied') await unresolveReviewThread(run.octokit, threadId);
+      await replyToReviewThread(run.octokit, threadId, formatFoundAgainReply(f), ...markers);
     } catch (error) {
       core.warning(`Failed to reply on answered thread ${threadId}: ${error}`);
     }

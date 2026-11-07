@@ -850,9 +850,9 @@ describe('fetchRecapState', () => {
         id: 't3',
         comments: {
           nodes: [
-            { body: '<!-- manki:blocker:Bug --> \u{1F6AB} **Blocker**: Bug found\n\nDesc.', author: { login: 'github-actions[bot]' } },
+            { body: '<!-- manki:warning:Bug --> **Warning**: Bug found\n\nDesc.', author: { login: 'github-actions[bot]' } },
             { body: 'Agreed. Handling it later is fine.\n\n<!-- manki -->', author: { login: 'github-actions[bot]' } },
-            { body: 'This came up again.\n\nDetails.\n\n<!-- manki -->\n<!-- manki-found-again -->', author: { login: 'github-actions[bot]' } },
+            { body: 'This came up again.\n\nDetails.\n\n<!-- manki -->\n<!-- manki-found-again -->\n<!-- manki-found-again-blocker -->', author: { login: 'github-actions[bot]' } },
           ],
         },
       }),
@@ -861,6 +861,7 @@ describe('fetchRecapState', () => {
     const state = await fetchRecapState(octokit, TEST_BOT, 'owner', 'repo', 1);
     expect(state.previousFindings[0].authorReplyText).toBe('Fixed, done.');
     expect(state.previousFindings.map(f => f.answer)).toEqual([undefined, '**Withdrawn.** `load` returns early.', 'This came up again.\n\nDetails.']);
+    expect(state.previousFindings.map(f => f.severity)).toEqual(['blocker', 'blocker', 'blocker']);
   });
 
   it('uses the latest non-bot reply when multiple human replies exist', async () => {

@@ -158,6 +158,7 @@ jest.mock('./recap', () => ({
   sanitize: jest.requireActual('./recap').sanitize,
   securityOverridesIn: jest.requireActual('./recap').securityOverridesIn,
   FOUND_AGAIN_MARKER: jest.requireActual('./recap').FOUND_AGAIN_MARKER,
+  FOUND_AGAIN_BLOCKER_MARKER: jest.requireActual('./recap').FOUND_AGAIN_BLOCKER_MARKER,
 }));
 
 jest.mock('./review', () => ({
@@ -5256,7 +5257,7 @@ describe('runFullReview orchestration', () => {
     jest.mocked(ghUtils.fetchInterRoundDiff).mockResolvedValue(
       'diff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-old\n+new\n',
     );
-    const worse = { severity: 'warning' as const, title: 'Bug B', file: 'src/app.ts', line: 5, description: 'Worse now.', reviewers: [], answeredIn: { threadId: 'PRRT_def', answer: 'Withdrawn. Fine.' } };
+    const worse = { severity: 'blocker' as const, title: 'Bug B', file: 'src/app.ts', line: 5, description: 'Worse now.', reviewers: [], answeredIn: { threadId: 'PRRT_def', answer: 'Withdrawn. Fine.' } };
 
     jest.mocked(reviewModule.runReview).mockResolvedValue({
       verdict: 'APPROVE', outcome: 'READY' as const, summary: 'ok', findings: [worse, worse],
@@ -5300,9 +5301,10 @@ describe('runFullReview orchestration', () => {
       ]);
     expect(mockGraphql.mock.calls.filter(([query]) => String(query).includes('addPullRequestReviewThreadReply')).map(([, vars]) => vars)).toEqual(posted ? [
       { threadId: 'PRRT_abc', body: 'Fixed in abc123.\n\n<!-- manki -->' },
-      { threadId: 'PRRT_def', body: 'Found again.\n\n<!-- manki -->\n<!-- manki-found-again -->' },
+      { threadId: 'PRRT_def', body: 'Found again.\n\n<!-- manki -->\n<!-- manki-found-again -->\n<!-- manki-found-again-blocker -->' },
     ] : []);
     if (posted) expect(jest.mocked(ghUtils.formatFoundAgainReply)).toHaveBeenCalledWith(worse);
+    expect(jest.mocked(ghUtils.postReview).mock.calls[0][7]!.findings.entries.map(e => e.threadId)).toEqual(['PRRT_def', 'PRRT_def']);
   });
 
   it('resolves only threads with status addressed', async () => {
