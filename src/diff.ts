@@ -48,6 +48,7 @@ export function parsePRDiff(rawDiff: string): ParsedDiff {
       hunks,
       additions: file.additions,
       deletions: file.deletions,
+      ...(file.oldMode && file.newMode && file.oldMode !== file.newMode && { modeChange: `${file.oldMode} ${file.newMode}` }),
     });
   }
 
@@ -124,7 +125,7 @@ export function filterRawDiff(rawDiff: string, excludePaths: string[]): string {
  */
 export function changeDigest(diff: ParsedDiff): string {
   return createHash('sha256').update(JSON.stringify([
-    diff.files.map(f => [f.changeType, f.oldPath, f.path, f.hunks.map(h => h.content)]),
+    diff.files.map(f => [f.changeType, f.oldPath, f.path, f.modeChange, f.hunks.map(h => h.content)]),
     diff.binarySkipped?.map(f => f.header),
   ])).digest('hex');
 }

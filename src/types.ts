@@ -618,6 +618,8 @@ export interface DiffFile {
   hunks: DiffHunk[];
   additions?: number;
   deletions?: number;
+  /** The old and new mode, such as `100644 100755`, when the PR changes the mode of a file it also edits. */
+  modeChange?: string;
 }
 
 export interface DiffHunk {
