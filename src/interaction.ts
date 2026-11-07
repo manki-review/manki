@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 
 import { LLMCall, LLMClient, recordCalls, SendMessageOptions } from './providers';
 import { writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
-import { BotIdentity, dynamicFence, hasWriteAccess, MANKI_VERSION, isRepoAdmin, isTrustedAssociation, reactToIssueComment, reactToReviewComment, fetchPRDiff } from './github';
+import { BotIdentity, dynamicFence, hasWriteAccess, MANKI_VERSION, isRepoAdmin, reactToIssueComment, reactToReviewComment, fetchPRDiff } from './github';
 import { resolveMemoryRepo } from './config';
 import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
@@ -32,14 +32,11 @@ export async function isLLMAccessAllowed(octokit: Octokit, owner: string, repo: 
   return commenterCanWrite(octokit, owner, repo);
 }
 
-/**
- * Whether the commenter has write access. `OWNER`, `MEMBER` and `COLLABORATOR` count without an API call, and anyone
- * else is looked up, since GitHub can report an organization member as `CONTRIBUTOR` or `NONE`.
- */
+/** Whether the commenter has write access, asked through the API since `author_association` cannot tell. */
 async function commenterCanWrite(octokit: Octokit, owner: string, repo: string): Promise<boolean> {
   const { comment, sender } = github.context.payload;
   const login: string | undefined = sender?.login;
-  return isTrustedAssociation(comment?.author_association) || (!!login && await hasWriteAccess(octokit, owner, repo, login));
+  return !!login && await hasWriteAccess(octokit, owner, repo, login, comment?.author_association);
 }
 
 interface MemoryConfig {
@@ -145,7 +142,6 @@ async function resolveThreadOf(
 /**
  * Who may get a Manki thread resolved through a comment: someone who could resolve it by hand.
  * On a security thread, `securityAllowed` says whether the sender may also clear it: a maintainer other than the PR author.
- * Write access is checked through the API there, since an org member with read access also shows as `MEMBER`.
  */
 async function resolvePermission(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, isSecurity: boolean,
@@ -153,8 +149,7 @@ async function resolvePermission(
 ): Promise<{ mayResolve: boolean; isPrAuthor: boolean; securityAllowed: boolean }> {
   const isTrusted = await commenterCanWrite(octokit, owner, repo);
   const isPrAuthor = !!prAuthorLogin && senderLogin?.toLowerCase() === prAuthorLogin.toLowerCase();
-  const securityAllowed = isSecurity && isTrusted && !!senderLogin && mayClearSecurityThread(senderLogin, bot, prAuthorLogin)
-    && await hasWriteAccess(octokit, owner, repo, senderLogin);
+  const securityAllowed = isSecurity && isTrusted && !!senderLogin && mayClearSecurityThread(senderLogin, bot, prAuthorLogin);
   return { mayResolve: isTrusted || isPrAuthor, isPrAuthor, securityAllowed };
 }
 

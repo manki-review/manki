@@ -205,7 +205,6 @@ jest.mock('./github', () => ({
   fetchPRComments: jest.fn().mockResolvedValue([]),
   BOT_LOGIN: 'manki-review[bot]',
   isBotLogin: jest.requireActual('./github').isBotLogin,
-  isTrustedAssociation: jest.requireActual('./github').isTrustedAssociation,
   titleToSlug: jest.requireActual('./github').titleToSlug,
   truncateBody: jest.requireActual('./github').truncateBody,
   APPROVED_LINE: jest.requireActual('./github').APPROVED_LINE,
@@ -698,7 +697,7 @@ describe('run', () => {
 
       await run();
 
-      expect(jest.mocked(ghUtils.hasWriteAccess)).toHaveBeenCalledWith(workflowClient, 'test-owner', 'test-repo', 'private-member');
+      expect(jest.mocked(ghUtils.hasWriteAccess)).toHaveBeenCalledWith(workflowClient, 'test-owner', 'test-repo', 'private-member', 'CONTRIBUTOR');
       expect(mockPullsGet).toHaveBeenCalled();
       expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
     });
@@ -722,7 +721,7 @@ describe('run', () => {
 
       await run();
 
-      expect(jest.mocked(ghUtils.hasWriteAccess)).toHaveBeenCalledWith(workflowClient, 'test-owner', 'test-repo', 'stranger');
+      expect(jest.mocked(ghUtils.hasWriteAccess)).toHaveBeenCalledWith(workflowClient, 'test-owner', 'test-repo', 'stranger', 'NONE');
       expect(jest.mocked(authModule.createAuthenticatedOctokit)).not.toHaveBeenCalled();
       expect(jest.mocked(createLLMClient)).not.toHaveBeenCalled();
       expect(jest.mocked(ghUtils.reactToIssueComment)).not.toHaveBeenCalled();

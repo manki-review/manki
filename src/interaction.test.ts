@@ -37,7 +37,6 @@ jest.mock('./memory', () => ({
 jest.mock('./github', () => ({
   dynamicFence: jest.requireActual('./github').dynamicFence,
   isBotLogin: jest.requireActual('./github').isBotLogin,
-  isTrustedAssociation: jest.requireActual('./github').isTrustedAssociation,
   reactToIssueComment: jest.fn().mockResolvedValue(undefined),
   reactToReviewComment: jest.fn().mockResolvedValue(undefined),
   fetchPRDiff: jest.fn().mockResolvedValue(''),
@@ -398,6 +397,7 @@ function setContext(overrides: Record<string, any> = {}) {
     },
     issue: { pull_request: { url: 'https://...' } },
     pull_request: { number: 1 },
+    sender: { login: 'collaborator' },
     ...overrides,
   };
   ctx.repo = { owner: 'test-owner', repo: 'test-repo' };
@@ -570,19 +570,16 @@ describe('isLLMAccessAllowed', () => {
   const octokit = {} as Parameters<typeof isLLMAccessAllowed>[0];
   const allowed = () => isLLMAccessAllowed(octokit, 'test-owner', 'test-repo');
 
-  it('trusts an owner, member or collaborator without an API call', async () => {
-    setContext({ sender: { login: 'reader' } });
-    expect(await allowed()).toBe(true);
-    expect(ghUtils.hasWriteAccess).not.toHaveBeenCalled();
-  });
-
   it.each([
+    ['an owner with write access', 'owner', 'OWNER', true],
+    ['an org member with read access', 'reader', 'MEMBER', false],
+    ['a collaborator with read access', 'reader', 'COLLABORATOR', false],
     ['a private org member with write access', 'member', 'CONTRIBUTOR', true],
     ['a stranger with read access', 'reader', 'NONE', false],
   ])('asks the API about %s', async (_name, login, association, expected) => {
     setContext({ comment: { id: 42, body: '@manki review', user: { login }, author_association: association }, sender: { login } });
     expect(await allowed()).toBe(expected);
-    expect(ghUtils.hasWriteAccess).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', login);
+    expect(ghUtils.hasWriteAccess).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', login, association);
   });
 
   it.each([
@@ -597,7 +594,7 @@ describe('isLLMAccessAllowed', () => {
       pull_request: { number: 1, user: { login } },
     });
     expect(await allowed()).toBe(expected);
-    expect(ghUtils.hasWriteAccess).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', login);
+    expect(ghUtils.hasWriteAccess).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', login, association);
   });
 
   it('checks only the editor on an edit of another user\'s comment', async () => {
@@ -722,6 +719,7 @@ describe('handleReviewCommentReply', () => {
     ['Kept. `src/file.ts:12` still skips `clearTimeout` on the success path.', 'MEMBER', 'someone', 'pr-author', false, undefined],
     ['Unverified. I can\'t verify from the code that the API sorts the list. A maintainer should confirm it.', 'OWNER', 'pr-author', 'pr-author', false, undefined],
     ['Fixed. The guard now runs first.', 'CONTRIBUTOR', 'reader', 'pr-author', false, undefined],
+    ['Fixed. The guard now runs first.', 'COLLABORATOR', 'reader', 'pr-author', false, undefined],
     ['Fixed. The guard now runs first.', 'NONE', 'someone', 'pr-author', false, 'ADDRESSED'],
     ['Agreed. The token never reaches a log.', 'OWNER', 'pr-author', 'pr-author', true, undefined],
     ['Agreed. The token never reaches a log.', 'CONTRIBUTOR', 'reader', 'pr-author', true, undefined],
@@ -803,12 +801,12 @@ describe('handleReviewCommentReply', () => {
   });
 
   it.each([
-    ['saves a narrow learning when a writer gets the finding withdrawn', 'Withdrawn. `parse` returns early on an empty id.', 'OWNER', false, true],
-    ['saves no learning for a withdrawn security finding', 'Withdrawn. The token is masked first.', 'OWNER', true, false],
-    ['saves no learning for a reply from someone without write access', 'Withdrawn. `parse` returns early on an empty id.', 'CONTRIBUTOR', false, false],
-    ['saves no learning for any other outcome', 'Agreed. The follow-up PR handles it.', 'OWNER', false, false],
-  ])('%s', async (_name, reply, association, isSecurity, saves) => {
-    setContext({ comment: { id: 1, body: 'The caller always validates this upstream, so the check is not needed here.', user: { type: 'User' }, in_reply_to_id: 99, author_association: association }, pull_request: { number: 7 } });
+    ['saves a narrow learning when a writer gets the finding withdrawn', 'Withdrawn. `parse` returns early on an empty id.', 'OWNER', 'owner', false, true],
+    ['saves no learning for a withdrawn security finding', 'Withdrawn. The token is masked first.', 'OWNER', 'owner', true, false],
+    ['saves no learning for a reply from someone without write access', 'Withdrawn. `parse` returns early on an empty id.', 'MEMBER', 'reader', false, false],
+    ['saves no learning for any other outcome', 'Agreed. The follow-up PR handles it.', 'OWNER', 'owner', false, false],
+  ])('%s', async (_name, reply, association, sender, isSecurity, saves) => {
+    setContext({ comment: { id: 1, body: 'The caller always validates this upstream, so the check is not needed here.', user: { type: 'User' }, in_reply_to_id: 99, author_association: association }, pull_request: { number: 7 }, sender: { login: sender } });
     const octokit = createMockOctokit();
     octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: findingComment(isSecurity), path: 'src/file.ts', line: 10 } });
     const client = createMockClient();
@@ -842,8 +840,8 @@ describe('handleReviewCommentReply', () => {
 });
 
 describe('handleDismiss (via handlePRComment)', () => {
-  it('acknowledges dismiss from non-collaborator without persisting', async () => {
-    setContext({ comment: { id: 42, body: '@manki dismiss null-check', user: { type: 'User' }, author_association: 'CONTRIBUTOR' } });
+  it.each(['CONTRIBUTOR', 'MEMBER', 'COLLABORATOR'])('acknowledges dismiss from a %s without write access without persisting', async association => {
+    setContext({ comment: { id: 42, body: '@manki dismiss null-check', user: { type: 'User' }, author_association: association }, sender: { login: 'reader' } });
     const octokit = createMockOctokit();
     await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, { enabled: true, repo: 'mem' }, 'token');
     expect(core.info).toHaveBeenCalledWith(expect.stringContaining('non-collaborator'));
@@ -854,10 +852,10 @@ describe('handleDismiss (via handlePRComment)', () => {
   });
 
   it.each([
-    ['a trusted collaborator', 'OWNER', undefined],
+    ['an owner with write access', 'OWNER', 'owner'],
     ['a private org member with write access', 'NONE', 'member'],
   ])('stores suppression for %s with memory enabled', async (_who, association, sender) => {
-    setContext({ comment: { id: 42, body: '@manki dismiss null-check-warning', user: { type: 'User' }, author_association: association }, sender: sender && { login: sender } });
+    setContext({ comment: { id: 42, body: '@manki dismiss null-check-warning', user: { type: 'User' }, author_association: association }, sender: { login: sender } });
     const octokit = createMockOctokit();
     await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, { enabled: true, repo: 'test-owner/memory' }, 'mem-token');
     expect(memory.writeSuppression).toHaveBeenCalled();
@@ -884,8 +882,8 @@ describe('handleDismiss (via handlePRComment)', () => {
 });
 
 describe('handleRemember (via handlePRComment)', () => {
-  it('rejects non-collaborators', async () => {
-    setContext({ comment: { id: 42, body: '@manki remember always check for sql injection in query builders', user: { type: 'User' }, author_association: 'CONTRIBUTOR' } });
+  it.each(['CONTRIBUTOR', 'MEMBER', 'COLLABORATOR'])('rejects a %s without write access', async association => {
+    setContext({ comment: { id: 42, body: '@manki remember always check for sql injection in query builders', user: { type: 'User' }, author_association: association }, sender: { login: 'reader' } });
     const octokit = createMockOctokit();
     await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, { enabled: true, repo: 'mem' }, 'token');
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
@@ -936,8 +934,8 @@ describe('handleRemember (via handlePRComment)', () => {
 });
 
 describe('handleForget (via handlePRComment)', () => {
-  it('rejects non-collaborators', async () => {
-    setContext({ comment: { id: 42, body: '@manki forget some learning', user: { type: 'User' }, author_association: 'CONTRIBUTOR' } });
+  it.each(['CONTRIBUTOR', 'MEMBER', 'COLLABORATOR'])('rejects a %s without write access', async association => {
+    setContext({ comment: { id: 42, body: '@manki forget some learning', user: { type: 'User' }, author_association: association }, sender: { login: 'reader' } });
     const octokit = createMockOctokit();
     await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, { enabled: true, repo: 'mem' }, 'token');
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
@@ -1026,8 +1024,8 @@ describe('handleForget (via handlePRComment)', () => {
 });
 
 describe('handleCheck (via handlePRComment)', () => {
-  it('rejects non-collaborators', async () => {
-    setContext({ comment: { id: 42, body: '@manki check', user: { type: 'User' }, author_association: 'CONTRIBUTOR' } });
+  it.each(['CONTRIBUTOR', 'MEMBER', 'COLLABORATOR'])('rejects a %s without write access', async association => {
+    setContext({ comment: { id: 42, body: '@manki check', user: { type: 'User' }, author_association: association }, sender: { login: 'reader' } });
     const octokit = createMockOctokit();
     await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, undefined, undefined, { auto_approve: true } as Partial<ReviewConfig> as ReviewConfig);
     expect(octokit.rest.issues.createComment).toHaveBeenCalledWith(
@@ -1175,6 +1173,7 @@ describe('handleReviewCommentCommand', () => {
     ['a PR author without admin', 'OWNER', 'pr-author', false, true, false],
     ['a maintainer other than the PR author', 'MEMBER', 'someone', false, true, true],
     ['an org member with read access', 'MEMBER', 'reader', false, true, false],
+    ['a collaborator with read access, on a plain finding', 'COLLABORATOR', 'reader', false, false, false],
     ['an outside contributor', 'CONTRIBUTOR', 'reader', true, true, false],
     ['a private org member with write access', 'NONE', 'someone', false, true, true],
     ['a PR author without admin, on a plain finding', 'NONE', 'pr-author', false, false, true],
