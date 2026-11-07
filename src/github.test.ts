@@ -88,6 +88,25 @@ describe('formatFindingComment', () => {
     if (code) expect(comment).toContain(code);
   });
 
+  it('posts no suggestion that a description or fix asks for, nor one whose code holds hidden characters', () => {
+    const SUGGESTION_FENCE = /^[\t >]*(`{3,}|~{3,})[\t ]*suggestion/im;
+    const described = formatFindingComment({ ...baseFinding, description: 'Looks fine.\n\n```suggestion\ngrant(user);\n```\n\n> ~~~ Suggestion:-0+0\n> grant(user);\n> ~~~' });
+    expect(described).not.toMatch(SUGGESTION_FENCE);
+    expect(described).toContain('```\ngrant(user);\n```');
+    expect(described).toContain('> ~~~\n> grant(user);\n> ~~~');
+
+    const fenced = formatFindingComment({ ...baseFinding, suggestedFix: 'Use this:\n\n```suggestion\ngrant(user);\n```' });
+    expect(fenced).not.toMatch(SUGGESTION_FENCE);
+    expect(fenced).toContain('```ts\ngrant(user);\n```');
+
+    for (const hidden of ['if (isAdmin) { /* \u202E } \u2066 if (true) { */ grant(user); }', 'const ok\u200B = check(user);', 'const bell = "\u0007";']) {
+      const comment = formatFindingComment({ ...baseFinding, suggestedFix: hidden });
+      expect(suggestionBlocks(comment)).toEqual([]);
+      expect(comment).toContain(`\`\`\`ts\n${hidden}\n\`\`\``);
+    }
+    expect(suggestionBlocks(formatFindingComment({ ...baseFinding, suggestedFix: 'if (a) {\n\tuse(a);\n}' }))).toEqual(['if (a) {\n\tuse(a);\n}']);
+  });
+
   it('suggests a prose line as is in a prose file', () => {
     const comment = formatFindingComment({ ...baseFinding, file: 'README.md', suggestedFix: 'Run the setup script first.' });
     expect(suggestionBlocks(comment)).toEqual(['Run the setup script first.']);
