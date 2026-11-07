@@ -1102,6 +1102,13 @@ describe('postReview body lead', () => {
     expect(mockGet).not.toHaveBeenCalled();
   });
 
+  it('marks a review that is no verdict after its record, where truncation never reaches', async () => {
+    await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', { ...ready, verdict: 'COMMENT', outcome: undefined }, diff, undefined, undefined, { noVerdict: true });
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body).toContain('<!-- manki-no-verdict -->');
+    await postedBody(ready);
+    expect((mockCreateReview.mock.calls.at(-1)![0] as { body: string }).body).not.toContain('<!-- manki-no-verdict -->');
+  });
+
   it('approves when GitHub still reports mergeable as unknown after the retries', async () => {
     jest.useFakeTimers();
     try {

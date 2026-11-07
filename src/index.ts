@@ -890,7 +890,7 @@ async function postUnreviewedRound(
   const { octokit, bot, owner, repo, prNumber, commitSha } = target;
   await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
   const result = { verdict: 'COMMENT' as const, summary, findings: [], highlights: [], reviewComplete: true, agentNames: [] as string[] };
-  const { id: reviewId } = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
+  const { id: reviewId } = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, undefined, undefined, { noVerdict: true });
   await replacePreviousReviews(target, progress, reviewId);
   await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId, 'APPROVED');
   await updateProgressComment(octokit, owner, repo, commentId, dashboard, metadata, progressSettings(target, progress, 'up to date', { reviewed: true }));
@@ -1258,7 +1258,7 @@ async function postIncompleteRound(run: ReviewRun, result: ReviewResult): Promis
   cancelDashboardFlush(run.progress);
   core.setFailed(`Review incomplete: ${failureReason(result.summary)}`);
   result.verdict = 'COMMENT';
-  await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
+  await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, undefined, undefined, { noVerdict: true });
   dashboard.phase = 'complete';
   await updateProgressComment(octokit, owner, repo, commentId, dashboard, undefined, progressSettings(run, run.progress, 'review incomplete'));
   return outcomeReport('INCOMPLETE', result.summary);

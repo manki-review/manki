@@ -1784,6 +1784,7 @@ describe('runFullReview orchestration', () => {
       await callRunFullReview();
 
       expect(completedCheck()).toMatchObject({ conclusion: 'failure', output: { title: 'Review incomplete', summary: 'The judge failed.' } });
+      expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual({ noVerdict: true });
     });
 
     it('records a draft round as a draft and never makes it the final capped round', async () => {
@@ -2216,6 +2217,7 @@ describe('runFullReview orchestration', () => {
 
     const posted = jest.mocked(ghUtils.postReview).mock.calls[0][5];
     expect(posted.verdict).toBe('COMMENT');
+    expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual({ noVerdict: true });
     expect(posted.summary).toContain('**Not reviewed** at `abc123`: no model read this PR');
     expect(posted.summary).toContain(file && matchedPattern ? `- \`${file.path}\`: matches \`${matchedPattern}\` in \`exclude_paths\`` : '- `gradle/wrapper/gradle-wrapper.jar`: no lines to read');
     if (file?.path === 'yarn.lock') expect(posted.summary).toContain('**Static analysis on the skipped files:**\n- `yarn.lock:12`: osv-scanner GHSA-1234: left-pad 1.0.0 is vulnerable');
@@ -2912,7 +2914,7 @@ describe('runFullReview orchestration', () => {
     expect(jest.mocked(ghUtils.postReview)).toHaveBeenCalledWith(
       expect.anything(), 'test-owner', 'test-repo', 42, 'abc123',
       expect.objectContaining({ verdict: 'COMMENT' }),
-      expect.anything(),
+      expect.anything(), undefined, undefined, { noVerdict: true },
     );
     expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith('Review incomplete: Review incomplete');
     expect(jest.mocked(ghUtils.dismissPreviousReviews)).not.toHaveBeenCalled();
