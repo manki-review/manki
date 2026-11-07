@@ -118,7 +118,7 @@ jest.mock('./diff', () => {
     filterRawDiff: jest.fn((rawDiff: string) => rawDiff),
     addCodeContext: jest.requireActual('./diff').addCodeContext,
     tagFindingOrigins: jest.requireActual('./diff').tagFindingOrigins,
-    isSameChange: jest.requireActual('./diff').isSameChange,
+    compareChanges: jest.requireActual('./diff').compareChanges,
     changeDigest: jest.requireActual('./diff').changeDigest,
     rebuildRawDiff: jest.requireActual('./diff').rebuildRawDiff,
   };
@@ -174,6 +174,7 @@ jest.mock('./github', () => ({
   fetchRepoContext: jest.fn().mockResolvedValue(''),
   fetchFileContents: jest.fn().mockResolvedValue(new Map()),
   fetchInterRoundDiff: jest.fn().mockResolvedValue(''),
+  fetchBlobShas: jest.fn().mockResolvedValue(new Map()),
   fetchHeadSha: jest.requireActual('./github').fetchHeadSha,
   assertHeadUnchanged: jest.requireActual('./github').assertHeadUnchanged,
   SupersededError: jest.requireActual('./github').SupersededError,
@@ -5984,6 +5985,31 @@ describe('runFullReview orchestration', () => {
 
       expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
       expect(mockCreateReview).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['re-posts the approval when the binary keeps its full blob sha', 'b'.repeat(40), false],
+      ['runs a normal round when the binary got another blob with the same short id', 'c'.repeat(40), true],
+      ['runs a normal round when GitHub lists no blob sha for the binary', undefined, true],
+    ])('%s', async (_label, currentSha, reviews) => {
+      const binary = 'diff --git a/app.jar b/app.jar\nindex 5555555..6666666 100644\nBinary files a/app.jar and b/app.jar differ\n';
+      seedPush('APPROVE', `${binary}${REBASED_DIFF}`);
+      jest.mocked(ghUtils.fetchInterRoundDiff).mockImplementation(
+        async (_octokit, _owner, _repo, _base, head) => (head === 'old9999999' ? `${binary}${REVIEWED_DIFF}` : `${binary}${REBASED_DIFF}`),
+      );
+      jest.mocked(ghUtils.fetchBlobShas).mockImplementation(async (_octokit, _owner, _repo, _base, head) =>
+        new Map(head === 'old9999999' ? [['app.jar', 'b'.repeat(40)]] : currentSha ? [['app.jar', currentSha]] : []));
+
+      await callRunFullReview();
+
+      expect(jest.mocked(ghUtils.fetchBlobShas)).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 'main', 'abc123');
+      if (reviews) {
+        expect(jest.mocked(reviewModule.runReview)).toHaveBeenCalled();
+        expect(mockCreateReview).not.toHaveBeenCalled();
+      } else {
+        expectNoRound();
+        expect(mockCreateReview).toHaveBeenCalledWith(expect.objectContaining({ event: 'APPROVE', commit_id: 'abc123' }));
+      }
     });
 
     it('runs a normal round when the previous verdict was a COMMENT', async () => {

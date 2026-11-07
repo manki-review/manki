@@ -130,13 +130,12 @@ export function changeDigest(diff: ParsedDiff): string {
 }
 
 /**
- * Whether two raw diffs make the same change. A diff with a binary never matches: its abbreviated blob ids are short
- * enough to forge, so they cannot prove the content unchanged.
+ * Whether two raw diffs make the same change, by `changeDigest`, and the binaries the second one carries. A diff cuts a
+ * binary's blob ids to 8 characters, short enough to forge, so only the full blob shas prove its content the same.
  */
-export function isSameChange(a: string, b: string): boolean {
-  const [before, after] = [parsePRDiff(a), parsePRDiff(b)];
-  if (before.binarySkipped?.length || after.binarySkipped?.length) return false;
-  return changeDigest(before) === changeDigest(after);
+export function compareChanges(a: string, b: string): { same: boolean; binaries: BinaryFile[] } {
+  const after = parsePRDiff(b);
+  return { same: changeDigest(parsePRDiff(a)) === changeDigest(after), binaries: after.binarySkipped ?? [] };
 }
 
 /** Returns the text of each line the diff adds to the file, keyed by its line number in the new file. */
