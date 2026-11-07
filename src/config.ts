@@ -1,8 +1,8 @@
 import * as core from '@actions/core';
 import { parse as parseYaml } from 'yaml';
 
-import { BUILT_IN_CLASSES, BUILT_IN_GROUPS, PATH_ALIASES, floorShortfall, modelIdentity, resolveRouting, routeClass } from './routing';
-import { ANALYZERS, PairedPin, RelatedRepo, ReviewConfig, ReviewRoutingConfig, StaticAnalysisConfig } from './types';
+import { BUILT_IN_CLASSES, BUILT_IN_GROUPS, PATH_ALIASES, canonicalJson, floorShortfall, resolveRouting, routeClass } from './routing';
+import { ANALYZERS, PairedPin, ReviewConfig, StaticAnalysisConfig } from './types';
 
 const MAX_WAIT_TIMEOUT_SECONDS = 3600;
 
@@ -699,106 +699,10 @@ export function loadStaticAnalysisConfig(content: string | null, source = '.mank
   }
 }
 
-export interface BaseReviewConfig {
-  review?: ReviewRoutingConfig;
-  /** The base branch's `models`, with defaults, when its config file parses. */
-  models?: ReviewConfig['models'];
-  /** The base branch's `related_repos`. Unset when its config file or that block is missing or invalid. */
-  relatedRepos?: RelatedRepo[];
-  /** The base branch's review size limits, with defaults, when its config file parses. */
-  limits?: Pick<ReviewConfig, (typeof LIMIT_KEYS)[number]>;
-  /**
-   * `builtin` when the base branch has no `review` block, `base_unreadable` when its config could
-   * not be read, and `base_invalid` when its `review` block fails validation or misses a floor.
-   */
-  source: 'base' | 'builtin' | 'base_unreadable' | 'base_invalid';
-}
-
-/**
- * Returns the `review` block and `models` of the base branch's config file. A file that cannot be
- * parsed, or a `review` block that fails validation, gives the built-in review groups, never the
- * PR's copy, so a broken base never blocks the PR that fixes it.
- */
-export function loadReviewConfig(content: string | null, source = '.manki.yml'): BaseReviewConfig {
-  // A base branch without a config file runs on the default models, so a PR cannot collapse those either.
-  if (!content) return { models: DEFAULT_CONFIG.models, limits: loadLimits({}, source), source: 'builtin' };
-  let parsed: unknown;
-  try {
-    parsed = parseYaml(content);
-  } catch (e) {
-    core.warning(`Could not parse ${source} on the base branch, using the built-in review groups: ${e instanceof Error ? e.message : String(e)}`);
-    return { source: 'base_unreadable' };
-  }
-  const root = isObject(parsed) ? parsed : {};
-  const models = root.models !== undefined && validateConfig({ models: root.models }).valid
-    ? deepMerge(DEFAULT_CONFIG, { models: root.models }).models
-    : DEFAULT_CONFIG.models;
-  const relatedRepos = baseRelatedRepos(root.related_repos, source);
-  const limits = loadLimits(root, source);
-  if (root.review === undefined) return { models, limits, relatedRepos, source: 'builtin' };
-  const validation = validateConfig({ review: root.review });
-  for (const warning of validation.warnings) core.warning(warning);
-  if (!validation.valid) {
-    core.warning(`Invalid \`review\` in ${source} on the base branch, using the built-in review groups: ${validation.errors.join('; ')}`);
-    return { models, limits, relatedRepos, source: 'base_invalid' };
-  }
-  return { review: root.review as ReviewRoutingConfig, models, limits, relatedRepos, source: 'base' };
-}
-
-/** Returns the base branch's `related_repos`, or `undefined` when it has none or the block is invalid, which it warns about. */
-function baseRelatedRepos(block: unknown, source: string): RelatedRepo[] | undefined {
-  if (block === undefined) return undefined;
-  const validation = validateConfig({ related_repos: block });
-  for (const warning of validation.warnings) core.warning(warning);
-  if (!validation.valid) {
-    core.warning(`Invalid \`related_repos\` in ${source} on the base branch, reading no related repos: ${validation.errors.join('; ')}`);
-    return undefined;
-  }
-  return block as RelatedRepo[];
-}
-
-/** Returns the review size limits of a base config, each falling back to its default when missing or invalid. */
-function loadLimits(root: Record<string, unknown>, source: string): NonNullable<BaseReviewConfig['limits']> {
-  return Object.fromEntries(LIMIT_KEYS.map(key => {
-    if (!(key in root)) return [key, DEFAULT_CONFIG[key]];
-    const validation = validateConfig({ [key]: root[key] });
-    if (validation.valid) return [key, root[key]];
-    core.warning(`Invalid \`${key}\` in ${source} on the base branch, using ${DEFAULT_CONFIG[key]}: ${validation.errors.join('; ')}`);
-    return [key, DEFAULT_CONFIG[key]];
-  })) as NonNullable<BaseReviewConfig['limits']>;
-}
-
-/**
- * Returns the PR's config with the base branch's `review` block, `related_repos` and size limits. When the PR's models would run both
- * finders of a pair on one model and the base branch's give two, the reviewer models come from the
- * base, so a PR cannot drop the second model. A base block that misses a floor gives the built-ins.
- */
-export function applyBaseReviewConfig(head: ReviewConfig, base: BaseReviewConfig): { config: ReviewConfig; source: BaseReviewConfig['source'] } {
-  if (JSON.stringify(head.review) !== JSON.stringify(base.review)) {
-    core.info('This PR changes the `review` block. The change applies after merge: this round uses the base branch\'s review groups.');
-  }
-  if (JSON.stringify(head.related_repos ?? []) !== JSON.stringify(base.relatedRepos ?? [])) {
-    core.info('This PR changes `related_repos`. The change applies after merge: this round uses the base branch\'s related repos.');
-  }
-  let config: ReviewConfig = {
-    ...head, review: base.review, related_repos: base.relatedRepos ?? [], ...(base.limits ?? loadLimits({}, '')),
-  };
-  if (base.models) {
-    const baseConfig: ReviewConfig = { ...DEFAULT_CONFIG, models: base.models };
-    const onOneModel = (c: ReviewConfig) => modelIdentity(resolvePairModel(c)) === modelIdentity(resolveModel(c, 'reviewer'));
-    if (onOneModel(config) && !onOneModel(baseConfig)) {
-      const reviewer = resolveModel(baseConfig, 'reviewer');
-      const reviewerPair = resolvePairModel(baseConfig);
-      core.warning(`This PR's \`models\` run both finders on ${resolveModel(config, 'reviewer')}. This round keeps the base branch's ${reviewer} and ${reviewerPair}, so a PR cannot drop the second model.`);
-      config = { ...config, models: { ...config.models, reviewer, reviewer_pair: reviewerPair } };
-    }
-  }
-  const floorErrors = reviewFloorErrors(config);
-  if (floorErrors.length > 0) {
-    core.warning(`The base branch's \`review\` block misses a floor, using the built-in review groups: ${floorErrors.join('; ')}`);
-    return { config: { ...config, review: undefined }, source: 'base_invalid' };
-  }
-  return { config, source: base.source };
+/** Returns the top-level keys whose values differ between the PR's config and the base branch's. */
+export function changedKeys(head: ReviewConfig, base: ReviewConfig): string[] {
+  const values = (config: ReviewConfig) => config as unknown as Record<string, unknown>;
+  return [...KNOWN_KEYS].filter(key => !IGNORED_KEYS.has(key) && canonicalJson(values(head)[key]) !== canonicalJson(values(base)[key]));
 }
 
 export function resolveModel(config: ReviewConfig, stage: 'planner' | 'reviewer' | 'judge' | 'dedup'): string {
@@ -856,13 +760,4 @@ export function loadConfig(yamlContent: string | undefined, source?: string): Re
 /** Returns the memory repo as `owner/name`: `memory.repo`, or `<owner>/review-memory` when that is empty. */
 export function resolveMemoryRepo(memory: { repo: string }, owner: string): string {
   return memory.repo || `${owner}/review-memory`;
-}
-
-export function sanitizeForkConfig(config: ReviewConfig): ReviewConfig {
-  return {
-    ...config,
-    instructions: DEFAULT_CONFIG.instructions,
-    reviewers: [...DEFAULT_CONFIG.reviewers],
-    memory: { ...config.memory, repo: DEFAULT_CONFIG.memory.repo },
-  };
 }

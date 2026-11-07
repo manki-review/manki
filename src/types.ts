@@ -941,9 +941,11 @@ export interface RoundAnalyzerRun {
   reason?: string;
 }
 
+/** Where the `review` block came from: the base branch, or the built-ins because the base has none, could not be read, or failed validation. */
+export type ConfigSource = 'base' | 'builtin' | 'base_unreadable' | 'base_invalid';
+
 export interface RoundRouting extends TeamRouting {
-  /** Where the `review` block came from: the base branch, or the built-ins because the base has none, could not be read, or failed validation. */
-  configSource: 'base' | 'builtin' | 'base_unreadable' | 'base_invalid';
+  configSource: ConfigSource;
   /** SHA-256 of the review classes, groups and routes the round chose from, so rounds under different definitions stay apart. */
   configDigest: string;
   reviewers: Array<{ name: string; model: string; provider: string; effort?: EffortLevel }>;
@@ -1001,7 +1003,6 @@ export interface FullReviewOptions {
   skipCap?: boolean;
   bypassHint?: 'force_review' | 'skip_cap' | 'manual_review_command';
   trigger?: RoundTrigger;
-  headRepoFullName?: string;
   /** The PR's coordinator state. */
   settings?: PrState;
   /** Reviews the whole PR as new, so every finding counts as new code. */

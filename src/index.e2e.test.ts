@@ -111,8 +111,8 @@ class FakeGitHub {
   mergeable: boolean | null = true;
   /** Refuses `resolveReviewThread` the way GitHub does for a token without the permission. */
   refuseResolve = false;
-  /** The config file the PR carries at its head commit. */
-  headConfig?: string;
+  /** The config file at each ref, such as the base branch or the PR's head commit. */
+  configs: Record<string, string> = {};
   activeRuns: number[] = [];
   /** The bodies Manki sent to the token service's `/state/report`. */
   stateReports: unknown[] = [];
@@ -224,8 +224,9 @@ class FakeGitHub {
       return json({ id: this.nextId++ }, 201);
     }
     if (method === 'GET' && route.startsWith('/compare/') && headers.get('accept')?.includes('diff')) return text(PR_DIFF);
-    if (method === 'GET' && route === `/contents/${INPUTS.config_path}` && this.headConfig && searchParams.get('ref') === this.headSha) {
-      return json({ type: 'file', encoding: 'base64', size: this.headConfig.length, content: Buffer.from(this.headConfig).toString('base64') });
+    const config = this.configs[searchParams.get('ref') ?? ''];
+    if (method === 'GET' && route === `/contents/${INPUTS.config_path}` && config) {
+      return json({ type: 'file', encoding: 'base64', size: config.length, content: Buffer.from(config).toString('base64') });
     }
     if (method === 'GET' && route === `/contents/src/math.ts`) {
       return json({ type: 'file', encoding: 'base64', size: MATH_TS.length, content: Buffer.from(MATH_TS).toString('base64') });
@@ -403,7 +404,6 @@ const INPUTS: Record<string, string> = {
 function reviewRound(trigger = 'pull_request:opened', force = false): Promise<void> {
   return runFullReview(OWNER, REPO, PR_NUMBER, mockGitHub.headSha, 'main', { title: 'Keep the sum in a variable', body: 'Small refactor.', baseBranch: 'main' }, {
     prAuthorLogin: 'alice',
-    headRepoFullName: `${OWNER}/${REPO}`,
     trigger: { event: trigger, sender: 'alice' },
     ...(force && { forceReview: true, bypassHint: 'force_review' as const }),
   });
@@ -869,8 +869,8 @@ describe('runFullReview end to end', () => {
   });
 
   describe('dispatched by the webhook service', () => {
-    it('reviews a push with the config the PR carries at its head', async () => {
-      mockGitHub.headConfig = 'planner:\n  enabled: false\n';
+    it('reviews a push with the base branch\'s config, not the one the PR carries at its head', async () => {
+      mockGitHub.configs = { main: 'planner:\n  enabled: false\n', [HEAD_SHA]: 'auto_review: false\n' };
 
       await dispatch({ event: 'pull_request', action: 'synchronize', pr: String(PR_NUMBER), head_sha: HEAD_SHA, delivery_id: '72d3162e-cc78-11e3-81ab-4c9367dc0958' });
 

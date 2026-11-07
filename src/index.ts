@@ -5,7 +5,7 @@ import * as path from 'path';
 import { assertWritesAllowed, RunCancelledError, stopWritesOn } from './abort';
 import { AppMemory, AuthResult, createAuthenticatedOctokit, fetchPrState, getMemoryToken, reportPrState } from './auth';
 import { sanitizeTokens, withMarkers } from './utils';
-import { applyBaseReviewConfig, BaseReviewConfig, loadConfig, loadReviewConfig, sanitizeForkConfig, resolveFallbackModel, resolveMemoryRepo, resolveModel, resolvePairModel } from './config';
+import { changedKeys, loadConfig, resolveFallbackModel, resolveMemoryRepo, resolveModel, resolvePairModel } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, outcomeReport, ReviewCheck, startReviewCheck } from './check-run';
@@ -24,7 +24,7 @@ import { collectStaticSignals } from './static-signals';
 import { runStepHook, STEP_HOOK_COMMAND } from './tool-steps';
 import { fetchWorkspace } from './workspace';
 import { SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
-import { DashboardData, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, roundContextToFlatAliases } from './types';
+import { ConfigSource, DashboardData, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, roundContextToFlatAliases } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -416,7 +416,6 @@ async function handlePullRequest(): Promise<void> {
 
   await runFullReview(owner, repo, prNumber, commitSha, pr.base.ref, prContext, {
     prAuthorLogin: pr.user?.login,
-    headRepoFullName: pr.head.repo?.full_name,
     trigger: buildRoundTrigger(),
     ...(forced && { forceReview: true, skipCap: true, bypassHint: 'force_review' as const }),
     settings,
@@ -513,7 +512,6 @@ async function handleCommentTrigger(settingsTick = false): Promise<void> {
 
   await runFullReview(owner, repo, prNumber, pr.head.sha, pr.base.ref, prContext, {
     prAuthorLogin: pr.user?.login,
-    headRepoFullName: pr.head.repo?.full_name,
     ...(forced ? { forceReview: true, skipCap: true, bypassHint: 'force_review' as const } : { skipCap: true, bypassHint: 'manual_review_command' as const }),
     trigger: buildRoundTrigger(settings.runModes),
     settings,
@@ -670,11 +668,11 @@ function cancelDashboardFlush(progress: RunProgress): void {
 }
 
 /**
- * Loads `.manki.yml` at the head commit through the API, so a PR that changes its own config (such as
- * `exclude_paths`) takes effect on the same PR. The `review` block is the exception: it comes from the base
- * branch, so a PR cannot weaken its own review. Returns `undefined` after reporting a config that does not load.
+ * Loads the round's config from the base branch, so a PR cannot weaken its own review. The PR's own `.manki.yml` is still
+ * loaded, so one that does not load fails the run, and the keys it changes are logged as applying after merge.
+ * Returns `undefined` after reporting a config that does not load.
  */
-async function loadRunConfig(target: RunTarget, configPath: string, headRepoFullName?: string): Promise<{ config: ReviewConfig; reviewSource: BaseReviewConfig['source'] } | undefined> {
+async function loadRunConfig(target: RunTarget, configPath: string): Promise<{ config: ReviewConfig; reviewSource: ConfigSource } | undefined> {
   const { octokit, owner, repo, prNumber, commitSha, baseRef } = target;
   // The contents API takes a repo-relative path, so `./`, absolute and outside paths are normalised first.
   const cwd = path.resolve(process.cwd());
@@ -683,11 +681,12 @@ async function loadRunConfig(target: RunTarget, configPath: string, headRepoFull
   if (outside) core.warning('`config_path` points outside the repository, reading `.manki.yml`');
   const repoConfigPath = outside ? '.manki.yml' : repoRelative.split(path.sep).join('/');
   try {
-    const rawConfig = loadConfig(await readConfigFile(octokit, owner, repo, commitSha, repoConfigPath) ?? undefined, repoConfigPath);
-    const isFork = headRepoFullName !== undefined && headRepoFullName !== `${owner}/${repo}`;
-    const headConfig = isFork ? sanitizeForkConfig(rawConfig) : rawConfig;
-    const base = await loadBaseReviewConfig(octokit, owner, repo, baseRef, repoConfigPath);
-    const { config, source } = applyBaseReviewConfig(headConfig, base);
+    const headConfig = loadConfig(await readConfigFile(octokit, owner, repo, commitSha, repoConfigPath) ?? undefined, repoConfigPath);
+    const { config, source } = await loadBaseConfig(octokit, owner, repo, baseRef, repoConfigPath);
+    const changed = changedKeys(headConfig, config);
+    if (changed.length > 0) {
+      core.info(`This PR changes ${changed.map(key => `\`${key}\``).join(', ')} in ${repoConfigPath}. The change applies after merge: this round uses the base branch's settings.`);
+    }
     return { config, reviewSource: source };
   } catch (error) {
     const reason = failureReason(error);
@@ -697,16 +696,27 @@ async function loadRunConfig(target: RunTarget, configPath: string, headRepoFull
   }
 }
 
-/** Reads the `review` block from the base branch. A base config that cannot be fetched gives the built-ins. */
-async function loadBaseReviewConfig(octokit: Octokit, owner: string, repo: string, baseRef: string, configPath: string): Promise<BaseReviewConfig> {
+/**
+ * Reads the config from the base branch. A base config that cannot be read or does not load gives the defaults with
+ * `auto_approve` off, so the PR that fixes it is still reviewed but never approved.
+ */
+async function loadBaseConfig(octokit: Octokit, owner: string, repo: string, baseRef: string, configPath: string): Promise<{ config: ReviewConfig; source: ConfigSource }> {
+  const fallBack = (source: ConfigSource, problem: string, error: unknown) => {
+    core.warning(`${problem} ${configPath} on the base branch, reviewing with the defaults and no approval: ${failureReason(error)}`);
+    return { config: { ...loadConfig(undefined), auto_approve: false }, source };
+  };
   let content: string | null;
   try {
     content = await readConfigFile(octokit, owner, repo, baseRef, configPath);
   } catch (error) {
-    core.warning(`Could not read ${configPath} on the base branch, using the built-in review groups: ${error instanceof Error ? error.message : String(error)}`);
-    return { source: 'base_unreadable' };
+    return fallBack('base_unreadable', 'Could not read', error);
   }
-  return loadReviewConfig(content, configPath);
+  try {
+    const config = loadConfig(content ?? undefined, configPath);
+    return { config, source: config.review ? 'base' : 'builtin' };
+  } catch (error) {
+    return fallBack('base_invalid', 'Could not load', error);
+  }
 }
 
 /** Whether the run stops before posting a progress comment: the commit is reviewed or stale, or nothing changed. */
@@ -1529,7 +1539,7 @@ async function runFullReview(
   prContext?: PrContext,
   options: FullReviewOptions = {},
 ): Promise<void> {
-  const { prAuthorLogin, forceReview, skipCap, trigger = buildRoundTrigger(), headRepoFullName } = options;
+  const { prAuthorLogin, forceReview, skipCap, trigger = buildRoundTrigger() } = options;
   core.info(`Starting review for ${owner}/${repo}#${prNumber}`);
 
   const providerInputs = readProviderInputs();
@@ -1560,7 +1570,7 @@ async function runFullReview(
   let checkReport: CheckReport | undefined;
 
   try {
-    const loaded = await loadRunConfig(target, configPath, headRepoFullName);
+    const loaded = await loadRunConfig(target, configPath);
     if (!loaded) return;
     const { config, reviewSource } = loaded;
     if (await skipsRound(target, config, trigger, options)) return;

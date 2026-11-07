@@ -238,7 +238,7 @@ export function routingDigest(review: ReviewRoutingConfig | undefined): string {
   return createHash('sha256').update(canonicalJson(resolveRouting(review))).digest('hex');
 }
 
-function canonicalJson(value: unknown): string {
+export function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
   if (value && typeof value === 'object') {
     const entries = Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
