@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 
-import { ApprovalHeld, buildDashboard, formatFoundAgainReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings } from './github';
+import { ApprovalHeld, buildDashboard, formatFoundAgainReply, formatUnreviewedNotice, titleToSlug, formatBlockingPriorThreads, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { paginateSinglePage, TEST_BOT } from './test-utils';
@@ -4243,5 +4243,18 @@ describe('fetchPRComments', () => {
 
     expect(result).toHaveLength(150);
     expect(result[0].id).toBe(150);
+  });
+});
+
+describe('formatUnreviewedNotice', () => {
+  it('lists each skipped file and why, with no section for what is empty, and cuts a long list', () => {
+    const lockfiles = Array.from({ length: 52 }, (_, i) => ({ path: `pkg${i}/yarn.lock`, matchedPattern: '*.lock' }));
+    const notice = formatUnreviewedNotice('abc1234', lockfiles, [{ path: 'bad`name.jar', header: '' }], []);
+    expect(notice).toContain('**Not reviewed** at `abc1234`: no model read this PR, since Manki skips every file it changes. A person needs to review it.');
+    expect(notice).toContain('- `pkg49/yarn.lock`: matches `*.lock` in `exclude_paths`\n- and 3 more');
+    expect(notice).not.toContain('pkg50/');
+    expect(notice).not.toContain('Static analysis');
+    expect(formatUnreviewedNotice('abc1234', [], [{ path: 'bad`name.jar', header: '' }], [])).toContain("- `bad'name.jar`: no lines to read");
+    expect(formatUnreviewedNotice('abc1234', [], [], [])).toBe('**Not reviewed** at `abc1234`: no model read this PR, since Manki skips every file it changes. A person needs to review it.');
   });
 });

@@ -3,7 +3,7 @@ import { createHash } from 'crypto';
 import parseDiff from 'parse-diff';
 import { minimatch } from 'minimatch';
 
-import { DiffFile, DiffHunk, Finding, ParsedDiff, RoundDiffExcludedFile } from './types';
+import { BinaryFile, DiffFile, DiffHunk, Finding, ParsedDiff, RoundDiffExcludedFile } from './types';
 
 /**
  * Parse a unified diff string into structured data.
@@ -17,12 +17,12 @@ export function parsePRDiff(rawDiff: string): ParsedDiff {
   let totalAdditions = 0;
   let totalDeletions = 0;
   const files: DiffFile[] = [];
-  const binarySkipped: string[] = [];
+  const binarySkipped: BinaryFile[] = [];
 
   for (const file of parsed) {
     if (isBinaryFile(file)) {
       const binaryPath = file.to && file.to !== '/dev/null' ? file.to : file.from ?? '';
-      if (binaryPath) binarySkipped.push(binaryPath);
+      if (binaryPath) binarySkipped.push({ path: binaryPath, header: JSON.stringify([file.from, file.to, file.index, file.oldMode, file.newMode]) });
       continue;
     }
 
@@ -118,21 +118,25 @@ export function filterRawDiff(rawDiff: string, excludePaths: string[]): string {
 }
 
 /**
- * Returns a SHA-256 digest of the change `diff` makes once `excludePaths` are dropped.
- * Hunk positions and `index` lines are left out, so a diff moved by a rebase
- * keeps its digest.
+ * Returns a SHA-256 digest of the change `diff` makes, excluded files included, so a change to a file no model reads
+ * still changes it. Hunk positions are left out, so a diff moved by a rebase keeps its digest. A file with no lines,
+ * such as a binary, adds its diff header, whose blob ids change with its content.
  */
-export function changeDigest(diff: ParsedDiff, excludePaths: string[]): string {
-  const { files, binarySkipped } = filterDiff(diff, excludePaths).diff;
+export function changeDigest(diff: ParsedDiff): string {
   return createHash('sha256').update(JSON.stringify([
-    files.map(f => [f.changeType, f.oldPath, f.path, f.hunks.map(h => h.content)]),
-    binarySkipped?.filter(path => !findExcludePattern(path, excludePaths)),
+    diff.files.map(f => [f.changeType, f.oldPath, f.path, f.hunks.map(h => h.content)]),
+    diff.binarySkipped?.map(f => f.header),
   ])).digest('hex');
 }
 
-/** Whether two raw diffs make the same change once `excludePaths` are dropped. */
-export function isSameChange(a: string, b: string, excludePaths: string[]): boolean {
-  return changeDigest(parsePRDiff(a), excludePaths) === changeDigest(parsePRDiff(b), excludePaths);
+/**
+ * Whether two raw diffs make the same change. A diff with a binary never matches: its abbreviated blob ids are short
+ * enough to forge, so they cannot prove the content unchanged.
+ */
+export function isSameChange(a: string, b: string): boolean {
+  const [before, after] = [parsePRDiff(a), parsePRDiff(b)];
+  if (before.binarySkipped?.length || after.binarySkipped?.length) return false;
+  return changeDigest(before) === changeDigest(after);
 }
 
 /** Returns the text of each line the diff adds to the file, keyed by its line number in the new file. */

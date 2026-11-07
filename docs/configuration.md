@@ -135,7 +135,7 @@ memory:
 |---------|------|---------|--------------|
 | `auto_review` | boolean | `true` | Review a PR automatically when it opens and on every push. With `false`, Manki reviews only on request, such as `@manki review`. |
 | `auto_approve` | boolean | `true` | Approve the PR once every blocking thread is resolved, without a new review. |
-| `exclude_paths` | list of globs | `["*.lock", "dist/**", "*.generated.*"]` | Files the reviewers never read. Some analyzers still check them, see [Running Manki's analyzers](how-reviews-work.md#running-mankis-analyzers). |
+| `exclude_paths` | list of globs | `["*.lock", "dist/**", "*.generated.*"]` | Files the reviewers never read. A PR that changes only such files is never approved: a person must review it. Some analyzers still check them, see [Running Manki's analyzers](how-reviews-work.md#running-mankis-analyzers). |
 | `skip_labels` | list of strings | none | PRs with any of these labels get no automatic review. Compared case-insensitively, and read from the base branch. See [Skipping PRs](how-reviews-work.md#skipping-prs). |
 | `skip_authors` | list of strings | none | PRs by any of these authors, such as `dependabot[bot]`, get no automatic review. Compared case-insensitively, and read from the base branch. |
 | `skip_branches` | list of globs | none | PRs whose head branch in the repo itself matches, such as `dependabot/**`, get no automatic review. Never matches a fork's branch. Read from the base branch. |

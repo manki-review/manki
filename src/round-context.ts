@@ -1,5 +1,4 @@
 import type { LLMCall } from './providers';
-import { changeDigest } from './diff';
 import { isEmptyInterRoundDiff, MAX_INTER_ROUND_DIFF_CHARS } from './judge';
 import { collectResolvedThreadIds, fingerprintFinding, PreviousFinding, RecapState, securityOverridesIn } from './recap';
 import { MANKI_VERSION } from './github';
@@ -31,6 +30,8 @@ export interface RoundRecordInput {
   priorRoundCount: number;
   maxAutoRounds: number;
   diff: ParsedDiff;
+  /** `changeDigest` of the PR's full diff, excluded files included. */
+  changeDigest: string;
   excludedFiles: RoundDiffExcludedFile[];
   openThreads: OpenThread[];
   interRoundDiff?: string;
@@ -275,14 +276,14 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
       ...(config.review_passes != null && { reviewPasses: config.review_passes }),
     },
     diff: {
-      changeDigest: changeDigest(diff, config.exclude_paths),
+      changeDigest: input.changeDigest,
       lines: diff.totalAdditions + diff.totalDeletions,
       additions: diff.totalAdditions,
       deletions: diff.totalDeletions,
       filesReviewed: filteredFiles.length,
       fileTypes,
       ...(excludedFiles.length > 0 && { excludedFiles }),
-      ...(diff.binarySkipped && diff.binarySkipped.length > 0 && { binarySkipped: diff.binarySkipped }),
+      ...(diff.binarySkipped && diff.binarySkipped.length > 0 && { binarySkipped: diff.binarySkipped.map(f => f.path) }),
       oversizedHandled: false,
       perFile: filteredFiles.map((f): RoundDiffPerFile => ({
         path: f.path,

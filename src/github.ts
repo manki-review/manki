@@ -4,7 +4,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
-import { AgentProgressEntry, DashboardData, FOLLOW_UP_TAG, Finding, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity } from './types';
+import { AgentProgressEntry, BinaryFile, DashboardData, FOLLOW_UP_TAG, Finding, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, RoundDiffExcludedFile, StaticSignal, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity } from './types';
 import { isLineInDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { findPriorThreadId } from './finding-fingerprint';
@@ -181,6 +181,26 @@ export function approvalHoldLine(hold: ApprovalHold): string {
   if (hold.reason === 'draft') return '**Approval held:** this PR is a draft. Mark it ready for review, and Manki reviews it again.';
   if (hold.reason === 'config') return '**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.';
   return `**Approval held:** this PR conflicts with \`${sanitizeFilePath(hold.baseRef)}\`. Rebase it, and Manki reviews the result.`;
+}
+
+const MAX_UNREVIEWED_LINES = 50;
+
+/**
+ * Returns the notice for a diff no model reads: each skipped file and why, and what the static analyzers found on them.
+ * Long lists are cut at `MAX_UNREVIEWED_LINES` entries.
+ */
+export function formatUnreviewedNotice(shortSha: string, excluded: RoundDiffExcludedFile[], binary: BinaryFile[], signals: StaticSignal[]): string {
+  const list = (lines: string[]) => [...lines.slice(0, MAX_UNREVIEWED_LINES), ...(lines.length > MAX_UNREVIEWED_LINES ? [`- and ${lines.length - MAX_UNREVIEWED_LINES} more`] : [])].join('\n');
+  const skipped = [
+    ...excluded.map(f => `- \`${sanitizeFilePath(f.path)}\`: matches \`${sanitizeFilePath(f.matchedPattern)}\` in \`exclude_paths\``),
+    ...binary.map(f => `- \`${sanitizeFilePath(f.path)}\`: no lines to read, such as a binary, a mode change or an empty file`),
+  ];
+  const found = signals.map(s => `- \`${sanitizeFilePath(s.file)}:${s.line}\`: ${s.tool}${s.ruleId ? ` ${s.ruleId}` : ''}: ${s.message}`);
+  return [
+    `**Not reviewed** at \`${shortSha}\`: no model read this PR, since Manki skips every file it changes. A person needs to review it.`,
+    ...(skipped.length > 0 ? [`**Skipped files:**\n${list(skipped)}`] : []),
+    ...(found.length > 0 ? [`**Static analysis on the skipped files:**\n${list(found)}`] : []),
+  ].join('\n\n');
 }
 
 /** Thrown when the PR head moved past the commit under review, so the review must post no verdict. */
