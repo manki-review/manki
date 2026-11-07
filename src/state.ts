@@ -4,7 +4,7 @@ import * as github from '@actions/github';
 import { assertWritesAllowed } from './abort';
 import { fetchPrState, reportPrState } from './auth';
 import { completeReviewCheck, outcomeReport, startReviewCheck } from './check-run';
-import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchInterRoundDiff, fetchPRComments, fetchReviewThreadNodes, fetchStandingVerdict, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgressOn, isRepoAdmin, markAutoApproveComplete, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
+import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchInterRoundDiff, fetchPRComments, fetchReviewThreadNodes, fetchStandingVerdict, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, isRepoAdmin, markAutoApproveComplete, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
 import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { isSameChange } from './diff';
@@ -388,7 +388,7 @@ async function holdApproval(
 
 /**
  * Deletes the auto-approve withheld notice for `headSha` and every approval-held notice. Call it once a review posts its verdict on `headSha`.
- * Marks each failed or incomplete progress comment for `headSha` as superseded by that verdict.
+ * Marks every older failed or incomplete review progress comment as superseded by that verdict, whatever commit it was for.
  * With `pauseLifted`, when that round lifted the pause, each pause notice that lost its settings block is marked as resumed.
  */
 async function retireStaleNotices(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha: string, pauseLifted = false): Promise<void> {
@@ -405,7 +405,7 @@ async function retireStaleNotices(octokit: Octokit, bot: BotIdentity, owner: str
     try {
       if (c.body.includes(marker) || c.body.includes(APPROVAL_HELD_MARKER_PREFIX)) {
         await octokit.rest.issues.deleteComment({ owner, repo, comment_id: c.id });
-      } else if (isFailedProgressOn(c.body, headSha)) {
+      } else if (isFailedProgress(c.body)) {
         await markProgressCommentSuperseded(octokit, owner, repo, c.id, { reviewedSha: headSha, headSha });
       } else if (pauseLifted && c.body.includes(PAUSE_NOTICE_MARKER) && !c.body.includes(SETTINGS_MARKER)) {
         const body = withMarkers(`Automatic review was paused. Review resumed on \`${headSha.slice(0, 7)}\`.`, PROGRESS_MARKER, REVIEW_COMPLETE_MARKER);

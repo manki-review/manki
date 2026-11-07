@@ -110,22 +110,12 @@ const BOT_MARKERS = [BOT_MARKER, VERSION_MARKER];
 const REVIEW_FAILED_LINE = '🔴 **Review failed**';
 const REVIEW_INCOMPLETE_LINE = '⚠️ **Review incomplete:**';
 
-const COMMIT_MARKER_REGEX = /<!-- manki-commit:([0-9a-f]+) -->/;
 const VERSION_MARKER_REGEX = /<!-- manki-version:\s*([^\s]+)\s*-->/;
 
 function extractVersionFromBody(body: string | null | undefined): string | null {
   if (!body) return null;
   const match = body.match(VERSION_MARKER_REGEX);
   return match ? match[1] : null;
-}
-
-function buildCommitMarker(commitSha: string): string {
-  return `<!-- manki-commit:${commitSha} -->`;
-}
-
-/** Returns the commit a progress comment reviews, or `null` for a comment posted without the marker. */
-function extractCommitFromBody(body: string): string | null {
-  return body.match(COMMIT_MARKER_REGEX)?.[1] ?? null;
 }
 
 // Covers all standard HTML elements including `base` (can inject a base URL that hijacks relative links)
@@ -620,7 +610,7 @@ function listSection(heading: string, noun: string, lines: string[]): string | u
 const MAX_LISTED_FINDINGS = 10;
 
 /**
- * Post a "review in progress" comment for the review of `commitSha` on the PR.
+ * Post a "review in progress" comment on the PR.
  * Returns the comment ID so we can update/delete it later.
  */
 export async function postProgressComment(
@@ -628,14 +618,12 @@ export async function postProgressComment(
   owner: string,
   repo: string,
   prNumber: number,
-  commitSha: string,
   dashboard?: DashboardData,
   settings?: SettingsView,
 ): Promise<number> {
   const body = withSettingsBlock(withMarkers(
     dashboard ? buildDashboard(dashboard) : '**Review started**',
     ...BOT_MARKERS,
-    buildCommitMarker(commitSha),
   ), settings);
 
   const { data } = await octokit.rest.issues.createComment({
@@ -709,7 +697,6 @@ export async function markAutoApproveComplete(
  * Transition a progress comment to a terminal failure state that names the
  * failed `action` and the reason, with tokens redacted. Uses `CANCELLED_MARKER`
  * so the post step leaves the comment alone.
- * With `commitSha`, a later verdict on that commit marks the comment superseded.
  */
 export async function markProgressCommentFailed(
   octokit: Octokit,
@@ -718,14 +705,12 @@ export async function markProgressCommentFailed(
   commentId: number,
   action: 'Review' | 'Auto-approve',
   reason: string,
-  commitSha?: string,
   settings?: SettingsView,
 ): Promise<void> {
   const body = withMarkers(
     `🔴 **${action} failed:** ${sanitizeMarkdown(sanitizeTokens(String(reason))).slice(0, 300)}`,
     ...BOT_MARKERS,
     CANCELLED_MARKER,
-    ...(commitSha ? [buildCommitMarker(commitSha)] : []),
   );
   try {
     await editProgressComment(octokit, owner, repo, commentId, body, settings);
@@ -769,7 +754,7 @@ export async function markProgressCommentSuperseded(
 /**
  * Freeze the progress comment as an audit log with the final dashboard
  * and optional review metadata (config, judge decisions, recap, timing).
- * Without `metadata` the comment reads as failed. With `commitSha`, a later verdict on that commit marks it superseded.
+ * Without `metadata` the comment reads as failed, and a later verdict marks it superseded.
  * Throws the abort reason once GitHub writes are stopped.
  */
 export async function updateProgressComment(
@@ -779,7 +764,6 @@ export async function updateProgressComment(
   commentId: number,
   dashboard: DashboardData,
   metadata?: ReviewMetadata,
-  commitSha?: string,
   settings?: SettingsView,
 ): Promise<void> {
   const parts: string[] = [
@@ -822,14 +806,14 @@ export async function updateProgressComment(
   assertWritesAllowed();
   await editProgressComment(
     octokit, owner, repo, commentId,
-    withMarkers(truncateBody(parts.join('\n')), ...BOT_MARKERS, REVIEW_COMPLETE_MARKER, ...(commitSha ? [buildCommitMarker(commitSha)] : [])),
+    withMarkers(truncateBody(parts.join('\n')), ...BOT_MARKERS, REVIEW_COMPLETE_MARKER),
     settings,
   );
 }
 
-/** Whether `body` is a progress comment for `commitSha` whose review failed or ended incomplete. */
-function isFailedProgressOn(body: string, commitSha: string): boolean {
-  return (body.startsWith(REVIEW_FAILED_LINE) || body.startsWith('🔴 **Review failed:**')) && extractCommitFromBody(body) === commitSha;
+/** Whether `body` is a progress comment whose review failed or ended incomplete. */
+function isFailedProgress(body: string): boolean {
+  return body.startsWith(REVIEW_FAILED_LINE) || body.startsWith('🔴 **Review failed:**');
 }
 
 /**
@@ -841,12 +825,11 @@ export async function updateProgressDashboard(
   repo: string,
   commentId: number,
   dashboard: DashboardData,
-  commitSha: string,
   settings?: SettingsView,
 ): Promise<void> {
   await editProgressComment(
     octokit, owner, repo, commentId,
-    withMarkers(buildDashboard(dashboard), ...BOT_MARKERS, buildCommitMarker(commitSha)),
+    withMarkers(buildDashboard(dashboard), ...BOT_MARKERS),
     settings,
   );
 }
@@ -2297,5 +2280,5 @@ async function postConfigErrorComment(
   }
 }
 
-export { APPROVED_LINE, dynamicFence, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, isTrustedAssociation, BOT_MARKER, REVIEW_COMPLETE_MARKER, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgressOn, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings };
+export { APPROVED_LINE, dynamicFence, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, isTrustedAssociation, BOT_MARKER, REVIEW_COMPLETE_MARKER, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings };
 export type { StandingVerdict };

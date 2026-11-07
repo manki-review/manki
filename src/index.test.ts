@@ -200,7 +200,7 @@ jest.mock('./github', () => ({
   markOwnProgressCommentCancelled: jest.fn().mockResolvedValue(false),
   markProgressCommentFailed: jest.fn().mockResolvedValue(undefined),
   markProgressCommentSuperseded: jest.fn().mockResolvedValue(undefined),
-  isFailedProgressOn: jest.requireActual('./github').isFailedProgressOn,
+  isFailedProgress: jest.requireActual('./github').isFailedProgress,
   postAppWarningIfNeeded: jest.fn().mockResolvedValue(undefined),
   fetchPRComments: jest.fn().mockResolvedValue([]),
   BOT_LOGIN: 'manki-review[bot]',
@@ -2054,10 +2054,10 @@ describe('runFullReview orchestration', () => {
       await runWith();
 
       const running = view('review running', { lastReviewed: 'ddd2222', boxes: new Set(['pause', 'full', 'deeper', 'cancel']) });
-      expect(ghUtils.postProgressComment).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 42, 'abc123', undefined, running);
+      expect(ghUtils.postProgressComment).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 42, undefined, running);
       expect(ghUtils.retireSettingsBlocks).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'test-owner', 'test-repo', [older], 1);
-      expect(jest.mocked(ghUtils.updateProgressDashboard).mock.calls[0][6]).toEqual(running);
-      expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[7]).toEqual(view('up to date', { lastReviewed: 'abc123' }));
+      expect(jest.mocked(ghUtils.updateProgressDashboard).mock.calls[0][5]).toEqual(running);
+      expect(jest.mocked(ghUtils.updateProgressComment).mock.calls.at(-1)?.[6]).toEqual(view('up to date', { lastReviewed: 'abc123' }));
     });
 
     it('names the coordinator\'s last reviewed commit, not the round record\'s, and keeps the block on a failed review', async () => {
@@ -2066,10 +2066,10 @@ describe('runFullReview orchestration', () => {
 
       await runWith({ draft: true });
 
-      expect(jest.mocked(ghUtils.updateProgressDashboard).mock.calls[0][6]).toEqual(
+      expect(jest.mocked(ghUtils.updateProgressDashboard).mock.calls[0][5]).toEqual(
         view('review running', { lastReviewed: 'ddd2222', boxes: new Set(['pause', 'full', 'deeper', 'draft', 'cancel']) }),
       );
-      expect(jest.mocked(ghUtils.markProgressCommentFailed).mock.calls[0][7]).toEqual(
+      expect(jest.mocked(ghUtils.markProgressCommentFailed).mock.calls[0][6]).toEqual(
         view('review failed', { lastReviewed: 'ddd2222', boxes: new Set(['pause', 'full', 'deeper', 'draft']) }),
       );
       expect(authModule.reportPrState).not.toHaveBeenCalled();
@@ -2287,7 +2287,7 @@ describe('runFullReview orchestration', () => {
     // Metadata is what makes the progress comment read as complete rather than failed.
     expect(jest.mocked(ghUtils.updateProgressComment)).toHaveBeenLastCalledWith(
       expect.anything(), 'test-owner', 'test-repo', expect.any(Number), expect.anything(),
-      expect.objectContaining({ judgeDecisions: [], config: expect.objectContaining({ triage: 'none', teamAgents: [] }) }), undefined, expect.objectContaining({ status: 'up to date' }),
+      expect.objectContaining({ judgeDecisions: [], config: expect.objectContaining({ triage: 'none', teamAgents: [] }) }), expect.objectContaining({ status: 'up to date' }),
     );
     expect(jest.mocked(reviewModule.runReview)).not.toHaveBeenCalled();
     // Warmup must be skipped on paths that never invoke an LLM.
@@ -3029,7 +3029,7 @@ describe('runFullReview orchestration', () => {
 
     expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(`Review failed: ${reason}`);
     expect(jest.mocked(ghUtils.markProgressCommentFailed)).toHaveBeenCalledWith(
-      expect.anything(), 'test-owner', 'test-repo', 1, 'Review', reason, 'abc123', expect.objectContaining({ status: 'review failed' }),
+      expect.anything(), 'test-owner', 'test-repo', 1, 'Review', reason, expect.objectContaining({ status: 'review failed' }),
     );
     expect(jest.mocked(ghUtils.updateProgressComment)).not.toHaveBeenCalled();
     expect(jest.mocked(ghUtils.postReview)).not.toHaveBeenCalled();
