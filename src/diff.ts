@@ -48,7 +48,7 @@ export function parsePRDiff(rawDiff: string): ParsedDiff {
       hunks,
       additions: file.additions,
       deletions: file.deletions,
-      ...(file.oldMode && file.newMode && file.oldMode !== file.newMode && { modeChange: `${file.oldMode} ${file.newMode}` }),
+      ...modeChange(file),
     });
   }
 
@@ -283,6 +283,13 @@ export function addCodeContext(findings: Finding[], diff: ParsedDiff): void {
       }
     }
   }
+}
+
+const PLAIN_FILE_MODE = '100644';
+
+function modeChange(file: parseDiff.File): Pick<DiffFile, 'modeChange'> {
+  if (file.new) return file.newMode && file.newMode !== PLAIN_FILE_MODE ? { modeChange: file.newMode } : {};
+  return file.oldMode && file.newMode && file.oldMode !== file.newMode ? { modeChange: `${file.oldMode} ${file.newMode}` } : {};
 }
 
 function isBinaryFile(file: parseDiff.File): boolean {
