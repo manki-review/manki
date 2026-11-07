@@ -177,6 +177,7 @@ jest.mock('./github', () => ({
   fetchHeadSha: jest.requireActual('./github').fetchHeadSha,
   assertHeadUnchanged: jest.requireActual('./github').assertHeadUnchanged,
   SupersededError: jest.requireActual('./github').SupersededError,
+  formatUnreviewedNotice: jest.requireActual('./github').formatUnreviewedNotice,
   postProgressComment: jest.fn().mockResolvedValue(1),
   updateProgressComment: jest.fn().mockResolvedValue(undefined),
   updateProgressDashboard: jest.fn().mockResolvedValue(undefined),
@@ -2197,12 +2198,15 @@ describe('runFullReview orchestration', () => {
     jest.mocked(ghUtils.readConfigFile).mockResolvedValue(null);
   });
 
-  it('approves when all files are filtered out by config', async () => {
-    jest.mocked(diffModule.parsePRDiff).mockReturnValue({
-      files: [{ path: 'package-lock.json', changeType: 'modified', hunks: [] }],
-      totalAdditions: 10, totalDeletions: 5,
-    });
-    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [], excluded: [] });
+  it.each([
+    ['a lockfile', { path: 'yarn.lock', changeType: 'modified' as const, hunks: [] }, '*.lock', []],
+    ['a committed `dist/` build', { path: 'dist/index.js', changeType: 'modified' as const, hunks: [] }, 'dist/**', []],
+    ['a binary', undefined, undefined, [{ path: 'gradle/wrapper/gradle-wrapper.jar', header: '' }]],
+  ])('never approves a PR that changes only %s, and runs the analyzers on it first', async (_label, file, matchedPattern, binarySkipped) => {
+    const signal = { tool: 'osv-scanner', ruleId: 'GHSA-1234', severity: 'error' as const, file: 'yarn.lock', line: 12, message: 'left-pad 1.0.0 is vulnerable', source: 'dependencies' as const };
+    jest.mocked(staticSignalsModule.collectStaticSignals).mockResolvedValueOnce({ signals: file?.path === 'yarn.lock' ? [signal] : [] });
+    jest.mocked(diffModule.parsePRDiff).mockReturnValue({ files: file ? [file] : [], totalAdditions: 10, totalDeletions: 5, binarySkipped });
+    jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({ included: [], excluded: file && matchedPattern ? [{ path: file.path, matchedPattern }] : [] });
     const warmupCLI = jest.fn().mockResolvedValue(undefined);
     jest.mocked(createLLMClient).mockImplementation(() => ({
       sendMessage: jest.fn(), warmupCLI,
@@ -2210,14 +2214,14 @@ describe('runFullReview orchestration', () => {
 
     await callRunFullReview();
 
-    expect(jest.mocked(ghUtils.postReview)).toHaveBeenCalledWith(
-      expect.anything(), 'test-owner', 'test-repo', 42, 'abc123',
-      expect.objectContaining({
-        verdict: 'APPROVE',
-        summary: expect.stringContaining('No reviewable files'),
-      }),
-      expect.anything(),
-    );
+    const posted = jest.mocked(ghUtils.postReview).mock.calls[0][5];
+    expect(posted.verdict).toBe('COMMENT');
+    expect(posted.summary).toContain('**Not reviewed** at `abc123`: no model read this PR');
+    expect(posted.summary).toContain(file && matchedPattern ? `- \`${file.path}\`: matches \`${matchedPattern}\` in \`exclude_paths\`` : '- `gradle/wrapper/gradle-wrapper.jar`: no lines to read');
+    if (file?.path === 'yarn.lock') expect(posted.summary).toContain('**Static analysis on the skipped files:**\n- `yarn.lock:12`: osv-scanner GHSA-1234: left-pad 1.0.0 is vulnerable');
+    expect(staticSignalsModule.collectStaticSignals).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ headSha: 'abc123', fullDiff: expect.objectContaining({ binarySkipped }) }));
+    expect(jest.mocked(ghUtils.dismissPreviousReviews)).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo', 42, 123, 'APPROVED');
+    expect(mockChecksUpdate).toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'action_required', output: expect.objectContaining({ title: 'Not reviewed' }) }));
     // Metadata is what makes the progress comment read as complete rather than failed.
     expect(jest.mocked(ghUtils.updateProgressComment)).toHaveBeenLastCalledWith(
       expect.anything(), 'test-owner', 'test-repo', expect.any(Number), expect.anything(),
@@ -3397,7 +3401,7 @@ describe('runFullReview orchestration', () => {
     beforeEach(() => {
       jest.mocked(diffModule.parsePRDiff).mockReturnValue({
         files: [attrFile], totalAdditions: 10, totalDeletions: 5,
-        binarySkipped: ['assets/logo.png'],
+        binarySkipped: [{ path: 'assets/logo.png', header: '' }],
       });
       jest.mocked(diffModule.filterFilesWithAttribution).mockReturnValue({
         included: [attrFile],
@@ -5966,8 +5970,12 @@ describe('runFullReview orchestration', () => {
       expect(jest.mocked(authModule.reportPrState).mock.calls).toEqual(verdict === 'APPROVE' ? [['test-owner', 'test-repo', 42, { approval: { commit: 'abc123', held } }]] : []);
     });
 
-    it('runs a normal round when the PR change differs from the reviewed commit', async () => {
-      seedPush('APPROVE', REBASED_DIFF.replace('+const b = 2;', '+const b = 3;'));
+    it.each([
+      ['changes a line', REBASED_DIFF.replace('+const b = 2;', '+const b = 3;')],
+      ['only adds an excluded file', `diff --git a/yarn.lock b/yarn.lock\nindex 5555555..6666666 100644\n--- a/yarn.lock\n+++ b/yarn.lock\n@@ -1 +1 @@\n-left-pad@1.0.0\n+left-pad@1.0.1\n${REBASED_DIFF}`],
+      ['carries a binary', `diff --git a/app.jar b/app.jar\nindex 5555555..6666666 100644\nBinary files a/app.jar and b/app.jar differ\n${REBASED_DIFF}`],
+    ])('runs a normal round when the PR %s since the approved commit', async (_label, currentDiff) => {
+      seedPush('APPROVE', currentDiff);
 
       await callRunFullReview();
 

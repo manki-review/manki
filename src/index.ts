@@ -30,6 +30,7 @@ import {
   fetchConfigFile,
   readConfigFile,
   fetchRepoContext,
+  formatUnreviewedNotice,
   fetchFileContents,
   fetchInterRoundDiff,
   formatFoundAgainReply,
@@ -745,7 +746,7 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
   }
 
   if (trigger.event === 'pull_request:synchronize' && config.auto_review) {
-    const standing = await findUnchangedVerdict(octokit, bot, owner, repo, prNumber, baseRef, commitSha, config.exclude_paths);
+    const standing = await findUnchangedVerdict(octokit, bot, owner, repo, prNumber, baseRef, commitSha);
     if (standing) {
       const shortSha = standing.commitSha.slice(0, 7);
       assertWritesAllowed();
@@ -879,20 +880,22 @@ async function replacePreviousReviews(target: RunTarget, progress: RunProgress, 
   await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId);
 }
 
-/** Posts a verdict for a diff no reviewer reads, replaces the previous review and marks the progress comment complete. Returns the report for the PR check. */
+/**
+ * Posts a comment for a diff no model reads, replaces the previous reviews, approvals included, and marks the progress
+ * comment complete. Returns the report for the PR check, which waits for a person.
+ */
 async function postUnreviewedRound(
-  target: RunTarget, progress: RunProgress, commentId: number, dashboard: DashboardData, diff: ParsedDiff,
-  verdict: 'APPROVE' | 'COMMENT', summary: string, metadata: ReviewMetadata,
+  target: RunTarget, progress: RunProgress, commentId: number, dashboard: DashboardData, diff: ParsedDiff, summary: string, metadata: ReviewMetadata,
 ): Promise<CheckReport> {
   const { octokit, bot, owner, repo, prNumber, commitSha } = target;
   await assertHeadUnchanged(octokit, owner, repo, prNumber, commitSha);
-  const result = { verdict, summary, findings: [], highlights: [], reviewComplete: true, agentNames: [] as string[] };
-  const { id: reviewId, approvalHeld } = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
+  const result = { verdict: 'COMMENT' as const, summary, findings: [], highlights: [], reviewComplete: true, agentNames: [] as string[] };
+  const { id: reviewId } = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff);
   await replacePreviousReviews(target, progress, reviewId);
+  await dismissPreviousReviews(octokit, owner, repo, prNumber, reviewId, 'APPROVED');
   await updateProgressComment(octokit, owner, repo, commentId, dashboard, metadata, progressSettings(target, progress, 'up to date', { reviewed: true }));
   await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha);
-  // A diff no reviewer read must not pass a required check, so it waits for a person.
-  return verdict === 'APPROVE' ? outcomeReport('READY', summary, approvalHeld) : { conclusion: 'action_required', title: 'Not reviewed', summary };
+  return { conclusion: 'action_required', title: 'Not reviewed', summary };
 }
 
 /**
@@ -1627,8 +1630,10 @@ async function runFullReview(
 
     if (diff.files.length === 0) {
       core.info('No reviewable files in diff');
-      checkReport = await postUnreviewedRound(target, progress, commentId, dashboard, diff, 'APPROVE', 'No reviewable files in this PR (all filtered out by config).',
-        unreviewedMetadata());
+      // The analyzers still check the skipped files, such as a lockfile for vulnerable packages.
+      const { signals } = await collectStaticSignals(await workflowOctokit(), { owner, repo, prNumber, headSha: commitSha, baseRef, configPath, diff, fullDiff });
+      const notice = formatUnreviewedNotice(shortSha, excludedFiles, fullDiff.binarySkipped ?? [], signals);
+      checkReport = await postUnreviewedRound(target, progress, commentId, dashboard, diff, notice, unreviewedMetadata());
       return;
     }
 
@@ -1646,7 +1651,8 @@ async function runFullReview(
       checkReport = await postPauseNotice(target, progress, pause, maxAutoRounds, recap.previousFindings, recap.priorRounds.at(-1)?.meta.timestamp);
       return;
     }
-    const countsTowardCap = !options.draft && isNewChange({ commitSha, changeDigest: changeDigest(diff, config.exclude_paths) }, recap.priorRounds.at(-1));
+    const digest = changeDigest(fullDiff);
+    const countsTowardCap = !options.draft && isNewChange({ commitSha, changeDigest: digest }, recap.priorRounds.at(-1));
 
     const { openThreads, fileContents } = await collectOpenThreads(target, recap, diff);
     const [{ interRoundDiff, priorChange, linkedIssues, staticSignals, staticAnalysis }, workspace] = await Promise.all([
@@ -1657,7 +1663,7 @@ async function runFullReview(
     const run: ReviewRun = {
       ...target, options, trigger, config, reviewSource, models, plannerEnabled: !!clients.planner,
       recap, priorRoundCount, maxAutoRounds,
-      diff, excludedFiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError, staticAnalysis,
+      diff, changeDigest: digest, excludedFiles, openThreads, interRoundDiff, memoryLoadStatus, memoryLoadError, staticAnalysis,
       commentId, dashboard, progress, startTime, parseEndTime,
     };
 

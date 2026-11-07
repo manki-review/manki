@@ -31,7 +31,7 @@ function staleApproveMarker(headSha: string): string {
  */
 async function findUnchangedVerdict(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number,
-  baseRef: string, commitSha: string, excludePaths: string[],
+  baseRef: string, commitSha: string,
 ): Promise<StandingVerdict | undefined> {
   const standing = await fetchStandingVerdict(octokit, bot, owner, repo, prNumber);
   if (!standing || standing.commitSha === commitSha) return undefined;
@@ -41,7 +41,7 @@ async function findUnchangedVerdict(
       fetchInterRoundDiff(octokit, owner, repo, baseRef, commitSha),
     ]);
     if (!reviewed.trim() || !current.trim()) return undefined;
-    return isSameChange(reviewed, current, excludePaths) ? standing : undefined;
+    return isSameChange(reviewed, current) ? standing : undefined;
   } catch (error) {
     core.warning(`Could not compare with the reviewed commit ${standing.commitSha.slice(0, 7)}: ${error instanceof Error ? error.message : error}`);
     return undefined;
@@ -304,10 +304,10 @@ function isBotReview(bot: BotIdentity, r: ReviewEntry): boolean {
  */
 async function reviewCoversHead(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number,
-  pr: PullHead, reviews: ReviewEntry[], config?: ReviewConfig,
+  pr: PullHead, reviews: ReviewEntry[],
 ): Promise<boolean> {
   if (reviews.some(r => isBotReview(bot, r) && r.state !== 'DISMISSED' && r.commit_id === pr.head.sha)) return true;
-  const standing = await findUnchangedVerdict(octokit, bot, owner, repo, prNumber, pr.base.ref, pr.head.sha, config?.exclude_paths ?? []);
+  const standing = await findUnchangedVerdict(octokit, bot, owner, repo, prNumber, pr.base.ref, pr.head.sha);
   if (standing) core.info(`No change since the reviewed commit ${standing.commitSha.slice(0, 7)}, so its review covers ${pr.head.sha.slice(0, 7)}`);
   return !!standing;
 }
@@ -317,7 +317,7 @@ async function explainUnreviewedHead(octokit: Octokit, bot: BotIdentity, owner: 
   const { data: pr } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
   const head = `\`${pr.head.sha.slice(0, 7)}\``;
   const reviews = await octokit.paginate(octokit.rest.pulls.listReviews, { owner, repo, pull_number: prNumber, per_page: 100 });
-  if (await reviewCoversHead(octokit, bot, owner, repo, prNumber, pr, reviews, config)) return undefined;
+  if (await reviewCoversHead(octokit, bot, owner, repo, prNumber, pr, reviews)) return undefined;
   const halt = config && await autoReviewHalt(octokit, bot, owner, repo, prNumber, config);
   return halt
     ? `Manki has not reviewed ${head}. ${halt}`
@@ -469,7 +469,7 @@ async function checkAndAutoApprove(
   // Stale-SHA gate: bail unless a Manki review covers the current HEAD. This covers
   // every variant: stale prior review, absent commit_id, all reviews DISMISSED, or
   // no bot review at all.
-  if (!await reviewCoversHead(octokit, bot, owner, repo, prNumber, pr, reviews, config)) {
+  if (!await reviewCoversHead(octokit, bot, owner, repo, prNumber, pr, reviews)) {
     const staleSha =
       reviews.filter((r: ReviewEntry) => isBotReview(bot, r) && r.commit_id !== pr.head.sha).slice(-1)[0]?.commit_id ?? 'unknown';
     core.warning(
