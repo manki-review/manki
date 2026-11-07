@@ -65,20 +65,6 @@ describe('formatReviewRecord', () => {
 });
 
 describe('extractReviewRecords', () => {
-  const visibleBlock = (ctx: RoundContext) => `<details>\n<summary>Manki context</summary>\n\n\`\`\`json\n${JSON.stringify(ctx, null, 2)}\n\`\`\`\n</details>`;
-
-  it('reads the visible block that releases before v7 wrote', () => {
-    const body = `Review.\n\n${visibleBlock(makeRoundContext(1))}`;
-    expect(hasReviewRecord(body)).toBe(true);
-    expect(extractReviewRecords(body)).toEqual({ records: [JSON.stringify(makeRoundContext(1), null, 2) + '\n'], errors: [] });
-  });
-
-  it('reads the hidden record, not a visible block quoted in the review text', () => {
-    const ctx = makeRoundContext(2);
-    const body = `Quoted: ${visibleBlock(makeRoundContext(9))}\n\n${formatReviewRecord(ctx)}`;
-    expect(extractReviewRecords(body).records.map(r => JSON.parse(r))).toEqual([ctx]);
-  });
-
   it('finds no record in a body without one', () => {
     expect(hasReviewRecord('Approved. <!-- manki-stats: 0 findings -->')).toBe(false);
     expect(extractReviewRecords('Approved. <!-- manki-stats: 0 findings -->')).toEqual({ records: [], errors: [] });

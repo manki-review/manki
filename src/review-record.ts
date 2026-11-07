@@ -6,8 +6,6 @@ import { redactSecretsDeep, sanitizeHtmlCommentJson, sanitizeTokens } from './ut
 const PLAIN_RE = /<!-- manki-context: ([\s\S]+?) -->/g;
 const GZIP_RE = /<!-- manki-context-gzip: ([A-Za-z0-9+/=]+) -->/g;
 const REPLY_RE = /<!-- manki-reply-record: ([\s\S]+?) -->/g;
-/** The visible block releases before v7 wrote, read so their round history still loads. */
-const DETAILS_RE = /<details>\s*<summary>Manki context<\/summary>\s*```json\s*([\s\S]*?)```\s*<\/details>/g;
 /** Larger than any real record, so a crafted compressed one can't exhaust memory. */
 const MAX_RECORD_BYTES = 16 * 1024 * 1024;
 
@@ -61,20 +59,19 @@ export function omitBulkyDiagnostics(context: RoundContext): RoundContext {
   };
 }
 
-/** Whether `body` carries a round record in any format Manki has written. */
+/** Whether `body` carries a round record. */
 export function hasReviewRecord(body: string): boolean {
-  return body.includes('<!-- manki-context') || body.includes('<summary>Manki context</summary>');
+  return body.includes('<!-- manki-context');
 }
 
 /**
  * Returns the JSON text of the round record in a review body, decompressed when needed, or the
- * error when it can't be decoded. Manki writes the record last, so only the last hidden record
- * counts: an earlier one is quoted text. The visible block of older releases is read only when
- * the body has no hidden record.
+ * error when it can't be decoded. Manki writes the record last, so only the last record
+ * counts: an earlier one is quoted text.
  */
 export function extractReviewRecords(body: string): { records: string[]; errors: string[] } {
   const last = [...body.matchAll(PLAIN_RE), ...body.matchAll(GZIP_RE)].sort((a, b) => b.index - a.index)[0];
-  if (!last) return { records: [...body.matchAll(DETAILS_RE)].map(m => m[1]), errors: [] };
+  if (!last) return { records: [], errors: [] };
   if (last[0].startsWith('<!-- manki-context: ')) return { records: [last[1]], errors: [] };
   try {
     return { records: [gunzipSync(Buffer.from(last[1], 'base64'), { maxOutputLength: MAX_RECORD_BYTES }).toString('utf-8')], errors: [] };

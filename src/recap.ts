@@ -404,8 +404,6 @@ function parseContextBlocks(
       }
 
       const ctx = parsed as RoundContext;
-      // Older releases ended a clean last round `BUDGET`, which is a plain approval.
-      if ((ctx.meta.outcome as string) === 'BUDGET') ctx.meta.outcome = 'READY';
       if (ctx.planner && typeof ctx.planner.prType === 'string') {
         ctx.planner.prType = migrateLegacyPrType(ctx.planner.prType);
       }
