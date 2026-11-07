@@ -596,11 +596,24 @@ describe('buildJudgeUserMessage', () => {
     expect(msg).toContain('Null check missing');
     expect(msg).toContain('PRRT_def');
     expect(msg).toContain('Unused import');
-    expect(msg).toContain('"Null check missing" at src/foo.ts:10 (stays open: the push did not change this file)');
-    expect(msg).not.toContain('src/bar.ts:20 (stays open');
+
+    // Only a thread whose earlier blocker still blocks is marked: an agreed blocker no longer blocks.
+    const agreed = { threadId: 'PRRT_ghi', title: 'Agreed later', file: 'src/baz.ts', line: 5, severity: 'blocker' as const };
+    const entries = [
+      makeFindingFingerprintEntry({ title: 'Null check missing', file: 'src/foo.ts', severity: 'blocker', threadId: 'PRRT_abc' }),
+      makeFindingFingerprintEntry({ title: 'Unused import', file: 'src/bar.ts', severity: 'suggestion', threadId: 'PRRT_def' }),
+      makeFindingFingerprintEntry({ title: 'Agreed later', file: 'src/baz.ts', severity: 'blocker', threadId: 'PRRT_ghi', authorReplyClass: 'agree' }),
+    ];
+    const rounds = [makeRoundContext(1, { findings: { count: 3, severityCounts: {}, entries } })];
+    const followUp = (interRoundDiff: string) =>
+      buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, [...openThreads, agreed], rounds, interRoundDiff);
+    const unpushed = followUp('');
+    expect(unpushed).toContain('"Null check missing" at src/foo.ts:10 (earlier blocker, stays open: the push did not change this file)');
+    expect(unpushed).toMatch(/"Unused import" at src\/bar\.ts:20\n/);
+    expect(unpushed).toMatch(/"Agreed later" at src\/baz\.ts:5\n/);
 
     const pushed = 'diff --git a/src/foo.ts b/src/foo.ts\n--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -10,1 +10,1 @@\n-a\n+b\n';
-    expect(buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, openThreads, [], pushed)).not.toContain('stays open');
+    expect(followUp(pushed)).toMatch(/"Null check missing" at src\/foo\.ts:10 \(earlier blocker\)\n/);
   });
 
   it('renders thread reference with view link suffix when threadUrl is provided', () => {
