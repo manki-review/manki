@@ -12,4 +12,3 @@ instructions: |
 
 memory:
   enabled: true
-  repo: "manki-review/review-memory"

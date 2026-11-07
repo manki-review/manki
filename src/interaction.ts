@@ -2,9 +2,8 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { LLMCall, LLMClient, recordCalls, SendMessageOptions } from './providers';
-import { writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
+import { MemoryStore, writeSuppression, writeLearning, removeLearning, removeSuppression, sanitizeMemoryField } from './memory';
 import { BotIdentity, dynamicFence, hasWriteAccess, MANKI_VERSION, isRepoAdmin, reactToIssueComment, reactToReviewComment, fetchPRDiff } from './github';
-import { resolveMemoryRepo } from './config';
 import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
@@ -36,11 +35,6 @@ export async function isLLMAccessAllowed(octokit: Octokit, owner: string, repo: 
 async function commenterCanWrite(octokit: Octokit, owner: string, repo: string): Promise<boolean> {
   const login: string | undefined = github.context.payload.sender?.login;
   return !!login && await hasWriteAccess(octokit, owner, repo, login);
-}
-
-interface MemoryConfig {
-  enabled: boolean;
-  repo: string;
 }
 
 const BOT_MARKER = '<!-- manki -->';
@@ -99,6 +93,8 @@ const SECURITY_STAYS_OPEN = 'This is a security finding, so the thread stays ope
 const FORGET_USAGE = 'Search term too short: it needs at least 3 characters.\n\nUsage:\n- `/manki forget <text>` removes a learning.\n- `/manki forget suppression <pattern>` removes a suppression.';
 
 const MEMORY_DISABLED = 'Review memory is off for this repo. Add `memory.enabled: true` to `.manki.yml` to turn it on.';
+
+const GLOBAL_MEMORY_BY_HAND = 'Nothing was stored. Global memory applies to every repo, so the owner of the memory repository edits `_global/` by hand.';
 
 const MAX_REPLY_DEPTH = 20;
 
@@ -182,12 +178,12 @@ function requireNewProof(reply: string, finding: string): string {
  * Saves the learning a withdrawn finding leaves: on `path`, findings like `title` do not apply, for the reason the
  * developer gave. Returns the sentence that tells the developer what was saved and how to remove it.
  */
-async function saveWithdrawnLearning(memoryToken: string, memoryConfig: MemoryConfig, owner: string, repo: string, prNumber: number, path: string, title: string, developerReply: string): Promise<string> {
+async function saveWithdrawnLearning(memory: MemoryStore, owner: string, repo: string, prNumber: number, path: string, title: string, developerReply: string): Promise<string> {
   const id = `learn-${Date.now()}`;
   // The developer's own words, never the model's, since PR content the model read could steer what it writes.
   const reason = sanitizeMemoryField(developerReply.replace(/\s+/g, ' ').trim().slice(0, 300));
   const content = `Findings like "${sanitizeMemoryField(title.slice(0, 120))}" do not apply on \`${path}\`: ${reason}`;
-  await writeLearning(github.getOctokit(memoryToken), resolveMemoryRepo(memoryConfig, owner), repo, {
+  await writeLearning(memory, {
     id, content, scope: 'repo', path, source: `${owner}/${repo}#${prNumber}`, created_at: new Date().toISOString().split('T')[0],
   });
   core.info(`Saved learning ${id} for ${path}`);
@@ -205,8 +201,7 @@ export async function handleReviewCommentReply(
   owner: string,
   repo: string,
   prNumber: number,
-  memoryConfig?: MemoryConfig,
-  memoryToken?: string,
+  memory?: MemoryStore,
   loadWorkspace?: () => Promise<string | undefined>,
 ): Promise<void> {
   const payload = github.context.payload;
@@ -284,9 +279,9 @@ export async function handleReviewCommentReply(
     // A security finding never teaches the reviewers to skip a pattern, and only a writer's reply can change memory.
     let saved: string | undefined;
     const path = root.comment.path;
-    if (WITHDRAWN_REPLY_RE.test(reply) && !isSecurity && path && memoryConfig?.enabled && memoryToken && await commenterCanWrite(octokit, owner, repo)) {
+    if (WITHDRAWN_REPLY_RE.test(reply) && !isSecurity && path && memory && await commenterCanWrite(octokit, owner, repo)) {
       const title = parseFindingData(findingBody)?.title ?? path;
-      saved = await saveWithdrawnLearning(memoryToken, memoryConfig, owner, repo, prNumber, path, title, comment.body ?? '')
+      saved = await saveWithdrawnLearning(memory, owner, repo, prNumber, path, title, comment.body ?? '')
         .catch((error: unknown) => {
           core.warning(`Failed to save the learning of a withdrawn finding: ${error}`);
           return undefined;
@@ -327,8 +322,7 @@ export async function handlePRComment(
   owner: string,
   repo: string,
   issueNumber: number,
-  memoryConfig?: MemoryConfig,
-  memoryToken?: string,
+  memory?: MemoryStore,
   config?: ReviewConfig,
 ): Promise<void> {
   const payload = github.context.payload;
@@ -367,16 +361,16 @@ export async function handlePRComment(
       break;
     }
     case 'dismiss':
-      await handleDismiss(octokit, owner, repo, issueNumber, command.args, memoryConfig, memoryToken);
+      await handleDismiss(octokit, owner, repo, issueNumber, command.args, memory);
       await reactToIssueComment(octokit, owner, repo, commentId, '+1');
       break;
     case 'remember':
       await reactToIssueComment(octokit, owner, repo, commentId, 'eyes');
-      await handleRemember(octokit, owner, repo, issueNumber, command.args, memoryConfig, memoryToken);
+      await handleRemember(octokit, owner, repo, issueNumber, command.args, memory);
       break;
     case 'forget':
       await reactToIssueComment(octokit, owner, repo, commentId, 'eyes');
-      await handleForget(octokit, owner, repo, issueNumber, command.args, memoryConfig, memoryToken);
+      await handleForget(octokit, owner, repo, issueNumber, command.args, memory);
       break;
     case 'check':
       await reactToIssueComment(octokit, owner, repo, commentId, 'eyes');
@@ -457,8 +451,7 @@ async function handleDismiss(
   repo: string,
   prNumber: number,
   findingRef: string,
-  memoryConfig?: MemoryConfig,
-  memoryToken?: string,
+  memory?: MemoryStore,
 ): Promise<void> {
   const sanitizedPattern = findingRef
     .replace(/</g, '').replace(/>/g, '')
@@ -476,7 +469,7 @@ async function handleDismiss(
     core.info('Dismiss from non-collaborator — acknowledging but not persisting suppression');
   }
 
-  const memoryNote = !memoryConfig?.enabled
+  const memoryNote = !memory
     ? 'Review memory is off, so later reviews can raise it again.'
     : isTrusted
       ? 'Stored as a suppression in review memory.'
@@ -488,12 +481,9 @@ async function handleDismiss(
     body: withMarkers(`Dismissed${sanitizedPattern ? `: \`${sanitizedPattern}\`` : ''}. ${memoryNote}`, BOT_MARKER),
   });
 
-  if (isTrusted && memoryConfig?.enabled && memoryToken && sanitizedPattern) {
+  if (isTrusted && memory && sanitizedPattern) {
     try {
-      const memoryOctokit = github.getOctokit(memoryToken);
-      const memoryRepo = resolveMemoryRepo(memoryConfig, owner);
-
-      await writeSuppression(memoryOctokit, memoryRepo, repo, {
+      await writeSuppression(memory, {
         id: `supp-${Date.now()}`,
         pattern: sanitizedPattern,
         reason: `Dismissed by user on PR #${prNumber}`,
@@ -553,8 +543,7 @@ async function handleRemember(
   repo: string,
   prNumber: number,
   instruction: string,
-  memoryConfig?: MemoryConfig,
-  memoryToken?: string,
+  memory?: MemoryStore,
 ): Promise<void> {
   const isTrusted = await commenterCanWrite(octokit, owner, repo);
 
@@ -576,7 +565,16 @@ async function handleRemember(
     return;
   }
 
-  if (!memoryConfig?.enabled || !memoryToken) {
+  if (instruction.trim().toLowerCase().startsWith('global:')) {
+    await octokit.rest.issues.createComment({
+      owner, repo,
+      issue_number: prNumber,
+      body: withMarkers(GLOBAL_MEMORY_BY_HAND, BOT_MARKER),
+    });
+    return;
+  }
+
+  if (!memory) {
     await octokit.rest.issues.createComment({
       owner, repo,
       issue_number: prNumber,
@@ -585,24 +583,13 @@ async function handleRemember(
     return;
   }
 
-  let scope: 'repo' | 'global' = 'repo';
-  let content = instruction.trim();
-
-  if (content.toLowerCase().startsWith('global:')) {
-    scope = 'global';
-    content = content.slice(7).trim();
-  }
-
-  const sanitized = sanitizeMemoryField(content);
+  const sanitized = sanitizeMemoryField(instruction.trim());
 
   try {
-    const memoryOctokit = github.getOctokit(memoryToken);
-    const memoryRepo = resolveMemoryRepo(memoryConfig, owner);
-
-    await writeLearning(memoryOctokit, memoryRepo, repo, {
+    await writeLearning(memory, {
       id: `learn-${Date.now()}`,
       content: sanitized,
-      scope,
+      scope: 'repo',
       source: `${owner}/${repo}#${prNumber}`,
       created_at: new Date().toISOString().split('T')[0],
     });
@@ -610,16 +597,16 @@ async function handleRemember(
     await octokit.rest.issues.createComment({
       owner, repo,
       issue_number: prNumber,
-      body: withMarkers(`Stored for future reviews (scope: ${scope}): \`${sanitized}\``, BOT_MARKER),
+      body: withMarkers(`Stored for future reviews: \`${sanitized}\``, BOT_MARKER),
     });
 
-    core.info(`Stored learning: "${sanitized}" (scope: ${scope})`);
+    core.info(`Stored learning: "${sanitized}"`);
   } catch (error) {
     core.warning(`Failed to store learning: ${error}`);
     await octokit.rest.issues.createComment({
       owner, repo,
       issue_number: prNumber,
-      body: withMarkers('Could not store it. The memory repo token needs write access.', BOT_MARKER),
+      body: withMarkers('Could not store it. The run log has the reason.', BOT_MARKER),
     });
   }
 }
@@ -630,8 +617,7 @@ async function handleForget(
   repo: string,
   issueNumber: number,
   args: string,
-  memoryConfig?: MemoryConfig,
-  memoryToken?: string,
+  memory?: MemoryStore,
 ): Promise<void> {
   const isTrusted = await commenterCanWrite(octokit, owner, repo);
 
@@ -653,7 +639,7 @@ async function handleForget(
     return;
   }
 
-  if (!memoryConfig?.enabled || !memoryToken) {
+  if (!memory) {
     await octokit.rest.issues.createComment({
       owner, repo,
       issue_number: issueNumber,
@@ -662,8 +648,6 @@ async function handleForget(
     return;
   }
 
-  const memoryOctokit = github.getOctokit(memoryToken);
-  const memoryRepo = resolveMemoryRepo(memoryConfig, owner);
   const trimmed = args.trim();
 
   try {
@@ -678,7 +662,7 @@ async function handleForget(
         return;
       }
 
-      const { removed, remaining } = await removeSuppression(memoryOctokit, memoryRepo, repo, searchPattern);
+      const { removed, remaining } = await removeSuppression(memory, searchPattern);
 
       if (removed) {
         await octokit.rest.issues.createComment({
@@ -695,7 +679,7 @@ async function handleForget(
         });
       }
     } else {
-      const { removed, remaining } = await removeLearning(memoryOctokit, memoryRepo, repo, trimmed);
+      const { removed, remaining } = await removeLearning(memory, trimmed);
 
       if (removed) {
         await octokit.rest.issues.createComment({
@@ -717,7 +701,7 @@ async function handleForget(
     await octokit.rest.issues.createComment({
       owner, repo,
       issue_number: issueNumber,
-      body: withMarkers('Could not remove it. The memory repo token needs write access.', BOT_MARKER),
+      body: withMarkers('Could not remove it. The run log has the reason.', BOT_MARKER),
     });
   }
 }
@@ -883,8 +867,7 @@ export async function handleReviewCommentCommand(
   prNumber: number,
   commentId: number,
   command: ParsedCommand,
-  memoryConfig?: MemoryConfig,
-  memoryToken?: string,
+  memory?: MemoryStore,
 ): Promise<void> {
   const prOnlyCommands = new Set(['check', 'explain']);
   if (prOnlyCommands.has(command.type)) {
@@ -898,17 +881,17 @@ export async function handleReviewCommentCommand(
 
   switch (command.type) {
     case 'dismiss':
-      await handleDismiss(octokit, owner, repo, prNumber, command.args, memoryConfig, memoryToken);
+      await handleDismiss(octokit, owner, repo, prNumber, command.args, memory);
       await resolveDismissedThread(octokit, bot, owner, repo, prNumber);
       await reactToReviewComment(octokit, owner, repo, commentId, '+1');
       break;
     case 'remember':
       await reactToReviewComment(octokit, owner, repo, commentId, 'eyes');
-      await handleRemember(octokit, owner, repo, prNumber, command.args, memoryConfig, memoryToken);
+      await handleRemember(octokit, owner, repo, prNumber, command.args, memory);
       break;
     case 'forget':
       await reactToReviewComment(octokit, owner, repo, commentId, 'eyes');
-      await handleForget(octokit, owner, repo, prNumber, command.args, memoryConfig, memoryToken);
+      await handleForget(octokit, owner, repo, prNumber, command.args, memory);
       break;
     case 'help':
       await reactToReviewComment(octokit, owner, repo, commentId, '+1');
