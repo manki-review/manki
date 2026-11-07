@@ -1601,7 +1601,7 @@ function sanitizeMarkdown(text: string): string {
     .replace(/!\[([^\]]*)\]\[[^\]]*\]/g, '$1')                       // Reference images
     .replace(/\[([^\]]*)\]\[[^\]]*\]/g, '$1')                        // Reference links
     .replace(/^\[[^\]]*\]:\s+.*$/gm, '')                             // Link/image definitions
-    .replace(SUGGESTION_FENCE_RE, '$1$2')                           // Suggestion fences: plain code, no commit button
+    .replace(SUGGESTION_FENCE_RE, '$1')                             // Suggestion fences: plain code, no commit button
     // Insert zero-width space after @ to prevent GitHub from resolving mentions.
     // Lookbehind avoids matching email addresses (which have chars before @).
     // Also handles @org/team patterns.
@@ -1626,7 +1626,8 @@ function visibleLength(text: string): number {
   return text.replace(/<details>[\s\S]*?<\/details>/g, '').replace(/<!--[\s\S]*?-->/g, '').length;
 }
 const FENCE_LINE_RE = /^\s*(`{3,}|~{3,})(.*)$/;
-const SUGGESTION_FENCE_RE = /^((?:[\t >]|[-*+][\t ]|\d{1,9}[.)][\t ])*)(`{3,}|~{3,})[\t ]*suggestion\b.*$/gim;
+// Any fence run, wherever it sits, since later splitting can move it to the start of a line.
+const SUGGESTION_FENCE_RE = /(`{3,}|~{3,})[\t ]*suggestion\S*/gi;
 const PROSE_LINE_RE = /^[A-Z][A-Za-z']*(?:\s+\S+){2,}[.:]$/;
 // A comment that says where the code goes, such as `// After the guard, add:`, means the code does not apply as is.
 const PLACEMENT_COMMENT_RE = /^\s*(?:\/\/|#|--|\/\*)\s+(?:(?:in|after|before|replace|add|then|change|move|instead)\b|.*:\s*(?:\*\/)?$)/i;
@@ -1695,8 +1696,8 @@ function renderFixParts(parts: FixPart[], file: string): string {
     const text = p.lines.join('\n');
     if (p.kind === 'prose') return sanitizeMarkdown(text);
     const fence = dynamicFence(text);
-    const lang = p.lang && !/^suggestion\b/i.test(p.lang) ? p.lang : extension;
-    return `${fence}${lang.replace(/[^\w+#.-]/g, '')}\n${text}\n${fence}`;
+    const lang = [p.lang, extension].map(l => (l ?? '').replace(/[^\w+#.-]/g, '')).find(l => l && !/^suggestion/i.test(l)) ?? '';
+    return `${fence}${lang}\n${text}\n${fence}`;
   }).join('\n\n');
 }
 
