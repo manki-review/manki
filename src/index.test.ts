@@ -63,7 +63,8 @@ const mockOctokitInstance = {
 };
 
 jest.mock('./auth', () => ({
-  createAuthenticatedOctokit: jest.fn().mockResolvedValue({ octokit: mockOctokitInstance, identity: 'app', bot: { logins: ['manki-review[bot]', 'github-actions[bot]'] } }),
+  createAuthenticatedOctokit: jest.fn().mockResolvedValue({ octokit: mockOctokitInstance, bot: { logins: ['manki-review[bot]'] } }),
+  TokenServiceError: jest.requireActual('./auth').TokenServiceError,
   getMemoryToken: jest.fn().mockResolvedValue(null),
   fetchPrState: jest.fn().mockResolvedValue(null),
   reportPrState: jest.fn().mockResolvedValue(undefined),
@@ -194,7 +195,6 @@ jest.mock('./github', () => ({
   markProgressCommentFailed: jest.fn().mockResolvedValue(undefined),
   markProgressCommentSuperseded: jest.fn().mockResolvedValue(undefined),
   isFailedProgress: jest.requireActual('./github').isFailedProgress,
-  postAppWarningIfNeeded: jest.fn().mockResolvedValue(undefined),
   fetchPRComments: jest.fn().mockResolvedValue([]),
   BOT_LOGIN: 'manki-review[bot]',
   isBotLogin: jest.requireActual('./github').isBotLogin,
@@ -203,7 +203,7 @@ jest.mock('./github', () => ({
   APPROVED_LINE: jest.requireActual('./github').APPROVED_LINE,
   BOT_MARKER: '<!-- manki-bot -->',
   REVIEW_COMPLETE_MARKER: '<!-- manki-review-complete -->',
-  APP_WARNING_MARKER: '<!-- manki-app-warning -->',
+  REVIEW_INCOMPLETE_LINE: jest.requireActual('./github').REVIEW_INCOMPLETE_LINE,
   PAUSE_NOTICE_MARKER: jest.requireActual('./github').PAUSE_NOTICE_MARKER,
   postConfigErrorComment: jest.fn().mockResolvedValue(undefined),
   latestSettings: jest.requireActual('./github').latestSettings,
@@ -1478,6 +1478,7 @@ describe('main', () => {
     process.env.GITHUB_EVENT_NAME = 'workflow_dispatch';
     // The event each test sets stands for the one the dispatch inputs name.
     jest.spyOn(dispatchModule, 'restoreDispatchedEvent').mockResolvedValue('run');
+    jest.spyOn(dispatchModule, 'dispatchedNumber').mockReturnValue(7);
   });
 
   afterEach(() => {
@@ -1521,6 +1522,36 @@ describe('main', () => {
     await main();
 
     expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(expect.stringContaining('Something broke'));
+  });
+
+  it('marks the round incomplete with the workflow token when the token service fails, and only in the main step', async () => {
+    setContext({ eventName: 'pull_request', payload: { action: 'opened', sender: { login: 'user' }, pull_request: { number: 7, head: { sha: 'abc' }, base: { ref: 'main' }, title: 'Test', body: '', draft: false } } });
+    jest.mocked(core.getInput).mockImplementation((name: string) => ({ anthropic_api_key: 'test-api-key', github_token: 'ghs_workflow' })[name] ?? '');
+    const failure = new authModule.TokenServiceError('HTTP 503');
+    jest.mocked(authModule.createAuthenticatedOctokit).mockRejectedValueOnce(failure);
+    jest.mocked(github.getOctokit).mockReturnValue(mockOctokitInstance as unknown as ReturnType<typeof github.getOctokit>);
+
+    try {
+      await main();
+
+      expect(jest.mocked(github.getOctokit)).toHaveBeenCalledWith('ghs_workflow');
+      expect(mockOctokitInstance.rest.issues.createComment).toHaveBeenCalledWith({
+        owner: 'test-owner', repo: 'test-repo', issue_number: 7,
+        body: '⚠️ **Review incomplete:** Could not get a token from the Manki token service (HTTP 503). Retry the run.',
+      });
+      expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(expect.stringContaining('Could not get a token from the Manki token service'));
+
+      jest.mocked(mockOctokitInstance.rest.issues.createComment).mockClear();
+      jest.mocked(core.getState).mockReturnValueOnce('true');
+      jest.mocked(authModule.createAuthenticatedOctokit).mockRejectedValueOnce(failure);
+      await main();
+      expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalled();
+    } finally {
+      jest.mocked(github.getOctokit).mockReset();
+      jest.mocked(core.getState).mockReset().mockReturnValue('');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      jest.mocked(authModule.createAuthenticatedOctokit).mockReset().mockResolvedValue({ octokit: mockOctokitInstance as any, bot: TEST_BOT });
+    }
   });
 
   it('fails the run when the config fetched for a non-review event is invalid', async () => {
@@ -5427,54 +5458,6 @@ describe('runFullReview orchestration', () => {
       jest.mocked(configModule.resolveModel).mockReturnValue('claude-sonnet-4-20250514');
       jest.mocked(parseModelSpec).mockImplementation((m: string) => ({ provider: 'anthropic', model: m }));
     }
-  });
-
-  it('posts app warning when identity is actions', async () => {
-    _resetOctokitCache();
-    jest.mocked(authModule.createAuthenticatedOctokit).mockResolvedValue({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      octokit: mockOctokitInstance as any,
-      identity: 'actions',
-      bot: TEST_BOT,
-    });
-
-    await callRunFullReview();
-
-    expect(jest.mocked(ghUtils.postAppWarningIfNeeded)).toHaveBeenCalledWith(
-      mockOctokitInstance, TEST_BOT, 'test-owner', 'test-repo', 42,
-    );
-  });
-
-  it('does not post app warning when identity is app', async () => {
-    _resetOctokitCache();
-    jest.mocked(authModule.createAuthenticatedOctokit).mockResolvedValue({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      octokit: mockOctokitInstance as any,
-      identity: 'app',
-      bot: TEST_BOT,
-    });
-
-    await callRunFullReview();
-
-    expect(jest.mocked(ghUtils.postAppWarningIfNeeded)).not.toHaveBeenCalled();
-  });
-
-  it('continues review and warns when postAppWarningIfNeeded throws', async () => {
-    _resetOctokitCache();
-    jest.mocked(authModule.createAuthenticatedOctokit).mockResolvedValue({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      octokit: mockOctokitInstance as any,
-      identity: 'actions',
-      bot: TEST_BOT,
-    });
-    jest.mocked(ghUtils.postAppWarningIfNeeded).mockRejectedValueOnce(new Error('API error'));
-
-    await callRunFullReview();
-
-    expect(jest.mocked(core.warning)).toHaveBeenCalledWith(
-      expect.stringContaining('Failed to post app warning'),
-    );
-    expect(jest.mocked(ghUtils.postProgressComment)).toHaveBeenCalled();
   });
 
   describe('convergence round-count cap', () => {

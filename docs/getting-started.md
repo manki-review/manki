@@ -38,7 +38,7 @@ When Manki posts a new review, it dismisses its own earlier REQUEST_CHANGES revi
 
 ## Step 1: Install the GitHub App
 
-Install the [Manki GitHub App](https://github.com/apps/manki-review) on the repositories you want reviewed. This gives Manki its own identity: reviews appear as `manki-review[bot]` with a distinct avatar instead of the generic `github-actions[bot]`.
+Install the [Manki GitHub App](https://github.com/apps/manki-review) on the repositories you want reviewed. Manki reviews and posts with the App's token, as `manki-review[bot]`.
 
 1. Go to [github.com/apps/manki-review](https://github.com/apps/manki-review)
 2. Click **Install**
@@ -50,7 +50,7 @@ The app requires these permissions:
 |------------|--------|---------|
 | Contents | Read and write | Read repository files and diffs. GitHub needs write to resolve a review thread, and the token Manki gets covers only the reviewed repo |
 | Pull requests | Read and write | Post review comments and approvals |
-| Issues | Read and write | Post progress comments and app warnings; read linked issues for review context |
+| Issues | Read and write | Post progress comments; read linked issues for review context |
 | Actions | Read and write | Start the Manki workflow and follow its runs (see [What the Manki App needs](#what-the-manki-app-needs)). Set on the App by its maintainers, so you only approve it |
 | Checks | Read and write | Show a `Manki` check on the PR. Set on the App by its maintainers, so you only approve it |
 
@@ -60,7 +60,7 @@ Instead of the manki-review App, Manki can post as an App you create, with the `
 
 ## Step 2: Authentication Secrets
 
-> **Do you need a GitHub token?** No. `github_token` defaults to the workflow's own token. With the GitHub App installed (Step 1), Manki uses the App's token instead and posts as `manki-review[bot]`. Without the App, it posts with the workflow token as `github-actions[bot]`. For review memory, Manki gets a second App token that can write only the `review-memory` repo of the same account, when the App is installed on it. A memory repo with any other name needs the `memory_repo_token` input.
+> **Do you need a GitHub token?** No. `github_token` defaults to the workflow's own token. Manki reviews and posts with the GitHub App's token (Step 1) as `manki-review[bot]`, and uses the workflow token only to read the dispatched event and CI results. When the token service gives no App token, Manki tries once more, then fails the run and says so on the PR with the workflow token. For review memory, Manki gets a second App token that can write only the `review-memory` repo of the same account, when the App is installed on it. A memory repo with any other name needs the `memory_repo_token` input.
 
 ### Choosing a provider
 
@@ -193,7 +193,7 @@ on:
 permissions:
   contents: read          # read repo files and diffs
   pull-requests: write    # post review comments and approvals
-  issues: write           # post progress comments and app warnings on PRs
+  issues: write           # post a note on the PR when the token service gives no token
   id-token: write         # OIDC token for GitHub App identity
   actions: read           # verify workflow run is legitimate
   # checks: read          # optional: read CI annotations, see "Reading CI results"
@@ -293,7 +293,7 @@ models:
 
 ### Action inputs
 
-The workflow above uses the only inputs most setups need: a provider credential (e.g. `anthropic_api_key`, `openai_api_key`, `gemini_api_key`, or one of the OAuth equivalents) and optionally `memory_repo_token`. `github_token` defaults to the workflow token, so set it only to post with a different token. To point at a config file outside the repo root, set `config_path` (default: `.manki.yml`). To post as [your own GitHub App](#your-own-github-app), set `github_app_id` and `github_app_private_key`. `manki_token_url` points at a different token service. See [`action.yml`](../action.yml) for the full input reference.
+The workflow above uses the only inputs most setups need: a provider credential (e.g. `anthropic_api_key`, `openai_api_key`, `gemini_api_key`, or one of the OAuth equivalents) and optionally `memory_repo_token`. `github_token` defaults to the workflow token, so set it only to read with a different token. To point at a config file outside the repo root, set `config_path` (default: `.manki.yml`). To post as [your own GitHub App](#your-own-github-app), set `github_app_id` and `github_app_private_key`. `manki_token_url` points at a different token service. See [`action.yml`](../action.yml) for the full input reference.
 
 ### Action outputs
 

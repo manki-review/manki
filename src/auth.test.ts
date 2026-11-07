@@ -4,7 +4,7 @@ import { createAppAuth } from '@octokit/auth-app';
 import { retry } from '@octokit/plugin-retry';
 import { throttling } from '@octokit/plugin-throttling';
 
-import { AppMemory, createAuthenticatedOctokit, fetchPrState, getMemoryToken, reportPrState, resolveGitHubToken, TokenResult } from './auth';
+import { AppMemory, createAuthenticatedOctokit, fetchPrState, getMemoryToken, reportPrState, resolveGitHubToken, TokenResult, TokenServiceError } from './auth';
 
 jest.mock('@actions/core');
 jest.mock('@actions/github');
@@ -49,7 +49,6 @@ describe('getMemoryToken', () => {
   });
 });
 
-const GITHUB_TOKEN = 'ghp_test_token_123';
 const TOKEN_URL = 'https://manki-api.dustinface.me/token';
 const OWNER = 'test-owner';
 const REPO = 'test-repo';
@@ -73,9 +72,9 @@ describe('resolveGitHubToken', () => {
       );
     });
 
-    const result = await resolveGitHubToken(GITHUB_TOKEN, TOKEN_URL, OWNER, REPO);
+    const result = await resolveGitHubToken(TOKEN_URL, OWNER, REPO);
 
-    expect(result).toEqual<TokenResult>({ token: APP_TOKEN, identity: 'app' });
+    expect(result).toEqual<TokenResult>({ token: APP_TOKEN });
     expect(core.setSecret).toHaveBeenCalledWith(APP_TOKEN);
     expect(core.info).toHaveBeenCalledWith(expect.stringContaining('manki-review[bot]'));
 
@@ -95,9 +94,9 @@ describe('resolveGitHubToken', () => {
       memory_expires_at: '2026-03-28T12:00:00Z',
     }));
 
-    const result = await resolveGitHubToken(GITHUB_TOKEN, TOKEN_URL, OWNER, REPO);
+    const result = await resolveGitHubToken(TOKEN_URL, OWNER, REPO);
 
-    expect(result).toEqual<TokenResult>({ token: APP_TOKEN, memoryToken: 'ghs_memory', identity: 'app' });
+    expect(result).toEqual<TokenResult>({ token: APP_TOKEN, memoryToken: 'ghs_memory' });
     expect(core.setSecret).toHaveBeenCalledWith(APP_TOKEN);
     expect(core.setSecret).toHaveBeenCalledWith('ghs_memory');
   });
@@ -106,97 +105,65 @@ describe('resolveGitHubToken', () => {
     jest.spyOn(core, 'getIDToken').mockResolvedValue('fake-oidc-token');
     mockFetch(async () => Response.json({ token: APP_TOKEN, expires_at: '2026-03-28T12:00:00Z', memory_token: memoryToken }));
 
-    expect(await resolveGitHubToken(GITHUB_TOKEN, TOKEN_URL, OWNER, REPO)).toEqual<TokenResult>({ token: APP_TOKEN, identity: 'app' });
+    expect(await resolveGitHubToken(TOKEN_URL, OWNER, REPO)).toEqual<TokenResult>({ token: APP_TOKEN });
   });
 
-  it('falls back to github_token when OIDC token is not available', async () => {
-    jest.spyOn(core, 'getIDToken').mockRejectedValue(new Error('OIDC not available'));
+  const tokenReply = () => Response.json({ token: APP_TOKEN, expires_at: '2026-03-28T12:00:00Z' });
 
-    const result = await resolveGitHubToken(GITHUB_TOKEN, TOKEN_URL, OWNER, REPO);
+  /** Runs `resolveGitHubToken` past the wait before its retry. */
+  async function resolveWithRetryWait(): Promise<TokenResult> {
+    jest.useFakeTimers();
+    try {
+      const result = resolveGitHubToken(TOKEN_URL, OWNER, REPO);
+      result.catch(() => {});
+      await jest.advanceTimersByTimeAsync(2000);
+      return await result;
+    } finally {
+      jest.useRealTimers();
+    }
+  }
 
-    expect(result).toEqual<TokenResult>({ token: GITHUB_TOKEN, identity: 'actions' });
-    expect(core.info).toHaveBeenCalledWith(expect.stringContaining('OIDC token not available'));
-  });
+  it('fails without retrying when the run has no OIDC token, the service refuses or the reply has no token', async () => {
+    jest.spyOn(core, 'getIDToken').mockRejectedValueOnce(new Error('OIDC not available'));
+    await expect(resolveGitHubToken(TOKEN_URL, OWNER, REPO)).rejects.toThrow(
+      new TokenServiceError('no OIDC token, so the workflow needs `id-token: write`'),
+    );
 
-  it('falls back when token service returns not found', async () => {
     jest.spyOn(core, 'getIDToken').mockResolvedValue('fake-oidc-token');
-    mockFetch(async () => {
-      return new Response('Not Found', { status: 404 });
-    });
-
-    const result = await resolveGitHubToken(GITHUB_TOKEN, TOKEN_URL, OWNER, REPO);
-
-    expect(result).toEqual<TokenResult>({ token: GITHUB_TOKEN, identity: 'actions' });
-    expect(core.info).toHaveBeenCalledWith(expect.stringContaining('not available'));
+    for (const [reply, reason] of [
+      [new Response('Not Found', { status: 404 }), 'HTTP 404'],
+      [Response.json({ token: '' }), 'a reply without a token'],
+      [Response.json({ expires_at: '2026-03-28T12:00:00Z' }), 'a reply without a token'],
+      [Response.json({ token: 12345 }), 'a reply without a token'],
+    ] as const) {
+      mockFetch(async () => reply);
+      await expect(resolveGitHubToken(TOKEN_URL, OWNER, REPO))
+        .rejects.toThrow(`Could not get a token from the Manki token service (${reason}). Retry the run.`);
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+    }
   });
 
-  it('falls back when token service returns an error', async () => {
+  it.each([
+    ['a timeout', () => Promise.reject(new DOMException('This operation was aborted', 'AbortError'))],
+    ['a network error', () => Promise.reject(new TypeError('fetch failed'))],
+    ['a 5xx', async () => new Response('Bad Gateway', { status: 502 })],
+  ])('tries once more after %s, and uses the token of the retry', async (_case, firstReply) => {
     jest.spyOn(core, 'getIDToken').mockResolvedValue('fake-oidc-token');
-    mockFetch(async () => {
-      return new Response('Internal Server Error', { status: 500 });
-    });
+    global.fetch = jest.fn().mockImplementationOnce(firstReply).mockImplementationOnce(async () => tokenReply()) as jest.Mock;
 
-    const result = await resolveGitHubToken(GITHUB_TOKEN, TOKEN_URL, OWNER, REPO);
-
-    expect(result).toEqual<TokenResult>({ token: GITHUB_TOKEN, identity: 'actions' });
-    expect(core.info).toHaveBeenCalledWith(expect.stringContaining('not available'));
+    expect(await resolveWithRetryWait()).toEqual<TokenResult>({ token: APP_TOKEN });
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    expect(core.info).toHaveBeenCalledWith(expect.stringContaining('trying again'));
   });
 
-  it('falls back when token service returns invalid response (empty token)', async () => {
+  it('fails after the retry fails too', async () => {
     jest.spyOn(core, 'getIDToken').mockResolvedValue('fake-oidc-token');
-    mockFetch(async () => {
-      return new Response(
-        JSON.stringify({ token: '', expires_at: '2026-03-28T12:00:00Z' }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      );
-    });
+    mockFetch(async () => new Response('Service Unavailable', { status: 503 }));
+    await expect(resolveWithRetryWait()).rejects.toThrow('Could not get a token from the Manki token service (HTTP 503). Retry the run.');
 
-    const result = await resolveGitHubToken(GITHUB_TOKEN, TOKEN_URL, OWNER, REPO);
-
-    expect(result).toEqual<TokenResult>({ token: GITHUB_TOKEN, identity: 'actions' });
-    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('invalid response'));
-  });
-
-  it('falls back when token service returns invalid response (missing token)', async () => {
-    jest.spyOn(core, 'getIDToken').mockResolvedValue('fake-oidc-token');
-    mockFetch(async () => {
-      return new Response(
-        JSON.stringify({ expires_at: '2026-03-28T12:00:00Z' }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      );
-    });
-
-    const result = await resolveGitHubToken(GITHUB_TOKEN, TOKEN_URL, OWNER, REPO);
-
-    expect(result).toEqual<TokenResult>({ token: GITHUB_TOKEN, identity: 'actions' });
-    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('invalid response'));
-  });
-
-  it('falls back on network error', async () => {
-    jest.spyOn(core, 'getIDToken').mockResolvedValue('fake-oidc-token');
-    mockFetch(async () => {
-      throw new Error('Network failure');
-    });
-
-    const result = await resolveGitHubToken(GITHUB_TOKEN, TOKEN_URL, OWNER, REPO);
-
-    expect(result).toEqual<TokenResult>({ token: GITHUB_TOKEN, identity: 'actions' });
-    expect(core.info).toHaveBeenCalledWith(expect.stringContaining('App token resolution failed'));
-  });
-
-  it('falls back when token is not a string type', async () => {
-    jest.spyOn(core, 'getIDToken').mockResolvedValue('fake-oidc-token');
-    mockFetch(async () => {
-      return new Response(
-        JSON.stringify({ token: 12345, expires_at: '2026-03-28T12:00:00Z' }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      );
-    });
-
-    const result = await resolveGitHubToken(GITHUB_TOKEN, TOKEN_URL, OWNER, REPO);
-
-    expect(result).toEqual<TokenResult>({ token: GITHUB_TOKEN, identity: 'actions' });
-    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('invalid response'));
+    mockFetch(async () => { throw new TypeError('fetch failed'); });
+    await expect(resolveWithRetryWait()).rejects.toThrow('(TypeError: fetch failed)');
+    expect(global.fetch).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -352,7 +319,6 @@ describe('createAuthenticatedOctokit', () => {
     expect(core.setSecret).toHaveBeenCalledWith('app-jwt-token');
     expect(core.setSecret).toHaveBeenCalledWith('installation-token-abc');
     expect(result.octokit).toBeDefined();
-    expect(result.identity).toBe('app');
     expect(result.bot).toEqual({ logins: ['acme-reviewer[bot]'] });
 
     // The memory token is minted per memory repo, with only `contents: write`, and never reuses the review token.
@@ -389,55 +355,17 @@ describe('createAuthenticatedOctokit', () => {
     await expect(createAuthenticatedOctokit()).rejects.toThrow('Invalid github_app_id: "not-a-number" is not a number');
   });
 
-  it('throws when no auth is configured', async () => {
-    mockGetInput.mockImplementation(() => '');
-
-    await expect(createAuthenticatedOctokit()).rejects.toThrow('No authentication configured');
-  });
-
-  it('falls back to resolveGitHubToken when no app credentials', async () => {
-    mockGetInput.mockImplementation((name: string) => {
-      if (name === 'github_app_id') return '';
-      if (name === 'github_app_private_key') return '';
-      if (name === 'github_token') return 'ghp_fallback';
-      if (name === 'manki_token_url') return '';
-      return '';
-    });
-
-    // OIDC not available — forces fallback to github_token
-    jest.spyOn(core, 'getIDToken').mockRejectedValue(new Error('No OIDC'));
-    const getAuthenticated = jest.fn().mockResolvedValue({ data: { login: 'review-user' } });
-    mockGetOctokit.mockReturnValue({ rest: { users: { getAuthenticated } } } as unknown as ReturnType<typeof github.getOctokit>);
-
-    const result = await createAuthenticatedOctokit();
-
-    expect(result.octokit).toBeDefined();
-    expect(result.appMemory).toBeUndefined();
-    expect(result.identity).toBe('actions');
-    expect(result.bot).toEqual({ logins: ['manki-review[bot]', 'github-actions[bot]', 'review-user'] });
-    expect(mockGetOctokit).toHaveBeenCalledWith('ghp_fallback', expect.anything(), retry, throttling, expect.any(Function));
-  });
-
-  it('keeps the default identity for the workflow token and when the token user cannot be resolved', async () => {
-    jest.spyOn(core, 'getIDToken').mockRejectedValue(new Error('No OIDC'));
-    const getAuthenticated = jest.fn().mockRejectedValue(new Error('Bad credentials'));
-    mockGetOctokit.mockReturnValue({ rest: { users: { getAuthenticated } } } as unknown as ReturnType<typeof github.getOctokit>);
-
+  it('fails cleanly when the token service gives no token, and never falls back to github_token', async () => {
     mockGetInput.mockImplementation((name: string) => (name === 'github_token' ? 'ghs_workflow' : ''));
-    expect((await createAuthenticatedOctokit()).bot).toEqual({ logins: ['manki-review[bot]', 'github-actions[bot]'] });
-    expect(getAuthenticated).not.toHaveBeenCalled();
+    jest.spyOn(core, 'getIDToken').mockRejectedValue(new Error('No OIDC'));
 
-    jest.mocked(core.warning).mockClear();
-    mockGetInput.mockImplementation((name: string) => (name === 'github_token' ? 'github_pat_broken' : ''));
-    expect((await createAuthenticatedOctokit()).bot).toEqual({ logins: ['manki-review[bot]', 'github-actions[bot]'] });
-    expect(getAuthenticated).toHaveBeenCalledTimes(1);
-    expect(core.warning).toHaveBeenCalledTimes(1);
-    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Bad credentials'));
+    await expect(createAuthenticatedOctokit()).rejects.toBeInstanceOf(TokenServiceError);
+    expect(mockGetOctokit).not.toHaveBeenCalled();
   });
 
   it('retries a rate-limited request at most twice', async () => {
-    mockGetInput.mockImplementation((name: string) => (name === 'github_token' ? 'ghp_fallback' : ''));
-    jest.spyOn(core, 'getIDToken').mockRejectedValue(new Error('No OIDC'));
+    jest.spyOn(core, 'getIDToken').mockResolvedValue('oidc-token');
+    mockFetch(async () => Response.json({ token: 'resolved-app-token' }));
     mockGetOctokit.mockReturnValue({} as ReturnType<typeof github.getOctokit>);
 
     await createAuthenticatedOctokit();
@@ -472,8 +400,8 @@ describe('createAuthenticatedOctokit', () => {
 
     const result = await createAuthenticatedOctokit();
 
-    expect(result.identity).toBe('app');
-    expect(result.bot).toEqual({ logins: ['manki-review[bot]', 'github-actions[bot]'] });
+    expect(result.bot).toEqual({ logins: ['manki-review[bot]'] });
+    expect(mockGetOctokit).toHaveBeenCalledWith('resolved-app-token', expect.anything(), retry, throttling, expect.any(Function));
     expect(await getMemoryToken(result.appMemory, `${OWNER}/review-memory`)).toBe(expected);
     expect(await getMemoryToken(result.appMemory, 'Test-Owner/Review-Memory')).toBe(expected);
     expect(await getMemoryToken(result.appMemory, `${OWNER}/team-memory`)).toBeNull();
