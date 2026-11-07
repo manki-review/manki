@@ -201,6 +201,14 @@ describe('collectStaticSignals', () => {
       },
     ]);
     expect(toolAlertFindings(signals).map(f => [f.severity, f.file, f.toolSource])).toEqual([['blocker', 'src/auth.ts', 'Manki'], ['warning', 'docs/notes.md', 'Manki']]);
+
+    // Many other results never push the alerts out.
+    const crowded = makeOctokit({ main: 'static_analysis:\n  checks: false\n  dependency_review: false\n' });
+    crowded.rest.codeScanning.listAlertsForRepo.mockResolvedValue({ data: Array.from({ length: 60 }, (_, i) => ({
+      rule: { id: `rule-${i}`, severity: 'error' }, tool: { name: 'CodeQL' }, most_recent_instance: { location: { path: 'src/auth.ts', start_line: 2 }, message: { text: 'Unsafe' } },
+    })) });
+    const many = (await collectStaticSignals(crowded, { ...request(), diff: fullDiff, fullDiff })).signals;
+    expect([many.length, ...many.slice(0, 3).map(s => s.source)]).toEqual([50, 'hidden_characters', 'hidden_characters', 'code_scanning']);
   });
 
   it('reads every source with one warning when the base config cannot be fetched', async () => {
