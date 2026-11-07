@@ -1,13 +1,12 @@
 import { execFile } from 'child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { promisify } from 'util';
 
 import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
-import { appendReplyTail, buildExitDiagnostics, callWithTimeout, cliEnv, MankiCommand, matchQuotaText, repoToolsPrompt, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, stepHookCommand, toolServerCommand, warnReplyTail } from './cli-utils';
+import { appendReplyTail, buildExitDiagnostics, callWithTimeout, cliEnv, MankiCommand, matchQuotaText, repoToolsPrompt, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, stepHookCommand, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
 import { AnthropicAuth, LLMClient, LLMResponse, LLMUsage, QuotaError, readCount, RefusalError, SendMessageOptions, ToolStep, ZERO_USAGE } from './types';
 
 // Re-export for backward compatibility with existing test imports.
@@ -273,8 +272,7 @@ export class AnthropicClient implements LLMClient {
   private async sendViaOAuth(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
     const cliPath = await this.ensureCLI();
     // A file keeps a long system prompt clear of the per-argument size limit.
-    const promptDir = mkdtempSync(join(tmpdir(), 'manki-prompt-'));
-    try {
+    return withPromptDir(async (promptDir) => {
       const systemPromptPath = join(promptDir, 'system.md');
       const repoTools = options?.repoTools;
       const fullPrompt = repoTools ? `${systemPrompt}\n\n${repoToolsPrompt(repoTools, 'Read, Grep and Glob')}` : systemPrompt;
@@ -286,10 +284,8 @@ export class AnthropicClient implements LLMClient {
         tools = { mcpConfigPath: writeToolServerConfig(promptDir, toolServerCommand(repoTools.root, { related: repoTools.related })), stepHook: stepHookCommand(stepsDir, repoTools.steps) };
       }
       const args = claudeCliArgs(this.model, systemPromptPath, options, tools);
-      return await this.runOAuthCli(cliPath, args, fullPrompt.length + userMessage.length, userMessage, options);
-    } finally {
-      rmSync(promptDir, { recursive: true, force: true });
-    }
+      return this.runOAuthCli(cliPath, args, fullPrompt.length + userMessage.length, userMessage, options);
+    });
   }
 
   private async runOAuthCli(cliPath: string, args: string[], promptChars: number, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
