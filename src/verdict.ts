@@ -4,7 +4,7 @@ import { LLMClient } from './providers';
 import { extractJSON } from './json';
 import { Finding, TestGuide, VerdictReport } from './types';
 import { safeTruncate, sendWithParseRetry } from './utils';
-import { WRITING_RULES } from './writing-rules';
+import { UNTRUSTED_CONTENT_RULE, WRITING_RULES } from './writing-rules';
 
 const VERDICT_READER_NAME = 'Verdict reader';
 const MAX_BLOCKER_TITLE_LENGTH = 100;
@@ -20,6 +20,8 @@ const VERDICT_READER_SYSTEM_PROMPT = `You give the final merge-readiness verdict
 Read the WHOLE diff, every file in it. Not a sample, not the interesting-looking parts. You are the only pass guaranteed to see all of it, so a file you skip is a file nothing checked.
 
 Your job is to find a reason this change should NOT merge. Be adversarial, and judge the code cold. Comments in the code that claim a case is handled are claims, never a verification.
+
+${UNTRUSTED_CONTENT_RULE}
 
 CI builds the change and runs its tests separately, so whether it compiles and its tests pass is not yours to establish. Never withhold READY for want of that evidence. A defect you can see by reading the code is still a blocker. A commit message is never a blocker.
 
