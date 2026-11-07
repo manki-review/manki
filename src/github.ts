@@ -256,6 +256,15 @@ export async function fetchInterRoundDiff(
 }
 
 /**
+ * Returns the full blob sha of each file `head` changes against its merge base with `base`, by path. GitHub lists at most
+ * 300 files for a comparison, so a path past that is missing from the map.
+ */
+export async function fetchBlobShas(octokit: Octokit, owner: string, repo: string, base: string, head: string): Promise<Map<string, string>> {
+  const { data } = await octokit.rest.repos.compareCommits({ owner, repo, base, head, per_page: 1 });
+  return new Map((data.files ?? []).flatMap(f => (f.sha ? [[f.filename, f.sha] as const] : [])));
+}
+
+/**
  * Fetch the config file content from the repo.
  */
 export async function fetchConfigFile(

@@ -4,10 +4,10 @@ import * as github from '@actions/github';
 import { assertWritesAllowed } from './abort';
 import { changeThreadThroughService, fetchPrState, reportPrState } from './auth';
 import { completeReviewCheck, outcomeReport, startReviewCheck } from './check-run';
-import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchInterRoundDiff, fetchPRComments, NO_VERDICT_MARKER, fetchReviewThreadNodes, fetchStandingVerdict, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, isRepoAdmin, markAutoApproveComplete, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
+import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchBlobShas, fetchInterRoundDiff, fetchPRComments, NO_VERDICT_MARKER, fetchReviewThreadNodes, fetchStandingVerdict, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgress, isRepoAdmin, markAutoApproveComplete, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
 import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
-import { isSameChange } from './diff';
+import { compareChanges } from './diff';
 import { fetchPriorRoundContexts, foundAgainAsBlocker, isOverrideCandidate, isSecurityThread, mayClearSecurityThread, PreviousFinding, RecapState, recordedSecurityOverride, REOPENED_MARKER, securityOverrideMarker, securityOverrideOf, threadSeverity } from './recap';
 import { ReviewConfig, RoundContext, SecurityOverride } from './types';
 import { withMarkers } from './utils';
@@ -41,7 +41,14 @@ async function findUnchangedVerdict(
       fetchInterRoundDiff(octokit, owner, repo, baseRef, commitSha),
     ]);
     if (!reviewed.trim() || !current.trim()) return undefined;
-    return isSameChange(reviewed, current) ? standing : undefined;
+    const { same, binaries } = compareChanges(reviewed, current);
+    if (!same) return undefined;
+    if (binaries.length === 0) return standing;
+    const [reviewedShas, currentShas] = await Promise.all([
+      fetchBlobShas(octokit, owner, repo, baseRef, standing.commitSha),
+      fetchBlobShas(octokit, owner, repo, baseRef, commitSha),
+    ]);
+    return binaries.every(f => reviewedShas.has(f.path) && reviewedShas.get(f.path) === currentShas.get(f.path)) ? standing : undefined;
   } catch (error) {
     core.warning(`Could not compare with the reviewed commit ${standing.commitSha.slice(0, 7)}: ${error instanceof Error ? error.message : error}`);
     return undefined;

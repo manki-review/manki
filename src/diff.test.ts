@@ -6,7 +6,7 @@ import {
   filterRawDiff,
   isLineInDiff,
   sliceDiff,
-  isSameChange,
+  compareChanges,
   rebuildRawDiff,
   tagFindingOrigins,
 } from './diff';
@@ -342,7 +342,9 @@ describe('filterRawDiff', () => {
   });
 });
 
-describe('isSameChange', () => {
+describe('compareChanges', () => {
+  const isSameChange = (a: string, b: string) => compareChanges(a, b).same;
+
   it('ignores hunk positions and index lines', () => {
     const rebased = MULTI_FILE_DIFF
       .replace('index 1111111..2222222', 'index 5555555..6666666')
@@ -359,9 +361,11 @@ describe('isSameChange', () => {
     expect(isSameChange(GENERATED_FIRST_DIFF, GENERATED_FIRST_DIFF.replace('"mappings"', '"names"'))).toBe(false);
   });
 
-  it('never matches a diff with a binary, whose abbreviated blob ids cannot prove its content unchanged', () => {
-    expect(isSameChange(`${BINARY_FILE_DIFF}${MULTI_FILE_DIFF}`, `${BINARY_FILE_DIFF}${MULTI_FILE_DIFF}`)).toBe(false);
-    expect(isSameChange(MULTI_FILE_DIFF, `${BINARY_FILE_DIFF}${MULTI_FILE_DIFF}`)).toBe(false);
+  it('returns the binaries of the second diff, which only their full blob shas can prove unchanged', () => {
+    const withBinary = `${BINARY_FILE_DIFF}${MULTI_FILE_DIFF}`;
+    expect(compareChanges(withBinary, withBinary)).toEqual({ same: true, binaries: [expect.objectContaining({ path: 'assets/logo.png' })] });
+    expect(compareChanges(MULTI_FILE_DIFF, withBinary).same).toBe(false);
+    expect(compareChanges(MULTI_FILE_DIFF, MULTI_FILE_DIFF)).toEqual({ same: true, binaries: [] });
   });
 
   it('gives a binary whose blob changes a new digest', () => {
