@@ -351,11 +351,12 @@ describe('isBotMentionNonReview', () => {
 // --- Handler tests ---
 
 /** The first comment of a Manki thread, holding a security finding when `isSecurity`. */
-type FindingKind = 'security' | 'blocker' | 'warning';
+/** `reraised` is a warning thread that a found-again reply made block, which only the live thread shows. */
+type FindingKind = 'security' | 'blocker' | 'warning' | 'reraised';
 
 function findingComment(kind: FindingKind): string {
   return jest.requireActual('./github').formatFindingComment({
-    severity: kind === 'warning' ? 'warning' : 'blocker', title: 'Token leaks into logs', file: 'src/file.ts', line: 10, description: 'd', reviewers: [],
+    severity: kind === 'warning' || kind === 'reraised' ? 'warning' : 'blocker', title: 'Token leaks into logs', file: 'src/file.ts', line: 10, description: 'd', reviewers: [],
     ...(kind === 'security' && { tags: ['security'] }),
   });
 }
@@ -720,6 +721,8 @@ describe('handleReviewCommentReply', () => {
     ['Fixed. The guard now runs first.', 'MEMBER', 'someone', 'pr-author', 'blocker', 'ADDRESSED'],
     ['**Agreed.** Deferring it to the follow-up is fine.', 'NONE', 'pr-author', 'pr-author', 'warning', 'WONT_FIX'],
     ['**Agreed.** Deferring it to the follow-up is fine.', 'NONE', 'pr-author', 'pr-author', 'blocker', undefined],
+    ['**Agreed.** Deferring it to the follow-up is fine.', 'NONE', 'pr-author', 'pr-author', 'reraised', undefined],
+    ['Fixed. The guard now runs first.', 'MEMBER', 'someone', 'pr-author', 'reraised', 'ADDRESSED'],
     ['Fixed. The guard now runs first.', 'OWNER', 'pr-author', 'pr-author', 'blocker', undefined],
     ['Withdrawn. The caller already checks for null.', 'OWNER', 'someone', 'pr-author', 'blocker', 'INVALID'],
     ['Kept. `src/file.ts:12` still skips `clearTimeout` on the success path.', 'MEMBER', 'someone', 'pr-author', 'blocker', undefined],
@@ -1181,6 +1184,8 @@ describe('handleReviewCommentCommand', () => {
     ['a PR author without admin, on a plain blocker', 'NONE', 'pr-author', false, 'blocker', false],
     ['a PR author without admin, on a warning', 'NONE', 'pr-author', false, 'warning', true],
     ['a maintainer other than the PR author', 'MEMBER', 'someone', false, 'security', true],
+    ['a maintainer other than the PR author, on a re-raised warning', 'MEMBER', 'someone', false, 'reraised', true],
+    ['a PR author without admin, on a re-raised warning', 'NONE', 'pr-author', false, 'reraised', false],
     ['an org member with read access', 'MEMBER', 'reader', false, 'security', false],
     ['a collaborator with read access, on a warning', 'COLLABORATOR', 'reader', false, 'warning', false],
     ['an outside contributor', 'CONTRIBUTOR', 'reader', true, 'security', false],
