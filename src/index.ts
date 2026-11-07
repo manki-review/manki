@@ -4,7 +4,7 @@ import * as path from 'path';
 
 import { assertWritesAllowed, RunCancelledError, stopWritesOn } from './abort';
 import { AppMemory, AuthResult, createAuthenticatedOctokit, fetchPrState, getMemoryToken, reportPrState } from './auth';
-import { sanitizeTokens, withMarkers } from './utils';
+import { redactSecrets, redactSecretsDeep, sanitizeTokens, withMarkers } from './utils';
 import { changedKeys, loadConfig, resolveFallbackModel, resolveMemoryRepo, resolveModel, resolvePairModel } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
@@ -1499,16 +1499,18 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult)
 function setReviewOutputs(reviewId: number, context: RoundContext, result: ReviewResult): void {
   const flatAliases = roundContextToFlatAliases(context);
   const severityMap = context.findings.severityCounts;
-  core.setOutput('review_id', reviewId.toString());
-  core.setOutput('verdict', flatAliases.verdict);
-  core.setOutput('findings_count', flatAliases.findingsKept.toString());
-  core.setOutput('findings_json', JSON.stringify(result.findings));
+  // A later step can post or log an output, so none may carry a secret.
+  const setOutput = (name: string, value: string): void => core.setOutput(name, redactSecrets(value));
+  setOutput('review_id', reviewId.toString());
+  setOutput('verdict', flatAliases.verdict);
+  setOutput('findings_count', flatAliases.findingsKept.toString());
+  setOutput('findings_json', JSON.stringify(redactSecretsDeep(result.findings)));
 
   // `result.findings` excludes 'ignore' severity (filtered in review.ts), so
   // the counts here mirror `severityMap` above and the legacy `severity` alias.
-  core.setOutput('severity_counts', JSON.stringify(flatAliases.severity));
+  setOutput('severity_counts', JSON.stringify(flatAliases.severity));
 
-  core.setOutput('judge_model', flatAliases.judgeModel);
+  setOutput('judge_model', flatAliases.judgeModel);
 
   core.info(`Review complete: ${result.verdict} with ${flatAliases.findingsKept} findings`);
   core.info(`Severity breakdown: ${severityMap.blocker} blocker, ${severityMap.warning} warning, ${severityMap.suggestion} suggestion, ${severityMap.nitpick} nitpick`);

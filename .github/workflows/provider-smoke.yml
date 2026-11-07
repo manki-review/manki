@@ -2,6 +2,11 @@ name: Provider smoke
 
 on:
   workflow_dispatch:
+    inputs:
+      prompt:
+        description: Prompt sent to each provider instead of the default one
+        type: string
+        required: false
   schedule:
     # Mondays at 09:00 UTC
     - cron: '0 9 * * 1'
@@ -43,6 +48,7 @@ jobs:
           MODEL: ${{ matrix.model }}
           EFFORT: ${{ matrix.effort }}
           PROVIDER: ${{ matrix.provider }}
+          PROMPT: ${{ inputs.prompt }}
           ANTHROPIC_API_KEY: ${{ matrix.provider == 'anthropic' && secrets.ANTHROPIC_API_KEY || '' }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ matrix.provider == 'anthropic' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
           OPENAI_API_KEY: ${{ matrix.provider == 'openai' && secrets.OPENAI_API_KEY || '' }}
@@ -51,9 +57,10 @@ jobs:
           GEMINI_OAUTH_TOKEN: ${{ matrix.provider == 'gemini' && secrets.GEMINI_OAUTH_TOKEN || '' }}
         run: |
           set +e
-          EFFORT_ARG=""
-          [ -n "${EFFORT}" ] && EFFORT_ARG="--effort ${EFFORT}"
-          npm run smoke -- --model "${MODEL}" ${EFFORT_ARG}
+          ARGS=(--model "${MODEL}")
+          [ -n "${EFFORT}" ] && ARGS+=(--effort "${EFFORT}")
+          [ -n "${PROMPT}" ] && ARGS+=(--prompt "${PROMPT}")
+          npm run smoke -- "${ARGS[@]}"
           rc=$?
           if [ $rc -eq 2 ]; then
             echo "::notice title=Smoke skipped::No credentials configured for ${PROVIDER}"

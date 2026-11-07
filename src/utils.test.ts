@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 
-import { truncate, formatDuration, mapWithConcurrency, redactSecrets, registerSecret, safeJsonParse, safeTruncate, sanitizeTokens, withMarkers } from './utils';
+import { truncate, formatDuration, isSecretName, mapWithConcurrency, redactSecrets, registerSecret, safeJsonParse, safeTruncate, sanitizeTokens, withMarkers } from './utils';
 
 jest.mock('@actions/core');
 
@@ -88,19 +88,37 @@ describe('utils', () => {
     });
   });
 
+  describe('isSecretName', () => {
+    it('matches a secret word as any part of the name, except the names that hold a path, an endpoint or a switch', () => {
+      for (const name of ['GITHUB_TOKEN', 'OPENAI_API_KEY_PROD', 'GOOGLE_CREDENTIALS_JSON', 'ANTHROPIC_CUSTOM_HEADERS', 'db_password', 'AUTH', 'AWS_SECRET_FILE_KEY', 'AWS_WEB_IDENTITY_TOKEN_FILE_2', 'INPUT_MANKI_TOKEN']) {
+        expect([name, isSecretName(name)]).toEqual([name, true]);
+      }
+      for (const name of [
+        'AWS_WEB_IDENTITY_TOKEN_FILE', 'AWS_SHARED_CREDENTIALS_FILE', 'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI', 'AWS_CONTAINER_CREDENTIALS_FULL_URI',
+        'CLAUDE_CODE_SKIP_BEDROCK_AUTH', 'CLAUDE_CODE_SKIP_VERTEX_AUTH', 'INPUT_MANKI_TOKEN_URL',
+        'MAX_THINKING_TOKENS', 'KEYBOARD_LAYOUT', 'PATH', 'MONKEY_PATCH',
+      ]) {
+        expect([name, isSecretName(name)]).toEqual([name, false]);
+      }
+    });
+  });
+
   describe('redactSecrets', () => {
     afterEach(() => {
       delete process.env.INPUT_OPENAI_API_KEY;
       delete process.env.INPUT_CONFIG_PATH;
       delete process.env.INPUT_GEMINI_API_KEY;
+      delete process.env.INPUT_MANKI_TOKEN_URL;
     });
 
     it('redacts registered values and secret action inputs, and masks registered values in the log', () => {
       registerSecret('minted-app-token-1');
       process.env.INPUT_OPENAI_API_KEY = 'sk-openai-input-key';
       process.env.INPUT_CONFIG_PATH = '.github/manki-config.yml';
+      process.env.INPUT_MANKI_TOKEN_URL = 'https://manki-api.example/token';
 
-      expect(redactSecrets('a minted-app-token-1 b sk-openai-input-key c .github/manki-config.yml')).toBe('a [REDACTED] b [REDACTED] c .github/manki-config.yml');
+      expect(redactSecrets('a minted-app-token-1 b sk-openai-input-key c .github/manki-config.yml https://manki-api.example/token'))
+        .toBe('a [REDACTED] b [REDACTED] c .github/manki-config.yml https://manki-api.example/token');
       expect(core.setSecret).toHaveBeenCalledWith('minted-app-token-1');
     });
 

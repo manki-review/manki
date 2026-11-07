@@ -74,7 +74,7 @@ export function redactSecretsDeep(value: unknown): unknown {
 
 /** Returns every form of a secret value that `redactSecrets` replaces, longest first. */
 function secretForms(): string[] {
-  const inputs = Object.entries(process.env).flatMap(([name, value]) => (/^INPUT_/i.test(name) && SECRET_NAME.test(name) && value ? [value] : []));
+  const inputs = Object.entries(process.env).flatMap(([name, value]) => (/^INPUT_/i.test(name) && isSecretName(name) && value ? [value] : []));
   const forms = [...registeredSecrets, ...inputs].flatMap((secret) => {
     const value = secret.trim();
     const lines = value.split(/\r?\n/).map((line) => line.trim()).filter((line) => !PEM_ARMOR.test(line));
@@ -109,8 +109,21 @@ export function safeJsonParse(text: string): unknown | null {
 /** Variables a child process needs to run and to reach the network through a proxy. None of them names a credential. */
 export const SYSTEM_ENV = ['PATH', 'SystemRoot', 'TEMP', 'TMP', 'TMPDIR', 'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'https_proxy', 'http_proxy', 'no_proxy'];
 
-/** Matches a variable name that holds a credential, such as `*_TOKEN`, `*_KEY` or `*_PASSWORD`. */
-export const SECRET_NAME = /(?:^|_)(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD|PASSPHRASE|PAT|CREDENTIALS?|AUTH)$/i;
+const SECRET_NAME = /(?:^|_)(?:TOKEN|KEY|SECRET|PASSWORD|PASSWD|PASSPHRASE|PAT|CREDENTIALS?|AUTH|HEADERS)(?:_|$)/i;
+
+// Names with a secret word in them that hold a file path, an endpoint or an on/off switch.
+const NON_SECRET_NAMES = new Set([
+  'AWS_WEB_IDENTITY_TOKEN_FILE', 'AWS_SHARED_CREDENTIALS_FILE', 'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI', 'AWS_CONTAINER_CREDENTIALS_FULL_URI',
+  'CLAUDE_CODE_SKIP_BEDROCK_AUTH', 'CLAUDE_CODE_SKIP_VERTEX_AUTH', 'INPUT_MANKI_TOKEN_URL',
+]);
+
+/**
+ * Whether a variable name holds a credential: any of its underscore-separated parts is a word such as `TOKEN`, `KEY`,
+ * `PASSWORD` or `HEADERS`, as in `OPENAI_API_KEY_PROD` or `GOOGLE_CREDENTIALS_JSON`.
+ */
+export function isSecretName(name: string): boolean {
+  return SECRET_NAME.test(name) && !NON_SECRET_NAMES.has(name.toUpperCase());
+}
 
 /**
  * Redact GitHub token literals from a string so they cannot leak into logs
