@@ -23,13 +23,14 @@ const installs = new Map<string, Promise<string>>();
  * Returns the directory a pinned download was installed into. A `.tgz`, `.tar.gz` or `.zip` is unpacked there, and
  * any other file is saved there as an executable under its own name. Each download is installed at most once per run.
  * In the runner's temp folder, other processes such as Manki's tool server reuse it too. Throws when the download
- * fails or its digest differs from `integrity`.
+ * fails or its digest differs from `integrity`, and the next call then tries again.
  */
 export function installPinned(download: PinnedDownload): Promise<string> {
   let install = installs.get(download.url);
   if (!install) {
     install = downloadAndInstall(download);
     installs.set(download.url, install);
+    install.catch(() => installs.delete(download.url));
   }
   return install;
 }
