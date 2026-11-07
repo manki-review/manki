@@ -6,6 +6,7 @@ import { promisify } from 'util';
 import Anthropic from '@anthropic-ai/sdk';
 import * as core from '@actions/core';
 
+import { installPinned } from '../tool-install';
 import { appendReplyTail, buildExitDiagnostics, callWithTimeout, cliEnv, MankiCommand, matchQuotaText, repoToolsPrompt, runCli, sanitizeLogOutput, STALE_TIMEOUT_MS, stepHookCommand, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
 import { AnthropicAuth, LLMClient, LLMResponse, LLMUsage, QuotaError, readCount, RefusalError, SendMessageOptions, ToolStep, ZERO_USAGE } from './types';
 
@@ -15,8 +16,29 @@ export { sanitizeLogOutput, STALE_TIMEOUT_MS };
 const execFileAsync = promisify(execFile);
 
 // Pinned because a future release makes `--bare` the default for `-p`, and bare mode never reads
-// `CLAUDE_CODE_OAUTH_TOKEN`. Keep this in sync with the install step in `.github/workflows/manki.yml`.
+// `CLAUDE_CODE_OAUTH_TOKEN`.
 export const CLAUDE_CLI_VERSION = '2.1.318';
+
+// The digest of each platform's native build of `CLAUDE_CLI_VERSION`. The `@anthropic-ai/claude-code` package only
+// copies one of these into place in an install script, so Manki downloads the build itself and runs no script.
+const CLAUDE_CLI_BUILDS: Record<string, string> = {
+  'linux-x64': 'sha512-GX+7CUng2R5f7SsA2w0LaXlH2f62fRCFD/Z2SUexoeH3B0KfulKQt5DtY9NeD2Yp3VEBz6/k/xWSbGPUi6NV2A==',
+  'linux-arm64': 'sha512-FUVVH3aQbLEChjv5wQLdFbpBC7bclVIdVYO5hDzJthDyf2OQtdubIP5QqLPgEScQb3CVIAFg2IPJ5nihJa8Ndw==',
+  'darwin-x64': 'sha512-fockeRy3+Yrr3PxRtGW2XRPWcShjRxIhUJDWi9Xi4svB8h+JUDn7JijHzy1vgUILOE5uIvgfMadN2siEFlt/Ug==',
+  'darwin-arm64': 'sha512-EBKlipLmKY+ZEY+yNft2NegA6Uz34ZMjkzYxUaLF37qitojBJbIcF71F6JwFRlpIPXmiWchftLa9XONg3KBaxQ==',
+  'win32-x64': 'sha512-g/fa2hqcU/+Qd3NMaY/8i+AoX6HQt3zBcj+V/Ot9icr5TN4PmOmuy6YhVNFLHb2IniLIrBA+gZFqonUe0aYLxg==',
+  'win32-arm64': 'sha512-+yn6RI0BeeiG+xbX8OkxSgRAiKIJZhO1foPNG8wUfjIPYaaxYsm8GL3TV7KyuBgGrjPYR1+pFzXaHY2bLsF37g==',
+};
+
+/** Downloads the pinned Claude CLI build for this platform, once per run, and returns its binary. */
+async function installClaudeCli(): Promise<string> {
+  const platform = `${process.platform}-${process.arch}`;
+  const integrity = CLAUDE_CLI_BUILDS[platform];
+  if (!integrity) throw new Error(`no pinned Claude CLI build for ${platform}`);
+  const name = `claude-code-${platform}`;
+  const dir = await installPinned({ url: `https://registry.npmjs.org/@anthropic-ai/${name}/-/${name}-${CLAUDE_CLI_VERSION}.tgz`, integrity });
+  return join(dir, 'package', process.platform === 'win32' ? 'claude.exe' : 'claude');
+}
 
 export function buildAnthropicAuth(oauthToken: string, apiKey: string): AnthropicAuth {
   if (oauthToken) return { kind: 'oauth', token: oauthToken };
@@ -102,12 +124,6 @@ function usesBudgetThinking(model: string): boolean {
 
 const MAX_TOKENS = 16384;
 const THINKING_MAX_TOKENS = 32768;
-
-let cliInstallPromise: Promise<string> | null = null;
-
-export function resetCLIInstallPromise(): void {
-  cliInstallPromise = null;
-}
 
 const OAUTH_ERROR_HINT =
   'Check the claude_code_oauth_token secret (create a new token with `claude setup-token`) or use anthropic_api_key instead.';
@@ -244,28 +260,13 @@ export class AnthropicClient implements LLMClient {
       this.cachedCLIPath = stdout.trim();
       return this.cachedCLIPath;
     } catch {
-      if (!cliInstallPromise) {
-        cliInstallPromise = (async () => {
-          core.info('Claude CLI not found, installing via npm...');
-          // No `--ignore-scripts`: the package's postinstall puts the native binary in place.
-          await execFileAsync('npm', ['install', '-g', `@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}`], {
-            timeout: 120000,
-          });
-          try {
-            const { stdout } = await execFileAsync('which', ['claude']);
-            return stdout.trim();
-          } catch {
-            throw new Error('Failed to install Claude CLI');
-          }
-        })();
-      }
+      core.info(`Claude CLI not found, installing version ${CLAUDE_CLI_VERSION}...`);
       try {
-        this.cachedCLIPath = await cliInstallPromise;
-        return this.cachedCLIPath;
+        this.cachedCLIPath = await installClaudeCli();
       } catch (error) {
-        cliInstallPromise = null;
-        throw error;
+        throw new Error(`Failed to install Claude CLI: ${error instanceof Error ? error.message : String(error)}`);
       }
+      return this.cachedCLIPath;
     }
   }
 

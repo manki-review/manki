@@ -58,13 +58,6 @@ jobs:
           cache: 'npm'
       - run: npm ci
       - run: npm run build
-      - name: Install Claude Code CLI
-        if: env.CLAUDE_CODE_OAUTH_TOKEN != ''
-        # The pin mirrors the runtime fallback in `src/providers/anthropic.ts`.
-        # If you update `CLAUDE_CLI_VERSION` in `src/providers/anthropic.ts`, update the version here too.
-        run: npm install -g '@anthropic-ai/claude-code@2.1.318'
-        env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       - name: Install Codex CLI
         if: env.OPENAI_OAUTH_TOKEN != ''
         # Pin and `--ignore-scripts` mirror the runtime fallback in `src/providers/openai.ts`.
