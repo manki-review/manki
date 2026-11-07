@@ -65,8 +65,7 @@ export interface MemoryStore {
 /**
  * Returns the store of `owner/repo`'s memory for the run on PR or issue `pr`, or `undefined` when memory is off.
  * A `memory.repo` is used directly with `memory_repo_token`, and is skipped with a warning without that token.
- * Otherwise the token service reads and writes the central memory repository, and no token leaves it. That
- * repository is public, so a private repo gets no memory without `memory.repo`.
+ * Otherwise the token service reads and writes the central memory repository, and no token leaves it.
  */
 export function openMemoryStore(memory: { enabled: boolean; repo: string } | undefined, owner: string, repo: string, pr: number): MemoryStore | undefined {
   if (!memory?.enabled) return undefined;
@@ -74,10 +73,6 @@ export function openMemoryStore(memory: { enabled: boolean; repo: string } | und
   if (memory.repo) {
     if (token) return repoMemoryStore(github.getOctokit(token), memory.repo, repo);
     core.warning(`\`memory.repo\` is \`${memory.repo}\` but \`memory_repo_token\` is not set, so memory is skipped. Set the token, or remove \`memory.repo\` to use the central memory.`);
-    return undefined;
-  }
-  if (github.context.payload.repository?.private) {
-    core.warning('The central memory repository is public, so memory is skipped for this private repo. Set `memory.repo` and `memory_repo_token` to keep its memory in a repository of your own.');
     return undefined;
   }
   if (token) core.warning('`memory_repo_token` is set without `memory.repo`, so it is unused and memory comes from the central memory repository. Set `memory.repo` to keep using your own memory repository, such as `<owner>/review-memory`.');
