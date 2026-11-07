@@ -11,7 +11,7 @@ import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, outcomeReport, ReviewCheck, startReviewCheck } from './check-run';
 import { extractCurrentCodeWindow } from './code-window';
 import { recordFixRate } from './fix-rate';
-import { dispatchedNumber, isDispatchedRun, restoreDispatchedEvent } from './dispatch';
+import { dispatchedInputs, dispatchedNumber, isDispatchedRun, restoreDispatchedEvent } from './dispatch';
 import { addCodeContext, changeDigest, parsePRDiff, filterDiff, filterRawDiff, rebuildRawDiff, tagFindingOrigins } from './diff';
 import { handleReviewCommentReply, handleReviewCommentCommand, handlePRComment, isReviewRequest, isBotMentionNonReview, hasBotMention, parseCommand, isLLMAccessAllowed } from './interaction';
 import { isEmptyInterRoundDiff } from './judge';
@@ -1925,6 +1925,7 @@ async function handleReviewCommentInteraction(): Promise<void> {
 }
 
 const POST_PHASE_STATE_KEY = 'manki_post_phase';
+const TOKEN_FAILURE_LINE = '⚠️ **Manki did not run:**';
 
 const NOT_DISPATCHED = 'Manki runs only from the `workflow_dispatch` workflow that the Manki service starts. '
   + 'See https://github.com/manki-review/manki/blob/main/docs/getting-started.md#step-3-add-the-workflow';
@@ -1951,15 +1952,20 @@ async function postCleanup(): Promise<void> {
 }
 
 /**
- * Tells PR or issue `issueNumber` that the round is incomplete because the token service failed. Only the
- * workflow's `github_token` can post then, so the note comes from `github-actions[bot]` and carries no Manki marker.
+ * Tells the PR or issue a dispatched run is for that the run stopped because the token service failed, once per reason.
+ * Only the workflow's `github_token` can post then, so the note comes from `github-actions[bot]` and carries no Manki
+ * marker. A merge waits on nobody, so it gets no note.
  */
-async function reportTokenFailure(issueNumber: number, error: TokenServiceError): Promise<void> {
+async function reportTokenFailure({ event, action, number }: ReturnType<typeof dispatchedInputs>, error: TokenServiceError): Promise<void> {
   const token = core.getInput('github_token');
-  if (!token) return;
+  if (!token || (event === 'pull_request' && action === 'closed')) return;
   const { owner, repo } = github.context.repo;
+  const body = `${event === 'pull_request' ? REVIEW_INCOMPLETE_LINE : TOKEN_FAILURE_LINE} ${redactSecrets(error.message)}`;
   try {
-    await github.getOctokit(token).rest.issues.createComment({ owner, repo, issue_number: issueNumber, body: `${REVIEW_INCOMPLETE_LINE} ${redactSecrets(error.message)}` });
+    const octokit = github.getOctokit(token);
+    const comments = await octokit.paginate(octokit.rest.issues.listComments, { owner, repo, issue_number: number, per_page: 100 });
+    if (comments.some(comment => comment.body === body)) return;
+    await octokit.rest.issues.createComment({ owner, repo, issue_number: number, body });
   } catch (postError) {
     core.warning(`Could not post that the token service failed: ${postError}`);
   }
@@ -1980,7 +1986,7 @@ async function main(): Promise<void> {
   // so its presence indicates we're in the post phase.
   const isPostPhase = core.getState(POST_PHASE_STATE_KEY) === 'true';
   // Read before the dispatched event replaces the inputs in the context.
-  let dispatched: number | undefined;
+  let dispatched: ReturnType<typeof dispatchedInputs> | undefined;
 
   try {
     if (isPostPhase) {
@@ -1988,7 +1994,7 @@ async function main(): Promise<void> {
     } else {
       core.saveState(POST_PHASE_STATE_KEY, 'true');
       if (!isDispatchedRun()) throw new Error(NOT_DISPATCHED);
-      dispatched = dispatchedNumber();
+      dispatched = dispatchedInputs();
       if (await restoreDispatchedEvent(await workflowOctokit()) === 'run') await run();
     }
   } catch (error) {

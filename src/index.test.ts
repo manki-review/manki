@@ -1480,7 +1480,7 @@ describe('main', () => {
     process.env.GITHUB_EVENT_NAME = 'workflow_dispatch';
     // The event each test sets stands for the one the dispatch inputs name.
     jest.spyOn(dispatchModule, 'restoreDispatchedEvent').mockResolvedValue('run');
-    jest.spyOn(dispatchModule, 'dispatchedNumber').mockReturnValue(7);
+    jest.spyOn(dispatchModule, 'dispatchedInputs').mockReturnValue({ event: 'pull_request', action: 'opened', number: 7 });
   });
 
   afterEach(() => {
@@ -1526,28 +1526,38 @@ describe('main', () => {
     expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(expect.stringContaining('Something broke'));
   });
 
-  it('marks the round incomplete with the workflow token when the token service fails, and only in the main step', async () => {
+  it('says on the PR with the workflow token that the token service failed, once per reason, and only in the main step', async () => {
     setContext({ eventName: 'pull_request', payload: { action: 'opened', sender: { login: 'user' }, pull_request: { number: 7, head: { sha: 'abc' }, base: { ref: 'main' }, title: 'Test', body: '', draft: false } } });
     jest.mocked(core.getInput).mockImplementation((name: string) => ({ anthropic_api_key: 'test-api-key', github_token: 'ghs_workflow' })[name] ?? '');
-    const failure = new authModule.TokenServiceError('HTTP 503');
-    jest.mocked(authModule.createAuthenticatedOctokit).mockRejectedValueOnce(failure);
-    jest.mocked(github.getOctokit).mockReturnValue(mockOctokitInstance as unknown as ReturnType<typeof github.getOctokit>);
+    jest.mocked(authModule.createAuthenticatedOctokit).mockRejectedValue(new authModule.TokenServiceError('HTTP 503'));
+    const comments: Array<{ body: string }> = [];
+    const createComment = jest.fn(async ({ body }: { body: string }) => { comments.push({ body }); });
+    const workflowClient = { paginate: jest.fn(async () => comments), rest: { issues: { listComments: {}, createComment } } };
+    jest.mocked(github.getOctokit).mockReturnValue(workflowClient as unknown as ReturnType<typeof github.getOctokit>);
+    const reviewNote = '⚠️ **Review incomplete:** Could not get a token from the Manki token service (HTTP 503). Retry the run.';
 
     try {
       await main();
-
       expect(jest.mocked(github.getOctokit)).toHaveBeenCalledWith('ghs_workflow');
-      expect(mockOctokitInstance.rest.issues.createComment).toHaveBeenCalledWith({
-        owner: 'test-owner', repo: 'test-repo', issue_number: 7,
-        body: '⚠️ **Review incomplete:** Could not get a token from the Manki token service (HTTP 503). Retry the run.',
-      });
+      expect(createComment).toHaveBeenCalledWith({ owner: 'test-owner', repo: 'test-repo', issue_number: 7, body: reviewNote });
       expect(jest.mocked(core.setFailed)).toHaveBeenCalledWith(expect.stringContaining('Could not get a token from the Manki token service'));
 
-      jest.mocked(mockOctokitInstance.rest.issues.createComment).mockClear();
-      jest.mocked(core.getState).mockReturnValueOnce('true');
-      jest.mocked(authModule.createAuthenticatedOctokit).mockRejectedValueOnce(failure);
+      // The same failure again adds no second note.
       await main();
-      expect(mockOctokitInstance.rest.issues.createComment).not.toHaveBeenCalled();
+      expect(createComment).toHaveBeenCalledTimes(1);
+
+      // A command gets a note that does not speak of a review, and a merge gets none.
+      jest.mocked(dispatchModule.dispatchedInputs).mockReturnValueOnce({ event: 'issue_comment', action: 'created', number: 7 });
+      await main();
+      expect(comments.map(c => c.body)).toEqual([reviewNote, '⚠️ **Manki did not run:** Could not get a token from the Manki token service (HTTP 503). Retry the run.']);
+      jest.mocked(dispatchModule.dispatchedInputs).mockReturnValueOnce({ event: 'pull_request', action: 'closed', number: 7 });
+      comments.length = 0;
+      await main();
+      expect(createComment).toHaveBeenCalledTimes(2);
+
+      jest.mocked(core.getState).mockReturnValueOnce('true');
+      await main();
+      expect(createComment).toHaveBeenCalledTimes(2);
     } finally {
       jest.mocked(github.getOctokit).mockReset();
       jest.mocked(core.getState).mockReset().mockReturnValue('');

@@ -49,9 +49,14 @@ export function isDispatchedRun(): boolean {
   return process.env.GITHUB_EVENT_NAME === 'workflow_dispatch';
 }
 
+/** The event, action and PR or issue number a dispatched run is for, read from the inputs alone, so it needs no API call. */
+export function dispatchedInputs(): DispatchInputs {
+  return readDispatchInputs(github.context.payload.inputs ?? {});
+}
+
 /** The PR or issue number a dispatched run is for, read from the inputs alone so the post phase needs no API call. */
 export function dispatchedNumber(): number {
-  return readDispatchInputs(github.context.payload.inputs ?? {}).number;
+  return dispatchedInputs().number;
 }
 
 /**
