@@ -9,6 +9,7 @@ import { Finding } from './types';
 import * as authModule from './auth';
 
 jest.mock('./auth', () => ({
+  changeThreadThroughService: jest.fn().mockResolvedValue(false),
   fetchPrState: jest.fn().mockResolvedValue(null),
   reportPrState: jest.fn().mockResolvedValue(undefined),
 }));

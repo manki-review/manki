@@ -65,6 +65,7 @@ const mockOctokitInstance = {
 jest.mock('./auth', () => ({
   createAuthenticatedOctokit: jest.fn().mockResolvedValue({ octokit: mockOctokitInstance, identity: 'app', bot: { logins: ['manki-review[bot]', 'github-actions[bot]'] } }),
   getMemoryToken: jest.fn().mockResolvedValue(null),
+  changeThreadThroughService: jest.fn().mockResolvedValue(false),
   fetchPrState: jest.fn().mockResolvedValue(null),
   reportPrState: jest.fn().mockResolvedValue(undefined),
 }));
