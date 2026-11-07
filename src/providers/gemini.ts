@@ -1,11 +1,12 @@
 import { execFile } from 'child_process';
+import { writeFileSync } from 'fs';
 import { join } from 'path';
 import { promisify } from 'util';
 
 import { FinishReason, GoogleGenAI, ThinkingConfig, ThinkingLevel } from '@google/genai';
 import * as core from '@actions/core';
 
-import { buildExitDiagnostics, callWithTimeout, cliEnv, matchQuotaText, registerAuthFileSecrets, runCli, sanitizeLogOutput, seedAuthFile, warnReplyTail } from './cli-utils';
+import { buildExitDiagnostics, callWithTimeout, cliEnv, matchQuotaText, registerAuthFileSecrets, runCli, sanitizeLogOutput, seedAuthFile, warnReplyTail, withPromptDir } from './cli-utils';
 import { GeminiAuth, LLMClient, LLMResponse, LLMUsage, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -53,6 +54,9 @@ export function geminiThinkingConfig(model: string, effort: SendMessageOptions['
 // its optional keychain dependency has one, which the seeded `oauth_creds.json` file does not need.
 // Keep this in sync with the install step in `.github/workflows/manki.yml`.
 export const GEMINI_CLI_VERSION = '0.66.0';
+
+// A user-tier rule at the top priority, so no setting can allow a tool again. A denied tool never reaches the model.
+const GEMINI_NO_TOOLS_POLICY = '[[rule]]\ntoolName = "*"\ndecision = "deny"\npriority = 999\n';
 
 // `finishReason` and `promptFeedback.blockReason` values that mean a safety or policy filter declined the request.
 const POLICY_BLOCK_REASONS: ReadonlySet<string> = new Set(['SAFETY', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII', 'MODEL_ARMOR']);
@@ -159,31 +163,34 @@ export class GeminiClient implements LLMClient {
       });
     }
 
-    // Prompt is written to stdin; the CLI reads until EOF and responds on stdout.
-    // We pass the full prompt on stdin to avoid argv length limits.
-    const args = [
-      // Headless runs refuse an untrusted directory. `runCli` runs the CLI in an empty one.
-      '--skip-trust',
-      '--model', this.model,
-    ];
-
     let output = '';
-    const { code, signal, stderr, lastStdoutChunk } = await runCli({
-      label: 'Gemini',
-      cliPath,
-      args,
-      env: cliEnv('gemini', {
-        // GOOGLE_GENAI_USE_GCA=true selects the LOGIN_WITH_GOOGLE auth type in
-        // non-interactive mode. The CLI then loads its credentials from the
-        // `oauth_creds.json` file seeded above (which carries a refresh_token,
-        // unlike the GOOGLE_CLOUD_ACCESS_TOKEN env-var path that only sets a
-        // short-lived access_token).
-        ...(oauthToken ? { GOOGLE_GENAI_USE_GCA: 'true' } : {}),
-      }),
-      input: fullPrompt,
-      hardTimeoutMs: options?.timeoutMs,
-      signal: options?.signal,
-      onStdout: (chunk) => { output += chunk; },
+    const { code, signal, stderr, lastStdoutChunk } = await withPromptDir((promptDir) => {
+      const policyPath = join(promptDir, 'no-tools.toml');
+      writeFileSync(policyPath, GEMINI_NO_TOOLS_POLICY, { mode: 0o600 });
+      // Prompt is written to stdin; the CLI reads until EOF and responds on stdout.
+      // We pass the full prompt on stdin to avoid argv length limits.
+      return runCli({
+        label: 'Gemini',
+        cliPath,
+        args: [
+          // Headless runs refuse an untrusted directory. `runCli` runs the CLI in an empty one.
+          '--skip-trust',
+          '--model', this.model,
+          '--policy', policyPath,
+        ],
+        env: cliEnv('gemini', {
+          // GOOGLE_GENAI_USE_GCA=true selects the LOGIN_WITH_GOOGLE auth type in
+          // non-interactive mode. The CLI then loads its credentials from the
+          // `oauth_creds.json` file seeded above (which carries a refresh_token,
+          // unlike the GOOGLE_CLOUD_ACCESS_TOKEN env-var path that only sets a
+          // short-lived access_token).
+          ...(oauthToken ? { GOOGLE_GENAI_USE_GCA: 'true' } : {}),
+        }),
+        input: fullPrompt,
+        hardTimeoutMs: options?.timeoutMs,
+        signal: options?.signal,
+        onStdout: (chunk) => { output += chunk; },
+      });
     }).catch((error: unknown) => {
       warnReplyTail('Gemini CLI', output);
       throw error;

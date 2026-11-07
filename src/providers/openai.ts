@@ -1,4 +1,5 @@
 import { execFile } from 'child_process';
+import { writeFileSync } from 'fs';
 import { join } from 'path';
 import { promisify } from 'util';
 
@@ -6,7 +7,7 @@ import OpenAI from 'openai';
 import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import * as core from '@actions/core';
 
-import { buildExitDiagnostics, callWithTimeout, cliEnv, extractCliErrorSnippet, MankiCommand, matchQuotaText, registerAuthFileSecrets, repoToolsPrompt, runCli, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail } from './cli-utils';
+import { buildExitDiagnostics, callWithTimeout, cliEnv, extractCliErrorSnippet, MankiCommand, matchQuotaText, registerAuthFileSecrets, repoToolsPrompt, runCli, seedAuthFile, STALE_TIMEOUT_MS, toolServerCommand, warnReplyTail, withPromptDir } from './cli-utils';
 import { LLMClient, LLMResponse, LLMUsage, OpenAIAuth, QuotaError, readCount, RefusalError, SendMessageOptions, ZERO_USAGE } from './types';
 
 const execFileAsync = promisify(execFile);
@@ -188,7 +189,7 @@ export class OpenAIClient implements LLMClient {
   private async sendViaOAuth(systemPrompt: string, userMessage: string, options?: SendMessageOptions): Promise<LLMResponse> {
     const repoTools = options?.repoTools;
     const toolsPrompt = repoTools ? `\n\n${repoToolsPrompt(repoTools, '`read_file`, `grep` and `glob`')}` : '';
-    const fullPrompt = `${systemPrompt}${toolsPrompt}\n\n---\n\n${userMessage}`;
+    const instructions = `${systemPrompt}${toolsPrompt}`;
     const codexHome = resolveCodexHome();
     const oauthToken = this.auth.kind === 'oauth' ? this.auth.token : undefined;
     const model = this.model;
@@ -207,8 +208,13 @@ export class OpenAIClient implements LLMClient {
     // `codex exec` runs a non-interactive completion, reading the prompt from stdin
     // when invoked with `-` as the prompt argument. `--model` selects the model.
     // `runCli` runs it in an empty directory, which is not a git repository.
-    // Its read-only sandbox still lets tools read every file, such as the auth files, so the shell and image reader are off.
-    const args = ['exec', '--skip-git-repo-check', '--model', this.model, '-c', 'features.shell_tool=false', '-c', 'features.view_image=false', '-c', 'web_search=disabled'];
+    // The read-only sandbox still lets tools read every file, such as the auth files, so every built-in tool
+    // that reads files or reaches the network or an account is off, and only Manki's tool server is left.
+    const args = [
+      'exec', '--skip-git-repo-check', '--model', this.model, '--sandbox', 'read-only', '-c', 'approval_policy=never',
+      '-c', 'features.shell_tool=false', '-c', 'features.view_image=false', '-c', 'web_search=disabled', '-c', 'features.apps=false',
+      '-c', 'features.plugins=false', '-c', 'features.multi_agent=false', '-c', 'features.image_generation=false',
+    ];
 
     const reasoningEffort = options?.effort && resolveReasoningEffort(this.model, options.effort);
     if (reasoningEffort) {
@@ -221,20 +227,22 @@ export class OpenAIClient implements LLMClient {
 
     if (repoTools) args.push(...codexToolServerArgs(toolServerCommand(repoTools.root, { fileTools: true, steps: repoTools.steps, related: repoTools.related })));
 
-    // Read prompt from stdin
-    args.push('-');
-
     let output = '';
-    const { code, signal, stderr, lastStdoutChunk } = await runCli({
-      label: 'Codex',
-      cliPath,
-      args,
-      env: cliEnv('codex', { CODEX_HOME: codexHome }),
-      input: fullPrompt,
-      hardTimeoutMs: options?.timeoutMs,
-      signal: options?.signal,
-      onStdout: (chunk) => { output += chunk; },
-      stderrResetsStale: true,
+    const { code, signal, stderr, lastStdoutChunk } = await withPromptDir((promptDir) => {
+      // Manki's instructions replace Codex's own, so stdin carries only the untrusted content.
+      const instructionsPath = join(promptDir, 'instructions.md');
+      writeFileSync(instructionsPath, instructions, { mode: 0o600 });
+      return runCli({
+        label: 'Codex',
+        cliPath,
+        args: [...args, '-c', `model_instructions_file=${JSON.stringify(instructionsPath)}`, '-'],
+        env: cliEnv('codex', { CODEX_HOME: codexHome }),
+        input: userMessage,
+        hardTimeoutMs: options?.timeoutMs,
+        signal: options?.signal,
+        onStdout: (chunk) => { output += chunk; },
+        stderrResetsStale: true,
+      });
     }).catch((error: unknown) => {
       warnReplyTail('Codex CLI', output);
       throw error;
@@ -256,7 +264,7 @@ export class OpenAIClient implements LLMClient {
         lastStdoutChunk,
         model,
         effort: options?.effort,
-        promptChars: fullPrompt.length,
+        promptChars: instructions.length + userMessage.length,
         elapsedMs: Date.now() - startTime,
       });
       core.warning(`Codex CLI failed (${msg})`);

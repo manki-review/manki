@@ -1,5 +1,5 @@
 import { spawn } from 'child_process';
-import { readdirSync } from 'fs';
+import { existsSync, readdirSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import OpenAI from 'openai';
@@ -363,7 +363,10 @@ describe('sendViaOAuth (Codex CLI path)', () => {
     jest.restoreAllMocks();
   });
 
-  function setupSpawnMock(stdout: string, opts: { exitCode?: number; stderr?: string } = {}): void {
+  const instructionsPath = (args: string[]): string => JSON.parse(args.at(-2)!.replace(/^model_instructions_file=/, ''));
+
+  /** Mocks the CLI and returns its stdin and the instructions file of each call, which is gone once the call returns. */
+  function setupSpawnMock(stdout: string, opts: { exitCode?: number; stderr?: string } = {}): { stdin: jest.Mock; instructions: string[] } {
     const proc = {
       stdin: { write: jest.fn().mockReturnValue(true), end: jest.fn(), on: jest.fn() },
       stdout: { on: jest.fn() },
@@ -388,29 +391,37 @@ describe('sendViaOAuth (Codex CLI path)', () => {
       }
     });
 
-    mockSpawn.mockReturnValue(proc as unknown as ReturnType<typeof spawn>);
+    const instructions: string[] = [];
+    mockSpawn.mockImplementation((_command, args) => {
+      instructions.push(readFileSync(instructionsPath(args as string[]), 'utf8'));
+      return proc as unknown as ReturnType<typeof spawn>;
+    });
+    return { stdin: proc.stdin.write, instructions };
   }
 
-  it('runs `codex exec` with the model, no shell, image reader or web search in an empty temp directory', async () => {
-    setupSpawnMock('hello\n');
+  it('runs `codex exec` read-only with no built-in tool and Manki\'s instructions in a file, in an empty temp directory', async () => {
+    const { stdin, instructions } = setupSpawnMock('hello\n');
     const client = new OpenAIClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'o3' });
 
     await client.sendMessage('sys', 'user');
 
     const spawnArgs = mockSpawn.mock.calls[0][1] as string[];
-    expect(spawnArgs[0]).toBe('exec');
-    expect(spawnArgs).toContain('--skip-git-repo-check');
-    const modelIdx = spawnArgs.indexOf('--model');
-    expect(modelIdx).toBeGreaterThan(-1);
-    expect(spawnArgs[modelIdx + 1]).toBe('o3');
-    expect(spawnArgs.join(' ')).toContain('-c features.shell_tool=false -c features.view_image=false -c web_search=disabled');
+    expect(spawnArgs).toEqual([
+      'exec', '--skip-git-repo-check', '--model', 'o3', '--sandbox', 'read-only', '-c', 'approval_policy=never',
+      '-c', 'features.shell_tool=false', '-c', 'features.view_image=false', '-c', 'web_search=disabled', '-c', 'features.apps=false',
+      '-c', 'features.plugins=false', '-c', 'features.multi_agent=false', '-c', 'features.image_generation=false',
+      '-c', expect.stringMatching(/^model_instructions_file=".*\/instructions\.md"$/), '-',
+    ]);
+    expect(instructions).toEqual(['sys']);
+    expect(existsSync(instructionsPath(spawnArgs))).toBe(false);
+    expect(stdin.mock.calls.map(c => String(c[0])).join('')).toBe('user');
     const { cwd } = mockSpawn.mock.calls[0][2] as { cwd: string };
     expect(cwd.startsWith(join(tmpdir(), 'manki-cli-'))).toBe(true);
     expect(readdirSync(cwd)).toEqual([]);
   });
 
   it('gives Codex Manki\'s tool server with the file tools, and tells it about them, only when asked', async () => {
-    setupSpawnMock('[]\n');
+    const { stdin, instructions } = setupSpawnMock('[]\n');
     const savedRunnerTemp = process.env.RUNNER_TEMP;
     process.env.RUNNER_TEMP = '/runner/temp';
     try {
@@ -430,15 +441,14 @@ describe('sendViaOAuth (Codex CLI path)', () => {
       `-c mcp_servers.manki.command=${JSON.stringify(process.execPath)}`,
       `-c mcp_servers.manki.args=${JSON.stringify([process.argv[1], 'mcp-server', '/work/repo', '--file-tools', '--steps', '15'])}`,
       '-c mcp_servers.manki.default_tools_approval_mode="approve"',
-      '-c mcp_servers.manki.env.RUNNER_TEMP="/runner/temp" -',
+      '-c mcp_servers.manki.env.RUNNER_TEMP="/runner/temp"',
     ].join(' '));
     expect(withTools).toContain('features.shell_tool=false');
     expect(without.join(' ')).not.toContain('mcp_servers');
-    const proc = mockSpawn.mock.results[0].value as { stdin: { write: jest.Mock } };
-    const stdin = proc.stdin.write.mock.calls.map(c => String(c[0])).join('');
-    expect(stdin).toMatch(/^Review the diff\.\n\n## Tools\n\nThe PR's head commit is checked out at `\/work\/repo`\. `read_file`, `grep` and `glob` read files/);
-    expect(stdin).toContain('\n\n---\n\nthe diff');
-    expect(stdin).not.toContain('## Related repos');
+    expect(instructions[0]).toMatch(/^Review the diff\.\n\n## Tools\n\nThe PR's head commit is checked out at `\/work\/repo`\. `read_file`, `grep` and `glob` read files/);
+    expect(instructions[0]).not.toContain('## Related repos');
+    expect(instructions[1]).toBe('Review the diff.');
+    expect(stdin.mock.calls.map(c => String(c[0]))).toEqual(['the diff', 'the diff']);
   });
 
   it('passes model_reasoning_effort override when effort is set on o-series model', async () => {

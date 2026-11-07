@@ -289,6 +289,16 @@ export function registerAuthFileSecrets(path: string): void {
   }
 }
 
+/** Runs `run` with a new private directory for the files of one CLI call, and removes the directory afterwards. */
+export async function withPromptDir<T>(run: (dir: string) => Promise<T>): Promise<T> {
+  const dir = mkdtempSync(join(tmpdir(), 'manki-prompt-'));
+  try {
+    return await run(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 let emptyCwd: string | undefined;
 
 /**

@@ -1,5 +1,5 @@
 import { spawn } from 'child_process';
-import { readdirSync } from 'fs';
+import { existsSync, readdirSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -482,17 +482,21 @@ describe('GeminiClient OAuth path', () => {
     );
   });
 
-  it('passes the model to the CLI and runs it in an empty, trusted temp directory', async () => {
-    setupOAuthSpawnMock({ stdout: 'ok' });
+  it('runs the CLI with the model and a policy that denies every tool, in an empty, trusted temp directory', async () => {
+    const proc = setupOAuthSpawnMock({ stdout: 'ok' });
+    let policy = '';
+    mockSpawn.mockImplementationOnce((_command, spawnArgs) => {
+      policy = readFileSync((spawnArgs as string[])[4], 'utf8');
+      return proc as unknown as ReturnType<typeof spawn>;
+    });
     const client = new GeminiClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gemini-3.1-pro-preview' });
 
     await client.sendMessage('sys', 'user');
 
     const args = mockSpawn.mock.calls[0][1] as string[];
-    const idx = args.indexOf('--model');
-    expect(idx).toBeGreaterThanOrEqual(0);
-    expect(args[idx + 1]).toBe('gemini-3.1-pro-preview');
-    expect(args).toContain('--skip-trust');
+    expect(args).toEqual(['--skip-trust', '--model', 'gemini-3.1-pro-preview', '--policy', expect.stringMatching(/\/no-tools\.toml$/)]);
+    expect(policy).toBe('[[rule]]\ntoolName = "*"\ndecision = "deny"\npriority = 999\n');
+    expect(existsSync(args[4])).toBe(false);
     const { cwd } = mockSpawn.mock.calls[0][2] as { cwd: string };
     expect(cwd.startsWith(join(tmpdir(), 'manki-cli-'))).toBe(true);
     expect(readdirSync(cwd)).toEqual([]);
