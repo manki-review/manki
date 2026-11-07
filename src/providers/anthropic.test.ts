@@ -469,6 +469,7 @@ describe('sendViaOAuth — error paths', () => {
     expect(spawnArgs).toContain('--include-partial-messages');
     expect(spawnArgs[spawnArgs.indexOf('--tools') + 1]).toBe('');
     expect(spawnArgs).toContain('--strict-mcp-config');
+    expect(spawnArgs).toContain('--model=claude-opus-4-6');
     expect(spawnArgs).not.toContain('--mcp-config');
     expect(spawnArgs).not.toContain('--restricted');
     expect(spawnArgs[spawnArgs.indexOf('--setting-sources') + 1]).toBe('');

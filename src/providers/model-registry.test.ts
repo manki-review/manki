@@ -46,6 +46,10 @@ describe('parseModelSpec', () => {
     expect(() => parseModelSpec('mistral/mistral-large')).toThrow(/Unknown provider "mistral"/);
   });
 
+  it.each(['gemini/--yolo', 'claude/-x', 'anthropic/-x', '-x', 'claude-opus 4', 'openai/gpt-5 --yolo', 'gpt-5;id'])('rejects the model id in %s', (input) => {
+    expect(() => parseModelSpec(input)).toThrow(/Invalid model id/);
+  });
+
   it('throws on empty model after slash', () => {
     expect(() => parseModelSpec('anthropic/')).toThrow(/Empty model/);
   });

@@ -407,7 +407,7 @@ describe('sendViaOAuth (Codex CLI path)', () => {
 
     const spawnArgs = mockSpawn.mock.calls[0][1] as string[];
     expect(spawnArgs).toEqual([
-      'exec', '--skip-git-repo-check', '--model', 'o3', '--sandbox', 'read-only', '-c', 'approval_policy=never',
+      'exec', '--skip-git-repo-check', '--model=o3', '--sandbox', 'read-only', '-c', 'approval_policy=never',
       '-c', 'features.shell_tool=false', '-c', 'features.view_image=false', '-c', 'web_search=disabled', '-c', 'features.apps=false',
       '-c', 'features.plugins=false', '-c', 'features.multi_agent=false', '-c', 'features.image_generation=false',
       '-c', expect.stringMatching(/^model_instructions_file=".*\/instructions\.md"$/), '-',

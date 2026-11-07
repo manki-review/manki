@@ -1,6 +1,7 @@
 import * as core from '@actions/core';
 import { parse as parseYaml } from 'yaml';
 
+import { parseModelSpec } from './providers';
 import { BUILT_IN_CLASSES, BUILT_IN_GROUPS, PATH_ALIASES, canonicalJson, floorShortfall, resolveRouting, routeClass } from './routing';
 import { ANALYZERS, PairedPin, ReviewConfig, StaticAnalysisConfig } from './types';
 
@@ -217,8 +218,9 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
       if ('fallback' in models && (typeof models.fallback !== 'string' || models.fallback === '')) {
         errors.push('`models.fallback` must be a non-empty string');
       }
-      for (const key of Object.keys(models)) {
+      for (const [key, model] of Object.entries(models)) {
         if (!MODEL_KEYS.has(key)) warnings.push(`Unknown config key: "models.${key}"`);
+        else if (typeof model === 'string' && model !== '') pushModelError(errors, `models.${key}`, model);
       }
     }
   }
@@ -375,6 +377,17 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
   return { valid: errors.length === 0, errors, warnings };
 }
 
+const MODEL_REFS: ReadonlySet<string> = new Set(['@reviewer', '@reviewer_pair']);
+
+/** Adds an error when `model` is no model spec Manki can run, so a bad id never reaches a CLI. */
+function pushModelError(errors: string[], key: string, model: string): void {
+  try {
+    parseModelSpec(model);
+  } catch (error) {
+    errors.push(`\`${key}\`: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 const isStringArray = (value: unknown): value is string[] => Array.isArray(value) && value.every(v => typeof v === 'string' && v !== '');
 
@@ -457,6 +470,7 @@ function validateReviewBlock(review: unknown, errors: string[], warnings: string
             if (!GROUP_REVIEWER_KEYS.has(key)) warnings.push(`Unknown config key: "review.groups.${name}.reviewers[${i}].${key}"`);
           }
           if ('model' in reviewer && (typeof reviewer.model !== 'string' || reviewer.model === '')) errors.push(`${at}.model\` must be a non-empty string`);
+          else if (typeof reviewer.model === 'string' && !MODEL_REFS.has(reviewer.model)) pushModelError(errors, `review.groups.${name}.reviewers[${i}].model`, reviewer.model);
           if ('effort' in reviewer && !REVIEWER_EFFORTS.has(reviewer.effort as string)) errors.push(`${at}.effort\` must be one of: low, medium, high, max, auto`);
           if ('focus' in reviewer && (typeof reviewer.focus !== 'string' || reviewer.focus === '')) errors.push(`${at}.focus\` must be a non-empty string`);
           if ('role' in reviewer && reviewer.role !== 'finder' && reviewer.role !== 'verifier') errors.push(`${at}.role\` must be one of: finder, verifier`);
