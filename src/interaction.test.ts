@@ -967,7 +967,7 @@ describe('handleRemember (via handlePRComment)', () => {
     );
   });
 
-  it('stores global-scoped learning with global: prefix', async () => {
+  it('stores global-scoped learning with global: prefix, only for a writer of the memory repo', async () => {
     setContext({ comment: { id: 42, body: '@manki remember global: always prefer immutable data structures in all repos', user: { type: 'User' }, author_association: 'OWNER' } });
     const octokit = createMockOctokit();
     await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, { enabled: true, repo: 'test-owner/memory' }, 'mem-token');
@@ -977,6 +977,21 @@ describe('handleRemember (via handlePRComment)', () => {
       'test-repo',
       expect.objectContaining({ scope: 'global' }),
     );
+    expect(ghUtils.hasWriteAccess).toHaveBeenCalledWith('mock-memory-octokit', 'test-owner', 'memory', 'collaborator');
+
+    // A writer of this repo alone cannot add a learning every repo sharing the memory gets.
+    jest.mocked(memory.writeLearning).mockClear();
+    jest.mocked(ghUtils.hasWriteAccess).mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, { enabled: true, repo: 'test-owner/memory' }, 'mem-token');
+    expect(memory.writeLearning).not.toHaveBeenCalled();
+    expect(octokit.rest.issues.createComment).toHaveBeenLastCalledWith(
+      expect.objectContaining({ body: expect.stringContaining('Only collaborators with write access to `test-owner/memory` can add a global learning') }),
+    );
+
+    // Without `global:` the same writer still stores it for this repo.
+    setContext({ comment: { id: 42, body: '@manki remember always prefer immutable data structures here', user: { type: 'User' }, author_association: 'OWNER' } });
+    await handlePRComment(octokit, TEST_BOT, null, 'test-owner', 'test-repo', 1, { enabled: true, repo: 'test-owner/memory' }, 'mem-token');
+    expect(memory.writeLearning).toHaveBeenCalledWith(expect.anything(), 'test-owner/memory', 'test-repo', expect.objectContaining({ scope: 'repo' }));
   });
 
   it('reports error when writeLearning fails', async () => {

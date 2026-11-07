@@ -53,7 +53,7 @@ See [How reviews work](docs/how-reviews-work.md#review-pipeline) for the full wa
 | `/manki explain [topic]` | Ask about the PR changes |
 | `/manki dismiss [finding]` | Dismiss a finding (stored as suppression in memory). In a Manki thread, it also resolves the thread |
 | `/manki remember <instruction>` | Teach it something for future reviews |
-| `/manki remember global: <instruction>` | Teach globally (applies to all repos) |
+| `/manki remember global: <instruction>` | Teach globally (applies to all repos sharing the memory). Takes write access to the memory repo |
 | `/manki check` | Check thread resolution and auto-approve if clear |
 | `/manki forget <text>` | Remove a learning matching the text |
 | `/manki forget suppression <pattern>` | Remove a suppression matching the pattern |
