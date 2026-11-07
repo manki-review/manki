@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
 import { completeReviewCheck, outcomeReport, startReviewCheck } from './check-run';
-import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, checkConcurrentSubmissionLock, dismissPreviousReviews, fetchApprovalHold, fetchInterRoundDiff, fetchPRComments, fetchReviewThreadNodes, fetchStandingVerdict, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgressOn, isRepoAdmin, isReviewInProgress, markAutoApproveComplete, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
+import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchInterRoundDiff, fetchPRComments, fetchReviewThreadNodes, fetchStandingVerdict, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgressOn, isRepoAdmin, markAutoApproveComplete, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
 import { SETTINGS_MARKER } from './settings';
 import type { StandingVerdict } from './github';
 import { isSameChange } from './diff';
@@ -308,16 +308,10 @@ async function reviewCoversHead(
   return !!standing;
 }
 
-/**
- * Returns why auto-approve has to wait because no Manki review covers the head yet, or `undefined` when one does.
- * A review that is running or queued for the head counts as not covering it yet.
- */
+/** Returns why auto-approve has to wait because no Manki review covers the head yet, or `undefined` when one does. */
 async function explainUnreviewedHead(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, config?: ReviewConfig): Promise<string | undefined> {
   const { data: pr } = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
   const head = `\`${pr.head.sha.slice(0, 7)}\``;
-  if (await isReviewInProgress(octokit, bot, owner, repo, prNumber, pr.head.sha)) {
-    return `A review of ${head} is running or queued. Approval follows from its verdict.`;
-  }
   const reviews = await octokit.paginate(octokit.rest.pulls.listReviews, { owner, repo, pull_number: prNumber, per_page: 100 });
   if (await reviewCoversHead(octokit, bot, owner, repo, prNumber, pr, reviews, config)) return undefined;
   const halt = config && await autoReviewHalt(octokit, bot, owner, repo, prNumber, config);
@@ -419,17 +413,7 @@ async function retireStaleNotices(octokit: Octokit, bot: BotIdentity, owner: str
   }
 }
 
-/**
- * Post an approval review if all findings are resolved.
- *
- * Two concurrency guards run before any review is posted. First the TTL-based
- * `checkConcurrentSubmissionLock` scans for a fresh in-progress marker from a
- * different run, which protects against the Actions-API failure mode in
- * `isReviewInProgress` (the bot identity often lacks `actions:read`, so its
- * catch path fails open and would otherwise let an APPROVED race land on top
- * of a parallel CHANGES_REQUESTED). The original `isReviewInProgress` check
- * runs afterward as belt-and-suspenders.
- */
+/** Post an approval review if all findings are resolved. */
 async function checkAndAutoApprove(
   octokit: Octokit,
   bot: BotIdentity,
@@ -438,16 +422,6 @@ async function checkAndAutoApprove(
   prNumber: number,
   config?: ReviewConfig,
 ): Promise<boolean> {
-  if (await checkConcurrentSubmissionLock(octokit, bot, owner, repo, prNumber, config)) {
-    core.info('Skipping auto-approve — another run holds the in-progress lock');
-    return false;
-  }
-
-  if (await isReviewInProgress(octokit, bot, owner, repo, prNumber)) {
-    core.info('Skipping auto-approve — review in progress');
-    return false;
-  }
-
   const threads = await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber);
 
   const totalCount = threads.length;

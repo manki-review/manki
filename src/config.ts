@@ -1,12 +1,9 @@
 import * as core from '@actions/core';
-import * as fs from 'fs';
-import { minimatch } from 'minimatch';
 import { parse as parseYaml } from 'yaml';
 
 import { BUILT_IN_CLASSES, BUILT_IN_GROUPS, PATH_ALIASES, floorShortfall, modelIdentity, resolveRouting, routeClass } from './routing';
-import { ANALYZERS, PairedPin, RelatedRepo, ReviewConfig, ReviewRoutingConfig, SkipFacts, StaticAnalysisConfig } from './types';
+import { ANALYZERS, PairedPin, RelatedRepo, ReviewConfig, ReviewRoutingConfig, StaticAnalysisConfig } from './types';
 
-export const MAX_LOCK_TTL_SECONDS = 3600;
 const MAX_WAIT_TIMEOUT_SECONDS = 3600;
 
 const HAIKU_MODEL = 'claude-haiku-5-5';
@@ -56,7 +53,6 @@ export const DEFAULT_CONFIG: ReviewConfig = {
     suppress_resolved_threads: true,
   },
   related_repos: [],
-  concurrency_lock_ttl_seconds: 600,
 };
 
 const SKIP_KEYS = ['skip_labels', 'skip_authors', 'skip_branches'] as const;
@@ -92,7 +88,6 @@ export const KNOWN_KEYS: ReadonlySet<string> = new Set([
   'convergence',
   'stats',
   'metrics',
-  'concurrency_lock_ttl_seconds',
 ]);
 
 // Accepted so older configs keep loading, then dropped.
@@ -367,17 +362,6 @@ function validateConfig(config: Record<string, unknown>): ConfigValidationResult
       errors.push('`metrics` must be an object');
     } else if ('fix_rate' in metrics && typeof metrics.fix_rate !== 'boolean') {
       errors.push('`metrics.fix_rate` must be a boolean');
-    }
-  }
-
-  if ('concurrency_lock_ttl_seconds' in config) {
-    if (
-      typeof config.concurrency_lock_ttl_seconds !== 'number' ||
-      !Number.isFinite(config.concurrency_lock_ttl_seconds) ||
-      config.concurrency_lock_ttl_seconds < 0 ||
-      config.concurrency_lock_ttl_seconds > MAX_LOCK_TTL_SECONDS
-    ) {
-      errors.push(`\`concurrency_lock_ttl_seconds\` must be a non-negative number ≤ ${MAX_LOCK_TTL_SECONDS}`);
     }
   }
 
@@ -732,8 +716,6 @@ export function loadStaticAnalysisConfig(content: string | null, source = '.mank
 
 export interface BaseReviewConfig {
   review?: ReviewRoutingConfig;
-  /** The base branch's skip rules, when they validate. */
-  skip?: Pick<ReviewConfig, (typeof SKIP_KEYS)[number]>;
   /** The base branch's `models`, with defaults, when its config file parses. */
   models?: ReviewConfig['models'];
   /** The base branch's `related_repos`. Unset when its config file or that block is missing or invalid. */
@@ -766,29 +748,16 @@ export function loadReviewConfig(content: string | null, source = '.manki.yml'):
   const models = root.models !== undefined && validateConfig({ models: root.models }).valid
     ? deepMerge(DEFAULT_CONFIG, { models: root.models }).models
     : DEFAULT_CONFIG.models;
-  const skip = loadSkipRules(root, source);
   const relatedRepos = baseRelatedRepos(root.related_repos, source);
   const limits = loadLimits(root, source);
-  if (root.review === undefined) return { models, limits, ...(skip && { skip }), relatedRepos, source: 'builtin' };
+  if (root.review === undefined) return { models, limits, relatedRepos, source: 'builtin' };
   const validation = validateConfig({ review: root.review });
   for (const warning of validation.warnings) core.warning(warning);
   if (!validation.valid) {
     core.warning(`Invalid \`review\` in ${source} on the base branch, using the built-in review groups: ${validation.errors.join('; ')}`);
-    return { models, limits, ...(skip && { skip }), relatedRepos, source: 'base_invalid' };
+    return { models, limits, relatedRepos, source: 'base_invalid' };
   }
-  return { review: root.review as ReviewRoutingConfig, models, limits, ...(skip && { skip }), relatedRepos, source: 'base' };
-}
-
-/** Returns the skip rules of a base config, or `undefined` when it sets none or they fail validation. */
-function loadSkipRules(root: Record<string, unknown>, source: string): BaseReviewConfig['skip'] {
-  const given = Object.fromEntries(SKIP_KEYS.filter(k => k in root).map(k => [k, root[k]]));
-  if (Object.keys(given).length === 0) return undefined;
-  const validation = validateConfig(given);
-  if (!validation.valid) {
-    core.warning(`Invalid skip rules in ${source} on the base branch, skipping no PR: ${validation.errors.join('; ')}`);
-    return undefined;
-  }
-  return { skip_labels: [], skip_authors: [], skip_branches: [], ...given } as BaseReviewConfig['skip'];
+  return { review: root.review as ReviewRoutingConfig, models, limits, relatedRepos, source: 'base' };
 }
 
 /** Returns the base branch's `related_repos`, or `undefined` when it has none or the block is invalid, which it warns about. */
@@ -827,7 +796,7 @@ export function applyBaseReviewConfig(head: ReviewConfig, base: BaseReviewConfig
     core.info('This PR changes `related_repos`. The change applies after merge: this round uses the base branch\'s related repos.');
   }
   let config: ReviewConfig = {
-    ...head, review: base.review, related_repos: base.relatedRepos ?? [], skip_labels: [], skip_authors: [], skip_branches: [], ...base.skip, ...(base.limits ?? loadLimits({}, '')),
+    ...head, review: base.review, related_repos: base.relatedRepos ?? [], ...(base.limits ?? loadLimits({}, '')),
   };
   if (base.models) {
     const baseConfig: ReviewConfig = { ...DEFAULT_CONFIG, models: base.models };
@@ -845,24 +814,6 @@ export function applyBaseReviewConfig(head: ReviewConfig, base: BaseReviewConfig
     return { config: { ...config, review: undefined }, source: 'base_invalid' };
   }
   return { config, source: base.source };
-}
-
-export function loadConfigFromFile(filePath: string): ReviewConfig {
-  if (!fs.existsSync(filePath)) {
-    core.info(`Config file not found at ${filePath}, using defaults`);
-    return { ...DEFAULT_CONFIG, reviewers: [...DEFAULT_CONFIG.reviewers], memory: { ...DEFAULT_CONFIG.memory } };
-  }
-
-  let content: string;
-  try {
-    content = fs.readFileSync(filePath, 'utf-8');
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    core.warning(`Failed to read config file at ${filePath}: ${msg}. Using defaults.`);
-    return { ...DEFAULT_CONFIG, reviewers: [...DEFAULT_CONFIG.reviewers], memory: { ...DEFAULT_CONFIG.memory } };
-  }
-
-  return loadConfigFromContent(content, filePath);
 }
 
 export function resolveModel(config: ReviewConfig, stage: 'planner' | 'reviewer' | 'judge' | 'dedup'): string {
@@ -929,22 +880,4 @@ export function sanitizeForkConfig(config: ReviewConfig): ReviewConfig {
     reviewers: [...DEFAULT_CONFIG.reviewers],
     memory: { ...config.memory, repo: DEFAULT_CONFIG.memory.repo },
   };
-}
-
-/**
- * Returns which of `config`'s skip rules the PR matches, such as `label "dependencies"`, or `undefined` when none does.
- * A label or branch rule matches only a head branch in the repo itself.
- */
-export function matchSkipRule(config: ReviewConfig, facts: SkipFacts): string | undefined {
-  const lower = (values: string[]) => values.map(v => v.toLowerCase());
-  // A fork's author can push after a skip label is added, so only labels on the repo's own branches count.
-  const label = !facts.fromFork && facts.labels.find(l => lower(config.skip_labels ?? []).includes(l.toLowerCase()));
-  if (label) return `label "${label}"`;
-  // A writer can push to a bot's PR, so the event's sender must match too.
-  const skippedAuthor = (login: string | undefined) => !!login && lower(config.skip_authors ?? []).includes(login.toLowerCase());
-  if (skippedAuthor(facts.author) && (facts.sender === undefined || skippedAuthor(facts.sender))) return `author ${facts.author}`;
-  // Only writers can push a branch to the repo itself, while a fork's author names its branch freely.
-  const branch = !facts.fromFork && (config.skip_branches ?? []).find(pattern => minimatch(facts.branch, pattern));
-  if (branch) return `branch ${facts.branch}`;
-  return undefined;
 }

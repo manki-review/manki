@@ -4,9 +4,9 @@ import { join } from 'path';
 
 import * as core from '@actions/core';
 
-import { BOT_MARKER, CANCELLED_MARKER, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, RUN_ID_MARKER_PREFIX } from './github';
+import { BOT_MARKER, CANCELLED_MARKER, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER } from './github';
 import { parseSettingsBlock } from './settings';
-import { _resetOctokitCache, handlePullRequest, main, runFullReview } from './index';
+import { _resetOctokitCache, main, runFullReview } from './index';
 import type { SendMessageOptions } from './providers';
 import { STALE_APPROVE_MARKER_PREFIX } from './state';
 import { fetchWorkspace } from './workspace';
@@ -408,18 +408,20 @@ function forcedRound(): Promise<void> {
   return reviewRound('issue_comment:edited:settings:force', true);
 }
 
+/** Runs Manki as the webhook service dispatches it, for the event `inputs` name. */
+function dispatch(inputs: Record<string, string>): Promise<void> {
+  Object.assign(mockContext, { eventName: 'workflow_dispatch', actor: APP_LOGIN, payload: { inputs, sender: { login: APP_LOGIN, type: 'Bot' } } });
+  return main();
+}
+
 /** Runs Manki on a review command that alice comments on the PR. */
 function reviewCommand(): Promise<void> {
-  Object.assign(mockContext, {
-    eventName: 'issue_comment',
-    payload: {
-      action: 'created',
-      sender: { login: 'alice', type: 'User' },
-      issue: { number: PR_NUMBER, pull_request: { url: `https://api.github.com/repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}` } },
-      comment: { id: 9100, body: '@manki review', author_association: 'OWNER', user: { login: 'alice', type: 'User' } },
-    },
-  });
-  return main();
+  const comment = mockGitHub.addComment('@manki review', 'alice');
+  return dispatch({ event: 'issue_comment', action: 'created', pr: String(PR_NUMBER), comment_id: String(comment.id) });
+}
+
+function mankiComments(): FakeComment[] {
+  return mockGitHub.comments.filter(c => c.user.login === APP_LOGIN);
 }
 
 function skipNotices(): FakeComment[] {
@@ -431,13 +433,18 @@ function postedReviews(login = APP_LOGIN): FakeReview[] {
 }
 
 describe('runFullReview end to end', () => {
+  const eventName = process.env.GITHUB_EVENT_NAME;
+
   afterEach(() => {
     jest.useRealTimers();
     jest.restoreAllMocks();
     jest.mocked(core.warning).mockReset();
+    if (eventName === undefined) delete process.env.GITHUB_EVENT_NAME;
+    else process.env.GITHUB_EVENT_NAME = eventName;
   });
 
   beforeEach(() => {
+    process.env.GITHUB_EVENT_NAME = 'workflow_dispatch';
     jest.clearAllMocks();
     _resetOctokitCache();
     mockContext.eventName = 'pull_request';
@@ -602,14 +609,14 @@ describe('runFullReview end to end', () => {
     it('reviews a commit only once, and shows a command on a reviewed commit as up to date in the settings block', async () => {
       await reviewCommand();
       expect(postedReviews().map(r => [r.state, r.commit_id])).toEqual([['APPROVED', HEAD_SHA]]);
-      const comments = mockGitHub.comments.length;
+      const comments = mankiComments().length;
 
       await reviewCommand();
       await reviewCommand();
 
       expect(postedReviews()).toHaveLength(1);
       expect(skipNotices()).toEqual([]);
-      expect(mockGitHub.comments).toHaveLength(comments);
+      expect(mankiComments()).toHaveLength(comments);
       const blocks = mockGitHub.comments.map(c => parseSettingsBlock(c.body)).filter(b => b !== undefined);
       expect(blocks).toEqual([expect.objectContaining({ lastReviewed: HEAD_SHA.slice(0, 7), status: 'up to date', boxes: new Set(['pause', 'full', 'deeper']) })]);
     });
@@ -720,11 +727,6 @@ describe('runFullReview end to end', () => {
       return process;
     }) as typeof process.on);
     const previous = mockGitHub.addReview(`${BOT_MARKER}\nChanges requested.`, 'CHANGES_REQUESTED', 'old0000000000000000000000000000000000000', APP_LOGIN);
-    mockContext.payload = {
-      action: 'opened',
-      sender: { login: 'alice', type: 'User' },
-      pull_request: { number: PR_NUMBER, title: 'Keep the sum in a variable', body: 'Small refactor.', draft: false, head: { sha: HEAD_SHA, repo: { full_name: `${OWNER}/${REPO}` } }, base: { ref: 'main' }, user: { login: 'alice' } },
-    };
     let writesAtSignal = -1;
     const sigterm = () => {
       listeners.get('SIGTERM')!('SIGTERM');
@@ -736,7 +738,7 @@ describe('runFullReview end to end', () => {
       mockGitHub.onWrite = write => { if (write === `POST /repos/${OWNER}/${REPO}/pulls/${PR_NUMBER}/reviews`) sigterm(); };
     }
 
-    await main();
+    await dispatch({ event: 'pull_request', action: 'opened', pr: String(PR_NUMBER), head_sha: HEAD_SHA });
 
     expect(writesAtSignal).toBeGreaterThan(0);
     expect(mockGitHub.writes).toHaveLength(writesAtSignal);
@@ -745,29 +747,6 @@ describe('runFullReview end to end', () => {
     expect(previous.state).toBe('CHANGES_REQUESTED');
     expect(core.setFailed).not.toHaveBeenCalled();
     expect(core.info).toHaveBeenCalledWith('The run was cancelled by SIGTERM, writing nothing more to GitHub');
-  });
-
-  it.each([
-    ['an older commit, so the push run reviews the new head', 'deadbeef00000000000000000000000000000000', ['APPROVED']],
-    ['the same commit, so the push run skips', HEAD_SHA, []],
-  ])('handles a push while a `/manki review` run reviews %s', async (_label, reviewedSha, states) => {
-    const oldProgress = `${BOT_MARKER}\n${RUN_ID_MARKER_PREFIX}6999 -->\n<!-- manki-commit:${reviewedSha} -->\n**Review started**`;
-    mockGitHub.addComment(oldProgress, APP_LOGIN, new Date().toISOString());
-    mockGitHub.activeRuns.push(6999);
-    mockContext.payload = {
-      action: 'synchronize',
-      sender: { login: 'alice', type: 'User' },
-      pull_request: { number: PR_NUMBER, title: 'Keep the sum in a variable', body: 'Small refactor.', draft: false, head: { sha: HEAD_SHA, repo: { full_name: `${OWNER}/${REPO}` } }, base: { ref: 'main' }, user: { login: 'alice' } },
-    };
-
-    await handlePullRequest();
-
-    expect(postedReviews().map(r => [r.state, r.commit_id])).toEqual(states.map(state => [state, HEAD_SHA]));
-    // A running review shows in the settings block, so a skipped push posts no notice.
-    expect(mockGitHub.comments.some(c => c.body.includes('**Review skipped**'))).toBe(false);
-    // The older run's comment is its own: the push run neither takes it as its lock nor rewrites it.
-    expect(mockGitHub.comments.find(c => c.body.includes(`${RUN_ID_MARKER_PREFIX}6999 -->`))?.body).toBe(oldProgress);
-    expect(mockGitHub.comments.some(c => c.body.includes(CANCELLED_MARKER))).toBe(false);
   });
 
   it('reads past the first 100 comments and review threads', async () => {
@@ -784,12 +763,6 @@ describe('runFullReview end to end', () => {
     const second = mockGitHub.roundContext(postedReviews()[1]);
     expect(second.meta.round).toBe(2);
     expect(second.judge.openThreadCount).toBe(1);
-
-    // A live progress comment from another run, past the first page of comments, holds the PR.
-    mockGitHub.addComment(`${BOT_MARKER}\n${RUN_ID_MARKER_PREFIX}6999 -->\n**Review started**`, APP_LOGIN, new Date().toISOString());
-    await forcedRound();
-    expect(postedReviews()).toHaveLength(2);
-    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('another Manki run (id=6999)'));
   });
 
   it('redacts the value of a secret action input from every review, thread and comment it posts', async () => {
@@ -889,18 +862,6 @@ describe('runFullReview end to end', () => {
   });
 
   describe('dispatched by the webhook service', () => {
-    const eventName = process.env.GITHUB_EVENT_NAME;
-    beforeEach(() => { process.env.GITHUB_EVENT_NAME = 'workflow_dispatch'; });
-    afterEach(() => {
-      if (eventName === undefined) delete process.env.GITHUB_EVENT_NAME;
-      else process.env.GITHUB_EVENT_NAME = eventName;
-    });
-
-    function dispatch(inputs: Record<string, string>): Promise<void> {
-      Object.assign(mockContext, { eventName: 'workflow_dispatch', actor: APP_LOGIN, payload: { inputs, sender: { login: APP_LOGIN, type: 'Bot' } } });
-      return main();
-    }
-
     it('reviews a push with the config the PR carries at its head', async () => {
       mockGitHub.headConfig = 'planner:\n  enabled: false\n';
 

@@ -1,12 +1,11 @@
 import * as core from '@actions/core';
-import * as fs from 'fs';
 import * as github from '@actions/github';
 import * as path from 'path';
 
 import { assertWritesAllowed, RunCancelledError, stopWritesOn } from './abort';
 import { AppMemory, AuthResult, createAuthenticatedOctokit, fetchPrState, getMemoryToken } from './auth';
 import { sanitizeTokens, withMarkers } from './utils';
-import { applyBaseReviewConfig, BaseReviewConfig, loadConfig, loadConfigFromFile, loadReviewConfig, matchSkipRule, sanitizeForkConfig, resolveFallbackModel, resolveMemoryRepo, resolveModel, resolvePairModel } from './config';
+import { applyBaseReviewConfig, BaseReviewConfig, loadConfig, loadReviewConfig, sanitizeForkConfig, resolveFallbackModel, resolveMemoryRepo, resolveModel, resolvePairModel } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
 import type { LLMClient, ProviderAuth, ProviderInputs } from './providers';
 import { cancelOpenReviewCheck, CheckReport, completeReviewCheck, failedReport, outcomeReport, ReviewCheck, startReviewCheck } from './check-run';
@@ -25,7 +24,7 @@ import { collectStaticSignals } from './static-signals';
 import { runStepHook, STEP_HOOK_COMMAND } from './tool-steps';
 import { fetchWorkspace } from './workspace';
 import { SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
-import { DashboardData, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, RoundTrigger, SettingsState, StaticSignal, roundContextToFlatAliases } from './types';
+import { DashboardData, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StaticSignal, roundContextToFlatAliases } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -48,7 +47,6 @@ import {
   APPROVED_LINE,
   BOT_MARKER as PROGRESS_MARKER,
   isBotLogin,
-  isReviewInProgress,
   titleToSlug,
   isApprovedOnCommit,
   hasBotReviewOnCommit,
@@ -57,7 +55,6 @@ import {
   markProgressCommentFailed,
   markProgressCommentSuperseded,
   postAppWarningIfNeeded,
-  checkConcurrentSubmissionLock,
   postConfigErrorComment,
   latestSettings,
   PAUSE_NOTICE_MARKER,
@@ -284,7 +281,6 @@ async function run(): Promise<void> {
       return;
     }
   } else if (eventName === 'pull_request_review_thread') {
-    // Only a dispatched run sees this event, since GitHub Actions cannot trigger on it.
     if (action !== 'resolved' && action !== 'unresolved') {
       core.info(`Ignoring pull_request_review_thread action: ${action}`);
       return;
@@ -335,15 +331,14 @@ async function run(): Promise<void> {
 }
 
 /** The state of a PR the coordinator has nothing on: not paused, and no box modes. */
-const NO_SETTINGS: SettingsState = { settings: { paused: false }, runModes: new Set(), queuedModes: new Set() };
+const NO_SETTINGS: PrState = { settings: { paused: false }, runModes: new Set(), queuedModes: new Set() };
 
 /**
  * Returns the PR's coordinator state. Without one, as when the token service cannot answer, the PR counts as
  * not paused with no box modes, so a push still gets its review.
  */
-async function loadSettings(owner: string, repo: string, prNumber: number): Promise<SettingsState> {
-  const state = isDispatchedRun() ? await fetchPrState(owner, repo, prNumber, github.context.runId) : null;
-  return state ? { ...state, settings: state.settings ?? NO_SETTINGS.settings } : NO_SETTINGS;
+async function loadSettings(owner: string, repo: string, prNumber: number): Promise<PrState> {
+  return await fetchPrState(owner, repo, prNumber, github.context.runId) ?? NO_SETTINGS;
 }
 
 /** The boxes that apply to a PR: Pause, Full review and Deeper review always, Review this draft on a draft, and `extra`. */
@@ -352,7 +347,7 @@ function settingsBoxes(draft: boolean, extra: SettingsBox[] = []): Set<SettingsB
 }
 
 /** The boxes the coordinator state ticks: Pause while paused, and each box whose run is still queued. */
-function tickedBoxes(settings: SettingsState): Set<SettingsBox> {
+function tickedBoxes(settings: PrState): Set<SettingsBox> {
   return new Set<SettingsBox>([...(settings.settings.paused ? ['pause' as const] : []), ...settings.queuedModes]);
 }
 
@@ -360,7 +355,7 @@ function tickedBoxes(settings: SettingsState): Set<SettingsBox> {
  * How a run reviews. Any box a writer ticked reviews even a draft or an already reviewed or paused PR.
  * `full` counts every finding as new, and `deeper` runs two finders on every group, each one effort level higher.
  */
-function reviewModes({ runModes }: SettingsState): { forced: boolean; fullReview: boolean; deeper: boolean } {
+function reviewModes({ runModes }: PrState): { forced: boolean; fullReview: boolean; deeper: boolean } {
   return { forced: runModes.size > 0, fullReview: runModes.has('full'), deeper: runModes.has('deeper') };
 }
 
@@ -369,7 +364,7 @@ function reviewModes({ runModes }: SettingsState): { forced: boolean; fullReview
  * Without `lastReviewed`, the block keeps the commit it names.
  */
 async function showRunStatus(
-  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, settings: SettingsState,
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, settings: PrState,
   { head, draft, status, text, lastReviewed }: { head: string; draft: boolean; status: string; text: string; lastReviewed?: string },
 ): Promise<void> {
   await showSettings(octokit, bot, owner, repo, prNumber, {
@@ -379,7 +374,7 @@ async function showRunStatus(
 
 /** Shows an already reviewed `commitSha` as up to date in the settings block. Its Full review box reviews it again. */
 async function showAlreadyReviewed(
-  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, commitSha: string, settings: SettingsState, draft = false,
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, commitSha: string, settings: PrState, draft = false,
 ): Promise<void> {
   await showRunStatus(octokit, bot, owner, repo, prNumber, settings, {
     head: commitSha, draft, status: 'up to date', text: 'This commit already has a review.', lastReviewed: commitSha,
@@ -428,9 +423,6 @@ async function handlePullRequest(): Promise<void> {
     return;
   }
 
-  // A running review already shows in the settings block.
-  if (await isReviewInProgress(octokit, bot, owner, repo, prNumber, commitSha)) return;
-
   if (!forced && await isApprovedOnCommit(octokit, bot, owner, repo, prNumber, commitSha)) {
     core.info('Already approved on this commit — skipping review');
     return;
@@ -450,13 +442,6 @@ async function handlePullRequest(): Promise<void> {
 
   await runFullReview(owner, repo, prNumber, commitSha, pr.base.ref, prContext, {
     prAuthorLogin: pr.user?.login,
-    skipFacts: {
-      labels: (pr.labels ?? []).map((l: { name?: string }) => l.name ?? '').filter(Boolean),
-      author: pr.user?.login,
-      sender: github.context.payload.sender?.login,
-      branch: pr.head.ref ?? '',
-      fromFork: pr.head.repo?.full_name !== `${owner}/${repo}`,
-    },
     headRepoFullName: pr.head.repo?.full_name,
     trigger: buildRoundTrigger(),
     ...(forced && { forceReview: true, skipCap: true, bypassHint: 'force_review' as const }),
@@ -538,12 +523,6 @@ async function handleCommentTrigger(settingsTick = false): Promise<void> {
     pull_number: prNumber,
   });
   const draft = !!pr.draft;
-
-  // A running review already shows in the settings block.
-  if (!forced && await isReviewInProgress(octokit, bot, owner, repo, prNumber, pr.head.sha)) {
-    core.info('Review already in progress — skipping');
-    return;
-  }
 
   // An approved head counts as reviewed here, so a review command on it shows up to date, and Full review reviews it again.
   if (!forced && await hasBotReviewOnCommit(octokit, bot, owner, repo, prNumber, pr.head.sha)) {
@@ -677,7 +656,7 @@ async function postRunProgress(target: RunTarget, progress: RunProgress, { setti
  * Deletes the run's progress comment for a run that reviews nothing. The settings block goes back to the comment that
  * had it before, with `status`. Without such a comment, `text` is posted with the block.
  */
-async function dropProgressComment(target: RunTarget, progress: RunProgress, settings: SettingsState = NO_SETTINGS, status: string, text: string): Promise<void> {
+async function dropProgressComment(target: RunTarget, progress: RunProgress, settings: PrState = NO_SETTINGS, status: string, text: string): Promise<void> {
   const { octokit, bot, owner, repo, prNumber, commitSha } = target;
   if (progress.commentId === undefined) return;
   try {
@@ -717,40 +696,20 @@ function cancelDashboardFlush(progress: RunProgress): void {
 }
 
 /**
- * Loads `.manki.yml` from the local checkout so a PR that modifies its own
- * config (e.g., extending `exclude_paths`) takes effect on the same PR.
- * `process.cwd()` is the PR tree because the action runs as a local
- * composite via `./` in the consumer workflow. A dispatched run reads the
- * file at the head commit through the API instead. The `review` block is the
- * exception: it comes from the base branch, so a PR cannot weaken its own
- * review. Returns `undefined` after reporting a config that does not load.
+ * Loads `.manki.yml` at the head commit through the API, so a PR that changes its own config (such as
+ * `exclude_paths`) takes effect on the same PR. The `review` block is the exception: it comes from the base
+ * branch, so a PR cannot weaken its own review. Returns `undefined` after reporting a config that does not load.
  */
 async function loadRunConfig(target: RunTarget, configPath: string, headRepoFullName?: string): Promise<{ config: ReviewConfig; reviewSource: BaseReviewConfig['source'] } | undefined> {
   const { octokit, owner, repo, prNumber, commitSha, baseRef } = target;
-  const cwd = path.resolve(process.cwd());
-  const configAbsPath = path.isAbsolute(configPath)
-    ? configPath
-    : path.join(cwd, configPath);
-  let resolvedConfigPath: string;
-  try {
-    resolvedConfigPath = fs.realpathSync(configAbsPath);
-  } catch {
-    resolvedConfigPath = configAbsPath;
-  }
-  if (resolvedConfigPath !== cwd && !resolvedConfigPath.startsWith(cwd + path.sep)) {
-    core.warning(`\`config_path\` resolved outside workspace — using defaults`);
-  }
-  const effectiveConfigPath = (resolvedConfigPath === cwd || resolvedConfigPath.startsWith(cwd + path.sep))
-    ? resolvedConfigPath
-    : path.join(cwd, '.manki.yml');
   // The contents API takes a repo-relative path, so `./`, absolute and outside paths are normalised first.
-  const repoRelative = path.relative(cwd, configAbsPath);
-  const repoConfigPath = repoRelative.startsWith('..') || path.isAbsolute(repoRelative) ? '.manki.yml' : repoRelative.split(path.sep).join('/');
+  const cwd = path.resolve(process.cwd());
+  const repoRelative = path.relative(cwd, path.resolve(cwd, configPath));
+  const outside = repoRelative.startsWith('..') || path.isAbsolute(repoRelative);
+  if (outside) core.warning('`config_path` points outside the repository, reading `.manki.yml`');
+  const repoConfigPath = outside ? '.manki.yml' : repoRelative.split(path.sep).join('/');
   try {
-    // A dispatched run checks out the default branch or nothing, so the PR's config comes from the API.
-    const rawConfig = isDispatchedRun()
-      ? loadConfig(await readConfigFile(octokit, owner, repo, commitSha, repoConfigPath) ?? undefined, repoConfigPath)
-      : loadConfigFromFile(effectiveConfigPath);
+    const rawConfig = loadConfig(await readConfigFile(octokit, owner, repo, commitSha, repoConfigPath) ?? undefined, repoConfigPath);
     const isFork = headRepoFullName !== undefined && headRepoFullName !== `${owner}/${repo}`;
     const headConfig = isFork ? sanitizeForkConfig(rawConfig) : rawConfig;
     const base = await loadBaseReviewConfig(octokit, owner, repo, baseRef, repoConfigPath);
@@ -776,23 +735,11 @@ async function loadBaseReviewConfig(octokit: Octokit, owner: string, repo: strin
   return loadReviewConfig(content, configPath);
 }
 
-/** Whether the run stops before posting a progress comment: another run holds the PR, the commit is reviewed or stale, or nothing changed. */
+/** Whether the run stops before posting a progress comment: the commit is reviewed or stale, or nothing changed. */
 async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: RoundTrigger, { forceReview, settings = NO_SETTINGS, draft }: FullReviewOptions): Promise<boolean> {
   const { octokit, bot, owner, repo, prNumber, commitSha, baseRef } = target;
 
-  // Scan for a competing in-progress marker before posting our own to shorten
-  // the race window. A residual window remains when two runs both pass this scan
-  // before either posts; tracking issue for the strict atomic fix: https://github.com/manki-review/manki/issues/798
-  if (await checkConcurrentSubmissionLock(octokit, bot, owner, repo, prNumber, config, commitSha)) {
-    core.warning('Defense-in-depth lock engaged — this run will not post a review. If no review appears on the PR, re-trigger with `/manki review`.');
-    return true;
-  }
-
-  // Sibling head-SHA dedupe: serialized siblings (e.g., `pull_request_review`
-  // and `pull_request_review_comment` fan-out from one human review) can both
-  // pass the in-progress scan when the prior run's marker has already been
-  // cleared. The state-based check on the bot's posted reviews catches that.
-  // Honors `forceReview`, so a box tick still reviews the same SHA again.
+  // A run queued behind another can find its commit reviewed already. `forceReview` reviews it again, as a box tick asks.
   if (!forceReview && await hasBotReviewOnCommit(octokit, bot, owner, repo, prNumber, commitSha)) {
     core.warning(`Bot already posted a non-DISMISSED review on commit ${commitSha.slice(0, 7)} — bailing serialized sibling run.`);
     await showAlreadyReviewed(octokit, bot, owner, repo, prNumber, commitSha, settings, draft);
@@ -1635,13 +1582,6 @@ async function runFullReview(
     const loaded = await loadRunConfig(target, configPath, headRepoFullName);
     if (!loaded) return;
     const { config, reviewSource } = loaded;
-    const skipRule = !forceReview && options.skipFacts ? matchSkipRule(config, options.skipFacts) : undefined;
-    if (skipRule) {
-      core.info(`Skipping review: the PR matches the skip rule for ${skipRule}`);
-      check = await startReviewCheck(octokit, owner, repo, commitSha);
-      checkReport = { conclusion: 'skipped', title: 'Review skipped', summary: `This PR matches the skip rule for ${skipRule} in \`${configPath}\` on the base branch.` };
-      return;
-    }
     if (await skipsRound(target, config, trigger, options)) return;
 
     const commentId = await postRunProgress(target, progress, options);
@@ -1987,19 +1927,16 @@ async function handleReviewCommentInteraction(): Promise<void> {
 
 const POST_PHASE_STATE_KEY = 'manki_post_phase';
 
+const NOT_DISPATCHED = 'Manki runs only from the `workflow_dispatch` workflow that the Manki service starts. '
+  + 'See https://github.com/manki-review/manki/blob/main/docs/getting-started.md#step-3-add-the-workflow';
+
 /**
  * Post-step cleanup invoked when the main step is cancelled or fails.
  * Marks the current run's progress comment as cancelled so the next trigger
  * doesn't see a zombie.
  */
 async function postCleanup(): Promise<void> {
-  const pr = github.context.payload.pull_request
-    ?? (github.context.payload.issue?.pull_request ? github.context.payload.issue : undefined);
-  const prNumber = isDispatchedRun() ? dispatchedNumber() : pr?.number;
-  if (!prNumber) {
-    core.info('Post-cleanup: no PR number in event payload — skipping');
-    return;
-  }
+  const prNumber = dispatchedNumber();
   const { owner, repo } = github.context.repo;
   const runId = github.context.runId;
   try {
@@ -2033,10 +1970,11 @@ async function main(): Promise<void> {
 
   try {
     if (isPostPhase) {
-      await postCleanup();
+      if (isDispatchedRun()) await postCleanup();
     } else {
       core.saveState(POST_PHASE_STATE_KEY, 'true');
-      if (!isDispatchedRun() || await restoreDispatchedEvent(await workflowOctokit()) === 'run') await run();
+      if (!isDispatchedRun()) throw new Error(NOT_DISPATCHED);
+      if (await restoreDispatchedEvent(await workflowOctokit()) === 'run') await run();
     }
   } catch (error) {
     core.setFailed(`Manki encountered an error: ${failureReason(error)}`);

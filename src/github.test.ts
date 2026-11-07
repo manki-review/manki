@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 
-import { ApprovalHeld, buildDashboard, formatFoundAgainReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings } from './github';
+import { ApprovalHeld, buildDashboard, formatFoundAgainReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { paginateSinglePage, TEST_BOT } from './test-utils';
@@ -2557,7 +2557,6 @@ describe('updateProgressComment', () => {
     expect(body).toContain('**Review superseded** by the new commit `def5678`');
     expect(body).toContain('No verdict was posted for `abc1234`');
     expect(body).toContain(CANCELLED_MARKER);
-    expect(findInProgressLock([{ id: 123, body, user: { login: BOT_LOGIN, type: 'Bot' }, updated_at: new Date().toISOString() }], TEST_BOT, 42)).toBeNull();
 
     await markProgressCommentSuperseded(mockOctokit, 'owner', 'repo', 123, new SupersededError('abc1234ffff', 'def5678ffff'), true);
     expect(mockUpdateComment.mock.calls[1][0].body).toContain('**Review superseded** by the new commit `def5678`. The review of `abc1234` was posted, and the earlier reviews stay until the new commit is reviewed.');
@@ -3660,268 +3659,6 @@ describe('postReview non-blocking findings', () => {
   });
 });
 
-describe('isReviewInProgress', () => {
-  type Octokit = ReturnType<typeof import('@actions/github').getOctokit>;
-
-  function makeRunIdBody(runId: number, text = '**Review in progress**'): string {
-    return `${BOT_MARKER}\n<!-- manki-run-id:${runId} -->\n${text}`;
-  }
-
-  interface MockOpts {
-    comments: Array<{ id?: number; body: string; user: { login?: string; type: string } }>;
-    workflowRun?: { status: string | null; conclusion: string | null };
-    workflowRunError?: Error;
-  }
-
-  function makeMockOctokit(opts: MockOpts) {
-    const getWorkflowRun = opts.workflowRunError
-      ? jest.fn().mockRejectedValue(opts.workflowRunError)
-      : jest.fn().mockResolvedValue({ data: opts.workflowRun ?? { status: 'in_progress', conclusion: null } });
-    const updateComment = jest.fn().mockResolvedValue({});
-    const octokit = {
-      paginate: jest.fn(paginateSinglePage),
-      rest: {
-        issues: {
-          listComments: jest.fn().mockResolvedValue({
-            data: opts.comments.map((c, i) => ({
-              id: c.id ?? i + 1,
-              body: c.body,
-              user: { login: c.user.login ?? (c.user.type === 'Bot' ? BOT_LOGIN : 'someone'), type: c.user.type },
-            })),
-          }),
-          updateComment,
-        },
-        actions: {
-          getWorkflowRun,
-        },
-      },
-    } as unknown as Octokit;
-    return { octokit, getWorkflowRun, updateComment };
-  }
-
-  it.each([
-    ['no head is given', '<!-- manki-commit:aaa111 -->', undefined, true],
-    ['the live review is for the head', '<!-- manki-commit:aaa111 -->', 'aaa111', true],
-    ['the live review does not name its commit', '', 'bbb222', true],
-    ['the live review is for an older commit', '<!-- manki-commit:aaa111 -->', 'bbb222', false],
-  ])('reports a live run_id per the Actions API as in progress only when it reviews the head: %s', async (_label, commitMarker, headSha, expected) => {
-    const { octokit, getWorkflowRun, updateComment } = makeMockOctokit({
-      comments: [{ body: `${makeRunIdBody(12345)}\n${commitMarker}`, user: { type: 'Bot' } }],
-      workflowRun: { status: 'in_progress', conclusion: null },
-    });
-
-    const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1, headSha);
-
-    expect(result).toBe(expected);
-    expect(getWorkflowRun).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', run_id: 12345 });
-    expect(updateComment).not.toHaveBeenCalled();
-  });
-
-  it('recognises a progress comment only when its author is the bot identity', async () => {
-    const { octokit } = makeMockOctokit({
-      comments: [{ body: makeRunIdBody(12345), user: { login: 'github-actions[bot]', type: 'Bot' } }],
-      workflowRun: { status: 'in_progress', conclusion: null },
-    });
-
-    expect(await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1)).toBe(true);
-    expect(await isReviewInProgress(octokit, CUSTOM_APP_BOT, 'owner', 'repo', 1)).toBe(false);
-  });
-
-  it('recognises a progress comment posted with a personal access token', async () => {
-    const { octokit } = makeMockOctokit({
-      comments: [{ body: makeRunIdBody(12345), user: { login: 'review-user', type: 'User' } }],
-      workflowRun: { status: 'in_progress', conclusion: null },
-    });
-
-    expect(await isReviewInProgress(octokit, PAT_BOT, 'owner', 'repo', 1)).toBe(true);
-    expect(await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1)).toBe(false);
-  });
-
-  it('skips a config-error comment and finds the real progress comment behind it', async () => {
-    const createComment = jest.fn().mockResolvedValue({});
-    const poster = { rest: { issues: { createComment } } } as unknown as Octokit;
-    await postConfigErrorComment(poster, 'owner', 'repo', 1, 'Invalid YAML in .manki.yml: bad ``` indent');
-    const configErrorBody = createComment.mock.calls[0][0].body as string;
-    expect(configErrorBody.startsWith('**Manki** could not load its config')).toBe(true);
-    expect(configErrorBody.endsWith(`\n\n${CONFIG_ERROR_MARKER}`)).toBe(true);
-    expect(configErrorBody).not.toContain(BOT_MARKER);
-    expect(configErrorBody).toContain('````\nInvalid YAML in .manki.yml: bad ``` indent\n````');
-
-    const { octokit, getWorkflowRun, updateComment } = makeMockOctokit({
-      comments: [
-        { id: 5, body: configErrorBody, user: { type: 'Bot' } },
-        { id: 6, body: makeRunIdBody(12345), user: { type: 'Bot' } },
-      ],
-      workflowRun: { status: 'in_progress', conclusion: null },
-    });
-
-    expect(await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1)).toBe(true);
-    expect(getWorkflowRun).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', run_id: 12345 });
-    expect(updateComment).not.toHaveBeenCalled();
-    expect(findInProgressLock([{ id: 5, body: configErrorBody, user: { login: BOT_LOGIN, type: 'Bot' }, updated_at: '2026-01-01T00:00:00Z' }], TEST_BOT, 42)).toBeNull();
-  });
-
-  it('returns false and marks comment as cancelled when run is completed (cancelled)', async () => {
-    const { octokit, updateComment } = makeMockOctokit({
-      comments: [{ id: 77, body: makeRunIdBody(99), user: { type: 'Bot' } }],
-      workflowRun: { status: 'completed', conclusion: 'cancelled' },
-    });
-
-    const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
-
-    expect(result).toBe(false);
-    expect(updateComment).toHaveBeenCalledWith(expect.objectContaining({
-      comment_id: 77,
-      body: expect.stringContaining('**Review cancelled:** a newer run replaced it.'),
-    }));
-  });
-
-  it('returns false and marks comment as cancelled when run failed', async () => {
-    const { octokit, updateComment } = makeMockOctokit({
-      comments: [{ id: 88, body: makeRunIdBody(100), user: { type: 'Bot' } }],
-      workflowRun: { status: 'completed', conclusion: 'failure' },
-    });
-
-    const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
-
-    expect(result).toBe(false);
-    expect(updateComment).toHaveBeenCalled();
-  });
-
-  it('returns false when progress comment contains complete marker', async () => {
-    const { octokit, getWorkflowRun } = makeMockOctokit({
-      comments: [{ body: `${BOT_MARKER}\n✅ **Review complete**\n${REVIEW_COMPLETE_MARKER}`, user: { type: 'Bot' } }],
-    });
-
-    const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
-
-    expect(result).toBe(false);
-    expect(getWorkflowRun).not.toHaveBeenCalled();
-  });
-
-  it('returns false and marks legacy comment (no run_id marker) as cancelled', async () => {
-    const { octokit, updateComment, getWorkflowRun } = makeMockOctokit({
-      comments: [{ id: 55, body: `${BOT_MARKER}\n**Review in progress**`, user: { type: 'Bot' } }],
-    });
-
-    const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
-
-    expect(result).toBe(false);
-    expect(getWorkflowRun).not.toHaveBeenCalled();
-    expect(updateComment).toHaveBeenCalledWith(expect.objectContaining({ comment_id: 55 }));
-  });
-
-  it('returns false when no progress comment exists', async () => {
-    const { octokit } = makeMockOctokit({
-      comments: [{ body: 'Some random comment', user: { type: 'User' } }],
-    });
-
-    const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
-
-    expect(result).toBe(false);
-  });
-
-  it('returns false when progress comment is from a non-bot user', async () => {
-    const { octokit } = makeMockOctokit({
-      comments: [{ body: makeRunIdBody(1), user: { type: 'User' } }],
-    });
-
-    const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
-
-    expect(result).toBe(false);
-  });
-
-  it('returns false when the listComments API call fails', async () => {
-    const octokit = {
-      paginate: jest.fn(paginateSinglePage),
-      rest: {
-        issues: {
-          listComments: jest.fn().mockRejectedValue(new Error('API error')),
-        },
-      },
-    } as unknown as Octokit;
-
-    const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
-
-    expect(result).toBe(false);
-  });
-
-  it.each([
-    ['is unreachable, leaving the comment as it is', 403, false],
-    ['no longer knows the run, which GitHub deletes after 90 days, so the comment is marked cancelled', 404, true],
-  ])('returns false when getWorkflowRun fails because the API %s', async (_label, status, cancelled) => {
-    const { octokit, updateComment } = makeMockOctokit({
-      comments: [{ id: 66, body: makeRunIdBody(123), user: { type: 'Bot' } }],
-      workflowRunError: Object.assign(new Error(`HTTP ${status}`), { status }),
-    });
-
-    const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
-
-    expect(result).toBe(false);
-    expect(updateComment.mock.calls.map(([args]) => [args.comment_id, args.body.includes(CANCELLED_MARKER)])).toEqual(cancelled ? [[66, true]] : []);
-  });
-
-  it('returns false (without querying Actions API) when run_id matches current run', async () => {
-    const originalRunId = process.env.GITHUB_RUN_ID;
-    process.env.GITHUB_RUN_ID = '4242';
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const ghCtx = require('@actions/github').context;
-    const originalRunIdAttr = ghCtx.runId;
-    Object.defineProperty(ghCtx, 'runId', { value: 4242, configurable: true, writable: true });
-    try {
-      const { octokit, getWorkflowRun, updateComment } = makeMockOctokit({
-        comments: [{ body: makeRunIdBody(4242), user: { type: 'Bot' } }],
-      });
-
-      const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
-
-      expect(result).toBe(false);
-      expect(getWorkflowRun).not.toHaveBeenCalled();
-      expect(updateComment).not.toHaveBeenCalled();
-    } finally {
-      Object.defineProperty(ghCtx, 'runId', { value: originalRunIdAttr, configurable: true, writable: true });
-      if (originalRunId === undefined) delete process.env.GITHUB_RUN_ID;
-      else process.env.GITHUB_RUN_ID = originalRunId;
-    }
-  });
-
-  it('returns false for every non-active workflow status (neutral, skipped, success)', async () => {
-    for (const status of ['completed'] as const) {
-      for (const conclusion of ['success', 'neutral', 'skipped', 'timed_out'] as const) {
-        const { octokit, updateComment } = makeMockOctokit({
-          comments: [{ id: 11, body: makeRunIdBody(500), user: { type: 'Bot' } }],
-          workflowRun: { status, conclusion },
-        });
-        const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
-        expect(result).toBe(false);
-        expect(updateComment).toHaveBeenCalled();
-      }
-    }
-  });
-
-  it('returns true for each active workflow status', async () => {
-    for (const status of ['queued', 'waiting', 'pending', 'requested', 'action_required'] as const) {
-      const { octokit } = makeMockOctokit({
-        comments: [{ body: makeRunIdBody(600), user: { type: 'Bot' } }],
-        workflowRun: { status, conclusion: null },
-      });
-      const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
-      expect(result).toBe(true);
-    }
-  });
-
-  it('ignores progress comments posted by other bots (login mismatch)', async () => {
-    const { octokit, getWorkflowRun } = makeMockOctokit({
-      comments: [{ body: makeRunIdBody(700), user: { login: 'dependabot[bot]', type: 'Bot' } }],
-    });
-
-    const result = await isReviewInProgress(octokit, TEST_BOT, 'owner', 'repo', 1);
-
-    expect(result).toBe(false);
-    expect(getWorkflowRun).not.toHaveBeenCalled();
-  });
-});
-
 describe('extractRunIdFromBody', () => {
   it('extracts run_id from a marker embedded in a comment body', () => {
     expect(extractRunIdFromBody(`${BOT_MARKER}\n<!-- manki-run-id:98765 -->\nbody`)).toBe(98765);
@@ -4364,6 +4101,21 @@ describe('fetchStandingVerdict', () => {
   });
 });
 
+describe('postConfigErrorComment', () => {
+  type Octokit = ReturnType<typeof import('@actions/github').getOctokit>;
+
+  it('posts the error in a fence that its own backticks cannot close, as no progress comment', async () => {
+    const createComment = jest.fn().mockResolvedValue({});
+    const poster = { rest: { issues: { createComment } } } as unknown as Octokit;
+    await postConfigErrorComment(poster, 'owner', 'repo', 1, 'Invalid YAML in .manki.yml: bad ``` indent');
+    const body = createComment.mock.calls[0][0].body as string;
+    expect(body.startsWith('**Manki** could not load its config')).toBe(true);
+    expect(body.endsWith(`\n\n${CONFIG_ERROR_MARKER}`)).toBe(true);
+    expect(body).not.toContain(BOT_MARKER);
+    expect(body).toContain('````\nInvalid YAML in .manki.yml: bad ``` indent\n````');
+  });
+});
+
 describe('postAppWarningIfNeeded', () => {
   type Octokit = ReturnType<typeof import('@actions/github').getOctokit>;
 
@@ -4442,107 +4194,6 @@ describe('isBotLogin', () => {
     for (const login of ['someone', 'manki-review[bot][bot]', '', null, undefined]) {
       expect(isBotLogin(TEST_BOT, login)).toBe(false);
     }
-  });
-});
-
-describe('findInProgressLock', () => {
-  function makeInProgressBody(runId: number): string {
-    return `${BOT_MARKER}\n<!-- manki-run-id:${runId} -->\n**Review in progress**`;
-  }
-
-  function makeComment(
-    id: number, body: string, login: string, type: string, updated_at: string,
-  ) {
-    return { id, body, user: { login, type }, updated_at };
-  }
-
-  function botComment(id: number, body: string, updated_at = '2026-01-01T00:00:00Z') {
-    return makeComment(id, body, BOT_LOGIN, 'Bot', updated_at);
-  }
-
-  it('returns null when no in-progress bot comment exists (lock acquisition)', () => {
-    const comments = [makeComment(1, 'Some user comment', 'someone', 'User', '2026-01-01T00:00:00Z')];
-
-    expect(findInProgressLock(comments, TEST_BOT, 42)).toBeNull();
-  });
-
-  it.each([
-    ['at the top of an older comment', makeInProgressBody(999)],
-    ['at the end', withMarkers('**Review in progress**', BOT_MARKER, '<!-- manki-run-id:999 -->')],
-  ])('returns the lock when a different run posted an in-progress marker with the markers %s (contention)', (_, body) => {
-    const comments = [botComment(7, body, '2026-05-22T12:00:00Z')];
-
-    expect(findInProgressLock(comments, TEST_BOT, 42)).toEqual({ runId: 999, updatedAt: '2026-05-22T12:00:00Z', commentId: 7 });
-  });
-
-  it('ignores a marker for another commit only when the caller names its own commit', () => {
-    const comments = [botComment(7, `${makeInProgressBody(999)}\n<!-- manki-commit:aaa111 -->`, '2026-05-22T12:00:00Z')];
-    const lock = { runId: 999, updatedAt: '2026-05-22T12:00:00Z', commentId: 7 };
-
-    expect(findInProgressLock(comments, TEST_BOT, 42, 'bbb222')).toBeNull();
-    expect(findInProgressLock(comments, TEST_BOT, 42, 'aaa111')).toEqual(lock);
-    expect(findInProgressLock(comments, TEST_BOT, 42)).toEqual(lock);
-  });
-
-  it('ignores the current run\'s own in-progress marker (self re-entry)', () => {
-    const comments = [botComment(7, makeInProgressBody(42))];
-
-    expect(findInProgressLock(comments, TEST_BOT, 42)).toBeNull();
-  });
-
-  it('skips comments bearing terminal markers (complete, cancelled)', () => {
-    const comments = [
-      botComment(1, `${makeInProgressBody(101)}\n${REVIEW_COMPLETE_MARKER}`),
-      botComment(2, `${makeInProgressBody(102)}\n${CANCELLED_MARKER}`),
-    ];
-
-    expect(findInProgressLock(comments, TEST_BOT, 42)).toBeNull();
-  });
-
-  it('skips comments without a parseable run-id marker (legacy)', () => {
-    const comments = [botComment(1, `${BOT_MARKER}\n**Review in progress**`)];
-
-    expect(findInProgressLock(comments, TEST_BOT, 42)).toBeNull();
-  });
-
-  it('skips comments that are not from the bot identity', () => {
-    const comments = [
-      makeComment(1, makeInProgressBody(888), 'human', 'User', '2026-01-01T00:00:00Z'),
-      makeComment(2, makeInProgressBody(999), 'github-actions[bot]', 'Bot', '2026-01-01T00:00:00Z'),
-    ];
-
-    expect(findInProgressLock(comments, CUSTOM_APP_BOT, 42)).toBeNull();
-    expect(findInProgressLock(comments, TEST_BOT, 42)).toEqual({ runId: 999, updatedAt: '2026-01-01T00:00:00Z', commentId: 2 });
-  });
-
-  it('returns the first (most recent) lock when multiple in-progress markers exist', () => {
-    const comments = [
-      botComment(20, makeInProgressBody(200), '2026-05-22T12:05:00Z'),
-      botComment(10, makeInProgressBody(100), '2026-05-22T11:55:00Z'),
-    ];
-
-    expect(findInProgressLock(comments, TEST_BOT, 42)).toEqual({ runId: 200, updatedAt: '2026-05-22T12:05:00Z', commentId: 20 });
-  });
-});
-
-describe('isLockExpired', () => {
-  const now = new Date('2026-05-22T12:00:00Z');
-
-  it('returns false when the comment was updated within the TTL window', () => {
-    expect(isLockExpired('2026-05-22T11:55:00Z', 600, now)).toBe(false);
-  });
-
-  it('returns true when the comment was updated more than TTL seconds ago (TTL expiry)', () => {
-    expect(isLockExpired('2026-05-22T11:40:00Z', 600, now)).toBe(true);
-  });
-
-  it('treats an unparseable timestamp as expired', () => {
-    expect(isLockExpired('not-a-date', 600, now)).toBe(true);
-  });
-
-  it('returns false for a fresh comment when TTL is zero only when ages match exactly', () => {
-    expect(isLockExpired('2026-05-22T12:00:00Z', 0, now)).toBe(false);
-    expect(isLockExpired('2026-05-22T11:59:59Z', 0, now)).toBe(true);
   });
 });
 

@@ -1,4 +1,4 @@
-import { applyBaseReviewConfig, DEFAULT_CONFIG, loadConfig, loadConfigFromContent, loadConfigFromFile, loadReviewConfig, loadStaticAnalysisConfig, matchSkipRule, resolveFallbackModel, resolveMemoryRepo, resolveModel, resolvePairModel, reviewFloorErrors, sanitizeForkConfig } from './config';
+import { applyBaseReviewConfig, DEFAULT_CONFIG, loadConfig, loadConfigFromContent, loadReviewConfig, loadStaticAnalysisConfig, resolveFallbackModel, resolveMemoryRepo, resolveModel, resolvePairModel, reviewFloorErrors, sanitizeForkConfig } from './config';
 import { ReviewConfig } from './types';
 
 // Suppress @actions/core output during tests
@@ -8,10 +8,7 @@ jest.mock('@actions/core', () => ({
   error: jest.fn(),
 }));
 
-jest.mock('fs');
-
 import * as core from '@actions/core';
-import * as fs from 'fs';
 
 describe('config', () => {
   beforeEach(() => {
@@ -294,9 +291,7 @@ describe('config', () => {
     });
 
     it('fails the PR that adds a floor class routed below the floor in its own config file', () => {
-      jest.mocked(fs.existsSync).mockReturnValue(true);
-      jest.mocked(fs.readFileSync).mockReturnValue('review:\n  routing:\n    security: solo\n');
-      expect(() => loadConfigFromFile('/repo/.manki.yml')).toThrow('routes the `security` floor class to the `solo` group');
+      expect(() => loadConfigFromContent('review:\n  routing:\n    security: solo\n', '.manki.yml')).toThrow('routes the `security` floor class to the `solo` group');
     });
 
     it('applies the base block, keeps two reviewer models, and falls back to the built-ins on a base floor miss', () => {
@@ -318,34 +313,10 @@ describe('config', () => {
       expect([missed.source, missed.config.review]).toEqual(['base_invalid', undefined]);
     });
 
-    it('takes the skip rules from the base branch only, and none from a base whose rules are invalid', () => {
+    it('loads and validates the skip rules', () => {
       expect(DEFAULT_CONFIG).toEqual(expect.objectContaining({ skip_labels: [], skip_authors: [], skip_branches: [] }));
-      const base = loadReviewConfig('skip_authors: ["dependabot[bot]"]\nskip_branches: ["renovate/**"]\n');
-      expect(base.skip).toEqual({ skip_labels: [], skip_authors: ['dependabot[bot]'], skip_branches: ['renovate/**'] });
-
-      const head = loadConfigFromContent('skip_labels: ["wip"]\nskip_authors: ["me"]\n');
-      expect(head.skip_labels).toEqual(['wip']);
-      const { config } = applyBaseReviewConfig(head, base);
-      expect([config.skip_labels, config.skip_authors, config.skip_branches]).toEqual([[], ['dependabot[bot]'], ['renovate/**']]);
-      expect(applyBaseReviewConfig(head, { source: 'base_unreadable' }).config).toEqual(expect.objectContaining({ skip_labels: [], skip_authors: [], skip_branches: [] }));
-
-      expect(loadReviewConfig('skip_labels: "deps"\n').skip).toBeUndefined();
-      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Invalid skip rules in .manki.yml on the base branch, skipping no PR'));
+      expect(loadConfigFromContent('skip_labels: ["wip"]\nskip_authors: ["me"]\n')).toEqual(expect.objectContaining({ skip_labels: ['wip'], skip_authors: ['me'] }));
       expect(() => loadConfigFromContent('skip_branches: ["", "main"]\n')).toThrow('`skip_branches` must be an array of non-empty strings');
-    });
-
-    it('matches a PR by label and author case-insensitively and by head branch glob, labels and branches only outside forks', () => {
-      const config = { ...DEFAULT_CONFIG, skip_labels: ['Dependencies'], skip_authors: ['Dependabot[bot]'], skip_branches: ['renovate/**'] };
-      const pr = { labels: [], author: 'someone', branch: 'feature/x', fromFork: false };
-      expect(matchSkipRule(config, pr)).toBeUndefined();
-      expect(matchSkipRule(config, { ...pr, labels: ['bug', 'dependencies'] })).toBe('label "dependencies"');
-      expect(matchSkipRule(config, { ...pr, labels: ['dependencies'], fromFork: true })).toBeUndefined();
-      expect(matchSkipRule(config, { ...pr, author: 'dependabot[bot]' })).toBe('author dependabot[bot]');
-      expect(matchSkipRule(config, { ...pr, author: 'dependabot[bot]', sender: 'dependabot[bot]' })).toBe('author dependabot[bot]');
-      expect(matchSkipRule(config, { ...pr, author: 'dependabot[bot]', sender: 'alice' })).toBeUndefined();
-      expect(matchSkipRule(config, { ...pr, branch: 'renovate/npm-yaml-2.x' })).toBe('branch renovate/npm-yaml-2.x');
-      expect(matchSkipRule(config, { ...pr, branch: 'renovate/npm-yaml-2.x', fromFork: true })).toBeUndefined();
-      expect(matchSkipRule(DEFAULT_CONFIG, { labels: ['dependencies'], author: 'dependabot[bot]', branch: 'renovate/x', fromFork: false })).toBeUndefined();
     });
   });
 
@@ -692,38 +663,6 @@ models:
     it('throws on non-number review_passes', () => {
       expect(() => loadConfigFromContent('review_passes: "three"')).toThrow('Invalid config');
     });
-
-    it('throws on non-number concurrency_lock_ttl_seconds', () => {
-      expect(() => loadConfigFromContent('concurrency_lock_ttl_seconds: "fast"'))
-        .toThrow(/concurrency_lock_ttl_seconds/);
-      expect(() => loadConfigFromContent('concurrency_lock_ttl_seconds: "fast"'))
-        .toThrow(/3600/);
-    });
-
-    it('throws on non-finite concurrency_lock_ttl_seconds (Infinity)', () => {
-      expect(() => loadConfigFromContent('concurrency_lock_ttl_seconds: .inf'))
-        .toThrow(/concurrency_lock_ttl_seconds/);
-    });
-
-    it('throws on non-finite concurrency_lock_ttl_seconds (NaN)', () => {
-      expect(() => loadConfigFromContent('concurrency_lock_ttl_seconds: .nan'))
-        .toThrow(/concurrency_lock_ttl_seconds/);
-    });
-
-    it('throws on negative concurrency_lock_ttl_seconds', () => {
-      expect(() => loadConfigFromContent('concurrency_lock_ttl_seconds: -1'))
-        .toThrow(/concurrency_lock_ttl_seconds/);
-    });
-
-    it('throws on concurrency_lock_ttl_seconds exceeding 3600', () => {
-      expect(() => loadConfigFromContent('concurrency_lock_ttl_seconds: 3601'))
-        .toThrow(/concurrency_lock_ttl_seconds/);
-    });
-
-    it('accepts valid concurrency_lock_ttl_seconds', () => {
-      const config = loadConfigFromContent('concurrency_lock_ttl_seconds: 300');
-      expect(config.concurrency_lock_ttl_seconds).toBe(300);
-    });
   });
 
   describe('resolveModel', () => {
@@ -894,52 +833,6 @@ models:
     it('keeps default exclude_paths when user supplies an empty array', () => {
       const config = loadConfigFromContent('exclude_paths: []');
       expect(config.exclude_paths).toEqual(DEFAULT_CONFIG.exclude_paths);
-    });
-  });
-
-  describe('loadConfigFromFile', () => {
-    beforeEach(() => jest.resetAllMocks());
-
-    it('returns defaults when file does not exist', () => {
-      jest.spyOn(fs, 'existsSync').mockReturnValue(false);
-      const config = loadConfigFromFile('/repo/.manki.yml');
-      expect(config).toEqual(DEFAULT_CONFIG);
-      expect(core.info).toHaveBeenCalledWith(expect.stringContaining('Config file not found'));
-    });
-
-    it('parses and returns config when file exists', () => {
-      jest.spyOn(fs, 'existsSync').mockReturnValue(true);
-      jest.spyOn(fs, 'readFileSync').mockReturnValue('max_diff_lines: 9999\n');
-      const config = loadConfigFromFile('/repo/.manki.yml');
-      expect(config.max_diff_lines).toBe(9999);
-    });
-
-    it('throws with the file path when the file has invalid YAML', () => {
-      jest.spyOn(fs, 'existsSync').mockReturnValue(true);
-      jest.spyOn(fs, 'readFileSync').mockReturnValue('auto_approve: [false\n');
-      expect(() => loadConfigFromFile('/repo/.manki.yml')).toThrow(/^Invalid YAML in \/repo\/\.manki\.yml: /);
-    });
-
-    it('falls back to defaults and warns on I/O error', () => {
-      jest.spyOn(fs, 'existsSync').mockReturnValue(true);
-      jest.spyOn(fs, 'readFileSync').mockImplementation(() => {
-        const err = new Error('Permission denied') as NodeJS.ErrnoException;
-        err.code = 'EACCES';
-        throw err;
-      });
-      const config = loadConfigFromFile('/repo/.manki.yml');
-      expect(config).toEqual(DEFAULT_CONFIG);
-      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Failed to read config file'));
-    });
-
-    it('falls back to defaults and warns on disk error', () => {
-      jest.spyOn(fs, 'existsSync').mockReturnValue(true);
-      jest.spyOn(fs, 'readFileSync').mockImplementation(() => {
-        throw new Error('EIO: input/output error');
-      });
-      const config = loadConfigFromFile('/repo/.manki.yml');
-      expect(config).toEqual(DEFAULT_CONFIG);
-      expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Failed to read config file'));
     });
   });
 

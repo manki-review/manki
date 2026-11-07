@@ -16,7 +16,7 @@ export { sanitizeLogOutput, STALE_TIMEOUT_MS };
 const execFileAsync = promisify(execFile);
 
 // Pinned because a future release makes `--bare` the default for `-p`, and bare mode never reads
-// `CLAUDE_CODE_OAUTH_TOKEN`. Keep this in sync with the install step in `.github/workflows/manki-dispatch.yml`.
+// `CLAUDE_CODE_OAUTH_TOKEN`. Keep this in sync with the install step in `.github/workflows/manki.yml`.
 export const CLAUDE_CLI_VERSION = '2.1.318';
 
 export function buildAnthropicAuth(oauthToken: string, apiKey: string): AnthropicAuth {

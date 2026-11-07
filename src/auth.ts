@@ -169,25 +169,24 @@ function modesOf(items: unknown, keep: (item: Record<string, unknown>) => boolea
 
 /**
  * Reads the coordinator's state of PR `prNumber` from the token service, with the modes of run `runId`.
- * Returns `null` when the run has no OIDC token or the service has no state to give.
+ * Returns `null` with a warning when the run has no OIDC token or the service gives no state.
  */
 export async function fetchPrState(owner: string, repo: string, prNumber: number, runId: number): Promise<PrState | null> {
   try {
     const response = await postToTokenService(new URL('state', tokenServiceUrl()).href, { owner, repo, pr: prNumber });
-    if (!response) return null;
-    if (!response.ok) {
-      core.info(`The token service has no PR state for #${prNumber} (${response.status})`);
+    if (!response?.ok) {
+      core.warning(`The token service gave no PR state for #${prNumber} (${response ? response.status : 'no OIDC token'}), reviewing as not paused`);
       return null;
     }
     const data = response.data as Record<string, unknown> | null;
     const settings = data?.settings as Record<string, unknown> | undefined;
     return {
-      ...(settings && typeof settings.paused === 'boolean' && { settings: { paused: settings.paused } }),
+      settings: { paused: settings?.paused === true },
       runModes: modesOf(data?.active, item => item.run_id === runId),
       queuedModes: modesOf(data?.queue, () => true),
     };
   } catch (error) {
-    core.warning(`Could not read the PR state from the token service: ${error}`);
+    core.warning(`Could not read the PR state from the token service, reviewing as not paused: ${error}`);
     return null;
   }
 }

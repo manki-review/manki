@@ -230,11 +230,11 @@ describe('fetchPrState', () => {
     expect(JSON.parse(init.body)).toEqual({ owner: OWNER, repo: REPO, pr: 12 });
   });
 
-  it('reads the state next to a custom token URL, and leaves out settings a Worker does not send', async () => {
+  it('reads the state next to a custom token URL, and counts settings that are not a boolean pause as not paused', async () => {
     mockGetInput.mockImplementation((name: string) => (name === 'manki_token_url' ? 'https://custom.example.com/api/token' : ''));
     mockFetch(async () => Response.json({ active: [], queue: [], settings: { paused: 'yes' } }));
 
-    expect(await fetchPrState(OWNER, REPO, 12, 7)).toEqual({ runModes: new Set(), queuedModes: new Set() });
+    expect(await fetchPrState(OWNER, REPO, 12, 7)).toEqual({ settings: { paused: false }, runModes: new Set(), queuedModes: new Set() });
     expect((global.fetch as jest.Mock).mock.calls[0][0]).toBe('https://custom.example.com/api/state');
   });
 
@@ -243,9 +243,11 @@ describe('fetchPrState', () => {
     ['the service has no `/state`', () => mockFetch(async () => new Response('Not Found', { status: 404 }))],
     ['the request fails', () => mockFetch(async () => { throw new Error('network down'); })],
     ['the reply is not JSON', () => mockFetch(async () => new Response('oops', { status: 200 }))],
-  ])('returns null when %s', async (_case, arrange) => {
+  ])('returns null with one warning when %s', async (_case, arrange) => {
+    jest.mocked(core.warning).mockClear();
     arrange();
     expect(await fetchPrState(OWNER, REPO, 12, 7)).toBeNull();
+    expect(core.warning).toHaveBeenCalledTimes(1);
   });
 
   it('gives up on a reply whose body never arrives', async () => {

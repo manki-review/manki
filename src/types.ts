@@ -624,13 +624,6 @@ export interface ReviewConfig {
      */
     fix_rate?: boolean;
   };
-  /**
-   * TTL (in seconds) for the in-app concurrent-submission lock. When another
-   * Manki run has posted an in-progress marker comment that was
-   * updated within this window, the current run bails before any LLM call.
-   * Acts as defense in depth on top of the workflow-level concurrency group.
-   */
-  concurrency_lock_ttl_seconds?: number;
 }
 
 export interface DiffFile {
@@ -1015,21 +1008,8 @@ export interface RoundCap {
 }
 
 /** Options forwarded from the dispatch site into `runFullReview`. */
-/** What the skip rules match on a PR. */
-export interface SkipFacts {
-  labels: string[];
-  author?: string;
-  /** Who caused the event, such as who pushed on `synchronize`. */
-  sender?: string;
-  branch: string;
-  /** Whether the head branch lives in a fork, where anyone can pick its name. */
-  fromFork: boolean;
-}
-
 export interface FullReviewOptions {
   prAuthorLogin?: string;
-  /** Set on automatic reviews of PR events, so the base branch's skip rules apply. */
-  skipFacts?: SkipFacts;
   /** Whether the PR is a draft. A draft round never approves and does not count toward the round cap. */
   draft?: boolean;
   forceReview?: boolean;
@@ -1037,8 +1017,8 @@ export interface FullReviewOptions {
   bypassHint?: 'force_review' | 'skip_cap' | 'manual_review_command';
   trigger?: RoundTrigger;
   headRepoFullName?: string;
-  /** The PR's coordinator state, set once the Worker handles the settings boxes. Without it, notices are separate comments. */
-  settings?: SettingsState;
+  /** The PR's coordinator state. */
+  settings?: PrState;
   /** Reviews the whole PR as new, so every finding counts as new code. */
   fullReview?: boolean;
   /** A Deeper review: two finders on every group, each one effort level higher. */
@@ -1050,16 +1030,13 @@ export type RunMode = 'full' | 'deeper' | 'draft' | 'force';
 
 /** What the PR coordinator says about a PR. */
 export interface PrState {
-  /** The PR's sticky settings. Only a Worker that handles the settings boxes sends them. */
-  settings?: { paused: boolean };
+  /** The PR's sticky settings. */
+  settings: { paused: boolean };
   /** The modes of this run. */
   runModes: ReadonlySet<RunMode>;
   /** The modes of the work still queued for the PR. */
   queuedModes: ReadonlySet<RunMode>;
 }
-
-/** The coordinator state of a PR whose Worker handles the settings boxes. */
-export type SettingsState = PrState & { settings: { paused: boolean } };
 
 /** Model spec each pipeline stage runs on. */
 export interface ReviewModels {

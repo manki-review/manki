@@ -137,41 +137,31 @@
             <div class="install-block">
               <button class="copy-btn" data-copy="#install-code">Copy</button>
               <pre><code id="install-code">name: Manki
+run-name: 'Manki ${{ inputs.event }}.${{ inputs.action }} on #${{ inputs.pr }} (${{ inputs.delivery_id }})'
 
 on:
-  pull_request:
-    types: [opened, synchronize, ready_for_review, closed]
-  pull_request_review:
-    types: [submitted, dismissed]
-  issue_comment:
-    types: [created, edited]
-  pull_request_review_comment:
-    types: [created]
+  workflow_dispatch:
+    inputs:
+      event: { type: string, required: true }
+      action: { type: string, required: true }
+      pr: { type: string, required: true }
+      head_sha: { type: string, required: false }
+      comment_id: { type: string, required: false }
+      review_id: { type: string, required: false }
+      delivery_id: { type: string, required: false }
 
 permissions:
   contents: read          # read repo files and diffs
   pull-requests: write    # post review comments and approvals
-  issues: write           # create nit issues when configured
+  issues: write           # post progress comments on PRs
   id-token: write         # OIDC token for GitHub App identity
   actions: read           # verify workflow run is legitimate
 
 jobs:
   review:
-    if: &gt;-
-      github.actor != 'manki-review[bot]'
-      &amp;&amp; github.event.sender.type != 'Bot'
-      &amp;&amp; github.event.review.user.type != 'Bot'
-      &amp;&amp; (github.event.action != 'closed' || github.event.pull_request.merged)
-      &amp;&amp; (github.event_name != 'issue_comment' || contains(github.event.comment.body, '@manki') || contains(github.event.comment.body, '/manki') || contains(github.event.comment.body, '- [x] Force review'))
-      &amp;&amp; (github.event_name != 'issue_comment' || !contains(fromJSON('["FIRST_TIMER","FIRST_TIME_CONTRIBUTOR"]'), github.event.comment.author_association))
-      &amp;&amp; (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)
-    concurrency:
-      group: manki-${{ (github.event_name == 'pull_request' || (github.event_name == 'issue_comment' &amp;&amp; (contains(github.event.comment.body, 'manki review') || contains(github.event.comment.body, '- [x] Force review')))) &amp;&amp; 'review' || 'reply' }}-${{ github.event.pull_request.number || github.event.issue.number }}
-      queue: max
     timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
@@ -235,7 +225,7 @@ jobs:
         </details>
         <details>
           <summary>Does every comment start a workflow run?</summary>
-          <div class="faq-answer">Not in webhook mode, a preview in 6.1 for the repositories the Manki service has allowlisted. The Manki App receives the events, drops the ones Manki ignores, and starts your dispatch workflow only for the events it acts on, in order for each PR. See <a href="https://github.com/manki-review/manki/blob/main/docs/getting-started.md#webhook-mode-opt-in-new-in-61">webhook mode</a> in the setup guide.</div>
+          <div class="faq-answer">No. The Manki App receives the events, drops the ones Manki ignores, and starts your Manki workflow only for the events it acts on, in order for each PR. See <a href="https://github.com/manki-review/manki/blob/main/docs/getting-started.md#step-3-add-the-workflow">Step 3</a> in the setup guide.</div>
         </details>
         <details>
           <summary>Can I customize the review?</summary>

@@ -51,8 +51,8 @@ The app requires these permissions:
 | Contents | Read | Read repository files and diffs |
 | Pull requests | Read and write | Post review comments and approvals |
 | Issues | Read and write | Post progress comments and app warnings; read linked issues for review context |
-| Actions | Read and write | [Webhook mode](#webhook-mode-opt-in-new-in-61): start the dispatch workflow and follow its runs. Set on the App by its maintainers, so you only approve it |
-| Checks | Read and write | [Webhook mode](#webhook-mode-opt-in-new-in-61): show a `Manki` check on the PR. Set on the App by its maintainers, so you only approve it |
+| Actions | Read and write | Start the Manki workflow and follow its runs (see [What the Manki App needs](#what-the-manki-app-needs)). Set on the App by its maintainers, so you only approve it |
+| Checks | Read and write | Show a `Manki` check on the PR. Set on the App by its maintainers, so you only approve it |
 
 ### Your own GitHub App
 
@@ -169,20 +169,26 @@ Runs reviews through the Gemini CLI binary, signed in with Google. Effort tiers 
 
 ## Step 3: Add the Workflow
 
-Create `.github/workflows/manki.yml`:
+GitHub sends your repository's events to the Manki GitHub App. The Manki service drops the ones Manki ignores, puts the rest in order for each PR, and starts a run of your Manki workflow for each event Manki acts on. The run uses your runner and your secrets. The service only orders and starts runs: every decision about a review, a reply or an approval stays in the action.
+
+The service only handles repositories that its operator has added to an allowlist (`WEBHOOK_REPOS` in the token service). It ignores the events of every other repository, so ask the Manki maintainers to add yours.
+
+Create `.github/workflows/manki.yml` on the default branch:
 
 ```yaml
 name: Manki
+run-name: 'Manki ${{ inputs.event }}.${{ inputs.action }} on #${{ inputs.pr }} (${{ inputs.delivery_id }})'
 
 on:
-  pull_request:
-    types: [opened, synchronize, ready_for_review, closed]
-  pull_request_review:
-    types: [submitted, dismissed]
-  issue_comment:
-    types: [created, edited]
-  pull_request_review_comment:
-    types: [created]
+  workflow_dispatch:
+    inputs:
+      event: { type: string, required: true }
+      action: { type: string, required: true }
+      pr: { type: string, required: true }
+      head_sha: { type: string, required: false }
+      comment_id: { type: string, required: false }
+      review_id: { type: string, required: false }
+      delivery_id: { type: string, required: false }
 
 permissions:
   contents: read          # read repo files and diffs
@@ -195,21 +201,9 @@ permissions:
 
 jobs:
   review:
-    if: >-
-      github.actor != 'manki-review[bot]'
-      && github.event.sender.type != 'Bot'
-      && github.event.review.user.type != 'Bot'
-      && (github.event.action != 'closed' || github.event.pull_request.merged)
-      && (github.event_name != 'issue_comment' || contains(github.event.comment.body, '@manki') || contains(github.event.comment.body, '/manki') || contains(github.event.comment.body, '- [x] Force review'))
-      && (github.event_name != 'issue_comment' || !contains(fromJSON('["FIRST_TIMER","FIRST_TIME_CONTRIBUTOR"]'), github.event.comment.author_association))
-      && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)
-    concurrency:
-      group: manki-${{ (github.event_name == 'pull_request' || (github.event_name == 'issue_comment' && (contains(github.event.comment.body, 'manki review') || contains(github.event.comment.body, '- [x] Force review')))) && 'review' || 'reply' }}-${{ github.event.pull_request.number || github.event.issue.number }}
-      queue: max
     timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
@@ -219,6 +213,8 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           # memory_repo_token: ${{ secrets.REVIEW_MEMORY_TOKEN }}  # Only if the App can't reach the memory repo
 ```
+
+The job has no `if` and no `concurrency` block, since the service filters and orders the events. It needs no checkout: Manki reads the PR's `.manki.yml` at the head commit through the API. The service finds the workflow by its `workflow_dispatch` inputs, so the file name is free. No other workflow may run Manki on events such as `pull_request`: while one is on the default branch, the service starts nothing for the repository and logs why, since each event would otherwise run twice. Manki fails a run that the service did not start.
 
 #### Workflow examples per provider
 
@@ -297,7 +293,7 @@ models:
 
 ### Action inputs
 
-The workflow above uses the only inputs most setups need: a provider credential (e.g. `anthropic_api_key`, `openai_api_key`, `gemini_api_key`, or one of the OAuth equivalents) and optionally `memory_repo_token`. `github_token` defaults to the workflow token, so set it only to post with a different token. To point at a config file outside the repo root, set `config_path` (default: `.manki.yml`). To post as [your own GitHub App](#your-own-github-app), set `github_app_id` and `github_app_private_key`. `manki_token_url` points at a different token service. To tune the in-app concurrent-submission lock TTL (defense in depth against simultaneous-start races on top of the workflow `concurrency` group), set `concurrency_lock_ttl_seconds` (default: 600). See [`action.yml`](../action.yml) for the full input reference.
+The workflow above uses the only inputs most setups need: a provider credential (e.g. `anthropic_api_key`, `openai_api_key`, `gemini_api_key`, or one of the OAuth equivalents) and optionally `memory_repo_token`. `github_token` defaults to the workflow token, so set it only to post with a different token. To point at a config file outside the repo root, set `config_path` (default: `.manki.yml`). To post as [your own GitHub App](#your-own-github-app), set `github_app_id` and `github_app_private_key`. `manki_token_url` points at a different token service. See [`action.yml`](../action.yml) for the full input reference.
 
 ### Action outputs
 
@@ -349,60 +345,47 @@ Releases before the committed `dist/` fix (`v5.0.0`, `v5.0.1`) only work through
 # Label PRs that have any blocker-severity findings
 - name: Label blocking PRs
   if: fromJSON(steps.manki.outputs.severity_counts).blocker > 0
-  run: gh pr edit ${{ github.event.number }} --add-label blocking-findings
+  run: gh pr edit ${{ inputs.pr }} --add-label blocking-findings
   env:
     GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
 You can also forward `severity_counts` or `findings_json` to a metrics sink (Slack, Datadog, a dashboard) in a follow-up step.
 
-### Event triggers explained
+### Events Manki handles
 
 | Event | Purpose |
 |-------|---------|
 | `pull_request: [opened, synchronize]` | Auto-review on PR open and new pushes |
 | `pull_request: [ready_for_review]` | Auto-review when a draft PR is marked ready (head SHA unchanged, so the planner sees the same diff a `synchronize` would have produced). Drafts get no automatic review unless `drafts: review` is set. A draft review never approves: a clean round is posted as a comment saying the approval is held until the PR is ready, and it does not count toward the round cap |
 | `pull_request: [closed]` | On merge, records how many posted findings were fixed, dismissed or left untouched (see `metrics.fix_rate` in [Configuration](configuration.md)). Closing without merging does nothing |
-| `issue_comment: [created, edited]` | `/manki` commands on PRs and issues. PR-only commands: `review`, `check`, `explain`. Available on both: `help`, `dismiss`, `remember`, `forget`, and free-form questions. |
+| `issue_comment: [created, edited]` | `/manki` commands on PRs and issues, and ticks in the settings block. PR-only commands: `review`, `check`, `explain`. Available on both: `help`, `dismiss`, `remember`, `forget`, and free-form questions. |
 | `pull_request_review_comment: [created]` | Replies to review comment threads |
 | `pull_request_review: [submitted, dismissed]` | Auto-approve check when reviews change state |
+| `pull_request_review_thread: [resolved, unresolved]` | Auto-approve check when someone resolves the last open thread by hand |
 
-The job `if` repeats the checks Manki makes when it starts, so GitHub skips the job without starting a runner for an event Manki would ignore anyway:
+The service starts no run for anything Manki or another bot did, a PR closed without merging, or a comment that doesn't mention `@manki` or `/manki`.
 
-- anything Manki or another bot did, such as a coverage bot's PR comment,
-- a review event on a bot's review, such as a push dismissing Manki's stale review,
-- a PR closed without merging,
-- a comment that doesn't mention `@manki` or `/manki` and doesn't tick a Force review box,
-- any event of a PR from a fork (see [Pull requests from forks](#pull-requests-from-forks)).
+Manki itself decides who can start it from a comment, on a PR, an issue or a review thread. A comment counts when its author has write access to the repository. Manki trusts an owner, member or collaborator as the event reports them, and asks the GitHub API about anyone else, with the workflow's own `GITHUB_TOKEN`. GitHub reports an organization member who keeps the membership private as `CONTRIBUTOR` or `NONE`, and the API still shows their access. Anyone can comment on a public repository, so Manki checks the commenter before it fetches the App token, uses a provider credential or calls a model. It refuses without posting anything, and the run ends at once. A tick in the settings block edits Manki's own comment, so Manki checks the person who ticked, who needs write access.
 
-Manki keeps the checks above in its code, so a workflow with a shorter `if` still works. It just starts a runner that exits at once. A skipped job shows as a skipped `review` check, which GitHub counts as passing for a required check.
+### What the service does
 
-Manki itself decides who can start it from a comment, on a PR, an issue or a review thread. A comment counts when its author has write access to the repository. Manki trusts an owner, member or collaborator as the event reports them, and asks the GitHub API about anyone else, with the workflow's own `GITHUB_TOKEN`. That API call is why the check lives in Manki and not in the `if`, which cannot make one: GitHub reports an organization member who keeps the membership private as `CONTRIBUTOR` or `NONE`, and the API still shows their access. Anyone can comment on a public repository, so Manki checks the commenter before it fetches the App token, uses a provider credential or calls a model. It refuses without posting anything, and the run ends at once. The `if` only skips comments from first-time contributors, who are never members. A tick of a Force review box edits Manki's own comment, so Manki checks the person who ticked, who needs write access. If you run Manki under your own GitHub App, replace `manki-review[bot]` with your app's bot login in the `github.actor` check.
-
-### Concurrency
-
-The `concurrency` block gives each PR two queues. Runs in the same queue never overlap, and nothing cancels them from outside:
-
-- The review queue, `manki-review-<pr>`, takes pushes and the other `pull_request` events, review commands, and ticks of the Force review box.
-- The reply queue, `manki-reply-<pr>`, takes thread replies, review state changes, and every other command.
-
-Both use `queue: max`, so GitHub holds up to 100 waiting runs per queue and starts them in order. Without it, a group holds a single waiting run, and GitHub cancels it when a newer run queues: a thread reply would silently drop a push review that was waiting to start. `cancel-in-progress` stays off, and GitHub rejects it next to `queue: max` anyway. Earlier setups cancelled a review when a new push arrived, and that kept causing trouble: every cancel left a red check on the PR, and a cancel could land while Manki was posting. A running review now stops by itself instead. It checks the PR head while it works, and when a new commit lands it stops within about 30 seconds, posts no verdict, and marks its progress comment superseded. The next run in the queue then reviews the new head. A run that receives SIGTERM, for example when the job is cancelled, stops writing to the PR.
-
-Replies have their own queue so an answer in a thread never waits behind a full review. The queue is picked from the comment text: a comment containing `manki review` goes to the review queue. A review request phrased another way runs in the reply queue, and the in-app lock described below still stops two reviews of the same commit.
+- **Events run in order.** Each PR has two queues. Reviews, thread replies, `check` and `dismiss` run one at a time in the order they arrived, and several pushes during a review become one review of the newest head. `explain`, `help`, `remember`, `forget` and free questions run one at a time in a second queue beside it, so a question never waits behind a review.
+- **A running review stops by itself on a new push.** It checks the PR head while it works, and when a new commit lands it stops within about 30 seconds, posts no verdict, and marks its progress comment superseded. The next run in the queue then reviews the new head. A run that receives SIGTERM, for example when the job is cancelled, stops writing to the PR.
+- **Every run uses the current version.** The service always starts the workflow on the default branch, so reviews, comment commands and thread replies all run the Manki version pinned there.
+- **A `Manki` check on the PR.** Every run belongs to the default branch, so its job shows on no PR. Manki creates a check named `Manki` on the PR head instead. It shows in progress during a review, links to the run, and ends with the result: success when Manki approves, failure when it requests changes or needs a human, or when the review is incomplete or the run fails, neutral when it holds its approval because the PR conflicts, cancelled when a newer push replaces the review, and action required when the PR is too big for an automatic review or for any review, or automatic review is paused. This needs the App's **Checks: read and write** permission. Until your installation approves it, the PR shows no Manki check and each review logs a warning, so don't require one before then. Once it shows, you can require the `Manki` check in branch protection.
+- **Resolving a thread can approve the PR.** Resolving the last open thread by hand runs the auto-approve check at once.
+- **Missed events come back.** Every 5 minutes the service retries the deliveries GitHub failed to hand over and queues a review for any open, non-draft PR from your repository whose head has no Manki review yet.
 
 `timeout-minutes: 30` ends a run that hangs, for example on a model call that never returns. GitHub's default is 6 hours, and the PR's queue would wait behind it for that long. A full review usually takes a few minutes.
 
-GitHub Actions concurrency is best-effort, not atomic. Two events dispatched within the same scheduling window can transition to in-progress before either reaches the queue check, in which case both runs proceed concurrently. As defense in depth, the action runs an in-app lock at the review pipeline entry point: it scans its own existing comments for an "in progress" marker carrying a different `manki-run-id`, and bails (with a `core.warning`) before any LLM call when one is found within the configurable TTL. Tune the TTL with the `concurrency_lock_ttl_seconds` action input (default 600 seconds). Lowering it makes the lock recover faster from crashed runs that left a stale marker behind. Raising it tolerates longer-running reviews.
-
 ### Pull requests from forks
 
-GitHub gives a workflow run for a PR from a fork no secrets and no OIDC token, and only a read-only `GITHUB_TOKEN`. This holds for the `pull_request`, `pull_request_review` and `pull_request_review_comment` events. Manki would have no model credentials and no permission to post, so the run would fail. The last line of the job `if` skips these events instead. The PR shows a skipped `review` check, and Manki posts nothing.
-
-Comment events are different: GitHub runs `issue_comment` in the base repository, with its secrets. Someone with write access can still ask for a review of a fork PR with a review command in a PR comment, and Manki reviews it like any other PR. Manki ignores a comment from anyone else, including the fork PR's author (see [Event triggers explained](#event-triggers-explained)).
+A push to a PR from a fork starts no review. Someone with write access can still ask for a review of a fork PR with a review command in a PR comment, and Manki reviews it like any other PR. Manki ignores a comment from anyone else, including the fork PR's author (see [Events Manki handles](#events-manki-handles)).
 
 ### Cache access
 
-GitHub gives `issue_comment` runs read-only access to the Actions cache. They can restore the default branch's caches but can't save new ones. The workflow above uses no cache, so this changes nothing for it. If you add one, for example `cache: 'npm'` on `actions/setup-node` to speed up CLI installs, set `cache-mode: read` on the `review` job:
+Every run the service starts belongs to the default branch, so a cache it saved would reach every branch. The workflow above uses no cache, so this changes nothing for it. If you add one, for example `cache: 'npm'` on `actions/setup-node` to speed up CLI installs, set `cache-mode: read` on the `review` job:
 
 ```yaml
 jobs:
@@ -410,92 +393,23 @@ jobs:
     cache-mode: read
 ```
 
-Every Manki run is then read-only on the cache, not only the comment runs. Your CI on the default branch still writes the caches that Manki restores. Note that `cache: 'npm'` needs a lockfile (`package-lock.json`, `npm-shrinkwrap.json` or `yarn.lock`) in your repository.
-
-## Webhook mode (opt-in, new in 6.1)
-
-Webhook mode is a preview in 6.1 and off unless you opt in. The event-driven workflow from Step 3 keeps working unchanged.
-
-The service only handles repositories that its operator has added to an allowlist (`WEBHOOK_REPOS` in the token service). It ignores the events of every other repository, so those keep the event-driven workflow. Webhook mode opens to more repositories once the service has protections against floods of requests.
-
-In the default setup, GitHub starts a workflow run in your repository for every push, comment and review, and the job `if` skips the ones Manki ignores. In webhook mode the Manki GitHub App receives those events instead. The Manki service filters them, puts them in order for each PR, and starts a run of a dispatch-only workflow in your repository for each event Manki acts on. The run uses your runner and your secrets, as before. The service only orders and starts runs: every decision about a review, a reply or an approval stays in the action.
-
-### What changes for you
-
-- **No run for an event Manki ignores.** A comment without a mention, a bot's push or a PR closed without merging never starts a workflow run, so the Actions tab and the PR checks show no skipped runs for them.
-- **Events run in order.** Each PR has two queues. Reviews, thread replies, `check` and `dismiss` run one at a time in the order they arrived, and several pushes during a review become one review of the newest head. `explain`, `help`, `remember`, `forget` and free questions run one at a time in a second queue beside it, so a question never waits behind a review. The service replaces the `concurrency` block.
-- **Every run uses the current version.** The service always starts the workflow on the default branch, so reviews, comment commands and thread replies all run the Manki version pinned there. In the event-driven setup, pushes, reviews and thread replies run the workflow from the PR's merge commit, so a PR that changes the workflow runs its own version for them. PR comments already run the workflow on the default branch.
-- **A `Manki` check on the PR.** In webhook mode every run belongs to the default branch, so its job shows on no PR. Manki creates a check named `Manki` on the PR head instead. It shows in progress during a review, links to the run, and ends with the result: success when Manki approves, failure when it requests changes or needs a human, or when the review is incomplete or the run fails, neutral when it holds its approval because the PR conflicts, cancelled when a newer push replaces the review, and action required when the PR is too big for an automatic review or for any review, or automatic review is paused. This needs the App's **Checks: read and write** permission. Until your installation approves it, the PR shows no Manki check and each review logs a warning, so don't require one before then. Once it shows, you can require the `Manki` check in branch protection.
-- **Resolving a thread can approve the PR.** GitHub Actions cannot start a run when someone resolves a review thread, so in the event-driven setup Manki only approves after a later event. In webhook mode, resolving the last open thread by hand runs the auto-approve check at once.
-- **Missed events come back.** Every 5 minutes the service retries the deliveries GitHub failed to hand over and queues a review for any open, non-draft PR from your repository whose head has no Manki review yet.
-
-Fork PRs work as before: a push to a PR from a fork starts no review, and a review command in a PR comment still reviews it.
+Your CI on the default branch still writes the caches that Manki restores. Note that `cache: 'npm'` needs a lockfile (`package-lock.json`, `npm-shrinkwrap.json` or `yarn.lock`) in your repository.
 
 ### What the Manki App needs
 
-The Manki maintainers set up the App's webhook, the **Actions: read and write** and **Checks: read and write** permissions and the **Workflow run** event once for every installation. The webhook receives the events of every installation, with their payloads such as PR titles, PR bodies and comment text, and the service drops the events of repositories that have not opted in. Actions write lets the App start, cancel and rerun workflow runs in the repositories it is installed on. The service uses it to start `manki-dispatch.yml`, and the Workflow run event tells it within seconds that a run ended, so it can start the next one in that PR's queue. Checks write lets Manki create and update its `Manki` check on your PRs.
+The Manki maintainers set up the App's webhook, the **Actions: read and write** and **Checks: read and write** permissions and the **Workflow run** event once for every installation. The webhook receives the events of every installation, with their payloads such as PR titles, PR bodies and comment text, and the service drops the events of repositories that are not on its allowlist. Actions write lets the App start, cancel and rerun workflow runs in the repositories it is installed on. The service uses it to start your Manki workflow, and the Workflow run event tells it within seconds that a run ended, so it can start the next one in that PR's queue. Checks write lets Manki create and update its `Manki` check on your PRs.
 
-A new App permission only takes effect once each installation approves it. GitHub emails the owner of every installation and shows the request on the App's installation settings, where the owner accepts it. Until then the service cannot start runs in your repositories, so keep the event-driven workflow until you have approved the Actions permission. Without the Checks permission, reviews run as usual and only the `Manki` check is missing.
+A new App permission only takes effect once each installation approves it. GitHub emails the owner of every installation and shows the request on the App's installation settings, where the owner accepts it. Until then the service cannot start runs in your repositories. Without the Checks permission, reviews run as usual and only the `Manki` check is missing.
 
-### Opting in
+### Starting a run by hand
 
-Only opt in once your repository is in the preview. Outside it, removing the event-driven workflow stops all reviews, since the service starts no runs.
-
-Once the installation owner has approved the Actions permission, add `.github/workflows/manki-dispatch.yml` to the default branch:
-
-```yaml
-name: Manki dispatch
-run-name: 'Manki ${{ inputs.event }}.${{ inputs.action }} on #${{ inputs.pr }} (${{ inputs.delivery_id }})'
-
-on:
-  workflow_dispatch:
-    inputs:
-      event: { type: string, required: true }
-      action: { type: string, required: true }
-      pr: { type: string, required: true }
-      head_sha: { type: string, required: false }
-      comment_id: { type: string, required: false }
-      review_id: { type: string, required: false }
-      delivery_id: { type: string, required: false }
-
-permissions:
-  contents: read
-  pull-requests: write
-  issues: write
-  id-token: write
-  actions: read
-
-jobs:
-  review:
-    timeout-minutes: 30
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '24'
-      - name: Manki Review
-        uses: manki-review/manki@v6
-        with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-```
-
-The job has no `if` and no `concurrency` block, since the service filters and orders the events. It needs no checkout: Manki reads the PR's `.manki.yml` at the head commit through the API. The example uses `anthropic_api_key`. Pass the same inputs to the Manki step as in your Step 3 workflow, such as another provider's credential from the [workflow examples per provider](#workflow-examples-per-provider) or `memory_repo_token`, and keep any CLI install steps it has. Otherwise reviews stop once `manki.yml` is gone.
-
-Keep the file name `manki-dispatch.yml`, since the service starts the workflow by that name.
-
-Then delete the event-driven workflow, `.github/workflows/manki.yml`, from the default branch. Webhook mode starts once it is gone. The service only dispatches when the default branch has the dispatch workflow and no event-driven Manki workflow. With both present, it starts nothing for the repository and logs why, while the event-driven workflow keeps handling every event. Otherwise each event would run twice. Doing both in one change works as well.
-
-The inputs carry only the event kind and its ids. Manki reads the PR, comment or review itself and checks that it belongs to the PR, so a dispatch cannot hand it anything else. Anyone with write access can also start the workflow by hand, for example to run a review again:
+The inputs carry only the event kind and its ids. Manki reads the PR, comment or review itself and checks that it belongs to the PR, so a dispatch cannot hand it anything else. Anyone with write access can also start the workflow by hand:
 
 ```bash
-gh workflow run manki-dispatch.yml -f event=pull_request -f action=synchronize -f pr=<number> -f head_sha=<full head SHA>
+gh workflow run manki.yml -f event=pull_request -f action=synchronize -f pr=<number> -f head_sha=<full head SHA>
 ```
 
-A run started by hand is not queued by the service, so it can overlap a dispatched run. The in-app lock described under [Concurrency](#concurrency) still stops two reviews of the same commit.
-
-### Switching back
-
-Put the event-driven workflow from [Step 3](#step-3-add-the-workflow) back on the default branch. From then on the service sees both workflows and starts nothing, and the event-driven workflow takes over at once. Delete `manki-dispatch.yml` afterwards, or keep it to switch again later.
+The service does not queue a run started by hand, so it can overlap a run the service started and review the same commit twice. To review again, prefer a review command or Full review in the settings block.
 
 ## Verification
 
@@ -503,7 +417,7 @@ After setup, create a test PR to verify everything works:
 
 1. Create a branch with a small change
 2. Open a PR
-3. The Manki workflow should trigger automatically
+3. The service should start the Manki workflow
 4. Check the Actions tab for the review run
 5. The PR should receive inline review comments and an APPROVE/REQUEST_CHANGES review
 
@@ -520,23 +434,17 @@ Manki's newest progress comment ends with a settings block. It holds a status li
 | "Failed to post APPROVE review" | Enable "Allow GitHub Actions to create and approve pull requests" in repo settings |
 | Review says "No reviewable files" | Check `exclude_paths` in config -- dotfiles are included by default |
 | Memory not loading | Verify `REVIEW_MEMORY_TOKEN` secret is set and the PAT has Contents read/write on the memory repo |
-| Review doesn't trigger on `/manki review` | The workflow file must exist on the default branch (main) |
+| No run starts | The Manki workflow must be on the default branch and declare the dispatch inputs, no other workflow may run Manki on events, and the repository must be on the service's allowlist (see [Step 3](#step-3-add-the-workflow)) |
 | "above the limit ... for automatic review" | Split the PR, tick Force review to review it in full, or raise `auto_review_max_lines` |
 | "above the limit ... that Manki reviews" | Split the PR, or raise `max_diff_lines` |
-| Auto-approve not working | Check that `auto_approve: true` is set in `.manki.yml` and the `pull_request_review` event trigger is in the workflow |
+| Auto-approve not working | Check that `auto_approve: true` is set in `.manki.yml` |
 | Inline comments land on wrong lines | The judge agent validated line numbers but the diff may have shifted. A blocking finding that is not on a changed line is posted as a comment on its file instead |
 
 ## Known Limitations
 
-### `/manki review` runs action code from main branch
+### Runs use the workflow on the default branch
 
-GitHub Actions runs `issue_comment` triggered workflows from the **default branch** (main), not the PR branch. This means:
-
-- `/manki review` always uses the action code from main -- not from the PR branch
-- If you're developing the action itself and want to test changes, use a direct push to trigger the `pull_request` event instead
-- **The review content is still correct** -- the PR diff is fetched via API regardless of which branch the workflow runs on
-
-This is a GitHub platform limitation that affects every bot built on GitHub Actions. In [webhook mode](#webhook-mode-opt-in-new-in-61) every run uses the workflow on the default branch, so pushes and comments run the same version.
+The service starts every run on the default branch. A PR that changes the Manki workflow or the pinned Manki version only takes effect for its own reviews once it is merged. The review content is still correct: the PR diff and the PR's `.manki.yml` are fetched through the API.
 
 ### Reviews may post duplicate comments across runs
 
@@ -565,5 +473,3 @@ When both are set for a provider, OAuth takes precedence (the action checks the 
 ## Upgrading to 6.1
 
 - **Review memory.** With the manki-review App, 6.1 writes memory with a separate memory token from the token service, which can write only `<owner>/review-memory`. Releases before 6.1 use the App's review token for memory. That token now covers only the reviewed repo, so their memory reads and writes fail. Upgrade to 6.1, or set `memory_repo_token`. A memory repo with any other name needs `memory_repo_token`, or [your own GitHub App](#your-own-github-app).
-- **Comment access.** Copy the job `if` from [Step 3](#step-3-add-the-workflow) into your workflow. The old `if` let only owners, members and collaborators start Manki from a comment, and GitHub reports an organization member with a private membership as neither, so those members were refused. Manki checks the commenter's write access itself in any case, see [Event triggers explained](#event-triggers-explained).
-- **Webhook mode** is a preview in 6.1, open only to some repositories. See [Webhook mode](#webhook-mode-opt-in-new-in-61).

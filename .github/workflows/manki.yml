@@ -1,16 +1,17 @@
-# Not run from here: GitHub only runs workflows under `.github/workflows`. Manki uses `manki-dispatch.yml` instead.
-# The canonical event-driven workflow, checked against the snippets in docs/getting-started.md and docs/index.html.
 name: Manki
+run-name: 'Manki ${{ inputs.event }}.${{ inputs.action }} on #${{ inputs.pr }} (${{ inputs.delivery_id }})'
 
+# The Manki service starts this workflow for each event Manki handles.
 on:
-  pull_request:
-    types: [opened, synchronize, ready_for_review, closed]
-  pull_request_review:
-    types: [submitted, dismissed]
-  issue_comment:
-    types: [created, edited]
-  pull_request_review_comment:
-    types: [created]
+  workflow_dispatch:
+    inputs:
+      event: { type: string, required: true }
+      action: { type: string, required: true }
+      pr: { type: string, required: true }
+      head_sha: { type: string, required: false }
+      comment_id: { type: string, required: false }
+      review_id: { type: string, required: false }
+      delivery_id: { type: string, required: false }
 
 permissions:
   contents: read
@@ -21,23 +22,36 @@ permissions:
 
 jobs:
   review:
-    # Mirrors the entry checks in `run()` in `src/index.ts`. The bot login is `BOT_LOGIN` in `src/github.ts`.
-    if: >-
-      github.actor != 'manki-review[bot]'
-      && github.event.sender.type != 'Bot'
-      && github.event.review.user.type != 'Bot'
-      && (github.event.action != 'closed' || github.event.pull_request.merged)
-      && (github.event_name != 'issue_comment' || contains(github.event.comment.body, '@manki') || contains(github.event.comment.body, '/manki') || contains(github.event.comment.body, '- [x] Force review'))
-      && (github.event_name != 'issue_comment' || !contains(fromJSON('["FIRST_TIMER","FIRST_TIME_CONTRIBUTOR"]'), github.event.comment.author_association))
-      && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)
-    concurrency:
-      group: manki-${{ (github.event_name == 'pull_request' || (github.event_name == 'issue_comment' && (contains(github.event.comment.body, 'manki review') || contains(github.event.comment.body, '- [x] Force review')))) && 'review' || 'reply' }}-${{ github.event.pull_request.number || github.event.issue.number }}
-      queue: max
     timeout-minutes: 30
+    # A dispatched run counts as the default branch, so a cache it saved would reach every branch.
     cache-mode: read
     runs-on: ubuntu-latest
     steps:
+      # Manki reviews its own PRs with their own build of the action.
+      # Only a head in this repository is built. A fork's head, or an issue, gets the default branch.
+      - name: Find the commit to build
+        id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ inputs.pr }}
+        run: |
+          sha="$GITHUB_SHA"
+          if [[ "$PR" =~ ^[1-9][0-9]{0,15}$ ]]; then
+            if pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" 2>"$RUNNER_TEMP/pr-error"); then
+              if [ "$(jq -r '.head.repo.full_name' <<<"$pr")" = "$GITHUB_REPOSITORY" ]; then
+                sha=$(jq -r '.head.sha' <<<"$pr")
+              fi
+            elif ! grep -q 'HTTP 404' "$RUNNER_TEMP/pr-error"; then
+              cat "$RUNNER_TEMP/pr-error" >&2
+              exit 1
+            fi
+          fi
+          echo "Building $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.head.outputs.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
@@ -74,4 +88,3 @@ jobs:
           openai_api_key: ${{ secrets.OPENAI_API_KEY }}
           gemini_oauth_token: ${{ secrets.GEMINI_OAUTH_TOKEN }}
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
-          memory_repo_token: ${{ secrets.REVIEW_MEMORY_TOKEN }}

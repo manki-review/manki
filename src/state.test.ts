@@ -2,7 +2,7 @@ import * as core from '@actions/core';
 import { areAllFindingsResolved, fetchBotReviewThreads, checkAndAutoApprove, explainUnreviewedHead, holdApproval, pauseState, reopenAuthorResolvedThreads, BOT_MARKER, ReviewThread } from './state';
 import { PreviousFinding, REOPENED_MARKER, securityOverrideMarker } from './recap';
 import { LAST_PAGE, makeRoundContext, paginateSinglePage, TEST_BOT } from './test-utils';
-import { formatFindingComment, isReviewInProgress } from './github';
+import { formatFindingComment } from './github';
 import { formatReviewRecord } from './review-record';
 import { DEFAULT_CONFIG } from './config';
 import { Finding } from './types';
@@ -10,8 +10,6 @@ import { Finding } from './types';
 jest.mock('./github', () => ({
   ...jest.requireActual('./github'),
   dismissPreviousReviews: jest.fn().mockResolvedValue(undefined),
-  isReviewInProgress: jest.fn().mockResolvedValue(false),
-  checkConcurrentSubmissionLock: jest.fn().mockResolvedValue(false),
   postAutoApproveProgressComment: jest.fn().mockResolvedValue(12345),
   markAutoApproveComplete: jest.fn().mockResolvedValue(undefined),
   markProgressCommentFailed: jest.fn().mockResolvedValue(undefined),
@@ -323,22 +321,12 @@ describe('reopenAuthorResolvedThreads', () => {
 });
 
 describe('checkAndAutoApprove', () => {
-  const { dismissPreviousReviews, isReviewInProgress: mockIsReviewInProgress } = jest.requireMock('./github') as {
+  const { dismissPreviousReviews } = jest.requireMock('./github') as {
     dismissPreviousReviews: jest.Mock;
-    isReviewInProgress: jest.Mock;
   };
 
   beforeEach(() => {
     jest.clearAllMocks();
-  });
-
-  it('skips when review is in progress', async () => {
-    mockIsReviewInProgress.mockResolvedValueOnce(true);
-    const octokit = {} as unknown as Octokit;
-
-    const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
-
-    expect(result).toBe(false);
   });
 
   function makeMockOctokit(overrides: {
@@ -381,7 +369,7 @@ describe('checkAndAutoApprove', () => {
           getCollaboratorPermissionLevel: jest.fn().mockResolvedValue({ data: { permission: overrides.permission ?? 'write' } }),
           compareCommits: jest.fn(async ({ head }: { head: string }) => ({ data: overrides.diffs?.[head] ?? '' })),
         },
-        checks: overrides.checks,
+        checks: overrides.checks ?? { create: jest.fn().mockResolvedValue({ data: { id: 900 } }), update: jest.fn().mockResolvedValue({}) },
       },
     } as unknown as Octokit;
   }
@@ -573,17 +561,10 @@ describe('checkAndAutoApprove', () => {
     );
   });
 
-  it('reports the approval as a passing `Manki` check on the head in webhook mode', async () => {
+  it('reports the approval as a passing `Manki` check on the head', async () => {
     const checks = { create: jest.fn().mockResolvedValue({ data: { id: 901 } }), update: jest.fn().mockResolvedValue({}) };
     const octokit = makeMockOctokit({ threads: [], checks });
-    const eventName = process.env.GITHUB_EVENT_NAME;
-    process.env.GITHUB_EVENT_NAME = 'workflow_dispatch';
-    try {
-      expect(await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1)).toBe(true);
-    } finally {
-      if (eventName === undefined) delete process.env.GITHUB_EVENT_NAME;
-      else process.env.GITHUB_EVENT_NAME = eventName;
-    }
+    expect(await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1)).toBe(true);
 
     expect(checks.create).toHaveBeenCalledWith(expect.objectContaining({ name: 'Manki', head_sha: 'abc123', status: 'in_progress' }));
     expect(checks.update).toHaveBeenCalledWith(expect.objectContaining({
@@ -947,12 +928,8 @@ describe('checkAndAutoApprove', () => {
         : 'Manki has not reviewed `head-sh` yet. A push review should start shortly, and approval follows from its verdict.');
     });
 
-    it('explains an unreviewed head by the review that is running, the pause, or the absence of both', async () => {
+    it('explains an unreviewed head by the pause, or by the review still to come', async () => {
       const octokit = staleHeadOctokit(jest.fn(), [formatReviewRecord(notConverging)]);
-      jest.mocked(isReviewInProgress).mockResolvedValueOnce(true);
-      expect(await explainUnreviewedHead(octokit, TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG))
-        .toBe('A review of `head-sh` is running or queued. Approval follows from its verdict.');
-      expect(isReviewInProgress).toHaveBeenLastCalledWith(octokit, TEST_BOT, 'owner', 'repo', 1, 'head-sha-aaaa');
       expect(await explainUnreviewedHead(octokit, TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG))
         .toMatch(/^Manki has not reviewed `head-sh`\. The last Manki round found a blocker that came back after a fix\. Automatic review is paused\./);
       expect(await explainUnreviewedHead(staleHeadOctokit(jest.fn(), []), TEST_BOT, 'owner', 'repo', 1, DEFAULT_CONFIG))
@@ -961,261 +938,9 @@ describe('checkAndAutoApprove', () => {
   });
 });
 
-describe('checkAndAutoApprove — concurrent run guard', () => {
-  const { dismissPreviousReviews, isReviewInProgress: mockIsReviewInProgress, checkConcurrentSubmissionLock: mockCheckConcurrentSubmissionLock } = jest.requireMock('./github') as {
-    dismissPreviousReviews: jest.Mock;
-    isReviewInProgress: jest.Mock;
-    checkConcurrentSubmissionLock: jest.Mock;
-  };
-
-  beforeEach(() => {
-    jest.clearAllMocks();
-    mockIsReviewInProgress.mockResolvedValue(false);
-  });
-
-  function makeMockOctokit(): Octokit {
-    return {
-      graphql: jest.fn().mockResolvedValue(makeGraphqlFetchResponse([])),
-      paginate: jest.fn(paginateSinglePage),
-      rest: {
-        pulls: {
-          get: jest.fn().mockResolvedValue({ data: { head: { sha: 'sha-1' } } }),
-          createReview: jest.fn().mockResolvedValue({}),
-          listReviews: jest.fn().mockResolvedValue({ data: [
-            { body: '<!-- manki -->', state: 'CHANGES_REQUESTED', commit_id: 'sha-1', user: { login: 'github-actions[bot]', type: 'Bot' } },
-          ] }),
-        },
-        issues: { listComments: jest.fn().mockResolvedValue({ data: [] }), createComment: jest.fn().mockResolvedValue({ data: { id: 1 } }) },
-      },
-    } as unknown as Octokit;
-  }
-
-  it('bails when a different run holds a fresh in-progress marker', async () => {
-    mockCheckConcurrentSubmissionLock.mockResolvedValueOnce(true);
-    const octokit = makeMockOctokit();
-    const createReviewMock = (octokit as unknown as { rest: { pulls: { createReview: jest.Mock } } }).rest.pulls.createReview;
-
-    const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
-
-    expect(result).toBe(false);
-    expect(createReviewMock).not.toHaveBeenCalled();
-    expect(dismissPreviousReviews).not.toHaveBeenCalled();
-    expect(mockIsReviewInProgress).not.toHaveBeenCalled();
-  });
-
-  it('proceeds when lock guard returns false', async () => {
-    mockCheckConcurrentSubmissionLock.mockResolvedValueOnce(false);
-    const octokit = makeMockOctokit();
-    const createReviewMock = (octokit as unknown as { rest: { pulls: { createReview: jest.Mock } } }).rest.pulls.createReview;
-
-    const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
-
-    expect(result).toBe(true);
-    expect(createReviewMock).toHaveBeenCalledWith(
-      expect.objectContaining({ event: 'APPROVE' }),
-    );
-  });
-
-  it('forwards the supplied config to the lock guard', async () => {
-    mockCheckConcurrentSubmissionLock.mockResolvedValueOnce(false);
-    const octokit = makeMockOctokit();
-    const config = { concurrency_lock_ttl_seconds: 300 } as Parameters<typeof checkAndAutoApprove>[5];
-
-    await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1, config);
-
-    expect(mockCheckConcurrentSubmissionLock).toHaveBeenCalledWith(
-      octokit, TEST_BOT, 'owner', 'repo', 1, config,
-    );
-  });
-
-  describe('end-to-end with realistic comment bodies', () => {
-    const ghActual = jest.requireActual('./github') as typeof import('./github');
-    const githubContext = jest.requireActual('@actions/github').context as { runId: number };
-    const BOT_LOGIN = 'manki-review[bot]';
-    const GH_BOT_MARKER = '<!-- manki-bot -->';
-    const NOW = new Date('2026-05-22T12:00:00Z');
-    let savedRunId: number;
-
-    function inProgressBody(runId: number): string {
-      return `${GH_BOT_MARKER}\n<!-- manki-run-id:${runId} -->\n**Manki** — Review in progress`;
-    }
-
-    function botComment(id: number, body: string, updatedAt: string) {
-      return { id, body, user: { login: BOT_LOGIN, type: 'Bot' }, updated_at: updatedAt };
-    }
-
-    function makeOctokit(comments: ReturnType<typeof botComment>[]): Octokit {
-      return {
-        graphql: jest.fn().mockResolvedValue(makeGraphqlFetchResponse([])),
-        paginate: jest.fn(paginateSinglePage),
-        rest: {
-          pulls: {
-            get: jest.fn().mockResolvedValue({ data: { head: { sha: 'sha-1' } } }),
-            createReview: jest.fn().mockResolvedValue({}),
-            listReviews: jest.fn().mockResolvedValue({ data: [
-              { body: '<!-- manki -->', state: 'CHANGES_REQUESTED', commit_id: 'sha-1', user: { login: 'github-actions[bot]', type: 'Bot' } },
-            ] }),
-          },
-          issues: {
-            listComments: jest.fn().mockResolvedValue({ data: comments }),
-            createComment: jest.fn().mockResolvedValue({}),
-          },
-        },
-      } as unknown as Octokit;
-    }
-
-    beforeEach(() => {
-      mockCheckConcurrentSubmissionLock.mockImplementation(ghActual.checkConcurrentSubmissionLock);
-      savedRunId = githubContext.runId;
-      githubContext.runId = 42;
-      jest.useFakeTimers().setSystemTime(NOW);
-    });
-
-    afterEach(() => {
-      githubContext.runId = savedRunId;
-      jest.useRealTimers();
-    });
-
-    it('bails when a fresh in-progress marker from a different run is present', async () => {
-      const octokit = makeOctokit([
-        botComment(7, inProgressBody(999), '2026-05-22T11:59:00Z'),
-      ]);
-      const createReviewMock = (octokit as unknown as { rest: { pulls: { createReview: jest.Mock } } }).rest.pulls.createReview;
-
-      const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
-
-      expect(result).toBe(false);
-      expect(createReviewMock).not.toHaveBeenCalled();
-    });
-
-    it('proceeds when the in-progress marker has aged past the TTL', async () => {
-      const octokit = makeOctokit([
-        botComment(7, inProgressBody(999), '2026-05-22T10:00:00Z'),
-      ]);
-      const createReviewMock = (octokit as unknown as { rest: { pulls: { createReview: jest.Mock } } }).rest.pulls.createReview;
-
-      const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
-
-      expect(result).toBe(true);
-      expect(createReviewMock).toHaveBeenCalledWith(
-        expect.objectContaining({ event: 'APPROVE' }),
-      );
-    });
-
-    it('proceeds when there is no in-progress marker on the PR', async () => {
-      const octokit = makeOctokit([]);
-      const createReviewMock = (octokit as unknown as { rest: { pulls: { createReview: jest.Mock } } }).rest.pulls.createReview;
-
-      const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
-
-      expect(result).toBe(true);
-      expect(createReviewMock).toHaveBeenCalledWith(
-        expect.objectContaining({ event: 'APPROVE' }),
-      );
-    });
-
-    it('treats an in-progress marker from the current run as non-competing', async () => {
-      const octokit = makeOctokit([
-        botComment(7, inProgressBody(42), '2026-05-22T11:59:00Z'),
-      ]);
-      const createReviewMock = (octokit as unknown as { rest: { pulls: { createReview: jest.Mock } } }).rest.pulls.createReview;
-
-      const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
-
-      expect(result).toBe(true);
-      expect(createReviewMock).toHaveBeenCalledWith(
-        expect.objectContaining({ event: 'APPROVE' }),
-      );
-    });
-
-    describe('readConcurrencyLockTtlSeconds validation', () => {
-      let warningSpy: jest.SpyInstance;
-
-      beforeEach(() => {
-        warningSpy = jest.spyOn(core, 'warning').mockImplementation(() => {});
-      });
-
-      afterEach(() => {
-        delete process.env['INPUT_CONCURRENCY_LOCK_TTL_SECONDS'];
-        warningSpy.mockRestore();
-      });
-
-      it('falls back to default and warns when TTL input is non-finite', async () => {
-        process.env['INPUT_CONCURRENCY_LOCK_TTL_SECONDS'] = 'not-a-number';
-        const octokit = makeOctokit([
-          botComment(7, inProgressBody(999), '2026-05-22T11:59:00Z'),
-        ]);
-
-        await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
-
-        expect(warningSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Invalid concurrency_lock_ttl_seconds=not-a-number'),
-        );
-      });
-
-      it('falls back to default and warns when TTL input is zero', async () => {
-        process.env['INPUT_CONCURRENCY_LOCK_TTL_SECONDS'] = '0';
-        const octokit = makeOctokit([
-          botComment(7, inProgressBody(999), '2026-05-22T11:59:00Z'),
-        ]);
-
-        await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
-
-        expect(warningSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Invalid concurrency_lock_ttl_seconds=0'),
-        );
-      });
-
-      it('falls back to default and warns when TTL input is negative', async () => {
-        process.env['INPUT_CONCURRENCY_LOCK_TTL_SECONDS'] = '-1';
-        const octokit = makeOctokit([
-          botComment(7, inProgressBody(999), '2026-05-22T11:59:00Z'),
-        ]);
-
-        await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
-
-        expect(warningSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Invalid concurrency_lock_ttl_seconds=-1'),
-        );
-      });
-
-      it('falls back to default and warns when TTL input exceeds the maximum', async () => {
-        process.env['INPUT_CONCURRENCY_LOCK_TTL_SECONDS'] = '9999';
-        const octokit = makeOctokit([
-          botComment(7, inProgressBody(999), '2026-05-22T11:59:00Z'),
-        ]);
-
-        await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
-
-        expect(warningSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Invalid concurrency_lock_ttl_seconds=9999'),
-        );
-      });
-
-      it('falls back to default and warns when .manki.yml-sourced TTL is 0', async () => {
-        const octokit = makeOctokit([
-          botComment(7, inProgressBody(999), '2026-05-22T11:59:00Z'),
-        ]);
-        const createReviewMock = (octokit as unknown as { rest: { pulls: { createReview: jest.Mock } } }).rest.pulls.createReview;
-        const config = { concurrency_lock_ttl_seconds: 0 } as Parameters<typeof checkAndAutoApprove>[5];
-
-        const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1, config);
-
-        expect(warningSpy).toHaveBeenCalledWith(
-          expect.stringContaining('Invalid `concurrency_lock_ttl_seconds` in config (0)'),
-        );
-        expect(result).toBe(false);
-        expect(createReviewMock).not.toHaveBeenCalled();
-      });
-    });
-  });
-});
-
 describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
   const ghMock = jest.requireMock('./github') as {
     dismissPreviousReviews: jest.Mock;
-    isReviewInProgress: jest.Mock;
-    checkConcurrentSubmissionLock: jest.Mock;
     postAutoApproveProgressComment: jest.Mock;
     markAutoApproveComplete: jest.Mock;
     markProgressCommentFailed: jest.Mock;
@@ -1223,8 +948,6 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    ghMock.isReviewInProgress.mockResolvedValue(false);
-    ghMock.checkConcurrentSubmissionLock.mockResolvedValue(false);
     ghMock.postAutoApproveProgressComment.mockResolvedValue(7777);
   });
 
@@ -1277,28 +1000,6 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
     expect(callOrder).toEqual(['post', 'createReview', 'complete']);
     expect(ghMock.markAutoApproveComplete).toHaveBeenCalledWith(octokit, 'owner', 'repo', 7777);
     expect(ghMock.markProgressCommentFailed).not.toHaveBeenCalled();
-  });
-
-  it('does not post a marker when the concurrency lock guard bails', async () => {
-    ghMock.checkConcurrentSubmissionLock.mockResolvedValueOnce(true);
-    const octokit = makeMockOctokit();
-
-    const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
-
-    expect(result).toBe(false);
-    expect(ghMock.postAutoApproveProgressComment).not.toHaveBeenCalled();
-    expect(ghMock.markAutoApproveComplete).not.toHaveBeenCalled();
-    expect(ghMock.markProgressCommentFailed).not.toHaveBeenCalled();
-  });
-
-  it('does not post a marker when `isReviewInProgress` returns true', async () => {
-    ghMock.isReviewInProgress.mockResolvedValueOnce(true);
-    const octokit = makeMockOctokit();
-
-    const result = await checkAndAutoApprove(octokit, TEST_BOT, 'owner', 'repo', 1);
-
-    expect(result).toBe(false);
-    expect(ghMock.postAutoApproveProgressComment).not.toHaveBeenCalled();
   });
 
   it('does not post a marker when unresolved findings remain', async () => {
@@ -1382,19 +1083,15 @@ describe('postAutoApproveProgressComment / markAutoApprove*', () => {
   const githubContext = jest.requireActual('@actions/github').context as { runId: number };
   let savedRunId: number;
 
-  const NOW = new Date('2026-05-22T12:00:00Z');
-
   beforeEach(() => {
     savedRunId = githubContext.runId;
     githubContext.runId = 12345;
-    jest.useFakeTimers().setSystemTime(NOW);
   });
   afterEach(() => {
     githubContext.runId = savedRunId;
-    jest.useRealTimers();
   });
 
-  it('posts a body that `findInProgressLock` detects as a live lock', async () => {
+  it('posts a body that names its run, so the post step can mark it cancelled', async () => {
     let postedBody = '';
     const createComment = jest.fn().mockImplementation(async ({ body }: { body: string }) => {
       postedBody = body;
@@ -1404,15 +1101,11 @@ describe('postAutoApproveProgressComment / markAutoApprove*', () => {
 
     await ghActual.postAutoApproveProgressComment(octokit, 'o', 'r', 1);
 
-    const comments = [
-      { id: 1, body: postedBody, user: { login: 'manki-review[bot]', type: 'Bot' }, updated_at: '2026-05-22T11:59:00Z' },
-    ];
-    expect(ghActual.findInProgressLock(comments, TEST_BOT, /* different run */ 999)).not.toBeNull();
-    expect(ghActual.findInProgressLock(comments, TEST_BOT, 12345)).toBeNull();
+    expect(ghActual.extractRunIdFromBody(postedBody)).toBe(12345);
     expect(postedBody).toContain('Auto-approving');
   });
 
-  it('complete-transition body no longer registers as a live lock', async () => {
+  it('marks the comment complete, so the post step leaves it alone', async () => {
     let updatedBody = '';
     const updateComment = jest.fn().mockImplementation(async ({ body }: { body: string }) => {
       updatedBody = body;
@@ -1422,14 +1115,11 @@ describe('postAutoApproveProgressComment / markAutoApprove*', () => {
 
     await ghActual.markAutoApproveComplete(octokit, 'o', 'r', 1);
 
-    const comments = [
-      { id: 1, body: updatedBody, user: { login: 'manki-review[bot]', type: 'Bot' }, updated_at: '2026-05-22T11:59:30Z' },
-    ];
-    expect(ghActual.findInProgressLock(comments, TEST_BOT, 999)).toBeNull();
+    expect(updatedBody).toContain(ghActual.REVIEW_COMPLETE_MARKER);
     expect(updatedBody).toContain('**Auto-approved:** all findings are resolved.');
   });
 
-  it('failure-transition body no longer registers as a live lock', async () => {
+  it('marks the comment failed with tokens redacted, so the post step leaves it alone', async () => {
     let updatedBody = '';
     const updateComment = jest.fn().mockImplementation(async ({ body }: { body: string }) => {
       updatedBody = body;
@@ -1439,10 +1129,7 @@ describe('postAutoApproveProgressComment / markAutoApprove*', () => {
 
     await ghActual.markProgressCommentFailed(octokit, 'o', 'r', 1, 'Auto-approve', 'API rate limited for ghs_secret123');
 
-    const comments = [
-      { id: 1, body: updatedBody, user: { login: 'manki-review[bot]', type: 'Bot' }, updated_at: '2026-05-22T11:59:30Z' },
-    ];
-    expect(ghActual.findInProgressLock(comments, TEST_BOT, 999)).toBeNull();
+    expect(updatedBody).toContain(ghActual.CANCELLED_MARKER);
     expect(updatedBody).toContain('API rate limited for [REDACTED]');
     expect(updatedBody).not.toContain('ghs_secret123');
   });
