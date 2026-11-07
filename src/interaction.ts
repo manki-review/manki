@@ -8,8 +8,8 @@ import { resolveMemoryRepo } from './config';
 import { truncateDiff } from './review';
 import { parsePRDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
-import { isSecurityThread, mayClearSecurityThread, parseFindingData } from './recap';
-import { ResolutionReason, announceSecurityOverrides, checkAndAutoApprove, explainUnreviewedHead, fetchBotReviewThreads, resolveReviewThread } from './state';
+import { isGuarded, isSecurityThread, mayClearSecurityThread, parseFindingData } from './recap';
+import { ResolutionReason, ReviewThread, announceSecurityOverrides, checkAndAutoApprove, explainUnreviewedHead, fetchBotReviewThreads, resolveReviewThread } from './state';
 import { ReplyRecord, ReviewConfig } from './types';
 import { formatReplyRecord } from './review-record';
 import { buildRoundUsage } from './round-context';
@@ -92,9 +92,12 @@ const REPLY_TOOLS_TIMEOUT_MS = 300_000;
 
 const REPLY_RESOLUTION_REASONS: Record<string, ResolutionReason> = { Fixed: 'ADDRESSED', Agreed: 'WONT_FIX', Withdrawn: 'INVALID' };
 
-const AGREED_REPLY_RE = /^\**Agreed\b/;
-
-const SECURITY_STAYS_OPEN = 'This is a security finding, so the thread stays open until a maintainer other than the PR author, or a repo admin, closes it.';
+function staysOpenNote(isSecurity: boolean, fixed: boolean): string {
+  const until = fixed
+    ? 'the next review confirms the fix, or a maintainer other than the PR author closes it'
+    : 'a maintainer other than the PR author, or a repo admin, closes it';
+  return `This is a ${isSecurity ? 'security' : 'blocking'} finding, so the thread stays open until ${until}.`;
+}
 
 const FORGET_USAGE = 'Search term too short: it needs at least 3 characters.\n\nUsage:\n- `/manki forget <text>` removes a learning.\n- `/manki forget suppression <pattern>` removes a suppression.';
 
@@ -116,19 +119,22 @@ async function fetchThreadRoot(octokit: Octokit, owner: string, repo: string, id
   return null;
 }
 
+/** Returns the Manki thread whose first comment is `rootCommentId`, or `undefined` when there is none. */
+async function findBotThread(
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, rootCommentId: number,
+): Promise<ReviewThread | undefined> {
+  return (await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber)).find(t => t.rootCommentId === rootCommentId);
+}
+
 /**
- * Resolves the Manki thread whose first comment is `rootCommentId` with `reason`. A security thread is left open unless `securityAllowed`.
- * With `adminOverride`, the PR author clears a security thread as a repo admin, and Manki records that in the thread first.
+ * Resolves `thread` with `reason`. A blocking or security thread is left open unless `mayClear`.
+ * With `adminOverride`, the PR author clears such a thread as a repo admin, and Manki records that in the thread first.
  */
-async function resolveThreadOf(
-  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, rootCommentId: number, reason: ResolutionReason,
-  securityAllowed: boolean, adminOverride?: string,
-): Promise<void> {
-  const thread = (await fetchBotReviewThreads(octokit, bot, owner, repo, prNumber)).find(t => t.rootCommentId === rootCommentId);
-  if (!thread || thread.isResolved) return;
-  if (thread.isSecurity && !securityAllowed) {
+async function resolveThreadOf(octokit: Octokit, thread: ReviewThread, reason: ResolutionReason, mayClear: boolean, adminOverride?: string): Promise<void> {
+  if (thread.isResolved) return;
+  if (isGuarded(thread) && !mayClear) {
     if (!adminOverride) {
-      core.info(`Left security thread ${thread.id} open, since only a maintainer other than the PR author, or a repo admin, can dismiss it`);
+      core.info(`Left thread ${thread.id} open, since only a maintainer other than the PR author, or a repo admin, can dismiss a blocking or security finding`);
       return;
     }
     // The recorded override is what lets later rounds count the resolved thread, so without it the thread stays open.
@@ -140,16 +146,15 @@ async function resolveThreadOf(
 
 /**
  * Who may get a Manki thread resolved through a comment: someone who could resolve it by hand.
- * On a security thread, `securityAllowed` says whether the sender may also clear it: a maintainer other than the PR author.
+ * `mayClear` says whether the sender may also clear a blocking or security thread: a maintainer other than the PR author.
  */
 async function resolvePermission(
-  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, isSecurity: boolean,
-  senderLogin: string | undefined, prAuthorLogin: string | undefined,
-): Promise<{ mayResolve: boolean; isPrAuthor: boolean; securityAllowed: boolean }> {
+  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, senderLogin: string | undefined, prAuthorLogin: string | undefined,
+): Promise<{ mayResolve: boolean; isPrAuthor: boolean; mayClear: boolean }> {
   const isTrusted = await commenterCanWrite(octokit, owner, repo);
   const isPrAuthor = !!prAuthorLogin && senderLogin?.toLowerCase() === prAuthorLogin.toLowerCase();
-  const securityAllowed = isSecurity && isTrusted && !!senderLogin && mayClearSecurityThread(senderLogin, bot, prAuthorLogin);
-  return { mayResolve: isTrusted || isPrAuthor, isPrAuthor, securityAllowed };
+  const mayClear = isTrusted && !!senderLogin && mayClearSecurityThread(senderLogin, bot, prAuthorLogin);
+  return { mayResolve: isTrusted || isPrAuthor, isPrAuthor, mayClear };
 }
 
 /** Asks `client` once, and returns the answer with the hidden usage record to post along with it. */
@@ -277,9 +282,16 @@ export async function handleReviewCommentReply(
     const findingBody = root.comment.body ?? '';
     const reply = requireNewProof(highlightCode(response.content.trim(), codeTokens), findingBody);
     const isSecurity = isSecurityThread(findingBody);
-    const { mayResolve, securityAllowed } = await resolvePermission(
-      octokit, bot, owner, repo, isSecurity, senderLogin, prAuthorLogin);
-    const staysOpen = (AGREED_REPLY_RE.test(reply) || WITHDRAWN_REPLY_RE.test(reply)) && isSecurity && !securityAllowed;
+    const { mayResolve, mayClear } = await resolvePermission(octokit, bot, owner, repo, senderLogin, prAuthorLogin);
+    const outcome = RESOLVING_REPLY_RE.exec(reply)?.[1];
+    // The live thread also counts a found-again reply that made it block, which the first comment does not show.
+    const thread = outcome
+      ? await findBotThread(octokit, bot, owner, repo, prNumber, root.id).catch((error: unknown) => {
+        core.warning(`Failed to read the thread of the reply: ${error}`);
+        return undefined;
+      })
+      : undefined;
+    const staysOpen = !!thread && !thread.isResolved && isGuarded(thread) && !mayClear;
 
     // A security finding never teaches the reviewers to skip a pattern, and only a writer's reply can change memory.
     let saved: string | undefined;
@@ -293,7 +305,7 @@ export async function handleReviewCommentReply(
         });
     }
 
-    const notes = [...(staysOpen ? [SECURITY_STAYS_OPEN] : []), ...(saved ? [saved] : [])];
+    const notes = [...(staysOpen ? [staysOpenNote(isSecurity, outcome === 'Fixed')] : []), ...(saved ? [saved] : [])];
     await octokit.rest.pulls.createReplyForReviewComment({
       owner,
       repo,
@@ -304,10 +316,9 @@ export async function handleReviewCommentReply(
 
     core.info('Posted reply to review comment');
 
-    const outcome = RESOLVING_REPLY_RE.exec(reply)?.[1];
-    if (outcome && mayResolve) {
+    if (outcome && thread && mayResolve) {
       try {
-        await resolveThreadOf(octokit, bot, owner, repo, prNumber, root.id, REPLY_RESOLUTION_REASONS[outcome], securityAllowed);
+        await resolveThreadOf(octokit, thread, REPLY_RESOLUTION_REASONS[outcome], mayClear);
       } catch (error) {
         core.warning(`Failed to resolve thread after reply: ${error}`);
       }
@@ -510,7 +521,7 @@ async function handleDismiss(
 
 /**
  * Resolves the Manki thread a `dismiss` reply was posted in, for someone who could resolve it by hand.
- * On a security thread the PR author may do so too when they are a repo admin.
+ * On a blocking or security thread the PR author may do so too when they are a repo admin.
  */
 async function resolveDismissedThread(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number): Promise<void> {
   const payload = github.context.payload;
@@ -521,13 +532,13 @@ async function resolveDismissedThread(octokit: Octokit, bot: BotIdentity, owner:
     const { data: parent } = await octokit.rest.pulls.getReviewComment({ owner, repo, comment_id: inReplyTo });
     const root = await fetchThreadRoot(octokit, owner, repo, inReplyTo, parent);
     if (!root || !isBotComment(root.comment.body ?? '')) return;
-    const isSecurity = isSecurityThread(root.comment.body ?? '');
-    const { mayResolve, isPrAuthor, securityAllowed } = await resolvePermission(
-      octokit, bot, owner, repo, isSecurity, senderLogin, payload.pull_request?.user?.login);
+    const { mayResolve, isPrAuthor, mayClear } = await resolvePermission(octokit, bot, owner, repo, senderLogin, payload.pull_request?.user?.login);
     if (!mayResolve) return;
-    const adminOverride = isSecurity && !securityAllowed && isPrAuthor && !!senderLogin
+    const thread = await findBotThread(octokit, bot, owner, repo, prNumber, root.id);
+    if (!thread) return;
+    const adminOverride = isGuarded(thread) && !mayClear && isPrAuthor && !!senderLogin
       && await isRepoAdmin(octokit, owner, repo, senderLogin);
-    await resolveThreadOf(octokit, bot, owner, repo, prNumber, root.id, 'WONT_FIX', securityAllowed, adminOverride ? senderLogin : undefined);
+    await resolveThreadOf(octokit, thread, 'WONT_FIX', mayClear, adminOverride ? senderLogin : undefined);
   } catch (error) {
     core.warning(`Failed to resolve the dismissed thread: ${error}`);
   }
