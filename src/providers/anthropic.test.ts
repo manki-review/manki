@@ -1063,6 +1063,20 @@ describe('ensureCLI — install path', () => {
     });
     expect(mockExecFileAsync.mock.calls).toEqual([['which', ['claude']]]);
     expect(mockSpawn.mock.calls[0][0]).toBe(join('/runner/temp/manki-pinned', 'package', process.platform === 'win32' ? 'claude.exe' : 'claude'));
+
+    // A musl system such as Alpine reports no glibc version and gets the musl build.
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { ...platform, value: 'linux' });
+    const report = jest.spyOn(process.report, 'getReport').mockReturnValue({ header: {} } as ReturnType<typeof process.report.getReport>);
+    try {
+      mockExecFileAsync.mockRejectedValueOnce(new Error('not found'));
+      mockInstallPinned.mockResolvedValueOnce('/runner/temp/manki-pinned');
+      await new AnthropicClient({ auth: { kind: 'oauth', token: 'token' }, model: 'claude-opus-4-6' }).sendMessage('sys', 'user');
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+      report.mockRestore();
+    }
+    expect(mockInstallPinned.mock.calls[1][0].url).toBe(`https://registry.npmjs.org/@anthropic-ai/claude-code-linux-${process.arch}-musl/-/claude-code-linux-${process.arch}-musl-${CLAUDE_CLI_VERSION}.tgz`);
   });
 
   it('throws when the install fails or no build is pinned for the platform, and installs again on the next call', async () => {

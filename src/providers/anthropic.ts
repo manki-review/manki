@@ -24,6 +24,8 @@ export const CLAUDE_CLI_VERSION = '2.1.318';
 const CLAUDE_CLI_BUILDS: Record<string, string> = {
   'linux-x64': 'sha512-GX+7CUng2R5f7SsA2w0LaXlH2f62fRCFD/Z2SUexoeH3B0KfulKQt5DtY9NeD2Yp3VEBz6/k/xWSbGPUi6NV2A==',
   'linux-arm64': 'sha512-FUVVH3aQbLEChjv5wQLdFbpBC7bclVIdVYO5hDzJthDyf2OQtdubIP5QqLPgEScQb3CVIAFg2IPJ5nihJa8Ndw==',
+  'linux-x64-musl': 'sha512-H1tn//6H1EOlkC87CYYs1iwz5rvMjGiyUpIR+8Pu0dRwA+DLAkQXgJGb0yRc+O8IWSZOhgWjarRIbPsS1cK2eg==',
+  'linux-arm64-musl': 'sha512-bZRgaooI/08JmS9d0lLfv9s7N6aO8Ykd0u2U6dmRsBQ1Tq1VFY5ZOi6hfoJBOwS4+1OR3xaUGYRS10i7dZBn9g==',
   'darwin-x64': 'sha512-fockeRy3+Yrr3PxRtGW2XRPWcShjRxIhUJDWi9Xi4svB8h+JUDn7JijHzy1vgUILOE5uIvgfMadN2siEFlt/Ug==',
   'darwin-arm64': 'sha512-EBKlipLmKY+ZEY+yNft2NegA6Uz34ZMjkzYxUaLF37qitojBJbIcF71F6JwFRlpIPXmiWchftLa9XONg3KBaxQ==',
   'win32-x64': 'sha512-g/fa2hqcU/+Qd3NMaY/8i+AoX6HQt3zBcj+V/Ot9icr5TN4PmOmuy6YhVNFLHb2IniLIrBA+gZFqonUe0aYLxg==',
@@ -32,7 +34,9 @@ const CLAUDE_CLI_BUILDS: Record<string, string> = {
 
 /** Downloads the pinned Claude CLI build for this platform, once per run, and returns its binary. */
 async function installClaudeCli(): Promise<string> {
-  const platform = `${process.platform}-${process.arch}`;
+  // A musl system, such as an Alpine container, reports no glibc version and needs the musl build.
+  const musl = process.platform === 'linux' && !(process.report.getReport() as { header?: { glibcVersionRuntime?: string } }).header?.glibcVersionRuntime;
+  const platform = `${process.platform}-${process.arch}${musl ? '-musl' : ''}`;
   const integrity = CLAUDE_CLI_BUILDS[platform];
   if (!integrity) throw new Error(`no pinned Claude CLI build for ${platform}`);
   const name = `claude-code-${platform}`;
