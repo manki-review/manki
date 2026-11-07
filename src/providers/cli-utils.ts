@@ -6,7 +6,7 @@ import { StringDecoder } from 'string_decoder';
 
 import * as core from '@actions/core';
 
-import { registerSecret, safeJsonParse, sanitizeTokens, SECRET_NAME, SYSTEM_ENV } from '../utils';
+import { isSecretName, registerSecret, safeJsonParse, sanitizeTokens, SYSTEM_ENV } from '../utils';
 import { FILE_TOOLS_FLAG, MCP_SERVER_COMMAND, RELATED_REPOS_FLAG, STEPS_FLAG } from '../mcp-server';
 import { STEP_HOOK_COMMAND, WRAP_UP_STEPS } from '../tool-steps';
 import { RelatedRepo, RelatedRepoTools } from '../types';
@@ -345,24 +345,26 @@ function isOn(value: string | undefined): boolean {
 const CLAUDE_MODE_CREDENTIALS: { on: (env: NodeJS.ProcessEnv) => boolean; names: string[] }[] = [
   { on: env => isOn(env.CLAUDE_CODE_USE_BEDROCK), names: ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_BEARER_TOKEN_BEDROCK'] },
   { on: env => isOn(env.CLAUDE_CODE_USE_VERTEX), names: ['GOOGLE_APPLICATION_CREDENTIALS'] },
-  { on: env => !!env.ANTHROPIC_BASE_URL, names: ['ANTHROPIC_AUTH_TOKEN'] },
+  { on: env => !!env.ANTHROPIC_BASE_URL, names: ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_CUSTOM_HEADERS'] },
 ];
 
 /**
  * Returns the environment for the `provider` CLI: the variables of `env` any CLI needs to run, the provider's own
- * configuration, and `vars`. Nothing named like a secret, such as `*_TOKEN` or `*_KEY`, passes, except `credential`
+ * configuration, and `vars`. Nothing named like a secret, such as `*_TOKEN` or `*_KEY_PROD`, passes, except `credential`
  * and, for Claude, the credentials of a Bedrock, Vertex or gateway setup that is on. Those are registered as secrets.
  */
 export function cliEnv(provider: CliProvider, vars: NodeJS.ProcessEnv = {}, credential?: string, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const modeCredentials = provider === 'claude' ? CLAUDE_MODE_CREDENTIALS.filter(mode => mode.on(env)).flatMap(mode => mode.names) : [];
   const credentials = new Set([...(credential ? [credential] : []), ...modeCredentials]);
   const needed = Object.entries(env).filter(([name]) => CLI_ENV.has(name.toUpperCase()) || CLI_ENV_PREFIX.test(name) || PROVIDER_ENV[provider].test(name) || modeCredentials.includes(name));
-  const result = Object.fromEntries([...needed, ...Object.entries(vars)].filter(([name]) => credentials.has(name) || !SECRET_NAME.test(name)));
+  const result = Object.fromEntries([...needed, ...Object.entries(vars)].filter(([name]) => credentials.has(name) || !isSecretName(name)));
   for (const name of modeCredentials) {
     const value = result[name];
     if (!value) continue;
     registerSecret(value);
     if (name === 'GOOGLE_APPLICATION_CREDENTIALS') registerGoogleCredentials(value);
+    // Each `Name: value` line of the headers carries its own secret, such as a gateway key.
+    if (name === 'ANTHROPIC_CUSTOM_HEADERS') value.split(/\r?\n/).forEach(line => registerSecret(line.slice(line.indexOf(':') + 1).trim()));
   }
   return result;
 }
