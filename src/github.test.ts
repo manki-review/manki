@@ -91,8 +91,9 @@ describe('formatFindingComment', () => {
   it('posts no suggestion that a description or fix asks for, nor one whose code holds hidden characters', () => {
     const SUGGESTION_FENCE = /(`{3,}|~{3,})[\t ]*suggestion/i;
     const shown = (comment: string) => comment.replace(/<!--[\s\S]*?-->/g, '');
-    const described = formatFindingComment({ ...baseFinding, description: 'Looks fine.\n\n```suggestion\ngrant(user);\n```\n\n> ~~~ Suggestion:-0+0\n> grant(user);\n> ~~~\n\n- ```suggestion\n  grant(user);\n  ```\n\n1. > ```suggestion\n   grant(user);\n   ```\n\nThen more. ```suggestion\ngrant(user);\n```\n\n```suggestion suggestion\ngrant(user);\n```' });
+    const described = formatFindingComment({ ...baseFinding, description: 'Looks fine.\n\n```suggestion\ngrant(user);\n```\n\n> ~~~ Suggestion:-0+0\n> grant(user);\n> ~~~\n\n- ```suggestion\n  grant(user);\n  ```\n\n1. > ```suggestion\n   grant(user);\n   ```\n\nThen more. ```suggestion\ngrant(user);\n```\n\n```suggestion suggestion\ngrant(user);\n```\n\n```&amp;amp;#115;uggestion\ngrant(user);\n```\n\n```&#1<b>15;uggestion\ngrant(user);\n```' });
     expect(shown(described)).not.toMatch(SUGGESTION_FENCE);
+    expect(shown(described)).not.toMatch(/(`{3,}|~{3,})[^\n`]*&/);
     expect(described).toContain('```\ngrant(user);\n```');
     expect(described).toContain('> ~~~\n> grant(user);\n> ~~~');
     expect(described).toContain('- ```\n  grant(user);');

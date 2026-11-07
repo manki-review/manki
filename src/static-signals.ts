@@ -178,14 +178,16 @@ export async function collectStaticSignals(
       return [];
     }
   }));
-  // A PR can change its own `exclude_paths`, so hidden characters are looked for in every changed file.
-  const onDiff = [...hiddenCharacterSignals(fullDiff), ...collected.flat()].sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]);
+  // A PR can change its own `exclude_paths`, so hidden characters are looked for in every changed file. Their alerts go
+  // first and are never cut, so a PR cannot hide one behind many other results.
+  const hidden = hiddenCharacterSignals(fullDiff);
+  const onDiff = [...hidden, ...collected.flat().sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity])];
   if (onDiff.length > 0) core.info(`Static analysis: ${onDiff.length} result(s) on lines in the diff`);
   const record: RoundStaticAnalysis = {
     ...(runs.length > 0 && { analyzers: runs.sort((a, b) => ANALYZERS.indexOf(a.analyzer) - ANALYZERS.indexOf(b.analyzer)) }),
     ...(checksStillPending.length > 0 && { checksStillPending }),
   };
-  return { signals: onDiff.slice(0, MAX_SIGNALS), ...(Object.keys(record).length > 0 && { record }) };
+  return { signals: onDiff.slice(0, Math.max(MAX_SIGNALS, hidden.length)), ...(Object.keys(record).length > 0 && { record }) };
 }
 
 /** Whether Manki itself reported the result. Nobody sees those results unless the review posts them. */
