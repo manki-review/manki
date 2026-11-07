@@ -149,7 +149,7 @@ The judge treats two finders reporting the same defect as strong evidence that i
 
 ## Skipping PRs
 
-`skip_labels`, `skip_authors` and `skip_branches` name PRs that get no automatic review, such as dependency bumps from a bot. Manki reads them from `.manki.yml` on the base branch only, so a PR that edits them cannot skip itself. A PR that matches any rule gets no review, no comment and no approval. In webhook mode its `Manki` check completes as skipped. A `@manki review` comment still reviews it.
+`skip_labels`, `skip_authors` and `skip_branches` name PRs that get no automatic review, such as dependency bumps from a bot. Manki reads them from `.manki.yml` on the base branch only, so a PR that edits them cannot skip itself. A PR that matches any rule gets no review, no comment and no approval. Its `Manki` check completes as skipped. A `@manki review` comment still reviews it.
 
 A skipped check passes a required status check, so a branch protection rule that requires `Manki` lets a skipped PR merge without a review. Use rules that only trusted actors can meet. GitHub sets the author, so `skip_authors` for bot accounts is the safest. It skips an event only when its sender is a listed author too, so a person who pushes to a bot's PR still gets a review. A label or branch rule matches only PRs whose head branch is in the repo itself, never a fork's. A fork's author can name a branch freely and keep pushing after a label is added, for example by a path-based labeler. Anyone with write access can still pick a matching branch name or add a skip label.
 
@@ -177,41 +177,7 @@ Manki reads these results with the workflow token (`github_token`), so grant the
 
 A source Manki cannot read is skipped with one info line in the log. Turn a source off with `static_analysis` in `.manki.yml` (see [Configuration](configuration.md)). Manki reads that block from the base branch, so a PR cannot turn off the tool that would flag it.
 
-Manki only sees checks that finished before it runs. To make it run after your CI, put the review job in the same workflow as the CI job and make it wait with `needs:`:
-
-```yaml
-jobs:
-  lint:
-    if: github.event_name == 'pull_request' && github.event.action != 'closed'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - run: npm ci && npm run lint
-
-  review:
-    needs: lint
-    # `!cancelled()` runs the review even when lint fails or is skipped, such as on comment events.
-    if: >-
-      !cancelled()
-      && github.actor != 'manki-review[bot]'
-      && github.event.sender.type != 'Bot'
-      && github.event.review.user.type != 'Bot'
-      && (github.event.action != 'closed' || github.event.pull_request.merged)
-      && (github.event_name != 'issue_comment' || contains(github.event.comment.body, '@manki') || contains(github.event.comment.body, '/manki') || contains(github.event.comment.body, '- [x] Force review'))
-      && (github.event_name != 'issue_comment' || !contains(fromJSON('["FIRST_TIMER","FIRST_TIME_CONTRIBUTOR"]'), github.event.comment.author_association))
-      && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - name: Manki Review
-        uses: manki-review/manki@v6
-        with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-```
-
-Keep the `on:`, `permissions:`, `concurrency:` and `timeout-minutes:` settings from the workflow in [Step 3](getting-started.md#step-3-add-the-workflow).
-
-When CI runs in a separate workflow, `needs:` cannot order the jobs. List the check runs to wait for in `static_analysis.wait_for_checks` instead. Manki polls them on the PR head every 15 seconds and reads the results once each has finished. After `wait_timeout_seconds` (default 300) it stops waiting, reads what is there, and records the checks still running in the `Manki context` block. A name is the check run's name as the PR's checks list shows it, usually the job name.
+Manki only sees checks that finished before it runs. Manki runs in its own workflow, so `needs:` cannot order it after your CI. List the check runs to wait for in `static_analysis.wait_for_checks` instead. Manki polls them on the PR head every 15 seconds and reads the results once each has finished. After `wait_timeout_seconds` (default 300) it stops waiting, reads what is there, and records the checks still running in the `Manki context` block. A name is the check run's name as the PR's checks list shows it, usually the job name.
 
 ```yaml
 static_analysis:

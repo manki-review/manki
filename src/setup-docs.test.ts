@@ -15,6 +15,7 @@ interface MankiStep {
 }
 
 interface Workflow {
+  'run-name': string;
   on: Record<string, unknown>;
   jobs: Record<string, Record<string, unknown>>;
 }
@@ -58,10 +59,6 @@ function htmlCodeBlocks(html: string): string[] {
     .replace(/&amp;/g, '&'));
 }
 
-function isDispatchWorkflow(workflow: Partial<Workflow>): boolean {
-  return !!workflow.on && 'workflow_dispatch' in workflow.on;
-}
-
 function findMankiSteps(node: unknown): MankiStep[] {
   if (Array.isArray(node)) return node.flatMap(findMankiSteps);
   if (!node || typeof node !== 'object') return [];
@@ -83,38 +80,21 @@ describe('documented workflow snippets', () => {
     'docs/index.html': htmlCodeBlocks(readRepoFile('docs/index.html')).filter(usesManki),
   };
 
-  it('includes the full workflow from Step 3 of `docs/getting-started.md` and docs/index.html, with the job settings of `docs/examples/manki.yml`', () => {
-    const own = (parseYaml(readRepoFile('docs/examples/manki.yml')) as Workflow).jobs.review;
-    expect(own.if).toContain(`(github.event_name != 'issue_comment' || !contains(fromJSON('["FIRST_TIMER","FIRST_TIME_CONTRIBUTOR"]'), github.event.comment.author_association))`);
-    expect(own.if).not.toContain('COLLABORATOR');
-    const step3 = setup.slice(setup.indexOf('## Step 3: Add the Workflow'));
-    for (const block of [markdownYamlBlocks(step3)[0], snippets['docs/index.html'][0]]) {
-      const workflow = parseYaml(block) as Workflow;
-      expect(Object.keys(workflow.on)).toContain('pull_request');
-      expect(findMankiSteps(workflow)).toHaveLength(1);
-      const { if: condition, concurrency, 'timeout-minutes': timeout } = workflow.jobs.review;
-      expect({ condition, concurrency, timeout }).toEqual({ condition: own.if, concurrency: own.concurrency, timeout: own['timeout-minutes'] });
-    }
-    const jobs = Object.values(snippets).flat().map(block => parseYaml(block) as Partial<Workflow>)
-      .filter(workflow => !isDispatchWorkflow(workflow)).map(workflow => workflow.jobs?.review).filter(job => job !== undefined);
-    expect(jobs.length).toBeGreaterThan(2);
-    for (const job of jobs) expect(job.if).toContain(own.if);
-    expect(snippets['docs/getting-started.md'].length).toBeGreaterThan(1);
-  });
-
-  it('includes a dispatch workflow in `docs/getting-started.md` that declares the dispatch inputs, with no `if` or `concurrency`, as our own does', () => {
-    const dispatch = snippets['docs/getting-started.md'].map(block => parseYaml(block) as Workflow).filter(isDispatchWorkflow);
-    expect(dispatch).toHaveLength(1);
+  it('includes the workflow from Step 3 of `docs/getting-started.md` and docs/index.html, with the triggers and job settings of our own', () => {
     const own = parseYaml(readRepoFile('.github/workflows/manki.yml')) as Workflow;
-    for (const workflow of [dispatch[0], own]) {
+    const step3 = setup.slice(setup.indexOf('## Step 3: Add the Workflow'));
+    const documented = [markdownYamlBlocks(step3)[0], snippets['docs/index.html'][0]].map(block => parseYaml(block) as Workflow);
+    for (const workflow of [...documented, own]) {
       expect(Object.keys(workflow.on)).toEqual(['workflow_dispatch']);
-      expect(workflow.on.workflow_dispatch).toEqual(dispatch[0].on.workflow_dispatch);
-      expect((workflow as Workflow & { 'run-name': string })['run-name']).toBe('Manki ${{ inputs.event }}.${{ inputs.action }} on #${{ inputs.pr }} (${{ inputs.delivery_id }})');
+      expect(workflow.on.workflow_dispatch).toEqual(own.on.workflow_dispatch);
+      expect(workflow['run-name']).toBe(own['run-name']);
       const { if: condition, concurrency, 'timeout-minutes': timeout } = workflow.jobs.review;
       expect({ condition, concurrency, timeout }).toEqual({ condition: undefined, concurrency: undefined, timeout: 30 });
     }
-    const { inputs: dispatchInputs } = dispatch[0].on.workflow_dispatch as { inputs: Record<string, unknown> };
+    for (const workflow of documented) expect(findMankiSteps(workflow)).toHaveLength(1);
+    const { inputs: dispatchInputs } = own.on.workflow_dispatch as { inputs: Record<string, unknown> };
     expect(Object.keys(dispatchInputs)).toEqual(['event', 'action', 'pr', 'head_sha', 'comment_id', 'review_id', 'delivery_id']);
+    expect(snippets['docs/getting-started.md'].filter(block => (parseYaml(block) as Partial<Workflow>).on)).toHaveLength(1);
   });
 
   it('passes only inputs that `action.yml` accepts and every required input', () => {
