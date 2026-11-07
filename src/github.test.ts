@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import { randomBytes } from 'crypto';
 
-import { ApprovalHeld, buildDashboard, formatFoundAgainReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings } from './github';
+import { ApprovalHeld, buildDashboard, formatFoundAgainReply, titleToSlug, formatBlockingPriorThreads, formatFindingComment, formatStatsOneLiner, mapVerdictToEvent, BOT_LOGIN, BotIdentity, isBotLogin, BOT_MARKER, REVIEW_COMPLETE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, postReview, resolveReferences, sanitizeMarkdown, sanitizeFilePath, truncateBody, dynamicFence, fetchFileContents, fetchLinkedIssues, updateProgressComment, postProgressComment, updateProgressDashboard, dismissPreviousReviews, reactToIssueComment, reactToReviewComment, fetchPRDiff, fetchInterRoundDiff, fetchConfigFile, readConfigFile, fetchRepoContext, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, extractVersionFromBody, fetchPRComments, INDENT, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, SupersededError, markProgressCommentSuperseded, retireSettingsBlocks, setSettingsBlock, showSettings } from './github';
 import { parseSettingsBlock, renderSettingsBlock, SettingsView, withSettingsBlock } from './settings';
 import { DashboardData, Finding, FindingFingerprintEntry, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, roundContextToFlatAliases } from './types';
 import { paginateSinglePage, TEST_BOT } from './test-utils';
@@ -2817,7 +2817,8 @@ describe('fetchRepoContext', () => {
 });
 
 describe('postProgressComment', () => {
-  it('posts a progress comment and returns comment ID', async () => {
+  it('posts a progress comment, returns its ID and saves it for the post step', async () => {
+    const saveState = jest.spyOn(core, 'saveState').mockImplementation(() => {});
     const createCommentMock = jest.fn().mockResolvedValue({ data: { id: 42 } });
     const mockOctokit = {
       rest: {
@@ -2830,7 +2831,9 @@ describe('postProgressComment', () => {
     const id = await postProgressComment(mockOctokit, 'owner', 'repo', 1, 'abc123');
     expect(id).toBe(42);
     const body = createCommentMock.mock.calls[0][0].body as string;
-    expect(body).toMatch(new RegExp(`^\\*\\*Review started\\*\\*\\n\\n${BOT_MARKER}\\n<!-- manki-version: [^>]+ -->\\n<!-- manki-run-id:[^>]* -->\\n<!-- manki-commit:abc123 -->$`));
+    expect(body).toMatch(new RegExp(`^\\*\\*Review started\\*\\*\\n\\n${BOT_MARKER}\\n<!-- manki-version: [^>]+ -->\\n<!-- manki-commit:abc123 -->$`));
+    expect(saveState).toHaveBeenCalledWith('manki_progress_comment', '42');
+    saveState.mockRestore();
   });
 
   it('uses dashboard data when provided', async () => {
@@ -2868,7 +2871,6 @@ describe('updateProgressDashboard', () => {
     const body = updateCommentMock.mock.calls[0][0].body as string;
     expect(body).toContain(BOT_MARKER);
     expect(body).toContain('8 findings');
-    expect(body).toMatch(/<!-- manki-run-id:[^ ]+ -->/);
     expect(body).toContain('<!-- manki-commit:abc123 -->');
   });
 
@@ -3661,167 +3663,66 @@ describe('postReview non-blocking findings', () => {
   });
 });
 
-describe('extractRunIdFromBody', () => {
-  it('extracts run_id from a marker embedded in a comment body', () => {
-    expect(extractRunIdFromBody(`${BOT_MARKER}\n<!-- manki-run-id:98765 -->\nbody`)).toBe(98765);
-  });
-
-  it('returns null when no marker is present', () => {
-    expect(extractRunIdFromBody(`${BOT_MARKER}\nno marker here`)).toBeNull();
-  });
-
-  it('returns null for null or undefined body', () => {
-    expect(extractRunIdFromBody(null)).toBeNull();
-    expect(extractRunIdFromBody(undefined)).toBeNull();
-    expect(extractRunIdFromBody('')).toBeNull();
-  });
-
-  it('returns null when run id is non-numeric', () => {
-    expect(extractRunIdFromBody(`${BOT_MARKER}\n<!-- manki-run-id:abc -->`)).toBeNull();
-  });
-
-  it('returns null when run id digits are missing', () => {
-    expect(extractRunIdFromBody(`${BOT_MARKER}\n<!-- manki-run-id: -->`)).toBeNull();
-  });
-
-  it('extracts the first run id when multiple markers are present', () => {
-    expect(extractRunIdFromBody(`${BOT_MARKER}\n<!-- manki-run-id:111 -->\n<!-- manki-run-id:222 -->`)).toBe(111);
-  });
-});
-
 describe('markOwnProgressCommentCancelled', () => {
   type Octokit = ReturnType<typeof import('@actions/github').getOctokit>;
+  const STATE = 'STATE_manki_progress_comment';
+  const running = withMarkers('**Review in progress**', BOT_MARKER);
 
-  function makeBody(runId: number): string {
-    return `${BOT_MARKER}\n<!-- manki-run-id:${runId} -->\n**Review in progress**`;
+  function makeOctokit(read: { body: string } | Error) {
+    const getComment = read instanceof Error ? jest.fn().mockRejectedValue(read) : jest.fn().mockResolvedValue({ data: { id: 10, ...read } });
+    const updateComment = jest.fn().mockResolvedValue({});
+    return { octokit: { rest: { issues: { getComment, updateComment } } } as unknown as Octokit, getComment, updateComment };
   }
 
-  function makeOctokit(comments: Array<{ id?: number; body: string; user: { login?: string; type: string } }>, updateError?: Error) {
-    const updateComment = updateError
-      ? jest.fn().mockRejectedValue(updateError)
-      : jest.fn().mockResolvedValue({});
-    const listComments = jest.fn().mockResolvedValue({
-      data: comments.map((c, i) => ({
-        id: c.id ?? i + 1,
-        body: c.body,
-        user: { login: c.user.login ?? (c.user.type === 'Bot' ? BOT_LOGIN : 'someone'), type: c.user.type },
-      })),
-    });
-    const octokit = {
-      paginate: jest.fn(paginateSinglePage),
-      rest: { issues: { listComments, updateComment } },
-    } as unknown as Octokit;
-    return { octokit, updateComment, listComments };
-  }
+  beforeEach(() => { process.env[STATE] = '10'; });
+  afterEach(() => { delete process.env[STATE]; });
 
-  it.each([
-    ['at the top of an older comment', makeBody(77)],
-    ['at the end', withMarkers('**Review in progress**', BOT_MARKER, '<!-- manki-run-id:77 -->')],
-  ])('marks the progress comment matching the given runId as cancelled with the markers %s', async (_, original) => {
-    const { octokit, updateComment } = makeOctokit([
-      { id: 10, body: original, user: { type: 'Bot' } },
-    ]);
+  it('marks the progress comment the run saved as cancelled, keeping its text', async () => {
+    const { octokit, getComment, updateComment } = makeOctokit({ body: running });
 
-    const result = await markOwnProgressCommentCancelled(octokit, TEST_BOT, 'owner', 'repo', 1, 77);
+    expect(await markOwnProgressCommentCancelled(octokit, 'owner', 'repo')).toBe(true);
 
-    expect(result).toBe(true);
+    expect(getComment).toHaveBeenCalledWith({ owner: 'owner', repo: 'repo', comment_id: 10 });
     expect(updateComment).toHaveBeenCalledWith(expect.objectContaining({ comment_id: 10 }));
     const body = updateComment.mock.calls[0][0].body as string;
-    expect(body.startsWith('**Review cancelled:** a newer run replaced it.')).toBe(true);
-    expect(body).toContain(original);
+    expect(body.startsWith('**Review cancelled:** the run stopped before the review finished.')).toBe(true);
+    expect(body).toContain(running);
     expect(body.endsWith(`\n\n${CANCELLED_MARKER}`)).toBe(true);
   });
 
   it('keeps the settings block last, saying the review was cancelled and offering no Cancel box', async () => {
     const view: SettingsView = { head: 'abc1234', status: 'review running', boxes: new Set(['pause', 'full', 'cancel']), ticked: new Set(['pause']) };
-    const original = withSettingsBlock(makeBody(77), view);
-    const { octokit, updateComment } = makeOctokit([{ id: 10, body: original, user: { type: 'Bot' } }]);
+    const { octokit, updateComment } = makeOctokit({ body: withSettingsBlock(running, view) });
 
-    expect(await markOwnProgressCommentCancelled(octokit, TEST_BOT, 'owner', 'repo', 1, 77)).toBe(true);
+    expect(await markOwnProgressCommentCancelled(octokit, 'owner', 'repo')).toBe(true);
     const body = updateComment.mock.calls[0][0].body as string;
-    expect(body).toContain(`${makeBody(77)}\n\n</details>`);
+    expect(body).toContain(`${running}\n\n</details>`);
     expect(parseSettingsBlock(body)).toEqual({ head: 'abc1234', status: 'review cancelled', boxes: new Set(['pause', 'full']), ticked: new Set(['pause']) });
   });
 
-  it('finds the progress comment past the first page of comments', async () => {
-    const comments = Array.from({ length: 150 }, (_, i) => ({ id: i + 1, body: makeBody(i + 1), user: { type: 'Bot' } }));
-    const { octokit, updateComment } = makeOctokit(comments.slice(0, 100));
-    (octokit.paginate as unknown as jest.Mock).mockResolvedValueOnce(
-      comments.map(c => ({ ...c, user: { login: BOT_LOGIN, type: 'Bot' }, updated_at: '2026-01-01T00:00:00Z' })),
-    );
+  it.each([
+    ['the run posted no progress comment', undefined, { body: running }],
+    ['the comment is complete', '10', { body: withMarkers('Done', BOT_MARKER, REVIEW_COMPLETE_MARKER) }],
+    ['the comment is already cancelled', '10', { body: withMarkers('Failed', BOT_MARKER, CANCELLED_MARKER) }],
+    ['the run deleted its comment', '10', Object.assign(new Error('Not Found'), { status: 404 })],
+  ])('leaves everything as it is when %s', async (_label, saved, read) => {
+    if (saved === undefined) delete process.env[STATE];
+    const warning = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const { octokit, updateComment } = makeOctokit(read);
 
-    expect(await markOwnProgressCommentCancelled(octokit, TEST_BOT, 'owner', 'repo', 1, 150)).toBe(true);
-    expect(updateComment).toHaveBeenCalledWith(expect.objectContaining({ comment_id: 150 }));
-  });
-
-  it('returns false when no comment has the matching runId', async () => {
-    const { octokit, updateComment } = makeOctokit([
-      { id: 10, body: makeBody(99), user: { type: 'Bot' } },
-    ]);
-
-    const result = await markOwnProgressCommentCancelled(octokit, TEST_BOT, 'owner', 'repo', 1, 77);
-
-    expect(result).toBe(false);
+    expect(await markOwnProgressCommentCancelled(octokit, 'owner', 'repo')).toBe(false);
     expect(updateComment).not.toHaveBeenCalled();
+    expect(warning).not.toHaveBeenCalled();
+    warning.mockRestore();
   });
 
-  it('ignores comments that already contain the cancelled marker', async () => {
-    const cancelledBody = `${CANCELLED_MARKER}\n${BOT_MARKER}\n<!-- manki-run-id:77 -->\nOld`;
-    const { octokit, updateComment } = makeOctokit([
-      { id: 10, body: cancelledBody, user: { type: 'Bot' } },
-    ]);
+  it('returns false and warns when the comment cannot be read', async () => {
+    const warning = jest.spyOn(core, 'warning').mockImplementation(() => {});
+    const { octokit } = makeOctokit(new Error('API error'));
 
-    const result = await markOwnProgressCommentCancelled(octokit, TEST_BOT, 'owner', 'repo', 1, 77);
-
-    expect(result).toBe(false);
-    expect(updateComment).not.toHaveBeenCalled();
-  });
-
-  it('ignores comments from non-bot users', async () => {
-    const { octokit } = makeOctokit([
-      { id: 10, body: makeBody(77), user: { type: 'User' } },
-    ]);
-
-    const result = await markOwnProgressCommentCancelled(octokit, TEST_BOT, 'owner', 'repo', 1, 77);
-
-    expect(result).toBe(false);
-  });
-
-  it('ignores comments posted by other bots (login mismatch)', async () => {
-    const { octokit, updateComment } = makeOctokit([
-      { id: 10, body: makeBody(77), user: { login: 'dependabot[bot]', type: 'Bot' } },
-    ]);
-
-    const result = await markOwnProgressCommentCancelled(octokit, TEST_BOT, 'owner', 'repo', 1, 77);
-
-    expect(result).toBe(false);
-    expect(updateComment).not.toHaveBeenCalled();
-  });
-
-  it('returns false and warns when listComments API fails', async () => {
-    const octokit = {
-      paginate: jest.fn(paginateSinglePage),
-      rest: { issues: { listComments: jest.fn().mockRejectedValue(new Error('API error')) } },
-    } as unknown as Octokit;
-
-    const result = await markOwnProgressCommentCancelled(octokit, TEST_BOT, 'owner', 'repo', 1, 77);
-
-    expect(result).toBe(false);
-  });
-
-  it('idempotent: does not re-update a comment already containing CANCELLED_MARKER in body', async () => {
-    // Simulate the rare case where the top-level check passes but the body
-    // already has the marker — markProgressCommentCancelled should early-return.
-    // Build a body where the marker ordering makes the outer filter pass but
-    // the inner guard catches it. We assert by verifying result + no update.
-    const { octokit, updateComment } = makeOctokit([
-      { id: 10, body: makeBody(77) + `\n${CANCELLED_MARKER}`, user: { type: 'Bot' } },
-    ]);
-
-    // Outer filter excludes CANCELLED_MARKER, so this returns false
-    const result = await markOwnProgressCommentCancelled(octokit, TEST_BOT, 'owner', 'repo', 1, 77);
-    expect(result).toBe(false);
-    expect(updateComment).not.toHaveBeenCalled();
+    expect(await markOwnProgressCommentCancelled(octokit, 'owner', 'repo')).toBe(false);
+    expect(warning).toHaveBeenCalledWith('Post-cleanup failed: API error');
+    warning.mockRestore();
   });
 });
 

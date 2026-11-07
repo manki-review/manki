@@ -1647,17 +1647,13 @@ describe('postCleanup (via main dispatch)', () => {
     return asDispatchedRun(main);
   }
 
-  it('marks the progress comment of the current run cancelled, with the PR number from the inputs', async () => {
+  it('marks the progress comment of the current run cancelled, naming the PR from the inputs', async () => {
     jest.mocked(ghUtils.markOwnProgressCommentCancelled).mockResolvedValueOnce(true);
 
     await runPostPhase();
 
-    expect(jest.mocked(ghUtils.markOwnProgressCommentCancelled)).toHaveBeenCalledWith(
-      expect.anything(), TEST_BOT, 'test-owner', 'test-repo', 42, 12345,
-    );
-    expect(jest.mocked(core.info)).toHaveBeenCalledWith(
-      expect.stringContaining('marked progress comment for run 12345 as cancelled'),
-    );
+    expect(jest.mocked(ghUtils.markOwnProgressCommentCancelled)).toHaveBeenCalledWith(expect.anything(), 'test-owner', 'test-repo');
+    expect(jest.mocked(core.info)).toHaveBeenCalledWith('Post-cleanup: marked the progress comment on #42 as cancelled');
     expect(mockChecksGet).not.toHaveBeenCalled();
     expect(mockChecksUpdate).not.toHaveBeenCalled();
   });
@@ -1667,9 +1663,7 @@ describe('postCleanup (via main dispatch)', () => {
 
     await runPostPhase('7');
 
-    expect(jest.mocked(core.info)).toHaveBeenCalledWith(
-      expect.stringContaining('no progress comment found for run 12345'),
-    );
+    expect(jest.mocked(core.info)).toHaveBeenCalledWith('Post-cleanup: no open progress comment on #7');
   });
 
   it('does nothing in the post phase of a run the Manki service did not start', async () => {

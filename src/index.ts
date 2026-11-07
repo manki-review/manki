@@ -1950,15 +1950,13 @@ const NOT_DISPATCHED = 'Manki runs only from the `workflow_dispatch` workflow th
 async function postCleanup(): Promise<void> {
   const prNumber = dispatchedNumber();
   const { owner, repo } = github.context.repo;
-  const runId = github.context.runId;
   try {
-    const { octokit, bot } = await getAuth();
+    const { octokit } = await getAuth();
     await cancelOpenReviewCheck(octokit, owner, repo);
-    const marked = await markOwnProgressCommentCancelled(octokit, bot, owner, repo, prNumber, runId);
-    if (marked) {
-      core.info(`Post-cleanup: marked progress comment for run ${runId} as cancelled`);
+    if (await markOwnProgressCommentCancelled(octokit, owner, repo)) {
+      core.info(`Post-cleanup: marked the progress comment on #${prNumber} as cancelled`);
     } else {
-      core.info(`Post-cleanup: no progress comment found for run ${runId}`);
+      core.info(`Post-cleanup: no open progress comment on #${prNumber}`);
     }
   } catch (error) {
     core.warning(`Post-cleanup failed: ${error instanceof Error ? error.message : error}`);

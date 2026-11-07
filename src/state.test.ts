@@ -1094,18 +1094,9 @@ describe('checkAndAutoApprove — in-progress marker lifecycle', () => {
 
 describe('postAutoApproveProgressComment / markAutoApprove*', () => {
   const ghActual = jest.requireActual('./github') as typeof import('./github');
-  const githubContext = jest.requireActual('@actions/github').context as { runId: number };
-  let savedRunId: number;
 
-  beforeEach(() => {
-    savedRunId = githubContext.runId;
-    githubContext.runId = 12345;
-  });
-  afterEach(() => {
-    githubContext.runId = savedRunId;
-  });
-
-  it('posts a body that names its run, so the post step can mark it cancelled', async () => {
+  it('posts the comment and saves its id, so the post step can mark it cancelled', async () => {
+    const saveState = jest.spyOn(core, 'saveState').mockImplementation(() => {});
     let postedBody = '';
     const createComment = jest.fn().mockImplementation(async ({ body }: { body: string }) => {
       postedBody = body;
@@ -1115,8 +1106,9 @@ describe('postAutoApproveProgressComment / markAutoApprove*', () => {
 
     await ghActual.postAutoApproveProgressComment(octokit, 'o', 'r', 1);
 
-    expect(ghActual.extractRunIdFromBody(postedBody)).toBe(12345);
+    expect(saveState).toHaveBeenCalledWith('manki_progress_comment', '1');
     expect(postedBody).toContain('Auto-approving');
+    saveState.mockRestore();
   });
 
   it('marks the comment complete, so the post step leaves it alone', async () => {
