@@ -2,6 +2,7 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
+import { fetchPrState, reportPrState } from './auth';
 import { completeReviewCheck, outcomeReport, startReviewCheck } from './check-run';
 import { ApprovalHeld, approvalHoldLine, APPROVED_LINE, AUTO_APPROVE_MARKER, BotIdentity, BOT_MARKER as PROGRESS_MARKER, dismissPreviousReviews, fetchApprovalHold, fetchInterRoundDiff, fetchPRComments, fetchReviewThreadNodes, fetchStandingVerdict, PAUSE_NOTICE_MARKER, REVIEW_COMPLETE_MARKER, formatSecurityOverrides, isApprovalSettingRefusal, isBotLogin, isFailedProgressOn, isRepoAdmin, markAutoApproveComplete, markProgressCommentFailed, markProgressCommentSuperseded, postAutoApproveProgressComment } from './github';
 import { SETTINGS_MARKER } from './settings';
@@ -286,6 +287,9 @@ async function autoReviewHalt(octokit: Octokit, bot: BotIdentity, owner: string,
   if (!config.auto_review) {
     return 'Automatic review is off for this repository (`auto_review: false`). Comment `@manki review` to review it.';
   }
+  if ((await fetchPrState(owner, repo, prNumber, github.context.runId))?.settings.paused) {
+    return 'Automatic review is paused in the settings block. Untick **Pause automatic reviews** there, or comment `@manki review`, to review it.';
+  }
   const { reason } = pauseState(await fetchPriorRoundContexts(octokit, bot, owner, repo, prNumber), config);
   return reason && `${reason} Automatic review is paused. Tick **Force review** in the settings block, or comment \`@manki review\`, to review it.`;
 }
@@ -486,7 +490,10 @@ async function checkAndAutoApprove(
     return true;
   }
 
-  if (await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha)) return false;
+  if (await holdApproval(octokit, bot, owner, repo, prNumber, pr.head.sha)) {
+    await reportPrState(owner, repo, prNumber, { approval: { commit: pr.head.sha, held: true } });
+    return false;
+  }
 
   const progressCommentId = await postAutoApproveProgressComment(octokit, owner, repo, prNumber);
 
@@ -509,6 +516,8 @@ async function checkAndAutoApprove(
         body,
       });
       core.info('Auto-approved PR');
+      // An approval ends the pause, so the coordinator again starts push reviews.
+      await reportPrState(owner, repo, prNumber, { approval: { commit: pr.head.sha, held: false }, pause: null });
       await dismissPreviousReviews(octokit, owner, repo, prNumber);
       await completeReviewCheck(await startReviewCheck(octokit, owner, repo, pr.head.sha), outcomeReport('READY', 'All blocking threads are resolved.'));
     } catch (error) {

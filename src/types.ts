@@ -1032,10 +1032,20 @@ export type RunMode = 'full' | 'deeper' | 'draft' | 'force';
 export interface PrState {
   /** The PR's sticky settings. */
   settings: { paused: boolean };
+  /** The commit of the PR's last finished review. */
+  lastReviewed?: string;
   /** The modes of this run. */
   runModes: ReadonlySet<RunMode>;
   /** The modes of the work still queued for the PR. */
   queuedModes: ReadonlySet<RunMode>;
+}
+
+/** What a run tells the PR coordinator once it has posted, as `/state/report` takes it. */
+export interface StateReport {
+  reviewed?: { commit: string };
+  approval?: { commit: string; held: boolean };
+  /** Why automatic review is paused, or `null` once it is not. */
+  pause?: { reason: string } | null;
 }
 
 /** Model spec each pipeline stage runs on. */

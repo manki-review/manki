@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 import * as path from 'path';
 
 import { assertWritesAllowed, RunCancelledError, stopWritesOn } from './abort';
-import { AppMemory, AuthResult, createAuthenticatedOctokit, fetchPrState, getMemoryToken } from './auth';
+import { AppMemory, AuthResult, createAuthenticatedOctokit, fetchPrState, getMemoryToken, reportPrState } from './auth';
 import { sanitizeTokens, withMarkers } from './utils';
 import { applyBaseReviewConfig, BaseReviewConfig, loadConfig, loadReviewConfig, sanitizeForkConfig, resolveFallbackModel, resolveMemoryRepo, resolveModel, resolvePairModel } from './config';
 import { buildAuthForProvider, createLLMClient, hasAnyProviderCredentials, parseModelSpec, sanitizeLogOutput } from './providers';
@@ -24,7 +24,7 @@ import { collectStaticSignals } from './static-signals';
 import { runStepHook, STEP_HOOK_COMMAND } from './tool-steps';
 import { fetchWorkspace } from './workspace';
 import { SETTINGS_MARKER, SettingsBox, SettingsView, withSettingsBlock } from './settings';
-import { DashboardData, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StaticSignal, roundContextToFlatAliases } from './types';
+import { DashboardData, FullReviewOptions, MemoryLoadStatus, OpenThread, ParsedDiff, PrContext, ReviewConfig, ReviewMetadata, ReviewModels, ReviewResult, RoundContext, RoundOutcome, RoundStaticAnalysis, PrState, RoundTrigger, StateReport, StaticSignal, roundContextToFlatAliases } from './types';
 import {
   fetchPRDiff,
   fetchConfigFile,
@@ -361,11 +361,11 @@ function reviewModes({ runModes }: PrState): { forced: boolean; fullReview: bool
 
 /**
  * Shows `status` in the settings block, for a run that reviews nothing. Posts `text` with it when no comment has a block.
- * Without `lastReviewed`, the block keeps the commit it names.
+ * Without `lastReviewed`, the block names the coordinator's last reviewed commit, or keeps the one it names.
  */
 async function showRunStatus(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, settings: PrState,
-  { head, draft, status, text, lastReviewed }: { head: string; draft: boolean; status: string; text: string; lastReviewed?: string },
+  { head, draft, status, text, lastReviewed = settings.lastReviewed }: { head: string; draft: boolean; status: string; text: string; lastReviewed?: string },
 ): Promise<void> {
   await showSettings(octokit, bot, owner, repo, prNumber, {
     ...(lastReviewed && { lastReviewed }), head, status, boxes: settingsBoxes(draft), ticked: tickedBoxes(settings),
@@ -644,7 +644,7 @@ async function postRunProgress(target: RunTarget, progress: RunProgress, { setti
   }
   const latest = latestSettings(comments, bot);
   progress.settings = {
-    lastReviewed: latest?.settings.lastReviewed, draft, ticked: tickedBoxes(settings),
+    lastReviewed: settings.lastReviewed, draft, ticked: tickedBoxes(settings),
     ...(latest && { previousId: latest.id }),
   };
   const commentId = await postProgressComment(octokit, owner, repo, prNumber, commitSha, undefined, runningSettings(target, progress));
@@ -773,6 +773,7 @@ async function skipsRound(target: RunTarget, config: ReviewConfig, trigger: Roun
           });
           await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha);
         }
+        if (approved) await reportPrState(owner, repo, prNumber, { approval: { commit: commitSha, held: !!held } });
         core.info(`Round SKIPPED: no change since reviewed commit ${shortSha}, ${standing.verdict} stands`);
         await showRunStatus(octokit, bot, owner, repo, prNumber, settings, {
           head: commitSha, draft: !!draft, status: 'up to date', text: summary, lastReviewed: standing.commitSha,
@@ -802,7 +803,6 @@ async function loadRecap(
     await dropProgressComment(target, progress, settings, 'automatic review off', 'Automatic review is off for this repository (`auto_review: false`).');
     return undefined;
   }
-  if (progress.settings) progress.settings.lastReviewed = recap.priorRounds.at(-1)?.meta.commitSha ?? progress.settings.lastReviewed;
 
   await reopenAuthorResolvedThreads(octokit, recap.previousFindings, pauseState(recap, config).paused);
   await announceSecurityOverrides(octokit, securityOverridesIn(recap.previousFindings).filter(o => !o.announced));
@@ -1012,15 +1012,21 @@ async function postTooBigNotice(target: RunTarget, progress: RunProgress, text: 
   return { conclusion: 'action_required', title: 'Not reviewed', summary: text };
 }
 
+/** The pause to report to the coordinator: its reason while automatic review is paused, otherwise `null`. */
+function pauseReport({ reason }: PauseState): StateReport['pause'] {
+  return reason ? { reason } : null;
+}
+
 /**
  * Replaces the progress comment with a notice that automatic review is paused, listing the blocking threads still open.
  * Each push during the same pause updates the notice from after `lastRoundAt` instead of adding another.
  * The notice's settings block offers Force review.
  */
 async function postPauseNotice(
-  target: RunTarget, progress: RunProgress, { capReached, capRounds, reason }: PauseState, maxAutoRounds: number,
+  target: RunTarget, progress: RunProgress, pause: PauseState, maxAutoRounds: number,
   previousFindings: PreviousFinding[], lastRoundAt?: string,
 ): Promise<CheckReport> {
+  const { capReached, capRounds, reason } = pause;
   core.info(capReached
     ? `Round cap reached (${capRounds} rounds with new changes since the last approval >= max ${maxAutoRounds}) — skipping auto review`
     : 'Last round did not converge — skipping auto review');
@@ -1031,6 +1037,7 @@ async function postPauseNotice(
     settings,
   );
   await replaceWithNotice(target, progress, PAUSE_NOTICE_MARKER, body, lastRoundAt);
+  await reportPrState(target.owner, target.repo, target.prNumber, { pause: pauseReport(pause) });
   return { conclusion: 'action_required', title: 'Automatic review paused', summary: `${reason} Automatic review is paused until someone asks for another round.` };
 }
 
@@ -1720,11 +1727,16 @@ async function runFullReview(
       await reopenThreads(octokit, resolved);
       throw error;
     }
+    const pauseAfter = pauseState({ ...recap, priorRounds: [...recap.priorRounds, context] }, config);
+    await reportPrState(owner, repo, prNumber, {
+      reviewed: { commit: commitSha },
+      ...(result.verdict === 'APPROVE' && { approval: { commit: commitSha, held: !!posted.approvalHeld } }),
+      pause: pauseReport(pauseAfter),
+    });
     await replyFixedThreads(run, resolved);
     await replyAnsweredThreads(run, result);
     await completeProgressComment(run, stage);
-    const pauseLifted = !pauseState({ ...recap, priorRounds: [...recap.priorRounds, context] }, config).paused;
-    await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha, pauseLifted);
+    await retireStaleNotices(octokit, bot, owner, repo, prNumber, commitSha, !pauseAfter.paused);
     setReviewOutputs(posted.id, context, result);
     checkReport = outcomeReport(result.outcome, result.summary, posted.approvalHeld);
   } catch (caught) {

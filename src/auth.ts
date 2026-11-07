@@ -4,7 +4,7 @@ import { createAppAuth } from '@octokit/auth-app';
 import { retry } from '@octokit/plugin-retry';
 import { throttling } from '@octokit/plugin-throttling';
 import { ACTIONS_BOT_LOGIN, BOT_LOGIN, BotIdentity } from './github';
-import type { PrState, RunMode } from './types';
+import type { PrState, RunMode, StateReport } from './types';
 import { redactSecretsDeep, registerSecret } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -180,14 +180,28 @@ export async function fetchPrState(owner: string, repo: string, prNumber: number
     }
     const data = response.data as Record<string, unknown> | null;
     const settings = data?.settings as Record<string, unknown> | undefined;
+    const reviewed = (data?.last_reviewed as Record<string, unknown> | null | undefined)?.commit;
     return {
       settings: { paused: settings?.paused === true },
+      ...(typeof reviewed === 'string' && { lastReviewed: reviewed }),
       runModes: modesOf(data?.active, item => item.run_id === runId),
       queuedModes: modesOf(data?.queue, () => true),
     };
   } catch (error) {
     core.warning(`Could not read the PR state from the token service, reviewing as not paused: ${error}`);
     return null;
+  }
+}
+
+/** Sends what this run posted on PR `prNumber` to the PR coordinator. A failure only warns, since the review on GitHub stands. */
+export async function reportPrState(owner: string, repo: string, prNumber: number, report: StateReport): Promise<void> {
+  try {
+    const response = await postToTokenService(new URL('state/report', tokenServiceUrl()).href, { owner, repo, pr: prNumber, ...report });
+    if (!response?.ok) {
+      core.warning(`The token service did not take the PR state of #${prNumber} (${response ? response.status : 'no OIDC token'})`);
+    }
+  } catch (error) {
+    core.warning(`Could not report the PR state to the token service: ${error}`);
   }
 }
 
