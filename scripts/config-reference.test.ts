@@ -1,6 +1,6 @@
 import { readFileSync } from 'fs';
 
-import { DEFAULT_CONFIG, GROUP_REVIEWER_KEYS, KNOWN_KEYS, RELATED_REPO_KEYS, REVIEW_KEYS } from '../src/config';
+import { DEFAULT_CONFIG, GROUP_REVIEWER_KEYS, KNOWN_KEYS, MODEL_KEYS, RELATED_REPO_KEYS, REVIEW_KEYS } from '../src/config';
 import { ANALYZERS } from '../src/types';
 import { REFERENCE_PATH, SETTINGS, withReference } from './config-reference';
 
@@ -17,12 +17,13 @@ describe('configuration reference', () => {
     const accepted = new Set([
       ...KNOWN_KEYS,
       ...leafPaths(DEFAULT_CONFIG),
+      ...[...MODEL_KEYS].map(k => `models.${k}`),
       ...[...REVIEW_KEYS].map(k => `review.${k}`),
       ...[...GROUP_REVIEWER_KEYS].map(k => `review.groups.<name>.reviewers[].${k}`),
       ...[...RELATED_REPO_KEYS].map(k => `related_repos[].${k}`),
       ...ANALYZERS.map(a => `static_analysis.analyzers.${a}`),
       // Nested keys `validateConfig` checks one by one, which no exported set lists.
-      'models.reviewer_pair', 'models.fallback', 'models.agents', 'metrics.fix_rate', 'reviewers[].name', 'reviewers[].focus',
+      'metrics.fix_rate', 'reviewers[].name', 'reviewers[].focus',
     ]);
     expect([...accepted].filter(key => !documented.includes(key))).toEqual([]);
     expect(documented.filter(key => !accepted.has(key))).toEqual([]);

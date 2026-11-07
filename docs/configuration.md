@@ -205,7 +205,6 @@ These still load, with a warning.
 
 | Setting | Type | Default | What it does |
 |---------|------|---------|--------------|
-| `models.agents` | map of model ids | none | Its first model that differs from `models.reviewer` becomes `models.reviewer_pair` when that is not set. Set `models.reviewer_pair` instead. |
 | `planner.paired` | `auto`, `always` or `never` | `auto` | Pins the planner's `paired` answer. Route classes with `review.routing` instead. |
 | `nit_handling` | `issues` or `comments` | none | Ignored. Nitpicks are listed in the review body. |
 | `review_level` | any | none | Ignored. The planner sets how many finders read each PR. |
