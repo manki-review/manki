@@ -128,14 +128,15 @@ function parseRefutation(text: string, workspace: string, file: string, diff?: P
 }
 
 /**
- * Grades `finding` by the refutation: a disproved one is dropped, and an unsettled one keeps its grade. A security
- * finding keeps its grade unless it is confirmed, since PR content the refuter reads could steer it.
+ * Grades `finding` by the refutation. A disproof drops an open lead or a finding capped below blocker, but never lowers
+ * a blocker, since PR content the refuter reads could steer it. An unsettled outcome keeps the grade, and a security
+ * finding changes only when confirmed.
  */
 function applyRefutation(finding: Finding, refutation: Refutation): Finding {
   const note = `Refutation ${refutation.outcome}: ${refutation.reason}`;
   const graded: Finding = { ...finding, refutation, judgeNotes: finding.judgeNotes ? `${finding.judgeNotes}\n${note}` : note };
   if (refutation.outcome !== 'confirmed' && finding.tags?.includes(SECURITY_TAG)) return graded;
-  if (refutation.outcome === 'disproved') return { ...graded, severity: 'ignore' };
+  if (refutation.outcome === 'disproved') return finding.severity === 'blocker' && !finding.lead ? graded : { ...graded, severity: 'ignore' };
   if (refutation.outcome === 'confirmed') {
     const proof = [...new Set([...(finding.evidence?.proof ?? []), ...(refutation.proof ?? [])])];
     const { lead: _lead, notChecked: _notChecked, ...confirmed } = graded;
