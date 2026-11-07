@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { minimatch } from 'minimatch';
 
-import { Finding, FindingSeverity } from './types';
+import { Finding, FindingSeverity, SECURITY_TAG } from './types';
 import { redactSecrets, redactSecretsDeep } from './utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -109,9 +109,8 @@ async function fetchTextFile(
 const SUPPRESSIBLE_SEVERITIES: ReadonlySet<FindingSeverity> = new Set<FindingSeverity>(['warning', 'suggestion', 'nitpick']);
 
 /**
- * Filter findings against stored suppressions.
- * Returns findings that are NOT suppressed.
- * Blocking-severity findings are never suppressed.
+ * Splits the judge's findings into the ones stored suppressions hide and the rest.
+ * A blocker, a security finding at any severity and a tool alert are never hidden.
  */
 export function applySuppressions(
   findings: Finding[],
@@ -121,7 +120,7 @@ export function applySuppressions(
   const suppressed: Finding[] = [];
 
   for (const finding of findings) {
-    if (!SUPPRESSIBLE_SEVERITIES.has(finding.severity)) {
+    if (!SUPPRESSIBLE_SEVERITIES.has(finding.severity) || finding.tags?.includes(SECURITY_TAG) || finding.toolSource) {
       kept.push(finding);
       continue;
     }

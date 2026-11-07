@@ -95,16 +95,17 @@ describe('applySuppressions', () => {
     expect(suppressed).toHaveLength(0);
   });
 
-  it('never suppresses required-severity findings', () => {
+  it('never suppresses a blocker, a security finding or a tool alert', () => {
     const findings = [
       makeFinding({ severity: 'blocker', title: 'Unused variable in auth' }),
+      makeFinding({ severity: 'warning', title: 'Unused variable leaks the token', tags: ['security'] }),
+      makeFinding({ severity: 'warning', title: 'no-unused-vars: Unused variable', toolSource: 'ESLint' }),
     ];
     const suppressions = [makeSuppression({ pattern: 'unused variable' })];
 
     const { kept, suppressed } = applySuppressions(findings, suppressions);
-    expect(kept).toHaveLength(1);
+    expect(kept).toEqual(findings);
     expect(suppressed).toHaveLength(0);
-    expect(kept[0].severity).toBe('blocker');
   });
 
   it('never suppresses ignore-severity findings', () => {

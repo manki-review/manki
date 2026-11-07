@@ -2093,8 +2093,8 @@ describe('buildDashboard', () => {
     expect(md).toContain(`${INDENT}evaluating 10 findings...`);
     expect(buildDashboard({ ...data, rawFindingCount: 1, judgeInputCount: 0, staticDedupCount: 1, llmDedupCount: 0 }))
       .toContain(`${INDENT}evaluating 0 findings (1 dropped as a repeat of an earlier resolved finding)...`);
-    expect(buildDashboard({ ...data, suppressionCount: 1, staticDedupCount: 1, llmDedupCount: 1 }))
-      .toContain(`${INDENT}evaluating 10 findings (1 suppressed by memory, 2 dropped as repeats of earlier resolved findings)...`);
+    expect(buildDashboard({ ...data, staticDedupCount: 1, llmDedupCount: 1 }))
+      .toContain(`${INDENT}evaluating 10 findings (2 dropped as repeats of earlier resolved findings)...`);
   });
 
   it('renders per-agent detail in the reviewed phase when agentProgress is provided', () => {
@@ -2322,14 +2322,14 @@ describe('buildDashboard', () => {
     expect(md).not.toContain(`${INDENT}dropped:`);
   });
 
-  it('renders test-nit suppression count in judge section when provided', () => {
+  it('renders the memory and test-nit suppression counts in judge section when provided', () => {
     const data: DashboardData = {
       phase: 'complete', lineCount: 400, agentCount: 3,
       rawFindingCount: 10, keptCount: 0, droppedCount: 3,
-      testNitSuppressedCount: 7,
+      suppressionCount: 2, testNitSuppressedCount: 7,
     };
     const md = buildDashboard(data);
-    expect(md).toContain('suppressed: 7 test-only nits (round ≥2 throttle)');
+    expect(md).toContain(`${INDENT}suppressed by memory: 2\n${INDENT}suppressed: 7 test-only nits (round ≥2 throttle)`);
   });
 
   it('omits test-nit suppression line when testNitSuppressedCount is not set', () => {

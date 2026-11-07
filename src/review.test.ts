@@ -2606,33 +2606,44 @@ describe('runReview', () => {
     expect(mockedRunJudgeAgent).not.toHaveBeenCalled();
   });
 
-  it('applies suppressions from memory to reviewer findings before judge, and never to blockers or tool alerts', async () => {
+  it('applies memory suppressions after the judge, and never to blockers, security findings or tool alerts', async () => {
+    const finder = (title: string, severity: string, file: string) => ({ severity, title, file, line: 10, description: 'Desc.' });
     const findingJson = JSON.stringify([
-      { severity: 'suggestion', title: 'Suppressed finding here', file: 'src/a.ts', line: 10, description: 'Desc.' },
-      { severity: 'blocker', title: 'Suppressed check lets injection through', file: 'src/b.ts', line: 20, description: 'Desc.' },
+      finder('Rename the option flag', 'suggestion', 'src/a.ts'),
+      finder('SQL injection in the query builder', 'warning', 'src/b.ts'),
+      // The finder grades it a warning, and the judge a blocker.
+      finder('Session cookie survives logout', 'warning', 'src/c.ts'),
     ]);
     const clients = makeClients(findingJson);
-    const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
     const memory = {
-      suppressions: [{ id: '1', pattern: 'suppressed', reason: 'intentional', created_by: 'user', created_at: '2025-01-01', pr_ref: '#1' }],
+      suppressions: [{ id: '1', pattern: 'ion', reason: 'noisy', created_by: 'user', created_at: '2025-01-01', pr_ref: '#1' }],
       learnings: [],
     };
     mockedApplySuppressions.mockImplementationOnce(jest.requireActual('./memory').applySuppressions);
-    // A later round, so dedup against earlier findings runs too.
-    const previousFindings = [{ title: 'Unrelated earlier finding', file: 'src/c.ts', line: 1, severity: 'warning' as const, status: 'open' as const }];
+    const alert = { tool: 'CodeQL', ruleId: 'js/sql-injection', severity: 'warning' as const, file: 'src/d.ts', line: 10, message: 'Query built from input', source: 'code_scanning' as const };
+    const judged = (title: string, severity: Finding['severity'], file: string, extra: Partial<Finding> = {}): Finding =>
+      ({ severity, title, file, line: 10, description: 'Desc.', reviewers: ['R1'], ...extra });
+    mockedRunJudgeAgent.mockResolvedValueOnce({
+      findings: [
+        judged('Rename the option flag', 'suggestion', 'src/a.ts'),
+        judged('SQL injection in the query builder', 'warning', 'src/b.ts', { tags: ['security'] }),
+        judged('Session cookie survives logout', 'blocker', 'src/c.ts'),
+        judged('js/sql-injection: Query built from input', 'warning', 'src/d.ts', { toolSource: 'CodeQL' }),
+      ],
+      summary: 'Four findings.',
+    });
 
-    const alert = { tool: 'CodeQL', ruleId: 'js/sql-injection', severity: 'warning' as const, file: 'src/a.ts', line: 10, message: 'Suppressed query built from input', source: 'code_scanning' as const };
+    const result = await runReview(clients, { config: makeConfig(), diff, rawDiff: 'raw diff', repoContext: 'repo context', memory, prContext: { title: 'PR', body: '', baseBranch: 'main', staticSignals: [alert] } });
 
-    const result = await runReview(clients, { config, diff, rawDiff: 'raw diff', repoContext: 'repo context', memory, previousFindings, prContext: { title: 'PR', body: '', baseBranch: 'main', staticSignals: [alert] } });
-    expect(mockedApplySuppressions).toHaveBeenCalled();
-    expect(mockedApplySuppressions.mock.calls.flatMap(([findings]) => findings).some(f => f.toolSource)).toBe(false);
-    expect([...new Set(mockedRunJudgeAgent.mock.calls[0][2].findings.map(f => f.title))]).toEqual([
-      'js/sql-injection: Suppressed query built from input',
-      'Suppressed check lets injection through',
+    // Every finding reaches the judge, the finder's warning grade included.
+    expect(new Set(mockedRunJudgeAgent.mock.calls[0][2].findings.map(f => f.title))).toEqual(new Set([
+      'js/sql-injection: Query built from input', 'Rename the option flag', 'SQL injection in the query builder', 'Session cookie survives logout',
+    ]));
+    expect(result.findings.map(f => f.title)).toEqual([
+      'SQL injection in the query builder', 'Session cookie survives logout', 'js/sql-injection: Query built from input',
     ]);
-    // Both reviewers return the suggestion.
-    expect(result.suppressionCount).toBe(2);
+    expect(result.suppressionCount).toBe(1);
   });
 
   it('keeps the judge severities when memory is loaded', async () => {
@@ -2684,26 +2695,13 @@ describe('runReview', () => {
     expect(result.findings).toEqual([]);
   });
 
-  it('emits judgeInputCount in judging progress event reflecting post-suppression post-dedup count', async () => {
+  it('emits judgeInputCount in judging progress event reflecting the post-dedup count', async () => {
     const findingJson = JSON.stringify([
       { severity: 'blocker', title: 'Null dereference bug', file: 'src/a.ts', line: 10, description: 'Bug found.' },
     ]);
     const clients = makeClients(findingJson);
     const config = makeConfig();
     const diff = makeDiff({ totalAdditions: 10, totalDeletions: 5 });
-    const memory = {
-      suppressions: [{ id: '1', pattern: 'xyz-nomatch', reason: 'noisy', created_by: 'user', created_at: '2025-01-01', pr_ref: '#1' }],
-      learnings: [],
-    };
-    // Suppress 1 of the 2 identical raw findings, keep 1 for dedup to handle.
-    mockedApplySuppressions.mockReturnValue({
-      kept: [
-        { severity: 'blocker', title: 'Null dereference bug', file: 'src/a.ts', line: 10, description: 'Bug found.', reviewers: ['Security & Safety'] },
-      ],
-      suppressed: [
-        { severity: 'blocker', title: 'Null dereference bug', file: 'src/a.ts', line: 10, description: 'Bug found.', reviewers: ['Security & Safety'] },
-      ],
-    });
     const previousFindings = [
       { title: 'Null dereference bug', file: 'src/a.ts', line: 10, severity: 'blocker' as const, status: 'resolved' as const },
     ];
@@ -2715,20 +2713,18 @@ describe('runReview', () => {
         diff,
         rawDiff: 'raw diff',
         repoContext: 'repo context',
-        memory,
         onProgress,
         previousFindings,
       },
     );
 
-    // raw = 2, suppression drops 1, static dedup drops the remaining 1, judgeInput = 0
-    expect(result.suppressionCount).toBe(1);
-    expect(result.staticDedupCount).toBe(1);
+    // raw = 2, static dedup drops both, judgeInput = 0
+    expect(result.staticDedupCount).toBe(2);
     const judgingCalls = onProgress.mock.calls.filter(
       (call: [import('./review').ReviewProgress]) => call[0].phase === 'judging',
     );
     expect(judgingCalls).toHaveLength(1);
-    expect(judgingCalls[0][0]).toMatchObject({ rawFindingCount: 2, judgeInputCount: 0, suppressionCount: 1, staticDedupCount: 1, llmDedupCount: 0 });
+    expect(judgingCalls[0][0]).toMatchObject({ rawFindingCount: 2, judgeInputCount: 0, staticDedupCount: 2, llmDedupCount: 0 });
   });
 
   it('runs LLM dedup after static dedup when a dedup client is provided', async () => {

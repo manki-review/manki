@@ -160,7 +160,6 @@ export function buildRoundContext(input: RoundRecordInput, result: ReviewResult,
   const mergedDuplicates = allJudged.length > 0
     ? (result.rawFindingCount ?? 0)
       + (result.toolAlertCount ?? 0)
-      - (result.suppressionCount ?? 0)
       - (result.staticDedupCount ?? 0)
       - (result.llmDedupCount ?? 0)
       - allJudged.length

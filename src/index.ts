@@ -1237,7 +1237,6 @@ async function reviewRound(
         dashboard.phase = 'reviewed';
         dashboard.rawFindingCount = event.rawFindingCount;
         dashboard.judgeInputCount = event.judgeInputCount;
-        dashboard.suppressionCount = event.suppressionCount;
         dashboard.staticDedupCount = event.staticDedupCount;
         dashboard.llmDedupCount = event.llmDedupCount;
         updateProgressDashboard(octokit, owner, repo, commentId, dashboard, runningSettings(run, progress))
@@ -1475,6 +1474,7 @@ async function completeProgressComment(run: ReviewRun, stage: ReviewStageResult)
     droppedCount: judgeDroppedCount,
     keptSeverities,
     droppedSeverities,
+    ...(result.suppressionCount && { suppressionCount: result.suppressionCount }),
     ...(result.testNitSuppressedCount != null && result.testNitSuppressedCount > 0 && { testNitSuppressedCount: result.testNitSuppressedCount }),
     ...(result.openLeads && { unfinishedChecks: result.openLeads.map(({ title, file, line }) => ({ title, file, line })) }),
     ...(disproved.length > 0 && { disproved }),
