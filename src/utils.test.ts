@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 
-import { truncate, formatDuration, mapWithConcurrency, redactSecrets, registerSecret, safeJsonParse, safeTruncate, sanitizeTokens, sendWithParseRetry, withMarkers } from './utils';
+import { truncate, formatDuration, isSecretName, mapWithConcurrency, redactSecrets, registerSecret, safeJsonParse, safeTruncate, sanitizeTokens, sendWithParseRetry, withMarkers } from './utils';
 
 jest.mock('@actions/core');
 
@@ -85,6 +85,21 @@ describe('utils', () => {
       expect(safeJsonParse('not json')).toBeNull();
       expect(safeJsonParse('{broken')).toBeNull();
       expect(safeJsonParse('')).toBeNull();
+    });
+  });
+
+  describe('isSecretName', () => {
+    it('matches a secret word as any part of the name, except the names that hold a path, an endpoint or a switch', () => {
+      for (const name of ['GITHUB_TOKEN', 'OPENAI_API_KEY_PROD', 'GOOGLE_CREDENTIALS_JSON', 'ANTHROPIC_CUSTOM_HEADERS', 'db_password', 'AUTH', 'AWS_SECRET_FILE_KEY', 'AWS_WEB_IDENTITY_TOKEN_FILE_2', 'INPUT_MANKI_TOKEN']) {
+        expect([name, isSecretName(name)]).toEqual([name, true]);
+      }
+      for (const name of [
+        'AWS_WEB_IDENTITY_TOKEN_FILE', 'AWS_SHARED_CREDENTIALS_FILE', 'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI', 'AWS_CONTAINER_CREDENTIALS_FULL_URI',
+        'CLAUDE_CODE_SKIP_BEDROCK_AUTH', 'CLAUDE_CODE_SKIP_VERTEX_AUTH', 'INPUT_MANKI_TOKEN_URL',
+        'MAX_THINKING_TOKENS', 'KEYBOARD_LAYOUT', 'PATH', 'MONKEY_PATCH',
+      ]) {
+        expect([name, isSecretName(name)]).toEqual([name, false]);
+      }
     });
   });
 
