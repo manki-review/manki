@@ -157,7 +157,8 @@ export async function refuteBlockers(client: LLMClient, findings: Finding[], { w
     }
     try {
       const refutation = await sendWithParseRetry(
-        () => client.sendMessage(REFUTE_SYSTEM_PROMPT, buildRefuteMessage(finding), {
+        buildRefuteMessage(finding),
+        message => client.sendMessage(REFUTE_SYSTEM_PROMPT, message, {
           ...(effort && { effort }), repoTools: { root: workspace, steps: REFUTE_STEPS }, timeoutMs: REFUTE_TIMEOUT_MS,
         }),
         reply => parseRefutation(reply.content, workspace, finding.file),

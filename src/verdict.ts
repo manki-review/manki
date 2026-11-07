@@ -109,7 +109,8 @@ function parseVerdictReport(responseText: string): VerdictReport {
 /** Runs the verdict reader once on `userMessage`. Throws when the call fails or its output is truncated or unparseable. */
 export async function runVerdictReader(client: LLMClient, userMessage: string): Promise<VerdictReport> {
   return sendWithParseRetry(
-    () => client.sendMessage(VERDICT_READER_SYSTEM_PROMPT, userMessage, { effort: 'high', timeoutMs: VERDICT_TIMEOUT_MS }),
+    userMessage,
+    message => client.sendMessage(VERDICT_READER_SYSTEM_PROMPT, message, { effort: 'high', timeoutMs: VERDICT_TIMEOUT_MS }),
     (response) => {
       if (response.truncated) {
         throw new Error(`verdict truncated at the output token limit (length ${response.content.length})`);

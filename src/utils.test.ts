@@ -1,6 +1,6 @@
 import * as core from '@actions/core';
 
-import { truncate, formatDuration, mapWithConcurrency, redactSecrets, registerSecret, safeJsonParse, safeTruncate, sanitizeTokens, withMarkers } from './utils';
+import { truncate, formatDuration, mapWithConcurrency, redactSecrets, registerSecret, safeJsonParse, safeTruncate, sanitizeTokens, sendWithParseRetry, withMarkers } from './utils';
 
 jest.mock('@actions/core');
 
@@ -167,6 +167,31 @@ describe('utils', () => {
     it('keeps the body first and puts each marker on its own line after a blank line', () => {
       expect(withMarkers('**Done.**', '<!-- a -->', '<!-- b -->')).toBe('**Done.**\n\n<!-- a -->\n<!-- b -->');
     });
+  });
+});
+
+describe('sendWithParseRetry', () => {
+  it('sends the message again with a note naming the parse error, and returns the parsed second reply', async () => {
+    const send = jest.fn<Promise<string>, [string]>().mockResolvedValueOnce('**Verdict:** READY').mockResolvedValueOnce('{"ok":true}');
+    const onRetry = jest.fn();
+    const result = await sendWithParseRetry('Review this.', send, reply => JSON.parse(reply) as { ok: boolean }, onRetry);
+    expect(result).toEqual({ ok: true });
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0][0]).toBe('Review this.');
+    expect(send.mock.calls[1][0]).toMatch(/^Review this\.\n\nYour previous reply could not be used: Unexpected token '\*'/);
+    expect(send.mock.calls[1][0]).toMatch(/\n\nReply with only the JSON object the system prompt describes, with no text, markdown or code fence around it\.$/);
+  });
+
+  it('sends once when the first reply parses, cuts a long parse error, and throws a second failure', async () => {
+    const send = jest.fn<Promise<string>, [string]>().mockResolvedValue('{}');
+    await sendWithParseRetry('m', send, reply => reply, jest.fn());
+    expect(send).toHaveBeenCalledTimes(1);
+
+    send.mockReset().mockResolvedValue('nope');
+    const failing = () => { throw new Error('x'.repeat(1000)); };
+    await expect(sendWithParseRetry('m', send, failing, jest.fn())).rejects.toThrow('x'.repeat(1000));
+    expect(send.mock.calls[1][0]).toContain(`${'x'.repeat(300)}...\n\n`);
+    expect(send.mock.calls[1][0]).not.toContain('x'.repeat(301));
   });
 });
 

@@ -1094,7 +1094,8 @@ export async function runJudgeAgent(
 
   const effort = input.effort ?? 'high';
   let judgeResult = await sendWithParseRetry(
-    () => client.sendMessage(systemPrompt, userMessage, { effort, timeoutMs: JUDGE_TIMEOUT_MS }),
+    userMessage,
+    message => client.sendMessage(systemPrompt, message, { effort, timeoutMs: JUDGE_TIMEOUT_MS }),
     (reply) => {
       if (reply.truncated) {
         throw new Error(`judge reply truncated at the output token limit (length ${reply.content.length})`);

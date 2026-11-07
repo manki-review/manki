@@ -121,22 +121,34 @@ export function sanitizeTokens(s: string): string {
   return s.replace(/\b(ghp|ghs|gho|ghu|ghr|github_pat)_[A-Za-z0-9._-]+/g, '[REDACTED]');
 }
 
+const MAX_PARSE_ERROR_CHARS = 300;
+
+/** The note a parse retry adds to its user message, so the model learns what was wrong with its reply. */
+export function parseRetryNote(error: unknown): string {
+  const reason = safeTruncate(error instanceof Error ? error.message : String(error), MAX_PARSE_ERROR_CHARS);
+  return `Your previous reply could not be used: ${reason}\n\nReply with only the JSON object the system prompt describes, with no text, markdown or code fence around it.`;
+}
+
 /**
- * Sends a request and parses its reply. When parsing throws, it sends once more and parses that
- * reply, so a single malformed model reply does not fail the stage. A second failure is thrown.
+ * Sends `message` and parses the reply. When parsing throws, it sends `message` once more with a note that names
+ * the parse error, and parses that reply, so a single malformed model reply does not fail the stage. A second failure
+ * is thrown.
  */
 export async function sendWithParseRetry<R, T>(
-  send: () => Promise<R>,
+  message: string,
+  send: (message: string) => Promise<R>,
   parse: (reply: R) => T,
   onRetry: (error: unknown) => void,
 ): Promise<T> {
-  const first = await send();
+  const first = await send(message);
+  let note: string;
   try {
     return parse(first);
   } catch (error) {
     onRetry(error);
+    note = parseRetryNote(error);
   }
-  return parse(await send());
+  return parse(await send(`${message}\n\n${note}`));
 }
 
 /**
