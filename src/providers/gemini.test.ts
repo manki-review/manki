@@ -486,7 +486,7 @@ describe('GeminiClient OAuth path', () => {
     const proc = setupOAuthSpawnMock({ stdout: 'ok' });
     let policy = '';
     mockSpawn.mockImplementationOnce((_command, spawnArgs) => {
-      policy = readFileSync((spawnArgs as string[])[4], 'utf8');
+      policy = readFileSync((spawnArgs as string[])[3], 'utf8');
       return proc as unknown as ReturnType<typeof spawn>;
     });
     const client = new GeminiClient({ auth: { kind: 'oauth', token: 'tok' }, model: 'gemini-3.1-pro-preview' });
@@ -494,9 +494,9 @@ describe('GeminiClient OAuth path', () => {
     await client.sendMessage('sys', 'user');
 
     const args = mockSpawn.mock.calls[0][1] as string[];
-    expect(args).toEqual(['--skip-trust', '--model', 'gemini-3.1-pro-preview', '--policy', expect.stringMatching(/\/no-tools\.toml$/)]);
+    expect(args).toEqual(['--skip-trust', '--model=gemini-3.1-pro-preview', '--policy', expect.stringMatching(/\/no-tools\.toml$/)]);
     expect(policy).toBe('[[rule]]\ntoolName = "*"\ndecision = "deny"\npriority = 999\n');
-    expect(existsSync(args[4])).toBe(false);
+    expect(existsSync(args[3])).toBe(false);
     const { cwd } = mockSpawn.mock.calls[0][2] as { cwd: string };
     expect(cwd.startsWith(join(tmpdir(), 'manki-cli-'))).toBe(true);
     expect(readdirSync(cwd)).toEqual([]);

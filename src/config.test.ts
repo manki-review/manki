@@ -511,6 +511,17 @@ models:
       expect(core.warning).not.toHaveBeenCalled();
     });
 
+    it.each([
+      ['models:\n  reviewer: gemini/--yolo\n', '`models.reviewer`: Invalid model id "--yolo" in "gemini/--yolo"'],
+      ['models:\n  judge: claude/-x\n', '`models.judge`: Invalid model id "-x" in "claude/-x"'],
+      ['models:\n  planner: claude-haiku 5\n', '`models.planner`: Invalid model id "claude-haiku 5"'],
+      ['models:\n  fallback: -x\n', '`models.fallback`: Invalid model id "-x"'],
+      ['models:\n  dedup: mistral-large\n', '`models.dedup`: Unknown model "mistral-large"'],
+      ['review:\n  groups:\n    g: { reviewers: [{ model: "openai/--sandbox" }, { model: "@reviewer_pair" }] }\n', '`review.groups.g.reviewers[0].model`: Invalid model id "--sandbox"'],
+    ])('rejects a model id a CLI could read as an option: %s', (yaml, message) => {
+      expect(() => loadConfigFromContent(yaml)).toThrow(message);
+    });
+
     it('throws on invalid models.judge type', () => {
       const yaml = `
 models:

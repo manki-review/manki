@@ -7,6 +7,9 @@ export interface ModelSpec {
 
 const KNOWN_PROVIDERS: ReadonlySet<ProviderName> = new Set<ProviderName>(['anthropic', 'openai', 'gemini']);
 
+// A model id reaches a CLI's argv, so it may not start with `-` or hold spaces or shell characters.
+const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/;
+
 const KNOWN_PREFIXES: ReadonlyArray<readonly [RegExp, ProviderName]> = [
   [/^claude-/, 'anthropic'],
   [/^gpt-/, 'openai'],
@@ -20,9 +23,12 @@ export function parseModelSpec(input: string): ModelSpec {
     throw new Error('Unknown model "". Use a known prefix (e.g., "claude-...", "gpt-...", "o3...", "gemini-...") or "provider/model" syntax.');
   }
   const slash = input.indexOf('/');
+  const model = input.slice(slash + 1);
+  if (model && !MODEL_ID.test(model)) {
+    throw new Error(`Invalid model id "${model}" in "${input}". A model id starts with a letter or digit and holds only letters, digits and \`._:@/-\`.`);
+  }
   if (slash !== -1) {
     const provider = input.slice(0, slash);
-    const model = input.slice(slash + 1);
     if (!KNOWN_PROVIDERS.has(provider as ProviderName)) {
       throw new Error(`Unknown provider "${provider}" in model spec "${input}".`);
     }

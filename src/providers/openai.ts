@@ -211,7 +211,7 @@ export class OpenAIClient implements LLMClient {
     // The read-only sandbox still lets tools read every file, such as the auth files, so every built-in tool
     // that reads files or reaches the network or an account is off, and only Manki's tool server is left.
     const args = [
-      'exec', '--skip-git-repo-check', '--model', this.model, '--sandbox', 'read-only', '-c', 'approval_policy=never',
+      'exec', '--skip-git-repo-check', `--model=${this.model}`, '--sandbox', 'read-only', '-c', 'approval_policy=never',
       '-c', 'features.shell_tool=false', '-c', 'features.view_image=false', '-c', 'web_search=disabled', '-c', 'features.apps=false',
       '-c', 'features.plugins=false', '-c', 'features.multi_agent=false', '-c', 'features.image_generation=false',
     ];

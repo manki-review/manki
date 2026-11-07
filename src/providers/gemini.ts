@@ -175,7 +175,7 @@ export class GeminiClient implements LLMClient {
         args: [
           // Headless runs refuse an untrusted directory. `runCli` runs the CLI in an empty one.
           '--skip-trust',
-          '--model', this.model,
+          `--model=${this.model}`,
           '--policy', policyPath,
         ],
         env: cliEnv('gemini', {

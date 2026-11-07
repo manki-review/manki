@@ -194,7 +194,7 @@ export function claudeCliArgs(model: string, systemPromptPath: string, { effort,
     '--setting-sources', '',
     // Replaces Claude Code's own agentic system prompt, which otherwise frames every stage.
     '--system-prompt-file', systemPromptPath,
-    '--model', model,
+    `--model=${model}`,
   ];
   if (repoTools && tools) {
     const hooks = { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: shellCommand(tools.stepHook) }] }] };
