@@ -1719,6 +1719,9 @@ export function buildPriorRoundLookup(sortedPriorRounds: RoundContext[]): Map<st
  *   2. any prior-round `blocker` still unresolved → ADDRESS_FIRST / prior_unaddressed
  *   3. otherwise (only warnings, suggestions and nitpicks, or empty) → READY / only_nit_or_suggestion
  *
+ * `verdictTrace.unresolvedPriors` lists the unresolved priors under either reason. A prior that
+ * a surviving blocker names again (`sameAs`) or sits on, by thread, is left out: that blocker carries it.
+ *
  * A prior `blocker` is "unresolved" when the author has not agreed to
  * dismiss it (`authorReply !== 'agree'`) and the underlying GitHub thread is
  * still in `openThreads`. A prior without a `threadId` was posted in the review
@@ -1779,42 +1782,37 @@ export function determineOutcome(
   priorRoundLookup?: Map<string, number>,
   changedFiles?: ReadonlySet<string>,
 ): { outcome: Extract<RoundOutcome, 'READY' | 'ADDRESS_FIRST'>; verdictReason: VerdictReason; verdictTrace: VerdictTrace } {
-  const emptyTrace = (): VerdictTrace => ({
-    survivingBlockers: [],
-    unresolvedPriors: [],
-  });
-
   const blockers = findings.filter(f => f.severity === 'blocker');
-  if (blockers.length > 0) {
-    const trace = emptyTrace();
-    trace.survivingBlockers = blockers.map(findingToTraceEntry);
-    return { outcome: 'ADDRESS_FIRST', verdictReason: 'required_present', verdictTrace: trace };
-  }
-
+  const namedAgain = new Set(blockers.flatMap(f => f.sameAs ? [f.sameAs] : []));
   const prior = dedupePriorFindings(priorRounds ?? []);
+  const carriedThreadIds = new Set([
+    ...blockers.flatMap(f => [f.threadId, f.answeredIn?.threadId]),
+    ...prior.filter(p => namedAgain.has(stringifyFindingFingerprint(p.fingerprint))).map(p => p.threadId),
+  ].filter((id): id is string => !!id));
 
   const openThreadsUnknown = openThreads == null;
   const openThreadIds = new Set((openThreads ?? []).map(t => t.threadId));
   const threadEvaluationsByThreadId = indexThreadEvaluations(threadEvaluations);
+  const openThreadIndex = new Map((openThreads ?? []).map(t => [t.threadId, t]));
+  // A blocker named again on an open thread is recorded with that thread's ID, so one thread can carry several priors.
+  const seenThreadIds = new Set<string>();
   const unresolvedPriors = prior.filter(p =>
-    isPriorLikelyUnresolved(p, openThreadIds, openThreadsUnknown, resolvedThreadIds, threadEvaluationsByThreadId, changedFiles),
-  );
-  if (unresolvedPriors.length > 0) {
-    const trace = emptyTrace();
-    const openThreadIndex = new Map((openThreads ?? []).map(t => [t.threadId, t]));
-    // A blocker named again on an open thread is recorded with that thread's ID, so one thread can carry several priors.
-    const seenThreadIds = new Set<string>();
-    const distinctPriors = unresolvedPriors.filter(p => {
-      if (!p.threadId) return true;
-      if (seenThreadIds.has(p.threadId)) return false;
-      seenThreadIds.add(p.threadId);
-      return true;
-    });
-    trace.unresolvedPriors = distinctPriors.map(p => priorToTraceEntry(p, priorRoundLookup, openThreadIndex));
-    return { outcome: 'ADDRESS_FIRST', verdictReason: 'prior_unaddressed', verdictTrace: trace };
-  }
+    !namedAgain.has(stringifyFindingFingerprint(p.fingerprint)) && !(p.threadId && carriedThreadIds.has(p.threadId))
+    && isPriorLikelyUnresolved(p, openThreadIds, openThreadsUnknown, resolvedThreadIds, threadEvaluationsByThreadId, changedFiles),
+  ).filter(p => {
+    if (!p.threadId) return true;
+    if (seenThreadIds.has(p.threadId)) return false;
+    seenThreadIds.add(p.threadId);
+    return true;
+  });
+  const verdictTrace: VerdictTrace = {
+    survivingBlockers: blockers.map(findingToTraceEntry),
+    unresolvedPriors: unresolvedPriors.map(p => priorToTraceEntry(p, priorRoundLookup, openThreadIndex)),
+  };
 
-  return { outcome: 'READY', verdictReason: 'only_nit_or_suggestion', verdictTrace: emptyTrace() };
+  if (blockers.length > 0) return { outcome: 'ADDRESS_FIRST', verdictReason: 'required_present', verdictTrace };
+  if (unresolvedPriors.length > 0) return { outcome: 'ADDRESS_FIRST', verdictReason: 'prior_unaddressed', verdictTrace };
+  return { outcome: 'READY', verdictReason: 'only_nit_or_suggestion', verdictTrace };
 }
 
 /**

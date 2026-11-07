@@ -616,15 +616,15 @@ describe('formatBlockingPriorThreads', () => {
     ...overrides,
   });
 
-  it('returns null when verdict reason is not `prior_unaddressed`', () => {
+  it('lists the priors when a new blocker decided the outcome', () => {
     const result = makeResult({
       verdictReason: 'required_present',
       verdictTrace: {
-        survivingBlockers: [],
-        unresolvedPriors: [{ file: 'a.ts', title: 'x', fingerprint: 'a.ts:1:1:x' }],
+        survivingBlockers: [{ file: 'b.ts', title: 'y', fingerprint: 'b.ts:2:2:y' }],
+        unresolvedPriors: [{ file: 'a.ts', title: 'x', fingerprint: 'a.ts:1:1:x', line: 1 }],
       },
     });
-    expect(formatBlockingPriorThreads(result)).toBeNull();
+    expect(formatBlockingPriorThreads(result)).toBe('**Still open from earlier reviews:**\n- `a.ts:1`: x');
   });
 
   it('returns null when there are no unresolved priors on the trace', () => {
@@ -1015,9 +1015,9 @@ describe('postReview body lead', () => {
     agentNames: [],
   };
 
-  async function postedBody(result: ReviewResult, existingThreads: PreviousFinding[] = []): Promise<{ body: string; event: string; approvalHeld: ApprovalHeld }> {
+  async function postedBody(result: ReviewResult, existingThreads: PreviousFinding[] = [], context?: RoundContext): Promise<{ body: string; event: string; approvalHeld: ApprovalHeld }> {
     mockCreateReview.mockClear();
-    const { approvalHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', result, diff, undefined, undefined, { existingThreads });
+    const { approvalHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', result, diff, context, context && 1000, { existingThreads });
     return { ...mockCreateReview.mock.calls[0][0] as { body: string; event: string }, approvalHeld };
   }
 
@@ -1206,18 +1206,24 @@ describe('postReview body lead', () => {
     expect(body).not.toContain('Nothing to flag');
   });
 
-  it('names the earlier thread when only an earlier blocker is still open', async () => {
-    const { body } = await postedBody({
-      ...ready,
-      verdict: 'REQUEST_CHANGES',
-      outcome: 'ADDRESS_FIRST',
-      verdictReason: 'prior_unaddressed',
-      verdictReport: undefined,
-      summary: '',
-      findings: [],
-      verdictTrace: { survivingBlockers: [], unresolvedPriors: [{ file: 'src/a.ts', title: 'Cache never expires', fingerprint: 'f', line: 3 }] },
-    });
-    expect(lead(body)).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker\.\n\n\*\*Still open from earlier reviews:\*\*\n- `src\/a\.ts:3`: Cache never expires\n/u);
+  it('counts new blockers apart from those still open from an earlier review', async () => {
+    const prior = { file: 'src/a.ts', title: 'Cache never expires', fingerprint: 'f', line: 3 };
+    const other = { file: 'src/a.ts', title: 'Lock never released', fingerprint: 'g', line: 9 };
+    const blocked: ReviewResult = { ...ready, verdict: 'REQUEST_CHANGES', outcome: 'ADDRESS_FIRST', verdictReport: undefined, summary: '' };
+    const priorOnly = { ...blocked, verdictReason: 'prior_unaddressed' as const, findings: [], verdictTrace: { survivingBlockers: [], unresolvedPriors: [prior] } };
+    const followUp = makeContext({ meta: { ...makeContext().meta, round: 2 } });
+
+    expect(lead((await postedBody(priorOnly)).body)).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker still open from an earlier review\.\n\n\*\*Still open from earlier reviews:\*\*\n- `src\/a\.ts:3`: Cache never expires\n/u);
+    expect((await postedBody({ ...priorOnly, verdictTrace: { survivingBlockers: [], unresolvedPriors: [prior, other] } })).body)
+      .toMatch(/^\u{1F534} \*\*Changes requested:\*\* 2 blockers still open from earlier reviews\./u);
+
+    const newOnly = { ...blocked, verdictReason: 'required_present' as const, findings: [blocker] };
+    expect((await postedBody(newOnly)).body).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker\./u);
+    expect((await postedBody(newOnly, [], followUp)).body).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 new blocker\./u);
+
+    const both = (await postedBody({ ...newOnly, verdictTrace: { survivingBlockers: [], unresolvedPriors: [prior, other] } }, [], followUp)).body;
+    expect(both).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 new blocker and 2 still open\./u);
+    expect(both).toContain('**Still open from earlier reviews:**\n- `src/a.ts:3`: Cache never expires\n- `src/a.ts:9`: Lock never released');
   });
 
   it('opens an INCOMPLETE review with the verdict line and the reason', async () => {
@@ -3405,7 +3411,7 @@ describe('postReview fallback paths', () => {
       expect(createReviewComment).not.toHaveBeenCalled();
       for (const [review] of createReview.mock.calls) {
         expect(review.comments).toEqual([]);
-        expect(review.body).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker\./u);
+        expect(review.body).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 blocker still open from an earlier review\./u);
         expect(review.body).toContain('**Still open from earlier reviews:**\n- `src/a.ts:2`: Floor class runs on one model ([view thread](https://github.com/owner/repo/pull/1#discussion_r1))\n\n  This round names it as:\n\n  **Blocker**\n  **Floor class weakened by the PR**\n  [`src/a.ts:');
       }
       expect(createReview.mock.calls[1][0].body).toContain('  [`src/a.ts:40`](https://github.com/owner/repo/blob/sha/src/a.ts#L40)\n  Desc.');

@@ -391,6 +391,13 @@ describe('determineOutcome', () => {
       const result = determineOutcome([blocker], fingerprintEntriesFromLegacy(priors), open);
       expect(result.outcome).toBe('ADDRESS_FIRST');
       expect(result.verdictReason).toBe('required_present');
+      expect(result.verdictTrace.unresolvedPriors.map(p => p.threadId)).toEqual(['T1']);
+
+      // A blocker that names the prior again, or sits on its thread, carries it, so the prior is not listed twice.
+      const namedAgain = { ...blocker, sameAs: 'src/x.ts:10:10:old-issue' };
+      expect(determineOutcome([namedAgain], fingerprintEntriesFromLegacy(priors), open).verdictTrace.unresolvedPriors).toEqual([]);
+      const answered = { ...blocker, answeredIn: { threadId: 'T1', answer: 'a' } };
+      expect(determineOutcome([answered], fingerprintEntriesFromLegacy(priors), open).verdictTrace.unresolvedPriors).toEqual([]);
     });
 
     it.each(['disagree', 'partial'] as const)('blocks APPROVE when authorReply is %s', (reply) => {

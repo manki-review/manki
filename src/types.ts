@@ -113,7 +113,7 @@ export interface VerdictTraceEntry {
 /**
  * Per-branch breakdown of which findings or priors triggered `determineOutcome`.
  * The verdict reader's blockers go in `survivingBlockers`.
- * Only the branch that fired needs to be non-empty; the other arrays stay empty.
+ * `unresolvedPriors` lists the earlier blockers still open even when a surviving blocker decided the outcome.
  * Recorded on `RoundJudge.verdictTrace` so replay tooling can answer "which N
  * priors gated APPROVE on round 15?" without re-deriving from `findings.entries`.
  */
