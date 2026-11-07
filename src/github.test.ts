@@ -1224,6 +1224,12 @@ describe('postReview body lead', () => {
     const both = (await postedBody({ ...newOnly, verdictTrace: { survivingBlockers: [], unresolvedPriors: [prior, other] } }, [], followUp)).body;
     expect(both).toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 new blocker and 2 still open\./u);
     expect(both).toContain('**Still open from earlier reviews:**\n- `src/a.ts:3`: Cache never expires\n- `src/a.ts:9`: Lock never released');
+
+    // Two blockers on one open thread are one earlier blocker. A warning on that thread is not a blocker.
+    const thread: PreviousFinding = { title: 'Cache never expires', file: 'src/a.ts', line: 3, severity: 'blocker', status: 'open', threadId: 'T1' };
+    const onThread = [{ ...blocker, threadId: 'T1' }, { ...blocker, line: 6, threadId: 'T1' }, { ...blocker, severity: 'warning' as const, threadId: 'T1' }];
+    expect((await postedBody({ ...newOnly, findings: [blocker, ...onThread] }, [thread], followUp)).body)
+      .toMatch(/^\u{1F534} \*\*Changes requested:\*\* 1 new blocker and 1 still open\./u);
   });
 
   it('opens an INCOMPLETE review with the verdict line and the reason', async () => {

@@ -1155,6 +1155,7 @@ export async function postReview(
   const stillOpen: string[] = [];
   const previouslyMissed: string[] = [];
   let carriedBlockers = 0;
+  const carriedThreadIds = new Set<string>();
   const nonBlocking: Finding[] = [];
   const linkTo = buildLineLink(owner, repo, commitSha, github.context.serverUrl);
   const followUps = agreedFollowUps(existingThreads);
@@ -1177,9 +1178,10 @@ export async function postReview(
 
     const threadId = f.threadId ?? f.answeredIn?.threadId;
     const openThread = threadId ? existingThreads.find(t => t.threadId === threadId) : undefined;
-    if (openThread) {
+    if (threadId && openThread) {
       core.info(`Skipping "${f.title}" on ${f.file}: the thread ${threadId} already carries it`);
       carriedBlockers++;
+      carriedThreadIds.add(threadId);
       if (!result.needsHuman?.blockers.some(b => b.threadId === threadId)) {
         // The finding shows under the link, so a wrong `sameAs` link still shows the defect. The indent keeps it in the list item.
         stillOpen.push(`${formatTraceEntry(openThread)}\n\n${`This round names it as:\n\n${formatFindingBlock(f, linkTo)}`.replace(/^(?=.)/gm, '  ')}`);
@@ -1223,7 +1225,7 @@ export async function postReview(
   const reviewedCommitFooter = buildReviewedCommitFooter(owner, repo, commitSha, github.context.serverUrl);
 
   const blockingFindings = result.findings.filter(isBlockingFinding);
-  const earlier = carriedBlockers + (result.verdictTrace?.unresolvedPriors.length ?? 0);
+  const earlier = carriedThreadIds.size + (result.verdictTrace?.unresolvedPriors.length ?? 0);
   const lead = formatLead(result, blockingFindings, { fresh: blockingFindings.length - carriedBlockers, earlier, followUp: (context?.meta.round ?? 1) > 1 });
   const hold = event === 'APPROVE' ? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) : undefined;
   const approvalHeld: ApprovalHeld = hold?.reason ?? false;

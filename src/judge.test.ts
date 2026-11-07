@@ -614,6 +614,8 @@ describe('buildJudgeUserMessage', () => {
 
     const pushed = 'diff --git a/src/foo.ts b/src/foo.ts\n--- a/src/foo.ts\n+++ b/src/foo.ts\n@@ -10,1 +10,1 @@\n-a\n+b\n';
     expect(followUp(pushed)).toMatch(/"Null check missing" at src\/foo\.ts:10 \(earlier blocker\)\n/);
+    expect(buildJudgeUserMessage(findings, new Map(), '', undefined, undefined, undefined, openThreads, rounds))
+      .toContain('"Null check missing" at src/foo.ts:10 (earlier blocker, stays open: the fix cannot be confirmed without the inter-round diff)');
   });
 
   it('renders thread reference with view link suffix when threadUrl is provided', () => {
