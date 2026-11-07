@@ -351,9 +351,13 @@ describe('isBotMentionNonReview', () => {
 // --- Handler tests ---
 
 /** The first comment of a Manki thread, holding a security finding when `isSecurity`. */
-function findingComment(isSecurity: boolean): string {
+/** `reraised` is a warning thread that a found-again reply made block, which only the live thread shows. */
+type FindingKind = 'security' | 'blocker' | 'warning' | 'reraised';
+
+function findingComment(kind: FindingKind): string {
   return jest.requireActual('./github').formatFindingComment({
-    severity: 'blocker', title: 'Token leaks into logs', file: 'src/file.ts', line: 10, description: 'd', reviewers: [], ...(isSecurity && { tags: ['security'] }),
+    severity: kind === 'warning' || kind === 'reraised' ? 'warning' : 'blocker', title: 'Token leaks into logs', file: 'src/file.ts', line: 10, description: 'd', reviewers: [],
+    ...(kind === 'security' && { tags: ['security'] }),
   });
 }
 
@@ -714,42 +718,50 @@ describe('handleReviewCommentReply', () => {
   });
 
   it.each([
-    ['Fixed. The guard now runs first.', 'MEMBER', 'someone', 'pr-author', false, 'ADDRESSED'],
-    ['**Agreed.** Deferring it to the follow-up is fine.', 'NONE', 'pr-author', 'pr-author', false, 'WONT_FIX'],
-    ['Withdrawn. The caller already checks for null.', 'OWNER', 'someone', 'pr-author', false, 'INVALID'],
-    ['Kept. `src/file.ts:12` still skips `clearTimeout` on the success path.', 'MEMBER', 'someone', 'pr-author', false, undefined],
-    ['Unverified. I can\'t verify from the code that the API sorts the list. A maintainer should confirm it.', 'OWNER', 'pr-author', 'pr-author', false, undefined],
-    ['Fixed. The guard now runs first.', 'CONTRIBUTOR', 'reader', 'pr-author', false, undefined],
-    ['Fixed. The guard now runs first.', 'COLLABORATOR', 'reader', 'pr-author', false, undefined],
-    ['Fixed. The guard now runs first.', 'NONE', 'someone', 'pr-author', false, 'ADDRESSED'],
-    ['Agreed. The token never reaches a log.', 'OWNER', 'pr-author', 'pr-author', true, undefined],
-    ['Agreed. The token never reaches a log.', 'CONTRIBUTOR', 'reader', 'pr-author', true, undefined],
-    ['Agreed. The token never reaches a log.', 'MEMBER', 'someone', 'pr-author', true, 'WONT_FIX'],
-    ['Agreed. The token never reaches a log.', 'MEMBER', 'someone', undefined, true, 'WONT_FIX'],
-    ['Agreed. The token never reaches a log.', 'MEMBER', 'reader', 'pr-author', true, undefined],
-    ['Kept. `src/log.ts:4` still prints the token.', 'OWNER', 'pr-author', 'pr-author', true, undefined],
-    ['Withdrawn. The token is masked first.', 'OWNER', 'pr-author', 'pr-author', true, undefined],
-  ])('resolves the thread after %j from a %s reply by %s, PR author %s, security %s, with reason %s', async (reply, association, sender, prAuthor, isSecurity, reason) => {
+    ['Fixed. The guard now runs first.', 'MEMBER', 'someone', 'pr-author', 'blocker', 'ADDRESSED'],
+    ['**Agreed.** Deferring it to the follow-up is fine.', 'NONE', 'pr-author', 'pr-author', 'warning', 'WONT_FIX'],
+    ['**Agreed.** Deferring it to the follow-up is fine.', 'NONE', 'pr-author', 'pr-author', 'blocker', undefined],
+    ['**Agreed.** Deferring it to the follow-up is fine.', 'NONE', 'pr-author', 'pr-author', 'reraised', undefined],
+    ['**Agreed.** Deferring it to the follow-up is fine.', 'NONE', 'pr-author', 'pr-author', 'blocker', undefined, true],
+    ['Fixed. The guard now runs first.', 'MEMBER', 'someone', 'pr-author', 'reraised', 'ADDRESSED'],
+    ['Fixed. The guard now runs first.', 'OWNER', 'pr-author', 'pr-author', 'blocker', undefined],
+    ['Withdrawn. The caller already checks for null.', 'OWNER', 'someone', 'pr-author', 'blocker', 'INVALID'],
+    ['Kept. `src/file.ts:12` still skips `clearTimeout` on the success path.', 'MEMBER', 'someone', 'pr-author', 'blocker', undefined],
+    ['Unverified. I can\'t verify from the code that the API sorts the list. A maintainer should confirm it.', 'OWNER', 'pr-author', 'pr-author', 'blocker', undefined],
+    ['Fixed. The guard now runs first.', 'CONTRIBUTOR', 'reader', 'pr-author', 'blocker', undefined],
+    ['Fixed. The guard now runs first.', 'COLLABORATOR', 'reader', 'pr-author', 'blocker', undefined],
+    ['Fixed. The guard now runs first.', 'NONE', 'someone', 'pr-author', 'blocker', 'ADDRESSED'],
+    ['Agreed. The token never reaches a log.', 'OWNER', 'pr-author', 'pr-author', 'security', undefined],
+    ['Agreed. The token never reaches a log.', 'CONTRIBUTOR', 'reader', 'pr-author', 'security', undefined],
+    ['Agreed. The token never reaches a log.', 'MEMBER', 'someone', 'pr-author', 'security', 'WONT_FIX'],
+    ['Agreed. The token never reaches a log.', 'MEMBER', 'someone', undefined, 'security', 'WONT_FIX'],
+    ['Agreed. The token never reaches a log.', 'MEMBER', 'reader', 'pr-author', 'security', undefined],
+    ['Kept. `src/log.ts:4` still prints the token.', 'OWNER', 'pr-author', 'pr-author', 'security', undefined],
+    ['Withdrawn. The token is masked first.', 'OWNER', 'pr-author', 'pr-author', 'security', undefined],
+  ])('resolves the thread after %j from a %s reply by %s, PR author %s, finding %s, with reason %s', async (reply, association, sender, prAuthor, kind, reason, resolved = false) => {
     setContext({
       comment: { id: 1, body: 'Done in the latest commit.', user: { type: 'User' }, in_reply_to_id: 99, author_association: association },
       pull_request: { number: 1, ...(prAuthor && { user: { login: prAuthor } }) },
       sender: { login: sender },
     });
     const octokit = createMockOctokit();
-    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: findingComment(isSecurity), path: 'src/file.ts', line: 10 } });
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: findingComment(kind as FindingKind), path: 'src/file.ts', line: 10 } });
     const client = createMockClient();
     jest.mocked(client.sendMessage).mockResolvedValue({ content: reply });
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([
       { id: 'PRRT_other', rootCommentId: 98, isResolved: false, isBlocking: true, findingTitle: 'Other' },
-      { id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: true, isSecurity, findingTitle: 'This' },
+      { id: 'PRRT_this', rootCommentId: 99, isResolved: resolved, isBlocking: kind !== 'warning', isSecurity: kind === 'security', findingTitle: 'This' },
     ]);
     jest.mocked(state.resolveReviewThread).mockClear();
 
     await handleReviewCommentReply(octokit, TEST_BOT, client, 'test-owner', 'test-repo', 1);
 
-    // An agreement that cannot close a security thread says who can.
-    const staysOpen = isSecurity && !reason && /^(Agreed|Withdrawn)\./.test(reply);
-    const note = '\n\nThis is a security finding, so the thread stays open until a maintainer other than the PR author, or a repo admin, closes it.';
+    // An answer that cannot close an open blocking or security thread says who can.
+    const staysOpen = kind !== 'warning' && !reason && !resolved && /^\**(Fixed|Agreed|Withdrawn)\./.test(reply);
+    const until = reply.startsWith('Fixed')
+      ? 'the next review confirms the fix, or a maintainer other than the PR author closes it'
+      : 'a maintainer other than the PR author, or a repo admin, closes it';
+    const note = `\n\nThis is a ${kind === 'security' ? 'security' : 'blocking'} finding, so the thread stays open until ${until}.`;
     expect(octokit.rest.pulls.createReplyForReviewComment).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining(`${reply}${staysOpen ? note : ''}\n\n<!-- manki -->\n<!-- manki-reply-record: `) }));
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(reason ? [[octokit, 'PRRT_this', reason]] : []);
   });
@@ -772,7 +784,7 @@ describe('handleReviewCommentReply', () => {
   it('turns a "Kept." reply that cites no new lines into "Unverified." and leaves the thread open', async () => {
     setContext({ comment: { id: 1, body: 'This cannot happen.', user: { type: 'User' }, in_reply_to_id: 99, author_association: 'OWNER' }, pull_request: { number: 1 } });
     const octokit = createMockOctokit();
-    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: `${findingComment(false)}\nSee src/file.ts:10.`, path: 'src/file.ts', line: 10 } });
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: `${findingComment('blocker')}\nSee src/file.ts:10.`, path: 'src/file.ts', line: 10 } });
     const client = createMockClient();
     jest.mocked(client.sendMessage).mockResolvedValue({ content: '**Kept.** `src/file.ts:10` still logs the token.' });
     jest.mocked(state.resolveReviewThread).mockClear();
@@ -809,7 +821,7 @@ describe('handleReviewCommentReply', () => {
   ])('%s', async (_name, reply, association, sender, isSecurity, saves) => {
     setContext({ comment: { id: 1, body: 'The caller always validates this upstream, so the check is not needed here.', user: { type: 'User' }, in_reply_to_id: 99, author_association: association }, pull_request: { number: 7 }, sender: { login: sender } });
     const octokit = createMockOctokit();
-    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: findingComment(isSecurity), path: 'src/file.ts', line: 10 } });
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: findingComment(isSecurity ? 'security' : 'blocker'), path: 'src/file.ts', line: 10 } });
     const client = createMockClient();
     jest.mocked(client.sendMessage).mockResolvedValue({ content: reply });
     jest.mocked(memory.writeLearning).mockClear();
@@ -1170,30 +1182,34 @@ describe('handleReviewCommentCommand', () => {
   });
 
   it.each([
-    ['a repo admin PR author', 'OWNER', 'pr-author', true, true, true],
-    ['a PR author without admin', 'OWNER', 'pr-author', false, true, false],
-    ['a maintainer other than the PR author', 'MEMBER', 'someone', false, true, true],
-    ['an org member with read access', 'MEMBER', 'reader', false, true, false],
-    ['a collaborator with read access, on a plain finding', 'COLLABORATOR', 'reader', false, false, false],
-    ['an outside contributor', 'CONTRIBUTOR', 'reader', true, true, false],
-    ['a private org member with write access', 'NONE', 'someone', false, true, true],
-    ['a PR author without admin, on a plain finding', 'NONE', 'pr-author', false, false, true],
-  ])('resolves the thread a dismiss was posted in, from %s', async (_who, association, sender, isAdmin, isSecurity, resolves) => {
+    ['a repo admin PR author', 'OWNER', 'pr-author', true, 'security', true],
+    ['a repo admin PR author, on a plain blocker', 'OWNER', 'pr-author', true, 'blocker', true],
+    ['a PR author without admin', 'OWNER', 'pr-author', false, 'security', false],
+    ['a PR author without admin, on a plain blocker', 'NONE', 'pr-author', false, 'blocker', false],
+    ['a PR author without admin, on a warning', 'NONE', 'pr-author', false, 'warning', true],
+    ['a maintainer other than the PR author', 'MEMBER', 'someone', false, 'security', true],
+    ['a maintainer other than the PR author, on a re-raised warning', 'MEMBER', 'someone', false, 'reraised', true],
+    ['a PR author without admin, on a re-raised warning', 'NONE', 'pr-author', false, 'reraised', false],
+    ['an org member with read access', 'MEMBER', 'reader', false, 'security', false],
+    ['a collaborator with read access, on a warning', 'COLLABORATOR', 'reader', false, 'warning', false],
+    ['an outside contributor', 'CONTRIBUTOR', 'reader', true, 'security', false],
+    ['a private org member with write access', 'NONE', 'someone', false, 'security', true],
+  ] as Array<[string, string, string, boolean, FindingKind, boolean]>)('resolves the thread a dismiss was posted in, from %s', async (_who, association, sender, isAdmin, kind, resolves) => {
     setContext({
       comment: { id: 62, body: '@manki dismiss', user: { type: 'User' }, in_reply_to_id: 99, author_association: association },
       pull_request: { number: 1, user: { login: 'pr-author' } },
       sender: { login: sender },
     });
     const octokit = createMockOctokit();
-    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: findingComment(isSecurity), path: 'src/file.ts', line: 10 } });
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: findingComment(kind), path: 'src/file.ts', line: 10 } });
     jest.mocked(ghUtils.isRepoAdmin).mockResolvedValue(isAdmin);
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([
-      { id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: true, ...(isSecurity && { isSecurity }), findingTitle: 'Token' },
+      { id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: kind !== 'warning', ...(kind === 'security' && { isSecurity: true }), findingTitle: 'Token' },
     ]);
 
     await handleReviewCommentCommand(octokit, TEST_BOT, 'test-owner', 'test-repo', 1, 62, parseCommand('@manki dismiss'));
 
-    const overrides = isAdmin && isSecurity && sender === 'pr-author' ? [[octokit, [{ thread: 'PRRT_this', login: 'pr-author', via: 'dismiss' }]]] : [];
+    const overrides = isAdmin && kind !== 'warning' && sender === 'pr-author' ? [[octokit, [{ thread: 'PRRT_this', login: 'pr-author', via: 'dismiss' }]]] : [];
     expect(jest.mocked(state.announceSecurityOverrides).mock.calls).toEqual(overrides);
     expect(jest.mocked(state.resolveReviewThread).mock.calls).toEqual(resolves ? [[octokit, 'PRRT_this', 'WONT_FIX']] : []);
     expect(ghUtils.reactToReviewComment).toHaveBeenCalledWith(octokit, 'test-owner', 'test-repo', 62, '+1');
@@ -1206,7 +1222,7 @@ describe('handleReviewCommentCommand', () => {
       sender: { login: 'pr-author' },
     });
     const octokit = createMockOctokit();
-    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: findingComment(true), path: 'src/file.ts', line: 10 } });
+    octokit.rest.pulls.getReviewComment.mockResolvedValue({ data: { body: findingComment('security'), path: 'src/file.ts', line: 10 } });
     jest.mocked(ghUtils.isRepoAdmin).mockResolvedValue(true);
     const thread = { id: 'PRRT_this', rootCommentId: 99, isResolved: false, isBlocking: true, isSecurity: true, findingTitle: 'Token' };
     jest.mocked(state.fetchBotReviewThreads).mockResolvedValue([thread]);

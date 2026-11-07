@@ -961,8 +961,9 @@ describe('runFullReview end to end', () => {
 
       expect(core.setFailed).not.toHaveBeenCalled();
       expect(mockLLM.calls).toEqual(['reviewer']);
-      expect(thread.comments.at(-1)?.body).toMatch(/^Agreed\. The caller bounds the inputs/);
-      expect(thread.isResolved).toBe(true);
+      expect(thread.comments.at(-1)?.body).toMatch(/^Agreed\. The caller bounds the inputs.*\n\nThis is a blocking finding, so the thread stays open/s);
+      // Alice wrote the PR, so her word alone does not clear a blocker.
+      expect(thread.isResolved).toBe(false);
     });
   });
 });

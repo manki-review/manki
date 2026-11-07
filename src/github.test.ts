@@ -1192,7 +1192,7 @@ describe('postReview body lead', () => {
       thread('Cleared by a maintainer', 'r2'),
       thread('Secret in the URL', 'r3', { login: 'owner', via: 'dismiss', announced: true }),
     ];
-    const line = '**Security findings dismissed by a repo admin:** [Token leaks into logs](https://github.com/o/r/pull/1#r1) by @owner, '
+    const line = '**Findings dismissed by a repo admin:** [Token leaks into logs](https://github.com/o/r/pull/1#r1) by @owner, '
       + '[Secret in the URL](https://github.com/o/r/pull/1#r3) by @owner.';
 
     const approved = await postedBody(ready, threads);
