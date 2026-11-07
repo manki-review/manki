@@ -22,8 +22,10 @@ export function safeTruncate(text: string, maxLen: number): string {
 }
 
 // Control characters other than tab and newline, format characters, which include zero-width and bidi controls, and
-// the line and paragraph separators, which end a line in some languages without showing as a break.
-const HIDDEN_CHARACTER = /(?![\t\n])[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+// the line and paragraph separators, which end a line in some languages without showing as a break. Also the Hangul
+// fillers, invisible letters that pass as identifiers, and the variation selectors that can hide bytes in a string,
+// except U+FE0F, which follows most emoji.
+const HIDDEN_CHARACTER = /(?![\t\n])(?!\uFE0F)(?:[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\u115F\u3164\uFFA0]|\u1160|\p{Variation_Selector})/gu;
 
 /** Returns the distinct hidden characters in `text` as `U+XXXX` code points, in the order they first appear. */
 export function hiddenCharacters(text: string): string[] {

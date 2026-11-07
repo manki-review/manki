@@ -108,12 +108,13 @@ describe('formatFindingComment', () => {
     expect(shown(named)).not.toMatch(SUGGESTION_FENCE);
     expect(named).toContain('```\ngrant(user);\n```');
 
-    for (const hidden of ['if (isAdmin) { /* \u202E } \u2066 if (true) { */ grant(user); }', 'const ok\u200B = check(user);', 'const bell = "\u0007";']) {
+    for (const hidden of ['if (isAdmin) { /* \u202E } \u2066 if (true) { */ grant(user); }', 'const ok\u200B = check(user);', 'const bell = "\u0007";', 'const { timeout,\u3164 } = query;', 'const data = "a\u{E0101}\uFE01";']) {
       const comment = formatFindingComment({ ...baseFinding, suggestedFix: hidden });
       expect(suggestionBlocks(comment)).toEqual([]);
       expect(comment).toContain(`\`\`\`ts\n${hidden}\n\`\`\``);
     }
     expect(suggestionBlocks(formatFindingComment({ ...baseFinding, suggestedFix: 'if (a) {\n\tuse(a);\n}' }))).toEqual(['if (a) {\n\tuse(a);\n}']);
+    expect(suggestionBlocks(formatFindingComment({ ...baseFinding, suggestedFix: 'const ok = "\u2705\uFE0F";' }))).toEqual(['const ok = "\u2705\uFE0F";']);
   });
 
   it('suggests a prose line as is in a prose file', () => {
