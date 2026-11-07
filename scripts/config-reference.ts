@@ -91,7 +91,7 @@ export const SETTINGS: Setting[] = [
   { key: 'convergence.test_path_patterns', type: 'list of globs', description: 'Test files. From the second round, suggestions and nitpicks on them are dropped.' },
   { key: 'convergence.suppress_resolved_threads', type: 'boolean', description: 'A finding whose thread a person resolved, or Manki resolved as addressed, suppresses matching findings in later rounds.' },
   { key: 'memory', type: 'map', description: 'Review memory. See [Review memory](memory.md).' },
-  { key: 'memory.enabled', type: 'boolean', description: 'Read learnings and suppressions, and write new ones. Without `memory.repo`, they live in the central memory repository, which the token service reads and writes for the run.' },
+  { key: 'memory.enabled', type: 'boolean', description: 'Read learnings and suppressions, and write new ones. Without `memory.repo`, they live in the public central memory repository, which the token service reads and writes for the run. A private repo needs `memory.repo`.' },
   { key: 'memory.repo', type: '`owner/name`', default: 'none', description: 'Your own memory repository instead of the central one, such as `<owner>/review-memory`. Needs the `memory_repo_token` input, or memory is skipped with a warning.' },
   { key: 'metrics', type: 'map', default: 'none', description: 'Metrics Manki records.' },
   { key: 'metrics.fix_rate', type: 'boolean', default: 'the value of `memory.enabled`', description: 'On merge, count per severity and finder how many posted findings were fixed, dismissed or left untouched. Written to the job summary, and to the repo\'s memory when memory is on.' },
