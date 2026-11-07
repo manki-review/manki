@@ -511,7 +511,7 @@ describe('runFullReview end to end', () => {
     expect(postedReviews().map(r => r.state)).toEqual(['APPROVED', 'APPROVED']);
   });
 
-  it('has the judge try to refute a blocker with tools, drops it with the reason when disproved, and reuses that on unchanged code', async () => {
+  it('has the judge try to refute a blocker with tools, keeps a disproved blocker with the reason, and reuses that on unchanged code', async () => {
     const workspace = mkdtempSync(join(tmpdir(), 'manki-e2e-head-'));
     mkdirSync(join(workspace, 'src'));
     writeFileSync(join(workspace, 'src', 'math.ts'), 'export const add = (a: number, b: number) => a + b;\n');
@@ -525,8 +525,10 @@ describe('runFullReview end to end', () => {
 
       expect(mockLLM.tools).toContainEqual(['refute', { root: workspace, steps: 15 }]);
       const progress = mockGitHub.comments.find(c => c.body.startsWith('✅ **Review complete**'))!.body;
-      expect(progress).toContain('**Disproved by the judge:** 1 finding\n&nbsp;&nbsp;&nbsp;&nbsp;Sum is never range checked (`src/math.ts:2`): Both inputs are bounded at src/api.ts:3.');
-      expect(postedReviews().map(r => r.state)).toEqual(['APPROVED']);
+      expect(progress).not.toContain('Disproved by the judge');
+      expect(postedReviews().map(r => r.state)).toEqual(['CHANGES_REQUESTED']);
+      // A disproof never clears a blocker, so it is posted with the refuter's reason under "How this was checked".
+      expect(mockGitHub.threads.map(t => t.comments[0].body)).toEqual([expect.stringContaining('a disproof alone never clears a blocker: Both inputs are bounded at src/api.ts:3.')]);
       // The refutation call is recorded under its own label, so it is no judge retry.
       const record = mockGitHub.roundContext(postedReviews()[0]);
       expect([record.judge.retryCount, record.usage.llmCalls?.filter(c => c.agent === 'refute').length]).toEqual([0, 1]);
@@ -536,7 +538,7 @@ describe('runFullReview end to end', () => {
 
       expect(mockLLM.calls).toContain('judge');
       expect(mockLLM.calls).not.toContain('refute');
-      expect(postedReviews().map(r => r.state)).toEqual(['APPROVED', 'APPROVED']);
+      expect(postedReviews().map(r => r.state)).toEqual(['DISMISSED', 'CHANGES_REQUESTED']);
     } finally {
       rmSync(workspace, { recursive: true, force: true });
     }
