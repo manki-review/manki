@@ -976,7 +976,7 @@ function formatBodyFix(fix: string, file: string): string {
  */
 function splitLead(text: string, maxSentences: number, maxLength: number): { lead: string; rest: string } {
   const trimmed = text.trim();
-  const fenceAt = trimmed.indexOf('```');
+  const fenceAt = trimmed.search(/`{3}|~{3}/);
   const prose = fenceAt === -1 ? trimmed : trimmed.slice(0, fenceAt);
   // Odd entries are the whitespace between sentences, so joining a slice keeps the original spacing.
   const parts = prose.trimEnd().split(/(?<=[.!?])(\s+)/);
@@ -1594,7 +1594,7 @@ function sanitizeMarkdown(text: string): string {
   result = result.replace(HTML_TAG_REGEX, '');
   result = result.replace(HTML_TAG_REGEX, '');
 
-  return result
+  return closeOpenFence(result
     .replace(HTML_UNCLOSED_TAG_REGEX, '')  // Unclosed tags at end of string
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')                       // Images: keep alt text only
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')                        // Links: keep text only
@@ -1608,7 +1608,7 @@ function sanitizeMarkdown(text: string): string {
     // Insert zero-width space after @ to prevent GitHub from resolving mentions.
     // Lookbehind avoids matching email addresses (which have chars before @).
     // Also handles @org/team patterns.
-    .replace(/(?<![a-zA-Z0-9.])@([a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)?)/g, '@\u200B$1');
+    .replace(/(?<![a-zA-Z0-9.])@([a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)?)/g, '@\u200B$1'));
 }
 
 /** Reduce a finding title to a URL-safe slug for use in HTML comment markers and fingerprints. */
@@ -1633,6 +1633,21 @@ const FENCE_LINE_RE = /^\s*(`{3,}|~{3,})(.*)$/;
 // backtick run's info string stops at the next backtick, so a later run on the same line is matched too.
 const FENCE_INFO_RE = /(`{3,})([^\n`]*)|(~{3,})([^\n]*)/g;
 const PLAIN_LANGUAGE_RE = /^[A-Za-z0-9_+#.-]{1,32}$/;
+
+/** Closes a top-level fence `text` leaves open, so what Manki appends after it is never read as part of the block. */
+function closeOpenFence(text: string): string {
+  let open: string | undefined;
+  for (const line of text.split('\n')) {
+    const [, run, info] = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/) ?? [];
+    if (!run) continue;
+    if (!open) {
+      if (run[0] === '~' || !info.includes('`')) open = run;
+    } else if (run[0] === open[0] && run.length >= open.length && !info.trim()) {
+      open = undefined;
+    }
+  }
+  return open ? `${text}\n${open}` : text;
+}
 
 /**
  * Returns `info` when it is a plain language name, or nothing. Any other info string is dropped, so no spelling that

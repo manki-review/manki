@@ -106,6 +106,12 @@ describe('formatFindingComment', () => {
       expect(shown(fenced)).not.toMatch(SUGGESTION_FENCE);
       expect(fenced).toContain('```ts\ngrant(user);\n```');
     }
+    // A fence the description leaves open is closed before the fix, so the fix's own lines cannot open a suggestion.
+    const open = formatFindingComment({ ...baseFinding, description: 'Looks fine.\n~~~', suggestedFix: '```\n~~~\n```suggestion\nevil\u202E\n```' });
+    expect(open).toContain('Looks fine.\n\n````ts\n~~~\n```suggestion\nevil\u202E\n````');
+    expect(open).toContain('<summary>Details</summary>\n\n~~~\n~~~\n\n</details>');
+    expect(sanitizeMarkdown('a\n````ts\nx\n```\ny')).toBe('a\n````ts\nx\n```\ny\n````');
+    expect(sanitizeMarkdown('a\n```ts\nx\n```\ny ```z```')).toBe('a\n```ts\nx\n```\ny ```z```');
     const named = formatFindingComment({ ...baseFinding, file: 'src/x.suggestion', suggestedFix: 'Use this:\n\n```\ngrant(user);\n```' });
     expect(shown(named)).not.toMatch(SUGGESTION_FENCE);
     expect(named).toContain('```\ngrant(user);\n```');
