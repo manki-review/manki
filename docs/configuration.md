@@ -198,7 +198,6 @@ memory:
 | `memory.repo` | `owner/name` | none | The memory repository, such as `<owner>/review-memory`. |
 | `metrics` | map | none | Metrics Manki records. |
 | `metrics.fix_rate` | boolean | the value of `memory.enabled` | On merge, count per severity and finder how many posted findings were fixed, dismissed or left untouched. Written to the job summary, and to the memory repo when memory is on. |
-| `concurrency_lock_ttl_seconds` | number above 0, up to 3600 | `600` | How long another run's in-progress marker stops a new review of the PR. The `concurrency_lock_ttl_seconds` action input wins, and it defaults to 600, so a value here has no effect. Set the input instead. |
 
 ### Deprecated settings
 

@@ -4,13 +4,12 @@ import * as core from '@actions/core';
 import * as github from '@actions/github';
 
 import { assertWritesAllowed } from './abort';
-import { AgentProgressEntry, DashboardData, FOLLOW_UP_TAG, Finding, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, ReviewConfig, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity } from './types';
+import { AgentProgressEntry, DashboardData, FOLLOW_UP_TAG, Finding, RefutationOutcome, FINDING_CATEGORIES, FINDING_EFFORTS, FindingSeverity, ParsedDiff, ReviewMetadata, ReviewResult, RoundContext, RoundOutcome, ReviewVerdict, VALID_PR_TYPES, VerdictTraceEntry, TestGuide, isBlockingSeverity } from './types';
 import { isLineInDiff } from './diff';
 import { codeTokensFromDiff, highlightCode } from './highlight';
 import { findPriorThreadId } from './finding-fingerprint';
 import type { PreviousFinding } from './recap';
 import { MAX_AGENT_RETRIES, SEVERITY_ORDER } from './types';
-import { MAX_LOCK_TTL_SECONDS } from './config';
 import { safeTruncate, sanitizeHtmlCommentJson, sanitizeTokens, withMarkers } from './utils';
 import { formatReviewRecord, omitBulkyDiagnostics } from './review-record';
 import { parseSettingsBlock, SETTINGS_MARKER, SettingsView, stripSettingsBlock, withSettingsBlock } from './settings';
@@ -131,12 +130,6 @@ function buildCommitMarker(commitSha: string): string {
 /** Returns the commit a progress comment reviews, or `null` for a comment posted without the marker. */
 function extractCommitFromBody(body: string): string | null {
   return body.match(COMMIT_MARKER_REGEX)?.[1] ?? null;
-}
-
-/** Whether a progress comment reviews a commit other than `commitSha`. A comment without the marker never does. */
-function reviewsOtherCommit(body: string, commitSha: string | undefined): boolean {
-  const reviewed = extractCommitFromBody(body);
-  return !!commitSha && reviewed !== null && reviewed !== commitSha;
 }
 
 function extractRunIdFromBody(body: string | null | undefined): number | null {
@@ -689,10 +682,8 @@ async function editProgressComment(
 }
 
 /**
- * Post an auto-approve specific "in progress" marker comment. Distinct body
- * text from `postProgressComment` so a human reading the PR sees which path
- * is running, but reuses `BOT_MARKERS` + `manki-run-id` so `findInProgressLock`
- * treats it as a live concurrency lock for sibling runs.
+ * Posts the comment that shows an auto-approve is running. Its `manki-run-id` marker lets the post step
+ * mark it cancelled when the run stops early.
  */
 export async function postAutoApproveProgressComment(
   octokit: Octokit,
@@ -712,8 +703,7 @@ export async function postAutoApproveProgressComment(
 
 /**
  * Transition the auto-approve progress comment to its terminal "complete"
- * state. Adds `REVIEW_COMPLETE_MARKER` so the comment is no longer treated as
- * a live in-progress lock by `findInProgressLock`.
+ * state. Adds `REVIEW_COMPLETE_MARKER` so the post step leaves the comment alone.
  */
 export async function markAutoApproveComplete(
   octokit: Octokit,
@@ -732,7 +722,7 @@ export async function markAutoApproveComplete(
 /**
  * Transition a progress comment to a terminal failure state that names the
  * failed `action` and the reason, with tokens redacted. Uses `CANCELLED_MARKER`
- * so `findInProgressLock` no longer treats it as a live lock.
+ * so the post step leaves the comment alone.
  * With `commitSha`, a later verdict on that commit marks the comment superseded.
  */
 export async function markProgressCommentFailed(
@@ -762,7 +752,7 @@ export async function markProgressCommentFailed(
  * Transition a progress comment to a terminal state that says a push to `headSha` superseded
  * the review of `reviewedSha`. With `reviewPosted`, it says the review was posted but replaced no earlier one.
  * When both SHAs match, it says a later review of that commit posted its verdict.
- * Uses `CANCELLED_MARKER` so `findInProgressLock` no longer treats it as a live lock.
+ * Uses `CANCELLED_MARKER` so the post step leaves the comment alone.
  */
 export async function markProgressCommentSuperseded(
   octokit: Octokit,
@@ -2071,12 +2061,6 @@ async function fetchReviewThreadNodes<T>(
   );
 }
 
-interface ProgressComment {
-  id: number;
-  body: string;
-  runId: number | null;
-}
-
 /** Returns every comment on the PR, most recently updated first. */
 async function fetchPRComments(
   octokit: Octokit, owner: string, repo: string, prNumber: number,
@@ -2142,188 +2126,6 @@ async function retireSettingsBlocks(
   for (const c of comments) {
     if (c.id !== keepId && isBotUser(bot, c.user) && c.body?.includes(SETTINGS_MARKER)) await setSettingsBlock(octokit, owner, repo, c.id);
   }
-}
-
-/**
- * Find the most recent non-complete, non-cancelled progress comment posted by the bot.
- */
-function findProgressComment(comments: IssueComment[], bot: BotIdentity): ProgressComment | null {
-  const match = comments.find(c =>
-    isBotUser(bot, c.user) &&
-    c.body?.includes(BOT_MARKER) &&
-    !c.body?.includes(REVIEW_COMPLETE_MARKER) &&
-    !c.body?.includes(CANCELLED_MARKER)
-  );
-  if (!match || !match.body) return null;
-  return { id: match.id, body: match.body, runId: extractRunIdFromBody(match.body) };
-}
-
-const ACTIVE_RUN_STATUSES = new Set([
-  'in_progress', 'queued', 'waiting', 'pending', 'requested', 'action_required',
-]);
-
-/**
- * Check whether a review is currently in progress for a PR by verifying the
- * embedded Actions run_id via the GitHub Actions API. Zombie comments from
- * cancelled/failed runs are marked as cancelled in-place (not deleted) so the
- * audit trail is preserved. With `headSha`, a live review of another commit does
- * not count: it stops by itself at its next head check.
- */
-async function isReviewInProgress(octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, headSha?: string): Promise<boolean> {
-  let progress: ProgressComment | null;
-  try {
-    const comments = await fetchPRComments(octokit, owner, repo, prNumber);
-    progress = findProgressComment(comments, bot);
-  } catch {
-    return false;
-  }
-  if (!progress) return false;
-
-  // Legacy comments without a run_id marker predate this check — treat as stale.
-  if (progress.runId === null) {
-    core.info('Progress comment has no run_id marker — treating as stale');
-    await markProgressCommentCancelled(octokit, owner, repo, progress.id, progress.body);
-    return false;
-  }
-
-  // Same run: we're re-entering our own execution, nothing to skip.
-  if (progress.runId === github.context.runId) {
-    return false;
-  }
-
-  let status: string | null | undefined;
-  let conclusion: string | null | undefined;
-  try {
-    const { data: workflowRun } = await octokit.rest.actions.getWorkflowRun({
-      owner, repo, run_id: progress.runId,
-    });
-    status = workflowRun.status;
-    conclusion = workflowRun.conclusion;
-  } catch (error) {
-    // GitHub deletes old runs, so a run it no longer knows has finished.
-    if ((error as { status?: number }).status !== 404) {
-      core.warning(`Failed to query Actions run ${progress.runId}: ${error instanceof Error ? error.message : error}`);
-      return false;
-    }
-    status = 'deleted';
-  }
-
-  if (ACTIVE_RUN_STATUSES.has(status ?? '')) {
-    if (reviewsOtherCommit(progress.body, headSha)) {
-      core.info(`Run ${progress.runId} is reviewing ${extractCommitFromBody(progress.body)?.slice(0, 7)}, not the head ${headSha?.slice(0, 7)}. Reviewing the head, the older review stops at its next head check`);
-      return false;
-    }
-    core.info(`Skipping — review already in progress (run ${progress.runId}, status=${status})`);
-    return true;
-  }
-
-  core.info(`Progress comment belongs to completed run ${progress.runId} (status=${status}, conclusion=${conclusion}) — marking as cancelled`);
-  await markProgressCommentCancelled(octokit, owner, repo, progress.id, progress.body);
-  return false;
-}
-
-/**
- * Lock info for an in-progress marker comment posted by a different run.
- */
-interface InProgressLock {
-  runId: number;
-  updatedAt: string;
-  commentId: number;
-}
-
-/**
- * Scan the PR's bot comments for an in-progress marker carrying a `manki-run-id`
- * that differs from `currentRunId`. Returns the most recent such comment, or
- * null when none is found. Skips terminal-state comments (complete, cancelled,
- * force-review / force-cap stubs), comments whose run id cannot be parsed and,
- * with `commitSha`, comments for another commit.
- *
- * Used as a defense-in-depth check at the review entry point: if a sibling run
- * has already announced "Review in progress" within the configured TTL, the
- * current run bails before any LLM cost is incurred. This complements the
- * workflow-level `concurrency` group, which is best-effort and can let two
- * runs reach `in_progress` within the same scheduling window.
- */
-function findInProgressLock(comments: IssueComment[], bot: BotIdentity, currentRunId: number, commitSha?: string): InProgressLock | null {
-  for (const c of comments) {
-    if (!isBotUser(bot, c.user)) continue;
-    if (!c.body?.includes(BOT_MARKER)) continue;
-    if (c.body.includes(REVIEW_COMPLETE_MARKER)) continue;
-    if (c.body.includes(CANCELLED_MARKER)) continue;
-    const runId = extractRunIdFromBody(c.body);
-    if (runId === null) continue;
-    if (runId === currentRunId) continue;
-    if (reviewsOtherCommit(c.body, commitSha)) continue;
-    return { runId, updatedAt: c.updated_at, commentId: c.id };
-  }
-  return null;
-}
-
-/**
- * True when `updatedAt` is older than `ttlSeconds` relative to `now`. Used to
- * ignore in-progress markers from runs that crashed without clearing their
- * lock, so a single stale comment cannot wedge the PR indefinitely.
- */
-function isLockExpired(updatedAt: string, ttlSeconds: number, now: Date): boolean {
-  const updated = Date.parse(updatedAt);
-  if (!Number.isFinite(updated)) return true;
-  return (now.getTime() - updated) / 1000 > ttlSeconds;
-}
-
-const DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS = 600;
-
-function readConcurrencyLockTtlSeconds(config?: ReviewConfig): number {
-  const raw = core.getInput('concurrency_lock_ttl_seconds');
-  if (raw) {
-    const n = Number(raw);
-    if (!Number.isFinite(n) || n <= 0 || n > MAX_LOCK_TTL_SECONDS) {
-      core.warning(`Invalid concurrency_lock_ttl_seconds=${raw}, using default ${DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS}`);
-      return DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS;
-    }
-    return n;
-  }
-  const fromConfig = config?.concurrency_lock_ttl_seconds;
-  if (fromConfig === undefined) return DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS;
-  if (!Number.isFinite(fromConfig) || fromConfig <= 0 || fromConfig > MAX_LOCK_TTL_SECONDS) {
-    core.warning(`Invalid \`concurrency_lock_ttl_seconds\` in config (${fromConfig}), using default ${DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS}`);
-    return DEFAULT_CONCURRENCY_LOCK_TTL_SECONDS;
-  }
-  return fromConfig;
-}
-
-/**
- * Defense-in-depth check before any LLM call. When another Manki
- * run has posted an in-progress marker comment whose `manki-run-id` differs
- * from ours and whose `updated_at` is within the configured TTL, bail to avoid
- * a double review. The workflow-level `concurrency` group is best-effort and
- * can let two runs reach `in_progress` within the same scheduling window.
- * With `commitSha`, a marker for another commit is no lock.
- *
- * Returns `true` when the caller should bail.
- */
-async function checkConcurrentSubmissionLock(
-  octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, config?: ReviewConfig, commitSha?: string,
-): Promise<boolean> {
-  const currentRunId = github.context.runId;
-  let lock;
-  try {
-    const comments = await fetchPRComments(octokit, owner, repo, prNumber);
-    lock = findInProgressLock(comments, bot, currentRunId, commitSha);
-  } catch (error) {
-    core.warning(`Concurrency lock scan failed: ${error instanceof Error ? error.message : error}`);
-    return false;
-  }
-  if (!lock) return false;
-
-  const ttlSeconds = readConcurrencyLockTtlSeconds(config);
-  const now = new Date();
-  if (isLockExpired(lock.updatedAt, ttlSeconds, now)) {
-    core.info(`Ignoring stale in-progress marker from run ${lock.runId} (updated_at=${lock.updatedAt}, TTL=${ttlSeconds}s)`);
-    return false;
-  }
-  const ageSeconds = Math.round((now.getTime() - Date.parse(lock.updatedAt)) / 1000);
-  core.warning(`Bailing: another Manki run (id=${lock.runId}) posted an in-progress marker ${ageSeconds}s ago (TTL=${ttlSeconds}s). Defense-in-depth lock engaged before LLM call.`);
-  return true;
 }
 
 /**
@@ -2406,7 +2208,7 @@ async function fetchBotReviews(
  * Run entry points consult this before any LLM call so serialized
  * sibling events (e.g., the `pull_request_review` + `pull_request_review_comment`
  * fan-out from a single human review) cannot post duplicate reviews on the
- * same commit. Complements the temporally-overlapping `checkConcurrentSubmissionLock`.
+ * same commit.
  */
 async function findBotReviewOnCommit(
   octokit: Octokit, bot: BotIdentity, owner: string, repo: string, prNumber: number, commitSha: string,
@@ -2518,5 +2320,5 @@ async function postConfigErrorComment(
   }
 }
 
-export { APPROVED_LINE, dynamicFence, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, isTrustedAssociation, BOT_MARKER, REVIEW_COMPLETE_MARKER, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isReviewInProgress, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgressOn, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, findInProgressLock, isLockExpired, checkConcurrentSubmissionLock, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings };
-export type { InProgressLock, StandingVerdict };
+export { APPROVED_LINE, dynamicFence, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, isTrustedAssociation, BOT_MARKER, REVIEW_COMPLETE_MARKER, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, RUN_ID_MARKER_PREFIX, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgressOn, extractRunIdFromBody, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings };
+export type { StandingVerdict };

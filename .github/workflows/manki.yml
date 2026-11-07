@@ -1,7 +1,7 @@
-name: Manki dispatch
+name: Manki
 run-name: 'Manki ${{ inputs.event }}.${{ inputs.action }} on #${{ inputs.pr }} (${{ inputs.delivery_id }})'
 
-# Webhook mode for Manki itself. The service only dispatches this workflow once `manki.yml` is gone from the default branch.
+# The Manki service starts this workflow for each event Manki handles.
 on:
   workflow_dispatch:
     inputs:

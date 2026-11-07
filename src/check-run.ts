@@ -1,7 +1,6 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 
-import { isDispatchedRun } from './dispatch';
 import { truncateBody } from './github';
 import type { ApprovalHeld } from './github';
 import type { RoundOutcome } from './types';
@@ -46,17 +45,16 @@ export function outcomeReport(outcome: RoundOutcome, summary: string, approvalHe
   return { ...OUTCOME_REPORTS[outcome], summary };
 }
 
-/** Returns the check report for a run that failed. A failure keeps a required check blocking, as the failed job does in event-driven mode. */
+/** Returns the check report for a run that failed. A failure keeps a required check blocking. */
 export function failedReport(summary: string): CheckReport {
   return { conclusion: 'failure', title: 'Review failed', summary };
 }
 
 /**
- * Creates an in-progress `Manki` check run on `headSha` that links to this run. Only a dispatched run creates one,
- * because its run belongs to the default branch and so shows on no PR. A failure is logged and returns `undefined`.
+ * Creates an in-progress `Manki` check run on `headSha` that links to this run. The run itself belongs to the
+ * default branch and so shows on no PR. A failure is logged and returns `undefined`.
  */
 export async function startReviewCheck(octokit: Octokit, owner: string, repo: string, headSha: string): Promise<ReviewCheck | undefined> {
-  if (!isDispatchedRun()) return undefined;
   const { serverUrl, runId } = github.context;
   try {
     const { data } = await octokit.rest.checks.create({

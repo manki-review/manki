@@ -105,7 +105,7 @@ describe('documented workflow snippets', () => {
   it('includes a dispatch workflow in `docs/getting-started.md` that declares the dispatch inputs, with no `if` or `concurrency`, as our own does', () => {
     const dispatch = snippets['docs/getting-started.md'].map(block => parseYaml(block) as Workflow).filter(isDispatchWorkflow);
     expect(dispatch).toHaveLength(1);
-    const own = parseYaml(readRepoFile('.github/workflows/manki-dispatch.yml')) as Workflow;
+    const own = parseYaml(readRepoFile('.github/workflows/manki.yml')) as Workflow;
     for (const workflow of [dispatch[0], own]) {
       expect(Object.keys(workflow.on)).toEqual(['workflow_dispatch']);
       expect(workflow.on.workflow_dispatch).toEqual(dispatch[0].on.workflow_dispatch);
