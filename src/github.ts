@@ -1409,6 +1409,12 @@ function dynamicFence(content: string): string {
   return '`'.repeat(Math.max(3, maxBt + 1));
 }
 
+/** Wraps `text` in a `dynamicFence`, so nothing inside can close the block, with `info` as its language. */
+function fenceText(text: string, info = ''): string {
+  const fence = dynamicFence(text);
+  return `${fence}${info}\n${text}\n${fence}`;
+}
+
 function buildReviewedCommitFooter(owner: string, repo: string, commitSha: string, serverUrl: string): string {
   return `Reviewed [\`${commitSha.slice(0, 7)}\`](${repoUrl(serverUrl, owner, repo)}/commit/${commitSha}).`;
 }
@@ -2290,5 +2296,5 @@ async function postConfigErrorComment(
   }
 }
 
-export { APPROVED_LINE, dynamicFence, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, BOT_MARKER, REVIEW_COMPLETE_MARKER, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings };
+export { APPROVED_LINE, dynamicFence, fenceText, formatFindingComment, formatSecurityOverrides, formatStatsOneLiner, mapVerdictToEvent, resolveReferences, sanitizeFilePath, sanitizeMarkdown, truncateBody, BOT_LOGIN, ACTIONS_BOT_LOGIN, BotIdentity, hasWriteAccess, isBotLogin, isRepoAdmin, BOT_MARKER, REVIEW_COMPLETE_MARKER, PAUSE_NOTICE_MARKER, AUTO_APPROVE_MARKER, CANCELLED_MARKER, VERSION_MARKER_PREFIX, MANKI_VERSION, isApprovedOnCommit, hasBotReviewOnCommit, findBotReviewOnCommit, markOwnProgressCommentCancelled, isFailedProgress, extractVersionFromBody, fetchPRComments, GraphqlConnection, paginateGraphql, fetchReviewThreadNodes, APP_WARNING_MARKER, postAppWarningIfNeeded, CONFIG_ERROR_MARKER, postConfigErrorComment, fetchStandingVerdict, LOW_CONFIDENCE_NOTE, latestSettings, retireSettingsBlocks, setSettingsBlock, showSettings };
 export type { StandingVerdict };
