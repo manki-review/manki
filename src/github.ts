@@ -1059,7 +1059,7 @@ function formatFindingDetail(finding: Finding): string[] {
 function formatFindingBlock(finding: Finding, linkTo: LineLink): string {
   const lines = [formatFindingHeader(finding), `**${sanitizeMarkdown(finding.title)}**`];
   if (finding.file) lines.push(`[${inlineCode(findingLocation(finding))}](${linkTo(finding.file, finding.line)})`);
-  return [...lines, ...formatFindingDetail(finding)].join('\n');
+  return [...lines, ...formatFindingDetail(finding), ...checksSection(finding)].join('\n');
 }
 
 /**
@@ -1088,7 +1088,7 @@ function formatFindingFold(finding: Finding, linkTo: LineLink, lineCounts: Reado
   const preview = finding.file && finding.line > 0 && (last === undefined || finding.line <= last)
     ? [linkTo(finding.file, Math.max(1, finding.line - PREVIEW_CONTEXT), Math.min(last ?? finding.line, finding.line + PREVIEW_CONTEXT))]
     : [];
-  return `<details>\n${summary}\n\n${[...formatFindingDetail(finding), ...preview].join('\n\n')}\n\n</details>`;
+  return `<details>\n${summary}\n\n${[...formatFindingDetail(finding), ...preview, ...checksSection(finding)].join('\n\n')}\n\n</details>`;
 }
 
 /** Returns one list of the review body: a heading, an optional intro, then one fold per finding. */
@@ -1759,6 +1759,12 @@ function howThisWasChecked({ evidence, refutation }: Finding): string[] {
   return lines.slice(0, MAX_CHECK_LINES);
 }
 
+/** Returns the collapsed "How this was checked" section of `finding`, or none when nobody checked it. */
+function checksSection(finding: Finding): string[] {
+  const checks = howThisWasChecked(finding);
+  return checks.length > 0 ? [`<details>\n<summary>How this was checked</summary>\n\n${checks.map(line => `- ${line}`).join('\n')}\n\n</details>`] : [];
+}
+
 function formatFindingComment(finding: Finding): string {
   let comment = `${SEVERITY_EMOJI[finding.severity]} ${formatFindingHeader(finding)}\n\n**${sanitizeMarkdown(finding.title)}**\n\n`;
   if (finding.judgeConfidence === 'low') comment += `${LOW_CONFIDENCE_NOTE}\n\n`;
@@ -1769,10 +1775,7 @@ function formatFindingComment(finding: Finding): string {
   if (rest) {
     comment += `\n\n<details>\n<summary>Details</summary>\n\n${rest}\n\n</details>`;
   }
-  const checks = howThisWasChecked(finding);
-  if (checks.length > 0) {
-    comment += `\n\n<details>\n<summary>How this was checked</summary>\n\n${checks.map(line => `- ${line}`).join('\n')}\n\n</details>`;
-  }
+  for (const section of checksSection(finding)) comment += `\n\n${section}`;
 
   const data: Record<string, unknown> = {
     file: finding.file,
