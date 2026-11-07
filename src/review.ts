@@ -1856,11 +1856,6 @@ function namedPriorThreadIds(findings: Finding[], priorBlockers: PriorBlocker[])
   return new Set(ids.filter((id): id is string => !!id));
 }
 
-/**
- * Returns `evaluations` with `addressed` kept only where the round confirms the fix.
- * A thread whose blocker this round names again is not fixed. A blocker thread, or one whose severity
- * is unknown, counts as fixed only when the push changed its file, so a judge reading an unchanged file cannot clear it.
- */
 /** Returns the files the inter-round diff changes, or none when it is unknown. */
 export function filesChangedByPush(interRoundDiff: string | undefined): Set<string> {
   return new Set(interRoundDiff ? parsePRDiff(interRoundDiff).files.map(f => f.path) : []);
@@ -1871,6 +1866,11 @@ export function blockerThreadStaysOpen(thread: OpenThread, pushChangedFiles: Rea
   return (thread.severity === 'blocker' || thread.severity === 'unknown') && !pushChangedFiles.has(thread.file);
 }
 
+/**
+ * Returns `evaluations` with `addressed` kept only where the round confirms the fix.
+ * A thread whose blocker this round names again is not fixed. A blocker thread, or one whose severity
+ * is unknown, counts as fixed only when the push changed its file, so a judge reading an unchanged file cannot clear it.
+ */
 function confirmFixes(
   evaluations: ThreadEvaluation[] | undefined,
   openThreadIndex: Map<string, OpenThread>,
