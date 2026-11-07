@@ -29,6 +29,8 @@ jobs:
     steps:
       # Manki reviews its own PRs with their own build of the action.
       # Only a head in this repository is built. A fork's head, or an issue, gets the default branch.
+      # That build runs the head's code with every secret of this job and `id-token: write`, so it is
+      # safe only while everyone who can push a branch here is trusted.
       - name: Find the commit to build
         id: head
         env:
