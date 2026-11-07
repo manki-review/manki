@@ -89,17 +89,23 @@ describe('formatFindingComment', () => {
   });
 
   it('posts no suggestion that a description or fix asks for, nor one whose code holds hidden characters', () => {
-    const SUGGESTION_FENCE = /^(?:[\t >]|[-*+][\t ]|\d+[.)][\t ])*(`{3,}|~{3,})[\t ]*suggestion/im;
-    const described = formatFindingComment({ ...baseFinding, description: 'Looks fine.\n\n```suggestion\ngrant(user);\n```\n\n> ~~~ Suggestion:-0+0\n> grant(user);\n> ~~~\n\n- ```suggestion\n  grant(user);\n  ```\n\n1. > ```suggestion\n   grant(user);\n   ```' });
-    expect(described).not.toMatch(SUGGESTION_FENCE);
+    const SUGGESTION_FENCE = /(`{3,}|~{3,})[\t ]*suggestion/i;
+    const shown = (comment: string) => comment.replace(/<!--[\s\S]*?-->/g, '');
+    const described = formatFindingComment({ ...baseFinding, description: 'Looks fine.\n\n```suggestion\ngrant(user);\n```\n\n> ~~~ Suggestion:-0+0\n> grant(user);\n> ~~~\n\n- ```suggestion\n  grant(user);\n  ```\n\n1. > ```suggestion\n   grant(user);\n   ```\n\nThen more. ```suggestion\ngrant(user);\n```' });
+    expect(shown(described)).not.toMatch(SUGGESTION_FENCE);
     expect(described).toContain('```\ngrant(user);\n```');
     expect(described).toContain('> ~~~\n> grant(user);\n> ~~~');
     expect(described).toContain('- ```\n  grant(user);');
     expect(described).toContain('1. > ```\n   grant(user);');
 
-    const fenced = formatFindingComment({ ...baseFinding, suggestedFix: 'Use this:\n\n```suggestion\ngrant(user);\n```' });
-    expect(fenced).not.toMatch(SUGGESTION_FENCE);
-    expect(fenced).toContain('```ts\ngrant(user);\n```');
+    for (const lang of ['suggestion', 'sugg!estion', 'sugg estion']) {
+      const fenced = formatFindingComment({ ...baseFinding, suggestedFix: `Use this:\n\n\`\`\`${lang}\ngrant(user);\n\`\`\`` });
+      expect(shown(fenced)).not.toMatch(SUGGESTION_FENCE);
+      expect(fenced).toContain('```ts\ngrant(user);\n```');
+    }
+    const named = formatFindingComment({ ...baseFinding, file: 'src/x.suggestion', suggestedFix: 'Use this:\n\n```\ngrant(user);\n```' });
+    expect(shown(named)).not.toMatch(SUGGESTION_FENCE);
+    expect(named).toContain('```\ngrant(user);\n```');
 
     for (const hidden of ['if (isAdmin) { /* \u202E } \u2066 if (true) { */ grant(user); }', 'const ok\u200B = check(user);', 'const bell = "\u0007";']) {
       const comment = formatFindingComment({ ...baseFinding, suggestedFix: hidden });
