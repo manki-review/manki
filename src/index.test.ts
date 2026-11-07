@@ -1799,6 +1799,7 @@ describe('runFullReview orchestration', () => {
     it.each([
       ['conflict', 'Approval held: the PR conflicts with its base'],
       ['draft', 'Approval held: the PR is a draft'],
+      ['config', 'Approval held: the base branch config did not load'],
     ] as const)('completes the check as neutral when the approval is held for a %s, and reports it held', async (held, title) => {
       jest.mocked(ghUtils.postReview).mockResolvedValueOnce({ id: 123, approvalHeld: held });
 
@@ -1919,6 +1920,7 @@ describe('runFullReview orchestration', () => {
       await callRunFullReview();
 
       expect(reviewedConfig()).toEqual(actualLoadConfig(base));
+      expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual(expect.objectContaining({ configFailed: false }));
       expect(jest.mocked(core.info)).toHaveBeenCalledWith(
         'This PR changes `auto_review`, `auto_approve`, `exclude_paths`, `max_diff_lines`, `reviewers`, `instructions`, `memory`, `models`, `planner`, `review`, `static_analysis`, `related_repos`, `noise_level`, `drafts`, `review_passes`, `convergence`, `metrics` in .manki.yml. The change applies after merge: this round uses the base branch\'s settings.',
       );
@@ -1942,7 +1944,8 @@ describe('runFullReview orchestration', () => {
 
       await callRunFullReview();
 
-      expect(reviewedConfig()).toEqual({ ...actualLoadConfig(undefined), auto_approve: false });
+      expect(reviewedConfig()).toEqual(actualLoadConfig(undefined));
+      expect(jest.mocked(ghUtils.postReview).mock.calls[0][9]).toEqual(expect.objectContaining({ configFailed: true }));
       expect(jest.mocked(core.warning)).toHaveBeenCalledWith(expect.stringContaining(warning));
       expect(jest.mocked(core.setFailed)).not.toHaveBeenCalled();
     });

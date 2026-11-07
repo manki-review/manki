@@ -1092,6 +1092,16 @@ describe('postReview body lead', () => {
     expect(body).toBe(`**Approval held:** this PR is a draft. Mark it ready for review, and Manki reviews it again.\n\n${approved.body}`);
   });
 
+  it('holds the approval of a READY round as a COMMENT when the base branch config did not load, without reading the PR', async () => {
+    const approved = await postedBody(ready);
+    mockGet.mockClear();
+    const { approvalHeld } = await postReview(mockOctokit, 'owner', 'repo', 1, 'abcdef1234', ready, diff, undefined, undefined, { configFailed: true });
+    const { body, event } = mockCreateReview.mock.calls.at(-1)![0] as { body: string; event: string };
+    expect([event, approvalHeld]).toEqual(['COMMENT', 'config']);
+    expect(body).toBe(`**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.\n\n${approved.body}`);
+    expect(mockGet).not.toHaveBeenCalled();
+  });
+
   it('approves when GitHub still reports mergeable as unknown after the retries', async () => {
     jest.useFakeTimers();
     try {

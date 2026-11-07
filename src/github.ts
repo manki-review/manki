@@ -155,10 +155,10 @@ const MERGEABLE_ATTEMPTS = 3;
 const MERGEABLE_RETRY_MS = 1500;
 
 /** Why an approval was posted as a comment instead, or `false` when it was not held. */
-export type ApprovalHeld = false | 'conflict' | 'draft';
+export type ApprovalHeld = false | 'conflict' | 'draft' | 'config';
 
-/** Why Manki holds an approval right now: the PR is a draft, or it conflicts with `baseRef`. */
-export type ApprovalHold = { reason: 'draft' } | { reason: 'conflict'; baseRef: string };
+/** Why Manki holds an approval right now: the PR is a draft, it conflicts with `baseRef`, or the base branch's config did not load. */
+export type ApprovalHold = { reason: 'draft' } | { reason: 'conflict'; baseRef: string } | { reason: 'config' };
 
 /**
  * Returns why an approval must be held, read from the PR as it is now, or `undefined` when it may be posted.
@@ -184,9 +184,9 @@ export async function fetchApprovalHold(octokit: Octokit, owner: string, repo: s
 
 /** Returns the line that says why Manki does not approve. */
 export function approvalHoldLine(hold: ApprovalHold): string {
-  return hold.reason === 'draft'
-    ? '**Approval held:** this PR is a draft. Mark it ready for review, and Manki reviews it again.'
-    : `**Approval held:** this PR conflicts with \`${sanitizeFilePath(hold.baseRef)}\`. Rebase it, and Manki reviews the result.`;
+  if (hold.reason === 'draft') return '**Approval held:** this PR is a draft. Mark it ready for review, and Manki reviews it again.';
+  if (hold.reason === 'config') return '**Approval held:** the config file on the base branch could not be read or does not load, so Manki reviewed with the defaults.';
+  return `**Approval held:** this PR conflicts with \`${sanitizeFilePath(hold.baseRef)}\`. Rebase it, and Manki reviews the result.`;
 }
 
 /** Thrown when the PR head moved past the commit under review, so the review must post no verdict. */
@@ -1142,7 +1142,7 @@ export async function postReview(
   diff?: ParsedDiff,
   context?: RoundContext,
   reviewTimeMs?: number,
-  { existingThreads = [], draft = false }: { existingThreads?: PreviousFinding[]; draft?: boolean } = {},
+  { existingThreads = [], draft = false, configFailed = false }: { existingThreads?: PreviousFinding[]; draft?: boolean; configFailed?: boolean } = {},
 ): Promise<{ id: number; approvalHeld: ApprovalHeld }> {
   const event = mapVerdictToEvent(result.verdict);
 
@@ -1227,7 +1227,8 @@ export async function postReview(
   const blockingFindings = result.findings.filter(isBlockingFinding);
   const earlier = carriedThreadIds.size + (result.verdictTrace?.unresolvedPriors.length ?? 0);
   const lead = formatLead(result, blockingFindings, { fresh: blockingFindings.length - carriedBlockers, earlier, followUp: (context?.meta.round ?? 1) > 1 });
-  const hold = event === 'APPROVE' ? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) : undefined;
+  const configHold: ApprovalHold | undefined = configFailed ? { reason: 'config' } : undefined;
+  const hold = event === 'APPROVE' ? configHold ?? await fetchApprovalHold(octokit, owner, repo, prNumber, draft) : undefined;
   const approvalHeld: ApprovalHeld = hold?.reason ?? false;
   const heldLine = hold && approvalHoldLine(hold);
 
@@ -1282,7 +1283,8 @@ export async function postReview(
   }
   const postedVerdict = approvalHeld ? 'COMMENT' : result.verdict;
   if (approvalHeld) {
-    core.info(`${hold?.reason === 'conflict' ? `PR conflicts with ${hold.baseRef}` : 'The PR is a draft'}, so the approval is posted as a comment`);
+    const why = hold?.reason === 'conflict' ? `PR conflicts with ${hold.baseRef}` : hold?.reason === 'config' ? 'The base branch config did not load' : 'The PR is a draft';
+    core.info(`${why}, so the approval is posted as a comment`);
   }
   core.info(`Posting review: ${mapVerdictToEvent(postedVerdict)} with ${validComments.length} line comments and ${fileComments.length} file-level comments`);
 

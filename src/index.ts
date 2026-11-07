@@ -697,13 +697,17 @@ async function loadRunConfig(target: RunTarget, configPath: string): Promise<{ c
 }
 
 /**
- * Reads the config from the base branch. A base config that cannot be read or does not load gives the defaults with
- * `auto_approve` off, so the PR that fixes it is still reviewed but never approved.
+ * Reads the config from the base branch. A base config that cannot be read or does not load gives the defaults, and
+ * `configFailed` holds the round's approval, so the PR that fixes it is still reviewed but never approved.
  */
+function configFailed(source: ConfigSource): boolean {
+  return source === 'base_unreadable' || source === 'base_invalid';
+}
+
 async function loadBaseConfig(octokit: Octokit, owner: string, repo: string, baseRef: string, configPath: string): Promise<{ config: ReviewConfig; source: ConfigSource }> {
   const fallBack = (source: ConfigSource, problem: string, error: unknown) => {
     core.warning(`${problem} ${configPath} on the base branch, reviewing with the defaults and no approval: ${failureReason(error)}`);
-    return { config: { ...loadConfig(undefined), auto_approve: false }, source };
+    return { config: loadConfig(undefined), source };
   };
   let content: string | null;
   try {
@@ -1387,6 +1391,7 @@ async function postRound(run: ReviewRun, result: ReviewResult, context: RoundCon
   const posted = await postReview(octokit, owner, repo, prNumber, commitSha, result, diff, context, reviewTimeMs, {
     existingThreads: recap.previousFindings,
     draft: run.options.draft,
+    configFailed: configFailed(run.reviewSource),
   });
   await replacePreviousReviews(run, run.progress, posted.id);
   return posted;
