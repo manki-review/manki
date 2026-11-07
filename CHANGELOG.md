@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [7.0.1] - 2026-11-07
+
+### Review loop and verdicts
+
+- The verdict line on a follow-up round says how many blockers are new and how many are still open from earlier reviews, such as "1 new blocker and 2 still open". The summary under it no longer says nothing blocks while an earlier blocker is open, and a round with a new blocker also lists the earlier blockers still open ([#1095](https://github.com/manki-review/manki/pull/1095)).
+
+Also: the Manki service now runs a thread reply before a review that arrives at the same time, so a push and a reply on a Manki thread no longer get a request for changes that the reply withdraws a minute later. The service is updated live, with no Manki release needed ([manki-review/token-service#48](https://github.com/manki-review/token-service/pull/48)).
+
 ## [7.0.0] - 2026-11-07
 
 Manki 7 checks its findings against the code before it posts them. Reviewers on a Claude or Codex subscription read the PR beyond the diff with read-only tools, every blocker must cite the lines that prove it, and the judge tries to refute each blocker before it blocks. Only blockers block. Drafts, very large PRs and PRs you name in `.manki.yml` get no automatic review. This release is tracked in [#1036](https://github.com/manki-review/manki/issues/1036).
