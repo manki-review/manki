@@ -150,12 +150,12 @@ export function addedLines(file: DiffFile): Map<number, string> {
 }
 
 /**
- * Check if a line number is within the diff hunks for a file.
+ * Check if a line number, or any line from `line` to `end`, is within the diff hunks for a file.
  * GitHub only allows inline comments on lines that are part of the diff.
  */
-export function isLineInDiff(file: DiffFile, line: number): boolean {
+export function isLineInDiff(file: DiffFile, line: number, end = line): boolean {
   return file.hunks.some(
-    (hunk) => line >= hunk.newStart && line <= hunk.newStart + hunk.newLines - 1,
+    (hunk) => end >= hunk.newStart && line <= hunk.newStart + hunk.newLines - 1,
   );
 }
 
