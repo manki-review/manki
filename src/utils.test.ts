@@ -93,14 +93,17 @@ describe('utils', () => {
       delete process.env.INPUT_OPENAI_API_KEY;
       delete process.env.INPUT_CONFIG_PATH;
       delete process.env.INPUT_GEMINI_API_KEY;
+      delete process.env.INPUT_MANKI_TOKEN_URL;
     });
 
     it('redacts registered values and secret action inputs, and masks registered values in the log', () => {
       registerSecret('minted-app-token-1');
       process.env.INPUT_OPENAI_API_KEY = 'sk-openai-input-key';
       process.env.INPUT_CONFIG_PATH = '.github/manki-config.yml';
+      process.env.INPUT_MANKI_TOKEN_URL = 'https://manki-api.example/token';
 
-      expect(redactSecrets('a minted-app-token-1 b sk-openai-input-key c .github/manki-config.yml')).toBe('a [REDACTED] b [REDACTED] c .github/manki-config.yml');
+      expect(redactSecrets('a minted-app-token-1 b sk-openai-input-key c .github/manki-config.yml https://manki-api.example/token'))
+        .toBe('a [REDACTED] b [REDACTED] c .github/manki-config.yml https://manki-api.example/token');
       expect(core.setSecret).toHaveBeenCalledWith('minted-app-token-1');
     });
 
